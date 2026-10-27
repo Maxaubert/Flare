@@ -62,13 +62,21 @@ impl Profile {
         self.dir.join("settings.json")
     }
 
-    /// Where mods live (Surfaces stage 8): one folder per mod, `<profile>\mods\<id>\mod.json`. The default
-    /// profile is `%APPDATA%\Flare`; a run with its own `--user-data-dir` (the e2e) has its own mods.
-    pub fn mods_dir(&self) -> PathBuf {
+    /// Where every plugin lives (plugins phase 2c), both protocols: one folder each, `<profile>\plugins\<id>\`
+    /// holding a `mod.json` or a `plugin.json`. The default profile is `%APPDATA%\Flare`; a run with its own
+    /// `--user-data-dir` (the e2e) has its own plugins.
+    pub fn plugins_dir(&self) -> PathBuf {
+        self.dir.join("plugins")
+    }
+
+    /// The old mods folder (Surfaces stage 8), `<profile>\mods`: never read, only emptied into the plugins folder
+    /// once, by the first scan.
+    pub fn old_mods_dir(&self) -> PathBuf {
         self.dir.join("mods")
     }
 
-    /// Which mods the user turned on (`{"version":1,"mods":{"notes":true}}`), next to the mods folder.
+    /// Which mods and plugins the user turned on (`{"version":1,"mods":{"notes":true}}`), in the profile. The
+    /// name stays `mods.json`.
     pub fn mods_file(&self) -> PathBuf {
         self.dir.join("mods.json")
     }

@@ -18,9 +18,45 @@ export struct TabRow {
     mark-color: color,
     mark-state: int,    // 0 none, 1 working, 2 question, 3 finished, 4 failed
     mark-rainbow: bool, // a finished Bar line wears the flowing rainbow
-    agent: int,         // 0 shell, 1 claude, 2 codex (the tab icon)
+    agent: int,         // 0 shell, 1 claude, 2 codex, 3 agy (the tab icon)
+    motion: int,        // how the icon moves: a working agent's pick (AgentIcon), else 0 still
     failed-tip: string, // "Failed: rate limit" while failed, else ""
+    // Decor (plugins phase 1): flat fields, so the row diff stays one compare. The badges in drawing order
+    // (their glyph paths, "" for none, and tone 0 ink, 1 accent, 2 muted), how many there are (0 to 2,
+    // and with a progress never more than 2 in all), the progress (-1 none, -2 an unknown amount drawn as a
+    // static dotted pill, else 0 to 1) and how many chips the strip has room for on this tab (0 to 2).
+    chip1-cmd: string,
+    chip1-tone: int,
+    chip2-cmd: string,
+    chip2-tone: int,
+    chip-count: int,
+    prog: float,
+    chip-room: int,
+    // Plugin hover buttons (plugins phase 4): drawn while the tab is hovered, in Flare's chip, left of the decor and
+    // never over the ring. How many (0 to 2), and each one's glyph path ("" draws its letter), letter, tooltip, and
+    // whether it is ticked (on) or turned off (off).
+    hov-count: int,
+    hov1-cmd: string,
+    hov1-letter: string,
+    hov1-tip: string,
+    hov1-on: bool,
+    hov1-off: bool,
+    hov2-cmd: string,
+    hov2-letter: string,
+    hov2-tip: string,
+    hov2-on: bool,
+    hov2-off: bool,
 }
+
+// One row of the plugins' sidebar sections (plugins phase 4), the sidebar's and the Plugins dropdown's alike:
+// kind 0 a section's header (text the plugin's name, sub the section's title), 1 an item, 2 the note of an empty
+// section. `sid` is `<plugin>/<key>`; check -1 none, 0 unticked, 1 ticked; `jump` brings a tab to the front.
+export struct PluginRow { kind: int, sid: string, id: string, text: string, sub: string, icon: string, check: int,
+                          jump: bool, folded: bool, can-up: bool, can-down: bool }
+
+// A plugin's button in the top bar (plugins phase 4): its glyph path ("" draws its letter), its tooltip (the
+// plugin's name first), ticked, and enabled.
+export struct PluginButton { cmd: string, letter: string, tip: string, checked: bool, enabled: bool }
 
 export struct StripGeom { more-x: int, more-w: int, plus-x: int, plus-w: int, more-count: int, dots: [color] }
 

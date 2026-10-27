@@ -13,8 +13,29 @@ use std::path::{Path, PathBuf};
 /// The longest entry path the manifest may name.
 pub const MAX_ENTRY_CHARS: usize = 200;
 
-/// Syntax of a relative path inside a mod folder. The reason is a phrase that reads after the field name.
+/// Syntax of a relative path inside a mod folder that names a page (`.html` or `.htm`). The reason is a phrase
+/// that reads after the field name.
 pub fn check_relative(path: &str) -> Result<(), String> {
+    check_inside_syntax(path)?;
+    let lower = path.to_ascii_lowercase();
+    if !(lower.ends_with(".html") || lower.ends_with(".htm")) {
+        return Err("must name an .html file".into());
+    }
+    Ok(())
+}
+
+/// Syntax of a relative path inside a plugin folder that names its helper program: the rules of
+/// [`check_relative`], and an `.exe` file (a script would need an interpreter Flare does not choose).
+pub fn check_program(path: &str) -> Result<(), String> {
+    check_inside_syntax(path)?;
+    if !path.to_ascii_lowercase().ends_with(".exe") {
+        return Err("must name an .exe file".into());
+    }
+    Ok(())
+}
+
+/// The part of the syntax every path inside a mod folder shares, whatever it names.
+fn check_inside_syntax(path: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err("is empty".into());
     }
@@ -41,10 +62,6 @@ pub fn check_relative(path: &str) -> Result<(), String> {
             return Err("has an empty or '.' part".into());
         }
     }
-    let lower = path.to_ascii_lowercase();
-    if !(lower.ends_with(".html") || lower.ends_with(".htm")) {
-        return Err("must name an .html file".into());
-    }
     Ok(())
 }
 
@@ -52,6 +69,16 @@ pub fn check_relative(path: &str) -> Result<(), String> {
 /// `std::fs::canonicalize`; `rel` must already pass [`check_relative`].
 pub fn inside(folder: &Path, rel: &str) -> Result<PathBuf, String> {
     check_relative(rel)?;
+    resolve_inside(folder, rel)
+}
+
+/// [`inside`] for the helper program: `rel` must pass [`check_program`].
+pub fn program_inside(folder: &Path, rel: &str) -> Result<PathBuf, String> {
+    check_program(rel)?;
+    resolve_inside(folder, rel)
+}
+
+fn resolve_inside(folder: &Path, rel: &str) -> Result<PathBuf, String> {
     let joined = folder.join(rel);
     let real = std::fs::canonicalize(&joined) // sync-ok: runs on the discovery worker
         .map_err(|_| "does not exist in the mod folder".to_string())?;
@@ -238,6 +265,40 @@ mod tests {
         );
         let long = format!("{}.html", "a".repeat(MAX_ENTRY_CHARS));
         assert!(check_relative(&long).unwrap_err().contains("longer"));
+    }
+
+    #[test]
+    fn a_helper_program_is_an_exe_inside_the_folder_by_the_same_rules() {
+        for ok in ["helper.exe", r"bin\Helper.EXE", "a/b/run.exe"] {
+            assert_eq!(check_program(ok), Ok(()), "{ok}");
+        }
+        for (bad, want) in [
+            ("helper.bat", ".exe"),
+            ("helper.cmd", ".exe"),
+            ("helper.ps1", ".exe"),
+            ("index.html", ".exe"),
+            ("../helper.exe", "'..'"),
+            ("C:helper.exe", "':'"),
+            (r"\\server\x.exe", "absolute"),
+            ("", "is empty"),
+        ] {
+            let err = check_program(bad).unwrap_err();
+            assert!(err.contains(want), "{bad:?}: {err}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let folder = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(folder.join("helper.exe"), "MZ").unwrap(); // sync-ok: test code only
+        assert!(program_inside(&folder, "helper.exe").is_ok());
+        assert!(
+            program_inside(&folder, "gone.exe")
+                .unwrap_err()
+                .contains("does not exist")
+        );
+        assert!(
+            program_inside(&folder, "index.html")
+                .unwrap_err()
+                .contains(".exe")
+        );
     }
 
     #[test]

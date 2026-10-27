@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Sonara bar</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 12px/40px "Segoe UI", system-ui, sans-serif; margin: 0; padding: 0 10px; display: flex; gap: 10px;
+    align-items: center; height: 40px; overflow: hidden; white-space: nowrap; }
+  button { font: inherit; width: 28px; height: 24px; padding: 0; border: 1px solid currentColor; border-radius: 6px;
+    background: transparent; color: inherit; opacity: 0.85; cursor: pointer; }
+  #title { flex: 0 1 auto; min-width: 60px; max-width: 40%; overflow: hidden; text-overflow: ellipsis; }
+  #seek { flex: 1 1 auto; min-width: 80px; }
+  #time { flex: none; font-variant-numeric: tabular-nums; opacity: 0.7; }
+</style>
+</head>
+<body>
+<!-- The Sonara bar sample's strip under a tab's terminal (plugin.json, "bar", 40 px). Flare draws the back and skip
+     chips at its right end; this page draws play and pause, the title and the seek slider. -->
+<button id="play" title="Play">&#9654;</button>
+<span id="title"></span>
+<input id="seek" type="range" min="0" max="60" step="1" value="0" aria-label="Position">
+<span id="time">0:00 / 0:00</span>
+<script>
+// The bar reads what "plays" from the plugin's own store (key "now", written by the background page and by this page)
+// once a second, and moves the slider on by itself in between. Play, pause and a seek write the store at once; the
+// background page and the bar on any other tab see it on their next read.
+(function () {
+  var flare = window.flare;
+  if (!flare) { return; }
+  var now = null;
+  var dragging = false;
+  var $ = function (id) { return document.getElementById(id); };
+
+  function current() {
+    if (!now) { return null; }
+    var pos = now.pos;
+    var playing = now.playing;
+    if (playing) {
+      pos += (Date.now() - now.at) / 1000;
+      if (pos >= now.len) { pos = now.len; playing = false; }
+    }
+    return { title: now.title, pos: pos, len: now.len, playing: playing, at: Date.now() };
+  }
+
+  function clock(s) {
+    s = Math.max(0, Math.floor(s));
+    return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+  }
+
+  function render() {
+    var c = current();
+    if (!c) { return; }
+    $('title').textContent = c.title;
+    $('title').title = c.title;
+    $('play').innerHTML = c.playing ? '&#10074;&#10074;' : '&#9654;';
+    $('play').title = c.playing ? 'Pause' : 'Play';
+    $('seek').max = String(c.len);
+    if (!dragging) { $('seek').value = String(c.pos); }
+    $('time').textContent = clock(dragging ? Number($('seek').value) : c.pos) + ' / ' + clock(c.len);
+  }
+
+  function write(n) {
+    now = n;
+    render();
+    flare.call('storage.set', { key: 'now', value: n }).catch(function () {});
+  }
+
+  function poll() {
+    flare.call('storage.get', { key: 'now' }).then(function (r) {
+      var n = r && r.value;
+      if (n && typeof n.len === 'number') {
+        now = n;
+      } else if (!now) {
+        now = { title: 'Nothing yet (a fake source: Claude sets it with sonara_now)', pos: 0, len: 60, playing: false,
+          at: Date.now() };
+      }
+      render();
+    }).catch(function () {});
+  }
+
+  $('play').addEventListener('click', function () {
+    var c = current();
+    if (!c) { return; }
+    if (!c.playing && c.pos >= c.len) { c.pos = 0; }
+    c.playing = !c.playing;
+    write(c);
+  });
+
+  $('seek').addEventListener('input', function () { dragging = true; render(); });
+  $('seek').addEventListener('change', function () {
+    dragging = false;
+    var c = current();
+    if (!c) { return; }
+    c.pos = Number($('seek').value);
+    write(c);
+  });
+
+  poll();
+  setInterval(poll, 1000);
+  setInterval(render, 250);
+})();
+</script>
+</body>
+</html>

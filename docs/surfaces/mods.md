@@ -1,4 +1,9 @@
-# Mods
+# Mods (protocol 1)
+
+**The reference for plugins is now `plugins.md`** (the protocol 2 manifest, every permission, the methods per
+namespace, the events, the limits, the bridge, helpers, install, update and remove, and the safety rules). This file
+keeps the protocol 1 notes: the `mod.json` format, the stage 8 rules plugins build on (the serving rule, the bridge's
+wire form, tool routing, tokens) and the test vectors for the Prism Terminal port.
 
 A mod is a small folder that adds a panel to a tab and, optionally, tools the agent can call. It is
 written by the user or by a mod author, it runs on the user's PC, and it gets exactly the permissions
@@ -19,11 +24,19 @@ Prism Terminal port, which must reproduce the same rules.
 
 ## Where mods live and when they run
 
-- Folder: `%APPDATA%\Flare\mods\<id>\`. The folder name is the id.
+- Folder: `%APPDATA%\Flare\plugins\<id>\`, the one folder for every plugin, protocol 1 (`mod.json`) and protocol 2
+  (`plugin.json`) alike (plugins phase 2c). The folder name is the id. Settings > Plugins has an "Open plugins folder"
+  button (the folder is made at start and each time the page opens, on the scan worker).
+- The old folder, `%APPDATA%\Flare\mods\`, is no longer read. At start, before the first scan and on its worker,
+  Flare moves once every folder in it whose name is a legal id into `plugins\` (a rename on the same volume). A name
+  `plugins\` already holds stays in `mods\` and Settings > Plugins names it in one sentence; a folder whose name is not
+  an id is left alone; an emptied `mods\` is removed, one that still holds something keeps it. A mod's switch and
+  approval (`mods.json`, whose name stays) and its storage (the profile `flare-mod-<id>`) are tied to its id, never to
+  its folder, so a moved mod keeps all three (`flare_mods::migrate`).
 - A mod is OFF until the user turns it on in Settings > Mods, which shows its permissions first.
 - Turning it on mints the mod's token. Turning it off kills the token. Nothing is stored about tokens: a
   restart mints new ones for the mods still on.
-- Mods are not fetched from anywhere. There is no store, no signing and no network install.
+- Flare fetches no mod by itself. Settings > Plugins installs one from a `.zip` file or an `https` address the person gives (plugins phase 7, below), always off. There is no store and no signing.
 
 ## The manifest (`mod.json`)
 
@@ -45,10 +58,10 @@ ignored. Every refusal is one sentence that names the field; Settings > Mods sho
 
 | Name | What it allows the mod | Notes |
 |---|---|---|
-| `panel` | Show its panel in a tab. | Required with a `panel`. `panel.open` from a mod takes only its OWN `mod:<id>`: any other kind (`web`, `changes`, `tasks`, another mod) is `forbidden`, because a web panel would reach the network in the user's shared profile (S4/S5). `panel.close` and `panel.state` are allowed. |
+| `panel` | Show its panel in a tab. | Required with a `panel`. `panel.open` from a mod takes only its OWN `mod:<id>`: any other kind (`web`, `changes`, another mod) is `forbidden`, because a web panel would reach the network in the user's shared profile (S4/S5). `panel.close` and `panel.state` are allowed. |
 | `view` | Show content through `view.*` (image, file, text, html) in its own panel or the user's. | Same checks as the agent (rule 13, 14). `view.html` with `allow_network: true` is `forbidden` for a mod: the user's mini-app network switch is consent for the AGENT's pages, never a mod's. |
 | `browser` | Drive the mod's own browser panel through `browser.*` (open, navigate, look, click, type, press, scroll, wait). | Never the user's Edge profile (S4), and never the shared web profile of the user's tabs. Its own profile (see "Which tab a mod acts on"). **v1 limit:** a mod that holds `browser` passes the grant, and the call is then answered `unavailable` ("a mod's own browser panel is not built yet"): the panel slot of a tab holds one panel, which for a mod is its page. A mod without `browser` is refused every `browser.*` method with `forbidden`, before anything runs. |
-| `convo` | Read `convo.state` (the session's tasks and changes). | |
+| `convo` | Read `convo.state` (the session's changes). | |
 | `tools` | Answer tool calls through `tools.respond`. | Required with a `tools` list. |
 
 A permission not in this list is refused with a reason. `eval` (`browser.eval`) is the user's own switch
@@ -194,8 +207,8 @@ No mod call names a tab, so there is no tab argument to aim at another one.
   shared web profile that holds the user's logged-in tabs (S4 and "One profile per mod" below). **Not built:** it
   needs a second slot beside the mod's page, so a mod that holds `browser` is answered `unavailable`. The
   profile rule is already kept for the page itself: a mod's page runs in its own profile `flare-mod-<id>`
-  (not private, so its `localStorage` survives a restart), inside the mini-apps' sealed browser, under
-  `<profile>\WebView2-app-sealed` (decisions.md, stage 8). The agent's `browser_*` tools do not drive a mod's page
+  (not private, so its `localStorage` survives a restart), inside the mods' and plugins' own sealed browser (apart
+  from the mini-apps' since plugins phase 2b), under `<profile>\WebView2-app-sealed` (decisions.md, stage 8). The agent's `browser_*` tools do not drive a mod's page
   either (`unavailable`: the panel belongs to a mod).
 - A mod that is not shown in any tab has no bound tab: its `view.*` calls and its tool calls need one. A tool
   call opens the mod's panel in the CALLER's tab (a tab behind gets its page made hidden), so a call never fails
@@ -233,12 +246,15 @@ stops a mod from reading a page the user is logged into in another tab.
   Never written to a file, never logged, never shown. The lookup compares every live token in constant
   time.
 - **One profile per mod.** A mod's WebView2 profile is its own (`flare-mod-<id>`, kept between runs so its
-  `localStorage` survives a restart), inside the sealed browser the mini-apps use, under
-  `%LOCALAPPDATA%\Flare\WebView2-app-sealed` (with a `--user-data-dir`, beside that profile's `WebView2` folder);
+  `localStorage` survives a restart), inside the mods' and plugins' own sealed browser, under
+  `%LOCALAPPDATA%\Flare\WebView2-app-sealed` (with a `--user-data-dir`, beside that profile's `WebView2` folder; the
+  folder name is older than the split from the mini-apps in plugins phase 2b and must not change, or every mod's
+  storage is lost);
   never the web panel's profile and never the user's Edge profile. A profile name is the only per-mod name WebView2
-  allows inside one browser, so the folder is not `...\mods\<id>\profile`.
+  allows inside one browser, so the folder is not `...\plugins\<id>\profile`.
 - **No network from a mod.** The page is served from its folder with a strict policy. A mod that needs
-  the internet is not a v1 mod.
+  the internet is not a v1 mod. A protocol 2 plugin reaches it only with an approved `network` (plugins phase 6,
+  "Session bar, network and audio" below).
 - **The manifest is untrusted.** Every field is checked before anything is used. A path is checked three
   times: its syntax when read, its canonical location on disk (links and junctions included) when the mod is
   found, and the same location again on every request its page makes (the Serving rule).
@@ -277,3 +293,9 @@ Port the rules, not the code. The table in `README.md` says what each Rust piece
   `/data/secret.txt` through a junction `data -> <outside folder>` is refused by `serve`; a `tabs.list`
   answer for a mod without `panel` lists only its own tab; `mint(["browser","eval"])` is refused;
   `"version": "2"` in `mods.json` is left alone and `"not json"` is moved to `mods.json.bad`.
+
+## Protocol 2 and the plugin phases
+
+Moved to `plugins.md` (2026-10-26): the `plugin.json` keys and permissions (phase 2), background pages and events
+(phase 3), sidebar sections and actions (phase 4), sessions, typing and storage (phase 5), the session bar, network and
+audio (phase 6), and helpers, install, update and remove (phase 7). Samples: `../../sample-plugins/`.

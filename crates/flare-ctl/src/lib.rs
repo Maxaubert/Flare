@@ -4,6 +4,7 @@
 //! - `proto`: wire types, error codes, parsing.
 //! - `method`: the method names and their timeouts.
 //! - `grant`: who may call what (rule S3 and friends), a pure function.
+//! - `decor`: the badge icons, tones, keys and limits of `tabs.badge.*` and `tabs.progress.*`.
 //! - `framing`: JSON lines over a [`framing::Wire`], with a size cap.
 //! - `session`: one connection's server side, over any wire; the [`session::Dispatcher`] the app
 //!   implements.
@@ -15,6 +16,7 @@
 //! can be ported to Prism Terminal.
 
 pub mod client;
+pub mod decor;
 pub mod framing;
 pub mod grant;
 pub mod method;

@@ -22,10 +22,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use flare_agent::close::holds_window_close;
+use flare_agent::icon_motion::{ICON_STILL, IconPhase, MotionPicks, icon_phase};
 use flare_agent::keys::AgentView;
-use flare_agent::kinds::{AgentKind, CODEX_RESUME, DetectedAgent};
+use flare_agent::kinds::{AgentKind, DetectedAgent};
 use flare_agent::mark_motion::{MarkPhase, MarksPause, STILL, mark_phase, needs_clock, pulse_at};
 use flare_agent::resume::valid_resume;
+use flare_agent::reveal::agent_of_resume;
 use flare_agent::tab_look::{Switches, TabSets};
 use flare_agent::tab_mark::MarkState;
 use flare_render::metrics::CellMetrics;
@@ -36,13 +38,14 @@ use flare_settings::agent_prefs::{
 use flare_settings::kv::PrefStore;
 use flare_settings::kv::Subscription;
 use flare_settings::look::LookStore;
-use flare_settings::new_tab::{NewTabMode, new_tab_folder, new_tab_mode};
+use flare_settings::new_tab::new_tab_folder;
 use flare_settings::recent_roots::{pinned_roots, recent_roots};
 use flare_settings::sidebar::{SidebarMode, sidebar_mode};
 use flare_settings::tab_layout::{TabLayout, tab_layout};
 use flare_settings::tab_switch::tab_switch;
 use flare_settings::term_prefs::agent_keys;
 use flare_tabs::close_flow::{CloseFlow, CloseVerdict, Confirmed};
+use flare_tabs::decor::{Decors, Refused, Source as DecorSource};
 use flare_tabs::drag_flight::DragInFlight;
 use flare_tabs::keymap::{ChordId, KeyContext, app_owns_key, key_label};
 use flare_tabs::model::TabModel;
@@ -114,6 +117,9 @@ use flare_theme::fonts::zoom_step;
 pub enum UiMsg {
     RestoreDone(Restored),
     Picked(Option<PathBuf>),
+    /// The starter folders of the folder menu (Documents, Downloads, Desktop, the user folder: those that exist),
+    /// resolved by a worker.
+    StarterFolders(Vec<String>),
     /// A dropped path, resolved by a worker to the folder it names (or holds).
     FolderResolved(String),
     /// The folders a hand-off's arguments named, resolved by a worker.
@@ -166,7 +172,11 @@ pub enum UiMsg {
     Mods(crate::mods_ctl::ModsMsgBox),
 }
 
+mod bar_glue;
+mod install_glue;
 mod mods_glue;
+mod plugins_glue;
+mod sessions_glue;
 mod surfaces7;
 mod web_glue;
 
@@ -201,6 +211,7 @@ impl std::fmt::Debug for TermMsgBox {
 
 pub type Post = Arc<dyn Fn(UiMsg) + Send + Sync>;
 type PickAnswer = Arc<dyn Fn(Option<PathBuf>) + Send + Sync>;
+type StarterAnswer = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 
 pub struct Deps {
     pub prefs: PrefStore,
@@ -216,6 +227,9 @@ pub struct Deps {
     /// Production: `flare_win::pick::pick_folder` parented to the window; tests: a fake that
     /// answers at once.
     pub pick_folder: Rc<dyn Fn(Option<PathBuf>, PickAnswer)>,
+    /// The folder menu's starter folders. Production: `flare_win::paths::starter_folders` on a worker, which then
+    /// answers; tests: a fake that never answers (no starters), or one that does.
+    pub starter_folders: Rc<dyn Fn(StarterAnswer)>,
     pub clipboard: Rc<dyn Fn(&str)>,
     pub open_url: Rc<dyn Fn(&str)>,
     /// Production: `GridHost::set_source(Box::new(LiveSource::new(h)))`; tests: records the id.
@@ -328,8 +342,9 @@ fn mark_state_of(n: i32) -> Option<MarkState> {
     }
 }
 
-/// Puts one instant of every moving mark on the window.
-fn push_frame(app: &AppWindow, p: MarkPhase, pulse: f32) {
+/// Puts one instant of every moving mark, and of every agent icon's motion, on the window.
+fn push_frame(app: &AppWindow, p: MarkPhase, icon: &IconPhase, pulse: f32) {
+    use slint::Model as _;
     let g = app.global::<MarkMotion>();
     g.set_still(p.still);
     g.set_spin(p.spin_deg);
@@ -337,6 +352,30 @@ fn push_frame(app: &AppWindow, p: MarkPhase, pulse: f32) {
     g.set_run(p.run_t);
     g.set_flow(p.flow_px);
     g.set_pulse(pulse);
+    g.set_hop_y(icon.hop_y);
+    g.set_hop_sx(icon.hop_sx);
+    g.set_hop_sy(icon.hop_sy);
+    g.set_blink(icon.blink);
+    g.set_spin_fade(icon.spin_fade_deg);
+    g.set_fade(icon.fade);
+    g.set_turn(icon.spin_deg);
+    g.set_grow(icon.grow);
+    g.set_grow_alpha(icon.grow_alpha);
+    // agy's arch: one colour a path, written into the model in place once it holds them (no new model a frame).
+    let flow = g.get_agy_flow();
+    let colours = icon
+        .flow
+        .iter()
+        .map(|&(r, gr, b)| slint::Color::from_rgb_u8(r, gr, b));
+    if flow.row_count() == icon.flow.len() {
+        for (i, c) in colours.enumerate() {
+            if flow.row_data(i) != Some(c) {
+                flow.set_row_data(i, c);
+            }
+        }
+    } else {
+        g.set_agy_flow(ModelRc::new(VecModel::from(colours.collect::<Vec<_>>())));
+    }
 }
 
 /// The marks the look and the picks give now.
@@ -431,11 +470,24 @@ pub struct AppCtl {
     /// The e2e holds the slide at an offset for a picture: no frame moves it until released.
     slide_held: bool,
     rows_model: Rc<VecModel<TabRow>>,
+    /// The plugins' section rows and top-bar buttons (plugins phase 4), each one model kept for the window's life.
+    plugin_rows_model: Rc<VecModel<crate::PluginRow>>,
+    plugin_top_model: Rc<VecModel<crate::PluginButton>>,
+    /// The bars the tabs show (plugins phase 6), the front bar's chips as Slint draws them and as they were built.
+    bars: crate::plugin_bar::Bars,
+    bar_chips_model: Rc<VecModel<crate::PluginButton>>,
+    bar_chips: Vec<crate::plugin_ui::Button>,
+    /// The plugins' sidebar sections and actions (plugins phase 4).
+    plugins: plugins_glue::PluginSurfaces,
+    /// The transcripts followed for the plugins that listen to `session`, and each plugin's share (plugins phase 5).
+    sessions: crate::plugin_sessions::PluginSessions,
     view: View,
     last_geom: Option<GeomData>,
     query: String,
     boot_saved: SavedTabs,
     restore_started: bool,
+    /// The folder menu's starter folders, once a worker has found them (empty until then).
+    starters: Vec<String>,
     source_id: Option<String>,
     last_saved: Option<SavedTabs>,
     /// Agents that are mid-answer: tab id to the clock time they started (M6 fills this).
@@ -459,6 +511,13 @@ pub struct AppCtl {
     dictation: crate::dictation_ctl::DictationKeys,
     /// The tabs the hub has been given a handle for; one that goes away is forgotten.
     hub_known: HashSet<String>,
+    /// The badges and progress callers put on tabs (plugins phase 1): the agent's own, through the channel.
+    decor: Decors,
+    /// How each agent's icon moves while it works: the plugins' picks (`agents.motion.*`, owner 2026-10-26).
+    pub(crate) motions: MotionPicks,
+    /// The tabs as the plugins last heard of them (plugins phase 3): the next refresh tells them what changed.
+    /// None while no page listens.
+    plugin_seen: Option<Vec<crate::appctl::mods_glue::TabFact>>,
     /// The hub's view of the host's handles, refreshed before every hub call.
     handles: Rc<RefCell<HashMap<String, Arc<TermHandle>>>>,
     /// The colours the marks wear, from the look and the picks.
@@ -493,6 +552,8 @@ pub struct AppCtl {
     looked: Option<(Option<String>, bool)>,
     /// The taskbar overlay, made once the window has a handle.
     badge: Option<TaskbarBadge>,
+    /// The badge's last outcome (count, on, drawn), so the log hears each change once.
+    badge_seen: Option<(usize, bool, bool)>,
     /// Tabs restored with an agent to resume: the kind and when they were spawned. They wear the
     /// agent's icon from the first frame and are saved as that agent until the hub takes over.
     restoring: HashMap<String, (AgentKind, u64)>,
@@ -547,13 +608,12 @@ pub struct AppCtl {
     ctl_info: Option<CtlInfo>,
 }
 
-/// The rows the terminal's menu gains on a tab that runs Claude (Surfaces stage 6; reworded 2026-10-22 so the
-/// owner needs no explanation). The rows show only on a tab that is Claude (a session or the detection), so
-/// they always name Claude. "Hide ..." is the same words while the panel is open.
+/// The row the terminal's menu gains on a tab that runs Claude (Surfaces stage 6; reworded 2026-10-22 so the
+/// owner needs no explanation; the task list row was removed 2026-10-26). The row shows only on a tab that is
+/// Claude (a session or the detection), so it always names Claude. "Hide ..." is the same words while the panel
+/// is open.
 const CONVO_SHOW_CHANGES: &str = "Show files Claude changed";
 const CONVO_HIDE_CHANGES: &str = "Hide files Claude changed";
-const CONVO_SHOW_TASKS: &str = "Show task list";
-const CONVO_HIDE_TASKS: &str = "Hide task list";
 
 /// How long the skeleton fades after the agent has painted (PT `ResumeSkeleton`).
 const SKELETON_FADE_MS: u64 = 180;
@@ -691,7 +751,11 @@ fn menu_row(r: &MenuRowData) -> MenuRow {
     MenuRow {
         label: r.label.as_str().into(),
         hint: r.hint.as_str().into(),
-        icon: glyph_path(r.icon).into(),
+        icon: if r.icon_cmd.is_empty() {
+            glyph_path(r.icon).into()
+        } else {
+            r.icon_cmd.as_str().into()
+        },
         filled_icon: r.filled_icon,
         disabled: r.disabled,
         trailing_icon: r.trailing_icon.map_or("", glyph_path).into(),
@@ -699,9 +763,9 @@ fn menu_row(r: &MenuRowData) -> MenuRow {
         trailing_tip: r.trailing_tip.as_str().into(),
         keep_open: false,
         group: r.group,
-        flyout: false,
+        flyout: r.flyout,
         flyout_pick: false,
-        parent: -1,
+        parent: r.parent,
     }
 }
 
@@ -721,11 +785,7 @@ fn overflow_row(r: &OverflowRowData, rows: &[RowData]) -> OverflowRow {
 }
 
 fn detected(kind: Option<AgentKind>) -> DetectedAgent {
-    match kind {
-        Some(AgentKind::Claude) => DetectedAgent::Claude,
-        Some(AgentKind::Codex) => DetectedAgent::Codex,
-        None => DetectedAgent::Other,
-    }
+    kind.map_or(DetectedAgent::Other, DetectedAgent::from)
 }
 
 impl AppCtl {
@@ -747,6 +807,12 @@ impl AppCtl {
         }
         let rows_model: Rc<VecModel<TabRow>> = Rc::new(VecModel::default());
         app.set_tab_rows(ModelRc::from(rows_model.clone()));
+        let plugin_rows_model: Rc<VecModel<crate::PluginRow>> = Rc::new(VecModel::default());
+        app.set_plugin_rows(ModelRc::from(plugin_rows_model.clone()));
+        let plugin_top_model: Rc<VecModel<crate::PluginButton>> = Rc::new(VecModel::default());
+        app.set_plugin_top_buttons(ModelRc::from(plugin_top_model.clone()));
+        let bar_chips_model: Rc<VecModel<crate::PluginButton>> = Rc::new(VecModel::default());
+        app.set_bar_chips(ModelRc::from(bar_chips_model.clone()));
         let handles: Rc<RefCell<HashMap<String, Arc<TermHandle>>>> = Rc::default();
         {
             // The look controller reaches every live tab (front and background) through this.
@@ -831,6 +897,13 @@ impl AppCtl {
             frame_clock,
             slide_held: false,
             rows_model,
+            plugin_rows_model,
+            plugin_top_model,
+            bars: crate::plugin_bar::Bars::default(),
+            bar_chips_model,
+            bar_chips: Vec::new(),
+            plugins: plugins_glue::PluginSurfaces::default(),
+            sessions: crate::plugin_sessions::PluginSessions::default(),
             view: View {
                 rows: Vec::new(),
                 geom: GeomData {
@@ -848,6 +921,7 @@ impl AppCtl {
             query: String::new(),
             boot_saved,
             restore_started: false,
+            starters: Vec::new(),
             source_id: None,
             last_saved: None,
             working: HashMap::new(),
@@ -860,6 +934,9 @@ impl AppCtl {
             find_shown: false,
             hub,
             hub_known: HashSet::new(),
+            decor: Decors::default(),
+            motions: MotionPicks::new(),
+            plugin_seen: None,
             handles,
             marks,
             marks_rainbow,
@@ -878,6 +955,7 @@ impl AppCtl {
             flash: Rc::new(|| {}),
             looked: None,
             badge: None,
+            badge_seen: None,
             restoring: HashMap::new(),
             agent_panel_seen: HashSet::new(),
             web_full_was: None,
@@ -1127,8 +1205,39 @@ impl AppCtl {
             |c, id: SharedString, x: f32, y: f32| { c.open_tab_menu(&id, x, y) }
         );
         bind!(app, rc, on_new_tab, |c| c.new_tab());
+        // The plugins' sections and actions (plugins phase 4).
+        bind!(app, rc, on_plugins_clicked, |c| c.plugins_clicked());
+        bind!(app, rc, on_plugins_dismissed, |c| c.plugins_dismissed());
+        bind!(app, rc, on_plugin_top_clicked, |c, i: i32| c
+            .plugin_top_clicked(i));
+        bind!(app, rc, on_bar_chip_clicked, |c, i: i32| c
+            .bar_chip_clicked(i));
+        bind!(
+            app,
+            rc,
+            on_tab_hover_action,
+            |c, id: SharedString, i: i32| c.tab_hover_action(&id, i)
+        );
+        bind!(app, rc, on_plugin_fold, |c, sid: SharedString| c
+            .plugin_fold(&sid));
+        bind!(
+            app,
+            rc,
+            on_plugin_header_menu,
+            |c, sid: SharedString, x: f32, y: f32| { c.plugin_header_menu(&sid, x, y) }
+        );
+        bind!(
+            app,
+            rc,
+            on_plugin_item,
+            |c, sid: SharedString, id: SharedString, on_box: bool| {
+                c.plugin_item(&sid, &id, on_box)
+            }
+        );
         bind!(app, rc, on_plus_menu, |c, x: f32, y: f32| c
             .open_plus_menu(x, y));
+        bind!(app, rc, on_folder_menu, |c, x: f32, y: f32| c
+            .open_folder_menu(x, y));
         bind!(app, rc, on_more_clicked, |c, x: f32, y: f32| c
             .open_overflow(false, x, y));
         bind!(app, rc, on_settings_clicked, |c| c.toggle_settings());
@@ -1236,8 +1345,6 @@ impl AppCtl {
             .convo_select(path.as_str()));
         bind!(app, rc, on_panel_convo_open, |c, path: SharedString| c
             .convo_open(path.as_str()));
-        bind!(app, rc, on_panel_convo_toggle, |c, key: SharedString| c
-            .convo_toggle(key.as_str()));
         bind!(app, rc, on_panel_wrap_toggled, |c| c.panel_wrap_toggled());
         bind!(app, rc, on_panel_wrap_cols_changed, |c| c
             .panel_wrap_cols_changed());
@@ -1484,8 +1591,21 @@ impl AppCtl {
             r.offset_css = offsets.get(&r.id).copied().unwrap_or(0.0);
             r.carried = carried.as_deref() == Some(r.id.as_str());
         }
+        match self.mods.as_ref().map(|m| Arc::clone(m.hub())) {
+            Some(hub) => crate::tabs_ui::decorate_with(
+                &mut view.rows,
+                &self.decor,
+                self.scale,
+                &|id, icon| hub.icon_of(id, icon),
+                &|id| hub.name_of(id),
+            ),
+            None => crate::tabs_ui::decorate(&mut view.rows, &self.decor, self.scale),
+        }
+        self.plugin_hover_rows(&mut view.rows);
+        crate::tabs_ui::wear_motions(&mut view.rows, &self.motions);
 
         sync_rows(&self.rows_model, &view.rows);
+        self.push_plugins(&app);
         if self.last_geom.as_ref() != Some(&view.geom) {
             let dots: Vec<slint::Color> = view.geom.dots.iter().map(|d| d.colour).collect();
             app.set_strip_geom(StripGeom {
@@ -1513,6 +1633,8 @@ impl AppCtl {
         app.set_new_tab_title(
             format!("New tab ({new_key}). Right-click for recent folders").into(),
         );
+        // The sidebar's button has an arrow for the folders instead of a right-click (2026-10-27).
+        app.set_new_tab_side_title(format!("New tab ({new_key})").into());
         app.set_version_text(format!("Version {}", crate::app_facts::version()).into());
 
         if view.front_kind == 2 {
@@ -1579,14 +1701,17 @@ impl AppCtl {
         self.term
             .set_previews(flare_settings::term_prefs::open_previews(&self.prefs));
 
-        // Rule 37: nothing is written before the restore answered.
-        if let Some(s) = self.model.saved_if_restored()
+        // Rule 37: nothing is written before the restore answered. Nor after the end of life: `finish` wrote
+        // the tabs as they stood, then killed the shells, and a refresh after that sees every agent gone and
+        // would write a tabs.json with no agent to resume (2026-10-25: three restarts came back as plain shells).
+        if !self.ended
+            && let Some(s) = self.model.saved_if_restored()
             && self.last_saved.as_ref() != Some(&s)
         {
             self.deps.tabs_store.save(&s);
             self.last_saved = Some(s);
         }
-        if self.model.restore_done() {
+        if !self.ended && self.model.restore_done() {
             let tabs = self.shell_tabs();
             self.panels.persist(&tabs);
         }
@@ -1595,6 +1720,8 @@ impl AppCtl {
         self.update_skeleton(now);
         self.update_clock();
         self.update_badge();
+        // What changed on the tabs since the last refresh goes to the plugins that listen (one round a refresh).
+        self.plugin_events();
         app.window().request_redraw();
         self.kick();
     }
@@ -1620,14 +1747,25 @@ impl AppCtl {
         let on = taskbar_badge_on(&self.prefs);
         let scale = self.scale;
         let Some(b) = self.badge.as_mut() else { return };
-        // Explorer made the taskbar button again (it restarted): the overlay is gone, draw it anew.
-        if flare_win::taskbar::take_button_created() {
-            b.refresh();
-        }
-        if !on || n == 0 {
-            b.clear();
+        let ok = if !on || n == 0 {
+            b.clear()
         } else {
-            b.set(n, scale);
+            b.set(n, scale)
+        };
+        if self.badge_seen != Some((n, on, ok)) {
+            self.badge_seen = Some((n, on, ok));
+            let mut fields = vec![
+                ("count", serde_json::json!(n)),
+                ("on", serde_json::json!(on)),
+                ("ok", serde_json::json!(ok)),
+            ];
+            if !ok {
+                fields.push((
+                    "why",
+                    crate::diag_ctl::txt(&flare_win::taskbar::last_shell_error()),
+                ));
+            }
+            crate::diag_ctl::crumb("taskbar-badge", &fields);
         }
     }
 
@@ -1744,6 +1882,12 @@ impl AppCtl {
             return;
         }
         self.focused = focused;
+        // Coming back draws the taskbar badge anew: Explorer may have restarted since, which takes
+        // every overlay away, or the button did not exist yet when the badge was first set.
+        if focused && let Some(b) = self.badge.as_mut() {
+            b.refresh();
+            self.update_badge();
+        }
         self.sync_looking();
         if self.hub.take_changed() {
             self.sync_model_agents();
@@ -1832,6 +1976,9 @@ impl AppCtl {
         *self.handles.borrow_mut() = live;
         for id in gone {
             self.hub.on_closed(&id);
+            // Whatever was put on the tab goes with it.
+            self.decor.remove_tab(&id);
+            self.plugin_tab_gone(&id);
             // A recording that was to be pasted into this tab learns it has closed.
             crate::dictation_ctl::tab_gone(&id);
         }
@@ -1875,6 +2022,7 @@ impl AppCtl {
 
     /// Windows' animation-effects switch (tests inject one).
     pub fn set_animations_source(&mut self, f: Rc<dyn Fn() -> bool>) {
+        self.web.set_motion(Rc::clone(&f));
         self.animations = f;
         self.update_clock();
     }
@@ -1924,7 +2072,7 @@ impl AppCtl {
         if !need {
             self.clock.timer.stop();
             self.clock.start = None;
-            push_frame(&app, STILL, 1.0);
+            push_frame(&app, STILL, &ICON_STILL, 1.0);
             return;
         }
         if self.minimised {
@@ -1971,7 +2119,7 @@ impl AppCtl {
     fn mark_frame(app: &AppWindow, pause: &MarksPause, now: u64, start: u64, skeleton: bool) {
         let ms = pause.clock(now).saturating_sub(start);
         let pulse = if skeleton { pulse_at(ms) } else { 1.0 };
-        push_frame(app, mark_phase(ms), pulse);
+        push_frame(app, mark_phase(ms), &icon_phase(ms), pulse);
     }
 
     /// Runs the clock's body once at the controller's clock (the timer's own tick, for tests).
@@ -2050,9 +2198,10 @@ impl AppCtl {
 
     // ---- the restore ----------------------------------------------------------------------------
 
-    /// A worker thread resolves the saved strip; [`UiMsg::RestoreDone`] answers. Runs ONCE.
+    /// A worker thread resolves the saved strip; [`UiMsg::RestoreDone`] answers. Runs ONCE. The folder menu's
+    /// starter folders are asked for here too, once; [`UiMsg::StarterFolders`] answers.
     pub fn start_restore(this: &Rc<RefCell<AppCtl>>) {
-        let (saved, is_dir, lookup, post) = {
+        let (saved, is_dir, lookup, post, starters) = {
             let mut c = this.borrow_mut();
             if c.restore_started {
                 return;
@@ -2063,8 +2212,13 @@ impl AppCtl {
                 Arc::clone(&c.deps.is_dir),
                 Arc::clone(&c.deps.lookup),
                 Arc::clone(&c.deps.post),
+                Rc::clone(&c.deps.starter_folders),
             )
         };
+        {
+            let post = Arc::clone(&post);
+            starters(Arc::new(move |list| post(UiMsg::StarterFolders(list))));
+        }
         let r = std::thread::Builder::new()
             .name("flare-restore".into())
             .spawn({
@@ -2090,11 +2244,7 @@ impl AppCtl {
             self.note_spawn(&s.id, &s.cwd, s.resume.is_some());
             self.hub.on_spawned(&s.id, &s.cwd, s.resume.as_deref());
             // Only an id that passed the check is a resume; the rest is a plain shell.
-            let kind = match valid_resume(s.resume.as_deref()) {
-                Some(CODEX_RESUME) => Some(AgentKind::Codex),
-                Some(_) => Some(AgentKind::Claude),
-                None => None,
-            };
+            let kind = valid_resume(s.resume.as_deref()).map(agent_of_resume);
             self.model.set_agent(&s.id, kind);
             if let Some(k) = kind {
                 self.restoring.insert(s.id.clone(), (k, now));
@@ -2137,13 +2287,9 @@ impl AppCtl {
         );
     }
 
-    /// A tab goes: the `tab-close` crumb, `kind` being the agent in it (`claude`, `codex`) or `shell`.
+    /// A tab goes: the `tab-close` crumb, `kind` being the agent in it (`claude`, `codex`, `agy`) or `shell`.
     fn note_close(&mut self, id: &str) {
-        let kind = match self.model.agent_kind(id) {
-            Some(AgentKind::Claude) => "claude",
-            Some(AgentKind::Codex) => "codex",
-            None => "shell",
-        };
+        let kind = self.model.agent_kind(id).map_or("shell", AgentKind::as_str);
         crate::diag_ctl::crumb(
             "tab-close",
             &[
@@ -2235,30 +2381,26 @@ impl AppCtl {
     }
 
     fn prewarm_new_tab(&self) {
-        if new_tab_mode(&self.prefs) == NewTabMode::Folder {
-            self.deps.host.prewarm(&self.new_tab_dir());
-        }
+        self.deps.host.prewarm(&self.new_tab_dir());
     }
 
-    /// The + button and Ctrl+T. Folder mode: the stored folder, else the user's folder, no
-    /// question. Ask mode: the folder picker (a cancel opens nothing).
+    /// The + button and Ctrl+T: the stored folder, else the user's folder, no question. (There is no ask mode
+    /// any more, 2026-10-27: a stored "ask" opens here too; the folder menu's first row asks instead.)
     pub fn new_tab(&mut self) {
         self.close_menu_quietly();
-        match new_tab_mode(&self.prefs) {
-            NewTabMode::Folder => {
-                let dir = self.new_tab_dir();
-                self.open_folder(&dir);
-                self.deps.host.prewarm(&dir);
-                self.focus_terminal();
-            }
-            NewTabMode::Ask => {
-                let stored = new_tab_folder(&self.prefs);
-                let default_dir = (!stored.is_empty()).then(|| PathBuf::from(stored));
-                let post = Arc::clone(&self.deps.post);
-                let answer: PickAnswer = Arc::new(move |p| post(UiMsg::Picked(p)));
-                (self.deps.pick_folder)(default_dir, answer);
-            }
-        }
+        let dir = self.new_tab_dir();
+        self.open_folder(&dir);
+        self.deps.host.prewarm(&dir);
+        self.focus_terminal();
+    }
+
+    /// The folder menu's "Choose a folder…": the folder picker, starting in the new-tab folder; the answer opens a
+    /// tab there ([`UiMsg::Picked`]), and the spawn remembers it as a recent. A cancel opens nothing.
+    fn choose_folder(&mut self) {
+        let default_dir = Some(PathBuf::from(self.new_tab_dir()));
+        let post = Arc::clone(&self.deps.post);
+        let answer: PickAnswer = Arc::new(move |p| post(UiMsg::Picked(p)));
+        (self.deps.pick_folder)(default_dir, answer);
     }
 
     /// Closing asks first when the tab hosts an agent, else closes at once.
@@ -2456,15 +2598,25 @@ impl AppCtl {
         self.clear_tip();
         self.close_menu_quietly();
         self.close_overflow_quietly();
+        self.plugins.open = false;
         self.refresh();
     }
 
     // ---- menus, the +N list and the start screen -------------------------------------------------------
 
+    /// The strip's + right-clicked: the folder menu at the pointer.
     fn open_plus_menu(&mut self, x: f32, y: f32) {
         self.close_overflow_quietly();
-        let rows = plus_menu_rows(&self.prefs);
+        let rows = plus_menu_rows(&self.prefs, &self.starters, &self.deps.home);
         self.show_menu(MenuKind::Plus, rows, x, y);
+    }
+
+    /// The sidebar New tab button's arrow: the same menu, its left edge at `x` and its foot just above `top` (the
+    /// button's top), so it never covers the button.
+    fn open_folder_menu(&mut self, x: f32, top: f32) {
+        self.close_overflow_quietly();
+        let rows = plus_menu_rows(&self.prefs, &self.starters, &self.deps.home);
+        self.show_menu_at(MenuKind::Plus, rows, x, top, true);
     }
 
     fn open_tab_menu(&mut self, id: &str, x: f32, y: f32) {
@@ -2477,10 +2629,16 @@ impl AppCtl {
         } else {
             tab.cwd.clone()
         };
-        let rows = tab_menu_rows(&cwd, self.key_label_of(ChordId::CloseTab))
-            .into_iter()
-            .map(|r| (r, String::new()))
-            .collect();
+        let shell = tab.kind == TabKind::Shell;
+        let mut rows: Vec<(MenuRowData, String)> =
+            tab_menu_rows(&cwd, self.key_label_of(ChordId::CloseTab))
+                .into_iter()
+                .map(|r| (r, String::new()))
+                .collect();
+        // The plugins' actions for a shell tab, one flyout under each plugin's name (plugins phase 4).
+        if shell {
+            self.plugin_menu_rows(id, &mut rows);
+        }
         self.show_menu(
             MenuKind::Tab {
                 id: id.to_string(),
@@ -2493,11 +2651,24 @@ impl AppCtl {
     }
 
     fn show_menu(&mut self, kind: MenuKind, rows: Vec<(MenuRowData, String)>, x: f32, y: f32) {
+        self.show_menu_at(kind, rows, x, y, false);
+    }
+
+    /// `above`: the menu's foot sits just above `y` instead of its top at `y` (the sidebar's New tab arrow).
+    fn show_menu_at(
+        &mut self,
+        kind: MenuKind,
+        rows: Vec<(MenuRowData, String)>,
+        x: f32,
+        y: f32,
+        above: bool,
+    ) {
         self.clear_tip();
         self.menu = Some(MenuState { kind, rows });
         if let Some(app) = self.app() {
             app.set_menu_x(x);
             app.set_menu_y(y);
+            app.set_menu_above(above);
         }
         self.push_menu();
         if let Some(app) = self.app() {
@@ -2539,6 +2710,7 @@ impl AppCtl {
     /// still being delivered to the scrim, and the controller is borrowed for it.
     fn outside_right_click(&mut self, x: f32, y: f32) {
         self.close_menu_quietly();
+        self.plugins.open = false;
         let overflow_was_open = self.overflow.is_some();
         self.close_overflow_quietly();
         self.refresh();
@@ -2559,10 +2731,15 @@ impl AppCtl {
         };
         match &m.kind {
             MenuKind::Plus => {
-                if !path.is_empty() {
+                // The first row is always "Choose a folder…"; by its place, as a folder may carry that name.
+                if i == 0 {
+                    self.choose_folder();
+                } else if !path.is_empty() {
                     self.open_recent(path);
                 }
             }
+            MenuKind::Tab { id, .. } if self.plugin_menu_picked(&id.clone(), &path.clone()) => {}
+            MenuKind::Section { sid } => self.section_menu_picked(&sid.clone(), &row.label.clone()),
             MenuKind::Tab { id, cwd } => match row.label.as_str() {
                 "Close tab" => self.request_close(id),
                 "Copy folder path" => (self.deps.clipboard)(cwd),
@@ -2596,7 +2773,7 @@ impl AppCtl {
             return;
         }
         if let Ok(i) = usize::try_from(i) {
-            toggle_pin_in_menu(&self.prefs, &mut m.rows, i);
+            toggle_pin_in_menu(&self.prefs, &mut m.rows, i, &self.starters, &self.deps.home);
         }
         self.push_menu();
     }
@@ -3001,8 +3178,11 @@ impl AppCtl {
         self.panels
             .set_wrap(flare_settings::term_prefs::wrap_previews(&self.prefs));
         self.panels.sync(app, front.as_deref());
+        // The bar's height first: the terminal is laid out shorter before the browser is placed.
+        self.push_bar(app);
         let ctx = self.key_context();
         self.web.sync(app, &self.panels, front.as_deref(), ctx);
+        self.sync_bar_views(app);
         self.sync_web_full();
         self.sync_convo();
         let kind = front
@@ -3022,7 +3202,7 @@ impl AppCtl {
 
     // ---- the conversation panels (Surfaces stage 6) ------------------------------------------------
 
-    /// Brings the transcript trackers in line with the open Changes and Tasks panels: one per such tab whose Claude
+    /// Brings the transcript trackers in line with the open Changes panels: one per such tab whose Claude
     /// session is known, none otherwise. True when one started or stopped (the window follows).
     fn sync_convo(&mut self) -> bool {
         let open = self.panels.open_convo();
@@ -3095,14 +3275,6 @@ impl AppCtl {
         }
     }
 
-    /// A subagent's list folded or opened in the Tasks panel of the front tab.
-    fn convo_toggle(&mut self, key: &str) {
-        let Some(id) = self.front_id() else { return };
-        if self.convo.toggle(&id, key) {
-            self.refresh();
-        }
-    }
-
     /// The path in a diff was clicked: a worker re-resolves it (rule 13) and, when it is a picture or a text file on
     /// the click allowlist (rule 14), the panel shows it. Anything else does nothing; nothing is ever run.
     fn convo_open(&mut self, path: &str) {
@@ -3141,8 +3313,8 @@ impl AppCtl {
         }
     }
 
-    /// The rows the terminal's menu gains on a tab that runs Claude: one to show or hide the Changes panel and one for
-    /// the Tasks panel. A tab without Claude gets none, so the plain shell's menu does not change.
+    /// The row the terminal's menu gains on a tab that runs Claude: one to show or hide the Changes panel. A tab
+    /// without Claude gets none, so the plain shell's menu does not change.
     pub(crate) fn convo_menu_rows(&self, tab: &str) -> Vec<(MenuRowData, String)> {
         let claude = self.hub.agent_here(tab)
             && (self.hub.claude_session(tab).is_some()
@@ -3163,6 +3335,9 @@ impl AppCtl {
                     trailing_filled: false,
                     trailing_tip: String::new(),
                     group,
+                    flyout: false,
+                    parent: -1,
+                    icon_cmd: String::new(),
                 },
                 String::new(),
             )
@@ -3174,19 +3349,8 @@ impl AppCtl {
         } else {
             CONVO_SHOW_CHANGES
         };
-        vec![
-            // Their own group, after a rule: they are about the agent, not the terminal.
-            row(changes, crate::menus_ui::GLYPH_CHANGES, true),
-            row(
-                if open == Some(flare_surfaces::PanelKind::Tasks) {
-                    CONVO_HIDE_TASKS
-                } else {
-                    CONVO_SHOW_TASKS
-                },
-                crate::menus_ui::GLYPH_TASKS,
-                false,
-            ),
-        ]
+        // Its own group, after a rule: it is about the agent, not the terminal.
+        vec![row(changes, crate::menus_ui::GLYPH_CHANGES, true)]
     }
 
     /// A row of the convo part of the terminal's menu was picked. False for any other row.
@@ -3195,8 +3359,6 @@ impl AppCtl {
         let (kind, show) = match label {
             CONVO_SHOW_CHANGES => (PanelKind::Changes, true),
             CONVO_HIDE_CHANGES => (PanelKind::Changes, false),
-            CONVO_SHOW_TASKS => (PanelKind::Tasks, true),
-            CONVO_HIDE_TASKS => (PanelKind::Tasks, false),
             _ => return false,
         };
         if show {
@@ -3208,7 +3370,7 @@ impl AppCtl {
         true
     }
 
-    /// Opens the Changes or Tasks panel on the tab (the menu, and `panel.open` from the agent). False when the tab
+    /// Opens the Changes panel on the tab (the menu, and `panel.open` from the agent). False when the tab
     /// cannot hold one.
     pub(crate) fn open_convo_panel(&mut self, tab: &str, kind: flare_surfaces::PanelKind) -> bool {
         if !self.is_shell_tab(tab) || !self.panels.show_convo(tab, kind) {
@@ -3328,6 +3490,53 @@ impl AppCtl {
         events("panel.changed", params, Some(tab));
     }
 
+    /// Whether a tab holds any badge or progress (tests).
+    #[cfg(test)]
+    pub(crate) fn has_decor(&self, tab: &str) -> bool {
+        self.decor.get(tab).is_some()
+    }
+
+    /// The agent's badges and progress leave every tab whose session changed or whose agent left (the hub says
+    /// which). True when a tab lost something it showed.
+    fn clear_agent_decor(&mut self) -> bool {
+        let mut changed = false;
+        for (tab, _why) in self.hub.take_decor_gone() {
+            changed |= self.decor.clear_source(&tab, &DecorSource::Agent);
+        }
+        changed
+    }
+
+    /// The agent's badges and progress need an agent in the tab: its token alone is not enough, since any
+    /// process in a plain shell tab holds it. The decor would wear an agent's name no one runs, and nothing
+    /// would ever clear it (the hub reports an agent leaving only where one was).
+    fn agent_decor_allowed(
+        &self,
+        tab: &str,
+        source: &DecorSource,
+        generation: u64,
+    ) -> Result<(), flare_ctl::CtlError> {
+        if *source == DecorSource::Agent && self.hub.agent_kind(tab).is_none() {
+            return Err(flare_ctl::CtlError::new(
+                flare_ctl::code::FORBIDDEN,
+                "no agent in this tab",
+            ));
+        }
+        // A plugin's change that was checked while it was on is not applied once it is off: everything it put up
+        // went when it was turned off, and nothing of it comes back, not even when it is on again by now (its
+        // generation moved on).
+        if let DecorSource::Plugin(id) = source
+            && self.mods.as_ref().is_some_and(|m| {
+                m.hub().grant_of_mod(id).is_none() || m.hub().generation(id) != generation
+            })
+        {
+            return Err(flare_ctl::CtlError::new(
+                flare_ctl::code::UNAUTHORIZED,
+                "the plugin is turned off",
+            ));
+        }
+        Ok(())
+    }
+
     fn is_shell_tab(&self, tab: &str) -> bool {
         flare_tabs::tabs::shell_tabs(&self.model.state)
             .iter()
@@ -3356,6 +3565,11 @@ impl AppCtl {
                         json!({"id": t.id, "title": label, "active": active.as_deref() == Some(&t.id)})
                     })
                     .collect();
+                Ok(json!({"tabs": tabs}))
+            }
+            CtlOp::TabsWide => {
+                let tabs: Vec<serde_json::Value> =
+                    self.tab_facts().iter().map(|f| f.to_json()).collect();
                 Ok(json!({"tabs": tabs}))
             }
             CtlOp::TabCwd { tab } => {
@@ -3440,6 +3654,113 @@ impl AppCtl {
                 self.mark_agent_panel(&tab);
                 self.after_ctl_show(&tab)
             }
+            // Decor (plugins phase 1): the worker checked every param and the rate; the tab keeps it and is drawn
+            // again only when something a person sees changed.
+            CtlOp::BadgeSet {
+                tab,
+                source,
+                key,
+                icon,
+                tip,
+                tone,
+                generation,
+            } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                self.agent_decor_allowed(&tab, &source, generation)?;
+                match self.decor.set_badge(&tab, source, &key, &icon, &tip, tone) {
+                    Ok(changed) => {
+                        if changed {
+                            self.refresh();
+                        }
+                        Ok(json!({}))
+                    }
+                    Err(Refused::TooManyKeys) => Err(CtlError::new(
+                        code::BAD_PARAMS,
+                        format!(
+                            "a caller keeps at most {} badges on one tab and {} in all; clear one first",
+                            flare_tabs::decor::MAX_KEYS_PER_TAB,
+                            flare_tabs::decor::MAX_KEYS_TOTAL
+                        ),
+                    )),
+                }
+            }
+            CtlOp::BadgeClear { tab, source, key } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                let cleared = self.decor.clear_badge(&tab, &source, &key);
+                if cleared {
+                    self.refresh();
+                }
+                Ok(json!({"cleared": cleared}))
+            }
+            CtlOp::ProgressSet {
+                tab,
+                source,
+                key,
+                value,
+                label,
+                generation,
+            } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                self.agent_decor_allowed(&tab, &source, generation)?;
+                if self.decor.set_progress(&tab, source, &key, value, &label) {
+                    self.refresh();
+                }
+                Ok(json!({}))
+            }
+            CtlOp::ProgressClear { tab, source, key } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                let cleared = self.decor.clear_progress(&tab, &source, &key);
+                if cleared {
+                    self.refresh();
+                }
+                Ok(json!({"cleared": cleared}))
+            }
+            // The plugins' sections and actions (plugins phase 4): checked on the worker, applied in `plugins_glue`.
+            CtlOp::SidebarSet {
+                plugin,
+                key,
+                items,
+                generation,
+            } => self.ctl_sidebar_set(plugin, key, items, generation),
+            CtlOp::ActionsSet {
+                plugin,
+                key,
+                tab,
+                state,
+                generation,
+            } => self.ctl_actions_set(plugin, key, tab, state, generation),
+            // Sessions and typing (plugins phase 5): checked on the worker, applied in `sessions_glue`.
+            CtlOp::SessionOf { tab } => self.ctl_session_of(&tab),
+            CtlOp::TabInput {
+                plugin,
+                tab,
+                text,
+                enter,
+                generation,
+            } => self.ctl_tab_input(plugin, tab, text, enter, generation),
+            // The session bar (plugins phase 6): checked on the worker, applied in `bar_glue`.
+            CtlOp::BarShow {
+                plugin,
+                tab,
+                generation,
+            } => self.ctl_bar_show(plugin, tab, generation),
+            CtlOp::BarHide { plugin, tab } => self.ctl_bar_hide(plugin, tab),
+            // The agents' icon motions (owner 2026-10-26): checked on the worker, applied in `plugins_glue`.
+            CtlOp::MotionSet {
+                plugin,
+                agent,
+                motion,
+                generation,
+            } => self.ctl_motion_set(plugin, agent, motion, generation),
+            CtlOp::MotionClear { plugin, agent } => self.ctl_motion_clear(plugin, agent),
             // Answered by the browser's message, never here (see `ctl_browser`).
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }
@@ -4265,6 +4586,28 @@ impl AppCtl {
         self.finish();
     }
 
+    /// The `tabs-saved` crumb of the last save: per shell tab, the agent `tabs.json` keeps for it and what the
+    /// hub knew, so a restart that resumes nothing can be told apart from a save that kept no agent.
+    fn note_saved_agents(&self) {
+        let tabs: Vec<serde_json::Value> = self
+            .model
+            .state
+            .tabs
+            .iter()
+            .filter(|t| t.kind == TabKind::Shell)
+            .map(|t| {
+                serde_json::json!({
+                    "id": t.id,
+                    "saved": self.model.agent_kind(&t.id).map(|k| format!("{k:?}").to_lowercase()),
+                    "here": self.hub.agent_here(&t.id),
+                    "kind": self.hub.agent_kind(&t.id).map(|k| format!("{k:?}").to_lowercase()),
+                    "session": self.hub.claude_session(&t.id).is_some(),
+                })
+            })
+            .collect();
+        crate::diag_ctl::crumb("tabs-saved", &[("tabs", serde_json::Value::Array(tabs))]);
+    }
+
     /// The end of life: both state files flushed, then every shell killed and waited for.
     fn finish(&mut self) {
         if self.ended {
@@ -4282,6 +4625,7 @@ impl AppCtl {
         self.save_window_now();
         if let Some(s) = self.model.saved_if_restored() {
             self.deps.tabs_store.save(&s);
+            self.note_saved_agents();
         }
         if self.model.restore_done() {
             let tabs = self.shell_tabs();
@@ -4429,6 +4773,7 @@ impl AppCtl {
                 self.focus_terminal();
             }
             UiMsg::Picked(None) => {}
+            UiMsg::StarterFolders(list) => self.starters = list,
             UiMsg::FolderResolved(dir) => {
                 self.open_folder(&dir);
                 self.focus_terminal();
@@ -4606,7 +4951,10 @@ impl AppCtl {
                 .set_busy(holds_window_close(self.hub.working_count()));
             changed = true;
         }
-        // A hook may have named a new Claude session: a tracker follows it (only for an open Changes or Tasks panel).
+        if self.clear_agent_decor() {
+            changed = true;
+        }
+        // A hook may have named a new Claude session: a tracker follows it (only for an open Changes panel).
         if self.sync_convo() {
             changed = true;
         }
@@ -4672,6 +5020,12 @@ impl ChordTarget for Target<'_> {
     }
 
     fn toggle_fullscreen(&mut self) {
+        // A page in full screen: F11 takes it out, and the window goes back to what it was before the page.
+        if self.0.web.covers_window() {
+            self.0.web.leave_full();
+            self.0.web_moved();
+            return;
+        }
         if let Some(app) = self.0.app() {
             // The UI turns solid and the backdrop comes off before the OS is asked (D7).
             crate::look_ctl::LookCtl::with_current(|l| l.before_fullscreen());
@@ -4796,11 +5150,12 @@ mod tests {
     mod splitter_tests;
     mod web_tests;
     use super::*;
+    use crate::menus_ui::CHOOSE_FOLDER;
     use crate::openers::{OpenedRecord, RecordingOpeners};
     use crate::ui_harness::{Frame, Harness};
     use flare_render::glyph::{FakeGlyphs, GlyphSource};
     use flare_render::metrics::cell_metrics;
-    use flare_settings::new_tab::set_new_tab_mode;
+    use flare_settings::new_tab::set_new_tab_folder;
     use flare_settings::tab_layout::set_tab_layout;
     use flare_settings::term_prefs::set_agent_keys;
     use flare_shells::list::ShellDef;
@@ -4962,6 +5317,7 @@ mod tests {
                 let log = log.clone();
                 Rc::new(move || log.borrow_mut().hidden += 1)
             },
+            starter_folders: Rc::new(|_| {}),
             launch_folders: opts.launch,
             e2e: true,
             term: TermPorts {
@@ -5196,29 +5552,97 @@ mod tests {
     }
 
     #[test]
-    fn ask_mode_uses_the_picker_and_cancel_opens_nothing() {
+    fn a_stored_ask_mode_opens_in_the_folder_at_once() {
+        // There is no ask mode any more (2026-10-27): a profile that still says "ask" opens like folder mode.
+        let f = fx_with_prefs(Opts::default(), |p| {
+            p.set("flare.newtab.mode", "ask");
+            set_new_tab_folder(p, "D:\\stored");
+        });
+        f.ctl.borrow_mut().new_tab();
+        f.wait_made("D:\\stored");
+        assert_eq!(f.cwds(), ["D:\\stored"]);
+        assert!(f.log.borrow().picks.is_empty(), "no picker");
+    }
+
+    #[test]
+    fn choose_a_folder_in_the_folder_menu_asks_opens_there_and_remembers_it() {
         let f = fx_with_prefs(
             Opts {
                 pick_answer: Some(PathBuf::from("D:\\w")),
                 ..Opts::default()
             },
-            |p| set_new_tab_mode(p, NewTabMode::Ask, Some("D:\\stored")),
+            |p| set_new_tab_folder(p, "D:\\stored"),
         );
-        f.ctl.borrow_mut().new_tab();
+        f.ctl.borrow_mut().open_folder_menu(10.0, 400.0);
+        assert!(f.h.comp.get_menu_open());
+        assert!(
+            f.h.comp.get_menu_above(),
+            "the arrow's menu opens above the button"
+        );
+        let first = f.h.comp.get_menu_rows().row_data(0).unwrap();
+        assert_eq!(first.label.as_str(), CHOOSE_FOLDER);
+        f.h.comp.invoke_menu_picked(0);
+        assert!(!f.h.comp.get_menu_open());
+        // The picker starts in the new-tab folder; its answer opens a tab and joins the recents.
         assert_eq!(
             f.log.borrow().picks,
             vec![Some(PathBuf::from("D:\\stored"))]
         );
         f.pump_until("the tab", |f| f.rows() == 1);
         assert_eq!(f.cwds(), ["D:\\w"]);
+        f.wait_made("D:\\w");
+        assert_eq!(
+            flare_settings::recent_roots::recent_roots(&f.prefs)
+                .first()
+                .map(String::as_str),
+            Some("D:\\w")
+        );
+        // The strip's right-click menu opens at the pointer, not above it.
+        f.ctl.borrow_mut().open_plus_menu(10.0, 10.0);
+        assert!(!f.h.comp.get_menu_above());
 
-        let g = fx_with_prefs(Opts::default(), |p| {
-            set_new_tab_mode(p, NewTabMode::Ask, None);
-        });
-        g.ctl.borrow_mut().new_tab();
+        // A cancel opens nothing.
+        let g = fx();
+        g.ctl.borrow_mut().open_plus_menu(10.0, 10.0);
+        g.h.comp.invoke_menu_picked(0);
         g.pump();
-        assert_eq!(g.log.borrow().picks, vec![None]);
+        assert_eq!(g.log.borrow().picks, vec![Some(PathBuf::from("C:\\home"))]);
         assert_eq!(g.rows(), 0);
+    }
+
+    #[test]
+    fn the_starter_folders_fill_the_folder_menu_once_the_worker_answers() {
+        let f = fx();
+        f.ctl.borrow_mut().on_msg(UiMsg::StarterFolders(vec![
+            "C:\\home\\Documents".to_string(),
+            "C:\\home".to_string(),
+        ]));
+        f.ctl.borrow_mut().open_plus_menu(10.0, 10.0);
+        let rows = f.h.comp.get_menu_rows();
+        let labels: Vec<String> = (0..rows.row_count())
+            .map(|i| rows.row_data(i).unwrap().label.to_string())
+            .collect();
+        assert_eq!(labels, [CHOOSE_FOLDER, "Documents", "home"]);
+        assert_eq!(rows.row_data(2).unwrap().hint.as_str(), "user folder");
+        f.h.comp.invoke_menu_picked(1);
+        f.pump_until("the tab", |f| f.rows() == 1);
+        assert_eq!(f.cwds(), ["C:\\home\\Documents"]);
+    }
+
+    #[test]
+    fn a_folder_named_choose_a_folder_opens_itself_not_the_picker() {
+        let named = format!("C:\\home\\{CHOOSE_FOLDER}");
+        let f = fx();
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::StarterFolders(vec![named.clone()]));
+        f.ctl.borrow_mut().open_plus_menu(10.0, 10.0);
+        let rows = f.h.comp.get_menu_rows();
+        assert_eq!(rows.row_data(1).unwrap().label.as_str(), CHOOSE_FOLDER);
+        f.h.comp.invoke_menu_picked(1);
+        f.pump_until("the tab", |f| f.rows() == 1);
+        assert_eq!(f.cwds(), [named.as_str()]);
+        assert!(f.log.borrow().picks.is_empty(), "no picker");
     }
 
     #[test]
@@ -5748,7 +6172,7 @@ mod tests {
         assert!(!f.h.comp.get_menu_open());
         f.ctl.borrow_mut().open_plus_menu(10.0, 10.0);
         assert!(f.h.comp.get_menu_open());
-        f.h.comp.invoke_menu_picked(0); // the recent folder C:\a
+        f.h.comp.invoke_menu_picked(1); // the recent folder C:\a, under "Choose a folder…"
         assert_eq!(f.rows(), 2);
     }
 
@@ -8011,6 +8435,174 @@ two",
         }
     }
 
+    fn badge_op(tab: &str, key: &str, icon: &str, tip: &str) -> crate::ctl_app::CtlOp {
+        crate::ctl_app::CtlOp::BadgeSet {
+            tab: tab.into(),
+            source: DecorSource::Agent,
+            key: key.into(),
+            icon: icon.into(),
+            tip: tip.into(),
+            tone: flare_tabs::decor::Tone::Ink,
+            generation: 0,
+        }
+    }
+
+    fn progress_op(tab: &str, value: Option<f32>) -> crate::ctl_app::CtlOp {
+        crate::ctl_app::CtlOp::ProgressSet {
+            tab: tab.into(),
+            source: DecorSource::Agent,
+            key: "progress".into(),
+            value,
+            label: "Review".into(),
+            generation: 0,
+        }
+    }
+
+    const TITLE_CLAUDE: &str = "\u{1b}]0;\u{2733} Claude Code\u{7}";
+    const SID_A: &str = "b44e954e-a9cf-4ba9-a3c0-99ec6795d1d9";
+    const SID_B: &str = "11111111-2222-4333-8444-555555555555";
+
+    fn osc_session(sid: &str) -> String {
+        format!("\u{1b}]777;flare-agent;state=working;session={sid}\u{7}")
+    }
+
+    /// Plugins phase 1: a badge and a progress go from the channel's op to the drawn row (flat fields and the
+    /// tooltip), and only the tab they were put on.
+    #[test]
+    fn a_badge_and_a_progress_from_the_channel_reach_the_drawn_row() {
+        let f = fx();
+        let ids = f.open_tabs(&["C:\\a", "C:\\b"]);
+        let a = ids[0].clone();
+        f.claude_in("C:\\a");
+        assert_eq!(f.row(0).prog, -1.0);
+        assert_eq!(f.row(0).chip_count, 0);
+        ctl_call(&f, badge_op(&a, "call-me", "phone", "Call-me is on")).unwrap();
+        let r = f.row(0);
+        assert_eq!(r.chip_count, 1);
+        assert_eq!(
+            r.chip1_cmd.as_str(),
+            crate::menus_ui::glyph_path(crate::menus_ui::GLYPH_BADGE_PHONE)
+        );
+        assert!(
+            r.tip.as_str().ends_with("\nClaude: Call-me is on"),
+            "{}",
+            r.tip
+        );
+        ctl_call(&f, progress_op(&a, Some(0.5))).unwrap();
+        let r = f.row(0);
+        assert_eq!((r.prog, r.chip_count), (0.5, 1));
+        assert!(r.tip.as_str().contains("\nClaude: Review 50%"), "{}", r.tip);
+        // The other tab is untouched.
+        let b = f.row(1);
+        assert_eq!((b.prog, b.chip_count, b.tip.as_str()), (-1.0, 0, "C:\\b"));
+        // An unknown amount, then the clears.
+        ctl_call(&f, progress_op(&a, None)).unwrap();
+        assert_eq!(f.row(0).prog, -2.0);
+        let v = ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::ProgressClear {
+                tab: a.clone(),
+                source: DecorSource::Agent,
+                key: "progress".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(v["cleared"], true);
+        ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::BadgeClear {
+                tab: a.clone(),
+                source: DecorSource::Agent,
+                key: "call-me".into(),
+            },
+        )
+        .unwrap();
+        let r = f.row(0);
+        assert_eq!((r.prog, r.chip_count, r.tip.as_str()), (-1.0, 0, "C:\\a"));
+        assert!(!f.ctl.borrow().has_decor(&a));
+        // A tab that is not there is no tab, and a fifth key is refused.
+        let e = ctl_call(&f, badge_op("nope", "k", "star", "")).unwrap_err();
+        assert_eq!(e.code, flare_ctl::code::NO_TAB);
+        for k in ["k1", "k2", "k3", "k4"] {
+            ctl_call(&f, badge_op(&a, k, "star", "")).unwrap();
+        }
+        let e = ctl_call(&f, badge_op(&a, "k5", "star", "")).unwrap_err();
+        assert_eq!(e.code, flare_ctl::code::BAD_PARAMS);
+        assert!(e.message.contains("at most 4"), "{}", e.message);
+    }
+
+    /// The agent's decor belongs to its session: another session id, the agent leaving and the tab closing each
+    /// take it away; the first session id after none does not.
+    #[test]
+    fn the_agent_decor_goes_with_its_session_its_agent_and_its_tab() {
+        let f = fx();
+        let ids = f.open_tabs(&["C:\\a", "C:\\b"]);
+        let (a, b) = (ids[0].clone(), ids[1].clone());
+        f.say("C:\\a", TITLE_CLAUDE);
+        f.pump_until("the agent to be here", |f| f.agent_here(&a));
+        ctl_call(&f, badge_op(&a, "call-me", "phone", "")).unwrap();
+        f.say("C:\\a", &osc_session(SID_A));
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        assert_eq!(f.row(0).chip_count, 1, "a first session clears nothing");
+        f.say("C:\\a", &osc_session(SID_B));
+        f.pump_until("the new session to clear the badge", |f| {
+            f.row(0).chip_count == 0
+        });
+        assert!(!f.ctl.borrow().has_decor(&a));
+
+        // The agent leaves (its title goes): its progress goes.
+        ctl_call(&f, progress_op(&a, Some(0.3))).unwrap();
+        assert_eq!(f.row(0).prog, 0.3);
+        f.say("C:\\a", "\u{1b}]0;\u{7}");
+        f.pump_until("the agent to leave", |f| f.row(0).prog == -1.0);
+
+        // The tab closes: its decor goes with it.
+        f.claude_in("C:\\b");
+        ctl_call(&f, badge_op(&b, "x", "star", "")).unwrap();
+        assert!(f.ctl.borrow().has_decor(&b));
+        // Closed as a yes to the close ask would (an agent tab asks first).
+        f.ctl.borrow_mut().close_now(&b);
+        f.pump_until("b to close", |f| !f.ctl.borrow().has_decor(&b));
+    }
+
+    /// A plain shell tab holds the agent's token too, but with no agent in it the agent's badge and progress
+    /// are refused: nothing would name or clear them. Clearing is harmless and still answers.
+    #[test]
+    fn a_shell_tab_with_no_agent_gets_no_agent_decor() {
+        let f = fx();
+        let ids = f.open_tabs(&["C:\\a"]);
+        let a = ids[0].clone();
+        let e = ctl_call(&f, badge_op(&a, "k", "star", "Hi")).unwrap_err();
+        assert_eq!(e.code, flare_ctl::code::FORBIDDEN);
+        assert!(e.message.contains("no agent"), "{}", e.message);
+        let e = ctl_call(&f, progress_op(&a, Some(0.5))).unwrap_err();
+        assert_eq!(e.code, flare_ctl::code::FORBIDDEN);
+        assert!(!f.ctl.borrow().has_decor(&a));
+        assert_eq!((f.row(0).chip_count, f.row(0).prog), (0, -1.0));
+        let v = ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::BadgeClear {
+                tab: a.clone(),
+                source: DecorSource::Agent,
+                key: "k".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(v["cleared"], false);
+        // A plugin's decor does not need the tab's agent.
+        let op = crate::ctl_app::CtlOp::BadgeSet {
+            tab: a.clone(),
+            source: DecorSource::Plugin("p".into()),
+            key: "k".into(),
+            icon: "star".into(),
+            tip: String::new(),
+            tone: flare_tabs::decor::Tone::Ink,
+            generation: 0,
+        };
+        ctl_call(&f, op).unwrap();
+        assert!(f.ctl.borrow().has_decor(&a));
+    }
+
     #[test]
     fn a_hook_signal_marks_the_row_in_place() {
         let f = fx();
@@ -8131,6 +8723,59 @@ two",
         f.ctl.borrow_mut().set_animations_source(Rc::new(|| true));
         assert!(f.clock_running());
         assert!(!f.motion().0);
+    }
+
+    /// Owner decision 2026-10-26: a plugin's pick moves a working agent's icon, every frame from the mark clock
+    /// (`push_frame`); the tab that stops working stands still, and so does every icon with animation effects off.
+    #[test]
+    fn a_picked_motion_moves_a_working_agents_icon_from_the_mark_clock_and_stills_with_effects_off()
+    {
+        use flare_agent::icon_motion::{AGY_RGB, IconMotion, icon_phase};
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        assert_eq!(f.row(0).agent, 1, "Claude, by its hook");
+        assert_eq!(f.row(0).motion, 0, "no pick: the icon stands as today");
+        f.ctl
+            .borrow_mut()
+            .motions
+            .set(AgentKind::Claude, "p", IconMotion::HopBlink);
+        f.ctl.borrow_mut().refresh();
+        assert_eq!(f.row(0).motion, IconMotion::HopBlink.code());
+        assert!(f.clock_running(), "the working mark already runs the clock");
+        let icon = |f: &Fx| {
+            let g = f.h.comp.global::<MarkMotion>();
+            (g.get_still(), g.get_hop_y(), g.get_blink(), g.get_fade())
+        };
+        let start = f.clock.get();
+        for ms in [0, 513, 810, 1700, 3000] {
+            f.clock.set(start + ms);
+            f.ctl.borrow().mark_frame_now();
+            let p = icon_phase(ms);
+            assert_eq!(icon(&f), (false, p.hop_y, p.blink, p.fade), "at {ms}");
+        }
+        let g = f.h.comp.global::<MarkMotion>();
+        assert_eq!(g.get_agy_flow().row_count(), 10);
+        // The tab finished: its icon stands still, and with nothing else moving the clock stops.
+        f.say("C:\\a", OSC_DONE);
+        f.pump_until("finished", |f| f.row(0).mark_state == 3);
+        assert_eq!(f.row(0).motion, 0);
+        assert!(!f.clock_running());
+        // Working again with animation effects off: the pick stays, nothing moves.
+        f.ctl.borrow_mut().set_animations_source(Rc::new(|| false));
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        assert!(!f.clock_running());
+        let (still, hop_y, blink, fade) = icon(&f);
+        assert!(still && !blink);
+        assert_eq!((hop_y, fade), (0.0, 1.0));
+        let flow: Vec<slint::Color> = g.get_agy_flow().iter().collect();
+        let want: Vec<slint::Color> = AGY_RGB
+            .iter()
+            .map(|&(r, gr, b)| slint::Color::from_rgb_u8(r, gr, b))
+            .collect();
+        assert_eq!(flow, want, "the still arch wears its own colours");
     }
 
     #[test]
@@ -8428,6 +9073,35 @@ two",
     }
 
     #[test]
+    fn an_agy_tab_comes_back_as_agy_c_wearing_its_icon_from_the_first_frame() {
+        let lookup = FixedSessions::new(&[SESSION_A]);
+        let f = fx_with(Opts {
+            saved: vec![("C:\\c", None), ("C:\\y", Some(AgentKind::Agy))],
+            lookup: lookup_of(&lookup),
+            shells: Some(vec![resume_pwsh()]),
+            ..Opts::default()
+        });
+        assert_eq!(f.row(1).agent, 3, "the agy arch from the first frame");
+        assert!(f.row(1).loading);
+        f.start_restore_and_wait();
+        f.pump_until("the spawns", |f| !f.made_with("C:\\y").is_empty());
+        assert!(lookup.asked().is_empty(), "agy asks Claude's store nothing");
+        let agy = &f.made_with("C:\\y")[0];
+        assert!(env_of(agy, "FLARE_RESUME_ID").is_none());
+        assert_eq!(env_of(agy, "AGY_CLI_OSC7501").as_deref(), Some("on"));
+        assert!(
+            agy.spec()
+                .args
+                .last()
+                .is_some_and(|a| a.ends_with("; agy -c"))
+        );
+        assert_eq!(
+            f.ctl.borrow().model().agent_kind(&f.ids()[1]),
+            Some(AgentKind::Agy)
+        );
+    }
+
+    #[test]
     fn two_claude_tabs_in_one_folder_resume_the_newest_two() {
         let lookup = FixedSessions::new(&[SESSION_A, SESSION_B]);
         let f = fx_with(Opts {
@@ -8653,6 +9327,33 @@ two",
     }
 
     #[test]
+    fn the_tabs_saved_at_quit_keep_their_agent_when_the_killed_shells_report_it_gone() {
+        let f = fx();
+        f.start_restore_and_wait();
+        f.open_tabs(&["C:\\a", "C:\\b"]);
+        let a = f.claude_in("C:\\a");
+        assert_eq!(
+            f.ctl.borrow_mut().on_close_requested(),
+            CloseDecision::Close
+        );
+        let agents = |f: &Fx| {
+            let raw = std::fs::read_to_string(f.dir.path().join("tabs.json")).unwrap(); // sync-ok: test code only, never the app
+            flare_tabs::restore::parse_tabs(&raw)
+                .tabs
+                .iter()
+                .map(|t| t.agent)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(agents(&f), vec![Some(AgentKind::Claude), None]);
+        // The shells are killed: the poll says the agent left, and the event loop still refreshes.
+        f.agent_exits(&a);
+        f.ctl.borrow_mut().refresh();
+        std::thread::sleep(Duration::from_millis(120)); // sync-ok: test code, past the store's 30 ms delay
+        f.pump();
+        assert_eq!(agents(&f), vec![Some(AgentKind::Claude), None]);
+    }
+
+    #[test]
     fn the_window_close_is_held_only_while_an_agent_works_by_the_hub() {
         let f = fx();
         let ids = f.open_tabs(&["C:\\a", "C:\\b"]);
@@ -8856,6 +9557,29 @@ two",
             log.0.borrow().last().cloned().map(|l| l.0),
             Some(None),
             "nothing marked: the overlay is cleared"
+        );
+    }
+
+    /// Coming back to the window draws the badge anew even when the count did not change: Explorer may have
+    /// restarted (which takes every overlay away), and no subclass listens for its `TaskbarButtonCreated`.
+    #[test]
+    fn a_gained_focus_draws_the_same_badge_again() {
+        let f = fx();
+        let log = f.with_badge();
+        let ids = f.open_tabs(&["C:\\a", "C:\\b"]);
+        f.say("C:\\a", OSC_DONE);
+        f.pump_until("a mark", |f| {
+            f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0])
+        });
+        f.ctl.borrow_mut().on_focus(false);
+        let before = log.0.borrow().len();
+        f.ctl.borrow_mut().refresh();
+        assert_eq!(log.0.borrow().len(), before, "the same count draws nothing");
+        f.ctl.borrow_mut().on_focus(true);
+        let drawn: Vec<Overlay> = log.0.borrow()[before..].to_vec();
+        assert!(
+            drawn.iter().any(|o| o.1 == "1 tab needs a look"),
+            "drawn again on focus: {drawn:?}"
         );
     }
 

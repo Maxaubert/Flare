@@ -507,6 +507,46 @@ fn attach_material_when_ready(
     );
     timer
 }
+
+/// Runs `f` with the window's handle as soon as it has one (looking as often as the `--e2e` park
+/// timer does). Right after `show()` there is none: the winit backend makes the native window only
+/// once the event loop runs, so a step that asked then got nothing and was skipped for good (the
+/// taskbar badge never showed, 2026-10-26). Keep the returned timer alive for the run.
+fn when_handle_ready(
+    app: &AppWindow,
+    what: &'static str,
+    f: impl FnOnce(&AppWindow, isize) + 'static,
+) -> Rc<slint::Timer> {
+    let timer = Rc::new(slint::Timer::default());
+    let weak_timer = Rc::downgrade(&timer);
+    let weak = app.as_weak();
+    let mut f = Some(f);
+    let mut polls = 0u32;
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(E2E_HANDLE_POLL_MS),
+        move || {
+            let Some(app) = weak.upgrade() else { return };
+            let decision = poll_handle(polls, E2E_HANDLE_POLLS, hwnd_of(&app));
+            polls += 1;
+            match decision {
+                HandlePoll::Wait => return,
+                HandlePoll::Found(h) => {
+                    if let Some(f) = f.take() {
+                        f(&app, h);
+                    }
+                }
+                HandlePoll::GiveUp => {
+                    log::warn!("the window never got a handle, so {what} is not set up");
+                }
+            }
+            if let Some(t) = weak_timer.upgrade() {
+                t.stop();
+            }
+        },
+    );
+    timer
+}
 /// Brings the window forward the way `raise_plan` says (under `--e2e` it only shows).
 fn raise_window(app: &AppWindow, e2e: bool) {
     let minimised = app.window().is_minimized();
@@ -1045,6 +1085,27 @@ pub fn run_window(
                     }
                 })
             },
+            // The folder menu's starters are the owner's real folders: under --e2e there are none, so a scenario
+            // sees only what it set up.
+            starter_folders: Rc::new(move |answer| {
+                if e2e_on {
+                    return;
+                }
+                let r = std::thread::Builder::new()
+                    .name("flare-starters".into())
+                    .spawn(move || {
+                        let found = flare_win::paths::starter_folders();
+                        answer(
+                            found
+                                .into_iter()
+                                .map(|p| p.to_string_lossy().into_owned())
+                                .collect(),
+                        );
+                    });
+                if let Err(e) = r {
+                    log::warn!("could not start the starter folders worker: {e}");
+                }
+            }),
             launch_folders,
             e2e: e2e_on,
             term: TermPorts {
@@ -1076,13 +1137,49 @@ pub fn run_window(
         let apps_root = flare_surfaces::app::apps_root(&inst.profile.dir);
         flare_surfaces::app::retire_root(&apps_root); // sync-ok: startup, before the window shows
         rc.borrow_mut().set_apps_root(apps_root.clone());
-        // Mods (stage 8): `<profile>\mods`, found on a worker at start and when Settings > Mods opens. Off until
-        // the person turns one on.
+        // Mods (stage 8) and plugins (plugins phase 2): all in `<profile>\plugins` (phase 2c), found on a worker at
+        // start and when Settings > Plugins opens; the first scan moves the old `<profile>\mods` in. Off until the
+        // person turns one on.
         let mods_hub = Arc::new(flare_mods::Hub::new(flare_mods::hub::Config {
-            dir: inst.profile.mods_dir(),
+            dir: inst.profile.plugins_dir(),
+            old_mods_dir: Some(inst.profile.old_mods_dir()),
             state_file: inst.profile.mods_file(),
         }));
+        // Safe mode (design 13): `--no-plugins`, Shift held at launch, or two unclean ends in a row with plugins on
+        // keep every plugin off this start. The e2e runs are killed at will, so only the flag counts there.
+        let asked = args.no_plugins || (!args.e2e && crate::plugin_safe::shift_held());
+        let safe = if args.e2e {
+            asked.then_some(crate::plugin_safe::WHY_ASKED)
+        } else {
+            crate::plugin_safe::start(&inst.profile.dir, asked)
+        };
+        if let Some(why) = safe {
+            log::warn!("plugins are off for this start (safe mode)");
+            mods_hub.set_safe_mode(why);
+        }
+        let run_record = (!args.e2e).then(|| crate::plugin_safe::path_in(&inst.profile.dir));
+        // A removal (or a change of maker) deletes the plugin's browser profile in both of the plugins' browsers.
+        {
+            let web_dir = flare_surfaces::web::webview_folder(
+                args.user_data_dir.as_deref(),
+                flare_win::paths::local_app_data()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .as_deref(),
+            )
+            .unwrap_or_else(|| inst.profile.dir.join("WebView2"));
+            mods_hub.set_profile_dirs(Arc::new(move |id: &str| {
+                let name = flare_surfaces::modview::profile_name(id);
+                [
+                    flare_surfaces::modview::env_folder(&web_dir),
+                    flare_surfaces::modview::net_env_folder(&web_dir),
+                ]
+                .into_iter()
+                .map(|env| env.join("EBWebView").join(&name))
+                .collect()
+            }));
+        }
         let mut mods_dispatcher = None;
+        let mut owner_events = None;
         if let Some(instance) = &ctl_instance {
             let tabs = Arc::clone(&ctl_mgr);
             match crate::ctl_app::CtlServer::start(
@@ -1115,6 +1212,7 @@ pub fn run_window(
             ) {
                 Ok(server) => {
                     mods_dispatcher = Some(server.dispatcher());
+                    owner_events = Some(server.owner_events());
                     rc.borrow_mut().set_ctl(
                         server.events(),
                         crate::appctl::CtlInfo {
@@ -1128,7 +1226,37 @@ pub fn run_window(
                 Err(e) => log::warn!("the control channel did not start: {e}"),
             }
         }
+        let plugin_limits = mods_hub.limits();
+        let plugin_logs = mods_hub.logs_dir();
         rc.borrow_mut().set_mods(mods_hub, mods_dispatcher);
+        rc.borrow_mut().set_plugin_run_record(run_record);
+        // Plugins phase 7: helpers need the channel (their pipe), and Install from file its picker.
+        if let (Some(events), Some(instance)) = (owner_events, &ctl_instance) {
+            rc.borrow_mut().set_plugin_owner_events(events);
+            rc.borrow_mut()
+                .set_plugin_helpers(plugin_logs, instance.pipe.clone());
+        }
+        {
+            let weak = app.as_weak();
+            rc.borrow_mut().set_pick_zip(Rc::new(move |answer| {
+                let parent = weak
+                    .upgrade()
+                    .and_then(|a| hwnd_of(&a))
+                    .map(|hwnd| ParentWindow { hwnd });
+                // Under --e2e an unset seam is a cancel: no real dialog shows.
+                let seam =
+                    e2e::global().dialog_seam(&["FLARE_E2E", "_PICK_ZIP"].concat(), "", |_| true);
+                flare_win::pick::pick_file(
+                    PickOptions {
+                        parent,
+                        default_dir: None,
+                        seam,
+                    },
+                    ("Plugin (.zip)", &["zip"]),
+                    move |p| answer(p),
+                );
+            }));
+        }
         // The panels' file is read here, at start, before the restore gives the tabs their panels.
         let panels_store = Arc::new(flare_surfaces::store::PanelStore::new(
             inst.profile.panels_file(),
@@ -1141,6 +1269,7 @@ pub fn run_window(
                 app.as_weak(),
                 args.user_data_dir.clone(),
                 inst.profile.dir.clone(),
+                Some(plugin_limits),
             ));
         // Windows' notifications and the system's listening table (stage 7); under --e2e a recorder.
         crate::appctl::install_surfaces7(&rc, Arc::clone(&post), args.e2e);
@@ -1464,9 +1593,6 @@ pub fn run_window(
     app.show()?;
     // The watchdog: the UI thread beats every 50 ms, and the hung-window poll looks at this window.
     let beat_timer = crate::diag_ctl::beat_timer();
-    if let Some(hwnd) = hwnd_of(&app) {
-        crate::diag_ctl::set_window(hwnd);
-    }
     // A bell flashes the taskbar button while the window is not in front (no sound). Under --e2e the
     // window is parked and has no button, so the flash is only counted.
     if let Some(rc) = &ctl {
@@ -1497,11 +1623,8 @@ pub fn run_window(
             crate::e2e_glue::install(&app, rc, args, kp, backends_clip.clone());
         }
     }
-    // The exe's own icon on the window (and again on every scale-factor change).
-    crate::startup::apply_window_icon(hwnd_of(&app));
-    // The agent: the process poll, and the taskbar overlay (it needs the window's handle, which
-    // exists now). Under --e2e the real overlay is never touched: a recording shell stands in, so
-    // the badge's text can be read.
+    // The agent: the process poll, and the taskbar overlay. Under --e2e the real overlay is never
+    // touched: a recording shell stands in, so the badge's text can be read.
     if let Some(rc) = &ctl {
         let mut c = rc.borrow_mut();
         c.start_agent_poll();
@@ -1509,11 +1632,32 @@ pub fn run_window(
             c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::with_shell(Box::new(
                 flare_win::taskbar::RecordShell,
             )));
-        } else if let Some(hwnd) = hwnd_of(&app) {
-            flare_win::taskbar::watch_button_created(hwnd);
-            c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
         }
     }
+    // What needs the window's handle, once it has one: the watchdog's hung-window poll, the exe's
+    // own icon on the window (again on every scale-factor change) and the taskbar overlay.
+    let handle_timer = {
+        let ctl = ctl.clone();
+        let e2e = args.e2e;
+        when_handle_ready(
+            &app,
+            "the watchdog, the icon and the badge",
+            move |_, hwnd| {
+                crate::diag_ctl::set_window(hwnd);
+                crate::startup::apply_window_icon(Some(hwnd));
+                // No subclass for `TaskbarButtonCreated`: one beside AccessKit's crashed the window
+                // as the first overlay was set (2026-10-26). A gained focus redraws the badge instead.
+                if let Some(rc) = ctl.filter(|_| !e2e) {
+                    let mut c = rc.borrow_mut();
+                    c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
+                    // The agent's cursor and the border round the page while it works: windows owned
+                    // by this one (under --e2e the recording stand-ins WebCtl starts with stay).
+                    c.set_agent_border(Box::new(flare_win::agent_cursor::CursorWindow::new(hwnd)));
+                    c.set_agent_cursor(Box::new(flare_win::agent_cursor::CursorWindow::new(hwnd)));
+                }
+            },
+        )
+    };
     if initial.as_ref().is_some_and(|i| i.maximise) {
         app.window().set_maximized(true);
     }
@@ -1581,6 +1725,10 @@ pub fn run_window(
     // by the next start).
     if let Some(inst) = instance.as_ref() {
         flare_surfaces::app::clean_root(&flare_surfaces::app::apps_root(&inst.profile.dir)); // sync-ok: quit path, after the window and the channel are gone
+        // A clean quit: the plugins' run record is closed (safe mode counts the runs that end without this).
+        if !args.e2e {
+            crate::plugin_safe::clean_exit(&inst.profile.dir); // sync-ok: quit path, after the window and the channel are gone
+        }
     }
     APP_CTL.with(|cell| *cell.borrow_mut() = None);
     LookCtl::uninstall();
@@ -1597,6 +1745,7 @@ pub fn run_window(
     SOFTWARE_PAINT.with(|h| *h.borrow_mut() = None);
     drop(beat_timer);
     drop(park_timer);
+    drop(handle_timer);
     drop(material_timer);
     drop(instance); // the lock is released last
     result

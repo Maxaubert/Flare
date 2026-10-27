@@ -116,6 +116,7 @@ impl Fx {
             raise: Rc::new(|| {}),
             quit: Rc::new(|| {}),
             hide: Rc::new(|| {}),
+            starter_folders: Rc::new(|_| {}),
             launch_folders: Vec::new(),
             e2e: true,
             term: TermPorts::inert(),

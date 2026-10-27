@@ -1,11 +1,11 @@
-// The conversation panels (Surfaces stage 6): Changes (the files the agent edited, then one file's diff) and Tasks
-// (the agent's task list). Both are drawn from rows the controller made on a worker, so the window only wraps
-// them. Only the rows in view are instantiated (a diff can hold thousands), and a closed panel holds no rows at all.
+// The conversation panel (Surfaces stage 6): Changes (the files the agent edited, then one file's diff). It is drawn
+// from rows the controller made on a worker, so the window only wraps them. Only the rows in view are instantiated (a diff can hold thousands), and a closed panel holds no rows at all.
 //
 // Whole device pixels everywhere (`Px.snap`), as the rest of the chrome. Nothing here moves on its own.
 
 import { Theme, Px, SettingsFixed } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
+import { ViewThumb } from "scrollbar.slint";
 
 // One changed file in the list.
 export struct ConvoFileRow {
@@ -24,18 +24,6 @@ export struct ConvoDiffRow {
     text: string,
 }
 
-// One row of the task list. kind: 0 group header, 1 task. state: 0 pending, 1 in progress, 2 done, 3 other.
-export struct ConvoTaskRow {
-    kind: int,
-    state: int,
-    text: string,
-    sub: string,       // what the agent is doing, for the task in progress
-    active: bool,
-    key: string,       // a group header's key, for collapsing
-    collapsed: bool,
-    count: string,     // a group header's "2 of 5 done"
-}
-
 // The added and removed inks. Rust sets them from the theme's terminal palette (green and red), so a theme
 // that recolours the terminal recolours the diff.
 export global ConvoInk {
@@ -43,26 +31,8 @@ export global ConvoInk {
     in property <color> removed: Theme.danger-fill;
 }
 
-// A thin scroll thumb on the right edge, as the text viewer's: it shows where the view is and takes no pointer.
-component ConvoThumb inherits Rectangle {
-    in property <length> view-h;
-    in property <length> content-h;
-    in property <length> scrolled;   // the viewport's offset, negative or zero
-    visible: root.content-h > root.view-h + 1px;
-    width: Px.snap(6px);
-    height: root.view-h;
-    Rectangle {
-        property <length> len: max(Px.snap(24px), root.view-h * root.view-h / max(root.content-h, 1px));
-        property <length> travel: root.view-h - self.len;
-        property <float> at: root.content-h > root.view-h ? min(1.0, max(0.0, -root.scrolled / (root.content-h - root.view-h))) : 0.0;
-        x: 0px;
-        y: Px.snap(self.at * self.travel);
-        width: parent.width;
-        height: Px.snap(self.len);
-        border-radius: self.width / 2;
-        background: Theme.text.with-alpha(0.4);
-    }
-}
+// The side panel's fading scroll thumb (scrollbar.slint).
+component ConvoThumb inherits ViewThumb {}
 
 // The files the agent changed, newest first.
 component FileList inherits Rectangle {
@@ -415,149 +385,5 @@ export component ChangesView inherits Rectangle {
         rows: root.rows;
         max-cols: root.max-cols;
         pressed => { root.pressed(); }
-    }
-}
-
-// The marker in front of a task: a ring for pending, a filled dot for the one in progress, a dot with a tick for done.
-component TaskMark inherits Rectangle {
-    in property <int> state;
-    width: Px.snap(14px);
-    height: Px.snap(14px);
-    border-radius: self.width / 2;
-    background: root.state == 1 ? Theme.accent : (root.state == 2 ? Theme.dim2 : transparent);
-    border-width: root.state == 1 || root.state == 2 ? 0px : Px.snap(1.5px);
-    border-color: root.state == 3 ? Theme.dim2 : Theme.dim;
-    if root.state == 2: Path {
-        x: (parent.width - 8px) / 2 - self.stroke-width / 2;
-        y: (parent.height - 8px) / 2 - self.stroke-width / 2;
-        width: 8px + self.stroke-width;
-        height: 8px + self.stroke-width;
-        viewbox-width: 16;
-        viewbox-height: 16;
-        commands: "M2 8.5l4 4 8-9";
-        fill: transparent;
-        stroke: Theme.ground;
-        stroke-width: 2.4 * 8px / 16;
-        stroke-line-cap: round;
-        stroke-line-join: round;
-    }
-}
-
-// The Tasks panel: the agent's list, the one in progress highlighted; a subagent's list is a group that folds.
-export component TasksView inherits Rectangle {
-    in property <[ConvoTaskRow]> rows;
-    callback toggle(string);
-    callback pressed();
-
-    out property <int> row-count: root.rows.length;
-    out property <length> content-h: col.preferred-height;
-
-    public function scroll-by(dy: length) {
-        flick.content-y = min(0px, max(root.height - flick.content-height, flick.content-y + dy));
-    }
-    public function scroll-to(top: bool) {
-        flick.content-y = top ? 0px : min(0px, root.height - flick.content-height);
-    }
-    public function reset-scroll() {
-        flick.content-x = 0px;
-        flick.content-y = 0px;
-    }
-
-    clip: true;
-    flick := Flickable {
-        width: root.width;
-        height: root.height;
-        content-width: root.width;
-        content-height: max(col.preferred-height, root.height);
-        col := VerticalLayout {
-            width: flick.content-width;
-            y: 0px;
-            alignment: start;
-            for r[i] in root.rows: Rectangle {
-                // Every row says its own height (a header 30 px, a task as tall as its words), so the list does not
-                // depend on a conditional layout reporting one.
-                height: r.kind == 0 ? Px.snap(30px) : max(Px.snap(30px), Px.snap(6px) + Px.snap(words.preferred-height + Px.hair()) + (r.sub == "" ? 0px : Px.snap(2px) + Px.snap(doing.preferred-height + Px.hair())) + Px.snap(6px));
-                background: r.kind == 0 ? Theme.side-flat : (r.active ? Theme.accent.with-alpha(0.14) : transparent);
-                accessible-role: text;
-                accessible-label: r.kind == 0 ? r.text + ", " + r.count : (r.state == 1 ? "In progress: " : (r.state == 2 ? "Done: " : "To do: ")) + r.text;
-                if r.kind == 0: Path {
-                    x: Px.snap(10px) - self.stroke-width / 2;
-                    y: Px.snap((parent.height - 10px) / 2) - self.stroke-width / 2;
-                    width: 10px + self.stroke-width;
-                    height: 10px + self.stroke-width;
-                    viewbox-width: 24;
-                    viewbox-height: 24;
-                    commands: r.collapsed ? Glyphs.chevron-right : Glyphs.chevron-down;
-                    fill: transparent;
-                    stroke: Theme.icon;
-                    stroke-width: 2.2 * 10px / 24;
-                    stroke-line-cap: round;
-                    stroke-line-join: round;
-                }
-                if r.kind == 1: TaskMark {
-                    x: Px.snap(16px);
-                    y: Px.snap(8px);
-                    state: r.state;
-                }
-                words := Text {
-                    x: r.kind == 0 ? Px.snap(28px) : Px.snap(40px);
-                    y: r.kind == 0 ? Px.snap((parent.height - self.preferred-height) / 2) : Px.snap(6px);
-                    width: parent.width - self.x - (r.kind == 0 ? counted.preferred-width + Px.snap(24px) : Px.snap(12px));
-                    text: r.text;
-                    wrap: r.kind == 0 ? no-wrap : word-wrap;
-                    overflow: r.kind == 0 ? elide : clip;
-                    font-family: Theme.font-ui;
-                    font-size: r.kind == 0 ? 12px : 12.5px;
-                    font-weight: r.kind == 0 || r.active ? 600 : 400;
-                    color: r.kind == 1 && r.state == 2 ? Theme.dim : Theme.text;
-                }
-                counted := Text {
-                    visible: r.kind == 0;
-                    x: parent.width - self.preferred-width - Px.snap(12px);
-                    y: Px.snap((parent.height - self.preferred-height) / 2);
-                    text: r.count;
-                    font-family: Theme.font-ui;
-                    font-size: 11.5px;
-                    color: Theme.dim;
-                }
-                doing := Text {
-                    visible: r.kind == 1 && r.sub != "";
-                    x: Px.snap(40px);
-                    y: Px.snap(6px) + Px.snap(words.preferred-height + Px.hair()) + Px.snap(2px);
-                    width: parent.width - Px.snap(40px) - Px.snap(12px);
-                    text: r.sub;
-                    wrap: word-wrap;
-                    font-family: Theme.font-ui;
-                    font-size: 11.5px;
-                    color: Theme.accent-hi;
-                }
-                if r.kind == 0: TouchArea {
-                    accessible-role: button;
-                    accessible-label: (r.collapsed ? "Show " : "Hide ") + r.text;
-                    accessible-action-default => { root.toggle(r.key); }
-                    mouse-cursor: MouseCursor.pointer;
-                    pointer-event(e) => {
-                        if (e.kind == PointerEventKind.down) {
-                            root.pressed();
-                        }
-                    }
-                    clicked => { root.toggle(r.key); }
-                }
-                if r.kind == 1: TouchArea {
-                    pointer-event(e) => {
-                        if (e.kind == PointerEventKind.down) {
-                            root.pressed();
-                        }
-                    }
-                }
-            }
-        }
-    }
-    ConvoThumb {
-        x: root.width - self.width;
-        y: 0px;
-        view-h: root.height;
-        content-h: flick.content-height;
-        scrolled: flick.content-y;
     }
 }

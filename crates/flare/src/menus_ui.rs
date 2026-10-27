@@ -6,7 +6,9 @@
 
 use crate::tabs_ui::View;
 use flare_settings::kv::PrefStore;
-use flare_settings::recent_roots::{pinned_roots, recent_roots, toggle_pin};
+use flare_settings::recent_roots::{
+    RECENT_SHOWN, pinned_roots, recent_labels, recent_roots, starter_fill, toggle_pin,
+};
 use flare_tabs::places::place_rows;
 use flare_tabs::sidebar_rows::find_keeps;
 use flare_tabs::tip_place::{BoxF, TIP_SHOW_MS, TipSide, TipSpot, place_tip};
@@ -23,10 +25,39 @@ pub const GLYPH_LINK: &str = "menu-link";
 pub const GLYPH_FOLDER: &str = "menu-folder";
 pub const GLYPH_FIND: &str = "menu-find";
 pub const GLYPH_HELP: &str = "menu-help";
-/// The Surfaces rows: a side pane, a diff page and a checklist.
+/// The Surfaces rows: a side pane and a diff page.
 pub const GLYPH_PANEL: &str = "menu-panel";
 pub const GLYPH_CHANGES: &str = "menu-changes";
-pub const GLYPH_TASKS: &str = "menu-tasks";
+/// The tab badges (plugins phase 1), one per `flare_ctl::decor::BADGE_ICONS` name.
+pub const GLYPH_BADGE_PHONE: &str = "badge-phone";
+pub const GLYPH_BADGE_GLOBE: &str = "badge-globe";
+pub const GLYPH_BADGE_BELL: &str = "badge-bell";
+pub const GLYPH_BADGE_MIC: &str = "badge-mic";
+pub const GLYPH_BADGE_EYE: &str = "badge-eye";
+pub const GLYPH_BADGE_MOON: &str = "badge-moon";
+pub const GLYPH_BADGE_LOCK: &str = "badge-lock";
+pub const GLYPH_BADGE_BOLT: &str = "badge-bolt";
+pub const GLYPH_BADGE_STAR: &str = "badge-star";
+pub const GLYPH_BADGE_PLUS: &str = "badge-plus";
+pub const GLYPH_BADGE_PIN: &str = "badge-pin";
+
+/// The glyph a badge icon is drawn with, for a built-in badge name (`flare_ctl::decor::BADGE_ICONS`).
+pub fn badge_glyph(icon: &str) -> Option<&'static str> {
+    Some(match icon {
+        "phone" => GLYPH_BADGE_PHONE,
+        "globe" => GLYPH_BADGE_GLOBE,
+        "bell" => GLYPH_BADGE_BELL,
+        "mic" => GLYPH_BADGE_MIC,
+        "eye" => GLYPH_BADGE_EYE,
+        "moon" => GLYPH_BADGE_MOON,
+        "lock" => GLYPH_BADGE_LOCK,
+        "bolt" => GLYPH_BADGE_BOLT,
+        "star" => GLYPH_BADGE_STAR,
+        "plus" => GLYPH_BADGE_PLUS,
+        "pin" => GLYPH_BADGE_PIN,
+        _ => return None,
+    })
+}
 
 /// The SVG path of a glyph name (24-unit viewbox), as `ui/glyphs.slint` holds it.
 pub fn glyph_path(name: &str) -> &'static str {
@@ -51,9 +82,27 @@ pub fn glyph_path(name: &str) -> &'static str {
         GLYPH_CHANGES => {
             "M6 3.5h12a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 19V5A1.5 1.5 0 0 1 6 3.5zM12 7.5v5M9.5 10h5M9.5 16h5"
         }
-        GLYPH_TASKS => {
-            "M4 6.5l1.7 1.7L9 4.8M12 7h8M4 12.5l1.7 1.7L9 11M12 13h8M4 18.5l1.7 1.7L9 17M12 19h8"
+        GLYPH_BADGE_PHONE => {
+            "M6 3.5h7a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 19V5A1.5 1.5 0 0 1 6 3.5zM8.5 17.5h2M17.5 9a3.5 3.5 0 0 1 0 6M20 6.5a7 7 0 0 1 0 11"
         }
+        GLYPH_BADGE_GLOBE => {
+            "M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17zM3.5 12h17M12 3.5a3.8 8.5 0 0 1 0 17a3.8 8.5 0 0 1 0-17z"
+        }
+        GLYPH_BADGE_BELL => "M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15zM10 20.5h4",
+        GLYPH_BADGE_MIC => {
+            "M9 6a3 3 0 0 1 6 0v5a3 3 0 0 1-6 0zM5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v3"
+        }
+        GLYPH_BADGE_EYE => {
+            "M2.5 12C5 7.7 8.2 5.5 12 5.5C15.8 5.5 19 7.7 21.5 12C19 16.3 15.8 18.5 12 18.5C8.2 18.5 5 16.3 2.5 12zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"
+        }
+        GLYPH_BADGE_MOON => "M20 14.5A8.5 8.5 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z",
+        GLYPH_BADGE_LOCK => "M5.5 11h13v9.5h-13zM8 11V8a4 4 0 0 1 8 0v3",
+        GLYPH_BADGE_BOLT => "M13 2.5L5 13.5h6l-1 8 8-11h-6z",
+        GLYPH_BADGE_STAR => {
+            "M12 3l2.7 5.6 6.1.8-4.5 4.2 1.1 6.1L12 16.8l-5.4 2.9 1.1-6.1-4.5-4.2 6.1-.8z"
+        }
+        GLYPH_BADGE_PLUS => "M12 5v14M5 12h14",
+        GLYPH_BADGE_PIN => "M15 3l6 6-3 1-4 4 .5 4.5L10 14l-6 6-1-1 6-6-4.5-4.5L9 8l4-4z",
         _ => "",
     }
 }
@@ -71,6 +120,13 @@ pub struct MenuRowData {
     pub trailing_tip: String,
     /// Starts a new group: a wider gap and a rule above the row (the Surfaces rows of the terminal menu).
     pub group: bool,
+    /// A row with a flyout of children (one level): the rows whose `parent` is its index (a plugin's group in the
+    /// tab menu, plugins phase 4). It only opens the flyout.
+    pub flyout: bool,
+    /// The index of the flyout row this row hangs from; -1 for a row of the menu itself.
+    pub parent: i32,
+    /// A glyph path drawn instead of `icon` when not empty (a plugin's own icon, which is no named glyph).
+    pub icon_cmd: String,
 }
 
 impl MenuRowData {
@@ -85,7 +141,15 @@ impl MenuRowData {
             trailing_filled: false,
             trailing_tip: String::new(),
             group: false,
+            flyout: false,
+            parent: -1,
+            icon_cmd: String::new(),
         }
+    }
+
+    /// A row with these words and nothing else (the plugins' rows build on it).
+    pub fn labelled(label: &str) -> Self {
+        Self::plain(label)
     }
 }
 
@@ -99,39 +163,95 @@ pub enum MenuKind {
     Term {
         tab: String,
     },
+    /// The menu of a plugin's sidebar section (plugins phase 4): move it up or down, fold it.
+    Section {
+        sid: String,
+    },
 }
 
-/// The + menu: pins first, then the newest unpinned recents. None at all: one disabled row.
-/// Each row comes with the folder it opens ("" for the note).
-pub fn plus_menu_rows(prefs: &PrefStore) -> Vec<(MenuRowData, String)> {
-    let places = place_rows(&pinned_roots(prefs), &recent_roots(prefs));
-    if places.is_empty() {
+/// The folder menu's first row: the folder picker, then a tab there (2026-10-27).
+pub const CHOOSE_FOLDER: &str = "Choose a folder\u{2026}";
+
+/// What a starter folder's row says on its right: "user folder" for the user's own, `~\Documents` for one inside
+/// it, nothing for one elsewhere (a Documents moved to another drive).
+fn starter_hint(path: &str, home: &str) -> String {
+    let (p, h) = (
+        path.trim_end_matches(['\\', '/']),
+        home.trim_end_matches(['\\', '/']),
+    );
+    if h.is_empty() {
+        return String::new();
+    }
+    if p.eq_ignore_ascii_case(h) {
+        return "user folder".to_string();
+    }
+    match p.get(..h.len()) {
+        Some(head) if head.eq_ignore_ascii_case(h) && p[h.len()..].starts_with(['\\', '/']) => {
+            format!("~{}", &p[h.len()..])
+        }
+        _ => String::new(),
+    }
+}
+
+/// The folder menu (the sidebar's arrow and the strip's right-click): "Choose a folder…", then the pins, then the
+/// newest unpinned recents. While fewer recents than the menu shows are known, `starters` (Documents, Downloads,
+/// Desktop, the user folder: those that exist) fill the empty spots; a real recent pushes one out. Nothing to
+/// list at all: a disabled note under the first row. Each row comes with the folder it opens ("" for the first
+/// row and the note).
+pub fn plus_menu_rows(
+    prefs: &PrefStore,
+    starters: &[String],
+    home: &str,
+) -> Vec<(MenuRowData, String)> {
+    let (pinned, recent) = (pinned_roots(prefs), recent_roots(prefs));
+    let places = place_rows(&pinned, &recent);
+    let fill = starter_fill(&pinned, &recent, starters, RECENT_SHOWN);
+    let mut choose = MenuRowData::plain(CHOOSE_FOLDER);
+    choose.icon = GLYPH_FOLDER;
+    let mut rows = vec![(choose, String::new())];
+    if places.is_empty() && fill.is_empty() {
         let mut note = MenuRowData::plain("No recent folders");
         note.disabled = true;
-        return vec![(note, String::new())];
+        note.group = true;
+        rows.push((note, String::new()));
+        return rows;
     }
-    places
-        .into_iter()
-        .map(|p| {
-            let mut row = MenuRowData::plain(&p.label);
-            row.icon = GLYPH_FOLDER_FILL;
-            row.filled_icon = true;
-            row.trailing_icon = Some(GLYPH_PIN);
-            row.trailing_filled = p.pinned;
-            row.trailing_tip = if p.pinned {
-                "Unpin"
-            } else {
-                "Pin to this menu"
-            }
-            .to_string();
-            (row, p.path)
-        })
-        .collect()
+    // The labels are worked out over every listed folder, so a starter and a recent of one name both take
+    // their parent along.
+    let all: Vec<String> = places
+        .iter()
+        .map(|p| p.path.clone())
+        .chain(fill.iter().cloned())
+        .collect();
+    let labels = recent_labels(&all);
+    let pins = places.iter().map(|p| p.pinned);
+    let starter_flags = std::iter::repeat_n(false, fill.len());
+    for (i, (pinned, path)) in pins.chain(starter_flags).zip(all).enumerate() {
+        let label = labels.get(i).map_or(path.as_str(), |l| l.label.as_str());
+        let mut row = MenuRowData::plain(label);
+        row.icon = GLYPH_FOLDER_FILL;
+        row.filled_icon = true;
+        row.trailing_icon = Some(GLYPH_PIN);
+        row.trailing_filled = pinned;
+        row.trailing_tip = if pinned { "Unpin" } else { "Pin to this menu" }.to_string();
+        row.group = i == 0;
+        if i >= places.len() {
+            row.hint = starter_hint(&path, home);
+        }
+        rows.push((row, path));
+    }
+    rows
 }
 
 /// Toggles the pin of the row at `index`, then re-reads the list: the row climbs to the top while
 /// the menu stands.
-pub fn toggle_pin_in_menu(prefs: &PrefStore, rows: &mut Vec<(MenuRowData, String)>, index: usize) {
+pub fn toggle_pin_in_menu(
+    prefs: &PrefStore,
+    rows: &mut Vec<(MenuRowData, String)>,
+    index: usize,
+    starters: &[String],
+    home: &str,
+) {
     let Some((_, path)) = rows.get(index) else {
         return;
     };
@@ -139,7 +259,7 @@ pub fn toggle_pin_in_menu(prefs: &PrefStore, rows: &mut Vec<(MenuRowData, String
         return;
     }
     toggle_pin(prefs, &path.clone());
-    *rows = plus_menu_rows(prefs);
+    *rows = plus_menu_rows(prefs, starters, home);
 }
 
 /// A tab's own menu: Close tab (with its key) and, for a folder tab only, Copy folder path.
@@ -300,23 +420,89 @@ mod tests {
     }
 
     #[test]
-    fn the_plus_menu_is_pins_then_five_recents_or_a_disabled_note() {
+    fn the_plus_menu_is_choose_then_pins_then_five_recents_or_a_disabled_note() {
         let prefs = PrefStore::memory();
-        let empty = plus_menu_rows(&prefs);
-        assert_eq!(empty.len(), 1);
-        assert_eq!(empty[0].0.label, "No recent folders");
-        assert!(empty[0].0.disabled);
+        let empty = plus_menu_rows(&prefs, &[], "");
+        assert_eq!(labels(&empty), [CHOOSE_FOLDER, "No recent folders"]);
+        assert!(!empty[0].0.disabled);
+        assert_eq!(empty[0].0.icon, GLYPH_FOLDER);
+        assert_eq!(empty[0].0.trailing_icon, None);
+        assert!(empty[1].0.disabled);
         for i in (0..8).rev() {
             remember_root(&prefs, &format!(r"C:\r\recent{i}"));
         }
         toggle_pin(&prefs, r"C:\p\pinA");
         toggle_pin(&prefs, r"C:\p\pinB");
-        let rows = plus_menu_rows(&prefs);
-        assert_eq!(rows.len(), 7);
-        assert!(rows[0].0.trailing_filled && rows[1].0.trailing_filled);
-        assert!(rows[2..].iter().all(|(r, _)| !r.trailing_filled));
-        assert_eq!(rows[0].1, r"C:\p\pinA");
+        let rows = plus_menu_rows(&prefs, &[], "");
+        assert_eq!(rows.len(), 8);
+        assert_eq!(rows[0].0.label, CHOOSE_FOLDER);
+        assert_eq!(rows[0].1, "");
+        assert!(rows[1].0.trailing_filled && rows[2].0.trailing_filled);
+        assert!(rows[3..].iter().all(|(r, _)| !r.trailing_filled));
+        assert_eq!(rows[1].1, r"C:\p\pinA");
+        // A rule between the first row and the folders.
+        assert!(rows[1].0.group && rows[2..].iter().all(|(r, _)| !r.group));
         assert!(rows.iter().all(|(r, _)| !r.disabled));
+    }
+
+    #[test]
+    fn starters_fill_the_menu_until_real_recents_push_them_out() {
+        let prefs = PrefStore::memory();
+        let home = r"C:\Users\me";
+        let starters: Vec<String> = [
+            r"C:\Users\me\Documents",
+            r"C:\Users\me\Downloads",
+            r"D:\Desktop",
+            home,
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let rows = plus_menu_rows(&prefs, &starters, home);
+        assert_eq!(
+            labels(&rows),
+            [CHOOSE_FOLDER, "Documents", "Downloads", "Desktop", "me"]
+        );
+        let hints: Vec<&str> = rows.iter().map(|(r, _)| r.hint.as_str()).collect();
+        assert_eq!(
+            hints,
+            ["", r"~\Documents", r"~\Downloads", "", "user folder"]
+        );
+        assert_eq!(rows[1].1, r"C:\Users\me\Documents");
+        assert!(rows[1].0.group);
+        // Two recents: they come first and the last two starters give way.
+        remember_root(&prefs, r"C:\work\b");
+        remember_root(&prefs, r"C:\work\a");
+        let rows = plus_menu_rows(&prefs, &starters, home);
+        assert_eq!(
+            labels(&rows),
+            [CHOOSE_FOLDER, "a", "b", "Documents", "Downloads", "Desktop"]
+        );
+        assert_eq!(rows[1].0.hint, "");
+        // A starter opened once is a recent: listed once, as a recent.
+        remember_root(&prefs, r"C:\Users\me\Downloads");
+        let rows = plus_menu_rows(&prefs, &starters, home);
+        assert_eq!(
+            labels(&rows),
+            [CHOOSE_FOLDER, "Downloads", "a", "b", "Documents", "Desktop"]
+        );
+        assert_eq!(rows[1].0.hint, "");
+        // Pinning a starter makes it a pin.
+        let mut rows = rows;
+        toggle_pin_in_menu(&prefs, &mut rows, 4, &starters, home);
+        assert_eq!(
+            labels(&rows),
+            [
+                CHOOSE_FOLDER,
+                "Documents",
+                "Downloads",
+                "a",
+                "b",
+                "Desktop",
+                "me"
+            ]
+        );
+        assert!(rows[1].0.trailing_filled);
     }
 
     #[test]
@@ -325,22 +511,25 @@ mod tests {
         for p in [r"C:\x\c", r"C:\x\b", r"C:\x\a"] {
             remember_root(&prefs, p);
         }
-        let mut rows = plus_menu_rows(&prefs);
+        let mut rows = plus_menu_rows(&prefs, &[], "");
         assert_eq!(
             rows.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>(),
-            [r"C:\x\a", r"C:\x\b", r"C:\x\c"]
+            ["", r"C:\x\a", r"C:\x\b", r"C:\x\c"]
         );
-        toggle_pin_in_menu(&prefs, &mut rows, 2);
+        // The first row has no pin: toggling it does nothing.
+        toggle_pin_in_menu(&prefs, &mut rows, 0, &[], "");
+        assert!(pinned_roots(&prefs).is_empty());
+        toggle_pin_in_menu(&prefs, &mut rows, 3, &[], "");
         assert_eq!(
             rows.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>(),
-            [r"C:\x\c", r"C:\x\a", r"C:\x\b"]
+            ["", r"C:\x\c", r"C:\x\a", r"C:\x\b"]
         );
         assert_eq!(pinned_roots(&prefs), [r"C:\x\c"]);
-        assert_eq!(rows[0].0.trailing_tip, "Unpin");
-        assert_eq!(rows[1].0.trailing_tip, "Pin to this menu");
+        assert_eq!(rows[1].0.trailing_tip, "Unpin");
         assert_eq!(rows[2].0.trailing_tip, "Pin to this menu");
+        assert_eq!(rows[3].0.trailing_tip, "Pin to this menu");
         // And back: unpinning drops it to the recents' place.
-        toggle_pin_in_menu(&prefs, &mut rows, 0);
+        toggle_pin_in_menu(&prefs, &mut rows, 1, &[], "");
         assert!(pinned_roots(&prefs).is_empty());
     }
 
@@ -360,13 +549,34 @@ mod tests {
             GLYPH_HELP,
             GLYPH_PANEL,
             GLYPH_CHANGES,
-            GLYPH_TASKS,
+            GLYPH_BADGE_PHONE,
+            GLYPH_BADGE_GLOBE,
+            GLYPH_BADGE_BELL,
+            GLYPH_BADGE_MIC,
+            GLYPH_BADGE_EYE,
+            GLYPH_BADGE_MOON,
+            GLYPH_BADGE_LOCK,
+            GLYPH_BADGE_BOLT,
+            GLYPH_BADGE_STAR,
+            GLYPH_BADGE_PLUS,
+            GLYPH_BADGE_PIN,
         ] {
             let needle = format!("<string> {name}: \"{}\";", glyph_path(name));
             assert!(
                 slint.contains(&needle),
                 "glyph {name} differs from glyphs.slint"
             );
+        }
+    }
+
+    #[test]
+    fn every_built_in_badge_has_a_glyph_and_nothing_else_does() {
+        for icon in flare_ctl::decor::BADGE_ICONS {
+            let glyph = badge_glyph(icon).unwrap_or_else(|| panic!("{icon} has no glyph"));
+            assert!(!glyph_path(glyph).is_empty(), "{icon}");
+        }
+        for icon in ["check", "dot", "", "close", "menu-copy"] {
+            assert_eq!(badge_glyph(icon), None, "{icon:?}");
         }
     }
 
@@ -537,6 +747,9 @@ mod tests {
     #[test]
     fn labels_helper_reads_rows() {
         let prefs = PrefStore::memory();
-        assert_eq!(labels(&plus_menu_rows(&prefs)), ["No recent folders"]);
+        assert_eq!(
+            labels(&plus_menu_rows(&prefs, &[], "")),
+            [CHOOSE_FOLDER, "No recent folders"]
+        );
     }
 }

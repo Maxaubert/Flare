@@ -10,16 +10,20 @@
 //! 41 (the state is stored atomically, unknown values read as the default and are never written
 //! back, a failed store keeps the defaults).
 
+pub mod agent_cursor;
 pub mod agent_job;
 pub mod agent_web;
 pub mod app;
+pub mod audio;
 pub mod devpreview;
 pub mod kind;
 pub mod layout;
 pub mod modview;
+pub mod net;
 pub mod notify;
 pub mod overlay;
 pub mod preview;
+pub mod slot;
 pub mod state;
 pub mod store;
 pub mod web;

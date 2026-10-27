@@ -1,5 +1,7 @@
-//! A web backend with no browser, for the panel logic's tests: it keeps the views it was asked for,
-//! records every call and lets a test play the browser's part by sending events.
+//! A web backend with no browser, for the panel logic's tests: it keeps the views it was asked for (by
+//! slot), records every call and lets a test play the browser's part by sending events. A tab's panel is
+//! recorded as it always was (`Call::OpenApp`, `Call::Close` with the tab); a bar or a background page has calls
+//! of its own that name the slot.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -8,7 +10,8 @@ use std::rc::Rc;
 use flare_surfaces::app::AppSpec;
 use flare_surfaces::web::PhysRect;
 
-use crate::backend::{ControllerProbe, KeyFilter, Nav, Sink, WebBackend, WebEvent};
+use crate::backend::{ControllerProbe, KeyFilter, Nav, Sink, Slot, ViewSink, WebBackend, WebEvent};
+use crate::seal::{Seal, plugin_seal};
 
 /// One call the window made.
 #[derive(Clone, Debug, PartialEq)]
@@ -45,6 +48,18 @@ pub enum Call {
     Cdp(String, u64, String, String),
     /// A message posted to a mod's page: tab and JSON text.
     Post(String, String),
+    /// A view was asked for in a slot that is not a tab's panel (a bar, a background page).
+    OpenView {
+        slot: Slot,
+        app: AppSpec,
+        bounds: PhysRect,
+        visible: bool,
+    },
+    ViewBounds(Slot, PhysRect),
+    ViewVisible(Slot, bool),
+    CloseView(Slot),
+    /// A message posted to the page in a slot that is not a tab's panel.
+    PostView(Slot, String),
 }
 
 /// How a test plays the page's DevTools: method and params in, the answer out.
@@ -57,13 +72,15 @@ pub struct FakeView {
     pub app: Option<AppSpec>,
     pub bounds: PhysRect,
     pub visible: bool,
+    /// The walls of a mod's or plugin's view, as the host would apply them (None for anything else).
+    pub seal: Option<Seal>,
 }
 
 /// What a test sees of the fake from outside (the window owns the fake itself).
 #[derive(Default)]
 pub struct FakeState {
     pub calls: Vec<Call>,
-    pub views: BTreeMap<String, FakeView>,
+    pub views: BTreeMap<Slot, FakeView>,
     /// When set, `open` answers `Failed` instead of making a view.
     pub fail: Option<(String, bool)>,
     /// When set, a still answers with this PNG (else None: it could not be taken).
@@ -97,15 +114,30 @@ impl FakeWeb {
     pub fn calls(&self) -> Vec<Call> {
         self.state.borrow().calls.clone()
     }
+
+    /// The view of `slot`, as the fake holds it.
+    pub fn view(&self, slot: &Slot) -> Option<FakeView> {
+        self.state.borrow().views.get(slot).cloned()
+    }
+}
+
+/// The call that closes the view of `slot`: a tab's panel is recorded by its tab, as it always was.
+fn close_call(slot: &Slot) -> Call {
+    if slot.is_panel() {
+        Call::Close(slot.owner.clone())
+    } else {
+        Call::CloseView(slot.clone())
+    }
 }
 
 impl WebBackend for FakeWeb {
     fn open(&mut self, tab: &str, url: &str, bounds: PhysRect, visible: bool) {
+        let slot = Slot::panel(tab);
         let mut s = self.state.borrow_mut();
         // A view of the other kind is closed first, as the real host does.
-        if s.views.get(tab).is_some_and(|v| v.app.is_some()) {
+        if s.views.get(&slot).is_some_and(|v| v.app.is_some()) {
             s.calls.push(Call::Close(tab.into()));
-            s.views.remove(tab);
+            s.views.remove(&slot);
         }
         s.calls.push(Call::Open {
             tab: tab.into(),
@@ -123,60 +155,75 @@ impl WebBackend for FakeWeb {
             return;
         }
         s.views.insert(
-            tab.into(),
+            slot,
             FakeView {
                 url: url.into(),
                 app: None,
                 bounds,
                 visible,
+                seal: None,
             },
         );
         drop(s);
         (self.sink)(WebEvent::Ready { tab: tab.into() });
     }
 
-    fn open_app(&mut self, tab: &str, app: AppSpec, bounds: PhysRect, visible: bool) {
+    fn open_view(&mut self, slot: &Slot, app: AppSpec, bounds: PhysRect, visible: bool) {
+        let events = ViewSink::new(&self.sink, slot);
         let mut s = self.state.borrow_mut();
         // A view of anything else (another app, a page) is closed first, as the real host does.
         if s.views
-            .get(tab)
+            .get(slot)
             .is_some_and(|v| v.app.as_ref().map(|a| &a.host) != Some(&app.host))
         {
-            s.calls.push(Call::Close(tab.into()));
-            s.views.remove(tab);
+            s.calls.push(close_call(slot));
+            s.views.remove(slot);
         }
-        s.calls.push(Call::OpenApp {
-            tab: tab.into(),
-            app: app.clone(),
-            bounds,
-            visible,
+        s.calls.push(if slot.is_panel() {
+            Call::OpenApp {
+                tab: slot.owner.clone(),
+                app: app.clone(),
+                bounds,
+                visible,
+            }
+        } else {
+            Call::OpenView {
+                slot: slot.clone(),
+                app: app.clone(),
+                bounds,
+                visible,
+            }
         });
-        if let Some((why, missing_runtime)) = s.fail.clone() {
+        let refused = (!slot.is_panel() && app.module.is_none())
+            .then(|| ("only a plugin's page opens here".to_string(), false));
+        if let Some((why, missing_runtime)) = refused.or_else(|| s.fail.clone()) {
             drop(s);
-            (self.sink)(WebEvent::Failed {
-                tab: tab.into(),
+            events.send(|tab| WebEvent::Failed {
+                tab,
                 why,
                 missing_runtime,
             });
             return;
         }
+        let seal = app.module.is_some().then(|| plugin_seal(slot.kind));
         s.views.insert(
-            tab.into(),
+            slot.clone(),
             FakeView {
                 url: app.url.clone(),
                 app: Some(app),
                 bounds,
                 visible,
+                seal,
             },
         );
         drop(s);
-        (self.sink)(WebEvent::Ready { tab: tab.into() });
+        events.send(|tab| WebEvent::Ready { tab });
     }
 
     fn navigate(&mut self, tab: &str, url: &str) {
         let mut s = self.state.borrow_mut();
         s.calls.push(Call::Navigate(tab.into(), url.into()));
-        if let Some(v) = s.views.get_mut(tab) {
+        if let Some(v) = s.views.get_mut(&Slot::panel(tab)) {
             v.url = url.into();
         }
     }
@@ -188,10 +235,14 @@ impl WebBackend for FakeWeb {
             .push(Call::Go(tab.into(), nav));
     }
 
-    fn set_bounds(&mut self, tab: &str, bounds: PhysRect) {
+    fn set_view_bounds(&mut self, slot: &Slot, bounds: PhysRect) {
         let mut s = self.state.borrow_mut();
-        s.calls.push(Call::Bounds(tab.into(), bounds));
-        if let Some(v) = s.views.get_mut(tab) {
+        s.calls.push(if slot.is_panel() {
+            Call::Bounds(slot.owner.clone(), bounds)
+        } else {
+            Call::ViewBounds(slot.clone(), bounds)
+        });
+        if let Some(v) = s.views.get_mut(slot) {
             v.bounds = bounds;
         }
     }
@@ -200,10 +251,14 @@ impl WebBackend for FakeWeb {
         self.state.borrow_mut().calls.push(Call::ParentMoved);
     }
 
-    fn set_visible(&mut self, tab: &str, visible: bool) {
+    fn set_view_visible(&mut self, slot: &Slot, visible: bool) {
         let mut s = self.state.borrow_mut();
-        s.calls.push(Call::Visible(tab.into(), visible));
-        if let Some(v) = s.views.get_mut(tab) {
+        s.calls.push(if slot.is_panel() {
+            Call::Visible(slot.owner.clone(), visible)
+        } else {
+            Call::ViewVisible(slot.clone(), visible)
+        });
+        if let Some(v) = s.views.get_mut(slot) {
             v.visible = visible;
         }
     }
@@ -228,17 +283,17 @@ impl WebBackend for FakeWeb {
         self.state.borrow_mut().calls.push(Call::Focus(tab.into()));
     }
 
-    fn close(&mut self, tab: &str) {
+    fn close_view(&mut self, slot: &Slot) {
         let mut s = self.state.borrow_mut();
-        s.calls.push(Call::Close(tab.into()));
-        s.views.remove(tab);
+        s.calls.push(close_call(slot));
+        s.views.remove(slot);
     }
 
     fn close_all(&mut self) {
         let mut s = self.state.borrow_mut();
-        let tabs: Vec<String> = s.views.keys().cloned().collect();
-        for t in tabs {
-            s.calls.push(Call::Close(t));
+        let slots: Vec<Slot> = s.views.keys().cloned().collect();
+        for slot in slots {
+            s.calls.push(close_call(&slot));
         }
         s.calls.push(Call::CloseAll);
         s.views.clear();
@@ -265,7 +320,7 @@ impl WebBackend for FakeWeb {
             let mut s = self.state.borrow_mut();
             s.calls
                 .push(Call::Cdp(tab.into(), id, method.into(), params.into()));
-            if !s.views.contains_key(tab) {
+            if !s.views.contains_key(&Slot::panel(tab)) {
                 Some(Err("no web view".to_string()))
             } else {
                 s.cdp.as_mut().map(|f| f(method, params))
@@ -280,14 +335,18 @@ impl WebBackend for FakeWeb {
         }
     }
 
-    fn post_message(&mut self, tab: &str, json: &str) {
+    fn post_to_view(&mut self, slot: &Slot, json: &str) {
         let mut s = self.state.borrow_mut();
         // Only a mod's view has a bridge.
         if s.views
-            .get(tab)
+            .get(slot)
             .is_some_and(|v| v.app.as_ref().is_some_and(|a| a.module.is_some()))
         {
-            s.calls.push(Call::Post(tab.into(), json.into()));
+            s.calls.push(if slot.is_panel() {
+                Call::Post(slot.owner.clone(), json.into())
+            } else {
+                Call::PostView(slot.clone(), json.into())
+            });
         }
     }
 
@@ -305,9 +364,9 @@ impl WebBackend for FakeWeb {
             .push(Call::Script(tab.into(), id, js.into()));
     }
 
-    fn probe(&self, tab: &str) -> Option<ControllerProbe> {
+    fn probe_view(&self, slot: &Slot) -> Option<ControllerProbe> {
         let s = self.state.borrow();
-        s.views.get(tab).map(|v| ControllerProbe {
+        s.views.get(slot).map(|v| ControllerProbe {
             bounds: v.bounds,
             visible: v.visible,
             url: v.url.clone(),

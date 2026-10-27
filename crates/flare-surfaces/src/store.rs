@@ -304,16 +304,37 @@ mod tests {
         // it reads as an unknown kind and that one panel is dropped (rule 40), the tab and its neighbour stay.
         let raw = r#"{"version":1,"tabs":[
             {"cwd":"C:\\a","panel":{"kind":"board","target":"board","open":true}},
-            {"cwd":"C:\\b","panel":{"kind":"tasks","target":"tasks"}}]}"#;
+            {"cwd":"C:\\b","panel":{"kind":"changes","target":"changes"}}]}"#;
         let got = parse_panels(raw);
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].panel, None, "the board panel is gone");
         assert_eq!(
             got[1].panel.as_ref().map(|p| p.kind.clone()),
-            Some(PanelKind::Tasks)
+            Some(PanelKind::Changes)
         );
         // And it is never written back.
         assert!(!panels_json(&got).contains("board"));
+    }
+
+    #[test]
+    fn a_stored_tasks_panel_is_dropped_on_load() {
+        // The Tasks panel was removed (owner, 2026-10-26). A panels.json an older build wrote still has it: it
+        // reads as an unknown kind and that one panel is dropped (rule 40), the tab and its neighbour stay.
+        let raw = r#"{"version":1,"tabs":[
+            {"cwd":"C:\\a","panel":{"kind":"tasks","target":"tasks","open":true,"width":0.35}},
+            {"cwd":"C:\\b","panel":{"kind":"changes","target":"changes","open":false}}]}"#;
+        let got = parse_panels(raw);
+        assert_eq!(got.len(), 2, "both tabs are kept");
+        assert_eq!(got[0].cwd, r"C:\a");
+        assert_eq!(got[0].panel, None, "the tasks panel is gone");
+        assert_eq!(
+            got[1].panel.as_ref().map(|p| (p.kind.clone(), p.open)),
+            Some((PanelKind::Changes, false))
+        );
+        // It is never written back, and the file that is written loads cleanly.
+        let written = panels_json(&got);
+        assert!(!written.contains("tasks"), "{written}");
+        assert_eq!(parse_panels(&written), got);
     }
 
     #[test]

@@ -62,6 +62,12 @@ pub enum Control {
         text: String,
         capturing: bool,
     },
+    /// A one-line text field (plugins phase 7: the address to install a plugin from): what is typed, and the faint
+    /// words shown while it is empty.
+    Text {
+        value: String,
+        placeholder: String,
+    },
     /// The microphone picker (`""` is the system default) and its test meter.
     Mic {
         value: String,

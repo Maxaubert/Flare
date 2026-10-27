@@ -74,7 +74,7 @@ pub enum TermEvent {
     Cwd(String),
     /// OSC 52 write, at most `OSC52_MAX` chars.
     ClipboardWrite(String),
-    /// OSC 777 passed up raw (the agent code parses it).
+    /// OSC 777 or OSC 7501 passed up raw (the agent code parses it).
     Osc {
         ident: u32,
         data: String,
@@ -432,7 +432,7 @@ impl Emulator {
                             out.extend(rs.into_iter().map(|r| TermEvent::Reply(r.into_bytes())));
                         }
                     }
-                    777 => out.push(TermEvent::Osc {
+                    777 | 7501 => out.push(TermEvent::Osc {
                         ident,
                         data: data.to_string(),
                     }),
@@ -1925,6 +1925,41 @@ mod tests {
                 ident: 777,
                 data: "flare-agent;state=working".into()
             }]
+        );
+    }
+
+    #[test]
+    fn osc_7501_is_passed_up_raw_with_either_terminator_and_across_chunks() {
+        let mut e = Emulator::new(80, 24);
+        let report = |data: &str| TermEvent::Osc {
+            ident: 7501,
+            data: data.into(),
+        };
+        assert_eq!(
+            e.feed(b"\x1b]7501;state=working:app=agy\x1b\\"),
+            vec![report("state=working:app=agy")]
+        );
+        assert_eq!(
+            e.feed(b"\x1b]7501;state=idle\x07"),
+            vec![report("state=idle")]
+        );
+        assert!(e.feed(b"ab\x1b]7501;state=bl").is_empty());
+        assert_eq!(
+            e.feed(b"ocked:kind=question\x1b\\cd"),
+            vec![report("state=blocked:kind=question")]
+        );
+        // The feature query is passed up too (the agent code reads it as no report); nothing is answered.
+        let evs = e.feed(b"\x1b]7501;?\x1b\\");
+        assert!(replies(&evs).is_empty());
+    }
+
+    #[test]
+    fn a_7501_inside_another_osc_is_that_osc_text() {
+        let mut e = Emulator::new(80, 24);
+        let evs = e.feed(b"\x1b]0;x ]7501;state=working y\x07");
+        assert_eq!(
+            evs,
+            vec![TermEvent::Title("x ]7501;state=working y".into())]
         );
     }
 

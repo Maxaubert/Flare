@@ -5,12 +5,12 @@
 //! links (this app's, Surfaces stage 1), text, help.
 
 use super::{
-    BlockModel, Button, Control, Opt, PageEnv, PageModel, RowModel, SectionModel, opts, plain_row,
+    BlockModel, Button, Control, Opt, PageEnv, PageModel, RowModel, SectionModel, plain_row,
     section, switch_row,
 };
 use crate::agent_prefs::agent_guard;
 use crate::help_prefs::help_enabled;
-use crate::new_tab::{NewTabMode, new_tab_folder, new_tab_mode};
+use crate::new_tab::new_tab_folder;
 use crate::rows::{RowDef, row};
 use crate::term_prefs::{
     agent_eval, agent_keys, app_network, dev_preview, open_previews, right_click_reports,
@@ -47,22 +47,19 @@ fn shell_section(env: &PageEnv<'_>) -> Option<SectionModel> {
     Some(section("shell", vec![BlockModel::Row(row)]))
 }
 
-/// The Opening terminals section: the new-tab folder mode and its buttons, and the Explorer row.
+/// The Opening terminals section: the new-tab folder and its buttons, and the Explorer row. There is no
+/// ask mode any more (2026-10-27): the folder menu's "Choose a folder…" row does that job.
 fn opening_section(env: &PageEnv<'_>) -> SectionModel {
-    let mode = new_tab_mode(env.prefs);
     let folder = new_tab_folder(env.prefs);
-    let folder_mode = mode == NewTabMode::Folder;
-    let has_folder = folder_mode && !folder.is_empty();
+    let has_folder = !folder.is_empty();
 
     let newtab = def("newtab-mode");
-    let sub = match mode {
-        NewTabMode::Ask => "Asks for a folder each time.".to_string(),
-        NewTabMode::Folder if has_folder => "Opens in the folder you chose.".to_string(),
-        NewTabMode::Folder => newtab.sub.to_string(),
+    let sub = if has_folder {
+        "Opens in the folder you chose.".to_string()
+    } else {
+        newtab.sub.to_string()
     };
-    let row_tip = if !folder_mode {
-        String::new()
-    } else if has_folder {
+    let row_tip = if has_folder {
         folder.clone()
     } else {
         env.home.clone()
@@ -76,32 +73,17 @@ fn opening_section(env: &PageEnv<'_>) -> SectionModel {
             off: false,
         });
     }
-    if folder_mode {
-        buttons.push(Button {
-            id: "choose-folder",
-            label: "Choose folder\u{2026}".to_string(),
-            alt: None,
-            off: false,
-        });
-    }
-    let mode_word = match mode {
-        NewTabMode::Folder => "folder",
-        NewTabMode::Ask => "ask",
-    };
+    buttons.push(Button {
+        id: "choose-folder",
+        label: "Choose folder\u{2026}".to_string(),
+        alt: None,
+        off: false,
+    });
     let newtab_row = RowModel {
         sub,
         row_tip,
         buttons,
-        ..plain_row(
-            newtab,
-            Control::Segmented {
-                value: mode_word.to_string(),
-                options: opts(&[
-                    ("folder", "Open in a folder"),
-                    ("ask", "Ask where each time"),
-                ]),
-            },
-        )
+        ..plain_row(newtab, Control::None)
     };
 
     // The Explorer menu row reads the registry's state: while Windows is being asked it is off.
@@ -235,7 +217,7 @@ mod tests {
     use crate::help_prefs::set_help_enabled;
     use crate::kv::PrefStore;
     use crate::look::LookStore;
-    use crate::new_tab::{NewTabMode, set_new_tab_mode};
+    use crate::new_tab::set_new_tab_folder;
     use crate::page::all_row_ids;
     use crate::page::{DiagInfo, GlassSupport, PageEnv, ThemeColours};
     use crate::term_prefs::{save_shell_id, set_agent_keys};
@@ -462,38 +444,29 @@ mod tests {
     }
 
     #[test]
-    fn the_new_tab_row_is_a_two_way_segment_with_its_words() {
+    fn the_new_tab_row_has_no_mode_to_pick() {
         let prefs = PrefStore::memory();
         let look = LookStore::new(prefs.clone());
         let face: &dyn Fn(&str) -> String = &face_of_test;
         let e = env(&prefs, &look, face);
-        let page = build_terminal(&e);
-        let Control::Segmented { value, options } = &the_row(&page, "newtab-mode").control else {
-            panic!("the new tab row is a segment");
-        };
-        assert_eq!(value, "folder");
-        let pairs: Vec<(&str, &str)> = options
-            .iter()
-            .map(|o| (o.id.as_str(), o.name.as_str()))
-            .collect();
-        assert_eq!(
-            pairs,
-            [
-                ("folder", "Open in a folder"),
-                ("ask", "Ask where each time"),
-            ]
-        );
+        // A profile from before 2026-10-27 may still say "ask": the row reads as the folder row all the same.
+        prefs.set("flare.newtab.mode", "ask");
+        let r = the_row(&build_terminal(&e), "newtab-mode").clone();
+        assert_eq!(r.control, Control::None);
+        assert_eq!(r.sub, "Opens in your user folder.");
+        let ids: Vec<&str> = r.buttons.iter().map(|b| b.id).collect();
+        assert_eq!(ids, vec!["choose-folder"]);
     }
 
     #[test]
-    fn the_new_tab_row_says_what_the_mode_does_and_offers_its_buttons() {
+    fn the_new_tab_row_says_where_tabs_open_and_offers_its_buttons() {
         let prefs = PrefStore::memory();
         let look = LookStore::new(prefs.clone());
         let face: &dyn Fn(&str) -> String = &face_of_test;
         let mut e = env(&prefs, &look, face);
         e.home = "C:/Users/Admin".to_string();
 
-        // Fresh: folder mode, no folder chosen.
+        // Fresh: no folder chosen.
         let page = build_terminal(&e);
         let r = the_row(&page, "newtab-mode");
         assert_eq!(r.sub, "Opens in your user folder.");
@@ -502,8 +475,8 @@ mod tests {
         assert_eq!(r.buttons[0].label, "Choose folder\u{2026}");
         assert_eq!(r.row_tip, "C:/Users/Admin");
 
-        // Folder mode with a folder: both buttons, the chosen sub, the folder as the tip.
-        set_new_tab_mode(&prefs, NewTabMode::Folder, Some("D:/work"));
+        // A folder: both buttons, the chosen sub, the folder as the tip.
+        set_new_tab_folder(&prefs, "D:/work");
         let page = build_terminal(&e);
         let r = the_row(&page, "newtab-mode");
         assert_eq!(r.sub, "Opens in the folder you chose.");
@@ -512,16 +485,8 @@ mod tests {
         assert_eq!(r.buttons[0].label, "Use my user folder");
         assert_eq!(r.row_tip, "D:/work");
 
-        // Ask: its own sub, no buttons, no tip.
-        set_new_tab_mode(&prefs, NewTabMode::Ask, None);
-        let page = build_terminal(&e);
-        let r = the_row(&page, "newtab-mode");
-        assert_eq!(r.sub, "Asks for a folder each time.");
-        assert!(r.buttons.is_empty());
-        assert_eq!(r.row_tip, "");
-
-        // Folder mode with no home known: no tip.
-        set_new_tab_mode(&prefs, NewTabMode::Folder, Some(""));
+        // No folder and no home known: no tip.
+        set_new_tab_folder(&prefs, "");
         e.home = String::new();
         let page = build_terminal(&e);
         assert_eq!(the_row(&page, "newtab-mode").row_tip, "");

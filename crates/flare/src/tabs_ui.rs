@@ -7,9 +7,11 @@
 
 use crate::mark_colours::{UiMarks, colour_of};
 use flare_agent::icon::{IconKind, icon_kind};
-use flare_agent::kinds::DetectedAgent;
+use flare_agent::icon_motion::MotionPicks;
+use flare_agent::kinds::{AgentKind, DetectedAgent};
 use flare_agent::tab_look::{Switches, TabSets, tab_look, tab_title};
 use flare_agent::tab_mark::{MarkColour, MarkPlace, MarkState};
+use flare_tabs::decor::{Badge, Decors, MAX_DRAWN, Source, progress_code, room_for};
 use flare_tabs::model::TabModel;
 use flare_tabs::sidebar_rows::{find_keeps, folder_line};
 use flare_tabs::strip_layout::{layout_strip_with, room_for_plan};
@@ -52,8 +54,10 @@ pub struct RowData {
     pub carried: bool,
     /// What this tab needs from you, if anything (the +N list sorts by it, the dots show it).
     pub need: Option<MarkRole>,
-    /// 0 shell, 1 claude, 2 codex (the tab icon).
+    /// 0 shell, 1 claude, 2 codex, 3 agy (the tab icon).
     pub agent: i32,
+    /// How the icon moves (`IconMotion::code`): a working agent's pick ([`wear_motions`] fills it), else 0 still.
+    pub motion: i32,
     /// 0 none, 1 working, 2 question, 3 finished, 4 failed.
     pub mark_state: i32,
     /// 0 none, 1 ring, 2 line, 3 run.
@@ -62,6 +66,38 @@ pub struct RowData {
     pub mark_color: slint::Color,
     /// A finished Bar line wears the flowing rainbow.
     pub mark_rainbow: bool,
+    /// The badges and progress the tab draws ([`decorate`] fills it; none until then).
+    pub chips: RowChips,
+    /// The plugins' hover buttons the tab draws while hovered (plugins phase 4; none until the window sets them),
+    /// at most [`crate::plugin_ui::HOVER_MAX`].
+    pub hover: Vec<crate::plugin_ui::Button>,
+}
+
+/// What a row carries of its decor, as the flat fields of the Slint row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowChips {
+    /// The badges in drawing order: a glyph path ("" for none) and its tone (0 ink, 1 accent, 2 muted). A plugin's
+    /// own icon is its path from `contributes.icons`, drawn in the chip's one colour like a built-in.
+    pub chip1: (String, i32),
+    pub chip2: (String, i32),
+    /// How many badges there are (0 to 2; with a progress, at most 2 chips in all).
+    pub count: i32,
+    /// -1 none, -2 an unknown amount, else 0 to 1.
+    pub prog: f32,
+    /// How many chips the strip has room for on this tab (0 to 2).
+    pub room: i32,
+}
+
+impl Default for RowChips {
+    fn default() -> Self {
+        Self {
+            chip1: (String::new(), 0),
+            chip2: (String::new(), 0),
+            count: 0,
+            prog: -1.0,
+            room: 0,
+        }
+    }
 }
 
 /// One dot on the +N button: the hidden tab's need, wearing the look's colour for it (a state
@@ -233,8 +269,10 @@ pub fn build_view(inp: &ViewInput) -> View {
             agent: match icon_kind(tab_agent, settings) {
                 IconKind::Claude => 1,
                 IconKind::Codex => 2,
+                IconKind::Agy => 3,
                 IconKind::Shell | IconKind::Settings => 0,
             },
+            motion: 0,
             mark_state: look.state.map_or(0, state_int),
             mark_kind: match look.mark.place {
                 MarkPlace::None => 0,
@@ -248,6 +286,8 @@ pub fn build_view(inp: &ViewInput) -> View {
                     colour_of(inp.agent.marks, s)
                 }),
             mark_rainbow: look.mark.colour == Some(MarkColour::Rainbow),
+            chips: RowChips::default(),
+            hover: Vec::new(),
         });
     }
 
@@ -290,6 +330,75 @@ pub fn build_view(inp: &ViewInput) -> View {
     }
 }
 
+/// Puts each tab's badges and progress on its row: the chips it draws (the progress first, then one badge per
+/// source, at most two), how many of them the strip has room for at the tab's width, and one tooltip line for every
+/// piece, each naming who set it ("Claude" or "Codex" for the tab's agent, "Agent" for any other). A tab with no decor keeps its row.
+pub fn decorate(rows: &mut [RowData], decor: &Decors, scale: f64) {
+    decorate_with(rows, decor, scale, &|_, _| None, &|id| id.to_string());
+}
+
+/// [`decorate`], with what the plugins say: the path of a plugin's own icon (`icon_of(plugin, name)`, from its
+/// `contributes.icons`) and the name its tooltip lines start with (`name_of(plugin)`).
+pub fn decorate_with(
+    rows: &mut [RowData],
+    decor: &Decors,
+    scale: f64,
+    icon_of: &dyn Fn(&str, &str) -> Option<String>,
+    name_of: &dyn Fn(&str) -> String,
+) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    for r in rows.iter_mut() {
+        let Some(d) = decor.get(&r.id).filter(|_| !r.settings) else {
+            continue;
+        };
+        let drawn = d.drawn(MAX_DRAWN);
+        let glyph = |b: Option<&&Badge>| {
+            b.map_or((String::new(), 0), |b| {
+                let path = match (crate::menus_ui::badge_glyph(&b.icon), &b.source) {
+                    (Some(g), _) => crate::menus_ui::glyph_path(g).to_string(),
+                    (None, Source::Plugin(id)) => icon_of(id, &b.icon).unwrap_or_default(),
+                    (None, Source::Agent) => String::new(),
+                };
+                (path, b.tone.code())
+            })
+        };
+        r.chips = RowChips {
+            chip1: glyph(drawn.badges.first()),
+            chip2: glyph(drawn.badges.get(1)),
+            count: drawn.badges.len() as i32,
+            prog: progress_code(drawn.progress),
+            room: room_for(f64::from(r.w) / scale, r.mode == 0) as i32,
+        };
+        // Named by the agent the row shows; another agent (or none yet) is no "Claude".
+        let agent = match r.agent {
+            1 => "Claude",
+            2 => "Codex",
+            3 => "Antigravity",
+            _ => "Agent",
+        };
+        let lines = d.tip_lines(|s| match s {
+            Source::Agent => agent.to_string(),
+            Source::Plugin(id) => name_of(id),
+        });
+        if !lines.is_empty() {
+            let mut tip = if r.tip.is_empty() {
+                r.label.clone()
+            } else {
+                r.tip.clone()
+            };
+            for l in lines {
+                tip.push('\n');
+                tip.push_str(&l);
+            }
+            r.tip = tip;
+        }
+    }
+}
+
 /// 1 working, 2 question, 3 finished, 4 failed.
 fn state_int(s: MarkState) -> i32 {
     match s {
@@ -297,6 +406,30 @@ fn state_int(s: MarkState) -> i32 {
         MarkState::Question => 2,
         MarkState::Done => 3,
         MarkState::Failed => 4,
+    }
+}
+
+/// The agent a row's icon int names (the inverse of the match in [`build_view`]).
+fn agent_of_icon(agent: i32) -> Option<AgentKind> {
+    match agent {
+        1 => Some(AgentKind::Claude),
+        2 => Some(AgentKind::Codex),
+        3 => Some(AgentKind::Agy),
+        _ => None,
+    }
+}
+
+/// The agents' icon motions (owner decision 2026-10-26): the tab of an agent that is working (its Working mark is
+/// on) wears the motion a plugin picked for that agent; every other row stands still. The mark clock runs while a
+/// tab works, so nothing new ticks for it.
+pub fn wear_motions(rows: &mut [RowData], picks: &MotionPicks) {
+    for r in rows {
+        r.motion = match agent_of_icon(r.agent) {
+            Some(kind) if r.mark_state == state_int(MarkState::Working) && !r.settings => {
+                picks.of(kind).code()
+            }
+            _ => 0,
+        };
     }
 }
 
@@ -321,8 +454,32 @@ pub fn to_slint_row(row: &RowData) -> crate::TabRow {
         mark_state: row.mark_state,
         mark_rainbow: row.mark_rainbow,
         agent: row.agent,
+        motion: row.motion,
         failed_tip: "".into(),
+        chip1_cmd: row.chips.chip1.0.as_str().into(),
+        chip1_tone: row.chips.chip1.1,
+        chip2_cmd: row.chips.chip2.0.as_str().into(),
+        chip2_tone: row.chips.chip2.1,
+        chip_count: row.chips.count,
+        prog: row.chips.prog,
+        chip_room: row.chips.room,
+        hov_count: row.hover.len().min(crate::plugin_ui::HOVER_MAX) as i32,
+        hov1_cmd: hover_of(row, 0).map_or("", |b| b.cmd.as_str()).into(),
+        hov1_letter: hover_of(row, 0).map_or("", |b| b.letter.as_str()).into(),
+        hov1_tip: hover_of(row, 0).map_or("", |b| b.tip.as_str()).into(),
+        hov1_on: hover_of(row, 0).is_some_and(|b| b.checked),
+        hov1_off: hover_of(row, 0).is_some_and(|b| !b.enabled),
+        hov2_cmd: hover_of(row, 1).map_or("", |b| b.cmd.as_str()).into(),
+        hov2_letter: hover_of(row, 1).map_or("", |b| b.letter.as_str()).into(),
+        hov2_tip: hover_of(row, 1).map_or("", |b| b.tip.as_str()).into(),
+        hov2_on: hover_of(row, 1).is_some_and(|b| b.checked),
+        hov2_off: hover_of(row, 1).is_some_and(|b| !b.enabled),
     }
+}
+
+/// The row's hover button at place `i`, if it has one.
+fn hover_of(row: &RowData, i: usize) -> Option<&crate::plugin_ui::Button> {
+    row.hover.get(i).filter(|_| i < crate::plugin_ui::HOVER_MAX)
 }
 
 /// Updates the ONE `VecModel` that `tab-rows` was given at startup IN PLACE (a new model would
@@ -1008,11 +1165,65 @@ mod tests {
             carried: false,
             need: None,
             agent: 0,
+            motion: 0,
             mark_state: 0,
             mark_kind: 0,
             mark_color: slint::Color::from_argb_u8(0, 0, 0, 0),
             mark_rainbow: false,
+            chips: RowChips::default(),
+            hover: Vec::new(),
         }
+    }
+
+    /// Owner decision 2026-10-26: a working agent's tab wears its agent's pick; a tab that does not work, a shell, the
+    /// Settings tab and an agent nobody picked for stand still.
+    #[test]
+    fn only_a_working_agents_tab_wears_its_agents_motion() {
+        use flare_agent::icon_motion::IconMotion;
+        let mut picks = MotionPicks::new();
+        picks.set(AgentKind::Claude, "p", IconMotion::HopBlink);
+        picks.set(AgentKind::Agy, "p", IconMotion::RainbowFlow);
+        let with = |agent: i32, state: i32| {
+            let mut r = row("t", 0.0);
+            r.agent = agent;
+            r.mark_state = state;
+            r.motion = 9;
+            r
+        };
+        let mut rows = vec![
+            with(1, 1),
+            with(1, 0),
+            with(1, 2),
+            with(1, 3),
+            with(2, 1),
+            with(3, 1),
+            with(0, 1),
+        ];
+        rows.push({
+            let mut s = with(1, 1);
+            s.settings = true;
+            s
+        });
+        wear_motions(&mut rows, &picks);
+        let got: Vec<i32> = rows.iter().map(|r| r.motion).collect();
+        assert_eq!(
+            got,
+            [
+                IconMotion::HopBlink.code(),
+                0,
+                0,
+                0,
+                0,
+                IconMotion::RainbowFlow.code(),
+                0,
+                0
+            ]
+        );
+        assert_eq!(to_slint_row(&rows[0]).motion, IconMotion::HopBlink.code());
+        // The pick goes: the tab stands still at the next refresh.
+        picks.clear_plugin("p");
+        wear_motions(&mut rows, &picks);
+        assert!(rows.iter().all(|r| r.motion == 0));
     }
 
     #[test]
@@ -1135,6 +1346,176 @@ mod tests {
         assert_eq!(r.mark_state, 0);
     }
 
+    fn decor_of(f: impl FnOnce(&mut Decors)) -> Decors {
+        let mut d = Decors::default();
+        f(&mut d);
+        d
+    }
+
+    #[test]
+    fn a_decorated_row_carries_its_chips_room_and_tooltip_lines() {
+        use flare_tabs::decor::Tone;
+        let m = three();
+        let mut v = view_of(&m, 1000, 1.0, "");
+        let id = v.rows[0].id.clone();
+        let decor = decor_of(|d| {
+            d.set_badge(
+                &id,
+                Source::Agent,
+                "call-me",
+                "phone",
+                "Call-me is on",
+                Tone::Accent,
+            )
+            .unwrap();
+            d.set_progress(&id, Source::Agent, "progress", Some(0.5), "Build");
+        });
+        // The row shows Claude, so the agent's lines say "Claude".
+        v.rows[0].agent = 1;
+        decorate(&mut v.rows, &decor, 1.0);
+        let r = &v.rows[0];
+        assert_eq!(r.chips.prog, 0.5);
+        assert_eq!(r.chips.count, 1);
+        assert_eq!(
+            (r.chips.chip1.0.as_str(), r.chips.chip1.1),
+            (crate::menus_ui::glyph_path("badge-phone"), 1)
+        );
+        assert_eq!((r.chips.chip2.0.as_str(), r.chips.chip2.1), ("", 0));
+        assert_eq!(
+            r.tip,
+            "C:\\w\\api\nClaude: Build 50%\nClaude: Call-me is on"
+        );
+        // The strip has room for two on a 150 px tab and the others are untouched.
+        assert!(r.w >= 150, "{}", r.w);
+        assert_eq!(r.chips.room, 2);
+        assert_eq!(v.rows[1].chips, RowChips::default());
+        assert_eq!(v.rows[1].tip, "C:\\w\\web");
+        // The Slint row carries the same, flat.
+        let s = to_slint_row(r);
+        assert_eq!(
+            (s.chip_count, s.prog, s.chip_room, s.chip1_tone),
+            (1, 0.5, 2, 1)
+        );
+        assert_eq!(
+            s.chip1_cmd.as_str(),
+            crate::menus_ui::glyph_path("badge-phone")
+        );
+        // A plain row says "no progress".
+        assert_eq!(to_slint_row(&v.rows[1]).prog, -1.0);
+    }
+
+    /// A plugin's badge draws its own icon's path in the chip and its tooltip line starts with the plugin's name.
+    #[test]
+    fn a_plugins_badge_draws_its_own_icon_and_says_its_name() {
+        let m = three();
+        let mut v = view_of(&m, 1000, 1.0, "");
+        let id = v.rows[0].id.clone();
+        let p = || Source::Plugin("badger".to_string());
+        let decor = decor_of(|d| {
+            d.set_badge(
+                &id,
+                p(),
+                "seen",
+                "tick",
+                "Seen",
+                flare_tabs::decor::Tone::Ink,
+            )
+            .unwrap();
+        });
+        decorate_with(
+            &mut v.rows,
+            &decor,
+            1.0,
+            &|plugin, icon| (plugin == "badger" && icon == "tick").then(|| "M4 12l5 5L20 6".into()),
+            &|plugin| format!("The {plugin}"),
+        );
+        let r = &v.rows[0];
+        assert_eq!(r.chips.chip1.0, "M4 12l5 5L20 6");
+        assert!(r.tip.ends_with("\nThe badger: Seen"), "{}", r.tip);
+        // An icon nobody declares draws nothing, and without the plugins' words the id names it.
+        let decor = decor_of(|d| {
+            d.set_badge(&id, p(), "seen", "gone", "", flare_tabs::decor::Tone::Ink)
+                .unwrap();
+        });
+        let mut v = view_of(&m, 1000, 1.0, "");
+        decorate(&mut v.rows, &decor, 1.0);
+        assert_eq!(v.rows[0].chips.chip1.0, "");
+        assert!(
+            v.rows[0].tip.ends_with("\nbadger: gone"),
+            "{}",
+            v.rows[0].tip
+        );
+    }
+
+    /// A row that shows no Claude (another agent, say) never names Claude in its tooltip.
+    #[test]
+    fn a_row_with_no_claude_names_no_claude_in_the_tooltip() {
+        let m = three();
+        let mut v = view_of(&m, 1000, 1.0, "");
+        v.rows[0].agent = 0;
+        let id = v.rows[0].id.clone();
+        let decor = decor_of(|d| {
+            d.set_badge(
+                &id,
+                Source::Agent,
+                "k",
+                "star",
+                "Hi",
+                flare_tabs::decor::Tone::Ink,
+            )
+            .unwrap();
+        });
+        decorate(&mut v.rows, &decor, 1.0);
+        let tip = &v.rows[0].tip;
+        assert!(tip.ends_with("\nAgent: Hi"), "{tip}");
+        assert!(!tip.contains("Claude"), "{tip}");
+    }
+
+    #[test]
+    fn the_room_follows_the_tab_in_css_pixels_and_an_icon_tab_has_none() {
+        let m = three();
+        let mut v = view_of(&m, 1000, 1.0, "");
+        let decor = decor_of(|d| {
+            for r in &v.rows {
+                d.set_progress(&r.id, Source::Agent, "progress", None, "");
+            }
+        });
+        v.rows[0].w = 120;
+        v.rows[1].w = 300;
+        v.rows[2].mode = 1;
+        decorate(&mut v.rows, &decor, 2.0);
+        // 120 device px at 2x is 60 css px: no room; 300 is 150: two.
+        assert_eq!(v.rows[0].chips.room, 0);
+        assert_eq!(v.rows[1].chips.room, 2);
+        assert_eq!(v.rows[2].chips.room, 0);
+        assert!(v.rows.iter().all(|r| r.chips.prog == -2.0));
+    }
+
+    #[test]
+    fn a_codex_tab_names_its_agent_in_the_tooltip() {
+        let m = three();
+        let mut v = view_of(&m, 1000, 1.0, "");
+        v.rows[0].agent = 2;
+        let id = v.rows[0].id.clone();
+        let decor = decor_of(|d| {
+            d.set_badge(
+                &id,
+                Source::Agent,
+                "k",
+                "star",
+                "",
+                flare_tabs::decor::Tone::Ink,
+            )
+            .unwrap();
+        });
+        decorate(&mut v.rows, &decor, 1.0);
+        assert!(
+            v.rows[0].tip.ends_with("\nCodex: star"),
+            "{}",
+            v.rows[0].tip
+        );
+    }
+
     #[test]
     fn a_failed_tab_tooltip_carries_the_kind() {
         let (m, id, mut w) = one_tab_world("failed");
@@ -1173,6 +1554,8 @@ mod tests {
         assert_eq!(agent_of(&w), 1);
         w.kinds.insert(id.clone(), DetectedAgent::Codex);
         assert_eq!(agent_of(&w), 2);
+        w.kinds.insert(id.clone(), DetectedAgent::Agy);
+        assert_eq!(agent_of(&w), 3);
         w.kinds.insert(id, DetectedAgent::Other);
         assert_eq!(agent_of(&w), 0);
         let mut m = three();

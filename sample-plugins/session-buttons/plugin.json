@@ -1,0 +1,23 @@
+{
+  "id": "session-buttons",
+  "name": "Session buttons",
+  "version": "0.1.0",
+  "protocol": 2,
+  "description": "Buttons that type into a session for you: Compact sends /compact, and Tell it to carry on sends one preset line. On a tab's hover button, in its menu and in a small bar under the terminal. It types into your terminals, which is full control; it types only into tabs where Claude runs.",
+  "author": "Flare",
+  "homepage": "https://github.com/Maxaubert/Flare/tree/main/sample-plugins/session-buttons",
+  "permissions": ["tabs", "actions", "input", "bar"],
+  "background": "background.html",
+  "bar": { "entry": "bar.html", "height": 32 },
+  "contributes": {
+    "actions": [
+      { "key": "compact", "title": "Compact", "icon": "squeeze", "where": ["tab-hover", "tab-menu", "session-bar"] },
+      { "key": "tell", "title": "Tell it to carry on", "icon": "say", "where": ["tab-menu", "session-bar"] },
+      { "key": "bar", "title": "Show the buttons bar", "where": ["tab-menu"] }
+    ],
+    "icons": {
+      "squeeze": "M4 4L10 10M10 5V10H5M20 20L14 14M14 19V14H19",
+      "say": "M4 5H20V16H11L7 20V16H4Z"
+    }
+  }
+}

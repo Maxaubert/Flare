@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'">
+<title>Look</title>
+</head>
+<body>
+<script>
+// The background page of the look sample: it runs, hidden, while the plugin is on, and changes how tabs look with
+// the decor methods (`decorate`). With `tabs` it hears every tab's agent and may name any tab.
+// - A star badge marks a tab whose agent stopped working while another tab was in front; it goes when you bring that
+//   tab to the front.
+// - Claude's set_steps tool puts a weighted progress chip on its tab: the share of the work that is done, so 9 of 10
+//   steps done reads 50 % when the last step is half the work.
+(function () {
+  var flare = window.flare;
+  if (!flare) { return; }
+  var LABEL_MAX = 80;
+  var DONE_LINGER_MS = 5000;
+  var states = {};   // tab id: the agent's last state
+  var active = null; // the tab in front
+  var starred = {};  // tab id: true while it has the star
+  var finishing = {}; // tab id: the timer that takes a finished progress off
+
+  // One clean line: no control or hidden formatting characters, at most `max` characters.
+  function clean(s, max) {
+    s = String(s == null ? '' : s)
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+      .replace(/[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return s.length > max ? s.slice(0, max - 1) + '…' : s;
+  }
+
+  // The weighted progress of a list of steps, pure: value = the weights done / all the weights. A step without a
+  // weight counts 1. Throws a sentence for a list Flare should not draw.
+  function weighted(steps) {
+    if (!Array.isArray(steps)) { throw 'steps must be a list'; }
+    if (steps.length > 100) { throw 'at most 100 steps'; }
+    var total = 0, doneWeight = 0, doneCount = 0, next = null;
+    steps.forEach(function (s, i) {
+      if (!s || typeof s !== 'object') { throw 'step ' + i + ' must be an object'; }
+      var w = s.weight === undefined ? 1 : s.weight;
+      if (typeof w !== 'number' || !isFinite(w) || w <= 0 || w > 1000) {
+        throw 'step ' + i + ': weight must be a number above 0 and at most 1000';
+      }
+      total += w;
+      if (s.done === true) {
+        doneWeight += w;
+        doneCount += 1;
+      } else if (next === null) {
+        next = clean(s.name, 40);
+      }
+    });
+    return {
+      value: total > 0 ? doneWeight / total : 0,
+      done: doneCount,
+      count: steps.length,
+      next: next
+    };
+  }
+
+  function star(tab, on) {
+    if (on && !starred[tab]) {
+      starred[tab] = true;
+      flare.call('tabs.badge.set', { tab: tab, key: 'finished', icon: 'star', tone: 'accent',
+        tip: 'Finished while you were away' }).catch(function () { delete starred[tab]; });
+    } else if (!on && starred[tab]) {
+      delete starred[tab];
+      flare.call('tabs.badge.clear', { tab: tab, key: 'finished' }).catch(function () {});
+    }
+  }
+
+  function showSteps(tab, p) {
+    clearTimeout(finishing[tab]);
+    delete finishing[tab];
+    if (p.count === 0) {
+      return flare.call('tabs.progress.clear', { tab: tab, key: 'steps' });
+    }
+    var label = p.done + ' of ' + p.count + ' steps, ' + Math.round(p.value * 100) + ' % of the work' +
+      (p.next ? ': ' + p.next : '');
+    return flare.call('tabs.progress.set', { tab: tab, key: 'steps', value: p.value, label: clean(label, LABEL_MAX) })
+      .then(function () {
+        // A finished job keeps its full chip for a moment, then it goes.
+        if (p.done === p.count) {
+          finishing[tab] = setTimeout(function () {
+            delete finishing[tab];
+            flare.call('tabs.progress.clear', { tab: tab, key: 'steps' }).catch(function () {});
+          }, DONE_LINGER_MS);
+        }
+      });
+  }
+
+  flare.on('tool', function (call) {
+    if (call.tool !== 'set_steps') {
+      flare.respond(call.callId, null, 'no tool called ' + call.tool);
+      return;
+    }
+    if (!call.tab) { flare.respond(call.callId, null, 'the call came from no tab'); return; }
+    var p;
+    try { p = weighted(call.input && call.input.steps); } catch (why) {
+      flare.respond(call.callId, null, String(why));
+      return;
+    }
+    showSteps(call.tab, p).then(function () {
+      flare.respond(call.callId, { value: Math.round(p.value * 1000) / 1000 });
+    }, function (e) {
+      flare.respond(call.callId, null, 'Flare refused it: ' + ((e && e.message) || 'unknown'));
+    });
+  });
+
+  // An agent that stops working while its tab is behind earns the star.
+  flare.on('agent', function (e) {
+    if (!e || typeof e.tab !== 'string') { return; }
+    var was = states[e.tab];
+    states[e.tab] = e.state;
+    if (was === 'working' && e.state !== 'working' && e.tab !== active) { star(e.tab, true); }
+    if (e.state === 'working') { star(e.tab, false); }
+  });
+
+  // Going back to the tab takes the star off; a closed tab takes its decor with it.
+  flare.on('tabs', function (e) {
+    if (!e || !e.tab) { return; }
+    var id = e.tab.id;
+    if (e.kind === 'closed') {
+      delete states[id];
+      delete starred[id];
+      clearTimeout(finishing[id]);
+      delete finishing[id];
+    } else if (e.kind === 'focused') {
+      active = id;
+      star(id, false);
+    }
+  });
+
+  flare.call('tabs.list', {}).then(function (r) {
+    (r && r.tabs ? r.tabs : []).forEach(function (t) {
+      states[t.id] = t.state;
+      if (t.active) { active = t.id; }
+    });
+  }).catch(function () {});
+})();
+</script>
+</body>
+</html>

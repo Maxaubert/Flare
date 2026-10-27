@@ -152,11 +152,138 @@ fn path_schema(what: &str) -> Value {
     })
 }
 
-/// The tools of v1: the ones that show things, then the browser's.
+/// The tools of v1: the ones that show things, then the browser's, then the tab's badges and progress.
 pub fn tools() -> Vec<ToolDef> {
     let mut all = show_tools();
     all.extend(browser::tools());
+    all.extend(decor_tools());
     all
+}
+
+/// The agent's own badges and progress on its tab (plugins phase 1). Flare checks every value again.
+fn decor_tools() -> Vec<ToolDef> {
+    let key = json!({"type": "string", "description": "A short name for the badge: 1 to 24 of a-z, 0-9 and - (for example \"call-me\"). Setting the same key again replaces that badge."});
+    vec![
+        ToolDef {
+            name: "set_tab_badge",
+            description: "Put a small badge on this terminal tab in Flare (beside the tab's name in the tab strip and the sidebar), so the user sees a state at a glance: for example a phone while call-me is on, or a globe while you use a web page. The tip shows in the tab's tooltip. Setting the same key replaces the badge; clear_tab_badge removes it. At most 4 badges; they go when this session ends, the agent leaves the tab or the tab closes.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "key": key,
+                    "icon": {"type": "string", "enum": flare_ctl::decor::BADGE_ICONS, "description": "The badge's picture."},
+                    "tip": {"type": "string", "description": "A short line for the tab's tooltip (at most 80 characters)."}
+                },
+                "required": ["key", "icon"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDef {
+            name: "clear_tab_badge",
+            description: "Remove a badge set_tab_badge put on this terminal tab in Flare.",
+            schema: json!({
+                "type": "object",
+                "properties": {"key": key},
+                "required": ["key"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDef {
+            name: "set_tab_progress",
+            description: "Show how far a long piece of work has come on this terminal tab in Flare: a small bar beside the tab's name, filled from 0 to 1, or a dotted \"under way\" chip when value is left out. Call it again to move the bar; clear_tab_progress removes it. The label shows in the tab's tooltip. It goes when this session ends, the agent leaves the tab or the tab closes.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "value": {"type": "number", "minimum": 0, "maximum": 1, "description": "How much is done, 0 to 1. Leave it out when the amount is not known."},
+                    "label": {"type": "string", "description": "A short line for the tab's tooltip, such as \"Reviewing 3 of 8\" (at most 80 characters)."}
+                },
+                "additionalProperties": false
+            }),
+        },
+        ToolDef {
+            name: "clear_tab_progress",
+            description: "Remove the progress set_tab_progress put on this terminal tab in Flare.",
+            schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
+        },
+    ]
+}
+
+/// The decor tools: their arguments checked for shape (Flare checks the values), then the channel call.
+fn call_decor_tool(name: &str, args: &Map<String, Value>, channel: &mut dyn Channel) -> ToolResult {
+    let text = |k: &str, required: bool| -> Result<Option<String>, ToolResult> {
+        match args.get(k) {
+            Some(Value::String(s)) if !s.is_empty() => Ok(Some(s.clone())),
+            None | Some(Value::Null) if !required => Ok(None),
+            // An empty optional text is "none", as Flare itself takes it.
+            Some(Value::String(_)) if !required => Ok(None),
+            _ if required => Err(ToolResult::error(format!(
+                "{k} is required: a non-empty string."
+            ))),
+            _ => Err(ToolResult::error(format!("{k} must be a string."))),
+        }
+    };
+    let checked = (|| -> Result<(Method, Value, String), ToolResult> {
+        Ok(match name {
+            "set_tab_badge" => {
+                let key = text("key", true)?.unwrap_or_default();
+                let icon = text("icon", true)?.unwrap_or_default();
+                let mut p = json!({"key": key, "icon": icon});
+                if let Some(t) = text("tip", false)? {
+                    p["tip"] = json!(t);
+                }
+                (
+                    Method::TabsBadgeSet,
+                    p,
+                    format!("The badge \"{key}\" is on this tab in Flare."),
+                )
+            }
+            "clear_tab_badge" => {
+                let key = text("key", true)?.unwrap_or_default();
+                (
+                    Method::TabsBadgeClear,
+                    json!({"key": key}),
+                    format!("Cleared the badge \"{key}\"."),
+                )
+            }
+            "set_tab_progress" => {
+                let mut p = json!({"key": flare_ctl::decor::AGENT_PROGRESS_KEY});
+                let shown = match args.get("value") {
+                    None | Some(Value::Null) => {
+                        "Showing progress (amount unknown) on this tab in Flare.".to_string()
+                    }
+                    Some(Value::Number(n)) => {
+                        let v = n.as_f64().unwrap_or(f64::NAN);
+                        p["value"] = json!(v);
+                        format!(
+                            "Showing {}% progress on this tab in Flare.",
+                            (v * 100.0).round() as i64
+                        )
+                    }
+                    Some(_) => {
+                        return Err(ToolResult::error("value must be a number from 0 to 1."));
+                    }
+                };
+                if let Some(l) = text("label", false)? {
+                    p["label"] = json!(l);
+                }
+                (Method::TabsProgressSet, p, shown)
+            }
+            "clear_tab_progress" => (
+                Method::TabsProgressClear,
+                json!({"key": flare_ctl::decor::AGENT_PROGRESS_KEY}),
+                "Cleared the progress.".to_string(),
+            ),
+            _ => return Err(ToolResult::error(format!("{name} is not a tab tool."))),
+        })
+    })();
+    let (method, params, done) = match checked {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    channel
+        .call(method, params)
+        .map(|_| ToolResult::text(done))
+        .unwrap_or_else(map_channel_error)
 }
 
 fn show_tools() -> Vec<ToolDef> {
@@ -208,6 +335,20 @@ fn show_tools() -> Vec<ToolDef> {
                     "title": {"type": "string", "description": "A short title for the panel header."}
                 },
                 "required": ["mermaid"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDef {
+            name: "show_audio",
+            description: "Play a sound file (mp3, wav, ogg, opus, m4a, aac, flac, webm) or a public https address in an audio player beside this terminal tab in Flare, with play, pause and seek. A file is copied into the player (at most 100 MB); an address must be https on a public host (never localhost, a .local name or a private network address) and the player loads that sound only. It plays by itself only when autoplay is true, and then once. Replaces what the panel showed.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path of the sound file (absolute, or relative to the folder you are working in). Give this or url."},
+                    "url": {"type": "string", "description": "A public https address of a sound to play. Give this or path."},
+                    "title": {"type": "string", "description": "A short title for the panel header."},
+                    "autoplay": {"type": "boolean", "description": "Start playing once as soon as the player is shown (default false)."}
+                },
                 "additionalProperties": false
             }),
         },
@@ -330,6 +471,12 @@ pub fn call_tool(
     if let Some(r) = browser::call(name, args, channel) {
         return Some(r);
     }
+    if matches!(
+        name,
+        "set_tab_badge" | "clear_tab_badge" | "set_tab_progress" | "clear_tab_progress"
+    ) {
+        return Some(call_decor_tool(name, args, channel));
+    }
     let path_arg = || -> Result<String, ToolResult> {
         match args.get("path") {
             Some(Value::String(p)) if !p.trim().is_empty() => Ok(absolute(p)),
@@ -397,6 +544,35 @@ pub fn call_tool(
             channel
                 .call(Method::ViewHtml, params)
                 .map(|v| shown_app_text(&v, wants_network))
+        }
+        "show_audio" => {
+            let mut params = json!({});
+            match (args.get("path"), args.get("url")) {
+                (Some(Value::String(p)), None | Some(Value::Null)) if !p.trim().is_empty() => {
+                    params["path"] = json!(absolute(p));
+                }
+                (None | Some(Value::Null), Some(Value::String(u))) if !u.trim().is_empty() => {
+                    params["url"] = json!(u.trim());
+                }
+                _ => {
+                    return Some(ToolResult::error(
+                        "give either path (a non-empty string) or url (a non-empty string), not both and not neither.",
+                    ));
+                }
+            }
+            match args.get("title") {
+                None | Some(Value::Null) => {}
+                Some(Value::String(t)) => params["title"] = json!(t),
+                Some(_) => return Some(ToolResult::error("title must be a string.")),
+            }
+            match args.get("autoplay") {
+                None | Some(Value::Null) => {}
+                Some(Value::Bool(b)) => params["autoplay"] = json!(b),
+                Some(_) => return Some(ToolResult::error("autoplay must be true or false.")),
+            }
+            channel
+                .call(Method::ViewAudio, params)
+                .map(|_| ToolResult::text("Showing the audio player in Flare."))
         }
         "show_diagram" => {
             let src = match args.get("mermaid") {
@@ -1015,6 +1191,7 @@ mod tests {
                 "show_text",
                 "show_html",
                 "show_diagram",
+                "show_audio",
                 "open_page",
                 "close_panel",
                 "browser_look",
@@ -1024,7 +1201,11 @@ mod tests {
                 "browser_scroll",
                 "browser_wait",
                 "browser_navigate",
-                "browser_eval"
+                "browser_eval",
+                "set_tab_badge",
+                "clear_tab_badge",
+                "set_tab_progress",
+                "clear_tab_progress"
             ]
         );
         for t in list {
@@ -1035,8 +1216,171 @@ mod tests {
         assert_eq!(list[2]["inputSchema"]["required"], json!(["text"]));
         assert!(list[3]["inputSchema"].get("required").is_none());
         assert_eq!(list[4]["inputSchema"]["required"], json!(["mermaid"]));
-        assert_eq!(list[5]["inputSchema"]["required"], json!(["url"]));
-        assert_eq!(list[6]["inputSchema"]["properties"], json!({}));
+        assert!(list[5]["inputSchema"].get("required").is_none());
+        assert_eq!(list[6]["inputSchema"]["required"], json!(["url"]));
+        assert_eq!(list[7]["inputSchema"]["properties"], json!({}));
+    }
+
+    #[test]
+    fn show_audio_routes_a_path_made_absolute_or_a_url_to_view_audio() {
+        let mut ch = Fake::default();
+        let r = handle_message(
+            &req(
+                1,
+                "tools/call",
+                json!({"name": "show_audio", "arguments": {"path": "speech.mp3", "title": "Reply", "autoplay": true}}),
+            ),
+            &mut ch,
+        )
+        .unwrap();
+        assert_eq!(r["result"]["isError"], false);
+        assert_eq!(ch.calls[0].0, Method::ViewAudio);
+        let p = &ch.calls[0].1;
+        assert!(std::path::Path::new(p["path"].as_str().unwrap()).is_absolute());
+        assert_eq!(
+            (p["title"].clone(), p["autoplay"].clone()),
+            (json!("Reply"), json!(true))
+        );
+        let mut ch = Fake::default();
+        handle_message(
+            &req(
+                2,
+                "tools/call",
+                json!({"name": "show_audio", "arguments": {"url": " https://example.com/a.ogg "}}),
+            ),
+            &mut ch,
+        );
+        assert_eq!(
+            ch.calls,
+            vec![(
+                Method::ViewAudio,
+                json!({"url": "https://example.com/a.ogg"})
+            )]
+        );
+        for args in [
+            json!({}),
+            json!({"path": "a.mp3", "url": "https://example.com/a.mp3"}),
+            json!({"path": ""}),
+            json!({"path": "a.mp3", "title": 1}),
+            json!({"path": "a.mp3", "autoplay": "yes"}),
+        ] {
+            let mut ch = Fake::default();
+            let r = handle_message(
+                &req(
+                    3,
+                    "tools/call",
+                    json!({"name": "show_audio", "arguments": args}),
+                ),
+                &mut ch,
+            )
+            .unwrap();
+            assert_eq!(r["result"]["isError"], true, "{args}");
+            assert!(ch.calls.is_empty(), "{args}");
+        }
+    }
+
+    #[test]
+    fn the_badge_tool_offers_exactly_the_built_in_icons() {
+        let list = tools();
+        let t = list.iter().find(|t| t.name == "set_tab_badge").unwrap();
+        assert_eq!(
+            t.schema["properties"]["icon"]["enum"],
+            json!(flare_ctl::decor::BADGE_ICONS)
+        );
+        assert_eq!(t.schema["required"], json!(["key", "icon"]));
+        let p = list.iter().find(|t| t.name == "set_tab_progress").unwrap();
+        assert!(p.schema.get("required").is_none());
+    }
+
+    fn call(ch: &mut Fake, name: &str, args: Value) -> Value {
+        handle_message(
+            &req(1, "tools/call", json!({"name": name, "arguments": args})),
+            ch,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_tab_tools_reach_the_decor_methods_with_their_words() {
+        let mut ch = Fake::default();
+        let r = call(
+            &mut ch,
+            "set_tab_badge",
+            json!({"key": "call-me", "icon": "phone", "tip": "Call-me is on"}),
+        );
+        assert_eq!(r["result"]["isError"], false);
+        assert!(text_of(&r).contains("call-me"), "{}", text_of(&r));
+        let r = call(&mut ch, "clear_tab_badge", json!({"key": "call-me"}));
+        assert_eq!(r["result"]["isError"], false);
+        let r = call(
+            &mut ch,
+            "set_tab_progress",
+            json!({"value": 0.5, "label": "Review"}),
+        );
+        assert!(text_of(&r).contains("50%"), "{}", text_of(&r));
+        let r = call(&mut ch, "set_tab_progress", json!({}));
+        assert!(text_of(&r).contains("unknown"), "{}", text_of(&r));
+        // An empty optional tip or label is "none", not a wrong type.
+        let r = call(
+            &mut ch,
+            "set_tab_badge",
+            json!({"key": "k", "icon": "star", "tip": ""}),
+        );
+        assert_eq!(r["result"]["isError"], false, "{}", text_of(&r));
+        let r = call(&mut ch, "set_tab_progress", json!({"label": ""}));
+        assert_eq!(r["result"]["isError"], false, "{}", text_of(&r));
+        call(&mut ch, "clear_tab_progress", json!({}));
+        let key = flare_ctl::decor::AGENT_PROGRESS_KEY;
+        assert_eq!(
+            ch.calls,
+            [
+                (
+                    Method::TabsBadgeSet,
+                    json!({"key": "call-me", "icon": "phone", "tip": "Call-me is on"})
+                ),
+                (Method::TabsBadgeClear, json!({"key": "call-me"})),
+                (
+                    Method::TabsProgressSet,
+                    json!({"key": key, "value": 0.5, "label": "Review"})
+                ),
+                (Method::TabsProgressSet, json!({"key": key})),
+                (Method::TabsBadgeSet, json!({"key": "k", "icon": "star"})),
+                (Method::TabsProgressSet, json!({"key": key})),
+                (Method::TabsProgressClear, json!({"key": key})),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tab_tool_with_a_bad_shape_never_reaches_flare_and_a_refusal_comes_back() {
+        let mut ch = Fake::default();
+        for (name, args) in [
+            ("set_tab_badge", json!({"icon": "phone"})),
+            ("set_tab_badge", json!({"key": "a"})),
+            (
+                "set_tab_badge",
+                json!({"key": "a", "icon": "phone", "tip": 3}),
+            ),
+            ("clear_tab_badge", json!({})),
+            ("set_tab_progress", json!({"value": "half"})),
+            ("set_tab_progress", json!({"label": 1})),
+        ] {
+            let r = call(&mut ch, name, args.clone());
+            assert_eq!(r["result"]["isError"], true, "{name} {args}");
+        }
+        assert!(ch.calls.is_empty());
+        // Flare's own refusal (a bad icon, the rate) reaches the model as one clean line.
+        ch.answer = Some(Err(ChannelError::Remote {
+            code: "rate_limited".into(),
+            message: "at most 10 badge or progress changes a second on one tab".into(),
+        }));
+        let r = call(
+            &mut ch,
+            "set_tab_badge",
+            json!({"key": "a", "icon": "phone"}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        assert!(text_of(&r).contains("rate_limited"), "{}", text_of(&r));
     }
 
     #[test]

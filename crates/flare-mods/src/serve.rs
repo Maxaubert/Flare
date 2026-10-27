@@ -17,6 +17,18 @@ pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 /// author writes is theirs; this one is the host's, and a script cannot remove it.
 pub const CSP: &str = "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:";
 
+/// The policy of a page of a plugin that holds `network` (plugins phase 6, design 13): [`CSP`], and its connections,
+/// pictures and sound may come from `https` addresses too. No frame, no form that posts elsewhere, no `<base>`. A
+/// policy cannot leave out the local hosts, and its `https:` lets `wss:` through too: the request wall refuses those
+/// (`flare_surfaces::net`), and the plugins' networked browser's resolver finds no local name or address for what
+/// never meets that wall, a WebSocket (`flare_surfaces::modview::net_browser_arguments`).
+pub const NET_CSP: &str = "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https:; media-src 'self' data: blob: https:; frame-src 'none'; form-action 'self'; base-uri 'none'";
+
+/// The policy of a plugin's page: [`NET_CSP`] with `network`, else [`CSP`] (as a mod's page always had).
+pub fn csp(network: bool) -> &'static str {
+    if network { NET_CSP } else { CSP }
+}
+
 /// A file ready to answer a request with.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Served {
@@ -88,14 +100,24 @@ pub fn mime_of(path: &Path) -> &'static str {
         "ico" => "image/x-icon",
         "woff2" => "font/woff2",
         "woff" => "font/woff",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" | "oga" => "audio/ogg",
+        "opus" => "audio/ogg; codecs=opus",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "flac" => "audio/flac",
+        "weba" => "audio/webm",
         _ => "application/octet-stream",
     }
 }
 
-/// The response headers for a served file, as WebView2 takes them (CRLF separated).
-pub fn headers_for(mime: &str) -> String {
+/// The response headers for a served file, as WebView2 takes them (CRLF separated). `network`: the page is a plugin's
+/// that holds `network` ([`csp`]).
+pub fn headers_for(mime: &str, network: bool) -> String {
+    let policy = csp(network);
     format!(
-        "Content-Type: {mime}\r\nContent-Security-Policy: {CSP}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nCross-Origin-Resource-Policy: same-origin"
+        "Content-Type: {mime}\r\nContent-Security-Policy: {policy}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nCross-Origin-Resource-Policy: same-origin"
     )
 }
 
@@ -183,7 +205,7 @@ mod tests {
 
     #[test]
     fn the_policy_is_on_every_answer_and_names_no_network() {
-        let h = headers_for("text/html");
+        let h = headers_for("text/html", false);
         assert!(h.contains("Content-Security-Policy: default-src 'none'"));
         assert!(h.contains("X-Content-Type-Options: nosniff"));
         assert!(refusal_headers().contains("Content-Security-Policy"));
@@ -191,8 +213,38 @@ mod tests {
         assert!(!CSP.contains("connect-src"), "default-src 'none' covers it");
     }
 
+    /// Design 13: with `network` the page may connect, and load pictures and sound, over https; it still has no
+    /// frame, posts no form elsewhere and sets no base, and without `network` the policy is the sealed one.
+    #[test]
+    fn a_networked_plugins_policy_opens_https_for_connections_pictures_and_sound_only() {
+        assert_eq!(csp(false), CSP);
+        let p = csp(true);
+        for part in [
+            "default-src 'none'",
+            "connect-src 'self' https:",
+            "img-src 'self' data: https:",
+            "media-src 'self' data: blob: https:",
+            "frame-src 'none'",
+            "form-action 'self'",
+            "base-uri 'none'",
+        ] {
+            assert!(p.contains(part), "{part} in {p}");
+        }
+        assert!(!p.contains("http:"), "never plain http");
+        assert!(
+            !p.contains("script-src 'self' 'unsafe-inline' https"),
+            "no script from the internet"
+        );
+        assert!(!p.contains('*'));
+        let h = headers_for("text/html", true);
+        assert!(h.contains(&format!("Content-Security-Policy: {NET_CSP}")));
+        assert!(!headers_for("text/html", false).contains("https:"));
+    }
+
     #[test]
     fn types_follow_the_extension() {
+        assert_eq!(mime_of(Path::new("a.mp3")), "audio/mpeg");
+        assert_eq!(mime_of(Path::new("a.ogg")), "audio/ogg");
         assert_eq!(mime_of(Path::new("a.PNG")), "image/png");
         assert_eq!(mime_of(Path::new("a")), "application/octet-stream");
         assert_eq!(mime_of(Path::new("a.exe")), "application/octet-stream");

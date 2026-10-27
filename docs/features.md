@@ -132,7 +132,8 @@ are added as milestones land.
   text (L12). The lock mutex has an explicit one-ACE DACL and a medium label, so an elevated first instance
   still shows its lock to a normal launch (L11). A hand-off server that is not this user in this session
   refuses the launch instead of starting a second instance on the same profile (L41). The taskbar badge is
-  drawn again on `TaskbarButtonCreated` (L14). The stack sampler's abandon wait is bounded (L15).
+  set up once the window has a handle and drawn again whenever the window gains focus (L14; the
+  `TaskbarButtonCreated` subclass is gone: beside AccessKit's it crashed the window, 2026-10-26). The stack sampler's abandon wait is bounded (L15).
 - **Close.** One rule, not a setting: a plain shell closes unasked; a tab with an agent asks; the
   window close is held only while an agent is working. Held by the `close` tests (flare-agent) and
   `close_flow` (flare-tabs). The shells are killed and waited for, with a 3 s cap.
@@ -303,7 +304,8 @@ are added as milestones land.
 - **Terminal menu.** Right click opens the menu for what was clicked: path rows, link rows, Copy with a
   selection, Paste, Find in scrollback, and Command help last while it is on (M7). No Close tab. A path
   to a picture or text file also gets "Show in side panel" after Open (Surfaces round 9), and a tab that runs
-  Claude gets "Show files Claude changed" and "Show task list" in a group of their own at the bottom. It is
+  Claude gets "Show files Claude changed" in a group of its own at the bottom ("Show task list" was removed with the
+  Tasks panel, 2026-10-26). It is
   bound to the tab it opened on. Held by `the_menu_fits_what_was_clicked_and_copies_exactly` and the
   flare `term_menu.rs` tests.
 - **A right click outside an open menu opens the next menu (owner, 2026-10-23).** "Right click should open the
@@ -436,6 +438,7 @@ M6 plan's Tasks 2 to 35.
 - **D13** Settings rows are M7's; M6 owns the switch keys and getters only.
 - **D14** Codex has no hooks. It is found by the poll and its title dialect, and is resumable with
   `codex resume --last`. Gemini, aider and other agents light the indicator and have nothing to resume.
+  agy (the Antigravity CLI) became the third resumable agent on 2026-10-26: see "Antigravity (agy) as an agent".
 - **D15** The cd guard is kept uncalled, so a later decision can wire it with one call.
 - **D16** `hooks.json` is generated once and guarded forever (`hooks_json_matches_the_table`).
 
@@ -452,6 +455,7 @@ in `ui_tests/marks.rs`.
 
 1. Tab-icon artwork: the OpenAI mark (Simple Icons 15, CC0) for Codex and the Clawd pixel art in
    `#d77757` for Claude, both named in `THIRD-PARTY-NOTICES.md`. Confirm both may ship in a private repo.
+   The agy arch (2026-10-26, after Antigravity's banner) is named there too and has the same question.
 2. The taskbar disc counts Finished, Question and Failed tabs as Prism Terminal does, and is on by
    default. Confirm it stays on. No answer is recorded yet.
 3. Sonara still reads `PRISM_TAB_ID` (decision O6). Flare posts `host_tab` with `FLARE_TAB_ID`, so a
@@ -1122,6 +1126,32 @@ MCP tools and how a look is written for the model).
   `the_ribbon_holds_after_a_call_that_finished_until_the_person_acts`, `the_ribbon_names_who_is_using_the_page` and the e2e (up
   during a 2.5 s call, still up right after, gone within 6 s, the browser window's rectangle unchanged with the ribbon up and after
   it goes; the ribbon's background is opaque so the page's title does not show through).
+- **The agent's cursor.** While an agent clicks, types into a ref or scrolls over a ref on the page in front, an orange arrow
+  (`#fe8f34`, white rim) with a tag naming the agent ("Claude", "Codex", else "Agent") glides there before the events go
+  (350 ms plus 0.5 ms a CSS pixel, at most 700 ms, ease-in-out; the events wait exactly that long), ripples on each press, stays
+  while the ribbon holds and fades in 200 ms after. It never jumps: after its fade the next action on the same page shows it
+  where it rested and glides on. Only the first action on a page, one after a navigation or a change of the page's size, and one
+  after a takeover or the page going out of sight show it at the target (held 180 ms so it is seen before the press). It is a
+  window of Flare's own above the page, never in it: the page cannot see or hide it and it is in no look. A takeover, a closed
+  panel, a tab behind, a menu over the page or a minimised window takes it away at once; it follows the window and the
+  splitter. A page that is not live in front has no cursor and no glide. With Windows' animation effects off nothing glides or
+  fades: the arrow is placed at once. Held by the `agent_cursor` tests (`flare-surfaces`, `flare-win`),
+  `a_click_finds_its_point_then_waits_for_the_glide_then_presses`,
+  `the_events_wait_for_the_glide_the_window_says_not_the_longest`,
+  `the_cursor_shows_where_a_click_lands_before_it_presses_and_ripples_on_the_press`,
+  `after_the_fade_the_next_action_glides_on_from_where_the_arrow_rested`,
+  `a_new_page_or_a_takeover_forgets_where_the_arrow_rested`, `with_animation_effects_off_nothing_glides_or_fades`,
+  `the_person_taking_over_takes_the_cursor_away_at_once`,
+  `a_menu_over_the_page_or_a_tab_in_front_hides_the_cursor_and_a_hidden_page_does_not_wait` and the e2e `agentBrowser` (at the
+  button's middle at 100 and 225 percent, gone after the hold, its spot remembered).
+- **The agent's border.** While an agent uses the page in front, from its first call until the ribbon's hold ends, a light
+  orange border (the cursor's orange at 55 % opacity, 2 px at 100 %, square corners like the page) rings the page's
+  rectangle; it fades with the arrow in 200 ms and comes back with the next call. It is a second window of Flare's own above
+  the page (the browser is a child window Slint cannot draw over), transparent to every click. A takeover, a menu over the
+  page, a tab behind or a closed panel takes it away at once. Held by
+  `a_light_orange_border_rings_the_page_while_the_agent_uses_it_and_fades_with_the_arrow`,
+  `a_menu_over_the_page_takes_the_border_away_and_it_comes_back_after`, the `border` tests in `flare-win` and the e2e
+  `agentBrowser` (the page's own rectangle while the ribbon holds, gone after).
 - **The person keeps control.** A key of theirs in the page, or a mouse button pressed over it, ends the running call with
   `interrupted` and drops the ribbon; the agent's own key presses are never the app's chords. Held by
   `a_key_of_the_persons_posts_a_takeover_only_while_an_agent_works`, `the_agents_own_key_press_is_neither_the_persons_nor_a_chord`,
@@ -1258,33 +1288,33 @@ the MCP tools `show_html` and `show_diagram`); the rule: `docs/regression-rules.
 - Mini-apps (2026-10-22): the sandbox also refuses to start when a Windows policy overrides the browser's arguments, launches no external program, and no longer wipes the shared cookie jar; the tool text says storage lasts until the last mini-app panel closes.
 ## Surfaces: the conversation reader library (stage 6, library part), 2026-10-21
 
-The pure-Rust part of the reader: `crates/flare-convo`, no UI. Format notes for Prism Terminal: `docs/surfaces/convo.md`; choices: `docs/surfaces/decisions.md` (Stage 6 library); the notes for the port: `docs/surfaces/lessons.md` (Stage 6 library). Issues #25, #26 and #27 (library parts; the Changes and Tasks panels are the next part).
+The pure-Rust part of the reader: `crates/flare-convo`, no UI. Format notes for Prism Terminal: `docs/surfaces/convo.md`; choices: `docs/surfaces/decisions.md` (Stage 6 library); the notes for the port: `docs/surfaces/lessons.md` (Stage 6 library). Issues #25, #26 and #27 (library parts; the Changes panel is the next part).
 
 - **The transcript path comes from the session id and the tab folder.** `<home>\.claude\projects\<slug>\<session-id>.jsonl`, with the slug from `flare_agent::resume::encode_cwd`. An id with a separator, a dot or a space is refused. A fallback finds `<session-id>.jsonl` in any project folder. Held by `transcript_path_uses_the_slug_and_refuses_an_unsafe_id` and `the_fallback_finds_the_session_under_any_project_folder` (`flare-convo`).
 - **The tail reads what was appended, bounded and never whole.** One poll reads at most 4 MB from its offset and returns only complete lines; a partial last line waits for its newline; a line longer than 8 MB is dropped and counted (`skipped_long`). Held by `reads_only_what_was_appended_since_the_last_poll`, `a_partial_last_line_waits_for_its_newline`, `a_bounded_read_says_there_is_more_and_the_rest_comes_next`, `a_line_longer_than_the_cap_is_skipped_and_counted_and_the_next_line_reads`.
 - **A truncated or replaced transcript starts again from its first line.** Shorter than the offset, or a new file (volume serial and file index from the open handle; NTFS keeps the creation time across a quick delete, so that is not used). The consumer clears its model when a batch says `restarted`. Held by `a_truncated_file_restarts_from_zero` and `a_replaced_file_restarts_even_when_it_is_longer`.
 - **The tail worker polls every 500 ms only while someone listens.** Dropping the subscription stops it. Held by `the_worker_delivers_growth_and_stops_when_the_subscription_drops` and `a_subscription_with_nothing_new_sends_nothing`.
-- **The fold reads edits, the task list and the named files, and tolerates anything it does not know.** Edit, MultiEdit, Write and NotebookEdit make edits (with the time and whether the result failed); TodoWrite replaces the task list; TaskCreate and TaskUpdate change it (shape guessed); absolute Windows paths in the assistant's words are the named files, images flagged. A subagent's lines are tagged and its task list is kept apart. A bad line is counted and skipped. Held by the `flare-convo` fold tests (`an_edit_is_listed_with_its_path_time_and_applied_result`, `multiedit_keeps_each_entry_as_its_own_change`, `write_is_a_whole_file_and_diffs_as_all_added`, `a_failed_edit_is_kept_and_marked_failed`, `todowrite_replaces_the_whole_list_each_time`, `a_task_tool_create_then_update_by_its_id`, `a_subagent_todolist_never_replaces_the_main_one`, `named_files_are_absolute_windows_paths_with_an_extension_once_each`, `counts_every_line_and_the_bad_ones`, `an_unknown_type_or_a_non_object_never_panics_or_changes_the_model`).
+- **The fold reads edits and the named files, and tolerates anything it does not know.** Edit, MultiEdit, Write and NotebookEdit make edits (with the time and whether the result failed); absolute Windows paths in the assistant's words are the named files, images flagged. A subagent's lines are tagged. A bad line is counted and skipped. TodoWrite, TaskCreate and TaskUpdate were read into a task list for the Tasks panel; since that panel was removed (2026-10-26) they are tools the fold ignores (`the_task_tools_fold_into_nothing`). Held by the `flare-convo` fold tests (`an_edit_is_listed_with_its_path_time_and_applied_result`, `multiedit_keeps_each_entry_as_its_own_change`, `write_is_a_whole_file_and_diffs_as_all_added`, `a_failed_edit_is_kept_and_marked_failed`, `named_files_are_absolute_windows_paths_with_an_extension_once_each`, `counts_every_line_and_the_bad_ones`, `an_unknown_type_or_a_non_object_never_panics_or_changes_the_model`).
 - **An edit can be shown as a diff of its own text (library only).** A line diff of old to new, three lines of context, capped at 2000 lines and marked when cut; a whole new file shows as all added. No git is run. Held by the `diff` tests (`one_replaced_line_with_context_on_both_sides`, `far_apart_changes_make_two_hunks`, `output_is_capped_and_says_so`, `a_pair_too_big_for_the_table_is_all_removed_then_added`).
-- **A subagent's transcript is read from its own file.** Its lines are in `<slug>\<session-id>\subagents\agent-<id>.jsonl`, so `tail::subscribe_session` tails the session file and every `agent-*.jsonl` beside it, each batch naming its file, and each subagent's task list is kept under its file name. Held by `a_session_worker_reads_the_session_file_and_every_subagent_file_by_name` and `a_subagent_file_folds_as_sidechain_and_each_list_keeps_its_own_name` (review fix, 2026-10-21).
+- **A subagent's transcript is read from its own file.** Its lines are in `<slug>\<session-id>\subagents\agent-<id>.jsonl`, so `tail::subscribe_session` tails the session file and every `agent-*.jsonl` beside it, each batch naming its file, and every line of it is a sidechain line. Held by `a_session_worker_reads_the_session_file_and_every_subagent_file_by_name`, `a_subagent_file_folds_as_sidechain` and `subagent_edits_arrive_from_their_own_file` (review fix, 2026-10-21).
 - **The reader is bounded.** The worker's queue holds two batches (a slow consumer parks the reads); the model keeps 2000 edits and 32 MB of edit text, with 64 KB per stored text. A rewrite in place that ends longer restarts (the last 64 bytes are compared). Held by `a_worker_blocked_on_a_full_queue_still_stops_when_the_subscription_drops`, `a_file_rewritten_in_place_that_ends_longer_restarts`, `the_oldest_edits_go_once_there_are_too_many_and_a_late_result_is_ignored` and `the_kept_edit_text_is_bounded_in_bytes_too` (review fix, 2026-10-21).
-- **In the app now:** the Changes and Tasks panels and `convo.state` are the next section (stage 6).
+- **In the app now:** the Changes panel and `convo.state` are the next section (stage 6).
 
-## Surfaces: the Changes and Tasks panels (stage 6), 2026-10-22
+## Surfaces: the Changes panel (stage 6; the Tasks panel was removed), 2026-10-22
 
-What Claude did, shown beside its terminal: the files it edited with each edit as a diff, and its task list. Issues #25, #26 and #27. The library is above; choices: `docs/surfaces/decisions.md` (Stage 6); the holes and the notes for Prism Terminal: `docs/surfaces/lessons.md` (Stage 6); the method: `docs/surfaces/protocol.md` (`convo.state`, `panel.open`).
+What Claude did, shown beside its terminal: the files it edited with each edit as a diff. (A second panel, Tasks, showed its task list until it was removed on 2026-10-26: see below.) Issues #25, #26 and #27. The library is above; choices: `docs/surfaces/decisions.md` (Stage 6); the holes and the notes for Prism Terminal: `docs/surfaces/lessons.md` (Stage 6); the method: `docs/surfaces/protocol.md` (`convo.state`, `panel.open`).
 
-- **Nothing runs unless a panel is open.** A tab gets one transcript tracker only while its Changes or Tasks panel is open AND the hooks have named its Claude session; closing the panel, switching it to a file, losing the session or closing the tab stops it. A tab with a session and no panel has no thread, no timer and no read. Held by `a_tab_with_a_session_and_no_panel_runs_nothing`, `closing_the_panel_stops_the_tracker_and_reopening_starts_it_again`, `closing_the_tab_stops_its_tracker` (`ui_tests/agent_flows/convo_flows.rs`) and by the e2e `convoPanels`.
+- **Nothing runs unless a panel is open.** A tab gets one transcript tracker only while its Changes panel is open AND the hooks have named its Claude session; closing the panel, switching it to a file, losing the session or closing the tab stops it. A tab with a session and no panel has no thread, no timer and no read. Held by `a_tab_with_a_session_and_no_panel_runs_nothing`, `closing_the_panel_stops_the_tracker_and_reopening_starts_it_again`, `closing_the_tab_stops_its_tracker` (`ui_tests/agent_flows/convo_flows.rs`) and by the e2e `convoPanels`.
 - **The folding and the diffing run on a worker.** The tracker follows the session file and its subagents' files, folds them and makes the rows; the window only wraps finished rows (rule 34). A new session (a `/clear`, a resume) switches the file and forgets the pick; a replaced or cut transcript is read again from its start; a transcript that is not at the tab's folder is found in any project folder. Claude's folder is `CLAUDE_CONFIG_DIR` (absolute only), else `%USERPROFILE%\.claude`. Held by `a_new_session_switches_the_file_and_forgets_the_pick`, `the_changes_panel_lists_the_edits_and_follows_the_file_as_it_grows`, and in `flare-convo` by `a_replaced_transcript_starts_the_model_again`, `a_transcript_in_another_project_folder_is_found`, `a_transcript_that_appears_later_is_picked_up`, `dropping_the_tracker_stops_the_worker` and the `claude_dir` tests.
 - **Changes lists the edited files, newest first, and one click shows a file's edits as a diff.** Each row has the name, the folder, "3 edits" and a red ", 1 failed". The diff has a header per edit, context rows, removed rows and added rows tinted with the theme's terminal red and green, two line-number columns and monospace text; "Files" (or Backspace) goes back and the path opens the file in the panel (the stage 1 preview, re-resolved and allowlisted: a program does nothing). Only the rows in view are built, so 100 000 rows build about 40. Held by `ui_tests/convo.rs` (`a_big_file_list_builds_only_the_rows_in_view`, `a_diff_of_a_hundred_thousand_rows_builds_only_the_rows_in_view_and_scrolls`, `added_and_removed_rows_wear_the_themes_inks_and_context_rows_wear_none`, `a_click_on_a_file_picks_it_and_the_bar_goes_back_or_opens_the_path`, `backspace_goes_back_from_a_diff_and_the_arrows_do_not_scroll_an_empty_one`) at 100 and 225 percent, by `a_failed_edit_is_marked_in_the_list`, `a_click_on_the_path_in_a_diff_shows_the_file_and_a_program_shows_nothing`, and in `flare-convo` by the `view` tests (`files_list_the_newest_first_and_count_each_edit_once`, `a_diff_marks_each_edit_and_numbers_its_lines`, `a_huge_diff_is_cut_at_the_row_cap_with_a_note`).
-- **Tasks shows the agent's list with its states, the one in progress highlighted.** A ring for pending, the accent dot and a tinted row for the one in progress (with what it is doing under it), a grey dot with a tick for done. Subagents' lists are groups ("Subagent 1a2b3c4", "1 of 2 done") that fold with a click. A later TodoWrite appended to the transcript updates the list. Held by `a_task_wears_its_state_and_only_the_one_in_progress_has_the_accent`, `the_active_task_has_a_tinted_row_and_a_plain_one_does_not`, `a_group_header_calls_back_with_its_key_and_a_folded_group_has_fewer_rows`, `the_keys_scroll_a_long_task_list` (at 100 and 225 percent), `the_tasks_panel_shows_the_list_and_a_new_todowrite_updates_it`, `a_subagents_list_is_a_group_that_folds`, the glyph size tests `the_conversation_glyphs_draw_at_full_size_at_every_scale` (all eight scalings) and in `flare-convo` `tasks_group_the_main_list_then_each_subagent_and_mark_the_active_one`.
-- **Empty states say what is missing, in plain words.** "Claude is not running in this tab yet...", "Reading the conversation...", "Waiting for the conversation file.", "Claude has not changed a file yet.", "Claude has no task list yet." Held by `a_panel_with_no_session_says_so_and_starts_nothing`, `an_empty_session_says_nothing_has_changed_yet` and `the_empty_words_say_what_is_missing`.
-- **How to open them.** The terminal's right-click menu on a tab that runs Claude gains "Show files Claude changed" and "Show task list" ("Hide ..." while open; reworded 2026-10-22, see "Owner feedback, round 9"); Claude opens its own with `panel.open` kind `changes` or `tasks`. A plain shell's menu does not change. No chords were added (the shared chord table is the owner's call). Held by `the_terminal_menu_offers_the_two_panels_only_on_a_claude_tab` and `panel_open_takes_the_conversation_kinds_and_nothing_more`.
-- **They are stored and restored like the other panels.** A stored `changes` or `tasks` panel reopens empty with the "not running" words and fills when the session is known; one with a wrong target is dropped. Held by `a_stored_conversation_panel_reopens_empty_until_the_transcript_loads` and `a_stored_panel_of_a_kind_with_the_wrong_target_is_dropped`.
-- **`convo.state` gives the agent its own tab's summary.** Files, edits, failures, task counts by state, the task in progress and the 20 newest changed files; no contents. A tab Flare is not reading answers `tracking: false` and says how to have it read. Held by `convo_state_summarises_the_tabs_own_conversation`, `convo_state_asks_for_the_callers_own_tab_only` (`ctl_app.rs`) and the e2e `convoPanels`.
-- **End to end (the release exe, its own profile and Claude folder, offscreen):** `convoPanels`, at 100 and 225 percent, with a synthetic transcript: no tracker before a panel, `panel.open` for each kind, the file listed, a real click on its row showing removed and added rows, an appended edit and an appended TodoWrite updating both, a new session switching the file, and `panel.close` stopping the tracker. See `docs/e2e.md`.
-- **By hand, not machine-tested:** a real Claude Code session's `tool_result` and task-tool shapes (the fixtures are synthetic), the look in all 18 themes, a transcript of hundreds of megabytes. The list is at the end of `docs/surfaces/lessons.md` (Stage 6).
-- **Review fixes (2026-10-22).** A diff line is cut at 400 characters with an ellipsis on the worker; an update rebuilds only the list, the diff or the tasks that changed (an edit of another file leaves the open diff's rows alone); a path answer that arrives after the panel changed is dropped; the search for a missing transcript backs off to every 30 s; wrapped task rows sit on whole device pixels. Tests: `view::a_very_long_line_is_cut_to_the_row_width_with_an_ellipsis`, `convo_ctl::a_capped_diff_gives_five_thousand_rows_no_wider_than_the_viewport`, `convo_flows::an_edit_of_another_file_leaves_the_selected_diff_rows_alone`, `convo_flows::a_path_answer_that_arrives_after_the_panel_changed_is_dropped`, `convo_flows::closing_the_tab_stops_its_tracker` (the worker really exits), `ui_tests::convo::wrapped_task_rows_sit_on_whole_device_pixels_at_fractional_scales`.
+- **The Tasks panel: REMOVED (owner, 2026-10-26: sessions never used it).** It showed the agent's TodoWrite and TaskCreate list from the transcript (states, the one in progress highlighted, subagents' lists as groups that folded), opened from the terminal menu ("Show task list") or `panel.open` kind `tasks`. Gone entirely: the panel kind, the `TasksView` in `convo.slint`, the menu row and its `menu-tasks` glyph, the task list in `flare-convo` (the fold, the view's groups and counts), the task counts in `convo.state`, the Tasks part of the `convoPanels` end to end and their tests. A `panels.json` an older build wrote with a `tasks` panel reads it as an unknown kind and drops that one panel, the tab and its neighbours stay (rule 40; `a_stored_tasks_panel_is_dropped_on_load`, `a_stored_panel_of_the_removed_tasks_kind_is_dropped_and_the_tab_restores`); `panel.open` kind `tasks` is `bad_params`. The Changes panel is untouched.
+- **Empty states say what is missing, in plain words.** "Claude is not running in this tab yet...", "Reading the conversation...", "Waiting for the conversation file.", "Claude has not changed a file yet." Held by `a_panel_with_no_session_says_so_and_starts_nothing`, `an_empty_session_says_nothing_has_changed_yet` and `the_empty_words_say_what_is_missing`.
+- **How to open it.** The terminal's right-click menu on a tab that runs Claude gains "Show files Claude changed" ("Hide ..." while open; reworded 2026-10-22, see "Owner feedback, round 9"); Claude opens its own with `panel.open` kind `changes`. A plain shell's menu does not change. No chords were added (the shared chord table is the owner's call). Held by `the_terminal_menu_offers_the_changed_files_only_on_a_claude_tab` and `panel_open_takes_the_conversation_kinds_and_nothing_more`.
+- **It is stored and restored like the other panels.** A stored `changes` panel reopens empty with the "not running" words and fills when the session is known; one with a wrong target is dropped. Held by `a_stored_conversation_panel_reopens_empty_until_the_transcript_loads` and `a_stored_panel_of_a_kind_with_the_wrong_target_is_dropped`.
+- **`convo.state` gives the agent its own tab's summary.** Files, edits, failures and the 20 newest changed files; no contents (the task counts went with the Tasks panel, 2026-10-26). A tab Flare is not reading answers `tracking: false` and says how to have it read. Held by `convo_state_summarises_the_tabs_own_conversation`, `convo_state_asks_for_the_callers_own_tab_only` (`ctl_app.rs`) and the e2e `convoPanels`.
+- **End to end (the release exe, its own profile and Claude folder, offscreen):** `convoPanels`, at 100 and 225 percent, with a synthetic transcript: no tracker before a panel, `panel.open` kind `changes`, the file listed, a real click on its row showing removed and added rows, an appended edit updating it, `panel.open` kind `tasks` refused, a new session switching the file, and `panel.close` stopping the tracker. See `docs/e2e.md`.
+- **By hand, not machine-tested:** a real Claude Code session's `tool_result` shapes (the fixtures are synthetic), the look in all 18 themes, a transcript of hundreds of megabytes. The list is at the end of `docs/surfaces/lessons.md` (Stage 6).
+- **Review fixes (2026-10-22).** A diff line is cut at 400 characters with an ellipsis on the worker; an update rebuilds only the list or the diff that changed (an edit of another file leaves the open diff's rows alone); a path answer that arrives after the panel changed is dropped; the search for a missing transcript backs off to every 30 s. Tests: `view::a_very_long_line_is_cut_to_the_row_width_with_an_ellipsis`, `convo_ctl::a_capped_diff_gives_five_thousand_rows_no_wider_than_the_viewport`, `convo_flows::an_edit_of_another_file_leaves_the_selected_diff_rows_alone`, `convo_flows::a_path_answer_that_arrives_after_the_panel_changed_is_dropped`, `convo_flows::closing_the_tab_stops_its_tracker` (the worker really exits). (A fix for wrapped task rows went with the Tasks panel, 2026-10-26.)
 
 ## Surfaces: live preview and question notifications (stage 7; the agent board was removed), 2026-10-22
 
@@ -1318,12 +1348,397 @@ Issue #31. Choices: `docs/surfaces/decisions.md` (Stage 8, the app part); the ho
 The owner used the build and said: "whats the agent board i dont get the new right click menu options ... and why cant i view in sidebar as an option. also the sidebar with the preview of a file isnt super great its a bit buggy sometimes when moving the sidepanel to grow it or shrink it will bug out, and im not sure if text wraps or disappears". Then, of the board: "this is basically useless remove it". Choices: `docs/surfaces/decisions.md` (Round 9); what the splitter did wrong and what fixed it: `docs/surfaces/lessons.md` (Round 9); the rules: `docs/regression-rules.md` 215 to 219.
 
 - **The agent board is removed** (see the stage 7 section above for the list and the test that holds a stored one is dropped).
-- **The terminal menu says what its Surfaces rows do.** On a tab that runs Claude, after a rule (their own group, a wider gap with a hairline), the rows are "Show files Claude changed" and "Show task list" ("Hide files Claude changed" and "Hide task list" while open; the rows show only on a tab that is Claude, by session or detection, so the wording never varies). Each has its own glyph in the menu glyph set (`menu-changes`, a page with a plus and a minus; `menu-tasks`, a checklist). A tab with no agent gets neither (they would be empty). Tests: `the_terminal_menu_offers_the_changed_files_and_the_task_list_only_on_a_claude_tab`, `glyph_paths_match_the_slint_file`.
+- **The terminal menu says what its Surfaces row does.** On a tab that runs Claude, after a rule (its own group, a wider gap with a hairline), the row is "Show files Claude changed" ("Hide files Claude changed" while open; the row shows only on a tab that is Claude, by session or detection, so the wording never varies), with its own glyph in the menu glyph set (`menu-changes`, a page with a plus and a minus). A tab with no agent does not get it (it would be empty). A second row, "Show task list" with a checklist glyph, went with the Tasks panel (2026-10-26). Tests: `the_terminal_menu_offers_the_changed_files_only_on_a_claude_tab`, `glyph_paths_match_the_slint_file`.
 - **"Show in side panel" on a path's menu.** A right-click on a path that is a picture or a text file (the kinds a left click would preview, vetted the same way: the backend resolves the path again and both names must be of the same previewable kind) adds "Show in side panel" right after "Open". It is an explicit ask, so it works whatever "Open previews in Flare" says about plain clicks. A script, a program, an svg, a pdf, a folder and a page do not get the row. Tests: `show_in_side_panel_follows_open_for_a_file_the_panel_draws`, `show_in_side_panel_is_offered_only_where_a_left_click_would_preview`, `show_in_side_panel_on_a_text_file_menu_opens_the_preview_and_opens_nothing_in_windows`, `show_in_side_panel_works_even_when_plain_clicks_open_files_in_windows`, `show_in_side_panel_on_a_picture_menu_and_never_for_a_script_or_a_folder`.
 - **Long lines wrap in the text preview.** Before, a long line ran off the right edge and looked as if it disappeared. Now the rows are wrapped to the columns that fit (after a space or a dash in the last quarter of a row, else a hard cut), the line-number gutter shows a number on a line's first row only, the header says "N lines" (lines, not rows), and only the rows in view are built. The wrap is LIVE (2026-10-23, owner: "make that dynamic so it wraps as you move it, thats how other programs work like notepad, even flare in general if you make the window smaller things wrap"): the rows wrap to the current width at every step of a splitter drag and of a window resize, the line at the top of the view stays at the top, and the exact final wrap follows the last step. A file under 200 KB of shaped text is wrapped where the step lands (a refresh during the move wraps live as well, never the exact way) (about 4 ms measured in a debug build for a 1000-line, 100 KB file, less in release); a bigger one on a worker, one wrap in flight, whose answer wraps again to the newest width, so a drag is never stalled. The terminal grid still fits once, at the release (rule 24). A button in the panel header (a bent-line glyph, left of the close button) and the setting **Wrap long lines in previews** (Settings > Terminal > Links, `flare.window.wrapPreviews`, default on) flip it; off, the rows are the lines and the view scrolls sideways as before. A file over 1 MB is wrapped on a worker while the panel says "Opening". Tests: `flare_surfaces::wrap` (5), `ui_tests::panel_wrap` (8, at 100 and 225 percent: a 500 character line takes several rows, the gutter numbers first rows only, nothing past the right edge, 300 000 rows stay virtual, the button), `a_long_line_wraps_by_default_and_the_header_button_turns_it_off_and_on`, `a_splitter_drag_wraps_live_at_every_step_and_the_release_changes_nothing_more`, `a_live_drag_keeps_the_line_at_the_top_in_place`, `a_big_file_drag_never_stalls_the_ui_and_ends_exact`, `a_small_file_wrap_per_step_is_cheap`, `narrowing_the_slot_mid_drag_rewraps_at_once_so_the_text_never_overflows_or_is_cut`, the e2e `panelSplitter` (rows re-wrap mid-drag), `a_big_file_wraps_on_a_worker_and_a_stale_answer_changes_nothing`, `the_wrap_row_is_a_switch_that_is_on_until_turned_off`.
 - **The splitter, tested the way a hand drags it.** `appctl::tests::splitter_tests` (headless, through the real controller, 100 and 225 percent, a picture and a text file) and the end to end `panelSplitter` (the release exe, GPU renderer, real pointer events and window pictures) drag in many steps, quick and slow, past both limits and back, and check after every step that the slot and the splitter stay inside the limits and on the slot's edge, the slot follows the pointer to the device pixel and never against it, the grid is held and not fitted during the drag and fitted exactly once on the release, the panel's content is on the frame, nothing odd shows in the gap, and the grab is let go when the pointer leaves the window. What was wrong and what fixed it: `docs/surfaces/lessons.md` (Round 9).
 
 - **Review fixes (round 9, 2026-10-22).** A re-wrap keeps the line at the top of the view (and a view scrolled sideways returns to the left edge when wrap turns on); wrapping counts display width (CJK and emoji take two columns); while the splitter is held a narrowing slot lets the wrapped rows overflow sideways instead of cutting them; a tab switched by chord during a drag lets go of the grab; a page in front (Settings) no longer unwraps and re-wraps the file; "Show in side panel" on a file that went away or is no longer showable says "Cannot show this file" in the panel and still opens nothing in Windows; PRIVACY.md no longer describes the removed board; the e2e scenario file `board.rs` is `live_preview.rs` (group `preview`). The owner's "bug out when growing or shrinking" was not reproduced: a short screen recording would settle it.
+
+## Plugins phase 1: badges and progress on Claude's own tab, 2026-10-25
+
+The first phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design: `docs/superpowers/specs/2026-10-25-plugin-system-design.md`,
+sections 5.1, 5.2, 8 and 13). No plugins yet: Claude puts a badge or a progress on the tab it runs in, and the drawing
+every later phase uses is built. The methods: `docs/surfaces/protocol.md` (`tabs.badge.*`, `tabs.progress.*`).
+
+- **What shows.** An outlined pill just before the tab's end in the strip (left of the ring on a sidebar row) holds a
+  progress meter (a static fill from 0 to 1, or four dots when the amount is unknown) and badge glyphs (phone, globe,
+  bell, mic, eye, moon, lock, bolt, star, plus, pin, 14 px, in the tab's ink, an accent or a muted tone). At most 2
+  chips: 2 on a named tab of 150 css px or more, 1 from 110, none below or on an icon tab; the name narrows by what the
+  pill takes. Never at the tab's foot (the agent's bar mark stays whole) and nothing animates. Every piece is a line in
+  the tab's tooltip (`Claude: Review 50%`, `Claude: Call-me is on`); the pill has no pointer area, so a drag still
+  starts on it. Tests: `ui_tests::decor` (5: the pill's place at 100, 150 and 200 percent, the name giving way, no
+  room and icon tabs, the bar under it untouched, the sidebar row), `tabs_ui` (3), `menus_ui` (the glyph pin test and
+  `every_built_in_badge_has_a_glyph_and_nothing_else_does`).
+- **The model.** `flare_tabs::decor`: badges keyed by who set them and a key (replace by key, clear by key, clear by
+  source, 4 keys a tab and 200 in all per source), one progress a tab, which chips a tab draws for its width, and the
+  tooltip lines. Flat fields in the Slint row (`chip1-cmd`, `chip1-tone`, `chip2-cmd`, `chip2-tone`, `chip-count`,
+  `prog`, `chip-room`), so the row diff stays one compare. Tests: `flare_tabs::decor` (11).
+- **The channel.** A `Decor` namespace with `tabs.badge.set|clear` and `tabs.progress.set|clear`, a `decorate`
+  permission (the agent holds it; a `mod.json` cannot ask for it yet), for the caller's own tab only. Key, icon, tone,
+  tip (the manifest's clean-text rule, 80 characters) and value are checked on the channel's worker, and each change is
+  spent from 10 a second per tab and caller there, before the window is asked. Tests: `flare_ctl::grant` (incl.
+  `a_grant_with_no_permission_may_call_only_hello_and_tabs_list`), `flare_ctl::decor`, `flare_ctl::method`,
+  `ctl_app` (4: own tab only, bad params named, what each op carries, the rate), `flare_mods::manifest`.
+- **Cleared with the session.** The agent hub reports a tab whose Claude session changed from one id to another or
+  whose agent left; the window clears the agent's pieces on those and on close. Tests:
+  `agent_hub::the_agent_decor_goes_when_the_session_changes_or_the_agent_leaves`,
+  `appctl::tests::a_badge_and_a_progress_from_the_channel_reach_the_drawn_row`,
+  `appctl::tests::the_agent_decor_goes_with_its_session_its_agent_and_its_tab`.
+- **The agent's tools.** `flare-mcp` lists 19 tools: the 15 before, then `set_tab_badge {key, icon, tip?}`,
+  `clear_tab_badge {key}`, `set_tab_progress {value?, label?}` and `clear_tab_progress`. Tests: `flare-mcp` (3 new,
+  and the counts in `tests/stdio.rs`), the e2e tool list in `mcpRoundTrip`.
+- **By hand (step 9 of the plan, the owner):** in a NEW Claude session after the install (a running session keeps its
+  tool list), `set_tab_badge phone` and `set_tab_progress 0.5` show in the strip and the sidebar.
+
+## Plugins phase 2: the protocol 2 manifest, the plugin permissions, Settings > Plugins, 2026-10-25
+
+The second phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 3, 4, 9 and 13). A plugin is
+a folder with a `plugin.json` that says protocol 2; a protocol 1 mod (`mod.json`) reads and behaves exactly as before.
+The keys of later phases are checked now and run later. The contract: `docs/surfaces/plugins.md`, "The manifest".
+
+- **The manifest.** `plugin.json` adds `author`, `homepage` (`https://` only), `background`, `bar {entry, height 24 to
+  160}`, `contributes {sidebar (2), actions (8, places tab-menu, tab-hover, top-bar, session-bar), icons (32 SVG paths
+  of path characters, 2 KB)}` and `helper {command (.exe in the folder), args (16 of 200)}`; each key goes with its
+  permission both ways, and unknown keys are refused at every level. `mod.json` must say protocol 1 and `plugin.json`
+  protocol 2; a protocol 2 key in a `mod.json` is refused with a pointer to `plugin.json`. Tests: `flare_mods::manifest`
+  (the plugin vectors, one per key), `flare_mods::paths` (the helper's `.exe` rule).
+- **Two folders, one id space.** `<profile>\plugins\` is read after `<profile>\mods\` (either file in either); an id in
+  both is refused in `plugins\`; every file a manifest names must be a real file in the folder. Tests:
+  `flare_mods::discover` (incl. `an_id_in_both_folders_is_refused_in_the_plugins_folder` and
+  `the_sample_plugins_are_valid`, which loads `sample-plugins/`). Replaced in phase 2c: one folder, `plugins\`.
+- **The permissions.** `tabs`, `decorate`, `sidebar`, `actions`, `bar`, `sessions`, `input`, `network` and `process`,
+  askable only from protocol 2 (`ASKABLE_V1` is the old five). In `flare-ctl` each new method family has its own
+  namespace (`Sidebar`, `Actions`, `Bar`, `Session`, `Input`) opened by exactly its permission, nothing rides on the open
+  `Tabs` one, `network`, `process` and `tabs` open no method, and the agent enters none of them. `tabs` is to widen the
+  tab a call may name (`Grant::may_act_on_any_tab`, defined and tested); nothing calls it yet, so every call still acts
+  on the caller's own tab (it is wired with the background pages). Their methods come with their phases. Tests:
+  `flare_ctl::grant` (`each_namespace_is_opened_by_exactly_its_own_permission`,
+  `a_grant_with_no_permission_may_call_only_hello_and_tabs_list` and four more).
+- **The approval.** The switch store stays `mods.json` (version 1): a plugin's entry adds `author`, `homepage`, `source`
+  (once install exists) and `hash` (`sha256:` over the folder's files, made on the save worker); protocol 1 entries are
+  written byte for byte as before. A plugin whose author or homepage changes is turned off until approved again, as one
+  that asks for more is. A plugin whose tools only a background page could answer offers none yet (a note says so).
+  Tests: `flare_mods::enabled`, `flare_mods::hash`, `flare_mods::hub` (the plugin tests).
+- **Settings > Plugins.** The page keeps its key `mods` and is titled Plugins, with an Open plugins folder row above the
+  mods folder row (phase 2c: the plugins folder row only). A protocol 1 mod's card is unchanged; a plugin's adds "Made by" (author, homepage), its permissions in
+  plain words, and a warnings row: "Full control" for `process` and `input`, the combined notes for `input`+`sessions`,
+  `network`+`sessions`, `network`+`tabs`, and `network`'s own. Tests: `flare_settings::page::mods`,
+  `ui_tests::settings_mods` (at 100 and 225 percent), `mods_ctl::the_page_info_of_a_plugin_has_its_maker_and_warnings_and_a_mod_has_none`.
+- **Not built in this phase** (the plan's later phases): background pages, a call naming another tab under `tabs`, the
+  sidebar sections and actions, the bar, the helper and install from a zip or a URL. Their manifest keys are parsed and validated only.
+
+## Plugins phase 2b: views keyed by slot, 2026-10-25
+
+Phase 2b of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design 13): a refactor that the background pages and
+the bar build on. Nothing the person sees changes, except that a mod's page can no longer show an `alert`, `confirm` or
+`prompt` dialog (design 13: no script dialogs in any plugin view).
+
+- **Slots.** `flare_surfaces::slot::Slot {owner, kind}`, kind `Panel` (owner a tab), `Bar` (owner a tab) or
+  `Background` (owner a plugin id). `flare_web::WebHost` keys its views, held downloads, file reads and callbacks by
+  slot, with a generation per slot (kept after a close, so a late callback of a slot's earlier view is let go).
+  `WebBackend` gained slot methods (`open_view`, `close_view`, `set_view_bounds`, `set_view_visible`, `post_to_view`,
+  `probe_view`); the tab methods act on the tab's panel and behave as before. An event of a bar or background view
+  comes as `WebEvent::View {slot, event}`, so code that knows only panels never mistakes it for a tab's. A bar or
+  background slot takes only a mod's or plugin's page. `ModCtl` keys its pages by slot too (a bare tab id means its
+  panel), a reply names its slot, and a background page's call has no tab. The app makes only panels so far. Tests:
+  `flare_surfaces::slot`, `flare_web::backend` (the three slot tests with the fake), `mods_ctl::pages_are_kept_by_slot_and_a_background_page_calls_with_no_tab`.
+- **One seal.** `WebHost::seal_plugin_view` puts up every wall of a mod's or plugin's view from `flare_web::seal::plugin_seal(kind)`:
+  no script dialog (dismissed at once), no window of its own, no permission, no external program, no developer tools
+  or status bar, frames of its own host only; a bar and a background page also have no context menu, no browser keys
+  and no download (cancelled at once), while a panel keeps its menu, keys and the download question as before. Tests:
+  `flare_web::seal` (one per kind) and `every_kind_of_plugin_view_is_sealed_as_its_kind_says`.
+- **The plugins' own browser.** Mods and plugins run in a WebView2 environment of their own (`EnvKind::Plugin`), apart
+  from the web panel's and the mini-apps'. It keeps the folder the mods' profiles were always in
+  (`<profile>\WebView2-app-sealed`, `modview::env_folder`), so every `flare-mod-<id>` profile and its storage stay where
+  they were; the sealed mini-apps, which keep nothing on disk, moved to `WebView2-mini-sealed`. Test:
+  `the_plugins_browser_keeps_the_mods_folder_and_shares_it_with_nobody`.
+
+## Plugins phase 2c: one plugins folder, 2026-10-25
+
+Asked for by the owner after phases 2 and 2b: every plugin, protocol 1 (`mod.json`) and protocol 2 (`plugin.json`)
+alike, lives in one folder, `<profile>\plugins\`. The contract: `docs/surfaces/mods.md`, "Where mods live and when they
+run".
+
+- **One folder.** Flare reads only `<profile>\plugins\` (`flare_mods::discover(dir)`; the `Root` of a found mod and the
+  second root are gone). Its refusals name "the plugins folder" ("not a plugin id", "a link to somewhere outside the
+  plugins folder"). Tests: `flare_mods::discover` (incl.
+  `mods_and_plugins_share_the_one_folder_and_the_old_mods_folder_is_not_read`).
+- **The move.** The first scan (on the scan worker, before it reads) moves every folder of `<profile>\mods\` whose name
+  is a legal id and that `plugins\` does not hold into `plugins\` by a rename. A name `plugins\` already holds stays in
+  `mods\` and is a "Not loaded" row in Settings > Plugins naming it in one sentence; a folder whose name is not an id
+  is left alone; an emptied `mods\` is removed, else it keeps what could not move. It runs once per start, so nothing
+  is moved twice. The switch, approval (`mods.json`, name unchanged) and storage (`flare-mod-<id>`) are by id, so a
+  moved mod keeps them. Tests: `flare_mods::migrate` (5: moved and the empty folder removed, a clash kept and named, a
+  non-id folder and loose files left alone, nothing moved twice, the plugins folder made only when something moves),
+  `flare_mods::hub::the_first_scan_moves_the_old_mods_in_and_a_moved_mod_keeps_its_switch`,
+  `mods_ctl::the_page_info_of_a_plugin_has_its_maker_and_warnings_and_a_mod_has_none`.
+- **Settings > Plugins.** One folder row, `plugins-folder`, "Open plugins folder"; the mods folder row and every
+  "mods folder" word are gone. The scan worker makes the folder at start and each time the page opens (the old mods
+  folder is never made). Tests: `flare_settings::page::mods::the_one_folder_row_comes_first_opens_the_plugins_folder_and_shows_its_path`,
+  `ui_tests::settings_mods::the_plugins_folder_button_opens_the_plugins_folder`,
+  `mods_ctl::a_scan_runs_on_a_worker_and_a_second_ask_runs_after_it`.
+- **e2e.** `modsSample` copies the sample into the profile's `plugins\` and checks the `plugins-folder` row; its other
+  expectations are unchanged.
+
+## Plugins phase 3: background pages, events, any tab, decor for plugins, 2026-10-25
+
+The third phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 5.1, 6, 10 and 13). The
+contract: `docs/surfaces/plugins.md`, "Background pages" and "Events", and `docs/surfaces/protocol.md` (the tab scope, the
+wide `tabs.list`, decor for plugins).
+
+- **Background pages.** A protocol 2 plugin that is on and has `background` gets a hidden view of it, tied to no tab,
+  in the plugins' browser and its own profile, sealed as a background view and never focused (`WebCtl::open_background`,
+  `AppCtl::sync_backgrounds`); at most 6 on at once (the seventh switch is refused with the reason); 3 restarts in 5
+  minutes, then "Stopped" under its switch in Settings; a 10 s ping with no answer is an end; safe mode after two
+  unclean starts in a row with plugins on, or `--no-plugins`, or Shift at launch (`plugin_safe`). Tests:
+  `appctl::tests::mods_tests` (`a_plugin_with_a_background_page_gets_one_hidden_sealed_view_tied_to_no_tab_while_it_is_on`,
+  `a_background_page_that_ends_is_started_again_three_times_in_five_minutes_then_stays_stopped`,
+  `a_background_page_that_does_not_answer_the_ping_in_ten_seconds_is_closed_and_counts_as_ended`),
+  `flare_mods::hub` (the cap, the generation, safe mode, stopped), `plugin_safe` (2), `flare_settings::page::mods`
+  (`a_stopped_background_page_and_safe_mode_are_said_in_warning_rows`), `config` (`--no-plugins`).
+- **Tools in the background page.** A plugin with a background page answers its tools there; no panel opens. Protocol 1
+  and plugins without one keep the panel routing (the e2e `modsSample` is unchanged). Tests:
+  `a_tool_of_a_plugin_with_a_background_page_is_answered_there_and_no_panel_opens`,
+  `flare_mods::hub::tools_of_a_plugin_with_a_background_page_are_answered_by_it`.
+- **Events.** The bridge's `on()` takes `tool`, `tabs`, `agent` and `plugin`, and answers the host's ping itself; after
+  each refresh the window compares the tabs with what the plugins last heard (`tab_events`: opened, closed, focused,
+  renamed, moved, panel, and agent kind, state and session) and hands each change to the pages that listen and may see
+  the tab, at most 32 a page a round. Tests: `flare_mods::bridge` (2 new), `tab_events_say_what_changed_and_only_that`,
+  `events_reach_every_page_that_listens_and_may_see_the_tab`.
+- **Any tab, decor and the wide list.** With `tabs` a call names any tab by its public id (never a secret); a background
+  page needs `tabs` to name one. Plugins decorate as `plugin:<id>`, with their own `contributes.icons` (at most 256
+  commands, numbers within +-1000) drawn in the chip, one badge drawn per plugin per tab, 30 changes a second per plugin;
+  everything a plugin drew goes when it is turned off or its background page ends. Tests: `ctl_app` (4 new: the scope,
+  the 30 a second, the wide list, the own panel on a named tab),
+  `a_plugin_with_tabs_lists_and_decorates_any_tab_by_its_public_id_and_its_decor_goes_when_it_stops`,
+  `tabs_ui::a_plugins_badge_draws_its_own_icon_and_says_its_name`, `flare_tabs::decor` (2 new),
+  `flare_mods::manifest` (the icon limits).
+- **The budget.** `flare_mods::limit`: one limiter per plugin shared by its pages, 50 messages a second (burst 100), 2 MB a
+  second, 256 KB a message; the browser glue drops a page's message over it before copying it, the window spends it, a
+  pipe connection spends it in the dispatcher. Tests: `flare_mods::limit` (4),
+  `a_plugins_pages_share_one_budget_and_a_message_over_it_is_dropped_unread`.
+- **Sample.** `sample-plugins/browser-badge` (a background page: a globe on a tab while its browser panel is open);
+  `manifest-tour`'s background page now answers `add_item`. Both load as valid in
+  `flare_mods::discover::tests::the_sample_plugins_are_valid`.
+
+## Plugins phase 4: sidebar sections and actions, 2026-10-25
+
+The fourth phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 5.3, 5.4 and 13). The
+contract: `docs/surfaces/plugins.md`, "Sidebar sections and actions", and `docs/surfaces/protocol.md` (`sidebar.set`,
+`actions.set`, click scope).
+
+- **Sections.** Each `contributes.sidebar` entry of a plugin that is on is a section under the tab list in the vertical
+  layout, drawn by Flare in the sidebar's look under the plugin's name (`ui/plugin_sections.slint`): a header that
+  folds on a click and has a menu (Move up, Move down, Fold), items with a checkbox, an icon, a second line and a jump
+  arrow, and a note when empty; at most 6 in all, in the person's order (`plugins.sidebar.order` and
+  `plugins.sidebar.folded` in the preferences), at most 45 percent of the sidebar. In the horizontal layout a Plugins
+  button in the title bar opens the same rows as a dropdown (an overlay: `Overlay::PluginsDropdown`). The model:
+  `plugin_ui` (pure); the window: `appctl::plugins_glue`. Tests: `plugin_ui` (9), `ui_tests::plugin_surfaces` (the
+  room, the ticked box, the clicks, the cap of the height, the dropdown), `a_section_is_drawn_under_its_plugins_name_set_by_sidebar_set_and_its_ticks_and_clicks_are_events`,
+  `sections_and_buttons_are_capped_and_the_persons_order_and_folds_are_kept`,
+  `the_plugins_dropdown_opens_from_the_top_bar_only_while_a_section_is_drawn`.
+- **`sidebar.set` and `actions.set`.** New methods in the `Sidebar` and `Actions` namespaces, checked on the worker
+  (declared key, fields, 50 items, 120-character clean lines, icons, a tab the plugin may see; 5 a second per section,
+  20 a second per plugin) and applied only for the generation they were checked for. Tests:
+  `sidebar_set_is_five_a_second_for_one_section_and_only_a_plugin_calls_it`, the refusals in the two appctl tests above
+  and below.
+- **Actions.** `tab-menu`: one flyout per plugin under its name in a shell tab's menu (`MenuRowData` gains `flyout`,
+  `parent` and an own icon path). `tab-hover`: Flare's outlined chip (`PluginChip`) on a hovered tab of 110 px or more
+  and on a hovered sidebar row, left of the badges and never over the ring, two on a tab at most. `top-bar`: up to 3
+  chips left of the update chip and the window buttons, with a 10 px gap of their own. State per tab or for every tab,
+  ticked and faint. A click is the page event `action` `{key, tab}` (to the background page when it listens), an item's
+  click or tick `sidebar.item` `{key, item, checked?}`; a background page's tool call says the agent's `tab`. Tests:
+  `actions_show_in_the_tab_menu_on_hover_and_in_the_top_bar_and_a_click_is_an_event_with_click_scope`,
+  `ui_tests::plugin_surfaces` (hover buttons: place, never over the ring, none on narrow or icon tabs, the click; the
+  top bar's gap in both bars), `flare_mods::bridge` (2 new), `ui_tests::overlay_order`, `ui_tests::panel` (the new
+  overlay term).
+- **Click scope.** A click on a plugin's action or item on tab X lets that plugin act on X until X closes or the plugin
+  is turned off (`Hub::grant_click_scope`, read by `AppDispatcher::scoped_tab`). Tests:
+  `flare_mods::hub::a_plugin_on_shows_what_it_contributes_and_a_click_scope_lasts_until_it_stops_or_the_tab_closes`, and
+  the actions test above.
+- **Sample.** `sample-plugins/todo`: to-dos per session tab in a sidebar section, `add_todo` and `todo_done` for Claude,
+  ticked off after a moment, kept in the page's `localStorage`, "Add to-do" in a tab's menu. It loads as valid in
+  `flare_mods::discover::tests::the_sample_plugins_are_valid`.
+
+## Plugins phase 5: sessions, typing and storage, 2026-10-26
+
+The fifth phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 6, 7 and 13). The contract:
+`docs/surfaces/plugins.md`, "Sessions, typing and storage", and `docs/surfaces/protocol.md` (`session.read`,
+`tabs.input`, `storage.*`).
+
+- **Session events.** `window.flare.on('session', fn)` hears `{tab, session, role, text, tool?, at?, dropped?}` for
+  each prompt, reply and tool call of a tab's Claude session, for a plugin that holds `sessions` and may see the tab;
+  text cleaned and at most 2000 characters; 50 a second per plugin, the rest counted in `dropped`. The entries:
+  `flare_convo::said`; the follower: `flare_convo::follow` (the transcript tail started at its end,
+  `Tail::skip_to_end`); which tabs are followed and each plugin's share: `plugin_sessions` and
+  `appctl::sessions_glue`. A tab is followed only while a page listens and may see it and its session is known; off,
+  nobody listening or the tab closed stops it. Tests: `flare-convo/tests/said.rs` (7), `plugin_sessions` (3),
+  `a_tab_is_followed_only_while_a_plugin_with_sessions_listens_and_may_see_it`,
+  `each_plugin_hears_fifty_entries_a_second_and_the_next_event_says_what_it_missed`.
+- **`session.read`.** The last 200 entries, read from the transcript's last 4 MB on the call's worker; once a second per
+  tab. Test: `session_read_gives_the_last_two_hundred_entries_to_a_plugin_that_holds_sessions_only`.
+- **`tabs.input`.** Typing for a plugin that holds `input`, on a tab it may see: one paste the way the person's goes
+  (bracketed when asked), the Enter 300 ms later only while the tab is open and the plugin on; 4 KB, control characters
+  refused but tab and line breaks, 2 a second per tab. The typed intent is `flare_term::handle::PluginInput` (regression
+  rules 2 and 188 amended: the plugin exception, never the agent). Tests:
+  `tabs_input_types_as_a_paste_with_its_checks_and_the_enter_comes_after`,
+  `the_enter_is_not_pressed_once_the_plugin_is_off_and_a_closed_tab_takes_nothing`,
+  `rule_s3_the_agent_cannot_type_into_shells_change_settings_or_enable_mods` (now with `tabs.input`).
+- **Storage.** `storage.get {key?}` and `storage.set {key?, value}`: each protocol 2 plugin's own JSON object in
+  `<profile>\plugins-storage\<id>.json`, at most 1 MB (`too_large`), read on the call's worker, written atomically by
+  a writer thread at most twice a second (`flare_mods::storage`). A new `Storage` namespace that needs no permission and
+  is closed to the agent; a protocol 1 mod is refused. Tests: `flare_mods::storage` (7),
+  `storage_is_each_plugins_own_and_never_a_protocol_1_mods_or_the_agents`, the grant table
+  (`a_grant_with_no_permission_may_call_only_hello_tabs_list_and_its_own_store`).
+- **Settings.** `input` already reads "Type and run commands in your terminals (full control)" and `input` with
+  `sessions` adds "With both, it can read what Claude says and steer Claude by typing to it." (unchanged, tested in
+  `flare_mods::hub` and `ui_tests::settings_mods`).
+
+## Plugins phase 6: session bar, network and audio, 2026-10-26
+
+The sixth phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 5.5, 5.6, 8 and 13). The
+contract: `docs/surfaces/plugins.md`, "Session bar, network and audio", and `docs/surfaces/protocol.md` (`bar.show`,
+`bar.hide`, `view.audio`, `show_audio`).
+
+- **The session bar.** `bar.show {tab?}` and `bar.hide {tab?}` (namespace `Bar`, permission `bar`; once a second per
+  plugin per tab) put the plugin's strip (`bar.entry`, `bar.height` 24 to 160) under a tab's terminal. One bar a tab: a
+  second plugin gets `busy`. The terminal is laid out shorter by the bar's height and the shell is resized once (the
+  window-resize path, no animation); the bar shows only while its tab is in front with its terminal. Its page is a
+  plugin view in the bar slot, sealed as a bar, made lazily for the tab in front, hidden behind or under a Flare
+  overlay, at most two kept a plugin and 12 plugin views in all (`plugin_bar::MAX_VIEWS`: the panels of mods and
+  plugins and the background pages stay, an older bar behind goes; the front one always shows), and never the keyboard. Every bar of a plugin goes when it stops, a tab's with the
+  tab, and a bar page that ends takes its bar. The pure part: `plugin_bar` (one bar a tab, the height limits, what a
+  plugin stops, which views go past two or past the total); the window: `appctl::bar_glue` and `WebCtl::sync_bars`; the layout:
+  `bar-h`, `bar-row` and `bar-web-*` in `app.slint`.
+- **`session-bar` actions.** Drawn as Flare's chips at the right end of the bar row (at most 4), with `actions.set`
+  state; a click is `action {key, tab}` with click scope.
+- **`network`.** A plugin that holds it runs its pages in a networked plugins' browser (`EnvKind::PluginNet`,
+  `WebView2-plugin-net`: the WebRTC policy and a resolver that knows no local name and no local address range, the
+  wall for a WebSocket, which `https:` in the policy matches as `wss:` and which never meets the request wall) with the policy
+  `flare_mods::serve::NET_CSP` (https `connect-src`, `img-src`, `media-src`; `frame-src 'none'`, `form-action 'self'`,
+  `base-uri 'none'`); the request wall lets out only https to a public host (`flare_surfaces::net`: loopback, private,
+  shared and link-local ranges, dotless hosts and local names refused). No navigation away and no window, as before.
+  Without it the policy is the sealed one. The combined Settings warnings for `network` with `sessions` and with
+  `tabs` were already there (phase 2).
+- **Audio.** `view.audio {path | url, title?, autoplay?}` (namespace `View`) and the agent's `show_audio` in
+  `flare-mcp`: Flare's own player page (`flare_surfaces::audio`) in the panel, a mini-app whose policy lets in its own
+  copied track (at most 100 MB, the sound types by both names, rules 13 and 14) or one public https origin; play,
+  pause, seek, no loop, autoplay only when asked and once. A plugin plays an address only with `network`.
+- **Tests.** `plugin_bar` (5), `appctl::tests::mods_tests::plugin_bar` (3: the bar and its one fit, `busy`, the rate,
+  lazy views, hiding behind a tab and an overlay, clearing on hide, off and tab close; the chips and their clicks; the
+  bar page's calls; networked pages), `ui_tests::plugin_bar` (3: the grid gives up the height at every scale, the row
+  under it, the chips' room and clicks, nothing while the grid is not in front), `flare_surfaces::net` (2),
+  `flare_surfaces::audio` (4), `modview` (4 new), `flare_mods::serve` (the policy per permission), `flare_mods::hub`
+  (`a_plugins_bar_and_network_count_only_while_it_is_on_with_them_approved`), the grant table
+  (`bar_opens_only_the_bar_and_view_opens_the_audio_player`), `ctl_app` (`view_audio_*`, 2) and `flare-mcp`
+  (`show_audio_routes_a_path_made_absolute_or_a_url_to_view_audio`, the pinned tools list).
+
+Builder's calls (the owner may overrule):
+- "Unless the user pinned it" (design 5.5) is not built: there is no pin yet, so a second plugin is always `busy`.
+- The bar's page hides under any Flare overlay instead of showing a still (it is a thin strip; the panel's still
+  machinery is for the panel).
+- A click that gives the bar's page focus hands the keyboard back to the terminal at once ("never take focus").
+- A networked plugin's profile lives in its own browser folder, so a plugin that gains or loses `network` in an update
+  starts with empty page storage (two browsers with different arguments cannot share a folder).
+- The networked plugins' browser walls the local addresses in its resolver (`MAP 127.* ~NOTFOUND` and the like), not
+  with a proxy script: Chromium sends loopback and link-local direct whatever a script says, and `<-loopback>` works
+  only with a fixed proxy (`net/docs/proxy.md`). That the rules apply to an address written as numbers is read from
+  Chromium's `HostMappingRules`, not yet measured on this runtime; a public name whose first label is such a number
+  (`10.example.com`) is not found either.
+- `show_audio` with an address uses the networked mini-app browser whatever the mini-app network switch says (that
+  switch is for pages the agent writes); the page is Flare's and its policy lets in one origin's media only.
+
+## Plugins phase 7: helper programs, install, update and remove, 2026-10-26
+
+The seventh phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 4, 9, 10 and 13). The
+contract: `docs/surfaces/plugins.md`, "Helper programs" and "Install, update, remove", and `docs/surfaces/protocol.md` ("Events", a
+plugin's helper).
+
+- **Helper programs.** `flare_mods::helper::Host` starts a plugin's `helper.command` (an `.exe` checked again inside
+  the folder by `paths::program_inside`) for a plugin that is on and holds `process` in its live grant
+  (`Hub::helper_of`), suspended, in a kill-on-close job object of its own, then resumed; `CREATE_NO_WINDOW`, the plugin
+  folder as its current folder, stdin closed, `FLARE_TAB_TOKEN` and `FLARE_RESUME_ID` removed, `FLARE_PLUGIN_TOKEN`
+  and `FLARE_CTL_PIPE` set on the child. stdout and stderr go to `<profile>\plugins-logs\<id>.log` (moved to `.log.1`
+  past 1 MB). An end by itself restarts it at once, 3 times in 5 minutes, then it stays stopped
+  (`helper::STOPPED_HELPER` in Settings) until the plugin is switched. Turning the plugin off terminates its job before
+  Settings hears it is off; the quit stops every helper. Starting, waiting and logging run on the helper's own threads.
+  The window: `appctl::install_glue` (`sync_helpers` after every change of the plugins, beside `sync_backgrounds`).
+- **Helper events.** `flare_ctl::session::Hub::publish_to_owner` routes an event to the connections that said hello
+  with one plugin's token; the window sends a helper the `tabs` and `agent` events of each refresh when its plugin
+  holds `tabs`, and `session` entries with `sessions` (and `tabs` or click scope).
+- **Install.** `flare_mods::install`: the zip rules (create-new writes, links, encryption, traversal, drives, `:`, `\`,
+  device names, case duplicates, 200 characters, 8 folders, 16 MB an entry, 100 MB, 50 MB, 2000 entries), staging in
+  `plugins\.staging\<random>` checked by `discover::check_folder` and hashed before anything lands, the commit by
+  rename with the old copy moved aside and put back on a failure, and the Recycle Bin (`SHFileOperationW`, silent).
+  `flare_mods::fetch`: the download (https on every hop, at most 5 redirects followed one at a time, the phase 6 address
+  wall and a resolver that drops local addresses, 50 MB counted, 60 seconds, no cookies, no proxy). The hub
+  (`hub::lifecycle`): `stage_install`, `pause`, `commit_install`, `remove_plugin`, one disk lock with the scan; the
+  install record (`source`, `hash`) in `mods.json` under `installed`; a change of source is a new approval like a change
+  of author or homepage, and wipes the plugin's storage and browser profile. The workers: `crate::plugin_install`.
+- **Settings > Plugins.** "Install a plugin" (Install from file, a file picker) and "From an address" (a text field,
+  the new `Control::Text` and `SetKind.text`, `SetTextField`; Install or Enter) under the folder row, and Update and
+  Remove on each card's switch row. One install, update or removal at a time; the install row's subtext is what the
+  last one said, a warning when it failed.
+- **Tests.** `flare_mods::install` (7: the name rules, traversal, case, links, the size and count limits, the layouts,
+  the commit and the old copy, leftovers), `flare_mods::fetch` (4: the limit, redirects and their rule, the resolver,
+  a server error), `flare_mods::helper` (7: the environment and the log, the job ends a stopped helper and its child,
+  the restart policy with real processes and as a counter, only an exe inside the folder, log rotation, no token in
+  `Debug`), `hub::lifecycle` (6: installed off with its record, an update asking for more turns off, a downgrade
+  refused, another source wipes storage and profile, remove forgets everything, `helper_of` only on and with
+  `process`), `enabled` (the install record), `flare_ctl::session` (owner events), `flare_surfaces::net`
+  (`ip_refusal`), `crate::plugin_install` (3: the rules, refused addresses, the id an update holds),
+  `appctl::tests::mods_tests::plugin_install` (7: from a file, a refused zip, update and its stop, remove, the
+  picker, a helper on and off with its events, a helper stopped after its restarts), `ui_tests::settings_mods` (the
+  install rows, the field and the buttons) and the Plugins page model.
+
+Builder's calls (the owner may overrule):
+- A downgrade is refused with a sentence instead of asked about (design 13 "a downgrade asks"); removing first installs
+  the older one.
+- "Installing over an existing id shows the differences" is the existing card: an update that asks for more turns the
+  plugin off and its card lists what it asks for now, with "Asks for new permissions"; there is no side-by-side view.
+- Remove asks nothing: the folder goes to the Recycle Bin, so it can be brought back by hand (its approval cannot).
+- Update downloads again from the address the plugin was installed from, or opens the file picker for one installed
+  from a file or by hand; the zip must hold the same id.
+- A plugin's browser profile is deleted as the folder `EBWebView\flare-mod-<id>` of both plugin browsers, after its
+  views closed; that this is WebView2's profile folder is read from WebView2's layout, not measured.
+- The design's "at most 4 pipe connections per plugin token" is not built in this phase.
+- A helper hears `tabs`, `agent` and `session` events without asking for them (a page asks with `window.flare.on`);
+  there is no `plugin` event for a helper, since it is stopped when the plugin turns off.
+
+## Plugins phase 8: samples, call-me and the plugin docs, 2026-10-26
+
+The eighth phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 1, 11 and 13). No Rust
+behaviour changes.
+
+- **Samples.** `sample-plugins/` gains four, each small and commented, with a line in its README: `what-next` (a "Next
+  up" sidebar section Claude fills with `set_next`, kept in the plugin's store; adding `network` and a repository lets
+  the page fetch the open issues from `api.github.com` itself), `sonara-bar` (a bar with play and pause, a seek slider and
+  a title, back and skip as `session-bar` actions, driven by a fake source Claude sets with `sonara_now`; no real Sonara
+  integration), `session-buttons` ("Compact" and "Tell it to carry on" on the hover button, the tab menu and the bar,
+  typed with `tabs.input` and Enter into tabs where Claude runs; `input` is full control) and `look` (a star on a tab
+  whose agent finished while you were elsewhere, and a weighted progress chip from `set_steps`: the weights done over
+  all the weights, so 9 of 10 steps done reads 50 % when the last is half the work). Test:
+  `flare_mods::discover::tests::the_sample_plugins_are_valid` (every sample loads as a valid plugin with the
+  permissions it should hold and uses the methods it says).
+- **Docs.** `docs/surfaces/plugins.md` is the plugin contract (the manifest, the permissions in plain words, the methods
+  per namespace, the events, which tab a call acts on, the limits, the bridge, pages and the serving rule, helpers,
+  install, update and remove, the safety rules); `mods.md` keeps the protocol 1 notes and a pointer. The README's
+  plugin line and `sample-plugins/README.md` point to it.
+- **Call-me.** The call-me skill (outside the repo, `~/.claude/skills/call-me/SKILL.md`) calls
+  `set_tab_badge {key: "call-me", icon: "phone", tip: "Call-me is on"}` when it turns on inside Flare and
+  `clear_tab_badge {key: "call-me"}` when it turns off, and skips both when the tools are absent.
+
+Builder's calls (the owner may overrule):
+- The weighted progress is a plugin tool (`look`'s `set_steps`), in the page's JavaScript; there is no Rust helper to
+  unit test. A workflow without the plugin reports the same value with `set_tab_progress`.
+- The "Tell it" button is titled "Tell it to carry on" and types its preset line (set at the top of its page): a
+  plugin has no prompt to ask for the text.
+- `session-buttons` asks for `tabs` too, only to type nowhere but in Claude tabs (in a plain shell `/compact` and Enter
+  would run as a command).
+- `sonara-bar` and `session-buttons` show their bar from a tab-menu toggle (click scope), so they need no `tabs` for it.
+- `look` has no icon override or effect: `tabs.icon.*` and `tabs.effect.*` are not built. (An agent's icon motion is
+  built separately, see "Agent icons that move".)
 
 ## General review, 2026-10-23
 
@@ -1352,3 +1767,114 @@ A review of the whole app by eight reviewers found these, all fixed on `fix/gene
   system is read synchronously by `set_font`; it needs the build moved to a worker with a swap, a design of its own), and
   term-6's second half (scanner replies such as XTVERSION and OSC 10/11 can still jump ahead of DA replies that alacritty
   holds inside a synchronized update).
+
+## Antigravity (agy) as an agent, 2026-10-26
+
+Spec: `docs/superpowers/specs/2026-10-26-agy-and-agent-motion.md`, Part 1. Facts about agy 1.4.7 and the map of every place
+Flare names an agent: `C:\Users\Admin\Documents\Claude\research\flare\2026-10-26-agy-cli-and-flare-agent-map.md`.
+
+- **The third agent.** `AgentKind::Agy` and `DetectedAgent::Agy`, the word `"agy"` in `tabs.json`, `tabs.list` and the
+  `agent` event, shown as "Antigravity" (close question, ribbon, cursor tag, decor tooltip, notifications). The one list is
+  still `RESUMABLE_AGENTS`; the guard (`no_source_file_lists_the_resumable_agents_by_hand`) now fails on any line that names
+  two of the three. Detection: the program `agy` / `agy.exe` as the first token or a program-file argument (one `agy.exe`
+  process, no node); `agy` is in the prefilter, so `legacy` and `strategy` pass it and the strict match drops them. Under one
+  shell Claude wins, then Codex, then agy, then any other agent.
+- **State from OSC 7501** (`flare-agent` `osc7501.rs`), a third source under the hooks and over titles and output scoring.
+  `OSC 7501 ; state=<idle|working|done|blocked|error|clear>[:kind=permission|question|auth][:app=..][:msg=base64] ST`, BEL
+  or ESC \, key order free, unknown keys ignored, the grammar and limits of the program-status spec
+  (https://www.superlogical.com/rex/docs/build/program-status, read 2026-10-26). working is Working, blocked a Question,
+  done Finished, error Failed, idle nothing; `clear` hands the tab back to the titles and the scoring. `msg` is decoded
+  only into clean text (no control or bidi character) and is not shown anywhere yet. Every shell Flare starts gets
+  `AGY_CLI_OSC7501=on` unless the user set the variable; Flare does not answer agy's `OSC 7501 ; ?` query.
+- **Chosen where the spec left it open.** Only the root record counts: a report with an `id` (a part of the work) is
+  dropped, so a subtask's "done" never marks the tab. A report from a tab with no agent found yet lights nothing; it asks
+  the poll to look and is applied when the poll names an agent (so a plain program's 7501 never makes a shell an agent).
+  Claude's hooks take a tab over from 7501 (Claude Code may send both). A question raised by 7501 is cleared by the
+  program's next report, never by Flare's screen reads. A report goes with its program: a prompt (the shell reported its
+  folder) or a poll answer naming another agent drops it and the marks it set, so an agent that quit without
+  `state=clear` never freezes the next one's marks.
+- **Help.** The command help has `agy` (start) and `agy -c` (carry on the last conversation) under "Claude Code, Codex and
+  Antigravity"; Flare's own entries sit in `tools/oracle-help/flare.mjs` over Prism Terminal's copied catalogue, and the
+  golden searches are regenerated from Prism Terminal's own search.
+- **Fallback.** With no 7501 (an older agy) the poll still names the agent and the output scoring gives working and idle.
+- **Resume.** A saved agy tab comes back with `agy:last`, started as `agy -c` (the most recent conversation in that folder);
+  `valid_resume` accepts the marker, and no id travels.
+- **Icon.** `IconKind::Agy`, row int 3 (Settings moved to 4): the pixel arch of agy's banner, 32 cells on a 10 x 8 grid
+  (the picked mock `docs/surfaces/agy-icon-mock.html` has 32, not the 46 the spec guessed), one Slint `Path` per colour
+  (`Glyphs.agy`, `Theme.agy`), pinned to `flare_agent::icon::{AGY_PIXELS, AGY_COLOURS, agy_paths}` by
+  `ui_text_marks.rs`. It stands still unless a plugin picks a motion (Part 2, "Agent icons that move").
+- **Keys.** agy takes Codex's image paste (^V) and newline (backslash, CR) until they are measured. Ctrl+Backspace sends ^W (0x17) while agy runs: agy deletes a word on ^W or Alt+Backspace and ignores ^H and every encoded Ctrl+Backspace (measured on 1.4.8), and Flare keeps Ctrl+W for closing a tab. Every other program still gets ^H.
+- **Not in this PR.** Hooks for agy, Flare's MCP server in agy's config (`agy mcp add` writes the user's global file),
+  dictation routing, answering the `OSC 7501 ; ?` query (the spec's reply is
+  `OSC 7501 ; ? : states=idle,working,done,blocked,error : kinds=permission,question,auth ST`; agy's own check is not
+  captured yet).
+- Held by `agy_is_found_by_its_program_and_never_by_a_word`, `claude_then_codex_win_over_agy_under_one_shell`, the
+  `osc7501` parser tests, `each_status_drives_its_mark_on_an_agy_tab_away` and the other OSC 7501 indicator tests,
+  `an_agy_tab_is_marked_from_its_osc_7501_reports`, `osc_7501_is_passed_up_raw_with_either_terminator_and_across_chunks`,
+  `an_agent_that_follows_agy_without_a_clear_drives_its_own_marks`, `a_prompt_drops_the_report_of_the_program_that_ended`,
+  `agy_gets_its_own_marker_and_its_word_round_trips`, `agy_resumes_its_last_conversation_with_no_id`,
+  `an_agy_tab_comes_back_as_agy_c_wearing_its_icon_from_the_first_frame`, `turns_agys_status_reports_on_unless_the_user_chose`,
+  `the_agy_icon_is_the_banners_rainbow_arch`, `the_agy_glyph_is_the_agent_crates_paths` and `agent_icons_are_eighteen_pixels`.
+
+## Agent icons that move, picked by a plugin, 2026-10-27
+
+Spec: `docs/superpowers/specs/2026-10-26-agy-and-agent-motion.md`, Part 2 (owner decisions 3 and 4); the mocks Max picked:
+`docs/surfaces/agent-motion-mock.html` (Claude H1, Codex O6) and `docs/surfaces/agy-motion-mock.html` (agy A1).
+
+- **What moves.** An agent's tab icon, in the strip and the sidebar, while its tab works (the Working mark is on), in the
+  motion a plugin picked for that agent: `hop-blink` (H1: a slow hop with a squash, 1.8 s, Clawd's eyes shut every other
+  landing), `spin-fade` (O6: a turn every 3.5 s, fading 0.55 to 1 over 1.8 s), `rainbow-flow` (A1, agy only: the arch's
+  colours run along it every 3 s), and for any agent `hop`, `spin` (4 s a turn) and `breathe` (0.82 to 1.05 of its size).
+  Without a pick, and for a tab that does not work, the icon stands still as before; with Windows' animation effects off
+  every icon stands still.
+- **How.** `flare_agent::icon_motion` computes every frame from the mark clock's time (`icon_phase`, no clock read
+  there); `push_frame` puts it on `MarkMotion` with the marks; `AgentIcon` (`tabmark.slint`) moves and scales the icon's
+  box for the hop and the breath, fades it, turns it (`transform-rotation`, left out by the software renderer), fills
+  Clawd's eyes (`Glyphs.clawd-lids`, pinned to `flare_agent::icon::clawd_lids_path`) and gives each path of agy's arch its
+  flowing colour. A row gets its motion from `tabs_ui::wear_motions`. No Slint `animate`, and nothing new ticks: the
+  clock runs while a tab works anyway.
+- **The plugin API.** `agents.motion.set {agent, motion}` and `agents.motion.clear {agent}`, namespace `Agents`, new
+  permission `agent-looks` ("Change how agent icons move while they work"), protocol 2 only; the newest pick wins, and a
+  plugin that stops takes its picks with it (`flare_agent::icon_motion::MotionPicks`, kept by the window, applied for the
+  plugin generation that was checked). Contract: `docs/surfaces/plugins.md` ("Agent icon motions"), `protocol.md`.
+- **Sample.** `sample-plugins/agent-moves/`: the owner's three picks from its background page, and a panel (a tab's menu,
+  "Agent motions") to pick one per agent, kept in its store.
+- Held by the `icon_motion` tests (each motion's frames at fixed phases: hop height and squash, the blink's frames, the
+  turns, the fade, the flow's colours and offsets, the still frame, the picks), `only_a_working_agents_tab_wears_its_agents_motion`,
+  `a_picked_motion_moves_a_working_agents_icon_from_the_mark_clock_and_stills_with_effects_off`,
+  `agent_icons_move_by_the_pushed_frame_and_stand_still_when_stilled`, the `plugin_motion` tests (permission, params,
+  rate, the newest pick, a plugin turned off), `agent_looks_opens_only_the_agents_motions`,
+  `clawds_lids_are_the_agent_crates_path_in_clawds_colour`, `the_agent_icon_moves_by_the_mark_clock_only` and
+  `the_sample_plugins_are_valid`.
+
+## New tab: a folder arrow on the sidebar button, and no ask mode, 2026-10-27
+
+Spec: `docs/superpowers/specs/2026-10-27-new-tab-folder-arrow.md`; the picked look is N1 in
+`docs/surfaces/new-tab-arrow-mock.html`.
+
+- **A split New tab button in the sidebar.** The main part opens a tab in the default folder at once (Ctrl+T does the
+  same); a 40 px arrow on the right, behind a full-height hairline, with a chevron and its own hover, opens the folder
+  menu just above the button (its left edge on the button's). The main part's tooltip is "New tab (Ctrl+T)", the
+  arrow's "Open in a folder" (also its accessible name). A right-click on the button does nothing any more.
+- **The strip's + is unchanged.** Same look, a click opens a tab, a right-click opens the same folder menu at the
+  pointer (two small buttons side by side there would make New tab hard to hit).
+- **The folder menu.** "Choose a folder…" is always the first row: the folder picker (starting in the new-tab folder),
+  then a tab there, and the folder joins the recents (every spawn remembers its folder). Under a rule: the pins in pin
+  order, then the 5 newest unpinned recents. While fewer recents than that are known, Documents, Downloads, Desktop and
+  the user folder fill the empty spots, in that order, each once, never one already pinned or in the history; they say
+  where they are on the right (`~\Documents`, "user folder"), and a real recent pushes one out. Each folder row keeps its
+  pin. Nothing to list at all: a disabled "No recent folders" under the first row.
+- **The starter folders** are Windows' known folders (`SHGetKnownFolderPath`, so a Documents redirected to OneDrive is the
+  one Explorer shows), checked for existence on a worker once at start (`flare_win::paths::starter_folders`, rule 34);
+  until it answers the menu simply has none. Under `--e2e` there are none.
+- **No ask mode.** Settings > Terminal > "Folder for new tabs" has no segment any more: it says where tabs open, with
+  "Use my user folder" (when a folder is chosen) and "Choose folder…". A stored `flare.newtab.mode = "ask"` reads as
+  folder mode (the key is no longer read; the row's reset still clears it); the import writes `prism.newtab.mode` as
+  `folder` whatever it was.
+- Held by `the_new_tab_button_opens_a_tab_and_its_arrow_opens_the_folder_menu`,
+  `sidebar_new_tab_arrow_draws_at_full_size_at_every_scale`, `the_plus_menu_is_choose_then_pins_then_five_recents_or_a_disabled_note`,
+  `starters_fill_the_menu_until_real_recents_push_them_out`, `starters_fill_the_empty_spots_and_recents_push_them_out`,
+  `a_starter_already_pinned_or_recent_is_never_listed_twice`, `choose_a_folder_in_the_folder_menu_asks_opens_there_and_remembers_it`,
+  `the_starter_folders_fill_the_folder_menu_once_the_worker_answers`, `a_stored_ask_mode_opens_in_the_folder_at_once`,
+  `the_new_tab_row_has_no_mode_to_pick`, `the_new_tab_mode_imports_as_folder_whatever_it_was`,
+  `plus_opens_at_once_in_the_chosen_folder_and_does_not_ask_again` and `the_starter_folders_exist_and_end_with_the_user_folder`.

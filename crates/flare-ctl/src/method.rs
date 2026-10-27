@@ -4,6 +4,8 @@
 
 use std::time::Duration;
 
+use crate::grant::Permission;
+
 /// Default time a request may take before the server answers `timeout`.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Time for the `browser.*` methods (page loads, waits).
@@ -15,6 +17,31 @@ pub const MOD_CALL_TIMEOUT: Duration = Duration::from_secs(40);
 pub enum Method {
     Hello,
     TabsList,
+    /// A badge on a tab: a small glyph in Flare's outlined chip (plugins phase 1). The agent's own tab only.
+    TabsBadgeSet,
+    TabsBadgeClear,
+    /// A progress chip on a tab: a static pill, never at the tab's foot (the agent's mark lives there).
+    TabsProgressSet,
+    TabsProgressClear,
+    /// The items of one of a plugin's sidebar sections (plugins phase 4), drawn by Flare in the sidebar's look.
+    SidebarSet,
+    /// The state of one of a plugin's actions, on one tab or on every tab (plugins phase 4).
+    ActionsSet,
+    /// The last entries of a Claude session's conversation in a tab (plugins phase 5), under `sessions`.
+    SessionRead,
+    /// Text typed into a tab's shell as one paste, and an Enter after it when asked (plugins phase 5), under `input`.
+    /// The only way a caller outside Flare's own interface writes into a shell (rule 2's plugin exception).
+    TabsInput,
+    /// A plugin's own small store (plugins phase 5): what it keeps, read back. No permission, never the agent's.
+    StorageGet,
+    StorageSet,
+    /// A plugin's strip under a tab's terminal (plugins phase 6), shown and hidden, under `bar`. One bar a tab.
+    BarShow,
+    BarHide,
+    /// How one agent's tab icon moves while it works, a motion from Flare's fixed list (owner decision 2026-10-26),
+    /// under `agent-looks`. Last writer wins; a plugin turned off takes its motions with it.
+    AgentsMotionSet,
+    AgentsMotionClear,
     PanelOpen,
     PanelClose,
     PanelState,
@@ -25,6 +52,8 @@ pub enum Method {
     ViewHtml,
     /// A Mermaid diagram (Surfaces stage 5).
     ViewDiagram,
+    /// A sound file or a public https address in Flare's audio player (plugins phase 6).
+    ViewAudio,
     BrowserOpen,
     BrowserNavigate,
     BrowserLook,
@@ -56,6 +85,9 @@ pub enum Method {
 pub enum Namespace {
     Hello,
     Tabs,
+    /// What a caller draws on a tab (badges and progress), under the `decorate` permission. Its own namespace, so
+    /// nothing of it rides on the open `Tabs` one.
+    Decor,
     Panel,
     View,
     Browser,
@@ -65,13 +97,91 @@ pub enum Namespace {
     AgentTools,
     /// Methods only the app's own UI may call (settings, shell input, mod management).
     Ui,
+    /// A plugin's sidebar sections (`sidebar.set`), under `sidebar`.
+    Sidebar,
+    /// A plugin's buttons and menu items (`actions.set`), under `actions`.
+    Actions,
+    /// A plugin's strip under a terminal (`bar.show`, `bar.hide`), under `bar`.
+    Bar,
+    /// What is said in Claude sessions (`session.read`), under `sessions`.
+    Session,
+    /// Typing into a tab's shell (`tabs.input`), under `input`. Its own namespace, so it never rides on the open
+    /// `Tabs` one.
+    Input,
+    /// A plugin's own store (`storage.get`, `storage.set`): every plugin's, with no permission, and never the agent's
+    /// (design 13). It holds only what the plugin put there.
+    Storage,
+    /// How the agents' tab icons move while they work (`agents.motion.*`), under `agent-looks`. Never the agent's.
+    Agents,
+}
+
+impl Namespace {
+    /// Every namespace.
+    pub const ALL: [Namespace; 17] = [
+        Namespace::Hello,
+        Namespace::Tabs,
+        Namespace::Decor,
+        Namespace::Panel,
+        Namespace::View,
+        Namespace::Browser,
+        Namespace::Convo,
+        Namespace::Tools,
+        Namespace::AgentTools,
+        Namespace::Ui,
+        Namespace::Sidebar,
+        Namespace::Actions,
+        Namespace::Bar,
+        Namespace::Session,
+        Namespace::Input,
+        Namespace::Storage,
+        Namespace::Agents,
+    ];
+
+    /// The one permission that opens this namespace to a plugin. `None` for the open ones (`hello`, `tabs.list`), for a
+    /// plugin's own store (every plugin's, see `Grant::may_enter`), for the agent's tools and for the app's own: no
+    /// permission reaches those.
+    pub fn permission(self) -> Option<Permission> {
+        match self {
+            Namespace::Hello
+            | Namespace::Tabs
+            | Namespace::AgentTools
+            | Namespace::Ui
+            | Namespace::Storage => None,
+            Namespace::Decor => Some(Permission::Decorate),
+            Namespace::Panel => Some(Permission::Panel),
+            Namespace::View => Some(Permission::View),
+            Namespace::Browser => Some(Permission::Browser),
+            Namespace::Convo => Some(Permission::Convo),
+            Namespace::Tools => Some(Permission::Tools),
+            Namespace::Sidebar => Some(Permission::Sidebar),
+            Namespace::Actions => Some(Permission::Actions),
+            Namespace::Bar => Some(Permission::Bar),
+            Namespace::Session => Some(Permission::Sessions),
+            Namespace::Input => Some(Permission::Input),
+            Namespace::Agents => Some(Permission::AgentLooks),
+        }
+    }
 }
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 26] = [
+    pub const ALL: [Method; 41] = [
         Method::Hello,
         Method::TabsList,
+        Method::TabsBadgeSet,
+        Method::TabsBadgeClear,
+        Method::TabsProgressSet,
+        Method::TabsProgressClear,
+        Method::SidebarSet,
+        Method::ActionsSet,
+        Method::SessionRead,
+        Method::TabsInput,
+        Method::StorageGet,
+        Method::StorageSet,
+        Method::BarShow,
+        Method::BarHide,
+        Method::AgentsMotionSet,
+        Method::AgentsMotionClear,
         Method::PanelOpen,
         Method::PanelClose,
         Method::PanelState,
@@ -80,6 +190,7 @@ impl Method {
         Method::ViewText,
         Method::ViewHtml,
         Method::ViewDiagram,
+        Method::ViewAudio,
         Method::BrowserOpen,
         Method::BrowserNavigate,
         Method::BrowserLook,
@@ -103,6 +214,20 @@ impl Method {
         match self {
             Method::Hello => "hello",
             Method::TabsList => "tabs.list",
+            Method::TabsBadgeSet => "tabs.badge.set",
+            Method::TabsBadgeClear => "tabs.badge.clear",
+            Method::TabsProgressSet => "tabs.progress.set",
+            Method::TabsProgressClear => "tabs.progress.clear",
+            Method::SidebarSet => "sidebar.set",
+            Method::ActionsSet => "actions.set",
+            Method::SessionRead => "session.read",
+            Method::TabsInput => "tabs.input",
+            Method::StorageGet => "storage.get",
+            Method::StorageSet => "storage.set",
+            Method::BarShow => "bar.show",
+            Method::BarHide => "bar.hide",
+            Method::AgentsMotionSet => "agents.motion.set",
+            Method::AgentsMotionClear => "agents.motion.clear",
             Method::PanelOpen => "panel.open",
             Method::PanelClose => "panel.close",
             Method::PanelState => "panel.state",
@@ -111,6 +236,7 @@ impl Method {
             Method::ViewText => "view.text",
             Method::ViewHtml => "view.html",
             Method::ViewDiagram => "view.diagram",
+            Method::ViewAudio => "view.audio",
             Method::BrowserOpen => "browser.open",
             Method::BrowserNavigate => "browser.navigate",
             Method::BrowserLook => "browser.look",
@@ -139,12 +265,24 @@ impl Method {
         match self {
             Method::Hello => Namespace::Hello,
             Method::TabsList => Namespace::Tabs,
+            Method::TabsBadgeSet
+            | Method::TabsBadgeClear
+            | Method::TabsProgressSet
+            | Method::TabsProgressClear => Namespace::Decor,
+            Method::SidebarSet => Namespace::Sidebar,
+            Method::ActionsSet => Namespace::Actions,
+            Method::SessionRead => Namespace::Session,
+            Method::TabsInput => Namespace::Input,
+            Method::StorageGet | Method::StorageSet => Namespace::Storage,
+            Method::BarShow | Method::BarHide => Namespace::Bar,
+            Method::AgentsMotionSet | Method::AgentsMotionClear => Namespace::Agents,
             Method::PanelOpen | Method::PanelClose | Method::PanelState => Namespace::Panel,
             Method::ViewImage
             | Method::ViewFile
             | Method::ViewText
             | Method::ViewHtml
-            | Method::ViewDiagram => Namespace::View,
+            | Method::ViewDiagram
+            | Method::ViewAudio => Namespace::View,
             Method::BrowserOpen
             | Method::BrowserNavigate
             | Method::BrowserLook
@@ -199,6 +337,7 @@ mod tests {
             let ok = match m.namespace() {
                 Namespace::Hello => prefix == "hello",
                 Namespace::Tabs => prefix == "tabs",
+                Namespace::Decor => prefix == "tabs",
                 Namespace::Panel => prefix == "panel",
                 Namespace::View => prefix == "view",
                 Namespace::Browser => prefix == "browser",
@@ -206,6 +345,13 @@ mod tests {
                 Namespace::Tools => prefix == "tools",
                 Namespace::AgentTools => prefix == "mods",
                 Namespace::Ui => matches!(prefix, "shell" | "settings" | "mods"),
+                Namespace::Sidebar => prefix == "sidebar",
+                Namespace::Actions => prefix == "actions",
+                Namespace::Bar => prefix == "bar",
+                Namespace::Session => prefix == "session",
+                Namespace::Input => prefix == "tabs",
+                Namespace::Storage => prefix == "storage",
+                Namespace::Agents => prefix == "agents",
             };
             assert!(ok, "{} is filed under the wrong namespace", m.name());
         }
@@ -221,6 +367,8 @@ mod tests {
             "browser.fly",
             "view.image ",
             "tabs.list.x",
+            "tabs.badge",
+            "tabs.badge.set.x",
         ] {
             assert_eq!(Method::parse(n), None, "{n:?}");
         }

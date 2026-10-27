@@ -5,6 +5,16 @@ crates/flare/src/ui_tests/skeleton.rs | #dedacf | a comment naming the theme tex
 crates/flare-agent/src/badge.rs | #25242c | the taskbar disc's fill: a fixed dark disc, as Prism Terminal draws it, so it reads on any taskbar; never a theme value
 crates/flare-agent/src/badge.rs | #ffffff | the taskbar disc's count ink, white on the fixed dark disc
 crates/flare-agent/src/icon.rs | #d77757 | Clawd's orange as Claude Code draws it in the terminal: the agent's own colour, never a theme value
+crates/flare-agent/src/icon.rs | #15aabf | the agy icon (G1), colour 1 of the rainbow along its arch as agy's banner draws it: the agent's own colours, never a theme value
+crates/flare-agent/src/icon.rs | #40c057 | the agy icon (G1), colour 2 of the rainbow along its arch as agy's banner draws it: the agent's own colours, never a theme value
+crates/flare-agent/src/icon.rs | #94d82d | the agy icon (G1), colour 3 of the rainbow along its arch as agy's banner draws it: the agent's own colours, never a theme value
+crates/flare-agent/src/icon.rs | #fab005 | the agy icon (G1), colour 4 of the rainbow along its arch as agy's banner draws it: the agent's own colours, never a theme value
+crates/flare-agent/src/icon.rs | #fd7e14 | the agy icon (G1), colour 5 of the rainbow along its arch as agy's banner draws it: the agent's own colours, never a theme value
+crates/flare-agent/src/icon.rs | #fa5252 | the agy icon (G1), colour 6 of the rainbow along its arch as agy's banner draws it: the agent's own colours, never a theme value
+crates/flare-agent/src/icon.rs | #e64980 | the agy icon (G1), colour 7 of the rainbow along its arch as agy's banner draws it: the agent's own colours, never a theme value
+crates/flare-agent/src/icon.rs | #be4bdb | the agy icon (G1), colour 8 of the rainbow along its arch as agy's banner draws it: the agent's own colours, never a theme value
+crates/flare-agent/src/icon.rs | #7950f2 | the agy icon (G1), colour 9 of the rainbow along its arch as agy's banner draws it: the agent's own colours, never a theme value
+crates/flare-agent/src/icon.rs | #4c6ef5 | the agy icon (G1), colour 10 of the rainbow along its arch as agy's banner draws it: the agent's own colours, never a theme value
 crates/flare/src/appctl.rs | #ffffff | the ink `ask_text` passes to `ask_view` inside a #[cfg(test)] fn (the scan stops only at a top-level cfg(test)); the tests read the dialog's words, not its colour
 crates/flare-win/src/taskbar.rs | #25242c | the taskbar disc's fill named in doc comments, the same fixed value as badge.rs
 // M7: the settings.

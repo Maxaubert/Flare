@@ -1613,12 +1613,14 @@ dependencies = [
  "velopack",
  "wgpu",
  "windows-sys 0.61.2",
+ "zip 9.0.0",
 ]
 
 [[package]]
 name = "flare-agent"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "flare-win",
  "log",
  "regex",
@@ -1741,8 +1743,12 @@ dependencies = [
  "flare-settings",
  "log",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
+ "ureq",
+ "url",
  "windows-sys 0.61.2",
+ "zip 9.0.0",
 ]
 
 [[package]]

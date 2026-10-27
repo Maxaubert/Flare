@@ -228,6 +228,69 @@ fn logs_nothing_for_a_sleep_not_a_lag_not_a_stack_not_a_slow_canary() {
 }
 
 #[test]
+fn logs_no_lag_while_the_screen_is_off_and_starts_over_when_it_is_back() {
+    let r = rig();
+    let w = watch(&r);
+    w.beat();
+    w.screen(false);
+    // Windows slows the timers of a screen that is off: the beat comes every ~260 ms all night.
+    for _ in 0..20 {
+        r.clock.advance(263);
+        w.beat();
+        w.step();
+    }
+    r.clock.advance(5000);
+    w.step();
+    w.screen(true);
+    w.step();
+    r.clock.advance(50);
+    w.beat();
+    w.step();
+    assert!(r.sink.kinds().is_empty(), "{:?}", r.sink.kinds());
+    // Back on, a late beat is a lag again.
+    r.clock.advance(300);
+    w.beat();
+    w.step();
+    assert_eq!(r.sink.kinds(), vec!["main-lag"]);
+}
+
+#[test]
+fn writes_at_most_twenty_lags_a_minute_and_the_next_says_how_many_were_held() {
+    let r = rig();
+    let w = watch(&r);
+    w.beat();
+    for _ in 0..30 {
+        r.clock.advance(300);
+        w.beat();
+        w.step();
+    }
+    assert_eq!(r.sink.of("main-lag").len(), 20);
+    r.clock.set(60_000);
+    w.beat();
+    r.clock.advance(300);
+    w.beat();
+    w.step();
+    let lags = r.sink.of("main-lag");
+    assert_eq!(lags.len(), 21);
+    assert_eq!(lags[20]["held"], 10);
+    assert!(lags[0].get("held").is_none());
+}
+
+#[test]
+fn a_wake_with_the_screen_still_off_stays_quiet() {
+    let r = rig();
+    let w = watch(&r);
+    w.beat();
+    w.screen(false);
+    w.power_suspend();
+    w.power_resume();
+    r.clock.advance(400);
+    w.beat();
+    w.step();
+    assert!(r.sink.kinds().is_empty(), "{:?}", r.sink.kinds());
+}
+
+#[test]
 fn writes_a_stack_when_the_window_is_hung() {
     let r = rig();
     let w = watch_with(&r, Arc::new(|| {}), Some(Arc::new(Frames)));

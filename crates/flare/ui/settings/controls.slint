@@ -337,6 +337,67 @@ export component SetRowButton inherits Rectangle {
     }
 }
 
+// A one-line text field in the row-button look (plugins phase 7: the address a plugin is installed from): 32 high,
+// 240 wide, a hairline that turns accent while it has the focus, the placeholder while it is empty. Enter is
+// `accepted`; each keystroke is `edited`.
+export component SetTextField inherits Rectangle {
+    in property <string> text;
+    in property <string> placeholder;
+    in property <string> label;
+    in property <string> sub;
+    in property <bool> off;
+    callback edited(string);
+    callback accepted();
+
+    public function focus-me() {
+        input.focus();
+    }
+
+    // Rust set a new text (the page was drawn again): the field follows it, once typing broke the binding.
+    changed text => {
+        if input.text != root.text {
+            input.text = root.text;
+        }
+    }
+
+    width: 240px;
+    height: SettingsShape.control-h;
+    border-radius: SettingsShape.radius-sm;
+    border-width: Px.hair();
+    border-color: input.has-focus ? Theme.accent-hi : Theme.divider;
+    background: Theme.control;
+    opacity: root.off ? 0.5 : 1;
+
+    Text {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        visible: input.text == "";
+        text: root.placeholder;
+        font-family: SettingsFixed.font-text;
+        font-size: 12px;
+        color: Theme.dim;
+        vertical-alignment: center;
+    }
+    input := TextInput {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        text: root.text;
+        single-line: true;
+        enabled: !root.off;
+        font-family: SettingsFixed.font-text;
+        font-size: 12px;
+        color: Theme.text;
+        vertical-alignment: center;
+        accessible-role: text-input;
+        accessible-label: root.label;
+        accessible-description: root.sub;
+        edited => { root.edited(self.text); }
+        accepted => { root.accepted(); }
+    }
+}
+
 // PT Reset link: 11 px weight 600 in accent-hi; on hover or keyboard focus a hairline underline.
 export component SetResetLink inherits Rectangle {
     in property <string> label: "Reset";

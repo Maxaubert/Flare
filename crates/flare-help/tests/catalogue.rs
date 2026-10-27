@@ -233,7 +233,7 @@ fn ids_carry_their_shell_or_tool_prefix() {
     let any_prefix = |c: HelpCategory| -> Option<&'static str> {
         match c {
             HelpCategory::Git => Some("git-"),
-            HelpCategory::Agents => Some("claude-|codex-"),
+            HelpCategory::Agents => Some("claude-|codex-|agy-"),
             HelpCategory::Packages => Some("pkg-"),
             HelpCategory::Wsl => Some("wsl-"),
             _ => None,

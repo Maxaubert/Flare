@@ -1,0 +1,74 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Agent cursor options</title>
+<style>
+:root{--ground:#171717;--side:#0d0d0d;--text:#dedacf;--dim:#929089;--line:#ffffff17;--accent:#fe8f34;--accent-hi:#f6a25b;--clawd:#d77757}
+*{box-sizing:border-box}
+body{margin:0;background:var(--side);color:var(--text);font:14px/1.4 "Segoe UI",system-ui,sans-serif;padding:24px}
+h1{font-size:18px;font-weight:600;margin:0 0 4px}
+p.sub{color:var(--dim);margin:0 0 20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:18px}
+.card{background:var(--ground);border:1px solid var(--line);border-radius:8px;padding:14px}
+.name{font-weight:600;margin-bottom:4px}.name span{color:var(--dim);font-weight:400}
+.desc{color:var(--dim);font-size:12.5px;margin-bottom:10px}
+.page{position:relative;height:260px;background:#fff;color:#222;border-radius:6px;overflow:hidden;font:13px system-ui}
+.page .bar{height:34px;background:#f3f3f3;border-bottom:1px solid #e3e3e3;display:flex;align-items:center;gap:14px;padding:0 12px;font-weight:600}
+.page .bar a{color:#2563eb;font-weight:400}
+.page .body{padding:16px}
+.page input{width:220px;padding:7px 9px;border:1px solid #ccc;border-radius:5px;font:13px system-ui}
+.page button{margin-top:12px;padding:8px 16px;border:0;border-radius:5px;background:#2563eb;color:#fff;font:600 13px system-ui}
+.page button.pressed{filter:brightness(.85)}
+.cur{position:absolute;left:0;top:0;pointer-events:none;transition:transform .55s cubic-bezier(.3,.7,.2,1);z-index:5}
+.ripple{position:absolute;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;pointer-events:none;opacity:0;z-index:4}
+.ripple.go{animation:rip .5s ease-out}
+@keyframes rip{0%{transform:scale(.3);opacity:.9}100%{transform:scale(1.4);opacity:0}}
+.tag{position:absolute;left:18px;top:16px;font:600 11px "Segoe UI";padding:2px 7px;border-radius:9px;white-space:nowrap}
+.halo{position:absolute;left:-14px;top:-14px;width:28px;height:28px;border-radius:50%}
+</style></head><body>
+<h1>Agent cursor in Flare's browser panel: pick one</h1>
+<p class="sub">Each demo loops: move to the field, click, type, move to the button, click. The cursor is drawn by Flare on top of the page; it never takes clicks itself.</p>
+<div class="grid" id="g"></div>
+<script>
+const ARROW = (fill, stroke) => `<svg width="22" height="22" viewBox="0 0 24 24"><path d="M4 2.5l15 9.2-6.6 1.5-3.4 6.3z" fill="${fill}" stroke="${stroke}" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+const opts = [
+  {k:'A', n:'orange arrow + "Claude" tag', d:'Like Claude in Chrome: a filled arrow in Flare orange, with a small name tag. Ripple on click.',
+   cur:`${ARROW('#fe8f34','#fff')}<span class="tag" style="background:#fe8f34;color:#1a1a1a">Claude</span>`, rip:'rgba(254,143,52,.55)'},
+  {k:'B', n:'orange arrow, no tag', d:'Same arrow, nothing else. Quietest arrow.',
+   cur:ARROW('#fe8f34','#fff'), rip:'rgba(254,143,52,.55)'},
+  {k:'C', n:'Clawd-colour arrow + tag', d:'Arrow in Claude\'s own clay colour (the tab icon\'s), tag "Claude".',
+   cur:`${ARROW('#d77757','#fff')}<span class="tag" style="background:#d77757;color:#fff">Claude</span>`, rip:'rgba(215,119,87,.55)'},
+  {k:'D', n:'dark arrow with orange outline', d:'Looks like a normal pointer but outlined in orange, so it is not mistaken for yours.',
+   cur:ARROW('#1d1d1d','#fe8f34'), rip:'rgba(254,143,52,.5)'},
+  {k:'E', n:'soft dot', d:'No arrow: a glowing orange dot, like a touch point. Never mistaken for your mouse.',
+   cur:`<div class="halo" style="background:radial-gradient(circle,#fe8f34 0 34%,rgba(254,143,52,.35) 36%,rgba(254,143,52,0) 70%)"></div>`, rip:'rgba(254,143,52,.55)'},
+  {k:'F', n:'arrow + orange ring', d:'Orange arrow with a faint ring around its tip, easy to spot on busy pages.',
+   cur:`<div class="halo" style="border:2px solid rgba(254,143,52,.55)"></div>${ARROW('#fe8f34','#fff')}`, rip:'rgba(254,143,52,.55)'},
+];
+const g = document.getElementById('g');
+g.innerHTML = opts.map(o => `
+<div class="card"><div class="name">${o.k} <span>${o.n}</span></div><div class="desc">${o.d}</div>
+<div class="page" id="p${o.k}">
+ <div class="bar">Example shop <a>Home</a><a>Deals</a><a>Cart</a></div>
+ <div class="body"><div>Search products</div><input placeholder="Type to search" readonly><br><button>Search</button></div>
+ <div class="ripple" style="background:${o.rip}"></div>
+ <div class="cur">${o.cur}</div>
+</div></div>`).join('');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function loop(o) {
+  const p = document.getElementById('p'+o.k), c = p.querySelector('.cur'), r = p.querySelector('.ripple'),
+        inp = p.querySelector('input'), btn = p.querySelector('button');
+  const at = (el) => { const a = el.getBoundingClientRect(), b = p.getBoundingClientRect();
+    return [a.left - b.left + Math.min(40, a.width/2), a.top - b.top + a.height/2]; };
+  const move = async ([x,y]) => { c.style.transform = `translate(${x}px,${y}px)`; await sleep(650); };
+  const click = async ([x,y]) => { r.style.left = x+'px'; r.style.top = y+'px'; r.classList.remove('go'); void r.offsetWidth; r.classList.add('go'); await sleep(180); };
+  while (true) {
+    inp.value = ''; c.style.transition = 'none'; c.style.transform = 'translate(330px,220px)'; void c.offsetWidth; c.style.transition = '';
+    await sleep(500);
+    const f = at(inp); await move(f); await click(f);
+    for (const ch of 'blue running shoes') { inp.value += ch; await sleep(55); }
+    await sleep(300);
+    const b = at(btn); await move(b); btn.classList.add('pressed'); await click(b); await sleep(200); btn.classList.remove('pressed');
+    await sleep(1300);
+  }
+}
+opts.forEach((o, i) => setTimeout(() => loop(o), i * 250));
+</script></body></html>

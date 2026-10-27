@@ -25,7 +25,7 @@ session (no content copied); it found the subagent layout below. Fixtures are sy
 
 ## In Flare (stage 6)
 
-Flare tails a session only while a Changes or Tasks panel is open on its tab. The Claude folder is `CLAUDE_CONFIG_DIR` when it is an absolute path, else `<profile>\.claude` (`path::claude_dir`, `transcript_path_in`). A restart of any file re-reads every file from 0 and starts a new model. The row model the panels draw is `view.rs`; the worker is `track.rs`.
+Flare tails a session only while a Changes panel is open on its tab. The Claude folder is `CLAUDE_CONFIG_DIR` when it is an absolute path, else `<profile>\.claude` (`path::claude_dir`, `transcript_path_in`). A restart of any file re-reads every file from 0 and starts a new model. The row model the panels draw is `view.rs`; the worker is `track.rs`.
 
 ## Reading it while it grows
 
@@ -54,7 +54,7 @@ Each line is a JSON object. The reader looks at these keys only; everything else
 | Key | Use | Status |
 |---|---|---|
 | `type` | `"assistant"` and `"user"` are folded; every other value is ignored | known (`queue-operation`, `last-prompt`, `file-history-snapshot`, `summary`, `system` appear and are ignored) |
-| `isSidechain` | `true` for a subagent's line; its edits and tasks are tagged or kept apart. Lines of a subagent's own file are sidechain whatever this says | known (subagent files, see Where the file is); inline `true` lines in the session file are read the same way (a fixture only) |
+| `isSidechain` | `true` for a subagent's line; its edits are tagged. Lines of a subagent's own file are sidechain whatever this says | known (subagent files, see Where the file is); inline `true` lines in the session file are read the same way (a fixture only) |
 | `timestamp` | ISO 8601 string, kept as written, on each edit | known |
 | `message.content` | an array of blocks (or, rarely, a plain string: an assistant string is scanned for file paths, a user string is ignored) | known |
 
@@ -76,12 +76,11 @@ just not used.
 | `MultiEdit` | `file_path`, `edits: [{old_string, new_string}]` (one change per entry) | known |
 | `Write` | `file_path`, `content` (a whole file; the text it replaced is not in the transcript, so its diff is all added) | known |
 | `NotebookEdit` | `notebook_path`, `new_source` (one cell's new source, as a whole); `cell_id`, `edit_mode`, `cell_type` ignored | known for `new_source`; the delete mode is not distinguished |
-| `TodoWrite` | `todos: [{content, status, activeForm}]`; each call **replaces** the whole list | known |
-| `TaskCreate` | `subject` (or `content`, or `description`) for the title, `activeForm` | guessed field names (the tool family is newer; a missing title makes the create a no-op) |
-| `TaskUpdate` | `taskId` (a string or a number), and optionally `status`, `subject`/`content`, `activeForm`; `status: "deleted"` removes the task | guessed |
-| `TaskCreate` result | Flare looks for a JSON `id` or `task.id`, else the first `#<digits>` in the text, and keeps it as the task's id for `TaskUpdate` | guessed (the result format is not pinned by any sample Flare has seen) |
 
-Statuses: `pending`, `in_progress`, `completed` are known. Any other word is `TaskStatus::Other` and is kept as it is not lost.
+The task tools (`TodoWrite`, `TaskCreate`, `TaskUpdate`) were folded into a task list for the Tasks panel until that
+panel was removed (owner, 2026-10-26: sessions never used it). They are now tools the fold ignores
+(`the_task_tools_fold_into_nothing`). The shapes Flare read (`TodoWrite`'s `todos: [{content, status, activeForm}]`
+replacing the whole list, and the guessed `TaskCreate`/`TaskUpdate` fields) are in this file's history before that date.
 
 Edits: `Edit` and `MultiEdit` and `Write` and `NotebookEdit` need a file path; an `Edit` with no `new_string`, or a
 `MultiEdit` with no usable entries, is dropped. A result with `is_error: true` marks the edit `Failed`; a success marks it
@@ -89,7 +88,7 @@ Edits: `Edit` and `MultiEdit` and `Write` and `NotebookEdit` need a file path; a
 
 Caps (`fold::MAX_TEXT`, `MAX_EDITS`, `MAX_EDIT_BYTES`): each old, new or whole-file text keeps its first 64 KB (the edit
 is then `truncated`, and its diff covers only the kept part). The model keeps the newest 2000 edits and at most 32 MB of
-edit text; the oldest go first, and a result that arrives for a dropped edit is ignored. Tasks and named files are not
+edit text; the oldest go first, and a result that arrives for a dropped edit is ignored. Named files are not
 capped yet.
 
 ## Files the assistant named
@@ -106,8 +105,7 @@ capped yet.
 
 A subagent's lines come from its own file (see Where the file is). `Convo::fold_from(source, line)` takes the file name
 (`agent-<id>.jsonl`) with each line, and `fold_line` is the session file (`source ""`). Lines of a subagent file are
-sidechain. A subagent's `TodoWrite` never replaces the main list: it goes to `side_tasks`, keyed by its file name, so two
-subagents' lists stay apart. Task-tool creates and updates from a subagent go to that same list.
+sidechain, so its edits and named files are tagged `sidechain`.
 
 On a `restarted` batch from a subagent file, the consumer must clear that file's part of the model. The reader keeps no
 per-file state beyond its tails.
@@ -126,7 +124,6 @@ reads the file. Fold and diff are not cheap: run them on the tail worker or a ba
 
 ## What is not known
 
-- The exact shape of `TaskCreate` and `TaskUpdate` inputs and results (guessed above).
 - Whether Claude Code writes a tool result's `is_error` as `true` only, or sometimes as a string. Flare takes only a boolean.
 - Other transcript types (images in messages, compaction summaries) are ignored; nothing here depends on them.
 - Codex transcripts: a later adapter, not read at all.

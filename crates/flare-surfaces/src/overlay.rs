@@ -15,6 +15,8 @@ pub enum Overlay {
     Menu,
     /// The tab list (overflow) popup.
     Overflow,
+    /// The Plugins dropdown of the horizontal layout (plugins phase 4).
+    PluginsDropdown,
     /// The close question and the other dialogs.
     Dialog,
     /// The update window.
@@ -50,6 +52,7 @@ impl Overlay {
     pub const ALL: [Overlay; 16] = [
         Overlay::Menu,
         Overlay::Overflow,
+        Overlay::PluginsDropdown,
         Overlay::Dialog,
         Overlay::UpdateWindow,
         Overlay::UpdateNotice,

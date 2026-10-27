@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'">
+<title>Session to-dos</title>
+</head>
+<body>
+<script>
+// The background page of the to-do sample: it runs, hidden, while the plugin is on, and keeps the list in its own
+// localStorage. Each to-do belongs to a session tab and is shown in the plugin's sidebar section with a checkbox; a
+// click on it brings its tab to the front. Claude adds to-dos with add_todo (the call names the tab it came from) and
+// ticks them off with todo_done; the person can tick the box, or add one from a tab's menu ("Add to-do"). A ticked
+// to-do leaves the list after a moment.
+(function () {
+  var flare = window.flare;
+  if (!flare) { return; }
+  var STORE = 'flare-todo-items';
+  var TEXT_MAX = 120;
+  var LEAVE_MS = 1500;
+  var items = load();
+  var titles = {};
+  var seq = Date.now();
+  var pending = null;
+
+  // One clean line: no control or hidden formatting characters, at most `max` characters.
+  function clean(s, max) {
+    s = String(s == null ? '' : s)
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+      .replace(/[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return s.length > max ? s.slice(0, max - 1) + '…' : s;
+  }
+
+  function load() {
+    try {
+      var v = JSON.parse(window.localStorage.getItem(STORE) || '[]');
+      return Array.isArray(v) ? v.filter(function (it) {
+        return it && typeof it.id === 'string' && typeof it.text === 'string';
+      }) : [];
+    } catch (x) { return []; }
+  }
+
+  function save() {
+    try { window.localStorage.setItem(STORE, JSON.stringify(items)); } catch (x) {}
+  }
+
+  // The section is drawn again at most every 250 ms (Flare takes 5 a second for one section).
+  function render() {
+    if (pending) { return; }
+    pending = setTimeout(function () {
+      pending = null;
+      var list = items.slice(0, 50).map(function (it) {
+        var o = { id: it.id, text: it.text, checked: !!it.done };
+        if (it.tab && titles.hasOwnProperty(it.tab)) {
+          o.tab = it.tab;
+          o.sub = clean(titles[it.tab], TEXT_MAX) || 'A tab';
+        } else if (it.title) {
+          o.sub = clean(it.title + ' (closed)', TEXT_MAX);
+        }
+        return o;
+      });
+      flare.call('sidebar.set', { key: 'todos', items: list }).catch(function (e) {
+        if (e && e.code === 'rate_limited') { render(); }
+      });
+    }, 250);
+  }
+
+  function add(text, tab) {
+    var item = { id: 't' + (seq++).toString(36), text: clean(text, TEXT_MAX), done: false };
+    if (typeof tab === 'string' && tab) {
+      item.tab = tab;
+      item.title = titles[tab] || '';
+    }
+    items.push(item);
+    save();
+    render();
+    return item;
+  }
+
+  function tick(id, done) {
+    var it = items.filter(function (x) { return x.id === id; })[0];
+    if (!it) { return false; }
+    it.done = done;
+    save();
+    render();
+    if (done) {
+      setTimeout(function () {
+        items = items.filter(function (x) { return !(x.id === id && x.done); });
+        save();
+        render();
+      }, LEAVE_MS);
+    }
+    return true;
+  }
+
+  flare.on('tool', function (call) {
+    var input = call.input || {};
+    if (call.tool === 'add_todo') {
+      var text = clean(input.text, TEXT_MAX);
+      if (!text) { flare.respond(call.callId, null, 'text must be 1 to 120 characters'); return; }
+      var item = add(text, typeof input.tab === 'string' && input.tab ? input.tab : call.tab);
+      flare.respond(call.callId, { id: item.id });
+    } else if (call.tool === 'todo_done') {
+      if (tick(String(input.id || ''), true)) {
+        flare.respond(call.callId, { done: true });
+      } else {
+        flare.respond(call.callId, null, 'no to-do has that id');
+      }
+    } else {
+      flare.respond(call.callId, null, 'no tool called ' + call.tool);
+    }
+  });
+
+  // A tick or an untick in the section; a click beside the box only brings the tab to the front.
+  flare.on('sidebar.item', function (e) {
+    if (e && e.key === 'todos' && typeof e.checked === 'boolean') { tick(e.item, e.checked); }
+  });
+
+  // "Add to-do" in a tab's menu: a to-do to look at that tab.
+  flare.on('action', function (e) {
+    if (e && e.key === 'add' && e.tab) {
+      add('Look at ' + (titles[e.tab] || 'this session'), e.tab);
+    }
+  });
+
+  // Tab titles for the second line; a closed tab's to-dos stay, named after the tab they were for.
+  flare.on('tabs', function (e) {
+    if (!e || !e.tab) { return; }
+    if (e.kind === 'closed') {
+      delete titles[e.tab.id];
+    } else {
+      titles[e.tab.id] = e.tab.title || '';
+      items.forEach(function (it) { if (it.tab === e.tab.id) { it.title = titles[e.tab.id]; } });
+    }
+    render();
+  });
+
+  flare.call('tabs.list', {}).then(function (r) {
+    (r && r.tabs ? r.tabs : []).forEach(function (t) { titles[t.id] = t.title || ''; });
+    render();
+  }).catch(function () { render(); });
+})();
+</script>
+</body>
+</html>

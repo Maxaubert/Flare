@@ -142,6 +142,9 @@ export component ContextMenu inherits Rectangle {
     in property <[MenuRow]> rows;
     in property <length> at-x;
     in property <length> at-y;
+    // The panel's foot sits 4 px above at-y (the sidebar's New tab arrow opens it over the button), else its top
+    // is at at-y. Either way the window's edges cap it.
+    in property <bool> above;
     callback picked(int);
     callback trailing(int);
     callback dismissed();
@@ -244,7 +247,9 @@ export component ContextMenu inherits Rectangle {
         // The layout's padding is the border already: adding it again made the last row taller.
         height: col.preferred-height;
         x: Px.snap(min(root.at-x, root.width - self.width - 8px));
-        y: Px.snap(min(root.at-y, root.height - self.height - 8px));
+        y: Px.snap(root.above
+            ? max(8px, root.at-y - self.height - 4px)
+            : min(root.at-y, root.height - self.height - 8px));
         background: Theme.side-flat;
         border-radius: 2px;
         border-width: Px.hair();
@@ -384,7 +389,7 @@ component OverflowItem inherits Rectangle {
                 width: 18px;
                 AgentIcon {
                     y: (parent.height - 18px) / 2;
-                    kind: root.item.settings ? 3 : root.item.agent;
+                    kind: root.item.settings ? 4 : root.item.agent;
                     ink: ta.has-hover ? Theme.text : Theme.text-soft;
                 }
             }

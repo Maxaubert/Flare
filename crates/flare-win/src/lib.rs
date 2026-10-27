@@ -3,6 +3,7 @@
 //! clipboard write and read, the folder picker, the shell open, the path openers and the
 //! double-click metrics.
 
+pub mod agent_cursor;
 pub mod argv;
 pub mod clipboard;
 pub mod clipboard_port;

@@ -6,11 +6,16 @@
 //!
 //! Calls go out in order; where two do not depend on each other (the layout and the accessibility
 //! tree, the boxes of 600 elements) they go out together and the job waits for all of them.
+//!
+//! A pointer action (a click, a scroll over a ref, typing into a ref) first finds where it lands and
+//! says so ([`Job::take_point`]), then holds its events for the cursor's glide (as long as the window
+//! says, [`Job::glide_for`], at most [`GLIDE_MAX_MS`]): the window's tick ends the hold, nothing waits.
 
 use std::collections::{HashMap, VecDeque};
 
 use serde_json::{Value, json};
 
+pub use crate::agent_cursor::{GLIDE_MAX_MS, Point};
 use crate::agent_web::{
     self as web, Button, Candidate, EVAL_RESULT_MAX, Viewport, WaitFor, click_events, click_point,
     element_rect, key_events, png_size_b64, shot_params, shot_scale, viewport_of, wheel_event,
@@ -209,10 +214,18 @@ enum Stage {
         layout: Slot,
         quads: Slot,
     },
-    /// Only the page's size (a wheel with nothing named).
+    /// Only the page's size: a wheel with nothing named (`at` None: in the middle, and no cursor), or a
+    /// click by point (`at`, so the point comes with its viewport).
     Metrics {
         then: Then,
         layout: Slot,
+        at: Option<(f64, f64)>,
+    },
+    /// The cursor glides to the point: `first` goes out once the window's tick finds `until_ms` past.
+    Glide {
+        until_ms: u64,
+        next: Box<Stage>,
+        first: Call,
     },
     /// Input events, one at a time.
     Seq {
@@ -224,9 +237,16 @@ enum Stage {
     },
     Focus {
         text: String,
+        backend: i64,
         enable: u64,
         focus: u64,
         got: usize,
+    },
+    /// Where the focused element is, for the cursor (an answer that has no place types all the same).
+    TypeAt {
+        text: String,
+        layout: Slot,
+        quads: Slot,
     },
     Wait {
         what: WaitFor,
@@ -253,6 +273,10 @@ pub struct Job {
     /// The releases of a press the job was cut short in (a timeout takes the stage before the window
     /// asks); see [`Job::release_calls`].
     release: Vec<Call>,
+    /// Where the next pointer action lands, until the window takes it.
+    point: Option<Point>,
+    /// How long the events wait for the cursor's glide (0 when no cursor is drawn).
+    glide_ms: u64,
 }
 
 fn call(ids: &mut Ids<'_>, method: &str, params: Value) -> Call {
@@ -289,6 +313,31 @@ impl Job {
     /// The numbers a finished look handed out; the window keeps them for the clicks that follow.
     pub fn take_refs(&mut self) -> Option<RefMap> {
         self.refs.take()
+    }
+
+    /// Where the pointer action is about to land, once (the window moves the cursor there). It is
+    /// known before the action's events go out, while the cursor glides.
+    pub fn take_point(&mut self) -> Option<Point> {
+        self.point.take()
+    }
+
+    /// How long the events wait for the cursor's glide at most: [`GLIDE_MAX_MS`] by default, 0 for a
+    /// page whose cursor is not drawn (its tab is behind, a menu covers it).
+    pub fn set_glide_ms(&mut self, ms: u64) {
+        self.glide_ms = ms;
+    }
+
+    /// The cursor's glide, now that the window has taken the point, lasts `ms` from `now_ms` (its length
+    /// depends on how far the arrow goes, 0 when it is not drawn or does not move): the held events go
+    /// then. True when they are due at once (the window's next [`Job::on_tick`] sends them).
+    pub fn glide_for(&mut self, ms: u64, now_ms: u64) -> bool {
+        match &mut self.stage {
+            Some(Stage::Glide { until_ms, .. }) => {
+                *until_ms = now_ms + ms;
+                ms == 0
+            }
+            _ => false,
+        }
     }
 
     /// The calls that let go of what a job cut short had pressed: the mouse button or key whose release
@@ -330,6 +379,8 @@ impl Job {
                     refs: None,
                     page: Default::default(),
                     release: Vec::new(),
+                    point: None,
+                    glide_ms: GLIDE_MAX_MS,
                 }),
                 Out::Calls(calls),
             )
@@ -373,20 +424,16 @@ impl Job {
                         "x and y are page pixels from the top left, zero or more",
                     ));
                 }
-                let (queue, first) = seq_of(
-                    click_events(x, y, button, double),
-                    "Input.dispatchMouseEvent",
-                    ids,
-                );
+                // The page's size first, so the point comes with its viewport (for the cursor).
+                let layout = call(ids, "Page.getLayoutMetrics", json!({}));
                 job(
-                    Stage::Seq {
-                        queue,
-                        cur: first.id,
-                        cur_call: first.clone(),
-                        result: json!({"clicked": {"x": r1(x), "y": r1(y)}}),
+                    Stage::Metrics {
+                        then: Then::Click { button, double },
+                        layout: slot(&layout),
+                        at: Some((x, y)),
                     },
                     ACT_BUDGET_MS,
-                    vec![first],
+                    vec![layout],
                 )
             }
             Op::Click {
@@ -412,6 +459,7 @@ impl Job {
                             Stage::Metrics {
                                 then: Then::Wheel { dx, dy },
                                 layout: slot(&layout),
+                                at: None,
                             },
                             ACT_BUDGET_MS,
                             vec![layout],
@@ -428,6 +476,7 @@ impl Job {
                         job(
                             Stage::Focus {
                                 text,
+                                backend: b,
                                 enable: enable.id,
                                 focus: focus.id,
                                 got: 0,
@@ -468,6 +517,8 @@ impl Job {
                     refs: None,
                     page: Default::default(),
                     release: Vec::new(),
+                    point: None,
+                    glide_ms: GLIDE_MAX_MS,
                 };
                 let out = j.on_tick(now_ms, ids);
                 (Some(j), out)
@@ -498,6 +549,14 @@ impl Job {
 
     /// Time has passed (and a wait may be due to look again).
     pub fn on_tick(&mut self, now_ms: u64, ids: &mut Ids<'_>) -> Out {
+        // The cursor has arrived: the held events go.
+        if let Some(Stage::Glide { until_ms, .. }) = &self.stage
+            && now_ms >= *until_ms
+            && let Some(Stage::Glide { next, first, .. }) = self.stage.take()
+        {
+            self.stage = Some(*next);
+            return Out::Calls(vec![first]);
+        }
         if let Some(Stage::Wait {
             what,
             end_ms,
@@ -836,20 +895,53 @@ impl Job {
                 let Some((x, y)) = q.ok().and_then(|q| click_point(&q, &vp)) else {
                     return done(gone());
                 };
-                self.pointer_then(then, x, y, ids)
+                let at = point_of(x, y, &vp);
+                self.pointer_then(then, x, y, Some(at), now_ms, ids)
             }
-            Stage::Metrics { then, mut layout } => {
+            Stage::Metrics {
+                then,
+                mut layout,
+                at,
+            } => {
                 if id == layout.0 {
                     layout.1 = Some(r);
                 }
                 let Some(res) = layout.1.clone() else {
-                    return (Some(Stage::Metrics { then, layout }), Out::Idle);
+                    return (Some(Stage::Metrics { then, layout, at }), Out::Idle);
                 };
-                let Some(vp) = res.ok().and_then(|v| viewport_of(&v)) else {
-                    return done(err(Fail::Unavailable, "the page's size could not be read"));
-                };
-                self.pointer_then(then, vp.w / 2.0, vp.h / 2.0, ids)
+                let vp = res.ok().and_then(|v| viewport_of(&v));
+                match at {
+                    // A click by point goes where it was told; a page whose size cannot be read is still
+                    // clicked, only with no cursor.
+                    Some((x, y)) => {
+                        let p = vp.map(|vp| point_of(x, y, &vp));
+                        self.pointer_then(then, x, y, p, now_ms, ids)
+                    }
+                    // A wheel with nothing named turns in the middle and moves no cursor.
+                    None => {
+                        let Some(vp) = vp else {
+                            return done(err(
+                                Fail::Unavailable,
+                                "the page's size could not be read",
+                            ));
+                        };
+                        self.pointer_then(then, vp.w / 2.0, vp.h / 2.0, None, now_ms, ids)
+                    }
+                }
             }
+            // Only the window's tick ends a glide.
+            Stage::Glide {
+                until_ms,
+                next,
+                first,
+            } => (
+                Some(Stage::Glide {
+                    until_ms,
+                    next,
+                    first,
+                }),
+                Out::Idle,
+            ),
             Stage::Seq {
                 mut queue,
                 cur,
@@ -898,6 +990,7 @@ impl Job {
             }
             Stage::Focus {
                 text,
+                backend,
                 enable,
                 focus,
                 mut got,
@@ -919,6 +1012,7 @@ impl Job {
                     return (
                         Some(Stage::Focus {
                             text,
+                            backend,
                             enable,
                             focus,
                             got,
@@ -926,9 +1020,57 @@ impl Job {
                         Out::Idle,
                     );
                 }
+                // Where the element is, for the cursor; the text goes in whatever the answer.
+                let layout = call(ids, "Page.getLayoutMetrics", json!({}));
+                let quads = call(
+                    ids,
+                    "DOM.getContentQuads",
+                    json!({"backendNodeId": backend}),
+                );
+                (
+                    Some(Stage::TypeAt {
+                        text,
+                        layout: slot(&layout),
+                        quads: slot(&quads),
+                    }),
+                    Out::Calls(vec![layout, quads]),
+                )
+            }
+            Stage::TypeAt {
+                text,
+                mut layout,
+                mut quads,
+            } => {
+                if id == layout.0 {
+                    layout.1 = Some(r);
+                } else if id == quads.0 {
+                    quads.1 = Some(r);
+                }
+                let (Some(l), Some(q)) = (layout.1.clone(), quads.1.clone()) else {
+                    return (
+                        Some(Stage::TypeAt {
+                            text,
+                            layout,
+                            quads,
+                        }),
+                        Out::Idle,
+                    );
+                };
+                let at = l.ok().and_then(|v| viewport_of(&v)).and_then(|vp| {
+                    q.ok()
+                        .and_then(|q| click_point(&q, &vp))
+                        .map(|(x, y)| point_of(x, y, &vp))
+                });
                 let name = self.op;
                 let (job, out) = insert_text(text, now_ms, name, ids);
-                (job.and_then(|j| j.stage), out)
+                match (at, job.and_then(|j| j.stage), out) {
+                    (Some(p), Some(stage), Out::Calls(mut calls)) if calls.len() == 1 => {
+                        self.point = Some(p);
+                        let first = calls.remove(0);
+                        self.glide_then(stage, first, now_ms)
+                    }
+                    (_, stage, out) => (stage, out),
+                }
             }
             Stage::Wait {
                 what,
@@ -994,11 +1136,15 @@ impl Job {
         }
     }
 
+    /// The events of a click or a wheel at (x, y). With a point the cursor is told where, and the events
+    /// wait for its glide.
     fn pointer_then(
         &mut self,
         then: Then,
         x: f64,
         y: f64,
+        point: Option<Point>,
+        now_ms: u64,
         ids: &mut Ids<'_>,
     ) -> (Option<Stage>, Out) {
         let (events, method, result): (Vec<Value>, &'static str, Value) = match then {
@@ -1017,14 +1163,34 @@ impl Job {
             ),
         };
         let (queue, first) = seq_of(events, method, ids);
+        let seq = Stage::Seq {
+            queue,
+            cur: first.id,
+            cur_call: first.clone(),
+            result,
+        };
+        match point {
+            Some(p) => {
+                self.point = Some(p);
+                self.glide_then(seq, first, now_ms)
+            }
+            None => (Some(seq), Out::Calls(vec![first])),
+        }
+    }
+
+    /// `first` goes out after the glide (at once when there is none); `next` is the stage that waits for
+    /// its answer.
+    fn glide_then(&mut self, next: Stage, first: Call, now_ms: u64) -> (Option<Stage>, Out) {
+        if self.glide_ms == 0 {
+            return (Some(next), Out::Calls(vec![first]));
+        }
         (
-            Some(Stage::Seq {
-                queue,
-                cur: first.id,
-                cur_call: first.clone(),
-                result,
+            Some(Stage::Glide {
+                until_ms: now_ms + self.glide_ms,
+                next: Box::new(next),
+                first,
             }),
-            Out::Calls(vec![first]),
+            Out::Idle,
         )
     }
 
@@ -1120,6 +1286,16 @@ impl Job {
     }
 }
 
+/// A point of the visual viewport, for the cursor.
+fn point_of(x: f64, y: f64, vp: &Viewport) -> Point {
+    Point {
+        x,
+        y,
+        vp_w: vp.w,
+        vp_h: vp.h,
+    }
+}
+
 fn done<T>(r: Result<Value, JobError>) -> (Option<T>, Out) {
     (None, Out::Done(r))
 }
@@ -1146,6 +1322,8 @@ fn insert_text(
             refs: None,
             page: Default::default(),
             release: Vec::new(),
+            point: None,
+            glide_ms: GLIDE_MAX_MS,
         }),
         Out::Calls(vec![c]),
     )
@@ -1178,6 +1356,8 @@ fn prep_a(
             refs: None,
             page: Default::default(),
             release: Vec::new(),
+            point: None,
+            glide_ms: GLIDE_MAX_MS,
         }),
         Out::Calls(vec![enable, scroll]),
     )
@@ -1745,7 +1925,15 @@ mod tests {
             browser,
         );
         assert_eq!(r.unwrap()["clicked"], json!({"x": 33.0, "y": 44.5}));
-        assert_eq!(rig.methods().len(), 3);
+        assert_eq!(
+            rig.methods(),
+            [
+                "Page.getLayoutMetrics",
+                "Input.dispatchMouseEvent",
+                "Input.dispatchMouseEvent",
+                "Input.dispatchMouseEvent"
+            ]
+        );
         for bad in [Target::Point(-1.0, 5.0), Target::Point(f64::NAN, 5.0)] {
             let mut rig = Rig::new();
             let (r, _) = rig.run(
@@ -1829,10 +2017,17 @@ mod tests {
         assert_eq!(r.unwrap()["typed"], json!(11));
         assert_eq!(
             rig.methods(),
-            ["DOM.enable", "DOM.focus", "Input.insertText"]
+            [
+                "DOM.enable",
+                "DOM.focus",
+                "Page.getLayoutMetrics",
+                "DOM.getContentQuads",
+                "Input.insertText"
+            ]
         );
         assert_eq!(rig.log[1].1["backendNodeId"], json!(12));
-        assert_eq!(rig.log[2].1["text"], json!("héllo wörld"));
+        assert_eq!(rig.log[3].1["backendNodeId"], json!(12));
+        assert_eq!(rig.log[4].1["text"], json!("héllo wörld"));
         // With no ref the text goes where the keyboard is.
         rig.log.clear();
         let (r, _) = rig.run(
@@ -2145,6 +2340,8 @@ mod tests {
         }
     }
 
+    /// A click by point whose page size is in and whose glide is over: its first event (the move) is
+    /// the call in flight.
     fn click_job(ids: &mut u64) -> Job {
         let (job, out) = Job::start(
             Op::Click {
@@ -2156,8 +2353,385 @@ mod tests {
             0,
             &mut Ids(ids),
         );
-        assert!(matches!(out, Out::Calls(_)));
-        job.unwrap()
+        let mut job = job.unwrap();
+        let Out::Calls(c) = out else {
+            panic!("{out:?}")
+        };
+        assert_eq!(c[0].method, "Page.getLayoutMetrics");
+        let out = job.on_reply(
+            c[0].id,
+            Ok(metrics(800.0, 500.0)),
+            Page { url: "", title: "" },
+            1,
+            &mut Ids(ids),
+        );
+        assert_eq!(out, Out::Idle, "the cursor glides");
+        let Out::Calls(c) = job.on_tick(1 + GLIDE_MAX_MS, &mut Ids(ids)) else {
+            panic!("the glide ends")
+        };
+        assert_eq!(c[0].params["type"], "mouseMoved");
+        job
+    }
+
+    /// Steps a job by hand: every call answered from `browser` at once, the clock still. Returns the methods
+    /// sent, in order, and what the job said last (Idle while it glides).
+    fn step_all(job: &mut Job, out: Out, ids: &mut u64, now: u64) -> (Vec<String>, Out) {
+        let page = Page { url: "", title: "" };
+        let mut sent = Vec::new();
+        let mut out = out;
+        while let Out::Calls(calls) = out {
+            let mut next = Out::Idle;
+            for c in calls {
+                sent.push(c.method.clone());
+                let o = job.on_reply(
+                    c.id,
+                    browser(&c.method, &c.params),
+                    page,
+                    now,
+                    &mut Ids(ids),
+                );
+                if o != Out::Idle {
+                    next = o;
+                }
+            }
+            out = next;
+        }
+        (sent, out)
+    }
+
+    #[test]
+    fn a_click_finds_its_point_then_waits_for_the_glide_then_presses() {
+        let mut rig = Rig::new();
+        let (_, refs) = look(&mut rig);
+        let mut ids = rig.ids;
+        let (job, out) = Job::start(
+            Op::Click {
+                target: Target::Ref("e2".into()),
+                button: Button::Left,
+                double: false,
+            },
+            &refs,
+            5_000,
+            &mut Ids(&mut ids),
+        );
+        let mut job = job.unwrap();
+        let (sent, out) = step_all(&mut job, out, &mut ids, 5_010);
+        assert_eq!(
+            sent,
+            [
+                "DOM.enable",
+                "DOM.scrollIntoViewIfNeeded",
+                "Page.getLayoutMetrics",
+                "DOM.getContentQuads"
+            ],
+            "nothing is pressed yet"
+        );
+        assert_eq!(out, Out::Idle);
+        assert_eq!(
+            job.take_point(),
+            Some(Point {
+                x: 140.0,
+                y: 212.0,
+                vp_w: 800.0,
+                vp_h: 500.0
+            }),
+            "the middle of the button, with the viewport it is in"
+        );
+        assert_eq!(job.take_point(), None, "once");
+        assert_eq!(
+            job.on_tick(5_010 + GLIDE_MAX_MS - 1, &mut Ids(&mut ids)),
+            Out::Idle
+        );
+        let out = job.on_tick(5_010 + GLIDE_MAX_MS, &mut Ids(&mut ids));
+        let (sent, out) = step_all(&mut job, out, &mut ids, 5_300);
+        assert_eq!(sent, ["Input.dispatchMouseEvent"; 3]);
+        assert_eq!(
+            out,
+            Out::Done(Ok(json!({"clicked": {"x": 140.0, "y": 212.0}})))
+        );
+    }
+
+    #[test]
+    fn a_click_by_point_says_its_point_with_the_viewport() {
+        let mut ids = 0;
+        let (job, out) = Job::start(
+            Op::Click {
+                target: Target::Point(33.0, 44.5),
+                button: Button::Left,
+                double: false,
+            },
+            &RefMap::default(),
+            0,
+            &mut Ids(&mut ids),
+        );
+        let mut job = job.unwrap();
+        let (sent, out) = step_all(&mut job, out, &mut ids, 1);
+        assert_eq!(sent, ["Page.getLayoutMetrics"]);
+        assert_eq!(out, Out::Idle);
+        assert_eq!(
+            job.take_point(),
+            Some(Point {
+                x: 33.0,
+                y: 44.5,
+                vp_w: 800.0,
+                vp_h: 500.0
+            })
+        );
+        // A page whose size cannot be read is clicked all the same, with no cursor and no wait.
+        let mut rig = Rig::new();
+        let (r, _) = rig.run(
+            Op::Click {
+                target: Target::Point(5.0, 6.0),
+                button: Button::Left,
+                double: false,
+            },
+            &RefMap::default(),
+            |m, p| match m {
+                "Page.getLayoutMetrics" => Err("no page".into()),
+                _ => browser(m, p),
+            },
+        );
+        assert_eq!(r.unwrap()["clicked"], json!({"x": 5.0, "y": 6.0}));
+    }
+
+    #[test]
+    fn a_double_click_has_one_point_and_one_glide_then_both_presses() {
+        let mut rig = Rig::new();
+        let (_, refs) = look(&mut rig);
+        let mut ids = rig.ids;
+        let (job, out) = Job::start(
+            Op::Click {
+                target: Target::Ref("e2".into()),
+                button: Button::Left,
+                double: true,
+            },
+            &refs,
+            0,
+            &mut Ids(&mut ids),
+        );
+        let mut job = job.unwrap();
+        let (_, out) = step_all(&mut job, out, &mut ids, 1);
+        assert_eq!(out, Out::Idle);
+        assert!(job.take_point().is_some());
+        let out = job.on_tick(1 + GLIDE_MAX_MS, &mut Ids(&mut ids));
+        let mut presses = 0;
+        let mut out = out;
+        while let Out::Calls(c) = out {
+            presses += c
+                .iter()
+                .filter(|c| c.params["type"] == "mousePressed")
+                .count();
+            let c = &c[0];
+            out = job.on_reply(
+                c.id,
+                Ok("{}".into()),
+                Page { url: "", title: "" },
+                2 + GLIDE_MAX_MS,
+                &mut Ids(&mut ids),
+            );
+        }
+        assert!(matches!(out, Out::Done(Ok(_))), "{out:?}");
+        assert_eq!(presses, 2);
+        assert_eq!(job.take_point(), None, "no second point");
+    }
+
+    #[test]
+    fn a_scroll_over_a_ref_and_typing_into_one_have_a_point_and_glide() {
+        let mut rig = Rig::new();
+        let (_, refs) = look(&mut rig);
+        let mut ids = rig.ids;
+        for op in [
+            Op::Scroll {
+                dx: 0.0,
+                dy: 40.0,
+                target: Some("e3".into()),
+            },
+            Op::Type {
+                text: "hi".into(),
+                target: Some("e3".into()),
+            },
+        ] {
+            let (job, out) = Job::start(op, &refs, 0, &mut Ids(&mut ids));
+            let mut job = job.unwrap();
+            let (sent, out) = step_all(&mut job, out, &mut ids, 1);
+            assert_eq!(out, Out::Idle, "{sent:?}");
+            assert!(
+                !sent.contains(&"Input.insertText".to_string())
+                    && !sent.contains(&"Input.dispatchMouseEvent".to_string()),
+                "nothing goes before the glide: {sent:?}"
+            );
+            assert_eq!(
+                job.take_point(),
+                Some(Point {
+                    x: 200.0,
+                    y: 262.0,
+                    vp_w: 800.0,
+                    vp_h: 500.0
+                })
+            );
+            let out = job.on_tick(1 + GLIDE_MAX_MS, &mut Ids(&mut ids));
+            assert!(matches!(&out, Out::Calls(c) if c.len() == 1), "{out:?}");
+        }
+    }
+
+    #[test]
+    fn typing_into_a_ref_with_no_place_types_at_once_and_has_no_point() {
+        let mut rig = Rig::new();
+        let (_, refs) = look(&mut rig);
+        let mut ids = rig.ids;
+        let (job, out) = Job::start(
+            Op::Type {
+                text: "hi".into(),
+                target: Some("e3".into()),
+            },
+            &refs,
+            0,
+            &mut Ids(&mut ids),
+        );
+        let mut job = job.unwrap();
+        let page = Page { url: "", title: "" };
+        let mut out = out;
+        let mut sent = Vec::new();
+        while let Out::Calls(calls) = out {
+            let mut next = Out::Idle;
+            for c in calls {
+                sent.push(c.method.clone());
+                let reply = match c.method.as_str() {
+                    "DOM.getContentQuads" => Err("Could not compute content quads.".to_string()),
+                    m => browser(m, &c.params),
+                };
+                let o = job.on_reply(c.id, reply, page, 1, &mut Ids(&mut ids));
+                if o != Out::Idle {
+                    next = o;
+                }
+            }
+            out = next;
+        }
+        assert_eq!(sent.last().map(String::as_str), Some("Input.insertText"));
+        assert_eq!(out, Out::Done(Ok(json!({"typed": 2}))));
+        assert_eq!(job.take_point(), None);
+    }
+
+    #[test]
+    fn a_key_a_look_and_a_scroll_with_nothing_named_have_no_point_and_no_wait() {
+        let mut ids = 0;
+        for op in [
+            Op::Press {
+                key: web::parse_key("Enter").unwrap(),
+            },
+            Op::Look { picture: true },
+            Op::Scroll {
+                dx: 0.0,
+                dy: 100.0,
+                target: None,
+            },
+            Op::Type {
+                text: "x".into(),
+                target: None,
+            },
+        ] {
+            let name = op.name();
+            let (job, out) = Job::start(op, &RefMap::default(), 0, &mut Ids(&mut ids));
+            let mut job = job.unwrap();
+            let (_, out) = step_all(&mut job, out, &mut ids, 1);
+            assert!(matches!(out, Out::Done(_)), "{name}: {out:?}");
+            assert_eq!(job.take_point(), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn with_no_glide_the_events_go_at_once_but_the_point_is_still_said() {
+        let mut rig = Rig::new();
+        let (_, refs) = look(&mut rig);
+        let mut ids = rig.ids;
+        let (job, out) = Job::start(
+            Op::Click {
+                target: Target::Ref("e2".into()),
+                button: Button::Left,
+                double: false,
+            },
+            &refs,
+            0,
+            &mut Ids(&mut ids),
+        );
+        let mut job = job.unwrap();
+        job.set_glide_ms(0);
+        let (sent, out) = step_all(&mut job, out, &mut ids, 1);
+        assert_eq!(sent.len(), 7, "{sent:?}");
+        assert!(matches!(out, Out::Done(Ok(_))));
+        assert!(job.take_point().is_some());
+    }
+
+    #[test]
+    fn the_events_wait_for_the_glide_the_window_says_not_the_longest() {
+        let start = |ids: &mut u64| {
+            let mut rig = Rig::new();
+            let (_, refs) = look(&mut rig);
+            *ids = rig.ids;
+            let (job, out) = Job::start(
+                Op::Click {
+                    target: Target::Ref("e2".into()),
+                    button: Button::Left,
+                    double: false,
+                },
+                &refs,
+                0,
+                &mut Ids(ids),
+            );
+            let mut job = job.unwrap();
+            let (_, out) = step_all(&mut job, out, ids, 10);
+            assert_eq!(out, Out::Idle);
+            assert!(job.take_point().is_some());
+            job
+        };
+        // A glide of 420 ms: held until then, not until the longest.
+        let mut ids = 0;
+        let mut job = start(&mut ids);
+        assert!(!job.glide_for(420, 10));
+        assert_eq!(job.on_tick(10 + 419, &mut Ids(&mut ids)), Out::Idle);
+        let Out::Calls(c) = job.on_tick(10 + 420, &mut Ids(&mut ids)) else {
+            panic!("the glide has landed")
+        };
+        assert_eq!(c[0].params["type"], "mouseMoved");
+        assert!(!job.glide_for(0, 500), "no glide under way any more");
+        // No glide (the arrow is not drawn, does not move, or motion is off): due at once.
+        let mut job = start(&mut ids);
+        assert!(job.glide_for(0, 10));
+        assert!(matches!(job.on_tick(10, &mut Ids(&mut ids)), Out::Calls(_)));
+        // Left alone, the job holds for the longest glide.
+        let mut job = start(&mut ids);
+        assert_eq!(
+            job.on_tick(10 + GLIDE_MAX_MS - 1, &mut Ids(&mut ids)),
+            Out::Idle
+        );
+        assert!(matches!(
+            job.on_tick(10 + GLIDE_MAX_MS, &mut Ids(&mut ids)),
+            Out::Calls(_)
+        ));
+    }
+
+    #[test]
+    fn the_person_taking_over_during_the_glide_has_nothing_to_let_go_of() {
+        let mut rig = Rig::new();
+        let (_, refs) = look(&mut rig);
+        let mut ids = rig.ids;
+        let (job, out) = Job::start(
+            Op::Click {
+                target: Target::Ref("e2".into()),
+                button: Button::Left,
+                double: false,
+            },
+            &refs,
+            0,
+            &mut Ids(&mut ids),
+        );
+        let mut job = job.unwrap();
+        let (_, out) = step_all(&mut job, out, &mut ids, 1);
+        assert_eq!(out, Out::Idle);
+        assert!(
+            job.release_calls(&mut Ids(&mut ids)).is_empty(),
+            "nothing was pressed"
+        );
     }
 
     #[test]

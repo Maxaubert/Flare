@@ -62,8 +62,9 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// The grant a mod's token holds: exactly its manifest permissions (S5). `eval` is never among them, even if
-/// a caller passes it: it is the user's own switch for `browser.eval` (S4), and no mod gets it.
-pub fn mod_grant(id: &str, permissions: &[Permission]) -> Grant {
+/// a caller passes it: it is the user's own switch for `browser.eval` (S4), and no mod gets it. `plugin` says
+/// whether it is a protocol 2 plugin (only a plugin keeps a store).
+pub fn mod_grant(id: &str, permissions: &[Permission], plugin: bool) -> Grant {
     Grant::Mod {
         id: id.to_string(),
         permissions: permissions
@@ -71,6 +72,7 @@ pub fn mod_grant(id: &str, permissions: &[Permission]) -> Grant {
             .copied()
             .filter(|p| *p != Permission::Eval)
             .collect(),
+        plugin,
     }
 }
 
@@ -79,6 +81,7 @@ struct Live {
     id: String,
     token: String,
     permissions: Vec<Permission>,
+    plugin: bool,
 }
 
 /// The live tokens, one per enabled mod. Not `Clone`, not `Debug` for the secrets: the tokens are only
@@ -101,8 +104,14 @@ impl Tokens {
     }
 
     /// Mints the mod's token, replacing (and so killing) any token it had. Err when no random bytes, or when the
-    /// permissions include `eval` (a mod never holds it; a refused mint leaves the old token alive).
-    pub fn mint(&mut self, id: &str, permissions: &[Permission]) -> Result<String, String> {
+    /// permissions include `eval` (a mod never holds it; a refused mint leaves the old token alive). `plugin` is
+    /// the manifest's protocol: true for a protocol 2 plugin.
+    pub fn mint(
+        &mut self,
+        id: &str,
+        permissions: &[Permission],
+        plugin: bool,
+    ) -> Result<String, String> {
         if permissions.contains(&Permission::Eval) {
             return Err(
                 "a mod can never hold eval: it is the user's own switch for browser.eval".into(),
@@ -114,6 +123,7 @@ impl Tokens {
             id: id.to_string(),
             token: token.clone(),
             permissions: permissions.to_vec(),
+            plugin,
         });
         Ok(token)
     }
@@ -133,13 +143,18 @@ impl Tokens {
             .map(|l| l.token.as_str())
     }
 
+    /// Whether the mod's live token is a protocol 2 plugin's; None when it holds none.
+    pub fn plugin_of(&self, id: &str) -> Option<bool> {
+        self.live.iter().find(|l| l.id == id).map(|l| l.plugin)
+    }
+
     /// The grant a presented token holds, or None for a token that is not live (a disabled mod's, or a
     /// guess).
     pub fn grant(&self, presented: &str) -> Option<Grant> {
         let mut found = None;
         for l in &self.live {
             if constant_time_eq(l.token.as_bytes(), presented.as_bytes()) {
-                found = Some(mod_grant(&l.id, &l.permissions));
+                found = Some(mod_grant(&l.id, &l.permissions, l.plugin));
             }
         }
         found
@@ -198,12 +213,13 @@ mod tests {
     #[test]
     fn a_minted_token_maps_to_the_mod_with_exactly_its_permissions() {
         let mut t = Tokens::new();
-        let tok = t.mint("notes", &[P::Panel, P::Tools]).unwrap();
+        let tok = t.mint("notes", &[P::Panel, P::Tools], false).unwrap();
         assert_eq!(
             t.grant(&tok),
             Some(Grant::Mod {
                 id: "notes".into(),
                 permissions: vec![P::Panel, P::Tools],
+                plugin: false,
             })
         );
         assert_eq!(t.token_of("notes"), Some(tok.as_str()));
@@ -213,7 +229,7 @@ mod tests {
     fn a_grant_from_a_token_allows_its_permissions_and_no_others() {
         use flare_ctl::Method as M;
         let mut t = Tokens::new();
-        let tok = t.mint("notes", &[P::Tools]).unwrap();
+        let tok = t.mint("notes", &[P::Tools], false).unwrap();
         let g = t.grant(&tok).unwrap();
         assert!(g.may_call(M::ToolsRespond));
         assert!(!g.may_call(M::ViewImage));
@@ -228,11 +244,11 @@ mod tests {
     fn browser_needs_the_browser_permission_and_eval_never_comes_from_a_mod() {
         use flare_ctl::Method as M;
         let mut t = Tokens::new();
-        let tok = t.mint("drive", &[P::Browser]).unwrap();
+        let tok = t.mint("drive", &[P::Browser], false).unwrap();
         let g = t.grant(&tok).unwrap();
         assert!(g.may_call(M::BrowserNavigate));
         assert!(!g.may_call(M::BrowserEval), "browser alone is not eval");
-        let view_only = t.mint("viewer", &[P::View]).unwrap();
+        let view_only = t.mint("viewer", &[P::View], false).unwrap();
         let g = t.grant(&view_only).unwrap();
         assert!(!g.may_call(M::BrowserNavigate));
         assert!(!g.may_call(M::BrowserOpen));
@@ -243,8 +259,8 @@ mod tests {
     fn a_mint_with_eval_is_refused_and_keeps_the_old_token() {
         use flare_ctl::Method as M;
         let mut t = Tokens::new();
-        let old = t.mint("drive", &[P::Browser]).unwrap();
-        let err = t.mint("drive", &[P::Browser, P::Eval]).unwrap_err();
+        let old = t.mint("drive", &[P::Browser], false).unwrap();
+        let err = t.mint("drive", &[P::Browser, P::Eval], false).unwrap_err();
         assert!(err.contains("eval"), "{err}");
         assert_eq!(
             t.grant(&old).unwrap().kind(),
@@ -257,7 +273,7 @@ mod tests {
     #[test]
     fn mod_grant_drops_eval_even_when_a_caller_passes_it() {
         use flare_ctl::Method as M;
-        let g = mod_grant("drive", &[P::Browser, P::Eval]);
+        let g = mod_grant("drive", &[P::Browser, P::Eval], false);
         assert_eq!(g.permission_names(), vec!["browser"]);
         assert!(g.may_call(M::BrowserNavigate));
         assert!(!g.may_call(M::BrowserEval));
@@ -266,7 +282,7 @@ mod tests {
     #[test]
     fn a_disabled_mods_token_is_dead() {
         let mut t = Tokens::new();
-        let tok = t.mint("notes", &[P::View]).unwrap();
+        let tok = t.mint("notes", &[P::View], false).unwrap();
         assert!(t.revoke("notes"));
         assert_eq!(t.grant(&tok), None);
         assert_eq!(t.token_of("notes"), None);
@@ -277,8 +293,8 @@ mod tests {
     #[test]
     fn enabling_again_replaces_the_token() {
         let mut t = Tokens::new();
-        let old = t.mint("notes", &[P::View]).unwrap();
-        let new = t.mint("notes", &[P::View]).unwrap();
+        let old = t.mint("notes", &[P::View], false).unwrap();
+        let new = t.mint("notes", &[P::View], false).unwrap();
         assert_ne!(old, new);
         assert_eq!(t.grant(&old), None);
         assert!(t.grant(&new).is_some());
@@ -288,8 +304,8 @@ mod tests {
     #[test]
     fn each_mod_has_its_own_token_and_grant() {
         let mut t = Tokens::new();
-        let a = t.mint("alpha", &[P::View]).unwrap();
-        let b = t.mint("beta", &[P::Convo]).unwrap();
+        let a = t.mint("alpha", &[P::View], false).unwrap();
+        let b = t.mint("beta", &[P::Convo], false).unwrap();
         assert_eq!(t.len(), 2);
         assert!(matches!(t.grant(&a), Some(Grant::Mod { ref id, .. }) if id == "alpha"));
         assert!(matches!(t.grant(&b), Some(Grant::Mod { ref id, .. }) if id == "beta"));
@@ -301,7 +317,7 @@ mod tests {
     #[test]
     fn guesses_and_prefixes_are_not_grants() {
         let mut t = Tokens::new();
-        let tok = t.mint("notes", &[P::View]).unwrap();
+        let tok = t.mint("notes", &[P::View], false).unwrap();
         assert_eq!(t.grant(""), None);
         assert_eq!(t.grant("0"), None);
         assert_eq!(t.grant(&tok[..63]), None);
@@ -312,7 +328,7 @@ mod tests {
     #[test]
     fn a_token_is_not_in_the_debug_output() {
         let mut t = Tokens::new();
-        let tok = t.mint("notes", &[P::View]).unwrap();
+        let tok = t.mint("notes", &[P::View], false).unwrap();
         let shown = format!("{t:?}");
         assert!(shown.contains("notes"));
         assert!(!shown.contains(&tok));
@@ -321,7 +337,7 @@ mod tests {
     #[test]
     fn an_empty_mod_gets_a_grant_with_no_permissions() {
         let mut t = Tokens::new();
-        let tok = t.mint("empty-mod", &[]).unwrap();
+        let tok = t.mint("empty-mod", &[], false).unwrap();
         let g = t.grant(&tok).unwrap();
         assert_eq!(g.permission_names(), Vec::<&str>::new());
     }

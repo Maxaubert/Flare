@@ -39,7 +39,7 @@ pub const PAGES: [PageDef; 7] = [
     },
     PageDef {
         id: "mods",
-        label: "Mods",
+        label: "Plugins",
         icon: "chip",
         end: false,
     },

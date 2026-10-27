@@ -307,12 +307,21 @@ mod win {
                     // SAFETY: plain COM activation of the shell's taskbar list.
                     let made: windows::core::Result<ITaskbarList3> =
                         unsafe { CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER) };
-                    if let Ok(l) = made {
+                    match made {
                         // SAFETY: `l` is a live interface.
-                        if unsafe { l.HrInit() }.is_ok() {
-                            self.list = Some(l);
-                        }
+                        Ok(l) => match unsafe { l.HrInit() } {
+                            Ok(()) => self.list = Some(l),
+                            Err(e) => {
+                                super::note_shell_error(&format!("HrInit {:#010x}", e.code().0))
+                            }
+                        },
+                        Err(e) => super::note_shell_error(&format!(
+                            "CoCreateInstance {:#010x}",
+                            e.code().0
+                        )),
                     }
+                } else {
+                    super::note_shell_error(&format!("CoInitializeEx {:#010x}", hr.0));
                 }
             }
             self.list.as_ref()
@@ -361,13 +370,17 @@ mod win {
 
         fn set_overlay(&mut self, icon: Option<&Disc>, text: &str) -> bool {
             if self.hwnd == 0 {
+                super::note_shell_error("no window handle");
                 return false;
             }
             let hwnd = HWND(self.hwnd as *mut c_void);
             let hicon = match icon {
                 Some(d) => match make_icon(d) {
                     Some(h) => h,
-                    None => return false,
+                    None => {
+                        super::note_shell_error("the icon was not made");
+                        return false;
+                    }
                 },
                 None => HICON::default(),
             };
@@ -380,7 +393,16 @@ mod win {
                         PCWSTR::null()
                     };
                     // SAFETY: valid HWND value, icon (or null to clear) and NUL-terminated text.
-                    unsafe { l.SetOverlayIcon(hwnd, hicon, p) }.is_ok()
+                    match unsafe { l.SetOverlayIcon(hwnd, hicon, p) } {
+                        Ok(()) => true,
+                        Err(e) => {
+                            super::note_shell_error(&format!(
+                                "SetOverlayIcon {:#010x}",
+                                e.code().0
+                            ));
+                            false
+                        }
+                    }
                 }
                 None => false,
             };
@@ -418,60 +440,9 @@ pub trait OverlayShell {
     /// `None` clears the overlay. True when the shell took it.
     fn set_overlay(&mut self, icon: Option<&Disc>, text: &str) -> bool;
 
-    /// The taskbar was recreated (Explorer restarted): forget the COM object made for the old one.
+    /// The overlay may be gone (Explorer restarted, or the button did not exist yet): forget the COM
+    /// object made before.
     fn reset(&mut self) {}
-}
-
-/// Whether `msg` is the registered `TaskbarButtonCreated` message (`registered` 0 means the
-/// registration failed, which matches nothing).
-pub fn is_button_created(msg: u32, registered: u32) -> bool {
-    registered != 0 && msg == registered
-}
-
-/// Listens on `hwnd` for the shell's `TaskbarButtonCreated` broadcast (sent when Explorer makes the
-/// window's button, again after it restarts). The window procedure only sets a flag; the UI tick
-/// redraws the badge. Safe to call again.
-#[cfg(windows)]
-pub fn watch_button_created(hwnd: isize) -> bool {
-    use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
-    use windows_sys::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW;
-    const ID: usize = 0x464C_5442;
-    static REGISTERED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    unsafe extern "system" fn proc(
-        hwnd: windows_sys::Win32::Foundation::HWND,
-        msg: u32,
-        wparam: windows_sys::Win32::Foundation::WPARAM,
-        lparam: windows_sys::Win32::Foundation::LPARAM,
-        _id: usize,
-        _data: usize,
-    ) -> windows_sys::Win32::Foundation::LRESULT {
-        if is_button_created(msg, REGISTERED.load(std::sync::atomic::Ordering::SeqCst)) {
-            note_button_created();
-        }
-        // SAFETY: the next procedure in the chain, with the arguments this one was given.
-        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
-    }
-    let name: Vec<u16> = "TaskbarButtonCreated"
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    // SAFETY: `name` is NUL-terminated and outlives the call.
-    let id = unsafe { RegisterWindowMessageW(name.as_ptr()) };
-    REGISTERED.store(id, std::sync::atomic::Ordering::SeqCst);
-    // SAFETY: subclasses a window of this process from its own thread; the procedure is a plain function.
-    id != 0 && unsafe { SetWindowSubclass(hwnd as _, Some(proc), ID, 0) != 0 }
-}
-
-static BUTTON_CREATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Notes that the taskbar button was (re)created; the UI tick takes it with [`take_button_created`].
-pub fn note_button_created() {
-    BUTTON_CREATED.store(true, std::sync::atomic::Ordering::SeqCst);
-}
-
-/// True once per `TaskbarButtonCreated`: the overlay must be drawn again.
-pub fn take_button_created() -> bool {
-    BUTTON_CREATED.swap(false, std::sync::atomic::Ordering::SeqCst)
 }
 
 /// A shell that takes every overlay and shows it nowhere: an `--e2e` run has a badge to read
@@ -514,6 +485,20 @@ pub fn last_overlay_px() -> u32 {
 
 fn remember_description(text: &str) {
     LAST_DESCRIPTION.with(|d| *d.borrow_mut() = text.to_string());
+}
+
+std::thread_local! {
+    static SHELL_ERROR: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Why the shell last refused the overlay (the step and its HRESULT), for the diagnostics log.
+pub fn last_shell_error() -> String {
+    SHELL_ERROR.with(|e| e.borrow().clone())
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn note_shell_error(why: &str) {
+    SHELL_ERROR.with(|e| *e.borrow_mut() = why.to_string());
 }
 
 /// The description the shell last took on this thread ("1 tab needs a look"), empty when the
@@ -856,19 +841,5 @@ mod tests {
             3,
             "the shell was told to start afresh each time"
         );
-    }
-
-    #[test]
-    fn the_button_created_message_is_matched_only_by_its_registered_id() {
-        assert!(is_button_created(0xC123, 0xC123));
-        assert!(!is_button_created(0x0001, 0xC123));
-        assert!(
-            !is_button_created(0xC123, 0),
-            "an id of 0 (registration failed) matches nothing"
-        );
-        assert!(!take_button_created());
-        note_button_created();
-        assert!(take_button_created());
-        assert!(!take_button_created(), "taken once");
     }
 }

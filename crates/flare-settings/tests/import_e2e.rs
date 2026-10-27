@@ -179,7 +179,7 @@ fn a_pt_stable_profile_becomes_a_flare_profile_before_the_first_paint() {
         ("flare.window.edges", "faint"),
         ("flare.window.tabLayout", "vertical"),
         ("flare.window.sidebar", "open"),
-        ("flare.newtab.mode", "ask"),
+        ("flare.newtab.mode", "folder"),
         ("flare.help.shell", "powershell"),
         ("flare.dictation.enabled", "1"),
         ("flare.dictation.mode", "hold"),

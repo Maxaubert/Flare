@@ -33,6 +33,7 @@ fn tab_rows(scale: f32, n: usize) -> Vec<TabRow> {
             mode: 0,
             x: (i as f32 * 150.0 * scale).round() as i32,
             w: (150.0 * scale).round() as i32,
+            prog: -1.0,
             ..TabRow::default()
         })
         .collect()

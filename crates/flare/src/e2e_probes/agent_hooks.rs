@@ -15,7 +15,7 @@ pub fn register(r: &mut ProbeRegistry) {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TabFacts {
     pub id: String,
-    /// The agent kind ("claude", "codex") or "shell" when no agent is here.
+    /// The agent kind ("claude", "codex", "agy") or "shell" when no agent is here.
     pub kind: String,
     pub present: bool,
     /// The row's mark code: 1 working, 2 question, 3 finished, 4 failed, anything else none.

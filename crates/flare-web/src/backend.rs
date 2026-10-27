@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use flare_surfaces::app::AppSpec;
+pub use flare_surfaces::slot::{Slot, ViewKind};
 use flare_surfaces::web::PhysRect;
 
 /// Where events go: the window's `UiMsg` queue. Called on the UI thread, from inside the message
@@ -158,6 +159,46 @@ pub enum WebEvent {
         host: String,
         json: String,
     },
+    /// An event of a view that is not a tab's panel (a plugin's bar or background page): the event as a panel
+    /// would say it (its `tab` is the slot's owner), with the slot it came from. A panel's events are never
+    /// wrapped, so everything that knew only panels reads them as before. See [`addressed`].
+    View {
+        slot: Slot,
+        event: Box<WebEvent>,
+    },
+}
+
+/// The event of the view in `slot`: as it is for a tab's panel, wrapped in `WebEvent::View` for any other slot.
+pub fn addressed(slot: &Slot, event: WebEvent) -> WebEvent {
+    if slot.is_panel() {
+        event
+    } else {
+        WebEvent::View {
+            slot: slot.clone(),
+            event: Box::new(event),
+        }
+    }
+}
+
+/// Where one view's events go: the window's sink, every event addressed by the view's slot.
+#[derive(Clone)]
+pub struct ViewSink {
+    sink: Sink,
+    slot: Slot,
+}
+
+impl ViewSink {
+    pub fn new(sink: &Sink, slot: &Slot) -> Self {
+        Self {
+            sink: Arc::clone(sink),
+            slot: slot.clone(),
+        }
+    }
+
+    /// Sends the event `make` builds from the view's owner (the event's `tab`).
+    pub fn send(&self, make: impl FnOnce(String) -> WebEvent) {
+        (self.sink)(addressed(&self.slot, make(self.slot.owner.clone())));
+    }
 }
 
 impl WebEvent {
@@ -184,6 +225,7 @@ impl WebEvent {
             WebEvent::Script { .. } => "Script",
             WebEvent::Cdp { .. } => "Cdp",
             WebEvent::ModMessage { .. } => "ModMessage",
+            WebEvent::View { .. } => "View",
         }
     }
 }
@@ -212,7 +254,9 @@ pub struct ControllerProbe {
     pub private: bool,
 }
 
-/// One web view per tab with an open web panel.
+/// One web view per slot: the panel of each tab with an open web panel and, for plugins, a bar beside a tab or
+/// a background page (see [`Slot`]; only panels are made by the app so far). The methods that take a tab act on
+/// its panel.
 pub trait WebBackend {
     /// Makes the tab's view (asynchronously, the first time also the browser environment) and
     /// opens `url` in it at `bounds`. A view the tab already has is only moved and sent to `url`.
@@ -221,11 +265,24 @@ pub trait WebBackend {
     /// with the app's folder served on its host name, a navigation that may not leave the app's page, no
     /// window of its own for the page and, unless `app.allow_network`, no request that is not the app's
     /// own. A view the tab already has (of anything else) is closed first.
-    fn open_app(&mut self, tab: &str, app: AppSpec, bounds: PhysRect, visible: bool);
+    fn open_app(&mut self, tab: &str, app: AppSpec, bounds: PhysRect, visible: bool) {
+        self.open_view(&Slot::panel(tab), app, bounds, visible);
+    }
+    /// Makes the view of `slot` for a page with walls (`open_app` is this for a tab's panel). A bar or a
+    /// background slot takes only a mod's or plugin's page (`app.module`); anything else is answered `Failed`
+    /// and no view is made. Every mod's and plugin's view is sealed as its kind says
+    /// ([`crate::seal::plugin_seal`]). A view the slot already has (of anything else) is closed first.
+    fn open_view(&mut self, slot: &Slot, app: AppSpec, bounds: PhysRect, visible: bool);
     fn navigate(&mut self, tab: &str, url: &str);
     fn go(&mut self, tab: &str, nav: Nav);
-    fn set_bounds(&mut self, tab: &str, bounds: PhysRect);
-    fn set_visible(&mut self, tab: &str, visible: bool);
+    fn set_bounds(&mut self, tab: &str, bounds: PhysRect) {
+        self.set_view_bounds(&Slot::panel(tab), bounds);
+    }
+    fn set_visible(&mut self, tab: &str, visible: bool) {
+        self.set_view_visible(&Slot::panel(tab), visible);
+    }
+    fn set_view_bounds(&mut self, slot: &Slot, bounds: PhysRect);
+    fn set_view_visible(&mut self, slot: &Slot, visible: bool);
     /// The window the pages sit in moved (or changed monitor or size): the browser must be told, or the
     /// popups it draws (a select's list, the IME's candidates, its menus) keep the old screen position.
     fn parent_moved(&mut self) {}
@@ -234,7 +291,11 @@ pub trait WebBackend {
     /// Gives the page the keyboard.
     fn focus(&mut self, tab: &str);
     /// Closes and frees the tab's view. The browser environment goes with the last one.
-    fn close(&mut self, tab: &str);
+    fn close(&mut self, tab: &str) {
+        self.close_view(&Slot::panel(tab));
+    }
+    /// Closes and frees the view of `slot`, as `close` does a tab's.
+    fn close_view(&mut self, slot: &Slot);
     /// Closes every view and lets the browser environment go, now (the window is ending). Nothing is
     /// reported after it. Downloads still waiting for a yes are cancelled.
     fn close_all(&mut self);
@@ -255,13 +316,20 @@ pub trait WebBackend {
     fn cdp(&mut self, tab: &str, id: u64, method: &str, params: &str);
     /// Posts a message to a mod's page (its bridge's `message` event). Does nothing for a view that is not a
     /// mod's or has no page yet.
-    fn post_message(&mut self, tab: &str, json: &str);
+    fn post_message(&mut self, tab: &str, json: &str) {
+        self.post_to_view(&Slot::panel(tab), json);
+    }
+    /// Posts a message to the mod's or plugin's page in `slot`, as `post_message` does to a tab's.
+    fn post_to_view(&mut self, slot: &Slot, json: &str);
     /// The e2e only: sets the browser's own zoom of the tab's page (what Ctrl+wheel in the panel does).
     fn set_zoom(&mut self, tab: &str, factor: f64);
     /// The e2e only: runs a script in the page; answered by `WebEvent::Script`.
     fn run_script(&mut self, tab: &str, id: u64, js: &str);
     /// The e2e only: the controller's own numbers.
-    fn probe(&self, tab: &str) -> Option<ControllerProbe>;
+    fn probe(&self, tab: &str) -> Option<ControllerProbe> {
+        self.probe_view(&Slot::panel(tab))
+    }
+    fn probe_view(&self, slot: &Slot) -> Option<ControllerProbe>;
 }
 
 #[cfg(test)]
@@ -410,6 +478,148 @@ mod tests {
             posts,
             [Call::Post("mod".into(), r#"{"t":"tool"}"#.into())],
             "only the mod's view gets a message"
+        );
+    }
+
+    fn notes() -> AppSpec {
+        flare_surfaces::modview::mod_spec(
+            "notes",
+            std::path::Path::new("C:\\mods\\notes"),
+            "index.html",
+        )
+    }
+
+    /// Every kind of view a plugin can have is sealed by the one seal of its kind, and nothing else is.
+    #[test]
+    fn every_kind_of_plugin_view_is_sealed_as_its_kind_says() {
+        use crate::seal::{DownloadWall, plugin_seal};
+        let (sink, _seen) = collecting();
+        let mut f = FakeWeb::new(sink);
+        let r = PhysRect::default();
+        let slots = [
+            Slot::panel("t1"),
+            Slot::bar("t1"),
+            Slot::background("notes"),
+        ];
+        for s in &slots {
+            f.open_view(s, notes(), r, false);
+        }
+        assert_eq!(f.controllers(), 3, "three slots, three views");
+        for s in &slots {
+            let seal = f.view(s).and_then(|v| v.seal).expect("sealed");
+            assert_eq!(seal, plugin_seal(s.kind));
+            assert!(!seal.script_dialogs && !seal.new_windows && !seal.permissions);
+            assert!(!seal.external_uris && seal.frames_own_only && !seal.dev_tools);
+        }
+        let bar = f.view(&Slot::bar("t1")).unwrap().seal.unwrap();
+        let bg = f.view(&Slot::background("notes")).unwrap().seal.unwrap();
+        for s in [bar, bg] {
+            assert!(!s.context_menu && !s.browser_keys);
+            assert_eq!(s.downloads, DownloadWall::Cancel);
+        }
+        let panel = f.view(&Slot::panel("t1")).unwrap().seal.unwrap();
+        assert!(panel.context_menu && panel.browser_keys);
+        // The web panel and a mini-app are not plugin views and get no plugin seal.
+        f.open("t2", "https://a.example/", r, true);
+        assert_eq!(f.view(&Slot::panel("t2")).unwrap().seal, None);
+    }
+
+    #[test]
+    fn a_bar_or_a_background_slot_takes_only_a_plugins_page() {
+        use flare_surfaces::app::{app_host, app_url};
+        let (sink, seen) = collecting();
+        let mut f = FakeWeb::new(sink);
+        let mini = AppSpec {
+            host: app_host(1),
+            folder: "C:\\apps".into(),
+            url: app_url(&app_host(1)),
+            allow_network: false,
+            module: None,
+        };
+        f.open_view(&Slot::bar("t1"), mini.clone(), PhysRect::default(), true);
+        f.open_view(&Slot::background("x"), mini, PhysRect::default(), true);
+        assert_eq!(f.controllers(), 0);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert!(seen.iter().all(|e| matches!(
+            e,
+            WebEvent::View { event, .. } if matches!(**event, WebEvent::Failed { .. })
+        )));
+    }
+
+    /// A panel's events and calls are what they always were; a bar's and a background page's name their slot,
+    /// so nothing that knows only panels mistakes them for a tab's.
+    #[test]
+    fn a_panels_events_name_its_tab_and_other_slots_events_come_wrapped() {
+        let (sink, seen) = collecting();
+        let mut f = FakeWeb::new(sink);
+        let r = PhysRect::default();
+        f.open_app("t1", notes(), r, true);
+        f.open_view(&Slot::bar("t1"), notes(), r, true);
+        f.open_view(&Slot::background("notes"), notes(), r, false);
+        {
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen[0], WebEvent::Ready { tab: "t1".into() });
+            assert_eq!(
+                seen[1],
+                WebEvent::View {
+                    slot: Slot::bar("t1"),
+                    event: Box::new(WebEvent::Ready { tab: "t1".into() }),
+                }
+            );
+            assert_eq!(
+                seen[2],
+                WebEvent::View {
+                    slot: Slot::background("notes"),
+                    event: Box::new(WebEvent::Ready {
+                        tab: "notes".into()
+                    }),
+                }
+            );
+            assert_eq!(seen[2].kind(), "View");
+        }
+        assert!(
+            f.calls()
+                .iter()
+                .any(|c| matches!(c, Call::OpenApp { tab, .. } if tab == "t1"))
+        );
+        // A message reaches the slot it names, and only it.
+        f.post_message("t1", "p");
+        f.post_to_view(&Slot::bar("t1"), "b");
+        f.post_to_view(&Slot::background("notes"), "g");
+        f.post_to_view(&Slot::background("other"), "x");
+        let posts: Vec<_> = f
+            .calls()
+            .into_iter()
+            .filter(|c| matches!(c, Call::Post(..) | Call::PostView(..)))
+            .collect();
+        assert_eq!(
+            posts,
+            [
+                Call::Post("t1".into(), "p".into()),
+                Call::PostView(Slot::bar("t1"), "b".into()),
+                Call::PostView(Slot::background("notes"), "g".into()),
+            ]
+        );
+        // Closing the tab's panel leaves its bar and the background page; each closes on its own.
+        f.close("t1");
+        assert_eq!(f.controllers(), 2);
+        assert!(f.probe("t1").is_none() && f.probe_view(&Slot::bar("t1")).is_some());
+        f.close_view(&Slot::bar("t1"));
+        f.close_all();
+        assert_eq!(f.controllers(), 0);
+        let closes: Vec<_> = f
+            .calls()
+            .into_iter()
+            .filter(|c| matches!(c, Call::Close(_) | Call::CloseView(_)))
+            .collect();
+        assert_eq!(
+            closes,
+            [
+                Call::Close("t1".into()),
+                Call::CloseView(Slot::bar("t1")),
+                Call::CloseView(Slot::background("notes")),
+            ]
         );
     }
 

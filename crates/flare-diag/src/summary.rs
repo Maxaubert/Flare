@@ -28,6 +28,7 @@ const SINK_KINDS: &[&str] = &[
     "agent-title",
     "agent-mark",
     "agent-restore",
+    "agent-poll",
     "agent-poll-failing",
     "frame-slow",
 ];

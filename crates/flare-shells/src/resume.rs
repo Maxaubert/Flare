@@ -37,16 +37,21 @@ pub fn with_resume_prior(def: &ShellDef, resume: &str, prior: Option<&str>) -> L
         Some(v) if plain_switch_value(v) => format!("set {NO_CWD_EXE}={v}"),
         _ => format!("set {NO_CWD_EXE}="),
     };
-    let codex = resume == "codex:last";
-    let env = if codex {
+    // A marker resumes the agent's most recent session in the folder: no id travels.
+    let marker = match resume {
+        "codex:last" => Some("codex resume --last"),
+        "agy:last" => Some("agy -c"),
+        _ => None,
+    };
+    let env = if marker.is_some() {
         None
     } else {
         Some((RESUME_ENV.to_string(), resume.to_string()))
     };
     let (args, env) = match def.id.as_str() {
         "pwsh" | "powershell" if !def.args.is_empty() => {
-            let step = if codex {
-                "codex resume --last".to_string()
+            let step = if let Some(line) = marker {
+                line.to_string()
             } else {
                 format!(
                     "& {{ $r = $env:{RESUME_ENV}; Remove-Item Env:{RESUME_ENV}; claude --resume $r }}"
@@ -62,8 +67,8 @@ pub fn with_resume_prior(def: &ShellDef, resume: &str, prior: Option<&str>) -> L
         "cmd" => {
             // cmd looks in the current folder (the tab's project) before PATH; a claude.cmd a
             // repo carries must never run on a restore.
-            let step = if codex {
-                format!("set {NO_CWD_EXE}=1& codex resume --last& {restore}")
+            let step = if let Some(line) = marker {
+                format!("set {NO_CWD_EXE}=1& {line}& {restore}")
             } else {
                 format!(
                     "set {NO_CWD_EXE}=1& set {RESUME_ENV}=& claude --resume %{RESUME_ENV}%& {restore}"
@@ -154,7 +159,7 @@ mod tests {
 
     #[test]
     fn a_cmd_resume_clears_the_search_switch_once_the_agent_ends() {
-        for id in [A, "codex:last"] {
+        for id in [A, "codex:last", "agy:last"] {
             let r = with_resume_prior(&cmd(), id, None);
             assert!(
                 r.args[1].ends_with("& set NoDefaultCurrentDirectoryInExePath="),
@@ -167,7 +172,7 @@ mod tests {
     /// A user's own value of the switch is put back, not erased (new-4 residual).
     #[test]
     fn a_cmd_resume_puts_the_users_own_switch_value_back() {
-        for id in [A, "codex:last"] {
+        for id in [A, "codex:last", "agy:last"] {
             let r = with_resume_prior(&cmd(), id, Some("1"));
             assert!(
                 r.args[1].ends_with("& set NoDefaultCurrentDirectoryInExePath=1"),
@@ -194,7 +199,7 @@ mod tests {
 
     #[test]
     fn a_cmd_resume_never_searches_the_current_folder() {
-        for id in [A, "codex:last"] {
+        for id in [A, "codex:last", "agy:last"] {
             let r = with_resume_prior(&cmd(), id, None);
             assert!(
                 r.args[1].starts_with("set NoDefaultCurrentDirectoryInExePath=1& "),
@@ -228,6 +233,22 @@ mod tests {
             [
                 "/K",
                 "set NoDefaultCurrentDirectoryInExePath=1& codex resume --last& set NoDefaultCurrentDirectoryInExePath="
+            ]
+        );
+        assert_eq!(r.env, None);
+    }
+
+    #[test]
+    fn agy_resumes_its_last_conversation_with_no_id() {
+        let r = with_resume(&pwsh(), "agy:last");
+        assert_eq!(r.args[3], "boot; agy -c");
+        assert_eq!(r.env, None);
+        let r = with_resume_prior(&cmd(), "agy:last", None);
+        assert_eq!(
+            r.args,
+            [
+                "/K",
+                "set NoDefaultCurrentDirectoryInExePath=1& agy -c& set NoDefaultCurrentDirectoryInExePath="
             ]
         );
         assert_eq!(r.env, None);

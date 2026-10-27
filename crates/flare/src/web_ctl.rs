@@ -23,6 +23,15 @@
 //! job runs, and for a moment after, the panel's head wears a ribbon. The person's own key or click in
 //! the page ends the job (`interrupted`): the keys are heard in the key hook, a click by looking at the
 //! real mouse buttons on a timer (no hook is installed).
+//!
+//! The agent's cursor: a pointer action says where it lands before its events go, and an orange arrow
+//! (`flare_win::agent_cursor`, a window of Flare's own above the page, never in it) glides there,
+//! ripples on each press, stays while the ribbon does and fades after. It never jumps: after its fade the
+//! next action on the same page starts it where it rested. While the agent uses the page, from its first
+//! call until the ribbon's hold ends, a light orange border (a second such window) rings the page and
+//! fades with the arrow. Both are drawn only over the page in front and live: a takeover, a closed
+//! panel, a tab behind, a Flare menu over the page (the still) or a minimised window takes them away at
+//! once. The agent tick places them again each turn, so they follow the window and the splitter.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -31,8 +40,9 @@ use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use flare_ctl::{CtlError, code};
+use flare_surfaces::agent_cursor::{AgentBorder, AgentCursor};
 use flare_surfaces::agent_job::{
-    Fail, Ids, Job, JobError, Op as AgentOp, Out as JobOut, Page, RefMap,
+    Fail, GLIDE_MAX_MS, Ids, Job, JobError, Op as AgentOp, Out as JobOut, Page, RefMap,
 };
 use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::web::{
@@ -42,7 +52,10 @@ use flare_surfaces::web::{
 use flare_tabs::keymap::{ChordId, KeyContext, chord_of};
 use flare_term::keys::KeyEvent;
 use flare_web::{KeyFilter, KeyPress, Nav, Sink, WebBackend, WebEvent};
-use serde_json::Value;
+use flare_win::agent_cursor::{
+    CursorArt, CursorBitmap, CursorShell, RecordBorder, RecordCursor, border_bitmap,
+};
+use serde_json::{Value, json};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
 use crate::AppWindow;
@@ -142,6 +155,59 @@ pub enum WebOut {
     ModPage { tab: String, ready: bool },
     /// A mod's page, or the browser it ran in, is gone.
     ModLost { tab: String },
+    /// A plugin's background page sent a message over its bridge (plugins phase 3).
+    BgMessage { plugin: String, json: String },
+    /// A plugin's background page began loading (`ready` false) or finished loading well (true).
+    BgPage { plugin: String, ready: bool },
+    /// A plugin's background page, or the browser it ran in, is gone (a failed load included).
+    BgLost { plugin: String },
+    /// A plugin's bar page under a tab's terminal sent a message over its bridge (plugins phase 6).
+    BarMessage {
+        tab: String,
+        plugin: String,
+        json: String,
+    },
+    /// A plugin's bar page began loading (`ready` false) or finished loading well (true).
+    BarPage {
+        tab: String,
+        plugin: String,
+        ready: bool,
+    },
+    /// A plugin's bar page, or the browser it ran in, is gone (a failed load included).
+    BarLost { tab: String, plugin: String },
+}
+
+/// A tab's bar as the window wants it (plugins phase 6): the plugin whose bar the tab shows, and its page.
+#[derive(Clone, Debug)]
+pub struct BarWant {
+    pub tab: String,
+    pub plugin: String,
+    pub spec: AppSpec,
+}
+
+/// What [`WebCtl::sync_bars`] did to the bar views: the window binds a page to an opened one and lets a closed one go.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BarChange {
+    Opened { tab: String, plugin: String },
+    Closed { tab: String, plugin: String },
+}
+
+/// A plugin's bar view under a tab's terminal: whose page, its host (a message from any other is not its), the
+/// navigation that counts as its load, what the browser was last told and when it was last on screen.
+struct BarView {
+    plugin: String,
+    host: String,
+    started_nav: Option<u64>,
+    visible: bool,
+    bounds: Option<PhysRect>,
+    seen: u64,
+}
+
+/// A plugin's background page as the controller knows it: the host it was opened on (a message from any other is
+/// not its) and the navigation that counts as its load.
+struct BgView {
+    host: String,
+    started_nav: Option<u64>,
 }
 
 struct Pending {
@@ -200,6 +266,7 @@ pub fn agent_label(k: flare_agent::kinds::DetectedAgent) -> String {
     match k {
         D::Claude => "Claude",
         D::Codex => "Codex",
+        D::Agy => "Antigravity",
         D::Other => "An agent",
     }
     .to_string()
@@ -208,6 +275,27 @@ pub fn agent_label(k: flare_agent::kinds::DetectedAgent) -> String {
 /// The words of the ribbon.
 pub fn ribbon_words(label: &str) -> String {
     format!("{label} is using this page")
+}
+
+/// The cursor's tag: the agent's name ("Claude", "Codex"), else "Agent".
+pub fn cursor_tag(label: &str) -> String {
+    if label == "An agent" {
+        "Agent".to_string()
+    } else {
+        label.to_string()
+    }
+}
+
+/// Where the client area of Flare's window starts on the screen.
+fn client_origin(hwnd: isize) -> (i32, i32) {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+    let mut p = POINT { x: 0, y: 0 };
+    // SAFETY: a plain read of where Flare's own window is; `p` is a valid in/out value.
+    if unsafe { ClientToScreen(hwnd as *mut _, &mut p) } == 0 {
+        return (0, 0);
+    }
+    (p.x, p.y)
 }
 
 /// Is a point inside a rectangle (client pixels).
@@ -392,6 +480,54 @@ pub struct WebCtl {
     /// That page covers the whole window now: its tab is in front with its panel shown (set by every sync). The
     /// app makes the window full screen while it holds.
     covers: bool,
+    /// The app made the window full screen for the page (it was not already), so it leaves full screen with it.
+    window_follows: bool,
+    /// The window's size the page last covered (set by every sync while it covers).
+    covered: Option<(u32, u32)>,
+    /// The window's size at the last sync while no page covered it.
+    uncovered: Option<(u32, u32)>,
+    /// The plugins' background pages (plugins phase 3), by plugin: hidden views tied to no tab, which never take
+    /// the keyboard and are never shown.
+    backgrounds: HashMap<String, BgView>,
+    /// The plugins' bar views (plugins phase 6), by tab: shown under the terminal while their tab is in front, hidden
+    /// behind, never given the keyboard.
+    bars: HashMap<String, BarView>,
+    /// Counts the syncs that put a bar on screen (a bar view's `seen`).
+    bar_clock: u64,
+    /// The page left full screen and the window is on its way back: the page keeps covering the window until the
+    /// window's size changes, so it moves into the panel once, at the window's new size, not first into a panel
+    /// laid out for the full-screen window (the tab, and the size it covered).
+    hold: Option<(String, (u32, u32))>,
+    /// The agent's cursor: its state, the shell that draws it (a recording one until the real window is
+    /// handed in), the tab and the name it is drawn for.
+    cursor: AgentCursor,
+    cursor_shell: Box<dyn CursorShell>,
+    cursor_tab: Option<String>,
+    cursor_label: String,
+    /// The art for (scale in hundredths, tag), and its bitmap with no ripple.
+    cursor_art: Option<(u32, String, CursorArt, CursorBitmap)>,
+    /// What was last drawn: the tip on the screen, the opacity and whether ripples were in it.
+    cursor_last: Option<(i32, i32, u8, bool)>,
+    /// The tip in client pixels, while drawn (the e2e reads it).
+    cursor_client: Option<(i32, i32)>,
+    /// Which document of its tab the cursor last pointed on (`TabWeb::doc`): a spot it rested at on an
+    /// earlier page is forgotten.
+    cursor_doc: u64,
+    /// The border round the page while the agent uses it: its state, its shell, its tab, its bitmap for
+    /// (page width, height, scale in hundredths), and what was last drawn (top left on the screen, size,
+    /// opacity) and where in client pixels.
+    border: AgentBorder,
+    border_shell: Box<dyn CursorShell>,
+    border_tab: Option<String>,
+    border_bmp: Option<((i32, i32, u32), CursorBitmap)>,
+    border_last: Option<((i32, i32, i32, i32), u8)>,
+    border_client: Option<PhysRect>,
+    /// Windows' animation effects switch, read once per agent call (tests pin it).
+    motion: Rc<dyn Fn() -> bool>,
+    /// The window's scale at the last sync.
+    scale: f32,
+    /// Added to the agent's clock: a test moves time on without waiting.
+    clock_skew: u64,
 }
 
 /// The keys WebView2 reports in Win32 virtual-key codes, as the chord table knows them.
@@ -492,6 +628,13 @@ impl WebCtl {
             bounds: None,
             full: None,
             covers: false,
+            window_follows: false,
+            covered: None,
+            uncovered: None,
+            backgrounds: HashMap::new(),
+            bars: HashMap::new(),
+            bar_clock: 0,
+            hold: None,
             keys: Rc::new(KeyState {
                 ctx: Cell::new(KeyContext::default()),
                 esc: RefCell::new(EscTwice::default()),
@@ -509,7 +652,45 @@ impl WebCtl {
             ended_capture: None,
             hwnd: None,
             closed: false,
+            cursor: AgentCursor::default(),
+            cursor_shell: Box::new(RecordCursor),
+            cursor_tab: None,
+            cursor_label: String::new(),
+            cursor_art: None,
+            cursor_last: None,
+            cursor_client: None,
+            cursor_doc: 0,
+            border: AgentBorder::default(),
+            border_shell: Box::new(RecordBorder),
+            border_tab: None,
+            border_bmp: None,
+            border_last: None,
+            border_client: None,
+            motion: Rc::new(crate::e2e::animations_enabled),
+            scale: 1.0,
+            clock_skew: 0,
         }
+    }
+
+    /// What draws the agent's cursor: the real window once Flare's has a handle (never under `--e2e`).
+    pub fn set_cursor_shell(&mut self, shell: Box<dyn CursorShell>) {
+        self.cursor_shell.hide();
+        self.cursor_shell = shell;
+        self.cursor_last = None;
+        self.update_cursor();
+    }
+
+    /// What draws the border round the page while the agent uses it (as [`WebCtl::set_cursor_shell`]).
+    pub fn set_border_shell(&mut self, shell: Box<dyn CursorShell>) {
+        self.border_shell.hide();
+        self.border_shell = shell;
+        self.border_last = None;
+        self.update_cursor();
+    }
+
+    /// Where Windows' animation effects switch is read (tests pin it).
+    pub fn set_motion(&mut self, f: Rc<dyn Fn() -> bool>) {
+        self.motion = f;
     }
 
     /// How the browser is made (startup; tests hand a stand-in).
@@ -640,6 +821,12 @@ impl WebCtl {
         }
         self.keys.job_active.set(false);
         self.keys.agent_keys.set(false);
+        self.cursor.hide();
+        self.cursor_off();
+        self.border.hide();
+        self.border_off();
+        self.backgrounds.clear();
+        self.bars.clear();
         if let Some(mut b) = self.backend.take() {
             b.close_all();
         }
@@ -708,7 +895,14 @@ impl WebCtl {
         }
         let shown = app.get_panel_shown();
         let overlay = app.get_overlay_open();
+        // A Flare menu or dialog over a page in full screen ends the full screen: the page goes back into its
+        // panel (where its still is drawn) and the window back to what it was, not a whole-window frame
+        // squashed into the panel's box under the menu.
+        if overlay && shown && self.full.is_some() && self.full.as_deref() == front_web {
+            self.leave_full();
+        }
         let scale = app.get_scale();
+        self.scale = scale;
         let rect = phys_rect(
             app.get_panel_web_x(),
             app.get_panel_web_y(),
@@ -725,13 +919,26 @@ impl WebCtl {
             && self
                 .tabs
                 .contains_key(self.full.as_deref().unwrap_or_default());
-        let rect = if self.covers {
-            let size = slint::ComponentHandle::window(app).size();
+        let size = slint::ComponentHandle::window(app).size();
+        let size = (size.width, size.height);
+        if self.covers {
+            self.covered = Some(size);
+        } else {
+            self.covered = None;
+            self.uncovered = Some(size);
+        }
+        // A hold ends once the window has its new size, a Flare overlay opens, or its tab is no longer on screen.
+        if let Some((tab, at)) = &self.hold
+            && (!shown || overlay || front_web != Some(tab.as_str()) || *at != size)
+        {
+            self.hold = None;
+        }
+        let rect = if self.covers || self.hold.is_some() {
             PhysRect {
                 x: 0,
                 y: 0,
-                w: i32::try_from(size.width).unwrap_or(i32::MAX),
-                h: i32::try_from(size.height).unwrap_or(i32::MAX),
+                w: i32::try_from(size.0).unwrap_or(i32::MAX),
+                h: i32::try_from(size.1).unwrap_or(i32::MAX),
             }
         } else {
             rect
@@ -784,6 +991,7 @@ impl WebCtl {
             self.bounds = None;
         }
         self.push(app, panels, front_web);
+        self.update_cursor();
     }
 
     fn open_tab(
@@ -925,6 +1133,17 @@ impl WebCtl {
         if self.full.as_deref() == Some(tab) {
             self.full = None;
         }
+        if self.hold.as_ref().is_some_and(|(t, _)| t == tab) {
+            self.hold = None;
+        }
+        if self.cursor_tab.as_deref() == Some(tab) {
+            self.cursor.hide();
+            self.cursor_off();
+        }
+        if self.border_tab.as_deref() == Some(tab) {
+            self.border.hide();
+            self.border_off();
+        }
         if let Some(p) = t.probe {
             let _ = p.reply.send(Err(CtlError::new(
                 code::UNAVAILABLE,
@@ -999,10 +1218,342 @@ impl WebCtl {
             crate::timer_registry::clear(CAPTURE_TIMER);
         }
         if self.tabs.is_empty() {
-            // No web panel is open: the browser goes (it is made again by the next one).
+            // No web panel is open: the browser goes (it is made again by the next one), unless a plugin's
+            // background page still runs in it.
             self.has_focus = false;
             self.bounds = None;
+            self.drop_idle_backend();
+        }
+    }
+
+    /// The browser goes when no view of any kind is left in it.
+    fn drop_idle_backend(&mut self) {
+        if self.tabs.is_empty() && self.backgrounds.is_empty() && self.bars.is_empty() {
             self.backend = None;
+        }
+    }
+
+    // ---- plugins' bars ------------------------------------------------------------------------------------------
+
+    /// Makes the bar views agree with the bars the tabs show (`wanted`) and puts the front tab's on screen in the
+    /// window's bar row (its rectangle is the layout's `bar-web-*`), hidden while a Flare overlay is open or the grid is
+    /// not in front. A view is made the first time its tab is in front with a bar (lazily), hidden while its tab is
+    /// behind, closed when its tab no longer shows that plugin's bar, and an older one behind is closed past
+    /// [`crate::plugin_bar::LIVE_PER_PLUGIN`] a plugin and past [`crate::plugin_bar::MAX_VIEWS`] plugin views in all.
+    /// Only a change is sent to the browser.
+    pub fn sync_bars(
+        &mut self,
+        app: &AppWindow,
+        wanted: &[BarWant],
+        front: Option<&str>,
+    ) -> Vec<BarChange> {
+        let mut out = Vec::new();
+        let stale: Vec<String> = self
+            .bars
+            .iter()
+            .filter(|(t, v)| !wanted.iter().any(|w| w.tab == **t && w.plugin == v.plugin))
+            .map(|(t, _)| t.clone())
+            .collect();
+        for t in stale {
+            if let Some(c) = self.close_bar(&t) {
+                out.push(c);
+            }
+        }
+        let scale = app.get_scale();
+        let rect = phys_rect(
+            app.get_bar_web_x(),
+            app.get_bar_web_y(),
+            app.get_bar_web_w(),
+            app.get_bar_web_h(),
+            scale,
+        );
+        let on_screen = app.get_bar_shown() && !app.get_overlay_open() && !rect.is_empty();
+        let shown = front
+            .filter(|_| on_screen)
+            .and_then(|t| wanted.iter().find(|w| w.tab == t));
+        if let Some(w) = shown
+            && !self.bars.contains_key(&w.tab)
+            && !self.closed
+        {
+            self.bars.insert(
+                w.tab.clone(),
+                BarView {
+                    plugin: w.plugin.clone(),
+                    host: w.spec.host.clone(),
+                    started_nav: None,
+                    visible: true,
+                    bounds: Some(rect),
+                    seen: 0,
+                },
+            );
+            match self.backend() {
+                Some(b) => {
+                    b.open_view(&flare_web::Slot::bar(&w.tab), w.spec.clone(), rect, true);
+                    out.push(BarChange::Opened {
+                        tab: w.tab.clone(),
+                        plugin: w.plugin.clone(),
+                    });
+                }
+                None => {
+                    self.bars.remove(&w.tab);
+                }
+            }
+        }
+        let shown_tab = shown.map(|w| w.tab.clone());
+        if shown_tab.is_some() {
+            self.bar_clock += 1;
+        }
+        let clock = self.bar_clock;
+        let mut acts: Vec<(String, Option<bool>, Option<PhysRect>)> = Vec::new();
+        for (t, v) in &mut self.bars {
+            let visible = shown_tab.as_deref() == Some(t.as_str());
+            let vis = (v.visible != visible).then_some(visible);
+            v.visible = visible;
+            let bounds = (visible && v.bounds != Some(rect)).then_some(rect);
+            if bounds.is_some() {
+                v.bounds = Some(rect);
+            }
+            if visible {
+                v.seen = clock;
+            }
+            if vis.is_some() || bounds.is_some() {
+                acts.push((t.clone(), vis, bounds));
+            }
+        }
+        if let Some(b) = self.backend.as_mut() {
+            for (t, vis, bounds) in acts {
+                let slot = flare_web::Slot::bar(&t);
+                // Moved before it shows, so it never flashes at its old place.
+                if let Some(r) = bounds {
+                    b.set_view_bounds(&slot, r);
+                }
+                if let Some(v) = vis {
+                    b.set_view_visible(&slot, v);
+                }
+            }
+        }
+        let live: Vec<(String, String, u64)> = self
+            .bars
+            .iter()
+            .map(|(t, v)| (t.clone(), v.plugin.clone(), v.seen))
+            .collect();
+        for t in crate::plugin_bar::surplus(&live, shown_tab.as_deref()) {
+            if let Some(c) = self.close_bar(&t) {
+                out.push(c);
+            }
+        }
+        // Then the total of every plugin view (design 13): the panels of mods and plugins and the background pages
+        // stay, an older bar behind goes.
+        let live: Vec<(String, String, u64)> = self
+            .bars
+            .iter()
+            .map(|(t, v)| (t.clone(), v.plugin.clone(), v.seen))
+            .collect();
+        for t in
+            crate::plugin_bar::over_total(&live, shown_tab.as_deref(), self.other_plugin_views())
+        {
+            if let Some(c) = self.close_bar(&t) {
+                out.push(c);
+            }
+        }
+        if self.bars.is_empty() && !out.is_empty() {
+            self.drop_idle_backend();
+        }
+        out
+    }
+
+    /// The plugin views that are not bars: the tabs whose panel shows a mod's or a plugin's page, and the background
+    /// pages.
+    fn other_plugin_views(&self) -> usize {
+        let panels = self
+            .tabs
+            .values()
+            .filter(|t| {
+                t.app_host
+                    .as_deref()
+                    .is_some_and(|h| flare_surfaces::modview::mod_of_host(h).is_some())
+            })
+            .count();
+        panels + self.backgrounds.len()
+    }
+
+    /// Closes the tab's bar view, if it has one.
+    fn close_bar(&mut self, tab: &str) -> Option<BarChange> {
+        let v = self.bars.remove(tab)?;
+        if let Some(b) = self.backend.as_mut() {
+            b.close_view(&flare_web::Slot::bar(tab));
+        }
+        Some(BarChange::Closed {
+            tab: tab.to_string(),
+            plugin: v.plugin,
+        })
+    }
+
+    /// Speaks to the tab's bar page (its bridge's `message` event).
+    pub fn post_to_bar(&mut self, tab: &str, json: &str) {
+        if self.bars.contains_key(tab)
+            && let Some(b) = self.backend.as_mut()
+        {
+            b.post_to_view(&flare_web::Slot::bar(tab), json);
+        }
+    }
+
+    /// The tabs whose bar has a view, sorted, with the plugin and whether it is on screen.
+    pub fn bar_views(&self) -> Vec<(String, String, bool)> {
+        let mut v: Vec<(String, String, bool)> = self
+            .bars
+            .iter()
+            .map(|(t, b)| (t.clone(), b.plugin.clone(), b.visible))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// What a bar page's view said, for the window: its messages, its load and its end. The keyboard it took by a
+    /// click goes back to the window at once (a bar never keeps it); anything else of it is nobody's business.
+    fn on_bar_event(&mut self, tab: &str, e: WebEvent) -> Option<WebOut> {
+        let v = self.bars.get_mut(tab)?;
+        let plugin = v.plugin.clone();
+        match e {
+            WebEvent::Loading { nav, .. } => {
+                v.started_nav = Some(nav);
+                Some(WebOut::BarPage {
+                    tab: tab.to_string(),
+                    plugin,
+                    ready: false,
+                })
+            }
+            WebEvent::Loaded { ok, nav, .. } if v.started_nav == Some(nav) => Some(if ok {
+                WebOut::BarPage {
+                    tab: tab.to_string(),
+                    plugin,
+                    ready: true,
+                }
+            } else {
+                self.close_bar(tab);
+                WebOut::BarLost {
+                    tab: tab.to_string(),
+                    plugin,
+                }
+            }),
+            WebEvent::Failed { .. } | WebEvent::Gone { .. } => {
+                self.close_bar(tab);
+                Some(WebOut::BarLost {
+                    tab: tab.to_string(),
+                    plugin,
+                })
+            }
+            WebEvent::ModMessage { host, json, .. } if host == v.host => Some(WebOut::BarMessage {
+                tab: tab.to_string(),
+                plugin,
+                json,
+            }),
+            WebEvent::Focus { has: true, .. } => {
+                if let Some(h) = self.hwnd {
+                    // SAFETY: SetFocus on Flare's own live window, from its own thread.
+                    unsafe {
+                        windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(h as *mut _);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    // ---- plugins' background pages ------------------------------------------------------------------------------
+
+    /// Opens the plugin's background page: a hidden view in the plugins' browser and the plugin's own profile, tied
+    /// to no tab, sealed as a background page by the host. A page it already has is opened again (a restart).
+    pub fn open_background(&mut self, plugin: &str, spec: AppSpec) {
+        if self.closed {
+            return;
+        }
+        self.backgrounds.insert(
+            plugin.to_string(),
+            BgView {
+                host: spec.host.clone(),
+                started_nav: None,
+            },
+        );
+        let slot = flare_web::Slot::background(plugin);
+        match self.backend() {
+            Some(b) => b.open_view(&slot, spec, PhysRect::default(), false),
+            None => {
+                self.backgrounds.remove(plugin);
+            }
+        }
+    }
+
+    /// Closes the plugin's background page, if it has one.
+    pub fn close_background(&mut self, plugin: &str) {
+        self.close_background_keeping(plugin, false);
+    }
+
+    /// [`WebCtl::close_background`]; `keep` holds on to the browser even when no view is left (the page is opened
+    /// again right after).
+    pub fn close_background_keeping(&mut self, plugin: &str, keep: bool) {
+        if self.backgrounds.remove(plugin).is_some()
+            && let Some(b) = self.backend.as_mut()
+        {
+            b.close_view(&flare_web::Slot::background(plugin));
+        }
+        if !keep {
+            self.drop_idle_backend();
+        }
+    }
+
+    /// Speaks to the plugin's background page (its bridge's `message` event).
+    pub fn post_to_background(&mut self, plugin: &str, json: &str) {
+        if self.backgrounds.contains_key(plugin)
+            && let Some(b) = self.backend.as_mut()
+        {
+            b.post_to_view(&flare_web::Slot::background(plugin), json);
+        }
+    }
+
+    /// The plugins whose background page has a view, sorted.
+    pub fn background_ids(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.backgrounds.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    /// What a background page's view said, for the window: its messages, its load and its end. Anything else of
+    /// it (a title, a focus) is nobody's business.
+    fn on_background_event(&mut self, plugin: &str, e: WebEvent) -> Option<WebOut> {
+        let v = self.backgrounds.get_mut(plugin)?;
+        match e {
+            WebEvent::Loading { nav, .. } => {
+                v.started_nav = Some(nav);
+                Some(WebOut::BgPage {
+                    plugin: plugin.to_string(),
+                    ready: false,
+                })
+            }
+            // Only the load of the navigation that began counts (a refused one ends with a failed load too).
+            WebEvent::Loaded { ok, nav, .. } if v.started_nav == Some(nav) => Some(if ok {
+                WebOut::BgPage {
+                    plugin: plugin.to_string(),
+                    ready: true,
+                }
+            } else {
+                self.backgrounds.remove(plugin);
+                WebOut::BgLost {
+                    plugin: plugin.to_string(),
+                }
+            }),
+            WebEvent::Failed { .. } | WebEvent::Gone { .. } => {
+                self.backgrounds.remove(plugin);
+                Some(WebOut::BgLost {
+                    plugin: plugin.to_string(),
+                })
+            }
+            WebEvent::ModMessage { host, json, .. } if host == v.host => Some(WebOut::BgMessage {
+                plugin: plugin.to_string(),
+                json,
+            }),
+            _ => None,
         }
     }
 
@@ -1057,6 +1608,7 @@ impl WebCtl {
         {
             b.parent_moved();
         }
+        self.update_cursor();
     }
 
     pub fn nav(&mut self, tab: &str, nav: Nav) {
@@ -1126,6 +1678,28 @@ impl WebCtl {
         self.covers
     }
 
+    /// The page in full screen is asked to leave it, and is treated as having left at once (its own word that it
+    /// has is then nothing new). The window goes back with the next sync.
+    pub fn leave_full(&mut self) {
+        let Some(tab) = self.full.take() else { return };
+        self.covers = false;
+        self.hold = None;
+        self.bounds = None;
+        if let Some(b) = self.backend() {
+            // Id 0 is no script anyone waits for.
+            b.run_script(
+                &tab,
+                0,
+                "document.fullscreenElement && document.exitFullscreen(); 0",
+            );
+        }
+    }
+
+    /// The app made the window full screen for the page (true), or it was full screen already (false).
+    pub fn set_window_follows(&mut self, on: bool) {
+        self.window_follows = on;
+    }
+
     pub fn has_tab(&self, tab: &str) -> bool {
         self.tabs.contains_key(tab)
     }
@@ -1174,7 +1748,15 @@ impl WebCtl {
     // ---- the agent (stage 4) ---------------------------------------------------------------------------
 
     fn now_ms(&self) -> u64 {
-        u64::try_from(self.keys.clock.elapsed().as_millis()).unwrap_or(u64::MAX)
+        u64::try_from(self.keys.clock.elapsed().as_millis())
+            .unwrap_or(u64::MAX)
+            .saturating_add(self.clock_skew)
+    }
+
+    /// Moves the agent's clock on by `ms` (a test's glide, ribbon and fade pass without waiting).
+    #[cfg(test)]
+    pub fn skip_clock(&mut self, ms: u64) {
+        self.clock_skew += ms;
     }
 
     /// The ribbon's words for the tab's page: while an agent call runs on it and for a moment after.
@@ -1253,6 +1835,12 @@ impl WebCtl {
             let _ = reply.send(Err(CtlError::new(code::UNAVAILABLE, m.to_string())));
         };
         let now = self.now_ms();
+        // The cursor is drawn only where `cursor_on` lets it (the page live in front, its place known):
+        // elsewhere nothing waits for its glide. With animation effects off nothing glides or fades.
+        let on_screen = self.cursor_on(tab);
+        let still = !(self.motion)();
+        self.cursor.set_still(still);
+        self.border.set_still(still);
         let Some(t) = self.tabs.get_mut(tab) else {
             // The tab has a web panel (the caller checked) but its page is not made: its tab is behind.
             say("the page is not ready yet; try again in a moment");
@@ -1287,13 +1875,15 @@ impl WebCtl {
             other => other,
         };
         let (job, out) = Job::start(op, &t.refs, now, &mut Ids(&mut self.call_ids));
-        let Some(job) = job else {
+        let Some(mut job) = job else {
             // Refused before it began (a bad ref, a bad point): nothing was sent to the page.
             if let JobOut::Done(r) = out {
                 let _ = reply.send(r.map_err(ctl_error));
             }
             return;
         };
+        // The longest glide until the cursor says how long this one is (`drive`).
+        job.set_glide_ms(if on_screen && !still { GLIDE_MAX_MS } else { 0 });
         t.agent = Some(AgentCall {
             job,
             reply,
@@ -1307,12 +1897,50 @@ impl WebCtl {
         self.drive(tab, out);
     }
 
-    /// Carries out what a job asked.
+    /// Carries out what a job asked, and moves the cursor to where it acts: the job's events wait as long
+    /// as the cursor's glide takes.
     fn drive(&mut self, tab: &str, out: JobOut) {
+        let now = self.now_ms();
+        let mut out = out;
+        let point = self
+            .tabs
+            .get_mut(tab)
+            .and_then(|t| t.agent.as_mut().map(|a| (a, t.doc)))
+            .and_then(|(a, doc)| a.job.take_point().map(|p| (p, a.label.clone(), doc)));
+        if let Some((p, label, doc)) = point {
+            let mut glide = 0;
+            if self.cursor_on(tab) {
+                if self.cursor_tab.as_deref() != Some(tab) {
+                    self.cursor.hide();
+                }
+                // A spot it rested at on the page before a navigation is no place to glide from.
+                if self.cursor_doc != doc && !self.cursor.shown() {
+                    self.cursor.forget();
+                }
+                self.cursor_doc = doc;
+                self.cursor_tab = Some(tab.to_string());
+                self.cursor_label = label;
+                glide = self.cursor.point(p, now);
+            }
+            if let Some(a) = self.tabs.get_mut(tab).and_then(|t| t.agent.as_mut())
+                && a.job.glide_for(glide, now)
+                && out == JobOut::Idle
+            {
+                // No glide after all: the held events go now.
+                out = a.job.on_tick(now, &mut Ids(&mut self.call_ids));
+            }
+        }
         match out {
             JobOut::Idle => {}
             JobOut::Calls(calls) => {
                 for c in calls {
+                    // A button going down ripples at the tip.
+                    if c.method == "Input.dispatchMouseEvent"
+                        && c.params["type"] == "mousePressed"
+                        && self.cursor_tab.as_deref() == Some(tab)
+                    {
+                        self.cursor.press(now);
+                    }
                     let params = c.params.to_string();
                     if let Some(b) = self.backend.as_mut() {
                         b.cdp(tab, c.id, &c.method, &params);
@@ -1321,6 +1949,184 @@ impl WebCtl {
             }
             JobOut::Done(r) => self.finish_agent(tab, r),
         }
+        self.update_cursor();
+    }
+
+    /// Can the cursor be drawn over the tab's page: in front, live (no still for a menu), the window not
+    /// minimised, its place known.
+    fn cursor_on(&self, tab: &str) -> bool {
+        self.shown_tab.as_deref() == Some(tab)
+            && self.phase == Phase::Live
+            && !self.hwnd.is_some_and(window_minimized)
+            && self
+                .bounds
+                .as_ref()
+                .is_some_and(|(t, r)| t == tab && !r.is_empty())
+    }
+
+    /// The cursor's window comes off the screen (its state is the caller's).
+    fn cursor_off(&mut self) {
+        if self.cursor_last.take().is_some() {
+            self.cursor_shell.hide();
+        }
+        self.cursor_client = None;
+        if !self.cursor.shown() && !self.cursor.remembers() {
+            self.cursor_tab = None;
+        }
+    }
+
+    /// The border's window comes off the screen (its state is the caller's).
+    fn border_off(&mut self) {
+        if self.border_last.take().is_some() {
+            self.border_shell.hide();
+        }
+        self.border_client = None;
+        if !self.border.shown() {
+            self.border_tab = None;
+            // A page-sized bitmap is not kept while nothing draws it.
+            self.border_bmp = None;
+        }
+    }
+
+    /// Is the agent using the tab's page: a call on it, or the ribbon's hold after one.
+    fn agent_active(&self, tab: &str, now: u64) -> bool {
+        self.tabs.get(tab).is_some_and(|t| {
+            t.agent.is_some() || t.hold.as_ref().is_some_and(|(_, until)| now < *until)
+        })
+    }
+
+    /// Draws the border round the page in front while the agent uses it, fading once it does not; a
+    /// frame that is the same as the last is not drawn again, and a fade only changes the opacity.
+    fn update_border(&mut self, now: u64) {
+        let place = match (&self.shown_tab, &self.bounds) {
+            (Some(t), Some((bt, r))) if t == bt && self.cursor_on(t) => Some((t.clone(), *r)),
+            _ => None,
+        };
+        let Some((tab, rect)) = place else {
+            self.border.hide();
+            self.border_off();
+            return;
+        };
+        if self.border_tab.as_deref() != Some(tab.as_str()) {
+            self.border.hide();
+        }
+        if self.agent_active(&tab, now) {
+            self.border.show();
+            self.border_tab = Some(tab);
+        } else {
+            self.border.fade(now);
+        }
+        let Some(a) = self.border.frame(now) else {
+            self.border_off();
+            return;
+        };
+        let alpha = (a * 255.0).round().clamp(0.0, 255.0) as u8;
+        let scale_key = (self.scale.clamp(0.5, 4.0) * 100.0).round() as u32;
+        let size = (rect.w, rect.h, scale_key);
+        if self.border_bmp.as_ref().is_none_or(|(k, _)| *k != size) {
+            let bmp = border_bitmap(
+                rect.w.max(0) as u32,
+                rect.h.max(0) as u32,
+                f64::from(scale_key) / 100.0,
+            );
+            self.border_bmp = Some((size, bmp));
+            self.border_last = None;
+        }
+        let (ox, oy) = self.hwnd.map_or((0, 0), client_origin);
+        let key = (ox + rect.x, oy + rect.y, rect.w, rect.h);
+        self.border_client = Some(rect);
+        match self.border_last {
+            Some((k, was)) if k == key && was == alpha => return,
+            Some((k, _)) if k == key && self.border_shell.set_alpha(alpha) => {
+                self.border_last = Some((key, alpha));
+                return;
+            }
+            _ => {}
+        }
+        let Some((_, bmp)) = self.border_bmp.as_ref() else {
+            return;
+        };
+        let shown = self.border_shell.show_at(key.0, key.1, bmp, alpha);
+        self.border_last = shown.then_some((key, alpha));
+    }
+
+    /// Draws the cursor as it is now, where the page is now; a frame that is the same as the last is not
+    /// drawn again. It fades once its tab has neither a call nor the ribbon's hold.
+    fn update_cursor(&mut self) {
+        let now = self.now_ms();
+        self.update_border(now);
+        let place = match &self.cursor_tab {
+            Some(t) if self.cursor_on(t) => self.bounds.as_ref().map(|(t, r)| (t.clone(), *r)),
+            _ => None,
+        };
+        let Some((tab, rect)) = place else {
+            self.cursor.hide();
+            self.cursor_off();
+            return;
+        };
+        if !self.agent_active(&tab, now) {
+            self.cursor.fade(now);
+        }
+        let Some(f) = self.cursor.frame(now) else {
+            self.cursor_off();
+            return;
+        };
+        // CSS pixels of the viewport onto the page's rectangle (its zoom included), then onto the screen.
+        let cx = rect.x + (f.at.x * f64::from(rect.w) / f.at.vp_w.max(1.0)).round() as i32;
+        let cy = rect.y + (f.at.y * f64::from(rect.h) / f.at.vp_h.max(1.0)).round() as i32;
+        let (ox, oy) = self.hwnd.map_or((0, 0), client_origin);
+        let (sx, sy) = (ox + cx, oy + cy);
+        let alpha = (f.alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+        let scale_key = (self.scale.clamp(0.5, 4.0) * 100.0).round() as u32;
+        let tag = cursor_tag(&self.cursor_label);
+        if self
+            .cursor_art
+            .as_ref()
+            .is_none_or(|(k, t, _, _)| *k != scale_key || *t != tag)
+        {
+            let art = CursorArt::new(f64::from(scale_key) / 100.0, &tag);
+            let plain = art.frame(&[]);
+            self.cursor_art = Some((scale_key, tag, art, plain));
+            self.cursor_last = self.cursor_last.map(|_| (i32::MIN, 0, 0, true));
+        }
+        let rippling = !f.ripples.is_empty();
+        let key = (sx, sy, alpha, rippling);
+        self.cursor_client = Some((cx, cy));
+        if self.cursor_last == Some(key) && !rippling {
+            return;
+        }
+        let Some((_, _, art, plain)) = self.cursor_art.as_ref() else {
+            return;
+        };
+        let shown = if rippling {
+            self.cursor_shell
+                .show_at(sx, sy, &art.frame(&f.ripples), alpha)
+        } else {
+            self.cursor_shell.show_at(sx, sy, plain, alpha)
+        };
+        self.cursor_last = shown.then_some(key);
+    }
+
+    /// The agent's cursor as the e2e reads it: drawn or not, its tip in client pixels, its tag, how many
+    /// presses rippled, whether a spot is kept for the next glide, and the border round the page (drawn
+    /// or not, its rectangle in client pixels, its opacity).
+    pub fn cursor_probe(&self) -> Value {
+        let rec = flare_win::agent_cursor::recorded();
+        let brec = flare_win::agent_cursor::recorded_border();
+        json!({
+            "shown": self.cursor_last.is_some(),
+            "client": self.cursor_client.map(|(x, y)| json!([x, y])),
+            "tag": self.cursor_tab.as_ref().map(|_| cursor_tag(&self.cursor_label)),
+            "presses": self.cursor.presses(),
+            "remembers": self.cursor.remembers(),
+            "recorded": {"shown": rec.shown, "x": rec.x, "y": rec.y, "alpha": rec.alpha, "draws": rec.draws},
+            "border": {
+                "shown": self.border_last.is_some(),
+                "client": self.border_client.map(|r| json!([r.x, r.y, r.w, r.h])),
+                "alpha": self.border_last.map(|(_, a)| a),
+                "recorded": {"shown": brec.shown, "w": brec.w, "h": brec.h, "alpha": brec.alpha, "draws": brec.draws},
+            },
+        })
     }
 
     /// The call is over: its answer is sent, a look's element names are kept, the ribbon holds a moment.
@@ -1352,6 +2158,12 @@ impl WebCtl {
             // The page is the person's now: what the agent last saw may no longer be there.
             t.refs = RefMap::default();
             t.hold = None;
+            if self.cursor_tab.as_deref() == Some(tab) {
+                self.cursor.hide();
+            }
+            if self.border_tab.as_deref() == Some(tab) {
+                self.border.hide();
+            }
         } else {
             t.hold = Some((a.label.clone(), now + RIBBON_HOLD_MS));
         }
@@ -1369,6 +2181,14 @@ impl WebCtl {
         } else if let Some(t) = self.tabs.get_mut(&tab) {
             t.hold = None;
         }
+        // The person's own input takes the cursor and the border away at once, with the ribbon.
+        if self.cursor_tab.as_deref() == Some(tab.as_str()) {
+            self.cursor.hide();
+        }
+        if self.border_tab.as_deref() == Some(tab.as_str()) {
+            self.border.hide();
+        }
+        self.update_cursor();
     }
 
     /// One turn of the agent timer. False when nothing is left for it to watch.
@@ -1413,7 +2233,11 @@ impl WebCtl {
                 t.hold = None;
             }
         }
-        self.agent_busy() || self.tabs.values().any(|t| t.hold.is_some())
+        self.update_cursor();
+        self.agent_busy()
+            || self.tabs.values().any(|t| t.hold.is_some())
+            || self.cursor.shown()
+            || self.border.shown()
     }
 
     /// A DevTools call answered.
@@ -1852,6 +2676,13 @@ impl WebCtl {
                     self.full = Some(tab);
                 } else if !on && self.full.as_deref() == Some(tab.as_str()) {
                     self.full = None;
+                    // Only a window that grew for full screen shrinks back: one that kept its size gets no hold.
+                    if self.window_follows
+                        && let Some(at) = self.covered
+                        && self.uncovered != Some(at)
+                    {
+                        self.hold = Some((tab, at));
+                    }
                 }
                 // The window's rectangle is sent again at the next sync (the page grows or shrinks back).
                 self.bounds = None;
@@ -1877,6 +2708,17 @@ impl WebCtl {
                         mod_id: mod_id.to_string(),
                         json,
                     });
+                }
+            }
+            WebEvent::View { slot, event } => {
+                // A plugin's background page is routed to the window; a bar (made by no one yet) is not a tab's panel,
+                // so nothing here acts on it.
+                if slot.kind == flare_web::ViewKind::Background {
+                    out.extend(self.on_background_event(&slot.owner, *event));
+                } else if slot.kind == flare_web::ViewKind::Bar {
+                    out.extend(self.on_bar_event(&slot.owner, *event));
+                } else {
+                    log::debug!("a {} view said {}", slot.kind.name(), event.kind());
                 }
             }
         }
@@ -1997,6 +2839,7 @@ pub fn production_factory(
     window: slint::Weak<AppWindow>,
     user_data_dir: Option<std::path::PathBuf>,
     profile_dir: std::path::PathBuf,
+    limits: Option<std::sync::Arc<flare_mods::limit::Limits>>,
 ) -> WebFactory {
     Box::new(move |sink| {
         let parent = window
@@ -2034,6 +2877,7 @@ pub fn production_factory(
             virtual_hosts,
             // The e2e's seam: a mini-app without the peer-connection script, to test the walls under it.
             without_webrtc_script: crate::ship_ctl::e2e_var("APP_NO_WEBRTC_SCRIPT").is_some(),
+            limits: limits.clone(),
         }))
     })
 }
@@ -2275,9 +3119,22 @@ mod tests {
             "Codex is using this page"
         );
         assert_eq!(
+            ribbon_words(&agent_label(D::Agy)),
+            "Antigravity is using this page"
+        );
+        assert_eq!(
             ribbon_words(&agent_label(D::Other)),
             "An agent is using this page"
         );
+    }
+
+    #[test]
+    fn the_cursors_tag_names_the_agent_or_says_agent() {
+        use flare_agent::kinds::DetectedAgent as D;
+        assert_eq!(cursor_tag(&agent_label(D::Claude)), "Claude");
+        assert_eq!(cursor_tag(&agent_label(D::Codex)), "Codex");
+        assert_eq!(cursor_tag(&agent_label(D::Agy)), "Antigravity");
+        assert_eq!(cursor_tag(&agent_label(D::Other)), "Agent");
     }
 
     #[test]

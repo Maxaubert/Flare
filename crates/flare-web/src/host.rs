@@ -1,4 +1,7 @@
-//! The WebView2 glue: one controller per tab with an open web panel, parented to Flare's window.
+//! The WebView2 glue: one controller per slot (a tab's open web panel, and for plugins a bar beside a tab or a
+//! background page, see `flare_surfaces::slot`), parented to Flare's window. Views, their pending work and
+//! their callbacks are keyed by slot, and each slot counts its own generations, so an answer for a view that
+//! was closed or replaced is never applied to the slot's next one.
 //!
 //! Everything runs on the UI thread, which is a COM single-threaded apartment (winit initialises
 //! OLE for drag and drop) with the message loop WebView2 needs. Nothing here waits for the browser:
@@ -13,7 +16,9 @@
 //! and, when it has no network, a proxy that is not there (`EnvKind`, rule 199). There is one such
 //! environment per kind, made when the first view of the kind opens and closed with the last. A
 //! mini-app's view does not navigate until the script that removes the peer-connection API is
-//! confirmed installed.
+//! confirmed installed. The mods and plugins have a browser of their own as well (`EnvKind::Plugin`), apart
+//! from the web panel's and the mini-apps', in the folder their profiles were always kept in, and every one of
+//! their views is sealed by one function (`seal_plugin_view`, the walls of `crate::seal`).
 //!
 //! The profile is the folder the caller gives, never the user's own Edge profile (S4). Permissions
 //! (camera, microphone, location, notifications and the rest) are denied. A page cannot open a
@@ -34,7 +39,9 @@ use std::sync::{Arc, Mutex};
 use flare_mods::serve as modserve;
 use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::modview::{self, Route};
-use flare_surfaces::web::{Failure, PhysRect, failure_of_kind, host_label, navigation_allowed};
+use flare_surfaces::web::{
+    Failure, PhysRect, failure_of_kind, host_label, navigation_allowed, pdf_view,
+};
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
@@ -45,8 +52,8 @@ use webview2_com::{
     FocusChangedEventHandler, HistoryChangedEventHandler, LaunchingExternalUriSchemeEventHandler,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
-    SourceChangedEventHandler, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler,
-    WindowCloseRequestedEventHandler, take_pwstr,
+    ScriptDialogOpeningEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler,
+    WebResourceRequestedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
@@ -59,7 +66,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, Interface, PCWSTR, PWSTR};
 
-use crate::backend::{ControllerProbe, KeyFilter, KeyPress, Nav, Sink, WebBackend, WebEvent};
+use crate::backend::{
+    ControllerProbe, KeyFilter, KeyPress, Nav, Sink, Slot, ViewSink, WebBackend, WebEvent,
+};
+use crate::seal::{DownloadWall, Seal, plugin_seal};
 
 /// The longest still kept (a PNG of a very large panel).
 const STILL_MAX: usize = 48 * 1024 * 1024;
@@ -100,10 +110,14 @@ pub struct HostConfig {
     /// The e2e's seam only: do not add the peer-connection script to a mini-app, so the browser-level
     /// walls (the WebRTC policy and the dead proxy) can be tested on their own.
     pub without_webrtc_script: bool,
+    /// The plugins' budgets (design 13): a message from a plugin's page that is over its budget is dropped before
+    /// it is copied out of the page. None: no plugin is limited (a run with no mods).
+    pub limits: Option<Arc<flare_mods::limit::Limits>>,
 }
 
 /// Which browser a view runs in. A mini-app never shares a browser with the web panel, and an app with
 /// the network and one without are two browsers (they differ in the arguments they are started with).
+/// The mods and plugins have their own (design 13).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum EnvKind {
     /// The web panel's.
@@ -112,12 +126,20 @@ enum EnvKind {
     AppSealed,
     /// Mini-apps that were granted `https:`: the WebRTC policy only.
     AppNet,
+    /// Mods' and plugins' views (no network): the sealed mini-apps' arguments, in the folder every mod's
+    /// profile lives in (`modview::env_folder`), so their storage is where it always was.
+    Plugin,
+    /// The views of a plugin that holds `network` (plugins phase 6): the WebRTC policy and a resolver that knows no
+    /// local name, in a folder of its own (`modview::net_env_folder`).
+    PluginNet,
 }
 
 impl EnvKind {
     fn of(app: Option<&AppSpec>) -> Self {
         match app {
             None => Self::Web,
+            Some(a) if a.module.is_some() && a.allow_network => Self::PluginNet,
+            Some(a) if a.module.is_some() => Self::Plugin,
             Some(a) if a.allow_network => Self::AppNet,
             Some(_) => Self::AppSealed,
         }
@@ -133,13 +155,13 @@ enum Inbound {
     },
     /// The mini-app's script wall was (or was not) installed in its view: only now may it navigate.
     Script {
-        tab: String,
-        serial: u64,
+        slot: Slot,
+        generation: u64,
         result: Result<(), String>,
     },
     Controller {
-        tab: String,
-        serial: u64,
+        slot: Slot,
+        generation: u64,
         result: Result<ICoreWebView2Controller, String>,
     },
 }
@@ -157,7 +179,9 @@ struct Live {
 }
 
 struct View {
-    serial: u64,
+    /// Which of the slot's views this is (`State::generations`): a callback carries it, and one for an
+    /// earlier view of the slot is let go.
+    generation: u64,
     /// A mini-app's controller that exists but may not navigate yet: its script wall is not confirmed.
     pending: Option<Live>,
     /// A mini-app's view (its own private profile, its folder on its own host, a wall round it).
@@ -185,7 +209,7 @@ impl View {
 
 /// A download the browser started and is holding until it is told yes or no.
 struct Download {
-    tab: String,
+    slot: Slot,
     args: ICoreWebView2DownloadStartingEventArgs,
     deferral: ICoreWebView2Deferral,
 }
@@ -195,7 +219,9 @@ type Downloads = Rc<RefCell<HashMap<u64, Download>>>;
 /// A request for a file of a mod's page, held by the browser until the worker that reads the file has
 /// answered (the page's request never waits on the UI thread, rule 34).
 struct PendingServe {
-    tab: String,
+    slot: Slot,
+    /// The page is a plugin's that holds `network`: its answer carries the networked policy.
+    network: bool,
     args: ICoreWebView2WebResourceRequestedEventArgs,
     deferral: ICoreWebView2Deferral,
     webview: ICoreWebView2,
@@ -211,8 +237,10 @@ const MAX_PAGE_MESSAGE: usize = 4 * 1024 * 1024;
 struct State {
     /// The browsers that exist or are being made, by kind (absent: none).
     envs: HashMap<EnvKind, Env>,
-    views: HashMap<String, View>,
-    serial: u64,
+    views: HashMap<Slot, View>,
+    /// The last generation each slot gave a view. Kept when the view closes, so the slot's next view never
+    /// has the number of one whose callbacks may still arrive (one small entry per slot ever used).
+    generations: HashMap<Slot, u64>,
 }
 
 pub struct WebHost {
@@ -222,6 +250,7 @@ pub struct WebHost {
     runtime: RuntimeCheck,
     virtual_hosts: Vec<(String, PathBuf)>,
     without_webrtc_script: bool,
+    limits: Option<Arc<flare_mods::limit::Limits>>,
     state: State,
     inbox: Rc<RefCell<VecDeque<Inbound>>>,
     filter: Rc<RefCell<Option<KeyFilter>>>,
@@ -339,10 +368,11 @@ impl WebHost {
             runtime: cfg.runtime,
             virtual_hosts: cfg.virtual_hosts,
             without_webrtc_script: cfg.without_webrtc_script,
+            limits: cfg.limits,
             state: State {
                 envs: HashMap::new(),
                 views: HashMap::new(),
-                serial: 0,
+                generations: HashMap::new(),
             },
             inbox: Rc::new(RefCell::new(VecDeque::new())),
             filter: Rc::new(RefCell::new(None)),
@@ -355,13 +385,13 @@ impl WebHost {
         }
     }
 
-    /// Ends the downloads still waiting for a yes (all of them, or the tab's): none is saved.
-    fn cancel_downloads(&self, tab: Option<&str>) {
+    /// Ends the downloads still waiting for a yes (all of them, or the slot's): none is saved.
+    fn cancel_downloads(&self, slot: Option<&Slot>) {
         let ids: Vec<u64> = self
             .downloads
             .borrow()
             .iter()
-            .filter(|(_, d)| tab.is_none_or(|t| d.tab == t))
+            .filter(|(_, d)| slot.is_none_or(|s| d.slot == *s))
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
@@ -383,20 +413,27 @@ impl WebHost {
         }
     }
 
-    /// The tab's view cannot be made: nothing of it is kept (a later open tries again, so a runtime
+    /// The slot's view cannot be made: nothing of it is kept (a later open tries again, so a runtime
     /// installed meanwhile is found), and the window is told why.
-    fn fail(&mut self, tab: &str, why: &str, missing_runtime: bool) {
-        self.state.views.remove(tab);
-        (self.sink)(WebEvent::Failed {
-            tab: tab.to_string(),
+    fn fail(&mut self, slot: &Slot, why: &str, missing_runtime: bool) {
+        self.state.views.remove(slot);
+        ViewSink::new(&self.sink, slot).send(|tab| WebEvent::Failed {
+            tab,
             why: why.to_string(),
             missing_runtime,
         });
     }
 
-    /// Starts the tab's browser (the first time) and, once it exists, the tab's controller.
-    fn ensure(&mut self, tab: &str) {
-        let Some(kind) = self.state.views.get(tab).map(View::kind) else {
+    /// The next generation of the slot's view.
+    fn next_generation(&mut self, slot: &Slot) -> u64 {
+        let g = self.state.generations.entry(slot.clone()).or_insert(0);
+        *g += 1;
+        *g
+    }
+
+    /// Starts the slot's browser (the first time) and, once it exists, the slot's controller.
+    fn ensure(&mut self, slot: &Slot) {
+        let Some(kind) = self.state.views.get(slot).map(View::kind) else {
             return;
         };
         match self.state.envs.get(&kind) {
@@ -411,19 +448,20 @@ impl WebHost {
                         self.state.envs.insert(kind, Env::Checking);
                     }
                     Err(e) => self.fail(
-                        tab,
+                        slot,
                         &format!("the runtime check could not start: {e}"),
                         false,
                     ),
                 }
             }
             Some(Env::Checking | Env::Creating) => {}
-            Some(Env::Ready(_)) => self.start_controller(tab),
+            Some(Env::Ready(_)) => self.start_controller(slot),
         }
     }
 
     /// Makes a browser of `kind`. The web panel's has no extra arguments. A mini-app's has the WebRTC
-    /// policy, and (with no network) a proxy that is not there, in a user data folder of its own.
+    /// policy, and (with no network) a proxy that is not there, in a user data folder of its own. The plugins'
+    /// has the sealed mini-apps' arguments, in a folder of its own too.
     fn start_env(&self, kind: EnvKind) -> Result<(), String> {
         if kind != EnvKind::Web {
             seal_against_overrides()?;
@@ -444,22 +482,25 @@ impl WebHost {
             EnvKind::Web => self.data_dir.clone(),
             EnvKind::AppSealed => app::env_folder(&self.data_dir, false),
             EnvKind::AppNet => app::env_folder(&self.data_dir, true),
+            EnvKind::Plugin => modview::env_folder(&self.data_dir),
+            EnvKind::PluginNet => modview::net_env_folder(&self.data_dir),
         };
         let folder = wide(&dir.to_string_lossy());
-        let options: Option<ICoreWebView2EnvironmentOptions> = match kind {
-            EnvKind::Web => None,
-            EnvKind::AppSealed | EnvKind::AppNet => {
-                let o = CoreWebView2EnvironmentOptions::default();
-                // SAFETY: the options object is ours alone and not yet shared with the loader.
-                unsafe {
-                    o.set_additional_browser_arguments(app::browser_arguments(
-                        kind == EnvKind::AppNet,
-                    ));
-                    o.set_target_compatible_browser_version(app::APP_MIN_BROWSER.to_string());
-                }
-                Some(o.into())
+        let o = CoreWebView2EnvironmentOptions::default();
+        // SAFETY: the options object is ours alone and not yet shared with the loader.
+        unsafe {
+            // Thin scrollbars over the page that fade when it is still, as Windows 11 draws them,
+            // instead of the classic grey bar with arrows (2026-10-25).
+            o.set_scroll_bar_style(COREWEBVIEW2_SCROLLBAR_STYLE_FLUENT_OVERLAY);
+            if kind != EnvKind::Web {
+                o.set_additional_browser_arguments(match kind {
+                    EnvKind::PluginNet => modview::net_browser_arguments(),
+                    k => app::browser_arguments(k == EnvKind::AppNet),
+                });
+                o.set_target_compatible_browser_version(app::APP_MIN_BROWSER.to_string());
             }
-        };
+        }
+        let options: Option<ICoreWebView2EnvironmentOptions> = Some(o.into());
         // SAFETY: `folder` is a NUL-terminated UTF-16 string that outlives the call; the options and
         // the handler are live COM objects the loader keeps alive until it fires.
         unsafe {
@@ -474,13 +515,13 @@ impl WebHost {
         .map_err(|e| e.message())
     }
 
-    /// The tabs whose view runs in the browser of `kind`.
-    fn tabs_of(&self, kind: EnvKind) -> Vec<String> {
+    /// The slots whose view runs in the browser of `kind`.
+    fn slots_of(&self, kind: EnvKind) -> Vec<Slot> {
         self.state
             .views
             .iter()
             .filter(|(_, v)| v.kind() == kind)
-            .map(|(t, _)| t.clone())
+            .map(|(s, _)| s.clone())
             .collect()
     }
 
@@ -490,8 +531,8 @@ impl WebHost {
         self.state.envs.retain(|k, _| used.contains(k));
     }
 
-    fn start_controller(&mut self, tab: &str) {
-        let Some(view) = self.state.views.get_mut(tab) else {
+    fn start_controller(&mut self, slot: &Slot) {
+        let Some(view) = self.state.views.get_mut(slot) else {
             return;
         };
         let Some(Env::Ready(env)) = self.state.envs.get(&view.kind()) else {
@@ -502,7 +543,7 @@ impl WebHost {
         }
         view.creating = true;
         let (inbox, sink) = (Rc::clone(&self.inbox), Arc::clone(&self.sink));
-        let (tab_name, serial) = (tab.to_string(), view.serial);
+        let (held_slot, generation) = (slot.clone(), view.generation);
         let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
             move |err, controller| {
                 let result = match err {
@@ -510,8 +551,8 @@ impl WebHost {
                     Err(e) => Err(e.message()),
                 };
                 inbox.borrow_mut().push_back(Inbound::Controller {
-                    tab: tab_name.clone(),
-                    serial,
+                    slot: held_slot.clone(),
+                    generation,
                     result,
                 });
                 sink(WebEvent::Pump);
@@ -535,27 +576,27 @@ impl WebHost {
         };
         if let Err(e) = r {
             let why = e.message();
-            self.fail(tab, &why, false);
+            self.fail(slot, &why, false);
         }
     }
 
     /// A controller arrived: set it up and send it where it was asked to go.
-    fn adopt(&mut self, tab: &str, serial: u64, controller: ICoreWebView2Controller) {
+    fn adopt(&mut self, slot: &Slot, generation: u64, controller: ICoreWebView2Controller) {
         let current = self
             .state
             .views
-            .get(tab)
-            .is_some_and(|v| v.serial == serial);
+            .get(slot)
+            .is_some_and(|v| v.generation == generation);
         if !current {
             // The panel closed (or reopened) while the browser was making this one.
             // SAFETY: closing a controller we own.
             let _ = unsafe { controller.Close() };
             return;
         }
-        let app = self.state.views.get(tab).and_then(|v| v.app.clone());
-        match self.configure(tab, serial, &controller, app.as_ref()) {
+        let app = self.state.views.get(slot).and_then(|v| v.app.clone());
+        match self.configure(slot, generation, &controller, app.as_ref()) {
             Ok(webview) => {
-                let Some(view) = self.state.views.get_mut(tab) else {
+                let Some(view) = self.state.views.get_mut(slot) else {
                     return;
                 };
                 let live = Live {
@@ -569,22 +610,20 @@ impl WebHost {
                 } else {
                     view.creating = false;
                     Self::go_live(view, live);
-                    (self.sink)(WebEvent::Ready {
-                        tab: tab.to_string(),
-                    });
+                    ViewSink::new(&self.sink, slot).send(|tab| WebEvent::Ready { tab });
                 }
             }
             Err(why) => {
                 // SAFETY: closing a controller we own.
                 let _ = unsafe { controller.Close() };
-                self.fail(tab, &why, false);
+                self.fail(slot, &why, false);
             }
         }
     }
 
     /// Puts the view where it was asked to be and sends it to its address.
     fn go_live(view: &mut View, live: Live) {
-        let url = wide(&view.url);
+        let url = wide(&pdf_view(&view.url));
         // SAFETY: `live` holds live COM objects owned here; `url` is NUL-terminated and outlives the call.
         unsafe {
             let _ = live.controller.SetBounds(to_rect(view.bounds));
@@ -596,18 +635,18 @@ impl WebHost {
 
     /// The script wall of a mini-app's view came back: on success the view goes live and navigates, on
     /// an error it fails (there is no fallback to a page without the wall).
-    fn script_armed(&mut self, tab: &str, serial: u64, result: Result<(), String>) {
+    fn script_armed(&mut self, slot: &Slot, generation: u64, result: Result<(), String>) {
         let current = self
             .state
             .views
-            .get(tab)
-            .is_some_and(|v| v.serial == serial && v.pending.is_some());
+            .get(slot)
+            .is_some_and(|v| v.generation == generation && v.pending.is_some());
         if !current {
             return;
         }
         match result {
             Ok(()) => {
-                let Some(view) = self.state.views.get_mut(tab) else {
+                let Some(view) = self.state.views.get_mut(slot) else {
                     return;
                 };
                 let Some(live) = view.pending.take() else {
@@ -615,38 +654,38 @@ impl WebHost {
                 };
                 view.creating = false;
                 Self::go_live(view, live);
-                (self.sink)(WebEvent::Ready {
-                    tab: tab.to_string(),
-                });
+                ViewSink::new(&self.sink, slot).send(|tab| WebEvent::Ready { tab });
             }
             Err(why) => {
-                if let Some(v) = self.state.views.remove(tab) {
+                if let Some(v) = self.state.views.remove(slot) {
                     v.shut();
                 }
-                self.fail(tab, &format!("the mini-app's script wall: {why}"), false);
+                self.fail(slot, &format!("the mini-app's script wall: {why}"), false);
             }
         }
     }
 
-    /// Settings and every handler of one view. The handlers hold the sink and the tab's name and
-    /// nothing of the host.
+    /// Settings and every handler of one view. The handlers hold the sink and the view's slot and
+    /// nothing of the host. A mod's or plugin's view gets its walls from `seal_plugin_view`; the web
+    /// panel's and a mini-app's are set here and in `configure_app` as they always were.
     fn configure(
         &self,
-        tab: &str,
-        serial: u64,
+        slot: &Slot,
+        generation: u64,
         controller: &ICoreWebView2Controller,
         app: Option<&AppSpec>,
     ) -> Result<ICoreWebView2, String> {
         // SAFETY: `controller` is a live COM object.
         let webview = unsafe { controller.CoreWebView2() }
             .map_err(|x| format!("the page: {}", x.message()))?;
+        let plugin = app.is_some_and(|a| a.module.is_some());
         // SAFETY: `webview` is live; settings are plain flags.
         unsafe {
             if let Ok(s) = webview.Settings() {
                 // A page cannot talk to the app, except a mod's page, over the bridge (`window.flare`).
-                let _ = s.SetIsWebMessageEnabled(app.is_some_and(|a| a.module.is_some()));
+                let _ = s.SetIsWebMessageEnabled(plugin);
                 let _ = s.SetAreHostObjectsAllowed(false);
-                if app.is_some() {
+                if app.is_some() && !plugin {
                     // A mini-app is a page of the agent's: no developer tools of the person's to poke
                     // at it with, no status bar of links (the agent's calls go through the controller).
                     let _ = s.SetAreDevToolsEnabled(false);
@@ -655,7 +694,10 @@ impl WebHost {
             }
         }
         if let Some(a) = app {
-            self.configure_app(&webview, a, tab, serial)?;
+            self.configure_app(&webview, a, slot, generation)?;
+            if plugin {
+                self.seal_plugin_view(&webview, a, slot, plugin_seal(slot.kind))?;
+            }
         }
         for (host, folder) in &self.virtual_hosts {
             if let Ok(w3) = webview.cast::<ICoreWebView2_3>() {
@@ -671,11 +713,10 @@ impl WebHost {
             }
         }
         let mut token = 0i64;
-        let name = |s: &str| s.to_string();
 
         // ---- navigation ----
         {
-            let (sink, tab) = (Arc::clone(&self.sink), name(tab));
+            let sink = ViewSink::new(&self.sink, slot);
             // A mini-app's view may only show its own page; a web panel's, any http or https address.
             let app_url = app.map(|a| a.url.clone());
             // A mod's view may only go to its own host (any path of it).
@@ -693,18 +734,11 @@ impl WebHost {
                     let mut nav = 0u64;
                     // SAFETY: as above.
                     let _ = unsafe { args.NavigationId(&mut nav) };
-                    sink(WebEvent::Loading {
-                        tab: tab.clone(),
-                        url: uri,
-                        nav,
-                    });
+                    sink.send(|tab| WebEvent::Loading { tab, url: uri, nav });
                 } else {
                     // SAFETY: as above.
                     let _ = unsafe { args.SetCancel(true) };
-                    sink(WebEvent::Refused {
-                        tab: tab.clone(),
-                        url: uri,
-                    });
+                    sink.send(|tab| WebEvent::Refused { tab, url: uri });
                 }
                 Ok(())
             }));
@@ -712,7 +746,7 @@ impl WebHost {
             let _ = unsafe { webview.add_NavigationStarting(&h, &mut token) };
         }
         {
-            let (sink, tab) = (Arc::clone(&self.sink), name(tab));
+            let sink = ViewSink::new(&self.sink, slot);
             let h = NavigationCompletedEventHandler::create(Box::new(move |w, args| {
                 let (Some(w), Some(args)) = (w, args) else {
                     return Ok(());
@@ -725,8 +759,8 @@ impl WebHost {
                     let _ = args.NavigationId(&mut nav);
                     (get_string(|p| w.Source(p)), get_bool(|b| args.IsSuccess(b)))
                 };
-                sink(WebEvent::Loaded {
-                    tab: tab.clone(),
+                sink.send(|tab| WebEvent::Loaded {
+                    tab,
                     url,
                     ok,
                     status: st.0.to_string(),
@@ -738,7 +772,7 @@ impl WebHost {
             let _ = unsafe { webview.add_NavigationCompleted(&h, &mut token) };
         }
         {
-            let (sink, tab) = (Arc::clone(&self.sink), name(tab));
+            let sink = ViewSink::new(&self.sink, slot);
             let h = SourceChangedEventHandler::create(Box::new(move |w, args| {
                 let Some(w) = w else { return Ok(()) };
                 // SAFETY: `w` and `args` are the live arguments of this callback.
@@ -749,15 +783,9 @@ impl WebHost {
                     .as_ref()
                     .is_none_or(|a| get_bool(|b| unsafe { a.IsNewDocument(b) }));
                 if new_document {
-                    sink(WebEvent::Url {
-                        tab: tab.clone(),
-                        url,
-                    });
+                    sink.send(|tab| WebEvent::Url { tab, url });
                 } else {
-                    sink(WebEvent::SameDocument {
-                        tab: tab.clone(),
-                        url,
-                    });
+                    sink.send(|tab| WebEvent::SameDocument { tab, url });
                 }
                 Ok(())
             }));
@@ -765,7 +793,7 @@ impl WebHost {
             let _ = unsafe { webview.add_SourceChanged(&h, &mut token) };
         }
         {
-            let (sink, tab) = (Arc::clone(&self.sink), name(tab));
+            let sink = ViewSink::new(&self.sink, slot);
             let h = HistoryChangedEventHandler::create(Box::new(move |w, _args| {
                 let Some(w) = w else { return Ok(()) };
                 // SAFETY: `w` is the live sender of this callback.
@@ -775,8 +803,8 @@ impl WebHost {
                         get_bool(|b| w.CanGoForward(b)),
                     )
                 };
-                sink(WebEvent::History {
-                    tab: tab.clone(),
+                sink.send(|tab| WebEvent::History {
+                    tab,
                     can_back,
                     can_forward,
                 });
@@ -786,63 +814,27 @@ impl WebHost {
             let _ = unsafe { webview.add_HistoryChanged(&h, &mut token) };
         }
         {
-            let (sink, tab) = (Arc::clone(&self.sink), name(tab));
+            let sink = ViewSink::new(&self.sink, slot);
             let h = DocumentTitleChangedEventHandler::create(Box::new(move |w, _args| {
                 let Some(w) = w else { return Ok(()) };
                 // SAFETY: `w` is the live sender of this callback.
                 let title = get_string(|p| unsafe { w.DocumentTitle(p) });
-                sink(WebEvent::Title {
-                    tab: tab.clone(),
-                    title,
-                });
+                sink.send(|tab| WebEvent::Title { tab, title });
                 Ok(())
             }));
             // SAFETY: as above.
             let _ = unsafe { webview.add_DocumentTitleChanged(&h, &mut token) };
         }
-        // A page cannot open a window: the address goes to this panel (if it may open at all).
-        {
-            let (sink, tab) = (Arc::clone(&self.sink), name(tab));
-            let is_app = app.is_some();
-            let h = NewWindowRequestedEventHandler::create(Box::new(move |w, args| {
-                let (Some(w), Some(args)) = (w, args) else {
-                    return Ok(());
-                };
-                // SAFETY: both are the live arguments of this callback.
-                unsafe {
-                    let uri = get_string(|p| args.Uri(p));
-                    let _ = args.SetHandled(true);
-                    // A mini-app's links open nowhere: it is one page, and the browser panel is the
-                    // person's to point somewhere.
-                    if !is_app && navigation_allowed(&uri) {
-                        let u = wide(&uri);
-                        let _ = w.Navigate(PCWSTR(u.as_ptr()));
-                    } else {
-                        sink(WebEvent::Refused {
-                            tab: tab.clone(),
-                            url: uri,
-                        });
-                    }
-                }
-                Ok(())
-            }));
-            // SAFETY: as above.
-            let _ = unsafe { webview.add_NewWindowRequested(&h, &mut token) };
-        }
-        // Every permission is denied (camera, microphone, location, notifications, clipboard ...).
-        {
-            let h = PermissionRequestedEventHandler::create(Box::new(move |_w, args| {
-                if let Some(args) = args {
-                    // SAFETY: `args` is the live argument of this callback.
-                    let _ = unsafe { args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY) };
-                }
-                Ok(())
-            }));
-            // SAFETY: as above.
-            let _ = unsafe { webview.add_PermissionRequested(&h, &mut token) };
+        if !plugin {
+            // A page cannot open a window: the address goes to this panel (if it may open at all).
+            // A mini-app's links open nowhere: it is one page, and the browser panel is the person's to
+            // point somewhere.
+            refuse_new_windows(&webview, ViewSink::new(&self.sink, slot), app.is_none());
+            deny_permissions(&webview);
         }
         {
-            let (sink, tab, inbox) = (Arc::clone(&self.sink), name(tab), Rc::clone(&self.inbox));
+            let (sink, inbox) = (Arc::clone(&self.sink), Rc::clone(&self.inbox));
+            let events = ViewSink::new(&self.sink, slot);
             let env_kind = EnvKind::of(app);
             let h = ProcessFailedEventHandler::create(Box::new(move |_w, args| {
                 let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND(-1);
@@ -855,8 +847,8 @@ impl WebHost {
                     Failure::Recovers => {
                         log::info!("a browser process restarted (kind {})", kind.0)
                     }
-                    Failure::Page => sink(WebEvent::Gone {
-                        tab: tab.clone(),
+                    Failure::Page => events.send(|tab| WebEvent::Gone {
+                        tab,
                         why: "the page's process ended".to_string(),
                     }),
                     Failure::Browser => {
@@ -877,80 +869,24 @@ impl WebHost {
             let h = WindowCloseRequestedEventHandler::create(Box::new(move |_w, _a| Ok(())));
             // SAFETY: as above.
             let _ = unsafe { webview.add_WindowCloseRequested(&h, &mut token) };
-            let (sink, tab) = (Arc::clone(&self.sink), name(tab));
+            let sink = ViewSink::new(&self.sink, slot);
             let h = ContainsFullScreenElementChangedEventHandler::create(Box::new(move |w, _a| {
                 let Some(w) = w else { return Ok(()) };
                 // SAFETY: `w` is the live sender of this callback.
                 let on = unsafe { get_bool(|b| w.ContainsFullScreenElement(b)) };
-                sink(WebEvent::FullScreen {
-                    tab: tab.clone(),
-                    on,
-                });
+                sink.send(|tab| WebEvent::FullScreen { tab, on });
                 Ok(())
             }));
             // SAFETY: as above.
             let _ = unsafe { webview.add_ContainsFullScreenElementChanged(&h, &mut token) };
         }
-
-        // A download is held until the person has said yes (S6): the browser would otherwise save it
-        // into Downloads at once. A runtime too old to hold one back cannot show a web panel at all.
-        {
-            let w4 = webview.cast::<ICoreWebView2_4>().map_err(|_| {
-                "this WebView2 Runtime cannot hold a download for a question".to_string()
-            })?;
-            let (sink, tab) = (Arc::clone(&self.sink), name(tab));
-            let (held, seq) = (Rc::clone(&self.downloads), Rc::clone(&self.download_seq));
-            let h = DownloadStartingEventHandler::create(Box::new(move |_w, args| {
-                let Some(args) = args else { return Ok(()) };
-                // SAFETY: `args` is the live argument of this callback.
-                let deferral = unsafe { args.GetDeferral() };
-                let Ok(deferral) = deferral else {
-                    // No way to wait for the person: no file.
-                    // SAFETY: as above.
-                    let _ = unsafe { args.SetCancel(true) };
-                    return Ok(());
-                };
-                // SAFETY: as above.
-                let (path, uri) = unsafe {
-                    let uri = args
-                        .DownloadOperation()
-                        .map(|op| get_string(|p| op.Uri(p)))
-                        .unwrap_or_default();
-                    (get_string(|p| args.ResultFilePath(p)), uri)
-                };
-                let file = path
-                    .rsplit(['\\', '/'])
-                    .next()
-                    .filter(|f| !f.is_empty())
-                    .unwrap_or("a file")
-                    .to_string();
-                seq.set(seq.get() + 1);
-                let id = seq.get();
-                held.borrow_mut().insert(
-                    id,
-                    Download {
-                        tab: tab.clone(),
-                        args: args.clone(),
-                        deferral,
-                    },
-                );
-                sink(WebEvent::Download {
-                    tab: tab.clone(),
-                    id,
-                    file,
-                    host: host_label(&uri),
-                });
-                Ok(())
-            }));
-            // SAFETY: `w4` and the handler are live COM objects; `token` is a valid out value.
-            if unsafe { w4.add_DownloadStarting(&h, &mut token) }.is_err() {
-                return Err("the download question could not be registered".to_string());
-            }
+        if !plugin {
+            self.hold_downloads(&webview, slot)?;
         }
 
         // ---- keys and focus, on the controller ----
         {
-            let (sink, tab, filter) = (Arc::clone(&self.sink), name(tab), Rc::clone(&self.filter));
+            let (sink, filter) = (ViewSink::new(&self.sink, slot), Rc::clone(&self.filter));
             let h = AcceleratorKeyPressedEventHandler::create(Box::new(move |_c, args| {
                 let Some(args) = args else {
                     return Err(E_POINTER.into());
@@ -982,10 +918,7 @@ impl WebHost {
                 if taken {
                     // SAFETY: as above.
                     let _ = unsafe { args.SetHandled(true) };
-                    sink(WebEvent::Key {
-                        tab: tab.clone(),
-                        key,
-                    });
+                    sink.send(|tab| WebEvent::Key { tab, key });
                 }
                 Ok(())
             }));
@@ -993,12 +926,9 @@ impl WebHost {
             let _ = unsafe { controller.add_AcceleratorKeyPressed(&h, &mut token) };
         }
         for has in [true, false] {
-            let (sink, tab) = (Arc::clone(&self.sink), name(tab));
+            let sink = ViewSink::new(&self.sink, slot);
             let h = FocusChangedEventHandler::create(Box::new(move |_c, _a| {
-                sink(WebEvent::Focus {
-                    tab: tab.clone(),
-                    has,
-                });
+                sink.send(|tab| WebEvent::Focus { tab, has });
                 Ok(())
             }));
             // SAFETY: as above.
@@ -1013,17 +943,131 @@ impl WebHost {
         Ok(webview)
     }
 
+    /// A download is held until the person has said yes (S6): the browser would otherwise save it
+    /// into Downloads at once. A runtime too old to hold one back cannot show a web panel at all.
+    fn hold_downloads(&self, webview: &ICoreWebView2, slot: &Slot) -> Result<(), String> {
+        let w4 = webview.cast::<ICoreWebView2_4>().map_err(|_| {
+            "this WebView2 Runtime cannot hold a download for a question".to_string()
+        })?;
+        let (sink, held_slot) = (ViewSink::new(&self.sink, slot), slot.clone());
+        let (held, seq) = (Rc::clone(&self.downloads), Rc::clone(&self.download_seq));
+        let h = DownloadStartingEventHandler::create(Box::new(move |_w, args| {
+            let Some(args) = args else { return Ok(()) };
+            // SAFETY: `args` is the live argument of this callback.
+            let deferral = unsafe { args.GetDeferral() };
+            let Ok(deferral) = deferral else {
+                // No way to wait for the person: no file.
+                // SAFETY: as above.
+                let _ = unsafe { args.SetCancel(true) };
+                return Ok(());
+            };
+            // SAFETY: as above.
+            let (path, uri) = unsafe {
+                let uri = args
+                    .DownloadOperation()
+                    .map(|op| get_string(|p| op.Uri(p)))
+                    .unwrap_or_default();
+                (get_string(|p| args.ResultFilePath(p)), uri)
+            };
+            let file = path
+                .rsplit(['\\', '/'])
+                .next()
+                .filter(|f| !f.is_empty())
+                .unwrap_or("a file")
+                .to_string();
+            seq.set(seq.get() + 1);
+            let id = seq.get();
+            held.borrow_mut().insert(
+                id,
+                Download {
+                    slot: held_slot.clone(),
+                    args: args.clone(),
+                    deferral,
+                },
+            );
+            sink.send(|tab| WebEvent::Download {
+                tab,
+                id,
+                file,
+                host: host_label(&uri),
+            });
+            Ok(())
+        }));
+        let mut token = 0i64;
+        // SAFETY: `w4` and the handler are live COM objects; `token` is a valid out value.
+        if unsafe { w4.add_DownloadStarting(&h, &mut token) }.is_err() {
+            return Err("the download question could not be registered".to_string());
+        }
+        Ok(())
+    }
+
+    /// The one function that seals a mod's or plugin's view, whatever its slot (design 13): every wall of
+    /// `seal` (see `crate::seal`) is put up here, and a view whose walls cannot all be put up fails (there is no
+    /// view with fewer). The network wall, the file server and the bridge are `configure_app`'s.
+    fn seal_plugin_view(
+        &self,
+        webview: &ICoreWebView2,
+        app: &AppSpec,
+        slot: &Slot,
+        seal: Seal,
+    ) -> Result<(), String> {
+        let refused = |what: &str| format!("this WebView2 Runtime cannot seal a plugin's {what}");
+        // SAFETY: `webview` is live; settings are plain flags.
+        unsafe {
+            let s = webview.Settings().map_err(|_| refused("settings"))?;
+            let _ = s.SetAreDevToolsEnabled(seal.dev_tools);
+            let _ = s.SetIsStatusBarEnabled(seal.status_bar);
+            let _ = s.SetAreDefaultContextMenusEnabled(seal.context_menu);
+            // With the browser's dialogs off, a dialog is raised as `ScriptDialogOpening`; a handler that does
+            // not accept it dismisses it (`alert` returns, `confirm` is false, `prompt` is null).
+            let _ = s.SetAreDefaultScriptDialogsEnabled(seal.script_dialogs);
+            if !seal.browser_keys {
+                s.cast::<ICoreWebView2Settings3>()
+                    .and_then(|s3| s3.SetAreBrowserAcceleratorKeysEnabled(false))
+                    .map_err(|_| refused("keys"))?;
+            }
+        }
+        if !seal.script_dialogs {
+            let h = ScriptDialogOpeningEventHandler::create(Box::new(move |_w, _args| {
+                log::debug!("a plugin's script dialog was dismissed");
+                Ok(())
+            }));
+            let mut t = 0i64;
+            // SAFETY: the view and the handler are live COM objects; `t` is a valid out value.
+            unsafe { webview.add_ScriptDialogOpening(&h, &mut t) }
+                .map_err(|_| refused("dialogs"))?;
+        }
+        if !seal.new_windows {
+            refuse_new_windows(webview, ViewSink::new(&self.sink, slot), false);
+        }
+        if !seal.permissions {
+            deny_permissions(webview);
+        }
+        match seal.downloads {
+            DownloadWall::Ask => self.hold_downloads(webview, slot)?,
+            DownloadWall::Cancel => cancel_downloads_at_once(webview)?,
+        }
+        if !seal.external_uris {
+            refuse_external_uris(webview, ViewSink::new(&self.sink, slot))?;
+        }
+        if seal.frames_own_only {
+            own_frames_only(webview, app)?;
+        }
+        Ok(())
+    }
+
     /// What makes a view a mini-app's: its folder served on its own host name, and every request that
     /// is not the app's own refused (the second wall, behind the page's policy). A mod's view (stage 8)
     /// has the same walls with two differences: its files are NOT a folder mapping (each request is
     /// checked by `flare_mods::serve` on a worker, so a junction in the folder serves nothing outside it),
-    /// and its page gets the `window.flare` bridge and a message channel to the host.
+    /// and its page gets the `window.flare` bridge and a message channel to the host. A mod's launch and
+    /// frame walls are put up with the rest of its seal (`seal_plugin_view`).
     fn configure_app(
         &self,
         webview: &ICoreWebView2,
         app: &AppSpec,
-        tab: &str,
-        serial: u64,
+        slot: &Slot,
+        generation: u64,
     ) -> Result<(), String> {
         let module = app.module.is_some();
         if !module {
@@ -1052,7 +1096,8 @@ impl WebHost {
             served: Arc::clone(&self.served),
             live: Arc::clone(&self.serve_live),
             sink: Arc::clone(&self.sink),
-            tab: tab.to_string(),
+            slot: slot.clone(),
+            network: allow,
         };
         let h = WebResourceRequestedEventHandler::create(Box::new(move |w, args| {
             let (Some(w), Some(args)) = (w, args) else {
@@ -1065,7 +1110,8 @@ impl WebHost {
                 };
                 let uri = get_string(|p| req.Uri(p));
                 if let Some((entry, folder)) = &files {
-                    match modview::route_request(&uri, &host) {
+                    // A plugin that holds `network` reaches public https hosts, and nothing local (plugins phase 6).
+                    match modview::route_request_net(&uri, &host, allow) {
                         Route::Pass => {}
                         Route::Refuse => refuse_request(&w, &args, 403),
                         Route::Serve(path) => serve.start(&w, &args, entry, folder, path),
@@ -1122,20 +1168,20 @@ impl WebHost {
             if text.is_empty() {
                 // The e2e's seam: the browser-level walls are tested alone.
                 self.inbox.borrow_mut().push_back(Inbound::Script {
-                    tab: tab.to_string(),
-                    serial,
+                    slot: slot.clone(),
+                    generation,
                     result: Ok(()),
                 });
                 (self.sink)(WebEvent::Pump);
             } else {
                 let script = wide(&text);
                 let (inbox, sink) = (Rc::clone(&self.inbox), Arc::clone(&self.sink));
-                let tab_name = tab.to_string();
+                let held_slot = slot.clone();
                 let done = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
                     move |err, _id| {
                         inbox.borrow_mut().push_back(Inbound::Script {
-                            tab: tab_name.clone(),
-                            serial,
+                            slot: held_slot.clone(),
+                            generation,
                             result: err.map_err(|e| e.message()),
                         });
                         sink(WebEvent::Pump);
@@ -1149,10 +1195,30 @@ impl WebHost {
         }
         // A mod's page talks to the host over web messages, from its own address only.
         if module {
-            let (sink, tab_name, host) =
-                (Arc::clone(&self.sink), tab.to_string(), app.host.clone());
+            let (sink, host) = (ViewSink::new(&self.sink, slot), app.host.clone());
+            let (limits, id) = (
+                self.limits.clone(),
+                app.module.as_ref().map(|m| m.id.clone()),
+            );
             let h = WebMessageReceivedEventHandler::create(Box::new(move |_w, args| {
                 let Some(args) = args else { return Ok(()) };
+                // A plugin's pages share one budget (protocol 1 mods have none): a message over it is dropped
+                // here, before it is copied out of the page. The window spends what it takes.
+                let limiter = limits
+                    .as_ref()
+                    .zip(id.as_deref())
+                    .and_then(|(l, id)| l.of(id));
+                if limiter
+                    .as_ref()
+                    .is_some_and(|l| !l.has_room(std::time::Instant::now()))
+                {
+                    return Ok(());
+                }
+                let cap = if limiter.is_some() {
+                    flare_mods::limit::MAX_MESSAGE
+                } else {
+                    MAX_PAGE_MESSAGE
+                };
                 // SAFETY: `args` is the live argument of this callback.
                 let (source, text) = unsafe {
                     (
@@ -1160,12 +1226,9 @@ impl WebHost {
                         get_string(|p| args.TryGetWebMessageAsString(p)),
                     )
                 };
-                if modview::nav_allowed(&source, &host)
-                    && !text.is_empty()
-                    && text.len() <= MAX_PAGE_MESSAGE
-                {
-                    sink(WebEvent::ModMessage {
-                        tab: tab_name.clone(),
+                if modview::nav_allowed(&source, &host) && !text.is_empty() && text.len() <= cap {
+                    sink.send(|tab| WebEvent::ModMessage {
+                        tab,
                         host: host.clone(),
                         json: text,
                     });
@@ -1176,55 +1239,10 @@ impl WebHost {
             // SAFETY: the view and the handler are live COM objects; `t` is a valid out value.
             unsafe { webview.add_WebMessageReceived(&h, &mut t) }
                 .map_err(|e| format!("the mod's message channel: {}", e.message()))?;
-        }
-        // No external program is launched from a mini-app (a mailto: or custom scheme would carry the
-        // page's data out through another program, past the proxy), and no frame navigates anywhere
-        // but a blank or srcdoc frame or the app's own page. (No cookie sweep: each app has a site
-        // of its own, and wiping the shared profile's jar would log another app's tab out.)
-        {
-            let w18 = webview
-                .cast::<ICoreWebView2_18>()
-                .map_err(|_| "this WebView2 Runtime cannot seal a mini-app".to_string())?;
-            let (sink, tab_name) = (Arc::clone(&self.sink), tab.to_string());
-            let h = LaunchingExternalUriSchemeEventHandler::create(Box::new(move |_w, args| {
-                if let Some(args) = args {
-                    // SAFETY: `args` is the live argument of this callback.
-                    unsafe {
-                        let uri = get_string(|p| args.Uri(p));
-                        let _ = args.SetCancel(true);
-                        sink(WebEvent::Refused {
-                            tab: tab_name.clone(),
-                            url: uri,
-                        });
-                    }
-                }
-                Ok(())
-            }));
-            let mut t = 0i64;
-            // SAFETY: the view and the handler are live COM objects; `t` is a valid out value.
-            unsafe { w18.add_LaunchingExternalUriScheme(&h, &mut t) }
-                .map_err(|e| format!("the mini-app's launch wall: {}", e.message()))?;
-            let app_url = app.url.clone();
-            let mod_host = module.then(|| app.host.clone());
-            let h = NavigationStartingEventHandler::create(Box::new(move |_w, args| {
-                if let Some(args) = args {
-                    // SAFETY: `args` is the live argument of this callback.
-                    unsafe {
-                        let uri = get_string(|p| args.Uri(p));
-                        let own = match &mod_host {
-                            Some(h) => modview::nav_allowed(&uri, h),
-                            None => app::nav_allowed(&uri, &app_url),
-                        };
-                        if !(uri == "about:blank" || uri == "about:srcdoc" || own) {
-                            let _ = args.SetCancel(true);
-                        }
-                    }
-                }
-                Ok(())
-            }));
-            // SAFETY: as above.
-            unsafe { webview.add_FrameNavigationStarting(&h, &mut t) }
-                .map_err(|e| format!("the mini-app's frame wall: {}", e.message()))?;
+        } else {
+            // A mini-app's launch and frame walls (a mod's are part of its seal).
+            refuse_external_uris(webview, ViewSink::new(&self.sink, slot))?;
+            own_frames_only(webview, app)?;
         }
         Ok(())
     }
@@ -1234,18 +1252,18 @@ impl WebHost {
         let Some(p) = self.serving.borrow_mut().remove(&id) else {
             return;
         };
-        answer_request(&p.webview, &p.args, result);
+        answer_request(&p.webview, &p.args, result, p.network);
         // SAFETY: the deferral is a live COM object kept since the callback.
         let _ = unsafe { p.deferral.Complete() };
     }
 
-    /// Releases the page requests still waiting for a file read (all, or the tab's), each answered 503.
-    fn cancel_serves(&self, tab: Option<&str>) {
+    /// Releases the page requests still waiting for a file read (all, or the slot's), each answered 503.
+    fn cancel_serves(&self, slot: Option<&Slot>) {
         let ids: Vec<u64> = self
             .serving
             .borrow()
             .iter()
-            .filter(|(_, p)| tab.is_none_or(|t| p.tab == t))
+            .filter(|(_, p)| slot.is_none_or(|s| p.slot == *s))
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
@@ -1259,8 +1277,13 @@ impl WebHost {
         }
     }
 
-    fn live(&self, tab: &str) -> Option<&Live> {
-        self.state.views.get(tab).and_then(|v| v.live.as_ref())
+    fn live(&self, slot: &Slot) -> Option<&Live> {
+        self.state.views.get(slot).and_then(|v| v.live.as_ref())
+    }
+
+    /// The live view of the tab's panel.
+    fn panel(&self, tab: &str) -> Option<&Live> {
+        self.live(&Slot::panel(tab))
     }
 
     fn child_windows(&self) -> Vec<(String, PhysRect)> {
@@ -1327,7 +1350,8 @@ struct ServeCtx {
     served: Served,
     live: Arc<AtomicUsize>,
     sink: Sink,
-    tab: String,
+    slot: Slot,
+    network: bool,
 }
 
 impl ServeCtx {
@@ -1354,7 +1378,8 @@ impl ServeCtx {
         self.serving.borrow_mut().insert(
             id,
             PendingServe {
-                tab: self.tab.clone(),
+                slot: self.slot.clone(),
+                network: self.network,
                 args: args.clone(),
                 deferral,
                 webview: w.clone(),
@@ -1426,6 +1451,7 @@ fn refuse_request(
             status: status as u16,
             reason: String::new(),
         }),
+        false,
     );
 }
 
@@ -1434,12 +1460,13 @@ fn answer_request(
     w: &ICoreWebView2,
     args: &ICoreWebView2WebResourceRequestedEventArgs,
     result: Result<modserve::Served, modserve::Refused>,
+    network: bool,
 ) {
     let (status, reason, headers, bytes) = match &result {
         Ok(s) => (
             200,
             "OK",
-            modserve::headers_for(s.mime),
+            modserve::headers_for(s.mime, network),
             Some(s.bytes.as_slice()),
         ),
         Err(r) => (
@@ -1473,6 +1500,116 @@ fn answer_request(
     }
 }
 
+// ---- the walls a view's set-up and the plugins' seal share ----
+
+/// A page cannot open a window of its own. With `in_place` (the web panel) an address that may open
+/// is sent to the same view; otherwise (a mini-app, a mod or plugin) it opens nowhere and the window is told.
+fn refuse_new_windows(webview: &ICoreWebView2, sink: ViewSink, in_place: bool) {
+    let h = NewWindowRequestedEventHandler::create(Box::new(move |w, args| {
+        let (Some(w), Some(args)) = (w, args) else {
+            return Ok(());
+        };
+        // SAFETY: both are the live arguments of this callback.
+        unsafe {
+            let uri = get_string(|p| args.Uri(p));
+            let _ = args.SetHandled(true);
+            if in_place && navigation_allowed(&uri) {
+                let u = wide(&pdf_view(&uri));
+                let _ = w.Navigate(PCWSTR(u.as_ptr()));
+            } else {
+                sink.send(|tab| WebEvent::Refused { tab, url: uri });
+            }
+        }
+        Ok(())
+    }));
+    let mut token = 0i64;
+    // SAFETY: `webview` and the handler are live COM objects; `token` is a valid out value.
+    let _ = unsafe { webview.add_NewWindowRequested(&h, &mut token) };
+}
+
+/// Every permission is denied (camera, microphone, location, notifications, clipboard ...).
+fn deny_permissions(webview: &ICoreWebView2) {
+    let h = PermissionRequestedEventHandler::create(Box::new(move |_w, args| {
+        if let Some(args) = args {
+            // SAFETY: `args` is the live argument of this callback.
+            let _ = unsafe { args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY) };
+        }
+        Ok(())
+    }));
+    let mut token = 0i64;
+    // SAFETY: `webview` and the handler are live COM objects; `token` is a valid out value.
+    let _ = unsafe { webview.add_PermissionRequested(&h, &mut token) };
+}
+
+/// A download is cancelled as it starts (a view with nobody to ask): nothing is saved, nothing is asked.
+fn cancel_downloads_at_once(webview: &ICoreWebView2) -> Result<(), String> {
+    let w4 = webview
+        .cast::<ICoreWebView2_4>()
+        .map_err(|_| "this WebView2 Runtime cannot refuse a download".to_string())?;
+    let h = DownloadStartingEventHandler::create(Box::new(move |_w, args| {
+        if let Some(args) = args {
+            // SAFETY: `args` is the live argument of this callback.
+            let _ = unsafe { args.SetCancel(true) };
+        }
+        Ok(())
+    }));
+    let mut token = 0i64;
+    // SAFETY: `w4` and the handler are live COM objects; `token` is a valid out value.
+    unsafe { w4.add_DownloadStarting(&h, &mut token) }
+        .map_err(|_| "the download wall could not be registered".to_string())
+}
+
+/// No external program is launched from the page (a mailto: or custom scheme would carry the page's data out
+/// through another program, past the proxy).
+fn refuse_external_uris(webview: &ICoreWebView2, sink: ViewSink) -> Result<(), String> {
+    let w18 = webview
+        .cast::<ICoreWebView2_18>()
+        .map_err(|_| "this WebView2 Runtime cannot seal a mini-app".to_string())?;
+    let h = LaunchingExternalUriSchemeEventHandler::create(Box::new(move |_w, args| {
+        if let Some(args) = args {
+            // SAFETY: `args` is the live argument of this callback.
+            unsafe {
+                let uri = get_string(|p| args.Uri(p));
+                let _ = args.SetCancel(true);
+                sink.send(|tab| WebEvent::Refused { tab, url: uri });
+            }
+        }
+        Ok(())
+    }));
+    let mut t = 0i64;
+    // SAFETY: the view and the handler are live COM objects; `t` is a valid out value.
+    unsafe { w18.add_LaunchingExternalUriScheme(&h, &mut t) }
+        .map_err(|e| format!("the mini-app's launch wall: {}", e.message()))
+}
+
+/// No frame navigates anywhere but a blank or srcdoc frame or the page's own: the app's page, or any page of
+/// a mod's own host. (No cookie sweep: each app has a site of its own, and wiping the shared profile's jar
+/// would log another app's tab out.)
+fn own_frames_only(webview: &ICoreWebView2, app: &AppSpec) -> Result<(), String> {
+    let app_url = app.url.clone();
+    let mod_host = app.module.is_some().then(|| app.host.clone());
+    let h = NavigationStartingEventHandler::create(Box::new(move |_w, args| {
+        if let Some(args) = args {
+            // SAFETY: `args` is the live argument of this callback.
+            unsafe {
+                let uri = get_string(|p| args.Uri(p));
+                let own = match &mod_host {
+                    Some(h) => modview::nav_allowed(&uri, h),
+                    None => app::nav_allowed(&uri, &app_url),
+                };
+                if !(uri == "about:blank" || uri == "about:srcdoc" || own) {
+                    let _ = args.SetCancel(true);
+                }
+            }
+        }
+        Ok(())
+    }));
+    let mut t = 0i64;
+    // SAFETY: the view and the handler are live COM objects; `t` is a valid out value.
+    unsafe { webview.add_FrameNavigationStarting(&h, &mut t) }
+        .map_err(|e| format!("the mini-app's frame wall: {}", e.message()))
+}
+
 impl Drop for WebHost {
     fn drop(&mut self) {
         // A download still waiting for a yes is never saved by the host going away.
@@ -1482,51 +1619,50 @@ impl Drop for WebHost {
 }
 
 impl WebHost {
-    /// Closes the tab's view and frees its controller; the browser environment stays.
-    fn close_view(&mut self, tab: &str) {
-        self.cancel_downloads(Some(tab));
-        self.cancel_serves(Some(tab));
-        if let Some(view) = self.state.views.remove(tab) {
+    /// Closes the slot's view and frees its controller; the browser environment stays.
+    fn drop_view(&mut self, slot: &Slot) {
+        self.cancel_downloads(Some(slot));
+        self.cancel_serves(Some(slot));
+        if let Some(view) = self.state.views.remove(slot) {
             view.shut();
         }
     }
 
-    /// Opens the tab's view for `url`, as a mini-app's when `app` is given. A view of the other kind is
-    /// closed first: a web page never gets an app's wall and an app is never left on the web panel's
+    /// Opens the slot's view for `url`, as a mini-app's (or a mod's) when `app` is given. A view of the other
+    /// kind is closed first: a web page never gets an app's wall and an app is never left on the web panel's
     /// profile.
-    fn open_view(
+    fn put_view(
         &mut self,
-        tab: &str,
+        slot: &Slot,
         url: &str,
         app: Option<AppSpec>,
         bounds: PhysRect,
         visible: bool,
     ) {
-        if self.state.views.get(tab).is_some_and(|v| {
+        if self.state.views.get(slot).is_some_and(|v| {
             v.kind() != EnvKind::of(app.as_ref())
                 || v.app.as_ref().map(|a| &a.host) != app.as_ref().map(|a| &a.host)
         }) {
             // Swapped in the same browser: the environment stays, so a mini-app updated again and
             // again does not restart it.
-            self.close_view(tab);
+            self.drop_view(slot);
         }
-        if let Some(v) = self.state.views.get_mut(tab) {
+        if let Some(v) = self.state.views.get_mut(slot) {
             v.url = url.to_string();
             v.bounds = bounds;
             v.visible = visible;
             if v.live.is_some() {
-                self.set_bounds(tab, bounds);
-                self.set_visible(tab, visible);
-                self.navigate(tab, url);
+                self.set_view_bounds(slot, bounds);
+                self.set_view_visible(slot, visible);
+                self.go_to(slot, url);
             }
             return;
         }
-        self.state.serial += 1;
-        let serial = self.state.serial;
+        let generation = self.next_generation(slot);
         self.state.views.insert(
-            tab.to_string(),
+            slot.clone(),
             View {
-                serial,
+                generation,
                 pending: None,
                 app,
                 creating: false,
@@ -1538,33 +1674,45 @@ impl WebHost {
         );
         // A browser the swapped-out view alone used goes now (a different kind of view was put in).
         self.drop_idle_envs();
-        self.ensure(tab);
+        self.ensure(slot);
+    }
+
+    /// Sends the slot's view to `url`.
+    fn go_to(&mut self, slot: &Slot, url: &str) {
+        if let Some(v) = self.state.views.get_mut(slot) {
+            v.url = url.to_string();
+        }
+        if let Some(l) = self.live(slot) {
+            let u = wide(&pdf_view(url));
+            // SAFETY: `webview` is live; `u` is NUL-terminated and outlives the call.
+            let _ = unsafe { l.webview.Navigate(PCWSTR(u.as_ptr())) };
+        }
     }
 }
 
 impl WebBackend for WebHost {
     fn open(&mut self, tab: &str, url: &str, bounds: PhysRect, visible: bool) {
-        self.open_view(tab, url, None, bounds, visible);
+        self.put_view(&Slot::panel(tab), url, None, bounds, visible);
     }
 
-    fn open_app(&mut self, tab: &str, app: AppSpec, bounds: PhysRect, visible: bool) {
+    fn open_view(&mut self, slot: &Slot, app: AppSpec, bounds: PhysRect, visible: bool) {
+        if !slot.is_panel() && app.module.is_none() {
+            // A bar or a background page is a plugin's only: no view is made for anything else.
+            self.drop_view(slot);
+            self.fail(slot, "only a plugin's page opens here", false);
+            self.drop_idle_envs();
+            return;
+        }
         let url = app.url.clone();
-        self.open_view(tab, &url, Some(app), bounds, visible);
+        self.put_view(slot, &url, Some(app), bounds, visible);
     }
 
     fn navigate(&mut self, tab: &str, url: &str) {
-        if let Some(v) = self.state.views.get_mut(tab) {
-            v.url = url.to_string();
-        }
-        if let Some(l) = self.live(tab) {
-            let u = wide(url);
-            // SAFETY: `webview` is live; `u` is NUL-terminated and outlives the call.
-            let _ = unsafe { l.webview.Navigate(PCWSTR(u.as_ptr())) };
-        }
+        self.go_to(&Slot::panel(tab), url);
     }
 
     fn go(&mut self, tab: &str, nav: Nav) {
-        if let Some(l) = self.live(tab) {
+        if let Some(l) = self.panel(tab) {
             // SAFETY: `webview` is a live COM object.
             let _ = unsafe {
                 match nav {
@@ -1577,11 +1725,11 @@ impl WebBackend for WebHost {
         }
     }
 
-    fn set_bounds(&mut self, tab: &str, bounds: PhysRect) {
-        if let Some(v) = self.state.views.get_mut(tab) {
+    fn set_view_bounds(&mut self, slot: &Slot, bounds: PhysRect) {
+        if let Some(v) = self.state.views.get_mut(slot) {
             v.bounds = bounds;
         }
-        if let Some(l) = self.live(tab) {
+        if let Some(l) = self.live(slot) {
             // SAFETY: `controller` is a live COM object.
             let _ = unsafe { l.controller.SetBounds(to_rect(bounds)) };
         }
@@ -1596,11 +1744,11 @@ impl WebBackend for WebHost {
         }
     }
 
-    fn set_visible(&mut self, tab: &str, visible: bool) {
-        if let Some(v) = self.state.views.get_mut(tab) {
+    fn set_view_visible(&mut self, slot: &Slot, visible: bool) {
+        if let Some(v) = self.state.views.get_mut(slot) {
             v.visible = visible;
         }
-        if let Some(l) = self.live(tab) {
+        if let Some(l) = self.live(slot) {
             // SAFETY: `controller` is a live COM object.
             let _ = unsafe { l.controller.SetIsVisible(visible) };
         }
@@ -1614,7 +1762,7 @@ impl WebBackend for WebHost {
                 png: None,
             });
         };
-        let Some(l) = self.live(tab) else {
+        let Some(l) = self.panel(tab) else {
             none(&self.sink);
             return;
         };
@@ -1643,8 +1791,9 @@ impl WebBackend for WebHost {
         }
     }
 
+    /// Only a tab's panel takes the keyboard: a bar or a background page never does.
     fn focus(&mut self, tab: &str) {
-        if let Some(l) = self.live(tab) {
+        if let Some(l) = self.panel(tab) {
             // SAFETY: `controller` is a live COM object.
             let _ = unsafe {
                 l.controller
@@ -1653,8 +1802,8 @@ impl WebBackend for WebHost {
         }
     }
 
-    fn close(&mut self, tab: &str) {
-        self.close_view(tab);
+    fn close_view(&mut self, slot: &Slot) {
+        self.drop_view(slot);
         // A browser no view uses is closed with its last view (a later open makes it again).
         self.drop_idle_envs();
     }
@@ -1684,15 +1833,15 @@ impl WebBackend for WebHost {
             .collect();
         for kind in waiting {
             self.state.envs.remove(&kind);
-            let tabs = self.tabs_of(kind);
-            if tabs.is_empty() {
+            let slots = self.slots_of(kind);
+            if slots.is_empty() {
                 // Everyone left while the question was out.
                 continue;
             }
             match &result {
                 Err(why) => {
-                    for t in tabs {
-                        self.fail(&t, why, true);
+                    for s in slots {
+                        self.fail(&s, why, true);
                     }
                 }
                 Ok(version) => {
@@ -1702,8 +1851,8 @@ impl WebBackend for WebHost {
                             self.state.envs.insert(kind, Env::Creating);
                         }
                         Err(why) => {
-                            for t in tabs {
-                                self.fail(&t, &why, false);
+                            for s in slots {
+                                self.fail(&s, &why, false);
                             }
                         }
                     }
@@ -1729,19 +1878,15 @@ impl WebBackend for WebHost {
             match item {
                 Inbound::BrowserExited(kind) => {
                     // Every page of that browser is gone and the environment with them: close what is
-                    // left of it, drop it (the next open makes a fresh one) and tell each panel.
-                    let tabs = self.tabs_of(kind);
-                    for t in &tabs {
-                        self.cancel_downloads(Some(t));
-                        self.cancel_serves(Some(t));
-                        if let Some(view) = self.state.views.remove(t) {
-                            view.shut();
-                        }
+                    // left of it, drop it (the next open makes a fresh one) and tell each view's owner.
+                    let slots = self.slots_of(kind);
+                    for s in &slots {
+                        self.drop_view(s);
                     }
                     self.state.envs.remove(&kind);
-                    for t in tabs {
-                        (self.sink)(WebEvent::Gone {
-                            tab: t,
+                    for s in slots {
+                        ViewSink::new(&self.sink, &s).send(|tab| WebEvent::Gone {
+                            tab,
                             why: "the browser's process ended".to_string(),
                         });
                     }
@@ -1750,15 +1895,15 @@ impl WebBackend for WebHost {
                     kind,
                     result: Ok(env),
                 } => {
-                    let tabs = self.tabs_of(kind);
-                    if tabs.is_empty() {
+                    let slots = self.slots_of(kind);
+                    if slots.is_empty() {
                         // Everyone left while it was being made.
                         self.state.envs.remove(&kind);
                         continue;
                     }
                     self.state.envs.insert(kind, Env::Ready(env));
-                    for t in tabs {
-                        self.start_controller(&t);
+                    for s in slots {
+                        self.start_controller(&s);
                     }
                 }
                 Inbound::Env {
@@ -1766,29 +1911,29 @@ impl WebBackend for WebHost {
                     result: Err(why),
                 } => {
                     self.state.envs.remove(&kind);
-                    for t in self.tabs_of(kind) {
-                        self.fail(&t, &why, false);
+                    for s in self.slots_of(kind) {
+                        self.fail(&s, &why, false);
                     }
                 }
                 Inbound::Script {
-                    tab,
-                    serial,
+                    slot,
+                    generation,
                     result,
-                } => self.script_armed(&tab, serial, result),
+                } => self.script_armed(&slot, generation, result),
                 Inbound::Controller {
-                    tab,
-                    serial,
+                    slot,
+                    generation,
                     result,
                 } => match result {
-                    Ok(c) => self.adopt(&tab, serial, c),
+                    Ok(c) => self.adopt(&slot, generation, c),
                     Err(why) => {
                         let mine = self
                             .state
                             .views
-                            .get(&tab)
-                            .is_some_and(|v| v.serial == serial);
+                            .get(&slot)
+                            .is_some_and(|v| v.generation == generation);
                         if mine {
-                            self.fail(&tab, &why, false);
+                            self.fail(&slot, &why, false);
                         }
                     }
                 },
@@ -1806,7 +1951,7 @@ impl WebBackend for WebHost {
 
     fn cdp(&mut self, tab: &str, id: u64, method: &str, params: &str) {
         let name = tab.to_string();
-        let Some(l) = self.live(tab) else {
+        let Some(l) = self.panel(tab) else {
             (self.sink)(WebEvent::Cdp {
                 tab: name,
                 id,
@@ -1844,16 +1989,16 @@ impl WebBackend for WebHost {
         }
     }
 
-    fn post_message(&mut self, tab: &str, json: &str) {
+    fn post_to_view(&mut self, slot: &Slot, json: &str) {
         let is_mod = self
             .state
             .views
-            .get(tab)
+            .get(slot)
             .is_some_and(|v| v.app.as_ref().is_some_and(|a| a.module.is_some()));
         if !is_mod {
             return;
         }
-        if let Some(l) = self.live(tab) {
+        if let Some(l) = self.live(slot) {
             let j = wide(json);
             // SAFETY: `webview` is a live COM object; `j` is NUL-terminated and outlives the call.
             let _ = unsafe { l.webview.PostWebMessageAsJson(PCWSTR(j.as_ptr())) };
@@ -1861,14 +2006,14 @@ impl WebBackend for WebHost {
     }
 
     fn set_zoom(&mut self, tab: &str, factor: f64) {
-        if let Some(l) = self.live(tab) {
+        if let Some(l) = self.panel(tab) {
             // SAFETY: `controller` is a live COM object.
             let _ = unsafe { l.controller.SetZoomFactor(factor) };
         }
     }
 
     fn run_script(&mut self, tab: &str, id: u64, js: &str) {
-        let Some(l) = self.live(tab) else {
+        let Some(l) = self.panel(tab) else {
             (self.sink)(WebEvent::Script {
                 id,
                 result: Err("no web view".to_string()),
@@ -1894,8 +2039,8 @@ impl WebBackend for WebHost {
         }
     }
 
-    fn probe(&self, tab: &str) -> Option<ControllerProbe> {
-        let l = self.live(tab)?;
+    fn probe_view(&self, slot: &Slot) -> Option<ControllerProbe> {
+        let l = self.live(slot)?;
         let mut r = RECT::default();
         let mut pid = 0u32;
         // SAFETY: `controller` and `webview` are live COM objects; the out values are valid.

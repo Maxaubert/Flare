@@ -7,7 +7,7 @@ import { Theme, Px, SettingsInk, SettingsShape, SettingsFixed } from "../theme.s
 import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell, RowLook } from "types.slint";
 import { SetFrame } from "frame.slint";
 import { SetRowFrame, SetBlockFrame, SetPanel, SetSectionHeading } from "row.slint";
-import { SetSwitch, SetSegmented, SetSaveButton, SetRowButton, SetResetLink } from "controls.slint";
+import { SetSwitch, SetSegmented, SetSaveButton, SetRowButton, SetResetLink, SetTextField } from "controls.slint";
 import { SetSlider } from "slider.slint";
 import { SetSelect, SelectMenu } from "select.slint";
 import { ColourField, ColourPopover } from "colour.slint";
@@ -108,6 +108,8 @@ export global SettingsBridge {
     callback row-choose(string, string);
     callback row-slide(string, int);
     callback row-button(string, string);
+    // A text field's row and what is typed in it now (each keystroke).
+    callback row-text(string, string);
     callback row-reset(string);
     callback colour-edited(string, string);
     callback colour-committed(string);
@@ -347,6 +349,25 @@ component RowControls inherits HorizontalLayout {
             escape-key => { SettingsBridge.colour-escape(root.data.id); }
             swatch-clicked(x, y, w, h) => { SettingsBridge.colour-swatch(root.data.id, Px.snap(x), Px.snap(y), Px.snap(x + w) - Px.snap(x), Px.snap(y + h) - Px.snap(y)); }
             tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+        }
+    }
+    if root.data.kind == SetKind.text: VerticalLayout {
+        alignment: center;
+        property <bool> want: root.wants;
+        changed want => {
+            if self.want {
+                tf.focus-me();
+                SettingsBridge.focus-id = "";
+            }
+        }
+        tf := SetTextField {
+            text: root.data.value;
+            placeholder: root.data.placeholder;
+            label: root.data.label;
+            sub: root.data.sub;
+            off: root.data.off;
+            edited(t) => { SettingsBridge.row-text(root.data.id, t); }
+            accepted => { SettingsBridge.row-button(root.data.id, "submit"); }
         }
     }
     if root.data.kind == SetKind.save: VerticalLayout {

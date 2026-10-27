@@ -1,18 +1,17 @@
-//! The conversation panels (Surfaces stage 6), headless: the Changes list and diff and the Tasks list, drawn from rows
-//! set directly on the window as the controller sets them. What is held: only the rows in view are built (a diff of
-//! 100 000 rows, a list of 5 000 files), the keys scroll, the added and removed rows wear the theme's inks, a task wears
-//! its state and the one in progress is highlighted, a folded group hides its tasks, and the clicks call back. Every
+//! The conversation panel (Surfaces stage 6), headless: the Changes list and diff, drawn from rows set directly on the
+//! window as the controller sets them. What is held: only the rows in view are built (a diff of 100 000 rows, a list of
+//! 5 000 files), the keys scroll, the added and removed rows wear the theme's inks, and the clicks call back. Every
 //! check runs at 100% and 225%.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use slint::platform::Key;
-use slint::{Global, ModelRc, SharedString, VecModel};
+use slint::{Global, ModelRc, VecModel};
 
 use crate::appctl::AppCtl;
 use crate::ui_harness::{Frame, Harness};
-use crate::{AppWindow, ConvoDiffRow, ConvoFileRow, ConvoInk, ConvoTaskRow, Theme};
+use crate::{AppWindow, ConvoDiffRow, ConvoFileRow, ConvoInk, Theme};
 
 const SCALES2: [f32; 2] = [1.0, 2.25];
 
@@ -73,31 +72,6 @@ fn diff(n: usize) -> ModelRc<ConvoDiffRow> {
     )
 }
 
-fn task(kind: i32, state: i32, text: &str, active: bool) -> ConvoTaskRow {
-    ConvoTaskRow {
-        kind,
-        state,
-        text: text.into(),
-        sub: if active {
-            "Doing it".into()
-        } else {
-            SharedString::new()
-        },
-        active,
-        key: if kind == 0 {
-            text.into()
-        } else {
-            SharedString::new()
-        },
-        collapsed: false,
-        count: if kind == 0 {
-            "1 of 2 done".into()
-        } else {
-            SharedString::new()
-        },
-    }
-}
-
 fn open_changes(h: &Harness<AppWindow>, n_files: usize, selected: &str, n_rows: usize) {
     h.comp.set_panel_open(true);
     h.comp.set_panel_kind(4);
@@ -106,14 +80,6 @@ fn open_changes(h: &Harness<AppWindow>, n_files: usize, selected: &str, n_rows: 
     h.comp.set_panel_convo_selected(selected.into());
     h.comp.set_panel_convo_rows(diff(n_rows));
     h.comp.set_panel_convo_max_cols(30);
-    h.advance(0);
-}
-
-fn open_tasks(h: &Harness<AppWindow>, rows: Vec<ConvoTaskRow>) {
-    h.comp.set_panel_open(true);
-    h.comp.set_panel_kind(5);
-    h.comp.set_panel_title("Tasks".into());
-    h.comp.set_panel_convo_tasks(model(rows));
     h.advance(0);
 }
 
@@ -262,29 +228,6 @@ fn another_file_opens_at_the_top_not_at_the_offset_of_the_last_one() {
 }
 
 #[test]
-fn a_reset_puts_the_task_list_back_at_the_top() {
-    let h = window(1.0);
-    h.activate();
-    let rows: Vec<ConvoTaskRow> = (0..200)
-        .map(|i| task(1, 0, &format!("Task number {i}"), false))
-        .collect();
-    open_tasks(&h, rows);
-    h.comp.invoke_focus_panel();
-    h.advance(0);
-    let top = h.render();
-    h.key_text(&key(Key::PageDown));
-    h.advance(0);
-    assert_ne!(top.rgba, h.render().rgba, "it scrolled");
-    h.comp.invoke_panel_convo_reset_scroll();
-    h.advance(0);
-    assert_eq!(
-        h.render().rgba,
-        top.rgba,
-        "another tab's list opens at its top"
-    );
-}
-
-#[test]
 fn added_and_removed_rows_wear_the_themes_inks_and_context_rows_wear_none() {
     for s in SCALES2 {
         let h = window(s);
@@ -347,167 +290,6 @@ fn backspace_goes_back_from_a_diff_and_the_arrows_do_not_scroll_an_empty_one() {
     assert_eq!(picks.borrow().len(), 1);
 }
 
-// ---- the tasks ----
-
-fn accent_pixels(h: &Harness<AppWindow>) -> usize {
-    let f = h.render();
-    let s = h.scale();
-    let acc = Theme::get(&h.comp).get_accent();
-    let want = [acc.red(), acc.green(), acc.blue(), 255];
-    let x0 = (h.comp.get_panel_body_x() * s) as u32;
-    let y0 = (h.comp.get_panel_body_y() * s) as u32;
-    f.count_where(
-        x0,
-        y0,
-        x0 + (h.comp.get_panel_body_w() * s) as u32,
-        y0 + (h.comp.get_panel_body_h() * s) as u32,
-        |p| Frame::near(p, want, 4),
-    )
-}
-
-#[test]
-fn a_task_wears_its_state_and_only_the_one_in_progress_has_the_accent() {
-    for s in SCALES2 {
-        let h = window(s);
-        open_tasks(
-            &h,
-            vec![
-                task(1, 2, "Read the code", false),
-                task(1, 0, "Write the test", false),
-                task(1, 3, "Something odd", false),
-            ],
-        );
-        assert_eq!(h.comp.get_panel_convo_task_rows(), 3);
-        let none = accent_pixels(&h);
-        open_tasks(
-            &h,
-            vec![
-                task(1, 2, "Read the code", false),
-                task(1, 1, "Edit the file", true),
-                task(1, 0, "Write the test", false),
-            ],
-        );
-        let some = accent_pixels(&h);
-        let min = (14.0 * 14.0 * 0.15 * s * s) as usize;
-        assert!(
-            some >= none + min,
-            "scale {s}: the dot of the task in progress is the accent ({none} then {some})"
-        );
-    }
-}
-
-#[test]
-fn wrapped_task_rows_sit_on_whole_device_pixels_at_fractional_scales() {
-    for s in [1.0f32, 1.25, 1.75, 2.25] {
-        let h = window(s);
-        let long = "A task whose words are long enough to wrap onto a second and a third line in a narrow panel body";
-        let mut rows = vec![task(1, 1, long, true)];
-        for i in 0..5 {
-            rows.push(task(1, 0, &format!("{long} {i}"), false));
-        }
-        rows.push(task(0, 0, "Subagent abc", false));
-        open_tasks(&h, rows);
-        let total = h.comp.get_panel_convo_task_content_h() * s;
-        assert!(
-            (total - total.round()).abs() < 0.01,
-            "scale {s}: the list is {total} device pixels tall, not a whole number"
-        );
-    }
-}
-
-#[test]
-fn the_active_task_has_a_tinted_row_and_a_plain_one_does_not() {
-    for s in SCALES2 {
-        let h = window(s);
-        open_tasks(
-            &h,
-            vec![
-                task(1, 1, "Edit the file", true),
-                task(1, 0, "Write the test", false),
-            ],
-        );
-        let f = h.render();
-        let ground = {
-            let c = Theme::get(&h.comp).get_ground();
-            [c.red(), c.green(), c.blue(), 255]
-        };
-        let acc = Theme::get(&h.comp).get_accent();
-        let (bx, by, bw) = (
-            h.comp.get_panel_body_x(),
-            h.comp.get_panel_body_y(),
-            h.comp.get_panel_body_w(),
-        );
-        // The right end of the first row (past the text) and of the second.
-        let x = bx + bw - 14.0;
-        let first = at(&h, &f, x, by + 6.0);
-        assert!(
-            near(first, over(ground, acc, 0.14), 4),
-            "scale {s}: the active row is tinted ({first:?})"
-        );
-        let second_y = by + h.comp.get_panel_convo_task_content_h() - 6.0;
-        let second = at(&h, &f, x, second_y);
-        assert!(
-            near(second, ground, 3),
-            "scale {s}: a plain row is bare ({second:?})"
-        );
-    }
-}
-
-#[test]
-fn a_group_header_calls_back_with_its_key_and_a_folded_group_has_fewer_rows() {
-    for s in SCALES2 {
-        let h = window(s);
-        let toggled = Rc::new(RefCell::new(Vec::<String>::new()));
-        {
-            let toggled = toggled.clone();
-            h.comp
-                .on_panel_convo_toggle(move |k| toggled.borrow_mut().push(k.to_string()));
-        }
-        let mut rows = vec![
-            task(0, 0, "agent-one", false),
-            task(1, 1, "Look", true),
-            task(1, 0, "Think", false),
-        ];
-        open_tasks(&h, rows.clone());
-        assert_eq!(h.comp.get_panel_convo_task_rows(), 3);
-        h.render();
-        let tall = h.comp.get_panel_convo_task_content_h();
-        h.click(
-            h.comp.get_panel_body_x() + 40.0,
-            h.comp.get_panel_body_y() + 10.0,
-        );
-        assert_eq!(toggled.borrow().as_slice(), ["agent-one"], "scale {s}");
-        // The controller then sends the list without the folded group's tasks.
-        rows[0].collapsed = true;
-        rows.truncate(1);
-        open_tasks(&h, rows);
-        assert_eq!(h.comp.get_panel_convo_task_rows(), 1);
-        h.render();
-        let short = h.comp.get_panel_convo_task_content_h();
-        assert!(short < tall, "scale {s}: {short} against {tall}");
-    }
-}
-
-#[test]
-fn the_keys_scroll_a_long_task_list() {
-    let h = window(1.0);
-    h.activate();
-    let rows: Vec<ConvoTaskRow> = (0..200)
-        .map(|i| task(1, 0, &format!("Task number {i}"), false))
-        .collect();
-    open_tasks(&h, rows);
-    h.comp.invoke_focus_panel();
-    h.advance(0);
-    let before = h.render();
-    h.key_text(&key(Key::PageDown));
-    h.advance(0);
-    let after = h.render();
-    assert_ne!(before.rgba, after.rgba, "a page down moved the list");
-    h.key_text(&key(Key::Home));
-    h.advance(0);
-    assert_eq!(h.render().rgba, before.rgba, "home is back at the top");
-}
-
 // ---- nothing runs ----
 
 #[test]
@@ -521,12 +303,9 @@ fn the_conversation_view_has_no_animation_and_no_timer() {
 fn a_closed_panel_holds_no_conversation_rows_after_the_controller_lets_go() {
     let h = window(1.0);
     open_changes(&h, 50, "C:\\p\\file0.rs", 500);
-    open_tasks(&h, vec![task(1, 0, "x", false)]);
     h.comp.set_panel_convo_files(ModelRc::default());
     h.comp.set_panel_convo_rows(ModelRc::default());
-    h.comp.set_panel_convo_tasks(ModelRc::default());
     h.advance(0);
-    assert_eq!(h.comp.get_panel_convo_task_rows(), 0);
     assert_eq!(h.comp.get_panel_convo_list_built(), 0);
     assert_eq!(h.comp.get_panel_convo_diff_built(), 0);
 }

@@ -36,6 +36,17 @@ impl AppCtl {
         self.web.set_factory(f);
     }
 
+    /// What draws the agent's cursor over the page: the real window once Flare's has a handle (a
+    /// recording stand-in until then, and always under `--e2e` and in the tests).
+    pub fn set_agent_cursor(&mut self, shell: Box<dyn flare_win::agent_cursor::CursorShell>) {
+        self.web.set_cursor_shell(shell);
+    }
+
+    /// What draws the border round the page while the agent uses it (as [`AppCtl::set_agent_cursor`]).
+    pub fn set_agent_border(&mut self, shell: Box<dyn flare_win::agent_cursor::CursorShell>) {
+        self.web.set_border_shell(shell);
+    }
+
     /// The browser's controllers now (0 while no web panel is open).
     pub fn web_controllers(&self) -> usize {
         self.web.controllers()
@@ -105,6 +116,7 @@ impl AppCtl {
         let front = self.model.active_shell().map(|t| t.id.clone());
         let ctx = self.key_context();
         self.web.sync(&app, &self.panels, front.as_deref(), ctx);
+        self.sync_bar_views(&app);
         self.sync_web_full();
         self.prune_downloads();
     }
@@ -120,6 +132,7 @@ impl AppCtl {
             (true, None) => {
                 let was = w.is_fullscreen();
                 self.web_full_was = Some(was);
+                self.web.set_window_follows(!was);
                 if !was {
                     // The UI turns solid and the backdrop comes off before the OS is asked (D7).
                     crate::look_ctl::LookCtl::with_current(|l| l.before_fullscreen());
@@ -232,7 +245,13 @@ impl AppCtl {
                 WebOut::Changed => self.refresh(),
                 o @ (WebOut::ModMessage { .. }
                 | WebOut::ModPage { .. }
-                | WebOut::ModLost { .. }) => {
+                | WebOut::ModLost { .. }
+                | WebOut::BgMessage { .. }
+                | WebOut::BgPage { .. }
+                | WebOut::BgLost { .. }
+                | WebOut::BarMessage { .. }
+                | WebOut::BarPage { .. }
+                | WebOut::BarLost { .. }) => {
                     self.on_mod_web(o);
                 }
                 WebOut::Download {
@@ -600,6 +619,7 @@ impl AppCtl {
                 "ribbon": self.web.ribbon_text(t),
                 "keys_heard": self.web.agent_keys_heard(),
             })),
+            "cursor": self.web.cursor_probe(),
             "url": tab.and_then(|t| self.web.tab_url(t)),
             "controller": probe.map(|p| json!({
                 "bounds": {"x": p.bounds.x, "y": p.bounds.y, "w": p.bounds.w, "h": p.bounds.h},
