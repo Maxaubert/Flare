@@ -1671,7 +1671,7 @@ fn a_click_by_ref_uses_the_numbers_of_the_last_look() {
     let rx = click_ref(&f, &id, "e1");
     f.pump();
     // The cursor glides to the button first; the agent's timer lets the click go.
-    agent_turn(&f, GLIDE_MS);
+    agent_turn(&f, GLIDE_MAX_MS);
     let v = rx.try_recv().unwrap().unwrap();
     assert_eq!(v["clicked"], json!({"x": 140.0, "y": 110.0}));
     let presses: Vec<String> = cdp_calls(&slot)
@@ -1981,7 +1981,7 @@ fn the_person_taking_over_a_click_lets_go_of_the_button() {
     );
     f.pump();
     answer_all(&f, &slot, &id, &mut std::collections::HashSet::new());
-    agent_turn(&f, GLIDE_MS);
+    agent_turn(&f, GLIDE_MAX_MS);
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
     f.ctl.borrow_mut().web_user_input();
     f.pump();
@@ -1999,8 +1999,8 @@ fn the_person_taking_over_a_click_lets_go_of_the_button() {
 
 // ---- the agent's cursor ----
 
-use flare_surfaces::agent_cursor::{FADE_MS, GLIDE_MS};
-use flare_win::agent_cursor::recorded;
+use flare_surfaces::agent_cursor::{FADE_MS, GLIDE_MAX_MS, Point, glide_ms};
+use flare_win::agent_cursor::{recorded, recorded_border};
 
 /// A look of the shop, done.
 fn looked(f: &Fx, slot: &Slot, id: &str) {
@@ -2049,7 +2049,7 @@ fn the_cursor_shows_where_a_click_lands_before_it_presses_and_ripples_on_the_pre
     assert_eq!(pressed(&slot), 0);
     assert_eq!(f.ctl.borrow().web.cursor_probe()["tag"], "Agent");
     // The glide is over: the click goes, with a ripple.
-    agent_turn(&f, GLIDE_MS);
+    agent_turn(&f, GLIDE_MAX_MS);
     assert!(rx.try_recv().unwrap().is_ok());
     assert_eq!(pressed(&slot), 1);
     assert_eq!(f.ctl.borrow().web.cursor_probe()["presses"], 1);
@@ -2074,7 +2074,7 @@ fn the_next_action_glides_from_where_the_cursor_was() {
     looked(&f, &slot, &id);
     let rx = click_ref(&f, &id, "e1");
     f.pump();
-    agent_turn(&f, GLIDE_MS);
+    agent_turn(&f, GLIDE_MAX_MS);
     rx.try_recv().unwrap().unwrap();
     // Typing into the field: the arrow starts at the button and arrives at the field.
     let rx = ask(
@@ -2094,7 +2094,21 @@ fn the_next_action_glides_from_where_the_cursor_was() {
         Some(on_page(&f, 140.0, 110.0)),
         "it starts where it was"
     );
-    agent_turn(&f, GLIDE_MS);
+    // The typing waits as long as the glide takes, which is the distance's, not the longest (the
+    // agent's clock also runs in real time, so only the halves are checked).
+    let ms = glide_ms(css(140.0, 110.0), css(200.0, 160.0));
+    assert!(ms < GLIDE_MAX_MS, "{ms}");
+    agent_turn(&f, ms / 2);
+    assert!(
+        matches!(rx.try_recv(), Err(TryRecvError::Empty)),
+        "still gliding"
+    );
+    let mid = cursor_at(&f).unwrap();
+    assert!(
+        mid != on_page(&f, 140.0, 110.0) && mid != on_page(&f, 200.0, 160.0),
+        "{mid:?}"
+    );
+    agent_turn(&f, ms - ms / 2);
     assert_eq!(rx.try_recv().unwrap().unwrap()["typed"], 1);
     assert_eq!(cursor_at(&f), Some(on_page(&f, 200.0, 160.0)));
     assert_eq!(
@@ -2102,6 +2116,219 @@ fn the_next_action_glides_from_where_the_cursor_was() {
         1,
         "typing presses nothing"
     );
+}
+
+/// A point of the shop's 600 x 400 viewport.
+fn css(x: f64, y: f64) -> Point {
+    Point {
+        x,
+        y,
+        vp_w: 600.0,
+        vp_h: 400.0,
+    }
+}
+
+/// A click on the shop's button by ref, its glide and the ribbon's hold over and the arrow faded.
+fn click_and_fade(f: &Fx, id: &str) {
+    let rx = click_ref(f, id, "e1");
+    f.pump();
+    agent_turn(f, GLIDE_MAX_MS);
+    rx.try_recv().unwrap().unwrap();
+    agent_turn(f, crate::web_ctl::RIBBON_HOLD_MS);
+    agent_turn(f, FADE_MS);
+    assert_eq!(cursor_at(f), None, "faded");
+}
+
+fn type_into_field(f: &Fx, id: &str) -> Receiver<Result<Value, flare_ctl::CtlError>> {
+    ask(
+        f,
+        agent_op(
+            id,
+            AgentOp::Type {
+                text: "3".into(),
+                target: Some("e2".into()),
+            },
+        ),
+        Duration::from_secs(5),
+    )
+}
+
+#[test]
+fn after_the_fade_the_next_action_glides_on_from_where_the_arrow_rested() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    looked(&f, &slot, &id);
+    click_and_fade(&f, &id);
+    assert_eq!(f.ctl.borrow().web.cursor_probe()["remembers"], true);
+    // Seconds later the next action: the arrow is back at the button, not at the field, and glides.
+    agent_turn(&f, 3_000);
+    let rx = type_into_field(&f, &id);
+    f.pump();
+    assert_eq!(
+        cursor_at(&f),
+        Some(on_page(&f, 140.0, 110.0)),
+        "no jump: it starts where it rested"
+    );
+    let ms = glide_ms(css(140.0, 110.0), css(200.0, 160.0));
+    agent_turn(&f, ms / 2);
+    assert!(
+        matches!(rx.try_recv(), Err(TryRecvError::Empty)),
+        "still gliding"
+    );
+    agent_turn(&f, ms - ms / 2);
+    assert_eq!(rx.try_recv().unwrap().unwrap()["typed"], 1);
+    assert_eq!(cursor_at(&f), Some(on_page(&f, 200.0, 160.0)));
+}
+
+#[test]
+fn a_new_page_or_a_takeover_forgets_where_the_arrow_rested() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    looked(&f, &slot, &id);
+    click_and_fade(&f, &id);
+    // The page loads something new: the next action appears at its target.
+    finish(&fake(&slot), &id, TWO, true);
+    f.pump();
+    looked(&f, &slot, &id);
+    let rx = type_into_field(&f, &id);
+    f.pump();
+    assert_eq!(cursor_at(&f), Some(on_page(&f, 200.0, 160.0)), "appears");
+    agent_turn(&f, GLIDE_MAX_MS);
+    rx.try_recv().unwrap().unwrap();
+    // The person takes over while it holds: gone, and nothing is remembered.
+    f.ctl.borrow_mut().web_user_input();
+    f.pump();
+    assert_eq!(cursor_at(&f), None);
+    assert_eq!(f.ctl.borrow().web.cursor_probe()["remembers"], false);
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    assert_eq!(cursor_at(&f), Some(on_page(&f, 140.0, 110.0)), "appears");
+    agent_turn(&f, GLIDE_MAX_MS);
+    rx.try_recv().unwrap().unwrap();
+}
+
+/// The border as the probe reports it: drawn, its rectangle in client pixels and its opacity.
+fn border(f: &Fx) -> (bool, Value, Value) {
+    let p = f.ctl.borrow().web.cursor_probe();
+    let b = &p["border"];
+    (
+        b["shown"] == json!(true),
+        b["client"].clone(),
+        b["alpha"].clone(),
+    )
+}
+
+#[test]
+fn a_light_orange_border_rings_the_page_while_the_agent_uses_it_and_fades_with_the_arrow() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    assert!(!border(&f).0, "no agent, no border");
+    // The page does not answer the look: the call runs, and the border is up from its start.
+    let rx = look(&f, &id);
+    f.pump();
+    let (shown, rect, alpha) = border(&f);
+    assert!(shown);
+    let r = drawn(&f);
+    assert_eq!(
+        rect,
+        json!([r.x, r.y, r.w, r.h]),
+        "the page's own rectangle"
+    );
+    assert_eq!(alpha, 255);
+    let rec = recorded_border();
+    assert!(rec.shown);
+    assert_eq!((rec.w, rec.h), (r.w as u32, r.h as u32));
+    // The person takes over: gone at once, no fade.
+    f.ctl.borrow_mut().web_user_input();
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::INTERRUPTED);
+    assert!(!border(&f).0);
+    assert!(!recorded_border().shown);
+    // A finished click: up through the ribbon's hold, then it fades with the arrow and is gone.
+    looked(&f, &slot, &id);
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    agent_turn(&f, GLIDE_MAX_MS);
+    rx.try_recv().unwrap().unwrap();
+    agent_turn(&f, crate::web_ctl::RIBBON_HOLD_MS - 100);
+    assert_eq!(border(&f).2, 255, "the ribbon holds");
+    // The hold ends: the border and the arrow start to fade together.
+    agent_turn(&f, 100);
+    let draws = recorded_border().draws;
+    agent_turn(&f, FADE_MS / 2);
+    let a = border(&f).2.as_u64().unwrap();
+    assert!(a > 0 && a < 255, "fading ({a})");
+    assert!(cursor_at(&f).is_some(), "with the arrow");
+    assert_eq!(
+        recorded_border().draws,
+        draws,
+        "a fade changes only the opacity"
+    );
+    agent_turn(&f, FADE_MS);
+    assert!(!border(&f).0);
+    assert!(!recorded_border().shown);
+    assert_eq!(cursor_at(&f), None);
+    // The next action brings it back whole.
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    assert_eq!(border(&f).2, 255);
+    agent_turn(&f, GLIDE_MAX_MS);
+    rx.try_recv().unwrap().unwrap();
+}
+
+#[test]
+fn a_menu_over_the_page_takes_the_border_away_and_it_comes_back_after() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    let _rx = look(&f, &id);
+    f.pump();
+    assert!(border(&f).0);
+    f.h.comp.set_dialog_open(true);
+    f.h.advance(0);
+    f.pump();
+    assert!(!border(&f).0, "not drawn over the menu");
+    f.h.comp.set_dialog_open(false);
+    f.h.advance(0);
+    f.pump();
+    agent_turn(&f, 16);
+    assert!(border(&f).0, "the call still runs");
+}
+
+#[test]
+fn with_animation_effects_off_nothing_glides_or_fades() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.ctl
+        .borrow_mut()
+        .web
+        .set_motion(std::rc::Rc::new(|| false));
+    f.h.advance(0);
+    looked(&f, &slot, &id);
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    assert!(rx.try_recv().unwrap().is_ok(), "no wait for a glide");
+    assert_eq!(cursor_at(&f), Some(on_page(&f, 140.0, 110.0)));
+    let rx = type_into_field(&f, &id);
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap()["typed"], 1);
+    assert_eq!(
+        cursor_at(&f),
+        Some(on_page(&f, 200.0, 160.0)),
+        "placed at once"
+    );
+    // After the hold: the arrow and the border go at once, with no fade.
+    agent_turn(&f, crate::web_ctl::RIBBON_HOLD_MS);
+    assert_eq!(cursor_at(&f), None);
+    assert!(!border(&f).0);
 }
 
 #[test]
@@ -2123,7 +2350,7 @@ fn the_person_taking_over_takes_the_cursor_away_at_once() {
     looked(&f, &slot, &id);
     let rx = click_ref(&f, &id, "e1");
     f.pump();
-    agent_turn(&f, GLIDE_MS);
+    agent_turn(&f, GLIDE_MAX_MS);
     rx.try_recv().unwrap().unwrap();
     assert!(cursor_at(&f).is_some());
     f.ctl.borrow_mut().web_user_input();
@@ -2147,7 +2374,7 @@ fn a_menu_over_the_page_or_a_tab_in_front_hides_the_cursor_and_a_hidden_page_doe
     f.pump();
     assert_ne!(f.ctl.borrow().web.phase_name(), "live");
     assert_eq!(cursor_at(&f), None);
-    agent_turn(&f, GLIDE_MS);
+    agent_turn(&f, GLIDE_MAX_MS);
     assert!(rx.try_recv().unwrap().is_ok(), "the click still goes");
     assert_eq!(cursor_at(&f), None, "and is not drawn over the menu");
     f.h.comp.set_dialog_open(false);

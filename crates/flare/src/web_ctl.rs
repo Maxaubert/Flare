@@ -26,10 +26,12 @@
 //!
 //! The agent's cursor: a pointer action says where it lands before its events go, and an orange arrow
 //! (`flare_win::agent_cursor`, a window of Flare's own above the page, never in it) glides there,
-//! ripples on each press, stays while the ribbon does and fades after. It is drawn only over the page in
-//! front and live: a takeover, a closed panel, a tab behind, a Flare menu over the page (the still) or a
-//! minimised window takes it away at once. The agent tick places it again each turn, so it follows the
-//! window and the splitter.
+//! ripples on each press, stays while the ribbon does and fades after. It never jumps: after its fade the
+//! next action on the same page starts it where it rested. While the agent uses the page, from its first
+//! call until the ribbon's hold ends, a light orange border (a second such window) rings the page and
+//! fades with the arrow. Both are drawn only over the page in front and live: a takeover, a closed
+//! panel, a tab behind, a Flare menu over the page (the still) or a minimised window takes them away at
+//! once. The agent tick places them again each turn, so they follow the window and the splitter.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -38,9 +40,9 @@ use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use flare_ctl::{CtlError, code};
-use flare_surfaces::agent_cursor::AgentCursor;
+use flare_surfaces::agent_cursor::{AgentBorder, AgentCursor};
 use flare_surfaces::agent_job::{
-    Fail, GLIDE_MS, Ids, Job, JobError, Op as AgentOp, Out as JobOut, Page, RefMap,
+    Fail, GLIDE_MAX_MS, Ids, Job, JobError, Op as AgentOp, Out as JobOut, Page, RefMap,
 };
 use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::web::{
@@ -50,7 +52,9 @@ use flare_surfaces::web::{
 use flare_tabs::keymap::{ChordId, KeyContext, chord_of};
 use flare_term::keys::KeyEvent;
 use flare_web::{KeyFilter, KeyPress, Nav, Sink, WebBackend, WebEvent};
-use flare_win::agent_cursor::{CursorArt, CursorBitmap, CursorShell, RecordCursor};
+use flare_win::agent_cursor::{
+    CursorArt, CursorBitmap, CursorShell, RecordBorder, RecordCursor, border_bitmap,
+};
 use serde_json::{Value, json};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
@@ -506,6 +510,20 @@ pub struct WebCtl {
     cursor_last: Option<(i32, i32, u8, bool)>,
     /// The tip in client pixels, while drawn (the e2e reads it).
     cursor_client: Option<(i32, i32)>,
+    /// Which document of its tab the cursor last pointed on (`TabWeb::doc`): a spot it rested at on an
+    /// earlier page is forgotten.
+    cursor_doc: u64,
+    /// The border round the page while the agent uses it: its state, its shell, its tab, its bitmap for
+    /// (page width, height, scale in hundredths), and what was last drawn (top left on the screen, size,
+    /// opacity) and where in client pixels.
+    border: AgentBorder,
+    border_shell: Box<dyn CursorShell>,
+    border_tab: Option<String>,
+    border_bmp: Option<((i32, i32, u32), CursorBitmap)>,
+    border_last: Option<((i32, i32, i32, i32), u8)>,
+    border_client: Option<PhysRect>,
+    /// Windows' animation effects switch, read once per agent call (tests pin it).
+    motion: Rc<dyn Fn() -> bool>,
     /// The window's scale at the last sync.
     scale: f32,
     /// Added to the agent's clock: a test moves time on without waiting.
@@ -641,6 +659,14 @@ impl WebCtl {
             cursor_art: None,
             cursor_last: None,
             cursor_client: None,
+            cursor_doc: 0,
+            border: AgentBorder::default(),
+            border_shell: Box::new(RecordBorder),
+            border_tab: None,
+            border_bmp: None,
+            border_last: None,
+            border_client: None,
+            motion: Rc::new(crate::e2e::animations_enabled),
             scale: 1.0,
             clock_skew: 0,
         }
@@ -652,6 +678,19 @@ impl WebCtl {
         self.cursor_shell = shell;
         self.cursor_last = None;
         self.update_cursor();
+    }
+
+    /// What draws the border round the page while the agent uses it (as [`WebCtl::set_cursor_shell`]).
+    pub fn set_border_shell(&mut self, shell: Box<dyn CursorShell>) {
+        self.border_shell.hide();
+        self.border_shell = shell;
+        self.border_last = None;
+        self.update_cursor();
+    }
+
+    /// Where Windows' animation effects switch is read (tests pin it).
+    pub fn set_motion(&mut self, f: Rc<dyn Fn() -> bool>) {
+        self.motion = f;
     }
 
     /// How the browser is made (startup; tests hand a stand-in).
@@ -784,6 +823,8 @@ impl WebCtl {
         self.keys.agent_keys.set(false);
         self.cursor.hide();
         self.cursor_off();
+        self.border.hide();
+        self.border_off();
         self.backgrounds.clear();
         self.bars.clear();
         if let Some(mut b) = self.backend.take() {
@@ -1098,6 +1139,10 @@ impl WebCtl {
         if self.cursor_tab.as_deref() == Some(tab) {
             self.cursor.hide();
             self.cursor_off();
+        }
+        if self.border_tab.as_deref() == Some(tab) {
+            self.border.hide();
+            self.border_off();
         }
         if let Some(p) = t.probe {
             let _ = p.reply.send(Err(CtlError::new(
@@ -1791,8 +1836,11 @@ impl WebCtl {
         };
         let now = self.now_ms();
         // The cursor is drawn only where `cursor_on` lets it (the page live in front, its place known):
-        // elsewhere nothing waits for its glide.
+        // elsewhere nothing waits for its glide. With animation effects off nothing glides or fades.
         let on_screen = self.cursor_on(tab);
+        let still = !(self.motion)();
+        self.cursor.set_still(still);
+        self.border.set_still(still);
         let Some(t) = self.tabs.get_mut(tab) else {
             // The tab has a web panel (the caller checked) but its page is not made: its tab is behind.
             say("the page is not ready yet; try again in a moment");
@@ -1834,7 +1882,8 @@ impl WebCtl {
             }
             return;
         };
-        job.set_glide_ms(if on_screen { GLIDE_MS } else { 0 });
+        // The longest glide until the cursor says how long this one is (`drive`).
+        job.set_glide_ms(if on_screen && !still { GLIDE_MAX_MS } else { 0 });
         t.agent = Some(AgentCall {
             job,
             reply,
@@ -1848,23 +1897,38 @@ impl WebCtl {
         self.drive(tab, out);
     }
 
-    /// Carries out what a job asked, and moves the cursor to where it acts.
+    /// Carries out what a job asked, and moves the cursor to where it acts: the job's events wait as long
+    /// as the cursor's glide takes.
     fn drive(&mut self, tab: &str, out: JobOut) {
         let now = self.now_ms();
+        let mut out = out;
         let point = self
             .tabs
             .get_mut(tab)
-            .and_then(|t| t.agent.as_mut())
-            .and_then(|a| a.job.take_point().map(|p| (p, a.label.clone())));
-        if let Some((p, label)) = point
-            && self.cursor_on(tab)
-        {
-            if self.cursor_tab.as_deref() != Some(tab) {
-                self.cursor.hide();
+            .and_then(|t| t.agent.as_mut().map(|a| (a, t.doc)))
+            .and_then(|(a, doc)| a.job.take_point().map(|p| (p, a.label.clone(), doc)));
+        if let Some((p, label, doc)) = point {
+            let mut glide = 0;
+            if self.cursor_on(tab) {
+                if self.cursor_tab.as_deref() != Some(tab) {
+                    self.cursor.hide();
+                }
+                // A spot it rested at on the page before a navigation is no place to glide from.
+                if self.cursor_doc != doc && !self.cursor.shown() {
+                    self.cursor.forget();
+                }
+                self.cursor_doc = doc;
+                self.cursor_tab = Some(tab.to_string());
+                self.cursor_label = label;
+                glide = self.cursor.point(p, now);
             }
-            self.cursor_tab = Some(tab.to_string());
-            self.cursor_label = label;
-            self.cursor.point(p, now);
+            if let Some(a) = self.tabs.get_mut(tab).and_then(|t| t.agent.as_mut())
+                && a.job.glide_for(glide, now)
+                && out == JobOut::Idle
+            {
+                // No glide after all: the held events go now.
+                out = a.job.on_tick(now, &mut Ids(&mut self.call_ids));
+            }
         }
         match out {
             JobOut::Idle => {}
@@ -1906,15 +1970,91 @@ impl WebCtl {
             self.cursor_shell.hide();
         }
         self.cursor_client = None;
-        if !self.cursor.shown() {
+        if !self.cursor.shown() && !self.cursor.remembers() {
             self.cursor_tab = None;
         }
+    }
+
+    /// The border's window comes off the screen (its state is the caller's).
+    fn border_off(&mut self) {
+        if self.border_last.take().is_some() {
+            self.border_shell.hide();
+        }
+        self.border_client = None;
+        if !self.border.shown() {
+            self.border_tab = None;
+            // A page-sized bitmap is not kept while nothing draws it.
+            self.border_bmp = None;
+        }
+    }
+
+    /// Is the agent using the tab's page: a call on it, or the ribbon's hold after one.
+    fn agent_active(&self, tab: &str, now: u64) -> bool {
+        self.tabs.get(tab).is_some_and(|t| {
+            t.agent.is_some() || t.hold.as_ref().is_some_and(|(_, until)| now < *until)
+        })
+    }
+
+    /// Draws the border round the page in front while the agent uses it, fading once it does not; a
+    /// frame that is the same as the last is not drawn again, and a fade only changes the opacity.
+    fn update_border(&mut self, now: u64) {
+        let place = match (&self.shown_tab, &self.bounds) {
+            (Some(t), Some((bt, r))) if t == bt && self.cursor_on(t) => Some((t.clone(), *r)),
+            _ => None,
+        };
+        let Some((tab, rect)) = place else {
+            self.border.hide();
+            self.border_off();
+            return;
+        };
+        if self.border_tab.as_deref() != Some(tab.as_str()) {
+            self.border.hide();
+        }
+        if self.agent_active(&tab, now) {
+            self.border.show();
+            self.border_tab = Some(tab);
+        } else {
+            self.border.fade(now);
+        }
+        let Some(a) = self.border.frame(now) else {
+            self.border_off();
+            return;
+        };
+        let alpha = (a * 255.0).round().clamp(0.0, 255.0) as u8;
+        let scale_key = (self.scale.clamp(0.5, 4.0) * 100.0).round() as u32;
+        let size = (rect.w, rect.h, scale_key);
+        if self.border_bmp.as_ref().is_none_or(|(k, _)| *k != size) {
+            let bmp = border_bitmap(
+                rect.w.max(0) as u32,
+                rect.h.max(0) as u32,
+                f64::from(scale_key) / 100.0,
+            );
+            self.border_bmp = Some((size, bmp));
+            self.border_last = None;
+        }
+        let (ox, oy) = self.hwnd.map_or((0, 0), client_origin);
+        let key = (ox + rect.x, oy + rect.y, rect.w, rect.h);
+        self.border_client = Some(rect);
+        match self.border_last {
+            Some((k, was)) if k == key && was == alpha => return,
+            Some((k, _)) if k == key && self.border_shell.set_alpha(alpha) => {
+                self.border_last = Some((key, alpha));
+                return;
+            }
+            _ => {}
+        }
+        let Some((_, bmp)) = self.border_bmp.as_ref() else {
+            return;
+        };
+        let shown = self.border_shell.show_at(key.0, key.1, bmp, alpha);
+        self.border_last = shown.then_some((key, alpha));
     }
 
     /// Draws the cursor as it is now, where the page is now; a frame that is the same as the last is not
     /// drawn again. It fades once its tab has neither a call nor the ribbon's hold.
     fn update_cursor(&mut self) {
         let now = self.now_ms();
+        self.update_border(now);
         let place = match &self.cursor_tab {
             Some(t) if self.cursor_on(t) => self.bounds.as_ref().map(|(t, r)| (t.clone(), *r)),
             _ => None,
@@ -1924,10 +2064,7 @@ impl WebCtl {
             self.cursor_off();
             return;
         };
-        let active = self.tabs.get(&tab).is_some_and(|t| {
-            t.agent.is_some() || t.hold.as_ref().is_some_and(|(_, until)| now < *until)
-        });
-        if !active {
+        if !self.agent_active(&tab, now) {
             self.cursor.fade(now);
         }
         let Some(f) = self.cursor.frame(now) else {
@@ -1970,16 +2107,25 @@ impl WebCtl {
         self.cursor_last = shown.then_some(key);
     }
 
-    /// The agent's cursor as the e2e reads it: drawn or not, its tip in client pixels, its tag and how
-    /// many presses rippled.
+    /// The agent's cursor as the e2e reads it: drawn or not, its tip in client pixels, its tag, how many
+    /// presses rippled, whether a spot is kept for the next glide, and the border round the page (drawn
+    /// or not, its rectangle in client pixels, its opacity).
     pub fn cursor_probe(&self) -> Value {
         let rec = flare_win::agent_cursor::recorded();
+        let brec = flare_win::agent_cursor::recorded_border();
         json!({
             "shown": self.cursor_last.is_some(),
             "client": self.cursor_client.map(|(x, y)| json!([x, y])),
             "tag": self.cursor_tab.as_ref().map(|_| cursor_tag(&self.cursor_label)),
             "presses": self.cursor.presses(),
+            "remembers": self.cursor.remembers(),
             "recorded": {"shown": rec.shown, "x": rec.x, "y": rec.y, "alpha": rec.alpha, "draws": rec.draws},
+            "border": {
+                "shown": self.border_last.is_some(),
+                "client": self.border_client.map(|r| json!([r.x, r.y, r.w, r.h])),
+                "alpha": self.border_last.map(|(_, a)| a),
+                "recorded": {"shown": brec.shown, "w": brec.w, "h": brec.h, "alpha": brec.alpha, "draws": brec.draws},
+            },
         })
     }
 
@@ -2015,6 +2161,9 @@ impl WebCtl {
             if self.cursor_tab.as_deref() == Some(tab) {
                 self.cursor.hide();
             }
+            if self.border_tab.as_deref() == Some(tab) {
+                self.border.hide();
+            }
         } else {
             t.hold = Some((a.label.clone(), now + RIBBON_HOLD_MS));
         }
@@ -2032,9 +2181,12 @@ impl WebCtl {
         } else if let Some(t) = self.tabs.get_mut(&tab) {
             t.hold = None;
         }
-        // The person's own input takes the cursor away at once, with the ribbon.
+        // The person's own input takes the cursor and the border away at once, with the ribbon.
         if self.cursor_tab.as_deref() == Some(tab.as_str()) {
             self.cursor.hide();
+        }
+        if self.border_tab.as_deref() == Some(tab.as_str()) {
+            self.border.hide();
         }
         self.update_cursor();
     }
@@ -2082,7 +2234,10 @@ impl WebCtl {
             }
         }
         self.update_cursor();
-        self.agent_busy() || self.tabs.values().any(|t| t.hold.is_some()) || self.cursor.shown()
+        self.agent_busy()
+            || self.tabs.values().any(|t| t.hold.is_some())
+            || self.cursor.shown()
+            || self.border.shown()
     }
 
     /// A DevTools call answered.

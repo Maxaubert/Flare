@@ -1121,16 +1121,31 @@ MCP tools and how a look is written for the model).
   during a 2.5 s call, still up right after, gone within 6 s, the browser window's rectangle unchanged with the ribbon up and after
   it goes; the ribbon's background is opaque so the page's title does not show through).
 - **The agent's cursor.** While an agent clicks, types into a ref or scrolls over a ref on the page in front, an orange arrow
-  (`#fe8f34`, white rim) with a tag naming the agent ("Claude", "Codex", else "Agent") glides there in 180 ms before the events go,
-  ripples on each press, stays while the ribbon holds and fades in 200 ms after. It is a window of Flare's own above the page,
-  never in it: the page cannot see or hide it and it is in no look. A takeover, a closed panel, a tab behind, a menu over the page
-  or a minimised window takes it away at once; it follows the window and the splitter. A page that is not live in front has no
-  cursor and no glide. Held by the `agent_cursor` tests (`flare-surfaces`, `flare-win`),
+  (`#fe8f34`, white rim) with a tag naming the agent ("Claude", "Codex", else "Agent") glides there before the events go
+  (350 ms plus 0.5 ms a CSS pixel, at most 700 ms, ease-in-out; the events wait exactly that long), ripples on each press, stays
+  while the ribbon holds and fades in 200 ms after. It never jumps: after its fade the next action on the same page shows it
+  where it rested and glides on. Only the first action on a page, one after a navigation or a change of the page's size, and one
+  after a takeover or the page going out of sight show it at the target (held 180 ms so it is seen before the press). It is a
+  window of Flare's own above the page, never in it: the page cannot see or hide it and it is in no look. A takeover, a closed
+  panel, a tab behind, a menu over the page or a minimised window takes it away at once; it follows the window and the
+  splitter. A page that is not live in front has no cursor and no glide. With Windows' animation effects off nothing glides or
+  fades: the arrow is placed at once. Held by the `agent_cursor` tests (`flare-surfaces`, `flare-win`),
   `a_click_finds_its_point_then_waits_for_the_glide_then_presses`,
+  `the_events_wait_for_the_glide_the_window_says_not_the_longest`,
   `the_cursor_shows_where_a_click_lands_before_it_presses_and_ripples_on_the_press`,
+  `after_the_fade_the_next_action_glides_on_from_where_the_arrow_rested`,
+  `a_new_page_or_a_takeover_forgets_where_the_arrow_rested`, `with_animation_effects_off_nothing_glides_or_fades`,
   `the_person_taking_over_takes_the_cursor_away_at_once`,
   `a_menu_over_the_page_or_a_tab_in_front_hides_the_cursor_and_a_hidden_page_does_not_wait` and the e2e `agentBrowser` (at the
-  button's middle at 100 and 225 percent, gone after the hold).
+  button's middle at 100 and 225 percent, gone after the hold, its spot remembered).
+- **The agent's border.** While an agent uses the page in front, from its first call until the ribbon's hold ends, a light
+  orange border (the cursor's orange at 55 % opacity, 2 px at 100 %, square corners like the page) rings the page's
+  rectangle; it fades with the arrow in 200 ms and comes back with the next call. It is a second window of Flare's own above
+  the page (the browser is a child window Slint cannot draw over), transparent to every click. A takeover, a menu over the
+  page, a tab behind or a closed panel takes it away at once. Held by
+  `a_light_orange_border_rings_the_page_while_the_agent_uses_it_and_fades_with_the_arrow`,
+  `a_menu_over_the_page_takes_the_border_away_and_it_comes_back_after`, the `border` tests in `flare-win` and the e2e
+  `agentBrowser` (the page's own rectangle while the ribbon holds, gone after).
 - **The person keeps control.** A key of theirs in the page, or a mouse button pressed over it, ends the running call with
   `interrupted` and drops the ribbon; the agent's own key presses are never the app's chords. Held by
   `a_key_of_the_persons_posts_a_takeover_only_while_an_agent_works`, `the_agents_own_key_press_is_neither_the_persons_nor_a_chord`,

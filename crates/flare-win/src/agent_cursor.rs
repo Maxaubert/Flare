@@ -6,10 +6,14 @@
 //! approach), the tag's text as a GDI coverage mask (as `taskbar::text_mask`), composed premultiplied
 //! BGRA. Part B is the window: a small layered popup owned by Flare's main window, transparent to the
 //! mouse, never activated, with no taskbar button. A trait stands in for it in the tests and `--e2e`.
+//!
+//! The border round the page while the agent uses it (Max, 2026-10-27) is a second such window the size
+//! of the page: the browser is a child window Slint cannot draw over, and a layered popup shows above it
+//! while every click goes through to the page.
 
-/// The accent orange, `#fe8f34`, as (r, g, b).
+/// The default look's accent orange as (r, g, b), fixed: the cursor is the same in every theme.
 const ORANGE: (u8, u8, u8) = (0xfe, 0x8f, 0x34);
-/// The tag's text, `#1a1a1a`.
+/// The tag's text, near black.
 const INK: (u8, u8, u8) = (0x1a, 0x1a, 0x1a);
 /// The arrow in units of a 24 unit box drawn 22 px wide at 100 %, from its tip (mockup A's path).
 const ARROW: [(f64, f64); 4] = [(0.0, 0.0), (15.0, 9.2), (8.4, 10.7), (5.0, 17.0)];
@@ -28,6 +32,12 @@ const TAG_PAD: f64 = 7.0;
 const TAG_FONT: f64 = 11.0;
 /// A name longer than this is cut (the tag stays a tag).
 const TAG_CHARS: usize = 24;
+/// The border round the page: the cursor's orange at this opacity (light orange over the page), this
+/// many pixels wide at 100 %.
+const BORDER_ALPHA: f64 = 0.55;
+const BORDER_PX: f64 = 2.0;
+/// The largest border drawn, in pixels each way (a bigger page has none rather than a huge bitmap).
+const BORDER_MAX: u32 = 16_384;
 
 /// A rendered cursor: premultiplied BGRA, top-down, `w * h * 4` bytes, with the tip at `tip`.
 #[derive(Clone, Debug, PartialEq)]
@@ -253,6 +263,46 @@ impl CursorArt {
 /// The cursor at `scale` with its tag naming `label` and a ripple for each progress in `ripples`.
 pub fn compose_cursor(scale: f64, label: &str, ripples: &[f32]) -> CursorBitmap {
     CursorArt::new(scale, label).frame(ripples)
+}
+
+/// The border for a page of `w * h` physical pixels at `scale`: a ring [`BORDER_PX`] wide just inside
+/// the page's edge in the cursor's orange at [`BORDER_ALPHA`], clear inside, its top left at `tip` (0, 0).
+/// The page's corners are square (the browser's window is a plain rectangle under the panel's head), so
+/// the ring's are too. Empty for an empty or too large page.
+pub fn border_bitmap(w: u32, h: u32, scale: f64) -> CursorBitmap {
+    if w == 0 || h == 0 || w > BORDER_MAX || h > BORDER_MAX {
+        return CursorBitmap {
+            w: 0,
+            h: 0,
+            bgra: Vec::new(),
+            tip: (0, 0),
+        };
+    }
+    let t = ((BORDER_PX * clean_scale(scale)).round() as u32).clamp(1, w.min(h).div_ceil(2));
+    let a = BORDER_ALPHA;
+    let px = [
+        (f64::from(ORANGE.2) * a).round() as u8,
+        (f64::from(ORANGE.1) * a).round() as u8,
+        (f64::from(ORANGE.0) * a).round() as u8,
+        (255.0 * a).round() as u8,
+    ];
+    let mut bgra = vec![0u8; (w * h * 4) as usize];
+    for (y, row) in bgra.chunks_exact_mut((w * 4) as usize).enumerate() {
+        let y = y as u32;
+        let edge_row = y < t || y >= h - t;
+        for (x, p) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let x = x as u32;
+            if edge_row || x < t || x >= w - t {
+                p.copy_from_slice(&px);
+            }
+        }
+    }
+    CursorBitmap {
+        w,
+        h,
+        bgra,
+        tip: (0, 0),
+    }
 }
 
 // ---------------------------------------------------------------- Part B: GDI and the window
@@ -544,6 +594,33 @@ mod win {
             ok
         }
 
+        fn set_alpha(&mut self, alpha: u8) -> bool {
+            if !self.visible || self.hwnd == 0 {
+                return false;
+            }
+            let blend = BLENDFUNCTION {
+                BlendOp: AC_SRC_OVER as u8,
+                BlendFlags: 0,
+                SourceConstantAlpha: alpha,
+                AlphaFormat: AC_SRC_ALPHA as u8,
+            };
+            // SAFETY: our own layered window; with no source DC it keeps its picture and place and takes
+            // only the new blend, which lives across the call.
+            unsafe {
+                UpdateLayeredWindow(
+                    self.hwnd as HWND,
+                    null_mut(),
+                    null(),
+                    null(),
+                    null_mut(),
+                    null(),
+                    0,
+                    &blend,
+                    ULW_ALPHA,
+                ) != 0
+            }
+        }
+
         fn hide(&mut self) {
             if self.visible && self.hwnd != 0 {
                 // SAFETY: our own window.
@@ -585,6 +662,12 @@ pub trait CursorShell {
     /// Shows `bmp` with its tip at (x, y) in screen pixels, at `alpha` (255 opaque) over all. True when
     /// it was shown.
     fn show_at(&mut self, x: i32, y: i32, bmp: &CursorBitmap, alpha: u8) -> bool;
+    /// The picture last shown, where it is, at a new `alpha` (a fade), with no new bitmap. False when
+    /// that cannot be done (nothing shown); the caller shows it again whole.
+    fn set_alpha(&mut self, alpha: u8) -> bool {
+        let _ = alpha;
+        false
+    }
     /// Gone at once.
     fn hide(&mut self);
 }
@@ -603,8 +686,12 @@ pub struct CursorRecord {
     pub draws: u64,
 }
 
+type Record = std::thread::LocalKey<std::cell::RefCell<CursorRecord>>;
+
 std::thread_local! {
     static RECORD: std::cell::RefCell<CursorRecord> = std::cell::RefCell::new(CursorRecord::default());
+    static BORDER_RECORD: std::cell::RefCell<CursorRecord> =
+        std::cell::RefCell::new(CursorRecord::default());
 }
 
 /// What a [`RecordCursor`] on this thread was last told.
@@ -612,22 +699,62 @@ pub fn recorded() -> CursorRecord {
     RECORD.with(|r| r.borrow().clone())
 }
 
+/// What a [`RecordBorder`] on this thread was last told (`x`, `y` its top left).
+pub fn recorded_border() -> CursorRecord {
+    BORDER_RECORD.with(|r| r.borrow().clone())
+}
+
+fn record_show(rec: &'static Record, x: i32, y: i32, bmp: &CursorBitmap, alpha: u8) -> bool {
+    rec.with(|r| {
+        let mut r = r.borrow_mut();
+        r.shown = true;
+        (r.x, r.y, r.w, r.h, r.alpha) = (x, y, bmp.w, bmp.h, alpha);
+        r.draws += 1;
+    });
+    true
+}
+
+fn record_alpha(rec: &'static Record, alpha: u8) -> bool {
+    rec.with(|r| {
+        let mut r = r.borrow_mut();
+        if r.shown {
+            r.alpha = alpha;
+        }
+        r.shown
+    })
+}
+
 /// A shell that keeps what it is told and shows it nowhere: tests and `--e2e` runs never make the window.
 pub struct RecordCursor;
 
 impl CursorShell for RecordCursor {
     fn show_at(&mut self, x: i32, y: i32, bmp: &CursorBitmap, alpha: u8) -> bool {
-        RECORD.with(|r| {
-            let mut r = r.borrow_mut();
-            r.shown = true;
-            (r.x, r.y, r.w, r.h, r.alpha) = (x, y, bmp.w, bmp.h, alpha);
-            r.draws += 1;
-        });
-        true
+        record_show(&RECORD, x, y, bmp, alpha)
+    }
+
+    fn set_alpha(&mut self, alpha: u8) -> bool {
+        record_alpha(&RECORD, alpha)
     }
 
     fn hide(&mut self) {
         RECORD.with(|r| r.borrow_mut().shown = false);
+    }
+}
+
+/// The border's stand-in, as [`RecordCursor`] is the arrow's.
+pub struct RecordBorder;
+
+impl CursorShell for RecordBorder {
+    fn show_at(&mut self, x: i32, y: i32, bmp: &CursorBitmap, alpha: u8) -> bool {
+        record_show(&BORDER_RECORD, x, y, bmp, alpha)
+    }
+
+    fn set_alpha(&mut self, alpha: u8) -> bool {
+        record_alpha(&BORDER_RECORD, alpha)
+    }
+
+    fn hide(&mut self) {
+        BORDER_RECORD.with(|r| r.borrow_mut().shown = false);
     }
 }
 
@@ -785,11 +912,65 @@ mod tests {
         assert!(!recorded().shown);
     }
 
+    #[test]
+    fn the_border_is_a_light_orange_ring_inside_the_page_and_clear_within() {
+        for (s, t) in [(1.0, 2), (1.25, 3), (1.5, 3), (2.0, 4), (3.0, 6)] {
+            let b = border_bitmap(300, 200, s);
+            assert_eq!((b.w, b.h, b.tip), (300, 200, (0, 0)));
+            assert_eq!(b.bgra.len(), 300 * 200 * 4);
+            let ring = px(&b, 0, 0);
+            // The cursor's orange, premultiplied at about half: light, and orange (red over green over blue).
+            assert_eq!(ring[3], (255.0 * BORDER_ALPHA).round() as u8);
+            assert!(ring[2] > ring[1] && ring[1] > ring[0], "{ring:?}");
+            assert!(ring[0] <= ring[3] && ring[1] <= ring[3] && ring[2] <= ring[3]);
+            for (x, y) in [
+                (t - 1, 100),
+                (299 - (t - 1), 100),
+                (150, t - 1),
+                (150, 199 - (t - 1)),
+            ] {
+                assert_eq!(px(&b, x, y), ring, "on the ring at {s}: ({x}, {y})");
+            }
+            for (x, y) in [
+                (t, 100),
+                (299 - t, 100),
+                (150, t),
+                (150, 199 - t),
+                (150, 100),
+            ] {
+                assert_eq!(px(&b, x, y), [0; 4], "clear inside at {s}: ({x}, {y})");
+            }
+        }
+        assert_eq!(border_bitmap(0, 10, 1.0).w, 0);
+        assert_eq!(border_bitmap(BORDER_MAX + 1, 10, 1.0).w, 0);
+        // A page thinner than the ring is all ring.
+        let b = border_bitmap(3, 3, 3.0);
+        assert!(b.bgra.as_chunks::<4>().0.iter().all(|p| p[3] > 0));
+    }
+
+    #[test]
+    fn the_border_s_stand_in_keeps_its_own_record_and_a_fade_changes_only_the_alpha() {
+        let mut r = RecordBorder;
+        assert!(!r.set_alpha(10), "nothing shown");
+        let b = border_bitmap(40, 30, 1.0);
+        assert!(r.show_at(5, 6, &b, 255));
+        assert!(!recorded().shown, "not the arrow's");
+        assert!(r.set_alpha(128));
+        let rec = recorded_border();
+        assert_eq!(
+            (rec.x, rec.y, rec.w, rec.h, rec.alpha, rec.draws),
+            (5, 6, 40, 30, 128, 1)
+        );
+        r.hide();
+        assert!(!recorded_border().shown);
+    }
+
     #[cfg(windows)]
     #[test]
     fn the_window_is_not_made_without_an_owner() {
         let mut w = CursorWindow::new(0);
         assert!(!w.show_at(10, 10, &compose_cursor(1.0, "Claude", &[]), 255));
+        assert!(!w.set_alpha(100));
         w.hide();
     }
 }

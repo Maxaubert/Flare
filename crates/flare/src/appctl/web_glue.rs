@@ -42,6 +42,11 @@ impl AppCtl {
         self.web.set_cursor_shell(shell);
     }
 
+    /// What draws the border round the page while the agent uses it (as [`AppCtl::set_agent_cursor`]).
+    pub fn set_agent_border(&mut self, shell: Box<dyn flare_win::agent_cursor::CursorShell>) {
+        self.web.set_border_shell(shell);
+    }
+
     /// The browser's controllers now (0 while no web panel is open).
     pub fn web_controllers(&self) -> usize {
         self.web.controllers()
