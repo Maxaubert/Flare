@@ -271,7 +271,18 @@ pub fn decode_image(path: &Path, stale: &dyn Fn() -> bool) -> Result<Decoded, Re
     if stale() {
         return Err(Reason::Superseded);
     }
-    let img = open()?.decode().map_err(|_| Reason::NotAnImage)?;
+    // A picture too big for the decoder's memory limit (a large 16-bit one) is too large, not unreadable.
+    let not_read = |e: image::ImageError| match e {
+        image::ImageError::Limits(_) => Reason::TooManyPixels,
+        _ => Reason::NotAnImage,
+    };
+    // A photo is drawn the way its camera held it (its EXIF orientation), not as the sensor stored it.
+    let mut decoder = open()?.into_decoder().map_err(not_read)?;
+    let orientation = image::ImageDecoder::orientation(&mut decoder)
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder).map_err(not_read)?;
+    img.apply_orientation(orientation);
+    let (w, h) = (img.width(), img.height());
     if stale() {
         return Err(Reason::Superseded);
     }
@@ -566,6 +577,40 @@ mod tests {
         assert_eq!(got.rgba.len(), 3 * 2 * 4);
         assert_eq!(&got.rgba[..4], &[200, 30, 40, 255]);
         assert!(!got.has_alpha && !got.scaled);
+    }
+
+    /// A JPEG of `w` by `h` whose EXIF says the camera was turned (orientation 6: rotate 90 degrees clockwise).
+    fn turned_jpeg(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(w, h, image::Rgb([200, 30, 40]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut out, image::ImageFormat::Jpeg)
+            .unwrap();
+        let jpeg = out.into_inner();
+        // APP1 "Exif": a little-endian TIFF header and one IFD entry, 0x0112 (orientation) = 6.
+        let tiff: [u8; 26] = [
+            b'I', b'I', 42, 0, 8, 0, 0, 0, // header, IFD at 8
+            1, 0, // one entry
+            0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, // orientation, SHORT, 1, 6
+            0, 0, 0, 0, // no next IFD
+        ];
+        let mut app1 = b"Exif\0\0".to_vec();
+        app1.extend_from_slice(&tiff);
+        let len = u16::try_from(app1.len() + 2).unwrap().to_be_bytes();
+        let mut with = jpeg[..2].to_vec();
+        with.extend_from_slice(&[0xFF, 0xE1, len[0], len[1]]);
+        with.extend_from_slice(&app1);
+        with.extend_from_slice(&jpeg[2..]);
+        with
+    }
+
+    /// The review (2026-10-24): phone photos showed sideways, the EXIF orientation ignored.
+    #[test]
+    fn a_photo_is_drawn_the_way_its_camera_held_it() {
+        let d = tempfile::tempdir().unwrap();
+        let p = write(d.path(), "turned.jpg", &turned_jpeg(8, 4));
+        let got = decode_image(&p, &|| false).unwrap();
+        assert_eq!((got.width, got.height), (4, 8), "turned upright");
     }
 
     #[test]

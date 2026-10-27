@@ -1292,10 +1292,18 @@ impl AppDispatcher {
         let kind = preview::classify_resolved(&abs, &real).ok_or_else(|| {
             CtlError::new(
                 code::BAD_PARAMS,
-                "Flare shows pictures (png, jpg, gif, webp, bmp, ico) and text or code files only",
+                "Flare shows pictures (png, jpg, gif, webp, bmp, ico) and text or code files only; a PDF, sound or video plays in the browser panel (open_page) from a local web server",
             )
         })?;
-        if kind != want || !preview::loadable(&real, &kind) {
+        // A file on a mapped network drive (or a link to one): the panel reads local drives only. Said as the
+        // resolve step says it, not as a file of the other kind.
+        if !preview::loadable(&real, &kind) {
+            return Err(CtlError::new(
+                code::NOT_FOUND,
+                "no such file that Flare may show",
+            ));
+        }
+        if kind != want {
             let (this, other) = if want == PanelKind::Image {
                 ("a picture", "show_file")
             } else {
@@ -2248,6 +2256,24 @@ mod tests {
         ("C:\\work\\doc.pdf", "C:\\work\\doc.pdf"),
         ("C:\\work\\sneaky.png", "C:\\work\\sneaky.exe"),
     ];
+
+    /// The review (2026-10-24): a picture on a mapped network drive was refused as "not a picture; show_file
+    /// shows it", and show_file sent the caller back.
+    #[test]
+    fn a_file_on_a_network_drive_is_not_found_by_either_tool() {
+        static FILES: &[(&str, &str)] = &[
+            ("Z:\\a.png", "UNC\\server\\share\\a.png"),
+            ("Z:\\a.txt", "UNC\\server\\share\\a.txt"),
+        ];
+        let r = rig(ok_all, false, FILES);
+        for (m, p) in [
+            (Method::ViewImage, "Z:\\a.png"),
+            (Method::ViewFile, "Z:\\a.txt"),
+        ] {
+            let got = r.d.call(&agent_in_tab(), m, json!({ "path": p }));
+            assert_eq!(code_of(got), code::NOT_FOUND, "{p}");
+        }
+    }
 
     fn code_of(r: Result<Value, CtlError>) -> String {
         r.expect_err("an error").code

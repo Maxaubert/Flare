@@ -759,6 +759,14 @@ impl WebHost {
                     let _ = args.NavigationId(&mut nav);
                     (get_string(|p| w.Source(p)), get_bool(|b| args.IsSuccess(b)))
                 };
+                // A new document clears the title (`WebEvent::Url`); one whose title is the same as the last page's
+                // raises no change, so the title is read again once a load has succeeded. Not after a failed one:
+                // a sound file "fails" (its stream is handed to the player) and still reports the last page's title.
+                if ok {
+                    // SAFETY: `w` is the live sender of this callback.
+                    let title = get_string(|p| unsafe { w.DocumentTitle(p) });
+                    sink.send(|tab| WebEvent::Title { tab, title });
+                }
                 sink.send(|tab| WebEvent::Loaded {
                     tab,
                     url,

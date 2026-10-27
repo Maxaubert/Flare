@@ -836,6 +836,41 @@ fn the_bar_buttons_drive_the_page_only_when_they_can() {
     }
 }
 
+/// The review (2026-10-24): a sound file opened after a page kept that page's title in the header (the browser
+/// raises no title change for it, and its load "fails" as the stream goes to the player).
+#[test]
+fn a_new_document_with_no_title_does_not_wear_the_last_pages() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    fake(&slot).say(WebEvent::Title {
+        tab: id.clone(),
+        title: "doc.pdf".into(),
+    });
+    f.pump();
+    f.h.advance(0);
+    assert_eq!(f.h.comp.get_panel_title().as_str(), "doc.pdf");
+    fake(&slot).say(WebEvent::Loading {
+        tab: id.clone(),
+        url: TWO.into(),
+        nav: 901,
+    });
+    fake(&slot).say(WebEvent::Url {
+        tab: id.clone(),
+        url: TWO.into(),
+    });
+    fake(&slot).say(WebEvent::Loaded {
+        tab: id.clone(),
+        url: TWO.into(),
+        ok: false,
+        status: "9".into(),
+        nav: 901,
+    });
+    f.pump();
+    f.h.advance(0);
+    assert_ne!(f.h.comp.get_panel_title().as_str(), "doc.pdf");
+}
+
 #[test]
 fn the_bar_follows_the_page() {
     let (f, _h, _) = live(Opts::default());
