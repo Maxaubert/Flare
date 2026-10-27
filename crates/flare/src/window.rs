@@ -1650,8 +1650,9 @@ pub fn run_window(
                 if let Some(rc) = ctl.filter(|_| !e2e) {
                     let mut c = rc.borrow_mut();
                     c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
-                    // The agent's cursor over the web panel: a window owned by this one (under --e2e
-                    // the recording stand-in WebCtl starts with stays).
+                    // The agent's cursor and the border round the page while it works: windows owned
+                    // by this one (under --e2e the recording stand-ins WebCtl starts with stay).
+                    c.set_agent_border(Box::new(flare_win::agent_cursor::CursorWindow::new(hwnd)));
                     c.set_agent_cursor(Box::new(flare_win::agent_cursor::CursorWindow::new(hwnd)));
                 }
             },

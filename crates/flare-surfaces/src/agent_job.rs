@@ -8,14 +8,14 @@
 //! tree, the boxes of 600 elements) they go out together and the job waits for all of them.
 //!
 //! A pointer action (a click, a scroll over a ref, typing into a ref) first finds where it lands and
-//! says so ([`Job::take_point`]), then holds its events for the cursor's glide ([`GLIDE_MS`]): the
-//! window's tick ends the hold, nothing waits.
+//! says so ([`Job::take_point`]), then holds its events for the cursor's glide (as long as the window
+//! says, [`Job::glide_for`], at most [`GLIDE_MAX_MS`]): the window's tick ends the hold, nothing waits.
 
 use std::collections::{HashMap, VecDeque};
 
 use serde_json::{Value, json};
 
-pub use crate::agent_cursor::{GLIDE_MS, Point};
+pub use crate::agent_cursor::{GLIDE_MAX_MS, Point};
 use crate::agent_web::{
     self as web, Button, Candidate, EVAL_RESULT_MAX, Viewport, WaitFor, click_events, click_point,
     element_rect, key_events, png_size_b64, shot_params, shot_scale, viewport_of, wheel_event,
@@ -321,10 +321,23 @@ impl Job {
         self.point.take()
     }
 
-    /// How long the events wait for the cursor's glide: [`GLIDE_MS`] by default, 0 for a page whose
-    /// cursor is not drawn (its tab is behind, a menu covers it).
+    /// How long the events wait for the cursor's glide at most: [`GLIDE_MAX_MS`] by default, 0 for a
+    /// page whose cursor is not drawn (its tab is behind, a menu covers it).
     pub fn set_glide_ms(&mut self, ms: u64) {
         self.glide_ms = ms;
+    }
+
+    /// The cursor's glide, now that the window has taken the point, lasts `ms` from `now_ms` (its length
+    /// depends on how far the arrow goes, 0 when it is not drawn or does not move): the held events go
+    /// then. True when they are due at once (the window's next [`Job::on_tick`] sends them).
+    pub fn glide_for(&mut self, ms: u64, now_ms: u64) -> bool {
+        match &mut self.stage {
+            Some(Stage::Glide { until_ms, .. }) => {
+                *until_ms = now_ms + ms;
+                ms == 0
+            }
+            _ => false,
+        }
     }
 
     /// The calls that let go of what a job cut short had pressed: the mouse button or key whose release
@@ -367,7 +380,7 @@ impl Job {
                     page: Default::default(),
                     release: Vec::new(),
                     point: None,
-                    glide_ms: GLIDE_MS,
+                    glide_ms: GLIDE_MAX_MS,
                 }),
                 Out::Calls(calls),
             )
@@ -505,7 +518,7 @@ impl Job {
                     page: Default::default(),
                     release: Vec::new(),
                     point: None,
-                    glide_ms: GLIDE_MS,
+                    glide_ms: GLIDE_MAX_MS,
                 };
                 let out = j.on_tick(now_ms, ids);
                 (Some(j), out)
@@ -1310,7 +1323,7 @@ fn insert_text(
             page: Default::default(),
             release: Vec::new(),
             point: None,
-            glide_ms: GLIDE_MS,
+            glide_ms: GLIDE_MAX_MS,
         }),
         Out::Calls(vec![c]),
     )
@@ -1344,7 +1357,7 @@ fn prep_a(
             page: Default::default(),
             release: Vec::new(),
             point: None,
-            glide_ms: GLIDE_MS,
+            glide_ms: GLIDE_MAX_MS,
         }),
         Out::Calls(vec![enable, scroll]),
     )
@@ -2353,7 +2366,7 @@ mod tests {
             &mut Ids(ids),
         );
         assert_eq!(out, Out::Idle, "the cursor glides");
-        let Out::Calls(c) = job.on_tick(1 + GLIDE_MS, &mut Ids(ids)) else {
+        let Out::Calls(c) = job.on_tick(1 + GLIDE_MAX_MS, &mut Ids(ids)) else {
             panic!("the glide ends")
         };
         assert_eq!(c[0].params["type"], "mouseMoved");
@@ -2426,10 +2439,10 @@ mod tests {
         );
         assert_eq!(job.take_point(), None, "once");
         assert_eq!(
-            job.on_tick(5_010 + GLIDE_MS - 1, &mut Ids(&mut ids)),
+            job.on_tick(5_010 + GLIDE_MAX_MS - 1, &mut Ids(&mut ids)),
             Out::Idle
         );
-        let out = job.on_tick(5_010 + GLIDE_MS, &mut Ids(&mut ids));
+        let out = job.on_tick(5_010 + GLIDE_MAX_MS, &mut Ids(&mut ids));
         let (sent, out) = step_all(&mut job, out, &mut ids, 5_300);
         assert_eq!(sent, ["Input.dispatchMouseEvent"; 3]);
         assert_eq!(
@@ -2500,7 +2513,7 @@ mod tests {
         let (_, out) = step_all(&mut job, out, &mut ids, 1);
         assert_eq!(out, Out::Idle);
         assert!(job.take_point().is_some());
-        let out = job.on_tick(1 + GLIDE_MS, &mut Ids(&mut ids));
+        let out = job.on_tick(1 + GLIDE_MAX_MS, &mut Ids(&mut ids));
         let mut presses = 0;
         let mut out = out;
         while let Out::Calls(c) = out {
@@ -2513,7 +2526,7 @@ mod tests {
                 c.id,
                 Ok("{}".into()),
                 Page { url: "", title: "" },
-                2 + GLIDE_MS,
+                2 + GLIDE_MAX_MS,
                 &mut Ids(&mut ids),
             );
         }
@@ -2556,7 +2569,7 @@ mod tests {
                     vp_h: 500.0
                 })
             );
-            let out = job.on_tick(1 + GLIDE_MS, &mut Ids(&mut ids));
+            let out = job.on_tick(1 + GLIDE_MAX_MS, &mut Ids(&mut ids));
             assert!(matches!(&out, Out::Calls(c) if c.len() == 1), "{out:?}");
         }
     }
@@ -2647,6 +2660,54 @@ mod tests {
         assert_eq!(sent.len(), 7, "{sent:?}");
         assert!(matches!(out, Out::Done(Ok(_))));
         assert!(job.take_point().is_some());
+    }
+
+    #[test]
+    fn the_events_wait_for_the_glide_the_window_says_not_the_longest() {
+        let start = |ids: &mut u64| {
+            let mut rig = Rig::new();
+            let (_, refs) = look(&mut rig);
+            *ids = rig.ids;
+            let (job, out) = Job::start(
+                Op::Click {
+                    target: Target::Ref("e2".into()),
+                    button: Button::Left,
+                    double: false,
+                },
+                &refs,
+                0,
+                &mut Ids(ids),
+            );
+            let mut job = job.unwrap();
+            let (_, out) = step_all(&mut job, out, ids, 10);
+            assert_eq!(out, Out::Idle);
+            assert!(job.take_point().is_some());
+            job
+        };
+        // A glide of 420 ms: held until then, not until the longest.
+        let mut ids = 0;
+        let mut job = start(&mut ids);
+        assert!(!job.glide_for(420, 10));
+        assert_eq!(job.on_tick(10 + 419, &mut Ids(&mut ids)), Out::Idle);
+        let Out::Calls(c) = job.on_tick(10 + 420, &mut Ids(&mut ids)) else {
+            panic!("the glide has landed")
+        };
+        assert_eq!(c[0].params["type"], "mouseMoved");
+        assert!(!job.glide_for(0, 500), "no glide under way any more");
+        // No glide (the arrow is not drawn, does not move, or motion is off): due at once.
+        let mut job = start(&mut ids);
+        assert!(job.glide_for(0, 10));
+        assert!(matches!(job.on_tick(10, &mut Ids(&mut ids)), Out::Calls(_)));
+        // Left alone, the job holds for the longest glide.
+        let mut job = start(&mut ids);
+        assert_eq!(
+            job.on_tick(10 + GLIDE_MAX_MS - 1, &mut Ids(&mut ids)),
+            Out::Idle
+        );
+        assert!(matches!(
+            job.on_tick(10 + GLIDE_MAX_MS, &mut Ids(&mut ids)),
+            Out::Calls(_)
+        ));
     }
 
     #[test]

@@ -2022,6 +2022,7 @@ impl AppCtl {
 
     /// Windows' animation-effects switch (tests inject one).
     pub fn set_animations_source(&mut self, f: Rc<dyn Fn() -> bool>) {
+        self.web.set_motion(Rc::clone(&f));
         self.animations = f;
         self.update_clock();
     }

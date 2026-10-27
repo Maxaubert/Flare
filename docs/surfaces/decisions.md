@@ -909,6 +909,8 @@ to links". The clicking already worked (stage 4); the cursor is new. Style A of 
   menu's still, a minimised window) gets no glide and no cursor, so an agent working behind is not slowed. Typing into a ref asks
   where the element is after `DOM.focus` (`Page.getLayoutMetrics` and `DOM.getContentQuads`); an element with no box types at once
   with no cursor. A scroll over a ref glides; a scroll with nothing named, a key, a look, a wait and eval move nothing.
+  (2026-10-27: the glide's length now comes from its distance and the first appearance holds 180 ms; see "The agent's
+  cursor never jumps" below.)
 - 2026-10-26, **a ripple per press**, seen as the `mousePressed` event goes out; two presses closer than 120 ms (a double click)
   ripple one after the other so both show.
 - 2026-10-26, **when it goes:** it stays where it last acted while the ribbon is up (the call plus `RIBBON_HOLD_MS`), then fades in
@@ -1011,3 +1013,38 @@ Spec and plan: `docs/superpowers/specs/2026-10-26-agy-and-agent-motion.md`. Rese
     so the import table and its count stay as they are; the Settings row's reset still clears the key.
   - **The settings row is an Action row** with no control (the row id `newtab-mode` is kept, so search and reset do not
     move).
+
+## The agent's cursor never jumps, and a border while the agent uses the page (`fix/agent-cursor-glide`), 2026-10-27
+
+Measured live by polling the cursor's window every 1 ms: clicks 0.4 s apart glided, but clicks 3 s apart (normal for an
+agent) faded out between them and the next one made the arrow appear at its new target, a visible jump. The owner's
+words on the border: "also there could be a light orange border when claude is using the browser and it goes away once
+claude is done using".
+
+- 2026-10-27, Max: **the agent's cursor never jumps between positions.** After the ribbon's hold the arrow still fades,
+  but `AgentCursor` keeps where its tip rested (`remembers`); the next action shows it there and glides on. The spot is
+  forgotten by a navigation (the tab's `doc` changed since the cursor last pointed), by a change of the viewport's size,
+  and by a hide (a takeover, a closed panel, a tab behind, a menu's still, a minimised window): only then, and on the
+  first action on a page, does the arrow appear at its target.
+- 2026-10-27, Max: **a light orange border round the page while the agent uses it**, from the agent's first call (a look
+  too, as for the ribbon) until the ribbon's hold ends, the moment the arrow starts to fade; it fades with it in
+  `FADE_MS` and comes back with the next call; a takeover takes it away at once.
+- 2026-10-27, chosen where the ask left it open:
+  - **The glide's length** is `350 + 0.5 x distance` ms in CSS pixels, clamped to 350..700, eased in and out (cubic), so it
+    starts and stops softly and a short hop is still seen. The job holds the longest glide (`GLIDE_MAX_MS`) until the
+    window has taken the point, then `Job::glide_for` sets the real length; a length of 0 (the arrow already there, not
+    drawn, or motion off) sends the held events in the same turn.
+  - **An appearance holds 180 ms** (`APPEAR_MS`), as before, so the person sees the arrow before the press.
+  - **The border is a second layered popup** (`CursorWindow`, the cursor's class) the size of the page's rectangle, not
+    Slint: the browser is a native child window and Slint cannot draw over it. Clicks go through it (`WS_EX_TRANSPARENT`,
+    `HTTRANSPARENT`). Its bitmap (a ring of `2 px x scale`, the cursor's orange at 55 %, premultiplied) is made once per
+    (size, scale); a fade changes only the window's constant alpha (`CursorShell::set_alpha`, `UpdateLayeredWindow` with
+    no source DC), so no bitmap is copied per frame. It is drawn just inside the page's edge. The page's corners are
+    square (the browser's window is a plain rectangle under the panel's head, the panel has no rounded corner there), so
+    the ring's are too. The colour is the cursor's fixed orange, the same in every theme, as the arrow's.
+  - **Animation effects off** (`flare_win::motion::animations_enabled`, read once per agent call through the same source
+    as the app's clock, so the tests pin it): no glide, the arrow is placed at once, no appearance hold, and the arrow and
+    the border go at once instead of fading.
+  - `web.state`'s `cursor` adds `remembers` and `border` (`shown`, `client` rectangle, `alpha`, what its stand-in
+    `RecordBorder` was told). The doc-comment colours in `flare-win/src/agent_cursor.rs` that tripped `colour_literals` are
+    gone (the values stay as the constants they always were).

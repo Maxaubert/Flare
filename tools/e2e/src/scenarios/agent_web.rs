@@ -360,13 +360,33 @@ fn agent_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
         cur["presses"].as_u64().is_some_and(|n| n >= 1),
         format!("{at}: and the press rippled ({})", cur["presses"]),
     );
+    // The light orange border rings the page's own rectangle while the agent uses it.
+    let bd = &cur["border"];
+    let page = json!([b["x"], b["y"], b["w"], b["h"]]);
+    ctx.ok(
+        bd["shown"] == json!(true)
+            && bd["recorded"]["shown"] == json!(true)
+            && bd["client"] == page,
+        format!(
+            "{at}: the agent's border rings the page while the ribbon holds ({bd}, page {page})"
+        ),
+    );
     let gone = ctx.until("the cursor to go after the ribbon", 6_000, &mut || {
         let c = &state(app)["cursor"];
-        c["shown"] == json!(false) && c["recorded"]["shown"] == json!(false)
+        c["shown"] == json!(false)
+            && c["recorded"]["shown"] == json!(false)
+            && c["border"]["shown"] == json!(false)
+            && c["border"]["recorded"]["shown"] == json!(false)
     });
     ctx.ok(
         gone,
-        format!("{at}: the cursor fades out after the ribbon's hold"),
+        format!("{at}: the cursor and the border fade out after the ribbon's hold"),
+    );
+    // It never jumps: where it rested is kept for the next action on the same page.
+    let rest = state(app)["cursor"]["remembers"].clone();
+    ctx.ok(
+        rest == json!(true),
+        format!("{at}: the cursor remembers where it rested ({rest})"),
     );
     // ---- click by point at the element's own centre (css pixels, whatever the display scale) ----
     let v2 = c

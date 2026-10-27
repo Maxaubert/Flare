@@ -78,3 +78,18 @@ One branch `feat/agent-cursor`, one PR. Each step with its tests; fmt, clippy, t
 7. **Docs:** `docs/surfaces/decisions.md` (the decisions above), `docs/features.md` (the web panel section), the mockup
    copied to `docs/surfaces/agent-cursor-mock.html`, and the by-hand list (the real window over the panel at 100 and 150 %).
 8. **Live check:** a release build with its own profile, a page opened with `open_page`, a `browser_click` by ref; Max looks.
+
+## Update 2026-10-27: it never jumps, a border while the agent works
+
+Max's decisions (recorded in `docs/surfaces/decisions.md`, "The agent's cursor never jumps"):
+
+- **Never jump.** After its fade the arrow remembers where it rested; the next action on the same page shows it there and
+  glides on. Only the first action on a page, one after a navigation or a viewport size change, and one after a hide (a
+  takeover, the page out of sight) appear at the target (held 180 ms so the arrow is seen before the press).
+- **The glide is clearly visible:** 350 ms plus 0.5 ms a CSS pixel, at most 700 ms, ease-in-out (cubic). The job holds
+  its events exactly that long (`Job::glide_for`, the window says the length once it takes the point).
+- **A light orange border** round the page from the agent's first call until the ribbon's hold ends, fading with the arrow
+  in 200 ms, gone at once on a takeover: the cursor's orange at 55 %, 2 px at 100 %, square like the page's corners. A second
+  layered popup the size of the page (Slint cannot draw over the browser's child window), transparent to clicks; a fade
+  changes only its constant alpha.
+- **Animation effects off:** no glide and no fade; the arrow is placed at once, the border shows and goes at once.
