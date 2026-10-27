@@ -113,7 +113,7 @@ pub enum Op {
 }
 
 impl Op {
-    /// The method's name, for the ribbon and the log.
+    /// The method's name, for `web.state` and the log.
     pub fn name(&self) -> &'static str {
         match self {
             Op::Look { .. } => "look",

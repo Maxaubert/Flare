@@ -1048,3 +1048,56 @@ claude is done using".
   - `web.state`'s `cursor` adds `remembers` and `border` (`shown`, `client` rectangle, `alpha`, what its stand-in
     `RecordBorder` was told). The doc-comment colours in `flare-win/src/agent_cursor.rs` that tripped `colour_literals` are
     gone (the values stay as the constants they always were).
+
+## The agent's border becomes an edge glow, and the panel drag follows the pointer (`fix/edge-glow-and-panel-drag`), 2026-10-27
+
+Max, after trying the border and the panel live: "the frame needs to be more like a gradient effect overlay from the
+edges" and "when I drag the side panel that holds the browser it's laggy or it's going in steps when I drag instead of
+following smoothly as I expand it or shrink it".
+
+- 2026-10-27, Max: **an edge glow instead of the ring.** Chosen where the ask left it open: the cursor's orange at 50 %
+  right at the edge, clear 32 CSS px in (times the scale, at most 4), a quadratic ease (`(1 - d / r)^2`), the two axes
+  combined as light is (`1 - (1 - a)(1 - b)`), so a corner is as strong as an edge and nothing stronger, with no diagonal
+  seam or darker square. Drawn as up to four bands (top and bottom the page's width, the sides between them) in four
+  `CursorWindow`s (`GlowWindow`, `GlowShell`; `RecordBorder` stands in for it and records the page's size): the middle of
+  the page is never drawn. Measured: a 4K page at 200 % is about 3 MB of bands and 1.2 ms to build (`glow_timing`, run by
+  hand); one page-sized bitmap was 33 MB and about 4.5 ms, before its copy into the window. The on, fade, off, takeover and
+  motion-off rules are the border's; the bands are rebuilt only on a change of size or scale and dropped while off.
+- 2026-10-27, Max: **the panel drag follows the pointer.** The cause, measured in a test Flare (a page in the panel,
+  SendInput dragging the splitter at 800 px/s in 4 px steps every 5 ms, the browser's window polled every ms, the page's
+  left edge read off the screen every frame, and a timing trace of the sync, the browser's `SetBounds`, the cursor and
+  Slint's frames): the browser's window was not throttled or debounced and followed within a frame (8 ms behind the
+  pointer, 14 ms on the screen), but
+  - each step ran the web sync twice, once for the left edge and once for the width (`changed` on each of the four
+    sides);
+  - while the agent used the page, every step rebuilt the border's page-sized bitmap and copied it into its window: 4 to
+    6 ms a step (p90 4.3 ms), so frames came 13 ms apart (median) and 20 ms (p90), up to 28 ms, steps of 16 to 28 px;
+  - the pointer, trailed by the page's edge while it shrinks the panel, was over the page with its button down, which the
+    takeover poll read as the person taking the page over: the agent's call ended `interrupted` in every such drag.
+  A text panel dragged at about every frame (7.9 ms, 4 px steps); the web panel's own cost is the browser's synchronous
+  `SetBounds` (0.6 to 1 ms) and Slint's frame (5 to 6 ms on this 2655 x 1755 window at 144 Hz), which stay.
+  Now: one `changed` on a struct of the page's rectangle (one sync a step); the glow is off the page while the splitter is
+  held (`WebCtl::splitting`) and back at the new size on release (`changed panel-splitting`); the takeover poll skips a
+  held splitter. Deferring `SetBounds` to after the frame was tried and dropped: it put the page a frame behind (14 ms
+  behind the pointer instead of 8).
+  Measured after (same rig, one fresh test Flare each, runs with another program's window in front left out): plain drags
+  8.8 to 9.5 ms between updates (median; 9.5 to 12.2 before), p90 10.4 to 11.6 ms (12.3 to 15.4 before), steps p90 8 px
+  (12 before); while the agent clicks, p90 15 ms and at most 21 ms (19 to 21 and up to 37 before), steps at most 20 px (28
+  before), the glow's cost a step under 1 ms (was 4 to 6), and no takeover.
+
+## The web panel's header and the agent ribbon removed (`fix/edge-glow-and-panel-drag`), 2026-10-27
+
+Max, after trying PR #110: "remove this bar, it goes orange when Claude's working, otherwise says [the page title], but
+I'd rather have more space for the browser".
+
+- 2026-10-27, Max: **a web page has no header.** The address row (back, forward, reload, address) is the panel's top,
+  the page starts right under it and gets the header's 32 px. The panel's close is the row's last button, at its right
+  end, a `WebButton` like the others (24 px, 12 px glyph). A line that said why an address was refused (the header's
+  `sub`) is a dim line at the address field's right end. The page title still names the panel in `web.state` and the
+  tab. Only the web page: a mini-app has no address row, so it keeps its header (title and close); image, text, file,
+  audio, diagram and Changes panels keep theirs (a diagram is a mini-app).
+- 2026-10-27, Max: **no agent ribbon.** The edge glow and the cursor with its tag are the only signs of an agent at
+  work. The ribbon only showed state: its X was the panel's close (now in the address row), and the person takes over
+  as before by clicking or typing in the page, which ends the call `interrupted` and the hold at once. Its 1.5 s hold
+  (`AGENT_HOLD_MS`, was `RIBBON_HOLD_MS`) stays as the timer after a call before the glow and the cursor fade.
+  `web.state`'s `ribbon` became `using` (`shown`, `text`), with no width.

@@ -773,6 +773,47 @@ fn the_browser_bar_is_part_of_a_web_panels_head_and_of_nothing_else() {
     }
 }
 
+/// Max 2026-10-27: a web page has no header (no title row, no agent ribbon); the address row is the top
+/// of the panel and holds the close at its right end. A mini-app keeps its header (it has no bar).
+#[test]
+fn a_web_page_has_no_header_and_the_address_row_holds_the_close() {
+    for s in SCALES {
+        let h = window(s);
+        open_web(&h);
+        h.comp.set_panel_title("Glide test".into());
+        h.advance(0);
+        assert_eq!(h.comp.get_panel_header_h(), 0.0, "scale {s}");
+        let top = h.comp.get_panel_slot_top();
+        let bar = h.comp.get_panel_bar_h();
+        assert!(
+            (h.comp.get_panel_body_y() - (top + bar)).abs() < 0.01,
+            "scale {s}: the page starts right under the address row"
+        );
+        // The close is the address row's last button, at its right end.
+        let slot_right =
+            h.comp.get_page_left() + h.comp.get_panel_slot_x() + h.comp.get_panel_visible_w();
+        let cx = h.comp.get_panel_web_close_x();
+        let cw = h.comp.get_panel_web_close_w();
+        assert!((cw - 24.0).abs() < 1.0, "scale {s}: an icon button ({cw})");
+        assert!(
+            (slot_right - (cx + cw) - 8.0).abs() < 1.0,
+            "scale {s}: 8 px from the right edge ({cx} + {cw}, {slot_right})"
+        );
+        let closed = Rc::new(Cell::new(0));
+        {
+            let closed = closed.clone();
+            h.comp.on_panel_close(move || closed.set(closed.get() + 1));
+        }
+        h.click(cx + cw / 2.0, top + bar / 2.0);
+        assert_eq!(closed.get(), 1, "scale {s}: the close closes");
+        // A mini-app has no bar, so it keeps the header and its close.
+        h.comp.set_panel_web_app(true);
+        h.advance(0);
+        assert!(h.comp.get_panel_header_h() > 0.0, "scale {s}");
+        assert_eq!(h.comp.get_panel_bar_h(), 0.0, "scale {s}");
+    }
+}
+
 #[test]
 fn the_page_fills_the_body_less_the_splitters_reach_at_every_scale() {
     for s in SCALES {

@@ -89,6 +89,18 @@ pub fn rects(ctx: &ProbeCtx, name: &str) -> Result<Value, String> {
             k,
         )),
         "panel-image" => Err("ui.rect panel-image: the panel shows no picture".into()),
+        // A web page has no header: its close is the address row's last button (24 px, centred in the bar).
+        "panel-close" if a.get_panel_header_h() <= 0.0 => {
+            let bar = a.get_panel_bar_h();
+            let w = a.get_panel_web_close_w();
+            Ok(rect_json(
+                a.get_panel_web_close_x(),
+                top + (bar - w) / 2.0,
+                w,
+                w,
+                k,
+            ))
+        }
         // The close button: 20 px, 8 px in from the slot's right edge, centred in the 32 px header.
         "panel-close" => {
             let head = a.get_panel_header_h();

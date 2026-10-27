@@ -275,7 +275,7 @@ fn preview_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), St
     });
     ctx.ok(
         loaded,
-        format!("{at}: the header names the page the listener serves"),
+        format!("{at}: the panel is named for the page the listener serves"),
     );
     let title = script(ctx, app, "document.title");
     ctx.ok(

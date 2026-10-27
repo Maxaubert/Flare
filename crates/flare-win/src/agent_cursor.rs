@@ -7,9 +7,10 @@
 //! BGRA. Part B is the window: a small layered popup owned by Flare's main window, transparent to the
 //! mouse, never activated, with no taskbar button. A trait stands in for it in the tests and `--e2e`.
 //!
-//! The border round the page while the agent uses it (Max, 2026-10-27) is a second such window the size
-//! of the page: the browser is a child window Slint cannot draw over, and a layered popup shows above it
-//! while every click goes through to the page.
+//! The glow round the page while the agent uses it (Max, 2026-10-27: first a 2 px ring, then a soft glow in
+//! from the edges) is drawn the same way, in four more such windows, one per edge band: the browser is a
+//! child window Slint cannot draw over, and a layered popup shows above it while every click goes through to
+//! the page. Only the bands are drawn, so a 4K page costs a few megabytes, not a page-sized bitmap.
 
 /// The default look's accent orange as (r, g, b), fixed: the cursor is the same in every theme.
 const ORANGE: (u8, u8, u8) = (0xfe, 0x8f, 0x34);
@@ -32,12 +33,12 @@ const TAG_PAD: f64 = 7.0;
 const TAG_FONT: f64 = 11.0;
 /// A name longer than this is cut (the tag stays a tag).
 const TAG_CHARS: usize = 24;
-/// The border round the page: the cursor's orange at this opacity (light orange over the page), this
-/// many pixels wide at 100 %.
-const BORDER_ALPHA: f64 = 0.55;
-const BORDER_PX: f64 = 2.0;
-/// The largest border drawn, in pixels each way (a bigger page has none rather than a huge bitmap).
-const BORDER_MAX: u32 = 16_384;
+/// The glow in from the page's edges: the cursor's orange at this opacity right at an edge, fading to
+/// nothing this many pixels in at 100 % (Max, 2026-10-27).
+const GLOW_ALPHA: f64 = 0.5;
+const GLOW_PX: f64 = 32.0;
+/// The largest glow drawn, in pixels each way (a bigger page has none rather than a huge bitmap).
+const GLOW_MAX: u32 = 16_384;
 
 /// A rendered cursor: premultiplied BGRA, top-down, `w * h * 4` bytes, with the tip at `tip`.
 #[derive(Clone, Debug, PartialEq)]
@@ -265,37 +266,68 @@ pub fn compose_cursor(scale: f64, label: &str, ripples: &[f32]) -> CursorBitmap 
     CursorArt::new(scale, label).frame(ripples)
 }
 
-/// The border for a page of `w * h` physical pixels at `scale`: a ring [`BORDER_PX`] wide just inside
-/// the page's edge in the cursor's orange at [`BORDER_ALPHA`], clear inside, its top left at `tip` (0, 0).
-/// The page's corners are square (the browser's window is a plain rectangle under the panel's head), so
-/// the ring's are too. Empty for an empty or too large page.
-pub fn border_bitmap(w: u32, h: u32, scale: f64) -> CursorBitmap {
-    if w == 0 || h == 0 || w > BORDER_MAX || h > BORDER_MAX {
-        return CursorBitmap {
-            w: 0,
-            h: 0,
-            bgra: Vec::new(),
-            tip: (0, 0),
-        };
+/// How strong the glow is `d` pixels in from one edge, for a glow `r` pixels deep: 1 at the edge, eased
+/// (quadratic) to 0 at `r`, so it fades with no band and no hard inner line.
+fn glow_falloff(d: f64, r: f64) -> f64 {
+    if d >= r {
+        0.0
+    } else {
+        let t = 1.0 - d / r;
+        t * t
     }
-    let t = ((BORDER_PX * clean_scale(scale)).round() as u32).clamp(1, w.min(h).div_ceil(2));
-    let a = BORDER_ALPHA;
-    let px = [
-        (f64::from(ORANGE.2) * a).round() as u8,
-        (f64::from(ORANGE.1) * a).round() as u8,
-        (f64::from(ORANGE.0) * a).round() as u8,
-        (255.0 * a).round() as u8,
-    ];
+}
+
+/// The glow along one axis of `n` pixels: both its edges, combined as light is (`1 - (1 - a)(1 - b)`).
+fn glow_ramp(n: u32, r: f64) -> Vec<f64> {
+    (0..n)
+        .map(|i| {
+            let a = glow_falloff(f64::from(i) + 0.5, r);
+            let b = glow_falloff(f64::from(n - i) - 0.5, r);
+            1.0 - (1.0 - a) * (1.0 - b)
+        })
+        .collect()
+}
+
+/// The glow of a page: its size and its edge bands, each with where its top left sits in the page.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeGlow {
+    pub w: u32,
+    pub h: u32,
+    pub bands: Vec<((i32, i32), CursorBitmap)>,
+}
+
+/// The glow's pixels in the page's rectangle `x0, y0, w, h`, from the two axes' ramps.
+fn glow_region(gx: &[f64], gy: &[f64], (x0, y0, w, h): (u32, u32, u32, u32)) -> CursorBitmap {
+    // Each opacity's premultiplied pixel, looked up rather than worked out per pixel.
+    let lut: Vec<[u8; 4]> = (0..=255u32)
+        .map(|a| {
+            let k = f64::from(a) / 255.0;
+            [
+                (f64::from(ORANGE.2) * k).round() as u8,
+                (f64::from(ORANGE.1) * k).round() as u8,
+                (f64::from(ORANGE.0) * k).round() as u8,
+                a as u8,
+            ]
+        })
+        .collect();
+    let peak = 255.0 * GLOW_ALPHA;
+    let gx = &gx[x0 as usize..(x0 + w) as usize];
     let mut bgra = vec![0u8; (w * h * 4) as usize];
-    for (y, row) in bgra.chunks_exact_mut((w * 4) as usize).enumerate() {
-        let y = y as u32;
-        let edge_row = y < t || y >= h - t;
-        for (x, p) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            let x = x as u32;
-            if edge_row || x < t || x >= w - t {
-                p.copy_from_slice(&px);
-            }
+    let mut last: Option<(f64, usize)> = None;
+    for (i, &y) in gy[y0 as usize..(y0 + h) as usize].iter().enumerate() {
+        let at = i * (w * 4) as usize;
+        // A row like the one above (the side bands' rows all are) is copied, not worked out again.
+        if let Some((ly, from)) = last
+            && ly == y
+        {
+            bgra.copy_within(from..from + (w * 4) as usize, at);
+            continue;
         }
+        let row = &mut bgra[at..at + (w * 4) as usize];
+        for (p, &x) in row.as_chunks_mut::<4>().0.iter_mut().zip(gx) {
+            *p = lut[(peak * (1.0 - (1.0 - x) * (1.0 - y))).round() as usize];
+        }
+        last = Some((y, at));
     }
     CursorBitmap {
         w,
@@ -303,6 +335,47 @@ pub fn border_bitmap(w: u32, h: u32, scale: f64) -> CursorBitmap {
         bgra,
         tip: (0, 0),
     }
+}
+
+/// The glow for a page of `w * h` physical pixels at `scale`: the cursor's orange at [`GLOW_ALPHA`] right at
+/// each edge, fading over [`GLOW_PX`] (at 100 %) to clear. The edges combine as light does, so a corner is
+/// no stronger than an edge and blends with no seam or darker square. It comes as up to four bands (top and
+/// bottom the page's width, the sides between them): everything outside them is clear, so it is never
+/// drawn. None for an empty or too large page.
+pub fn edge_glow(w: u32, h: u32, scale: f64) -> EdgeGlow {
+    if w == 0 || h == 0 || w > GLOW_MAX || h > GLOW_MAX {
+        return EdgeGlow {
+            w: 0,
+            h: 0,
+            bands: Vec::new(),
+        };
+    }
+    let r = (GLOW_PX * clean_scale(scale)).round().max(1.0);
+    let ru = r as u32;
+    let (gx, gy) = (glow_ramp(w, r), glow_ramp(h, r));
+    let top = ru.min(h);
+    let low = h.saturating_sub(ru).max(top);
+    let left = ru.min(w);
+    let right = w.saturating_sub(ru).max(left);
+    let rects = [
+        (0, 0, w, top),
+        (0, low, w, h - low),
+        (0, top, left, low - top),
+        (right, top, w - right, low - top),
+    ];
+    let bands = rects
+        .into_iter()
+        .filter(|&(_, _, bw, bh)| bw > 0 && bh > 0)
+        .map(|rect| ((rect.0 as i32, rect.1 as i32), glow_region(&gx, &gy, rect)))
+        .collect();
+    EdgeGlow { w, h, bands }
+}
+
+/// The whole page's glow as one bitmap (the tests check the bands against it).
+#[cfg(test)]
+fn glow_bitmap(w: u32, h: u32, scale: f64) -> CursorBitmap {
+    let r = (GLOW_PX * clean_scale(scale)).round().max(1.0);
+    glow_region(&glow_ramp(w, r), &glow_ramp(h, r), (0, 0, w, h))
 }
 
 // ---------------------------------------------------------------- Part B: GDI and the window
@@ -644,6 +717,62 @@ mod win {
 #[cfg(windows)]
 pub use win::CursorWindow;
 
+/// The glow's windows: one per edge band, each a [`CursorWindow`].
+#[cfg(windows)]
+pub struct GlowWindow {
+    parts: Vec<CursorWindow>,
+    /// How many of `parts` the glow last shown uses (a small page has fewer than four bands).
+    used: usize,
+}
+
+#[cfg(windows)]
+impl GlowWindow {
+    pub fn new(owner: isize) -> Self {
+        Self {
+            parts: (0..4).map(|_| CursorWindow::new(owner)).collect(),
+            used: 0,
+        }
+    }
+}
+
+#[cfg(windows)]
+impl GlowShell for GlowWindow {
+    fn show_at(&mut self, x: i32, y: i32, glow: &EdgeGlow, alpha: u8) -> bool {
+        if glow.bands.is_empty() {
+            return false;
+        }
+        self.used = glow.bands.len().min(self.parts.len());
+        let mut ok = true;
+        for (i, part) in self.parts.iter_mut().enumerate() {
+            match glow.bands.get(i) {
+                Some(((bx, by), bmp)) => ok &= part.show_at(x + bx, y + by, bmp, alpha),
+                None => part.hide(),
+            }
+        }
+        ok
+    }
+
+    fn set_alpha(&mut self, alpha: u8) -> bool {
+        // Every part shown takes the new blend; one that cannot has the caller show the glow again whole. The
+        // parts a small page leaves hidden are not asked: they would say no, and every fade step redraw it all.
+        if self.used == 0 {
+            return false;
+        }
+        let mut ok = true;
+        for part in &mut self.parts[..self.used] {
+            ok &= part.set_alpha(alpha);
+        }
+        ok
+    }
+
+    fn hide(&mut self) {
+        self.used = 0;
+        for part in &mut self.parts {
+            part.hide();
+        }
+    }
+}
+
 /// The tag's text rasterised by GDI: (width, `width * h` bytes of 0..255 coverage).
 #[cfg(windows)]
 fn label_mask(font_px: u32, h: u32, text: &str) -> (u32, Vec<u8>) {
@@ -669,6 +798,17 @@ pub trait CursorShell {
         false
     }
     /// Gone at once.
+    fn hide(&mut self);
+}
+
+/// The window side of the glow round the page: [`CursorShell`] for an [`EdgeGlow`], whose top left is put
+/// at (x, y) in screen pixels.
+pub trait GlowShell {
+    fn show_at(&mut self, x: i32, y: i32, glow: &EdgeGlow, alpha: u8) -> bool;
+    fn set_alpha(&mut self, alpha: u8) -> bool {
+        let _ = alpha;
+        false
+    }
     fn hide(&mut self);
 }
 
@@ -741,12 +881,18 @@ impl CursorShell for RecordCursor {
     }
 }
 
-/// The border's stand-in, as [`RecordCursor`] is the arrow's.
+/// The glow's stand-in, as [`RecordCursor`] is the arrow's (`w`, `h` the page's).
 pub struct RecordBorder;
 
-impl CursorShell for RecordBorder {
-    fn show_at(&mut self, x: i32, y: i32, bmp: &CursorBitmap, alpha: u8) -> bool {
-        record_show(&BORDER_RECORD, x, y, bmp, alpha)
+impl GlowShell for RecordBorder {
+    fn show_at(&mut self, x: i32, y: i32, glow: &EdgeGlow, alpha: u8) -> bool {
+        BORDER_RECORD.with(|r| {
+            let mut r = r.borrow_mut();
+            r.shown = true;
+            (r.x, r.y, r.w, r.h, r.alpha) = (x, y, glow.w, glow.h, alpha);
+            r.draws += 1;
+        });
+        true
     }
 
     fn set_alpha(&mut self, alpha: u8) -> bool {
@@ -913,46 +1059,124 @@ mod tests {
     }
 
     #[test]
-    fn the_border_is_a_light_orange_ring_inside_the_page_and_clear_within() {
-        for (s, t) in [(1.0, 2), (1.25, 3), (1.5, 3), (2.0, 4), (3.0, 6)] {
-            let b = border_bitmap(300, 200, s);
-            assert_eq!((b.w, b.h, b.tip), (300, 200, (0, 0)));
-            assert_eq!(b.bgra.len(), 300 * 200 * 4);
-            let ring = px(&b, 0, 0);
-            // The cursor's orange, premultiplied at about half: light, and orange (red over green over blue).
-            assert_eq!(ring[3], (255.0 * BORDER_ALPHA).round() as u8);
-            assert!(ring[2] > ring[1] && ring[1] > ring[0], "{ring:?}");
-            assert!(ring[0] <= ring[3] && ring[1] <= ring[3] && ring[2] <= ring[3]);
-            for (x, y) in [
-                (t - 1, 100),
-                (299 - (t - 1), 100),
-                (150, t - 1),
-                (150, 199 - (t - 1)),
-            ] {
-                assert_eq!(px(&b, x, y), ring, "on the ring at {s}: ({x}, {y})");
+    fn the_glow_is_orange_at_the_page_s_edges_and_fades_smoothly_to_clear_inside() {
+        let peak = (255.0 * GLOW_ALPHA).round() as u8;
+        for s in [1.0, 1.25, 1.5, 2.0, 3.0] {
+            let (w, h) = (400, 300);
+            let b = glow_bitmap(w, h, s);
+            assert_eq!((b.w, b.h, b.tip), (w, h, (0, 0)));
+            assert_eq!(b.bgra.len(), (w * h * 4) as usize);
+            let r = (GLOW_PX * s).round() as i32;
+            let (wi, hi) = (w as i32, h as i32);
+            // Strongest at each edge: the cursor's orange at about half, premultiplied (red over green over blue).
+            for (x, y) in [(0, 150), (wi - 1, 150), (200, 0), (200, hi - 1)] {
+                let p = px(&b, x, y);
+                assert!(
+                    p[3] >= peak - 8 && p[3] <= peak,
+                    "at the edge at {s}: ({x}, {y}) {p:?}"
+                );
+                assert!(p[2] > p[1] && p[1] > p[0], "{p:?}");
+                assert!(p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]);
             }
-            for (x, y) in [
-                (t, 100),
-                (299 - t, 100),
-                (150, t),
-                (150, 199 - t),
-                (150, 100),
-            ] {
-                assert_eq!(px(&b, x, y), [0; 4], "clear inside at {s}: ({x}, {y})");
+            // Fading in from every edge: never rising, no step of more than a few levels, eased, clear at the depth.
+            let lines: [Vec<(i32, i32)>; 4] = [
+                (0..=r).map(|d| (d, 150)).collect(),
+                (0..=r).map(|d| (wi - 1 - d, 150)).collect(),
+                (0..=r).map(|d| (200, d)).collect(),
+                (0..=r).map(|d| (200, hi - 1 - d)).collect(),
+            ];
+            for line in &lines {
+                let a: Vec<u8> = line.iter().map(|&(x, y)| px(&b, x, y)[3]).collect();
+                assert!(a.windows(2).all(|p| p[1] <= p[0]), "falls at {s}: {a:?}");
+                assert!(
+                    a.windows(2).all(|p| p[0] - p[1] <= 12),
+                    "smooth at {s}: {a:?}"
+                );
+                let mid = a[(r / 2) as usize];
+                assert!(mid > 0 && mid < peak / 2, "eased at {s}: {a:?}");
+                assert_eq!(a[r as usize], 0, "clear {r} px in at {s}: {a:?}");
+            }
+            assert_eq!(px(&b, 200, 150), [0; 4], "clear in the middle at {s}");
+            // A corner is no stronger than an edge, and the glow round it is smooth and symmetric (no seam).
+            assert!(px(&b, 0, 0)[3] >= peak - 1 && px(&b, 0, 0)[3] <= peak);
+            for d in 0..r {
+                let diag = px(&b, d, d)[3];
+                let next = px(&b, d + 1, d)[3];
+                assert!(
+                    next <= diag && diag - next <= 12,
+                    "corner at {s}, {d}: {diag} {next}"
+                );
+                assert_eq!(px(&b, d, 5), px(&b, 5, d), "symmetric at {s}");
             }
         }
-        assert_eq!(border_bitmap(0, 10, 1.0).w, 0);
-        assert_eq!(border_bitmap(BORDER_MAX + 1, 10, 1.0).w, 0);
-        // A page thinner than the ring is all ring.
-        let b = border_bitmap(3, 3, 3.0);
-        assert!(b.bgra.as_chunks::<4>().0.iter().all(|p| p[3] > 0));
+        assert_eq!(edge_glow(0, 10, 1.0).w, 0);
+        assert!(edge_glow(GLOW_MAX + 1, 10, 1.0).bands.is_empty());
+        // A page thinner than the glow is all glow, and no alpha goes past the peak.
+        let b = glow_bitmap(20, 20, 3.0);
+        assert!(
+            b.bgra
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|p| p[3] > 0 && p[3] <= peak)
+        );
+    }
+
+    #[test]
+    fn the_glow_s_bands_are_the_whole_glow_and_nothing_else() {
+        // Laid on a clear page, the bands are exactly the whole page's glow: they do not overlap, and what
+        // they leave out is clear. Small pages (bands meeting, a side gone) included.
+        for (w, h, s) in [
+            (300, 200, 1.5),
+            (400, 300, 1.0),
+            (50, 30, 2.0),
+            (20, 200, 1.0),
+            (7, 3, 3.0),
+        ] {
+            let whole = glow_bitmap(w, h, s);
+            let g = edge_glow(w, h, s);
+            assert_eq!((g.w, g.h), (w, h));
+            let mut laid = vec![0u8; (w * h * 4) as usize];
+            let mut cover = vec![0u8; (w * h) as usize];
+            for ((bx, by), b) in &g.bands {
+                for y in 0..b.h {
+                    for x in 0..b.w {
+                        let (px_, py_) = (*bx as u32 + x, *by as u32 + y);
+                        let at = (py_ * w + px_) as usize;
+                        cover[at] += 1;
+                        let src = ((y * b.w + x) * 4) as usize;
+                        laid[at * 4..at * 4 + 4].copy_from_slice(&b.bgra[src..src + 4]);
+                    }
+                }
+            }
+            assert!(cover.iter().all(|&c| c <= 1), "overlap at {w}x{h}");
+            assert_eq!(laid, whole.bgra, "{w}x{h} at {s}");
+        }
+        // A large page is four thin bands, not a page-sized bitmap.
+        let g = edge_glow(3840, 2160, 2.0);
+        let bytes: usize = g.bands.iter().map(|(_, b)| b.bgra.len()).sum();
+        assert_eq!(g.bands.len(), 4);
+        assert!(bytes < 3840 * 2160 * 4 / 8, "{bytes}");
+    }
+
+    #[test]
+    #[ignore = "a timing, run by hand: cargo test -p flare-win --release glow_timing -- --ignored --nocapture"]
+    fn glow_timing() {
+        for (w, h, s) in [(1600, 2000, 2.0), (3840, 2160, 2.0), (3840, 2160, 1.0)] {
+            let t = std::time::Instant::now();
+            let n = 20;
+            for _ in 0..n {
+                std::hint::black_box(edge_glow(w, h, s));
+            }
+            println!("glow {w}x{h} at {s}: {:?} a build", t.elapsed() / n);
+        }
     }
 
     #[test]
     fn the_border_s_stand_in_keeps_its_own_record_and_a_fade_changes_only_the_alpha() {
         let mut r = RecordBorder;
         assert!(!r.set_alpha(10), "nothing shown");
-        let b = border_bitmap(40, 30, 1.0);
+        let b = edge_glow(40, 30, 1.0);
         assert!(r.show_at(5, 6, &b, 255));
         assert!(!recorded().shown, "not the arrow's");
         assert!(r.set_alpha(128));
@@ -963,6 +1187,15 @@ mod tests {
         );
         r.hide();
         assert!(!recorded_border().shown);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_glow_s_windows_are_not_made_without_an_owner() {
+        let mut w = GlowWindow::new(0);
+        assert!(!w.show_at(10, 10, &edge_glow(40, 30, 1.0), 255));
+        assert!(!w.show_at(10, 10, &edge_glow(0, 0, 1.0), 255));
+        w.hide();
     }
 
     #[cfg(windows)]

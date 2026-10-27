@@ -201,8 +201,8 @@ line. Nothing is fetched, no real window gets input (the person's takeover is th
   window less a scroll bar, the picture at the display's own resolution); the refs; a click by ref and by the element's centre in css
   pixels, a double click; typing, Enter submitting, Control+a replacing; the agent pressing the app's own chord closes nothing; the
   list scrolling under the wheel; waits (text with a case change, a selector, a timeout with `met` false, a pause, a hostile text);
-  the ribbon during and after a call and the page's rectangle unchanged by it (read with the ribbon up); the panel zoomed to 150 percent (`WebZoom`) with a click by ref and by point still landing; the person's takeover ending a 30 s wait `interrupted`
-  with the ribbon gone and the refs forgotten; a link click that navigates, then a stale ref `not_found`; a tab that is behind (a
+  the address row holding the panel's close (no header since 2026-10-27); the page in use (`using`) during and after a call and the page's rectangle unchanged by it; the panel zoomed to 150 percent (`WebZoom`) with a click by ref and by point still landing; the person's takeover ending a 30 s wait `interrupted`
+  with the page no longer in use and the refs forgotten; a link click that navigates, then a stale ref `not_found`; a tab that is behind (a
   list but no picture, answered at once) and back in front; a connection with no tab; shell input still forbidden; closing the panel
   answering a running call. A second launch with `flare.web.agentEval` seeded in the profile holds `browser.eval` (a value, an object, a
   promise, an exception as `bad_params`).
@@ -212,7 +212,7 @@ line. Nothing is fetched, no real window gets input (the person's takeover is th
   PNG and the list as text between the page-content markers (one end marker, no forged element line, no control characters), then
   click by ref, type, press Enter, scroll, a stale ref, waits that find and do not find, eval refused with the setting's name,
   navigate and back, and a page with a hostile title (a quote, a fake end marker, hidden tag characters) staying inside the markers.
-- The probes: `web.state` now also reports `ribbon` (`shown`, `text`, `w`) and `agent` (`op`, `refs`, `ribbon`, `keys_heard`), and the
+- The probes: `web.state` now also reports `using` (`shown`, `text`; it was `ribbon` until the ribbon went, 2026-10-27), `close` (`x`, `w`, the address row's close) and `agent` (`op`, `refs`, `using`, `keys_heard`), and the
   test hook has two more requests, `WebUserInput`, the stand-in for the person's own click or key in the page, and `WebZoom`, which sets the browser zoom of the front page (what Ctrl+wheel does).
 
 ## Live preview and question notifications (Surfaces stage 7)

@@ -273,7 +273,7 @@ fn panel_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<u32, Str
                 .as_str()
                 .is_some_and(|u| u.ends_with("/index.html")),
         format!(
-            "{at}: the header names the page and the bar holds its address ({} / {})",
+            "{at}: the panel is named for the page and the bar holds its address ({} / {})",
             s["title"], s["bar"]["url"]
         ),
     );

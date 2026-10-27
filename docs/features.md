@@ -1033,8 +1033,12 @@ one controller per tab with an open web panel, parented to Flare's window.
   timer with no picture, so it can never stay over a menu or dialog (`a_page_that_never_answers_a_capture_is_hidden_by_the_timeout`,
   `a_capture_that_never_answers_is_ended_by_its_timeout` in `web.rs`).
 - **The browser bar.** Back, forward, reload (stop while loading), an address field (Enter opens it; text with no scheme becomes
-  https, `localhost` becomes http; `file:`, `javascript:`, `data:` and logins are refused with a line in the header; Escape
-  restores the page's address and gives the keys back) and the page title as the header title. Held by
+  https, `localhost` becomes http; `file:`, `javascript:`, `data:` and logins are refused with a dim line at the field's right
+  end; Escape restores the page's address and gives the keys back) and the panel's close at the row's right end. A web page
+  has no header (2026-10-27, Max: "I'd rather have more space for the browser"): the bar is the panel's top and the page starts
+  right under it, 32 px taller than before. The page title still names the panel (`web.state`'s `title`) and the tab. A
+  mini-app has no bar, so it keeps its header (title and close). Held by
+  `a_web_page_has_no_header_and_the_address_row_holds_the_close` (100 to 300 percent), and by
   `the_address_field_opens_what_is_typed`, `the_address_field_refuses_what_a_panel_may_not_open`,
   `the_bar_buttons_drive_the_page_only_when_they_can`, `the_bar_follows_the_page`,
   `a_refused_navigation_is_said_in_the_header_and_leaves_the_page`, `the_address_field_shows_the_page_and_enter_and_escape_do_their_part`,
@@ -1131,16 +1135,17 @@ MCP tools and how a look is written for the model).
 - **Stale refs do nothing.** A ref after a page load, a takeover, a new look that dropped it, or for an element that is gone is
   `not_found` ("look again") and nothing reaches the page. Held by `a_ref_is_forgotten_when_the_page_loads_something_new`,
   `a_stale_ref_is_not_found_and_nothing_is_sent`, `an_element_that_vanished_is_not_found` and the e2e.
-- **The ribbon.** "Claude is using this page" (the tab's detected agent, else "An agent") over the head of the panel while a call
-  runs and for 1.5 s after; the page does not move or resize for it. Held by
-  `the_ribbon_is_up_while_the_call_runs_and_the_person_taking_over_ends_the_call`,
-  `the_ribbon_holds_after_a_call_that_finished_until_the_person_acts`, `the_ribbon_names_who_is_using_the_page` and the e2e (up
-  during a 2.5 s call, still up right after, gone within 6 s, the browser window's rectangle unchanged with the ribbon up and after
-  it goes; the ribbon's background is opaque so the page's title does not show through).
+- **The page in use (no ribbon).** While a call runs and for 1.5 s after (the hold, `AGENT_HOLD_MS`) the agent counts as
+  using the page: the edge glow and the cursor with its tag show it, and nothing else is drawn. The orange ribbon "Claude is
+  using this page" over the panel's head went with the header (2026-10-27, Max); it had no button of its own (its X was the
+  panel's close, now in the address row). `web.state` still says who is using the page (`using`: `shown`, `text`, "Claude is
+  using this page"). Held by `the_page_is_in_use_while_the_call_runs_and_the_person_taking_over_ends_the_call`,
+  `the_hold_lasts_after_a_call_that_finished_until_the_person_acts`, `the_words_name_who_is_using_the_page` and the e2e (in use
+  during a 2.5 s call, still right after, over within 6 s, the browser window's rectangle unchanged throughout).
 - **The agent's cursor.** While an agent clicks, types into a ref or scrolls over a ref on the page in front, an orange arrow
   (`#fe8f34`, white rim) with a tag naming the agent ("Claude", "Codex", else "Agent") glides there before the events go
   (350 ms plus 0.5 ms a CSS pixel, at most 700 ms, ease-in-out; the events wait exactly that long), ripples on each press, stays
-  while the ribbon holds and fades in 200 ms after. It never jumps: after its fade the next action on the same page shows it
+  while the hold lasts and fades in 200 ms after. It never jumps: after its fade the next action on the same page shows it
   where it rested and glides on. Only the first action on a page, one after a navigation or a change of the page's size, and one
   after a takeover or the page going out of sight show it at the target (held 180 ms so it is seen before the press). It is a
   window of Flare's own above the page, never in it: the page cannot see or hide it and it is in no look. A takeover, a closed
@@ -1155,19 +1160,25 @@ MCP tools and how a look is written for the model).
   `the_person_taking_over_takes_the_cursor_away_at_once`,
   `a_menu_over_the_page_or_a_tab_in_front_hides_the_cursor_and_a_hidden_page_does_not_wait` and the e2e `agentBrowser` (at the
   button's middle at 100 and 225 percent, gone after the hold, its spot remembered).
-- **The agent's border.** While an agent uses the page in front, from its first call until the ribbon's hold ends, a light
-  orange border (the cursor's orange at 55 % opacity, 2 px at 100 %, square corners like the page) rings the page's
-  rectangle; it fades with the arrow in 200 ms and comes back with the next call. It is a second window of Flare's own above
-  the page (the browser is a child window Slint cannot draw over), transparent to every click. A takeover, a menu over the
-  page, a tab behind or a closed panel takes it away at once. Held by
-  `a_light_orange_border_rings_the_page_while_the_agent_uses_it_and_fades_with_the_arrow`,
-  `a_menu_over_the_page_takes_the_border_away_and_it_comes_back_after`, the `border` tests in `flare-win` and the e2e
-  `agentBrowser` (the page's own rectangle while the ribbon holds, gone after).
+- **The agent's glow.** While an agent uses the page in front, from its first call until the hold ends, a soft
+  orange glow comes in from the page's edges (2026-10-27, Max: it was a 2 px ring): the cursor's orange at 50 % right at
+  each edge, fading to clear 32 CSS px in (eased, scaled with the DPI), corners blended with no seam. It fades with the
+  arrow in 200 ms and comes back with the next call. It is four windows of Flare's own above the page, one per edge band
+  (the browser is a child window Slint cannot draw over), transparent to every click; the bands are rebuilt only when the
+  page's size or scale changes (about 1.2 ms for a 4K page). A takeover, a menu over the page, a tab behind or a closed
+  panel takes it away at once; while the person holds the panel's splitter it is off the page and comes back at the new
+  size when they let go. Held by `a_light_orange_border_rings_the_page_while_the_agent_uses_it_and_fades_with_the_arrow`,
+  `a_menu_over_the_page_takes_the_border_away_and_it_comes_back_after`,
+  `a_held_splitter_takes_the_glow_away_while_the_page_follows_every_step_and_it_comes_back_after`, the `glow` tests in
+  `flare-win` and the e2e `agentBrowser` (the page's own rectangle while the hold lasts, gone after).
+- **The panel drag follows the pointer.** Dragging the splitter of a web panel moves the page once per step (one callback
+  for its whole rectangle, not one per side), never rebuilds the agent's glow, and is not a takeover of a page the agent is
+  using (2026-10-27, Max: it was laggy and went in steps).
 - **The person keeps control.** A key of theirs in the page, or a mouse button pressed over it, ends the running call with
-  `interrupted` and drops the ribbon; the agent's own key presses are never the app's chords. Held by
+  `interrupted` and ends the hold (the glow and the cursor go at once); the agent's own key presses are never the app's chords. Held by
   `a_key_of_the_persons_posts_a_takeover_only_while_an_agent_works`, `the_agents_own_key_press_is_neither_the_persons_nor_a_chord`,
   `a_point_is_inside_a_rectangle_by_its_near_edges` and the e2e (a stand-in for the person's input ends a 30 s wait `interrupted`,
-  the ribbon goes, the refs are forgotten; pressing Ctrl+Shift+P as the agent closes nothing). The mouse is read every 16 ms and also
+  the page is no longer in use, the refs are forgotten; pressing Ctrl+Shift+P as the agent closes nothing). The mouse is read every 16 ms and also
   for a press that came and went between two reads; the page taking the window's focus is a takeover too; a click cut short lets go
   of its button (`a_click_cut_short_lets_go_of_the_button`, `the_person_taking_over_a_click_lets_go_of_the_button`,
   `the_person_focusing_the_page_while_a_call_runs_takes_over`). The real mouse path is by hand.
@@ -1192,7 +1203,7 @@ MCP tools and how a look is written for the model).
   keeps its page hidden; a look of it gives the list and no picture (a hidden page paints nothing), answered at once
   (`a_look_of_a_tab_that_is_behind_has_the_list_but_no_picture`, and the e2e).
 - **Nothing costs anything while unused.** No browser, no DevTools call, no timer until a call is made; the 16 ms timer runs only
-  while a call or the ribbon's hold lasts, and the window's properties are synced only when a call starts or ends or the ribbon goes. Held by `nothing_exists_before_a_web_panel_opens` and the timer names in
+  while a call or its hold lasts, and the window's properties are synced only when a call starts or ends or a hold ends. Held by `nothing_exists_before_a_web_panel_opens` and the timer names in
   `timer_registry`.
 - **MCP.** `flare-mcp` lists 13 tools (the five that show things and `browser_look`, `browser_click`, `browser_type`,
   `browser_press`, `browser_scroll`, `browser_wait`, `browser_navigate`, `browser_eval`), each described for an agent. Held by
@@ -1785,7 +1796,7 @@ Spec: `docs/superpowers/specs/2026-10-26-agy-and-agent-motion.md`, Part 1. Facts
 Flare names an agent: `C:\Users\Admin\Documents\Claude\research\flare\2026-10-26-agy-cli-and-flare-agent-map.md`.
 
 - **The third agent.** `AgentKind::Agy` and `DetectedAgent::Agy`, the word `"agy"` in `tabs.json`, `tabs.list` and the
-  `agent` event, shown as "Antigravity" (close question, ribbon, cursor tag, decor tooltip, notifications). The one list is
+  `agent` event, shown as "Antigravity" (close question, cursor tag, decor tooltip, notifications). The one list is
   still `RESUMABLE_AGENTS`; the guard (`no_source_file_lists_the_resumable_agents_by_hand`) now fails on any line that names
   two of the three. Detection: the program `agy` / `agy.exe` as the first token or a program-file argument (one `agy.exe`
   process, no node); `agy` is in the prefilter, so `legacy` and `strategy` pass it and the strict match drops them. Under one

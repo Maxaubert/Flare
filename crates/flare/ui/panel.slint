@@ -1,5 +1,5 @@
 // The panel slot (Surfaces stage 1): a header (title, close) and one native viewer, an image or a
-// read-only text file. The slot is placed by app.slint (right of the grid, after a splitter); this
+// read-only text file. A web page has no header: its address row is the top, with the close at its end. The slot is placed by app.slint (right of the grid, after a splitter); this
 // file draws what is inside it. While the panel is closed nothing is drawn, no timer or animation
 // exists, and the controller keeps the picture and the rows empty.
 //
@@ -301,10 +301,14 @@ component WebButton inherits Rectangle {
     }
 }
 
-// The browser bar of a web panel: back, forward, reload (stop while a page loads) and the address.
-// Enter opens what is typed, Escape puts the address of the page back and hands the keys to the terminal.
+// The browser bar of a web panel: back, forward, reload (stop while a page loads), the address and the
+// panel's close. It is the top of the panel (a web page has no header, Max 2026-10-27). Enter opens what
+// is typed, Escape puts the address of the page back and hands the keys to the terminal.
 component WebBar inherits Rectangle {
     in property <string> url;
+    // Why the last thing asked of the page did not happen (the header's line on other panels), dim at the
+    // field's right end.
+    in property <string> notice;
     in property <bool> loading;
     in property <bool> can-back;
     in property <bool> can-forward;
@@ -320,6 +324,9 @@ component WebBar inherits Rectangle {
     callback stop();
     callback submit(string);
     callback escape();
+    callback close();
+    out property <length> close-x: close-btn.absolute-position.x;
+    out property <length> close-w: close-btn.width;
     public function focus-address() { input.focus(); input.select-all(); }
 
     // The field shows the address of the page unless it is being typed in.
@@ -357,16 +364,28 @@ component WebBar inherits Rectangle {
     field := Rectangle {
         x: Px.snap(8px + 3 * (24px + 2px) + 4px);
         y: (parent.height - self.height) / 2;
-        width: parent.width - self.x - Px.snap(8px);
+        width: close-btn.x - self.x - Px.snap(4px);
         height: Px.snap(24px);
         background: Theme.ground;
         border-radius: Theme.radius-sm;
         border-width: Px.hair();
         border-color: input.has-focus ? Theme.dim : Theme.divider;
         clip: true;
+        notice-text := Text {
+            x: parent.width - Px.snap(8px) - self.width;
+            width: root.notice == "" ? 0px : min(self.preferred-width, Px.snap(parent.width * 0.5));
+            height: parent.height;
+            visible: root.notice != "";
+            vertical-alignment: center;
+            text: root.notice;
+            font-family: Theme.font-ui;
+            font-size: 11.5px;
+            color: Theme.dim;
+            overflow: elide;
+        }
         FocusScope {
             x: Px.snap(8px);
-            width: parent.width - Px.snap(16px);
+            width: parent.width - Px.snap(16px) - (root.notice == "" ? 0px : notice-text.width + Px.snap(8px));
             height: parent.height;
             capture-key-pressed(event) => {
                 if (event.text == Key.Return) {
@@ -410,6 +429,13 @@ component WebBar inherits Rectangle {
                 overflow: elide;
             }
         }
+    }
+    close-btn := WebButton {
+        x: parent.width - self.width - Px.snap(8px);
+        y: (parent.height - self.height) / 2;
+        path: Glyphs.close;
+        label: "Close panel";
+        activated => { root.close(); }
     }
     Rectangle {
         y: parent.height - Px.hair();
@@ -478,13 +504,11 @@ export component PanelSlot inherits Rectangle {
     in property <image> web-still;
     in property <bool> web-has-still;
     in property <bool> web-missing-runtime;
-    // "Claude is using this page" while an agent works in the page (empty: no ribbon). It covers the
-    // head's title, so the page below keeps its size.
-    in property <string> web-ribbon;
-    out property <bool> ribbon-shown: root.open && root.kind == 3 && root.web-ribbon != "";
-    out property <length> ribbon-w: ribbon.width;
-    // The bar is part of the head of a web panel (the page starts under it).
-    out property <length> bar-h: (root.kind == 3 && !root.web-app) ? Px.snap(32px) : 0px;
+    // A web page (not a mini-app) has no header: the bar is its head, and the page starts under it (Max
+    // 2026-10-27: more room for the page). An agent at work shows only in the page's edge glow and its
+    // cursor; the page title stays the tab's and `web.state`'s.
+    property <bool> bar-only: root.kind == 3 && !root.web-app;
+    out property <length> bar-h: root.bar-only ? Px.snap(32px) : 0px;
     out property <length> web-x: web-box.absolute-position.x;
     out property <length> web-y: web-box.absolute-position.y;
     out property <length> web-w: web-box.width;
@@ -493,6 +517,8 @@ export component PanelSlot inherits Rectangle {
     out property <length> web-field-x: web-bar.field-x;
     out property <length> web-field-w: web-bar.field-w;
     out property <string> web-draft: web-bar.draft;
+    out property <length> web-close-x: web-bar.close-x;
+    out property <length> web-close-w: web-bar.close-w;
     callback web-back();
     callback web-forward();
     callback web-reload();
@@ -502,7 +528,7 @@ export component PanelSlot inherits Rectangle {
     public function focus-address() { web-bar.focus-address(); }
 
     // The panel's own pieces in the window, for ui.rect and the tests.
-    out property <length> header-h: Px.snap(32px);
+    out property <length> header-h: root.bar-only ? 0px : Px.snap(32px);
     out property <length> body-x: body.absolute-position.x;
     out property <length> body-y: body.absolute-position.y;
     out property <length> body-w: body.width;
@@ -603,12 +629,13 @@ export component PanelSlot inherits Rectangle {
                 }
             }
         }
-        // The header.
+        // The header (none on a web page: its bar holds the close).
         Rectangle {
             x: 0px;
             y: 0px;
             width: parent.width;
             height: root.header-h;
+            visible: !root.bar-only;
             background: Theme.tabs;
             Text {
                 x: Px.snap(12px);
@@ -631,41 +658,6 @@ export component PanelSlot inherits Rectangle {
                 font-family: Theme.font-ui;
                 font-size: 11.5px;
                 color: Theme.dim;
-            }
-            ribbon := Rectangle {
-                x: 0px;
-                width: parent.width - close-btn.width - Px.snap(16px);
-                height: parent.height - Px.hair();
-                visible: root.kind == 3 && root.web-ribbon != "";
-                // Opaque, so the page's title and the note under it do not show through the tint.
-                background: Theme.tabs;
-                accessible-role: text;
-                accessible-label: root.web-ribbon;
-                Rectangle {
-                    width: parent.width;
-                    height: parent.height;
-                    background: Theme.accent.with-alpha(0.22);
-                }
-                Rectangle {
-                    x: Px.snap(12px);
-                    y: (parent.height - self.height) / 2;
-                    width: Px.snap(7px);
-                    height: Px.snap(7px);
-                    border-radius: Px.snap(4px);
-                    background: Theme.accent;
-                }
-                Text {
-                    x: Px.snap(26px);
-                    width: parent.width - Px.snap(26px) - Px.snap(8px);
-                    height: parent.height;
-                    vertical-alignment: center;
-                    text: root.web-ribbon;
-                    font-family: Theme.font-ui;
-                    font-size: 12px;
-                    font-weight: 600;
-                    color: Theme.accent-hi;
-                    overflow: elide;
-                }
             }
             // The wrap button sits left of the close button, on a text file only.
             wrap-btn := WebButton {
@@ -694,8 +686,9 @@ export component PanelSlot inherits Rectangle {
             y: root.header-h;
             width: parent.width;
             height: root.bar-h;
-            visible: root.kind == 3 && !root.web-app;
+            visible: root.bar-only;
             url: root.web-url;
+            notice: root.sub;
             loading: root.web-loading;
             can-back: root.web-can-back;
             can-forward: root.web-can-forward;
@@ -705,6 +698,7 @@ export component PanelSlot inherits Rectangle {
             stop => { root.web-stop(); }
             submit(text) => { root.web-submit(text); }
             escape => { root.escape(); }
+            close => { root.close(); }
         }
         body := Rectangle {
             x: 0px;
