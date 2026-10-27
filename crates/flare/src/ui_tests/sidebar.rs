@@ -483,13 +483,13 @@ fn the_grip_drags_the_width_and_shows_its_line_only_on_hover() {
 fn the_new_tab_button_opens_a_tab_and_its_arrow_opens_the_folder_menu() {
     let h = harness(1.0);
     let news = Rc::new(RefCell::new(0));
-    let menus = Rc::new(RefCell::new(Vec::<(f32, f32)>::new()));
+    let menus = Rc::new(RefCell::new(Vec::<(f32, f32, f32)>::new()));
     {
         let n = news.clone();
         h.comp.on_new_tab(move || *n.borrow_mut() += 1);
         let m = menus.clone();
         h.comp
-            .on_folder_menu(move |x, y| m.borrow_mut().push((x, y)));
+            .on_folder_menu(move |r, t, b| m.borrow_mut().push((r, t, b)));
     }
     // Foot: from css y 449; the button is 34 high, 9 below it (8 padding and the hairline), css x 8 to 212.
     // The arrow is its last 40 px (172 to 212), behind a hairline at 172.
@@ -514,7 +514,7 @@ fn the_new_tab_button_opens_a_tab_and_its_arrow_opens_the_folder_menu() {
     assert!(menus.borrow().is_empty());
     assert_eq!(*news.borrow(), 1);
 
-    // The arrow: its own hover, then the menu anchored on the button (its left edge, its top).
+    // The arrow: its own hover, then the menu as a dropdown from the button (its right edge, top and foot).
     h.move_to(192.0, 475.0);
     h.advance(0);
     let f = h.render();
@@ -531,8 +531,46 @@ fn the_new_tab_button_opens_a_tab_and_its_arrow_opens_the_folder_menu() {
     assert_eq!(*news.borrow(), 1, "the arrow opens no tab");
     let got = menus.borrow().clone();
     assert_eq!(got.len(), 1);
-    assert!((got[0].0 - 8.0).abs() < 0.6, "menu x {got:?}");
-    assert!((got[0].1 - 458.0).abs() < 0.6, "menu foot {got:?}");
+    assert!(
+        (got[0].0 - 212.0).abs() < 0.6,
+        "the arrow's right edge {got:?}"
+    );
+    assert!((got[0].1 - 458.0).abs() < 0.6, "the button's top {got:?}");
+    assert!((got[0].2 - 492.0).abs() < 0.6, "the button's foot {got:?}");
+}
+
+/// The chevron's ink in the rows above its middle and in the rows below it (css 190 to 194 wide).
+fn chevron_ink(f: &Frame) -> (u32, u32) {
+    let ink = |y0: u32| -> u32 {
+        (y0..y0 + 3)
+            .flat_map(|y| (190..195).map(move |x| (x, y)))
+            .map(|(x, y)| u32::from(f.px(x, y)[0]))
+            .sum()
+    };
+    (ink(472), ink(476))
+}
+
+#[test]
+fn the_arrow_stays_pressed_and_points_up_while_its_menu_is_open() {
+    let h = harness(1.0);
+    h.leave();
+    h.advance(0);
+    let f = h.render();
+    let rest = f.px(180, 466);
+    let (up, down) = chevron_ink(&f);
+    assert!(down > up, "a closed arrow points down ({up} over {down})");
+    h.comp.set_folder_open(true);
+    h.advance(0);
+    let f = h.render();
+    assert!(
+        Frame::near(f.px(180, 466), [40, 40, 40, 255], 4),
+        "the open arrow's bg {:?} (resting {rest:?})",
+        f.px(180, 466)
+    );
+    let (up, down) = chevron_ink(&f);
+    assert!(up > down, "an open arrow points up ({up} over {down})");
+    // Only the arrow: the main part keeps its resting colour.
+    assert!(!Frame::near(f.px(20, 475), [40, 40, 40, 255], 4));
 }
 
 #[test]

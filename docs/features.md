@@ -1876,8 +1876,11 @@ Spec: `docs/superpowers/specs/2026-10-27-new-tab-folder-arrow.md`; the picked lo
 
 - **A split New tab button in the sidebar.** The main part opens a tab in the default folder at once (Ctrl+T does the
   same); a 40 px arrow on the right, behind a full-height hairline, with a chevron and its own hover, opens the folder
-  menu just above the button (its left edge on the button's). The main part's tooltip is "New tab (Ctrl+T)", the
-  arrow's "Open in a folder" (also its accessible name). A right-click on the button does nothing any more.
+  menu as a dropdown from the arrow (Max 2026-10-27, spec decision 5): its right edge on the button's right edge, opening
+  left and up 4 px above the button, below it only when there is no room above, held 8 px inside the window (it may
+  cover the terminal past a narrow sidebar). While it is open the arrow stays lit and its chevron points up. The main
+  part's tooltip is "New tab (Ctrl+T)", the arrow's "Open in a folder" (also its accessible name). A right-click on the
+  button does nothing any more.
 - **The strip's + is unchanged.** Same look, a click opens a tab, a right-click opens the same folder menu at the
   pointer (two small buttons side by side there would make New tab hard to hit).
 - **The folder menu.** "Choose a folder…" is always the first row: the folder picker (starting in the new-tab folder),

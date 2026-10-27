@@ -63,6 +63,98 @@ fn open_list(h: &Harness<MenusPreview>, rows: Vec<OverflowRow>) {
     h.advance(0);
 }
 
+/// A dropdown from a button whose right edge is `right`, top `top` and foot `foot` (the New tab arrow).
+fn open_drop(h: &Harness<MenusPreview>, rows: Vec<MenuRow>, right: f32, top: f32, foot: f32) {
+    h.comp.set_menu_drop(true);
+    h.comp.set_menu_foot(foot);
+    open_menu(h, rows, right, top);
+    // The rows are built on the first frame; the panel is placed by its height.
+    h.render();
+    h.advance(0);
+}
+
+#[test]
+fn a_dropdown_hangs_from_its_buttons_right_edge_and_opens_upward_4_px_clear() {
+    for scale in SCALES {
+        let h = harness(scale);
+        // A button from 250 to 292 css x, 240 to 274 css y: room above, none below.
+        open_drop(
+            &h,
+            vec![row("One"), row("Two"), row("Three")],
+            292.0,
+            240.0,
+            274.0,
+        );
+        let (px, py) = (h.comp.get_panel_x(), h.comp.get_panel_y());
+        let (pw, ph) = (h.comp.get_panel_w(), h.comp.get_panel_h());
+        let px1 = 1.0 / scale;
+        assert!(
+            (px + pw - 292.0).abs() <= px1,
+            "right edge {} at {scale}",
+            px + pw
+        );
+        assert!(px < 250.0, "it opens toward the left, from {px} at {scale}");
+        assert!(
+            (py + ph - 236.0).abs() <= px1,
+            "foot {} at {scale}",
+            py + ph
+        );
+        // The pixels agree: no panel right of the button's edge, nor between it and the button.
+        let f = h.render();
+        let right = h.phys(292.5);
+        assert_eq!(
+            f.count_where(right, 0, f.w, f.h, |p| Frame::near(p, SIDE_FLAT, 2)),
+            0,
+            "nothing right of the button at {scale}"
+        );
+        let below = h.phys(236.5);
+        assert_eq!(
+            f.count_where(0, below, f.w, f.h, |p| Frame::near(p, SIDE_FLAT, 2)),
+            0,
+            "nothing under its foot at {scale}"
+        );
+    }
+}
+
+#[test]
+fn a_dropdown_drops_below_when_there_is_no_room_above_and_stays_in_the_window() {
+    for scale in SCALES {
+        let h = harness(scale);
+        // A button near the top: three rows do not fit above it, so the panel hangs under its foot.
+        open_drop(
+            &h,
+            vec![row("One"), row("Two"), row("Three")],
+            292.0,
+            30.0,
+            64.0,
+        );
+        let (px, py) = (h.comp.get_panel_x(), h.comp.get_panel_y());
+        let pw = h.comp.get_panel_w();
+        let px1 = 1.0 / scale;
+        assert!((py - 68.0).abs() <= px1, "top {py} at {scale}");
+        assert!((px + pw - 292.0).abs() <= px1, "right edge at {scale}");
+
+        // A button at the window's left edge: the panel is held 8 px inside rather than leaving it.
+        let h = harness(scale);
+        open_drop(&h, vec![row("One")], 40.0, 240.0, 274.0);
+        assert!(
+            (h.comp.get_panel_x() - 8.0).abs() <= px1,
+            "left edge {} at {scale}",
+            h.comp.get_panel_x()
+        );
+
+        // Neither side has room (a very short window): the panel starts 8 px from the top.
+        let h = harness(scale);
+        let many: Vec<MenuRow> = (0..12).map(|i| row(&format!("Row {i}"))).collect();
+        open_drop(&h, many, 292.0, 120.0, 154.0);
+        assert!(
+            (h.comp.get_panel_y() - 8.0).abs() <= px1,
+            "top {} at {scale}",
+            h.comp.get_panel_y()
+        );
+    }
+}
+
 #[test]
 fn the_menu_clamps_inside_the_window() {
     for scale in SCALES {
