@@ -28,9 +28,8 @@ pub fn newline_key(agent: Option<AgentKind>) -> &'static str {
 /// so it gets ^W (0x17). Claude, Codex and a plain shell keep ^H.
 pub fn word_rubout_key(agent: Option<AgentKind>) -> Option<&'static str> {
     match agent {
-        Some(AgentKind::Agy) => Some(""),
-        Some(AgentKind::Claude) => None,
-        Some(AgentKind::Codex) | None => None,
+        Some(AgentKind::Agy) => Some("\x17"),
+        Some(AgentKind::Claude) | Some(AgentKind::Codex) | None => None,
     }
 }
 
@@ -92,7 +91,7 @@ mod tests {
 
     #[test]
     fn word_rubout_is_ctrl_w_for_agy_only() {
-        assert_eq!(word_rubout_key(Some(AgentKind::Agy)), Some(""));
+        assert_eq!(word_rubout_key(Some(AgentKind::Agy)), Some("\x17"));
         assert_eq!(word_rubout_key(Some(AgentKind::Claude)), None);
         assert_eq!(word_rubout_key(Some(AgentKind::Codex)), None);
         assert_eq!(word_rubout_key(None), None);
