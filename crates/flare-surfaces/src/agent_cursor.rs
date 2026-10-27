@@ -128,7 +128,8 @@ impl AgentCursor {
     /// The next action lands at `p`: the arrow glides there from where it is drawn, or from where it
     /// rested before its fade (on the same viewport), and appears there when neither is known. A fade
     /// under way is called off. Answers how long the job holds its events: the glide's time,
-    /// [`APPEAR_MS`] for an appearance, 0 when the arrow is already there or nothing moves (no motion).
+    /// [`APPEAR_MS`] for an appearance (at its rested spot too), 0 when the arrow is drawn there already
+    /// or nothing moves (no motion).
     pub fn point(&mut self, p: Point, now_ms: u64) -> u64 {
         let rest = self.rest.take().filter(|r| r.same_viewport(&p));
         let from = self.position(now_ms).or(rest);
@@ -142,7 +143,13 @@ impl AgentCursor {
                     ms,
                 });
             }
-            Some(_) => self.glide = None,
+            // Already there: no wait while it is drawn, an appearance's when it comes back at its spot.
+            Some(_) => {
+                if self.at.is_none() && !self.still {
+                    ms = APPEAR_MS;
+                }
+                self.glide = None;
+            }
             None => {
                 self.glide = None;
                 self.ripples.clear();
@@ -413,6 +420,12 @@ mod tests {
         assert_eq!(c.frame(5_000).unwrap().alpha, 1.0);
         assert_eq!(c.frame(5_000 + ms).unwrap().at, p(400.0, 500.0));
         assert!(!c.remembers(), "used");
+        // Back at the very spot it rested: nothing to glide, but seen before the press.
+        c.fade(6_000);
+        assert_eq!(c.frame(6_000 + FADE_MS), None);
+        assert_eq!(c.point(p(400.0, 500.0), 9_000), APPEAR_MS);
+        assert_eq!(c.frame(9_000).unwrap().at, p(400.0, 500.0));
+        assert_eq!(c.point(p(400.0, 500.0), 9_500), 0, "drawn there already");
         // Faded mid-glide: it rests where it was drawn.
         let mut c = AgentCursor::default();
         c.point(p(0.0, 0.0), 0);

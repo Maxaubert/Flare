@@ -1983,6 +1983,8 @@ impl WebCtl {
         self.border_client = None;
         if !self.border.shown() {
             self.border_tab = None;
+            // A page-sized bitmap is not kept while nothing draws it.
+            self.border_bmp = None;
         }
     }
 
