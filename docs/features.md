@@ -1782,7 +1782,7 @@ Flare names an agent: `C:\Users\Admin\Documents\Claude\research\flare\2026-10-26
   (the picked mock `docs/surfaces/agy-icon-mock.html` has 32, not the 46 the spec guessed), one Slint `Path` per colour
   (`Glyphs.agy`, `Theme.agy`), pinned to `flare_agent::icon::{AGY_PIXELS, AGY_COLOURS, agy_paths}` by
   `ui_text_marks.rs`. It stands still unless a plugin picks a motion (Part 2, "Agent icons that move").
-- **Keys.** agy takes Codex's image paste (^V) and newline (backslash, CR) until they are measured.
+- **Keys.** agy takes Codex's image paste (^V) and newline (backslash, CR) until they are measured. Ctrl+Backspace sends ^W (0x17) while agy runs: agy deletes a word on ^W or Alt+Backspace and ignores ^H and every encoded Ctrl+Backspace (measured on 1.4.8), and Flare keeps Ctrl+W for closing a tab. Every other program still gets ^H.
 - **Not in this PR.** Hooks for agy, Flare's MCP server in agy's config (`agy mcp add` writes the user's global file),
   dictation routing, answering the `OSC 7501 ; ?` query (the spec's reply is
   `OSC 7501 ; ? : states=idle,working,done,blocked,error : kinds=permission,question,auth ST`; agy's own check is not

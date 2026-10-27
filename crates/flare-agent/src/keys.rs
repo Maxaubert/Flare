@@ -1,4 +1,4 @@
-//! The agent's image and newline keys (Task 9).
+//! The agent's image, newline and word-delete keys (Task 9).
 //! AgentKind, DetectedAgent, is_resumable, CODEX_RESUME (Task 12).
 
 use crate::kinds::AgentKind;
@@ -19,6 +19,18 @@ pub fn newline_key(agent: Option<AgentKind>) -> &'static str {
         Some(AgentKind::Claude) => "\n",
         Some(AgentKind::Agy) => "\\\r",
         Some(AgentKind::Codex) | None => "\\\r",
+    }
+}
+
+/// What Ctrl+Backspace sends in place of the encoder's ^H (0x08), or None to leave it to the encoder.
+/// agy's prompt (Bubble Tea) deletes a word on ^W or ESC DEL and ignores ^H and every encoded
+/// Ctrl+Backspace (kitty, modifyOtherKeys, win32-input-mode), measured on agy 1.4.8 under ConPTY,
+/// so it gets ^W (0x17). Claude, Codex and a plain shell keep ^H.
+pub fn word_rubout_key(agent: Option<AgentKind>) -> Option<&'static str> {
+    match agent {
+        Some(AgentKind::Agy) => Some(""),
+        Some(AgentKind::Claude) => None,
+        Some(AgentKind::Codex) | None => None,
     }
 }
 
@@ -76,6 +88,14 @@ mod tests {
     fn agy_takes_codexs_keys_until_measured() {
         assert_eq!(image_paste_key(Some(AgentKind::Agy)), "\x16");
         assert_eq!(newline_key(Some(AgentKind::Agy)), "\\\r");
+    }
+
+    #[test]
+    fn word_rubout_is_ctrl_w_for_agy_only() {
+        assert_eq!(word_rubout_key(Some(AgentKind::Agy)), Some(""));
+        assert_eq!(word_rubout_key(Some(AgentKind::Claude)), None);
+        assert_eq!(word_rubout_key(Some(AgentKind::Codex)), None);
+        assert_eq!(word_rubout_key(None), None);
     }
 
     #[test]
