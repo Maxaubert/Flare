@@ -93,3 +93,16 @@ Max's decisions (recorded in `docs/surfaces/decisions.md`, "The agent's cursor n
   layered popup the size of the page (Slint cannot draw over the browser's child window), transparent to clicks; a fade
   changes only its constant alpha.
 - **Animation effects off:** no glide and no fade; the arrow is placed at once, the border shows and goes at once.
+- **Later the same day, Max, after trying it live: the border becomes an edge glow** ("the frame needs to be more like a
+  gradient effect overlay from the edges"). The cursor's orange at 50 % right at each page edge, fading to clear 32 CSS px
+  in (scaled with the DPI), eased (quadratic), the edges combined as light is (`1 - (1 - a)(1 - b)`) so a corner is no
+  stronger than an edge and has no seam. Drawn as four edge bands in four layered popups (`GlowWindow`, built by
+  `edge_glow`), so a 4K page costs about 3 MB and 1.2 ms per rebuild (a page-sized bitmap was 33 MB and about 4.5 ms to
+  build, plus its copy). Same on, fade, off and takeover rules; rebuilt only on a size or scale change.
+- **Max, same day: the panel drag was laggy and steppy.** Measured in a test Flare (SendInput at 800 px/s, the browser's
+  window polled every ms, the screen read every frame): the page followed within a frame or so, but each step ran two
+  full syncs (the left edge and the width changed separately), and while the agent worked the border's page-sized bitmap
+  was rebuilt and copied at every step (4 to 6 ms each), so frames came 20 ms apart (p90) instead of 7 to 10. Now: one sync
+  per step (a single struct property for the page's rectangle), the glow is off the page while the splitter is held and
+  back at the new size on release, and holding the splitter is not a takeover (the page's edge trails the pointer, so the
+  pointer was over the page with its button down and the agent's call was ended).

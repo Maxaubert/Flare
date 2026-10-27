@@ -1652,7 +1652,7 @@ pub fn run_window(
                     c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
                     // The agent's cursor and the border round the page while it works: windows owned
                     // by this one (under --e2e the recording stand-ins WebCtl starts with stay).
-                    c.set_agent_border(Box::new(flare_win::agent_cursor::CursorWindow::new(hwnd)));
+                    c.set_agent_border(Box::new(flare_win::agent_cursor::GlowWindow::new(hwnd)));
                     c.set_agent_cursor(Box::new(flare_win::agent_cursor::CursorWindow::new(hwnd)));
                 }
             },

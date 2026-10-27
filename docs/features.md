@@ -1155,14 +1155,20 @@ MCP tools and how a look is written for the model).
   `the_person_taking_over_takes_the_cursor_away_at_once`,
   `a_menu_over_the_page_or_a_tab_in_front_hides_the_cursor_and_a_hidden_page_does_not_wait` and the e2e `agentBrowser` (at the
   button's middle at 100 and 225 percent, gone after the hold, its spot remembered).
-- **The agent's border.** While an agent uses the page in front, from its first call until the ribbon's hold ends, a light
-  orange border (the cursor's orange at 55 % opacity, 2 px at 100 %, square corners like the page) rings the page's
-  rectangle; it fades with the arrow in 200 ms and comes back with the next call. It is a second window of Flare's own above
-  the page (the browser is a child window Slint cannot draw over), transparent to every click. A takeover, a menu over the
-  page, a tab behind or a closed panel takes it away at once. Held by
-  `a_light_orange_border_rings_the_page_while_the_agent_uses_it_and_fades_with_the_arrow`,
-  `a_menu_over_the_page_takes_the_border_away_and_it_comes_back_after`, the `border` tests in `flare-win` and the e2e
-  `agentBrowser` (the page's own rectangle while the ribbon holds, gone after).
+- **The agent's glow.** While an agent uses the page in front, from its first call until the ribbon's hold ends, a soft
+  orange glow comes in from the page's edges (2026-10-27, Max: it was a 2 px ring): the cursor's orange at 50 % right at
+  each edge, fading to clear 32 CSS px in (eased, scaled with the DPI), corners blended with no seam. It fades with the
+  arrow in 200 ms and comes back with the next call. It is four windows of Flare's own above the page, one per edge band
+  (the browser is a child window Slint cannot draw over), transparent to every click; the bands are rebuilt only when the
+  page's size or scale changes (about 1.2 ms for a 4K page). A takeover, a menu over the page, a tab behind or a closed
+  panel takes it away at once; while the person holds the panel's splitter it is off the page and comes back at the new
+  size when they let go. Held by `a_light_orange_border_rings_the_page_while_the_agent_uses_it_and_fades_with_the_arrow`,
+  `a_menu_over_the_page_takes_the_border_away_and_it_comes_back_after`,
+  `a_held_splitter_takes_the_glow_away_while_the_page_follows_every_step_and_it_comes_back_after`, the `glow` tests in
+  `flare-win` and the e2e `agentBrowser` (the page's own rectangle while the ribbon holds, gone after).
+- **The panel drag follows the pointer.** Dragging the splitter of a web panel moves the page once per step (one callback
+  for its whole rectangle, not one per side), never rebuilds the agent's glow, and is not a takeover of a page the agent is
+  using (2026-10-27, Max: it was laggy and went in steps).
 - **The person keeps control.** A key of theirs in the page, or a mouse button pressed over it, ends the running call with
   `interrupted` and drops the ribbon; the agent's own key presses are never the app's chords. Held by
   `a_key_of_the_persons_posts_a_takeover_only_while_an_agent_works`, `the_agents_own_key_press_is_neither_the_persons_nor_a_chord`,

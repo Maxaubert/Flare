@@ -43,7 +43,7 @@ impl AppCtl {
     }
 
     /// What draws the border round the page while the agent uses it (as [`AppCtl::set_agent_cursor`]).
-    pub fn set_agent_border(&mut self, shell: Box<dyn flare_win::agent_cursor::CursorShell>) {
+    pub fn set_agent_border(&mut self, shell: Box<dyn flare_win::agent_cursor::GlowShell>) {
         self.web.set_border_shell(shell);
     }
 

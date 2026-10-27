@@ -2337,6 +2337,48 @@ fn a_light_orange_border_rings_the_page_while_the_agent_uses_it_and_fades_with_t
 }
 
 #[test]
+fn a_held_splitter_takes_the_glow_away_while_the_page_follows_every_step_and_it_comes_back_after() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    let _rx = look(&f, &id);
+    f.pump();
+    assert!(border(&f).0, "the glow is up while the agent works");
+    let c = &f.h.comp;
+    let w0 = c.get_panel_slot_w();
+    c.set_panel_drag_w(w0);
+    c.set_panel_splitting(true);
+    f.h.advance(0);
+    f.pump();
+    assert!(!border(&f).0, "off the page while the splitter is held");
+    assert!(!recorded_border().shown);
+    let draws = recorded_border().draws;
+    for step in 1..=5 {
+        c.set_panel_drag_w(w0 - 8.0 * step as f32);
+        f.h.advance(0);
+        f.pump();
+        // The page follows each step at once; the glow is not drawn again for it.
+        assert_eq!(last_bounds(&slot, &id), Some(drawn(&f)), "step {step}");
+        assert!(!border(&f).0);
+        assert_eq!(recorded_border().draws, draws, "step {step}");
+    }
+    // Let go: the glow is back, once, at the page's new size.
+    c.invoke_end_splitter();
+    f.h.advance(0);
+    f.pump();
+    let (shown, rect, _) = border(&f);
+    let r = drawn(&f);
+    assert!(shown, "back after the drag");
+    assert_eq!(rect, json!([r.x, r.y, r.w, r.h]));
+    assert_eq!(recorded_border().draws, draws + 1);
+    assert_eq!(
+        (recorded_border().w, recorded_border().h),
+        (r.w as u32, r.h as u32)
+    );
+}
+
+#[test]
 fn a_menu_over_the_page_takes_the_border_away_and_it_comes_back_after() {
     let (f, _h, _) = live(Opts::default());
     let slot = with_fake(&f);

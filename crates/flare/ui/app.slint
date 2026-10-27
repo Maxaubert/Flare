@@ -471,10 +471,12 @@ export component AppWindow inherits Window {
     // browser window follows. And an overlay opened or closed: the browser window hides or shows.
     callback panel-web-moved();
     callback overlay-changed();
-    changed panel-web-x => { root.panel-web-moved(); }
-    changed panel-web-y => { root.panel-web-moved(); }
-    changed panel-web-w => { root.panel-web-moved(); }
-    changed panel-web-h => { root.panel-web-moved(); }
+    // One callback for the four: a splitter step moves the left edge and the width together, and the page
+    // follows once, not once per side (Max, 2026-10-27: the drag was steppy).
+    property <{x: length, y: length, w: length, h: length}> panel-web-rect: { x: root.panel-web-x, y: root.panel-web-y, w: root.panel-web-w, h: root.panel-web-h };
+    changed panel-web-rect => { root.panel-web-moved(); }
+    // The splitter is taken or let go: the agent's glow comes off the page while it is held, and back after.
+    changed panel-splitting => { root.panel-web-moved(); }
     // The splitter was let go: the slot share of the page.
     callback panel-splitter-released(float);
     // The page (right of the sidebar) in the window, for the probes and the layout tests.

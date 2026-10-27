@@ -28,8 +28,8 @@
 //! (`flare_win::agent_cursor`, a window of Flare's own above the page, never in it) glides there,
 //! ripples on each press, stays while the ribbon does and fades after. It never jumps: after its fade the
 //! next action on the same page starts it where it rested. While the agent uses the page, from its first
-//! call until the ribbon's hold ends, a light orange border (a second such window) rings the page and
-//! fades with the arrow. Both are drawn only over the page in front and live: a takeover, a closed
+//! call until the ribbon's hold ends, an orange glow comes in from the page's edges (four more such
+//! windows, one per edge band) and fades with the arrow; it is off the page while the splitter is held. Both are drawn only over the page in front and live: a takeover, a closed
 //! panel, a tab behind, a Flare menu over the page (the still) or a minimised window takes them away at
 //! once. The agent tick places them again each turn, so they follow the window and the splitter.
 
@@ -53,7 +53,8 @@ use flare_tabs::keymap::{ChordId, KeyContext, chord_of};
 use flare_term::keys::KeyEvent;
 use flare_web::{KeyFilter, KeyPress, Nav, Sink, WebBackend, WebEvent};
 use flare_win::agent_cursor::{
-    CursorArt, CursorBitmap, CursorShell, RecordBorder, RecordCursor, border_bitmap,
+    CursorArt, CursorBitmap, CursorShell, EdgeGlow, GlowShell, RecordBorder, RecordCursor,
+    edge_glow,
 };
 use serde_json::{Value, json};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
@@ -458,6 +459,8 @@ pub struct WebCtl {
     phase: Phase,
     token: u64,
     bounds: Option<(String, PhysRect)>,
+    /// The splitter is held (read at each sync): the glow is off the screen, not rebuilt at every step.
+    splitting: bool,
     keys: Rc<KeyState>,
     has_focus: bool,
     scripts: HashMap<u64, Result<String, String>>,
@@ -513,13 +516,13 @@ pub struct WebCtl {
     /// Which document of its tab the cursor last pointed on (`TabWeb::doc`): a spot it rested at on an
     /// earlier page is forgotten.
     cursor_doc: u64,
-    /// The border round the page while the agent uses it: its state, its shell, its tab, its bitmap for
+    /// The glow round the page while the agent uses it: its state, its shell, its tab, its edge bands for
     /// (page width, height, scale in hundredths), and what was last drawn (top left on the screen, size,
     /// opacity) and where in client pixels.
     border: AgentBorder,
-    border_shell: Box<dyn CursorShell>,
+    border_shell: Box<dyn GlowShell>,
     border_tab: Option<String>,
-    border_bmp: Option<((i32, i32, u32), CursorBitmap)>,
+    border_bmp: Option<((i32, i32, u32), EdgeGlow)>,
     border_last: Option<((i32, i32, i32, i32), u8)>,
     border_client: Option<PhysRect>,
     /// Windows' animation effects switch, read once per agent call (tests pin it).
@@ -626,6 +629,7 @@ impl WebCtl {
             phase: Phase::Hidden,
             token: 0,
             bounds: None,
+            splitting: false,
             full: None,
             covers: false,
             window_follows: false,
@@ -681,7 +685,7 @@ impl WebCtl {
     }
 
     /// What draws the border round the page while the agent uses it (as [`WebCtl::set_cursor_shell`]).
-    pub fn set_border_shell(&mut self, shell: Box<dyn CursorShell>) {
+    pub fn set_border_shell(&mut self, shell: Box<dyn GlowShell>) {
         self.border_shell.hide();
         self.border_shell = shell;
         self.border_last = None;
@@ -895,6 +899,7 @@ impl WebCtl {
         }
         let shown = app.get_panel_shown();
         let overlay = app.get_overlay_open();
+        self.splitting = shown && app.get_panel_splitting();
         // A Flare menu or dialog over a page in full screen ends the full screen: the page goes back into its
         // panel (where its still is drawn) and the window back to what it was, not a whole-window frame
         // squashed into the panel's box under the menu.
@@ -1983,7 +1988,7 @@ impl WebCtl {
         self.border_client = None;
         if !self.border.shown() {
             self.border_tab = None;
-            // A page-sized bitmap is not kept while nothing draws it.
+            // The glow's bands are not kept while nothing draws them.
             self.border_bmp = None;
         }
     }
@@ -2020,11 +2025,20 @@ impl WebCtl {
             self.border_off();
             return;
         };
+        if self.splitting {
+            // The person is moving the splitter: a glow rebuilt for every step would cost the drag its frames.
+            // It is back, at the page's new size, once the splitter is let go.
+            if self.border_last.take().is_some() {
+                self.border_shell.hide();
+            }
+            self.border_client = None;
+            return;
+        }
         let alpha = (a * 255.0).round().clamp(0.0, 255.0) as u8;
         let scale_key = (self.scale.clamp(0.5, 4.0) * 100.0).round() as u32;
         let size = (rect.w, rect.h, scale_key);
         if self.border_bmp.as_ref().is_none_or(|(k, _)| *k != size) {
-            let bmp = border_bitmap(
+            let bmp = edge_glow(
                 rect.w.max(0) as u32,
                 rect.h.max(0) as u32,
                 f64::from(scale_key) / 100.0,
@@ -2194,8 +2208,11 @@ impl WebCtl {
     /// One turn of the agent timer. False when nothing is left for it to watch.
     fn agent_tick(&mut self) -> bool {
         let now = self.now_ms();
-        // The person's mouse: a button down over the page in front while the agent is working there.
-        if let (Some(hwnd), Some((tab, rect))) = (self.hwnd, self.bounds.clone())
+        // The person's mouse: a button down over the page in front while the agent is working there. Not while
+        // the splitter is held: the page's edge trails the pointer, which is then over the page with its button
+        // down, and resizing the panel is not taking the page over.
+        if let (Some(hwnd), Some((tab, rect)), false) =
+            (self.hwnd, self.bounds.clone(), self.splitting)
             && self.tabs.get(&tab).is_some_and(|t| t.agent.is_some())
             && self.shown_tab.as_deref() == Some(tab.as_str())
             && self.phase == Phase::Live
