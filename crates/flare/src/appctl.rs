@@ -82,8 +82,8 @@ use crate::font_ctl::{FontCtl, effective_px};
 use crate::help_ctl::{HelpCtl, next_open_seq};
 use crate::mark_colours::{UiMarks, current_palette, indicator_of, picks_from, ui_marks};
 use crate::menus_ui::{
-    CHOOSE_FOLDER, MenuKind, MenuRowData, OverflowRowData, TipHost, glyph_path, overflow_rows,
-    plus_menu_rows, tab_menu_rows, toggle_pin_in_menu,
+    MenuKind, MenuRowData, OverflowRowData, TipHost, glyph_path, overflow_rows, plus_menu_rows,
+    tab_menu_rows, toggle_pin_in_menu,
 };
 use crate::panel_ctl::{PanelCtl, PanelMsgBox};
 use crate::settings_ctl::{SettingsCtl, SettingsMsg};
@@ -2700,7 +2700,8 @@ impl AppCtl {
         };
         match &m.kind {
             MenuKind::Plus => {
-                if row.label == CHOOSE_FOLDER {
+                // The first row is always "Choose a folder…"; by its place, as a folder may carry that name.
+                if i == 0 {
                     self.choose_folder();
                 } else if !path.is_empty() {
                     self.open_recent(path);
@@ -5106,6 +5107,7 @@ mod tests {
     mod splitter_tests;
     mod web_tests;
     use super::*;
+    use crate::menus_ui::CHOOSE_FOLDER;
     use crate::openers::{OpenedRecord, RecordingOpeners};
     use crate::ui_harness::{Frame, Harness};
     use flare_render::glyph::{FakeGlyphs, GlyphSource};
@@ -5582,6 +5584,22 @@ mod tests {
         f.h.comp.invoke_menu_picked(1);
         f.pump_until("the tab", |f| f.rows() == 1);
         assert_eq!(f.cwds(), ["C:\\home\\Documents"]);
+    }
+
+    #[test]
+    fn a_folder_named_choose_a_folder_opens_itself_not_the_picker() {
+        let named = format!("C:\\home\\{CHOOSE_FOLDER}");
+        let f = fx();
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::StarterFolders(vec![named.clone()]));
+        f.ctl.borrow_mut().open_plus_menu(10.0, 10.0);
+        let rows = f.h.comp.get_menu_rows();
+        assert_eq!(rows.row_data(1).unwrap().label.as_str(), CHOOSE_FOLDER);
+        f.h.comp.invoke_menu_picked(1);
+        f.pump_until("the tab", |f| f.rows() == 1);
+        assert_eq!(f.cwds(), [named.as_str()]);
+        assert!(f.log.borrow().picks.is_empty(), "no picker");
     }
 
     #[test]
