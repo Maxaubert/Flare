@@ -721,6 +721,8 @@ pub use win::CursorWindow;
 #[cfg(windows)]
 pub struct GlowWindow {
     parts: Vec<CursorWindow>,
+    /// How many of `parts` the glow last shown uses (a small page has fewer than four bands).
+    used: usize,
 }
 
 #[cfg(windows)]
@@ -728,6 +730,7 @@ impl GlowWindow {
     pub fn new(owner: isize) -> Self {
         Self {
             parts: (0..4).map(|_| CursorWindow::new(owner)).collect(),
+            used: 0,
         }
     }
 }
@@ -738,6 +741,7 @@ impl GlowShell for GlowWindow {
         if glow.bands.is_empty() {
             return false;
         }
+        self.used = glow.bands.len().min(self.parts.len());
         let mut ok = true;
         for (i, part) in self.parts.iter_mut().enumerate() {
             match glow.bands.get(i) {
@@ -749,15 +753,20 @@ impl GlowShell for GlowWindow {
     }
 
     fn set_alpha(&mut self, alpha: u8) -> bool {
-        // Every part shown takes the new blend; one that cannot has the caller show the glow again whole.
+        // Every part shown takes the new blend; one that cannot has the caller show the glow again whole. The
+        // parts a small page leaves hidden are not asked: they would say no, and every fade step redraw it all.
+        if self.used == 0 {
+            return false;
+        }
         let mut ok = true;
-        for part in &mut self.parts {
+        for part in &mut self.parts[..self.used] {
             ok &= part.set_alpha(alpha);
         }
         ok
     }
 
     fn hide(&mut self) {
+        self.used = 0;
         for part in &mut self.parts {
             part.hide();
         }
