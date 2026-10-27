@@ -15,7 +15,7 @@ use crate::custom_theme::{palette_of, with_ground_alpha};
 use crate::help_prefs;
 use crate::kv::PrefStore;
 use crate::look::{AgentColourState, AgentIndicator, LookStore};
-use crate::new_tab::{self, NewTabMode};
+use crate::new_tab;
 use crate::page::appearance;
 use crate::tab_layout;
 use crate::tab_switch;
@@ -179,7 +179,7 @@ pub fn apply(ctx: &Ctx, ev: Event) -> Vec<Effect> {
 /// A folder the picker returned: the new-tab folder. Nothing chosen writes nothing.
 pub fn folder_picked(prefs: &PrefStore, dir: Option<PathBuf>) {
     if let Some(dir) = dir {
-        new_tab::set_new_tab_mode(prefs, NewTabMode::Folder, Some(&dir.to_string_lossy()));
+        new_tab::set_new_tab_folder(prefs, &dir.to_string_lossy());
     }
 }
 
@@ -219,14 +219,6 @@ fn choose(ctx: &Ctx, row: &str, option: &str) -> Vec<Effect> {
         "tab-switch" => tab_switch::set_tab_switch_word(p, option),
         "window-edges" => set_window_edges_word(p, option),
         "term-shell" => term_prefs::save_shell_id(p, option),
-        "newtab-mode" => {
-            let mode = if option == "ask" {
-                NewTabMode::Ask
-            } else {
-                NewTabMode::Folder
-            };
-            new_tab::set_new_tab_mode(p, mode, None);
-        }
         "term-font-family" => ctx.look.set_font_id(option),
         "term-font" => {
             if let Ok(pct) = option.trim().parse::<u32>() {
@@ -258,7 +250,7 @@ fn slide(ctx: &Ctx, row: &str, value: u32) {
 fn button_pressed(ctx: &Ctx, row: &str, button: &str) -> Vec<Effect> {
     match (row, button) {
         ("newtab-mode", "use-home") => {
-            new_tab::set_new_tab_mode(ctx.prefs, NewTabMode::Folder, Some(""));
+            new_tab::set_new_tab_folder(ctx.prefs, "");
             Vec::new()
         }
         ("newtab-mode", "choose-folder") => vec![Effect::PickFolder],
@@ -704,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn use_home_keeps_the_mode_and_clears_the_folder_and_choose_asks_for_a_picker() {
+    fn use_home_clears_the_folder_and_choose_asks_for_a_picker() {
         let r = Rig::new();
         folder_picked(&r.prefs, Some(PathBuf::from("C:/work")));
         assert_eq!(new_tab::new_tab_folder(&r.prefs), "C:/work");
@@ -714,7 +706,6 @@ mod tests {
             row: "newtab-mode".into(),
             button: "use-home".into(),
         });
-        assert_eq!(new_tab::new_tab_mode(&r.prefs), NewTabMode::Folder);
         assert_eq!(new_tab::new_tab_folder(&r.prefs), "");
         assert_eq!(
             r.go(Event::Button {

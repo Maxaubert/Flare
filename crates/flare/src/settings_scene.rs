@@ -17,7 +17,6 @@ use std::sync::Arc;
 use flare_settings::kv::PrefStore;
 use flare_settings::layout::{Metrics, is_narrow, rail_width};
 use flare_settings::look::LookStore;
-use flare_settings::new_tab::{NewTabMode, set_new_tab_mode};
 use flare_settings::page::GlassSupport;
 use flare_settings::tab_layout::{TabLayout, set_tab_layout};
 use flare_settings::verb::{FakeDiag, FakeVerb, VerbState};
@@ -67,7 +66,6 @@ pub fn prep(prefs: &PrefStore) {
     look.set_font_pct(100);
     set_window_edges(prefs, WindowEdges::Hairline);
     set_tab_layout(prefs, TabLayout::Horizontal);
-    set_new_tab_mode(prefs, NewTabMode::Folder, None);
 }
 
 /// The fixed store of the Dictation page scenes (M8, Task 35): `prep`, with dictation switched on and the Base model

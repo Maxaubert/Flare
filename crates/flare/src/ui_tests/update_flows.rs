@@ -119,6 +119,7 @@ fn make(mode: Mode, feed: Arc<dyn Feed>, probe: FakeFeed, current: &str) -> Fx {
             Rc::new(move || k.set(k.get() + 1))
         },
         hide: Rc::new(|| {}),
+        starter_folders: Rc::new(|_| {}),
         launch_folders: Vec::new(),
         e2e: true,
         term: TermPorts::inert(),
