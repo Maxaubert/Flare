@@ -800,7 +800,7 @@ fn the_address_field_refuses_what_a_panel_may_not_open() {
     f.h.advance(0);
     assert!(
         f.h.comp.get_panel_sub().contains("http"),
-        "the header says why: {}",
+        "the address row says why: {}",
         f.h.comp.get_panel_sub()
     );
 }
@@ -1603,7 +1603,7 @@ fn look(f: &Fx, tab: &str) -> Receiver<Result<Value, flare_ctl::CtlError>> {
     )
 }
 
-/// The agent's clock moves on `ms` and its timer turns once (a glide, the ribbon, a fade pass).
+/// The agent's clock moves on `ms` and its timer turns once (a glide, the hold, a fade pass).
 fn agent_turn(f: &Fx, ms: u64) {
     f.ctl.borrow_mut().web.skip_clock(ms);
     f.ctl
@@ -1764,35 +1764,37 @@ fn a_ref_is_forgotten_when_the_page_loads_something_new() {
 }
 
 #[test]
-fn the_ribbon_is_up_while_the_call_runs_and_the_person_taking_over_ends_the_call() {
+fn the_page_is_in_use_while_the_call_runs_and_the_person_taking_over_ends_the_call() {
     let (f, _h, _) = live(Opts::default());
     let slot = with_fake(&f);
     let id = up(&f, &slot);
     f.h.advance(0);
-    assert_eq!(f.h.comp.get_panel_web_ribbon().as_str(), "");
+    assert_eq!(f.ctl.borrow().web.using_text(&id), "");
+    // No header and no ribbon: the address row is the panel's top, before, during and after the call.
+    assert_eq!(f.h.comp.get_panel_header_h(), 0.0);
     // The page does not answer: the call is still running.
     let rx = look(&f, &id);
     f.pump();
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
     assert_eq!(f.ctl.borrow().web.agent_op(&id), Some("look"));
     assert_eq!(
-        f.h.comp.get_panel_web_ribbon().as_str(),
+        f.ctl.borrow().web.using_text(&id),
         "An agent is using this page"
     );
-    assert!(f.h.comp.get_panel_web_ribbon_shown());
+    assert_eq!(f.h.comp.get_panel_header_h(), 0.0);
     // The person clicks or types in the page.
     f.ctl.borrow_mut().web_user_input();
     f.pump();
     let e = rx.try_recv().unwrap().unwrap_err();
     assert_eq!(e.code, code::INTERRUPTED);
     assert!(e.message.contains("took over"));
-    assert_eq!(f.h.comp.get_panel_web_ribbon().as_str(), "");
+    assert_eq!(f.ctl.borrow().web.using_text(&id), "");
     assert!(f.ctl.borrow().web.agent_op(&id).is_none());
     assert_eq!(f.ctl.borrow().web.agent_refs(&id), 0);
 }
 
 #[test]
-fn the_ribbon_holds_after_a_call_that_finished_until_the_person_acts() {
+fn the_hold_lasts_after_a_call_that_finished_until_the_person_acts() {
     let (f, _h, _) = live(Opts::default());
     let slot = with_fake(&f);
     let id = up(&f, &slot);
@@ -1802,14 +1804,14 @@ fn the_ribbon_holds_after_a_call_that_finished_until_the_person_acts() {
     rx.try_recv().unwrap().unwrap();
     f.h.advance(0);
     assert_eq!(
-        f.h.comp.get_panel_web_ribbon().as_str(),
+        f.ctl.borrow().web.using_text(&id),
         "An agent is using this page",
-        "still up right after the call"
+        "still on right after the call"
     );
-    // The person's own input takes it down at once.
+    // The person's own input ends it at once.
     f.ctl.borrow_mut().web_user_input();
     f.pump();
-    assert_eq!(f.h.comp.get_panel_web_ribbon().as_str(), "");
+    assert_eq!(f.ctl.borrow().web.using_text(&id), "");
 }
 
 #[test]
@@ -1857,7 +1859,7 @@ fn closing_the_panel_answers_the_call_that_was_running() {
     let e = rx.try_recv().unwrap().unwrap_err();
     assert_eq!(e.code, code::UNAVAILABLE);
     assert!(e.message.contains("closed"));
-    assert_eq!(f.h.comp.get_panel_web_ribbon().as_str(), "");
+    assert_eq!(f.ctl.borrow().web.using_text(&id), "");
 }
 
 #[test]
@@ -2107,10 +2109,10 @@ fn the_cursor_shows_where_a_click_lands_before_it_presses_and_ripples_on_the_pre
     assert!(rx.try_recv().unwrap().is_ok());
     assert_eq!(pressed(&slot), 1);
     assert_eq!(f.ctl.borrow().web.cursor_probe()["presses"], 1);
-    // It stays while the ribbon holds, then fades and is gone.
-    agent_turn(&f, crate::web_ctl::RIBBON_HOLD_MS / 2);
+    // It stays while the hold lasts, then fades and is gone.
+    agent_turn(&f, crate::web_ctl::AGENT_HOLD_MS / 2);
     assert_eq!(cursor_at(&f), Some(on_page(&f, 140.0, 110.0)));
-    agent_turn(&f, crate::web_ctl::RIBBON_HOLD_MS);
+    agent_turn(&f, crate::web_ctl::AGENT_HOLD_MS);
     agent_turn(&f, FADE_MS / 2);
     let a = recorded().alpha;
     assert!(a > 0 && a < 255, "fading ({a})");
@@ -2182,13 +2184,13 @@ fn css(x: f64, y: f64) -> Point {
     }
 }
 
-/// A click on the shop's button by ref, its glide and the ribbon's hold over and the arrow faded.
+/// A click on the shop's button by ref, its glide and the hold over and the arrow faded.
 fn click_and_fade(f: &Fx, id: &str) {
     let rx = click_ref(f, id, "e1");
     f.pump();
     agent_turn(f, GLIDE_MAX_MS);
     rx.try_recv().unwrap().unwrap();
-    agent_turn(f, crate::web_ctl::RIBBON_HOLD_MS);
+    agent_turn(f, crate::web_ctl::AGENT_HOLD_MS);
     agent_turn(f, FADE_MS);
     assert_eq!(cursor_at(f), None, "faded");
 }
@@ -2304,14 +2306,14 @@ fn a_light_orange_border_rings_the_page_while_the_agent_uses_it_and_fades_with_t
     assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::INTERRUPTED);
     assert!(!border(&f).0);
     assert!(!recorded_border().shown);
-    // A finished click: up through the ribbon's hold, then it fades with the arrow and is gone.
+    // A finished click: up through the hold, then it fades with the arrow and is gone.
     looked(&f, &slot, &id);
     let rx = click_ref(&f, &id, "e1");
     f.pump();
     agent_turn(&f, GLIDE_MAX_MS);
     rx.try_recv().unwrap().unwrap();
-    agent_turn(&f, crate::web_ctl::RIBBON_HOLD_MS - 100);
-    assert_eq!(border(&f).2, 255, "the ribbon holds");
+    agent_turn(&f, crate::web_ctl::AGENT_HOLD_MS - 100);
+    assert_eq!(border(&f).2, 255, "the hold lasts");
     // The hold ends: the border and the arrow start to fade together.
     agent_turn(&f, 100);
     let draws = recorded_border().draws;
@@ -2422,7 +2424,7 @@ fn with_animation_effects_off_nothing_glides_or_fades() {
         "placed at once"
     );
     // After the hold: the arrow and the border go at once, with no fade.
-    agent_turn(&f, crate::web_ctl::RIBBON_HOLD_MS);
+    agent_turn(&f, crate::web_ctl::AGENT_HOLD_MS);
     assert_eq!(cursor_at(&f), None);
     assert!(!border(&f).0);
 }
@@ -2442,7 +2444,7 @@ fn the_person_taking_over_takes_the_cursor_away_at_once() {
     assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::INTERRUPTED);
     assert_eq!(cursor_at(&f), None);
     assert!(!recorded().shown);
-    // And a held cursor after a finished click goes with the ribbon when the person acts.
+    // And a held cursor after a finished click goes with the hold when the person acts.
     looked(&f, &slot, &id);
     let rx = click_ref(&f, &id, "e1");
     f.pump();
@@ -2595,10 +2597,11 @@ fn a_mini_app_gets_a_view_of_its_own_kind_and_answers_when_it_has_loaded() {
         "the address is Flare's own"
     );
     assert_eq!(v["loaded"], true);
-    // The header is the agent's title, and there is no address bar.
+    // The header is the agent's title (a mini-app keeps its header), and there is no address bar.
     assert_eq!(f.h.comp.get_panel_title().as_str(), "Chart");
     assert!(f.h.comp.get_panel_web_app());
     assert_eq!(f.h.comp.get_panel_bar_h(), 0.0);
+    assert!(f.h.comp.get_panel_header_h() > 0.0);
     assert_eq!(f.ctl.borrow().web_controllers(), 1);
 }
 

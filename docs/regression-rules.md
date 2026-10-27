@@ -453,19 +453,20 @@ address a navigation answers with are page text too: they sit between the marker
 (`a_hostile_title_or_address_after_a_navigation_stays_inside_the_markers`, `an_eval_result_cannot_fake_the_end_with_a_line_separator`,
 `hidden_characters_of_every_kind_are_dropped` in `flare-ctl` `text.rs`, and the e2e `mcpBrowser`).
 196. **The person keeps control of the page.** A key of theirs in the page, or a mouse button pressed over it, ends the agent's running
-call with `interrupted`, takes the ribbon down and forgets the refs; the mouse is read every 16 ms and a press that came and went between two reads still
+call with `interrupted`, ends the hold (glow and cursor go) and forgets the refs; the mouse is read every 16 ms and a press that came and went between two reads still
 counts (`GetAsyncKeyState`'s "pressed since" bit, cleared when the call starts), and the page taking the window's keyboard focus while a
 call runs is a takeover too (`the_person_focusing_the_page_while_a_call_runs_takes_over`); the agent's own key presses are neither the person's nor the app's
 chords (an agent pressing Ctrl+Shift+P closes nothing); a click in another window that covers the page is not a takeover. No keyboard
 or mouse hook is installed and nothing is sent to a real window. Held by
-`the_ribbon_is_up_while_the_call_runs_and_the_person_taking_over_ends_the_call`,
+`the_page_is_in_use_while_the_call_runs_and_the_person_taking_over_ends_the_call`,
 `a_key_of_the_persons_posts_a_takeover_only_while_an_agent_works`, `the_agents_own_key_press_is_neither_the_persons_nor_a_chord`,
 `a_point_is_inside_a_rectangle_by_its_near_edges` and the e2e `agentBrowser`. The real-button polling is on the by-hand list.
-197. **The ribbon never changes the page.** "Claude is using this page" sits over the head of the panel; the browser window's rectangle is
-the same with and without it, so an agent reading coordinates never sees the page reflow for the ribbon. It is up while a call runs on
-the page in front and for 1.5 s after, and the timer that serves it exists only then. Its background is opaque (a tint over a solid
-base), so the page's title does not show through it. Held by
-`the_ribbon_holds_after_a_call_that_finished_until_the_person_acts`, `nothing_exists_before_a_web_panel_opens` and the e2e
+197. **The agent at work never changes the page.** A web page has no header and no ribbon (2026-10-27, Max): the address row is the
+panel's top and holds the close, and an agent at work shows only as the edge glow and the cursor, windows over the page. The browser
+window's rectangle is the same with and without an agent, so an agent reading coordinates never sees the page reflow. The page is in
+use while a call runs on it and for 1.5 s after (the hold), and the timer that serves it exists only then. Held by
+`a_web_page_has_no_header_and_the_address_row_holds_the_close`,
+`the_hold_lasts_after_a_call_that_finished_until_the_person_acts`, `nothing_exists_before_a_web_panel_opens` and the e2e
 `agentBrowser` (the rectangle is compared).
 198. **Refs are only as old as the page they were made on.** A ref after a page load, a takeover, or for an element that is gone answers
 `not_found` and sends nothing to the page; positions are resolved when the action runs. Held by

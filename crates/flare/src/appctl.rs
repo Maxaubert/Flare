@@ -4829,7 +4829,7 @@ impl AppCtl {
             UiMsg::Web(WebMsgBox(m)) => {
                 if let Some(app) = self.app() {
                     // A DevTools answer or a timer turn changes the window's properties only when a
-                    // call starts or ends or a ribbon goes (a look of a big page is hundreds of answers).
+                    // call starts or ends or a hold ends (a look of a big page is hundreds of answers).
                     let quiet = matches!(
                         &m,
                         crate::web_ctl::WebMsg::AgentTick

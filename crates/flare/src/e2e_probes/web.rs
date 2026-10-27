@@ -68,11 +68,11 @@ fn web_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         "input_focused": a.get_panel_web_input_focused(),
         "h": a.get_panel_bar_h(),
     });
-    v["ribbon"] = json!({
-        "shown": a.get_panel_web_ribbon_shown(),
-        "text": a.get_panel_web_ribbon().to_string(),
-        "w": a.get_panel_web_ribbon_w(),
-    });
+    // Who is using the page in front: during an agent call and its hold (no ribbon is drawn any more,
+    // Max 2026-10-27; the glow and the cursor show it).
+    let using = v["agent"]["using"].as_str().unwrap_or("").to_string();
+    v["using"] = json!({"shown": !using.is_empty(), "text": using});
+    v["close"] = json!({"x": a.get_panel_web_close_x(), "w": a.get_panel_web_close_w()});
     v["still"] = json!({
         "shown": a.get_panel_web_has_still(),
         "w": a.get_panel_web_still().size().width,

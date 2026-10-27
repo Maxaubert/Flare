@@ -1084,3 +1084,20 @@ following smoothly as I expand it or shrink it".
   8.8 to 9.5 ms between updates (median; 9.5 to 12.2 before), p90 10.4 to 11.6 ms (12.3 to 15.4 before), steps p90 8 px
   (12 before); while the agent clicks, p90 15 ms and at most 21 ms (19 to 21 and up to 37 before), steps at most 20 px (28
   before), the glow's cost a step under 1 ms (was 4 to 6), and no takeover.
+
+## The web panel's header and the agent ribbon removed (`fix/edge-glow-and-panel-drag`), 2026-10-27
+
+Max, after trying PR #110: "remove this bar, it goes orange when Claude's working, otherwise says [the page title], but
+I'd rather have more space for the browser".
+
+- 2026-10-27, Max: **a web page has no header.** The address row (back, forward, reload, address) is the panel's top,
+  the page starts right under it and gets the header's 32 px. The panel's close is the row's last button, at its right
+  end, a `WebButton` like the others (24 px, 12 px glyph). A line that said why an address was refused (the header's
+  `sub`) is a dim line at the address field's right end. The page title still names the panel in `web.state` and the
+  tab. Only the web page: a mini-app has no address row, so it keeps its header (title and close); image, text, file,
+  audio, diagram and Changes panels keep theirs (a diagram is a mini-app).
+- 2026-10-27, Max: **no agent ribbon.** The edge glow and the cursor with its tag are the only signs of an agent at
+  work. The ribbon only showed state: its X was the panel's close (now in the address row), and the person takes over
+  as before by clicking or typing in the page, which ends the call `interrupted` and the hold at once. Its 1.5 s hold
+  (`AGENT_HOLD_MS`, was `RIBBON_HOLD_MS`) stays as the timer after a call before the glow and the cursor fade.
+  `web.state`'s `ribbon` became `using` (`shown`, `text`), with no width.

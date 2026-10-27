@@ -583,10 +583,11 @@ tests that prove nothing else changes). `ms` is a pause. A wait that runs out an
 threw: ..."). It exists only while the user's switch "Let agents run scripts in pages" is on (`flare.web.agentEval`, off by default,
 read at every request); with it off the agent grant gets `forbidden`.
 
-**The ribbon and the takeover.** While one of these calls runs on the page in front, and for 1.5 s after, the head of
-the panel shows "Claude is using this page" (the name is the tab's detected agent, else "An agent"); the page does
-not move or resize for it. A key the person presses in the page, or a mouse button they press over it, ends the
-agent's running call at once with `interrupted` and takes the ribbon down; the page is left as it is and the refs are
+**The page in use and the takeover.** While one of these calls runs on the page in front, and for 1.5 s after, the
+page wears the agent's edge glow and cursor (the cursor's tag is the tab's detected agent, else "Agent"); the page does
+not move or resize for them. (Until 2026-10-27 the panel's head also showed a ribbon, "Claude is using this page"; the
+header and the ribbon went for more page room, Max.) A key the person presses in the page, or a mouse button they press
+over it, ends the agent's running call at once with `interrupted` and ends the hold (glow and cursor go at once); the page is left as it is and the refs are
 forgotten. An agent's own key presses are never reported to the app as chords. The error is a code of its own,
 `interrupted`; a client treats it as "look again, then decide".
 

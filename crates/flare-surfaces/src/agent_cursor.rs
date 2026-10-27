@@ -20,7 +20,7 @@ const GLIDE_MS_PER_PX: f64 = 0.5;
 pub const APPEAR_MS: u64 = 180;
 /// How long a ripple grows and fades.
 pub const RIPPLE_MS: u64 = 400;
-/// How long the arrow and the border take to fade out after the ribbon's hold.
+/// How long the arrow and the border take to fade out after the hold.
 pub const FADE_MS: u64 = 200;
 /// Two presses closer than this ripple one after the other, so a double click shows two.
 pub const RIPPLE_GAP_MS: u64 = 120;
@@ -176,7 +176,7 @@ impl AgentCursor {
         self.presses += 1;
     }
 
-    /// The ribbon's hold is over: the arrow fades out (a second call is a no-op), or goes at once with
+    /// The hold is over: the arrow fades out (a second call is a no-op), or goes at once with
     /// animation effects off. Either way its spot is remembered.
     pub fn fade(&mut self, now_ms: u64) {
         if self.at.is_some() && self.fade_ms.is_none() {
@@ -253,7 +253,7 @@ impl AgentCursor {
 }
 
 /// The light orange border round the page while the agent uses it (Max, 2026-10-27): on from the agent's
-/// first action until the ribbon's hold ends, then it fades with the arrow in [`FADE_MS`]; gone at once
+/// first action until the hold ends, then it fades with the arrow in [`FADE_MS`]; gone at once
 /// when the person takes over. `Default` is off, with motion.
 #[derive(Clone, Debug, Default)]
 pub struct AgentBorder {
@@ -278,7 +278,7 @@ impl AgentBorder {
         self.fade_ms = None;
     }
 
-    /// The ribbon's hold is over: it fades (a second call is a no-op), or goes at once without motion.
+    /// The hold is over: it fades (a second call is a no-op), or goes at once without motion.
     pub fn fade(&mut self, now_ms: u64) {
         if self.on && self.fade_ms.is_none() {
             if self.still {

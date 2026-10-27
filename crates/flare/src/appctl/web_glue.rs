@@ -339,7 +339,7 @@ impl AppCtl {
 
     /// `browser.look` and the calls that use the page (stage 4). The agent's own tab only (the dispatcher
     /// names it from the token); the answer is sent by the browser's messages, or by the person taking
-    /// over. The ribbon goes up with the call.
+    /// over. The glow and the cursor go up with the call.
     pub(super) fn ctl_browser_agent(&mut self, op: crate::ctl_app::CtlOp, reply: Reply) {
         let crate::ctl_app::CtlOp::BrowserAgent { tab, op } = op else {
             let _ = reply.send(Err(CtlError::new(
@@ -616,7 +616,7 @@ impl AppCtl {
             "agent": front.as_deref().map(|t| json!({
                 "op": self.web.agent_op(t),
                 "refs": self.web.agent_refs(t),
-                "ribbon": self.web.ribbon_text(t),
+                "using": self.web.using_text(t),
                 "keys_heard": self.web.agent_keys_heard(),
             })),
             "cursor": self.web.cursor_probe(),

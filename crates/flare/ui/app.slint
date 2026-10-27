@@ -448,9 +448,9 @@ export component AppWindow inherits Window {
     in property <image> panel-web-still;
     in property <bool> panel-web-has-still;
     in property <bool> panel-web-missing-runtime;
-    in property <string> panel-web-ribbon;
-    out property <bool> panel-web-ribbon-shown: panel-slot.ribbon-shown;
-    out property <length> panel-web-ribbon-w: panel-slot.ribbon-w;
+    // The close at the address row's right end (a web page has no header, Max 2026-10-27).
+    out property <length> panel-web-close-x: panel-slot.web-close-x;
+    out property <length> panel-web-close-w: panel-slot.web-close-w;
     out property <length> panel-web-x: panel-slot.web-x;
     out property <length> panel-web-y: panel-slot.web-y;
     out property <length> panel-web-w: panel-slot.web-w;
@@ -1122,7 +1122,6 @@ export component AppWindow inherits Window {
                         web-still: root.panel-web-still;
                         web-has-still: root.panel-web-has-still;
                         web-missing-runtime: root.panel-web-missing-runtime;
-                        web-ribbon: root.panel-web-ribbon;
                         web-back => { root.panel-web-back(); }
                         web-forward => { root.panel-web-forward(); }
                         web-reload => { root.panel-web-reload(); }

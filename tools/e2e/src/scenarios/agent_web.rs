@@ -9,8 +9,8 @@
 //! `agentBrowser` speaks the channel with the `flare-ctl` client at 100 and 225 percent: a look (a real
 //! PNG, the viewport equal to the browser window, the elements with refs), a click by ref and by point,
 //! typing and Enter, scrolling a list, waits, a link click that navigates (and forgets the refs),
-//! refused scripts, the ribbon, and a takeover by the person that ends a call `interrupted`. A second
-//! launch with the scripts switch on holds `browser.eval`.
+//! refused scripts, the in-use state (no header, no ribbon), and a takeover by the person that ends a
+//! call `interrupted`. A second launch with the scripts switch on holds `browser.eval`.
 //!
 //! `mcpBrowser` drives the same page through `flare-mcp.exe` over stdio, as Claude Code would: a look
 //! answers with an image content item and the element list, and the tools act on its refs.
@@ -328,7 +328,7 @@ fn agent_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
         t == "clicked 1",
         format!("{at}: the page says it was clicked ({t:?})"),
     );
-    // ---- the agent's cursor: at the button's middle while the ribbon holds, then gone ----
+    // ---- the agent's cursor: at the button's middle while the hold lasts, then gone ----
     let sc = state(app);
     let cur = &sc["cursor"];
     let (ex, ey) = element(&v, "button", "Press me")
@@ -367,11 +367,9 @@ fn agent_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
         bd["shown"] == json!(true)
             && bd["recorded"]["shown"] == json!(true)
             && bd["client"] == page,
-        format!(
-            "{at}: the agent's border rings the page while the ribbon holds ({bd}, page {page})"
-        ),
+        format!("{at}: the agent's border rings the page while the hold lasts ({bd}, page {page})"),
     );
-    let gone = ctx.until("the cursor to go after the ribbon", 6_000, &mut || {
+    let gone = ctx.until("the cursor to go after the hold", 6_000, &mut || {
         let c = &state(app)["cursor"];
         c["shown"] == json!(false)
             && c["recorded"]["shown"] == json!(false)
@@ -380,7 +378,7 @@ fn agent_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
     });
     ctx.ok(
         gone,
-        format!("{at}: the cursor and the border fade out after the ribbon's hold"),
+        format!("{at}: the cursor and the border fade out after the hold"),
     );
     // It never jumps: where it rested is kept for the next action on the same page.
     let rest = state(app)["cursor"]["remembers"].clone();
@@ -627,54 +625,56 @@ fn agent_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
         format!("{at}: a wait text with quotes and code is only looked for ({hacked:?})"),
     );
 
-    // ---- the ribbon while a call runs, and for a moment after ----
+    // ---- the page in use while a call runs, and for a moment after (no header and no ribbon since
+    // Max 2026-10-27: the glow and the cursor show it; `using` is the state behind them) ----
     let bounds_before = state(app)["controller"]["bounds"].clone();
-    let ribbon_during = std::thread::scope(|s| {
+    let st0 = state(app);
+    ctx.ok(
+        st0["bar"]["h"].as_f64().unwrap_or(0.0) > 0.0
+            && st0["close"]["w"].as_f64().unwrap_or(0.0) > 0.0,
+        format!(
+            "{at}: the address row holds the panel's close ({})",
+            st0["close"]
+        ),
+    );
+    let using_during = std::thread::scope(|s| {
         let h = s.spawn(|| {
             let mut c2 = hello(&pipe, &token).ok()?;
             c2.call(Method::BrowserWait, json!({"ms": 2500}), LOAD).ok()
         });
-        let up = ctx.until("the ribbon to show", 6_000, &mut || {
-            state(app)["ribbon"]["shown"] == json!(true)
+        let up = ctx.until("the page to be in use", 6_000, &mut || {
+            state(app)["using"]["shown"] == json!(true)
         });
-        let words = state(app)["ribbon"]["text"]
+        let words = state(app)["using"]["text"]
             .as_str()
             .unwrap_or("")
             .to_string();
-        let w = state(app)["ribbon"]["w"].as_f64().unwrap_or(0.0);
         let bounds_up = state(app)["controller"]["bounds"].clone();
         let done = h.join().ok().flatten().is_some();
-        (up, words, w, done, bounds_up)
+        (up, words, done, bounds_up)
     });
     ctx.ok(
-        same_rect_eq(&bounds_before, &ribbon_during.4),
+        same_rect_eq(&bounds_before, &using_during.3),
         format!(
-            "{at}: with the ribbon up the page has the same rectangle as without it ({} / {})",
-            bounds_before, ribbon_during.4
+            "{at}: while the agent uses the page it has the same rectangle as without ({} / {})",
+            bounds_before, using_during.3
         ),
     );
     ctx.ok(
-        ribbon_during.0 && ribbon_during.1.ends_with("is using this page"),
+        using_during.0 && using_during.1.ends_with("is using this page"),
         format!(
-            "{at}: the ribbon says who is using the page while a call runs ({:?})",
-            ribbon_during.1
+            "{at}: the state says who is using the page while a call runs ({:?})",
+            using_during.1
         ),
     );
-    ctx.ok(
-        ribbon_during.2 > 100.0,
-        format!(
-            "{at}: and it has a width in the panel's head ({} px)",
-            ribbon_during.2
-        ),
-    );
-    ctx.ok(ribbon_during.3, format!("{at}: the call itself finished"));
-    let held = state(app)["ribbon"]["shown"] == json!(true);
+    ctx.ok(using_during.2, format!("{at}: the call itself finished"));
+    let held = state(app)["using"]["shown"] == json!(true);
     ctx.ok(
         held,
-        format!("{at}: the ribbon is still up right after the call"),
+        format!("{at}: the hold is still on right after the call"),
     );
-    let gone = ctx.until("the ribbon to go", 6_000, &mut || {
-        state(app)["ribbon"]["shown"] == json!(false)
+    let gone = ctx.until("the hold to end", 6_000, &mut || {
+        state(app)["using"]["shown"] == json!(false)
     });
     ctx.ok(
         gone,
@@ -683,7 +683,7 @@ fn agent_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
     let sw = state(app);
     ctx.ok(
         same_rect_eq(&sw["controller"]["bounds"], &sw["drawn"]),
-        format!("{at}: the page keeps its place while the ribbon comes and goes"),
+        format!("{at}: the page keeps its place while the agent comes and goes"),
     );
 
     // ---- the person taking over ends the call ----
@@ -696,9 +696,11 @@ fn agent_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
                 LOAD,
             ))
         });
-        let up = ctx.until("the ribbon to show for the long wait", 6_000, &mut || {
-            state(app)["ribbon"]["shown"] == json!(true)
-        });
+        let up = ctx.until(
+            "the page to be in use for the long wait",
+            6_000,
+            &mut || state(app)["using"]["shown"] == json!(true),
+        );
         let busy = state(app)["agent"]["op"] == json!("wait");
         let _ = app.session.call(&Request::WebUserInput);
         let r = h.join().ok().flatten();
@@ -715,10 +717,10 @@ fn agent_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
             long.2
         ),
     );
-    let after = ctx.until("the ribbon to drop at once", 2_000, &mut || {
-        state(app)["ribbon"]["shown"] == json!(false)
+    let after = ctx.until("the in-use state to drop at once", 2_000, &mut || {
+        state(app)["using"]["shown"] == json!(false)
     });
-    ctx.ok(after, format!("{at}: and the ribbon goes with it"));
+    ctx.ok(after, format!("{at}: and the in-use state goes with it"));
     ctx.ok(
         state(app)["agent"]["refs"] == json!(0),
         format!("{at}: the agent's refs are forgotten after a takeover"),
@@ -1273,7 +1275,7 @@ fn mcp_on(ctx: &mut Ctx, app: &mut App, exe: &Path) -> Result<(), String> {
         text_of(&r).contains("Title: \"Agent page\""),
         "a look after going back sees the first page again",
     );
-    // The page the agent used is in the panel, with the ribbon gone once the calls stop.
+    // The page the agent used is in the panel, no longer in use once the calls stop.
     let st = state(app);
     ctx.ok(
         st["kind"] == json!(3),

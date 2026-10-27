@@ -20,15 +20,15 @@
 //! The agent (stage 4): a call to look at the page or use it is a [`Job`] (`flare_surfaces::agent_job`),
 //! a state machine that says which DevTools Protocol calls to make. The browser answers each as a
 //! `WebEvent::Cdp` through the window's queue and the job goes on from there; nothing waits. While a
-//! job runs, and for a moment after, the panel's head wears a ribbon. The person's own key or click in
+//! job runs, and for a moment after (the hold), the page wears the agent's glow and cursor. The person's own key or click in
 //! the page ends the job (`interrupted`): the keys are heard in the key hook, a click by looking at the
 //! real mouse buttons on a timer (no hook is installed).
 //!
 //! The agent's cursor: a pointer action says where it lands before its events go, and an orange arrow
 //! (`flare_win::agent_cursor`, a window of Flare's own above the page, never in it) glides there,
-//! ripples on each press, stays while the ribbon does and fades after. It never jumps: after its fade the
+//! ripples on each press, stays while the hold does and fades after. It never jumps: after its fade the
 //! next action on the same page starts it where it rested. While the agent uses the page, from its first
-//! call until the ribbon's hold ends, an orange glow comes in from the page's edges (four more such
+//! call until its hold ends, an orange glow comes in from the page's edges (four more such
 //! windows, one per edge band) and fades with the arrow; it is off the page while the splitter is held. Both are drawn only over the page in front and live: a takeover, a closed
 //! panel, a tab behind, a Flare menu over the page (the still) or a minimised window takes them away at
 //! once. The agent tick places them again each turn, so they follow the window and the splitter.
@@ -68,13 +68,14 @@ pub const RUNTIME_URL: &str = "https://go.microsoft.com/fwlink/p/?LinkId=2124703
 
 /// The timer that ends a capture the page never answers (`timer_registry` name).
 const CAPTURE_TIMER: &str = "web.capture";
-/// The timer that runs while an agent call is on a page or its ribbon is still up.
+/// The timer that runs while an agent call is on a page or its hold is still on.
 const AGENT_TIMER: &str = "web.agent";
-/// How often that timer looks (the person's mouse, a wait, a deadline, the ribbon). It runs only while
-/// a call is on a page or the ribbon is up, and is about one frame, so a quick click is seen.
+/// How often that timer looks (the person's mouse, a wait, a deadline, the hold). It runs only while
+/// a call is on a page or a hold is on, and is about one frame, so a quick click is seen.
 const AGENT_TICK_MS: u64 = 16;
-/// How long the ribbon stays after the agent's call ends.
-pub const RIBBON_HOLD_MS: u64 = 1_500;
+/// How long the agent counts as using the page after its call ends: the glow and the cursor stay
+/// this long, then fade. It was the ribbon's hold; the panel header and its ribbon went (Max 2026-10-27).
+pub const AGENT_HOLD_MS: u64 = 1_500;
 
 /// Makes the browser (the first time a web panel needs it).
 pub type WebFactory = Box<dyn FnMut(Sink) -> Box<dyn WebBackend>>;
@@ -91,7 +92,7 @@ pub enum WebMsg {
     /// The person pressed a key in the page (or, for the e2e, stands in for a click): an agent call on
     /// the page in front ends.
     UserInput,
-    /// The agent timer: waits, deadlines, the person's mouse and the ribbon.
+    /// The agent timer: waits, deadlines, the person's mouse and the hold.
     AgentTick,
 }
 
@@ -243,7 +244,7 @@ struct Probe {
 struct AgentCall {
     job: Job,
     reply: Sender<Result<Value, CtlError>>,
-    /// Who is using the page, for the ribbon ("Claude").
+    /// Who is using the page ("Claude"), for `web.state` and the cursor's tag.
     label: String,
     /// Which document the page was showing when the call began (`TabWeb::doc`).
     doc: u64,
@@ -261,7 +262,7 @@ fn ctl_error(e: JobError) -> CtlError {
     CtlError::new(c, e.message)
 }
 
-/// Who is using the page, for the ribbon: the tab's agent by name, else the plain word.
+/// Who is using the page: the tab's agent by name, else the plain word.
 pub fn agent_label(k: flare_agent::kinds::DetectedAgent) -> String {
     use flare_agent::kinds::DetectedAgent as D;
     match k {
@@ -273,8 +274,8 @@ pub fn agent_label(k: flare_agent::kinds::DetectedAgent) -> String {
     .to_string()
 }
 
-/// The words of the ribbon.
-pub fn ribbon_words(label: &str) -> String {
+/// "Claude is using this page", for `web.state`.
+pub fn using_words(label: &str) -> String {
     format!("{label} is using this page")
 }
 
@@ -423,7 +424,7 @@ struct TabWeb {
     doc: u64,
     /// The element names of the agent's last look; they last until the next look or page load.
     refs: RefMap,
-    /// The ribbon's words and the moment it goes, after a call that has ended.
+    /// Who used the page and the moment the hold ends, after a call that has ended.
     hold: Option<(String, u64)>,
     /// The host of the mini-app this view shows (None for a plain web page): a view is closed and made
     /// again when the panel's app is not the one it was made for.
@@ -1091,7 +1092,6 @@ impl WebCtl {
             app.set_panel_web_can_back(false);
             app.set_panel_web_can_forward(false);
             app.set_panel_web_missing_runtime(false);
-            app.set_panel_web_ribbon("".into());
             return;
         };
         let target = panels.web_target(tab).unwrap_or_default();
@@ -1126,7 +1126,6 @@ impl WebCtl {
         app.set_panel_web_loading(t.is_some_and(|t| t.loading));
         app.set_panel_web_can_back(t.is_some_and(|t| t.can_back));
         app.set_panel_web_can_forward(t.is_some_and(|t| t.can_forward));
-        app.set_panel_web_ribbon(self.ribbon_text(tab).into());
     }
 
     /// Forgets what is known of the tab's page and answers every call that waited on it. True when the
@@ -1758,22 +1757,22 @@ impl WebCtl {
             .saturating_add(self.clock_skew)
     }
 
-    /// Moves the agent's clock on by `ms` (a test's glide, ribbon and fade pass without waiting).
+    /// Moves the agent's clock on by `ms` (a test's glide, hold and fade pass without waiting).
     #[cfg(test)]
     pub fn skip_clock(&mut self, ms: u64) {
         self.clock_skew += ms;
     }
 
-    /// The ribbon's words for the tab's page: while an agent call runs on it and for a moment after.
-    pub fn ribbon_text(&self, tab: &str) -> String {
+    /// Who is using the tab's page, in words (`web.state`): while an agent call runs on it and for a moment after.
+    pub fn using_text(&self, tab: &str) -> String {
         let Some(t) = self.tabs.get(tab) else {
             return String::new();
         };
         if let Some(a) = &t.agent {
-            return ribbon_words(&a.label);
+            return using_words(&a.label);
         }
         match &t.hold {
-            Some((label, until)) if self.now_ms() < *until => ribbon_words(label),
+            Some((label, until)) if self.now_ms() < *until => using_words(label),
             _ => String::new(),
         }
     }
@@ -1798,7 +1797,7 @@ impl WebCtl {
         self.keys.agent_heard.get()
     }
 
-    /// How many agent calls run and how many ribbons are held: when this is the same before and after a
+    /// How many agent calls run and how many holds are on: when this is the same before and after a
     /// message, the window's properties need no new sync (a DevTools answer or a timer turn alone).
     pub fn agent_shape(&self) -> (usize, usize) {
         (
@@ -1828,7 +1827,7 @@ impl WebCtl {
 
     /// An agent call on the tab's page (`browser.look`, `click`, ...). The answer goes to `reply` when the
     /// work is done, the person takes over, the deadline passes or the page goes. `label` names the agent
-    /// for the ribbon.
+    /// for `web.state` and the cursor's tag.
     pub fn start_agent(
         &mut self,
         tab: &str,
@@ -1993,7 +1992,7 @@ impl WebCtl {
         }
     }
 
-    /// Is the agent using the tab's page: a call on it, or the ribbon's hold after one.
+    /// Is the agent using the tab's page: a call on it, or the hold after one.
     fn agent_active(&self, tab: &str, now: u64) -> bool {
         self.tabs.get(tab).is_some_and(|t| {
             t.agent.is_some() || t.hold.as_ref().is_some_and(|(_, until)| now < *until)
@@ -2065,7 +2064,7 @@ impl WebCtl {
     }
 
     /// Draws the cursor as it is now, where the page is now; a frame that is the same as the last is not
-    /// drawn again. It fades once its tab has neither a call nor the ribbon's hold.
+    /// drawn again. It fades once its tab has neither a call nor a hold.
     fn update_cursor(&mut self) {
         let now = self.now_ms();
         self.update_border(now);
@@ -2143,7 +2142,7 @@ impl WebCtl {
         })
     }
 
-    /// The call is over: its answer is sent, a look's element names are kept, the ribbon holds a moment.
+    /// The call is over: its answer is sent, a look's element names are kept, the hold keeps the glow and cursor a moment.
     fn finish_agent(&mut self, tab: &str, result: Result<Value, JobError>) {
         let now = self.now_ms();
         let Some(t) = self.tabs.get_mut(tab) else {
@@ -2179,7 +2178,7 @@ impl WebCtl {
                 self.border.hide();
             }
         } else {
-            t.hold = Some((a.label.clone(), now + RIBBON_HOLD_MS));
+            t.hold = Some((a.label.clone(), now + AGENT_HOLD_MS));
         }
         let _ = a.reply.send(result.map_err(ctl_error));
         self.refresh_key_flags();
@@ -2195,7 +2194,7 @@ impl WebCtl {
         } else if let Some(t) = self.tabs.get_mut(&tab) {
             t.hold = None;
         }
-        // The person's own input takes the cursor and the border away at once, with the ribbon.
+        // The person's own input takes the cursor and the border away at once, and ends the hold.
         if self.cursor_tab.as_deref() == Some(tab.as_str()) {
             self.cursor.hide();
         }
@@ -3134,22 +3133,22 @@ mod tests {
     }
 
     #[test]
-    fn the_ribbon_names_who_is_using_the_page() {
+    fn the_words_name_who_is_using_the_page() {
         use flare_agent::kinds::DetectedAgent as D;
         assert_eq!(
-            ribbon_words(&agent_label(D::Claude)),
+            using_words(&agent_label(D::Claude)),
             "Claude is using this page"
         );
         assert_eq!(
-            ribbon_words(&agent_label(D::Codex)),
+            using_words(&agent_label(D::Codex)),
             "Codex is using this page"
         );
         assert_eq!(
-            ribbon_words(&agent_label(D::Agy)),
+            using_words(&agent_label(D::Agy)),
             "Antigravity is using this page"
         );
         assert_eq!(
-            ribbon_words(&agent_label(D::Other)),
+            using_words(&agent_label(D::Other)),
             "An agent is using this page"
         );
     }
