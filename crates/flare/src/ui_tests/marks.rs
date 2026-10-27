@@ -666,6 +666,22 @@ fn agent_icons_move_by_the_pushed_frame_and_stand_still_when_stilled() {
         up.2 - up.0 < rest.2 - rest.0,
         "narrower: {rest:?} -> {up:?}"
     );
+    assert!(up.3 - up.1 > rest.3 - rest.1, "taller: {rest:?} -> {up:?}");
+    // The landing: squashed, wider and shorter (an even shrink would be narrower too).
+    let land = |g: &MarkMotion| {
+        g.set_hop_sx(1.08);
+        g.set_hop_sy(0.88);
+    };
+    let (down, _) = icon_ink(&draw(1, M::HopBlink, &land), s, CLAWD, 40);
+    let down = down.unwrap();
+    assert!(
+        down.2 - down.0 > rest.2 - rest.0,
+        "wider: {rest:?} -> {down:?}"
+    );
+    assert!(
+        down.3 - down.1 < rest.3 - rest.1,
+        "shorter: {rest:?} -> {down:?}"
+    );
     // The same frame with no motion given, or with the clock stood, is the icon at rest.
     assert_eq!(
         icon_ink(&draw(1, M::None, &hop), s, CLAWD, 40).0,

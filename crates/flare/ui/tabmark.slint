@@ -215,7 +215,8 @@ export component AgentIcon inherits Rectangle {
         stroke-line-cap: round;
         stroke-line-join: round;
     }
-    // The agent's mark, in a box the motion scales about its centre and lifts.
+    // The agent's mark, in a box the motion scales about its centre and lifts. Each path fills the box
+    // (fit: fill; the default contain scales both ways by the smaller), so the hop squashes and stretches.
     if root.kind >= 1 && root.kind <= 3 : body := Rectangle {
         width: root.size * root.sx;
         height: root.size * root.sy;
@@ -227,6 +228,7 @@ export component AgentIcon inherits Rectangle {
         if root.kind == 1 : Path {
             width: body.width;
             height: body.height;
+            fit: fill;
             viewbox-x: 0.5;
             viewbox-y: -2.5;
             viewbox-width: 17;
@@ -238,6 +240,7 @@ export component AgentIcon inherits Rectangle {
         if root.kind == 1 && root.m == 1 && MarkMotion.blink : Path {
             width: body.width;
             height: body.height;
+            fit: fill;
             viewbox-x: 0.5;
             viewbox-y: -2.5;
             viewbox-width: 17;
@@ -248,6 +251,7 @@ export component AgentIcon inherits Rectangle {
         if root.kind == 2 : Path {
             width: body.width;
             height: body.height;
+            fit: fill;
             viewbox-width: 24;
             viewbox-height: 24;
             commands: Glyphs.openai;
@@ -257,6 +261,7 @@ export component AgentIcon inherits Rectangle {
             for cells[i] in Glyphs.agy : Path {
                 width: body.width;
                 height: body.height;
+                fit: fill;
                 viewbox-x: -0.5;
                 viewbox-y: -1.5;
                 viewbox-width: 11;
