@@ -181,6 +181,33 @@ pub fn plus_menu_list(pinned: &[String], recent: &[String], shown: usize) -> Vec
         .collect()
 }
 
+/// The starter folders (Documents, Downloads, Desktop, the user folder) that fill the + menu's empty spots: while
+/// fewer than `shown` unpinned recents are listed, the first starters that are neither pinned nor in the history,
+/// each once, make up the rest. A real recent pushes one out.
+pub fn starter_fill(
+    pinned: &[String],
+    recent: &[String],
+    starters: &[String],
+    shown: usize,
+) -> Vec<String> {
+    let listed = recent
+        .iter()
+        .filter(|r| !pinned.iter().any(|p| same(p, r)))
+        .take(shown)
+        .count();
+    let mut out: Vec<String> = Vec::new();
+    for s in starters {
+        if out.len() + listed >= shown {
+            break;
+        }
+        let known = pinned.iter().chain(recent).chain(&out).any(|x| same(x, s));
+        if !s.trim().is_empty() && !known {
+            out.push(s.clone());
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +320,42 @@ mod tests {
                 place("C:\\x", false),
             ]
         );
+    }
+
+    #[test]
+    fn starters_fill_the_empty_spots_and_recents_push_them_out() {
+        let starters = v(&[
+            "C:\\u\\Documents",
+            "C:\\u\\Downloads",
+            "C:\\u\\Desktop",
+            "C:\\u",
+        ]);
+        // Nothing yet: every starter, in order.
+        assert_eq!(starter_fill(&[], &[], &starters, 5), starters);
+        // Three recents leave two spots.
+        let recent = v(&["C:\\a", "C:\\b", "C:\\c"]);
+        assert_eq!(
+            starter_fill(&[], &recent, &starters, 5),
+            v(&["C:\\u\\Documents", "C:\\u\\Downloads"])
+        );
+        // A full menu has no spot left.
+        let five = v(&["C:\\a", "C:\\b", "C:\\c", "C:\\d", "C:\\e"]);
+        assert!(starter_fill(&[], &five, &starters, 5).is_empty());
+    }
+
+    #[test]
+    fn a_starter_already_pinned_or_recent_is_never_listed_twice() {
+        let starters = v(&[
+            "C:\\u\\Documents",
+            "C:\\u\\Downloads",
+            "C:\\u\\documents",
+            "C:\\u",
+        ]);
+        // A pin takes no recent's spot, but a pinned or recent starter is not offered again, nor one twice.
+        let out = starter_fill(&v(&["C:\\U\\DOWNLOADS"]), &v(&["c:\\u"]), &starters, 5);
+        assert_eq!(out, v(&["C:\\u\\Documents"]));
+        let out = starter_fill(&[], &v(&["C:\\a", "C:\\u\\Documents"]), &starters, 5);
+        assert_eq!(out, v(&["C:\\u\\Downloads", "C:\\u"]));
     }
 
     #[test]

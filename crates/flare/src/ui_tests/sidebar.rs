@@ -480,17 +480,19 @@ fn the_grip_drags_the_width_and_shows_its_line_only_on_hover() {
 }
 
 #[test]
-fn the_new_tab_button_clicks_and_right_clicks() {
+fn the_new_tab_button_opens_a_tab_and_its_arrow_opens_the_folder_menu() {
     let h = harness(1.0);
     let news = Rc::new(RefCell::new(0));
-    let plus = Rc::new(RefCell::new(0));
+    let menus = Rc::new(RefCell::new(Vec::<(f32, f32)>::new()));
     {
         let n = news.clone();
         h.comp.on_new_tab(move || *n.borrow_mut() += 1);
-        let p = plus.clone();
-        h.comp.on_plus_menu(move |_, _| *p.borrow_mut() += 1);
+        let m = menus.clone();
+        h.comp
+            .on_folder_menu(move |x, y| m.borrow_mut().push((x, y)));
     }
-    // Foot: from css y 449; the button is 34 high, 9 below it (8 padding and the hairline).
+    // Foot: from css y 449; the button is 34 high, 9 below it (8 padding and the hairline), css x 8 to 212.
+    // The arrow is its last 40 px (172 to 212), behind a hairline at 172.
     h.move_to(20.0, 475.0);
     h.advance(0);
     let f = h.render();
@@ -499,10 +501,38 @@ fn the_new_tab_button_clicks_and_right_clicks() {
         "hover bg {:?}",
         f.px(20, 475)
     );
+    // Only the main part lights up: the arrow keeps the button's resting colour.
+    let rest = f.px(200, 475);
+    assert!(
+        !Frame::near(rest, [40, 40, 40, 255], 4),
+        "arrow bg {rest:?}"
+    );
     h.click(20.0, 475.0);
     assert_eq!(*news.borrow(), 1);
+    // A right-click on the button does nothing any more (2026-10-27): the arrow is the way to the folders.
     h.right_click(20.0, 475.0);
-    assert_eq!(*plus.borrow(), 1);
+    assert!(menus.borrow().is_empty());
+    assert_eq!(*news.borrow(), 1);
+
+    // The arrow: its own hover, then the menu anchored on the button (its left edge, its top).
+    h.move_to(192.0, 475.0);
+    h.advance(0);
+    let f = h.render();
+    assert!(
+        Frame::near(f.px(180, 466), [40, 40, 40, 255], 4),
+        "arrow hover bg {:?}",
+        f.px(180, 466)
+    );
+    assert!(
+        !Frame::near(f.px(20, 475), [40, 40, 40, 255], 4),
+        "the main part rests while the arrow is hovered"
+    );
+    h.click(192.0, 475.0);
+    assert_eq!(*news.borrow(), 1, "the arrow opens no tab");
+    let got = menus.borrow().clone();
+    assert_eq!(got.len(), 1);
+    assert!((got[0].0 - 8.0).abs() < 0.6, "menu x {got:?}");
+    assert!((got[0].1 - 458.0).abs() < 0.6, "menu foot {got:?}");
 }
 
 #[test]

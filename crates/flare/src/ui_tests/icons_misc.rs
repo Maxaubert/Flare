@@ -384,7 +384,8 @@ const SIZED: [(&str, usize); 13] = [
     ("convo.slint", 1),
     ("tabs.slint", 5),
     ("tabmark.slint", 7),
-    ("sidebar.slint", 3),
+    // The fourth is the New tab arrow: `sidebar_new_tab_arrow_draws_at_full_size_at_every_scale`.
+    ("sidebar.slint", 4),
     ("menus.slint", 4),
     ("start.slint", 1),
     ("find.slint", 1),

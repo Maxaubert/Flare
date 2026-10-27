@@ -496,6 +496,8 @@ export component AppWindow inherits Window {
     // Whether the strip is window-drag (off while a file drag is in flight); read by the e2e probe.
     out property <bool> strip-has-move-area: strip.has-move-area;
     in property <string> new-tab-title;
+    // The sidebar's New tab button: no right-click there, so its tooltip names only the key.
+    in property <string> new-tab-side-title;
     in property <string> find-tab-key;
     in property <string> new-key;
     in property <string> settings-key;
@@ -568,6 +570,8 @@ export component AppWindow inherits Window {
     in property <[MenuRow]> menu-rows;
     in property <length> menu-x;
     in property <length> menu-y;
+    // The menu's foot sits just above menu-y (the sidebar's New tab arrow) instead of its top at menu-y.
+    in property <bool> menu-above;
     in property <bool> overflow-open;
     in property <[OverflowRow]> overflow-rows;
     in property <length> overflow-right;
@@ -735,6 +739,7 @@ export component AppWindow inherits Window {
     callback tab-menu(string, length, length);
     callback new-tab();
     callback plus-menu(length, length);
+    callback folder-menu(length, length);
     callback more-clicked(length, length);
     callback settings-clicked();
     callback strip-resized(int);
@@ -1293,7 +1298,7 @@ export component AppWindow inherits Window {
                     slide-now: root.sidebar-slide-now;
                     carrying: root.carrying;
                     find-key: root.find-tab-key;
-                    new-tab-title: root.new-tab-title;
+                    new-tab-title: root.new-tab-side-title;
                     plugin-rows: root.plugin-rows;
                     hover-action(a, b) => { root.tab-hover-action(a, b); }
                     plugin-fold(s) => { root.plugin-fold(s); }
@@ -1305,7 +1310,7 @@ export component AppWindow inherits Window {
                     closed(a) => { root.tab-closed(a); }
                     tab-menu(a, b, c) => { root.tab-menu(a, b, c); }
                     new-tab() => { root.new-tab(); }
-                    plus-menu(a, b) => { root.plus-menu(a, b); }
+                    folder-menu(a, b) => { root.folder-menu(a, b); }
                     find-edited(a) => { root.side-find-edited(a); }
                     find-accepted() => { root.side-find-accepted(); }
                     find-escape() => { root.side-find-escape(); }
@@ -1368,6 +1373,7 @@ export component AppWindow inherits Window {
             rows: root.menu-rows;
             at-x: root.menu-x;
             at-y: root.menu-y;
+            above: root.menu-above;
             picked(i) => { root.menu-picked(i); }
             trailing(i) => { root.menu-trailing(i); }
             dismissed => { root.menu-dismissed(); }

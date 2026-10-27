@@ -9,7 +9,6 @@ use flare_tabs::restore::{parse_tabs, SavedTab, SavedTabs};
 use flare_tabs::tabs_store::TabsStore;
 use serde_json::json;
 
-use super::driver;
 use crate::ctx::{App, Ctx, Launch};
 use crate::guards::ReapGuard;
 use crate::proc::{reap_by_profile, Child};
@@ -146,12 +145,47 @@ pub fn spawn(ctx: &mut Ctx) -> Result<(), String> {
     let second = ctx.until("the second tab", 15_000, &mut || tab_count(&mut app) == 2);
     ctx.ok(second, "Ctrl+T opens a tab over a focused shell");
 
-    // PT: run.mjs:500-505 (ask mode). The Terminal page's New tabs row is set to Ask, and the +
-    // (one action with Ctrl+T) opens the folder the chooser answered: the FLARE_E2E_PICK seam
-    // answers at once, with no dialog.
-    let asked = driver::pick_seg(ctx, &mut app, "newtab-mode", &["ask"]);
+    // PT: run.mjs:500-505 (ask mode). Flare has no ask mode (2026-10-27): the folder menu's first
+    // row, "Choose a folder…", asks instead. A right-click on the strip's + opens the menu, and the
+    // row opens the folder the chooser answered: the FLARE_E2E_PICK seam answers at once, with no
+    // dialog.
     let before = tab_count(&mut app);
-    app.session.key("Ctrl+T")?;
+    let plus = app.session.probe("ui.rect", json!({ "name": "plus" })).ok();
+    let menu_up = match plus.as_ref().and_then(|r| {
+        Some((
+            r["x"].as_f64()? + r["w"].as_f64()? / 2.0,
+            r["y"].as_f64()? + r["h"].as_f64()? / 2.0,
+        ))
+    }) {
+        Some((x, y)) => {
+            app.session.right_click(x as f32, y as f32)?;
+            ctx.until("the folder menu", 5_000, &mut || {
+                app.session
+                    .probe_str("app.state")
+                    .is_ok_and(|s| s["menu"]["open"] == json!(true))
+            })
+        }
+        None => false,
+    };
+    let first = app
+        .session
+        .probe_str("app.state")
+        .ok()
+        .and_then(|s| s["menu"]["rows"][0]["label"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    let picked = match app
+        .session
+        .probe("ui.rect", json!({ "name": "menu" }))
+        .ok()
+        .and_then(|m| Some((m["x"].as_f64()?, m["y"].as_f64()?)))
+    {
+        // The first row is 28 px tall, under the panel's hairline border.
+        Some((x, y)) => app
+            .session
+            .click((x + 30.0) as f32, (y + 15.0) as f32)
+            .is_ok(),
+        None => false,
+    };
     let opened = ctx.until(
         "a tab in the folder the chooser answered",
         15_000,
@@ -159,8 +193,12 @@ pub fn spawn(ctx: &mut Ctx) -> Result<(), String> {
     );
     let last = tooltips(&mut app).pop().unwrap_or_default();
     ctx.ok(
-        asked && opened && last.to_lowercase().contains(ASK_FOLDER),
-        format!("ask mode: the + opens the folder the chooser answered ({last:?})"),
+        menu_up
+            && first.starts_with("Choose a folder")
+            && picked
+            && opened
+            && last.to_lowercase().contains(ASK_FOLDER),
+        format!("Choose a folder… opens the folder the chooser answered ({first:?}, {last:?})"),
     );
 
     // PT: run.mjs:506

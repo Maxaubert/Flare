@@ -2330,7 +2330,7 @@ mod tests {
     use super::*;
     use crate::ui_harness::{Harness, SCALES};
     use flare_settings::kv::{Backend, MemoryBackend};
-    use flare_settings::new_tab::{NewTabMode, new_tab_folder, new_tab_mode};
+    use flare_settings::new_tab::new_tab_folder;
     use flare_settings::page::{Button, Opt};
     use flare_settings::verb::{FakeDiag, FakeVerb, PendingVerb};
     use flare_settings::window_colours::ACCENT;
@@ -2774,7 +2774,6 @@ mod tests {
         f.b()
             .invoke_row_button("newtab-mode".into(), "choose-folder".into());
         f.pump();
-        assert_eq!(new_tab_mode(&f.prefs), NewTabMode::Folder);
         assert!(new_tab_folder(&f.prefs).contains("Work"));
     }
 
