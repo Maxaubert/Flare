@@ -6,7 +6,7 @@ allow it, a program of its own. It runs on your PC and gets exactly the permissi
 approve. This file is the contract, for plugin authors and for the Prism Terminal port, which must keep the same rules.
 
 - Samples: `../../sample-plugins/` (`manifest-tour`, `browser-badge`, `todo`, `what-next`, `sonara-bar`,
-  `session-buttons`, `look`). Every folder there loads as a valid plugin in
+  `session-buttons`, `look`, `agent-moves`). Every folder there loads as a valid plugin in
   `flare_mods::discover::tests::the_sample_plugins_are_valid`, so a sample that breaks a rule fails the build.
 - Protocol 1 mods (`mod.json`, the older format) keep working unchanged; their own notes, the stage 8 rules this file
   builds on and the port's test vectors are in `mods.md`. Every rule there holds for a plugin too, unless this file
@@ -16,8 +16,9 @@ approve. This file is the contract, for plugin authors and for the Prism Termina
   `../superpowers/plans/2026-10-25-plugin-system.md`. The Rust reference: `crates/flare-mods` (manifest, discover,
   enabled, hub, bridge, helper, install, fetch), `crates/flare-ctl` (grants, methods, decor), `crates/flare-tabs`
   (`decor`).
-- **Status (2026-10-26):** plugins phases 1 to 8 are built: everything below works in Flare. Not built: a tab's own
-  icon and effects (`tabs.icon.*`, `tabs.effect.*` in design 5.2), the cap of 4 pipe connections per plugin token, a
+- **Status (2026-10-26):** plugins phases 1 to 8 are built: everything below works in Flare, and so do the agent icon
+  motions (`agents.motion.*`, owner decision 2026-10-26). Not built: a tab's own icon and effects (`tabs.icon.*`,
+  `tabs.effect.*` in design 5.2), the cap of 4 pipe connections per plugin token, a
   plugin store, signing and automatic updates.
 
 ## A plugin in two minutes
@@ -122,6 +123,7 @@ A plugin gets exactly what it lists and you approved (rule S5); nothing else, an
 | `input` | Typing into a tab's shell (`tabs.input`). | Type and run commands in your terminals (full control) | Full control |
 | `network` | Its pages may reach public https addresses (no method). | Use the internet | can change what it does from the internet |
 | `process` | Flare runs its `helper` program as you (no method). | Run its own program on this PC (full access) | Full control, and it can leave things behind outside Flare |
+| `agent-looks` | How each agent's tab icon moves while it works (`agents.motion.*`), a motion from Flare's list. | Change how agent icons move while they work | |
 
 The words are `flare_mods::hub::permission_words`, the warnings `permission_warnings`.
 
@@ -212,6 +214,7 @@ worker, and every limit spent there, before the window hears of it.
 | Sidebar (`sidebar`) | `sidebar.set {key, items}` | 5 a second per section; 50 items |
 | Actions (`actions`) | `actions.set {key, tab?, enabled?, checked?, title?}` | 20 a second per plugin |
 | Bar (`bar`) | `bar.show {tab?}`, `bar.hide {tab?}` | once a second per tab; one bar a tab (`busy`) |
+| Agents (`agent-looks`) | `agents.motion.set {agent, motion}`, `agents.motion.clear {agent}` | 10 a second per plugin per agent |
 | Session (`sessions`) | `session.read {tab?}` | once a second per tab; the last 200 entries |
 | Input (`input`) | `tabs.input {tab?, text, enter?}` | 2 a second per tab; 4096 bytes |
 | Storage (none, plugins only) | `storage.get {key?}`, `storage.set {key?, value}` | 1 MB as written; written to disk at most twice a second |
@@ -332,6 +335,38 @@ Sample: `../../sample-plugins/todo/`.
   file (mp3, wav, ogg, oga, opus, m4a, aac, flac, webm, weba; at most 100 MB) or a public https address (which needs
   `network` too). It never loops and plays by itself only with `autoplay: true`, once.
 
+## Agent icon motions
+
+Owner decision 2026-10-26, amending design 13 ("`tabs.icon.set` works only on tabs with no agent") narrowly: a plugin
+may pick how an agent's tab icon moves while that tab works. It picks a **motion from Flare's fixed list**; it never
+sends the agent's artwork, never draws a check or a dot, and the agent's marks (ring, bar) stay Flare's.
+
+- **`agents.motion.set {agent, motion}` and `agents.motion.clear {agent}` (`agent-looks`).** `agent` is `claude`,
+  `codex` or `agy`. The motions, all drawn by Flare:
+
+  | Motion | What it does | Agents |
+  |---|---|---|
+  | `none` | Still (holds an icon still over another plugin's older pick) | all |
+  | `hop-blink` | A slow hop with a squash on landing (1.8 s), Clawd blinking every other landing (H1) | all (only Clawd has eyes) |
+  | `spin-fade` | A turn every 3.5 s while fading from 0.55 to 1 and back over 1.8 s (O6) | all |
+  | `rainbow-flow` | The colours run along the arch, one lap every 3 s, each path 0.3 s ahead of the last (A1) | agy only |
+  | `hop` | The hop of `hop-blink`, no blink | all |
+  | `spin` | A steady turn every 4 s | all |
+  | `breathe` | Grows from 0.82 to 1.05 times its size and back, fading a little, 2.6 s each way | all |
+
+- **When it moves.** Only on the tab of an agent that is working (its Working mark is on), in the strip and the sidebar
+  (the +N list keeps its icons still), and never with Windows' animation effects off. Every frame comes from the mark
+  clock that already runs while a tab works, so nothing new ticks while all is idle. Without a pick an icon stands
+  still, as before. (On the software renderer a turn is left out; the icon still fades.)
+- **Who wins.** One pick per plugin per agent; the newest pick wins. A plugin that clears its pick, is turned off or
+  removed, or whose background page ends, takes its picks with it, and the older pick of another plugin shows again.
+- **Answers.** `set` answers `{agent, motion}`; `clear` answers `{agent, cleared, motion}` with the motion the agent wears
+  now. A motion or an agent not on the list, or `rainbow-flow` for an agent that is not agy, is `bad_params`, and the
+  message lists what fits. A protocol 1 mod cannot ask for `agent-looks`.
+- Sample: `../../sample-plugins/agent-moves/` sets the owner's picks (Claude `hop-blink`, Codex `spin-fade`, agy
+  `rainbow-flow`) from its background page and has a panel, opened from a tab's menu, to pick one per agent (kept in
+  its store).
+
 ## Helper programs
 
 - A plugin that declares `helper` and holds `process` gets its program started while it is on, and only then. The
@@ -375,7 +410,8 @@ Sample: `../../sample-plugins/todo/`.
 - **Exact permissions (S5).** The token maps to the approved permissions and nothing else; a plugin that is off has
   no token; every call checks the live grant and the plugin's generation.
 - **No spoofing.** Plugin badges sit in Flare's decor chip, never in the agent's ring or mark; no `check` or `dot`
-  icon; tones never equal the state colours; every tooltip line starts with the plugin's name. A plugin cannot style
+  icon; tones never equal the state colours; every tooltip line starts with the plugin's name. An agent's icon motion
+  is one of Flare's own, drawn on the agent's own artwork; a plugin sends no art for it. A plugin cannot style
   its sidebar section or draw over the tab strip.
 - **Untrusted manifest and untrusted pages.** Every field is checked before use, every path on every use, every page
   message for shape and size before its method is read.

@@ -17,7 +17,7 @@ list them in `capabilities`. Plugins phase 1 (2026-10-25) adds `tabs.badge.set|c
 for the agent's own tab; plugins phase 3 lets a plugin that holds `tabs` name any tab and see every tab in
 `tabs.list`; plugins phase 4 adds `sidebar.set` and `actions.set` (a plugin's sections and actions) and click scope;
 plugins phase 5 adds `session.read`, `tabs.input`, `storage.get` and `storage.set`; plugins phase 6 adds `bar.show`,
-`bar.hide` and `view.audio`. Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
+`bar.hide` and `view.audio`; the agent motions (2026-10-26) add `agents.motion.set` and `agents.motion.clear`. Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
 
@@ -206,6 +206,7 @@ so without `tabs` it can name none (`forbidden`) and with it, it must name one (
 | `tabs.input` | **no** (rules 2 and 188) | `input` (a `mod.json` cannot ask for it) | yes |
 | `storage.get`, `storage.set` | **no** | (always, a protocol 2 plugin's own store; a protocol 1 mod is refused by the dispatcher) | yes |
 | `bar.show`, `bar.hide` | **no** | `bar` | yes |
+| `agents.motion.set`, `agents.motion.clear` | **no** | `agent-looks` (a `mod.json` cannot ask for it) | yes |
 | `tools.respond` | no | `tools` | yes |
 | `mods.tools`, `mods.call` | yes | **no** | yes |
 | `shell.input`, `settings.set`, `mods.enable` | **no** | **no** | yes |
@@ -359,6 +360,21 @@ One bar a tab: `busy` when another plugin's bar shows there. Each is once a seco
 Errors: `bad_params` (a field that is not one, a plugin with no `bar` in its manifest), `forbidden` (no permission, a tab
 the plugin may not see, the agent), `no_tab`, `busy`, `rate_limited`, `unauthorized` (switched off since the call was
 checked).
+
+### agents.motion.set, agents.motion.clear (agent icon motions, 2026-10-26)
+
+Namespace `Agents` (permission `agent-looks`); the agent never enters it and the dispatcher refuses any caller that is not
+a plugin. Listed in `capabilities` when the run has a mods hub. The contract is in `plugins.md` ("Agent icon motions").
+
+| Method | Params | Result |
+|---|---|---|
+| `agents.motion.set` | `agent` (`"claude"`, `"codex"` or `"agy"`), `motion` (`none`, `hop-blink`, `spin-fade`, `rainbow-flow` (agy only), `hop`, `spin`, `breathe`) | `{agent, motion}`: the motion the agent wears now (this pick) |
+| `agents.motion.clear` | `agent` | `{agent, cleared, motion}`: whether the plugin had a pick, and what the agent wears now (an older pick of another plugin, or `none`) |
+
+One pick per plugin per agent; the newest pick wins, and a plugin turned off (or whose background page ended) takes its
+picks with it. Each is 10 changes a second per plugin per agent (`rate_limited`). Errors: `bad_params` (an agent or a
+motion not on the list, `rainbow-flow` for another agent than agy, a field that is not one), `forbidden` (no
+permission, the agent, a protocol 1 mod), `rate_limited`, `unauthorized` (switched off since the call was checked).
 
 ### panel.open
 

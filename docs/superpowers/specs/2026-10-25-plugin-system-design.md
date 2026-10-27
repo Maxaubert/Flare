@@ -273,7 +273,9 @@ Look and spoofing
   a named tab of 150 px or more, 1 below, none under 110 px or on icon tabs. Each source keeps at most 4 keys per tab
   and 200 in total. Badges are flat fixed fields in the tab row (no nested model, so the row diff stays cheap).
 - `tabs.icon.set` only on tabs with no agent kind; on agent tabs it is shown as a badge. First come; a second plugin
-  gets `busy`; the previous override comes back when its owner turns off.
+  gets `busy`; the previous override comes back when its owner turns off. Amended 2026-10-26 (owner): a plugin with
+  `agent-looks` may pick how an agent's icon moves while it works (`agents.motion.*`), a motion from Flare's fixed list,
+  never artwork, never a check or dot; the ring and bar stay Flare's (`docs/surfaces/decisions.md`, `plugins.md`).
 
 Compatibility
 - Protocol 1 keeps everything: `mod.json`, the `mods\` folder, `mods.json` as the switch store (protocol 2 entries
