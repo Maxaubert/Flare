@@ -855,9 +855,10 @@ Plan: `docs/superpowers/plans/2026-10-21-surfaces.md`, stage 1. Decisions and ho
   `a_panel_of_a_kind_this_stage_cannot_draw_is_kept_in_the_file_and_not_shown`,
   `a_session_that_never_opens_a_panel_writes_no_file_and_starts_no_writer`,
   `an_answer_for_a_file_no_longer_on_show_is_dropped` and the `store.rs` unit tests (damaged files, unknown kinds, widths).
-- **One property says an overlay is open.** `overlay-open` is true while any of the 15 overlays is (menu, tab list, dialog,
+- **One property says an overlay is open.** `overlay-open` is true while any of the 16 overlays is (menu, tab list, dialog,
   update window and notice, Settings page, its dropdown, theme editor and questions, colour picker, Command help, find bar,
-  the F12 card, a tab being dragged).
+  the F12 card, a tab being dragged, and the collapsed sidebar out on a hover when it reaches over the panel's slot, added
+  2026-10-24).
   Native panels ignore it; stage 3's web panel hides while it is true. Held by
   `every_overlay_turns_overlay_open_on_and_off_again` (no catch-all arm: a new overlay fails to compile until counted) and
   `overlay_open_is_read_only_for_rust_and_computed_in_the_window_file`.
@@ -1010,7 +1011,7 @@ one controller per tab with an open web panel, parented to Flare's window.
   (`ui_tests/panel.rs`), `it_sits_on_the_slot_at_every_display_scale`, `the_controller_follows_the_slot_when_the_splitter_moves`
   (`web_tests.rs`), the unit tests of `web.rs` (`a_logical_rect_rounds_by_its_edges`, `the_web_rect_is_the_slot_less_the_header_and_the_hairline`)
   and the e2e `webPanel`.
-- **Airspace.** While any of the 15 overlays is open the browser window is hidden and a still of its last frame (taken before it
+- **Airspace.** While any of the 16 overlays is open the browser window is hidden and a still of its last frame (taken before it
   hides) is drawn in its place; it shows again and the still is let go when the overlay closes; a tab behind hides its window and
   keeps its page. Held by `an_overlay_takes_a_still_and_then_hides_the_window`, `a_still_that_cannot_be_taken_still_hides_the_window`,
   `a_late_still_after_the_overlay_closed_is_dropped`, `a_tab_behind_keeps_its_page_but_hides_the_window`,
@@ -1080,6 +1081,11 @@ one controller per tab with an open web panel, parented to Flare's window.
 - **Stored.** A web panel is stored with its current address and comes back with its tab; a stored address that is not exactly its
   own normal form is dropped. Held by `a_stored_web_address_comes_back_and_a_bad_stored_address_is_dropped` and
   `set_target_follows_a_page_without_reopening_it`.
+- **A question takes the keys from the page (2026-10-24).** The close question and the download question take the Windows
+  keyboard focus back from a page that held it (Ctrl+W or a download link pressed in the page), so Enter and Escape answer the
+  question. Held by `the_download_question_takes_the_keys_back_from_the_page`. Measured the same day: a menu over the terminal
+  hides the page about 25 ms after the right click (the still is taken first), so the part of a menu over the panel can sit
+  under the page for one or two frames.
 - **End to end (the release exe, its own profile, offscreen):** `webPanel` (108 checks, at 100 and 225 percent, including a change of display scale with the page open), `webVideo` (13, a webm and an mp4) and
   `webNoRuntime` (7).
 - **Not built in this stage:** the agent's hands on the page (look, click, type, press, scroll, wait, eval; the ribbon) are
