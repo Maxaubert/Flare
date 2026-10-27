@@ -49,7 +49,7 @@ pub enum Overlay {
 
 impl Overlay {
     /// All of them.
-    pub const ALL: [Overlay; 16] = [
+    pub const ALL: [Overlay; 17] = [
         Overlay::Menu,
         Overlay::Overflow,
         Overlay::PluginsDropdown,
