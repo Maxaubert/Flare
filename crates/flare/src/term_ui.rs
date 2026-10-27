@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
-use flare_agent::keys::{AgentView, newline_key};
+use flare_agent::keys::{AgentView, newline_key, word_rubout_key};
 use flare_render::decor::{Decor, DecorInk};
 use flare_render::hit::{Hit, hit_cell, past_edge_px};
 use flare_render::metrics::CellMetrics;
@@ -967,6 +967,19 @@ impl TermUi {
                     } else {
                         self.watch.other_key();
                     }
+                }
+                // Ctrl+Backspace alone, for an agent that deletes a word on another key (agy: ^W).
+                if action == TermKeyAction::Pty
+                    && ev.pressed
+                    && ev.key == "Backspace"
+                    && ev.ctrl
+                    && !ev.shift
+                    && !ev.alt
+                    && !ev.meta
+                    && let Some(k) = word_rubout_key(self.deps.agent.armed(tab.id))
+                {
+                    tab.handle.send_text(k);
+                    return KeyDone::Handled;
                 }
                 KeyDone::Send
             }
@@ -2704,6 +2717,23 @@ mod tests {
         r.agent.0.set(Some(AgentKind::Codex));
         r.key(KeyEvent::new("Enter", "Enter").shift());
         assert_eq!(r.wait_written(3), b"\n\\\r");
+    }
+
+    #[test]
+    fn ctrl_backspace_where_agy_runs_sends_ctrl_w() {
+        let mut r = Rig::new(1.0);
+        let bs = || KeyEvent::new("Backspace", "Backspace").ctrl();
+        assert_eq!(r.key(bs()), (TermKeyAction::Pty, KeyDone::Send));
+        r.agent.0.set(Some(AgentKind::Claude));
+        assert_eq!(r.key(bs()), (TermKeyAction::Pty, KeyDone::Send));
+        r.agent.0.set(Some(AgentKind::Codex));
+        assert_eq!(r.key(bs()), (TermKeyAction::Pty, KeyDone::Send));
+        r.agent.0.set(Some(AgentKind::Agy));
+        assert_eq!(r.key(bs().shift()), (TermKeyAction::Pty, KeyDone::Send));
+        assert_eq!(r.key(bs().alt()), (TermKeyAction::Pty, KeyDone::Send));
+        assert_eq!(r.key(bs().released()), (TermKeyAction::Pty, KeyDone::Send));
+        assert_eq!(r.key(bs()), (TermKeyAction::Pty, KeyDone::Handled));
+        assert_eq!(r.wait_written(1), b"\x17");
     }
 
     // ---- find ----
