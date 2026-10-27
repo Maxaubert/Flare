@@ -6,7 +6,9 @@
 
 use crate::tabs_ui::View;
 use flare_settings::kv::PrefStore;
-use flare_settings::recent_roots::{pinned_roots, recent_roots, toggle_pin};
+use flare_settings::recent_roots::{
+    RECENT_SHOWN, pinned_roots, recent_labels, recent_roots, starter_fill, toggle_pin,
+};
 use flare_tabs::places::place_rows;
 use flare_tabs::sidebar_rows::find_keeps;
 use flare_tabs::tip_place::{BoxF, TIP_SHOW_MS, TipSide, TipSpot, place_tip};
@@ -167,37 +169,89 @@ pub enum MenuKind {
     },
 }
 
-/// The + menu: pins first, then the newest unpinned recents. None at all: one disabled row.
-/// Each row comes with the folder it opens ("" for the note).
-pub fn plus_menu_rows(prefs: &PrefStore) -> Vec<(MenuRowData, String)> {
-    let places = place_rows(&pinned_roots(prefs), &recent_roots(prefs));
-    if places.is_empty() {
+/// The folder menu's first row: the folder picker, then a tab there (2026-10-27).
+pub const CHOOSE_FOLDER: &str = "Choose a folder\u{2026}";
+
+/// What a starter folder's row says on its right: "user folder" for the user's own, `~\Documents` for one inside
+/// it, nothing for one elsewhere (a Documents moved to another drive).
+fn starter_hint(path: &str, home: &str) -> String {
+    let (p, h) = (
+        path.trim_end_matches(['\\', '/']),
+        home.trim_end_matches(['\\', '/']),
+    );
+    if h.is_empty() {
+        return String::new();
+    }
+    if p.eq_ignore_ascii_case(h) {
+        return "user folder".to_string();
+    }
+    match p.get(..h.len()) {
+        Some(head) if head.eq_ignore_ascii_case(h) && p[h.len()..].starts_with(['\\', '/']) => {
+            format!("~{}", &p[h.len()..])
+        }
+        _ => String::new(),
+    }
+}
+
+/// The folder menu (the sidebar's arrow and the strip's right-click): "Choose a folder…", then the pins, then the
+/// newest unpinned recents. While fewer recents than the menu shows are known, `starters` (Documents, Downloads,
+/// Desktop, the user folder: those that exist) fill the empty spots; a real recent pushes one out. Nothing to
+/// list at all: a disabled note under the first row. Each row comes with the folder it opens ("" for the first
+/// row and the note).
+pub fn plus_menu_rows(
+    prefs: &PrefStore,
+    starters: &[String],
+    home: &str,
+) -> Vec<(MenuRowData, String)> {
+    let (pinned, recent) = (pinned_roots(prefs), recent_roots(prefs));
+    let places = place_rows(&pinned, &recent);
+    let fill = starter_fill(&pinned, &recent, starters, RECENT_SHOWN);
+    let mut choose = MenuRowData::plain(CHOOSE_FOLDER);
+    choose.icon = GLYPH_FOLDER;
+    let mut rows = vec![(choose, String::new())];
+    if places.is_empty() && fill.is_empty() {
         let mut note = MenuRowData::plain("No recent folders");
         note.disabled = true;
-        return vec![(note, String::new())];
+        note.group = true;
+        rows.push((note, String::new()));
+        return rows;
     }
-    places
-        .into_iter()
-        .map(|p| {
-            let mut row = MenuRowData::plain(&p.label);
-            row.icon = GLYPH_FOLDER_FILL;
-            row.filled_icon = true;
-            row.trailing_icon = Some(GLYPH_PIN);
-            row.trailing_filled = p.pinned;
-            row.trailing_tip = if p.pinned {
-                "Unpin"
-            } else {
-                "Pin to this menu"
-            }
-            .to_string();
-            (row, p.path)
-        })
-        .collect()
+    // The labels are worked out over every listed folder, so a starter and a recent of one name both take
+    // their parent along.
+    let all: Vec<String> = places
+        .iter()
+        .map(|p| p.path.clone())
+        .chain(fill.iter().cloned())
+        .collect();
+    let labels = recent_labels(&all);
+    let pins = places.iter().map(|p| p.pinned);
+    let starter_flags = std::iter::repeat_n(false, fill.len());
+    for (i, (pinned, path)) in pins.chain(starter_flags).zip(all).enumerate() {
+        let label = labels.get(i).map_or(path.as_str(), |l| l.label.as_str());
+        let mut row = MenuRowData::plain(label);
+        row.icon = GLYPH_FOLDER_FILL;
+        row.filled_icon = true;
+        row.trailing_icon = Some(GLYPH_PIN);
+        row.trailing_filled = pinned;
+        row.trailing_tip = if pinned { "Unpin" } else { "Pin to this menu" }.to_string();
+        row.group = i == 0;
+        if i >= places.len() {
+            row.hint = starter_hint(&path, home);
+        }
+        rows.push((row, path));
+    }
+    rows
 }
 
 /// Toggles the pin of the row at `index`, then re-reads the list: the row climbs to the top while
 /// the menu stands.
-pub fn toggle_pin_in_menu(prefs: &PrefStore, rows: &mut Vec<(MenuRowData, String)>, index: usize) {
+pub fn toggle_pin_in_menu(
+    prefs: &PrefStore,
+    rows: &mut Vec<(MenuRowData, String)>,
+    index: usize,
+    starters: &[String],
+    home: &str,
+) {
     let Some((_, path)) = rows.get(index) else {
         return;
     };
@@ -205,7 +259,7 @@ pub fn toggle_pin_in_menu(prefs: &PrefStore, rows: &mut Vec<(MenuRowData, String
         return;
     }
     toggle_pin(prefs, &path.clone());
-    *rows = plus_menu_rows(prefs);
+    *rows = plus_menu_rows(prefs, starters, home);
 }
 
 /// A tab's own menu: Close tab (with its key) and, for a folder tab only, Copy folder path.
@@ -366,23 +420,89 @@ mod tests {
     }
 
     #[test]
-    fn the_plus_menu_is_pins_then_five_recents_or_a_disabled_note() {
+    fn the_plus_menu_is_choose_then_pins_then_five_recents_or_a_disabled_note() {
         let prefs = PrefStore::memory();
-        let empty = plus_menu_rows(&prefs);
-        assert_eq!(empty.len(), 1);
-        assert_eq!(empty[0].0.label, "No recent folders");
-        assert!(empty[0].0.disabled);
+        let empty = plus_menu_rows(&prefs, &[], "");
+        assert_eq!(labels(&empty), [CHOOSE_FOLDER, "No recent folders"]);
+        assert!(!empty[0].0.disabled);
+        assert_eq!(empty[0].0.icon, GLYPH_FOLDER);
+        assert_eq!(empty[0].0.trailing_icon, None);
+        assert!(empty[1].0.disabled);
         for i in (0..8).rev() {
             remember_root(&prefs, &format!(r"C:\r\recent{i}"));
         }
         toggle_pin(&prefs, r"C:\p\pinA");
         toggle_pin(&prefs, r"C:\p\pinB");
-        let rows = plus_menu_rows(&prefs);
-        assert_eq!(rows.len(), 7);
-        assert!(rows[0].0.trailing_filled && rows[1].0.trailing_filled);
-        assert!(rows[2..].iter().all(|(r, _)| !r.trailing_filled));
-        assert_eq!(rows[0].1, r"C:\p\pinA");
+        let rows = plus_menu_rows(&prefs, &[], "");
+        assert_eq!(rows.len(), 8);
+        assert_eq!(rows[0].0.label, CHOOSE_FOLDER);
+        assert_eq!(rows[0].1, "");
+        assert!(rows[1].0.trailing_filled && rows[2].0.trailing_filled);
+        assert!(rows[3..].iter().all(|(r, _)| !r.trailing_filled));
+        assert_eq!(rows[1].1, r"C:\p\pinA");
+        // A rule between the first row and the folders.
+        assert!(rows[1].0.group && rows[2..].iter().all(|(r, _)| !r.group));
         assert!(rows.iter().all(|(r, _)| !r.disabled));
+    }
+
+    #[test]
+    fn starters_fill_the_menu_until_real_recents_push_them_out() {
+        let prefs = PrefStore::memory();
+        let home = r"C:\Users\me";
+        let starters: Vec<String> = [
+            r"C:\Users\me\Documents",
+            r"C:\Users\me\Downloads",
+            r"D:\Desktop",
+            home,
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let rows = plus_menu_rows(&prefs, &starters, home);
+        assert_eq!(
+            labels(&rows),
+            [CHOOSE_FOLDER, "Documents", "Downloads", "Desktop", "me"]
+        );
+        let hints: Vec<&str> = rows.iter().map(|(r, _)| r.hint.as_str()).collect();
+        assert_eq!(
+            hints,
+            ["", r"~\Documents", r"~\Downloads", "", "user folder"]
+        );
+        assert_eq!(rows[1].1, r"C:\Users\me\Documents");
+        assert!(rows[1].0.group);
+        // Two recents: they come first and the last two starters give way.
+        remember_root(&prefs, r"C:\work\b");
+        remember_root(&prefs, r"C:\work\a");
+        let rows = plus_menu_rows(&prefs, &starters, home);
+        assert_eq!(
+            labels(&rows),
+            [CHOOSE_FOLDER, "a", "b", "Documents", "Downloads", "Desktop"]
+        );
+        assert_eq!(rows[1].0.hint, "");
+        // A starter opened once is a recent: listed once, as a recent.
+        remember_root(&prefs, r"C:\Users\me\Downloads");
+        let rows = plus_menu_rows(&prefs, &starters, home);
+        assert_eq!(
+            labels(&rows),
+            [CHOOSE_FOLDER, "Downloads", "a", "b", "Documents", "Desktop"]
+        );
+        assert_eq!(rows[1].0.hint, "");
+        // Pinning a starter makes it a pin.
+        let mut rows = rows;
+        toggle_pin_in_menu(&prefs, &mut rows, 4, &starters, home);
+        assert_eq!(
+            labels(&rows),
+            [
+                CHOOSE_FOLDER,
+                "Documents",
+                "Downloads",
+                "a",
+                "b",
+                "Desktop",
+                "me"
+            ]
+        );
+        assert!(rows[1].0.trailing_filled);
     }
 
     #[test]
@@ -391,22 +511,25 @@ mod tests {
         for p in [r"C:\x\c", r"C:\x\b", r"C:\x\a"] {
             remember_root(&prefs, p);
         }
-        let mut rows = plus_menu_rows(&prefs);
+        let mut rows = plus_menu_rows(&prefs, &[], "");
         assert_eq!(
             rows.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>(),
-            [r"C:\x\a", r"C:\x\b", r"C:\x\c"]
+            ["", r"C:\x\a", r"C:\x\b", r"C:\x\c"]
         );
-        toggle_pin_in_menu(&prefs, &mut rows, 2);
+        // The first row has no pin: toggling it does nothing.
+        toggle_pin_in_menu(&prefs, &mut rows, 0, &[], "");
+        assert!(pinned_roots(&prefs).is_empty());
+        toggle_pin_in_menu(&prefs, &mut rows, 3, &[], "");
         assert_eq!(
             rows.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>(),
-            [r"C:\x\c", r"C:\x\a", r"C:\x\b"]
+            ["", r"C:\x\c", r"C:\x\a", r"C:\x\b"]
         );
         assert_eq!(pinned_roots(&prefs), [r"C:\x\c"]);
-        assert_eq!(rows[0].0.trailing_tip, "Unpin");
-        assert_eq!(rows[1].0.trailing_tip, "Pin to this menu");
+        assert_eq!(rows[1].0.trailing_tip, "Unpin");
         assert_eq!(rows[2].0.trailing_tip, "Pin to this menu");
+        assert_eq!(rows[3].0.trailing_tip, "Pin to this menu");
         // And back: unpinning drops it to the recents' place.
-        toggle_pin_in_menu(&prefs, &mut rows, 0);
+        toggle_pin_in_menu(&prefs, &mut rows, 1, &[], "");
         assert!(pinned_roots(&prefs).is_empty());
     }
 
@@ -624,6 +747,9 @@ mod tests {
     #[test]
     fn labels_helper_reads_rows() {
         let prefs = PrefStore::memory();
-        assert_eq!(labels(&plus_menu_rows(&prefs)), ["No recent folders"]);
+        assert_eq!(
+            labels(&plus_menu_rows(&prefs, &[], "")),
+            [CHOOSE_FOLDER, "No recent folders"]
+        );
     }
 }

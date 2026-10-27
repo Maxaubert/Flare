@@ -38,7 +38,7 @@ use flare_settings::agent_prefs::{
 use flare_settings::kv::PrefStore;
 use flare_settings::kv::Subscription;
 use flare_settings::look::LookStore;
-use flare_settings::new_tab::{NewTabMode, new_tab_folder, new_tab_mode};
+use flare_settings::new_tab::new_tab_folder;
 use flare_settings::recent_roots::{pinned_roots, recent_roots};
 use flare_settings::sidebar::{SidebarMode, sidebar_mode};
 use flare_settings::tab_layout::{TabLayout, tab_layout};
@@ -117,6 +117,9 @@ use flare_theme::fonts::zoom_step;
 pub enum UiMsg {
     RestoreDone(Restored),
     Picked(Option<PathBuf>),
+    /// The starter folders of the folder menu (Documents, Downloads, Desktop, the user folder: those that exist),
+    /// resolved by a worker.
+    StarterFolders(Vec<String>),
     /// A dropped path, resolved by a worker to the folder it names (or holds).
     FolderResolved(String),
     /// The folders a hand-off's arguments named, resolved by a worker.
@@ -208,6 +211,7 @@ impl std::fmt::Debug for TermMsgBox {
 
 pub type Post = Arc<dyn Fn(UiMsg) + Send + Sync>;
 type PickAnswer = Arc<dyn Fn(Option<PathBuf>) + Send + Sync>;
+type StarterAnswer = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 
 pub struct Deps {
     pub prefs: PrefStore,
@@ -223,6 +227,9 @@ pub struct Deps {
     /// Production: `flare_win::pick::pick_folder` parented to the window; tests: a fake that
     /// answers at once.
     pub pick_folder: Rc<dyn Fn(Option<PathBuf>, PickAnswer)>,
+    /// The folder menu's starter folders. Production: `flare_win::paths::starter_folders` on a worker, which then
+    /// answers; tests: a fake that never answers (no starters), or one that does.
+    pub starter_folders: Rc<dyn Fn(StarterAnswer)>,
     pub clipboard: Rc<dyn Fn(&str)>,
     pub open_url: Rc<dyn Fn(&str)>,
     /// Production: `GridHost::set_source(Box::new(LiveSource::new(h)))`; tests: records the id.
@@ -479,6 +486,8 @@ pub struct AppCtl {
     query: String,
     boot_saved: SavedTabs,
     restore_started: bool,
+    /// The folder menu's starter folders, once a worker has found them (empty until then).
+    starters: Vec<String>,
     source_id: Option<String>,
     last_saved: Option<SavedTabs>,
     /// Agents that are mid-answer: tab id to the clock time they started (M6 fills this).
@@ -912,6 +921,7 @@ impl AppCtl {
             query: String::new(),
             boot_saved,
             restore_started: false,
+            starters: Vec::new(),
             source_id: None,
             last_saved: None,
             working: HashMap::new(),
@@ -1226,6 +1236,8 @@ impl AppCtl {
         );
         bind!(app, rc, on_plus_menu, |c, x: f32, y: f32| c
             .open_plus_menu(x, y));
+        bind!(app, rc, on_folder_menu, |c, x: f32, y: f32| c
+            .open_folder_menu(x, y));
         bind!(app, rc, on_more_clicked, |c, x: f32, y: f32| c
             .open_overflow(false, x, y));
         bind!(app, rc, on_settings_clicked, |c| c.toggle_settings());
@@ -1621,6 +1633,8 @@ impl AppCtl {
         app.set_new_tab_title(
             format!("New tab ({new_key}). Right-click for recent folders").into(),
         );
+        // The sidebar's button has an arrow for the folders instead of a right-click (2026-10-27).
+        app.set_new_tab_side_title(format!("New tab ({new_key})").into());
         app.set_version_text(format!("Version {}", crate::app_facts::version()).into());
 
         if view.front_kind == 2 {
@@ -2183,9 +2197,10 @@ impl AppCtl {
 
     // ---- the restore ----------------------------------------------------------------------------
 
-    /// A worker thread resolves the saved strip; [`UiMsg::RestoreDone`] answers. Runs ONCE.
+    /// A worker thread resolves the saved strip; [`UiMsg::RestoreDone`] answers. Runs ONCE. The folder menu's
+    /// starter folders are asked for here too, once; [`UiMsg::StarterFolders`] answers.
     pub fn start_restore(this: &Rc<RefCell<AppCtl>>) {
-        let (saved, is_dir, lookup, post) = {
+        let (saved, is_dir, lookup, post, starters) = {
             let mut c = this.borrow_mut();
             if c.restore_started {
                 return;
@@ -2196,8 +2211,13 @@ impl AppCtl {
                 Arc::clone(&c.deps.is_dir),
                 Arc::clone(&c.deps.lookup),
                 Arc::clone(&c.deps.post),
+                Rc::clone(&c.deps.starter_folders),
             )
         };
+        {
+            let post = Arc::clone(&post);
+            starters(Arc::new(move |list| post(UiMsg::StarterFolders(list))));
+        }
         let r = std::thread::Builder::new()
             .name("flare-restore".into())
             .spawn({
@@ -2360,30 +2380,26 @@ impl AppCtl {
     }
 
     fn prewarm_new_tab(&self) {
-        if new_tab_mode(&self.prefs) == NewTabMode::Folder {
-            self.deps.host.prewarm(&self.new_tab_dir());
-        }
+        self.deps.host.prewarm(&self.new_tab_dir());
     }
 
-    /// The + button and Ctrl+T. Folder mode: the stored folder, else the user's folder, no
-    /// question. Ask mode: the folder picker (a cancel opens nothing).
+    /// The + button and Ctrl+T: the stored folder, else the user's folder, no question. (There is no ask mode
+    /// any more, 2026-10-27: a stored "ask" opens here too; the folder menu's first row asks instead.)
     pub fn new_tab(&mut self) {
         self.close_menu_quietly();
-        match new_tab_mode(&self.prefs) {
-            NewTabMode::Folder => {
-                let dir = self.new_tab_dir();
-                self.open_folder(&dir);
-                self.deps.host.prewarm(&dir);
-                self.focus_terminal();
-            }
-            NewTabMode::Ask => {
-                let stored = new_tab_folder(&self.prefs);
-                let default_dir = (!stored.is_empty()).then(|| PathBuf::from(stored));
-                let post = Arc::clone(&self.deps.post);
-                let answer: PickAnswer = Arc::new(move |p| post(UiMsg::Picked(p)));
-                (self.deps.pick_folder)(default_dir, answer);
-            }
-        }
+        let dir = self.new_tab_dir();
+        self.open_folder(&dir);
+        self.deps.host.prewarm(&dir);
+        self.focus_terminal();
+    }
+
+    /// The folder menu's "Choose a folder…": the folder picker, starting in the new-tab folder; the answer opens a
+    /// tab there ([`UiMsg::Picked`]), and the spawn remembers it as a recent. A cancel opens nothing.
+    fn choose_folder(&mut self) {
+        let default_dir = Some(PathBuf::from(self.new_tab_dir()));
+        let post = Arc::clone(&self.deps.post);
+        let answer: PickAnswer = Arc::new(move |p| post(UiMsg::Picked(p)));
+        (self.deps.pick_folder)(default_dir, answer);
     }
 
     /// Closing asks first when the tab hosts an agent, else closes at once.
@@ -2587,10 +2603,19 @@ impl AppCtl {
 
     // ---- menus, the +N list and the start screen -------------------------------------------------------
 
+    /// The strip's + right-clicked: the folder menu at the pointer.
     fn open_plus_menu(&mut self, x: f32, y: f32) {
         self.close_overflow_quietly();
-        let rows = plus_menu_rows(&self.prefs);
+        let rows = plus_menu_rows(&self.prefs, &self.starters, &self.deps.home);
         self.show_menu(MenuKind::Plus, rows, x, y);
+    }
+
+    /// The sidebar New tab button's arrow: the same menu, its left edge at `x` and its foot just above `top` (the
+    /// button's top), so it never covers the button.
+    fn open_folder_menu(&mut self, x: f32, top: f32) {
+        self.close_overflow_quietly();
+        let rows = plus_menu_rows(&self.prefs, &self.starters, &self.deps.home);
+        self.show_menu_at(MenuKind::Plus, rows, x, top, true);
     }
 
     fn open_tab_menu(&mut self, id: &str, x: f32, y: f32) {
@@ -2625,11 +2650,24 @@ impl AppCtl {
     }
 
     fn show_menu(&mut self, kind: MenuKind, rows: Vec<(MenuRowData, String)>, x: f32, y: f32) {
+        self.show_menu_at(kind, rows, x, y, false);
+    }
+
+    /// `above`: the menu's foot sits just above `y` instead of its top at `y` (the sidebar's New tab arrow).
+    fn show_menu_at(
+        &mut self,
+        kind: MenuKind,
+        rows: Vec<(MenuRowData, String)>,
+        x: f32,
+        y: f32,
+        above: bool,
+    ) {
         self.clear_tip();
         self.menu = Some(MenuState { kind, rows });
         if let Some(app) = self.app() {
             app.set_menu_x(x);
             app.set_menu_y(y);
+            app.set_menu_above(above);
         }
         self.push_menu();
         if let Some(app) = self.app() {
@@ -2692,7 +2730,10 @@ impl AppCtl {
         };
         match &m.kind {
             MenuKind::Plus => {
-                if !path.is_empty() {
+                // The first row is always "Choose a folder…"; by its place, as a folder may carry that name.
+                if i == 0 {
+                    self.choose_folder();
+                } else if !path.is_empty() {
                     self.open_recent(path);
                 }
             }
@@ -2731,7 +2772,7 @@ impl AppCtl {
             return;
         }
         if let Ok(i) = usize::try_from(i) {
-            toggle_pin_in_menu(&self.prefs, &mut m.rows, i);
+            toggle_pin_in_menu(&self.prefs, &mut m.rows, i, &self.starters, &self.deps.home);
         }
         self.push_menu();
     }
@@ -4727,6 +4768,7 @@ impl AppCtl {
                 self.focus_terminal();
             }
             UiMsg::Picked(None) => {}
+            UiMsg::StarterFolders(list) => self.starters = list,
             UiMsg::FolderResolved(dir) => {
                 self.open_folder(&dir);
                 self.focus_terminal();
@@ -5103,11 +5145,12 @@ mod tests {
     mod splitter_tests;
     mod web_tests;
     use super::*;
+    use crate::menus_ui::CHOOSE_FOLDER;
     use crate::openers::{OpenedRecord, RecordingOpeners};
     use crate::ui_harness::{Frame, Harness};
     use flare_render::glyph::{FakeGlyphs, GlyphSource};
     use flare_render::metrics::cell_metrics;
-    use flare_settings::new_tab::set_new_tab_mode;
+    use flare_settings::new_tab::set_new_tab_folder;
     use flare_settings::tab_layout::set_tab_layout;
     use flare_settings::term_prefs::set_agent_keys;
     use flare_shells::list::ShellDef;
@@ -5269,6 +5312,7 @@ mod tests {
                 let log = log.clone();
                 Rc::new(move || log.borrow_mut().hidden += 1)
             },
+            starter_folders: Rc::new(|_| {}),
             launch_folders: opts.launch,
             e2e: true,
             term: TermPorts {
@@ -5503,29 +5547,97 @@ mod tests {
     }
 
     #[test]
-    fn ask_mode_uses_the_picker_and_cancel_opens_nothing() {
+    fn a_stored_ask_mode_opens_in_the_folder_at_once() {
+        // There is no ask mode any more (2026-10-27): a profile that still says "ask" opens like folder mode.
+        let f = fx_with_prefs(Opts::default(), |p| {
+            p.set("flare.newtab.mode", "ask");
+            set_new_tab_folder(p, "D:\\stored");
+        });
+        f.ctl.borrow_mut().new_tab();
+        f.wait_made("D:\\stored");
+        assert_eq!(f.cwds(), ["D:\\stored"]);
+        assert!(f.log.borrow().picks.is_empty(), "no picker");
+    }
+
+    #[test]
+    fn choose_a_folder_in_the_folder_menu_asks_opens_there_and_remembers_it() {
         let f = fx_with_prefs(
             Opts {
                 pick_answer: Some(PathBuf::from("D:\\w")),
                 ..Opts::default()
             },
-            |p| set_new_tab_mode(p, NewTabMode::Ask, Some("D:\\stored")),
+            |p| set_new_tab_folder(p, "D:\\stored"),
         );
-        f.ctl.borrow_mut().new_tab();
+        f.ctl.borrow_mut().open_folder_menu(10.0, 400.0);
+        assert!(f.h.comp.get_menu_open());
+        assert!(
+            f.h.comp.get_menu_above(),
+            "the arrow's menu opens above the button"
+        );
+        let first = f.h.comp.get_menu_rows().row_data(0).unwrap();
+        assert_eq!(first.label.as_str(), CHOOSE_FOLDER);
+        f.h.comp.invoke_menu_picked(0);
+        assert!(!f.h.comp.get_menu_open());
+        // The picker starts in the new-tab folder; its answer opens a tab and joins the recents.
         assert_eq!(
             f.log.borrow().picks,
             vec![Some(PathBuf::from("D:\\stored"))]
         );
         f.pump_until("the tab", |f| f.rows() == 1);
         assert_eq!(f.cwds(), ["D:\\w"]);
+        f.wait_made("D:\\w");
+        assert_eq!(
+            flare_settings::recent_roots::recent_roots(&f.prefs)
+                .first()
+                .map(String::as_str),
+            Some("D:\\w")
+        );
+        // The strip's right-click menu opens at the pointer, not above it.
+        f.ctl.borrow_mut().open_plus_menu(10.0, 10.0);
+        assert!(!f.h.comp.get_menu_above());
 
-        let g = fx_with_prefs(Opts::default(), |p| {
-            set_new_tab_mode(p, NewTabMode::Ask, None);
-        });
-        g.ctl.borrow_mut().new_tab();
+        // A cancel opens nothing.
+        let g = fx();
+        g.ctl.borrow_mut().open_plus_menu(10.0, 10.0);
+        g.h.comp.invoke_menu_picked(0);
         g.pump();
-        assert_eq!(g.log.borrow().picks, vec![None]);
+        assert_eq!(g.log.borrow().picks, vec![Some(PathBuf::from("C:\\home"))]);
         assert_eq!(g.rows(), 0);
+    }
+
+    #[test]
+    fn the_starter_folders_fill_the_folder_menu_once_the_worker_answers() {
+        let f = fx();
+        f.ctl.borrow_mut().on_msg(UiMsg::StarterFolders(vec![
+            "C:\\home\\Documents".to_string(),
+            "C:\\home".to_string(),
+        ]));
+        f.ctl.borrow_mut().open_plus_menu(10.0, 10.0);
+        let rows = f.h.comp.get_menu_rows();
+        let labels: Vec<String> = (0..rows.row_count())
+            .map(|i| rows.row_data(i).unwrap().label.to_string())
+            .collect();
+        assert_eq!(labels, [CHOOSE_FOLDER, "Documents", "home"]);
+        assert_eq!(rows.row_data(2).unwrap().hint.as_str(), "user folder");
+        f.h.comp.invoke_menu_picked(1);
+        f.pump_until("the tab", |f| f.rows() == 1);
+        assert_eq!(f.cwds(), ["C:\\home\\Documents"]);
+    }
+
+    #[test]
+    fn a_folder_named_choose_a_folder_opens_itself_not_the_picker() {
+        let named = format!("C:\\home\\{CHOOSE_FOLDER}");
+        let f = fx();
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::StarterFolders(vec![named.clone()]));
+        f.ctl.borrow_mut().open_plus_menu(10.0, 10.0);
+        let rows = f.h.comp.get_menu_rows();
+        assert_eq!(rows.row_data(1).unwrap().label.as_str(), CHOOSE_FOLDER);
+        f.h.comp.invoke_menu_picked(1);
+        f.pump_until("the tab", |f| f.rows() == 1);
+        assert_eq!(f.cwds(), [named.as_str()]);
+        assert!(f.log.borrow().picks.is_empty(), "no picker");
     }
 
     #[test]
@@ -6055,7 +6167,7 @@ mod tests {
         assert!(!f.h.comp.get_menu_open());
         f.ctl.borrow_mut().open_plus_menu(10.0, 10.0);
         assert!(f.h.comp.get_menu_open());
-        f.h.comp.invoke_menu_picked(0); // the recent folder C:\a
+        f.h.comp.invoke_menu_picked(1); // the recent folder C:\a, under "Choose a folder…"
         assert_eq!(f.rows(), 2);
     }
 

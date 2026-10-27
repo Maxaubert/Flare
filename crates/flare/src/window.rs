@@ -1085,6 +1085,27 @@ pub fn run_window(
                     }
                 })
             },
+            // The folder menu's starters are the owner's real folders: under --e2e there are none, so a scenario
+            // sees only what it set up.
+            starter_folders: Rc::new(move |answer| {
+                if e2e_on {
+                    return;
+                }
+                let r = std::thread::Builder::new()
+                    .name("flare-starters".into())
+                    .spawn(move || {
+                        let found = flare_win::paths::starter_folders();
+                        answer(
+                            found
+                                .into_iter()
+                                .map(|p| p.to_string_lossy().into_owned())
+                                .collect(),
+                        );
+                    });
+                if let Err(e) = r {
+                    log::warn!("could not start the starter folders worker: {e}");
+                }
+            }),
             launch_folders,
             e2e: e2e_on,
             term: TermPorts {

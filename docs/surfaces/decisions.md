@@ -987,3 +987,27 @@ Spec and plan: `docs/superpowers/specs/2026-10-26-agy-and-agent-motion.md`. Rese
 - 2026-10-27, PR 2, **the sample mod `agent-moves`** (`sample-plugins/agent-moves/`): `agent-looks`, `panel` and `actions`;
   its background page sets the owner's picks (or the ones kept in its store) when it starts, and a tab menu's "Agent
   motions" opens its panel with one picker per agent.
+
+## New tab: a folder arrow on the sidebar button, and no ask mode (`feat/new-tab-arrow`), 2026-10-27
+
+- 2026-10-27, owner (spec `docs/superpowers/specs/2026-10-27-new-tab-folder-arrow.md`): the sidebar New tab is a split
+  button (N1: full-height divider, chevron down, its own hover); the strip's + keeps its look and its right-click; Settings
+  drops "Ask where each time" and a stored "ask" reads as folder mode; the folder menu starts with "Choose a folder…" and
+  fills its empty spots with Documents, Downloads, Desktop and the user folder. Recorded as DIFF-26 in `docs/parity.md`.
+- 2026-10-27, chosen where the spec left it open:
+  - **Where the arrow's menu opens:** its left edge on the button's left edge, its foot 4 px above the button's top
+    (`ContextMenu.above`), so it never covers the button; the window's edges still cap it. The strip's right-click menu
+    still opens at the pointer.
+  - **The button keeps its 34 px height** (the mock drew 42); the arrow zone is 40 px and the label and plus are centred
+    in the main part, so the plus sits 20 px left of where it was.
+  - **The starters are resolved once,** on a worker when the restore starts; a folder deleted later stays listed until the
+    next start (a recent behaves the same). They carry a hint (`~\Documents`, "user folder"; none when outside the user
+    folder) and a pin, like a recent; labels are worked out over recents and starters together, so a clash takes the
+    parent along.
+  - **Nothing to list** still shows the disabled "No recent folders", now under "Choose a folder…".
+  - **The picker starts in the new-tab folder** (the stored one, else the user folder); the chosen folder becomes a recent
+    through the spawn, as every opened folder does. It does not change the new-tab folder.
+  - **The mode key stays named** (`new_tab::MODE_KEY`): the import still maps `prism.newtab.mode`, now always to `folder`,
+    so the import table and its count stay as they are; the Settings row's reset still clears the key.
+  - **The settings row is an Action row** with no control (the row id `newtab-mode` is kept, so search and reset do not
+    move).

@@ -1,4 +1,4 @@
-//! Path helpers shared by the e2e and the installer (Task 42).
+//! Path helpers shared by the e2e and the installer (Task 42), and the new-tab menu's starter folders.
 //!
 //! `%LOCALAPPDATA%` is asked of Windows' known-folder table first (the variable can be unset or
 //! redirected by a sandbox), then the variable, then `<home>\AppData\Local`, so a machine with no
@@ -7,7 +7,11 @@
 use std::path::PathBuf;
 
 use windows_sys::Win32::System::Com::CoTaskMemFree;
-use windows_sys::Win32::UI::Shell::{FOLDERID_LocalAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+use windows_sys::Win32::UI::Shell::{
+    FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_LocalAppData,
+    FOLDERID_Profile, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+};
+use windows_sys::core::GUID;
 
 /// The local application data folder: the known folder, else `LOCALAPPDATA`, else
 /// `<USERPROFILE>\AppData\Local`. None when none of the three is known.
@@ -26,20 +30,40 @@ fn resolve(known: Option<PathBuf>, env: Option<String>, home: Option<PathBuf>) -
         .or_else(|| home.map(|h| h.join("AppData").join("Local")))
 }
 
+/// The folders the new-tab menu offers while it has few recents (2026-10-27): Documents, Downloads, Desktop and
+/// the user folder, in that order, those that exist. Each is Windows' known folder, so a redirected Documents
+/// (OneDrive) is the one Explorer shows. It looks at the disk: call it on a worker, never on the UI thread (rule 34).
+pub fn starter_folders() -> Vec<PathBuf> {
+    [
+        &FOLDERID_Documents,
+        &FOLDERID_Downloads,
+        &FOLDERID_Desktop,
+        &FOLDERID_Profile,
+    ]
+    .into_iter()
+    .filter_map(known_folder)
+    // sync-ok: the existence check runs on the caller's worker thread, never on the UI thread
+    .filter(|p| p.is_dir())
+    .collect()
+}
+
 /// Windows' answer for the LocalAppData known folder, or None when the call fails.
 fn known_local_app_data() -> Option<PathBuf> {
+    known_folder(&FOLDERID_LocalAppData)
+}
+
+/// Windows' answer for a known folder, or None when the call fails.
+fn known_folder(id: &GUID) -> Option<PathBuf> {
     let mut raw: windows_sys::core::PWSTR = std::ptr::null_mut();
     // sync-ok: a shell lookup of a known-folder path that reads the profile's record, no file I/O
     // SAFETY: the out-pointer is a local, the GUID is a static, and a null token means the current user.
-    let hr = unsafe {
-        SHGetKnownFolderPath(
-            &FOLDERID_LocalAppData,
-            KF_FLAG_DEFAULT as u32,
-            std::ptr::null_mut(),
-            &mut raw,
-        )
-    };
+    let hr =
+        unsafe { SHGetKnownFolderPath(id, KF_FLAG_DEFAULT as u32, std::ptr::null_mut(), &mut raw) };
     if hr < 0 || raw.is_null() {
+        if !raw.is_null() {
+            // SAFETY: a failed call may still hand back an allocation; it is freed once.
+            unsafe { CoTaskMemFree(raw.cast()) };
+        }
         return None;
     }
     let mut len = 0usize;
@@ -109,6 +133,14 @@ mod tests {
         let got = known_local_app_data().expect("Windows knows its LocalAppData folder");
         let text = got.to_string_lossy().to_ascii_lowercase();
         assert!(text.ends_with(r"appdata\local"), "got {text}");
+    }
+
+    #[test]
+    fn the_starter_folders_exist_and_end_with_the_user_folder() {
+        let got = starter_folders();
+        assert!(got.iter().all(|p| p.is_dir()), "{got:?}");
+        let home = known_folder(&FOLDERID_Profile).expect("Windows knows the user folder");
+        assert_eq!(got.last(), Some(&home), "{got:?}");
     }
 
     #[test]

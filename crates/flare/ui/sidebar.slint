@@ -254,6 +254,8 @@ export component TabSidebar inherits Rectangle {
     in-out property <string> find-text <=> find-input.text;
     in property <string> find-key;
     in property <string> new-tab-title;
+    // The New tab arrow's tooltip and accessible name.
+    in property <string> folder-title: "Open in a folder";
     // The plugins' sections under the tab list (plugins phase 4); none takes no room.
     in property <[PluginRow]> plugin-rows;
     out property <length> sections-y: sec-box.absolute-position.y;
@@ -268,7 +270,8 @@ export component TabSidebar inherits Rectangle {
     callback closed(string);
     callback tab-menu(string, length, length);
     callback new-tab();
-    callback plus-menu(length, length);
+    // The New tab arrow: the folder menu, its left edge at x and its foot just above y (the button's top).
+    callback folder-menu(length, length);
     callback find-edited(string);
     callback find-accepted();
     callback find-escape();
@@ -447,7 +450,9 @@ export component TabSidebar inherits Rectangle {
                 }
             }
 
-            // The foot: a hairline on top, then the New tab button.
+            // The foot: a hairline on top, then the New tab button. It is split (2026-10-27, mock N1): the main
+            // part opens a tab in the default folder; the 40 px arrow behind a full-height hairline opens the
+            // folder menu just above the button. A right-click does nothing here (the strip's + keeps its own).
             Rectangle {
                 height: Px.hair() + 8px + 34px + 8px;
                 Rectangle {
@@ -455,16 +460,29 @@ export component TabSidebar inherits Rectangle {
                     height: Px.hair();
                     background: Theme.divider;
                 }
-                Rectangle {
+                // The two parts each paint their own ground (the hover lights only the one under the pointer); the
+                // border is drawn last, over both.
+                foot := Rectangle {
                     x: 8px;
                     y: Px.hair() + 8px;
                     width: parent.width - 16px;
                     height: 34px;
-                    border-radius: 6px;
-                    border-width: Px.hair();
-                    border-color: Theme.divider;
-                    background: foot-ta.has-hover ? Theme.hover-hi : Theme.hover;
+                    // The main part, its left corners rounded with the button's.
+                    Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width - 40px;
+                        height: parent.height;
+                        border-top-left-radius: 6px;
+                        border-bottom-left-radius: 6px;
+                        background: foot-ta.has-hover ? Theme.hover-hi : Theme.hover;
+                        accessible-role: button;
+                        accessible-label: root.new-tab-title;
+                        accessible-action-default => { root.new-tab(); }
+                    }
                     HorizontalLayout {
+                        x: 0px;
+                        width: parent.width - 40px;
                         alignment: center;
                         spacing: 8px;
                         // The 13 px slot; the path is grown by one stroke and moved back by half (see the close X).
@@ -493,11 +511,11 @@ export component TabSidebar inherits Rectangle {
                         }
                     }
                     foot-ta := TouchArea {
+                        x: 0px;
+                        width: parent.width - 40px;
                         pointer-event(e) => {
                             if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
                                 root.new-tab();
-                            } else if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right) {
-                                root.plus-menu(self.mouse-x + self.absolute-position.x, self.mouse-y + self.absolute-position.y);
                             }
                         }
                         changed has-hover => {
@@ -507,6 +525,61 @@ export component TabSidebar inherits Rectangle {
                                 root.tip("", 0px, 0px, 0px, 0px);
                             }
                         }
+                    }
+                    // The arrow, its right corners rounded with the button's.
+                    Rectangle {
+                        x: parent.width - 40px;
+                        y: 0px;
+                        width: 40px;
+                        height: parent.height;
+                        border-top-right-radius: 6px;
+                        border-bottom-right-radius: 6px;
+                        background: arrow-ta.has-hover ? Theme.hover-hi : Theme.hover;
+                        accessible-role: button;
+                        accessible-label: root.folder-title;
+                        accessible-action-default => { root.folder-menu(foot.absolute-position.x, foot.absolute-position.y); }
+                        // The 11 px slot, as the strip's +N chevron; the path is grown by one stroke and moved back by half.
+                        Path {
+                            x: (parent.width - 11px) / 2 - (2.2 * 11px / 24) / 2;
+                            y: Px.snap((parent.height - 11px) / 2) - (2.2 * 11px / 24) / 2;
+                            width: 11px + 2.2 * 11px / 24;
+                            height: 11px + 2.2 * 11px / 24;
+                            viewbox-width: 24;
+                            viewbox-height: 24;
+                            commands: Glyphs.chevron-down;
+                            fill: transparent;
+                            stroke: arrow-ta.has-hover ? Theme.text : Theme.text-soft;
+                            stroke-width: 2.2 * 11px / 24;
+                            stroke-line-cap: round;
+                            stroke-line-join: round;
+                        }
+                        arrow-ta := TouchArea {
+                            pointer-event(e) => {
+                                if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
+                                    root.folder-menu(foot.absolute-position.x, foot.absolute-position.y);
+                                }
+                            }
+                            changed has-hover => {
+                                if (self.has-hover) {
+                                    root.tip(root.folder-title, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+                                } else {
+                                    root.tip("", 0px, 0px, 0px, 0px);
+                                }
+                            }
+                        }
+                    }
+                    // The divider: a hairline from the top of the button to its foot.
+                    Rectangle {
+                        x: parent.width - 40px;
+                        y: 0px;
+                        width: Px.hair();
+                        height: parent.height;
+                        background: Theme.divider;
+                    }
+                    Rectangle {
+                        border-radius: 6px;
+                        border-width: Px.hair();
+                        border-color: Theme.divider;
                     }
                 }
             }
@@ -589,7 +662,7 @@ export component TabSidebarPreview inherits Window {
     in-out property <string> find-text <=> sb.find-text;
     // The label comes from the chord table (the tests set it); never typed by hand here.
     in property <string> find-key;
-    in property <string> new-tab-title: "New tab (Ctrl+T). Right-click for recent folders";
+    in property <string> new-tab-title: "New tab (Ctrl+T)";
     in property <[PluginRow]> plugin-rows;
     out property <length> sections-y: sb.sections-y;
     out property <length> sections-h: sb.sections-h;
@@ -604,7 +677,8 @@ export component TabSidebarPreview inherits Window {
     callback closed(string);
     callback tab-menu(string, length, length);
     callback new-tab();
-    callback plus-menu(length, length);
+    // The New tab arrow: the folder menu, its left edge at x and its foot just above y (the button's top).
+    callback folder-menu(length, length);
     callback find-edited(string);
     callback find-accepted();
     callback find-escape();
@@ -645,7 +719,7 @@ export component TabSidebarPreview inherits Window {
         closed(id) => { root.closed(id); }
         tab-menu(id, x, y) => { root.tab-menu(id, x, y); }
         new-tab => { root.new-tab(); }
-        plus-menu(x, y) => { root.plus-menu(x, y); }
+        folder-menu(x, y) => { root.folder-menu(x, y); }
         find-edited(t) => { root.find-edited(t); }
         find-accepted => { root.find-accepted(); }
         find-escape => { root.find-escape(); }
