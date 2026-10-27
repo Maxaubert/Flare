@@ -1,0 +1,40 @@
+{
+  "id": "sonara-bar",
+  "name": "Sonara bar",
+  "version": "0.1.0",
+  "protocol": 2,
+  "description": "A player bar under a tab's terminal: play and pause, a seek slider, the title, and back and skip buttons. A sample with a fake source: it plays nothing, and Claude (or you) tells it what is playing with sonara_now. Open it from a tab's menu.",
+  "author": "Flare",
+  "homepage": "https://github.com/Maxaubert/Flare/tree/main/sample-plugins/sonara-bar",
+  "permissions": ["bar", "actions", "tools"],
+  "background": "background.html",
+  "bar": { "entry": "bar.html", "height": 40 },
+  "contributes": {
+    "actions": [
+      { "key": "player", "title": "Show the player", "icon": "play", "where": ["tab-menu"] },
+      { "key": "back", "title": "Back 10 seconds", "icon": "rewind", "where": ["session-bar"] },
+      { "key": "skip", "title": "Skip 10 seconds", "icon": "forward", "where": ["session-bar"] }
+    ],
+    "icons": {
+      "play": "M8 5L19 12L8 19Z",
+      "rewind": "M11 7L6 12L11 17M18 7L13 12L18 17",
+      "forward": "M6 7L11 12L6 17M13 7L18 12L13 17"
+    }
+  },
+  "tools": [
+    {
+      "name": "sonara_now",
+      "description": "Tells the Sonara bar sample what is playing: the title, the position and length in seconds, and whether it plays. The sample plays no sound; it only shows it.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string", "description": "What is playing, 1 to 120 characters." },
+          "pos": { "type": "number", "description": "The position in seconds, 0 to len." },
+          "len": { "type": "number", "description": "The length in seconds, more than 0." },
+          "playing": { "type": "boolean", "description": "Whether it plays now." }
+        },
+        "required": ["title", "pos", "len", "playing"]
+      }
+    }
+  ]
+}

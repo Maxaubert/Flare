@@ -26,7 +26,7 @@ pub struct Asking {
     pub tab: String,
     /// The tab's name as the strip shows it.
     pub name: String,
-    /// "Claude", "Codex".
+    /// "Claude", "Codex", "Antigravity".
     pub agent: String,
     /// The question's text, when the screen showed it.
     pub text: Option<String>,

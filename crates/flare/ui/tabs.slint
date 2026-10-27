@@ -5,6 +5,7 @@ import { TabRow, StripGeom } from "types.slint";
 import { Theme, Px, Motion } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
 import { MarkMotion, MarkRing, MarkBar, AgentIcon } from "tabmark.slint";
+import { DecorPill, PluginChip } from "decor.slint";
 
 // The ring of a tab coming back: a 9 px circle, 1.5 px line at 22% ink, with a quarter of accent turning
 // once a second. It exists only while loading, so nothing animates at rest. The turn is the window's one
@@ -135,13 +136,19 @@ export component TabStrip inherits Rectangle {
     callback plus-menu(length, length);
     callback more-clicked(length, length);
     callback tip(string, length, length, length, length);
+    // A plugin's hover button (plugins phase 4) was clicked on a tab: the tab and the button's place, 0 or 1.
+    callback hover-action(string, int);
 
     clip: true;
 
     if !root.drag-in-flight : WindowMoveArea { }
 
     for row[index] in root.rows : tab := Rectangle {
-        property <bool> hov: ta.has-hover || (row.mode == 0 && xend.hovered);
+        property <bool> hov: ta.has-hover || (row.mode == 0 && xend.hovered) || hb1.hovered || hb2.hovered;
+        // The plugins' hover buttons (plugins phase 4): on a named tab of 110 px or more while it is hovered, left of
+        // the decor and never over the end box (its ring); the name gives them room.
+        property <bool> hov-shown: tab.hov && row.mode == 0 && row.hov-count > 0 && row.w * 1phx >= 110px && !root.carrying;
+        property <length> hov-w: tab.hov-shown ? row.hov-count * 22px + (row.hov-count - 1) * 3px : 0px;
         property <color> ink: (row.active || tab.hov) ? Theme.text : Theme.dim;
         x: row.x * 1phx + row.offset;
         y: 0px;
@@ -188,19 +195,34 @@ export component TabStrip inherits Rectangle {
             }
         }
 
-        // Named tab: icon, name, end.
+        // Badges and progress, just before the end; the name gives up what they take. Named tabs only.
+        pill := DecorPill {
+            x: Px.snap(tab.width - 10px - xend.width - 4px - self.width);
+            y: Px.snap((tab.height - self.height) / 2);
+            items: row.mode == 0 ? min(row.chip-room, row.chip-count + (row.prog != -1 ? 1 : 0)) : 0;
+            prog: row.prog;
+            chip1-cmd: row.chip1-cmd;
+            chip1-tone: row.chip1-tone;
+            chip2-cmd: row.chip2-cmd;
+            chip2-tone: row.chip2-tone;
+            ink: tab.ink;
+        }
+
+        // Named tab: icon, name, decor, end.
         if row.mode == 0 : Rectangle {
             AgentIcon {
                 x: 10px;
                 y: (parent.height - 18px) / 2;
-                kind: row.settings ? 3 : row.agent;
+                kind: row.settings ? 4 : row.agent;
                 ink: tab.ink;
+                motion: row.motion;
             }
             Text {
                 x: 34px;
                 y: 0px;
                 height: parent.height;
-                width: max(0px, parent.width - 34px - 10px - xend.width - 6px);
+                width: max(0px, parent.width - 34px - 10px - xend.width - 6px - (pill.width > 0 ? pill.width + 4px : 0px)
+                    - (tab.hov-w > 0 ? tab.hov-w + 4px : 0px));
                 text: row.label;
                 font-size: 12px;
                 font-family: Theme.font-ui;
@@ -209,6 +231,33 @@ export component TabStrip inherits Rectangle {
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
+        }
+
+        hb1 := PluginChip {
+            x: Px.snap((pill.width > 0 ? pill.x : tab.width - 10px - xend.width) - 4px - tab.hov-w);
+            y: Px.snap((tab.height - self.height) / 2);
+            visible: tab.hov-shown;
+            cmd: row.hov1-cmd;
+            letter: row.hov1-letter;
+            tip-text: row.hov1-tip;
+            on: row.hov1-on;
+            off: row.hov1-off;
+            ink: tab.ink;
+            clicked => { root.hover-action(row.id, 0); }
+            tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
+        }
+        hb2 := PluginChip {
+            x: hb1.x + 22px + 3px;
+            y: hb1.y;
+            visible: tab.hov-shown && row.hov-count > 1;
+            cmd: row.hov2-cmd;
+            letter: row.hov2-letter;
+            tip-text: row.hov2-tip;
+            on: row.hov2-on;
+            off: row.hov2-off;
+            ink: tab.ink;
+            clicked => { root.hover-action(row.id, 1); }
+            tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
         }
 
         xend := TabEnd {
@@ -229,8 +278,9 @@ export component TabStrip inherits Rectangle {
             AgentIcon {
                 x: (parent.width - 18px) / 2;
                 y: (parent.height - 18px) / 2;
-                kind: row.settings ? 3 : row.agent;
+                kind: row.settings ? 4 : row.agent;
                 ink: tab.ink;
+                motion: row.motion;
             }
             if row.mark-kind == 1 : Rectangle {
                 x: parent.width - 2px - 15px;
@@ -412,6 +462,7 @@ export component TabStripPreview inherits Window {
     callback plus-menu(length, length);
     callback more-clicked(length, length);
     callback tip(string, length, length, length, length);
+    callback hover-action(string, int);
 
     out property <float> win-scale: 1px / 1phx;
     changed win-scale => { Px.scale = root.win-scale; }
@@ -441,5 +492,6 @@ export component TabStripPreview inherits Window {
         plus-menu(a, b) => { root.plus-menu(a, b); }
         more-clicked(a, b) => { root.more-clicked(a, b); }
         tip(a, b, c, d, e) => { root.tip(a, b, c, d, e); }
+        hover-action(a, b) => { root.hover-action(a, b); }
     }
 }

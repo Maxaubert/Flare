@@ -72,13 +72,12 @@ fn has_separator(p: &str) -> bool {
     p.contains(['\\', '/'])
 }
 
-/// Whether `dir` is `cwd` or a folder above it. Such a folder found from a shown folder is the
-/// one the shell is already in said another way (a status line prints it on every redraw).
-pub fn holds_cwd(dir: &str, cwd: &str) -> bool {
+/// Whether `dir` is `cwd` itself. Such a folder found from a shown folder is the one the shell is
+/// already in said another way (a status line prints it on every redraw). A folder above `cwd` is
+/// a real place the text names (`Documents/Claude` from inside `...\Claude\Github\Flare`), so it links.
+pub fn is_cwd(dir: &str, cwd: &str) -> bool {
     let norm = |p: &str| p.replace('/', "\\").trim_end_matches('\\').to_lowercase();
-    let d = norm(dir);
-    let c = norm(cwd);
-    c == d || c.starts_with(&format!("{d}\\"))
+    norm(dir) == norm(cwd)
 }
 
 /// The folder above `dir`, or None at a drive's root.
@@ -287,7 +286,7 @@ impl PathLinks {
         for base in self.anchor_bases(owner, cwd, path) {
             match self.known(&base, path, now_ms) {
                 Known::Hit(b) => {
-                    if !(b.kind == PathKind::Dir && holds_cwd(&b.abs, cwd)) {
+                    if !(b.kind == PathKind::Dir && is_cwd(&b.abs, cwd)) {
                         return Found::Hit(PathFound { hit: b, base });
                     }
                 }
@@ -888,12 +887,13 @@ mod tests {
     }
 
     #[test]
-    fn holds_cwd_folder_and_above() {
+    fn is_cwd_is_only_the_folder_itself() {
         let cwd = "C:\\c\\Github-loftspace\\Stutter";
-        assert!(holds_cwd("C:\\c\\Github-loftspace\\Stutter", cwd));
-        assert!(holds_cwd("c:/C/github-loftspace", cwd));
-        assert!(!holds_cwd("C:\\c\\Github", cwd));
-        assert!(!holds_cwd("C:\\c\\Github-loftspace\\Stutter\\src", cwd));
+        assert!(is_cwd("C:\\c\\Github-loftspace\\Stutter", cwd));
+        assert!(is_cwd("c:/C/github-loftspace/stutter/", cwd));
+        assert!(!is_cwd("c:/C/github-loftspace", cwd));
+        assert!(!is_cwd("C:\\c\\Github", cwd));
+        assert!(!is_cwd("C:\\c\\Github-loftspace\\Stutter\\src", cwd));
     }
 
     #[test]
@@ -942,6 +942,48 @@ mod tests {
             p.pl.find_path("A", cwd, "Github-loftspace/Stutter", p.now),
             Found::No
         );
+    }
+
+    #[test]
+    fn a_folder_above_the_shells_folder_links_like_its_neighbour() {
+        // "Documents/Claude" from inside Documents\Claude\Github\Flare links, as "Documents/DuckStation" does.
+        let home = "C:\\Users\\A";
+        let cwd = "C:\\Users\\A\\Documents\\Claude\\Github\\Flare";
+        let dirs: HashSet<String> = [
+            format!("{home}\\Documents"),
+            format!("{home}\\Documents\\Claude"),
+            format!("{home}\\Documents\\DuckStation"),
+            format!("{home}\\Documents\\Claude\\Github"),
+            cwd.to_string(),
+        ]
+        .into_iter()
+        .collect();
+        let mut p = Pump::new(Box::new(move |base, text| {
+            let abs = if drive_form(text) {
+                text.to_string()
+            } else {
+                join(base, text)
+            };
+            let hit = dirs.contains(&abs);
+            hit.then_some(PathHit {
+                kind: PathKind::Dir,
+                abs,
+            })
+        }));
+        p.pl.subscribe("A");
+        // The tab has shown its home's Documents folder: relative paths are tried from there and above.
+        let shown = format!("{home}\\Documents");
+        for _ in 0..3 {
+            p.lr(&shown, cwd, "A");
+            p.pump();
+        }
+        for text in ["Documents/Claude", "Documents/DuckStation"] {
+            for _ in 0..8 {
+                p.lr(text, cwd, "A");
+                p.pump();
+            }
+            assert_eq!(p.lr(text, cwd, "A").len(), 1, "{text} should link");
+        }
     }
 
     #[test]

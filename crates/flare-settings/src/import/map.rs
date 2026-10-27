@@ -34,7 +34,7 @@ use crate::custom_theme::{parse_custom, serialize_custom};
 use crate::help_prefs::{clamp_help_width, help_enabled, help_shell, help_width};
 use crate::kv::PrefStore;
 use crate::look::{AgentColourState, AgentIndicator, LookStore};
-use crate::new_tab::{NewTabMode, new_tab_folder, new_tab_mode};
+use crate::new_tab::new_tab_folder;
 use crate::recent_roots::{pinned_roots, recent_roots};
 use crate::sidebar::{SidebarMode, sidebar_width, valid_sidebar_mode, valid_sidebar_width_num};
 use crate::tab_layout::{TabLayout, tab_layout};
@@ -70,6 +70,8 @@ pub enum Check {
     SeeThroughLevel,
     /// `minimal` and `ring` as they are; `off` and `full` become `ring`.
     IndicatorWord,
+    /// `folder` and `ask` both become `folder`: Flare has no ask mode (2026-10-27).
+    NewTabWord,
     /// A shell id made of plain characters (see `Charset::Id`).
     ShellId,
     /// A number, clamped to the sidebar's width range.
@@ -250,7 +252,7 @@ pub const RULES: &[Rule] = &[
     Rule {
         from: "prism.newtab.mode",
         to: "flare.newtab.mode",
-        check: Check::Enum(&["folder", "ask"]),
+        check: Check::NewTabWord,
     },
     Rule {
         from: "prism.newtab.folder",
@@ -429,6 +431,7 @@ fn candidate(check: &Check, raw: &str) -> Option<String> {
             "ring" | "off" | "full" => Some("ring".to_string()),
             _ => None,
         },
+        Check::NewTabWord => matches!(raw, "folder" | "ask").then(|| "folder".to_string()),
         Check::ShellId => plain(raw, 64, Charset::Id).then(|| raw.to_string()),
         Check::SidebarWidth => {
             let n = finite(raw)?;
@@ -529,13 +532,7 @@ fn read_back(to: &str, s: &PrefStore) -> Option<String> {
             .to_string(),
         ),
         "flare.window.sidebarWidth" => Some(sidebar_width(s).to_string()),
-        "flare.newtab.mode" => Some(
-            match new_tab_mode(s) {
-                NewTabMode::Folder => "folder",
-                NewTabMode::Ask => "ask",
-            }
-            .to_string(),
-        ),
+        "flare.newtab.mode" => Some("folder".to_string()),
         "flare.newtab.folder" => Some(new_tab_folder(s)),
         "flare.help.enabled" => on(help_enabled(s)),
         "flare.help.shell" => help_shell(s),
@@ -744,6 +741,19 @@ mod tests {
             Some("ring")
         );
         assert!(skipped("prism.term.agentIndicator", "soup"));
+    }
+
+    #[test]
+    fn the_new_tab_mode_imports_as_folder_whatever_it_was() {
+        assert_eq!(
+            written("prism.newtab.mode", "folder").as_deref(),
+            Some("folder")
+        );
+        assert_eq!(
+            written("prism.newtab.mode", "ask").as_deref(),
+            Some("folder")
+        );
+        assert!(skipped("prism.newtab.mode", "tabs"));
     }
 
     #[test]

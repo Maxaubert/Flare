@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use flare_agent::kinds::AgentKind;
 use flare_settings::kv::PrefStore;
-use flare_settings::new_tab::{NewTabMode, set_new_tab_mode};
+use flare_settings::new_tab::set_new_tab_folder;
 use flare_settings::recent_roots::{forget_root, pinned_roots, recent_roots, remember_root};
 use flare_settings::sidebar::{SidebarMode, sidebar_mode};
 use flare_settings::tab_layout::{TabLayout, set_tab_layout};
@@ -202,6 +202,7 @@ impl Fx {
                 let log = log.clone();
                 Rc::new(move || log.borrow_mut().hidden += 1)
             },
+            starter_folders: Rc::new(|_| {}),
             launch_folders: Vec::new(),
             e2e: true,
             term: crate::appctl::TermPorts::inert(),
@@ -1169,7 +1170,7 @@ fn a_row_dragged_over_the_next_swaps_and_a_filtered_list_refuses() {
 #[test]
 fn plus_opens_at_once_in_the_chosen_folder_and_does_not_ask_again() {
     let f = Fx::with_prefs(Opts::default().saved(&["C:\\a"]), |p| {
-        set_new_tab_mode(p, NewTabMode::Folder, Some("D:\\w"));
+        set_new_tab_folder(p, "D:\\w");
         remember_root(p, "C:\\r1");
         remember_root(p, "C:\\r2");
     });
@@ -1183,7 +1184,7 @@ fn plus_opens_at_once_in_the_chosen_folder_and_does_not_ask_again() {
         "the picker was never called"
     );
 
-    // Right click: the places menu, pins first.
+    // Right click (the strip's + keeps it): the folder menu, "Choose a folder…" first, then the pins.
     let (px, py) = f.plus_center();
     f.h.right_click(px, py);
     f.h.advance(0);
@@ -1195,24 +1196,25 @@ fn plus_opens_at_once_in_the_chosen_folder_and_does_not_ask_again() {
             .collect()
     };
     let before = labels(&f);
-    assert!(before.len() >= 3, "recents are listed: {before:?}");
+    assert_eq!(before[0], crate::menus_ui::CHOOSE_FOLDER);
+    assert!(before.len() >= 4, "recents are listed: {before:?}");
     let last = before.len() - 1;
     // Pinning the last row keeps the menu open and moves that row to the top.
     let last_name = before[last].clone();
     f.h.comp.invoke_menu_trailing(last as i32);
     f.h.advance(0);
     assert!(f.h.comp.get_menu_open(), "the menu stays open");
-    assert_eq!(labels(&f)[0], last_name, "the pinned row climbs");
+    assert_eq!(labels(&f)[1], last_name, "the pinned row climbs");
     assert_eq!(pinned_roots(&f.prefs).len(), 1);
-    // Clicking the second row opens a tab there.
+    // Clicking the second row (the first folder, after the group's 9 px gap) opens a tab there.
     let rows_before = f.rows();
     let panel_y = py.min(f.css.1 as f32);
-    let row_y = panel_y + f.hair_phys() as f32 / f.scale + 28.0 + 28.0 / 2.0 + 1.0;
+    let row_y = panel_y + f.hair_phys() as f32 / f.scale + 28.0 + 9.0 + 28.0 / 2.0;
     f.h.click(px + 20.0, row_y);
     f.pump_until("the menu tab", |f| f.rows() == rows_before + 1);
     assert!(!f.h.comp.get_menu_open());
 
-    // No recents at all: one disabled note.
+    // No recents at all: the first row, then one disabled note.
     for r in recent_roots(&f.prefs) {
         forget_root(&f.prefs, &r);
     }
@@ -1224,8 +1226,11 @@ fn plus_opens_at_once_in_the_chosen_folder_and_does_not_ask_again() {
     f.h.right_click(px, py);
     f.h.advance(0);
     assert!(f.h.comp.get_menu_open());
-    assert_eq!(labels(&f), ["No recent folders"]);
-    assert!(f.h.comp.get_menu_rows().row_data(0).unwrap().disabled);
+    assert_eq!(
+        labels(&f),
+        [crate::menus_ui::CHOOSE_FOLDER, "No recent folders"]
+    );
+    assert!(f.h.comp.get_menu_rows().row_data(1).unwrap().disabled);
 }
 
 #[test]

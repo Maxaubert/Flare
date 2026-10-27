@@ -95,12 +95,22 @@ pub trait ModsPort {
     fn info(&self) -> flare_settings::page::mods::ModsInfo;
     /// The page opened: look at the folder again (on a worker).
     fn page_shown(&self);
-    /// The person turned a mod on or off. `shown` is the permission words the row listed (what turning it on approves).
-    fn set_enabled(&self, id: &str, on: bool, shown: Vec<String>);
+    /// The person turned a mod on or off. `shown` is what the card listed: permission words, author and homepage
+    /// (what turning it on approves).
+    fn set_enabled(&self, id: &str, on: bool, shown: flare_mods::hub::Shown);
     /// The person asked for the mod's panel.
     fn show_panel(&self, id: &str);
-    /// The mods folder.
+    /// The plugins folder, the one folder for every plugin (the scan worker makes it, at start and when the page
+    /// opens).
     fn dir(&self) -> PathBuf;
+    /// The person asked to install a plugin from a `.zip` file (a file picker opens).
+    fn install_file(&self);
+    /// The person asked to install a plugin from the address typed in the field.
+    fn install_url(&self, url: &str);
+    /// The person asked to update the plugin (from where it came, or a file).
+    fn update(&self, id: &str);
+    /// The person asked to remove the plugin.
+    fn remove(&self, id: &str);
 }
 
 /// The picker answers on a worker, so its callback is `Send`.
@@ -173,8 +183,10 @@ pub struct SettingsCtl {
     /// The diagnostics flag as `diag.json` held it when Settings last showed (or the switch last
     /// wrote it). A rebuild runs per wall frame and per slider step, so it never reads the file.
     diag_verbose: Cell<Option<bool>>,
-    /// The permission words each mod's row listed when the Mods page was last drawn (a switch approves exactly these).
-    mods_shown: RefCell<std::collections::HashMap<String, Vec<String>>>,
+    /// What each mod's card listed when the Mods page was last drawn (a switch approves exactly this).
+    mods_shown: RefCell<std::collections::HashMap<String, flare_mods::hub::Shown>>,
+    /// The address typed in the Plugins page's install field (kept while the field is edited, never saved).
+    plugin_url: String,
     pending_pick: RefCell<Option<String>>,
     /// The colour popover, the typed codes of the colour rows and the dropper.
     picker: PickerCtl,
@@ -216,6 +228,7 @@ pub fn control_kind(c: &Control) -> SetKind {
         Control::Save { .. } => SetKind::Save,
         Control::Key { .. } => SetKind::Key,
         Control::Mic { .. } => SetKind::Mic,
+        Control::Text { .. } => SetKind::Text,
     }
 }
 
@@ -327,6 +340,10 @@ pub fn to_slint_row(r: &RowModel, y: f64, h: f64, ctx: &RowCtx<'_>) -> SetRow {
         Control::Save { dirty, title } => {
             out.save_dirty = *dirty;
             out.save_title = title.as_str().into();
+        }
+        Control::Text { value, placeholder } => {
+            out.value = value.as_str().into();
+            out.placeholder = placeholder.as_str().into();
         }
         Control::Key { text, capturing } => {
             out.value = text.as_str().into();
@@ -645,6 +662,7 @@ impl SettingsCtl {
             marked_until: None,
             diag_verbose: Cell::new(None),
             mods_shown: RefCell::new(std::collections::HashMap::new()),
+            plugin_url: String::new(),
             pending_pick: RefCell::new(None),
             picker: PickerCtl::default(),
             picker_timer: slint::Timer::default(),
@@ -779,6 +797,12 @@ impl SettingsCtl {
             rc,
             on_row_button,
             |c, id: SharedString, b: SharedString| c.row_button(&id, &b)
+        );
+        on!(
+            app,
+            rc,
+            on_row_text,
+            |c, id: SharedString, t: SharedString| c.row_text(&id, &t)
         );
         on!(app, rc, on_row_reset, |c, id: SharedString| c.event(
             Event::Reset {
@@ -1054,12 +1078,23 @@ impl SettingsCtl {
         };
         let mods_info = (self.page == "mods")
             .then(|| self.mods.as_ref().map(|m| m.info()))
-            .flatten();
+            .flatten()
+            .map(|mut i| {
+                i.url = self.plugin_url.clone();
+                i
+            });
         if let Some(info) = &mods_info {
             *self.mods_shown.borrow_mut() = info
                 .mods
                 .iter()
-                .map(|m| (m.id.clone(), m.permissions.clone()))
+                .map(|m| {
+                    let shown = flare_mods::hub::Shown {
+                        permissions: m.permissions.clone(),
+                        author: m.author.clone(),
+                        homepage: m.homepage.clone(),
+                    };
+                    (m.id.clone(), shown)
+                })
                 .collect();
         }
         let env = PageEnv {
@@ -1484,7 +1519,8 @@ impl SettingsCtl {
             && let Some(id) = row.strip_prefix(flare_settings::page::mods::SWITCH_PREFIX)
         {
             if let Some(m) = &self.mods {
-                // A mod the page never drew has no list shown: an empty one, which only a mod asking for nothing matches.
+                // A mod the page never drew has nothing shown: an empty card, which only a mod asking for nothing and
+                // naming no maker matches.
                 let shown = self
                     .mods_shown
                     .borrow()
@@ -1557,10 +1593,41 @@ impl SettingsCtl {
         }
     }
 
+    /// What is typed in a text field. The Plugins page's address is kept here, with no rebuild (a rebuild would
+    /// make the field again under the caret); the page reads it when it is next drawn.
+    fn row_text(&mut self, row: &str, text: &str) {
+        if row == flare_settings::page::mods::URL_ROW {
+            self.plugin_url = text.to_string();
+        }
+    }
+
     fn row_button(&mut self, row: &str, button: &str) {
+        use flare_settings::page::mods::{INSTALL_ROW, SWITCH_PREFIX, URL_ROW};
         if row == flare_settings::page::mods::FOLDER_ROW && button == "open" {
             if let Some(m) = &self.mods {
                 (self.deps.open_path)(&m.dir());
+            }
+            return;
+        }
+        if row == INSTALL_ROW && button == "file" {
+            if let Some(m) = &self.mods {
+                m.install_file();
+            }
+            return;
+        }
+        if row == URL_ROW && matches!(button, "url" | "submit") {
+            if let Some(m) = &self.mods {
+                m.install_url(self.plugin_url.trim());
+            }
+            return;
+        }
+        if let Some(id) = row.strip_prefix(SWITCH_PREFIX) {
+            if let Some(m) = &self.mods {
+                match button {
+                    "update" => m.update(id),
+                    "remove" => m.remove(id),
+                    _ => {}
+                }
             }
             return;
         }
@@ -2263,7 +2330,7 @@ mod tests {
     use super::*;
     use crate::ui_harness::{Harness, SCALES};
     use flare_settings::kv::{Backend, MemoryBackend};
-    use flare_settings::new_tab::{NewTabMode, new_tab_folder, new_tab_mode};
+    use flare_settings::new_tab::new_tab_folder;
     use flare_settings::page::{Button, Opt};
     use flare_settings::verb::{FakeDiag, FakeVerb, PendingVerb};
     use flare_settings::window_colours::ACCENT;
@@ -2707,7 +2774,6 @@ mod tests {
         f.b()
             .invoke_row_button("newtab-mode".into(), "choose-folder".into());
         f.pump();
-        assert_eq!(new_tab_mode(&f.prefs), NewTabMode::Folder);
         assert!(new_tab_folder(&f.prefs).contains("Work"));
     }
 

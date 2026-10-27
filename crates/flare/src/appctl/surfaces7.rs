@@ -71,6 +71,7 @@ fn agent_name(k: Option<flare_agent::kinds::DetectedAgent>) -> &'static str {
     match k {
         Some(DetectedAgent::Claude) => "Claude",
         Some(DetectedAgent::Codex) => "Codex",
+        Some(DetectedAgent::Agy) => "Antigravity",
         _ => "Agent",
     }
 }

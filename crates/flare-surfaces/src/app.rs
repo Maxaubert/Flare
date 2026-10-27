@@ -166,17 +166,24 @@ pub fn browser_arguments(allow_network: bool) -> String {
 
 /// The user data folder of a mini-app environment, beside the web panel's (`data_dir`): one for apps
 /// with no network and one for apps with it (two environments cannot share a folder when their
-/// browser arguments differ).
+/// browser arguments differ). The mods and plugins have a third, their own
+/// (`modview::env_folder`). A mini-app keeps nothing on disk, so its sealed folder moved to `-mini-sealed`
+/// (Phase 2b) without losing anything and left `-app-sealed` to the mods.
 pub fn env_folder(data_dir: &Path, allow_network: bool) -> PathBuf {
+    let tail = if allow_network {
+        "app-net"
+    } else {
+        "mini-sealed"
+    };
+    sibling_folder(data_dir, tail)
+}
+
+/// `<data_dir>-<tail>`, beside the web panel's folder.
+pub(crate) fn sibling_folder(data_dir: &Path, tail: &str) -> PathBuf {
     let name = data_dir
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "WebView2".to_string());
-    let tail = if allow_network {
-        "app-net"
-    } else {
-        "app-sealed"
-    };
     data_dir.with_file_name(format!("{name}-{tail}"))
 }
 
@@ -771,6 +778,6 @@ mod tests {
         assert_ne!(a, d);
         assert_eq!(a.parent(), d.parent());
         assert_eq!(b.parent(), d.parent());
-        assert!(a.ends_with("WebView2-app-sealed") && b.ends_with("WebView2-app-net"));
+        assert!(a.ends_with("WebView2-mini-sealed") && b.ends_with("WebView2-app-net"));
     }
 }

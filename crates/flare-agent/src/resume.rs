@@ -12,7 +12,7 @@ use std::time::SystemTime;
 
 use regex::Regex;
 
-use crate::kinds::CODEX_RESUME;
+use crate::kinds::{AGY_RESUME, CODEX_RESUME};
 
 /// How much of a transcript is read to tell an interactive one: the marks sit in its first lines.
 pub const HEAD_BYTES: usize = 4096;
@@ -23,10 +23,10 @@ pub const WANT: usize = 32;
 /// The stats and head reads run this many at a time.
 pub const PARALLEL: usize = 16;
 
-/// A session id (a UUID is 36 chars) or the Codex marker; anything else is no resume at all.
+/// A session id (a UUID is 36 chars) or the Codex or agy marker; anything else is no resume at all.
 pub fn valid_resume(r: Option<&str>) -> Option<&str> {
     let r = r?;
-    if r == CODEX_RESUME {
+    if r == CODEX_RESUME || r == AGY_RESUME {
         return Some(r);
     }
     let b = r.as_bytes();
@@ -253,6 +253,9 @@ mod tests {
         assert_eq!(valid_resume(Some(&format!("{ID}; calc"))), None);
         assert_eq!(valid_resume(Some("`calc`")), None);
         assert_eq!(valid_resume(Some("codex:last; calc")), None);
+        assert_eq!(valid_resume(Some("agy:last")), Some("agy:last"));
+        assert_eq!(valid_resume(Some("agy:last & calc")), None);
+        assert_eq!(valid_resume(Some("agy -c")), None);
     }
 
     fn write_session(dir: &Path, name: &str, body: &str, secs: u64) {

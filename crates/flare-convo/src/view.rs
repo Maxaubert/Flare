@@ -1,5 +1,5 @@
-//! What the panels show of a [`Convo`]: the changed files, one file's diff as rows, the task lists as groups, and the
-//! compact summary the control channel answers with. Plain data, no window; the app turns these into Slint rows.
+//! What the Changes panel shows of a [`Convo`]: the changed files, one file's diff as rows, and the compact summary
+//! the control channel answers with. Plain data, no window; the app turns these into Slint rows.
 //!
 //! Like `fold` and `diff`, these are not cheap on a long session: call them on the tracker's worker, never on the UI
 //! thread (rule 34).
@@ -7,15 +7,13 @@
 use std::collections::HashMap;
 
 use crate::diff::Kind;
-use crate::fold::{Convo, Edit, EditOp, Outcome, Task, TaskStatus};
+use crate::fold::{Convo, Edit, EditOp, Outcome};
 
 /// The most diff rows one file shows. A file edited a thousand times keeps its first rows and says so.
 pub const MAX_ROWS: usize = 5000;
 /// The most characters one diff row keeps. A longer line (a minified file) is cut and ends in an ellipsis, so the window
 /// never shapes a 64 KB line (rule 34).
 pub const LINE_CHARS: usize = 400;
-/// The most task rows (headers included) the panel lists.
-pub const MAX_TASK_ROWS: usize = 500;
 
 /// One changed file, as the Changes panel lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,124 +257,6 @@ fn push(out: &mut FileDiff, r: DiffRow) -> bool {
     true
 }
 
-/// A task state as the panel draws it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskState {
-    Pending,
-    InProgress,
-    Done,
-    /// A status word the reader does not know.
-    Other,
-}
-
-impl TaskState {
-    fn of(s: TaskStatus) -> Self {
-        match s {
-            TaskStatus::Pending => TaskState::Pending,
-            TaskStatus::InProgress => TaskState::InProgress,
-            TaskStatus::Completed => TaskState::Done,
-            TaskStatus::Other => TaskState::Other,
-        }
-    }
-
-    /// The number Slint rows carry: 0 pending, 1 in progress, 2 done, 3 other.
-    pub fn code(self) -> i32 {
-        match self {
-            TaskState::Pending => 0,
-            TaskState::InProgress => 1,
-            TaskState::Done => 2,
-            TaskState::Other => 3,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskItem {
-    pub title: String,
-    /// What the agent says it is doing ("Running the tests"), for an in-progress task.
-    pub doing: String,
-    pub state: TaskState,
-    /// The task the agent is on now: the first in-progress one of its list.
-    pub active: bool,
-}
-
-/// One list of tasks: the main agent's, or a subagent's.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskGroup {
-    /// `""` for the main agent, else the subagent's file name (`agent-<id>.jsonl`). Stable, so a collapsed group stays
-    /// collapsed while the list changes.
-    pub key: String,
-    pub title: String,
-    pub tasks: Vec<TaskItem>,
-    pub done: usize,
-}
-
-fn group_of(key: &str, title: String, tasks: &[Task]) -> TaskGroup {
-    let mut seen_active = false;
-    let items: Vec<TaskItem> = tasks
-        .iter()
-        .map(|t| {
-            let state = TaskState::of(t.status);
-            let active = state == TaskState::InProgress && !seen_active;
-            seen_active |= active;
-            TaskItem {
-                title: t.title.clone(),
-                doing: t
-                    .active_form
-                    .clone()
-                    .filter(|_| state == TaskState::InProgress)
-                    .unwrap_or_default(),
-                state,
-                active,
-            }
-        })
-        .collect();
-    let done = items.iter().filter(|t| t.state == TaskState::Done).count();
-    TaskGroup {
-        key: key.to_string(),
-        title,
-        tasks: items,
-        done,
-    }
-}
-
-/// "Subagent 1a2b3c4" for `agent-1a2b3c4d5e.jsonl`; the whole stem when it is short.
-fn subagent_title(key: &str) -> String {
-    let stem = key
-        .strip_prefix("agent-")
-        .unwrap_or(key)
-        .trim_end_matches(".jsonl");
-    let short: String = stem.chars().take(7).collect();
-    if short.is_empty() {
-        "Subagent".to_string()
-    } else {
-        format!("Subagent {short}")
-    }
-}
-
-/// The task lists: the main agent's first (when it has tasks), then each subagent's that has some, by file name.
-pub fn task_groups(convo: &Convo) -> Vec<TaskGroup> {
-    let mut out = Vec::new();
-    if !convo.tasks.is_empty() {
-        out.push(group_of("", "Tasks".to_string(), &convo.tasks));
-    }
-    for (key, tasks) in &convo.side_tasks {
-        if !tasks.is_empty() {
-            out.push(group_of(key, subagent_title(key), tasks));
-        }
-    }
-    out
-}
-
-/// Counts of the main agent's tasks by state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct TaskCounts {
-    pub pending: usize,
-    pub in_progress: usize,
-    pub done: usize,
-    pub other: usize,
-}
-
 /// What `convo.state` answers: small, no file contents.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Summary {
@@ -386,35 +266,14 @@ pub struct Summary {
     pub edits: usize,
     /// Of those, the ones that came back as an error.
     pub failed: usize,
-    pub tasks: TaskCounts,
-    /// Subagents that kept a task list of their own.
-    pub subagent_lists: usize,
-    /// The title of the main agent's task in progress, if any.
-    pub active: Option<String>,
 }
 
 pub fn summary(convo: &Convo) -> Summary {
     let list = files(convo);
-    let mut tasks = TaskCounts::default();
-    for t in &convo.tasks {
-        match TaskState::of(t.status) {
-            TaskState::Pending => tasks.pending += 1,
-            TaskState::InProgress => tasks.in_progress += 1,
-            TaskState::Done => tasks.done += 1,
-            TaskState::Other => tasks.other += 1,
-        }
-    }
     Summary {
         files: list.len(),
         edits: list.iter().map(|f| f.edits).sum(),
         failed: list.iter().map(|f| f.failed).sum(),
-        tasks,
-        subagent_lists: convo.side_tasks.values().filter(|t| !t.is_empty()).count(),
-        active: convo
-            .tasks
-            .iter()
-            .find(|t| t.status == TaskStatus::InProgress)
-            .map(|t| t.title.clone()),
     }
 }
 
@@ -536,57 +395,29 @@ mod tests {
     }
 
     #[test]
-    fn tasks_group_the_main_list_then_each_subagent_and_mark_the_active_one() {
-        let mut c = Convo::new();
-        c.fold_line(&assistant(
-            json!([{"type": "tool_use", "id": "t", "name": "TodoWrite",
-            "input": {"todos": [
-                {"content": "Read", "status": "completed", "activeForm": "Reading"},
-                {"content": "Edit", "status": "in_progress", "activeForm": "Editing"},
-                {"content": "Test", "status": "in_progress", "activeForm": "Testing"},
-                {"content": "Ship", "status": "pending", "activeForm": "Shipping"}]}}]),
-        ));
-        c.fold_from(
-            "agent-1234567890.jsonl",
-            &assistant(json!([{"type": "tool_use", "id": "s", "name": "TodoWrite",
-                "input": {"todos": [{"content": "Look", "status": "pending", "activeForm": "Looking"}]}}])),
-        );
-        let g = task_groups(&c);
-        assert_eq!(g.len(), 2);
-        assert_eq!(g[0].title, "Tasks");
-        assert_eq!(g[0].done, 1);
-        let active: Vec<bool> = g[0].tasks.iter().map(|t| t.active).collect();
+    fn the_summary_counts_files_edits_and_failures_and_ignores_the_task_tools() {
+        let c = convo(&[
+            edit_line("1", r"C:\p\a.rs", "x", "y"),
+            edit_line("2", r"C:\p\a.rs", "y", "z"),
+            result_line("2", true),
+            edit_line("3", r"C:\p\b.rs", "x", "y"),
+            assistant(json!([{"type": "tool_use", "id": "t", "name": "TodoWrite",
+                "input": {"todos": [{"content": "Read", "status": "in_progress", "activeForm": "Reading"}]}}])),
+        ]);
         assert_eq!(
-            active,
-            [false, true, false, false],
-            "only the first in progress"
-        );
-        assert_eq!(g[0].tasks[1].doing, "Editing");
-        assert_eq!(
-            g[0].tasks[0].doing, "",
-            "only an in-progress task says what it is doing"
-        );
-        assert_eq!(g[1].title, "Subagent 1234567");
-        assert_eq!(g[1].key, "agent-1234567890.jsonl");
-        let s = summary(&c);
-        assert_eq!(
-            s.tasks,
-            TaskCounts {
-                pending: 1,
-                in_progress: 2,
-                done: 1,
-                other: 0
+            summary(&c),
+            Summary {
+                files: 2,
+                edits: 3,
+                failed: 1
             }
         );
-        assert_eq!(s.subagent_lists, 1);
-        assert_eq!(s.active.as_deref(), Some("Edit"));
     }
 
     #[test]
     fn an_empty_conversation_has_nothing_to_show() {
         let c = Convo::new();
         assert!(files(&c).is_empty());
-        assert!(task_groups(&c).is_empty());
         assert_eq!(summary(&c), Summary::default());
     }
 }

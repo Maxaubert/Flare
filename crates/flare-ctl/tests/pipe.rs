@@ -19,6 +19,7 @@ impl Dispatcher for Fake {
         (token == "good").then(|| Grant::Mod {
             id: "m".into(),
             permissions: vec![Permission::View],
+            plugin: false,
         })
     }
     fn resolve_tab_token(&self, tab_token: &str) -> Option<String> {

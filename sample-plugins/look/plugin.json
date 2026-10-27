@@ -1,0 +1,36 @@
+{
+  "id": "look",
+  "name": "Look",
+  "version": "0.1.0",
+  "protocol": 2,
+  "description": "Changes how tabs look. A star marks a tab whose agent finished while you were in another tab, until you go back to it. Claude reports weighted progress with set_steps, shown as a progress chip on its tab: the share of the work done, not the count of steps.",
+  "author": "Flare",
+  "homepage": "https://github.com/Maxaubert/Flare/tree/main/sample-plugins/look",
+  "permissions": ["tabs", "decorate", "tools"],
+  "background": "background.html",
+  "tools": [
+    {
+      "name": "set_steps",
+      "description": "Shows the progress of a multi-step job on the tab you run in, weighted by how much work each step is. Send every step each time; an empty list takes the progress off. Answers with the value shown, 0 to 1.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "steps": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string", "description": "What the step is, for the tooltip." },
+                "weight": { "type": "number", "description": "How much of the work it is, more than 0 (default 1)." },
+                "done": { "type": "boolean", "description": "Whether it is finished." }
+              },
+              "required": ["name", "done"]
+            }
+          }
+        },
+        "required": ["steps"]
+      }
+    }
+  ]
+}

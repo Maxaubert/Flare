@@ -58,25 +58,19 @@ pub fn breathe_at(frac: f32) -> f32 {
     BREATHE_KEYS[i] + (BREATHE_KEYS[i + 1] - BREATHE_KEYS[i]) * t
 }
 
-/// The curve's x and y for a parameter `s`, with the control points of `cubic-bezier(0.42, 0,
-/// 0.58, 1)`.
-fn bezier_x(s: f64) -> f64 {
-    let (x1, x2) = (0.42, 0.58);
-    3.0 * (1.0 - s).powi(2) * s * x1 + 3.0 * (1.0 - s) * s * s * x2 + s * s * s
+/// One coordinate of a CSS timing curve for a parameter `s`, with the control points' `p1` and `p2`
+/// on that axis (the end points are 0 and 1).
+fn bezier(s: f64, p1: f64, p2: f64) -> f64 {
+    3.0 * (1.0 - s).powi(2) * s * p1 + 3.0 * (1.0 - s) * s * s * p2 + s * s * s
 }
 
-fn bezier_x_slope(s: f64) -> f64 {
-    let (x1, x2) = (0.42, 0.58);
-    3.0 * (1.0 - s).powi(2) * x1 + 6.0 * (1.0 - s) * s * (x2 - x1) + 3.0 * s * s * (1.0 - x2)
+fn bezier_slope(s: f64, p1: f64, p2: f64) -> f64 {
+    3.0 * (1.0 - s).powi(2) * p1 + 6.0 * (1.0 - s) * s * (p2 - p1) + 3.0 * s * s * (1.0 - p2)
 }
 
-fn bezier_y(s: f64) -> f64 {
-    3.0 * (1.0 - s) * s * s + s * s * s
-}
-
-/// `cubic-bezier(0.42, 0, 0.58, 1)` at progress `t`: solve x(s) = t by Newton (at most 8 steps),
+/// `cubic-bezier(x1, y1, x2, y2)` at progress `t`: solve x(s) = t by Newton (at most 8 steps),
 /// then bisection as the safety net, and return y(s).
-pub fn ease_in_out(t: f32) -> f32 {
+pub fn cubic_bezier(x1: f64, y1: f64, x2: f64, y2: f64, t: f32) -> f32 {
     let t = f64::from(t.clamp(0.0, 1.0));
     if t <= 0.0 {
         return 0.0;
@@ -86,18 +80,18 @@ pub fn ease_in_out(t: f32) -> f32 {
     }
     let mut s = t;
     for _ in 0..8 {
-        let err = bezier_x(s) - t;
-        let slope = bezier_x_slope(s);
+        let err = bezier(s, x1, x2) - t;
+        let slope = bezier_slope(s, x1, x2);
         if err.abs() < 1e-9 || slope.abs() < 1e-12 {
             break;
         }
         s = (s - err / slope).clamp(0.0, 1.0);
     }
-    if (bezier_x(s) - t).abs() > 1e-9 {
+    if (bezier(s, x1, x2) - t).abs() > 1e-9 {
         let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
         for _ in 0..60 {
             let mid = (lo + hi) / 2.0;
-            if bezier_x(mid) < t {
+            if bezier(mid, x1, x2) < t {
                 lo = mid;
             } else {
                 hi = mid;
@@ -105,7 +99,12 @@ pub fn ease_in_out(t: f32) -> f32 {
         }
         s = (lo + hi) / 2.0;
     }
-    bezier_y(s) as f32
+    bezier(s, y1, y2) as f32
+}
+
+/// `ease-in-out`, `cubic-bezier(0.42, 0, 0.58, 1)`, at progress `t`.
+pub fn ease_in_out(t: f32) -> f32 {
+    cubic_bezier(0.42, 0.0, 0.58, 1.0, t)
 }
 
 /// The skeleton's pulse at `ms`: 1.0 down to 0.5 and back, eased.

@@ -499,13 +499,24 @@ pub fn beat_timer() -> Option<slint::Timer> {
     Some(timer)
 }
 
-/// What the machine's sleep tells the watchdog (a sleep is not a stall).
+/// What the machine's sleep and its screen tell the watchdog (a sleep or a screen that is off is not a stall).
 pub fn power_events() -> Option<flare_win::session_end::PowerEvents> {
     let g = globals()?;
-    let (a, b) = (g.watch.clone(), g.watch.clone());
+    let (a, b, c) = (g.watch.clone(), g.watch.clone(), g.watch.clone());
     Some(flare_win::session_end::PowerEvents {
         on_suspend: Box::new(move || a.power_suspend()),
         on_resume: Box::new(move || b.power_resume()),
+        on_screen: {
+            // Windows says the current state when the watch registers: only a change is a crumb.
+            let last = std::sync::atomic::AtomicU8::new(u8::MAX);
+            Box::new(move |on| {
+                c.screen(on);
+                let was = last.swap(u8::from(on), Ordering::SeqCst);
+                if was != u8::MAX && was != u8::from(on) {
+                    crumb("screen", &[("on", Value::Bool(on))]);
+                }
+            })
+        },
     })
 }
 

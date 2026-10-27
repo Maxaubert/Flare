@@ -14,6 +14,12 @@ checked against what Prism Terminal answers, not against what we remember.
   (`crates/flare-help/data/<shell>.json`, one entry per line), and
   `tests/fixtures/meta.json` and `blankless.json` (what a row draws and copies).
   It refuses a total outside Prism Terminal's own 250 to 600 gate.
+- `flare.mjs` holds what Flare adds over Prism Terminal's catalogue (the
+  Antigravity `agy-start` and `agy-continue` entries, and the agents category
+  named "Claude Code, Codex and Antigravity", 2026-10-26). The copies in
+  `src/` stay Prism Terminal's; `dump.mjs` and `golden.mjs` read the
+  catalogue through this file, so the golden vectors are still Prism
+  Terminal's own `searchHelp`, run over what Flare ships.
 - `golden.mjs` writes `tests/fixtures/golden_search.json` (every query in
   `queries.json` for three shells and for none, plus generated queries from one
   entry in three, with Prism Terminal's `searchHelp` ids and scores) and
@@ -33,9 +39,9 @@ Set `PT_HELP_SRC` to also run `copy_check_passes` against the source.
 
 ## Facts
 
-- 328 catalogue entries (powershell 96, cmd 48, bash 72, git 42, agents 38,
-  packages 22, wsl 10). Source: Prism Terminal v0.55.6.
-- `golden_search.json`: 2468 queries, about 1.2 MB, not sampled.
+- 330 catalogue entries (powershell 96, cmd 48, bash 72, git 42, agents 40,
+  packages 22, wsl 10): Prism Terminal v0.55.6's 328 and Flare's 2.
+- `golden_search.json`: 2482 queries, about 1.2 MB, not sampled.
 - `queries.json`: 379 strings, the literals Prism Terminal's tests pass to the
   search (`search.test.ts`, the `QUESTIONS` table of `catalogue.test.ts`) and
   the edge cases the plan names. Two stray literals were dropped because they

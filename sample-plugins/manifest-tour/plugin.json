@@ -1,0 +1,32 @@
+{
+  "id": "manifest-tour",
+  "name": "Manifest tour",
+  "version": "0.1.0",
+  "protocol": 2,
+  "description": "A protocol 2 plugin that uses every manifest key a page can: a panel with a short list Claude can add to, a background page, a bar, a sidebar section, two actions and an icon of its own.",
+  "author": "Flare",
+  "homepage": "https://github.com/Maxaubert/Flare/tree/main/sample-plugins/manifest-tour",
+  "permissions": ["panel", "tools", "decorate", "sidebar", "actions", "bar"],
+  "background": "background.html",
+  "panel": { "entry": "panel.html", "title": "Tour" },
+  "bar": { "entry": "bar.html", "height": 32 },
+  "contributes": {
+    "sidebar": [{ "key": "tour", "title": "Tour" }],
+    "actions": [
+      { "key": "add", "title": "Add an item", "icon": "plus", "where": ["tab-menu"] },
+      { "key": "done", "title": "Mark done", "icon": "tick", "where": ["tab-hover", "session-bar"] }
+    ],
+    "icons": { "tick": "M4 12l5 5L20 6" }
+  },
+  "tools": [
+    {
+      "name": "add_item",
+      "description": "Adds one line to the Tour's list, kept by its background page. Use it to try a protocol 2 plugin's tool.",
+      "input_schema": {
+        "type": "object",
+        "properties": { "text": { "type": "string", "description": "The line to add, 1 to 200 characters." } },
+        "required": ["text"]
+      }
+    }
+  ]
+}

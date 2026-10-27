@@ -129,11 +129,6 @@ fn convo_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         .take(60)
         .map(|r| json!({"kind": r.kind, "old": r.old_no.to_string(), "new": r.new_no.to_string(), "text": r.text.to_string()}))
         .collect();
-    let tasks: Vec<Value> = a
-        .get_panel_convo_tasks()
-        .iter()
-        .map(|t| json!({"kind": t.kind, "state": t.state, "text": t.text.to_string(), "sub": t.sub.to_string(), "active": t.active, "collapsed": t.collapsed}))
-        .collect();
     let (trackers, sessions) = ctx.ctl.try_borrow().map_or((0, Vec::new()), |c| {
         let s: Vec<String> = c.convo().sessions();
         (c.convo().tracker_count(), s)
@@ -154,7 +149,6 @@ fn convo_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         "files": files,
         "diff_rows": rows.row_count(),
         "diff": diff,
-        "tasks": tasks,
         "list_built": a.get_panel_convo_list_built(),
         "diff_built": a.get_panel_convo_diff_built(),
         "trackers": trackers,

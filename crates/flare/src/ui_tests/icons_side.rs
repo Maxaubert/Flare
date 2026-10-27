@@ -38,6 +38,7 @@ fn tab(i: usize, name: &str, active: bool) -> TabRow {
         folder: format!("~\\work\\{name}").into(),
         active,
         kept: true,
+        prog: -1.0,
         ..TabRow::default()
     }
 }
@@ -197,6 +198,21 @@ fn draw_sidebar_plus(s: f32) -> Drawn {
     )
 }
 
+const CHEVRON_DOWN: &str = "M6 9l6 6 6-6";
+
+fn draw_sidebar_arrow(s: f32) -> Drawn {
+    // The New tab button's arrow: the last 40 px of the button (css x 172..212), the 11 px chevron in its middle.
+    let h = sidebar(s);
+    let f = h.render();
+    let r = region_around(&f, 192.0 * s, 475.0 * s, 9.0 * s);
+    let bg = ground(&f, r);
+    let got = ink_edges(&f, r, &Ink::new(bg, TEXT_SOFT)).expect("the chevron is drawn");
+    (
+        got,
+        expected_extent_px(CHEVRON_DOWN, 11.0, 24.0, 2.2 * 11.0 / 24.0, s),
+    )
+}
+
 fn draw_menu_icon(s: f32) -> Drawn {
     let mut r0 = row("One");
     r0.icon = MENU_ICON.into();
@@ -328,6 +344,13 @@ fn sidebar_search_glyph_draws_at_full_size_at_every_scale() {
 }
 
 #[test]
+fn sidebar_new_tab_arrow_draws_at_full_size_at_every_scale() {
+    for s in SCALES {
+        assert_size("sidebar new tab arrow", s, draw_sidebar_arrow(s));
+    }
+}
+
+#[test]
 fn sidebar_plus_draws_at_full_size_at_every_scale() {
     for s in SCALES {
         assert_size("sidebar plus", s, draw_sidebar_plus(s));
@@ -407,15 +430,17 @@ const CENTRES_SEARCH: [(f32, f32); 8] = [
     (62.78, 65.28),
     (75.32, 78.32),
 ];
+/// The sidebar plus sits 20 css px further left than it was recorded (2026-10-27): its label is centred in the
+/// button's main part, the button less its 40 px arrow.
 const CENTRES_PLUS: [(f32, f32); 8] = [
-    (82.0, 475.0),
-    (102.5, 593.75),
-    (123.0, 712.5),
-    (143.5, 831.25),
-    (164.0, 950.0),
-    (184.5, 1068.75),
-    (205.0, 1187.49),
-    (246.0, 1425.0),
+    (62.0, 475.0),
+    (77.5, 593.75),
+    (93.0, 712.5),
+    (108.5, 831.25),
+    (124.0, 950.0),
+    (139.5, 1068.75),
+    (155.0, 1187.49),
+    (186.0, 1425.0),
 ];
 const CENTRES_MENU_ICON: [(f32, f32); 8] = [
     (38.5, 35.0),

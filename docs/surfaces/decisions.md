@@ -587,7 +587,8 @@ terminal, working, instead of Claude describing it in words.
   realm (an about:blank or srcdoc frame) might have run before it. Now: (1) **the browser itself.** A mini-app never shares a WebView2
   environment with the web panel. `flare-web` keeps one environment per kind (`EnvKind`): `AppSealed` (apps with no network) and
   `AppNet` (apps that were granted `https:`), each made lazily when the first app of that kind opens, in a user data folder of its own
-  beside the panel's (`WebView2-app-sealed`, `WebView2-app-net`, `app::env_folder`) and closed with the last view that uses it (an
+  beside the panel's (`WebView2-app-sealed`, `WebView2-app-net`, `app::env_folder`; since plugins phase 2b the sealed mini-apps use
+  `WebView2-mini-sealed` and `WebView2-app-sealed` is the mods' and plugins' own) and closed with the last view that uses it (an
   idle kind is dropped when a view of another kind replaces it). Both start with `--webrtc-ip-handling-policy=disable_non_proxied_udp`
   (plus Chromium's `--force-...` spelling); `AppSealed` also with `--proxy-server=http://127.0.0.1:9 --proxy-bypass-list=<-loopback>`, a
   proxy that is not there with loopback taken out of the built-in bypass, so a WebSocket or any request the page makes without Flare's
@@ -728,7 +729,7 @@ The Opus review of the library (before the panels build on it) found these; each
 - **Rule 34 now scans this crate.** `crates/flare-convo/tests/sync_calls.rs` is a copy of the flare-agent scan. The one blocking import is marked. `next_timeout` is marked as a worker or test call; a UI caller uses `try_next`. Fold and diff are documented as off the UI thread.
 - **Diff line numbers are within the snippet, and that is documented, not changed.** The panel adds the file offset if it reads the file.
 
-## Stage 6: the Changes and Tasks panels (`surfaces-6-convo`, issues #25, #26, #27), 2026-10-22
+## Stage 6: the Changes and Tasks panels (`surfaces-6-convo`, issues #25, #26, #27), 2026-10-22 (the Tasks panel was removed 2026-10-26, see the end of this file)
 
 The library (`flare-convo`, above) is wired into the app. Format notes: `convo.md`; the channel method: `protocol.md` (`convo.state`, `panel.open`).
 
@@ -864,3 +865,186 @@ The owner's words: "i see that word wrapping has been added for the sidepanel, c
 - 2026-10-23, round 11, **the text preview wraps LIVE; this supersedes round 9's "the wrap is made once, when the width settles".** Reason: the owner wants it to follow the drag as an editor does, and the settle-only rule left text overflowing sideways during a drag. `panel_wrap_cols_changed` (every change of the view's columns, a splitter step or a window-edge step) calls `PanelCtl::live_wrap`, which wraps to the columns now and restores the top line (`top_line` / `restore_top`, as before). Under 200 KB of shaped text (`WRAP_LIVE_INLINE_MAX`, judged on the lines' bytes with tabs already spaces, as `is_big` does, cached in `Content::Text`) the wrap is made where the step lands (about 4 ms measured in a debug build for a 1000-line, 100 KB file, less in release); a bigger file goes to a worker with at most ONE wrap in flight: a step during it changes nothing, and its answer calls `live_wrap` again, which wraps to the newest width (older widths are dropped, never made). `settle_wrap` is still the exact final wrap (the release's refresh, a timer 120 ms after the last window-edge step, the setting) and replaces a wrap still in flight. While the width moves (`wrap_moving`, set by every step, cleared by the 120 ms timer, the release and the setting) a refresh wraps live too, never the exact way, so a window-edge drag never wraps a 200 KB to 1 MB file inline and never restarts the worker of a bigger one; `live_wrap` does nothing during a sidebar slide, answers included. A sidebar slide still wraps once at its end (rule 217). The terminal GRID still fits once at the release (rule 24): only the preview's wrap went live. Held by `a_splitter_drag_wraps_live_at_every_step_and_the_release_changes_nothing_more`, `a_live_drag_keeps_the_line_at_the_top_in_place`, `a_big_file_drag_never_stalls_the_ui_and_ends_exact` (100 and 225 percent), `a_window_edge_drag_never_wraps_a_mid_file_inline_nor_restarts_the_worker` and the e2e `panelSplitter`.
 
 - 2026-10-24, **"Notify me when an agent asks" is off by default; this supersedes stage 7's "default on".** Reason: the owner found the question toasts unwanted ("turn that setting off by default"). `agent_prefs::notify_ask_on` reads off unless a "1" is stored, so a profile that switched it on keeps it. Held by `the_question_notification_is_off_until_a_stored_one`, `by_default_a_question_shows_no_notification`, and the e2e `questionToast`, which stores the setting on for its "on" run and checks a fresh profile for its "off" run.
+
+- 2026-10-26, **the Tasks panel is removed, all of it** (owner: sessions never used it). The panel kind `tasks`, the
+  `TasksView` in `convo.slint`, the terminal menu's "Show task list" row and its `menu-tasks` glyph, `panel.open` kind
+  `tasks` (now `bad_params`, an unknown kind), the task list in `flare-convo` (TodoWrite, TaskCreate and TaskUpdate are
+  tools the fold now ignores; `Task`, `TaskStatus`, `side_tasks`, the view's `task_groups` and counts), the `tasks`,
+  `subagent_lists` and `active` fields of `convo.state`, the Tasks part of the `convoPanels` e2e and the tests that only
+  concerned it. A stored `tasks` panel in `panels.json` reads as an unknown kind and is dropped, the tab and its
+  neighbours stay (rule 40; `a_stored_tasks_panel_is_dropped_on_load`,
+  `a_stored_panel_of_the_removed_tasks_kind_is_dropped_and_the_tab_restores`). The Changes panel and its tracker are
+  untouched. The stage 6 entries above that name tasks are kept for the record; do not port the Tasks panel to Prism
+  Terminal.
+
+## The agent's cursor (`feat/agent-cursor`), 2026-10-26
+
+The owner's words: "can it use it like claude in chrome where i can see a cursor, and it can click elements on the site, not just go
+to links". The clicking already worked (stage 4); the cursor is new. Style A of six animated mockups
+(`agent-cursor-mock.html`): an orange arrow with a name tag, a ripple on each press. Spec and plan:
+`docs/superpowers/specs/2026-10-26-agent-cursor.md`.
+
+- 2026-10-26, **drawn by Flare in a window of its own, never in the page.** `flare_win::agent_cursor::CursorWindow` is a layered
+  popup (`WS_POPUP`, `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, `WM_NCHITTEST` answers
+  `HTTRANSPARENT`) owned by Flare's main window: it sits just above Flare and under any other app, takes no click and no focus, has no
+  taskbar button, and hides with the owner when it is minimised. It is made on the first show and destroyed with the controller.
+  Reason: an element injected into the page could be seen, moved or hidden by the page (a site could fake or bury the agent's
+  pointer), would be in `browser_look`'s picture and list, would be wiped by a navigation, and iframes and CSP make it fragile. The
+  page never learns the cursor exists; the e2e's look results are unchanged.
+- 2026-10-26, **pixels in Rust, no dependency.** The arrow is mockup A's path (24 unit box, 22 px wide at 100 %) as a polygon with
+  analytic anti-aliasing (signed distance to the edge, the taskbar disc's approach): white where the 1.6 px rim is (centred on the
+  path), `#fe8f34` inside it. The tag is an orange pill 19 px high at (14, 14) px from the tip with the name in 11 px Segoe UI
+  semibold, `#1a1a1a`, rasterised by GDI into a coverage mask. The ripple is an orange disc under the arrow at the tip, 34 px at
+  full size, growing 0.3 to 1.4 (ease-out) and fading from 0.5 to 0 in 400 ms. Everything is premultiplied BGRA, scaled by the
+  window's scale, and shown with `UpdateLayeredWindow`; the fade is the blend's constant alpha, so it needs no new bitmap. The arrow
+  and tag are drawn once per (scale, name) and cached; a frame is drawn only while it changes (a glide, a ripple, a fade, a move).
+- 2026-10-26, **coordinates:** a point is CSS pixels of the visual viewport with the viewport's size; on screen it is the page's
+  physical rectangle (`set_bounds`) plus the point times `bounds / viewport`, offset by the client origin (`ClientToScreen`). That
+  includes the browser's zoom. A click by point now asks `Page.getLayoutMetrics` first, so every point comes with its viewport (a
+  page whose size cannot be read is clicked all the same, with no cursor).
+- 2026-10-26, **the glide holds the events 180 ms, and nothing waits.** The job has a `Glide` stage after it knows the point
+  (`Job::take_point`); the agent tick (16 ms) ends it and the events go. The budget (`ACT_BUDGET_MS`) is unchanged and counts the
+  glide. **Chosen where the spec left it open:** the job always glides 180 ms when the cursor is drawn, the first appearance too
+  (the arrow appears at the target and the person sees it before the ripple); a page that is not live in front (its tab behind, a
+  menu's still, a minimised window) gets no glide and no cursor, so an agent working behind is not slowed. Typing into a ref asks
+  where the element is after `DOM.focus` (`Page.getLayoutMetrics` and `DOM.getContentQuads`); an element with no box types at once
+  with no cursor. A scroll over a ref glides; a scroll with nothing named, a key, a look, a wait and eval move nothing.
+  (2026-10-27: the glide's length now comes from its distance and the first appearance holds 180 ms; see "The agent's
+  cursor never jumps" below.)
+- 2026-10-26, **a ripple per press**, seen as the `mousePressed` event goes out; two presses closer than 120 ms (a double click)
+  ripple one after the other so both show.
+- 2026-10-26, **when it goes:** it stays where it last acted while the ribbon is up (the call plus `RIBBON_HOLD_MS`), then fades in
+  200 ms. Gone at once on a takeover (`interrupted`, or the person's input while the ribbon holds), the panel closing, its tab going
+  behind, a Flare menu or dialog over the page (any phase but live) and a minimised window. The agent tick places it again every
+  turn while it shows (the timer keeps running until it has faded), so it follows a window move, a resize and the splitter.
+- 2026-10-26, **no setting**, as for the ribbon. **Under `--e2e` and in the tests** the window is never made: `WebCtl` starts with
+  `RecordCursor`, which keeps what it was told (`agent_cursor::recorded`), and the real window is handed in by `window.rs` once
+  Flare's window has a handle and the run is not `--e2e`. `web.state` reports `cursor` (drawn, the tip in client pixels, the tag,
+  the presses, what the shell was told). Held by the `agent_cursor` tests in `flare-surfaces` and `flare-win`, the glide tests in
+  `agent_job.rs`, the cursor tests in `web_tests.rs` and the e2e `agentBrowser` (at the button's middle at 100 and 225 %, gone after
+  the hold).
+- 2026-10-26, **not done:** the tag is not flipped when the arrow is near the panel's right or bottom edge (it can draw past the
+  page, over Flare's own window, never past another app); no cursor for mods' pages or plugin pages driving a page (a non-goal).
+
+## Antigravity (agy) as an agent, and agent icons that move (`feat/agy-agent`), 2026-10-26
+
+Spec and plan: `docs/superpowers/specs/2026-10-26-agy-and-agent-motion.md`. Research:
+`C:\Users\Admin\Documents\Claude\research\flare\2026-10-26-agy-cli-and-flare-agent-map.md`.
+
+- 2026-10-26, **the Antigravity CLI (`agy`) is the third agent** next to Claude Code and Codex: detected, marked, resumed,
+  named "Antigravity" (owner).
+- 2026-10-26, **agy's tab icon is G1**: the pixel "A" of agy's own banner in its rainbow colours
+  (`docs/surfaces/agy-icon-mock.html`) (owner).
+- 2026-10-26, **agent icons move while their tab works**: Claude H1 (a hop, 1.8 s, a blink every other landing), Codex O6
+  (spin 3.5 s while fading 0.55 to 1), agy A1 (the rainbow flows along the arch, 3 s) (`agent-motion-mock.html`,
+  `agy-motion-mock.html`) (owner). Built in PR 2, not in PR 1.
+- 2026-10-26, **a mod picks an agent icon's motion** (owner). This amends the plugin design's section 13 ("`tabs.icon.set`
+  works only on tabs with no agent") narrowly: a plugin picks a motion from Flare's fixed list; it never supplies the
+  agent's artwork, never draws a check or dot, and the ring and bar stay Flare's. The method and its permission are PR 2's,
+  and `plugins.md` gets the text with them.
+- 2026-10-26, PR 1, **state from OSC 7501.** agy reports its state as `OSC 7501 ; state=..:kind=..:app=..:msg=base64 ST`
+  (agy 1.4.7 changelog; the grammar is the program-status spec, https://www.superlogical.com/rex/docs/build/program-status).
+  Flare reads it for any agent, as a source under Claude's hooks and over titles and output. Every shell gets
+  `AGY_CLI_OSC7501=on` (a variable the user set is kept): agy asks with `OSC 7501 ; ?` first, and the env switch is the
+  path that works without knowing what agy accepts as the answer. Why: agy sets no window title by default and has no
+  prompt or permission hook, so 7501 is the only signal for its questions.
+- 2026-10-26, PR 1, **chosen where the spec left it open:** only the root record counts (a report with an `id` is a part
+  of the work and is dropped); a report in a tab where no agent was found yet lights nothing, asks the poll, and is applied
+  when the poll names an agent (so a plain program cannot make a shell an agent); Claude's hooks take a tab over from
+  7501; a 7501 question is cleared only by the program's next report, never by Flare's screen reads; `msg` is kept only
+  as clean text and shown nowhere yet. The icon has the mock's 32 cells (the spec's 46 was a guess), drawn as one Slint
+  path per colour so PR 2's flow can shift colours per path. Settings' icon int moved from 3 to 4.
+- 2026-10-26, PR 1, **the command help gets agy** (the spec's "help entry"): `agy-start` (`agy`) and `agy-continue`
+  (`agy -c`), and the agents category reads "Claude Code, Codex and Antigravity". They live in
+  `tools/oracle-help/flare.mjs`, laid over Prism Terminal's copied sources (which stay verbatim), and the golden vectors
+  are regenerated from Prism Terminal's own search over that catalogue.
+- 2026-10-26, PR 1, **a 7501 report goes with its program:** a prompt (the shell reported its folder) drops the tab's
+  report and the marks it set, and so does a poll answer naming another agent than the one stored, so an agent that quit
+  without `state=clear` never freezes the next one's marks, and a plain program's report is not applied to a later agent.
+- 2026-10-26, PR 1, **not done:** hooks for agy, Flare's MCP server in agy's config
+  (`agy mcp add` writes the user's global file: a separate ask), dictation routing, and answering the 7501 query.
+- 2026-10-27, PR 2 (`feat/agent-motion`), **the amendment to design section 13, as built.** Section 13 says
+  "`tabs.icon.set` only on tabs with no agent kind"; that stays for a plugin's own icon. Beside it, a plugin with the new
+  permission `agent-looks` ("Change how agent icons move while they work", protocol 2 only, asked at install like the
+  others) picks an agent's icon motion with `agents.motion.set {agent, motion}` / `agents.motion.clear {agent}` in the new
+  namespace `Agents`. The motion is a name from Flare's list (`none`, `hop-blink`, `spin-fade`, `rainbow-flow` for agy only,
+  `hop`, `spin`, `breathe`); no artwork crosses, no check or dot is drawn, the ring and bar stay Flare's. Unknown agent or
+  motion: `bad_params`. The newest pick wins; a plugin turned off or removed (or whose background page ended, as for decor)
+  takes its picks with it. The contract is `plugins.md` ("Agent icon motions") and `protocol.md`.
+- 2026-10-27, PR 2, **how the motions are drawn.** `flare_agent::icon_motion` has every frame as a pure function of the
+  mark clock (`icon_phase`), pushed with the marks in `push_frame` into `MarkMotion`; `AgentIcon` reads it and no Slint
+  `animate` is involved. A row wears its agent's pick only while its Working mark is on (`tabs_ui::wear_motions`), so the
+  clock that already runs for the working mark drives it, and the `STILL` path (animation effects off, nothing moving)
+  draws every icon as it stands. Without a pick nothing moves: there is no built-in default.
+- 2026-10-27, PR 2, **chosen where the spec left it open.** (1) The hop and the breath move and scale the icon's box, which
+  both renderers draw exactly; the turns (`spin-fade`, `spin`) are a Slint `transform-rotation`, which the software
+  renderer (the fallback, and the tests) leaves out, so there the icon only fades. (2) `rainbow-flow` shifts the colour
+  of each of the arch's ten paths (one per colour, PR 1), path k 0.3 s ahead of path 0, through the mock's six keyframe
+  colours in sRGB; the mock steps per cell along the diagonal, which one path per colour cannot. (3) `hop` is H1's hop
+  without the blink, `spin` is O1 (4 s a turn, the mock's CSS), `breathe` is O4 (0.82 to 1.05 and 0.7 to 1 opacity,
+  2.6 s each way). (4) A pick of `none` holds an agent still over an older pick. (5) The rate is decor's 10 a second, per
+  plugin per agent. (6) `capabilities` lists the two methods; the motion names are fixed in the docs and named by every
+  `bad_params` (a plugin page does not see `hello`). (7) The +N list's icons stay still. (8) The answers say what the
+  agent wears now (`{agent, motion}`, and `cleared` for clear).
+- 2026-10-27, PR 2, **the sample mod `agent-moves`** (`sample-plugins/agent-moves/`): `agent-looks`, `panel` and `actions`;
+  its background page sets the owner's picks (or the ones kept in its store) when it starts, and a tab menu's "Agent
+  motions" opens its panel with one picker per agent.
+
+## New tab: a folder arrow on the sidebar button, and no ask mode (`feat/new-tab-arrow`), 2026-10-27
+
+- 2026-10-27, owner (spec `docs/superpowers/specs/2026-10-27-new-tab-folder-arrow.md`): the sidebar New tab is a split
+  button (N1: full-height divider, chevron down, its own hover); the strip's + keeps its look and its right-click; Settings
+  drops "Ask where each time" and a stored "ask" reads as folder mode; the folder menu starts with "Choose a folder…" and
+  fills its empty spots with Documents, Downloads, Desktop and the user folder. Recorded as DIFF-26 in `docs/parity.md`.
+- 2026-10-27, chosen where the spec left it open:
+  - **Where the arrow's menu opens:** its left edge on the button's left edge, its foot 4 px above the button's top
+    (`ContextMenu.above`), so it never covers the button; the window's edges still cap it. The strip's right-click menu
+    still opens at the pointer.
+  - **The button keeps its 34 px height** (the mock drew 42); the arrow zone is 40 px and the label and plus are centred
+    in the main part, so the plus sits 20 px left of where it was.
+  - **The starters are resolved once,** on a worker when the restore starts; a folder deleted later stays listed until the
+    next start (a recent behaves the same). They carry a hint (`~\Documents`, "user folder"; none when outside the user
+    folder) and a pin, like a recent; labels are worked out over recents and starters together, so a clash takes the
+    parent along.
+  - **Nothing to list** still shows the disabled "No recent folders", now under "Choose a folder…".
+  - **The picker starts in the new-tab folder** (the stored one, else the user folder); the chosen folder becomes a recent
+    through the spawn, as every opened folder does. It does not change the new-tab folder.
+  - **The mode key stays named** (`new_tab::MODE_KEY`): the import still maps `prism.newtab.mode`, now always to `folder`,
+    so the import table and its count stay as they are; the Settings row's reset still clears the key.
+  - **The settings row is an Action row** with no control (the row id `newtab-mode` is kept, so search and reset do not
+    move).
+
+## The agent's cursor never jumps, and a border while the agent uses the page (`fix/agent-cursor-glide`), 2026-10-27
+
+Measured live by polling the cursor's window every 1 ms: clicks 0.4 s apart glided, but clicks 3 s apart (normal for an
+agent) faded out between them and the next one made the arrow appear at its new target, a visible jump. The owner's
+words on the border: "also there could be a light orange border when claude is using the browser and it goes away once
+claude is done using".
+
+- 2026-10-27, Max: **the agent's cursor never jumps between positions.** After the ribbon's hold the arrow still fades,
+  but `AgentCursor` keeps where its tip rested (`remembers`); the next action shows it there and glides on. The spot is
+  forgotten by a navigation (the tab's `doc` changed since the cursor last pointed), by a change of the viewport's size,
+  and by a hide (a takeover, a closed panel, a tab behind, a menu's still, a minimised window): only then, and on the
+  first action on a page, does the arrow appear at its target.
+- 2026-10-27, Max: **a light orange border round the page while the agent uses it**, from the agent's first call (a look
+  too, as for the ribbon) until the ribbon's hold ends, the moment the arrow starts to fade; it fades with it in
+  `FADE_MS` and comes back with the next call; a takeover takes it away at once.
+- 2026-10-27, chosen where the ask left it open:
+  - **The glide's length** is `350 + 0.5 x distance` ms in CSS pixels, clamped to 350..700, eased in and out (cubic), so it
+    starts and stops softly and a short hop is still seen. The job holds the longest glide (`GLIDE_MAX_MS`) until the
+    window has taken the point, then `Job::glide_for` sets the real length; a length of 0 (the arrow already there, not
+    drawn, or motion off) sends the held events in the same turn.
+  - **An appearance holds 180 ms** (`APPEAR_MS`), as before, so the person sees the arrow before the press.
+  - **The border is a second layered popup** (`CursorWindow`, the cursor's class) the size of the page's rectangle, not
+    Slint: the browser is a native child window and Slint cannot draw over it. Clicks go through it (`WS_EX_TRANSPARENT`,
+    `HTTRANSPARENT`). Its bitmap (a ring of `2 px x scale`, the cursor's orange at 55 %, premultiplied) is made once per
+    (size, scale); a fade changes only the window's constant alpha (`CursorShell::set_alpha`, `UpdateLayeredWindow` with
+    no source DC), so no bitmap is copied per frame. It is drawn just inside the page's edge. The page's corners are
+    square (the browser's window is a plain rectangle under the panel's head, the panel has no rounded corner there), so
+    the ring's are too. The colour is the cursor's fixed orange, the same in every theme, as the arrow's.
+  - **Animation effects off** (`flare_win::motion::animations_enabled`, read once per agent call through the same source
+    as the app's clock, so the tests pin it): no glide, the arrow is placed at once, no appearance hold, and the arrow and
+    the border go at once instead of fading.
+  - `web.state`'s `cursor` adds `remembers` and `border` (`shown`, `client` rectangle, `alpha`, what its stand-in
+    `RecordBorder` was told). The doc-comment colours in `flare-win/src/agent_cursor.rs` that tripped `colour_literals` are
+    gone (the values stay as the constants they always were).

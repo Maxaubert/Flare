@@ -8,13 +8,16 @@ code disagree, that is a bug in one of them: fix both in the same commit.
 
 Status of the methods in Flare (stages 4 to 8 are done): the framework (transport, hello, grants, errors,
 limits, timeouts, events) is built and tested in `flare-ctl`. Flare starts the server at launch and
-implements `hello`, `tabs.list`, `panel.open` (kinds `web`, `changes` and `tasks`), `panel.close`, `panel.state`,
+implements `hello`, `tabs.list`, `panel.open` (kinds `web` and `changes`), `panel.close`, `panel.state`,
 `view.image|file|text|html|diagram`, `browser.open`, `browser.navigate`, the agent's hands on the page
 (`browser.look|click|type|press|scroll|wait|eval`, stage 4), the mini-apps and diagrams of stage 5
 (`view.html` and `view.diagram`), `convo.state` (stage 6, the conversation reader) and, with mods (stage 8),
 `tools.respond`, `mods.tools` and `mods.call`. A run with no mods hub answers those three `unavailable` and does not
-list them in `capabilities`. Each method below says which stage owns its behaviour; the names, params and
-grants are fixed now.
+list them in `capabilities`. Plugins phase 1 (2026-10-25) adds `tabs.badge.set|clear` and `tabs.progress.set|clear`
+for the agent's own tab; plugins phase 3 lets a plugin that holds `tabs` name any tab and see every tab in
+`tabs.list`; plugins phase 4 adds `sidebar.set` and `actions.set` (a plugin's sections and actions) and click scope;
+plugins phase 5 adds `session.read`, `tabs.input`, `storage.get` and `storage.set`; plugins phase 6 adds `bar.show`,
+`bar.hide` and `view.audio`; the agent motions (2026-10-26) add `agents.motion.set` and `agents.motion.clear`. Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
 
@@ -181,23 +184,36 @@ same user, so a process that can read another process's environment can still re
 keeps unrelated processes of the user (a script, a browser tab, another app) from acting as a tab, and
 keeps the tab's identity out of anything that only sees `tabs.list`. A method acts only on the
 connection's own tab (`ctx.tab`) and never on a `tab` field in its params, for the agent and mod grants
-alike.
+alike, with one exception (plugins phase 3): the decor methods and `panel.open` kind `mod:<own id>` take an
+optional `tab`, the public id `tabs.list` gives. The connection's own id is always allowed; another one only for a
+plugin that holds `tabs` (`Grant::may_act_on_any_tab`), or a tab where the person clicked one of the plugin's actions or
+sidebar items (click scope, plugins phase 4, until the tab closes or the plugin is turned off), else `forbidden`. A plugin's background page sits in no tab,
+so without `tabs` it can name none (`forbidden`) and with it, it must name one (`no_tab` otherwise). A secret given as
+`tab` is no tab's id (`no_tab`).
 
 | Method | agent | mod needs | ui |
 |---|---|---|---|
 | `hello`, `tabs.list` | yes | (always) | yes |
 | `panel.open`, `panel.close`, `panel.state` | yes | `panel` | yes |
-| `view.image`, `view.file`, `view.text`, `view.html`, `view.diagram` | yes | `view` | yes |
+| `view.image`, `view.file`, `view.text`, `view.html`, `view.diagram`, `view.audio` | yes | `view` (`view.audio` with a `url` also `network`) | yes |
 | `browser.open` ... `browser.wait` | yes (its own tab's panel only) | `browser` | yes |
 | `browser.eval` | only if the user switched "Let agents run scripts in pages" on (read at every request) | `browser` and `eval` | yes |
 | `convo.state` | yes (its own tab) | `convo` | yes |
+| `tabs.badge.set`, `tabs.badge.clear`, `tabs.progress.set`, `tabs.progress.clear` | yes (its own tab) | `decorate` (a `mod.json` cannot ask for it: not in `ASKABLE_V1`); any tab with `tabs` too | yes |
+| `sidebar.set` | no | `sidebar` | yes |
+| `actions.set` | no | `actions` | yes |
+| `session.read` | **no** | `sessions` | yes |
+| `tabs.input` | **no** (rules 2 and 188) | `input` (a `mod.json` cannot ask for it) | yes |
+| `storage.get`, `storage.set` | **no** | (always, a protocol 2 plugin's own store; a protocol 1 mod is refused by the dispatcher) | yes |
+| `bar.show`, `bar.hide` | **no** | `bar` | yes |
+| `agents.motion.set`, `agents.motion.clear` | **no** | `agent-looks` (a `mod.json` cannot ask for it) | yes |
 | `tools.respond` | no | `tools` | yes |
 | `mods.tools`, `mods.call` | yes | **no** | yes |
 | `shell.input`, `settings.set`, `mods.enable` | **no** | **no** | yes |
 
 **Rule S3** is the last row and the `agent` column: the agent can show content and drive its panel
-browser. It cannot type into a shell, change settings, enable mods, answer as a mod, or read other
-tabs' screens. The three methods in the last row are reserved names that exist only so the grant table
+browser. It cannot type into a shell (neither `shell.input` nor a plugin's `tabs.input`), change settings, enable
+mods, answer as a mod, read a session's conversation, keep a plugin's store, or read other tabs' screens. The three methods in the last row are reserved names that exist only so the grant table
 can pin their refusal: nothing over the pipe reaches them, whatever token or permission is held, and
 the in-process UI path does not use the channel for them at all in v1.
 
@@ -215,8 +231,8 @@ makes a path absolute against **its own** working folder (the agent's, where Cla
 before it sends it, and its tool text says so; a client that wants the tab's folder sends the path as it
 is, from its own connection.
 
-`PanelInfo` is `{"kind": "image"|"text"|"web"|"app"|"changes"|"tasks"|"mod:<id>", "title": string, "path"?: string, "url"?: string, "network"?: bool}`
-(`changes` and `tasks`, stage 6, have neither a `path` nor a `url`).
+`PanelInfo` is `{"kind": "image"|"text"|"web"|"app"|"changes"|"mod:<id>", "title": string, "path"?: string, "url"?: string, "network"?: bool}`
+(`changes`, stage 6, has neither a `path` nor a `url`).
 A file or text panel has `path` (text handed over has neither); a web panel has `url` and no `path`, and its
 `title` is the page's title, else the address's host. A **mini-app or diagram** (`kind` `"app"`, stage 5) has
 neither `path` nor `url` (its address is Flare's own and means nothing to a client), its `title` is the one the
@@ -255,9 +271,114 @@ only: never screen content (S3). The agent grant gets **its own tab only** (an e
 connection has no tab); a mod gets its own tab only too (2026-10-22: the `panel` permission no longer widens it). `title` is the label the
 tab strip shows, `active` is "in front". Stage 2.
 
+A plugin that holds `tabs` (plugins phase 3) gets every shell tab, in strip order, with more:
+`{"id", "title", "folder", "active", "agent": "claude"|"codex"|"agy"|null, "state": "working"|"question"|"done"|"failed"|"idle",
+"session": string|null, "panel": string|null}`. `panel` is what the tab's open panel shows: `browser` for the web
+panel, else its kind (`image`, `text`, `changes`, `app`, `mod:<id>`), null when none is open. The same object
+is the `tab` of every `tabs` event a plugin page hears (`plugins.md`, "Events").
+
+### tabs.badge.set, tabs.badge.clear, tabs.progress.set, tabs.progress.clear (plugins phase 1)
+
+What a caller draws on its own tab: badges (small glyphs) and one progress, in a bare chip (no ring) Flare draws before the
+tab's end (strip) or left of its ring (sidebar row). Never at the tab's foot, where the agent's bar mark is; nothing in
+it moves. Namespace `Decor` (prefix `tabs`), permission `decorate`; the agent holds it, a protocol 1 mod cannot ask for
+it, a plugin can (phase 3: its pieces are its own source, `plugin:<id>`, and with `tabs` it may name any tab). Every
+param is checked on the channel's worker, and each change is spent from a limit of 10 a second per tab and caller, and
+for a plugin also 30 a second across all its tabs, before the window hears of it (more answer `rate_limited`). A
+plugin's badge `icon` may also be one of its own `contributes.icons`, drawn in the chip's one colour like a built-in;
+its tooltip lines start with the plugin's name. Everything a plugin drew goes when it is turned off and when its
+background page ends. The words: `flare_ctl::decor`; the model: `flare_tabs::decor`.
+
+| Method | Params | Result |
+|---|---|---|
+| `tabs.badge.set` | `key` (1 to 24 of `a-z`, `0-9`, `-`), `icon` (one of `phone`, `globe`, `bell`, `mic`, `eye`, `moon`, `lock`, `bolt`, `star`, `plus`, `pin`; no `check`, no `dot`), `tip` (optional, one clean line of at most 80 characters: no control or hidden formatting character), `tone` (optional: `ink` default, `accent`, `muted`; `mic` may not be `accent`, which is Flare's dictation mark), `tab` (optional, own id only) | `{}` |
+| `tabs.badge.clear` | `key`, `tab` | `{"cleared": bool}` |
+| `tabs.progress.set` | `key`, `value` (optional, 0 to 1; absent is an unknown amount, a static dotted pill), `label` (optional, like `tip`), `tab` | `{}` |
+| `tabs.progress.clear` | `key`, `tab` | `{"cleared": bool}` |
+
+Setting the same `(caller, key)` replaces; a caller keeps at most 4 badge keys on a tab and 200 in all (a fifth is
+`bad_params`). A tab has one progress, the last set; clearing takes it only for the key that set it. A tab draws at most
+2 chips: the progress first, then one badge per caller (the agent's newest before any plugin's), 2 on a named tab of
+150 css px or more, 1 from 110 px, none below or on an icon tab; every piece is listed in the tab's tooltip, each line
+starting with who set it (`Claude: Call-me is on`; `Codex` on a Codex tab, `Antigravity` on an agy tab, `Agent` for any other agent). The agent's pieces go when the tab's Claude session changes from
+one id to another (a first id after none does not), when the agent leaves the tab (its kind is none; Codex too) and
+when the tab closes. They are not stored. Errors: `no_tab`, `forbidden` (another tab; or, for the agent's set, no agent in
+the tab: a plain shell's process holds the token too, and nothing would name or clear its pieces), `bad_params`,
+`rate_limited`.
+
+### sidebar.set, actions.set (plugins phase 4)
+
+A plugin's own sidebar sections and actions, declared in its `contributes` (`plugins.md`, "Sidebar sections and
+actions"). Namespaces `Sidebar` and `Actions`, permissions `sidebar` and `actions`; the agent and a protocol 1 mod
+cannot call them. Every param is checked on the channel's worker before the window hears of it; the window applies a
+change only for the plugin generation it was checked for (`unauthorized` after a switch off). Listed in `capabilities`
+when the run has a mods hub.
+
+| Method | Params | Result |
+|---|---|---|
+| `sidebar.set` | `key` (a `contributes.sidebar` key), `items` (at most 50 of `{id, text, sub?, icon?, checked?, tab?}`: `id` 1 to 64 characters and unique, `text` and `sub` clean lines of at most 120, `icon` a built-in badge or the plugin's own, `checked` a bool, `tab` a tab the plugin may see) | `{}` |
+| `actions.set` | `key` (a `contributes.actions` key), `tab` (optional: one the plugin may act on; absent is the caller's own tab, or every tab for a background page), `enabled`, `checked` (bools), `title` (a clean line of at most 80) | `{}` |
+
+Limits: `sidebar.set` 5 a second per section, `actions.set` 20 a second per plugin (`rate_limited`). Errors:
+`bad_params` (an undeclared key, a field that is not one, a text too long or not clean, a list too long), `forbidden`
+(a tab the plugin may not see), `no_tab` (`actions.set` on a closed tab), `rate_limited`, `unauthorized`. The clicks come
+back as the page events `action` and `sidebar.item` (`plugins.md`, "Events"), not as channel events.
+
+### session.read, tabs.input, storage.get, storage.set (plugins phase 5)
+
+Namespaces `Session` (permission `sessions`), `Input` (`input`) and `Storage` (no permission: every protocol 2 plugin's
+own store). The agent enters none of them; the dispatcher also refuses any caller that is not a plugin. Listed in
+`capabilities` when the run has a mods hub. The contract and the `session` page event are in `plugins.md` ("Sessions,
+typing and storage").
+
+| Method | Params | Result |
+|---|---|---|
+| `session.read` | `tab` (optional: a tab the plugin may see; absent is the caller's own) | `{tab, session, entries}`: the last 200 entries `{role, text, tool?, at?}` of the tab's Claude session, oldest first; `session` null and no entries when none is known |
+| `tabs.input` | `tab` (optional, as above), `text` (1 to 4096 bytes; no control character but tab, LF and CR), `enter` (optional bool) | `{typed: true, enter}` once the paste is written; the Enter follows 300 ms later while the tab is open and the plugin on |
+| `storage.get` | `key` (optional, 1 to 128 characters, no control character) | `{value}`: the key's value (null when absent) or the whole object |
+| `storage.set` | `key` (optional), `value` (required; with a key, null removes it; with none, the whole object) | `{}` |
+
+Limits: `session.read` once a second per tab per plugin, `tabs.input` 2 a second per tab (`rate_limited`); a store is
+at most 1 MB as written (`too_large`, nothing changed). `tabs.input` is the typed intent of rule 2's plugin exception:
+the window types the text as the person's paste (`TermHandle::plugin_input`), bracketed when the program asked, and
+checks the tab, the plugin's generation and its `input` again before the paste and before the Enter. Errors:
+`bad_params` (a field that is not one, a text refused, a bad key), `forbidden` (no permission, a tab the plugin may not
+see, the agent, a protocol 1 mod's store), `no_tab`, `rate_limited`, `too_large`, `unauthorized` (switched off since
+the call was checked), `unavailable` (the tab's shell is not running, a transcript that cannot be read).
+
+### bar.show, bar.hide (plugins phase 6)
+
+Namespace `Bar` (permission `bar`); the agent never enters it and the dispatcher refuses any caller that is not a plugin.
+Listed in `capabilities` when the run has a mods hub. The contract is in `plugins.md` ("Session bar, network and audio").
+
+| Method | Params | Result |
+|---|---|---|
+| `bar.show` | `tab` (optional: a tab the plugin may see; absent is the caller's own; a background page names one) | `{tab, height}` once the tab shows the plugin's bar (`height` from the manifest, 24 to 160) |
+| `bar.hide` | `tab` (optional, as above) | `{hidden}`: false when the tab showed no bar of this plugin |
+
+One bar a tab: `busy` when another plugin's bar shows there. Each is once a second per plugin per tab (`rate_limited`).
+Errors: `bad_params` (a field that is not one, a plugin with no `bar` in its manifest), `forbidden` (no permission, a tab
+the plugin may not see, the agent), `no_tab`, `busy`, `rate_limited`, `unauthorized` (switched off since the call was
+checked).
+
+### agents.motion.set, agents.motion.clear (agent icon motions, 2026-10-26)
+
+Namespace `Agents` (permission `agent-looks`); the agent never enters it and the dispatcher refuses any caller that is not
+a plugin. Listed in `capabilities` when the run has a mods hub. The contract is in `plugins.md` ("Agent icon motions").
+
+| Method | Params | Result |
+|---|---|---|
+| `agents.motion.set` | `agent` (`"claude"`, `"codex"` or `"agy"`), `motion` (`none`, `hop-blink`, `spin-fade`, `rainbow-flow` (agy only), `hop`, `spin`, `breathe`) | `{agent, motion}`: the motion the agent wears now (this pick) |
+| `agents.motion.clear` | `agent` | `{agent, cleared, motion}`: whether the plugin had a pick, and what the agent wears now (an older pick of another plugin, or `none`) |
+
+One pick per plugin per agent; the newest pick wins, and a plugin turned off (or whose background page ended) takes its
+picks with it. Each is 10 changes a second per plugin per agent (`rate_limited`). Errors: `bad_params` (an agent or a
+motion not on the list, `rainbow-flow` for another agent than agy, a field that is not one), `forbidden` (no
+permission, the agent, a protocol 1 mod), `rate_limited`, `unauthorized` (switched off since the call was checked).
+
 ### panel.open
 
-Params: `kind` (string, required; `"web"`, `"changes"` or `"tasks"`), `url` (string, optional, `web` only;
+Params: `kind` (string, required; `"web"`, `"changes"` or `"mod:<id>"`), `url` (string, optional, `web` only;
 without it the panel opens `about:blank`).
 
 - `web` opens the tab's web panel (replacing an open one) and behaves exactly as `browser.open` with the same
@@ -266,17 +387,19 @@ without it the panel opens `about:blank`).
   (`not_found` otherwise; `bad_params` for an id that is not a mod id or with a `url`, `path` or `text`). It answers
   at once with `{"panel": PanelInfo}` (`kind` `mod:<id>`, `title` the manifest's panel title, no `path`, `url` or
   `network`). The mod's page is made hidden when the tab is behind. A tab shows ONE panel, so it replaces what the
-  tab showed.
-- `changes` and `tasks` (stage 6) open the tab's conversation panel: the files the agent edited (with each file's
-  diff), or the agent's task list. They are native panels with no file or address behind them, so `url`, `path` and
-  `text` are refused (`bad_params`). The call answers at once with `{"panel": PanelInfo}` (`kind` `changes` or
-  `tasks`, `title` `Changes` or `Tasks`, no `path`). The panel replaces whatever the tab showed; a tab that is behind
-  keeps it stored and is not switched to. Opening one is what makes Flare read the tab's transcript (see
-  `convo.state`).
+  tab showed. On a tab named by `tab` that is not the caller's own (plugins phase 3) it replaces only a closed panel
+  or one showing the plugin already; else `busy`.
+- `changes` (stage 6) opens the tab's conversation panel: the files the agent edited (with each file's diff). It is
+  a native panel with no file or address behind it, so `url`, `path` and `text` are refused (`bad_params`). The call
+  answers at once with `{"panel": PanelInfo}` (`kind` `changes`, `title` `Changes`, no `path`). The panel replaces
+  whatever the tab showed; a tab that is behind keeps it stored and is not switched to. Opening it is what makes
+  Flare read the tab's transcript (see `convo.state`).
 - `board` (stage 7) was removed on 2026-10-22 with the agent board: it is an unknown kind, `bad_params`.
+- `tasks` (stage 6) was removed on 2026-10-26 with the Tasks panel (sessions never used it): it is an unknown kind,
+  `bad_params`.
 
 For images, files and text use `view.*`. Errors: `no_tab`, `bad_params` (no kind, another kind, `url`, `path` or
-`text` with `changes` or `tasks`, or an address `browser.open` refuses), `unavailable` (`web`: there is no WebView2
+`text` with `changes`, or an address `browser.open` refuses), `unavailable` (`web`: there is no WebView2
 runtime), `timeout`.
 
 ### panel.close
@@ -386,6 +509,20 @@ control characters removed, empty lines dropped, at most 800 characters>`; the p
 the system's light or dark setting (`prefers-color-scheme`), not Flare's theme (the panel is a web page). Errors as `view.html`
 (`unavailable` also when the page failed to load, the panel closed or the page moved on while the drawing was asked about). Stage 5.
 
+### view.audio (plugins phase 6)
+
+Params: exactly one of `path` (a sound file: mp3, wav, ogg, oga, opus, m4a, aac, flac, webm or weba, as typed and as the
+file system names it; resolved like `view.file`, rules 13 and 14; at most 100 MB) and `url` (an `https` address on a
+public host, at most 2 KB: loopback, private, shared and link-local addresses, a host without a dot, `localhost` and the
+names ending `.local`, `.localhost`, `.lan`, `.internal`, `.home.arpa` and `.localdomain` are `bad_params`), `title`
+(default "Audio"), `autoplay` (bool, default false). Shows Flare's own player page, a mini-app in the caller's panel:
+for a file the track is copied beside the page and the page's policy lets in `media-src 'self'` only; for an address the
+page runs in the networked mini-app browser and its policy lets in that origin's media only (`connect-src 'none'`, no
+frame, no form). Play, pause and seek; it never loops and plays by itself only with `autoplay`, once. Answers as
+`view.html` once the page has loaded. A plugin gives a `url` only when it holds `network` (else `forbidden`). Errors as
+`view.html`, plus `not_found` (no such file Flare may play, S2) and `bad_params` (not a sound file, a refused address,
+both or neither of `path` and `url`, a field that is not one).
+
 ### browser.* (stage 3 for opening and navigating, stage 4 for the agent using the page)
 
 All act on the tab's web panel and take up to 60 s. They answer `unavailable` when no web panel is open
@@ -486,21 +623,20 @@ page moves to.
 
 A compact summary of the caller's own tab's conversation, from what Flare has read of the Claude Code transcript.
 Params: none (a `tab` param is ignored, as for every method: the tab is the connection's own). Flare reads a
-tab's transcript ONLY while a Changes or Tasks panel is open on it and its Claude session is known (the session
+tab's transcript ONLY while a Changes panel is open on it and its Claude session is known (the session
 comes from the `flare-status` hooks), so the answer has two shapes.
 
 Not reading (no such panel, or no session yet): `{"tracking": false, "note": string}`. The note says that
-`panel.open` with kind `changes` or `tasks` makes Flare read it. This is an answer, not an error.
+`panel.open` with kind `changes` makes Flare read it. This is an answer, not an error.
 
 Reading: `{"tracking": true, "session": string, "found": bool, "files": int, "edits": int, "failed": int,
-"tasks": {"pending": int, "in_progress": int, "done": int, "other": int}, "subagent_lists": int,
-"active"?: string, "changed": [{"path": string, "edits": int, "failed": int}]}`.
+"changed": [{"path": string, "edits": int, "failed": int}]}`.
 
 - `found` is false until the transcript file exists; the counts are 0 until it is read.
 - `files` is the number of different files edited (Edit, MultiEdit, Write, NotebookEdit calls); `edits` the calls on
   them; `failed` the calls whose result was an error. A failed call stays counted because the agent made it.
-- `tasks` counts the MAIN agent's list by state; `subagent_lists` is how many subagents kept a list of their own;
-  `active` is the title of the main list's first task in progress.
+- `tasks`, `subagent_lists` and `active` (the agent's task list) were removed on 2026-10-26 with the Tasks panel;
+  a client must not expect them.
 - `changed` is the 20 newest changed files, newest first. No file contents and no diffs leave the app.
 
 Grant: the agent's own tab only (the `convo` permission for a mod). Errors: `no_tab`. Held by
@@ -569,8 +705,10 @@ Reserved names. Every grant answers `forbidden` ("is for the app's own interface
 | `unavailable` | known method, cannot be done now (no runtime, nothing open, reserved, overloaded) | no |
 | `timeout` | not answered within its timeout | no |
 | `interrupted` | the person took over the page while the call ran (stage 4) | no |
+| `busy` | a plugin's `panel.open` on another tab whose open panel shows something else (plugins phase 3), or its `bar.show` on a tab that shows another plugin's bar (phase 6) | no |
 | `tool_error` | a mod answered a tool call with an error (stage 8); the message is the mod's own reason | no |
-| `rate_limited` | too many requests | no |
+| `too_large` (a call) | a plugin's `storage.set` would pass 1 MB (plugins phase 5); nothing changed | no |
+| `rate_limited` | too many requests (the connection's 100 a second, a decor method's 10 a second per tab or 30 a second per plugin, `sidebar.set`'s 5 a second per section, `actions.set`'s 20 a second per plugin, `session.read`'s once a second per tab, `tabs.input`'s 2 a second per tab, `bar.show`'s and `bar.hide`'s once a second per tab, or a plugin's 50 messages and 2 MB a second) | no |
 | `internal` | the server failed | no |
 
 On a closing error the server sends the error response first (with the request's id when it could be
@@ -591,6 +729,17 @@ oldest, so an event is a hint to ask again (`panel.state`), not the only record.
 | `panel.changed` | `{"tab": string, "open": bool, "panel"?: PanelInfo}` | the tab's panel opened, closed or changed: by a `view.*`, `browser.*`, `panel.open` or `panel.close` call, a click on a path, the close button, the toggle chord, or a web panel moving to another address (its `url` in `PanelInfo`) |
 | `tabs.changed` | `{}` | a tab was added, removed or retitled (**reserved**: Flare does not send it yet) |
 | `mods.changed` | `{}` | the set of tools the agent sees changed (a mod was turned on or off, or a scan found a different set). Sent to EVERY connection that said hello, whatever its tab. `flare-mcp` answers it with `notifications/tools/list_changed` |
+| `tabs` | `{"kind": "opened" \| "closed" \| "focused" \| "renamed" \| "moved" \| "panel", "tab": TabInfo}` | plugins phase 7: to a plugin's helper only (below), when its plugin holds `tabs`. The same data a page's `tabs` event carries |
+| `agent` | `{"tab", "kind", "state", "session"}` | plugins phase 7: to a plugin's helper whose plugin holds `tabs`; a tab's agent kind, state or Claude session changed |
+| `session` | `{"tab", "session", "role", "text", "tool"?, "at"?, "dropped"?}` | plugins phase 7: to a plugin's helper whose plugin holds `sessions` and may see the tab (`tabs`, or a click there); new entries of the tab's Claude session, at most 50 a second per plugin |
+
+**A plugin's helper (plugins phase 7).** Flare starts a plugin's `helper` program (an `.exe` in its folder, for a plugin
+that is on and holds `process`) with `FLARE_PLUGIN_TOKEN` (the plugin's own token) and `FLARE_CTL_PIPE` in its
+environment and `FLARE_TAB_TOKEN` removed. It says `hello` with that `token` and gets the plugin's grant (`kind`
+`mod`, the plugin's id and approved permissions), with no tab of its own; its calls spend the plugin's one budget. The
+`tabs`, `agent` and `session` events above go to the connections that said hello with that plugin's token (routed by
+plugin id, `Hub::publish_to_owner`), never to another client, at most 32 of `tabs` and `agent` a refresh. A helper that
+says `events: false` gets none. Its token dies when the plugin is turned off, and the helper is stopped then.
 
 ## 8. Versioning
 
@@ -619,6 +768,7 @@ calls:
 | `show_text` | `text` (non-empty), `title` (optional) | `view.text` |
 | `show_html` | exactly one of `html` and `path` (relative paths are made absolute like the other file tools), `title`, `allow_network` | `view.html` (answers with what the page can do: no network, the network it got, or that it asked for the network and the setting is off) |
 | `show_diagram` | `mermaid` (non-empty), `title` | `view.diagram` (a diagram that does not parse is a tool error: `The diagram did not draw. Mermaid said:` and the parser's words, up to 900 characters and a few lines, then `Fix the Mermaid text and call show_diagram again.`) |
+| `show_audio` | exactly one of `path` (made absolute) and `url`, `title`, `autoplay` | `view.audio` |
 | `open_page` | `url` (non-empty) | `browser.open` |
 | `close_panel` | none | `panel.close` |
 | `browser_look` | none | `browser.look` (answers with MCP image content and the list as text) |
@@ -629,6 +779,10 @@ calls:
 | `browser_wait` | one of `text`, `selector`, `ms`; `timeout_ms` | `browser.wait` |
 | `browser_navigate` | `url`, or `action` (`back`, `forward`, `reload`) | `browser.navigate` (opens the panel with `browser.open` when none is open and a `url` was given) |
 | `browser_eval` | `expression` | `browser.eval` |
+| `set_tab_badge` | `key`, `icon` (an enum of the built-in badges), `tip` | `tabs.badge.set` |
+| `clear_tab_badge` | `key` | `tabs.badge.clear` |
+| `set_tab_progress` | `value` (0 to 1, optional), `label` | `tabs.progress.set` with `key` `progress` |
+| `clear_tab_progress` | none | `tabs.progress.clear` with `key` `progress` |
 | `mod_<id>_<tool>` | the mod's own `input_schema` | `mods.call` (listed by `mods.tools`; a string result is passed as it is, anything else as compact JSON, cut at 60 000 characters; a mod's own error is `isError` text with its reason, a refusal of Flare is `Flare refused: ...`) |
 
 `open_page` answers with

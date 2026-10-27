@@ -1,10 +1,11 @@
 //! The conversation panels through the real window controller (Surfaces stage 6): a fake Claude folder with synthetic
 //! transcripts, the hook line a Claude session sends (`OSC 777 ... session=`), and what the window shows.
 //!
-//! Held here: nothing runs for a tab with no Changes or Tasks panel open; an open panel starts one tracker on the tab's
-//! session file and lists what it reads, and the list follows lines appended to the file; a new session switches the
-//! file; closing the panel (or the tab) stops the tracker; `convo.state` answers the tab's own summary; a stored panel
-//! reopens empty until the transcript loads; a clicked path shows the file in the panel.
+//! Held here: nothing runs for a tab with no Changes panel open; an open panel starts one tracker on the tab's session
+//! file and lists what it reads, and the list follows lines appended to the file; a new session switches the file;
+//! closing the panel (or the tab) stops the tracker; `convo.state` answers the tab's own summary; a stored panel
+//! reopens empty until the transcript loads, and a stored panel of the removed Tasks kind is dropped; a clicked path
+//! shows the file in the panel.
 
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
@@ -28,13 +29,11 @@ fn edit_line(id: &str, path: &str, old: &str, new: &str) -> String {
     .to_string()
 }
 
-fn todo_line(items: &[(&str, &str)]) -> String {
-    let todos: Vec<Value> = items
-        .iter()
-        .map(|(c, s)| json!({"content": c, "status": s, "activeForm": format!("Doing {c}")}))
-        .collect();
+/// A TodoWrite call: the Tasks panel that showed it was removed (2026-10-26), so the reader ignores it.
+fn todo_line() -> String {
     json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "todo",
-        "name": "TodoWrite", "input": {"todos": todos}}]}})
+        "name": "TodoWrite", "input": {"todos": [
+            {"content": "Read", "status": "in_progress", "activeForm": "Reading"}]}}]}})
     .to_string()
 }
 
@@ -100,14 +99,6 @@ fn diff_text(f: &Fx) -> Vec<String> {
         .get_panel_convo_rows()
         .iter()
         .map(|r| r.text.to_string())
-        .collect()
-}
-
-fn tasks(f: &Fx) -> Vec<(i32, i32, String, bool)> {
-    f.h.comp
-        .get_panel_convo_tasks()
-        .iter()
-        .map(|r| (r.kind, r.state, r.text.to_string(), r.active))
         .collect()
 }
 
@@ -218,91 +209,6 @@ fn a_failed_edit_is_marked_in_the_list() {
 }
 
 #[test]
-fn the_tasks_panel_shows_the_list_and_a_new_todowrite_updates_it() {
-    let f = Fx::new();
-    let claude = Claude::new(&f);
-    let id = claude_tab(&f, SESSION_A);
-    claude.append(
-        TAB,
-        SESSION_A,
-        &[todo_line(&[
-            ("Read", "completed"),
-            ("Edit", "in_progress"),
-            ("Test", "pending"),
-        ])],
-    );
-    open(&f, &id, PanelKind::Tasks);
-    f.pump_until("the tasks", |f| tasks(f).len() == 3);
-    assert_eq!(f.h.comp.get_panel_kind(), 5);
-    assert_eq!(f.h.comp.get_panel_title().as_str(), "Tasks");
-    assert_eq!(f.h.comp.get_panel_sub().as_str(), "1 of 3 done");
-    assert_eq!(
-        tasks(&f),
-        [
-            (1, 2, "Read".to_string(), false),
-            (1, 1, "Edit".to_string(), true),
-            (1, 0, "Test".to_string(), false)
-        ]
-    );
-    claude.append(
-        TAB,
-        SESSION_A,
-        &[todo_line(&[
-            ("Read", "completed"),
-            ("Edit", "completed"),
-            ("Test", "in_progress"),
-        ])],
-    );
-    f.pump_until("the update", |f| {
-        tasks(f).get(2).is_some_and(|t| t.1 == 1 && t.3)
-    });
-    assert_eq!(f.h.comp.get_panel_sub().as_str(), "2 of 3 done");
-    assert!(!tasks(&f)[1].3, "the first task is no longer active");
-}
-
-#[test]
-fn a_subagents_list_is_a_group_that_folds() {
-    let f = Fx::new();
-    let claude = Claude::new(&f);
-    let id = claude_tab(&f, SESSION_A);
-    claude.append(TAB, SESSION_A, &[todo_line(&[("Plan", "in_progress")])]);
-    let sub = claude
-        .transcript(TAB, SESSION_A)
-        .with_extension("")
-        .join("subagents");
-    std::fs::create_dir_all(&sub).unwrap(); // sync-ok: test code only
-    std::fs::write(
-        sub.join("agent-abcdef01.jsonl"),
-        format!(
-            "{}\n",
-            todo_line(&[("Look", "pending"), ("Think", "pending")])
-        ),
-    )
-    .unwrap(); // sync-ok: test code only
-    open(&f, &id, PanelKind::Tasks);
-    f.pump_until("both lists", |f| tasks(f).len() == 2 + 1 + 2);
-    let rows = tasks(&f);
-    assert_eq!(rows[0].0, 0, "a header for the main list");
-    assert_eq!(rows[2].0, 0, "a header for the subagent's list");
-    // Fold the subagent's group: its two tasks go.
-    f.h.comp
-        .invoke_panel_convo_toggle("agent-abcdef01.jsonl".into());
-    f.pump();
-    assert_eq!(tasks(&f).len(), 3);
-    assert!(
-        f.h.comp
-            .get_panel_convo_tasks()
-            .row_data(2)
-            .unwrap()
-            .collapsed
-    );
-    f.h.comp
-        .invoke_panel_convo_toggle("agent-abcdef01.jsonl".into());
-    f.pump();
-    assert_eq!(tasks(&f).len(), 5);
-}
-
-#[test]
 fn a_new_session_switches_the_file_and_forgets_the_pick() {
     let f = Fx::new();
     let claude = Claude::new(&f);
@@ -372,9 +278,7 @@ fn closing_the_panel_stops_the_tracker_and_reopening_starts_it_again() {
     assert!(f.ctl.borrow_mut().toggle_front_panel());
     f.pump_until("the file again", |f| files(f).len() == 1);
     assert_eq!(trackers(&f), 1);
-    // Switching the panel to another kind keeps one tracker; to a file panel, none.
-    open(&f, &id, PanelKind::Tasks);
-    assert_eq!(trackers(&f), 1);
+    // Switching the panel to a file panel stops it.
     let note = f._dir.path().join("note.txt");
     std::fs::write(&note, "hello").unwrap(); // sync-ok: test code only
     f.ctl
@@ -390,9 +294,9 @@ fn closing_the_tab_stops_its_tracker() {
     let f = Fx::new();
     let claude = Claude::new(&f);
     let id = claude_tab(&f, SESSION_A);
-    claude.append(TAB, SESSION_A, &[todo_line(&[("Read", "pending")])]);
-    open(&f, &id, PanelKind::Tasks);
-    f.pump_until("the task", |f| tasks(f).len() == 1);
+    claude.append(TAB, SESSION_A, &[edit_line("e1", "C:\\a\\x.rs", "a", "b")]);
+    open(&f, &id, PanelKind::Changes);
+    f.pump_until("the file", |f| files(f).len() == 1);
     assert_eq!(trackers(&f), 1);
     let exited = f.ctl.borrow().convo().exit_flag(&id).expect("a tracker");
     assert!(!exited.load(std::sync::atomic::Ordering::SeqCst));
@@ -437,19 +341,16 @@ fn an_edit_of_another_file_leaves_the_selected_diff_rows_alone() {
         new_no: "".into(),
         text: "mark".into(),
     });
-    let (_, diff_v, tasks_v) = f.ctl.borrow().convo().piece_versions(&id).unwrap();
+    let (files_v, diff_v) = f.ctl.borrow().convo().piece_versions(&id).unwrap();
     claude.append(
         TAB,
         SESSION_A,
-        &[
-            edit_line("e2", "C:\\a\\y.rs", "p", "q"),
-            todo_line(&[("Read", "pending")]),
-        ],
+        &[edit_line("e2", "C:\\a\\y.rs", "p", "q"), todo_line()],
     );
     f.pump_until("the second file", |f| files(f).len() == 2);
-    let (_, diff_after, tasks_after) = f.ctl.borrow().convo().piece_versions(&id).unwrap();
+    let (files_after, diff_after) = f.ctl.borrow().convo().piece_versions(&id).unwrap();
     assert_eq!(diff_v, diff_after, "the picked file's diff did not change");
-    assert!(tasks_after > tasks_v, "the task list did");
+    assert!(files_after > files_v, "the file list did");
     assert_eq!(
         f.h.comp.get_panel_convo_rows().row_count(),
         before + 1,
@@ -473,19 +374,24 @@ fn a_path_answer_that_arrives_after_the_panel_changed_is_dropped() {
     f.pump_until("the file", |f| files(f).len() == 1);
     f.h.comp.invoke_panel_convo_select(real_s.as_str().into());
     f.pump();
-    // The click starts the check on a worker; the person switches to Tasks before the answer is read.
+    // The click starts the check on a worker; the person opens another file before the answer is read.
+    let other = work.join("other.txt");
+    std::fs::write(&other, "other").unwrap(); // sync-ok: test code only
     f.h.comp.invoke_panel_convo_open(real_s.as_str().into());
-    assert!(f.ctl.borrow_mut().open_convo_panel(&id, PanelKind::Tasks));
+    f.ctl
+        .borrow_mut()
+        .show_preview(&id, PanelKind::Text, &other.to_string_lossy());
     for _ in 0..15 {
         f.pump();
         std::thread::sleep(std::time::Duration::from_millis(20)); // sync-ok: test code only
     }
+    assert_eq!(f.h.comp.get_panel_kind(), 2);
     assert_eq!(
-        f.h.comp.get_panel_kind(),
-        5,
+        f.h.comp.get_panel_title().as_str(),
+        "other.txt",
         "the late answer changed nothing"
     );
-    assert_eq!(trackers(&f), 1);
+    assert_eq!(trackers(&f), 0);
 }
 
 #[test]
@@ -526,10 +432,6 @@ fn an_empty_session_says_nothing_has_changed_yet() {
     f.pump_until("the empty words", |f| {
         f.h.comp.get_panel_note().as_str() == "Claude has not changed a file yet."
     });
-    open(&f, &id, PanelKind::Tasks);
-    f.pump_until("the empty tasks", |f| {
-        f.h.comp.get_panel_note().as_str() == "Claude has no task list yet."
-    });
 }
 
 // ---- the control channel ----
@@ -569,11 +471,7 @@ fn convo_state_summarises_the_tabs_own_conversation() {
             edit_line("e1", "C:\\a\\x.rs", "a", "b"),
             edit_line("e2", "C:\\a\\x.rs", "b", "c"),
             edit_line("e3", "C:\\a\\y.rs", "a", "b"),
-            todo_line(&[
-                ("Read", "completed"),
-                ("Edit", "in_progress"),
-                ("Test", "pending"),
-            ]),
+            todo_line(),
         ],
     );
     // `panel.open` kind changes (the agent's own way) opens the panel, and the tracker starts.
@@ -595,11 +493,8 @@ fn convo_state_summarises_the_tabs_own_conversation() {
     assert_eq!(v["session"], json!(SESSION_A));
     assert_eq!(v["edits"], json!(3));
     assert_eq!(v["failed"], json!(0));
-    assert_eq!(
-        v["tasks"],
-        json!({"pending": 1, "in_progress": 1, "done": 1, "other": 0})
-    );
-    assert_eq!(v["active"], json!("Edit"));
+    // The Tasks panel was removed (2026-10-26): the answer has no task counts.
+    assert!(v.get("tasks").is_none() && v.get("active").is_none(), "{v}");
     assert_eq!(v["changed"][0]["path"], json!("C:\\a\\y.rs"));
     assert_eq!(v["changed"][1]["edits"], json!(2));
     // panel.state reports the panel as a panel of its own kind.
@@ -627,8 +522,8 @@ fn a_stored_conversation_panel_reopens_empty_until_the_transcript_loads() {
     let saved = [flare_surfaces::store::SavedTabPanel {
         cwd: TAB.into(),
         panel: Some(flare_surfaces::TabPanel {
-            kind: PanelKind::Tasks,
-            target: "tasks".into(),
+            kind: PanelKind::Changes,
+            target: "changes".into(),
             open: true,
             width: Some(0.35),
             by_agent: false,
@@ -644,8 +539,8 @@ fn a_stored_conversation_panel_reopens_empty_until_the_transcript_loads() {
     let claude = Claude::new(&f);
     AppCtl::start_restore(&f.ctl);
     f.pump_until("the restore", |f| f.ctl.borrow().model().restore_done());
-    f.pump_until("the stored panel", |f| f.h.comp.get_panel_kind() == 5);
-    assert_eq!(f.h.comp.get_panel_title().as_str(), "Tasks");
+    f.pump_until("the stored panel", |f| f.h.comp.get_panel_kind() == 4);
+    assert_eq!(f.h.comp.get_panel_title().as_str(), "Changes");
     assert!(
         f.h.comp
             .get_panel_note()
@@ -653,18 +548,55 @@ fn a_stored_conversation_panel_reopens_empty_until_the_transcript_loads() {
             .starts_with("Claude is not running")
     );
     assert_eq!(
-        f.h.comp.get_panel_convo_tasks().row_count(),
+        f.h.comp.get_panel_convo_files().row_count(),
         0,
         "empty at first"
     );
     assert!((f.h.comp.get_panel_share() - 0.35).abs() < 1e-6);
-    // The agent speaks, the session is known, and the tasks load.
-    let id = f.ids()[0].clone();
-    claude.append(TAB, SESSION_A, &[todo_line(&[("Read", "pending")])]);
+    // The agent speaks, the session is known, and the changes load.
+    claude.append(TAB, SESSION_A, &[edit_line("e1", "C:\\a\\x.rs", "a", "b")]);
     f.say(TAB, &hook(SESSION_A));
-    f.pump_until("the tasks", |f| tasks(f).len() == 1);
+    f.pump_until("the changes", |f| files(f).len() == 1);
     assert_eq!(trackers(&f), 1);
-    let _ = id;
+}
+
+#[test]
+fn a_stored_panel_of_the_removed_tasks_kind_is_dropped_and_the_tab_restores() {
+    // The Tasks panel was removed (owner, 2026-10-26). A panels.json an older build wrote still names it: the restore
+    // reads it without error, the tab comes back with no panel, and nothing reads its transcript.
+    let f = Fx::with(
+        Opts {
+            saved: vec![(TAB, None)],
+            ..Opts::default()
+        },
+        |_| {},
+    );
+    let file = f._dir.path().join("panels.json");
+    let raw = r#"{"version":1,"tabs":[{"cwd":"C:\\a","panel":{"kind":"tasks","target":"tasks","open":true,"width":0.35}}]}"#;
+    std::fs::write(&file, raw).unwrap(); // sync-ok: test code only
+    f.ctl
+        .borrow_mut()
+        .set_panel_store(Arc::new(flare_surfaces::store::PanelStore::new(
+            &file,
+            Duration::from_millis(30),
+        )));
+    let _claude = Claude::new(&f);
+    AppCtl::start_restore(&f.ctl);
+    f.pump_until("the restore", |f| f.ctl.borrow().model().restore_done());
+    f.pump();
+    assert_eq!(f.ids().len(), 1, "the tab is restored");
+    assert_eq!(f.ctl.borrow().open_panels(), 0, "with no panel");
+    assert!(!f.h.comp.get_panel_open());
+    assert_eq!(f.h.comp.get_panel_kind(), 0);
+    // The restored tab's shell is made on a worker: wait for it before it speaks.
+    f.pump_until("the restored shell", |f| {
+        f.sp.made().iter().any(|m| m.spec().cwd == TAB)
+    });
+    f.say(TAB, &hook(SESSION_A));
+    f.pump_until("the session", |f| {
+        f.ctl.borrow().hub().claude_session(&f.ids()[0]) == Some(SESSION_A)
+    });
+    assert_eq!(trackers(&f), 0, "no panel, no tracker");
 }
 
 #[test]
@@ -749,7 +681,7 @@ fn a_click_on_the_path_in_a_diff_shows_the_file_and_a_program_shows_nothing() {
 // ---- the menu ----
 
 #[test]
-fn the_terminal_menu_offers_the_changed_files_and_the_task_list_only_on_a_claude_tab() {
+fn the_terminal_menu_offers_the_changed_files_only_on_a_claude_tab() {
     let f = Fx::new();
     let _claude = Claude::new(&f);
     let plain = f.tabs(&["C:\\plain"]).remove(0);
@@ -768,20 +700,19 @@ fn the_terminal_menu_offers_the_changed_files_and_the_task_list_only_on_a_claude
     };
     // A tab whose rows show is Claude by definition (a session or the detection), so the wording never varies.
     let (show_c, hide_c) = ("Show files Claude changed", "Hide files Claude changed");
-    assert_eq!(labels(&f, &id), [show_c, "Show task list"]);
-    // Their own group (a rule above the first), each with its own fitting glyph.
+    assert_eq!(labels(&f, &id), [show_c]);
+    // Its own group (a rule above it), with its own fitting glyph.
     let rows = f.ctl.borrow().convo_menu_rows(&id);
-    assert!(rows[0].0.group && !rows[1].0.group);
+    assert!(rows[0].0.group);
     assert_eq!(rows[0].0.icon, crate::menus_ui::GLYPH_CHANGES);
-    assert_eq!(rows[1].0.icon, crate::menus_ui::GLYPH_TASKS);
     open(&f, &id, PanelKind::Changes);
-    assert_eq!(labels(&f, &id), [hide_c, "Show task list"]);
-    // Picking a row does what it says.
-    assert!(f.ctl.borrow_mut().convo_menu_picked(&id, "Show task list"));
-    f.pump();
-    assert_eq!(f.h.comp.get_panel_kind(), 5);
-    assert_eq!(labels(&f, &id), [show_c, "Hide task list"]);
-    assert!(f.ctl.borrow_mut().convo_menu_picked(&id, "Hide task list"));
+    assert_eq!(labels(&f, &id), [hide_c]);
+    // Picking the row does what it says.
+    assert!(
+        f.ctl
+            .borrow_mut()
+            .convo_menu_picked(&id, "Hide files Claude changed")
+    );
     f.pump();
     assert!(!f.h.comp.get_panel_open());
     assert!(
@@ -798,7 +729,8 @@ fn the_terminal_menu_offers_the_changed_files_and_the_task_list_only_on_a_claude
     );
     f.pump();
     assert!(!f.h.comp.get_panel_open());
-    // The old words are gone (including the unnamed "changed files"), and no row names the agent board.
+    // The old words are gone (including the unnamed "changed files"), and no row names the agent board or the
+    // task list (removed 2026-10-26).
     assert!(
         !f.ctl
             .borrow_mut()
@@ -810,5 +742,7 @@ fn the_terminal_menu_offers_the_changed_files_and_the_task_list_only_on_a_claude
             .borrow_mut()
             .convo_menu_picked(&id, "Show agent board")
     );
+    assert!(!f.ctl.borrow_mut().convo_menu_picked(&id, "Show task list"));
+    assert!(!f.ctl.borrow_mut().convo_menu_picked(&id, "Hide task list"));
     assert!(!f.ctl.borrow_mut().convo_menu_picked(&id, "Paste"));
 }

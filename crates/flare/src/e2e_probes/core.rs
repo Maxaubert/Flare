@@ -110,6 +110,7 @@ fn kind_name(row: &crate::TabRow) -> &'static str {
         match row.agent {
             1 => "claude",
             2 => "codex",
+            3 => "agy",
             _ => "shell",
         }
     }
@@ -429,6 +430,17 @@ fn ui_rect(ctx: &ProbeCtx, arg: &Value) -> Result<Value, String> {
             BAR_H - hair(k),
             k,
         )),
+        // The strip's + (its right-click opens the folder menu): 4 px in from the strip's top and foot.
+        "plus" if !a.get_layout_vertical() => {
+            let g = a.get_strip_geom();
+            Ok(rect_json(
+                mark_w(k) + g.plus_x as f32 / k,
+                4.0,
+                g.plus_w as f32 / k,
+                BAR_H - hair(k) - 8.0,
+                k,
+            ))
+        }
         "grid" => Ok(rect_json(
             a.get_grid_left(),
             a.get_grid_top(),
@@ -697,6 +709,7 @@ mod tests {
                 raise: Rc::new(|| {}),
                 quit: Rc::new(|| {}),
                 hide: Rc::new(|| {}),
+                starter_folders: Rc::new(|_| {}),
                 launch_folders: Vec::new(),
                 e2e: true,
                 term: crate::appctl::TermPorts::inert(),
@@ -819,6 +832,20 @@ mod tests {
     }
 
     #[test]
+    fn a_tabs_kind_is_named_by_its_icon() {
+        let row = |agent, settings| crate::TabRow {
+            agent,
+            settings,
+            ..Default::default()
+        };
+        assert_eq!(kind_name(&row(0, false)), "shell");
+        assert_eq!(kind_name(&row(1, false)), "claude");
+        assert_eq!(kind_name(&row(2, false)), "codex");
+        assert_eq!(kind_name(&row(3, false)), "agy");
+        assert_eq!(kind_name(&row(0, true)), "settings");
+    }
+
+    #[test]
     fn an_unknown_probe_is_an_error() {
         let f = Fx::new(1.0, 1);
         assert_eq!(
@@ -879,6 +906,23 @@ mod tests {
         assert!(!s["menu"]["rows"].as_array().unwrap().is_empty());
         let m = f.probe("ui.rect", json!({ "name": "menu" })).unwrap();
         assert!(m["w"].as_f64().unwrap() > 0.0 && m["h"].as_f64().unwrap() > 0.0);
+
+        // A right click on the strip's + opens the folder menu, "Choose a folder…" first.
+        f.h.comp.invoke_menu_dismissed();
+        f.h.advance(0);
+        let p = f.probe("ui.rect", json!({ "name": "plus" })).unwrap();
+        f.h.right_click(
+            (p["x"].as_f64().unwrap() + p["w"].as_f64().unwrap() / 2.0) as f32,
+            (p["y"].as_f64().unwrap() + p["h"].as_f64().unwrap() / 2.0) as f32,
+        );
+        f.h.advance(0);
+        let s = f.probe("app.state", Value::Null).unwrap();
+        assert_eq!(s["menu"]["open"], true);
+        assert_eq!(
+            s["menu"]["rows"][0]["label"],
+            json!(crate::menus_ui::CHOOSE_FOLDER),
+            "{s}"
+        );
 
         // The find bar.
         f.h.comp.set_find_query("needle".into());

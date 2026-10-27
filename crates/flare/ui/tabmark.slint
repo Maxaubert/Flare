@@ -19,6 +19,19 @@ export global MarkMotion {
     in property <float> pulse: 1.0;
     // The seven floored stops, or empty.
     in property <[color]> rainbow: [];
+    // The agent icons' motions (flare_agent::icon_motion, picked by a plugin): the hop's rise (a fraction of the
+    // icon's size, up negative) and squash, Clawd's shut eyes, O6's turn and fade, O1's turn, O4's size and fade,
+    // and A1's colour for each path of agy's arch (empty until the clock runs).
+    in property <float> hop-y: 0.0;
+    in property <float> hop-sx: 1.0;
+    in property <float> hop-sy: 1.0;
+    in property <bool> blink: false;
+    in property <angle> spin-fade: 0deg;
+    in property <float> fade: 1.0;
+    in property <angle> turn: 0deg;
+    in property <float> grow: 1.0;
+    in property <float> grow-alpha: 1.0;
+    in property <[color]> agy-flow: [];
 }
 
 // ONE mono mark at a tab's end (Ring). state: 1 working (spinner), 2 question (breathing dot),
@@ -167,13 +180,26 @@ export component MarkBar inherits Rectangle {
 }
 
 // The agent's icon on a tab, 18 px: kind 0 shell (the >_ prompt, stroke 2.2, ink), 1 claude (Clawd,
-// Theme.clawd), 2 codex (the OpenAI mark, ink), 3 settings (the cog, stroke 1.7, ink).
+// Theme.clawd), 2 codex (the OpenAI mark, ink), 3 agy (the pixel arch, one path per Theme.agy colour),
+// 4 settings (the cog, stroke 1.7, ink).
+// motion (owner 2026-10-26, flare_agent::icon_motion::IconMotion::code): 0 still, 1 hop-blink, 2 spin-fade,
+// 3 rainbow-flow, 4 hop, 5 spin, 6 breathe. The window gives it only to a working agent's tab, and every frame comes
+// from the mark clock (MarkMotion), never an animate: still with the clock stood (animation effects off) the icon
+// is drawn as it is still. The hop and the breath move the icon's box (exact in both renderers); a turn is a
+// transform, which the software renderer leaves out (the icon then only fades).
 export component AgentIcon inherits Rectangle {
     in property <int> kind;
     in property <color> ink;
     in property <length> size: 18px;
+    in property <int> motion: 0;
     width: size;
     height: size;
+
+    property <int> m: MarkMotion.still ? 0 : root.motion;
+    property <bool> hops: root.m == 1 || root.m == 4;
+    property <float> sx: root.hops ? MarkMotion.hop-sx : root.m == 6 ? MarkMotion.grow : 1.0;
+    property <float> sy: root.hops ? MarkMotion.hop-sy : root.m == 6 ? MarkMotion.grow : 1.0;
+    property <bool> flows: root.m == 3 && MarkMotion.agy-flow.length >= 10;
 
     if root.kind == 0 : Path {
         x: -2.2 * root.size / 48;
@@ -189,25 +215,64 @@ export component AgentIcon inherits Rectangle {
         stroke-line-cap: round;
         stroke-line-join: round;
     }
-    if root.kind == 1 : Path {
-        width: root.size;
-        height: root.size;
-        viewbox-x: 0.5;
-        viewbox-y: -2.5;
-        viewbox-width: 17;
-        viewbox-height: 17;
-        commands: Glyphs.clawd;
-        fill: Theme.clawd;
+    // The agent's mark, in a box the motion scales about its centre and lifts. Each path fills the box
+    // (fit: fill; the default contain scales both ways by the smaller), so the hop squashes and stretches.
+    if root.kind >= 1 && root.kind <= 3 : body := Rectangle {
+        width: root.size * root.sx;
+        height: root.size * root.sy;
+        x: (root.size - self.width) / 2;
+        y: (root.size - self.height) / 2 + (root.hops ? MarkMotion.hop-y * root.size : 0px);
+        opacity: root.m == 2 ? MarkMotion.fade : root.m == 6 ? MarkMotion.grow-alpha : 1.0;
+        transform-rotation: root.m == 2 ? MarkMotion.spin-fade : root.m == 5 ? MarkMotion.turn : 0deg;
+
+        if root.kind == 1 : Path {
+            width: body.width;
+            height: body.height;
+            fit: fill;
+            viewbox-x: 0.5;
+            viewbox-y: -2.5;
+            viewbox-width: 17;
+            viewbox-height: 17;
+            commands: Glyphs.clawd;
+            fill: Theme.clawd;
+        }
+        // H1's blink: the eyes shut in Clawd's own colour.
+        if root.kind == 1 && root.m == 1 && MarkMotion.blink : Path {
+            width: body.width;
+            height: body.height;
+            fit: fill;
+            viewbox-x: 0.5;
+            viewbox-y: -2.5;
+            viewbox-width: 17;
+            viewbox-height: 17;
+            commands: Glyphs.clawd-lids;
+            fill: Theme.clawd;
+        }
+        if root.kind == 2 : Path {
+            width: body.width;
+            height: body.height;
+            fit: fill;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: Glyphs.openai;
+            fill: root.ink;
+        }
+        if root.kind == 3 : Rectangle {
+            for cells[i] in Glyphs.agy : Path {
+                width: body.width;
+                height: body.height;
+                fit: fill;
+                viewbox-x: -0.5;
+                viewbox-y: -1.5;
+                viewbox-width: 11;
+                viewbox-height: 11;
+                commands: cells;
+                // A1: each path's colour flows along the arch.
+                fill: root.flows ? MarkMotion.agy-flow[i] : Theme.agy[i];
+            }
+        }
     }
-    if root.kind == 2 : Path {
-        width: root.size;
-        height: root.size;
-        viewbox-width: 24;
-        viewbox-height: 24;
-        commands: Glyphs.openai;
-        fill: root.ink;
-    }
-    if root.kind == 3 : Path {
+    if root.kind == 4 : Path {
         x: -1.7 * root.size / 48;
         y: -1.7 * root.size / 48;
         width: root.size + 1.7 * root.size / 24;
@@ -235,6 +300,7 @@ export component MarkPreview inherits Window {
     in property <color> ground: Theme.ground;
     in property <length> tab-w: 150px;
     in property <int> icon-kind;
+    in property <int> icon-motion;
     width: 400px;
     height: 36px;
     background: root.ground;
@@ -283,6 +349,7 @@ export component MarkPreview inherits Window {
         y: 9px;
         kind: root.icon-kind;
         ink: root.ink;
+        motion: root.icon-motion;
     }
 }
 

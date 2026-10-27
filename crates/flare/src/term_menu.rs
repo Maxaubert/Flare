@@ -154,6 +154,9 @@ pub fn to_menu_row(r: &TermMenuRow) -> MenuRowData {
         trailing_filled: false,
         trailing_tip: String::new(),
         group: false,
+        flyout: false,
+        parent: -1,
+        icon_cmd: String::new(),
     }
 }
 

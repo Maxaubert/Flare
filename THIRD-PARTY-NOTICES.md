@@ -8691,3 +8691,5 @@ SOFTWARE.
 
 - OpenAI mark (Codex tab icon): the path data is Simple Icons 15 (CC0 1.0, https://simpleicons.org). The mark itself is OpenAI's trademark, shown only to name Codex. Copied from Prism Terminal's agentIcon.ts.
 - Clawd (Claude tab icon): the start-screen character of Claude Code, drawn here as an 18 x 6 pixel grid in #d77757. The artwork belongs to Anthropic, shown only to name Claude. Copied from Prism Terminal's CLAWD_PIXELS.
+- The Antigravity arch (agy tab icon): the pixel "A" of the Antigravity CLI's own start banner, drawn here as 32 cells on a 10 x 8 grid in the banner's ten rainbow colours (#15aabf to #4c6ef5). The artwork belongs to Google, shown only to name Antigravity. Drawn for Flare after agy 1.4.7's banner (owner pick G1, 2026-10-26).
+- The motions of these three icons (hop, blink, turn, fade, breath, the arch's flowing colours) are Flare's own drawing of its mocks (`docs/surfaces/agent-motion-mock.html`, `agy-motion-mock.html`): the blink fills Clawd's two eye cells in Clawd's own colour, and the flow cycles through the arch's own colours. No artwork is added.

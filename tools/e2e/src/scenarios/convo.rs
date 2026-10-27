@@ -1,15 +1,16 @@
-//! The conversation panels (Surfaces stage 6): `convoPanels`.
+//! The conversation panel (Surfaces stage 6): `convoPanels`.
 //!
 //! The built release exe runs in its own world and profile with `CLAUDE_CONFIG_DIR` pointing at a folder of the
 //! scenario's own, so it never reads the owner's `~/.claude`. A shell stands in for Claude: it prints the hook line
 //! Claude's plugin sends (`OSC 777;flare-agent;state=working;session=<uuid>`), and the scenario writes a synthetic
 //! transcript for that session. The scenario then plays the agent on the control channel (`panel.open` with kind
-//! `changes` or `tasks`, `convo.state`) and the person (a click on a file row), and reads what the window shows
-//! through the `convo.state` probe. At 100 and 225 percent.
+//! `changes`, `convo.state`) and the person (a click on a file row), and reads what the window shows through the
+//! `convo.state` probe. At 100 and 225 percent.
 //!
 //! Held: nothing is read while no panel is open (no tracker); Changes shows the edited file and, after a click, its
-//! diff as removed and added rows (and builds only the rows in view); Tasks shows the list with its states; a line
-//! appended to the transcript updates both; a new session switches the file; closing the panel stops the tracker.
+//! diff as removed and added rows (and builds only the rows in view); a line appended to the transcript updates it;
+//! `panel.open` kind `tasks` is refused (the Tasks panel was removed 2026-10-26); a new session switches the file;
+//! closing the panel stops the tracker.
 //!
 //! Nothing here touches the user's windows, pipes, Claude settings or real transcripts.
 
@@ -35,13 +36,11 @@ fn edit_line(id: &str, path: &str, old: &str, new: &str) -> String {
     .to_string()
 }
 
-fn todo_line(items: &[(&str, &str)]) -> String {
-    let todos: Vec<Value> = items
-        .iter()
-        .map(|(c, s)| json!({"content": c, "status": s, "activeForm": format!("Doing {c}")}))
-        .collect();
+/// A TodoWrite call: the reader ignores it (the Tasks panel that showed it was removed, 2026-10-26).
+fn todo_line() -> String {
     json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "todo",
-        "name": "TodoWrite", "input": {"todos": todos}}]}})
+        "name": "TodoWrite", "input": {"todos": [
+            {"content": "Change it", "status": "in_progress", "activeForm": "Changing it"}]}}]}})
     .to_string()
 }
 
@@ -106,13 +105,6 @@ fn diff_has(v: &Value, kind: i64, text: &str) -> bool {
         rows.iter()
             .any(|r| r["kind"].as_i64() == Some(kind) && r["text"] == json!(text))
     })
-}
-
-fn task_states(v: &Value) -> Vec<i64> {
-    v["tasks"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|t| t["state"].as_i64()).collect())
-        .unwrap_or_default()
 }
 
 /// The pipe and the front tab's secret, from the `ctl.info` probe.
@@ -207,18 +199,14 @@ fn convo_on(
                 "fn old() {}\nlet keep = 1;",
                 "fn fresh() {}\nlet keep = 1;",
             ),
-            todo_line(&[
-                ("Read it", "completed"),
-                ("Change it", "in_progress"),
-                ("Test it", "pending"),
-            ]),
+            todo_line(),
         ],
     )?;
 
     // ---- nothing runs while no panel is open, even with a session and a transcript ----
     let s0 = state(app);
     ctx.ok(
-        s0["trackers"] == json!(0) && s0["kind"] != json!(4) && s0["kind"] != json!(5),
+        s0["trackers"] == json!(0) && s0["kind"] != json!(4),
         format!("{at}: no panel, no transcript tracker ({})", s0["trackers"]),
     );
     // The process poll has said its first word (a hook that lands before it can be taken back by it).
@@ -279,11 +267,9 @@ fn convo_on(
                 && v["session"] == json!(SESSION_A)
                 && v["files"] == json!(1)
                 && v["edits"] == json!(1)
-                && v["tasks"]["in_progress"] == json!(1)
-                && v["tasks"]["done"] == json!(1)
-                && v["active"] == json!("Change it")
+                && v.get("tasks").is_none()
         }),
-        format!("{at}: convo.state gives the file and task counts ({st:?})"),
+        format!("{at}: convo.state gives the file counts and no task counts ({st:?})"),
     );
 
     // ---- a click on the row shows the diff ----
@@ -335,48 +321,16 @@ fn convo_on(
     });
     ctx.ok(counted, format!("{at}: the list says 2 edits"));
 
-    // ---- the Tasks panel ----
+    // ---- the Tasks panel was removed (2026-10-26): its kind is refused and the Changes panel stays ----
     let t = c.call(Method::PanelOpen, json!({"kind": "tasks"}), WAIT);
     ctx.ok(
-        t.as_ref()
-            .is_ok_and(|v| v["panel"]["kind"] == json!("tasks")),
-        format!("{at}: panel.open kind tasks answers ({t:?})"),
-    );
-    let listed = ctx.until("Tasks to list the task list", 15_000, &mut || {
-        let s = state(app);
-        s["kind"] == json!(5) && task_states(&s) == [2, 1, 0]
-    });
-    ctx.ok(
-        listed,
-        format!("{at}: Tasks shows done, in progress and pending, in order"),
+        matches!(&t, Err(ClientError::Remote(e)) if e.code == flare_ctl::code::BAD_PARAMS),
+        format!("{at}: panel.open kind tasks is refused ({t:?})"),
     );
     let s = state(app);
     ctx.ok(
-        s["tasks"][1]["active"] == json!(true)
-            && s["tasks"][1]["text"] == json!("Change it")
-            && s["sub"] == json!("1 of 3 done"),
-        format!("{at}: the one in progress is the active row, the header counts 1 of 3"),
-    );
-    ctx.ok(
-        s["trackers"] == json!(1),
-        format!("{at}: switching the panel keeps one tracker"),
-    );
-    ctx.shot(app, &format!("convo-tasks-{dpi}"));
-    append(
-        &main_log,
-        &[todo_line(&[
-            ("Read it", "completed"),
-            ("Change it", "completed"),
-            ("Test it", "in_progress"),
-        ])],
-    )?;
-    let moved = ctx.until("the TodoWrite update", 15_000, &mut || {
-        let s = state(app);
-        task_states(&s) == [2, 2, 1] && s["sub"] == json!("2 of 3 done")
-    });
-    ctx.ok(
-        moved,
-        format!("{at}: a TodoWrite appended to the transcript updates the list"),
+        s["kind"] == json!(4) && s["trackers"] == json!(1),
+        format!("{at}: the refusal leaves the Changes panel and its one tracker"),
     );
 
     // ---- a new session switches the file ----
@@ -407,10 +361,7 @@ fn convo_on(
     ctx.ok(closed.is_ok(), format!("{at}: panel.close answers"));
     let stopped = ctx.until("the tracker to stop", 10_000, &mut || {
         let s = state(app);
-        s["trackers"] == json!(0)
-            && s["kind"] != json!(4)
-            && s["kind"] != json!(5)
-            && names(&s).is_empty()
+        s["trackers"] == json!(0) && s["kind"] != json!(4) && names(&s).is_empty()
     });
     ctx.ok(
         stopped,

@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
-use flare_agent::keys::{AgentView, newline_key};
+use flare_agent::keys::{AgentView, newline_key, word_rubout_key};
 use flare_render::decor::{Decor, DecorInk};
 use flare_render::hit::{Hit, hit_cell, past_edge_px};
 use flare_render::metrics::CellMetrics;
@@ -642,7 +642,15 @@ impl TermUi {
             0 => {
                 let clicks = self.clicks.press(now, dev.0, dev.1, 0);
                 self.watch.down(e.x_css, e.y_css, clicks, now);
-                if mouse_owned {
+                // A press on a link is Flare's even when the program owns the mouse: the pointer already
+                // shows the hand there, and a left click opens it (owner 2026-10-25: Claude Code's links did
+                // not open, only the menu's "Open link" did). The program gets neither the press nor the release.
+                let on_link = mouse_owned
+                    && tab
+                        .handle
+                        .with_emu_quiet(|em| em.link_at_view(row_c, col))
+                        .is_some();
+                if mouse_owned && !on_link {
                     self.reporting = true;
                     self.press = None;
                     self.last_cell = Some((col, row_c));
@@ -959,6 +967,19 @@ impl TermUi {
                     } else {
                         self.watch.other_key();
                     }
+                }
+                // Ctrl+Backspace alone, for an agent that deletes a word on another key (agy: ^W).
+                if action == TermKeyAction::Pty
+                    && ev.pressed
+                    && ev.key == "Backspace"
+                    && ev.ctrl
+                    && !ev.shift
+                    && !ev.alt
+                    && !ev.meta
+                    && let Some(k) = word_rubout_key(self.deps.agent.armed(tab.id))
+                {
+                    tab.handle.send_text(k);
+                    return KeyDone::Handled;
                 }
                 KeyDone::Send
             }
@@ -2461,6 +2482,27 @@ mod tests {
     }
 
     #[test]
+    fn a_click_on_a_link_opens_it_in_mouse_mode_and_the_program_gets_nothing() {
+        let mut r = Rig::new(1.0);
+        r.feed("see https://a.io/x ok");
+        r.feed(MOUSE_ON);
+        r.frame();
+        r.click(8, 0);
+        assert_eq!(*r.urls.borrow(), vec!["https://a.io/x".to_string()]);
+        thread::sleep(Duration::from_millis(30));
+        assert!(
+            r.written().is_empty(),
+            "no press or release reaches the program"
+        );
+        // Off the link the program still gets its clicks.
+        r.down(1, 0, false);
+        r.up(1, 0, false);
+        let want = b"\x1b[<0;2;1M\x1b[<0;2;1m";
+        assert_eq!(r.wait_written(want.len()), want);
+        assert_eq!(r.urls.borrow().len(), 1);
+    }
+
+    #[test]
     fn shift_gives_the_selection_back_in_mouse_mode() {
         let mut r = Rig::new(1.0);
         r.feed("hello world");
@@ -2675,6 +2717,23 @@ mod tests {
         r.agent.0.set(Some(AgentKind::Codex));
         r.key(KeyEvent::new("Enter", "Enter").shift());
         assert_eq!(r.wait_written(3), b"\n\\\r");
+    }
+
+    #[test]
+    fn ctrl_backspace_where_agy_runs_sends_ctrl_w() {
+        let mut r = Rig::new(1.0);
+        let bs = || KeyEvent::new("Backspace", "Backspace").ctrl();
+        assert_eq!(r.key(bs()), (TermKeyAction::Pty, KeyDone::Send));
+        r.agent.0.set(Some(AgentKind::Claude));
+        assert_eq!(r.key(bs()), (TermKeyAction::Pty, KeyDone::Send));
+        r.agent.0.set(Some(AgentKind::Codex));
+        assert_eq!(r.key(bs()), (TermKeyAction::Pty, KeyDone::Send));
+        r.agent.0.set(Some(AgentKind::Agy));
+        assert_eq!(r.key(bs().shift()), (TermKeyAction::Pty, KeyDone::Send));
+        assert_eq!(r.key(bs().alt()), (TermKeyAction::Pty, KeyDone::Send));
+        assert_eq!(r.key(bs().released()), (TermKeyAction::Pty, KeyDone::Send));
+        assert_eq!(r.key(bs()), (TermKeyAction::Pty, KeyDone::Handled));
+        assert_eq!(r.wait_written(1), b"\x17");
     }
 
     // ---- find ----

@@ -1,5 +1,6 @@
-//! Settings > Mods (Surfaces stage 8), headless, at 100 and 225 percent: the rail lists the page, each mod is a
-//! switch row and a permissions row in plain words, a folder that is not a mod is a warning with its reason, the
+//! Settings > Plugins (the page key `mods`; Surfaces stage 8, plugins phase 2), headless, at 100 and 225 percent:
+//! the rail lists the page, each mod is a switch row and a permissions row in plain words (a plugin adds who made
+//! it and its warnings), a folder that is not a mod is a warning with its reason, the
 //! buttons and the switch reach the mods port, and every row sits in the panel on whole device pixels whatever
 //! the length of its words.
 
@@ -29,9 +30,11 @@ struct FakePort {
     info: RefCell<ModsInfo>,
     asked: Cell<u32>,
     switched: RefCell<Vec<(String, bool)>>,
-    /// The permission words each switch carried (what the row listed).
-    switched_with: RefCell<Vec<Vec<String>>>,
+    /// What each switch carried (what the card listed).
+    switched_with: RefCell<Vec<flare_mods::hub::Shown>>,
     shown: RefCell<Vec<String>>,
+    /// The install, update and remove asks, as `what:argument`.
+    installs: RefCell<Vec<String>>,
 }
 
 impl ModsPort for FakePort {
@@ -41,7 +44,7 @@ impl ModsPort for FakePort {
     fn page_shown(&self) {
         self.asked.set(self.asked.get() + 1);
     }
-    fn set_enabled(&self, id: &str, on: bool, shown: Vec<String>) {
+    fn set_enabled(&self, id: &str, on: bool, shown: flare_mods::hub::Shown) {
         self.switched_with.borrow_mut().push(shown);
         self.switched.borrow_mut().push((id.to_string(), on));
     }
@@ -49,7 +52,19 @@ impl ModsPort for FakePort {
         self.shown.borrow_mut().push(id.to_string());
     }
     fn dir(&self) -> PathBuf {
-        PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\mods")
+        PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\plugins")
+    }
+    fn install_file(&self) {
+        self.installs.borrow_mut().push("file:".into());
+    }
+    fn install_url(&self, url: &str) {
+        self.installs.borrow_mut().push(format!("url:{url}"));
+    }
+    fn update(&self, id: &str) {
+        self.installs.borrow_mut().push(format!("update:{id}"));
+    }
+    fn remove(&self, id: &str) {
+        self.installs.borrow_mut().push(format!("remove:{id}"));
     }
 }
 
@@ -76,13 +91,14 @@ fn notes(enabled: bool) -> ModInfo {
         enabled,
         needs_approval: false,
         has_panel: true,
+        ..ModInfo::default()
     }
 }
 
 fn info(mods: Vec<ModInfo>) -> ModsInfo {
     ModsInfo {
         scanned: true,
-        dir: r"C:\Users\x\AppData\Roaming\Flare\mods".into(),
+        dir: r"C:\Users\x\AppData\Roaming\Flare\plugins".into(),
         mods,
         ..ModsInfo::default()
     }
@@ -205,7 +221,7 @@ fn the_rail_lists_mods_between_dictation_and_diagnostics() {
             "{s}"
         );
         let item = f.b().get_rail().iter().find(|r| r.id == "mods").unwrap();
-        assert_eq!(item.label.as_str(), "Mods");
+        assert_eq!(item.label.as_str(), "Plugins");
         assert!(!item.icon.is_empty());
     }
 }
@@ -260,8 +276,13 @@ fn the_switch_reaches_the_mods_port_and_the_page_draws_what_the_port_then_says()
             f.port.switched.borrow().as_slice(),
             [("notes".to_string(), true)]
         );
-        // The click carries the permission words the row listed, so only that list is approved.
-        let listed = f.port.info.borrow().mods[0].permissions.clone();
+        // The click carries what the card listed (permission words, maker, address), so only that is approved.
+        let m = f.port.info.borrow().mods[0].clone();
+        let listed = flare_mods::hub::Shown {
+            permissions: m.permissions,
+            author: m.author,
+            homepage: m.homepage,
+        };
         assert_eq!(f.port.switched_with.borrow().as_slice(), [listed]);
         // The port answers in the window; the page then draws the new state.
         *f.port.info.borrow_mut() = info(vec![notes(true)]);
@@ -288,16 +309,58 @@ fn the_panel_button_waits_for_the_mod_and_the_folder_button_opens_the_mods_folde
     f.b()
         .invoke_row_button("modperm:notes".into(), "show".into());
     assert_eq!(f.port.shown.borrow().as_slice(), ["notes".to_string()]);
-    let folder = f.row("mods-folder").unwrap();
-    assert_eq!(
-        folder.buttons.iter().next().unwrap().label.as_str(),
-        "Open mods folder"
+    assert!(
+        f.row("mods-folder").is_none(),
+        "one folder row, the plugins one"
     );
-    f.b().invoke_row_button("mods-folder".into(), "open".into());
+}
+
+#[test]
+fn the_install_buttons_the_address_field_and_each_cards_update_and_remove_reach_the_port() {
+    let f = fx_at(1.0, info(vec![notes(true)]));
+    f.page("mods");
+    let field = f.row("plugins-url").expect("the address row");
+    assert_eq!(field.kind, crate::SetKind::Text);
+    assert_eq!(field.placeholder.as_str(), "https://");
+    f.b()
+        .invoke_row_button("plugins-install".into(), "file".into());
+    // What is typed is kept with no rebuild, and Install (or Enter) sends it.
+    let before = f.ctl.borrow().rebuilds;
+    f.b()
+        .invoke_row_text("plugins-url".into(), " https://example.com/p.zip ".into());
     assert_eq!(
-        f.opened.borrow().as_slice(),
-        [PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\mods")]
+        f.ctl.borrow().rebuilds,
+        before,
+        "typing draws nothing again"
     );
+    f.b().invoke_row_button("plugins-url".into(), "url".into());
+    f.b()
+        .invoke_row_button("plugins-url".into(), "submit".into());
+    f.b().invoke_row_button("mod:notes".into(), "update".into());
+    f.b().invoke_row_button("mod:notes".into(), "remove".into());
+    assert_eq!(
+        f.port.installs.borrow().as_slice(),
+        [
+            "file:",
+            "url:https://example.com/p.zip",
+            "url:https://example.com/p.zip",
+            "update:notes",
+            "remove:notes"
+        ]
+    );
+    // The page drawn again keeps the address in the field.
+    f.ctl.borrow_mut().on_msg(SettingsMsg::Mods);
+    assert_eq!(
+        f.row("plugins-url").unwrap().value.as_str(),
+        " https://example.com/p.zip "
+    );
+    // What the install said is the install row's subtext, a warning when it failed.
+    let mut page = info(vec![notes(true)]);
+    page.install_note = Some((true, "The file is larger than 50 MB.".into()));
+    *f.port.info.borrow_mut() = page;
+    f.ctl.borrow_mut().on_msg(SettingsMsg::Mods);
+    let row = f.row("plugins-install").unwrap();
+    assert!(row.warn && row.sub.as_str() == "The file is larger than 50 MB.");
 }
 
 #[test]
@@ -407,4 +470,83 @@ fn every_row_sits_whole_in_its_card_on_device_pixels_at_every_scale_and_long_wor
             "content height covers the last card at {s}"
         );
     }
+}
+
+/// A protocol 2 plugin as the app fills it: who made it, its permissions in plain words and the warnings.
+fn todo_plugin() -> ModInfo {
+    ModInfo {
+        id: "todo".into(),
+        name: "Session to-dos".into(),
+        version: "1.0.0".into(),
+        description: "Things to check per session.".into(),
+        permissions: vec![
+            "Read what you and Claude say in sessions".into(),
+            "Type and run commands in your terminals (full control)".into(),
+        ],
+        enabled: false,
+        has_panel: false,
+        plugin: true,
+        author: "someone".into(),
+        homepage: "https://example.com/todo".into(),
+        warnings: vec![
+            flare_mods::hub::WARN_INPUT.into(),
+            flare_mods::hub::WARN_INPUT_SESSIONS.into(),
+        ],
+        full_control: true,
+        ..ModInfo::default()
+    }
+}
+
+#[test]
+fn a_plugin_card_draws_its_maker_its_permissions_and_a_full_control_warning_and_a_mod_card_is_unchanged()
+ {
+    for s in SCALES2 {
+        let f = fx_at(s, info(vec![notes(false), todo_plugin()]));
+        f.page("mods");
+        let card = |id: &str| -> Vec<String> {
+            f.sections()
+                .into_iter()
+                .find(|sec| sec.id == id)
+                .map(|sec| sec.rows.iter().map(|r| r.id.to_string()).collect())
+                .unwrap_or_default()
+        };
+        assert_eq!(card("modcard:notes"), ["mod:notes", "modperm:notes"]);
+        assert_eq!(
+            card("modcard:todo"),
+            ["mod:todo", "modby:todo", "modperm:todo", "modwarn:todo"]
+        );
+        assert_eq!(
+            f.row("mod:todo").unwrap().label.as_str(),
+            "Session to-dos 1.0.0"
+        );
+        assert!(
+            !f.row("mod:todo").unwrap().on,
+            "off until the user turns it on"
+        );
+        let by = f.row("modby:todo").unwrap();
+        assert_eq!(by.sub.as_str(), "someone, https://example.com/todo");
+        let perms = f.row("modperm:todo").unwrap();
+        assert!(perms.sub.as_str().contains("(full control)"));
+        let warn = f.row("modwarn:todo").unwrap();
+        assert!(warn.warn);
+        assert_eq!(warn.label.as_str(), "Full control");
+        assert!(warn.sub.as_str().contains("steer Claude"));
+    }
+}
+
+#[test]
+fn the_plugins_folder_button_opens_the_plugins_folder() {
+    let f = fx_at(1.0, info(vec![]));
+    f.page("mods");
+    let row = f.row("plugins-folder").expect("the plugins folder row");
+    assert_eq!(
+        row.buttons.iter().next().unwrap().label.as_str(),
+        "Open plugins folder"
+    );
+    f.b()
+        .invoke_row_button("plugins-folder".into(), "open".into());
+    assert_eq!(
+        f.opened.borrow().as_slice(),
+        [PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\plugins")]
+    );
 }

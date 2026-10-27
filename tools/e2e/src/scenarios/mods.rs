@@ -1,7 +1,7 @@
 //! Mods (Surfaces stage 8): `modsSample`.
 //!
 //! The scenario starts the built release exe in its own world and profile and copies the sample mod of
-//! `docs/surfaces/sample-mod` (and one broken folder) into the PROFILE's mods folder, so the owner's real mods
+//! `docs/surfaces/sample-mod` (and one broken folder) into the PROFILE's plugins folder, so the owner's real mods
 //! are never read. It then plays the person with the pointer on Settings > Mods and the agent with the built
 //! `flare-mcp.exe`, exactly as Claude Code would run it inside the tab. Nothing is fetched from the network
 //! (the page's own `fetch` of an outside address is checked to be blocked, against nothing that listens), no
@@ -50,8 +50,8 @@ fn mods_state(app: &mut App) -> Value {
     probe(app, "mods.state", Value::Null)
 }
 
-fn copy_sample(mods: &Path) -> Result<(), String> {
-    let to = mods.join("notes");
+fn copy_sample(plugins: &Path) -> Result<(), String> {
+    let to = plugins.join("notes");
     fs::create_dir_all(&to).map_err(|e| format!("make the sample folder: {e}"))?;
     for name in ["mod.json", "index.html"] {
         fs::copy(Path::new(SAMPLE).join(name), to.join(name))
@@ -60,7 +60,7 @@ fn copy_sample(mods: &Path) -> Result<(), String> {
     write_logo(&to.join("logo.png"))?;
     fs::write(to.join("other.html"), OTHER).map_err(|e| format!("write other.html: {e}"))?;
     // A folder that is not a mod: the page names it and says why.
-    let bad = mods.join("broken-mod");
+    let bad = plugins.join("broken-mod");
     fs::create_dir_all(&bad).map_err(|e| format!("make the broken folder: {e}"))?;
     fs::write(bad.join("mod.json"), "{ not json").map_err(|e| e.to_string())?;
     Ok(())
@@ -154,7 +154,7 @@ pub fn mods_sample(ctx: &mut Ctx) -> Result<(), String> {
         return Ok(());
     }
     let profile = ctx.ensure_world().profile.clone();
-    copy_sample(&profile.join("mods"))?;
+    copy_sample(&profile.join("plugins"))?;
     let mut app = launch(ctx)?;
     let r = first_run(ctx, &mut app, &exe, &profile);
     let left = app.close();
@@ -173,7 +173,7 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
     let up = ctx.until("the first scan", 15_000, &mut || {
         mods_state(app)["scanned"] == json!(true)
     });
-    ctx.ok(up, "the mods folder was scanned at start");
+    ctx.ok(up, "the plugins folder was scanned at start");
     let s = mods_state(app);
     ctx.ok(
         s["mods"].as_array().is_some_and(|m| m.len() == 1)
@@ -211,8 +211,8 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
         format!("the broken folder is a warning with its reason ({bad})"),
     );
     ctx.ok(
-        row(app, "mods-folder")["rect"].is_object(),
-        "the Open mods folder row is there",
+        row(app, "plugins-folder")["rect"].is_object(),
+        "the Open plugins folder row is there",
     );
 
     // Off: the agent has no mod tool.
@@ -583,7 +583,7 @@ fn second_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Resul
     );
 
     // ---- the manifest on disk asks for more than the person allowed ----
-    let manifest = profile.join("mods").join("notes").join("mod.json");
+    let manifest = profile.join("plugins").join("notes").join("mod.json");
     let text = fs::read_to_string(&manifest).map_err(|e| format!("read the manifest: {e}"))?;
     let edited = text.replacen(
         r#""permissions": ["panel", "tools"]"#,

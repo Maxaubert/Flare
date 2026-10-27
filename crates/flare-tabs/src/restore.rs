@@ -4,7 +4,7 @@
 //! The restore never types into a shell: a resume travels as the startup command (`Spawn::resume`).
 
 use crate::tabs::{Pending, Tab, TabKind, TabState};
-use flare_agent::kinds::{AgentKind, CODEX_RESUME};
+use flare_agent::kinds::{AGY_RESUME, AgentKind, CODEX_RESUME};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -142,6 +142,7 @@ pub fn plan_restore(
         let mut resume = None;
         match t.agent {
             Some(AgentKind::Codex) => resume = Some(CODEX_RESUME.to_string()),
+            Some(AgentKind::Agy) => resume = Some(AGY_RESUME.to_string()),
             Some(AgentKind::Claude) => {
                 let n = taken.entry(t.cwd.to_lowercase()).or_insert(0);
                 if let Some(id) = sessions(&t.cwd).get(*n) {
@@ -593,6 +594,18 @@ mod tests {
         };
         let r = plan_restore(&saved, &all, &|_| panic!("codex must not ask for sessions"));
         assert_eq!(r.tabs[0].resume.as_deref(), Some("codex:last"));
+    }
+
+    #[test]
+    fn agy_gets_its_own_marker_and_its_word_round_trips() {
+        let saved = SavedTabs {
+            tabs: vec![st("C:\\a", Some(AgentKind::Agy))],
+            active: 0,
+        };
+        let r = plan_restore(&saved, &all, &|_| panic!("agy must not ask for sessions"));
+        assert_eq!(r.tabs[0].resume.as_deref(), Some("agy:last"));
+        let p = parse_tabs(r#"{"tabs":[{"cwd":"C:\\a","agent":"agy"}],"active":0}"#);
+        assert_eq!(p.tabs, vec![st("C:\\a", Some(AgentKind::Agy))]);
     }
 
     #[test]

@@ -17,6 +17,7 @@ use flare_agent::badge::{Attention, AttentionIn, attention_count};
 use flare_agent::detect::ProcRow;
 use flare_agent::indicator::{Effect, Event, Indicator, Screen};
 use flare_agent::kinds::{AgentKind, DetectedAgent};
+use flare_agent::osc7501::parse_program_status;
 use flare_agent::poll::{AGENT_POLL_MIN, AgentSend, PollDeps, PollHandle, PollWorker};
 use flare_agent::question_watch::{QuestionWatch, RowSource};
 use flare_agent::question_widget::ShownQuestion;
@@ -69,6 +70,15 @@ pub struct HubDeps {
     /// An agent known to be here has left, and whatever it asked the terminal for (theme reports)
     /// goes with it.
     pub reports_off: Rc<dyn Fn(&str)>,
+}
+
+/// Why the agent's badges and progress must leave a tab (plugins phase 1): they belong to one Claude session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecorGone {
+    /// The tab's session changed from one id to another (a first id after none is not a change).
+    SessionChanged,
+    /// The agent left the tab (its kind is none now): Claude and Codex alike.
+    AgentLeft,
 }
 
 /// One answer of the poll, queued for the UI thread.
@@ -132,6 +142,7 @@ fn kind_word(k: DetectedAgent) -> String {
     match k {
         DetectedAgent::Claude => "claude",
         DetectedAgent::Codex => "codex",
+        DetectedAgent::Agy => "agy",
         DetectedAgent::Other => "other",
     }
     .to_string()
@@ -212,6 +223,9 @@ pub struct AgentHub {
     sessions: HashMap<String, String>,
     /// Tabs the process poll has answered for at least once (the e2e probe `agent.state` says so).
     polled: HashSet<String>,
+    /// Tabs whose agent decor must go, and why, in the order it happened; the window takes them
+    /// ([`AgentHub::take_decor_gone`]). A closed tab is not here: the window clears it on close.
+    decor_gone: Vec<(String, DecorGone)>,
     diag: AgentDiag,
     poll: Option<Box<dyn PollCtl>>,
     tx: Sender<PollMsg>,
@@ -233,6 +247,7 @@ impl AgentHub {
             folders: HashMap::new(),
             sessions: HashMap::new(),
             polled: HashSet::new(),
+            decor_gone: Vec::new(),
             diag,
             poll: None,
             tx,
@@ -308,6 +323,8 @@ impl AgentHub {
         if step.gone {
             self.sessions.remove(tab);
             (self.deps.reports_off)(tab);
+            self.decor_gone
+                .push((tab.to_string(), DecorGone::AgentLeft));
         }
         if step.recheck
             && let Some(p) = &self.poll
@@ -428,7 +445,12 @@ impl AgentHub {
                 HostEvent::Osc777 { id, data } => {
                     if let Some(signal) = parse_agent_signal(data) {
                         if let Some(session) = &signal.session {
-                            self.sessions.insert(id.clone(), session.clone());
+                            let old = self.sessions.insert(id.clone(), session.clone());
+                            // Another session in the same tab: what the old one put on the tab goes.
+                            if old.is_some_and(|o| o != *session) {
+                                self.decor_gone
+                                    .push((id.clone(), DecorGone::SessionChanged));
+                            }
                         }
                         self.ind_handle(
                             now,
@@ -439,9 +461,21 @@ impl AgentHub {
                         );
                     }
                 }
+                HostEvent::Osc7501 { id, data } => {
+                    if let Some(status) = parse_program_status(data) {
+                        self.ind_handle(
+                            now,
+                            Event::Status {
+                                tab: id.clone(),
+                                status,
+                            },
+                        );
+                    }
+                }
                 HostEvent::Cwd { id, path } => {
                     self.folders.insert(id.clone(), path.clone());
                     self.ind.activity.mark_prompt(id, now);
+                    self.ind_handle(now, Event::Prompt { tab: id.clone() });
                     let step = arm_on_prompt(&self.arm_of(id));
                     self.apply_arm(id, step);
                 }
@@ -485,13 +519,22 @@ impl AgentHub {
         self.folders.insert(tab.to_string(), cwd.to_string());
         let resumed = valid_resume(resume);
         // A restored Claude tab already has its session: the resume id (only a UUID).
-        match resumed {
+        let old = match resumed {
             Some(r) if agent_of_resume(r) == AgentKind::Claude && is_session_id(r) => {
-                self.sessions.insert(tab.to_string(), r.to_string());
+                self.sessions.insert(tab.to_string(), r.to_string())
             }
-            _ => {
-                self.sessions.remove(tab);
-            }
+            _ => self.sessions.remove(tab),
+        };
+        // A shell started again in a tab that had a session: that session's decor goes.
+        if let Some(old) = old
+            && self.sessions.get(tab) != Some(&old)
+        {
+            let why = if self.sessions.contains_key(tab) {
+                DecorGone::SessionChanged
+            } else {
+                DecorGone::AgentLeft
+            };
+            self.decor_gone.push((tab.to_string(), why));
         }
         self.arms.insert(
             tab.to_string(),
@@ -517,6 +560,7 @@ impl AgentHub {
         self.folders.remove(tab);
         self.sessions.remove(tab);
         self.polled.remove(tab);
+        self.decor_gone.retain(|(t, _)| t != tab);
         self.diag.forget(tab, now);
         self.settle(now);
     }
@@ -545,10 +589,8 @@ impl AgentHub {
                     .unwrap_or(tab)
                     .to_string();
                 let agent = self.ind.agent_kind(tab).map(kind_word).or_else(|| {
-                    flare_agent::keys::AgentView::armed(&self.arms, tab).map(|k| match k {
-                        AgentKind::Claude => "claude".to_string(),
-                        AgentKind::Codex => "codex".to_string(),
-                    })
+                    flare_agent::keys::AgentView::armed(&self.arms, tab)
+                        .map(|k| k.as_str().to_string())
                 });
                 let state = tab_state(&self.ind, tab);
                 SendTab {
@@ -580,6 +622,20 @@ impl AgentHub {
                 continue;
             }
             self.polled.insert(msg.id.clone());
+            // The poll sends changes only, so this is rare: the trail behind what `tabs.json` says about the
+            // tab's agent (2026-10-25: two Claude tabs came back as plain shells and the log could not say why).
+            let kind = msg
+                .kind
+                .map_or("none".to_string(), |k| format!("{k:?}").to_lowercase());
+            self.deps.diag.record(
+                "agent-poll",
+                &[
+                    ("id", DiagValue::Str(msg.id.clone())),
+                    ("present", DiagValue::Bool(msg.present)),
+                    ("kind", DiagValue::Str(kind)),
+                ],
+                epoch_ms(),
+            );
             self.ind_handle(
                 now,
                 Event::Poll {
@@ -662,6 +718,12 @@ impl AgentHub {
         std::mem::take(&mut self.changed)
     }
 
+    /// The tabs whose agent badges and progress must go since the last take: the session changed or the agent
+    /// left (plugins phase 1).
+    pub fn take_decor_gone(&mut self) -> Vec<(String, DecorGone)> {
+        std::mem::take(&mut self.decor_gone)
+    }
+
     pub fn indicator(&self) -> &Indicator {
         &self.ind
     }
@@ -678,10 +740,13 @@ impl AgentHub {
         self.ind.agent_kind(tab).and_then(DetectedAgent::resumable)
     }
 
-    /// The Claude session the tab's agent is in, when the hooks (or a resume) named one and the tab's agent is not Codex.
-    /// Only Claude's `flare-status` hooks carry a session, so a session here is Claude's. Gone with the agent.
+    /// The Claude session the tab's agent is in, when the hooks (or a resume) named one and the tab's agent is not
+    /// Codex or agy. Only Claude's `flare-status` hooks carry a session, so a session here is Claude's. Gone with the agent.
     pub fn claude_session(&self, tab: &str) -> Option<&str> {
-        if self.ind.agent_kind(tab) == Some(DetectedAgent::Codex) {
+        if matches!(
+            self.ind.agent_kind(tab),
+            Some(DetectedAgent::Codex | DetectedAgent::Agy)
+        ) {
             return None;
         }
         self.sessions.get(tab).map(String::as_str)
@@ -786,6 +851,7 @@ fn event_tab(ev: &HostEvent) -> Option<&str> {
         | HostEvent::Bell { id }
         | HostEvent::ClipboardWrite { id, .. }
         | HostEvent::Osc777 { id, .. }
+        | HostEvent::Osc7501 { id, .. }
         | HostEvent::Output { id }
         | HostEvent::Typed { id }
         | HostEvent::AnswerKey { id, .. }
@@ -1158,6 +1224,30 @@ mod tests {
         assert!(r.hub.indicator().done_ids().len() == 1);
     }
 
+    #[test]
+    fn an_agy_tab_is_marked_from_its_osc_7501_reports() {
+        let mut r = Rig::new();
+        r.open("a", None);
+        r.open("b", None);
+        r.hub.set_looking(Some("b"), true);
+        r.hub.queue_poll_answer("a", true, Some(DetectedAgent::Agy));
+        r.hub.drain_poll();
+        assert_eq!(r.hub.saved_agent("a"), Some(AgentKind::Agy));
+        r.print("a", b"\x1b]7501;state=working:app=agy\x1b\\");
+        r.pump_until("a working", |h| h.working("a"));
+        r.print("a", b"\x1b]7501;app=agy:kind=permission:state=blocked\x07");
+        r.pump_until("a asking", |h| h.question_tabs() == ["a"]);
+        r.print("a", b"\x1b]7501;state=done:app=agy\x1b\\");
+        r.pump_until("a done", |h| h.indicator().done_ids().contains("a"));
+        assert!(r.hub.question_tabs().is_empty());
+        assert_eq!(tab_of(&r.hub, "a").agent.as_deref(), Some("agy"));
+        assert_eq!(r.hub.claude_session("a"), None);
+        // A plain shell that reports lights nothing until something finds an agent there.
+        r.print("b", b"\x1b]7501;state=working:app=cargo\x1b\\");
+        r.advance(50);
+        assert!(!r.hub.agent_here("b"));
+    }
+
     const SID: &str = "b44e954e-a9cf-4ba9-a3c0-99ec6795d1d9";
 
     fn osc_session(state: &str, session: &str) -> Vec<u8> {
@@ -1218,6 +1308,45 @@ mod tests {
         assert_eq!(tab_of(&r.hub, "a").session, None);
         r.hub.on_closed("b");
         assert!(r.hub.send_tabs().iter().all(|t| t.tab != "b"));
+    }
+
+    /// Plugins phase 1: the agent's decor belongs to its session. A first session is no change; another session,
+    /// the agent leaving and a shell started again over a session each report the tab once.
+    #[test]
+    fn the_agent_decor_goes_when_the_session_changes_or_the_agent_leaves() {
+        let mut r = Rig::new();
+        r.open("a", None);
+        r.title("a", CLAUDE_TITLE);
+        r.print("a", &osc_session("working", SID));
+        assert!(
+            r.hub.take_decor_gone().is_empty(),
+            "a first session clears nothing"
+        );
+        r.print("a", &osc_session("done", SID));
+        assert!(
+            r.hub.take_decor_gone().is_empty(),
+            "the same session again clears nothing"
+        );
+        let next = "11111111-2222-4333-8444-555555555555";
+        r.print("a", &osc_session("working", next));
+        assert_eq!(
+            r.hub.take_decor_gone(),
+            [("a".to_string(), DecorGone::SessionChanged)]
+        );
+        // The title goes empty: the agent left the tab.
+        r.title("a", "");
+        assert_eq!(
+            r.hub.take_decor_gone(),
+            [("a".to_string(), DecorGone::AgentLeft)]
+        );
+        assert!(r.hub.take_decor_gone().is_empty(), "taken once");
+        // A closed tab's reports go with it (the window clears a closed tab itself).
+        r.open("b", None);
+        r.title("b", CLAUDE_TITLE);
+        r.print("b", &osc_session("working", SID));
+        r.print("b", &osc_session("working", next));
+        r.hub.on_closed("b");
+        assert!(r.hub.take_decor_gone().is_empty());
     }
 
     #[test]

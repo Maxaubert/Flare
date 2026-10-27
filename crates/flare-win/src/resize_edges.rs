@@ -15,17 +15,22 @@
 //! device px and a corner `round(16 * dpi / 96)` long, both inside the window, at the window's own
 //! DPI read on every hit test, so a `WM_DPICHANGED` and a monitor move need no work. No band while
 //! maximized, minimized or full screen.
+//!
+//! It also answers `WM_NCCALCSIZE` for the frameless window itself (`frameless_client`): Slint
+//! turns winit's decorations on while the window is full screen and off again one update after it
+//! leaves, and in between `DefWindowProc` would make room for a caption (the UI jumped on leaving
+//! full screen).
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect, MonitorFromWindow,
 };
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT,
-    HTTOPRIGHT, IsIconic, IsZoomed, SWP_NOSIZE, WINDOWPOS, WM_NCDESTROY, WM_NCHITTEST,
-    WM_WINDOWPOSCHANGING,
+    GWL_STYLE, GetWindowLongW, GetWindowRect, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT,
+    HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, IsIconic, IsZoomed, SWP_NOSIZE, WINDOWPOS,
+    WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST, WM_WINDOWPOSCHANGING, WS_CAPTION,
 };
 
 /// The subclass id (one per window).
@@ -174,6 +179,21 @@ unsafe extern "system" fn resize_proc(
         // SAFETY: removes this subclass before the window goes, as comctl32 asks.
         unsafe { RemoveWindowSubclass(hwnd, Some(resize_proc), RESIZE_ID) };
     }
+    if msg == WM_NCCALCSIZE {
+        // The window is frameless (`no-frame`), but Slint asks winit for decorations while it is full
+        // screen and takes them off again only on its next property update: leaving full screen,
+        // the caption style comes back while winit still has decorations on, its `WM_NCCALCSIZE`
+        // falls to `DefWindowProc`, and for about 30 ms the client leaves room for a caption the
+        // window never draws (the whole UI jumps down and back). Answered here as winit answers a
+        // frameless window: a maximized one gets the work area, any other the whole window.
+        // SAFETY: for this message `lparam` points at a RECT (`wparam` 0) or at NCCALCSIZE_PARAMS,
+        // whose first member is the proposed window RECT; either way it becomes the client RECT.
+        let r = unsafe { &mut *(lparam as *mut RECT) };
+        if let Some(client) = frameless_client(hwnd, r) {
+            *r = client;
+            return 0;
+        }
+    }
     if msg == WM_WINDOWPOSCHANGING {
         // SAFETY: for this message `lparam` points at the WINDOWPOS the system is about to apply.
         let pos = unsafe { &mut *(lparam as *mut WINDOWPOS) };
@@ -190,6 +210,29 @@ unsafe extern "system" fn resize_proc(
     }
     // SAFETY: the next procedure in the chain, with the arguments this one was given.
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
+
+/// The client RECT of the frameless window at the proposed window RECT, as winit gives it: the
+/// work area of the monitor under it when maximized, else the whole RECT. `None` (left to the
+/// chain) without the caption style, which is full screen, and when minimized.
+fn frameless_client(hwnd: HWND, proposed: &RECT) -> Option<RECT> {
+    // SAFETY: reads the state and monitor of a window of this process into locals.
+    unsafe {
+        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+        if style & WS_CAPTION != WS_CAPTION || IsIconic(hwnd) != 0 {
+            return None;
+        }
+        if IsZoomed(hwnd) == 0 {
+            return Some(*proposed);
+        }
+        let mut mi: MONITORINFO = std::mem::zeroed();
+        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        let mon = MonitorFromRect(proposed, MONITOR_DEFAULTTONEAREST);
+        if mon.is_null() || GetMonitorInfoW(mon, &mut mi) == 0 {
+            return None;
+        }
+        Some(mi.rcWork)
+    }
 }
 
 /// True when the incoming position is exactly the monitor's rectangle (borderless full screen),
@@ -494,6 +537,80 @@ mod tests {
         }
         // SAFETY: the next procedure in the chain.
         unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+
+    #[test]
+    fn the_window_leaving_full_screen_never_leaves_room_for_a_caption() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            NCCALCSIZE_PARAMS, SendMessageW, SetWindowLongW, WS_MAXIMIZE, WS_OVERLAPPEDWINDOW,
+            WS_POPUP,
+        };
+        let h = hidden_window();
+        assert!(!h.is_null());
+        // Both forms of the message: a bare RECT (`wparam` 0) and NCCALCSIZE_PARAMS (`wparam` 1, the
+        // one a frame change sends). Once the subclass is in, they agree.
+        let installed = std::cell::Cell::new(false);
+        let calc = |r: RECT| -> RECT {
+            let mut bare = r;
+            // SAFETY: zeroed params with the proposed RECT first, then two messages with locals, to a
+            // window of this thread.
+            let full = unsafe {
+                let mut p: NCCALCSIZE_PARAMS = std::mem::zeroed();
+                p.rgrc[0] = r;
+                SendMessageW(
+                    h,
+                    WM_NCCALCSIZE,
+                    1,
+                    &mut p as *mut NCCALCSIZE_PARAMS as LPARAM,
+                );
+                SendMessageW(h, WM_NCCALCSIZE, 0, &mut bare as *mut RECT as LPARAM);
+                p.rgrc[0]
+            };
+            if installed.get() {
+                assert_eq!(
+                    (bare.left, bare.top, bare.right, bare.bottom),
+                    (full.left, full.top, full.right, full.bottom)
+                );
+            }
+            full
+        };
+        let tuple = |r: RECT| (r.left, r.top, r.right, r.bottom);
+        // SAFETY: reads the monitor of the window made above into locals.
+        let (monitor, work) = unsafe {
+            let mut mi: MONITORINFO = std::mem::zeroed();
+            mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+            GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mut mi);
+            (mi.rcMonitor, mi.rcWork)
+        };
+        let set_style = |style: u32| {
+            // SAFETY: changes the style of the hidden window made above (no frame change is asked).
+            unsafe { SetWindowLongW(h, GWL_STYLE, style as i32) };
+        };
+        let sized = RECT {
+            left: 100,
+            top: 100,
+            right: 900,
+            bottom: 600,
+        };
+        // The caption style is back, as just after full screen while winit still has decorations
+        // on: without the subclass `DefWindowProc` leaves room for a caption.
+        set_style(WS_OVERLAPPEDWINDOW | WS_MAXIMIZE);
+        let mut bare = monitor;
+        // SAFETY: the `wparam` 0 form with a local RECT, to a window of this thread.
+        unsafe { SendMessageW(h, WM_NCCALCSIZE, 0, &mut bare as *mut RECT as LPARAM) };
+        assert!(bare.top > work.top, "{}", bare.top);
+        assert!(install(h as isize));
+        installed.set(true);
+        // Maximized: the work area, as winit answers its frameless window.
+        assert_eq!(tuple(calc(monitor)), tuple(work));
+        // A sized window: the whole window.
+        set_style(WS_OVERLAPPEDWINDOW);
+        assert_eq!(tuple(calc(sized)), tuple(sized));
+        // Full screen (no caption style) is left to the chain: the whole monitor.
+        set_style(WS_POPUP | WS_MAXIMIZE);
+        assert_eq!(tuple(calc(monitor)), tuple(monitor));
+        // SAFETY: destroys the window made above.
+        unsafe { DestroyWindow(h) };
     }
 
     #[test]

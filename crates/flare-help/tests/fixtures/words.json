@@ -1069,6 +1069,7 @@
   "against": "against",
   "agent": "agent",
   "agents": "agent",
+  "agy": "agy",
   "ah": "ah",
   "ahead": "ahead",
   "ai": "ai",
@@ -1102,6 +1103,7 @@
   "answering": "answer",
   "answers": "answer",
   "anthropic": "anthropic",
+  "antigravity": "antigravity",
   "any": "any",
   "anything": "anyth",
   "anyway": "anyway",
@@ -1838,6 +1840,7 @@
   "gcb": "gcb",
   "gci": "gci",
   "gcm": "gcm",
+  "gemini": "gemini",
   "generate": "generate",
   "generating": "generate",
   "geq": "geq",
@@ -1865,6 +1868,8 @@
   "going": "go",
   "gone": "go",
   "good": "good",
+  "google": "google",
+  "googles": "google",
   "got": "got",
   "gps": "gps",
   "gpt": "gpt",
@@ -4004,998 +4009,998 @@
    true
   ],
   [
-   "reboot",
-   "rebxot",
+   "rather",
+   "ratxer",
    true
   ],
   [
-   "four",
-   "foru",
+   "flush",
+   "fulsh",
    true
   ],
   [
-   "wont",
-   "wnt",
+   "website",
+   "wesite",
    true
   ],
   [
-   "python",
-   "qpython",
+   "principal",
+   "priqncipal",
    true
   ],
   [
-   "finishes",
-   "fznishex",
+   "examples",
+   "ezamplex",
    false
   ],
   [
-   "whatever",
-   "whateverzz",
+   "unsure",
+   "unsurezz",
    false
   ],
   [
-   "prompts",
-   "prompts",
+   "partitions",
+   "partitions",
    true
   ],
   [
-   "fails",
-   "failx",
+   "drive",
+   "drivx",
    true
   ],
   [
-   "video",
-   "viedo",
+   "touniversaltime",
+   "touniversaltmie",
    true
   ],
   [
-   "praise",
-   "raise",
+   "objects",
+   "obects",
    true
   ],
   [
-   "excel",
-   "excqel",
+   "deps",
+   "dqeps",
    true
   ],
   [
-   "uploaded",
-   "uploxdzd",
+   "tarball",
+   "txrzall",
    false
   ],
   [
-   "pick",
-   "pickzz",
+   "more",
+   "morezz",
    false
   ],
   [
-   "ending",
-   "ending",
+   "contenttype",
+   "contenttype",
    true
   ],
   [
-   "unknown",
-   "unkxown",
+   "stdin",
+   "xtdin",
    true
   ],
   [
-   "parsing",
-   "parsign",
+   "machines",
+   "amchines",
    true
   ],
   [
-   "duplicates",
-   "dplicates",
+   "clean",
+   "cean",
    true
   ],
   [
-   "turn",
-   "tuqrn",
+   "silence",
+   "silenqce",
    true
   ],
   [
-   "outdated",
-   "oxtzated",
+   "latency",
+   "lxtzncy",
    false
   ],
   [
-   "doctor",
-   "doctorzz",
+   "browse",
+   "browsezz",
    false
   ],
   [
-   "tooling",
-   "tooling",
+   "searching",
+   "searching",
    true
-  ],
-  [
-   "often",
-   "oxten",
-   true
-  ],
-  [
-   "development",
-   "devleopment",
-   true
-  ],
-  [
-   "thin",
-   "hin",
-   true
-  ],
-  [
-   "nobody",
-   "nobqody",
-   true
-  ],
-  [
-   "deep",
-   "zexp",
-   false
-  ],
-  [
-   "taken",
-   "takenzz",
-   false
-  ],
-  [
-   "multi",
-   "multi",
-   true
-  ],
-  [
-   "count",
-   "coxnt",
-   true
-  ],
-  [
-   "succeed",
-   "succede",
-   true
-  ],
-  [
-   "microsoft",
-   "micosoft",
-   true
-  ],
-  [
-   "confused",
-   "qconfused",
-   true
-  ],
-  [
-   "stick",
-   "szicx",
-   false
-  ],
-  [
-   "marking",
-   "markingzz",
-   false
-  ],
-  [
-   "commandline",
-   "commandline",
-   true
-  ],
-  [
-   "spinning",
-   "spinxing",
-   true
-  ],
-  [
-   "longer",
-   "lonegr",
-   true
-  ],
-  [
-   "classic",
-   "clssic",
-   true
-  ],
-  [
-   "skipped",
-   "skippqed",
-   true
-  ],
-  [
-   "limits",
-   "xizits",
-   false
-  ],
-  [
-   "chain",
-   "chainzz",
-   false
-  ],
-  [
-   "ship",
-   "ship",
-   true
-  ],
-  [
-   "large",
-   "largx",
-   true
-  ],
-  [
-   "built",
-   "bulit",
-   true
-  ],
-  [
-   "separated",
-   "eparated",
-   true
-  ],
-  [
-   "item",
-   "itqem",
-   true
-  ],
-  [
-   "beside",
-   "besxdz",
-   false
-  ],
-  [
-   "says",
-   "sayszz",
-   false
   ],
   [
    "installs",
-   "installs",
+   "inxtalls",
    true
   ],
   [
-   "authors",
-   "autxors",
+   "asks",
+   "akss",
    true
   ],
   [
-   "rewriting",
-   "erwriting",
+   "resolving",
+   "esolving",
    true
   ],
   [
-   "icacls",
-   "cacls",
+   "hashfile",
+   "hasqhfile",
    true
   ],
   [
-   "appends",
-   "appenqds",
-   true
-  ],
-  [
-   "reset",
-   "rexez",
+   "adapter",
+   "axazter",
    false
-  ],
-  [
-   "held",
-   "heldzz",
-   false
-  ],
-  [
-   "agent",
-   "agent",
-   true
-  ],
-  [
-   "remote",
-   "remxte",
-   true
-  ],
-  [
-   "grandchild",
-   "grancdhild",
-   true
-  ],
-  [
-   "abbreviations",
-   "abbreviaions",
-   true
   ],
   [
    "recoverable",
-   "recoqverable",
-   true
-  ],
-  [
-   "frozen",
-   "froxez",
+   "recoverablezz",
    false
   ],
   [
-   "writes",
-   "writeszz",
-   false
-  ],
-  [
-   "quotes",
-   "quotes",
+   "four",
+   "four",
    true
   ],
   [
-   "folder2",
-   "folxer2",
+   "windows",
+   "winxows",
    true
   ],
   [
-   "wide",
-   "wied",
+   "propose",
+   "propoes",
    true
   ],
   [
-   "psreadline",
-   "psreadlie",
-   true
-  ],
-  [
-   "fewer",
-   "fqewer",
-   true
-  ],
-  [
-   "volume",
-   "xozume",
-   false
-  ],
-  [
-   "print",
-   "printzz",
-   false
-  ],
-  [
-   "exits",
-   "exits",
+   "externally",
+   "extrnally",
    true
   ],
   [
    "using",
-   "usixg",
+   "uqsing",
    true
   ],
   [
-   "piped",
-   "ppied",
-   true
-  ],
-  [
-   "eperm",
-   "eper",
-   true
-  ],
-  [
-   "unrelated",
-   "unrelaqted",
-   true
-  ],
-  [
-   "paths",
-   "xazhs",
+   "photo",
+   "pzotx",
    false
   ],
   [
-   "edited",
-   "editedzz",
+   "effort",
+   "effortzz",
    false
   ],
   [
-   "ubuntu",
-   "ubuntu",
+   "type",
+   "type",
    true
   ],
   [
-   "owned",
-   "ownex",
+   "options",
+   "optxons",
    true
   ],
   [
-   "dots",
-   "dtos",
+   "digitally",
+   "digtially",
    true
   ],
   [
-   "trace",
-   "race",
+   "there",
+   "ther",
    true
   ],
   [
-   "open",
-   "opeqn",
+   "neither",
+   "neithqer",
    true
   ],
   [
-   "directly",
-   "zirectxy",
+   "creates",
+   "cxeztes",
    false
   ],
   [
-   "throwaway",
-   "throwawayzz",
+   "style",
+   "stylezz",
    false
   ],
   [
-   "notes",
-   "notes",
+   "math",
+   "math",
    true
   ],
   [
-   "delimiter",
-   "delxmiter",
+   "come",
+   "cxme",
    true
   ],
   [
-   "tell",
-   "tell",
+   "something",
+   "somethnig",
    true
   ],
   [
-   "nearly",
-   "nealy",
+   "line",
+   "lin",
    true
   ],
   [
-   "curl",
-   "qcurl",
+   "card",
+   "caqrd",
    true
   ],
   [
-   "sure",
-   "szrx",
+   "session",
+   "sxszion",
    false
   ],
   [
-   "mode",
-   "modezz",
+   "ipv4",
+   "ipv4zz",
    false
   ],
   [
-   "continuation",
-   "continuation",
+   "backup",
+   "backup",
    true
   ],
   [
-   "stream",
-   "xtream",
+   "rewritten",
+   "rewritxen",
    true
   ],
   [
-   "md5sum",
-   "md5usm",
+   "holds",
+   "holsd",
    true
   ],
   [
-   "complain",
-   "coplain",
+   "allows",
+   "llows",
    true
   ],
   [
-   "standing",
-   "standqing",
+   "released",
+   "releaseqd",
    true
   ],
   [
-   "lspci",
-   "zspxi",
+   "generating",
+   "gexezating",
    false
   ],
   [
-   "close",
-   "closezz",
+   "writing",
+   "writingzz",
    false
   ],
   [
-   "soft",
-   "soft",
+   "pypi",
+   "pypi",
    true
   ],
   [
-   "listening",
-   "xistening",
+   "files",
+   "fxles",
    true
   ],
   [
-   "cheat",
-   "hceat",
-   true
-  ],
-  [
-   "shrink",
-   "shrnk",
-   true
-  ],
-  [
-   "lean",
-   "leqan",
-   true
-  ],
-  [
-   "call",
-   "cxlz",
-   false
-  ],
-  [
-   "setting",
-   "settingzz",
-   false
-  ],
-  [
-   "junction",
-   "junction",
-   true
-  ],
-  [
-   "boolean",
-   "booxean",
-   true
-  ],
-  [
-   "search",
-   "seacrh",
-   true
-  ],
-  [
-   "interfacealias",
-   "inerfacealias",
-   true
-  ],
-  [
-   "background",
-   "backgroqund",
-   true
-  ],
-  [
-   "router",
-   "xozter",
-   false
-  ],
-  [
-   "importerror",
-   "importerrorzz",
-   false
-  ],
-  [
-   "argument",
-   "argument",
-   true
-  ],
-  [
-   "restart",
-   "resxart",
-   true
-  ],
-  [
-   "highlight",
-   "ihghlight",
-   true
-  ],
-  [
-   "already",
-   "aleady",
-   true
-  ],
-  [
-   "reopens",
-   "reopeqns",
-   true
-  ],
-  [
-   "gzip",
-   "gzix",
-   true
-  ],
-  [
-   "active",
-   "activezz",
-   false
-  ],
-  [
-   "refresh",
-   "refresh",
-   true
-  ],
-  [
-   "gateway",
-   "gatxway",
-   true
-  ],
-  [
-   "yolo",
-   "yool",
-   true
-  ],
-  [
-   "reader",
-   "eader",
-   true
-  ],
-  [
-   "forget",
-   "forqget",
-   true
-  ],
-  [
-   "wins",
-   "xizs",
-   false
-  ],
-  [
-   "push",
-   "pushzz",
-   false
-  ],
-  [
-   "filters",
-   "filters",
-   true
-  ],
-  [
-   "webpack",
-   "webxack",
-   true
-  ],
-  [
-   "processor",
-   "procesosr",
-   true
-  ],
-  [
-   "extensions",
-   "extensins",
-   true
-  ],
-  [
-   "venv",
-   "veqnv",
+   "vision",
+   "ivsion",
    true
   ],
   [
    "point",
-   "zoixt",
+   "pont",
+   true
+  ],
+  [
+   "eperm",
+   "qeperm",
+   true
+  ],
+  [
+   "universal",
+   "unixezsal",
    false
   ],
   [
-   "ever",
-   "everzz",
+   "pack",
+   "packzz",
    false
   ],
   [
-   "unused",
-   "unused",
-   true
-  ],
-  [
-   "permission",
-   "pexmission",
-   true
-  ],
-  [
-   "ellipsis",
-   "ellipiss",
-   true
-  ],
-  [
-   "undo",
-   "ndo",
-   true
-  ],
-  [
-   "paging",
-   "pagqing",
-   true
-  ],
-  [
-   "draws",
-   "dzawx",
-   false
-  ],
-  [
-   "trigger",
-   "triggerzz",
-   false
-  ],
-  [
-   "opus",
-   "opus",
-   true
-  ],
-  [
-   "dist",
-   "disx",
+   "doing",
+   "doing",
    true
   ],
   [
    "tldr",
-   "tlrd",
+   "xldr",
    true
   ],
   [
-   "numberoflogicalprocessors",
-   "numbroflogicalprocessors",
+   "normally",
+   "noramlly",
+   true
+  ],
+  [
+   "decompress",
+   "decompres",
+   true
+  ],
+  [
+   "swap",
+   "sqwap",
+   true
+  ],
+  [
+   "might",
+   "mzghx",
+   false
+  ],
+  [
+   "conda",
+   "condazz",
+   false
+  ],
+  [
+   "stamps",
+   "stamps",
+   true
+  ],
+  [
+   "logged",
+   "logxed",
+   true
+  ],
+  [
+   "checkout",
+   "hceckout",
+   true
+  ],
+  [
+   "short",
+   "shor",
+   true
+  ],
+  [
+   "keyfile",
+   "keyfiqle",
+   true
+  ],
+  [
+   "blocked",
+   "bxozked",
+   false
+  ],
+  [
+   "sane",
+   "sanezz",
+   false
+  ],
+  [
+   "iname",
+   "iname",
+   true
+  ],
+  [
+   "application",
+   "appxication",
+   true
+  ],
+  [
+   "replays",
+   "replasy",
+   true
+  ],
+  [
+   "grep",
+   "rep",
+   true
+  ],
+  [
+   "2222",
+   "222q2",
+   true
+  ],
+  [
+   "readlink",
+   "zeadlixk",
+   false
+  ],
+  [
+   "folders",
+   "folderszz",
+   false
+  ],
+  [
+   "what",
+   "what",
+   true
+  ],
+  [
+   "privilege",
+   "prixilege",
+   true
+  ],
+  [
+   "execute",
+   "execuet",
+   true
+  ],
+  [
+   "unzip",
+   "uzip",
+   true
+  ],
+  [
+   "patch",
+   "patcqh",
+   true
+  ],
+  [
+   "dump",
+   "dzmx",
+   false
+  ],
+  [
+   "trailing",
+   "trailingzz",
+   false
+  ],
+  [
+   "oldname",
+   "oldname",
    true
   ],
   [
    "destinationpath",
-   "destinationpqath",
+   "destinxtionpath",
    true
   ],
   [
-   "text",
-   "tzxx",
+   "tcptestsucceeded",
+   "tcptestuscceeded",
+   true
+  ],
+  [
+   "moves",
+   "moes",
+   true
+  ],
+  [
+   "conversation",
+   "conversatqion",
+   true
+  ],
+  [
+   "stop",
+   "xtzp",
    false
   ],
   [
-   "never",
-   "neverzz",
+   "make",
+   "makezz",
    false
   ],
   [
-   "database",
-   "database",
+   "clock",
+   "clock",
    true
   ],
   [
-   "syntax",
-   "xyntax",
+   "site",
+   "sxte",
    true
   ],
   [
-   "mount",
-   "monut",
+   "lease",
+   "elase",
    true
   ],
   [
-   "copies",
-   "opies",
+   "bulk",
+   "bul",
    true
   ],
   [
-   "subagents",
-   "subqagents",
+   "sees",
+   "seqes",
    true
   ],
   [
-   "mentions",
-   "xeztions",
+   "integration",
+   "ixtzgration",
    false
   ],
   [
-   "condition",
-   "conditionzz",
+   "attribute",
+   "attributezz",
    false
   ],
   [
-   "statement",
-   "statement",
+   "restmethod",
+   "restmethod",
    true
   ],
   [
-   "manage",
-   "manxge",
+   "heap",
+   "hexp",
    true
   ],
   [
-   "collect",
-   "colletc",
+   "address",
+   "address",
    true
   ],
   [
-   "spaces",
-   "spaes",
+   "redirection",
+   "redirction",
    true
   ],
   [
-   "location",
-   "loqcation",
+   "frequency",
+   "freqquency",
    true
   ],
   [
-   "chip",
-   "cxiz",
+   "wipe",
+   "zixe",
    false
   ],
   [
-   "simplematch",
-   "simplematchzz",
+   "psprovider",
+   "psproviderzz",
    false
   ],
   [
-   "letter",
-   "letter",
+   "failing",
+   "failing",
    true
   ],
   [
-   "carriage",
-   "carriaxe",
+   "values",
+   "valxes",
    true
   ],
   [
-   "share",
-   "shaer",
+   "picture",
+   "pictuer",
    true
   ],
   [
-   "killall",
-   "kilall",
+   "else",
+   "ese",
    true
   ],
   [
-   "brew",
-   "breqw",
+   "typo",
+   "qtypo",
    true
   ],
   [
-   "selection",
-   "selxczion",
+   "osarchitecture",
+   "oxazchitecture",
    false
   ],
   [
-   "ipaddress",
-   "ipaddresszz",
+   "discard",
+   "discardzz",
    false
   ],
   [
-   "becomes",
-   "becomes",
+   "this",
+   "this",
    true
   ],
   [
-   "safely",
-   "safxly",
+   "nettcpconnection",
+   "nettcpcoxnection",
    true
   ],
   [
-   "inline",
-   "niline",
+   "ctrl",
+   "ctlr",
    true
   ],
   [
-   "assistant",
-   "ssistant",
+   "subnet",
+   "ubnet",
    true
   ],
   [
-   "reuse",
-   "rqeuse",
+   "meant",
+   "meanqt",
    true
   ],
   [
-   "hosts",
-   "hzstx",
+   "commits",
+   "cxmzits",
    false
   ],
   [
-   "anthropic",
-   "anthropiczz",
+   "sourcing",
+   "sourcingzz",
    false
   ],
   [
-   "report",
-   "report",
+   "linters",
+   "linters",
    true
   ],
   [
-   "harmless",
-   "xarmless",
+   "catalogue",
+   "catxlogue",
    true
   ],
   [
-   "adds",
-   "adsd",
+   "setx",
+   "estx",
    true
   ],
   [
-   "related",
-   "reated",
+   "item",
+   "ite",
    true
   ],
   [
-   "give",
-   "gqive",
+   "batch",
+   "qbatch",
    true
   ],
   [
-   "1073741824",
-   "x0z3741824",
+   "rollback",
+   "rxlzback",
    false
   ],
   [
-   "recent",
-   "recentzz",
+   "hours",
+   "hourszz",
    false
   ],
   [
-   "freegb",
-   "freegb",
+   "amend",
+   "amend",
    true
   ],
   [
-   "work",
-   "wxrk",
+   "remote",
+   "xemote",
    true
   ],
   [
-   "question",
-   "uqestion",
+   "gitconfig",
+   "igtconfig",
    true
   ],
   [
-   "five",
-   "fiv",
+   "xargs",
+   "xars",
    true
   ],
   [
-   "when",
-   "whqen",
+   "quick",
+   "qquick",
    true
   ],
   [
-   "properties",
-   "pxozerties",
+   "find",
+   "zixd",
    false
   ],
   [
-   "false",
-   "falsezz",
+   "volume",
+   "volumezz",
    false
   ],
   [
-   "viewer",
-   "viewer",
+   "post",
+   "post",
    true
   ],
   [
-   "prefix",
-   "xrefix",
+   "errors",
+   "errxrs",
    true
   ],
   [
-   "exclude",
-   "exclued",
+   "unneeded",
+   "uneneded",
    true
   ],
   [
-   "upstream",
-   "pstream",
+   "pages",
+   "page",
    true
   ],
   [
-   "picks",
-   "pickqs",
+   "dotfiles",
+   "qdotfiles",
    true
   ],
   [
-   "ends",
-   "znxs",
+   "told",
+   "tzlx",
    false
   ],
   [
-   "unlink",
-   "unlinkzz",
+   "noun",
+   "nounzz",
    false
   ],
   [
-   "particular",
-   "particular",
+   "definition",
+   "definition",
    true
   ],
   [
-   "each",
-   "eacx",
+   "sync",
+   "xync",
    true
   ],
   [
-   "twenty",
-   "wtenty",
+   "mkdir",
+   "mkidr",
+   true
+  ],
+  [
+   "confirmation",
+   "confiration",
+   true
+  ],
+  [
+   "started",
+   "startqed",
+   true
+  ],
+  [
+   "look",
+   "xozk",
+   false
+  ],
+  [
+   "childitem",
+   "childitemzz",
+   false
+  ],
+  [
+   "should",
+   "should",
+   true
+  ],
+  [
+   "kind",
+   "kxnd",
+   true
+  ],
+  [
+   "bottom",
+   "obttom",
+   true
+  ],
+  [
+   "scaffold",
+   "scaffol",
+   true
+  ],
+  [
+   "index",
+   "indeqx",
+   true
+  ],
+  [
+   "apps",
+   "axpz",
+   false
+  ],
+  [
+   "reproducible",
+   "reproduciblezz",
+   false
+  ],
+  [
+   "gzip",
+   "gzip",
+   true
+  ],
+  [
+   "abort",
+   "axort",
+   true
+  ],
+  [
+   "rebase",
+   "rebsae",
+   true
+  ],
+  [
+   "forces",
+   "orces",
+   true
+  ],
+  [
+   "whereis",
+   "whereqis",
+   true
+  ],
+  [
+   "processor",
+   "proxezsor",
+   false
+  ],
+  [
+   "exits",
+   "exitszz",
+   false
+  ],
+  [
+   "upgrades",
+   "upgrades",
+   true
+  ],
+  [
+   "pbpaste",
+   "pbpxste",
+   true
+  ],
+  [
+   "earlier",
+   "earlire",
+   true
+  ],
+  [
+   "trigger",
+   "trgger",
+   true
+  ],
+  [
+   "only",
+   "qonly",
+   true
+  ],
+  [
+   "devdependencies",
+   "devdependxnzies",
+   false
+  ],
+  [
+   "term",
+   "termzz",
+   false
+  ],
+  [
+   "multiple",
+   "multiple",
+   true
+  ],
+  [
+   "copied",
+   "xopied",
+   true
+  ],
+  [
+   "stored",
+   "stoerd",
+   true
+  ],
+  [
+   "manuals",
+   "mauals",
+   true
+  ],
+  [
+   "cloudflare",
+   "cloudflqare",
+   true
+  ],
+  [
+   "slash",
+   "xlzsh",
+   false
+  ],
+  [
+   "lends",
+   "lendszz",
+   false
+  ],
+  [
+   "bytes",
+   "bytes",
+   true
+  ],
+  [
+   "sending",
+   "senxing",
+   true
+  ],
+  [
+   "internal",
+   "niternal",
+   true
+  ],
+  [
+   "auto",
+   "aut",
+   true
+  ],
+  [
+   "retries",
+   "retriqes",
+   true
+  ],
+  [
+   "hidden",
+   "hidxez",
+   false
+  ],
+  [
+   "afraid",
+   "afraidzz",
+   false
+  ],
+  [
+   "refreshenv",
+   "refreshenv",
+   true
+  ],
+  [
+   "fsize",
+   "xsize",
+   true
+  ],
+  [
+   "wmic",
+   "wimc",
+   true
+  ],
+  [
+   "publickey",
+   "ublickey",
+   true
+  ],
+  [
+   "faster",
+   "fasqter",
+   true
+  ],
+  [
+   "verb",
+   "zexb",
+   false
+  ],
+  [
+   "pip3",
+   "pip3zz",
+   false
+  ],
+  [
+   "encoding",
+   "encoding",
+   true
+  ],
+  [
+   "unauthorized",
+   "unaxthorized",
    true
   ],
   [
    "outline",
-   "ouline",
+   "outlien",
+   true
+  ],
+  [
+   "dist",
+   "dst",
    true
   ]
  ]

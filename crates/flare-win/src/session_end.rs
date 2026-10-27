@@ -16,26 +16,50 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     PostMessageW, PostQuitMessage, RegisterClassW, TranslateMessage, WM_CLOSE, WM_DESTROY,
     WM_ENDSESSION, WM_POWERBROADCAST, WM_QUERYENDSESSION, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
+use windows_sys::core::GUID;
 
 /// `PBT_APMSUSPEND`: the machine is about to sleep.
 pub const PBT_APMSUSPEND: usize = 0x0004;
 /// `PBT_APMRESUMEAUTOMATIC`: the machine woke (always sent, with or without a user).
 pub const PBT_APMRESUMEAUTOMATIC: usize = 0x0012;
+/// `PBT_POWERSETTINGCHANGE`: a power setting the window asked for changed; `lParam` says which and to what.
+pub const PBT_POWERSETTINGCHANGE: usize = 0x8013;
+
+/// `GUID_CONSOLE_DISPLAY_STATE`: the screen is off (0), on (1) or dimmed (2).
+pub const GUID_CONSOLE_DISPLAY_STATE: GUID =
+    GUID::from_u128(0x6fe69556_704a_47a0_8f24_c28d936fda47);
+
+/// `POWERBROADCAST_SETTING` with the one-`u32` payload the display state carries.
+#[repr(C)]
+pub struct PowerSetting {
+    pub setting: GUID,
+    pub len: u32,
+    pub data: u32,
+}
 
 // A message-only window is not sent the broadcast `WM_POWERBROADCAST`, so the window asks for it by name.
-// SAFETY (declarations): both are in user32 and take and return plain values.
+// SAFETY (declarations): all four are in user32 and take and return plain values.
 unsafe extern "system" {
     fn RegisterSuspendResumeNotification(recipient: HWND, flags: u32) -> *mut core::ffi::c_void;
     fn UnregisterSuspendResumeNotification(handle: *mut core::ffi::c_void) -> i32;
+    fn RegisterPowerSettingNotification(
+        recipient: HWND,
+        setting: *const GUID,
+        flags: u32,
+    ) -> *mut core::ffi::c_void;
+    fn UnregisterPowerSettingNotification(handle: *mut core::ffi::c_void) -> i32;
 }
 
 /// `DEVICE_NOTIFY_WINDOW_HANDLE`.
 const DEVICE_NOTIFY_WINDOW_HANDLE: u32 = 0;
 
-/// What the machine's sleep tells the app: two closures, run on the watch thread.
+/// What the machine's sleep and its screen tell the app: closures, run on the watch thread.
 pub struct PowerEvents {
     pub on_suspend: Box<dyn Fn() + Send>,
     pub on_resume: Box<dyn Fn() + Send>,
+    /// The screen went off (`false`) or came back on or dimmed (`true`). Windows slows the timers of
+    /// a screen that is off (2026-10-25: Flare's 50 ms beat came every ~260 ms all night).
+    pub on_screen: Box<dyn Fn(bool) + Send>,
 }
 
 /// The window class, registered once per process.
@@ -60,6 +84,22 @@ fn power_event(suspend: bool) {
                 &*p.on_resume
             };
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        }
+    });
+}
+
+/// Runs the screen closure for a `PBT_POWERSETTINGCHANGE` that is the display state.
+fn screen_event(setting: &PowerSetting) {
+    let same = |a: &GUID, b: &GUID| {
+        a.data1 == b.data1 && a.data2 == b.data2 && a.data3 == b.data3 && a.data4 == b.data4
+    };
+    if !same(&setting.setting, &GUID_CONSOLE_DISPLAY_STATE) || setting.len < 4 {
+        return;
+    }
+    let on = setting.data != 0;
+    ON_POWER.with(|cell| {
+        if let Some(p) = cell.borrow().as_ref() {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (p.on_screen)(on)));
         }
     });
 }
@@ -92,6 +132,11 @@ unsafe extern "system" fn wnd_proc(
             match wparam {
                 PBT_APMSUSPEND => power_event(true),
                 PBT_APMRESUMEAUTOMATIC => power_event(false),
+                PBT_POWERSETTINGCHANGE if lparam != 0 => {
+                    // SAFETY: for this event lParam points at a POWERBROADCAST_SETTING that lives for the call.
+                    let setting = unsafe { &*(lparam as *const PowerSetting) };
+                    screen_event(setting)
+                }
                 _ => {}
             }
             1 // TRUE: the request is granted
@@ -179,6 +224,14 @@ impl SessionEndWatch {
                 // SAFETY: hwnd is the window just made; a null handle (refused) is simply not unregistered.
                 let power_handle =
                     unsafe { RegisterSuspendResumeNotification(hwnd, DEVICE_NOTIFY_WINDOW_HANDLE) };
+                // SAFETY: as above; the GUID is a static. Windows sends the current state at once.
+                let screen_handle = unsafe {
+                    RegisterPowerSettingNotification(
+                        hwnd,
+                        &GUID_CONSOLE_DISPLAY_STATE,
+                        DEVICE_NOTIFY_WINDOW_HANDLE,
+                    )
+                };
                 let _ = tx.send(Ok(hwnd as isize));
                 // SAFETY: MSG is plain data; the loop runs on the window's own thread.
                 unsafe {
@@ -191,6 +244,10 @@ impl SessionEndWatch {
                 if !power_handle.is_null() {
                     // SAFETY: the handle came from the register call above and is released once.
                     unsafe { UnregisterSuspendResumeNotification(power_handle) };
+                }
+                if !screen_handle.is_null() {
+                    // SAFETY: the handle came from the register call above and is released once.
+                    unsafe { UnregisterPowerSettingNotification(screen_handle) };
                 }
                 ON_END.with(|cell| *cell.borrow_mut() = None);
                 ON_POWER.with(|cell| *cell.borrow_mut() = None);
@@ -294,6 +351,7 @@ mod tests {
                 on_resume: Box::new(move || {
                     w2.fetch_add(1, Ordering::SeqCst);
                 }),
+                on_screen: Box::new(|_| {}),
             }),
         )
         .expect("start");
@@ -310,6 +368,46 @@ mod tests {
         }
         assert_eq!(sleeps.load(Ordering::SeqCst), 1);
         assert_eq!(wakes.load(Ordering::SeqCst), 1);
+        w.stop();
+    }
+
+    #[test]
+    fn the_screen_going_off_and_on_reaches_its_closure_and_other_settings_do_not() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let s2 = seen.clone();
+        let w = SessionEndWatch::start_with_power(
+            || {},
+            Some(PowerEvents {
+                on_suspend: Box::new(|| {}),
+                on_resume: Box::new(|| {}),
+                on_screen: Box::new(move |on| s2.lock().unwrap().push(on)),
+            }),
+        )
+        .expect("start");
+        // Windows sends the screen's current state when the window registers: start from a clean list.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        seen.lock().unwrap().clear();
+        let send = |setting: GUID, data: u32| {
+            let s = PowerSetting {
+                setting,
+                len: 4,
+                data,
+            };
+            // SAFETY: the window is alive; SendMessageW is synchronous, so `s` outlives the call.
+            unsafe {
+                SendMessageW(
+                    w.hwnd() as HWND,
+                    WM_POWERBROADCAST,
+                    PBT_POWERSETTINGCHANGE,
+                    &s as *const PowerSetting as LPARAM,
+                )
+            };
+        };
+        send(GUID_CONSOLE_DISPLAY_STATE, 0);
+        send(GUID_CONSOLE_DISPLAY_STATE, 2);
+        send(GUID_CONSOLE_DISPLAY_STATE, 1);
+        send(GUID::from_u128(0x1234), 0);
+        assert_eq!(*seen.lock().unwrap(), vec![false, true, true]);
         w.stop();
     }
 

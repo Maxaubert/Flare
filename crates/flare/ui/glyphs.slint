@@ -43,11 +43,10 @@ export global Glyphs {
     out property <string> menu-folder: "M2.5 5.5h6.2l2 2.6h10.8v10.4H2.5z";
     out property <string> menu-find: "M10.5 4.5a6 6 0 1 0 0 12 6 6 0 0 0 0-12zM15 15l5 5";
     out property <string> menu-help: "M12 3.8a8.2 8.2 0 1 0 0 16.4 8.2 8.2 0 0 0 0-16.4zM9.6 9.4a2.5 2.5 0 1 1 3.7 2.2c-.8.5-1.3 1-1.3 1.9M12 16.6v.01";
-    // Surfaces menu rows: 13 px, stroke 1.7. A window with a side pane (Show in side panel), a page with a plus and a
-    // minus (the files an agent changed), a checklist (the task list).
+    // Surfaces menu rows: 13 px, stroke 1.7. A window with a side pane (Show in side panel) and a page with a plus and
+    // a minus (the files an agent changed).
     out property <string> menu-panel: "M4.5 5h15a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM14.5 5v14";
     out property <string> menu-changes: "M6 3.5h12a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 19V5A1.5 1.5 0 0 1 6 3.5zM12 7.5v5M9.5 10h5M9.5 16h5";
-    out property <string> menu-tasks: "M4 6.5l1.7 1.7L9 4.8M12 7h8M4 12.5l1.7 1.7L9 11M12 13h8M4 18.5l1.7 1.7L9 17M12 19h8";
     // The panel header's wrap button: 12 px, stroke 2.2 (drawn by WebButton). A line that turns back under itself.
     out property <string> wrap: "M3 6h18M3 12h13a3.5 3.5 0 0 1 0 7h-4M14 16.5l-2.5 2.5 2.5 2.5M3 18h5";
     // The find bar's previous-match arrow (Milestone 5): 12 px, stroke 2.
@@ -55,8 +54,25 @@ export global Glyphs {
     // The mark glyphs (Milestone 6). check: 16-unit box drawn at 12 px, stroke 2.4. cross: 16-unit box at 10 px, stroke 2.4.
     out property <string> check: "M3.2 8.6l3 3 6.6-7.2";
     out property <string> cross: "M4 4l8 8M12 4l-8 8";
+    // The tab badges (plugins phase 1): 14 px, stroke 1.8, never filled, in Flare's outlined chip. Equal to
+    // menus_ui::glyph_path (a test pins them). No check and no dot: those read as the agent's own marks.
+    out property <string> badge-phone: "M6 3.5h7a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 19V5A1.5 1.5 0 0 1 6 3.5zM8.5 17.5h2M17.5 9a3.5 3.5 0 0 1 0 6M20 6.5a7 7 0 0 1 0 11";
+    out property <string> badge-globe: "M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17zM3.5 12h17M12 3.5a3.8 8.5 0 0 1 0 17a3.8 8.5 0 0 1 0-17z";
+    out property <string> badge-bell: "M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15zM10 20.5h4";
+    out property <string> badge-mic: "M9 6a3 3 0 0 1 6 0v5a3 3 0 0 1-6 0zM5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v3";
+    out property <string> badge-eye: "M2.5 12C5 7.7 8.2 5.5 12 5.5C15.8 5.5 19 7.7 21.5 12C19 16.3 15.8 18.5 12 18.5C8.2 18.5 5 16.3 2.5 12zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z";
+    out property <string> badge-moon: "M20 14.5A8.5 8.5 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z";
+    out property <string> badge-lock: "M5.5 11h13v9.5h-13zM8 11V8a4 4 0 0 1 8 0v3";
+    out property <string> badge-bolt: "M13 2.5L5 13.5h6l-1 8 8-11h-6z";
+    out property <string> badge-star: "M12 3l2.7 5.6 6.1.8-4.5 4.2 1.1 6.1L12 16.8l-5.4 2.9 1.1-6.1-4.5-4.2 6.1-.8z";
+    out property <string> badge-plus: "M12 5v14M5 12h14";
+    out property <string> badge-pin: "M15 3l6 6-3 1-4 4 .5 4.5L10 14l-6 6-1-1 6-6-4.5-4.5L9 8l4-4z";
     // The Codex tab icon (24-unit box, 18 px, filled with the ink). Equal to flare_agent::icon::OPENAI_PATH (a test pins it).
     out property <string> openai: "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z";
     // Clawd, the Claude tab icon (viewbox 0.5 -2.5 17 17, 18 px, filled Theme.clawd). Equal to flare_agent::icon::clawd_path().
     out property <string> clawd: "M3 0 h1.02 v2.04 h-1.02 z M3 2 h1.02 v2.04 h-1.02 z M4 0 h1.02 v2.04 h-1.02 z M5 0 h1.02 v2.04 h-1.02 z M4 2 h1.02 v2.04 h-1.02 z M12 0 h1.02 v2.04 h-1.02 z M13 0 h1.02 v2.04 h-1.02 z M13 2 h1.02 v2.04 h-1.02 z M14 0 h1.02 v2.04 h-1.02 z M14 2 h1.02 v2.04 h-1.02 z M1 4 h1.02 v2.04 h-1.02 z M2 4 h1.02 v2.04 h-1.02 z M3 4 h1.02 v2.04 h-1.02 z M3 6 h1.02 v2.04 h-1.02 z M14 4 h1.02 v2.04 h-1.02 z M15 4 h1.02 v2.04 h-1.02 z M14 6 h1.02 v2.04 h-1.02 z M16 4 h1.02 v2.04 h-1.02 z M4 8 h1.02 v2.04 h-1.02 z M6 8 h1.02 v2.04 h-1.02 z M11 8 h1.02 v2.04 h-1.02 z M13 8 h1.02 v2.04 h-1.02 z M6 0 h1.02 v2.04 h-1.02 z M6 2 h1.02 v2.04 h-1.02 z M7 0 h1.02 v2.04 h-1.02 z M7 2 h1.02 v2.04 h-1.02 z M8 0 h1.02 v2.04 h-1.02 z M8 2 h1.02 v2.04 h-1.02 z M9 0 h1.02 v2.04 h-1.02 z M9 2 h1.02 v2.04 h-1.02 z M10 0 h1.02 v2.04 h-1.02 z M10 2 h1.02 v2.04 h-1.02 z M11 0 h1.02 v2.04 h-1.02 z M11 2 h1.02 v2.04 h-1.02 z M4 4 h1.02 v2.04 h-1.02 z M4 6 h1.02 v2.04 h-1.02 z M5 4 h1.02 v2.04 h-1.02 z M5 6 h1.02 v2.04 h-1.02 z M6 4 h1.02 v2.04 h-1.02 z M6 6 h1.02 v2.04 h-1.02 z M7 4 h1.02 v2.04 h-1.02 z M7 6 h1.02 v2.04 h-1.02 z M8 4 h1.02 v2.04 h-1.02 z M8 6 h1.02 v2.04 h-1.02 z M9 4 h1.02 v2.04 h-1.02 z M9 6 h1.02 v2.04 h-1.02 z M10 4 h1.02 v2.04 h-1.02 z M10 6 h1.02 v2.04 h-1.02 z M11 4 h1.02 v2.04 h-1.02 z M11 6 h1.02 v2.04 h-1.02 z M12 4 h1.02 v2.04 h-1.02 z M12 6 h1.02 v2.04 h-1.02 z M13 4 h1.02 v2.04 h-1.02 z M13 6 h1.02 v2.04 h-1.02 z";
+    // Clawd's eyelids (H1's blink, the same box as clawd). Equal to flare_agent::icon::clawd_lids_path().
+    out property <string> clawd-lids: "M5 2 h1.02 v2.04 h-1.02 z M12 2 h1.02 v2.04 h-1.02 z";
+    // The agy tab icon (G1): one path per colour of Theme.agy, viewbox -0.5 -1.5 11 11, 18 px. Equal to flare_agent::icon::agy_paths() (a test pins it).
+    out property <[string]> agy: ["M0 6 h1.02 v1.02 h-1.02 z M0 7 h1.02 v1.02 h-1.02 z", "M1 4 h1.02 v1.02 h-1.02 z M1 5 h1.02 v1.02 h-1.02 z M1 6 h1.02 v1.02 h-1.02 z M1 7 h1.02 v1.02 h-1.02 z", "M2 2 h1.02 v1.02 h-1.02 z M2 3 h1.02 v1.02 h-1.02 z M2 4 h1.02 v1.02 h-1.02 z M2 5 h1.02 v1.02 h-1.02 z", "M3 2 h1.02 v1.02 h-1.02 z M3 3 h1.02 v1.02 h-1.02 z", "M4 0 h1.02 v1.02 h-1.02 z M3 1 h1.02 v1.02 h-1.02 z M4 1 h1.02 v1.02 h-1.02 z M4 2 h1.02 v1.02 h-1.02 z", "M5 0 h1.02 v1.02 h-1.02 z M5 1 h1.02 v1.02 h-1.02 z M6 1 h1.02 v1.02 h-1.02 z M5 2 h1.02 v1.02 h-1.02 z", "M6 2 h1.02 v1.02 h-1.02 z M6 3 h1.02 v1.02 h-1.02 z", "M7 2 h1.02 v1.02 h-1.02 z M7 3 h1.02 v1.02 h-1.02 z M7 4 h1.02 v1.02 h-1.02 z M7 5 h1.02 v1.02 h-1.02 z", "M8 4 h1.02 v1.02 h-1.02 z M8 5 h1.02 v1.02 h-1.02 z M8 6 h1.02 v1.02 h-1.02 z M8 7 h1.02 v1.02 h-1.02 z", "M9 6 h1.02 v1.02 h-1.02 z M9 7 h1.02 v1.02 h-1.02 z"];
 }

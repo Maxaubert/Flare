@@ -1,8 +1,9 @@
 //! flare-tabs: the pure tab logic of Flare. The tab list and its rules, the strip's plan and
 //! device-pixel layout, the drag state machine, the chord table, the sidebar's reveal and slide,
-//! the restore planner, tabs.json and the close-flow state. Time is passed in, never read.
+//! the restore planner, tabs.json, the close-flow state and the badges and progress callers put on a tab. Time is passed in, never read.
 
 pub mod close_flow;
+pub mod decor;
 pub mod drag_flight;
 pub mod fit_hold;
 pub mod folder_names;
