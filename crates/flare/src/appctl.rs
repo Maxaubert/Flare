@@ -1236,8 +1236,12 @@ impl AppCtl {
         );
         bind!(app, rc, on_plus_menu, |c, x: f32, y: f32| c
             .open_plus_menu(x, y));
-        bind!(app, rc, on_folder_menu, |c, x: f32, y: f32| c
-            .open_folder_menu(x, y));
+        bind!(
+            app,
+            rc,
+            on_folder_menu,
+            |c, right: f32, top: f32, foot: f32| c.open_folder_menu(right, top, foot)
+        );
         bind!(app, rc, on_more_clicked, |c, x: f32, y: f32| c
             .open_overflow(false, x, y));
         bind!(app, rc, on_settings_clicked, |c| c.toggle_settings());
@@ -2611,12 +2615,12 @@ impl AppCtl {
         self.show_menu(MenuKind::Plus, rows, x, y);
     }
 
-    /// The sidebar New tab button's arrow: the same menu, its left edge at `x` and its foot just above `top` (the
-    /// button's top), so it never covers the button.
-    fn open_folder_menu(&mut self, x: f32, top: f32) {
+    /// The sidebar New tab button's arrow: the same menu as a dropdown from the button (`right` is its right edge,
+    /// `top` and `foot` its top and foot). It opens upward, right-aligned to the arrow, and never covers the button.
+    fn open_folder_menu(&mut self, right: f32, top: f32, foot: f32) {
         self.close_overflow_quietly();
         let rows = plus_menu_rows(&self.prefs, &self.starters, &self.deps.home);
-        self.show_menu_at(MenuKind::Plus, rows, x, top, true);
+        self.show_menu_at(MenuKind::Plus, rows, right, top, Some(foot));
     }
 
     fn open_tab_menu(&mut self, id: &str, x: f32, y: f32) {
@@ -2651,24 +2655,26 @@ impl AppCtl {
     }
 
     fn show_menu(&mut self, kind: MenuKind, rows: Vec<(MenuRowData, String)>, x: f32, y: f32) {
-        self.show_menu_at(kind, rows, x, y, false);
+        self.show_menu_at(kind, rows, x, y, None);
     }
 
-    /// `above`: the menu's foot sits just above `y` instead of its top at `y` (the sidebar's New tab arrow).
+    /// `drop`: a dropdown from a button whose foot is that `y` (the sidebar's New tab arrow); `x` is then the
+    /// button's right edge and `y` its top. Without it the menu's top-left is at the point.
     fn show_menu_at(
         &mut self,
         kind: MenuKind,
         rows: Vec<(MenuRowData, String)>,
         x: f32,
         y: f32,
-        above: bool,
+        drop: Option<f32>,
     ) {
         self.clear_tip();
         self.menu = Some(MenuState { kind, rows });
         if let Some(app) = self.app() {
             app.set_menu_x(x);
             app.set_menu_y(y);
-            app.set_menu_above(above);
+            app.set_menu_drop(drop.is_some());
+            app.set_menu_foot(drop.unwrap_or(y));
         }
         self.push_menu();
         if let Some(app) = self.app() {
@@ -5573,11 +5579,19 @@ mod tests {
             },
             |p| set_new_tab_folder(p, "D:\\stored"),
         );
-        f.ctl.borrow_mut().open_folder_menu(10.0, 400.0);
+        f.ctl.borrow_mut().open_folder_menu(212.0, 400.0, 434.0);
         assert!(f.h.comp.get_menu_open());
         assert!(
-            f.h.comp.get_menu_above(),
-            "the arrow's menu opens above the button"
+            f.h.comp.get_menu_drop(),
+            "the arrow's menu is a dropdown from the button"
+        );
+        assert_eq!(
+            (
+                f.h.comp.get_menu_x(),
+                f.h.comp.get_menu_y(),
+                f.h.comp.get_menu_foot()
+            ),
+            (212.0, 400.0, 434.0)
         );
         let first = f.h.comp.get_menu_rows().row_data(0).unwrap();
         assert_eq!(first.label.as_str(), CHOOSE_FOLDER);
@@ -5597,9 +5611,9 @@ mod tests {
                 .map(String::as_str),
             Some("D:\\w")
         );
-        // The strip's right-click menu opens at the pointer, not above it.
+        // The strip's right-click menu opens at the pointer, not as a dropdown.
         f.ctl.borrow_mut().open_plus_menu(10.0, 10.0);
-        assert!(!f.h.comp.get_menu_above());
+        assert!(!f.h.comp.get_menu_drop());
 
         // A cancel opens nothing.
         let g = fx();

@@ -142,9 +142,12 @@ export component ContextMenu inherits Rectangle {
     in property <[MenuRow]> rows;
     in property <length> at-x;
     in property <length> at-y;
-    // The panel's foot sits 4 px above at-y (the sidebar's New tab arrow opens it over the button), else its top
-    // is at at-y. Either way the window's edges cap it.
-    in property <bool> above;
+    // A dropdown from a button (the sidebar's New tab arrow, 2026-10-27): at-x is the button's right edge, at-y its
+    // top and at-foot its foot. The panel's right edge meets at-x and it opens upward, 4 px clear of the button; it
+    // drops below the foot only when there is no room above. Otherwise the panel's top-left is at (at-x, at-y).
+    // Either way the window's edges cap it.
+    in property <bool> drop;
+    in property <length> at-foot;
     callback picked(int);
     callback trailing(int);
     callback dismissed();
@@ -246,10 +249,13 @@ export component ContextMenu inherits Rectangle {
         width: Px.snap(min(max(156px, col.preferred-width) + 2 * Px.hair(), root.width - 16px));
         // The layout's padding is the border already: adding it again made the last row taller.
         height: col.preferred-height;
-        x: Px.snap(min(root.at-x, root.width - self.width - 8px));
-        y: Px.snap(root.above
-            ? max(8px, root.at-y - self.height - 4px)
-            : min(root.at-y, root.height - self.height - 8px));
+        x: Px.snap(root.drop
+            ? max(8px, min(root.at-x - self.width, root.width - self.width - 8px))
+            : min(root.at-x, root.width - self.width - 8px));
+        y: Px.snap(!root.drop ? min(root.at-y, root.height - self.height - 8px)
+            : root.at-y - self.height - 4px >= 8px ? root.at-y - self.height - 4px
+            : root.at-foot + 4px + self.height <= root.height - 8px ? root.at-foot + 4px
+            : 8px);
         background: Theme.side-flat;
         border-radius: 2px;
         border-width: Px.hair();
@@ -284,7 +290,9 @@ export component ContextMenu inherits Rectangle {
     // spot lands on the menu's own anchor (the panel's corner, or inside it where the window's edge
     // pushed the panel in). That is the same click again, not a click in the menu: it reopens the
     // menu there. The rest of the panel keeps its meaning.
+    // A dropdown has no right-clicked point: its button is the way back.
     TouchArea {
+        enabled: !root.drop;
         x: root.at-x - 2px;
         y: root.at-y - 2px;
         width: 5px;
@@ -604,6 +612,8 @@ export component MenusPreview inherits Window {
     in-out property <[MenuRow]> menu-rows;
     in-out property <length> menu-x;
     in-out property <length> menu-y;
+    in-out property <bool> menu-drop;
+    in-out property <length> menu-foot;
     in-out property <int> picked-index: -1;
     in-out property <int> trailing-index: -1;
     in-out property <int> menu-dismissed;
@@ -665,6 +675,8 @@ export component MenusPreview inherits Window {
         rows: root.menu-rows;
         at-x: root.menu-x;
         at-y: root.menu-y;
+        drop: root.menu-drop;
+        at-foot: root.menu-foot;
         picked(i) => { root.picked-index = i; }
         trailing(i) => { root.trailing-index = i; }
         dismissed => { root.menu-dismissed += 1; root.menu-open = false; }

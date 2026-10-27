@@ -256,6 +256,8 @@ export component TabSidebar inherits Rectangle {
     in property <string> new-tab-title;
     // The New tab arrow's tooltip and accessible name.
     in property <string> folder-title: "Open in a folder";
+    // The folder menu is up: the arrow stays pressed and its chevron points up.
+    in property <bool> folder-open;
     // The plugins' sections under the tab list (plugins phase 4); none takes no room.
     in property <[PluginRow]> plugin-rows;
     out property <length> sections-y: sec-box.absolute-position.y;
@@ -270,8 +272,8 @@ export component TabSidebar inherits Rectangle {
     callback closed(string);
     callback tab-menu(string, length, length);
     callback new-tab();
-    // The New tab arrow: the folder menu, its left edge at x and its foot just above y (the button's top).
-    callback folder-menu(length, length);
+    // The New tab arrow: the folder menu as a dropdown from the button, given its right edge, top and foot.
+    callback folder-menu(length, length, length);
     callback find-edited(string);
     callback find-accepted();
     callback find-escape();
@@ -534,10 +536,11 @@ export component TabSidebar inherits Rectangle {
                         height: parent.height;
                         border-top-right-radius: 6px;
                         border-bottom-right-radius: 6px;
-                        background: arrow-ta.has-hover ? Theme.hover-hi : Theme.hover;
+                        background: arrow-ta.has-hover || root.folder-open ? Theme.hover-hi : Theme.hover;
                         accessible-role: button;
                         accessible-label: root.folder-title;
-                        accessible-action-default => { root.folder-menu(foot.absolute-position.x, foot.absolute-position.y); }
+                        accessible-expanded: root.folder-open;
+                        accessible-action-default => { root.folder-menu(foot.absolute-position.x + foot.width, foot.absolute-position.y, foot.absolute-position.y + foot.height); }
                         // The 11 px slot, as the strip's +N chevron; the path is grown by one stroke and moved back by half.
                         Path {
                             x: (parent.width - 11px) / 2 - (2.2 * 11px / 24) / 2;
@@ -546,9 +549,10 @@ export component TabSidebar inherits Rectangle {
                             height: 11px + 2.2 * 11px / 24;
                             viewbox-width: 24;
                             viewbox-height: 24;
-                            commands: Glyphs.chevron-down;
+                            // Up while its menu is open (it opens upward from the arrow).
+                            commands: root.folder-open ? Glyphs.chevron-up : Glyphs.chevron-down;
                             fill: transparent;
-                            stroke: arrow-ta.has-hover ? Theme.text : Theme.text-soft;
+                            stroke: arrow-ta.has-hover || root.folder-open ? Theme.text : Theme.text-soft;
                             stroke-width: 2.2 * 11px / 24;
                             stroke-line-cap: round;
                             stroke-line-join: round;
@@ -556,7 +560,7 @@ export component TabSidebar inherits Rectangle {
                         arrow-ta := TouchArea {
                             pointer-event(e) => {
                                 if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
-                                    root.folder-menu(foot.absolute-position.x, foot.absolute-position.y);
+                                    root.folder-menu(foot.absolute-position.x + foot.width, foot.absolute-position.y, foot.absolute-position.y + foot.height);
                                 }
                             }
                             changed has-hover => {
@@ -663,6 +667,7 @@ export component TabSidebarPreview inherits Window {
     // The label comes from the chord table (the tests set it); never typed by hand here.
     in property <string> find-key;
     in property <string> new-tab-title: "New tab (Ctrl+T)";
+    in property <bool> folder-open;
     in property <[PluginRow]> plugin-rows;
     out property <length> sections-y: sb.sections-y;
     out property <length> sections-h: sb.sections-h;
@@ -677,8 +682,8 @@ export component TabSidebarPreview inherits Window {
     callback closed(string);
     callback tab-menu(string, length, length);
     callback new-tab();
-    // The New tab arrow: the folder menu, its left edge at x and its foot just above y (the button's top).
-    callback folder-menu(length, length);
+    // The New tab arrow: the folder menu as a dropdown from the button, given its right edge, top and foot.
+    callback folder-menu(length, length, length);
     callback find-edited(string);
     callback find-accepted();
     callback find-escape();
@@ -708,6 +713,7 @@ export component TabSidebarPreview inherits Window {
         carrying: root.carrying;
         find-key: root.find-key;
         new-tab-title: root.new-tab-title;
+        folder-open: root.folder-open;
         plugin-rows: root.plugin-rows;
         hover-action(id, n) => { root.hover-action(id, n); }
         plugin-fold(s) => { root.plugin-fold(s); }
@@ -719,7 +725,7 @@ export component TabSidebarPreview inherits Window {
         closed(id) => { root.closed(id); }
         tab-menu(id, x, y) => { root.tab-menu(id, x, y); }
         new-tab => { root.new-tab(); }
-        folder-menu(x, y) => { root.folder-menu(x, y); }
+        folder-menu(r, t, b) => { root.folder-menu(r, t, b); }
         find-edited(t) => { root.find-edited(t); }
         find-accepted => { root.find-accepted(); }
         find-escape => { root.find-escape(); }

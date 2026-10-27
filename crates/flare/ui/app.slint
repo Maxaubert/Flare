@@ -575,8 +575,10 @@ export component AppWindow inherits Window {
     in property <[MenuRow]> menu-rows;
     in property <length> menu-x;
     in property <length> menu-y;
-    // The menu's foot sits just above menu-y (the sidebar's New tab arrow) instead of its top at menu-y.
-    in property <bool> menu-above;
+    // A dropdown from the sidebar's New tab arrow: menu-x is the button's right edge, menu-y its top and menu-foot
+    // its foot (ContextMenu.drop); else the menu's top-left is at the point.
+    in property <bool> menu-drop;
+    in property <length> menu-foot;
     in property <bool> overflow-open;
     in property <[OverflowRow]> overflow-rows;
     in property <length> overflow-right;
@@ -744,7 +746,7 @@ export component AppWindow inherits Window {
     callback tab-menu(string, length, length);
     callback new-tab();
     callback plus-menu(length, length);
-    callback folder-menu(length, length);
+    callback folder-menu(length, length, length);
     callback more-clicked(length, length);
     callback settings-clicked();
     callback strip-resized(int);
@@ -1314,7 +1316,8 @@ export component AppWindow inherits Window {
                     closed(a) => { root.tab-closed(a); }
                     tab-menu(a, b, c) => { root.tab-menu(a, b, c); }
                     new-tab() => { root.new-tab(); }
-                    folder-menu(a, b) => { root.folder-menu(a, b); }
+                    folder-open: root.menu-open && root.menu-drop;
+                    folder-menu(a, b, c) => { root.folder-menu(a, b, c); }
                     find-edited(a) => { root.side-find-edited(a); }
                     find-accepted() => { root.side-find-accepted(); }
                     find-escape() => { root.side-find-escape(); }
@@ -1377,7 +1380,8 @@ export component AppWindow inherits Window {
             rows: root.menu-rows;
             at-x: root.menu-x;
             at-y: root.menu-y;
-            above: root.menu-above;
+            drop: root.menu-drop;
+            at-foot: root.menu-foot;
             picked(i) => { root.menu-picked(i); }
             trailing(i) => { root.menu-trailing(i); }
             dismissed => { root.menu-dismissed(); }
