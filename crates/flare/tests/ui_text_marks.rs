@@ -73,7 +73,8 @@ fn the_agy_arch_is_filled_from_the_theme_list_that_holds_the_agent_crates_colour
     assert_eq!(list_items(&ui_file("theme.slint"), "color", "agy"), want);
     let mark = ui_file("tabmark.slint");
     assert!(mark.contains("for cells[i] in Glyphs.agy : Path"));
-    assert!(mark.contains("fill: Theme.agy[i];"));
+    // Still, each path wears its Theme.agy colour; A1 swaps in the colour the mark clock pushed for it.
+    assert!(mark.contains("fill: root.flows ? MarkMotion.agy-flow[i] : Theme.agy[i];"));
     let (x, y, w, h) = flare_agent::icon::AGY_VIEWBOX;
     for line in [
         format!("viewbox-x: {x};"),
@@ -82,6 +83,61 @@ fn the_agy_arch_is_filled_from_the_theme_list_that_holds_the_agent_crates_colour
         format!("viewbox-height: {h};"),
     ] {
         assert!(mark.contains(&line), "AgentIcon has {line}");
+    }
+}
+
+#[test]
+fn clawds_lids_are_the_agent_crates_path_in_clawds_colour() {
+    assert_eq!(
+        glyph(&glyphs(), "clawd-lids"),
+        flare_agent::icon::clawd_lids_path()
+    );
+    let mark = ui_file("tabmark.slint");
+    let at = mark
+        .find("commands: Glyphs.clawd-lids;")
+        .expect("AgentIcon draws the lids");
+    assert!(
+        mark[at..]
+            .trim_start_matches("commands: Glyphs.clawd-lids;")
+            .trim_start()
+            .starts_with("fill: Theme.clawd;")
+    );
+}
+
+/// Owner decision 2026-10-26: the agent icons move by the mark clock alone (MarkMotion), never by a Slint animation.
+#[test]
+fn the_agent_icon_moves_by_the_mark_clock_only() {
+    let mark = ui_file("tabmark.slint");
+    let start = mark.find("export component AgentIcon").expect("AgentIcon");
+    let end = mark[start..]
+        .find("\nexport component ")
+        .map_or(mark.len(), |e| start + e);
+    let icon = &mark[start..end];
+    assert!(!icon.contains("animate"), "AgentIcon animates by itself");
+    assert!(!icon.contains("animation-tick"));
+    assert!(icon.contains("MarkMotion.still ? 0 : root.motion"));
+    for name in [
+        "hop-y",
+        "hop-sx",
+        "hop-sy",
+        "blink",
+        "spin-fade",
+        "fade",
+        "turn",
+        "grow",
+        "grow-alpha",
+        "agy-flow",
+    ] {
+        assert!(
+            icon.contains(&format!("MarkMotion.{name}")),
+            "AgentIcon reads {name}"
+        );
+    }
+    for name in ["tabs.slint", "sidebar.slint"] {
+        assert!(
+            ui_file(name).contains("motion: "),
+            "{name} gives the icon its motion"
+        );
     }
 }
 

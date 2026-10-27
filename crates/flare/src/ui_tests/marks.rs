@@ -622,6 +622,106 @@ fn agent_icons_are_eighteen_pixels() {
     }
 }
 
+/// The icon's box at (340, 9), and what of it is near `want`: its bounding box and pixel count.
+fn icon_ink(f: &Frame, s: f32, want: [u8; 4], tol: u8) -> (Option<(u32, u32, u32, u32)>, usize) {
+    let r = (
+        (330.0 * s) as u32,
+        0u32,
+        (380.0 * s) as u32,
+        (36.0 * s) as u32,
+    );
+    let pick = |p: [u8; 4]| Frame::near(p, want, tol);
+    (
+        f.bbox_where(r.0, r.1, r.2, r.3, pick),
+        f.count_where(r.0, r.1, r.2, r.3, pick),
+    )
+}
+
+/// Owner decision 2026-10-26: the icon moves by the frame the mark clock pushes, only with a motion given, and a
+/// still clock draws it as it stands. The hop lifts and squashes the box, H1 shuts Clawd's eyes, O6 and O4 fade, O4
+/// shrinks, and A1 paints each path of agy's arch the colour it is given. (The software renderer leaves a turn out.)
+#[test]
+fn agent_icons_move_by_the_pushed_frame_and_stand_still_when_stilled() {
+    use flare_agent::icon_motion::{AGY_RGB, IconMotion as M};
+    let s = 2.0f32;
+    let draw = |kind: i32, motion: M, set: &dyn Fn(&MarkMotion)| {
+        let h = harness(s);
+        h.comp.set_icon_kind(kind);
+        h.comp.set_icon_motion(motion.code());
+        set(&h.comp.global::<MarkMotion>());
+        h.render()
+    };
+    let hop = |g: &MarkMotion| {
+        g.set_hop_y(-0.22);
+        g.set_hop_sx(0.96);
+        g.set_hop_sy(1.06);
+    };
+    let (rest, rest_n) = icon_ink(&draw(1, M::None, &|_| {}), s, CLAWD, 40);
+    let rest = rest.unwrap();
+    // The hop: up by a fifth of the icon (18 css px * 0.22 = 4 at 200 %: 8 device px), taller and narrower.
+    let (up, _) = icon_ink(&draw(1, M::HopBlink, &hop), s, CLAWD, 40);
+    let up = up.unwrap();
+    assert!(rest.1 - up.1 >= 6, "{rest:?} -> {up:?}");
+    assert!(
+        up.2 - up.0 < rest.2 - rest.0,
+        "narrower: {rest:?} -> {up:?}"
+    );
+    // The same frame with no motion given, or with the clock stood, is the icon at rest.
+    assert_eq!(
+        icon_ink(&draw(1, M::None, &hop), s, CLAWD, 40).0,
+        Some(rest)
+    );
+    let stood = |g: &MarkMotion| {
+        hop(g);
+        g.set_still(true);
+        g.set_blink(true);
+    };
+    assert_eq!(
+        icon_ink(&draw(1, M::HopBlink, &stood), s, CLAWD, 40),
+        (Some(rest), rest_n)
+    );
+    // The blink fills both eyes in Clawd's colour, only with H1.
+    let shut = |g: &MarkMotion| g.set_blink(true);
+    let (_, shut_n) = icon_ink(&draw(1, M::HopBlink, &shut), s, CLAWD, 40);
+    let eye = (2.0 * 18.0 / 17.0 * s) as usize; // a cell is 1.02 x 2.04 of 17 units
+    assert!(shut_n >= rest_n + 2 * eye, "{rest_n} -> {shut_n}");
+    assert_eq!(icon_ink(&draw(1, M::Hop, &shut), s, CLAWD, 40).1, rest_n);
+    // O6's fade: the ink is drawn at 0.55, so no pixel is the full ink any more.
+    let faded = |g: &MarkMotion| g.set_fade(0.55);
+    assert!(icon_ink(&draw(2, M::None, &faded), s, INK, 10).1 > 0);
+    assert_eq!(icon_ink(&draw(2, M::SpinFade, &faded), s, INK, 10).1, 0);
+    // O4: smaller and fainter.
+    let small = |g: &MarkMotion| {
+        g.set_grow(0.82);
+        g.set_grow_alpha(0.7);
+    };
+    let (big, _) = icon_ink(&draw(2, M::None, &small), s, INK, 120);
+    let (little, _) = icon_ink(&draw(2, M::Breathe, &small), s, INK, 120);
+    let (big, little) = (big.unwrap(), little.unwrap());
+    assert!(
+        little.2 - little.0 + 4 <= big.2 - big.0,
+        "{big:?} -> {little:?}"
+    );
+    // A1: every path wears the colour pushed for it; still, the arch is its own colours again.
+    let one = AGY_RGB[5];
+    let red = |g: &MarkMotion| {
+        let c = Color::from_rgb_u8(one.0, one.1, one.2);
+        g.set_agy_flow(ModelRc::new(VecModel::from(vec![c; 10])));
+    };
+    let want = [one.0, one.1, one.2, 255];
+    let (_, flow_n) = icon_ink(&draw(3, M::RainbowFlow, &red), s, want, 6);
+    let (_, own_n) = icon_ink(&draw(3, M::None, &red), s, want, 6);
+    assert!(flow_n > 3 * own_n, "{own_n} -> {flow_n}");
+    let red_still = |g: &MarkMotion| {
+        red(g);
+        g.set_still(true);
+    };
+    assert_eq!(
+        icon_ink(&draw(3, M::RainbowFlow, &red_still), s, want, 6).1,
+        own_n
+    );
+}
+
 #[test]
 fn the_still_set_stills_everything() {
     let busy = MotionSet {

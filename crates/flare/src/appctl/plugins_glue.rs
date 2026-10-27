@@ -13,6 +13,8 @@
 //! - Click scope (design 13): a click on tab X (a tab's menu or hover button, an item that leads to X, a top-bar
 //!   button while X is in front) lets that plugin act on X until X closes or the plugin stops.
 //! - Everything a plugin set goes when it stops, and what a closed tab carried goes with it.
+//! - Agent icon motions (owner decision 2026-10-26): a plugin with `agent-looks` picks how an agent's icon moves while
+//!   it works (`CtlOp::MotionSet`, `CtlOp::MotionClear`); the newest pick wins, and a plugin that stops takes its own.
 
 use std::collections::{HashMap, HashSet};
 
@@ -29,6 +31,8 @@ use crate::plugin_ui::{
     self, ActionDecl, ActionState, Button, HOVER_MAX, Item, SectionDecl, TOP_BAR_MAX,
 };
 use crate::{AppWindow, PluginButton, PluginRow};
+use flare_agent::icon_motion::IconMotion;
+use flare_agent::kinds::AgentKind;
 
 /// What a tab-menu row of a plugin's action carries as its path: the plugin and the key, apart from Flare's own.
 const ACTION_ROW: &str = "plugin-action\u{1f}";
@@ -131,12 +135,50 @@ impl AppCtl {
             .collect();
     }
 
-    /// Everything the plugin set goes (it stopped, or its background page ended), its bars too (plugins phase 6).
+    /// Everything the plugin set goes (it stopped, or its background page ended), its bars too (plugins phase 6), and
+    /// its picks of the agents' motions.
     pub(super) fn clear_plugin_surfaces(&mut self, id: &str) {
         if self.plugins.ui.clear_plugin(id) {
             self.refresh();
         }
         self.clear_plugin_bars(id);
+        if self.motions.clear_plugin(id) {
+            self.refresh();
+        }
+    }
+
+    /// `agents.motion.set`: the plugin's pick for the agent, if it is still on in the generation that was checked.
+    /// Answers the motion the agent wears now (this pick: the newest wins).
+    pub(super) fn ctl_motion_set(
+        &mut self,
+        plugin: String,
+        agent: AgentKind,
+        motion: IconMotion,
+        generation: u64,
+    ) -> Result<Value, CtlError> {
+        self.plugin_still_on(&plugin, generation)?;
+        if self.motions.set(agent, &plugin, motion) {
+            self.refresh();
+        }
+        Ok(json!({"agent": agent.as_str(), "motion": self.motions.of(agent).name()}))
+    }
+
+    /// `agents.motion.clear`: the plugin's pick for the agent goes. Answers whether it had one and what the agent wears
+    /// now (another plugin's older pick, or `none`).
+    pub(super) fn ctl_motion_clear(
+        &mut self,
+        plugin: String,
+        agent: AgentKind,
+    ) -> Result<Value, CtlError> {
+        let cleared = self.motions.clear(agent, &plugin);
+        if cleared {
+            self.refresh();
+        }
+        Ok(json!({
+            "agent": agent.as_str(),
+            "cleared": cleared,
+            "motion": self.motions.of(agent).name(),
+        }))
     }
 
     /// A tab closed: the action state set for it goes, and no plugin keeps click scope on it.

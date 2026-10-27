@@ -24,6 +24,8 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use flare_agent::icon_motion::IconMotion;
+use flare_agent::kinds::{AgentKind, RESUMABLE_AGENTS};
 use flare_ctl::{CallContext, CtlError, Dispatcher, Grant, Method, code};
 use flare_mods::Hub;
 use flare_surfaces::PanelKind;
@@ -221,6 +223,20 @@ pub enum CtlOp {
         plugin: String,
         tab: String,
     },
+    /// `agents.motion.set` (owner decision 2026-10-26): checked on the call's thread (the agent, a motion of Flare's
+    /// list that fits it, the rate); the window keeps the plugin's pick, and the agent's working tabs wear the newest.
+    MotionSet {
+        plugin: String,
+        agent: AgentKind,
+        motion: IconMotion,
+        /// As for `BadgeSet`.
+        generation: u64,
+    },
+    /// `agents.motion.clear`: the plugin's pick for the agent goes (an older pick of another plugin shows again).
+    MotionClear {
+        plugin: String,
+        agent: AgentKind,
+    },
     /// `mods.call` (stage 8): hand a tool call to the mod's page in this tab, opening the mod's panel there
     /// first when it is not showing. Answered when the call is queued for the page; the page's own answer comes
     /// back through the hub.
@@ -283,6 +299,8 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::TabInput { .. } => "CtlOp::TabInput",
             CtlOp::BarShow { .. } => "CtlOp::BarShow",
             CtlOp::BarHide { .. } => "CtlOp::BarHide",
+            CtlOp::MotionSet { .. } => "CtlOp::MotionSet",
+            CtlOp::MotionClear { .. } => "CtlOp::MotionClear",
         })
     }
 }
@@ -932,6 +950,65 @@ impl AppDispatcher {
         } else {
             CtlOp::BarHide { plugin, tab }
         })
+    }
+
+    /// `agents.motion.set {agent, motion}` and `agents.motion.clear {agent}` (owner decision 2026-10-26): how an agent's
+    /// tab icon moves while it works, picked from Flare's fixed list (`IconMotion`). A plugin's only (`agent-looks`);
+    /// every param is checked here, and the call is spent from the plugin's second for that agent before the window is
+    /// asked. The plugin never sends artwork: Flare draws the motion, and the agent's marks stay Flare's.
+    fn motion_call(
+        &self,
+        ctx: &CallContext,
+        method: Method,
+        params: &Value,
+    ) -> Result<Value, CtlError> {
+        let bad = |m: String| CtlError::new(code::BAD_PARAMS, m);
+        let generation = self.generation_of(ctx);
+        let plugin = Self::plugin_caller(ctx, "an agent's motion")?;
+        let set = method == Method::AgentsMotionSet;
+        let fields: &[&str] = if set {
+            &["agent", "motion"]
+        } else {
+            &["agent"]
+        };
+        only_fields(params, fields, method.name())?;
+        let agents = RESUMABLE_AGENTS.map(AgentKind::as_str).join(", ");
+        let agent = str_param(params, "agent")?
+            .ok_or_else(|| bad(format!("agent is required: one of {agents}")))?;
+        let agent =
+            AgentKind::parse(agent).ok_or_else(|| bad(format!("agent is one of {agents}")))?;
+        let op = if set {
+            let fits = || IconMotion::names_for(agent).join(", ");
+            let motion = str_param(params, "motion")?
+                .ok_or_else(|| bad(format!("motion is required: one of {}", fits())))?;
+            let motion = IconMotion::parse(motion)
+                .filter(|m| m.fits(agent))
+                .ok_or_else(|| {
+                    bad(format!(
+                        "motion for {} is one of {}",
+                        agent.as_str(),
+                        fits()
+                    ))
+                })?;
+            CtlOp::MotionSet {
+                plugin: plugin.clone(),
+                agent,
+                motion,
+                generation,
+            }
+        } else {
+            CtlOp::MotionClear {
+                plugin: plugin.clone(),
+                agent,
+            }
+        };
+        // Only a call that is right spends from the limit: as many changes a second as decor on one tab.
+        self.spend_surface(
+            format!("agents.motion:{plugin}/{}", agent.as_str()),
+            flare_ctl::decor::RATE_PER_TAB,
+            "motion changes for one agent",
+        )?;
+        self.ask(op)
     }
 
     /// `storage.get {key?}` and `storage.set {key?, value}`: the calling plugin's own store, read and changed here on
@@ -1787,6 +1864,8 @@ impl Dispatcher for AppDispatcher {
                 Method::StorageSet,
                 Method::BarShow,
                 Method::BarHide,
+                Method::AgentsMotionSet,
+                Method::AgentsMotionClear,
             ]);
         }
         all
@@ -1955,6 +2034,9 @@ impl Dispatcher for AppDispatcher {
             Method::TabsInput => self.tabs_input(ctx, &params),
             Method::StorageGet | Method::StorageSet => self.storage_call(ctx, method, &params),
             Method::BarShow | Method::BarHide => self.bar_call(ctx, method, &params),
+            Method::AgentsMotionSet | Method::AgentsMotionClear => {
+                self.motion_call(ctx, method, &params)
+            }
             Method::ViewAudio => self.view_audio(ctx, &params),
             Method::ModsTools => self.mods_tools(),
             Method::ModsCall => self.mods_call(ctx, &params),

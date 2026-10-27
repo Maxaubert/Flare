@@ -7,7 +7,8 @@
 
 use crate::mark_colours::{UiMarks, colour_of};
 use flare_agent::icon::{IconKind, icon_kind};
-use flare_agent::kinds::DetectedAgent;
+use flare_agent::icon_motion::MotionPicks;
+use flare_agent::kinds::{AgentKind, DetectedAgent};
 use flare_agent::tab_look::{Switches, TabSets, tab_look, tab_title};
 use flare_agent::tab_mark::{MarkColour, MarkPlace, MarkState};
 use flare_tabs::decor::{Badge, Decors, MAX_DRAWN, Source, progress_code, room_for};
@@ -53,8 +54,10 @@ pub struct RowData {
     pub carried: bool,
     /// What this tab needs from you, if anything (the +N list sorts by it, the dots show it).
     pub need: Option<MarkRole>,
-    /// 0 shell, 1 claude, 2 codex (the tab icon).
+    /// 0 shell, 1 claude, 2 codex, 3 agy (the tab icon).
     pub agent: i32,
+    /// How the icon moves (`IconMotion::code`): a working agent's pick ([`wear_motions`] fills it), else 0 still.
+    pub motion: i32,
     /// 0 none, 1 working, 2 question, 3 finished, 4 failed.
     pub mark_state: i32,
     /// 0 none, 1 ring, 2 line, 3 run.
@@ -269,6 +272,7 @@ pub fn build_view(inp: &ViewInput) -> View {
                 IconKind::Agy => 3,
                 IconKind::Shell | IconKind::Settings => 0,
             },
+            motion: 0,
             mark_state: look.state.map_or(0, state_int),
             mark_kind: match look.mark.place {
                 MarkPlace::None => 0,
@@ -405,6 +409,30 @@ fn state_int(s: MarkState) -> i32 {
     }
 }
 
+/// The agent a row's icon int names (the inverse of the match in [`build_view`]).
+fn agent_of_icon(agent: i32) -> Option<AgentKind> {
+    match agent {
+        1 => Some(AgentKind::Claude),
+        2 => Some(AgentKind::Codex),
+        3 => Some(AgentKind::Agy),
+        _ => None,
+    }
+}
+
+/// The agents' icon motions (owner decision 2026-10-26): the tab of an agent that is working (its Working mark is
+/// on) wears the motion a plugin picked for that agent; every other row stands still. The mark clock runs while a
+/// tab works, so nothing new ticks for it.
+pub fn wear_motions(rows: &mut [RowData], picks: &MotionPicks) {
+    for r in rows {
+        r.motion = match agent_of_icon(r.agent) {
+            Some(kind) if r.mark_state == state_int(MarkState::Working) && !r.settings => {
+                picks.of(kind).code()
+            }
+            _ => 0,
+        };
+    }
+}
+
 /// The edge: nothing else touches Slint.
 pub fn to_slint_row(row: &RowData) -> crate::TabRow {
     crate::TabRow {
@@ -426,6 +454,7 @@ pub fn to_slint_row(row: &RowData) -> crate::TabRow {
         mark_state: row.mark_state,
         mark_rainbow: row.mark_rainbow,
         agent: row.agent,
+        motion: row.motion,
         failed_tip: "".into(),
         chip1_cmd: row.chips.chip1.0.as_str().into(),
         chip1_tone: row.chips.chip1.1,
@@ -1136,6 +1165,7 @@ mod tests {
             carried: false,
             need: None,
             agent: 0,
+            motion: 0,
             mark_state: 0,
             mark_kind: 0,
             mark_color: slint::Color::from_argb_u8(0, 0, 0, 0),
@@ -1143,6 +1173,57 @@ mod tests {
             chips: RowChips::default(),
             hover: Vec::new(),
         }
+    }
+
+    /// Owner decision 2026-10-26: a working agent's tab wears its agent's pick; a tab that does not work, a shell, the
+    /// Settings tab and an agent nobody picked for stand still.
+    #[test]
+    fn only_a_working_agents_tab_wears_its_agents_motion() {
+        use flare_agent::icon_motion::IconMotion;
+        let mut picks = MotionPicks::new();
+        picks.set(AgentKind::Claude, "p", IconMotion::HopBlink);
+        picks.set(AgentKind::Agy, "p", IconMotion::RainbowFlow);
+        let with = |agent: i32, state: i32| {
+            let mut r = row("t", 0.0);
+            r.agent = agent;
+            r.mark_state = state;
+            r.motion = 9;
+            r
+        };
+        let mut rows = vec![
+            with(1, 1),
+            with(1, 0),
+            with(1, 2),
+            with(1, 3),
+            with(2, 1),
+            with(3, 1),
+            with(0, 1),
+        ];
+        rows.push({
+            let mut s = with(1, 1);
+            s.settings = true;
+            s
+        });
+        wear_motions(&mut rows, &picks);
+        let got: Vec<i32> = rows.iter().map(|r| r.motion).collect();
+        assert_eq!(
+            got,
+            [
+                IconMotion::HopBlink.code(),
+                0,
+                0,
+                0,
+                0,
+                IconMotion::RainbowFlow.code(),
+                0,
+                0
+            ]
+        );
+        assert_eq!(to_slint_row(&rows[0]).motion, IconMotion::HopBlink.code());
+        // The pick goes: the tab stands still at the next refresh.
+        picks.clear_plugin("p");
+        wear_motions(&mut rows, &picks);
+        assert!(rows.iter().all(|r| r.motion == 0));
     }
 
     #[test]

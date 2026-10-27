@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use flare_agent::close::holds_window_close;
+use flare_agent::icon_motion::{ICON_STILL, IconPhase, MotionPicks, icon_phase};
 use flare_agent::keys::AgentView;
 use flare_agent::kinds::{AgentKind, DetectedAgent};
 use flare_agent::mark_motion::{MarkPhase, MarksPause, STILL, mark_phase, needs_clock, pulse_at};
@@ -334,8 +335,9 @@ fn mark_state_of(n: i32) -> Option<MarkState> {
     }
 }
 
-/// Puts one instant of every moving mark on the window.
-fn push_frame(app: &AppWindow, p: MarkPhase, pulse: f32) {
+/// Puts one instant of every moving mark, and of every agent icon's motion, on the window.
+fn push_frame(app: &AppWindow, p: MarkPhase, icon: &IconPhase, pulse: f32) {
+    use slint::Model as _;
     let g = app.global::<MarkMotion>();
     g.set_still(p.still);
     g.set_spin(p.spin_deg);
@@ -343,6 +345,30 @@ fn push_frame(app: &AppWindow, p: MarkPhase, pulse: f32) {
     g.set_run(p.run_t);
     g.set_flow(p.flow_px);
     g.set_pulse(pulse);
+    g.set_hop_y(icon.hop_y);
+    g.set_hop_sx(icon.hop_sx);
+    g.set_hop_sy(icon.hop_sy);
+    g.set_blink(icon.blink);
+    g.set_spin_fade(icon.spin_fade_deg);
+    g.set_fade(icon.fade);
+    g.set_turn(icon.spin_deg);
+    g.set_grow(icon.grow);
+    g.set_grow_alpha(icon.grow_alpha);
+    // agy's arch: one colour a path, written into the model in place once it holds them (no new model a frame).
+    let flow = g.get_agy_flow();
+    let colours = icon
+        .flow
+        .iter()
+        .map(|&(r, gr, b)| slint::Color::from_rgb_u8(r, gr, b));
+    if flow.row_count() == icon.flow.len() {
+        for (i, c) in colours.enumerate() {
+            if flow.row_data(i) != Some(c) {
+                flow.set_row_data(i, c);
+            }
+        }
+    } else {
+        g.set_agy_flow(ModelRc::new(VecModel::from(colours.collect::<Vec<_>>())));
+    }
 }
 
 /// The marks the look and the picks give now.
@@ -478,6 +504,8 @@ pub struct AppCtl {
     hub_known: HashSet<String>,
     /// The badges and progress callers put on tabs (plugins phase 1): the agent's own, through the channel.
     decor: Decors,
+    /// How each agent's icon moves while it works: the plugins' picks (`agents.motion.*`, owner 2026-10-26).
+    pub(crate) motions: MotionPicks,
     /// The tabs as the plugins last heard of them (plugins phase 3): the next refresh tells them what changed.
     /// None while no page listens.
     plugin_seen: Option<Vec<crate::appctl::mods_glue::TabFact>>,
@@ -897,6 +925,7 @@ impl AppCtl {
             hub,
             hub_known: HashSet::new(),
             decor: Decors::default(),
+            motions: MotionPicks::new(),
             plugin_seen: None,
             handles,
             marks,
@@ -1561,6 +1590,7 @@ impl AppCtl {
             None => crate::tabs_ui::decorate(&mut view.rows, &self.decor, self.scale),
         }
         self.plugin_hover_rows(&mut view.rows);
+        crate::tabs_ui::wear_motions(&mut view.rows, &self.motions);
 
         sync_rows(&self.rows_model, &view.rows);
         self.push_plugins(&app);
@@ -2027,7 +2057,7 @@ impl AppCtl {
         if !need {
             self.clock.timer.stop();
             self.clock.start = None;
-            push_frame(&app, STILL, 1.0);
+            push_frame(&app, STILL, &ICON_STILL, 1.0);
             return;
         }
         if self.minimised {
@@ -2074,7 +2104,7 @@ impl AppCtl {
     fn mark_frame(app: &AppWindow, pause: &MarksPause, now: u64, start: u64, skeleton: bool) {
         let ms = pause.clock(now).saturating_sub(start);
         let pulse = if skeleton { pulse_at(ms) } else { 1.0 };
-        push_frame(app, mark_phase(ms), pulse);
+        push_frame(app, mark_phase(ms), &icon_phase(ms), pulse);
     }
 
     /// Runs the clock's body once at the controller's clock (the timer's own tick, for tests).
@@ -3681,6 +3711,14 @@ impl AppCtl {
                 generation,
             } => self.ctl_bar_show(plugin, tab, generation),
             CtlOp::BarHide { plugin, tab } => self.ctl_bar_hide(plugin, tab),
+            // The agents' icon motions (owner 2026-10-26): checked on the worker, applied in `plugins_glue`.
+            CtlOp::MotionSet {
+                plugin,
+                agent,
+                motion,
+                generation,
+            } => self.ctl_motion_set(plugin, agent, motion, generation),
+            CtlOp::MotionClear { plugin, agent } => self.ctl_motion_clear(plugin, agent),
             // Answered by the browser's message, never here (see `ctl_browser`).
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }
@@ -8568,6 +8606,59 @@ two",
         f.ctl.borrow_mut().set_animations_source(Rc::new(|| true));
         assert!(f.clock_running());
         assert!(!f.motion().0);
+    }
+
+    /// Owner decision 2026-10-26: a plugin's pick moves a working agent's icon, every frame from the mark clock
+    /// (`push_frame`); the tab that stops working stands still, and so does every icon with animation effects off.
+    #[test]
+    fn a_picked_motion_moves_a_working_agents_icon_from_the_mark_clock_and_stills_with_effects_off()
+    {
+        use flare_agent::icon_motion::{AGY_RGB, IconMotion, icon_phase};
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        assert_eq!(f.row(0).agent, 1, "Claude, by its hook");
+        assert_eq!(f.row(0).motion, 0, "no pick: the icon stands as today");
+        f.ctl
+            .borrow_mut()
+            .motions
+            .set(AgentKind::Claude, "p", IconMotion::HopBlink);
+        f.ctl.borrow_mut().refresh();
+        assert_eq!(f.row(0).motion, IconMotion::HopBlink.code());
+        assert!(f.clock_running(), "the working mark already runs the clock");
+        let icon = |f: &Fx| {
+            let g = f.h.comp.global::<MarkMotion>();
+            (g.get_still(), g.get_hop_y(), g.get_blink(), g.get_fade())
+        };
+        let start = f.clock.get();
+        for ms in [0, 513, 810, 1700, 3000] {
+            f.clock.set(start + ms);
+            f.ctl.borrow().mark_frame_now();
+            let p = icon_phase(ms);
+            assert_eq!(icon(&f), (false, p.hop_y, p.blink, p.fade), "at {ms}");
+        }
+        let g = f.h.comp.global::<MarkMotion>();
+        assert_eq!(g.get_agy_flow().row_count(), 10);
+        // The tab finished: its icon stands still, and with nothing else moving the clock stops.
+        f.say("C:\\a", OSC_DONE);
+        f.pump_until("finished", |f| f.row(0).mark_state == 3);
+        assert_eq!(f.row(0).motion, 0);
+        assert!(!f.clock_running());
+        // Working again with animation effects off: the pick stays, nothing moves.
+        f.ctl.borrow_mut().set_animations_source(Rc::new(|| false));
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        assert!(!f.clock_running());
+        let (still, hop_y, blink, fade) = icon(&f);
+        assert!(still && !blink);
+        assert_eq!((hop_y, fade), (0.0, 1.0));
+        let flow: Vec<slint::Color> = g.get_agy_flow().iter().collect();
+        let want: Vec<slint::Color> = AGY_RGB
+            .iter()
+            .map(|&(r, gr, b)| slint::Color::from_rgb_u8(r, gr, b))
+            .collect();
+        assert_eq!(flow, want, "the still arch wears its own colours");
     }
 
     #[test]

@@ -10,6 +10,7 @@ pub mod close;
 pub mod detect;
 pub mod hook_state;
 pub mod icon;
+pub mod icon_motion;
 pub mod indicator;
 pub mod keys;
 pub mod kinds;
