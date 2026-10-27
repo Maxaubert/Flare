@@ -35,5 +35,10 @@ build. To try one, copy its folder into `%APPDATA%\Flare\plugins\` and turn it o
   in front, until you bring that tab back. Claude's `set_steps {steps: [{name, weight?, done}]}` puts a weighted
   progress chip on its tab: the weights done over all the weights, so 9 of 10 steps done reads 50 % when the last one
   is half the work. (A tab's own icon and effects, `tabs.icon.*` and `tabs.effect.*` in the design, are not built.)
+- `agent-moves/`: `agent-looks`, `panel` and `actions`. The agents' tab icons move while they work: Claude hops and
+  blinks (`hop-blink`), Codex turns while it fades (`spin-fade`), Antigravity's rainbow flows along its arch
+  (`rainbow-flow`), set with `agents.motion.set` when its background page starts. A tab's menu has "Agent motions",
+  a panel with one picker per agent (kept in the plugin's store). Turning it off makes the icons still again; so does
+  Windows' "animation effects" switch.
 
 The contract is `docs/surfaces/plugins.md`; the protocol 1 sample mod is `docs/surfaces/sample-mod/`.

@@ -60,6 +60,7 @@ pub fn permission_words(p: Permission) -> &'static str {
         Permission::Input => "Type and run commands in your terminals (full control)",
         Permission::Network => "Use the internet",
         Permission::Process => "Run its own program on this PC (full access)",
+        Permission::AgentLooks => "Change how agent icons move while they work",
     }
 }
 

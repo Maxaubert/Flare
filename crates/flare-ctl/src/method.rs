@@ -38,6 +38,10 @@ pub enum Method {
     /// A plugin's strip under a tab's terminal (plugins phase 6), shown and hidden, under `bar`. One bar a tab.
     BarShow,
     BarHide,
+    /// How one agent's tab icon moves while it works, a motion from Flare's fixed list (owner decision 2026-10-26),
+    /// under `agent-looks`. Last writer wins; a plugin turned off takes its motions with it.
+    AgentsMotionSet,
+    AgentsMotionClear,
     PanelOpen,
     PanelClose,
     PanelState,
@@ -107,11 +111,13 @@ pub enum Namespace {
     /// A plugin's own store (`storage.get`, `storage.set`): every plugin's, with no permission, and never the agent's
     /// (design 13). It holds only what the plugin put there.
     Storage,
+    /// How the agents' tab icons move while they work (`agents.motion.*`), under `agent-looks`. Never the agent's.
+    Agents,
 }
 
 impl Namespace {
     /// Every namespace.
-    pub const ALL: [Namespace; 16] = [
+    pub const ALL: [Namespace; 17] = [
         Namespace::Hello,
         Namespace::Tabs,
         Namespace::Decor,
@@ -128,6 +134,7 @@ impl Namespace {
         Namespace::Session,
         Namespace::Input,
         Namespace::Storage,
+        Namespace::Agents,
     ];
 
     /// The one permission that opens this namespace to a plugin. `None` for the open ones (`hello`, `tabs.list`), for a
@@ -151,13 +158,14 @@ impl Namespace {
             Namespace::Bar => Some(Permission::Bar),
             Namespace::Session => Some(Permission::Sessions),
             Namespace::Input => Some(Permission::Input),
+            Namespace::Agents => Some(Permission::AgentLooks),
         }
     }
 }
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 39] = [
+    pub const ALL: [Method; 41] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -172,6 +180,8 @@ impl Method {
         Method::StorageSet,
         Method::BarShow,
         Method::BarHide,
+        Method::AgentsMotionSet,
+        Method::AgentsMotionClear,
         Method::PanelOpen,
         Method::PanelClose,
         Method::PanelState,
@@ -216,6 +226,8 @@ impl Method {
             Method::StorageSet => "storage.set",
             Method::BarShow => "bar.show",
             Method::BarHide => "bar.hide",
+            Method::AgentsMotionSet => "agents.motion.set",
+            Method::AgentsMotionClear => "agents.motion.clear",
             Method::PanelOpen => "panel.open",
             Method::PanelClose => "panel.close",
             Method::PanelState => "panel.state",
@@ -263,6 +275,7 @@ impl Method {
             Method::TabsInput => Namespace::Input,
             Method::StorageGet | Method::StorageSet => Namespace::Storage,
             Method::BarShow | Method::BarHide => Namespace::Bar,
+            Method::AgentsMotionSet | Method::AgentsMotionClear => Namespace::Agents,
             Method::PanelOpen | Method::PanelClose | Method::PanelState => Namespace::Panel,
             Method::ViewImage
             | Method::ViewFile
@@ -338,6 +351,7 @@ mod tests {
                 Namespace::Session => prefix == "session",
                 Namespace::Input => prefix == "tabs",
                 Namespace::Storage => prefix == "storage",
+                Namespace::Agents => prefix == "agents",
             };
             assert!(ok, "{} is filed under the wrong namespace", m.name());
         }
