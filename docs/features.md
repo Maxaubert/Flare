@@ -1796,7 +1796,7 @@ Spec: `docs/superpowers/specs/2026-10-26-agy-and-agent-motion.md`, Part 1. Facts
 Flare names an agent: `C:\Users\Admin\Documents\Claude\research\flare\2026-10-26-agy-cli-and-flare-agent-map.md`.
 
 - **The third agent.** `AgentKind::Agy` and `DetectedAgent::Agy`, the word `"agy"` in `tabs.json`, `tabs.list` and the
-  `agent` event, shown as "Antigravity" (close question, ribbon, cursor tag, decor tooltip, notifications). The one list is
+  `agent` event, shown as "Antigravity" (close question, cursor tag, decor tooltip, notifications). The one list is
   still `RESUMABLE_AGENTS`; the guard (`no_source_file_lists_the_resumable_agents_by_hand`) now fails on any line that names
   two of the three. Detection: the program `agy` / `agy.exe` as the first token or a program-file argument (one `agy.exe`
   process, no node); `agy` is in the prefilter, so `legacy` and `strategy` pass it and the strict match drops them. Under one
