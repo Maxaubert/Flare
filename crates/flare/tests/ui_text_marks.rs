@@ -43,6 +43,48 @@ fn clawd_is_filled_from_the_theme_token_that_holds_the_agent_crates_orange() {
     assert!(ui_file("tabmark.slint").contains("fill: Theme.clawd;"));
 }
 
+/// The items of `out property <[KIND]> NAME: [A, B, ...];` as written (quotes kept off strings).
+fn list_items(text: &str, kind: &str, name: &str) -> Vec<String> {
+    let needle = format!("out property <[{kind}]> {name}: [");
+    let at = text
+        .find(&needle)
+        .unwrap_or_else(|| panic!("list {name} is declared"));
+    let rest = &text[at + needle.len()..];
+    rest[..rest.find("];").expect("closing bracket")]
+        .split(',')
+        .map(|s| s.trim().trim_matches('"').to_string())
+        .collect()
+}
+
+#[test]
+fn the_agy_glyph_is_the_agent_crates_paths() {
+    assert_eq!(
+        list_items(&glyphs(), "string", "agy"),
+        flare_agent::icon::agy_paths()
+    );
+}
+
+#[test]
+fn the_agy_arch_is_filled_from_the_theme_list_that_holds_the_agent_crates_colours() {
+    let want: Vec<String> = flare_agent::icon::AGY_COLOURS
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
+    assert_eq!(list_items(&ui_file("theme.slint"), "color", "agy"), want);
+    let mark = ui_file("tabmark.slint");
+    assert!(mark.contains("for cells[i] in Glyphs.agy : Path"));
+    assert!(mark.contains("fill: Theme.agy[i];"));
+    let (x, y, w, h) = flare_agent::icon::AGY_VIEWBOX;
+    for line in [
+        format!("viewbox-x: {x};"),
+        format!("viewbox-y: {y};"),
+        format!("viewbox-width: {w};"),
+        format!("viewbox-height: {h};"),
+    ] {
+        assert!(mark.contains(&line), "AgentIcon has {line}");
+    }
+}
+
 #[test]
 fn the_check_and_the_cross_are_the_sixteen_unit_strokes() {
     let g = glyphs();

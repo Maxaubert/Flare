@@ -56,6 +56,11 @@ pub enum HostEvent {
         id: String,
         data: String,
     },
+    /// An OSC 7501 program-status payload (everything after `7501;`); the agent code parses it.
+    Osc7501 {
+        id: String,
+        data: String,
+    },
     /// The pty printed (one per drained batch).
     Output {
         id: String,
@@ -308,6 +313,9 @@ impl TabHost {
                     }
                     TermEvent::Osc { ident: 777, data } => {
                         out.push(HostEvent::Osc777 { id, data });
+                    }
+                    TermEvent::Osc { ident: 7501, data } => {
+                        out.push(HostEvent::Osc7501 { id, data });
                     }
                     TermEvent::Output => out.push(HostEvent::Output { id }),
                     TermEvent::Typed => out.push(HostEvent::Typed { id }),

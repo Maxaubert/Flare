@@ -271,7 +271,7 @@ connection has no tab); a mod gets its own tab only too (2026-10-22: the `panel`
 tab strip shows, `active` is "in front". Stage 2.
 
 A plugin that holds `tabs` (plugins phase 3) gets every shell tab, in strip order, with more:
-`{"id", "title", "folder", "active", "agent": "claude"|"codex"|null, "state": "working"|"question"|"done"|"failed"|"idle",
+`{"id", "title", "folder", "active", "agent": "claude"|"codex"|"agy"|null, "state": "working"|"question"|"done"|"failed"|"idle",
 "session": string|null, "panel": string|null}`. `panel` is what the tab's open panel shows: `browser` for the web
 panel, else its kind (`image`, `text`, `changes`, `app`, `mod:<id>`), null when none is open. The same object
 is the `tab` of every `tabs` event a plugin page hears (`plugins.md`, "Events").
@@ -299,7 +299,7 @@ Setting the same `(caller, key)` replaces; a caller keeps at most 4 badge keys o
 `bad_params`). A tab has one progress, the last set; clearing takes it only for the key that set it. A tab draws at most
 2 chips: the progress first, then one badge per caller (the agent's newest before any plugin's), 2 on a named tab of
 150 css px or more, 1 from 110 px, none below or on an icon tab; every piece is listed in the tab's tooltip, each line
-starting with who set it (`Claude: Call-me is on`; `Codex` on a Codex tab, `Agent` for any other agent). The agent's pieces go when the tab's Claude session changes from
+starting with who set it (`Claude: Call-me is on`; `Codex` on a Codex tab, `Antigravity` on an agy tab, `Agent` for any other agent). The agent's pieces go when the tab's Claude session changes from
 one id to another (a first id after none does not), when the agent leaves the tab (its kind is none; Codex too) and
 when the tab closes. They are not stored. Errors: `no_tab`, `forbidden` (another tab; or, for the agent's set, no agent in
 the tab: a plain shell's process holds the token too, and nothing would name or clear its pieces), `bad_params`,

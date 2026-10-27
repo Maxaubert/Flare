@@ -177,7 +177,7 @@ Rules for pages:
 |---|---|---|
 | `tool` | `tools` | `{callId, tool, input, tab?}` |
 | `tabs` | none for its own tab (a background page has none); `tabs` for every tab | `{kind, tab}`, `kind` one of `opened`, `closed`, `focused`, `renamed`, `moved`, `panel` (what the tab's panel shows changed). With `tabs`, `tab` is the wide `tabs.list` object `{id, title, folder, active, agent, state, session, panel}`; without, `{id, title, active}`. |
-| `agent` | `tabs` | `{tab, kind: "claude" \| "codex" \| null, state: "working" \| "question" \| "done" \| "failed" \| "idle", session}`: a tab's agent kind, state or Claude session changed. |
+| `agent` | `tabs` | `{tab, kind: "claude" \| "codex" \| "agy" \| null, state: "working" \| "question" \| "done" \| "failed" \| "idle", session}`: a tab's agent kind, state or Claude session changed. |
 | `session` | `sessions` (and a tab it may see) | `{tab, session, role: "user" \| "assistant" \| "tool", text, tool?, at?, dropped?}`: one entry of the tab's Claude session as it is written. |
 | `action` | `actions` | `{key, tab}`: one of its actions was clicked (`tab` null for a top-bar button with no shell tab in front). |
 | `sidebar.item` | `sidebar` | `{key, item}` for a click, `{key, item, checked}` for a tick on its box. |

@@ -673,7 +673,7 @@ fn agent_prompt_draws_at_full_size_at_every_scale() {
 #[test]
 fn agent_cog_draws_at_full_size_at_every_scale() {
     for s in SCALES {
-        let f = mark(s, 0, 0, 3).render();
+        let f = mark(s, 0, 0, 4).render();
         let (cx, cy) = (349.0 * s, 18.0 * s);
         let region = region_around(&f, cx, cy, 13.0 * s);
         let bg = f.px(region.0, region.1);

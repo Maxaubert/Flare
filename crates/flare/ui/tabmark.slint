@@ -167,7 +167,8 @@ export component MarkBar inherits Rectangle {
 }
 
 // The agent's icon on a tab, 18 px: kind 0 shell (the >_ prompt, stroke 2.2, ink), 1 claude (Clawd,
-// Theme.clawd), 2 codex (the OpenAI mark, ink), 3 settings (the cog, stroke 1.7, ink).
+// Theme.clawd), 2 codex (the OpenAI mark, ink), 3 agy (the pixel arch, one path per Theme.agy colour),
+// 4 settings (the cog, stroke 1.7, ink).
 export component AgentIcon inherits Rectangle {
     in property <int> kind;
     in property <color> ink;
@@ -207,7 +208,19 @@ export component AgentIcon inherits Rectangle {
         commands: Glyphs.openai;
         fill: root.ink;
     }
-    if root.kind == 3 : Path {
+    if root.kind == 3 : Rectangle {
+        for cells[i] in Glyphs.agy : Path {
+            width: root.size;
+            height: root.size;
+            viewbox-x: -0.5;
+            viewbox-y: -1.5;
+            viewbox-width: 11;
+            viewbox-height: 11;
+            commands: cells;
+            fill: Theme.agy[i];
+        }
+    }
+    if root.kind == 4 : Path {
         x: -1.7 * root.size / 48;
         y: -1.7 * root.size / 48;
         width: root.size + 1.7 * root.size / 24;

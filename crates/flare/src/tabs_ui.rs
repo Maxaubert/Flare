@@ -266,6 +266,7 @@ pub fn build_view(inp: &ViewInput) -> View {
             agent: match icon_kind(tab_agent, settings) {
                 IconKind::Claude => 1,
                 IconKind::Codex => 2,
+                IconKind::Agy => 3,
                 IconKind::Shell | IconKind::Settings => 0,
             },
             mark_state: look.state.map_or(0, state_int),
@@ -372,6 +373,7 @@ pub fn decorate_with(
         let agent = match r.agent {
             1 => "Claude",
             2 => "Codex",
+            3 => "Antigravity",
             _ => "Agent",
         };
         let lines = d.tip_lines(|s| match s {
@@ -1471,6 +1473,8 @@ mod tests {
         assert_eq!(agent_of(&w), 1);
         w.kinds.insert(id.clone(), DetectedAgent::Codex);
         assert_eq!(agent_of(&w), 2);
+        w.kinds.insert(id.clone(), DetectedAgent::Agy);
+        assert_eq!(agent_of(&w), 3);
         w.kinds.insert(id, DetectedAgent::Other);
         assert_eq!(agent_of(&w), 0);
         let mut m = three();

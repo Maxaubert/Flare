@@ -8,6 +8,7 @@ use crate::kinds::DetectedAgent;
 pub enum IconKind {
     Claude,
     Codex,
+    Agy,
     Shell,
     Settings,
 }
@@ -20,8 +21,71 @@ pub fn icon_kind(agent: Option<DetectedAgent>, settings: bool) -> IconKind {
     match agent {
         Some(DetectedAgent::Claude) => IconKind::Claude,
         Some(DetectedAgent::Codex) => IconKind::Codex,
+        Some(DetectedAgent::Agy) => IconKind::Agy,
         Some(DetectedAgent::Other) | None => IconKind::Shell,
     }
+}
+
+/// The agy icon's colours (G1, owner decision 2026-10-26): the rainbow of agy's own banner, in order
+/// along the arch from the left foot to the right foot. The agent's colours, never themed.
+pub const AGY_COLOURS: [&str; 10] = [
+    "#15aabf", "#40c057", "#94d82d", "#fab005", "#fd7e14", "#fa5252", "#e64980", "#be4bdb",
+    "#7950f2", "#4c6ef5",
+];
+
+/// The agy icon's view box: x, y, width, height (in pixel units of its 10 x 8 grid).
+pub const AGY_VIEWBOX: (f32, f32, f32, f32) = (-0.5, -1.5, 11.0, 11.0);
+
+/// The agy icon's pixels, [x, y, colour] on a 10 x 8 grid: the pixel "A" (the arch) from agy's
+/// banner, as `docs/surfaces/agy-icon-mock.html` draws it. `colour` indexes `AGY_COLOURS`.
+pub const AGY_PIXELS: [(u8, u8, u8); 32] = [
+    (4, 0, 4),
+    (5, 0, 5),
+    (3, 1, 4),
+    (4, 1, 4),
+    (5, 1, 5),
+    (6, 1, 5),
+    (2, 2, 2),
+    (3, 2, 3),
+    (4, 2, 4),
+    (5, 2, 5),
+    (6, 2, 6),
+    (7, 2, 7),
+    (2, 3, 2),
+    (3, 3, 3),
+    (6, 3, 6),
+    (7, 3, 7),
+    (1, 4, 1),
+    (2, 4, 2),
+    (7, 4, 7),
+    (8, 4, 8),
+    (1, 5, 1),
+    (2, 5, 2),
+    (7, 5, 7),
+    (8, 5, 8),
+    (0, 6, 0),
+    (1, 6, 1),
+    (8, 6, 8),
+    (9, 6, 9),
+    (0, 7, 0),
+    (1, 7, 1),
+    (8, 7, 8),
+    (9, 7, 9),
+];
+
+/// The agy icon as one SVG path per colour (`AGY_COLOURS` order): a path holds that colour's
+/// pixels, each 1.02 square so neighbours meet without a seam.
+pub fn agy_paths() -> Vec<String> {
+    (0..AGY_COLOURS.len())
+        .map(|c| {
+            AGY_PIXELS
+                .iter()
+                .filter(|&&(_, _, colour)| usize::from(colour) == c)
+                .map(|&(x, y, _)| format!("M{x} {y} h1.02 v1.02 h-1.02 z"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect()
 }
 
 /// Clawd's colour, as Claude Code draws it in the terminal.
@@ -102,7 +166,12 @@ mod tests {
             icon_kind(Some(DetectedAgent::Other), false),
             IconKind::Shell
         );
+        assert_eq!(icon_kind(Some(DetectedAgent::Agy), false), IconKind::Agy);
         assert_eq!(icon_kind(None, false), IconKind::Shell);
+        assert_eq!(
+            icon_kind(Some(DetectedAgent::Agy), true),
+            IconKind::Settings
+        );
         assert_eq!(
             icon_kind(Some(DetectedAgent::Claude), true),
             IconKind::Settings
@@ -154,6 +223,69 @@ mod tests {
         assert_eq!(clawd_pixels().len(), 54);
         assert_eq!(got.len(), 54, "no duplicates");
         assert_eq!(CLAWD_ORANGE, "#d77757");
+    }
+
+    #[test]
+    fn the_agy_icon_is_the_banners_rainbow_arch() {
+        // The picked mock (G1), row by row: the arch's two-wide legs splay out from a two-cell top.
+        let art = [
+            "    ##    ",
+            "   ####   ",
+            "  ######  ",
+            "  ##  ##  ",
+            " ##    ## ",
+            " ##    ## ",
+            "##      ##",
+            "##      ##",
+        ];
+        let mut want = std::collections::BTreeSet::new();
+        for (y, line) in art.iter().enumerate() {
+            for (x, ch) in line.chars().enumerate() {
+                if ch == '#' {
+                    want.insert((x, y));
+                }
+            }
+        }
+        let got: std::collections::BTreeSet<(usize, usize)> = AGY_PIXELS
+            .iter()
+            .map(|&(x, y, _)| (usize::from(x), usize::from(y)))
+            .collect();
+        assert_eq!(got, want);
+        assert_eq!(got.len(), AGY_PIXELS.len(), "no duplicates");
+        // The colour runs along the arch: each colour sits in one or two neighbouring columns, and
+        // moving right never goes back to an earlier colour on the same row.
+        for &(x, y, c) in &AGY_PIXELS {
+            assert!(usize::from(c) < AGY_COLOURS.len());
+            for &(x2, y2, c2) in &AGY_PIXELS {
+                if y2 == y && x2 > x {
+                    assert!(c2 >= c, "({x},{y}) then ({x2},{y2})");
+                }
+            }
+        }
+        for c in 0..AGY_COLOURS.len() {
+            assert!(
+                AGY_PIXELS.iter().any(|p| usize::from(p.2) == c),
+                "colour {c} is used"
+            );
+        }
+        assert_eq!(AGY_COLOURS[0], "#15aabf");
+        assert_eq!(AGY_COLOURS[9], "#4c6ef5");
+        for c in AGY_COLOURS {
+            assert!(c.len() == 7 && c.starts_with('#'), "{c}");
+        }
+    }
+
+    #[test]
+    fn the_agy_paths_hold_every_pixel_once_by_colour() {
+        let paths = agy_paths();
+        assert_eq!(paths.len(), AGY_COLOURS.len());
+        let cells: usize = paths.iter().map(|p| p.matches('M').count()).sum();
+        assert_eq!(cells, AGY_PIXELS.len());
+        assert_eq!(
+            paths[0],
+            "M0 6 h1.02 v1.02 h-1.02 z M0 7 h1.02 v1.02 h-1.02 z"
+        );
+        assert!(paths[4].starts_with("M4 0 h1.02 v1.02 h-1.02 z"));
     }
 
     #[test]

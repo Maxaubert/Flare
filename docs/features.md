@@ -438,6 +438,7 @@ M6 plan's Tasks 2 to 35.
 - **D13** Settings rows are M7's; M6 owns the switch keys and getters only.
 - **D14** Codex has no hooks. It is found by the poll and its title dialect, and is resumable with
   `codex resume --last`. Gemini, aider and other agents light the indicator and have nothing to resume.
+  agy (the Antigravity CLI) became the third resumable agent on 2026-10-26: see "Antigravity (agy) as an agent".
 - **D15** The cd guard is kept uncalled, so a later decision can wire it with one call.
 - **D16** `hooks.json` is generated once and guarded forever (`hooks_json_matches_the_table`).
 
@@ -454,6 +455,7 @@ in `ui_tests/marks.rs`.
 
 1. Tab-icon artwork: the OpenAI mark (Simple Icons 15, CC0) for Codex and the Clawd pixel art in
    `#d77757` for Claude, both named in `THIRD-PARTY-NOTICES.md`. Confirm both may ship in a private repo.
+   The agy arch (2026-10-26, after Antigravity's banner) is named there too and has the same question.
 2. The taskbar disc counts Finished, Question and Failed tabs as Prism Terminal does, and is on by
    default. Confirm it stays on. No answer is recorded yet.
 3. Sonara still reads `PRISM_TAB_ID` (decision O6). Flare posts `host_tab` with `FLARE_TAB_ID`, so a
@@ -1743,3 +1745,51 @@ A review of the whole app by eight reviewers found these, all fixed on `fix/gene
   system is read synchronously by `set_font`; it needs the build moved to a worker with a swap, a design of its own), and
   term-6's second half (scanner replies such as XTVERSION and OSC 10/11 can still jump ahead of DA replies that alacritty
   holds inside a synchronized update).
+
+## Antigravity (agy) as an agent, 2026-10-26
+
+Spec: `docs/superpowers/specs/2026-10-26-agy-and-agent-motion.md`, Part 1. Facts about agy 1.4.7 and the map of every place
+Flare names an agent: `C:\Users\Admin\Documents\Claude\research\flare\2026-10-26-agy-cli-and-flare-agent-map.md`.
+
+- **The third agent.** `AgentKind::Agy` and `DetectedAgent::Agy`, the word `"agy"` in `tabs.json`, `tabs.list` and the
+  `agent` event, shown as "Antigravity" (close question, ribbon, cursor tag, decor tooltip, notifications). The one list is
+  still `RESUMABLE_AGENTS`; the guard (`no_source_file_lists_the_resumable_agents_by_hand`) now fails on any line that names
+  two of the three. Detection: the program `agy` / `agy.exe` as the first token or a program-file argument (one `agy.exe`
+  process, no node); `agy` is in the prefilter, so `legacy` and `strategy` pass it and the strict match drops them. Under one
+  shell Claude wins, then Codex, then agy, then any other agent.
+- **State from OSC 7501** (`flare-agent` `osc7501.rs`), a third source under the hooks and over titles and output scoring.
+  `OSC 7501 ; state=<idle|working|done|blocked|error|clear>[:kind=permission|question|auth][:app=..][:msg=base64] ST`, BEL
+  or ESC \, key order free, unknown keys ignored, the grammar and limits of the program-status spec
+  (https://www.superlogical.com/rex/docs/build/program-status, read 2026-10-26). working is Working, blocked a Question,
+  done Finished, error Failed, idle nothing; `clear` hands the tab back to the titles and the scoring. `msg` is decoded
+  only into clean text (no control or bidi character) and is not shown anywhere yet. Every shell Flare starts gets
+  `AGY_CLI_OSC7501=on` unless the user set the variable; Flare does not answer agy's `OSC 7501 ; ?` query.
+- **Chosen where the spec left it open.** Only the root record counts: a report with an `id` (a part of the work) is
+  dropped, so a subtask's "done" never marks the tab. A report from a tab with no agent found yet lights nothing; it asks
+  the poll to look and is applied when the poll names an agent (so a plain program's 7501 never makes a shell an agent).
+  Claude's hooks take a tab over from 7501 (Claude Code may send both). A question raised by 7501 is cleared by the
+  program's next report, never by Flare's screen reads. A report goes with its program: a prompt (the shell reported its
+  folder) or a poll answer naming another agent drops it and the marks it set, so an agent that quit without
+  `state=clear` never freezes the next one's marks.
+- **Help.** The command help has `agy` (start) and `agy -c` (carry on the last conversation) under "Claude Code, Codex and
+  Antigravity"; Flare's own entries sit in `tools/oracle-help/flare.mjs` over Prism Terminal's copied catalogue, and the
+  golden searches are regenerated from Prism Terminal's own search.
+- **Fallback.** With no 7501 (an older agy) the poll still names the agent and the output scoring gives working and idle.
+- **Resume.** A saved agy tab comes back with `agy:last`, started as `agy -c` (the most recent conversation in that folder);
+  `valid_resume` accepts the marker, and no id travels.
+- **Icon.** `IconKind::Agy`, row int 3 (Settings moved to 4): the pixel arch of agy's banner, 32 cells on a 10 x 8 grid
+  (the picked mock `docs/surfaces/agy-icon-mock.html` has 32, not the 46 the spec guessed), one Slint `Path` per colour
+  (`Glyphs.agy`, `Theme.agy`), pinned to `flare_agent::icon::{AGY_PIXELS, AGY_COLOURS, agy_paths}` by
+  `ui_text_marks.rs`. It stands still: the motions are Part 2.
+- **Keys.** agy takes Codex's image paste (^V) and newline (backslash, CR) until they are measured.
+- **Not in this PR.** Hooks for agy, Flare's MCP server in agy's config (`agy mcp add` writes the user's global file),
+  dictation routing, answering the `OSC 7501 ; ?` query (the spec's reply is
+  `OSC 7501 ; ? : states=idle,working,done,blocked,error : kinds=permission,question,auth ST`; agy's own check is not
+  captured yet).
+- Held by `agy_is_found_by_its_program_and_never_by_a_word`, `claude_then_codex_win_over_agy_under_one_shell`, the
+  `osc7501` parser tests, `each_status_drives_its_mark_on_an_agy_tab_away` and the other OSC 7501 indicator tests,
+  `an_agy_tab_is_marked_from_its_osc_7501_reports`, `osc_7501_is_passed_up_raw_with_either_terminator_and_across_chunks`,
+  `an_agent_that_follows_agy_without_a_clear_drives_its_own_marks`, `a_prompt_drops_the_report_of_the_program_that_ended`,
+  `agy_gets_its_own_marker_and_its_word_round_trips`, `agy_resumes_its_last_conversation_with_no_id`,
+  `an_agy_tab_comes_back_as_agy_c_wearing_its_icon_from_the_first_frame`, `turns_agys_status_reports_on_unless_the_user_chose`,
+  `the_agy_icon_is_the_banners_rainbow_arch`, `the_agy_glyph_is_the_agent_crates_paths` and `agent_icons_are_eighteen_pixels`.

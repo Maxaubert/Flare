@@ -2906,6 +2906,7 @@ impl AgentProbe for MgrProbe {
             match k {
                 DetectedAgent::Claude => "claude",
                 DetectedAgent::Codex => "codex",
+                DetectedAgent::Agy => "agy",
                 DetectedAgent::Other => "other",
             }
             .to_string()

@@ -923,3 +923,41 @@ to links". The clicking already worked (stage 4); the cursor is new. Style A of 
   the hold).
 - 2026-10-26, **not done:** the tag is not flipped when the arrow is near the panel's right or bottom edge (it can draw past the
   page, over Flare's own window, never past another app); no cursor for mods' pages or plugin pages driving a page (a non-goal).
+
+## Antigravity (agy) as an agent, and agent icons that move (`feat/agy-agent`), 2026-10-26
+
+Spec and plan: `docs/superpowers/specs/2026-10-26-agy-and-agent-motion.md`. Research:
+`C:\Users\Admin\Documents\Claude\research\flare\2026-10-26-agy-cli-and-flare-agent-map.md`.
+
+- 2026-10-26, **the Antigravity CLI (`agy`) is the third agent** next to Claude Code and Codex: detected, marked, resumed,
+  named "Antigravity" (owner).
+- 2026-10-26, **agy's tab icon is G1**: the pixel "A" of agy's own banner in its rainbow colours
+  (`docs/surfaces/agy-icon-mock.html`) (owner).
+- 2026-10-26, **agent icons move while their tab works**: Claude H1 (a hop, 1.8 s, a blink every other landing), Codex O6
+  (spin 3.5 s while fading 0.55 to 1), agy A1 (the rainbow flows along the arch, 3 s) (`agent-motion-mock.html`,
+  `agy-motion-mock.html`) (owner). Built in PR 2, not in PR 1.
+- 2026-10-26, **a mod picks an agent icon's motion** (owner). This amends the plugin design's section 13 ("`tabs.icon.set`
+  works only on tabs with no agent") narrowly: a plugin picks a motion from Flare's fixed list; it never supplies the
+  agent's artwork, never draws a check or dot, and the ring and bar stay Flare's. The method and its permission are PR 2's,
+  and `plugins.md` gets the text with them.
+- 2026-10-26, PR 1, **state from OSC 7501.** agy reports its state as `OSC 7501 ; state=..:kind=..:app=..:msg=base64 ST`
+  (agy 1.4.7 changelog; the grammar is the program-status spec, https://www.superlogical.com/rex/docs/build/program-status).
+  Flare reads it for any agent, as a source under Claude's hooks and over titles and output. Every shell gets
+  `AGY_CLI_OSC7501=on` (a variable the user set is kept): agy asks with `OSC 7501 ; ?` first, and the env switch is the
+  path that works without knowing what agy accepts as the answer. Why: agy sets no window title by default and has no
+  prompt or permission hook, so 7501 is the only signal for its questions.
+- 2026-10-26, PR 1, **chosen where the spec left it open:** only the root record counts (a report with an `id` is a part
+  of the work and is dropped); a report in a tab where no agent was found yet lights nothing, asks the poll, and is applied
+  when the poll names an agent (so a plain program cannot make a shell an agent); Claude's hooks take a tab over from
+  7501; a 7501 question is cleared only by the program's next report, never by Flare's screen reads; `msg` is kept only
+  as clean text and shown nowhere yet. The icon has the mock's 32 cells (the spec's 46 was a guess), drawn as one Slint
+  path per colour so PR 2's flow can shift colours per path. Settings' icon int moved from 3 to 4.
+- 2026-10-26, PR 1, **the command help gets agy** (the spec's "help entry"): `agy-start` (`agy`) and `agy-continue`
+  (`agy -c`), and the agents category reads "Claude Code, Codex and Antigravity". They live in
+  `tools/oracle-help/flare.mjs`, laid over Prism Terminal's copied sources (which stay verbatim), and the golden vectors
+  are regenerated from Prism Terminal's own search over that catalogue.
+- 2026-10-26, PR 1, **a 7501 report goes with its program:** a prompt (the shell reported its folder) drops the tab's
+  report and the marks it set, and so does a poll answer naming another agent than the one stored, so an agent that quit
+  without `state=clear` never freezes the next one's marks, and a plain program's report is not applied to a later agent.
+- 2026-10-26, PR 1, **not done:** hooks for agy, Flare's MCP server in agy's config
+  (`agy mcp add` writes the user's global file: a separate ask), dictation routing, and answering the 7501 query.

@@ -110,6 +110,7 @@ fn kind_name(row: &crate::TabRow) -> &'static str {
         match row.agent {
             1 => "claude",
             2 => "codex",
+            3 => "agy",
             _ => "shell",
         }
     }
@@ -816,6 +817,20 @@ mod tests {
         let s = f.probe("frames.series", Value::Null).unwrap();
         assert!(s["frames"].is_array(), "{s}");
         assert!(s["now_age_ms"].is_number(), "{s}");
+    }
+
+    #[test]
+    fn a_tabs_kind_is_named_by_its_icon() {
+        let row = |agent, settings| crate::TabRow {
+            agent,
+            settings,
+            ..Default::default()
+        };
+        assert_eq!(kind_name(&row(0, false)), "shell");
+        assert_eq!(kind_name(&row(1, false)), "claude");
+        assert_eq!(kind_name(&row(2, false)), "codex");
+        assert_eq!(kind_name(&row(3, false)), "agy");
+        assert_eq!(kind_name(&row(0, true)), "settings");
     }
 
     #[test]

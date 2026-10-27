@@ -23,9 +23,10 @@ use std::time::Duration;
 
 use flare_agent::close::holds_window_close;
 use flare_agent::keys::AgentView;
-use flare_agent::kinds::{AgentKind, CODEX_RESUME, DetectedAgent};
+use flare_agent::kinds::{AgentKind, DetectedAgent};
 use flare_agent::mark_motion::{MarkPhase, MarksPause, STILL, mark_phase, needs_clock, pulse_at};
 use flare_agent::resume::valid_resume;
+use flare_agent::reveal::agent_of_resume;
 use flare_agent::tab_look::{Switches, TabSets};
 use flare_agent::tab_mark::MarkState;
 use flare_render::metrics::CellMetrics;
@@ -747,11 +748,7 @@ fn overflow_row(r: &OverflowRowData, rows: &[RowData]) -> OverflowRow {
 }
 
 fn detected(kind: Option<AgentKind>) -> DetectedAgent {
-    match kind {
-        Some(AgentKind::Claude) => DetectedAgent::Claude,
-        Some(AgentKind::Codex) => DetectedAgent::Codex,
-        None => DetectedAgent::Other,
-    }
+    kind.map_or(DetectedAgent::Other, DetectedAgent::from)
 }
 
 impl AppCtl {
@@ -2196,11 +2193,7 @@ impl AppCtl {
             self.note_spawn(&s.id, &s.cwd, s.resume.is_some());
             self.hub.on_spawned(&s.id, &s.cwd, s.resume.as_deref());
             // Only an id that passed the check is a resume; the rest is a plain shell.
-            let kind = match valid_resume(s.resume.as_deref()) {
-                Some(CODEX_RESUME) => Some(AgentKind::Codex),
-                Some(_) => Some(AgentKind::Claude),
-                None => None,
-            };
+            let kind = valid_resume(s.resume.as_deref()).map(agent_of_resume);
             self.model.set_agent(&s.id, kind);
             if let Some(k) = kind {
                 self.restoring.insert(s.id.clone(), (k, now));
@@ -2243,13 +2236,9 @@ impl AppCtl {
         );
     }
 
-    /// A tab goes: the `tab-close` crumb, `kind` being the agent in it (`claude`, `codex`) or `shell`.
+    /// A tab goes: the `tab-close` crumb, `kind` being the agent in it (`claude`, `codex`, `agy`) or `shell`.
     fn note_close(&mut self, id: &str) {
-        let kind = match self.model.agent_kind(id) {
-            Some(AgentKind::Claude) => "claude",
-            Some(AgentKind::Codex) => "codex",
-            None => "shell",
-        };
+        let kind = self.model.agent_kind(id).map_or("shell", AgentKind::as_str);
         crate::diag_ctl::crumb(
             "tab-close",
             &[
@@ -8872,6 +8861,35 @@ two",
                 .args
                 .last()
                 .is_some_and(|a| a.ends_with("codex resume --last"))
+        );
+    }
+
+    #[test]
+    fn an_agy_tab_comes_back_as_agy_c_wearing_its_icon_from_the_first_frame() {
+        let lookup = FixedSessions::new(&[SESSION_A]);
+        let f = fx_with(Opts {
+            saved: vec![("C:\\c", None), ("C:\\y", Some(AgentKind::Agy))],
+            lookup: lookup_of(&lookup),
+            shells: Some(vec![resume_pwsh()]),
+            ..Opts::default()
+        });
+        assert_eq!(f.row(1).agent, 3, "the agy arch from the first frame");
+        assert!(f.row(1).loading);
+        f.start_restore_and_wait();
+        f.pump_until("the spawns", |f| !f.made_with("C:\\y").is_empty());
+        assert!(lookup.asked().is_empty(), "agy asks Claude's store nothing");
+        let agy = &f.made_with("C:\\y")[0];
+        assert!(env_of(agy, "FLARE_RESUME_ID").is_none());
+        assert_eq!(env_of(agy, "AGY_CLI_OSC7501").as_deref(), Some("on"));
+        assert!(
+            agy.spec()
+                .args
+                .last()
+                .is_some_and(|a| a.ends_with("; agy -c"))
+        );
+        assert_eq!(
+            f.ctl.borrow().model().agent_kind(&f.ids()[1]),
+            Some(AgentKind::Agy)
         );
     }
 

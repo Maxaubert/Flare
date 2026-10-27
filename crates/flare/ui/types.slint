@@ -18,7 +18,7 @@ export struct TabRow {
     mark-color: color,
     mark-state: int,    // 0 none, 1 working, 2 question, 3 finished, 4 failed
     mark-rainbow: bool, // a finished Bar line wears the flowing rainbow
-    agent: int,         // 0 shell, 1 claude, 2 codex (the tab icon)
+    agent: int,         // 0 shell, 1 claude, 2 codex, 3 agy (the tab icon)
     failed-tip: string, // "Failed: rate limit" while failed, else ""
     // Decor (plugins phase 1): flat fields, so the row diff stays one compare. The badges in drawing order
     // (their glyph paths, "" for none, and tone 0 ink, 1 accent, 2 muted), how many there are (0 to 2,

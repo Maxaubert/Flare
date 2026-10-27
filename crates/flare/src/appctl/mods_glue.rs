@@ -575,6 +575,7 @@ impl AppCtl {
                     agent: match self.hub.agent_kind(id) {
                         Some(D::Claude) => Some("claude"),
                         Some(D::Codex) => Some("codex"),
+                        Some(D::Agy) => Some("agy"),
                         Some(D::Other) | None => None,
                     },
                     state,
