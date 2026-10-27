@@ -1793,3 +1793,35 @@ Flare names an agent: `C:\Users\Admin\Documents\Claude\research\flare\2026-10-26
   `agy_gets_its_own_marker_and_its_word_round_trips`, `agy_resumes_its_last_conversation_with_no_id`,
   `an_agy_tab_comes_back_as_agy_c_wearing_its_icon_from_the_first_frame`, `turns_agys_status_reports_on_unless_the_user_chose`,
   `the_agy_icon_is_the_banners_rainbow_arch`, `the_agy_glyph_is_the_agent_crates_paths` and `agent_icons_are_eighteen_pixels`.
+
+## New tab: a folder arrow on the sidebar button, and no ask mode, 2026-10-27
+
+Spec: `docs/superpowers/specs/2026-10-27-new-tab-folder-arrow.md`; the picked look is N1 in
+`docs/surfaces/new-tab-arrow-mock.html`.
+
+- **A split New tab button in the sidebar.** The main part opens a tab in the default folder at once (Ctrl+T does the
+  same); a 40 px arrow on the right, behind a full-height hairline, with a chevron and its own hover, opens the folder
+  menu just above the button (its left edge on the button's). The main part's tooltip is "New tab (Ctrl+T)", the
+  arrow's "Open in a folder" (also its accessible name). A right-click on the button does nothing any more.
+- **The strip's + is unchanged.** Same look, a click opens a tab, a right-click opens the same folder menu at the
+  pointer (two small buttons side by side there would make New tab hard to hit).
+- **The folder menu.** "Choose a folder…" is always the first row: the folder picker (starting in the new-tab folder),
+  then a tab there, and the folder joins the recents (every spawn remembers its folder). Under a rule: the pins in pin
+  order, then the 5 newest unpinned recents. While fewer recents than that are known, Documents, Downloads, Desktop and
+  the user folder fill the empty spots, in that order, each once, never one already pinned or in the history; they say
+  where they are on the right (`~\Documents`, "user folder"), and a real recent pushes one out. Each folder row keeps its
+  pin. Nothing to list at all: a disabled "No recent folders" under the first row.
+- **The starter folders** are Windows' known folders (`SHGetKnownFolderPath`, so a Documents redirected to OneDrive is the
+  one Explorer shows), checked for existence on a worker once at start (`flare_win::paths::starter_folders`, rule 34);
+  until it answers the menu simply has none. Under `--e2e` there are none.
+- **No ask mode.** Settings > Terminal > "Folder for new tabs" has no segment any more: it says where tabs open, with
+  "Use my user folder" (when a folder is chosen) and "Choose folder…". A stored `flare.newtab.mode = "ask"` reads as
+  folder mode (the key is no longer read; the row's reset still clears it); the import writes `prism.newtab.mode` as
+  `folder` whatever it was.
+- Held by `the_new_tab_button_opens_a_tab_and_its_arrow_opens_the_folder_menu`,
+  `sidebar_new_tab_arrow_draws_at_full_size_at_every_scale`, `the_plus_menu_is_choose_then_pins_then_five_recents_or_a_disabled_note`,
+  `starters_fill_the_menu_until_real_recents_push_them_out`, `starters_fill_the_empty_spots_and_recents_push_them_out`,
+  `a_starter_already_pinned_or_recent_is_never_listed_twice`, `choose_a_folder_in_the_folder_menu_asks_opens_there_and_remembers_it`,
+  `the_starter_folders_fill_the_folder_menu_once_the_worker_answers`, `a_stored_ask_mode_opens_in_the_folder_at_once`,
+  `the_new_tab_row_has_no_mode_to_pick`, `the_new_tab_mode_imports_as_folder_whatever_it_was`,
+  `plus_opens_at_once_in_the_chosen_folder_and_does_not_ask_again` and `the_starter_folders_exist_and_end_with_the_user_folder`.
