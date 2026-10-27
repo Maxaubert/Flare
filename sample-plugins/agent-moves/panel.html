@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Agent motions</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.4 "Segoe UI", system-ui, sans-serif; margin: 0; padding: 12px 16px; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+  p { margin: 0 0 12px; opacity: 0.7; }
+  label { display: grid; grid-template-columns: 7em 1fr; align-items: center; gap: 8px; margin: 8px 0; }
+  select { font: inherit; padding: 2px 4px; }
+  .said { min-height: 1.4em; opacity: 0.7; }
+</style>
+</head>
+<body>
+<h1>Agent motions</h1>
+<p>How each agent's tab icon moves while it works. Still with Windows' animation effects off.</p>
+<label>Claude <select data-agent="claude"></select></label>
+<label>Codex <select data-agent="codex"></select></label>
+<label>Antigravity <select data-agent="agy"></select></label>
+<div class="said" id="said"></div>
+<script>
+// The panel of the Agent moves sample: one pick per agent from Flare's list of motions. A pick is set at once
+// (agents.motion.set) and kept in the plugin's store, where the background page reads it the next time it starts.
+(function () {
+  var flare = window.flare;
+  var DEFAULTS = { claude: 'hop-blink', codex: 'spin-fade', agy: 'rainbow-flow' };
+  var MOTIONS = [
+    ['none', 'Still'],
+    ['hop-blink', 'Hop and blink'],
+    ['spin-fade', 'Spin and fade'],
+    ['rainbow-flow', 'Rainbow flow'],
+    ['hop', 'Hop'],
+    ['spin', 'Spin'],
+    ['breathe', 'Breathe']
+  ];
+  var picks = {};
+  var said = document.getElementById('said');
+  var selects = Array.prototype.slice.call(document.querySelectorAll('select'));
+
+  selects.forEach(function (sel) {
+    var agent = sel.getAttribute('data-agent');
+    MOTIONS.forEach(function (m) {
+      // The rainbow flow needs Antigravity's colours: Flare refuses it for the others.
+      if (m[0] === 'rainbow-flow' && agent !== 'agy') { return; }
+      var o = document.createElement('option');
+      o.value = m[0];
+      o.textContent = m[1];
+      sel.appendChild(o);
+    });
+    sel.addEventListener('change', function () {
+      picks[agent] = sel.value;
+      said.textContent = '';
+      flare.call('agents.motion.set', { agent: agent, motion: sel.value }).then(function () {
+        return flare.call('storage.set', { key: 'picks', value: picks });
+      }).catch(function (e) {
+        said.textContent = 'Flare refused it: ' + ((e && e.message) || 'unknown');
+      });
+    });
+  });
+
+  flare.call('storage.get', { key: 'picks' }).then(function (r) {
+    if (r && r.value && typeof r.value === 'object') { picks = r.value; }
+  }).catch(function () {}).then(function () {
+    selects.forEach(function (sel) {
+      var agent = sel.getAttribute('data-agent');
+      sel.value = typeof picks[agent] === 'string' ? picks[agent] : DEFAULTS[agent];
+    });
+  });
+})();
+</script>
+</body>
+</html>

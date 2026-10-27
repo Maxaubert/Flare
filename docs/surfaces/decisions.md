@@ -961,3 +961,29 @@ Spec and plan: `docs/superpowers/specs/2026-10-26-agy-and-agent-motion.md`. Rese
   without `state=clear` never freezes the next one's marks, and a plain program's report is not applied to a later agent.
 - 2026-10-26, PR 1, **not done:** hooks for agy, Flare's MCP server in agy's config
   (`agy mcp add` writes the user's global file: a separate ask), dictation routing, and answering the 7501 query.
+- 2026-10-27, PR 2 (`feat/agent-motion`), **the amendment to design section 13, as built.** Section 13 says
+  "`tabs.icon.set` only on tabs with no agent kind"; that stays for a plugin's own icon. Beside it, a plugin with the new
+  permission `agent-looks` ("Change how agent icons move while they work", protocol 2 only, asked at install like the
+  others) picks an agent's icon motion with `agents.motion.set {agent, motion}` / `agents.motion.clear {agent}` in the new
+  namespace `Agents`. The motion is a name from Flare's list (`none`, `hop-blink`, `spin-fade`, `rainbow-flow` for agy only,
+  `hop`, `spin`, `breathe`); no artwork crosses, no check or dot is drawn, the ring and bar stay Flare's. Unknown agent or
+  motion: `bad_params`. The newest pick wins; a plugin turned off or removed (or whose background page ended, as for decor)
+  takes its picks with it. The contract is `plugins.md` ("Agent icon motions") and `protocol.md`.
+- 2026-10-27, PR 2, **how the motions are drawn.** `flare_agent::icon_motion` has every frame as a pure function of the
+  mark clock (`icon_phase`), pushed with the marks in `push_frame` into `MarkMotion`; `AgentIcon` reads it and no Slint
+  `animate` is involved. A row wears its agent's pick only while its Working mark is on (`tabs_ui::wear_motions`), so the
+  clock that already runs for the working mark drives it, and the `STILL` path (animation effects off, nothing moving)
+  draws every icon as it stands. Without a pick nothing moves: there is no built-in default.
+- 2026-10-27, PR 2, **chosen where the spec left it open.** (1) The hop and the breath move and scale the icon's box, which
+  both renderers draw exactly; the turns (`spin-fade`, `spin`) are a Slint `transform-rotation`, which the software
+  renderer (the fallback, and the tests) leaves out, so there the icon only fades. (2) `rainbow-flow` shifts the colour
+  of each of the arch's ten paths (one per colour, PR 1), path k 0.3 s ahead of path 0, through the mock's six keyframe
+  colours in sRGB; the mock steps per cell along the diagonal, which one path per colour cannot. (3) `hop` is H1's hop
+  without the blink, `spin` is O1 (4 s a turn, the mock's CSS), `breathe` is O4 (0.82 to 1.05 and 0.7 to 1 opacity,
+  2.6 s each way). (4) A pick of `none` holds an agent still over an older pick. (5) The rate is decor's 10 a second, per
+  plugin per agent. (6) `capabilities` lists the two methods; the motion names are fixed in the docs and named by every
+  `bad_params` (a plugin page does not see `hello`). (7) The +N list's icons stay still. (8) The answers say what the
+  agent wears now (`{agent, motion}`, and `cleared` for clear).
+- 2026-10-27, PR 2, **the sample mod `agent-moves`** (`sample-plugins/agent-moves/`): `agent-looks`, `panel` and `actions`;
+  its background page sets the owner's picks (or the ones kept in its store) when it starts, and a tab menu's "Agent
+  motions" opens its panel with one picker per agent.

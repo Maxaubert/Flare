@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'">
+<title>Agent moves</title>
+</head>
+<body>
+<script>
+// The background page of the Agent moves sample: it runs, hidden, while the plugin is on. When it starts it gives each
+// agent its motion (agents.motion.set, permission agent-looks): the picks kept in the plugin's own store (key
+// "picks"), else the defaults below. Flare draws the motion, only while that agent's tab works, and never with
+// Windows' animation effects off; turning the plugin off takes its motions away and the icons stand still again.
+// The tab menu's "Agent motions" opens the panel, where the person picks one per agent.
+(function () {
+  var flare = window.flare;
+  if (!flare) { return; }
+  // The motions the owner picked (docs/surfaces/agent-motion-mock.html, agy-motion-mock.html).
+  var DEFAULTS = { claude: 'hop-blink', codex: 'spin-fade', agy: 'rainbow-flow' };
+
+  function apply(picks) {
+    Object.keys(DEFAULTS).forEach(function (agent) {
+      var motion = typeof picks[agent] === 'string' ? picks[agent] : DEFAULTS[agent];
+      flare.call('agents.motion.set', { agent: agent, motion: motion }).catch(function () {
+        // A pick this Flare does not know (an older or newer list): fall back to the default.
+        flare.call('agents.motion.set', { agent: agent, motion: DEFAULTS[agent] }).catch(function () {});
+      });
+    });
+  }
+
+  flare.on('plugin', function (e) {
+    if (!e || e.kind !== 'on') { return; }
+    flare.call('storage.get', { key: 'picks' }).then(function (r) {
+      apply((r && r.value && typeof r.value === 'object') ? r.value : {});
+    }, function () { apply({}); });
+  });
+
+  flare.on('action', function (e) {
+    if (e && e.key === 'pick' && e.tab) {
+      // The click gives the plugin that tab (click scope), so its panel may open there.
+      flare.call('panel.open', { kind: 'mod:agent-moves', tab: e.tab }).catch(function () {});
+    }
+  });
+})();
+</script>
+</body>
+</html>

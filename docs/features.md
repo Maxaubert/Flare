@@ -1716,7 +1716,8 @@ Builder's calls (the owner may overrule):
 - `session-buttons` asks for `tabs` too, only to type nowhere but in Claude tabs (in a plain shell `/compact` and Enter
   would run as a command).
 - `sonara-bar` and `session-buttons` show their bar from a tab-menu toggle (click scope), so they need no `tabs` for it.
-- `look` has no icon override or effect: `tabs.icon.*` and `tabs.effect.*` are not built.
+- `look` has no icon override or effect: `tabs.icon.*` and `tabs.effect.*` are not built. (An agent's icon motion is
+  built separately, see "Agent icons that move".)
 
 ## General review, 2026-10-23
 
@@ -1780,7 +1781,7 @@ Flare names an agent: `C:\Users\Admin\Documents\Claude\research\flare\2026-10-26
 - **Icon.** `IconKind::Agy`, row int 3 (Settings moved to 4): the pixel arch of agy's banner, 32 cells on a 10 x 8 grid
   (the picked mock `docs/surfaces/agy-icon-mock.html` has 32, not the 46 the spec guessed), one Slint `Path` per colour
   (`Glyphs.agy`, `Theme.agy`), pinned to `flare_agent::icon::{AGY_PIXELS, AGY_COLOURS, agy_paths}` by
-  `ui_text_marks.rs`. It stands still: the motions are Part 2.
+  `ui_text_marks.rs`. It stands still unless a plugin picks a motion (Part 2, "Agent icons that move").
 - **Keys.** agy takes Codex's image paste (^V) and newline (backslash, CR) until they are measured.
 - **Not in this PR.** Hooks for agy, Flare's MCP server in agy's config (`agy mcp add` writes the user's global file),
   dictation routing, answering the `OSC 7501 ; ?` query (the spec's reply is
@@ -1793,3 +1794,34 @@ Flare names an agent: `C:\Users\Admin\Documents\Claude\research\flare\2026-10-26
   `agy_gets_its_own_marker_and_its_word_round_trips`, `agy_resumes_its_last_conversation_with_no_id`,
   `an_agy_tab_comes_back_as_agy_c_wearing_its_icon_from_the_first_frame`, `turns_agys_status_reports_on_unless_the_user_chose`,
   `the_agy_icon_is_the_banners_rainbow_arch`, `the_agy_glyph_is_the_agent_crates_paths` and `agent_icons_are_eighteen_pixels`.
+
+## Agent icons that move, picked by a plugin, 2026-10-27
+
+Spec: `docs/superpowers/specs/2026-10-26-agy-and-agent-motion.md`, Part 2 (owner decisions 3 and 4); the mocks Max picked:
+`docs/surfaces/agent-motion-mock.html` (Claude H1, Codex O6) and `docs/surfaces/agy-motion-mock.html` (agy A1).
+
+- **What moves.** An agent's tab icon, in the strip and the sidebar, while its tab works (the Working mark is on), in the
+  motion a plugin picked for that agent: `hop-blink` (H1: a slow hop with a squash, 1.8 s, Clawd's eyes shut every other
+  landing), `spin-fade` (O6: a turn every 3.5 s, fading 0.55 to 1 over 1.8 s), `rainbow-flow` (A1, agy only: the arch's
+  colours run along it every 3 s), and for any agent `hop`, `spin` (4 s a turn) and `breathe` (0.82 to 1.05 of its size).
+  Without a pick, and for a tab that does not work, the icon stands still as before; with Windows' animation effects off
+  every icon stands still.
+- **How.** `flare_agent::icon_motion` computes every frame from the mark clock's time (`icon_phase`, no clock read
+  there); `push_frame` puts it on `MarkMotion` with the marks; `AgentIcon` (`tabmark.slint`) moves and scales the icon's
+  box for the hop and the breath, fades it, turns it (`transform-rotation`, left out by the software renderer), fills
+  Clawd's eyes (`Glyphs.clawd-lids`, pinned to `flare_agent::icon::clawd_lids_path`) and gives each path of agy's arch its
+  flowing colour. A row gets its motion from `tabs_ui::wear_motions`. No Slint `animate`, and nothing new ticks: the
+  clock runs while a tab works anyway.
+- **The plugin API.** `agents.motion.set {agent, motion}` and `agents.motion.clear {agent}`, namespace `Agents`, new
+  permission `agent-looks` ("Change how agent icons move while they work"), protocol 2 only; the newest pick wins, and a
+  plugin that stops takes its picks with it (`flare_agent::icon_motion::MotionPicks`, kept by the window, applied for the
+  plugin generation that was checked). Contract: `docs/surfaces/plugins.md` ("Agent icon motions"), `protocol.md`.
+- **Sample.** `sample-plugins/agent-moves/`: the owner's three picks from its background page, and a panel (a tab's menu,
+  "Agent motions") to pick one per agent, kept in its store.
+- Held by the `icon_motion` tests (each motion's frames at fixed phases: hop height and squash, the blink's frames, the
+  turns, the fade, the flow's colours and offsets, the still frame, the picks), `only_a_working_agents_tab_wears_its_agents_motion`,
+  `a_picked_motion_moves_a_working_agents_icon_from_the_mark_clock_and_stills_with_effects_off`,
+  `agent_icons_move_by_the_pushed_frame_and_stand_still_when_stilled`, the `plugin_motion` tests (permission, params,
+  rate, the newest pick, a plugin turned off), `agent_looks_opens_only_the_agents_motions`,
+  `clawds_lids_are_the_agent_crates_path_in_clawds_colour`, `the_agent_icon_moves_by_the_mark_clock_only` and
+  `the_sample_plugins_are_valid`.

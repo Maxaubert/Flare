@@ -41,11 +41,15 @@ pub enum Permission {
     Network,
     /// Flare starts the plugin's helper program. Full control, and no method of its own.
     Process,
+    /// How an agent's tab icon moves while it works (`agents.motion.*`): a motion from Flare's fixed list, never the
+    /// agent's artwork or marks (owner decision 2026-10-26, amending design 13). Plugins only.
+    #[serde(rename = "agent-looks")]
+    AgentLooks,
 }
 
 impl Permission {
     /// Every permission, in documentation order.
-    pub const ALL: [Permission; 15] = [
+    pub const ALL: [Permission; 16] = [
         Permission::Panel,
         Permission::View,
         Permission::Browser,
@@ -61,6 +65,7 @@ impl Permission {
         Permission::Input,
         Permission::Network,
         Permission::Process,
+        Permission::AgentLooks,
     ];
 
     pub fn name(self) -> &'static str {
@@ -80,6 +85,7 @@ impl Permission {
             Permission::Input => "input",
             Permission::Network => "network",
             Permission::Process => "process",
+            Permission::AgentLooks => "agent-looks",
         }
     }
 
@@ -178,7 +184,14 @@ impl Grant {
                 N::AgentTools => true,
                 // The plugin surfaces and a plugin's store are a plugin's; reading a session is not the agent's, and
                 // typing into a shell is never the agent's (rules 2 and 188).
-                N::Sidebar | N::Actions | N::Bar | N::Session | N::Input | N::Storage => false,
+                // How agent icons move is a plugin's choice (`agent-looks`), never the agent's own.
+                N::Sidebar
+                | N::Actions
+                | N::Bar
+                | N::Session
+                | N::Input
+                | N::Storage
+                | N::Agents => false,
                 N::Hello | N::Tabs | N::Ui => unreachable!("handled above"),
             },
             Grant::Mod {
@@ -483,7 +496,8 @@ mod tests {
             assert_eq!(Permission::parse(p.name()), Some(p));
         }
         assert_eq!(Permission::parse("root"), None);
-        assert_eq!(Permission::ALL.len(), 15);
+        assert_eq!(Permission::ALL.len(), 16);
+        assert_eq!(Permission::parse("agent-looks"), Some(P::AgentLooks));
         let mut names: Vec<&str> = Permission::ALL.iter().map(|p| p.name()).collect();
         names.sort_unstable();
         names.dedup();
@@ -528,6 +542,7 @@ mod tests {
                     Namespace::Sidebar => "sidebar",
                     Namespace::Actions => "actions",
                     Namespace::Bar => "bar",
+                    Namespace::Agents => "agent-looks",
                     Namespace::Session => "sessions",
                     Namespace::Input => "input",
                     // Every plugin keeps its own store and the app reaches it; a protocol 1 mod and the agent never do.
@@ -595,6 +610,7 @@ mod tests {
         assert_eq!(Namespace::Actions.permission(), Some(P::Actions));
         assert_eq!(Namespace::Bar.permission(), Some(P::Bar));
         assert_eq!(Namespace::Decor.permission(), Some(P::Decorate));
+        assert_eq!(Namespace::Agents.permission(), Some(P::AgentLooks));
     }
 
     /// Three permissions open no namespace: `network` changes a page's policy, `process` starts the helper, and
@@ -649,6 +665,7 @@ mod tests {
                 Namespace::Session,
                 Namespace::Input,
                 Namespace::Storage,
+                Namespace::Agents,
             ] {
                 assert!(!g.may_enter(ns), "{ns:?}");
             }
@@ -656,6 +673,33 @@ mod tests {
         for ns in Namespace::ALL {
             assert!(Grant::Ui.may_enter(ns), "{ns:?}");
         }
+    }
+
+    /// `agent-looks` opens the agents' motions and nothing else, and nothing else opens them (owner 2026-10-26).
+    #[test]
+    fn agent_looks_opens_only_the_agents_motions() {
+        let g = mod_with(&[P::AgentLooks]);
+        for m in Method::ALL {
+            let want = matches!(
+                m.namespace(),
+                Namespace::Hello | Namespace::Tabs | Namespace::Storage | Namespace::Agents
+            );
+            assert_eq!(g.may_call(m), want, "{}", m.name());
+        }
+        let rest: Vec<Permission> = Permission::ALL
+            .into_iter()
+            .filter(|p| *p != P::AgentLooks)
+            .collect();
+        for m in [Method::AgentsMotionSet, Method::AgentsMotionClear] {
+            assert!(!mod_with(&rest).may_call(m), "{}", m.name());
+            assert!(!Grant::agent().may_call(m), "{}", m.name());
+            assert!(Grant::Ui.may_call(m));
+        }
+        assert_eq!(P::AgentLooks.name(), "agent-looks");
+        assert_eq!(
+            serde_json::to_string(&P::AgentLooks).unwrap(),
+            "\"agent-looks\""
+        );
     }
 
     #[test]

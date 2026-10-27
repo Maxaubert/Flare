@@ -844,5 +844,30 @@ mod tests {
         ] {
             assert!(page.contains(uses), "the look page uses {uses}");
         }
+        // Agent moves (owner decision 2026-10-26): the owner's motions for the three agents, set from the background
+        // page, and a panel to pick one per agent, opened from a tab's menu.
+        let (moves, page) = sample("agent-moves");
+        assert_eq!(
+            moves.manifest.permissions,
+            [P::AgentLooks, P::Panel, P::Actions]
+        );
+        assert!(moves.entry.is_some() && moves.bar.is_none());
+        assert_eq!(places(moves, "pick"), [W::TabMenu]);
+        assert!(moves.manifest.tools.is_empty());
+        for uses in [
+            "agents.motion.set",
+            "'hop-blink'",
+            "'spin-fade'",
+            "'rainbow-flow'",
+            "'plugin'",
+            "panel.open",
+            "storage.get",
+        ] {
+            assert!(page.contains(uses), "the agent-moves page uses {uses}");
+        }
+        let panel = fs::read_to_string(moves.entry.as_ref().unwrap()).unwrap(); // sync-ok: test code only
+        for uses in ["agents.motion.set", "storage.set", "'breathe'"] {
+            assert!(panel.contains(uses), "the agent-moves panel uses {uses}");
+        }
     }
 }

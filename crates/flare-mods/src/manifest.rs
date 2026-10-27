@@ -67,7 +67,7 @@ pub const ASKABLE_V1: [Permission; 5] = [
 ];
 
 /// The permissions a protocol 2 manifest may ask for: the protocol 1 list and the plugin ones. Never `eval`.
-pub const ASKABLE_V2: [Permission; 14] = [
+pub const ASKABLE_V2: [Permission; 15] = [
     Permission::Panel,
     Permission::View,
     Permission::Browser,
@@ -82,6 +82,7 @@ pub const ASKABLE_V2: [Permission; 14] = [
     Permission::Input,
     Permission::Network,
     Permission::Process,
+    Permission::AgentLooks,
 ];
 
 const TOP_KEYS_V1: [&str; 8] = [
