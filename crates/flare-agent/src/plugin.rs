@@ -106,20 +106,67 @@ fn is_drive_path(text: &str) -> bool {
     bytes.len() > 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
 }
 
-/// The template with every placeholder replaced by `cmd_path` (JSON-escaped). None when the
-/// template has no placeholder, `cmd_path` is not an absolute `...\System32\cmd.exe`, or a bare
-/// program name would survive.
+/// The template with every placeholder replaced by `cmd_path` (JSON-escaped), and the hooks that run
+/// `flare-mcp` left out. None when the template has no placeholder, `cmd_path` is not an absolute
+/// `...\System32\cmd.exe`, or a bare program name would survive.
 pub fn render_hooks(template: &str, cmd_path: &str) -> Option<String> {
+    render_hooks_with(template, cmd_path, None)
+}
+
+/// [`render_hooks`] that also writes `mcp_exe` (the absolute `flare-mcp.exe`) where a hook runs it: the
+/// prompt hook that tells Claude which page the browser panel shows. None: those hooks are left out
+/// (and a group or event they leave empty with them), so a build without the program gives Claude Code
+/// nothing to fail on. None as the answer when `mcp_exe` is given but is not an absolute drive path.
+pub fn render_hooks_with(template: &str, cmd_path: &str, mcp_exe: Option<&str>) -> Option<String> {
     if !is_drive_path(cmd_path) || !cmd_path.to_lowercase().ends_with("\\system32\\cmd.exe") {
         return None;
     }
     if !template.contains(SYSTEM_CMD_PLACEHOLDER) {
         return None;
     }
-    let quoted = serde_json::to_string(cmd_path).ok()?;
-    let escaped = &quoted[1..quoted.len() - 1];
-    let out = template.replace(SYSTEM_CMD_PLACEHOLDER, escaped);
+    let escape = |path: &str| -> Option<String> {
+        let quoted = serde_json::to_string(path).ok()?;
+        Some(quoted[1..quoted.len() - 1].to_string())
+    };
+    let mut out = template.replace(SYSTEM_CMD_PLACEHOLDER, &escape(cmd_path)?);
+    match mcp_exe {
+        Some(exe) if is_drive_path(exe) => {
+            out = out.replace(MCP_EXE_PLACEHOLDER, &escape(exe)?);
+        }
+        Some(_) => return None,
+        None if out.contains(MCP_EXE_PLACEHOLDER) => out = without_mcp_hooks(&out)?,
+        None => {}
+    }
     hooks_commands_are_absolute(&out).then_some(out)
+}
+
+/// `hooks.json` text without the hooks whose program is still [`MCP_EXE_PLACEHOLDER`], and without a
+/// group or an event that has nothing left.
+fn without_mcp_hooks(text: &str) -> Option<String> {
+    let mut value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let events = value.get_mut("hooks")?.as_object_mut()?;
+    for groups in events.values_mut() {
+        let Some(groups) = groups.as_array_mut() else {
+            continue;
+        };
+        for group in groups.iter_mut() {
+            if let Some(hooks) = group.get_mut("hooks").and_then(|h| h.as_array_mut()) {
+                hooks.retain(|hook| {
+                    hook.get("command").and_then(|c| c.as_str()) != Some(MCP_EXE_PLACEHOLDER)
+                });
+            }
+        }
+        groups.retain(|group| {
+            group
+                .get("hooks")
+                .and_then(|h| h.as_array())
+                .is_some_and(|h| !h.is_empty())
+        });
+    }
+    events.retain(|_, groups| groups.as_array().is_some_and(|g| !g.is_empty()));
+    let mut out = serde_json::to_string_pretty(&value).ok()?;
+    out.push('\n');
+    Some(out)
 }
 
 /// True when `hooks.json` text parses, has at least one hook, and every `command` is an absolute
@@ -151,9 +198,10 @@ pub fn hooks_commands_are_absolute(text: &str) -> bool {
     count > 0
 }
 
-/// What the shipped `plugin.json` carries where the MCP server's program goes. Like the hooks'
-/// placeholder it is never a valid command: [`install_plugin_with`] writes the absolute path of
-/// `flare-mcp.exe` beside the running exe, or leaves the whole `mcpServers` block out.
+/// What the shipped `plugin.json` (and the prompt hook in `hooks.json`) carries where the MCP server's
+/// program goes. Like the hooks' placeholder it is never a valid command: [`install_plugin_with`]
+/// writes the absolute path of `flare-mcp.exe` beside the running exe, or leaves the whole
+/// `mcpServers` block (and that hook) out.
 pub const MCP_EXE_PLACEHOLDER: &str = "@@FLARE_MCP_EXE@@";
 
 /// The manifest template with the MCP server's program set to `mcp_exe` (an absolute drive path),
@@ -213,8 +261,8 @@ pub fn install_plugin(src: &Path, dest: &Path, system_dir: &Path) -> std::io::Re
 }
 
 /// [`install_plugin`] that also writes `plugin.json` with `mcp_exe` (the absolute `flare-mcp.exe`) as
-/// the MCP server's program. None: the manifest has no MCP server, so a build without the file gives
-/// Claude Code nothing to fail on.
+/// the MCP server's program, and `hooks.json` with it as the prompt hook's. None: the manifest has no
+/// MCP server and that hook is left out, so a build without the file gives Claude Code nothing to fail on.
 pub fn install_plugin_with(
     src: &Path,
     dest: &Path,
@@ -225,12 +273,12 @@ pub fn install_plugin_with(
     let cmd = system_cmd_path(system_dir).ok_or_else(|| bad("not an absolute System32 folder"))?;
     // sync-ok: install on the spawn worker
     let template = std::fs::read_to_string(src.join("hooks").join("hooks.json"))?;
-    let hooks =
-        render_hooks(&template, &cmd).ok_or_else(|| bad("hooks.json cannot be rendered"))?;
+    let mcp_text = mcp_exe.map(|p| p.to_string_lossy().into_owned());
+    let hooks = render_hooks_with(&template, &cmd, mcp_text.as_deref())
+        .ok_or_else(|| bad("hooks.json cannot be rendered"))?;
     let manifest_rel = Path::new(".claude-plugin").join("plugin.json");
     // sync-ok: install on the spawn worker
     let manifest_template = std::fs::read_to_string(src.join(&manifest_rel))?;
-    let mcp_text = mcp_exe.map(|p| p.to_string_lossy().into_owned());
     let manifest = render_manifest(&manifest_template, mcp_text.as_deref())
         .ok_or_else(|| bad("plugin.json cannot be rendered"))?;
     let hooks_rel = Path::new("hooks").join("hooks.json");
@@ -361,13 +409,17 @@ mod tests {
         serde_json::from_str(&read_plugin_file("hooks/hooks.json")).expect("hooks.json parses")
     }
 
-    /// Every hook entry as (event, matcher, the args after the four fixed ones joined by a space).
+    /// Every `hook.cmd` entry as (event, matcher, the args after the four fixed ones joined by a
+    /// space). The prompt hook that runs `flare-mcp` is not one: [`mcp_hook_entries`] has it.
     fn hook_entries(value: &serde_json::Value) -> Vec<(String, String, String, serde_json::Value)> {
         let mut out = Vec::new();
         for (event, groups) in value["hooks"].as_object().expect("hooks object") {
             for group in groups.as_array().expect("group list") {
                 let matcher = group["matcher"].as_str().expect("matcher").to_string();
                 for hook in group["hooks"].as_array().expect("hook list") {
+                    if is_mcp_hook(hook) {
+                        continue;
+                    }
                     let args: Vec<String> = hook["args"]
                         .as_array()
                         .expect("args")
@@ -384,6 +436,147 @@ mod tests {
             }
         }
         out
+    }
+
+    /// The hook runs `flare-mcp` (the placeholder, or an installed `...\flare-mcp.exe`).
+    fn is_mcp_hook(hook: &serde_json::Value) -> bool {
+        let command = hook["command"].as_str().unwrap_or("");
+        command == MCP_EXE_PLACEHOLDER || command.to_lowercase().ends_with("flare-mcp.exe")
+    }
+
+    /// Every `flare-mcp` hook entry as (event, matcher, the hook).
+    fn mcp_hook_entries(value: &serde_json::Value) -> Vec<(String, String, serde_json::Value)> {
+        let mut out = Vec::new();
+        for (event, groups) in value["hooks"].as_object().expect("hooks object") {
+            for group in groups.as_array().expect("group list") {
+                let matcher = group["matcher"].as_str().expect("matcher").to_string();
+                for hook in group["hooks"].as_array().expect("hook list") {
+                    if is_mcp_hook(hook) {
+                        out.push((event.clone(), matcher.clone(), hook.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_prompt_hook_runs_flare_mcp_by_its_placeholder_with_one_flag() {
+        let value = hooks_value();
+        let entries = mcp_hook_entries(&value);
+        assert_eq!(entries.len(), 1);
+        let (event, matcher, hook) = &entries[0];
+        assert_eq!(
+            (event.as_str(), matcher.as_str()),
+            ("UserPromptSubmit", "*")
+        );
+        assert_eq!(hook["type"].as_str(), Some("command"));
+        assert_eq!(hook["command"].as_str(), Some(MCP_EXE_PLACEHOLDER));
+        assert_eq!(hook["args"], serde_json::json!(["--hook-context"]));
+        // Short: the hook itself gives up on Flare after a second, so a prompt is never held long.
+        assert!(hook["timeout"].as_u64().expect("timeout") <= 5);
+        // The state hook of the same event is still there, and still first.
+        let first = &value["hooks"]["UserPromptSubmit"][0]["hooks"][0];
+        assert_eq!(first["command"].as_str(), Some(SYSTEM_CMD_PLACEHOLDER));
+    }
+
+    #[test]
+    fn the_prompt_hook_gets_the_absolute_program_or_is_left_out() {
+        let template = read_plugin_file("hooks/hooks.json");
+        let cmd = "C:\\Windows\\System32\\cmd.exe";
+        let exe = "C:\\Program Files\\Flare [x]\\flare-mcp.exe";
+        let with = render_hooks_with(&template, cmd, Some(exe)).expect("renders");
+        assert!(!with.contains("@@"));
+        assert!(hooks_commands_are_absolute(&with));
+        let value: serde_json::Value = serde_json::from_str(&with).expect("json");
+        let entries = mcp_hook_entries(&value);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].2["command"].as_str(), Some(exe));
+        assert_eq!(
+            hook_entries(&value).len(),
+            25,
+            "the state hooks are all kept"
+        );
+        // Without the program the hook goes, its empty group with it, and nothing else changes.
+        let without = render_hooks_with(&template, cmd, None).expect("renders");
+        assert_eq!(
+            render_hooks(&template, cmd).as_deref(),
+            Some(without.as_str())
+        );
+        assert!(!without.contains("@@") && !without.contains("\"--hook-context\""));
+        let value: serde_json::Value = serde_json::from_str(&without).expect("json");
+        assert!(mcp_hook_entries(&value).is_empty());
+        assert_eq!(
+            value["hooks"]["UserPromptSubmit"].as_array().map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(hook_entries(&value).len(), 25);
+        // A relative or bare program is never written.
+        assert!(render_hooks_with(&template, cmd, Some("flare-mcp.exe")).is_none());
+        assert!(render_hooks_with(&template, cmd, Some("..\\flare-mcp.exe")).is_none());
+    }
+
+    #[test]
+    fn install_writes_the_prompt_hook_only_when_the_program_exists_and_ships_the_browser_command() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let system = fake_system32(tmp.path());
+        let exe = tmp.path().join("flare-mcp.exe");
+        let with = tmp.path().join("with");
+        install_plugin_with(&plugin_root(), &with, &system, Some(&exe)).expect("install");
+        let text = std::fs::read_to_string(with.join("hooks").join("hooks.json")).expect("hooks"); // sync-ok: test fixture on a temp folder
+        let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let entries = mcp_hook_entries(&value);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].2["command"].as_str(),
+            Some(exe.to_string_lossy().as_ref())
+        );
+        let command = std::fs::read_to_string(with.join("commands").join("browser.md")) // sync-ok: test fixture on a temp folder
+            .expect("the /browser command is installed");
+        assert!(command.contains("$ARGUMENTS"));
+        let without = tmp.path().join("without");
+        install_plugin(&plugin_root(), &without, &system).expect("install");
+        let text =
+            std::fs::read_to_string(without.join("hooks").join("hooks.json")).expect("hooks"); // sync-ok: test fixture on a temp folder
+        assert!(!text.contains("\"--hook-context\"") && !text.contains("@@"));
+        assert!(hooks_commands_are_absolute(&text));
+        // Adding the program later rewrites the hooks and the manifest, and nothing else.
+        assert_eq!(
+            install_plugin_with(&plugin_root(), &without, &system, Some(&exe)).expect("again"),
+            2
+        );
+    }
+
+    #[test]
+    fn the_browser_command_opens_a_page_looks_once_and_then_waits() {
+        let text = read_plugin_file("commands/browser.md");
+        assert!(text.starts_with("---\n") || text.starts_with("---\r\n"));
+        for word in [
+            "description:",
+            "argument-hint:",
+            "$ARGUMENTS",
+            "open_page",
+            "browser_look",
+            "https://www.google.com/",
+            "https://www.google.com/search?q=",
+            "wait for the user",
+        ] {
+            assert!(text.contains(word), "browser.md lacks {word}");
+        }
+        // Only the two tools it needs are allowed without asking, and by their plugin names.
+        let allowed = text
+            .lines()
+            .find_map(|l| l.strip_prefix("allowed-tools:"))
+            .expect("allowed-tools");
+        let tools: Vec<&str> = allowed.split(',').map(str::trim).collect();
+        assert_eq!(
+            tools,
+            [
+                "mcp__plugin_flare-status_flare__open_page",
+                "mcp__plugin_flare-status_flare__browser_look"
+            ]
+        );
+        assert!(!text.contains('\u{2014}'));
     }
 
     fn write_manifest(dir: &Path, body: &str) {
@@ -403,7 +596,7 @@ mod tests {
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
         assert!(shaped, "name {name} is not a plugin name");
-        assert_eq!(manifest["version"].as_str(), Some("1.1.0"));
+        assert_eq!(manifest["version"].as_str(), Some("1.2.0"));
         let description = manifest["description"].as_str().expect("description");
         assert!(!description.contains('\u{2014}'));
     }
@@ -472,10 +665,11 @@ mod tests {
             .expect("manifest"); // sync-ok: test fixture on a temp folder
         assert!(!text.contains("mcpServers") && !text.contains("@@"));
         assert!(read_is_our_plugin(&without));
-        // The installed copy follows the program: adding it later rewrites the manifest.
+        // The installed copy follows the program: adding it later rewrites the manifest (and the
+        // hooks, for the prompt hook).
         assert_eq!(
             install_plugin_with(&plugin_root(), &without, &system, Some(&exe)).expect("again"),
-            1
+            2
         );
     }
 
@@ -529,7 +723,12 @@ mod tests {
 
     #[test]
     fn the_plugin_carries_no_refused_name() {
-        for rel in [".claude-plugin/plugin.json", "hook.cmd", "hooks/hooks.json"] {
+        for rel in [
+            ".claude-plugin/plugin.json",
+            "hook.cmd",
+            "hooks/hooks.json",
+            "commands/browser.md",
+        ] {
             let text = read_plugin_file(rel).to_lowercase();
             for name in ["\"prism-agent", "\"prism-terminal-status"] {
                 assert!(!text.contains(name), "{rel} names a refused plugin");

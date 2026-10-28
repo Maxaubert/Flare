@@ -1,7 +1,7 @@
 {
   "name": "flare-status",
-  "version": "1.1.0",
-  "description": "Lets a Flare tab show what this Claude Code session is doing: working, waiting on you, finished or failed. Each hook prints one fixed terminal sequence; nothing leaves the PC. Also gives Claude tools to show an image, a file or some text in a panel beside the tab, through Flare's own local control channel.",
+  "version": "1.2.0",
+  "description": "Lets a Flare tab show what this Claude Code session is doing: working, waiting on you, finished or failed. Each hook prints one fixed terminal sequence; nothing leaves the PC. Also gives Claude tools to show an image, a file or some text in a panel beside the tab and to use Flare's browser panel, through Flare's own local control channel, a /browser command that opens a page there for you to browse, and a prompt hook that tells Claude which page that panel shows.",
   "mcpServers": {
     "flare": {
       "command": "@@FLARE_MCP_EXE@@",

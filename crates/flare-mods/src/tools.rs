@@ -185,6 +185,7 @@ mod tests {
             "browser_navigate",
             "browser_wait",
             "browser_eval",
+            "browser_state",
             "close_panel",
             "set_tab_badge",
             "clear_tab_badge",
