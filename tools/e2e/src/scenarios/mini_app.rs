@@ -336,7 +336,8 @@ fn app_on(ctx: &mut Ctx, app: &mut App, at: &str, profile: &Path) -> Result<(), 
     );
     ctx.ok(
         s["controller"]["profile"] == json!("flare-app")
-            && s["controller"]["private"] == json!(true),
+            && s["controller"]["private"] == json!(true)
+            && s["controller"]["autofill"] == json!(false),
         format!(
             "{at}: it runs in the private profile of its own, not the web panel's ({} / {})",
             s["controller"]["profile"], s["controller"]["private"]

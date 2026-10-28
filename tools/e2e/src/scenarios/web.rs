@@ -286,6 +286,13 @@ fn panel_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<u32, Str
         format!("{at}: the controller is visible with bounds {bounds}"),
     );
     ctx.ok(
+        ctl["autofill"] == json!(true),
+        format!(
+            "{at}: it offers to save passwords and fills in forms ({})",
+            ctl["autofill"]
+        ),
+    );
+    ctx.ok(
         same_rect(bounds, &s["drawn"], 1),
         format!(
             "{at}: its bounds equal the box Slint laid out for it ({} vs {})",

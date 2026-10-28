@@ -690,6 +690,12 @@ impl WebHost {
                     let _ = s.SetAreDevToolsEnabled(false);
                     let _ = s.SetIsStatusBarEnabled(false);
                 }
+                // The web panel is the person's browser: it offers to save a password and fills in saved ones and
+                // forms, in its own folder (2026-10-28). A mini-app's or a plugin's page gets neither.
+                if let Ok(s4) = s.cast::<ICoreWebView2Settings4>() {
+                    let _ = s4.SetIsPasswordAutosaveEnabled(app.is_none());
+                    let _ = s4.SetIsGeneralAutofillEnabled(app.is_none());
+                }
             }
         }
         if let Some(a) = app {
@@ -2051,7 +2057,7 @@ impl WebBackend for WebHost {
         let mut r = RECT::default();
         let mut pid = 0u32;
         // SAFETY: `controller` and `webview` are live COM objects; the out values are valid.
-        let (visible, url, title, profile, private) = unsafe {
+        let (visible, url, title, profile, private, autofill) = unsafe {
             let _ = l.controller.Bounds(&mut r);
             let _ = l.webview.BrowserProcessId(&mut pid);
             let profile = l
@@ -2071,6 +2077,13 @@ impl WebBackend for WebHost {
                 get_string(|p| l.webview.DocumentTitle(p)),
                 profile.0,
                 profile.1,
+                l.webview
+                    .Settings()
+                    .and_then(|s| s.cast::<ICoreWebView2Settings4>())
+                    .is_ok_and(|s4| {
+                        get_bool(|b| s4.IsPasswordAutosaveEnabled(b))
+                            && get_bool(|b| s4.IsGeneralAutofillEnabled(b))
+                    }),
             )
         };
         Some(ControllerProbe {
@@ -2082,6 +2095,7 @@ impl WebBackend for WebHost {
             browser_pid: pid,
             profile,
             private,
+            autofill,
         })
     }
 }

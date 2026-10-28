@@ -252,6 +252,8 @@ pub struct ControllerProbe {
     pub profile: String,
     /// The profile keeps nothing on disk (a mini-app's).
     pub private: bool,
+    /// The browser offers to save passwords and fills them in, and fills in forms (the web panel only).
+    pub autofill: bool,
 }
 
 /// One web view per slot: the panel of each tab with an open web panel and, for plugins, a bar beside a tab or
