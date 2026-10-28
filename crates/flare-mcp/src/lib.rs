@@ -11,8 +11,12 @@
 //! lists them as `mod_<id>_<tool>`; a `mod_` call goes to `mods.call`, which waits for the mod's page. Flare
 //! tells a listening server when the set changes (`mods.changed`), and the server sends
 //! `notifications/tools/list_changed` so a client that supports it lists again.
+//!
+//! Run with `--hook-context` it is not a server but Claude Code's `UserPromptSubmit` hook (`hook`): it tells the
+//! agent which web page the user has open in the browser panel beside its tab.
 
 mod browser;
+pub mod hook;
 
 use std::io::{BufRead, Write};
 use std::sync::Arc;
@@ -888,6 +892,8 @@ pub struct FlareChannel {
     tab_token: Option<String>,
     pipe: Option<String>,
     server_pid: Option<u32>,
+    /// A wait shorter than the usual ones, for the connect and for every answer (the prompt hook's).
+    timeout: Option<Duration>,
     client: Option<flare_ctl::Client<flare_ctl::PipeEnd>>,
     watching: bool,
     /// A `mods.tools` call was answered: this Flare has a mods hub, so the watcher is worth a connection.
@@ -910,6 +916,7 @@ impl FlareChannel {
             tab_token,
             pipe,
             server_pid: None,
+            timeout: None,
             client: None,
             watching: false,
             mods_hub_seen: false,
@@ -922,6 +929,12 @@ impl FlareChannel {
         self
     }
 
+    /// Waits at most `wait` to connect and for each answer, instead of [`CALL_TIMEOUT`] and [`call_wait`].
+    pub fn with_timeout(mut self, wait: Duration) -> Self {
+        self.timeout = Some(wait);
+        self
+    }
+
     fn connect(&mut self) -> Result<(), ChannelError> {
         if self.client.is_some() {
             return Ok(());
@@ -930,7 +943,7 @@ impl FlareChannel {
             self.tab_token.as_deref(),
             self.pipe.as_deref(),
             self.server_pid,
-            CALL_TIMEOUT,
+            self.timeout.unwrap_or(CALL_TIMEOUT),
             false,
         )?);
         Ok(())
@@ -1055,7 +1068,8 @@ impl Channel for FlareChannel {
         for attempt in 0..2 {
             self.connect()?;
             let client = self.client.as_mut().expect("connected above");
-            match client.call(method, params.clone(), call_wait(method)) {
+            let wait = self.timeout.unwrap_or_else(|| call_wait(method));
+            match client.call(method, params.clone(), wait) {
                 Ok(v) => {
                     if method == Method::ModsTools {
                         self.mods_hub_seen = true;
@@ -1202,6 +1216,7 @@ mod tests {
                 "browser_wait",
                 "browser_navigate",
                 "browser_eval",
+                "browser_state",
                 "set_tab_badge",
                 "clear_tab_badge",
                 "set_tab_progress",

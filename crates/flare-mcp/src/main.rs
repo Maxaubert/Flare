@@ -1,8 +1,13 @@
 //! `flare-mcp.exe`: the stdio MCP server. stdout carries protocol messages only; nothing is logged.
+//! With `--hook-context` it is Claude Code's prompt hook instead (`flare_mcp::hook`).
 
 use std::io::{self, BufReader};
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some(flare_mcp::hook::HOOK_FLAG) {
+        flare_mcp::hook::hook_main();
+        return;
+    }
     let mut channel = flare_mcp::FlareChannel::from_env();
     let stdin = BufReader::new(io::stdin().lock());
     // Not locked for the whole run: the watcher thread writes its notification through the same handle, and

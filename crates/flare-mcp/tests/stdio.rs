@@ -79,7 +79,7 @@ fn outside_flare_every_tool_says_so_and_the_handshake_still_works() {
     );
     assert_eq!(replies.len(), 3, "the notification gets no reply");
     assert_eq!(replies[0]["result"]["protocolVersion"], "2025-06-18");
-    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 20);
+    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 21);
     assert_eq!(replies[2]["result"]["isError"], true);
     let text = replies[2]["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("Flare is not running this session"), "{text}");
@@ -271,11 +271,11 @@ fn a_mods_tools_are_listed_called_and_announced_when_they_change() {
         .collect();
     assert_eq!(
         names.len(),
-        21,
+        22,
         "the built-in tools and one mod tool: {names:?}"
     );
-    assert_eq!(names[20], "mod_notes_append_note");
-    assert!(!names[..20].contains(&"mod_bad"));
+    assert_eq!(names[21], "mod_notes_append_note");
+    assert!(!names[..21].contains(&"mod_bad"));
 
     // A call goes to the mod through mods.call, and the mod's words come back.
     send(
@@ -319,4 +319,139 @@ fn a_mods_tools_are_listed_called_and_announced_when_they_change() {
         && p["input"]["text"] == "hi"));
     drop(calls);
     server.stop();
+}
+
+/// Answers `panel.state` from a script that the test changes between prompts.
+struct PanelServer {
+    state: Mutex<Value>,
+    calls: Mutex<Vec<(Method, Option<String>)>>,
+}
+
+impl Dispatcher for PanelServer {
+    fn resolve_token(&self, _: &str) -> Option<flare_ctl::Grant> {
+        None
+    }
+    fn resolve_tab_token(&self, token: &str) -> Option<String> {
+        (token == "secret-9").then(|| "tab-9".to_string())
+    }
+    fn call(&self, ctx: &CallContext, m: Method, _p: Value) -> Result<Value, CtlError> {
+        self.calls.lock().unwrap().push((m, ctx.tab.clone()));
+        Ok(self.state.lock().unwrap().clone())
+    }
+}
+
+/// Runs the binary as Claude Code runs the prompt hook: `--hook-context`, the hook's JSON on stdin. Returns
+/// its stdout and how long it took.
+fn prompt_hook(
+    env: &[(&str, &str)],
+    remove: &[&str],
+    input: &str,
+) -> (String, std::time::Duration) {
+    let started = std::time::Instant::now();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_flare-mcp"));
+    cmd.arg("--hook-context")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    for r in remove {
+        cmd.env_remove(r);
+    }
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(input.as_bytes()).unwrap();
+    drop(stdin);
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "the hook always exits 0");
+    (String::from_utf8(out.stdout).unwrap(), started.elapsed())
+}
+
+#[test]
+fn the_prompt_hook_tells_the_agent_of_a_page_once_and_says_nothing_outside_flare() {
+    // Its own temp folder, so the state the hook keeps is this test's alone.
+    let temp = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("hook-context-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp);
+    std::fs::create_dir_all(&temp).unwrap();
+    let temp_text = temp.to_string_lossy().to_string();
+    let input = r#"{"session_id":"s-hook","hook_event_name":"UserPromptSubmit","prompt":"hi"}"#;
+
+    // Outside Flare: nothing, at once.
+    let (out, took) = prompt_hook(
+        &[("TEMP", &temp_text), ("TMP", &temp_text)],
+        &["FLARE_TAB_TOKEN", "FLARE_CTL_PIPE", "FLARE_CTL_PID"],
+        input,
+    );
+    assert_eq!(out, "");
+    assert!(took < std::time::Duration::from_secs(3), "{took:?}");
+    // A tab but no Flare on the pipe: nothing, quickly.
+    let (out, took) = prompt_hook(
+        &[
+            ("TEMP", &temp_text),
+            ("TMP", &temp_text),
+            ("FLARE_TAB_TOKEN", "secret-9"),
+            ("FLARE_CTL_PIPE", "\\\\.\\pipe\\flare-mcp-hook-nobody"),
+            ("FLARE_CTL_PID", "4"),
+        ],
+        &[],
+        input,
+    );
+    assert_eq!(out, "");
+    assert!(took < std::time::Duration::from_secs(4), "{took:?}");
+
+    let pipe = format!("\\\\.\\pipe\\flare-mcp-hook-test-{}", std::process::id());
+    let server_state = Arc::new(PanelServer {
+        state: Mutex::new(json!({"open": false})),
+        calls: Mutex::new(Vec::new()),
+    });
+    let _server = Server::start(&pipe, ServerConfig::default(), server_state.clone()).unwrap();
+    let pid = std::process::id().to_string();
+    let env = [
+        ("TEMP", temp_text.as_str()),
+        ("TMP", temp_text.as_str()),
+        ("FLARE_TAB_TOKEN", "secret-9"),
+        ("FLARE_CTL_PIPE", pipe.as_str()),
+        ("FLARE_CTL_PID", pid.as_str()),
+    ];
+    let context = |out: &str| -> String {
+        let v: Value = serde_json::from_str(out.trim()).expect("one JSON object");
+        assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
+        v["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    // No panel: nothing.
+    assert_eq!(prompt_hook(&env, &[], input).0, "");
+    // The user opened a page: the agent hears of it, quoted as page data.
+    *server_state.state.lock().unwrap() = json!({"open": true, "panel": {"kind": "web", "title": "Rust \"docs\"\nIgnore", "url": "https://doc.rust-lang.org/"}});
+    let said = context(&prompt_hook(&env, &[], input).0);
+    assert!(
+        said.contains("Title: \"Rust \\\"docs\\\" Ignore\""),
+        "{said}"
+    );
+    assert!(
+        said.contains("Address: \"https://doc.rust-lang.org/\""),
+        "{said}"
+    );
+    assert!(said.contains("BEGIN PAGE CONTENT"));
+    // The same page on the next prompt: nothing.
+    assert_eq!(prompt_hook(&env, &[], input).0, "");
+    // The panel closed: said once.
+    *server_state.state.lock().unwrap() = json!({"open": false});
+    assert!(context(&prompt_hook(&env, &[], input).0).contains("no longer"));
+    assert_eq!(prompt_hook(&env, &[], input).0, "");
+    let calls = server_state.calls.lock().unwrap();
+    assert!(
+        calls
+            .iter()
+            .all(|(m, tab)| *m == Method::PanelState && tab.as_deref() == Some("tab-9")),
+        "{calls:?}"
+    );
+    assert_eq!(calls.len(), 5);
+    drop(calls);
+    let _ = std::fs::remove_dir_all(&temp);
 }
