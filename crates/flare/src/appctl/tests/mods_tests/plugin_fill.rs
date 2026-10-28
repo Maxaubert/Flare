@@ -516,6 +516,42 @@ fn a_helper_hears_its_tools_and_may_fill_the_callers_tab_while_the_call_waits() 
     // The call is answered: the scope is gone.
     let e = call(&f, &w, "vault", Method::BrowserFillPage, json!({"tab": a})).unwrap_err();
     assert_eq!(e.code, code::FORBIDDEN);
+
+    // A question asked inside a call, allowed only after the call was answered, fills nothing.
+    let before = scripts(&slot).len();
+    let tool_call = call_on_thread(
+        &w.dispatcher,
+        agent_in(&a),
+        Method::ModsCall,
+        json!({"name": "mod_vault_fill_login", "input": {}}),
+    );
+    f.pump_until("the second tool event", |_| {
+        heard.lock().unwrap().len() >= 2
+    });
+    let call_id = heard.lock().unwrap()[1].1["call_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let fill = call_on_thread(
+        &w.dispatcher,
+        helper_ctx(&w, "vault"),
+        Method::BrowserFill,
+        fill_params(&a, &["example.com"]),
+    );
+    f.pump_until("the second question", asking);
+    call(
+        &f,
+        &w,
+        "vault",
+        Method::ToolsRespond,
+        json!({"call_id": call_id, "result": {"filled": false}}),
+    )
+    .unwrap();
+    answer_of(&f, &tool_call).unwrap();
+    f.h.comp.invoke_pask_fill(1);
+    let e = answer_of(&f, &fill).unwrap_err();
+    assert_eq!(e.code, code::FORBIDDEN);
+    assert_eq!(scripts(&slot).len(), before, "a late Allow runs no script");
 }
 
 #[test]

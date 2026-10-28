@@ -256,6 +256,8 @@ pub enum CtlOp {
         login_name: String,
         login_uris: Vec<String>,
         values: flare_mods::fill::Values,
+        /// The plugin may fill `tab` only through an agent's waiting call (tool scope): Allow checks it again.
+        via_call: bool,
         /// As for `BadgeSet`.
         generation: u64,
     },
@@ -1238,6 +1240,7 @@ impl AppDispatcher {
     fn fill_call(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
         let (plugin, plugin_name, generation) = self.fill_caller(ctx, "filling a login")?;
         let tab = self.fill_tab(ctx, params)?;
+        let via_call = !self.may_see_tab(ctx, &tab);
         let req = flare_mods::fill::parse_fill(params)?;
         let hub = self.hub()?;
         if hub.asks().denied(&plugin) {
@@ -1252,6 +1255,7 @@ impl AppDispatcher {
             login_name: req.login_name,
             login_uris: req.login_uris,
             values: req.values,
+            via_call,
             generation,
         };
         self.ask_by(op, Instant::now() + ASK_CALL_WAIT)

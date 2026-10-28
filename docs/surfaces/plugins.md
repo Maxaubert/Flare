@@ -207,7 +207,8 @@ plugin with no background page and no panel, `tool` `{call_id, tool, tab, input}
   clicked (`sonara-bar` shows its bar where you asked for it, with no `tabs`).
 - A tool call names the tab Claude called from (`call.tab`), but it gives no scope: `look` holds `tabs` to put its
   progress there. One exception, for `fill` only (**tool scope**): while Claude's call to the plugin waits for its
-  answer, `browser.fill` and `browser.fill.page` may name the tab the call came from.
+  answer, `browser.fill` and `browser.fill.page` may name the tab the call came from. Allow checks it again: if
+  the call has ended by then, the fill is `forbidden` and nothing is typed.
 
 ## Methods by namespace
 

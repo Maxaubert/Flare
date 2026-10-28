@@ -29,11 +29,13 @@ const FILL_RUN_WAIT: Duration = Duration::from_secs(10);
 
 /// What a plugin asks.
 pub(crate) enum AskWhat {
-    /// A login for the page of `tab`, which was on `site` when the dialog went up.
+    /// A login for the page of `tab`, which was on `site` when the dialog went up. `via_call`: the plugin may fill
+    /// the tab only while the agent's call it answers still waits.
     Fill {
         tab: String,
         site: Site,
         values: Values,
+        via_call: bool,
     },
     Secret,
 }
@@ -137,6 +139,7 @@ impl AppCtl {
                 login_name,
                 login_uris,
                 values,
+                via_call,
                 generation,
             } => {
                 if !self.plugin_live(&plugin, generation) {
@@ -170,7 +173,12 @@ impl AppCtl {
                 let ask = PluginAsk {
                     plugin,
                     generation,
-                    what: AskWhat::Fill { tab, site, values },
+                    what: AskWhat::Fill {
+                        tab,
+                        site,
+                        values,
+                        via_call,
+                    },
                     reply,
                     seq: 0,
                     running: None,
@@ -284,13 +292,36 @@ impl AppCtl {
 
     /// Allow: the page, still on the site the person approved, gets the values.
     fn run_fill(&mut self, mut ask: PluginAsk) {
-        let AskWhat::Fill { tab, site, values } = &ask.what else {
+        let AskWhat::Fill {
+            tab,
+            site,
+            values,
+            via_call,
+        } = &ask.what
+        else {
             return;
         };
         if !self.plugin_live(&ask.plugin, ask.generation) {
             let _ = ask.reply.send(Err(CtlError::new(
                 code::UNAUTHORIZED,
                 "the plugin was turned off",
+            )));
+            return;
+        }
+        // A tab reached through an agent's call is filled only while that call still waits: a late Allow fills nothing.
+        let call_ended = *via_call
+            && !self
+                .mods
+                .as_ref()
+                .is_some_and(|m| m.hub().has_call_from(&ask.plugin, tab));
+        if call_ended {
+            log::info!(
+                "{}",
+                fill::log_line(&ask.plugin, &site.host, "refused, the agent's call ended")
+            );
+            let _ = ask.reply.send(Err(CtlError::new(
+                code::FORBIDDEN,
+                "the agent's call ended before the fill was allowed",
             )));
             return;
         }
