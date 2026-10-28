@@ -1034,17 +1034,25 @@ one controller per tab with an open web panel, parented to Flare's window.
   `a_capture_that_never_answers_is_ended_by_its_timeout` in `web.rs`).
 - **The browser bar.** Back, forward, reload (stop while loading), an address field (Enter opens it; text with no scheme becomes
   https, `localhost` becomes http; `file:`, `javascript:`, `data:` and logins are refused with a dim line at the field's right
-  end; Escape restores the page's address and gives the keys back) and the panel's close at the row's right end. A web page
+  end; Escape restores the page's address and gives the keys back; anything that is not an address, such as `youtube`,
+  `cat videos` or `what is rust?`, is a Google search, `https://www.google.com/search?q=...`, and Enter on an empty field does
+  nothing; a page whose site cannot be reached says "Could not open <host>" in that dim line until the next load, see
+  `docs/superpowers/specs/2026-10-28-address-bar-search.md`) and the panel's close at the row's right end. A web page
   has no header (2026-10-27, Max: "I'd rather have more space for the browser"): the bar is the panel's top and the page starts
   right under it, 32 px taller than before. The page title still names the panel (`web.state`'s `title`) and the tab. A
   mini-app has no bar, so it keeps its header (title and close). Held by
   `a_web_page_has_no_header_and_the_address_row_holds_the_close` (100 to 300 percent), and by
   `the_address_field_opens_what_is_typed`, `the_address_field_refuses_what_a_panel_may_not_open`,
+  `the_address_field_searches_google_for_what_is_not_an_address`,
+  `a_site_that_cannot_be_reached_is_said_in_the_address_row_until_the_next_load`,
   `the_bar_buttons_drive_the_page_only_when_they_can`, `the_bar_follows_the_page`,
   `a_refused_navigation_is_said_in_the_header_and_leaves_the_page`, `the_address_field_shows_the_page_and_enter_and_escape_do_their_part`,
   `the_bar_buttons_call_back_and_a_dead_one_does_not`, `the_browser_bar_is_part_of_a_web_panels_head_and_of_nothing_else`, and the
   `normalize_url` tests (`text_with_no_scheme_becomes_https`, `a_local_host_with_no_scheme_becomes_http`,
-  `every_other_scheme_is_refused`, `bad_text_is_refused`, `a_login_in_the_address_is_refused`).
+  `every_other_scheme_is_refused`, `bad_text_is_refused`, `a_login_in_the_address_is_refused`), and the `address_or_search`
+  tests (`the_address_field_opens_an_address_as_an_address`, `the_address_field_searches_for_anything_else`,
+  `the_address_field_still_refuses_a_scheme_and_does_not_search_it`, `a_caller_and_a_stored_panel_never_get_a_search`,
+  `a_site_that_cannot_be_reached_is_named_and_the_rest_say_nothing`).
 - **Keys.** The page has its keys; the app's chords (the table less Ctrl+F and the agent guard) are taken from it by
   `AcceleratorKeyPressed`; a second Escape within 600 ms gives the keys back; Ctrl+Shift+O moves them both ways; a press on the
   window takes them back. Held by `the_app_takes_its_chords_from_the_page`, `the_page_keeps_every_other_key`,
