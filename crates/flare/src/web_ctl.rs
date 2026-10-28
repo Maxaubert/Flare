@@ -47,7 +47,7 @@ use flare_surfaces::agent_job::{
 use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::web::{
     self, Act, CAPTURE_TIMEOUT_MS, EscTwice, Phase, PhysRect, UrlError, WebShow, host_label,
-    normalize_url, phys_rect, step, url_matches, web_show,
+    phys_rect, step, url_matches, web_show,
 };
 use flare_tabs::keymap::{ChordId, KeyContext, chord_of};
 use flare_term::keys::KeyEvent;
@@ -1578,9 +1578,10 @@ impl WebCtl {
         lost
     }
 
-    /// The address field was submitted. The error is the words to show.
+    /// The address field was submitted: an address opens, anything else is a Google search
+    /// ([`web::address_or_search`]). The error is the words to show.
     pub fn submit(&mut self, tab: &str, text: &str) -> Result<String, UrlError> {
-        let url = normalize_url(text)?;
+        let url = web::address_or_search(text)?;
         self.go_to(tab, &url);
         Ok(url)
     }
@@ -2500,6 +2501,16 @@ impl WebCtl {
                     }
                     if !url.is_empty() {
                         t.url = url.clone();
+                    }
+                    // The page's own latest navigation could not reach its site (`youtube` typed as an address):
+                    // the address field says so, as a refused navigation does. The next load clears it.
+                    if !ok
+                        && t.started_nav == Some(nav)
+                        && t.notice.is_empty()
+                        && let Some(note) = web::failed_load_notice(&t.url, &status)
+                    {
+                        t.notice = note;
+                        out.push(WebOut::Changed);
                     }
                     let settled = Settled {
                         url: t.url.clone(),

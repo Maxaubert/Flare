@@ -132,6 +132,126 @@ pub fn normalize_url(input: &str) -> Result<String, UrlError> {
     Ok(out)
 }
 
+/// Where a search typed in the address field goes: Google, with the words as the query (2026-10-28).
+pub const SEARCH_URL: &str = "https://www.google.com/search?q=";
+
+/// Schemes that are refused with a reason rather than searched for: typed on purpose, they are an address
+/// that cannot open here, and the words are not sent to a search engine.
+const REFUSED_SCHEMES: &[&str] = &[
+    "file",
+    "javascript",
+    "data",
+    "vbscript",
+    "blob",
+    "ftp",
+    "ws",
+    "wss",
+    "chrome",
+    "edge",
+    "view-source",
+];
+
+/// What the person's address field opens (2026-10-28): an address as [`normalize_url`] makes it, or a
+/// Google search for anything that is not one. Only the address field uses it; a caller's `url` and a
+/// stored panel stay with [`normalize_url`], which never turns text into a search.
+///
+/// - An address: a scheme of http, https or `about:blank`; or, with no space, a host with a dot
+///   (`youtube.com`, `a.b/path`), `localhost`, an IP (`127.0.0.1`, `[::1]`) or any `host:port`, with a
+///   path after it or not.
+/// - A scheme that is refused (`file:`, `javascript:`, any `x://`) is still the error [`normalize_url`]
+///   gives; the text is not searched for.
+/// - Everything else (`youtube`, `cat videos`, `what is rust?`) is a search. Text with no scheme that
+///   looked like an address but does not parse (`me@example.com`) is a search too.
+pub fn address_or_search(input: &str) -> Result<String, UrlError> {
+    let s = input.trim();
+    if s.is_empty() {
+        return Err(UrlError::Empty);
+    }
+    if s.chars().count() > TARGET_MAX {
+        return Err(UrlError::TooLong);
+    }
+    if s.chars().any(|c| c.is_control() && !c.is_whitespace()) {
+        return Err(UrlError::BadChars);
+    }
+    if !s.chars().any(char::is_whitespace) {
+        if let Some(scheme) = split_scheme(s) {
+            let lower = scheme.to_ascii_lowercase();
+            let rest = &s[scheme.len() + 1..];
+            if matches!(lower.as_str(), "http" | "https" | "about")
+                || REFUSED_SCHEMES.contains(&lower.as_str())
+                || rest.starts_with("//")
+            {
+                return normalize_url(s);
+            }
+        } else if looks_like_host(s)
+            && let Ok(url) = normalize_url(s)
+        {
+            return Ok(url);
+        }
+    }
+    let query: String = url::form_urlencoded::byte_serialize(s.as_bytes()).collect();
+    let out = format!("{SEARCH_URL}{query}");
+    if out.chars().count() > TARGET_MAX {
+        return Err(UrlError::TooLong);
+    }
+    Ok(out)
+}
+
+/// True when text with no scheme and no space names a host: a dot between two parts with a last part of
+/// letters (`youtube.com`, `bücher.de`, `a.b`), `localhost`, an IP literal, or anything with a port.
+fn looks_like_host(s: &str) -> bool {
+    let bare = s.trim_start_matches('/');
+    let hostport = &bare[..bare.find(['/', '?', '#']).unwrap_or(bare.len())];
+    if let Some(rest) = hostport.strip_prefix('[') {
+        // `[::1]` and `[::1]:80`.
+        return rest.split_once(']').is_some_and(|(ip, after)| {
+            ip.parse::<std::net::Ipv6Addr>().is_ok() && port_after(after)
+        });
+    }
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) => (h, Some(p)),
+        None => (hostport, None),
+    };
+    if host.is_empty() {
+        return false;
+    }
+    if let Some(p) = port {
+        // `myserver:8080`: a port makes it an address whatever the host is.
+        return is_port(p);
+    }
+    if host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::Ipv4Addr>().is_ok() {
+        return true;
+    }
+    let last = host.rsplit('.').next().unwrap_or("");
+    host.contains('.')
+        && host.split('.').all(|l| !l.is_empty())
+        && last.chars().all(|c| c.is_alphabetic() || c == '-')
+        && last.chars().any(char::is_alphabetic)
+}
+
+fn is_port(p: &str) -> bool {
+    !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// After an IPv6 literal's `]`: nothing, or a colon and a port.
+fn port_after(after: &str) -> bool {
+    after.is_empty() || after.strip_prefix(':').is_some_and(is_port)
+}
+
+/// The note at the end of the address field when the page's own latest navigation failed (2026-10-28):
+/// "Could not open <host>" for the browser's failures to reach a site (`status` is WebView2's
+/// `COREWEBVIEW2_WEB_ERROR_STATUS`). None for the rest: a navigation stopped or replaced (14), a stream
+/// handed to the player or a download (9), a page that answered with an error of its own (0, the page
+/// shows it) and a login asked for (17, 18).
+pub fn failed_load_notice(url: &str, status: &str) -> Option<String> {
+    let reached_nothing = matches!(status.trim().parse::<i32>(), Ok(1..=8 | 10..=13 | 15 | 16));
+    if !reached_nothing || url.is_empty() || url.eq_ignore_ascii_case("about:blank") {
+        return None;
+    }
+    let host: String = host_label(url).chars().take(60).collect();
+    Some(format!("Could not open {host}"))
+}
+
 /// True when a navigation the page itself starts (a link, a redirect, a script) may go ahead. The
 /// address is already a full one; the same schemes [`normalize_url`] lets through.
 pub fn navigation_allowed(uri: &str) -> bool {
@@ -800,6 +920,121 @@ mod tests {
     fn the_host_is_the_label_of_an_address() {
         assert_eq!(host_label("https://example.com/a?b"), "example.com");
         assert_eq!(host_label("about:blank"), "about:blank");
+    }
+
+    fn search(q: &str) -> String {
+        format!("{SEARCH_URL}{q}")
+    }
+
+    #[test]
+    fn the_address_field_opens_an_address_as_an_address() {
+        for (typed, url) in [
+            ("youtube.com", "https://youtube.com/"),
+            ("  youtube.com  ", "https://youtube.com/"),
+            ("YouTube.com/watch?v=1#t", "https://youtube.com/watch?v=1#t"),
+            ("a.b/path", "https://a.b/path"),
+            ("https://x", "https://x/"),
+            ("HTTPS://X/y", "https://x/y"),
+            ("localhost", "http://localhost/"),
+            ("localhost:3000", "http://localhost:3000/"),
+            ("127.0.0.1:8080/a", "http://127.0.0.1:8080/a"),
+            ("10.0.0.2", "https://10.0.0.2/"),
+            ("[::1]:80", "http://[::1]/"),
+            ("[::1]", "http://[::1]/"),
+            ("myserver:8080", "https://myserver:8080/"),
+            ("about:blank", "about:blank"),
+            ("ABOUT:BLANK", "about:blank"),
+            ("bücher.de", "https://xn--bcher-kva.de/"),
+            ("//example.com", "https://example.com/"),
+        ] {
+            assert_eq!(address_or_search(typed).as_deref(), Ok(url), "{typed:?}");
+        }
+    }
+
+    #[test]
+    fn the_address_field_searches_for_anything_else() {
+        for (typed, q) in [
+            ("youtube", "youtube"),
+            ("cat videos", "cat+videos"),
+            ("  what is rust  ", "what+is+rust"),
+            ("what is rust?", "what+is+rust%3F"),
+            ("why?", "why%3F"),
+            ("c#", "c%23"),
+            ("rust #lifetimes", "rust+%23lifetimes"),
+            ("a&b=c", "a%26b%3Dc"),
+            ("100%", "100%25"),
+            ("kaffe på søndag", "kaffe+p%C3%A5+s%C3%B8ndag"),
+            ("日本", "%E6%97%A5%E6%9C%AC"),
+            ("1.5", "1.5"),
+            ("e.g.", "e.g."),
+            ("note:this", "note%3Athis"),
+            ("me@example.com", "me%40example.com"),
+            ("http://example.com/a b", "http%3A%2F%2Fexample.com%2Fa+b"),
+            ("tab\there", "tab%09here"),
+        ] {
+            assert_eq!(
+                address_or_search(typed).as_deref(),
+                Ok(search(q).as_str()),
+                "{typed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_address_field_still_refuses_a_scheme_and_does_not_search_it() {
+        for typed in [
+            "file:///C:/Windows/win.ini",
+            "javascript:alert(1)",
+            "data:text/html,hi",
+            "ftp://example.com",
+            "chrome://settings",
+            "about:config",
+        ] {
+            assert_eq!(address_or_search(typed), Err(UrlError::Scheme), "{typed:?}");
+        }
+        assert_eq!(address_or_search(""), Err(UrlError::Empty));
+        assert_eq!(address_or_search("   "), Err(UrlError::Empty));
+        assert_eq!(address_or_search("a\u{7}b"), Err(UrlError::BadChars));
+        assert_eq!(
+            address_or_search(&"x ".repeat(TARGET_MAX)),
+            Err(UrlError::TooLong)
+        );
+        assert_eq!(
+            address_or_search(&"æ".repeat(TARGET_MAX / 2)),
+            Err(UrlError::TooLong),
+            "the encoded query is held to the same length"
+        );
+    }
+
+    #[test]
+    fn a_caller_and_a_stored_panel_never_get_a_search() {
+        assert_eq!(normalize_url("cat videos"), Err(UrlError::BadChars));
+        assert_eq!(normalize_url("youtube").as_deref(), Ok("https://youtube/"));
+    }
+
+    #[test]
+    fn a_site_that_cannot_be_reached_is_named_and_the_rest_say_nothing() {
+        assert_eq!(
+            failed_load_notice("https://youtube/", "13").as_deref(),
+            Some("Could not open youtube")
+        );
+        for status in ["6", "7", "12", "2", "16"] {
+            assert_eq!(
+                failed_load_notice("https://x.org/a", status).as_deref(),
+                Some("Could not open x.org"),
+                "{status}"
+            );
+        }
+        // Stopped or replaced, a stream or download, the page's own error, a login, nothing known.
+        for status in ["14", "9", "0", "17", "18", "", "x"] {
+            assert_eq!(
+                failed_load_notice("https://x.org/a", status),
+                None,
+                "{status}"
+            );
+        }
+        assert_eq!(failed_load_notice("about:blank", "13"), None);
+        assert_eq!(failed_load_notice("", "13"), None);
     }
 }
 
