@@ -7,6 +7,7 @@ import { StartScreen, StartScreenPreview } from "start.slint";
 import { ContextMenu, OverflowList, MenusPreview } from "menus.slint";
 import { Tip } from "tip.slint";
 import { Dialog, DialogPreview } from "dialog.slint";
+import { PluginAsk } from "plugin_ask.slint";
 import { TabRow, StripGeom, Place, MenuRow, OverflowRow, NoteSection, PluginRow, PluginButton } from "types.slint";
 import { PluginChip } from "decor.slint";
 import { PluginsDropdown } from "plugin_sections.slint";
@@ -490,7 +491,7 @@ export component AppWindow inherits Window {
     // The collapsed sidebar, out on a hover (or sliding), reaches over the panel's slot (a wide sidebar beside a
     // wide panel): it is drawn over the page, so a web panel hides under it like under any overlay.
     property <bool> sidebar-over-slot: root.side-mode && root.sidebar-collapsed && (root.sidebar-revealed || root.sidebar-sliding) && root.panel-slot-w > 0px && root.sidebar-width > page.width - root.panel-slot-w;
-    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.update-open || root.update-notice != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying || root.sidebar-over-slot;
+    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.pask-open || root.update-open || root.update-notice != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying || root.sidebar-over-slot;
     changed overlay-open => { root.overlay-changed(); }
 
     // ---- tabs ----
@@ -650,6 +651,12 @@ export component AppWindow inherits Window {
     in property <string> dialog-primary;
     in property <bool> dialog-danger;
     in property <bool> dialog-by-key;
+    // A plugin's question (the `fill` permission): a fill to approve (kind 0) or a secret to type (kind 1).
+    in property <bool> pask-open;
+    in property <int> pask-kind;
+    in property <string> pask-title;
+    in property <styled-text> pask-body;
+    in property <string> pask-label;
     in property <bool> tip-visible;
     in property <string> tip-text;
     in property <length> tip-x;
@@ -660,7 +667,7 @@ export component AppWindow inherits Window {
     out property <length> tip-h: tipbox.tip-h;
     // ---- focus ----
     // The overflow list focuses its field when it opens, so "open" stands for "its field has the keys".
-    out property <bool> chrome-has-focus: sb.find-has-focus || root.overflow-open || root.dialog-open || root.update-open;
+    out property <bool> chrome-has-focus: sb.find-has-focus || root.overflow-open || root.dialog-open || root.pask-open || root.update-open;
     public function focus-terminal() { keys.focus(); }
     public function focus-find() { find.focus-input(); }
     public function focus-sidebar-find() { sb.focus-find(); }
@@ -703,6 +710,23 @@ export component AppWindow inherits Window {
     out property <length> dialog-box-w: dlg.box-w;
     out property <length> dialog-box-h: dlg.box-h;
     out property <int> dialog-focus: dlg.focused-button;
+    out property <bool> pask-field-focus: pask.field-has-focus;
+    out property <length> pask-allow-x: pask.allow-x;
+    out property <length> pask-allow-y: pask.allow-y;
+    out property <length> pask-allow-w: pask.allow-w;
+    out property <length> pask-allow-h: pask.allow-h;
+    out property <length> pask-deny-x: pask.deny-x;
+    out property <length> pask-deny-y: pask.deny-y;
+    out property <length> pask-deny-w: pask.deny-w;
+    out property <length> pask-deny-h: pask.deny-h;
+    out property <length> pask-session-x: pask.session-x;
+    out property <length> pask-session-y: pask.session-y;
+    out property <length> pask-session-w: pask.session-w;
+    out property <length> pask-session-h: pask.session-h;
+    out property <length> pask-ok-x: pask.ok-x;
+    out property <length> pask-ok-y: pask.ok-y;
+    out property <length> pask-ok-w: pask.ok-w;
+    out property <length> pask-ok-h: pask.ok-h;
     callback find-edited(string);
     callback find-next();
     callback find-prev();
@@ -771,6 +795,9 @@ export component AppWindow inherits Window {
     callback overflow-query-edited(string);
     callback dialog-cancel();
     callback dialog-confirm();
+    // A plugin fill's answer (0 Deny, 1 Allow, 2 Deny for this session) and a secret's (OK with the text, or Cancel).
+    callback pask-fill(int);
+    callback pask-secret(bool, string);
     callback tip-request(string, length, length, length, length);
     callback bar-double-clicked();
     callback title-pressed();
@@ -1513,6 +1540,20 @@ export component AppWindow inherits Window {
             cancel => { root.update-cancel(); }
             abort => { root.update-abort(); }
             tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
+        }
+        // A plugin's question sits under the close question: that one is answered first.
+        pask := PluginAsk {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: root.pask-open;
+            kind: root.pask-kind;
+            title: root.pask-title;
+            body: root.pask-body;
+            label: root.pask-label;
+            fill-answer(c) => { root.pask-fill(c); }
+            secret-answer(ok, t) => { root.pask-secret(ok, t); }
         }
         dlg := Dialog {
             x: 0px;

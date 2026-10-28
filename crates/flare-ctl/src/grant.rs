@@ -45,11 +45,15 @@ pub enum Permission {
     /// agent's artwork or marks (owner decision 2026-10-26, amending design 13). Plugins only.
     #[serde(rename = "agent-looks")]
     AgentLooks,
+    /// Fill a saved login into a tab's web page after the person approves each fill in Flare's own dialog
+    /// (`browser.fill`, `browser.fill.page`), and ask the person for a secret in Flare's own masked field
+    /// (`secret.ask`). Plugins only, never the agent's: the values go to the page, never to the agent.
+    Fill,
 }
 
 impl Permission {
     /// Every permission, in documentation order.
-    pub const ALL: [Permission; 16] = [
+    pub const ALL: [Permission; 17] = [
         Permission::Panel,
         Permission::View,
         Permission::Browser,
@@ -66,6 +70,7 @@ impl Permission {
         Permission::Network,
         Permission::Process,
         Permission::AgentLooks,
+        Permission::Fill,
     ];
 
     pub fn name(self) -> &'static str {
@@ -86,6 +91,7 @@ impl Permission {
             Permission::Network => "network",
             Permission::Process => "process",
             Permission::AgentLooks => "agent-looks",
+            Permission::Fill => "fill",
         }
     }
 
@@ -184,14 +190,16 @@ impl Grant {
                 N::AgentTools => true,
                 // The plugin surfaces and a plugin's store are a plugin's; reading a session is not the agent's, and
                 // typing into a shell is never the agent's (rules 2 and 188).
-                // How agent icons move is a plugin's choice (`agent-looks`), never the agent's own.
+                // How agent icons move is a plugin's choice (`agent-looks`), never the agent's own. Filling a login
+                // and asking for a secret are a plugin's (`fill`): what the agent reads leaves the PC.
                 N::Sidebar
                 | N::Actions
                 | N::Bar
                 | N::Session
                 | N::Input
                 | N::Storage
-                | N::Agents => false,
+                | N::Agents
+                | N::Fill => false,
                 N::Hello | N::Tabs | N::Ui => unreachable!("handled above"),
             },
             Grant::Mod {
@@ -302,6 +310,9 @@ mod tests {
                 Method::SessionRead,
                 Method::StorageGet,
                 Method::StorageSet,
+                Method::BrowserFill,
+                Method::BrowserFillPage,
+                Method::SecretAsk,
             ] {
                 let err = g.check(m).unwrap_err();
                 assert_eq!(err.code, code::FORBIDDEN, "{}", m.name());
@@ -496,7 +507,8 @@ mod tests {
             assert_eq!(Permission::parse(p.name()), Some(p));
         }
         assert_eq!(Permission::parse("root"), None);
-        assert_eq!(Permission::ALL.len(), 16);
+        assert_eq!(Permission::ALL.len(), 17);
+        assert_eq!(Permission::parse("fill"), Some(P::Fill));
         assert_eq!(Permission::parse("agent-looks"), Some(P::AgentLooks));
         let mut names: Vec<&str> = Permission::ALL.iter().map(|p| p.name()).collect();
         names.sort_unstable();
@@ -543,6 +555,7 @@ mod tests {
                     Namespace::Actions => "actions",
                     Namespace::Bar => "bar",
                     Namespace::Agents => "agent-looks",
+                    Namespace::Fill => "fill",
                     Namespace::Session => "sessions",
                     Namespace::Input => "input",
                     // Every plugin keeps its own store and the app reaches it; a protocol 1 mod and the agent never do.
@@ -611,6 +624,7 @@ mod tests {
         assert_eq!(Namespace::Bar.permission(), Some(P::Bar));
         assert_eq!(Namespace::Decor.permission(), Some(P::Decorate));
         assert_eq!(Namespace::Agents.permission(), Some(P::AgentLooks));
+        assert_eq!(Namespace::Fill.permission(), Some(P::Fill));
     }
 
     /// Three permissions open no namespace: `network` changes a page's policy, `process` starts the helper, and
@@ -666,6 +680,7 @@ mod tests {
                 Namespace::Input,
                 Namespace::Storage,
                 Namespace::Agents,
+                Namespace::Fill,
             ] {
                 assert!(!g.may_enter(ns), "{ns:?}");
             }
@@ -700,6 +715,37 @@ mod tests {
             serde_json::to_string(&P::AgentLooks).unwrap(),
             "\"agent-looks\""
         );
+    }
+
+    /// `fill` opens `browser.fill`, `browser.fill.page` and `secret.ask` and nothing else; `browser` does not open
+    /// them, and the agent never has them, with or without the user's eval switch.
+    #[test]
+    fn fill_opens_only_the_fill_methods_and_never_for_the_agent() {
+        let g = mod_with(&[P::Fill]);
+        for m in Method::ALL {
+            let want = matches!(
+                m.namespace(),
+                Namespace::Hello | Namespace::Tabs | Namespace::Storage | Namespace::Fill
+            );
+            assert_eq!(g.may_call(m), want, "{}", m.name());
+        }
+        let rest: Vec<Permission> = Permission::ALL
+            .into_iter()
+            .filter(|p| *p != P::Fill)
+            .collect();
+        for m in [
+            Method::BrowserFill,
+            Method::BrowserFillPage,
+            Method::SecretAsk,
+        ] {
+            assert_eq!(m.namespace(), Namespace::Fill);
+            assert!(!mod_with(&rest).may_call(m), "{}", m.name());
+            assert!(!Grant::agent().may_call(m), "{}", m.name());
+            assert!(!Grant::Agent { eval: true }.may_call(m), "{}", m.name());
+            assert!(Grant::Ui.may_call(m));
+        }
+        assert!(!mod_with(&[P::Browser]).may_call(Method::BrowserFill));
+        assert!(!Grant::agent().permission_names().contains(&"fill"));
     }
 
     #[test]

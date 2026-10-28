@@ -2113,6 +2113,7 @@ fn a_plugins_pages_share_one_budget_and_a_message_over_it_is_dropped_unread() {
 
 // The plugins' sidebar sections and actions (plugins phase 4) live in their own file beside these.
 mod plugin_bar;
+mod plugin_fill;
 mod plugin_install;
 mod plugin_motion;
 mod plugin_sessions;

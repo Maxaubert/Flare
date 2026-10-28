@@ -124,6 +124,8 @@ pub enum ModsMsg {
     },
     /// A plugin's helper program started, ended and was started again, or stopped (its own threads).
     Helper(flare_mods::helper::Note),
+    /// The time of a plugin's question ran out (the `fill` permission): it counts as Deny, unless it was answered.
+    AskExpired { seq: u64 },
 }
 
 /// What Settings shows of the installs: one runs, and what the last one said.
@@ -134,8 +136,9 @@ pub struct InstallState {
     pub note: Option<(bool, String)>,
 }
 
-/// Where the channel's events for one plugin's helper go: (event, params, plugin id).
-pub type OwnerEvents = Arc<dyn Fn(&str, Value, &str) + Send + Sync>;
+/// Where the channel's events for one plugin's helper go: (event, params, plugin id). Answers how many of the
+/// plugin's connections it was queued for (0: its helper is not connected).
+pub type OwnerEvents = Arc<dyn Fn(&str, Value, &str) -> usize + Send + Sync>;
 /// The file picker for a plugin zip; its answer comes on a worker.
 pub type PickZip = std::rc::Rc<dyn Fn(crate::settings_ctl::PickAnswer)>;
 
@@ -163,6 +166,7 @@ impl std::fmt::Debug for ModsMsgBox {
             ModsMsg::Installed(_) => "ModsMsg::Installed",
             ModsMsg::Removed { .. } => "ModsMsg::Removed",
             ModsMsg::Helper(_) => "ModsMsg::Helper",
+            ModsMsg::AskExpired { .. } => "ModsMsg::AskExpired",
         })
     }
 }

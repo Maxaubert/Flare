@@ -272,6 +272,7 @@ impl AppCtl {
                         self.show_download_ask();
                     }
                 }
+                WebOut::Filled { id, result } => self.fill_done(id, result),
             }
         }
     }

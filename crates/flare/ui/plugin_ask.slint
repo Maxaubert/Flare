@@ -1,0 +1,219 @@
+// A plugin's question in Flare's own dialog (the `fill` permission, 2026-10-28), drawn on the same frame as the close
+// question (dialog.slint): a fill to approve ("Fill <login> into <host>?" with Deny for this session, Deny and Allow),
+// or a secret the plugin asks for, typed into a masked field.
+// Allow is pressed by the pointer only: no key presses it (Enter and Space press the Deny button that has the focus),
+// so a key sent at the window cannot approve a fill. Escape and a press outside the box are Deny (or Cancel).
+// The field's text is cleared as the dialog closes; it is handed to the glue once, with OK or Enter.
+import { Theme, Px } from "theme.slint";
+import { DialogButton } from "dialog.slint";
+
+export component PluginAsk inherits Rectangle {
+    in property <bool> open;
+    // 0 a fill to approve, 1 a secret to type.
+    in property <int> kind;
+    in property <string> title;
+    in property <styled-text> body;
+    // What the field is for (a secret only).
+    in property <string> label;
+    // A fill's answer: 0 Deny, 1 Allow, 2 Deny for this session.
+    callback fill-answer(int);
+    // A secret's answer: OK with the text, or Cancel.
+    callback secret-answer(bool, string);
+
+    // The Deny button that holds the keys in a fill (0 Deny, 1 Deny for this session); never Allow.
+    property <int> focus-idx: 0;
+    property <bool> by-key;
+    out property <bool> field-has-focus: field.has-focus;
+    // Where the buttons are, for the e2e's pointer (it presses them as the person would).
+    out property <length> allow-x: allow-btn.absolute-position.x;
+    out property <length> allow-y: allow-btn.absolute-position.y;
+    out property <length> allow-w: allow-btn.width;
+    out property <length> allow-h: allow-btn.height;
+    out property <length> deny-x: deny-btn.absolute-position.x;
+    out property <length> deny-y: deny-btn.absolute-position.y;
+    out property <length> deny-w: deny-btn.width;
+    out property <length> deny-h: deny-btn.height;
+    out property <length> session-x: session-btn.absolute-position.x;
+    out property <length> session-y: session-btn.absolute-position.y;
+    out property <length> session-w: session-btn.width;
+    out property <length> session-h: session-btn.height;
+    out property <length> ok-x: ok-btn.absolute-position.x;
+    out property <length> ok-y: ok-btn.absolute-position.y;
+    out property <length> ok-w: ok-btn.width;
+    out property <length> ok-h: ok-btn.height;
+
+    function cancel() {
+        if root.kind == 1 {
+            field.text = "";
+            root.secret-answer(false, "");
+        } else {
+            root.fill-answer(0);
+        }
+    }
+    function send-secret() {
+        let t = field.text;
+        field.text = "";
+        root.secret-answer(true, t);
+    }
+
+    visible: root.open;
+    width: 100%;
+    height: 100%;
+    changed open => {
+        field.text = "";
+        if root.open {
+            root.focus-idx = 0;
+            root.by-key = false;
+            if root.kind == 1 {
+                field.focus();
+            } else {
+                fs.focus();
+            }
+        }
+    }
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.scrim;
+    }
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down {
+                root.cancel();
+            }
+        }
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            if root.kind == 0 && (e.text == Key.Return || e.text == " ") {
+                root.by-key = true;
+                root.fill-answer(root.focus-idx == 1 ? 2 : 0);
+                return accept;
+            }
+            if root.kind == 0 && (e.text == Key.Tab || e.text == Key.Backtab) && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta {
+                root.by-key = true;
+                root.focus-idx = 1 - root.focus-idx;
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    box := Rectangle {
+        width: min(440px, root.width - 48px);
+        height: col.preferred-height;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        background: Theme.side-flat;
+        border-radius: 2px;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        drop-shadow-offset-y: 24px;
+        drop-shadow-blur: 70px;
+        drop-shadow-color: #00000099;
+        // Presses inside the box never reach the scrim.
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+        }
+        col := VerticalLayout {
+            padding: 20px;
+            Text {
+                text: root.title;
+                wrap: word-wrap;
+                font-family: Theme.font-ui;
+                font-size: 14.5px;
+                font-weight: 600;
+                color: Theme.text;
+            }
+            Rectangle { height: 6px; }
+            StyledText {
+                text: root.body;
+                default-color: Theme.dim;
+                default-font-size: 12.5px;
+                default-font-family: Theme.font-ui;
+            }
+            if root.kind == 1: VerticalLayout {
+                Rectangle { height: 14px; }
+                Text {
+                    text: root.label;
+                    wrap: word-wrap;
+                    font-family: Theme.font-ui;
+                    font-size: 12px;
+                    color: Theme.text-soft;
+                }
+                Rectangle { height: 6px; }
+            }
+            Rectangle {
+                visible: root.kind == 1;
+                height: root.kind == 1 ? 30px : 0px;
+                border-radius: 6px;
+                border-width: Px.hair();
+                border-color: field.has-focus ? Theme.accent : Theme.divider;
+                background: Theme.ground;
+                field := TextInput {
+                    x: 10px;
+                    width: parent.width - 20px;
+                    height: parent.height;
+                    enabled: root.kind == 1;
+                    single-line: true;
+                    input-type: InputType.password;
+                    font-family: Theme.font-ui;
+                    font-size: 12.5px;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    accessible-role: text-input;
+                    accessible-label: root.label;
+                    accepted => { root.send-secret(); }
+                    key-pressed(e) => {
+                        if e.text == Key.Escape {
+                            root.cancel();
+                            return accept;
+                        }
+                        return reject;
+                    }
+                }
+            }
+            Rectangle { height: 20px; }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                session-btn := DialogButton {
+                    shown: root.kind == 0;
+                    label: "Deny for this session";
+                    ringed: root.by-key && root.focus-idx == 1;
+                    clicked => { root.fill-answer(2); }
+                }
+                deny-btn := DialogButton {
+                    label: root.kind == 1 ? "Cancel" : "Deny";
+                    ringed: root.by-key && root.focus-idx == 0 && root.kind == 0;
+                    clicked => { root.cancel(); }
+                }
+                allow-btn := DialogButton {
+                    shown: root.kind == 0;
+                    label: "Allow";
+                    is-primary: true;
+                    // Pointer only: a screen reader reads it, but no key or default action presses it.
+                    pointer-only: true;
+                    clicked => { root.fill-answer(1); }
+                }
+                ok-btn := DialogButton {
+                    shown: root.kind == 1;
+                    label: "OK";
+                    is-primary: true;
+                    clicked => { root.send-secret(); }
+                }
+            }
+        }
+    }
+}

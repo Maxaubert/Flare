@@ -59,6 +59,10 @@ fn mod_wait_left(elapsed: Duration) -> Duration {
         .min(flare_mods::hub::CALL_TIMEOUT)
 }
 
+/// How long `browser.fill` and `secret.ask` wait for the window: the person's minute at the dialog and the page's
+/// fill after it, inside the channel's `FILL_TIMEOUT`, so the answer is Flare's.
+pub const ASK_CALL_WAIT: Duration = Duration::from_secs(75);
+
 /// How often a waiting call looks at the stop flag.
 const STOP_SLICE: Duration = Duration::from_millis(50);
 /// The longest title a caller may give a panel (the header shows one line).
@@ -237,6 +241,34 @@ pub enum CtlOp {
         plugin: String,
         agent: AgentKind,
     },
+    /// `browser.fill.page` (the `fill` permission): the address of the tab's web page (never a mini-app's or a
+    /// plugin's page). Answered with `{tab, url, host}`.
+    FillPage {
+        tab: String,
+    },
+    /// `browser.fill`: checked on the call's thread (the plugin, the params, the tab it may fill, its asks); the window
+    /// checks the page's site against the login's addresses, asks the person in its own dialog and on Allow types
+    /// the values into the page. Answered when the page is filled, or at the person's no. `values` prints nothing.
+    Fill {
+        plugin: String,
+        plugin_name: String,
+        tab: String,
+        login_name: String,
+        login_uris: Vec<String>,
+        values: flare_mods::fill::Values,
+        /// As for `BadgeSet`.
+        generation: u64,
+    },
+    /// `secret.ask`: Flare's own masked field, titled with the plugin's name. Answered with `{text}` (to this
+    /// plugin only, never logged) or `{cancelled: true}`.
+    SecretAsk {
+        plugin: String,
+        plugin_name: String,
+        title: String,
+        label: String,
+        /// As for `BadgeSet`.
+        generation: u64,
+    },
     /// `mods.call` (stage 8): hand a tool call to the mod's page in this tab, opening the mod's panel there
     /// first when it is not showing. Answered when the call is queued for the page; the page's own answer comes
     /// back through the hub.
@@ -301,6 +333,9 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::BarHide { .. } => "CtlOp::BarHide",
             CtlOp::MotionSet { .. } => "CtlOp::MotionSet",
             CtlOp::MotionClear { .. } => "CtlOp::MotionClear",
+            CtlOp::FillPage { .. } => "CtlOp::FillPage",
+            CtlOp::Fill { .. } => "CtlOp::Fill",
+            CtlOp::SecretAsk { .. } => "CtlOp::SecretAsk",
         })
     }
 }
@@ -1102,6 +1137,8 @@ impl AppDispatcher {
         // One deadline for the whole call, inside the channel's own (`MOD_CALL_TIMEOUT`): the answer is Flare's.
         let started = Instant::now();
         let call = hub.begin_call(name, input)?;
+        // While the call waits, the plugin may fill a login into this tab's page (tool scope).
+        hub.set_call_tab(&call.id, &tab);
         let op = CtlOp::ModTool {
             tab,
             mod_id: call.mod_id.clone(),
@@ -1144,6 +1181,97 @@ impl AppDispatcher {
         };
         hub.respond(id, call_id, outcome)?;
         Ok(json!({}))
+    }
+
+    // ---- fill (the `fill` permission, 2026-10-28) ------------------------------------------------------------------
+
+    /// The plugin that calls a `fill` method, its name as Settings shows it, and its generation.
+    fn fill_caller(
+        &self,
+        ctx: &CallContext,
+        what: &str,
+    ) -> Result<(String, String, u64), CtlError> {
+        let id = Self::plugin_caller(ctx, what)?;
+        let hub = self.hub()?;
+        let name = hub
+            .found(&id)
+            .map_or_else(|| id.clone(), |f| f.manifest.name.clone());
+        Ok((id.clone(), name, hub.generation(&id)))
+    }
+
+    /// The tab a fill acts on: the caller's own, one it may see (`tabs`, or a click there), or the tab an agent's
+    /// call to this plugin came from while that call waits for the plugin's answer (tool scope). A helper sits in no
+    /// tab, so it names one.
+    fn fill_tab(&self, ctx: &CallContext, params: &Value) -> Result<String, CtlError> {
+        match str_param(params, "tab")? {
+            Some(t) if t.is_empty() || t.len() > 64 => {
+                Err(CtlError::new(code::BAD_PARAMS, "tab is a tab's id"))
+            }
+            Some(t) if self.may_see_tab(ctx, t) || self.tool_scope(ctx, t) => Ok(t.to_string()),
+            Some(_) => Err(CtlError::new(
+                code::FORBIDDEN,
+                "a plugin fills only its own tab, a tab it may see, or the tab of an agent's call it is answering",
+            )),
+            None => Self::tab_of_call(ctx),
+        }
+    }
+
+    /// Whether an agent's call from `tab` to the calling plugin waits for the plugin's answer.
+    fn tool_scope(&self, ctx: &CallContext, tab: &str) -> bool {
+        match (&ctx.grant, &self.mods) {
+            (Grant::Mod { id, .. }, Some(hub)) => hub.has_call_from(id, tab),
+            _ => false,
+        }
+    }
+
+    /// `browser.fill.page {tab?}`: the address of the tab's web page, so the plugin can pick the login for it.
+    fn fill_page(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
+        Self::plugin_caller(ctx, "the address of a page to fill")?;
+        only_fields(params, &["tab"], "browser.fill.page")?;
+        let tab = self.fill_tab(ctx, params)?;
+        self.ask(CtlOp::FillPage { tab })
+    }
+
+    /// `browser.fill {tab?, login_name, login_uris, username?, password?, totp?}`: checked here (the params, the tab,
+    /// the session's Deny, six asks a minute), then the window checks the page's site, asks the person and fills.
+    /// The values are never in an error, a log line or the answer.
+    fn fill_call(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
+        let (plugin, plugin_name, generation) = self.fill_caller(ctx, "filling a login")?;
+        let tab = self.fill_tab(ctx, params)?;
+        let req = flare_mods::fill::parse_fill(params)?;
+        let hub = self.hub()?;
+        if hub.asks().denied(&plugin) {
+            log::info!("fill: plugin {plugin}: declined (denied for this session)");
+            return Ok(json!({"declined": true, "for_session": true}));
+        }
+        hub.asks().admit(&plugin, Instant::now())?;
+        let op = CtlOp::Fill {
+            plugin,
+            plugin_name,
+            tab,
+            login_name: req.login_name,
+            login_uris: req.login_uris,
+            values: req.values,
+            generation,
+        };
+        self.ask_by(op, Instant::now() + ASK_CALL_WAIT)
+    }
+
+    /// `secret.ask {title, label}`: Flare's own masked field; the text comes back to this plugin only.
+    fn secret_ask(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
+        let (plugin, plugin_name, generation) = self.fill_caller(ctx, "asking for a secret")?;
+        let req = flare_mods::fill::parse_secret(params)?;
+        self.hub()?.asks().admit(&plugin, Instant::now())?;
+        self.ask_by(
+            CtlOp::SecretAsk {
+                plugin,
+                plugin_name,
+                title: req.title,
+                label: req.label,
+                generation,
+            },
+            Instant::now() + ASK_CALL_WAIT,
+        )
     }
 
     /// `panel.open` kind `mod:<id>`: the mod's panel on the caller's tab (or, for a plugin that holds `tabs`, on a
@@ -1874,6 +2002,9 @@ impl Dispatcher for AppDispatcher {
                 Method::BarHide,
                 Method::AgentsMotionSet,
                 Method::AgentsMotionClear,
+                Method::BrowserFill,
+                Method::BrowserFillPage,
+                Method::SecretAsk,
             ]);
         }
         all
@@ -2049,6 +2180,9 @@ impl Dispatcher for AppDispatcher {
             Method::ModsTools => self.mods_tools(),
             Method::ModsCall => self.mods_call(ctx, &params),
             Method::ToolsRespond => self.tools_respond(ctx, &params),
+            Method::BrowserFill => self.fill_call(ctx, &params),
+            Method::BrowserFillPage => self.fill_page(ctx, &params),
+            Method::SecretAsk => self.secret_ask(ctx, &params),
             Method::ViewHtml => self.view_html(ctx, &params),
             Method::ViewDiagram => self.view_diagram(ctx, &params),
             Method::ViewImage => self.view_file(ctx, PanelKind::Image, &params),
@@ -2158,9 +2292,11 @@ impl CtlServer {
     pub fn owner_events(&self) -> crate::mods_ctl::OwnerEvents {
         let server = Arc::clone(&self.server);
         Arc::new(move |event, params, owner| {
-            if let Some(s) = server.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-                s.publish_to_owner(event, params, owner);
-            }
+            server
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map_or(0, |s| s.publish_to_owner(event, params, owner))
         })
     }
 

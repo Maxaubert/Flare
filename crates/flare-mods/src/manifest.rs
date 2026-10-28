@@ -67,7 +67,7 @@ pub const ASKABLE_V1: [Permission; 5] = [
 ];
 
 /// The permissions a protocol 2 manifest may ask for: the protocol 1 list and the plugin ones. Never `eval`.
-pub const ASKABLE_V2: [Permission; 15] = [
+pub const ASKABLE_V2: [Permission; 16] = [
     Permission::Panel,
     Permission::View,
     Permission::Browser,
@@ -83,6 +83,7 @@ pub const ASKABLE_V2: [Permission; 15] = [
     Permission::Network,
     Permission::Process,
     Permission::AgentLooks,
+    Permission::Fill,
 ];
 
 const TOP_KEYS_V1: [&str; 8] = [
@@ -485,13 +486,13 @@ fn parse_inner(kind: Kind, text: &str) -> Result<Manifest, String> {
             helper(obj, &permissions)?,
         ),
     };
-    // A tool is answered by the panel's page (or, for a plugin, its background page): with neither nothing could
-    // ever answer it.
-    if !tools.is_empty() && panel.is_none() && background.is_none() {
+    // A tool is answered by the panel's page (or, for a plugin, its background page or its helper): with none of
+    // them nothing could ever answer it.
+    if !tools.is_empty() && panel.is_none() && background.is_none() && helper.is_none() {
         return Err(match kind {
             Kind::Mod => "tools need a panel: its page answers them; add a panel".into(),
             Kind::Plugin => {
-                "tools need a panel or a background page to answer them; add one".into()
+                "tools need a panel, a background page or a helper to answer them; add one".into()
             }
         });
     }
@@ -2191,13 +2192,26 @@ mod tests {
         })
         .unwrap();
         assert!(m.panel.is_none() && m.tools.len() == 1);
-        let e = plugin_err(|v| {
+        // A helper alone answers them too (its connection hears the `tool` event).
+        let m = with_plugin(|v| {
             remove(v, "panel");
             remove(v, "background");
             v["permissions"] =
                 serde_json::json!(["tools", "decorate", "sidebar", "actions", "bar", "process"]);
+        })
+        .unwrap();
+        assert!(m.panel.is_none() && m.background.is_none() && m.helper.is_some());
+        let e = plugin_err(|v| {
+            remove(v, "panel");
+            remove(v, "background");
+            remove(v, "helper");
+            v["permissions"] =
+                serde_json::json!(["tools", "decorate", "sidebar", "actions", "bar"]);
         });
-        assert!(e.contains("tools need a panel or a background page"), "{e}");
+        assert!(
+            e.contains("tools need a panel, a background page or a helper"),
+            "{e}"
+        );
     }
 
     #[test]

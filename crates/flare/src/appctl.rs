@@ -172,6 +172,7 @@ pub enum UiMsg {
     Mods(crate::mods_ctl::ModsMsgBox),
 }
 
+mod ask_glue;
 mod bar_glue;
 mod install_glue;
 mod mods_glue;
@@ -599,6 +600,11 @@ pub struct AppCtl {
     web: WebCtl,
     /// The downloads of web pages waiting for a yes (S6).
     downloads: crate::download_ask::DownloadQueue,
+    /// A plugin's question in Flare's own dialog (a fill to approve, a secret to type), one at a time (the `fill`
+    /// permission, 2026-10-28).
+    plugin_ask: Option<ask_glue::PluginAsk>,
+    /// Numbers the plugins' questions, so a timer of an older one ends nothing.
+    plugin_ask_seq: u64,
     /// The panel had the keys at the last look, so they go back to the terminal when it goes away.
     panel_focus_seen: bool,
     /// The tab that was in front at the last panel sync: another one letting go of a splitter drag.
@@ -978,6 +984,8 @@ impl AppCtl {
             convo,
             web,
             downloads: crate::download_ask::DownloadQueue::default(),
+            plugin_ask: None,
+            plugin_ask_seq: 0,
             panel_focus_seen: false,
             panel_front_seen: None,
             ctl_events: None,
@@ -1281,6 +1289,14 @@ impl AppCtl {
             .overflow_query(&q));
         bind!(app, rc, on_dialog_cancel, |c| c.dialog_cancel());
         bind!(app, rc, on_dialog_confirm, |c| c.dialog_confirm());
+        bind!(app, rc, on_pask_fill, |c, choice: i32| c
+            .answer_fill(choice));
+        bind!(
+            app,
+            rc,
+            on_pask_secret,
+            |c, ok: bool, text: SharedString| c.answer_secret(ok, text)
+        );
         bind!(
             app,
             rc,
@@ -3767,12 +3783,16 @@ impl AppCtl {
                 generation,
             } => self.ctl_motion_set(plugin, agent, motion, generation),
             CtlOp::MotionClear { plugin, agent } => self.ctl_motion_clear(plugin, agent),
-            // Answered by the browser's message, never here (see `ctl_browser`).
+            // The address of a page to fill (the `fill` permission), applied in `ask_glue`.
+            CtlOp::FillPage { tab } => self.ctl_fill_page(&tab),
+            // Answered by the browser's message, never here (see `ctl_browser`), or by the person (`ask_glue`).
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }
             | CtlOp::BrowserAgent { .. }
             | CtlOp::ShowMod { .. }
             | CtlOp::ModTool { .. }
+            | CtlOp::Fill { .. }
+            | CtlOp::SecretAsk { .. }
             | CtlOp::ShowApp { .. } => Err(CtlError::new(
                 code::INTERNAL,
                 "a browser call reached the wrong handler",
@@ -4878,6 +4898,10 @@ impl AppCtl {
                         // A mod's panel, or a tool call put in front of a mod's page (stage 8).
                         op @ CtlOp::ShowMod { .. } => self.ctl_show_mod(op, req.reply),
                         op @ CtlOp::ModTool { .. } => self.ctl_mod_tool(op, req.reply),
+                        // A plugin's question (the `fill` permission): answered by the person, or when it expires.
+                        op @ (CtlOp::Fill { .. } | CtlOp::SecretAsk { .. }) => {
+                            self.ctl_plugin_ask(op, req.reply);
+                        }
                         op => {
                             let answer = self.ctl_op(op);
                             let _ = req.reply.send(answer);
