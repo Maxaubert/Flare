@@ -16,7 +16,7 @@ Date: 2026-10-28. Owner: Max.
    - `allowed-tools` lists `mcp__plugin_flare-status_flare__open_page` and `..._browser_look` only, so the command runs
      without a permission prompt and nothing else is pre-allowed.
 2. **The agent hears which page is open.** `flare-mcp --hook-context` runs as a second `UserPromptSubmit` hook. It connects
-   with `FlareChannel::from_env()` (1 s for the connect, 1 s for the answer), asks `panel.state` for its tab and, when an
+   with `FlareChannel::from_env()` (1 s each for the connect, the hello and the answer; the whole run is capped at 2.5 s), asks `panel.state` for its tab and, when an
    open web panel's address differs from the last one it reported for this tab and Claude session, prints
    `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"..."}}`. The context says the browser
    panel beside the tab shows a web page, gives the title and address between the page-content markers (cleaned, quoted:

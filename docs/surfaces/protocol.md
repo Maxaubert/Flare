@@ -788,7 +788,7 @@ calls:
 | `mod_<id>_<tool>` | the mod's own `input_schema` | `mods.call` (listed by `mods.tools`; a string result is passed as it is, anything else as compact JSON, cut at 60 000 characters; a mod's own error is `isError` text with its reason, a refusal of Flare is `Flare refused: ...`) |
 
 `flare-mcp --hook-context` is not a server: the `flare-status` plugin runs it as a `UserPromptSubmit` hook. It
-asks `panel.state` (1 s for the connect and 1 s for the answer, never more) and prints
+asks `panel.state` (1 s each for the connect, the hello and the answer, and 2.5 s for the whole run) and prints
 `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":...}}` only when the tab's web page
 differs from the one it last told this tab and Claude session about (remembered in `%TEMP%\flare-mcp\page-<hash>.json`,
 the hash of the tab token and the hook's `session_id`, so the secret is never written down), or once when that page has

@@ -400,6 +400,28 @@ fn the_prompt_hook_tells_the_agent_of_a_page_once_and_says_nothing_outside_flare
     );
     assert_eq!(out, "");
     assert!(took < std::time::Duration::from_secs(4), "{took:?}");
+    // A stdin that never closes cannot hold the prompt: the whole run is capped.
+    let started = std::time::Instant::now();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_flare-mcp"))
+        .arg("--hook-context")
+        .env("TEMP", &temp_text)
+        .env("TMP", &temp_text)
+        .env("FLARE_TAB_TOKEN", "secret-9")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let held = child.stdin.take().unwrap();
+    let out = child.wait_with_output().unwrap();
+    drop(held);
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
 
     let pipe = format!("\\\\.\\pipe\\flare-mcp-hook-test-{}", std::process::id());
     let server_state = Arc::new(PanelServer {

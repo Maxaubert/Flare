@@ -153,15 +153,30 @@ pub fn state_dir() -> PathBuf {
     std::env::temp_dir().join("flare-mcp")
 }
 
+/// The most the whole hook may take, whatever happens inside it: the connect, the hello and the answer each
+/// wait [`HOOK_TIMEOUT`] and a broken connection is tried once more, so without this cap a sick Flare (or a
+/// stdin that never closes) could hold the prompt until Claude Code's own hook timeout kills the process.
+pub const HOOK_BUDGET: Duration = Duration::from_millis(2500);
+
 /// The hook as `main` runs it. Always exits 0: a hook that fails must not get in the prompt's way.
 pub fn hook_main() {
     let Some(token) = std::env::var(TAB_TOKEN_VAR).ok().filter(|t| !t.is_empty()) else {
         return;
     };
-    let mut input = String::new();
-    let _ = std::io::stdin().take(STDIN_MAX).read_to_string(&mut input);
-    let mut channel = FlareChannel::from_env().with_timeout(HOOK_TIMEOUT);
-    if let Some(line) = run_hook(&input, &token, &mut channel, &state_dir()) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("flare-mcp-hook".into())
+        .spawn(move || {
+            let mut input = String::new();
+            let _ = std::io::stdin().take(STDIN_MAX).read_to_string(&mut input);
+            let mut channel = FlareChannel::from_env().with_timeout(HOOK_TIMEOUT);
+            let _ = tx.send(run_hook(&input, &token, &mut channel, &state_dir()));
+        });
+    if spawned.is_err() {
+        return;
+    }
+    // Past the budget the worker is left behind: `main` returns and the process exits with it.
+    if let Ok(Some(line)) = rx.recv_timeout(HOOK_BUDGET) {
         use std::io::Write;
         let mut out = std::io::stdout();
         let _ = writeln!(out, "{line}");

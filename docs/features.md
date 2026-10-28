@@ -1916,7 +1916,7 @@ Spec: `docs/superpowers/specs/2026-10-28-browser-command.md`.
   `install_writes_the_prompt_hook_only_when_the_program_exists_and_ships_the_browser_command` (`plugin.rs`).
 - **The agent hears which page is open.** A second `UserPromptSubmit` hook runs `flare-mcp --hook-context` (the absolute
   `flare-mcp.exe` written in at install like the MCP server's; the hook is left out when there is no program). It asks
-  `panel.state` with a 1 s timeout and adds context only when the tab's web page changed since it last told this tab and
+  `panel.state` with a 1 s timeout per step (2.5 s for the whole run) and adds context only when the tab's web page changed since it last told this tab and
   Claude session (a state file in `%TEMP%\flare-mcp`, named by a hash of the tab token and the session id), or once when
   the page has gone. The title and address are cleaned, quoted and between the page-content markers, as in a look. Outside
   Flare or when Flare does not answer it prints nothing and exits 0; the state hook (`hook.cmd`) is unchanged. Held by
