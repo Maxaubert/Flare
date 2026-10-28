@@ -214,6 +214,31 @@ fn a_slow_client_is_closed_when_its_head_is_late() {
     assert_eq!(accepted.load(Ordering::SeqCst), 0);
 }
 
+/// A pause shorter than the idle time, during which the relay's reads time out and are tried again, loses nothing.
+#[test]
+fn a_tunnel_quiet_for_less_than_the_idle_time_keeps_working() {
+    let (echo, _) = echo_server();
+    let (port, _) = proxy(
+        echo,
+        Limits {
+            idle: Duration::from_millis(1200),
+            ..limits()
+        },
+    );
+    let mut c = client(port);
+    let target = format!("echo.test:{}", echo.port());
+    write!(c, "CONNECT {target} HTTP/1.1\r\n\r\n").unwrap();
+    assert!(read_answer(&mut c).starts_with("HTTP/1.1 200 "));
+    for msg in [&b"before the pause"[..], b"after the pause"] {
+        c.write_all(msg).unwrap();
+        let mut got = vec![0u8; msg.len()];
+        c.read_exact(&mut got).unwrap();
+        assert_eq!(got, msg);
+        // Several of the relay's read ticks (a quarter of the idle time) pass with nothing to read.
+        std::thread::sleep(Duration::from_millis(700));
+    }
+}
+
 #[test]
 fn an_idle_tunnel_is_closed() {
     let (echo, _) = echo_server();

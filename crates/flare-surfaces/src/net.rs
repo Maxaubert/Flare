@@ -162,8 +162,9 @@ fn public_v4(ip: Ipv4Addr) -> bool {
         || a >= 240)
 }
 
-/// An IPv6 address on the internet: not loopback, unspecified, unique-local (fc00::/7), link-local (fe80::/10),
-/// multicast, documentation, and an IPv4 one inside it only when that one is public.
+/// An IPv6 address on the internet: not loopback, unspecified, unique-local (fc00::/7), link-local (fe80::/10), the
+/// old site-local range (fec0::/10, which still stays on a site's network), multicast, documentation, and an IPv4 one
+/// inside it only when that one is public.
 fn public_v6(ip: Ipv6Addr) -> bool {
     if let Some(v4) = ip.to_ipv4_mapped() {
         return public_v4(v4);
@@ -174,6 +175,7 @@ fn public_v6(ip: Ipv6Addr) -> bool {
         || ip.is_multicast()
         || (s[0] & 0xfe00) == 0xfc00
         || (s[0] & 0xffc0) == 0xfe80
+        || (s[0] & 0xffc0) == 0xfec0
         || (s[0] == 0x2001 && s[1] == 0x0db8)
         // The IPv4-compatible and NAT64 forms carry an IPv4 address the check above did not see.
         || (s[0..6] == [0, 0, 0, 0, 0, 0])
@@ -302,6 +304,7 @@ mod tests {
             "192.168.1.1:443",
             "[fc00::1]:443",
             "[fe80::1]:443",
+            "[fec0::1]:443",
             "[::1]:443",
             "[::ffff:127.0.0.1]:443",
         ] {

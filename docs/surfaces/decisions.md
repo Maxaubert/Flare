@@ -1119,3 +1119,7 @@ Spec: `docs/superpowers/specs/2026-10-28-dns-rebinding-proxy.md`.
   name: the connection is pinned, so the private ones are never reached either way.
 - 2026-10-28, builder: **the plugins' resolver rules stay, after `EXCLUDE 127.0.0.1`.** They match a numeric host too,
   so `127.*` would map the proxy's own address away; the exclusion is checked before every `MAP`.
+- 2026-10-28, review: **no address of this PC's own, public or not.** A PC with a public address (a global IPv6 one
+  is common) reaches a service listening on all its interfaces through it, so the real rule
+  (`netproxy::public_rule`) also drops any address a socket can be bound to (`netproxy::on_this_pc`). The old
+  site-local IPv6 range (fec0::/10) joined the refused ranges.

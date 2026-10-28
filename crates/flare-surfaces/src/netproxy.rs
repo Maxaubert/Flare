@@ -15,7 +15,9 @@
 //! which reaches only what it could reach anyway.
 
 use std::io::{self, Read, Write};
-use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{
+    IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket,
+};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -51,11 +53,25 @@ impl Default for Limits {
     }
 }
 
-/// The rule of the real proxy: [`crate::net::allowed_addresses`] with the system's own lookup.
+/// The rule of the real proxy: [`crate::net::allowed_addresses`] with the system's own lookup, and no address of this
+/// PC's own ([`on_this_pc`]): a PC with a public address (a global IPv6 one is common) reaches a service listening on
+/// all its interfaces through it, so a name pointed at that address would reach this PC.
 pub fn public_rule(host: &str, port: u16) -> Result<Vec<SocketAddr>, &'static str> {
-    crate::net::allowed_addresses(host, port, |name, port| {
+    let found = crate::net::allowed_addresses(host, port, |name, port| {
         (name, port).to_socket_addrs().map(Iterator::collect)
-    })
+    })?;
+    let kept: Vec<SocketAddr> = found.into_iter().filter(|a| !on_this_pc(a.ip())).collect();
+    if kept.is_empty() {
+        Err("the address is this PC's own")
+    } else {
+        Ok(kept)
+    }
+}
+
+/// Whether `ip` is one of this PC's own addresses: a socket can be bound to it only then (any other address fails
+/// with "address not available"). Nothing is sent.
+pub fn on_this_pc(ip: IpAddr) -> bool {
+    UdpSocket::bind(SocketAddr::new(ip, 0)).is_ok()
 }
 
 /// The port of this process's proxy, started on first use with [`public_rule`] and the default limits. The same port
@@ -239,8 +255,9 @@ fn relay(client: TcpStream, upstream: TcpStream, idle: Duration) {
     let (Ok(client2), Ok(upstream2)) = (client.try_clone(), upstream.try_clone()) else {
         return;
     };
-    // Reads wake up this often to look at the shared clock; a write that cannot finish in `idle` fails.
-    let tick = idle.min(Duration::from_secs(5));
+    // Reads wake up this often to look at the shared clock (well inside `idle`, so a read that timed out and was tried
+    // again is the usual path, and the tests take it too); a write that cannot finish in `idle` fails.
+    let tick = (idle / 4).clamp(Duration::from_millis(10), Duration::from_secs(5));
     for s in [&client, &upstream] {
         let _ = s.set_read_timeout(Some(tick));
         let _ = s.set_write_timeout(Some(idle));
@@ -327,6 +344,24 @@ mod tests {
             b"",
         ] {
             assert_eq!(connect_target(bad), Err(BAD_REQUEST), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn an_address_of_this_pc_is_known_and_refused() {
+        assert!(on_this_pc(Ipv4Addr::LOCALHOST.into()));
+        assert!(!on_this_pc("192.0.2.1".parse().unwrap()));
+        assert!(!on_this_pc("8.8.8.8".parse().unwrap()));
+        // The address this PC sends from (a UDP "connect" sends nothing): its own, so never a target.
+        if let Ok(local) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+            .and_then(|s| s.connect(("8.8.8.8", 53)).map(|()| s))
+            .and_then(|s| s.local_addr())
+        {
+            assert!(on_this_pc(local.ip()), "{local}");
+            assert!(
+                public_rule(&local.ip().to_string(), 443).is_err(),
+                "{local}"
+            );
         }
     }
 
