@@ -1903,3 +1903,27 @@ Spec: `docs/superpowers/specs/2026-10-27-new-tab-folder-arrow.md`; the picked lo
   `the_starter_folders_fill_the_folder_menu_once_the_worker_answers`, `a_stored_ask_mode_opens_in_the_folder_at_once`,
   `the_new_tab_row_has_no_mode_to_pick`, `the_new_tab_mode_imports_as_folder_whatever_it_was`,
   `plus_opens_at_once_in_the_chosen_folder_and_does_not_ask_again` and `the_starter_folders_exist_and_end_with_the_user_folder`.
+
+## /browser and the page the agent is told about, 2026-10-28
+
+Spec: `docs/superpowers/specs/2026-10-28-browser-command.md`.
+
+- **`/browser [url or search words]`.** The `flare-status` plugin ships `commands/browser.md` (plugin version 1.2.0). Claude
+  calls `open_page` with the address (empty: `https://www.google.com/`; words that are not an address:
+  `https://www.google.com/search?q=...`), calls `browser_look` once, says in one line that the page is open and the user can
+  browse it, and then waits: no clicking, typing or navigating unless asked. Only `open_page` and `browser_look` are
+  pre-allowed (`allowed-tools`). Held by `the_browser_command_opens_a_page_looks_once_and_then_waits` and
+  `install_writes_the_prompt_hook_only_when_the_program_exists_and_ships_the_browser_command` (`plugin.rs`).
+- **The agent hears which page is open.** A second `UserPromptSubmit` hook runs `flare-mcp --hook-context` (the absolute
+  `flare-mcp.exe` written in at install like the MCP server's; the hook is left out when there is no program). It asks
+  `panel.state` with a 1 s timeout and adds context only when the tab's web page changed since it last told this tab and
+  Claude session (a state file in `%TEMP%\flare-mcp`, named by a hash of the tab token and the session id), or once when
+  the page has gone. The title and address are cleaned, quoted and between the page-content markers, as in a look. Outside
+  Flare or when Flare does not answer it prints nothing and exits 0; the state hook (`hook.cmd`) is unchanged. Held by
+  `the_prompt_hook_runs_flare_mcp_by_its_placeholder_with_one_flag`, `the_prompt_hook_gets_the_absolute_program_or_is_left_out`,
+  `install_writes_the_mcp_server_only_when_the_program_exists` (`plugin.rs`), the five `hook::tests` (`flare-mcp`) and
+  `the_prompt_hook_tells_the_agent_of_a_page_once_and_says_nothing_outside_flare` (the real binary over a real pipe, `stdio.rs`).
+- **`browser_state`.** A ninth browser tool wraps `panel.state`: no panel, a web page (title and address as page data), a
+  mini-app (the browser tools work on it) or another kind. 21 built-in tools now. Held by
+  `browser_state_says_what_the_panel_shows_with_the_page_as_quoted_data`, `the_tools_are_listed_with_descriptions_written_for_an_agent`
+  (`browser.rs`), `tools_list_has_the_show_tools_then_the_browser_tools_with_object_schemas` (`lib.rs`) and the e2e `mcpRoundTrip` list.

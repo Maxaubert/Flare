@@ -780,11 +780,20 @@ calls:
 | `browser_wait` | one of `text`, `selector`, `ms`; `timeout_ms` | `browser.wait` |
 | `browser_navigate` | `url`, or `action` (`back`, `forward`, `reload`) | `browser.navigate` (opens the panel with `browser.open` when none is open and a `url` was given) |
 | `browser_eval` | `expression` | `browser.eval` |
+| `browser_state` | none | `panel.state` (says whether a panel is open and what kind; for a web page its title and address, cleaned, quoted and between the page-content markers like a look's) |
 | `set_tab_badge` | `key`, `icon` (an enum of the built-in badges), `tip` | `tabs.badge.set` |
 | `clear_tab_badge` | `key` | `tabs.badge.clear` |
 | `set_tab_progress` | `value` (0 to 1, optional), `label` | `tabs.progress.set` with `key` `progress` |
 | `clear_tab_progress` | none | `tabs.progress.clear` with `key` `progress` |
 | `mod_<id>_<tool>` | the mod's own `input_schema` | `mods.call` (listed by `mods.tools`; a string result is passed as it is, anything else as compact JSON, cut at 60 000 characters; a mod's own error is `isError` text with its reason, a refusal of Flare is `Flare refused: ...`) |
+
+`flare-mcp --hook-context` is not a server: the `flare-status` plugin runs it as a `UserPromptSubmit` hook. It
+asks `panel.state` (1 s for the connect and 1 s for the answer, never more) and prints
+`{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":...}}` only when the tab's web page
+differs from the one it last told this tab and Claude session about (remembered in `%TEMP%\flare-mcp\page-<hash>.json`,
+the hash of the tab token and the hook's `session_id`, so the secret is never written down), or once when that page has
+gone. The title and address are page data: cleaned, quoted and between the markers. Outside Flare, or when Flare does not
+answer, it prints nothing and exits 0.
 
 `open_page` answers with
 the final address and the page's title (cleaned to one line, like a refusal's words, because a web page wrote
