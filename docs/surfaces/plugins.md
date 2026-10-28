@@ -262,7 +262,10 @@ starts with the plugin's name. Setting the same key replaces; a tab has one prog
   - with `network`: adds `img-src https:`, `connect-src 'self' https:`, `media-src 'self' data: blob: https:`, and
     `frame-src 'none'; form-action 'self'; base-uri 'none'`. Only public https hosts are let out: loopback, private,
     shared and link-local ranges, a host without a dot, `localhost`, `*.local`, `*.lan`, `*.internal` and
-    `*.home.arpa` are refused (`flare_surfaces::net`).
+    `*.home.arpa` are refused (`flare_surfaces::net`). The networked browser sends every connection (a WebSocket too)
+    through Flare's filtering proxy on `127.0.0.1` (`flare_surfaces::netproxy`, issue #97), which looks the name up
+    itself and connects only to a public address it checked, so a public name pointed at this PC or the local network
+    (DNS rebinding) reaches nothing there.
 - **Sealed views.** Every plugin view: no new window, no download, no external link, no permission prompt, no
   DevTools, own frames only, script dialogs dismissed. A background or bar view also has no context menu and no
   browser keys, and never takes the keyboard (a click in a bar hands the keys back to the terminal).

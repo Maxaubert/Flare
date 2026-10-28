@@ -47,6 +47,10 @@ pub const INVENTORY: &[(&str, &str)] = &[
     // Mods: the host name a mod's page is served from (a local name, answered by Flare itself: no request) and
     // the rules that keep the page off the network.
     ("flare-surfaces/src/modview.rs", "Web panel"),
+    // Issue #97: the networked browsers' filtering proxy (on 127.0.0.1) connects only to a public address it looked up
+    // for a page's own CONNECT, and the address check builds an `https://` address from the host to parse it.
+    ("flare-surfaces/src/netproxy.rs", "Web panel"),
+    ("flare-surfaces/src/net.rs", "Web panel"),
     // The mod manifest's homepage check: a string compare on the `https://` prefix, no request (the address is
     // only shown on the mod's card in Settings).
     ("flare-mods/src/manifest.rs", "Mods"),

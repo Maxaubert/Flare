@@ -1101,3 +1101,21 @@ I'd rather have more space for the browser".
   as before by clicking or typing in the page, which ends the call `interrupted` and the hold at once. Its 1.5 s hold
   (`AGENT_HOLD_MS`, was `RIBBON_HOLD_MS`) stays as the timer after a call before the glow and the cursor fade.
   `web.state`'s `ribbon` became `using` (`shown`, `text`), with no width.
+
+## Networked pages checked after the name lookup (issue #97), 2026-10-28
+
+Spec: `docs/superpowers/specs/2026-10-28-dns-rebinding-proxy.md`.
+
+- 2026-10-28, builder: **a filtering proxy in Flare, not more resolver rules.** The networked plugins' browser and the
+  networked mini-apps' browser (the audio page too) start with `--proxy-server=http://127.0.0.1:<port>
+  --proxy-bypass-list=<-loopback>`; the proxy (`flare_surfaces::netproxy`, std only) serves `CONNECT` only, looks the
+  name up itself, keeps the public addresses (`net::allowed_addresses`) and connects to one of them, so the tunnel is
+  pinned to an address it checked. `<-loopback>` sends loopback and link-local to the proxy as well, where they are
+  refused. The web panel is unchanged.
+- 2026-10-28, builder: **one port a process, and no networked browser without it.** The proxy starts once
+  (`OnceLock`) and keeps its port, so a browser dropped while idle is made again with the same arguments for its
+  folder. If it cannot start, `host::env_arguments` fails and the views fail with the reason.
+- 2026-10-28, builder: **a mixed DNS answer keeps its public addresses** and drops the rest, rather than refusing the
+  name: the connection is pinned, so the private ones are never reached either way.
+- 2026-10-28, builder: **the plugins' resolver rules stay, after `EXCLUDE 127.0.0.1`.** They match a numeric host too,
+  so `127.*` would map the proxy's own address away; the exclusion is checked before every `MAP`.

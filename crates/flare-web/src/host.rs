@@ -39,6 +39,7 @@ use std::sync::{Arc, Mutex};
 use flare_mods::serve as modserve;
 use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::modview::{self, Route};
+use flare_surfaces::netproxy;
 use flare_surfaces::web::{
     Failure, PhysRect, failure_of_kind, host_label, navigation_allowed, pdf_view,
 };
@@ -124,13 +125,14 @@ enum EnvKind {
     Web,
     /// Mini-apps with no network: the WebRTC policy and a proxy that is not there.
     AppSealed,
-    /// Mini-apps that were granted `https:`: the WebRTC policy only.
+    /// Mini-apps that were granted `https:`: the WebRTC policy and Flare's filtering proxy
+    /// (`flare_surfaces::netproxy`, issue #97).
     AppNet,
     /// Mods' and plugins' views (no network): the sealed mini-apps' arguments, in the folder every mod's
     /// profile lives in (`modview::env_folder`), so their storage is where it always was.
     Plugin,
-    /// The views of a plugin that holds `network` (plugins phase 6): the WebRTC policy and a resolver that knows no
-    /// local name, in a folder of its own (`modview::net_env_folder`).
+    /// The views of a plugin that holds `network` (plugins phase 6): the WebRTC policy, Flare's filtering proxy and a
+    /// resolver that knows no local name, in a folder of its own (`modview::net_env_folder`).
     PluginNet,
 }
 
@@ -459,10 +461,10 @@ impl WebHost {
         }
     }
 
-    /// Makes a browser of `kind`. The web panel's has no extra arguments. A mini-app's has the WebRTC
-    /// policy, and (with no network) a proxy that is not there, in a user data folder of its own. The plugins'
-    /// has the sealed mini-apps' arguments, in a folder of its own too.
+    /// Makes a browser of `kind` with [`env_arguments`], in a user data folder of its own. A networked kind whose proxy
+    /// could not start is refused here, never made without it.
     fn start_env(&self, kind: EnvKind) -> Result<(), String> {
+        let arguments = env_arguments(kind)?;
         if kind != EnvKind::Web {
             seal_against_overrides()?;
         }
@@ -492,11 +494,8 @@ impl WebHost {
             // Thin scrollbars over the page that fade when it is still, as Windows 11 draws them,
             // instead of the classic grey bar with arrows (2026-10-25).
             o.set_scroll_bar_style(COREWEBVIEW2_SCROLLBAR_STYLE_FLUENT_OVERLAY);
-            if kind != EnvKind::Web {
-                o.set_additional_browser_arguments(match kind {
-                    EnvKind::PluginNet => modview::net_browser_arguments(),
-                    k => app::browser_arguments(k == EnvKind::AppNet),
-                });
+            if let Some(arguments) = arguments {
+                o.set_additional_browser_arguments(arguments);
                 o.set_target_compatible_browser_version(app::APP_MIN_BROWSER.to_string());
             }
         }
@@ -2087,6 +2086,20 @@ impl WebBackend for WebHost {
     }
 }
 
+/// The extra browser arguments of a browser of `kind`. The web panel's has none. A mini-app's has the WebRTC policy and
+/// either a proxy that is not there (no network) or Flare's filtering proxy (`https:` granted); the plugins' sealed
+/// one has the sealed mini-apps' arguments, the networked one the filtering proxy and its resolver rules. The proxy's
+/// port is fixed for the process, so a browser that was dropped while idle and made again gets the same arguments for
+/// its folder. An error when the proxy could not start: a networked browser is then not made at all.
+fn env_arguments(kind: EnvKind) -> Result<Option<String>, String> {
+    Ok(match kind {
+        EnvKind::Web => None,
+        EnvKind::AppSealed | EnvKind::Plugin => Some(app::browser_arguments(None)),
+        EnvKind::AppNet => Some(app::browser_arguments(Some(netproxy::port()?))),
+        EnvKind::PluginNet => Some(modview::net_browser_arguments(netproxy::port()?)),
+    })
+}
+
 /// Before a mini-app's browser starts: takes out of this process the variables that would replace the
 /// arguments, profile and runtime Flare passes (removed on the UI thread just before the loader reads
 /// them), and refuses the app when a Windows policy holds such a value (it cannot be removed, and a
@@ -2140,4 +2153,42 @@ fn policy_key_has_values(key: &str) -> bool {
                 rc != 0 || values > 0
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A browser dropped while idle is made again in the same folder: its arguments must be the same both times.
+    #[test]
+    fn every_browser_kind_gets_the_same_arguments_each_time_it_is_made() {
+        for kind in [
+            EnvKind::Web,
+            EnvKind::AppSealed,
+            EnvKind::AppNet,
+            EnvKind::Plugin,
+            EnvKind::PluginNet,
+        ] {
+            assert_eq!(env_arguments(kind), env_arguments(kind), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn the_networked_browsers_go_through_the_filtering_proxy_and_the_web_panel_does_not() {
+        let port = netproxy::port().unwrap();
+        let proxy =
+            format!("--proxy-server=http://127.0.0.1:{port} --proxy-bypass-list=<-loopback>");
+        for kind in [EnvKind::AppNet, EnvKind::PluginNet] {
+            let a = env_arguments(kind).unwrap().unwrap();
+            assert!(a.contains(&proxy), "{kind:?}: {a}");
+        }
+        for kind in [EnvKind::AppSealed, EnvKind::Plugin] {
+            let a = env_arguments(kind).unwrap().unwrap();
+            assert!(
+                a.contains("--proxy-server=http://127.0.0.1:9 "),
+                "{kind:?}: {a}"
+            );
+        }
+        assert_eq!(env_arguments(EnvKind::Web), Ok(None));
+    }
 }

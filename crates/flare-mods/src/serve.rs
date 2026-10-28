@@ -20,8 +20,8 @@ pub const CSP: &str = "default-src 'none'; script-src 'self' 'unsafe-inline'; st
 /// The policy of a page of a plugin that holds `network` (plugins phase 6, design 13): [`CSP`], and its connections,
 /// pictures and sound may come from `https` addresses too. No frame, no form that posts elsewhere, no `<base>`. A
 /// policy cannot leave out the local hosts, and its `https:` lets `wss:` through too: the request wall refuses those
-/// (`flare_surfaces::net`), and the plugins' networked browser's resolver finds no local name or address for what
-/// never meets that wall, a WebSocket (`flare_surfaces::modview::net_browser_arguments`).
+/// (`flare_surfaces::net`), and what never meets that wall, a WebSocket, goes through Flare's filtering proxy, which
+/// checks the address a name resolved to (`flare_surfaces::netproxy`, `flare_surfaces::modview::net_browser_arguments`).
 pub const NET_CSP: &str = "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https:; media-src 'self' data: blob: https:; frame-src 'none'; form-action 'self'; base-uri 'none'";
 
 /// The policy of a plugin's page: [`NET_CSP`] with `network`, else [`CSP`] (as a mod's page always had).
