@@ -1940,6 +1940,7 @@ network (DNS rebinding) passed the text checks of a networked page; now every co
   `flare_web::host` (`every_browser_kind_gets_the_same_arguments_each_time_it_is_made`,
   `the_networked_browsers_go_through_the_filtering_proxy_and_the_web_panel_does_not`) and the e2e `miniApp` "webrtc"
   (a WebSocket to loopback is now stopped with the network on too; not yet run live).
+
 ## /browser and the page the agent is told about, 2026-10-28
 
 Spec: `docs/superpowers/specs/2026-10-28-browser-command.md`.
