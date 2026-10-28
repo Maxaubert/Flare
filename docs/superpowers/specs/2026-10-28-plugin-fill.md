@@ -26,10 +26,14 @@ the agent reads leaves the PC). Flare holds no password manager: it gets a gener
      `https://example.com`. No match: `forbidden`, "this login is not for <host>";
    - Flare's own dialog: "<Plugin> wants to fill a login" / "Fill <login> into <host>?" with Deny for this session, Deny
      and Allow. Allow takes the pointer only: no key presses it (Enter and Space press the focused Deny button), and it
-     has no accessible default action. Escape and a press outside are Deny. The web page hides under the dialog;
-   - on Allow the page's site is checked again (it may have moved: `interrupted`), then one `ExecuteScript`: the values
-     are one JSON text, encoded again as a JS string literal by `serde_json` and read with `JSON.parse`, so a value is
-     never script text. The script checks `location` once more, finds the fields (`autocomplete` `username`, `email`,
+     has no accessible default action. It takes no press for its first 0.7 s (a click already on its way, which an
+     agent could time its fill to, never approves). Escape and a press outside are Deny. The web page hides under the
+     dialog;
+   - on Allow the page's site is checked again (it may have moved: `interrupted`), then one `ExecuteScript`. It runs in
+     the page's own JS world, where another site's page could have replaced `JSON.parse` or `toLowerCase`, so it first
+     compares `location.protocol`, `location.hostname` and `location.port` with literals (`!==` only) and stops before
+     touching the values when they differ. Then the values: one JSON text, encoded again as a JS string literal by
+     `serde_json` and read with `JSON.parse`, so a value is never script text. The script finds the fields (`autocomplete` `username`, `email`,
      `current-password`, `one-time-code` first; then the focused text field, the last text field before the password, a
      field named like a user or email, and a code field named like `otp`, `2fa`, `verification`), sets each value with
      the native setter and fires `input` and `change`;

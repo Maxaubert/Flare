@@ -276,6 +276,7 @@ fn run(ctx: &mut Ctx, app: &mut App, profile: &Path, record: &Path) -> Result<()
     );
     app.session.key("Enter")?;
     let answer = call.join().unwrap_or(Value::Null);
+    let mut agent_texts = vec![answer.to_string()];
     ctx.ok(
         answer["result"]["outcome"] == json!({"declined": true}),
         format!("Enter presses Deny, never Allow: the agent hears declined ({answer})"),
@@ -293,8 +294,39 @@ fn run(ctx: &mut Ctx, app: &mut App, profile: &Path, record: &Path) -> Result<()
     });
     ctx.ok(asked, "the second fill asks again");
     let q = ask_state(app);
+    // A press in the question's first moment does nothing (a click already on its way never approves).
+    if q["allow_armed"] == json!(false) {
+        press(app, &q, "allow")?;
+        let early = ask_state(app);
+        let typed = fields(ctx, app);
+        ctx.ok(
+            early["asking"] == json!(true) && typed["lp"] == json!(0),
+            format!("a press on Allow as the question shows does nothing ({early}, {typed})"),
+        );
+    }
+    // The agent cannot answer it: its key and its click go to the page, never to Flare's question.
+    let quick = Duration::from_secs(10);
+    let pressed = agent.call(Method::BrowserPress, json!({"key": "Enter"}), quick);
+    let r = &q["buttons"]["allow"];
+    let (ax, ay) = (
+        r["x"].as_f64().unwrap_or(0.0) + r["w"].as_f64().unwrap_or(0.0) / 2.0,
+        r["y"].as_f64().unwrap_or(0.0) + r["h"].as_f64().unwrap_or(0.0) / 2.0,
+    );
+    let clicked = agent.call(Method::BrowserClick, json!({"x": ax, "y": ay}), quick);
+    let still = ask_state(app);
+    let typed = fields(ctx, app);
+    ctx.ok(
+        still["asking"] == json!(true) && typed["lu"] == json!(0) && typed["lp"] == json!(0),
+        format!("the agent's Enter and its click where Allow is answer nothing ({still}, {typed}; {pressed:?}, {clicked:?})"),
+    );
+    let armed = ctx.until("Allow to take presses", 5_000, &mut || {
+        ask_state(app)["allow_armed"] == json!(true)
+    });
+    ctx.ok(armed, "Allow takes presses after its first moment");
+    let q = ask_state(app);
     press(app, &q, "allow")?;
     let answer = call.join().unwrap_or(Value::Null);
+    agent_texts.push(answer.to_string());
     ctx.ok(
         answer["result"]["outcome"] == json!({"filled": ["username", "password", "totp"], "missing": []}),
         format!("Allow fills the user name, the password and the code, and the agent hears that only ({answer})"),
@@ -321,6 +353,7 @@ fn run(ctx: &mut Ctx, app: &mut App, profile: &Path, record: &Path) -> Result<()
     // ---- a login of another site is refused, with no question ----
     let call = agent_tool(&pipe, &token, "mismatch");
     let answer = call.join().unwrap_or(Value::Null);
+    agent_texts.push(answer.to_string());
     let out = &answer["result"]["outcome"];
     ctx.ok(
         out["error"] == json!("forbidden")
@@ -345,10 +378,12 @@ fn run(ctx: &mut Ctx, app: &mut App, profile: &Path, record: &Path) -> Result<()
             }),
         format!("the helper heard three tool events, read the page's host each time and answered ({heard:?})"),
     );
-    let agent_text = answer.to_string();
     ctx.ok(
-        !agent_text.contains(PASS) && !agent_text.contains(USER) && !agent_text.contains(CODE),
-        "the agent's results hold no value of the login",
+        agent_texts.len() == 3
+            && agent_texts
+                .iter()
+                .all(|t| !t.contains(PASS) && !t.contains(USER) && !t.contains(CODE)),
+        "none of the agent's three results holds a value of the login",
     );
     secret_free(ctx, profile, record, "while running");
     Ok(())

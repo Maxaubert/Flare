@@ -28,6 +28,7 @@ fn plugin_ask(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     v["body"] = json!(format!("{:?}", a.get_pask_body()));
     v["label"] = json!(a.get_pask_label().to_string());
     v["field_focus"] = json!(a.get_pask_field_focus());
+    v["allow_armed"] = json!(a.get_pask_allow_armed());
     v["overlay_open"] = json!(a.get_overlay_open());
     v["buttons"] = json!({
         "allow": rect(a.get_pask_allow_x(), a.get_pask_allow_y(), a.get_pask_allow_w(), a.get_pask_allow_h()),

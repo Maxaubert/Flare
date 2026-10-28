@@ -354,44 +354,50 @@ impl Asks {
 /// The kinds of field a fill types into, in the order the answer names them.
 pub const FIELDS: [&str; 3] = ["username", "password", "totp"];
 
-/// The script that types the values into the page. The values travel as data: one JSON text, itself encoded as a JS
-/// string literal by `serde_json` and read with `JSON.parse`, so nothing a value holds can become code. The script
-/// first checks that the page is still on `site` (it may have moved while the person read the dialog), then finds
-/// the fields (the `autocomplete` tokens first: `username`, `email`, `current-password`, `one-time-code`; then the
-/// visible text and password fields), types each value as the native setter does and fires `input` and `change`. It
-/// answers `{ok, filled, missing}` (kinds of field only) or `{ok: false, why}`. The script holds the values, so it is
-/// a [`Secret`] too.
+/// A text as a JS string literal: `serde_json`'s string, with the line and paragraph separators escaped as well
+/// (a string literal may hold them since ES2019).
+fn js_string(s: &str) -> String {
+    serde_json::to_string(s)
+        .unwrap_or_else(|_| "\"\"".to_string())
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
+}
+
+/// The script that types the values into the page. It runs in the page's own JS world, where the page may have
+/// replaced any function (`JSON.parse`, `String.prototype.toLowerCase`), and the tab may have moved to another site
+/// since Flare last looked (the agent can navigate it while the person reads the dialog). So it first checks, with
+/// nothing but `!==` on the `location` a page cannot redefine, that the document is still on `site` (scheme, host
+/// and port), and stops there if not, before anything of the values is touched. Only then are the values read: one
+/// JSON text, itself encoded as a JS string literal and read with `JSON.parse`, so nothing a value holds can become
+/// code. It finds the fields (the `autocomplete` tokens first: `username`, `email`, `current-password`,
+/// `one-time-code`; then the visible text and password fields), types each value as the native setter does and fires
+/// `input` and `change`. It answers `{ok, filled, missing}` (kinds of field only) or `{ok: false, why}`. The script
+/// holds the values, so it is a [`Secret`] too.
 pub fn fill_script(values: &Values, site: &Site) -> Secret {
     let data = Secret::new(
         json!({
             "u": values.username.as_ref().map(Secret::expose),
             "p": values.password.as_ref().map(Secret::expose),
             "t": values.totp.as_ref().map(Secret::expose),
-            "host": site.host,
-            "scheme": site.scheme,
         })
         .to_string(),
     );
-    // The line and paragraph separators are escaped as well, though a string literal may hold them since ES2019.
-    let literal = Secret::new(
-        serde_json::to_string(data.expose())
-            .unwrap_or_else(|_| "\"{}\"".to_string())
-            .replace('\u{2028}', "\\u2028")
-            .replace('\u{2029}', "\\u2029"),
-    );
+    let literal = Secret::new(js_string(data.expose()));
+    // `location.port` is empty for the scheme's own port, as `Site::port` is None.
+    let port = site.port.map_or_else(String::new, |p| p.to_string());
     Secret::new(format!(
-        "(function (d) {{ {FILL_JS} }})(JSON.parse({}))",
+        "(function () {{ if (location.protocol !== {} || location.hostname !== {} || location.port !== {}) \
+         {{ return {{ ok: false, why: 'moved' }}; }} return (function (d) {{ {FILL_JS} }})(JSON.parse({})); }})()",
+        js_string(&format!("{}:", site.scheme)),
+        js_string(&site.host),
+        js_string(&port),
         literal.expose()
     ))
 }
 
-/// The body of [`fill_script`]: `d` is `{u, p, t, host, scheme}`.
+/// The body of [`fill_script`], run once the page's site is checked: `d` is `{u, p, t}`.
 const FILL_JS: &str = r#"
 try {
-  var hostOf = function (h) { return h.charAt(0) === '[' ? h : h.toLowerCase(); };
-  if (location.protocol !== d.scheme + ':' || hostOf(location.hostname) !== d.host) {
-    return { ok: false, why: 'moved' };
-  }
   var vis = function (e) {
     if (e.disabled || e.readOnly || (e.type || '').toLowerCase() === 'hidden') { return false; }
     if (!e.getClientRects().length) { return false; }
@@ -714,12 +720,14 @@ mod tests {
         let script = fill_script(&values, &site("https://example.com/"));
         assert_eq!(format!("{script:?}"), "Secret(..)");
         let js = script.expose();
-        assert!(js.starts_with("(function (d) {"));
+        assert!(js.starts_with("(function () {") && js.contains("(function (d) {"));
         let tail = js
             .rsplit_once("(JSON.parse(")
             .map(|(_, t)| t)
             .expect("the data is parsed from a string");
-        let literal = tail.strip_suffix("))").expect("the call ends the script");
+        let literal = tail
+            .strip_suffix(")); })()")
+            .expect("the call ends the script");
         // The literal is one JSON string; read back, it is the JSON object with the values exactly as given.
         // A JS string literal read as JSON: the separators escaped as ` ` read back the same.
         let text: String = serde_json::from_str(literal).unwrap();
@@ -727,12 +735,34 @@ mod tests {
         assert_eq!(data["p"], nasty);
         assert_eq!(data["u"], "max");
         assert_eq!(data["t"], Value::Null);
-        assert_eq!(data["host"], "example.com");
-        assert_eq!(data["scheme"], "https");
+        assert_eq!(data.as_object().map(|o| o.len()), Some(3));
         // Nothing of the value appears outside the literal, and the literal has no raw line separator.
         let code_part = js.replace(literal, "");
         assert!(!code_part.contains("alert") && !code_part.contains("max"));
         assert!(!literal.contains('\u{2028}') && !literal.contains('\u{2029}'));
+    }
+
+    /// The page may have moved to another site, whose own script replaced `JSON.parse` or `toLowerCase` to catch
+    /// the values: the script checks the site first, with `!==` on `location` alone, and reads the values only after.
+    #[test]
+    fn the_script_checks_the_site_before_it_reads_the_values() {
+        let values = Values {
+            password: Some(Secret::new("hunter2".into())),
+            ..Values::default()
+        };
+        let script = fill_script(&values, &site("https://id.example.com:8443/login"));
+        let js = script.expose();
+        let check = "if (location.protocol !== \"https:\" || location.hostname !== \"id.example.com\" \
+                     || location.port !== \"8443\") { return { ok: false, why: 'moved' }; }";
+        let at = js.find(check).expect("the site check");
+        let parse = js.find("JSON.parse(").expect("the values are read");
+        assert!(at < parse, "the check comes before the values are read");
+        assert!(js[..at].find("hunter2").is_none());
+        // Nothing the page could replace is called before the check.
+        assert!(!js[..at + check.len()].contains("toLowerCase"));
+        // The scheme's own port is the empty `location.port`.
+        let js = fill_script(&values, &site("https://example.com:443/"));
+        assert!(js.expose().contains("location.port !== \"\")"));
     }
 
     #[test]

@@ -298,7 +298,7 @@ impl AppCtl {
             .fill_page_url(tab, true)
             .ok()
             .and_then(|u| fill::page_site(&u))
-            .is_some_and(|now| now.host == site.host && now.scheme == site.scheme);
+            .is_some_and(|now| now == *site);
         if !same {
             log::info!(
                 "{}",

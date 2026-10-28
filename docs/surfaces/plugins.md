@@ -395,9 +395,12 @@ Flare's own dialog, and the user name, password and code never reach the agent.
 - **The dialog.** "<Plugin> wants to fill a login", "Fill <login> into <host>? The page gets the login; the agent never
   sees it.", with Deny for this session, Deny and Allow. Only your pointer presses Allow: no key does (Enter and Space
   press the Deny button that has the focus, Escape and a press outside are Deny), and it has no accessible default
-  action. The web page hides under it. It waits a minute, then counts as Deny.
+  action. Allow takes no press for its first 0.7 s, so a click already on its way when the dialog appears never
+  approves it. The web page hides under it. It waits a minute, then counts as Deny.
 - **On Allow** the page's address is checked again (it may have moved while you read: `interrupted`), then Flare types
-  the values with one `ExecuteScript`: the values travel as JSON data read with `JSON.parse`, never as script text. The
+  the values with one `ExecuteScript`. The script first checks the document's `location` (scheme, host and port) with
+  plain comparisons the page cannot replace, and stops (`interrupted`) before it reads any value when the tab has moved
+  to another site; only then are the values read, as JSON data with `JSON.parse`, never as script text. The
   script finds the fields by their `autocomplete` (`username`, `email`, `current-password`, `one-time-code`) first, then
   the focused text field, the last text field before the password, a field named like a user or an email, and a code
   field named like `otp`, `2fa` or `verification`; it sets each value as typing does and fires `input` and `change`.

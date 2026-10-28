@@ -1985,9 +1985,11 @@ Part A of the Bitwarden design (`Maxaubert/flare-plugins`, `docs/2026-10-28-bitw
   tests.
 - **`browser.fill`.** Only into the tab's web page, only when its site is the login's (host or subdomain, `https` unless
   the login says `http`; no public suffix list), and only after Allow in Flare's own dialog ("Fill <login> into <host>?",
-  Deny for this session, Deny, Allow; Allow by the pointer only, Enter presses Deny). The values reach the page as JSON
-  data through `ExecuteScript`, the fields are found by `autocomplete` first, and `input` and `change` fire. One dialog
-  at a time, 6 asks a minute per plugin, a minute to answer. Held by `flare_mods::fill` (13 tests) and
+  Deny for this session, Deny, Allow; Allow by the pointer only and not in its first 0.7 s, Enter presses Deny). The
+  values reach the page as JSON data through `ExecuteScript`, read only after the script checked the document's
+  `location` (a tab that moved to another site gets nothing), the fields are found by `autocomplete` first, and `input`
+  and `change` fire. One dialog at a time, 6 asks a minute per plugin, a minute to answer. Held by `flare_mods::fill`
+  (14 tests) and
   `appctl::tests::mods_tests::plugin_fill` (8 tests, the fake browser), and the e2e `pluginFill`.
 - **`secret.ask`.** Flare's masked field; the text goes to the plugin that asked, and no log or store of Flare's has it.
 - **Tool scope and helpers.** While Claude's call to a plugin waits, the plugin may fill into the tab it came from. A
@@ -1995,5 +1997,6 @@ Part A of the Bitwarden design (`Maxaubert/flare-plugins`, `docs/2026-10-28-bitw
   event `{call_id, tool, tab, input}`, and answered with `tools.respond`; a manifest may now have tools with only a
   helper.
 - **The e2e `pluginFill`.** A test plugin whose helper is the e2e exe itself (`--fake-fill-helper`), a local sign-in page
-  on `https://flare-test.local`, the dialog pressed by the e2e pointer like every dialog, Enter that does not allow, a
+  on `https://flare-test.local`, the dialog pressed by the e2e pointer like every dialog, Enter that does not allow, an
+  early press and the agent's own key and click that do not allow, a
   login of another site refused, and the profile's logs, the plugins' logs and the helper's record scanned for the values.

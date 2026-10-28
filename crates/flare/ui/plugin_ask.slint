@@ -3,6 +3,8 @@
 // or a secret the plugin asks for, typed into a masked field.
 // Allow is pressed by the pointer only: no key presses it (Enter and Space press the Deny button that has the focus),
 // so a key sent at the window cannot approve a fill. Escape and a press outside the box are Deny (or Cancel).
+// Allow takes no press for its first moment (ARM-DELAY): a question that pops up under a click already on its way
+// (an agent can time its fill to the person's clicks) is never approved by that click.
 // The field's text is cleared as the dialog closes; it is handed to the glue once, with OK or Enter.
 import { Theme, Px } from "theme.slint";
 import { DialogButton } from "dialog.slint";
@@ -23,6 +25,9 @@ export component PluginAsk inherits Rectangle {
     // The Deny button that holds the keys in a fill (0 Deny, 1 Deny for this session); never Allow.
     property <int> focus-idx: 0;
     property <bool> by-key;
+    // Allow takes presses (ARM-DELAY after the question went up).
+    property <bool> armed;
+    out property <bool> allow-armed: root.armed;
     out property <bool> field-has-focus: field.has-focus;
     // Where the buttons are, for the e2e's pointer (it presses them as the person would).
     out property <length> allow-x: allow-btn.absolute-position.x;
@@ -64,12 +69,20 @@ export component PluginAsk inherits Rectangle {
         if root.open {
             root.focus-idx = 0;
             root.by-key = false;
+            root.armed = false;
             if root.kind == 1 {
                 field.focus();
             } else {
                 fs.focus();
             }
         }
+    }
+
+    // ARM-DELAY: long enough to outlast a click begun before the question showed, short enough not to be felt.
+    Timer {
+        interval: 700ms;
+        running: root.open && root.kind == 0 && !root.armed;
+        triggered => { root.armed = true; }
     }
 
     Rectangle {
@@ -203,6 +216,7 @@ export component PluginAsk inherits Rectangle {
                     shown: root.kind == 0;
                     label: "Allow";
                     is-primary: true;
+                    enabled: root.armed;
                     // Pointer only: a screen reader reads it, but no key or default action presses it.
                     pointer-only: true;
                     clicked => { root.fill-answer(1); }

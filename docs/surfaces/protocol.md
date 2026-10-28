@@ -400,8 +400,9 @@ Any other key is `bad_params`, and no error names a value. **The site rule:** th
 login's host left out), `https` unless the login's address is `http`, the login's port when it names one, an IP address
 only itself, a string with no `://` read as `https://<it>`; else `forbidden` with the message
 `this login is not for <host>`. **The dialog** is Flare's own (Deny for this session, Deny, Allow; Allow by the pointer
-only), one at a time across plugins, waiting at most 60 s. **The fill** runs only after Allow, after the page's site is
-checked again, as one `ExecuteScript` whose values are one JSON text read with `JSON.parse`.
+only, and not in its first 0.7 s), one at a time across plugins, waiting at most 60 s. **The fill** runs only after
+Allow, after the page's site is checked again, as one `ExecuteScript` that checks `location` (scheme, host, port) before
+it reads its values, which are one JSON text read with `JSON.parse`.
 
 Timeout: `FILL_TIMEOUT` (90 s) for `browser.fill` and `secret.ask`, the default 15 s for `browser.fill.page`. Errors:
 `bad_params`, `forbidden` (no `fill`, the agent, a tab it may not name, another site), `no_tab`, `not_found` (no web page
