@@ -13,11 +13,16 @@ export component DialogButton inherits Rectangle {
     in property <bool> is-primary: false;
     in property <bool> danger: false;
     in property <bool> ringed: false;
+    // False takes the button out of its row (no width, not drawn): one row serves two kinds of question.
+    in property <bool> shown: true;
+    // True leaves out the accessible default action, so only the pointer presses it (a plugin fill's Allow).
+    in property <bool> pointer-only: false;
     callback clicked();
+    visible: root.shown;
     opacity: root.enabled ? 1 : 0.45;
     property <color> base: root.is-primary ? (root.danger ? Theme.danger-fill : Theme.accent) : Theme.hover;
     height: 30px;
-    width: lbl.preferred-width + 28px;
+    width: root.shown ? lbl.preferred-width + 28px : 0px;
     border-radius: 8px;
     background: ta.has-hover && root.enabled && root.is-primary ? root.base.brighter(0.1) : root.base;
     border-width: root.is-primary ? 0px : Px.hair();
@@ -27,7 +32,7 @@ export component DialogButton inherits Rectangle {
     accessible-label: root.label;
     accessible-enabled: root.enabled;
     accessible-action-default => {
-        if root.enabled {
+        if root.enabled && !root.pointer-only {
             root.clicked();
         }
     }

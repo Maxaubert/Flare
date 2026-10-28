@@ -20,6 +20,8 @@ approve. This file is the contract, for plugin authors and for the Prism Termina
   motions (`agents.motion.*`, owner decision 2026-10-26). Not built: a tab's own icon and effects (`tabs.icon.*`,
   `tabs.effect.*` in design 5.2), the cap of 4 pipe connections per plugin token, a
   plugin store, signing and automatic updates.
+- **Fill (2026-10-28):** the `fill` permission (`browser.fill`, `browser.fill.page`, `secret.ask`), tool scope, and tool
+  calls answered by a helper (see "Filling logins"). Design: `../superpowers/specs/2026-10-28-plugin-fill.md`.
 
 ## A plugin in two minutes
 
@@ -84,7 +86,7 @@ spaces, bidi overrides, the BOM).
 | `contributes.actions` | At most 8 `{key, title, icon?, where}`; `where` lists places from `tab-menu`, `tab-hover` (one action per plugin), `top-bar` (one per plugin) and `session-bar` (needs a `bar`). `icon` is a built-in badge or one of `contributes.icons`. Goes with `actions`, both ways. |
 | `contributes.icons` | At most 32 `name: path`. A name is a key that is not a built-in badge; the path is an SVG path on the 24-unit box, drawn as a stroke in the chip's one colour: it starts with `M` or `m`, is at most 2 KB and 256 commands, every number within -1000 to 1000, and holds path commands, numbers, signs, dots, commas and spaces only. |
 | `helper` | Optional. `{"command": "bin\\helper.exe", "args": []}`: an `.exe` in the folder, at most 16 arguments of 200 characters. Goes with `process`, both ways. |
-| `tools` | Optional. At most 32 tools Claude can call (below). Needs `tools`, and a background page or a panel to answer them. |
+| `tools` | Optional. At most 32 tools Claude can call (below). Needs `tools`, and a background page, a panel or a helper to answer them. |
 
 Every path (`background`, `panel.entry`, `bar.entry`, `helper.command`) is checked three times: its syntax when read
 (no `:`, no leading `/` or `\`, no `..`, `.` or empty part, at most 200 characters, `.html`/`.htm` or `.exe`), its
@@ -124,6 +126,7 @@ A plugin gets exactly what it lists and you approved (rule S5); nothing else, an
 | `network` | Its pages may reach public https addresses (no method). | Use the internet | can change what it does from the internet |
 | `process` | Flare runs its `helper` program as you (no method). | Run its own program on this PC (full access) | Full control, and it can leave things behind outside Flare |
 | `agent-looks` | How each agent's tab icon moves while it works (`agents.motion.*`), a motion from Flare's list. | Change how agent icons move while they work | |
+| `fill` | Fill a saved login into a tab's web page after you approve each fill (`browser.fill`, `browser.fill.page`), and ask you for a secret in Flare's own masked field (`secret.ask`). | Fill logins into your web panel | Can type passwords into pages, after you approve each one; with `network`: can send the passwords you type for it to the internet |
 
 The words are `flare_mods::hub::permission_words`, the warnings `permission_warnings`.
 
@@ -167,7 +170,8 @@ window.flare.call('tabs.badge.set', { tab: 't3', key: 'busy', icon: 'bolt', tip:
 Rules for pages:
 - Answer every tool call within 30 seconds (else Claude gets `timeout`), even with an error. A plugin with a background
   page has its tools answered there and no panel opens; without one, the call opens the plugin's panel in the caller's
-  tab (protocol 1 routing). What a tool returns is cleaned before Claude sees it.
+  tab (protocol 1 routing); a plugin with neither but a helper has them answered by its helper (the `tool` event below).
+  What a tool returns is cleaned before Claude sees it.
 - Everything Flare sends is data: a tool's `input` is what Claude wrote, an event's text is what a tab or a session
   said. Validate it, and never use it as code.
 - A page is served from the plugin folder only (see "Pages and the serving rule"); it cannot open a window, a link or a
@@ -187,7 +191,9 @@ Rules for pages:
 
 An event goes to every page of the plugin that listens to it (an `action` to the background page when it listens,
 else to every page that does), at most 32 a page in one round (one window refresh, which also coalesces what changed).
-A helper hears `tabs`, `agent` and `session` as channel events on its connection (`protocol.md`, "Events").
+A helper hears `tabs`, `agent` and `session` as channel events on its connection (`protocol.md`, "Events"), and, for a
+plugin with no background page and no panel, `tool` `{call_id, tool, tab, input}` (snake case, unlike a page's
+`callId`), answered with `tools.respond {call_id, result | error}`.
 
 ## Which tab a call acts on
 
@@ -200,7 +206,9 @@ A helper hears `tabs`, `agent` and `session` as channel events on its connection
   held `tabs` for that tab, until X closes or the plugin is turned off. So a plugin needs `tabs` only for tabs nobody
   clicked (`sonara-bar` shows its bar where you asked for it, with no `tabs`).
 - A tool call names the tab Claude called from (`call.tab`), but it gives no scope: `look` holds `tabs` to put its
-  progress there.
+  progress there. One exception, for `fill` only (**tool scope**): while Claude's call to the plugin waits for its
+  answer, `browser.fill` and `browser.fill.page` may name the tab the call came from. Allow checks it again: if
+  the call has ended by then, the fill is `forbidden` and nothing is typed.
 
 ## Methods by namespace
 
@@ -223,6 +231,7 @@ worker, and every limit spent there, before the window hears of it.
 | Convo (`convo`) | `convo.state` | |
 | Tools (`tools`) | `tools.respond` (the bridge's `respond`) | 8 calls waiting per plugin |
 | Browser (`browser`) | `browser.*` | answered `unavailable` (not built) |
+| Fill (`fill`) | `browser.fill {tab?, login_name, login_uris, username?, password?, totp?}`, `browser.fill.page {tab?}`, `secret.ask {title, label}` | one question at a time in all (`busy`); 6 asks a minute per plugin, fills and secrets together; a minute to answer |
 
 **Decor.** A badge is a bare glyph (no ring) Flare draws before the tab's end (left of the ring on a sidebar row),
 in the tone `ink` (default), `accent` or `muted` (`mic` never `accent`, Flare's dictation mark). A progress is a static
@@ -370,6 +379,47 @@ sends the agent's artwork, never draws a check or a dot, and the agent's marks (
   `rainbow-flow`) from its background page and has a panel, opened from a tab's menu, to pick one per agent (kept in
   its store).
 
+## Filling logins (`fill`)
+
+Owner decision 2026-10-28 (design: `../superpowers/specs/2026-10-28-plugin-fill.md`; the Bitwarden plugin it is for:
+`Maxaubert/flare-plugins`). A password manager plugin signs the agent in with your saved login, you approve each fill in
+Flare's own dialog, and the user name, password and code never reach the agent.
+
+- **`browser.fill {tab?, login_name, login_uris, username?, password?, totp?}`.** The tab is the caller's own, one it
+  may see, or the tab of Claude's call it is answering (tool scope). Its panel must be a web page that is up (not a
+  mini-app or a plugin's page: `not_found`). The page's address must be a site of the login: its host or a subdomain
+  of it (a leading `www.` of the login's host left out), `https` unless the login's address says `http`, the login's
+  port when it names one, an IP address only itself; a bare `example.com` reads as `https://example.com`. Else
+  `forbidden` with "this login is not for <host>". `login_name` is one clean line of at most 120 characters (the dialog
+  shows it); `login_uris` 1 to 32 addresses; each value 1 to 1024 characters with no control character; at least one
+  value; any other key is `bad_params`, and no error ever holds a value.
+- **The dialog.** "<Plugin> wants to fill a login", "Fill <login> into <host>? The page gets the login; the agent never
+  sees it.", with Deny for this session, Deny and Allow. Only your pointer presses Allow: no key does (Enter and Space
+  press the Deny button that has the focus, Escape and a press outside are Deny), and it has no accessible default
+  action. Allow takes no press for its first 0.7 s, so a click already on its way when the dialog appears never
+  approves it. The web page hides under it. It waits a minute, then counts as Deny.
+- **On Allow** the page's address is checked again (it may have moved while you read: `interrupted`), then Flare types
+  the values with one `ExecuteScript`. The script first checks the document's `location` (scheme, host and port) with
+  plain comparisons the page cannot replace, and stops (`interrupted`) before it reads any value when the tab has moved
+  to another site; only then are the values read, as JSON data with `JSON.parse`, never as script text. The
+  script finds the fields by their `autocomplete` (`username`, `email`, `current-password`, `one-time-code`) first, then
+  the focused text field, the last text field before the password, a field named like a user or an email, and a code
+  field named like `otp`, `2fa` or `verification`; it sets each value as typing does and fires `input` and `change`.
+  Fields inside frames are not reached.
+- **Answers.** `{filled, missing}` (kinds of field: `username`, `password`, `totp`), `{declined: true}`,
+  `{declined: true, for_session: true}` (that plugin's fills are declined at once, with no dialog, until Flare quits),
+  `{declined: true, timed_out: true}`, or an error. One dialog at a time across plugins (`busy`) and 6 asks a minute per
+  plugin (`rate_limited`).
+- **`browser.fill.page {tab?}`** gives `{tab, url, host}`: the address a plugin picks the login for.
+- **`secret.ask {title, label}`** shows Flare's masked field, titled "<Plugin>: <title>", with `label` over it, OK and
+  Cancel. Answers `{text}` to that plugin only, `{cancelled: true}` or `{cancelled: true, timed_out: true}`. Flare keeps
+  and logs none of it. It shares the 6 asks a minute.
+- **A tool answered by a helper.** Claude's call to a plugin with a helper and neither a background page nor a panel
+  reaches the helper as the `tool` event; while it waits the helper may fill into the caller's tab. Claude has 30 s for
+  the whole call, so a fill inside a tool call leaves you about 25 s to answer.
+- **Nothing is written down.** The one log line of a fill is `fill: plugin <id> on <host>: <outcome>`, of a secret
+  `secret.ask: plugin <id>: answered|cancelled`. The agent never holds `fill`.
+
 ## Helper programs
 
 - A plugin that declares `helper` and holds `process` gets its program started while it is on, and only then. The
@@ -381,7 +431,8 @@ sends the agent's artwork, never draws a check or a dot, and the agent's marks (
   tabs (and needs `tabs` for that, or a click).
 - **Contained:** it starts suspended and joins a kill-on-close job object before it runs, so it and everything it starts
   end when the plugin is turned off and when Flare ends. Its stdout and stderr go to `<profile>\plugins-logs\<id>.log`
-  (moved to `.log.1` past 1 MB). It hears `tabs`, `agent` and `session` events as a background page would.
+  (moved to `.log.1` past 1 MB). It hears `tabs`, `agent` and `session` events as a background page would, and the
+  `tool` event when it answers its plugin's tools (a plugin with no background page and no panel).
 - A helper runs as you, with full access: it can leave things behind outside Flare, and Settings says so.
 
 ## Install, update, remove
@@ -425,7 +476,9 @@ sends the agent's artwork, never draws a check or a dot, and the agent's marks (
 - **A bad plugin fails alone.** Each folder is refused with its own reason; a dead page or helper is restarted a few
   times, then stopped and shown, and never takes Flare down.
 - **Secrets stay in memory.** Tokens are never written, logged or shown; tab ids given to plugins are never the tab's
-  secret.
+  secret. A login filled with `fill` and a secret typed for `secret.ask` are in no log, answer or store of Flare's.
+- **A fill is yours to approve.** Flare's own dialog, Allow by the pointer only, the login's site only, one at a time and
+  6 a minute, and "Deny for this session" to stop a plugin that asks too often.
 
 ## Claude's own surfaces (no plugin)
 

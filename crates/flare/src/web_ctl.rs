@@ -177,6 +177,11 @@ pub enum WebOut {
     },
     /// A plugin's bar page, or the browser it ran in, is gone (a failed load included).
     BarLost { tab: String, plugin: String },
+    /// A plugin's fill script answered (the `fill` permission): the kinds of field it filled, as JSON, or why not.
+    Filled {
+        id: u64,
+        result: Result<String, String>,
+    },
 }
 
 /// A tab's bar as the window wants it (plugins phase 6): the plugin whose bar the tab shows, and its page.
@@ -466,6 +471,9 @@ pub struct WebCtl {
     has_focus: bool,
     scripts: HashMap<u64, Result<String, String>>,
     script_seq: u64,
+    /// The scripts that fill a plugin's login into a page (the `fill` permission): their answer goes to the window as
+    /// [`WebOut::Filled`], never into `scripts` (which the e2e reads).
+    fills: std::collections::HashSet<u64>,
     /// The last id given to a DevTools call (unique across the window).
     call_ids: u64,
     /// The still of the shown tab while an overlay hides its window.
@@ -650,6 +658,7 @@ impl WebCtl {
             }),
             has_focus: false,
             scripts: HashMap::new(),
+            fills: std::collections::HashSet::new(),
             script_seq: 0,
             call_ids: 0,
             still: None,
@@ -2300,6 +2309,21 @@ impl WebCtl {
         id
     }
 
+    /// Runs a plugin's fill script in the tab's page (the `fill` permission). Its answer comes back as
+    /// [`WebOut::Filled`] with the id given here; None when there is no browser to run it in.
+    pub fn start_fill(&mut self, tab: &str, js: &str) -> Option<u64> {
+        if !self.tabs.contains_key(tab) || self.backend().is_none() {
+            return None;
+        }
+        self.script_seq += 1;
+        let id = self.script_seq;
+        self.fills.insert(id);
+        if let Some(b) = self.backend() {
+            b.run_script(tab, id, js);
+        }
+        Some(id)
+    }
+
     /// The answer of the latest script started, None while it runs.
     pub fn script_latest(&self) -> Option<Result<String, String>> {
         self.scripts.get(&self.script_seq).cloned()
@@ -2705,7 +2729,11 @@ impl WebCtl {
                 out.push(WebOut::Changed);
             }
             WebEvent::Script { id, result } => {
-                self.scripts.insert(id, result);
+                if self.fills.remove(&id) {
+                    out.push(WebOut::Filled { id, result });
+                } else {
+                    self.scripts.insert(id, result);
+                }
             }
             WebEvent::FullScreen { tab, on } => {
                 if on && self.tabs.contains_key(&tab) {

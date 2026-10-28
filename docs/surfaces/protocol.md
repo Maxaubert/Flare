@@ -17,7 +17,8 @@ list them in `capabilities`. Plugins phase 1 (2026-10-25) adds `tabs.badge.set|c
 for the agent's own tab; plugins phase 3 lets a plugin that holds `tabs` name any tab and see every tab in
 `tabs.list`; plugins phase 4 adds `sidebar.set` and `actions.set` (a plugin's sections and actions) and click scope;
 plugins phase 5 adds `session.read`, `tabs.input`, `storage.get` and `storage.set`; plugins phase 6 adds `bar.show`,
-`bar.hide` and `view.audio`; the agent motions (2026-10-26) add `agents.motion.set` and `agents.motion.clear`. Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
+`bar.hide` and `view.audio`; the agent motions (2026-10-26) add `agents.motion.set` and `agents.motion.clear`; the `fill` permission (2026-10-28) adds
+`browser.fill`, `browser.fill.page` and `secret.ask`, and the `tool` event to a plugin's helper. Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
 
@@ -207,6 +208,7 @@ so without `tabs` it can name none (`forbidden`) and with it, it must name one (
 | `storage.get`, `storage.set` | **no** | (always, a protocol 2 plugin's own store; a protocol 1 mod is refused by the dispatcher) | yes |
 | `bar.show`, `bar.hide` | **no** | `bar` | yes |
 | `agents.motion.set`, `agents.motion.clear` | **no** | `agent-looks` (a `mod.json` cannot ask for it) | yes |
+| `browser.fill`, `browser.fill.page`, `secret.ask` | **no** (the values must never reach the agent) | `fill` (a `mod.json` cannot ask for it; `browser` does not open them) | yes |
 | `tools.respond` | no | `tools` | yes |
 | `mods.tools`, `mods.call` | yes | **no** | yes |
 | `shell.input`, `settings.set`, `mods.enable` | **no** | **no** | yes |
@@ -375,6 +377,39 @@ One pick per plugin per agent; the newest pick wins, and a plugin turned off (or
 picks with it. Each is 10 changes a second per plugin per agent (`rate_limited`). Errors: `bad_params` (an agent or a
 motion not on the list, `rainbow-flow` for another agent than agy, a field that is not one), `forbidden` (no
 permission, the agent, a protocol 1 mod), `rate_limited`, `unauthorized` (switched off since the call was checked).
+
+### browser.fill, browser.fill.page, secret.ask (the `fill` permission, 2026-10-28)
+
+Namespace `Fill` (permission `fill`); the agent never enters it and the dispatcher refuses any caller that is not a
+plugin (`forbidden`). Listed in `capabilities` when the run has a mods hub. A plugin's page calls them through
+`window.flare.call`, a helper over the pipe. The contract, with the dialog and the field rules, is in `plugins.md`
+("Filling logins"); design: `../superpowers/specs/2026-10-28-plugin-fill.md`.
+
+**The tab** of `browser.fill` and `browser.fill.page` is the optional `tab` (a public id), else the connection's own:
+its own, one the plugin may see (`tabs`, or click scope), or the tab an agent's `mods.call` to this plugin came from
+while that call waits for the plugin's answer (**tool scope**), else `forbidden`.
+
+| Method | Params | Result |
+|---|---|---|
+| `browser.fill.page` | `tab?` | `{"tab": string, "url": string, "host": string \| null}`: the address of the tab's web page now |
+| `browser.fill` | `tab?`, `login_name` (one clean line, at most 120 characters), `login_uris` (1 to 32 strings, each at most 2048), `username?`, `password?`, `totp?` (each 1 to 1024 characters, no control character; at least one) | `{"filled": [kind], "missing": [kind]}` with kind `"username"`, `"password"` or `"totp"`; or `{"declined": true}`, `{"declined": true, "for_session": true}`, `{"declined": true, "timed_out": true}` |
+| `secret.ask` | `title` (one clean line, at most 80), `label` (one clean line, at most 120) | `{"text": string}` (what the person typed, to this caller only), or `{"cancelled": true}`, `{"cancelled": true, "timed_out": true}` |
+
+Any other key is `bad_params`, and no error names a value. **The site rule:** the page's address must be `http` or
+`https` with a host, and a site of one of `login_uris`: the login's host or a subdomain of it (a leading `www.` of the
+login's host left out), `https` unless the login's address is `http`, the login's port when it names one, an IP address
+only itself, a string with no `://` read as `https://<it>`; else `forbidden` with the message
+`this login is not for <host>`. **The dialog** is Flare's own (Deny for this session, Deny, Allow; Allow by the pointer
+only, and not in its first 0.7 s), one at a time across plugins, waiting at most 60 s. **The fill** runs only after
+Allow, after the page's site is checked again, as one `ExecuteScript` that checks `location` (scheme, host, port) before
+it reads its values, which are one JSON text read with `JSON.parse`.
+
+Timeout: `FILL_TIMEOUT` (90 s) for `browser.fill` and `secret.ask`, the default 15 s for `browser.fill.page`. Errors:
+`bad_params`, `forbidden` (no `fill`, the agent, a tab it may not name, another site), `no_tab`, `not_found` (no web page
+in the tab, a mini-app or a plugin's page, a page not up in a browser), `busy` (another plugin question is open),
+`rate_limited` (6 asks a minute per plugin, `browser.fill` and `secret.ask` together; a refused ask counts),
+`interrupted` (the page moved to another address before it was filled), `unavailable` (the page could not be filled),
+`timeout`, `unauthorized` (the plugin was turned off while asking).
 
 ### panel.open
 
@@ -675,7 +710,9 @@ Params: `{"name": string, "input"?: object}` (`input` defaults to `{}`). Grant: 
 tab (`no_tab`). The call is routed to the mod that offers `name`, the mod's panel is opened in the CALLER's tab if it
 is not showing there (a tab that is behind gets its page made hidden), the call is handed to the page as a `tool`
 event once the page has loaded, and the answer is the page's `window.flare.respond`:
-`{"result": any JSON}`. Timeout: the page has 30 s (`hub::CALL_TIMEOUT`); the channel lets the method run 40 s
+`{"result": any JSON}`. A plugin with a background page has it handed there instead (no panel opens), and a plugin with
+a helper and neither a background page nor a panel has it sent to its helper as the `tool` event (section 7), answered
+with `tools.respond`; with no helper connected the call fails at once (`unavailable`). Timeout: the page has 30 s (`hub::CALL_TIMEOUT`); the channel lets the method run 40 s
 (`MOD_CALL_TIMEOUT`) so the answer is Flare's own. Errors: `not_found` (no mod offers `name`: it does not exist, the
 mod is off, or it clashes), `bad_params` (`input` not an object), `rate_limited` (8 calls already wait on that
 mod), `unavailable` (the page cannot be made, the panel was closed, the page's process ended, the mod was turned off
@@ -705,11 +742,11 @@ Reserved names. Every grant answers `forbidden` ("is for the app's own interface
 | `not_found` | a path, ref or panel does not exist (or may not be seen) | no |
 | `unavailable` | known method, cannot be done now (no runtime, nothing open, reserved, overloaded) | no |
 | `timeout` | not answered within its timeout | no |
-| `interrupted` | the person took over the page while the call ran (stage 4) | no |
-| `busy` | a plugin's `panel.open` on another tab whose open panel shows something else (plugins phase 3), or its `bar.show` on a tab that shows another plugin's bar (phase 6) | no |
+| `interrupted` | the person took over the page while the call ran (stage 4), or the page moved to another address before a `browser.fill` typed into it | no |
+| `busy` | a plugin's `panel.open` on another tab whose open panel shows something else (plugins phase 3), its `bar.show` on a tab that shows another plugin's bar (phase 6), or a `browser.fill` or `secret.ask` while a plugin question is open (2026-10-28) | no |
 | `tool_error` | a mod answered a tool call with an error (stage 8); the message is the mod's own reason | no |
 | `too_large` (a call) | a plugin's `storage.set` would pass 1 MB (plugins phase 5); nothing changed | no |
-| `rate_limited` | too many requests (the connection's 100 a second, a decor method's 10 a second per tab or 30 a second per plugin, `sidebar.set`'s 5 a second per section, `actions.set`'s 20 a second per plugin, `session.read`'s once a second per tab, `tabs.input`'s 2 a second per tab, `bar.show`'s and `bar.hide`'s once a second per tab, or a plugin's 50 messages and 2 MB a second) | no |
+| `rate_limited` | too many requests (the connection's 100 a second, a decor method's 10 a second per tab or 30 a second per plugin, `sidebar.set`'s 5 a second per section, `actions.set`'s 20 a second per plugin, `session.read`'s once a second per tab, `tabs.input`'s 2 a second per tab, `bar.show`'s and `bar.hide`'s once a second per tab, the 6 asks a minute per plugin of `browser.fill` and `secret.ask`, or a plugin's 50 messages and 2 MB a second) | no |
 | `internal` | the server failed | no |
 
 On a closing error the server sends the error response first (with the request's id when it could be
@@ -733,6 +770,7 @@ oldest, so an event is a hint to ask again (`panel.state`), not the only record.
 | `tabs` | `{"kind": "opened" \| "closed" \| "focused" \| "renamed" \| "moved" \| "panel", "tab": TabInfo}` | plugins phase 7: to a plugin's helper only (below), when its plugin holds `tabs`. The same data a page's `tabs` event carries |
 | `agent` | `{"tab", "kind", "state", "session"}` | plugins phase 7: to a plugin's helper whose plugin holds `tabs`; a tab's agent kind, state or Claude session changed |
 | `session` | `{"tab", "session", "role", "text", "tool"?, "at"?, "dropped"?}` | plugins phase 7: to a plugin's helper whose plugin holds `sessions` and may see the tab (`tabs`, or a click there); new entries of the tab's Claude session, at most 50 a second per plugin |
+| `tool` | `{"call_id": string, "tool": string, "tab": string, "input": object}` | 2026-10-28: to a plugin's helper, when the agent calls a tool of a plugin with a helper and neither a background page nor a panel. `tool` is the plugin's own name for it (not `mod_<id>_...`), `tab` the public id of the tab the agent called from (tool scope for `browser.fill` while the call waits). Answer within 30 s with `tools.respond {call_id, result \| error}` |
 
 **A plugin's helper (plugins phase 7).** Flare starts a plugin's `helper` program (an `.exe` in its folder, for a plugin
 that is on and holds `process`) with `FLARE_PLUGIN_TOKEN` (the plugin's own token) and `FLARE_CTL_PIPE` in its

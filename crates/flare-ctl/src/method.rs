@@ -10,6 +10,9 @@ use crate::grant::Permission;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Time for the `browser.*` methods (page loads, waits).
 pub const BROWSER_TIMEOUT: Duration = Duration::from_secs(60);
+/// Time for `browser.fill` and `secret.ask`: the person answers Flare's own dialog (it waits at most a minute), then
+/// the page is filled.
+pub const FILL_TIMEOUT: Duration = Duration::from_secs(90);
 /// Time for `mods.call`: the mod's page has 30 s, and a page that has to be opened first needs a few more.
 pub const MOD_CALL_TIMEOUT: Duration = Duration::from_secs(40);
 
@@ -63,6 +66,14 @@ pub enum Method {
     BrowserScroll,
     BrowserWait,
     BrowserEval,
+    /// A plugin fills a saved login into a tab's web page (under `fill`): only a page whose address matches the
+    /// login's, and only after the person allowed it in Flare's own dialog. The values go to the page only.
+    BrowserFill,
+    /// The address of a tab's web page, for a plugin that is to pick a login for it (under `fill`).
+    BrowserFillPage,
+    /// A plugin asks the person for a secret (a master password) in Flare's own masked field (under `fill`); the
+    /// text goes back to that plugin only and is never kept or logged.
+    SecretAsk,
     /// Reserved: what Flare knows about the conversation of the tab.
     ConvoState,
     /// Reserved, UI only: a mod answers a tool call the agent made.
@@ -113,11 +124,14 @@ pub enum Namespace {
     Storage,
     /// How the agents' tab icons move while they work (`agents.motion.*`), under `agent-looks`. Never the agent's.
     Agents,
+    /// A login filled into a web page and a secret asked of the person (`browser.fill`, `browser.fill.page`,
+    /// `secret.ask`), under `fill`. Never the agent's.
+    Fill,
 }
 
 impl Namespace {
     /// Every namespace.
-    pub const ALL: [Namespace; 17] = [
+    pub const ALL: [Namespace; 18] = [
         Namespace::Hello,
         Namespace::Tabs,
         Namespace::Decor,
@@ -135,6 +149,7 @@ impl Namespace {
         Namespace::Input,
         Namespace::Storage,
         Namespace::Agents,
+        Namespace::Fill,
     ];
 
     /// The one permission that opens this namespace to a plugin. `None` for the open ones (`hello`, `tabs.list`), for a
@@ -159,13 +174,14 @@ impl Namespace {
             Namespace::Session => Some(Permission::Sessions),
             Namespace::Input => Some(Permission::Input),
             Namespace::Agents => Some(Permission::AgentLooks),
+            Namespace::Fill => Some(Permission::Fill),
         }
     }
 }
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 41] = [
+    pub const ALL: [Method; 44] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -200,6 +216,9 @@ impl Method {
         Method::BrowserScroll,
         Method::BrowserWait,
         Method::BrowserEval,
+        Method::BrowserFill,
+        Method::BrowserFillPage,
+        Method::SecretAsk,
         Method::ConvoState,
         Method::ToolsRespond,
         Method::ShellInput,
@@ -246,6 +265,9 @@ impl Method {
             Method::BrowserScroll => "browser.scroll",
             Method::BrowserWait => "browser.wait",
             Method::BrowserEval => "browser.eval",
+            Method::BrowserFill => "browser.fill",
+            Method::BrowserFillPage => "browser.fill.page",
+            Method::SecretAsk => "secret.ask",
             Method::ConvoState => "convo.state",
             Method::ToolsRespond => "tools.respond",
             Method::ShellInput => "shell.input",
@@ -292,6 +314,7 @@ impl Method {
             | Method::BrowserScroll
             | Method::BrowserWait
             | Method::BrowserEval => Namespace::Browser,
+            Method::BrowserFill | Method::BrowserFillPage | Method::SecretAsk => Namespace::Fill,
             Method::ConvoState => Namespace::Convo,
             Method::ToolsRespond => Namespace::Tools,
             Method::ModsTools | Method::ModsCall => Namespace::AgentTools,
@@ -304,6 +327,8 @@ impl Method {
         match self.namespace() {
             // A page or a diagram is answered when it has loaded (and drawn): as long as a browser call.
             Namespace::Browser => BROWSER_TIMEOUT,
+            // The person answers Flare's dialog, then the page is filled; the page's address is answered at once.
+            Namespace::Fill if self != Method::BrowserFillPage => FILL_TIMEOUT,
             Namespace::View if matches!(self, Method::ViewHtml | Method::ViewDiagram) => {
                 BROWSER_TIMEOUT
             }
@@ -352,6 +377,7 @@ mod tests {
                 Namespace::Input => prefix == "tabs",
                 Namespace::Storage => prefix == "storage",
                 Namespace::Agents => prefix == "agents",
+                Namespace::Fill => matches!(prefix, "browser" | "secret"),
             };
             assert!(ok, "{} is filed under the wrong namespace", m.name());
         }
@@ -382,6 +408,14 @@ mod tests {
         assert_eq!(Method::ViewHtml.timeout(), BROWSER_TIMEOUT);
         assert_eq!(Method::ViewDiagram.timeout(), BROWSER_TIMEOUT);
         assert!(BROWSER_TIMEOUT > DEFAULT_TIMEOUT);
+    }
+
+    #[test]
+    fn a_fill_waits_for_the_persons_answer_and_the_page_address_does_not() {
+        assert_eq!(Method::BrowserFill.timeout(), FILL_TIMEOUT);
+        assert_eq!(Method::SecretAsk.timeout(), FILL_TIMEOUT);
+        assert_eq!(Method::BrowserFillPage.timeout(), DEFAULT_TIMEOUT);
+        assert!(FILL_TIMEOUT > Duration::from_secs(60));
     }
 
     #[test]

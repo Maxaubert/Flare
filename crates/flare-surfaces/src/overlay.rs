@@ -19,6 +19,8 @@ pub enum Overlay {
     PluginsDropdown,
     /// The close question and the other dialogs.
     Dialog,
+    /// A plugin's question: a fill to approve or a secret to type (the `fill` permission).
+    PluginAsk,
     /// The update window.
     UpdateWindow,
     /// The notice hung under the update chip.
@@ -49,11 +51,12 @@ pub enum Overlay {
 
 impl Overlay {
     /// All of them.
-    pub const ALL: [Overlay; 17] = [
+    pub const ALL: [Overlay; 18] = [
         Overlay::Menu,
         Overlay::Overflow,
         Overlay::PluginsDropdown,
         Overlay::Dialog,
+        Overlay::PluginAsk,
         Overlay::UpdateWindow,
         Overlay::UpdateNotice,
         Overlay::Settings,

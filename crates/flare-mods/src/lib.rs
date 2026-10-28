@@ -27,6 +27,8 @@
 //! - `install`: a plugin from a zip (staged, checked, then put in place by rename), its update and its removal.
 //! - `fetch`: the download of a plugin zip from an `https` address the person gave (the one network use here).
 //! - `helper`: a plugin's helper program, in a job object, with its log and its restarts.
+//! - `fill`: a saved login filled into a web page and a secret asked of the person (the `fill` permission): the
+//!   params, the site rule, the asks a plugin may make and the script that types the values as JSON data.
 //!
 //! Every disk call here runs on the caller's thread, which is a worker in the app (rule 34). The
 //! store and the scan never touch the UI thread.
@@ -35,6 +37,7 @@ pub mod bridge;
 pub mod discover;
 pub mod enabled;
 pub mod fetch;
+pub mod fill;
 pub mod hash;
 pub mod helper;
 pub mod hub;

@@ -264,6 +264,7 @@ impl AppCtl {
                 }
             }
             ModsMsg::Tick => self.plugins_tick(Instant::now()),
+            ModsMsg::AskExpired { seq } => self.plugin_ask_expired(seq),
             ModsMsg::Rescan => {
                 if let Some(c) = self.mods.as_mut() {
                     c.start_scan();
@@ -360,6 +361,8 @@ impl AppCtl {
         }
         self.stop_background(id);
         self.stop_helper(id);
+        // A question it asked goes with it, unanswered.
+        self.plugin_ask_off(id);
         self.clear_plugin_decor(id);
         self.clear_plugin_surfaces(id);
         self.sessions_plugin_off(id);
@@ -944,6 +947,27 @@ impl AppCtl {
                 self.web.post_to_background(&mod_id, &now);
             }
             let _ = reply.send(Ok(json!({})));
+            return;
+        }
+        // A plugin with a helper and neither a background page nor a panel answers there (2026-10-28): its helper
+        // hears the `tool` event on its connection and answers with `tools.respond`.
+        if let Some(m) = self.mods.as_ref()
+            && m.hub().answers_with_helper(&mod_id)
+        {
+            let data = json!({"call_id": call_id, "tool": tool, "tab": tab, "input": input});
+            let heard = m
+                .owner_events
+                .as_ref()
+                .map_or(0, |send| send("tool", data, &mod_id));
+            let answer = if heard == 0 {
+                Err(CtlError::new(
+                    code::UNAVAILABLE,
+                    "the plugin's helper is not connected to Flare (it may still be starting)",
+                ))
+            } else {
+                Ok(json!({}))
+            };
+            let _ = reply.send(answer);
             return;
         }
         let spec = match self.show_mod_panel(&tab, &mod_id) {

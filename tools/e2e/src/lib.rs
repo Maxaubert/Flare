@@ -4,6 +4,7 @@
 pub mod chord;
 pub mod ctx;
 pub mod dictproc;
+pub mod fake_fill_helper;
 pub mod fixtures;
 pub mod guards;
 pub mod perf;

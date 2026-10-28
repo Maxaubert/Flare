@@ -61,6 +61,7 @@ pub fn permission_words(p: Permission) -> &'static str {
         Permission::Network => "Use the internet",
         Permission::Process => "Run its own program on this PC (full access)",
         Permission::AgentLooks => "Change how agent icons move while they work",
+        Permission::Fill => "Fill logins into your web panel",
     }
 }
 
@@ -77,11 +78,16 @@ pub const WARN_NETWORK_SESSIONS: &str = "It can send what you and Claude say to 
 /// `network` and `tabs` together.
 pub const WARN_NETWORK_TABS: &str =
     "It can send what your tabs show, their names and folders, to the internet.";
+/// `network` and `fill` together: what the person types into Flare's secret field goes to the plugin's pages.
+pub const WARN_NETWORK_FILL: &str = "It can send the passwords you type for it to the internet.";
 /// `network` alone.
 pub const WARN_NETWORK: &str = "It can change what it does from the internet.";
+/// `fill`: the card says what it can do, and that Flare asks each time.
+pub const WARN_FILL: &str = "Can type passwords into pages, after you approve each one.";
 
 /// The warnings Settings shows with a plugin's permissions, most serious first: the full-control ones for `process`
-/// and `input`, then the combinations that reach further than either permission alone, then `network`'s own.
+/// and `input`, then the combinations that reach further than either permission alone, then `network`'s own, then
+/// `fill`'s.
 pub fn permission_warnings(perms: &[Permission]) -> Vec<&'static str> {
     let has = |p: Permission| perms.contains(&p);
     let mut out = Vec::new();
@@ -100,8 +106,14 @@ pub fn permission_warnings(perms: &[Permission]) -> Vec<&'static str> {
     if has(Permission::Network) && has(Permission::Tabs) {
         out.push(WARN_NETWORK_TABS);
     }
+    if has(Permission::Network) && has(Permission::Fill) {
+        out.push(WARN_NETWORK_FILL);
+    }
     if has(Permission::Network) {
         out.push(WARN_NETWORK);
+    }
+    if has(Permission::Fill) {
+        out.push(WARN_FILL);
     }
     out
 }
@@ -210,6 +222,9 @@ pub struct Change {
 
 struct Pending {
     mod_id: String,
+    /// The tab the agent called from, when the app said ([`Hub::set_call_tab`]): while the call waits, the plugin may
+    /// fill a login into that tab's page (`browser.fill`), as the person's click would let it act there.
+    tab: Option<String>,
     tx: Sender<Result<Value, CtlError>>,
 }
 
@@ -286,6 +301,8 @@ pub struct Hub {
     recycle: Mutex<Recycle>,
     /// The browser profile folders of a plugin, for a removal to delete (set by the app; none in the tests).
     profiles: Mutex<Option<ProfileDirs>>,
+    /// The asks of the `fill` permission, in memory only (a restart forgets a "Deny for this session").
+    asks: Mutex<crate::fill::Asks>,
 }
 
 /// What takes a removed plugin folder.
@@ -325,6 +342,7 @@ impl Hub {
             disk: Mutex::new(()),
             recycle: Mutex::new(Arc::new(crate::install::recycle)),
             profiles: Mutex::new(None),
+            asks: Mutex::new(crate::fill::Asks::default()),
             cfg,
         }
     }
@@ -450,6 +468,20 @@ impl Hub {
         let g = self.lock();
         g.found.iter().any(|f| {
             f.manifest.id == id && f.manifest.is_plugin() && f.manifest.background.is_some()
+        })
+    }
+
+    /// Whether the plugin's tools are answered by its helper: a protocol 2 plugin with a helper and neither a
+    /// background page nor a panel (whose pages would answer them first). The helper hears the `tool` event on its
+    /// connection and answers with `tools.respond`.
+    pub fn answers_with_helper(&self, id: &str) -> bool {
+        let g = self.lock();
+        g.found.iter().any(|f| {
+            f.manifest.id == id
+                && f.manifest.is_plugin()
+                && f.manifest.background.is_none()
+                && f.manifest.panel.is_none()
+                && f.manifest.helper.is_some()
         })
     }
 
@@ -780,14 +812,16 @@ impl Hub {
                 log::warn!("could not make a token for mod {id}; it stays off");
             }
         }
-        // The tool table: only mods that are on and hold a token, and that have a page to answer the calls: a
-        // panel, or for a protocol 2 plugin its background page (which then answers them, design 13).
+        // The tool table: only mods that are on and hold a token, and that have something to answer the calls: a
+        // panel, or for a protocol 2 plugin its background page (which then answers them, design 13) or its helper
+        // (2026-10-28).
         let manifests: Vec<&crate::manifest::Manifest> = g
             .found
             .iter()
             .filter(|f| {
                 let m = &f.manifest;
-                let answers = m.panel.is_some() || (m.is_plugin() && m.background.is_some());
+                let answers = m.panel.is_some()
+                    || (m.is_plugin() && (m.background.is_some() || m.helper.is_some()));
                 g.tokens.token_of(&m.id).is_some() && answers
             })
             .map(|f| &f.manifest)
@@ -987,10 +1021,10 @@ impl Hub {
             let m = &f.manifest;
             if !m.tools.is_empty()
                 && m.panel.is_none()
-                && !(m.is_plugin() && m.background.is_some())
+                && !(m.is_plugin() && (m.background.is_some() || m.helper.is_some()))
             {
                 notes.push(format!(
-                    "The tools of {} are left out: it has neither a panel nor a background page to answer them.",
+                    "The tools of {} are left out: it has no panel, background page or helper to answer them.",
                     m.id
                 ));
             }
@@ -1102,6 +1136,7 @@ impl Hub {
             id.clone(),
             Pending {
                 mod_id: route.mod_id.clone(),
+                tab: None,
                 tx,
             },
         );
@@ -1136,6 +1171,28 @@ impl Hub {
         // A caller that stopped waiting is not an error for the mod.
         let _ = p.tx.send(answer);
         Ok(())
+    }
+
+    /// The tab the agent made the call from (the app knows it; the hub's table does not).
+    pub fn set_call_tab(&self, call_id: &str, tab: &str) {
+        if let Some(p) = self.lock().pending.get_mut(call_id) {
+            p.tab = Some(tab.to_string());
+        }
+    }
+
+    /// Whether the agent's call from `tab` to `mod_id` is still waiting for the plugin's answer ("tool scope": while
+    /// it waits, the plugin may fill a login into that tab's page).
+    pub fn has_call_from(&self, mod_id: &str, tab: &str) -> bool {
+        self.lock()
+            .pending
+            .values()
+            .any(|p| p.mod_id == mod_id && p.tab.as_deref() == Some(tab))
+    }
+
+    /// The asks of the `fill` permission (`browser.fill`, `secret.ask`): how many each plugin made in the last minute
+    /// and the plugins the person told "Deny for this session". Shared by the call threads and the window.
+    pub fn asks(&self) -> std::sync::MutexGuard<'_, crate::fill::Asks> {
+        self.asks.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Ends a call that will not be answered (its page could not be made, or the caller gave up).
@@ -1343,9 +1400,14 @@ mod tests {
                 WARN_INPUT_SESSIONS,
                 WARN_NETWORK_SESSIONS,
                 WARN_NETWORK_TABS,
-                WARN_NETWORK
+                WARN_NETWORK_FILL,
+                WARN_NETWORK,
+                WARN_FILL
             ]
         );
+        assert_eq!(permission_warnings(&[P::Fill]), [WARN_FILL]);
+        assert_eq!(permission_words(P::Fill), "Fill logins into your web panel");
+        assert!(!is_full_control(&[P::Fill]));
         for w in permission_warnings(&crate::manifest::ASKABLE_V2) {
             assert!(!w.contains('\u{2014}'), "{w}");
         }
@@ -1663,6 +1725,33 @@ mod tests {
             !w.hub.snapshot().mods[0].needs_approval,
             "nothing to re-approve: it is just off"
         );
+    }
+
+    /// Tool scope (the `fill` permission): while the agent's call from a tab waits on the plugin, the plugin may fill
+    /// into that tab; once it is answered (or cancelled), it may not.
+    #[test]
+    fn a_waiting_call_names_its_tab_until_it_is_answered() {
+        let w = notes_world();
+        w.hub.scan();
+        w.hub.set_enabled("notes", true).unwrap();
+        let call = w
+            .hub
+            .begin_call("mod_notes_append_note", json!({}))
+            .unwrap();
+        assert!(!w.hub.has_call_from("notes", "t1"), "no tab was named");
+        w.hub.set_call_tab(&call.id, "t1");
+        assert!(w.hub.has_call_from("notes", "t1"));
+        assert!(!w.hub.has_call_from("notes", "t2"));
+        assert!(!w.hub.has_call_from("other", "t1"));
+        w.hub.respond("notes", &call.id, Ok(json!(1))).unwrap();
+        assert!(!w.hub.has_call_from("notes", "t1"));
+        let call = w
+            .hub
+            .begin_call("mod_notes_append_note", json!({}))
+            .unwrap();
+        w.hub.set_call_tab(&call.id, "t1");
+        w.hub.cancel(&call.id);
+        assert!(!w.hub.has_call_from("notes", "t1"));
     }
 
     #[test]

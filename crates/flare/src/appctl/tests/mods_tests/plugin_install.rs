@@ -284,6 +284,7 @@ fn a_helper_runs_only_while_its_plugin_is_on_and_hears_the_events_it_may_see() {
                     .lock()
                     .unwrap()
                     .push((name.to_string(), owner.to_string()));
+                1
             }));
     }
     f.ctl
@@ -321,6 +322,7 @@ fn a_helper_without_tabs_hears_no_tab_events_and_one_that_ends_too_often_is_stop
             .borrow_mut()
             .set_plugin_owner_events(Arc::new(move |name, _, _| {
                 heard.lock().unwrap().push(name.to_string());
+                1
             }));
     }
     f.ctl

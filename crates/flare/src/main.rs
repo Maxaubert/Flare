@@ -38,6 +38,7 @@ mod mods_ctl;
 mod openers;
 mod panel_ctl;
 mod picker_ctl;
+mod plugin_ask;
 mod plugin_bar;
 mod plugin_install;
 mod plugin_safe;
