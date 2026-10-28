@@ -376,6 +376,7 @@ impl WebBackend for FakeWeb {
                 None => flare_surfaces::app::PROFILE_NAME.to_string(),
             }),
             private: v.app.as_ref().is_some_and(|a| a.module.is_none()),
+            autofill: v.app.is_none(),
             ..ControllerProbe::default()
         })
     }

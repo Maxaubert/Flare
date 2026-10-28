@@ -631,6 +631,7 @@ impl AppCtl {
                 "browser_pid": p.browser_pid,
                 "profile": p.profile,
                 "private": p.private,
+                "autofill": p.autofill,
                 "children": p.child_windows.iter().map(|(c, r)| json!({
                     "class": c,
                     "x": r.x, "y": r.y, "w": r.w, "h": r.h,

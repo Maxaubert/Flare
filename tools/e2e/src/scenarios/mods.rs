@@ -31,6 +31,9 @@ use super::mini_app::{say, until_says};
 use super::web::{script, state};
 use crate::ctx::{App, Ctx, Launch};
 
+/// How many tools flare-mcp lists before any mod's (`flare_mcp`'s own list; 21 since `browser_state`).
+const BUILT_IN_TOOLS: usize = 21;
+
 const SAMPLE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/surfaces/sample-mod/notes"
@@ -221,7 +224,8 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
     let token = inf.tabs.first().map(|t| t.2.clone()).ok_or("a shell tab")?;
     let off = run_mcp(&mcp(exe, &inf, Some(&token), None), &handshake())?;
     ctx.ok(
-        names_of(&off[1]).len() == 15 && !names_of(&off[1]).iter().any(|n| n.starts_with("mod_")),
+        names_of(&off[1]).len() == BUILT_IN_TOOLS
+            && !names_of(&off[1]).iter().any(|n| n.starts_with("mod_")),
         format!(
             "off: tools/list has only the built-in tools ({:?})",
             names_of(&off[1])
@@ -266,10 +270,11 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
     let list = run_mcp(&mcp(exe, &inf, Some(&token), None), &handshake())?;
     let names = names_of(&list[1]);
     ctx.ok(
-        names.len() == 16 && names.last().map(String::as_str) == Some("mod_notes_append_note"),
+        names.len() == BUILT_IN_TOOLS + 1
+            && names.last().map(String::as_str) == Some("mod_notes_append_note"),
         format!("on: tools/list ends with the mod's tool ({names:?})"),
     );
-    let tool = list[1]["result"]["tools"][15].clone();
+    let tool = list[1]["result"]["tools"][BUILT_IN_TOOLS].clone();
     ctx.ok(
         tool["inputSchema"]["type"] == json!("object")
             && tool["description"]
@@ -322,7 +327,8 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
     ctx.ok(
         w["controller"]["url"] == json!("https://flare-mod-notes.local/")
             && w["controller"]["profile"] == json!("flare-mod-notes")
-            && w["controller"]["private"] == json!(false),
+            && w["controller"]["private"] == json!(false)
+            && w["controller"]["autofill"] == json!(false),
         format!(
             "a view of the mod's own address and own profile ({})",
             w["controller"]
@@ -477,7 +483,7 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
     ctx.ok(freed, "the mod's browser view was freed");
     let off_list = run_mcp(&mcp(exe, &inf, Some(&token), None), &handshake())?;
     ctx.ok(
-        names_of(&off_list[1]).len() == 15,
+        names_of(&off_list[1]).len() == BUILT_IN_TOOLS,
         format!(
             "off again: tools/list is the built-in tools ({:?})",
             names_of(&off_list[1])

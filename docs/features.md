@@ -1964,3 +1964,11 @@ Spec: `docs/superpowers/specs/2026-10-28-browser-command.md`.
   mini-app (the browser tools work on it) or another kind. 21 built-in tools now. Held by
   `browser_state_says_what_the_panel_shows_with_the_page_as_quoted_data`, `the_tools_are_listed_with_descriptions_written_for_an_agent`
   (`browser.rs`), `tools_list_has_the_show_tools_then_the_browser_tools_with_object_schemas` (`lib.rs`) and the e2e `mcpRoundTrip` list.
+
+## The web panel saves passwords and fills in forms, 2026-10-28
+
+Cookies already kept a site signed in (the panel's own profile folder, `WebView2` under the profile). Now the panel also offers to
+save a password when you sign in and fills saved passwords and form entries in (`ICoreWebView2Settings4`:
+`IsPasswordAutosaveEnabled` and `IsGeneralAutofillEnabled` on for the web panel, both off for a mini-app's and a plugin's
+page), in `configure` (`crates/flare-web/src/host.rs`). The controller probe reports it as `autofill`; held by the e2e
+`webPanel` (true), `miniApp` and `modsSample` (false). Zen's logins cannot be shared (another engine); sign in once in Flare.
