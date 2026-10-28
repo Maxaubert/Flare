@@ -13,6 +13,7 @@ pub mod diag;
 pub mod dictation;
 pub mod dpi;
 mod driver;
+pub mod fill;
 pub mod help;
 pub mod indicators;
 pub mod input_a;
@@ -616,6 +617,12 @@ pub const ALL: &[Scenario] = &[
         group: "web",
         run: mods::mods_sample,
         limit_secs: 480,
+    },
+    Scenario {
+        name: "pluginFill",
+        group: "web",
+        run: fill::plugin_fill,
+        limit_secs: 300,
     },
     Scenario {
         name: "devPreview",
