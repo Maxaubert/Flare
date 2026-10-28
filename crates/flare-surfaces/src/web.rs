@@ -215,17 +215,30 @@ fn looks_like_host(s: &str) -> bool {
     if host.is_empty() {
         return false;
     }
-    if let Some(p) = port {
-        // `myserver:8080`: a port makes it an address whatever the host is.
-        return is_port(p);
-    }
     if host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::Ipv4Addr>().is_ok() {
-        return true;
+        return port.is_none_or(is_port);
+    }
+    if let Some(p) = port {
+        // `myserver:8080`: a port makes a host name an address even with no dot. The name needs a letter:
+        // `10:30` and `3:16` are a time and a verse, not the IP `0.0.0.10` (2026-10-28 review).
+        return is_port(p)
+            && host.split('.').all(|l| !l.is_empty())
+            && host
+                .chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '-' | '.'))
+            && host.chars().any(char::is_alphabetic);
     }
     let last = host.rsplit('.').next().unwrap_or("");
+    // A last part of letters (`com`, `de`), or punycode for one (`xn--p1ai`, the Russian `.рф`).
+    let tld = last.chars().all(|c| c.is_alphabetic() || c == '-')
+        || (last.len() > 4
+            && last
+                .get(..4)
+                .is_some_and(|p| p.eq_ignore_ascii_case("xn--"))
+            && last.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
     host.contains('.')
         && host.split('.').all(|l| !l.is_empty())
-        && last.chars().all(|c| c.is_alphabetic() || c == '-')
+        && tld
         && last.chars().any(char::is_alphabetic)
 }
 
@@ -946,6 +959,9 @@ mod tests {
             ("ABOUT:BLANK", "about:blank"),
             ("bücher.de", "https://xn--bcher-kva.de/"),
             ("//example.com", "https://example.com/"),
+            ("example.com:8443/a", "https://example.com:8443/a"),
+            ("127.0.0.1", "http://127.0.0.1/"),
+            ("site.xn--p1ai", "https://site.xn--p1ai/"),
         ] {
             assert_eq!(address_or_search(typed).as_deref(), Ok(url), "{typed:?}");
         }
@@ -971,6 +987,12 @@ mod tests {
             ("me@example.com", "me%40example.com"),
             ("http://example.com/a b", "http%3A%2F%2Fexample.com%2Fa+b"),
             ("tab\there", "tab%09here"),
+            // A time or a verse is not an IP and a port (`10:30` parsed as `0.0.0.10:30`).
+            ("10:30", "10%3A30"),
+            ("3:16", "3%3A16"),
+            ("1.2:80", "1.2%3A80"),
+            ("a_b:80", "a_b%3A80"),
+            ("ab.ü1x", "ab.%C3%BC1x"),
         ] {
             assert_eq!(
                 address_or_search(typed).as_deref(),

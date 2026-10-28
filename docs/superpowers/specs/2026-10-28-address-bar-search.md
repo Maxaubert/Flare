@@ -23,7 +23,7 @@ first; an empty field does nothing (no navigation, no note).
   Any other `word:word` (`note:this`) is a search.
 - With no space and no scheme: an address when the host (before the first `/`, `?` or `#`) has a dot between non-empty
   parts and a last part of letters (`youtube.com`, `a.b/path`, `bücher.de`), is `localhost`, an IPv4 address, an IPv6
-  literal in brackets (`[::1]`, `[::1]:80`), or any `host:port`. It then goes through `normalize_url`; if that refuses it
+  literal in brackets (`[::1]`, `[::1]:80`), or `host:port` where the host is localhost, an IP or a name with a letter (`myserver:8080`; `10:30` and `3:16` are searches). It then goes through `normalize_url`; if that refuses it
   (`me@example.com`, a login), it is a search.
 - Everything else is a search: one word (`youtube`), text with a space (`cat videos`, even `http://x.com/a b`), words with
   `?`, `#`, `&`, `%`, letters of any script. A search longer than 2048 characters once encoded is refused as too long.
