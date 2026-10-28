@@ -1972,3 +1972,28 @@ save a password when you sign in and fills saved passwords and form entries in (
 `IsPasswordAutosaveEnabled` and `IsGeneralAutofillEnabled` on for the web panel, both off for a mini-app's and a plugin's
 page), in `configure` (`crates/flare-web/src/host.rs`). The controller probe reports it as `autofill`; held by the e2e
 `webPanel` (true), `miniApp` and `modsSample` (false). Zen's logins cannot be shared (another engine); sign in once in Flare.
+
+## Plugins fill logins, with your approval each time, 2026-10-28
+
+Part A of the Bitwarden design (`Maxaubert/flare-plugins`, `docs/2026-10-28-bitwarden-design.md`); Flare's record:
+`docs/superpowers/specs/2026-10-28-plugin-fill.md`. The contract: `docs/surfaces/plugins.md`, "Filling logins".
+
+- **The `fill` permission.** "Fill logins into your web panel", with the warning "Can type passwords into pages, after
+  you approve each one." (and, with `network`, that it can send the passwords you type for it to the internet). Its
+  namespace holds `browser.fill`, `browser.fill.page` and `secret.ask`; the agent never has it and `browser` does not open
+  it. Held by `fill_opens_only_the_fill_methods_and_never_for_the_agent` (`flare-ctl`) and the hub's words and warnings
+  tests.
+- **`browser.fill`.** Only into the tab's web page, only when its site is the login's (host or subdomain, `https` unless
+  the login says `http`; no public suffix list), and only after Allow in Flare's own dialog ("Fill <login> into <host>?",
+  Deny for this session, Deny, Allow; Allow by the pointer only, Enter presses Deny). The values reach the page as JSON
+  data through `ExecuteScript`, the fields are found by `autocomplete` first, and `input` and `change` fire. One dialog
+  at a time, 6 asks a minute per plugin, a minute to answer. Held by `flare_mods::fill` (13 tests) and
+  `appctl::tests::mods_tests::plugin_fill` (8 tests, the fake browser), and the e2e `pluginFill`.
+- **`secret.ask`.** Flare's masked field; the text goes to the plugin that asked, and no log or store of Flare's has it.
+- **Tool scope and helpers.** While Claude's call to a plugin waits, the plugin may fill into the tab it came from. A
+  plugin with a helper and neither a background page nor a panel has its tools listed, sent to the helper as the `tool`
+  event `{call_id, tool, tab, input}`, and answered with `tools.respond`; a manifest may now have tools with only a
+  helper.
+- **The e2e `pluginFill`.** A test plugin whose helper is the e2e exe itself (`--fake-fill-helper`), a local sign-in page
+  on `https://flare-test.local`, the dialog pressed by the e2e pointer like every dialog, Enter that does not allow, a
+  login of another site refused, and the profile's logs, the plugins' logs and the helper's record scanned for the values.
