@@ -854,7 +854,7 @@ fn webrtc_walls(ctx: &mut Ctx, app: &mut App, root: &Path) -> Result<(), String>
             format!("{at}: {label}: the app still renders in its own browser ({shown:?})"),
         );
         // A WebSocket never reaches the request wall: with no network the dead proxy must stop it, with
-        // the network on it reaches the listener (the control).
+        // the network on Flare's filtering proxy refuses loopback (issue #97: `<-loopback>` sends it there).
         let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let lport = listener.local_addr().map_err(|e| e.to_string())?.port();
@@ -866,11 +866,11 @@ fn webrtc_walls(ctx: &mut Ctx, app: &mut App, root: &Path) -> Result<(), String>
         let connected = ctx.poll(3_000, &mut || listener.accept().is_ok());
         let ws = say(ctx, app, "window.__ws");
         ctx.ok(
-            connected == network,
+            !connected,
             format!(
                 "{at}: {label}: a WebSocket to loopback {} ({ws:?})",
                 if network {
-                    "reaches a listener (the control)"
+                    "is refused by Flare's filtering proxy"
                 } else {
                     "is stopped by the browser's dead proxy"
                 }

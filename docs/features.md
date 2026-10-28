@@ -1301,11 +1301,11 @@ the MCP tools `show_html` and `show_diagram`); the rule: `docs/regression-rules.
   a second set of browser processes, with the memory and the extra start-up time that means.
 - **No peer connections, three ways.** The page loses `RTCPeerConnection` and the other RTC classes before its own code in every
   frame (the script is awaited before the page loads; a failure fails the view), the mini-apps' browser is started with the WebRTC
-  policy `disable_non_proxied_udp` (and, with no network, a proxy that is not there), and the page policy shuts child frames
+  policy `disable_non_proxied_udp` (and, with no network, a proxy that is not there; with it, Flare's filtering proxy, issue #97), and the page policy shuts child frames
   (`frame-src 'none'; child-src 'none'; worker-src 'self' blob:`). `show_html` tells the agent exactly what is and is not blocked.
   Held by the e2e `miniApp` "webrtc" checks (script and policy both off by seams: a loopback UDP socket as STUN server hears nothing
   from the window or from a srcdoc or about:blank frame, for an app with no network and for one with it, and does hear the web panel
-  as the control; a WebSocket to a loopback listener is stopped for a sealed app and reaches it for a networked one), the frame
+  as the control; a WebSocket to a loopback listener is stopped for a sealed app and, since issue #97, for a networked one too), the frame
   probe in `app_on` (no usable `RTCPeerConnection` in a srcdoc or about:blank frame, at once and later) and the unit tests named in
   rule 199. Decision: `docs/surfaces/decisions.md` (stage 5 second review).
 - **End to end (the release exe, its own profile, offscreen):** `miniApp` (92 checks, at 100 and 225 percent, then a launch with the
@@ -1644,8 +1644,9 @@ contract: `docs/surfaces/plugins.md`, "Session bar, network and audio", and `doc
 - **`session-bar` actions.** Drawn as Flare's chips at the right end of the bar row (at most 4), with `actions.set`
   state; a click is `action {key, tab}` with click scope.
 - **`network`.** A plugin that holds it runs its pages in a networked plugins' browser (`EnvKind::PluginNet`,
-  `WebView2-plugin-net`: the WebRTC policy and a resolver that knows no local name and no local address range, the
-  wall for a WebSocket, which `https:` in the policy matches as `wss:` and which never meets the request wall) with the policy
+  `WebView2-plugin-net`: the WebRTC policy, Flare's filtering proxy since issue #97 (below), and a resolver that knows
+  no local name and no local address range, the wall for a WebSocket, which `https:` in the policy matches as `wss:`
+  and which never meets the request wall) with the policy
   `flare_mods::serve::NET_CSP` (https `connect-src`, `img-src`, `media-src`; `frame-src 'none'`, `form-action 'self'`,
   `base-uri 'none'`); the request wall lets out only https to a public host (`flare_surfaces::net`: loopback, private,
   shared and link-local ranges, dotless hosts and local names refused). No navigation away and no window, as before.
@@ -1911,6 +1912,34 @@ Spec: `docs/superpowers/specs/2026-10-27-new-tab-folder-arrow.md`; the picked lo
   `the_starter_folders_fill_the_folder_menu_once_the_worker_answers`, `a_stored_ask_mode_opens_in_the_folder_at_once`,
   `the_new_tab_row_has_no_mode_to_pick`, `the_new_tab_mode_imports_as_folder_whatever_it_was`,
   `plus_opens_at_once_in_the_chosen_folder_and_does_not_ask_again` and `the_starter_folders_exist_and_end_with_the_user_folder`.
+
+## Networked pages checked after the name lookup (issue #97), 2026-10-28
+
+Spec: `docs/superpowers/specs/2026-10-28-dns-rebinding-proxy.md`. A public name whose DNS answer is this PC or the local
+network (DNS rebinding) passed the text checks of a networked page; now every connection is checked after the lookup.
+
+- **The filtering proxy.** `flare_surfaces::netproxy`: a std-only HTTP `CONNECT` proxy on `127.0.0.1` with a port the
+  system picks, started once a process and kept, a thread a connection (at most 256), the request head within 8 KB and
+  10 s, `CONNECT` only (another method 403, a bad target 400), the address check, a 10 s connect to one checked address
+  (pinned: the name is not looked up again), then a copy both ways that closes after 5 minutes with no byte.
+- **The check.** `flare_surfaces::net::parse_authority` (host and port, IPv6 in brackets, port required) and
+  `allowed_addresses` (the host's text by `refusal`, a numeric address as it is, a name looked up and only the
+  addresses `ip_refusal` passes kept; none left is a refusal).
+- **Who uses it.** The networked plugins' browser (`EnvKind::PluginNet`) and the networked mini-apps' (`EnvKind::AppNet`,
+  the audio page too): `--proxy-server=http://127.0.0.1:<port> --proxy-bypass-list=<-loopback>`, so loopback and
+  link-local go to the proxy too and are refused. The plugins' resolver rules stay, after `EXCLUDE 127.0.0.1` so the
+  browser reaches its proxy. The web panel is unchanged; the sealed kinds keep the dead proxy. No proxy, no networked
+  browser: the views fail with the reason (`flare_web::host::env_arguments`).
+- **Tests.** `flare_surfaces::net` (3 new: `a_connect_target_is_a_host_and_a_port_and_nothing_else`,
+  `a_public_name_pointed_at_this_pc_is_refused_after_the_lookup`,
+  `an_address_written_as_numbers_or_a_local_name_is_refused_without_a_lookup`), `flare_surfaces::netproxy` (2),
+  `crates/flare-surfaces/tests/netproxy.rs` (8, a loopback echo server: relay both ways, early bytes, GET 403 and a
+  rebinding name or numeric local target 403 with nothing dialled, a bad target 400, an oversized head and a slow head
+  closed, an idle tunnel closed), `modview` (`a_networked_plugins_browser_sends_everything_through_the_filtering_proxy`),
+  `app` (`a_sealed_app_browser_has_the_webrtc_policy_and_a_dead_proxy_a_networked_one_the_filtering_proxy`),
+  `flare_web::host` (`every_browser_kind_gets_the_same_arguments_each_time_it_is_made`,
+  `the_networked_browsers_go_through_the_filtering_proxy_and_the_web_panel_does_not`) and the e2e `miniApp` "webrtc"
+  (a WebSocket to loopback is now stopped with the network on too; not yet run live).
 
 ## /browser and the page the agent is told about, 2026-10-28
 

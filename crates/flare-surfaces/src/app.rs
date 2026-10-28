@@ -154,13 +154,21 @@ pub fn override_refusal(found: &[String]) -> Option<String> {
 /// version of the SDK Flare was built against and refuse an older, working runtime).
 pub const APP_MIN_BROWSER: &str = "110.0.0.0";
 
-/// The extra browser arguments of a mini-app environment. Always the WebRTC policy; the dead proxy
-/// only when the app has no network (an app that was granted `https:` needs the real route).
-pub fn browser_arguments(allow_network: bool) -> String {
-    if allow_network {
-        WEBRTC_POLICY_FLAG.to_string()
-    } else {
-        format!("{WEBRTC_POLICY_FLAG} {DEAD_PROXY_FLAGS}")
+/// Sends every connection of a networked browser through Flare's filtering proxy on `port` (`crate::netproxy`, issue
+/// #97), with loopback and link-local taken out of the built-in bypass (`<-loopback>`, which works with a fixed proxy:
+/// Chromium's `net/docs/proxy.md`, "Implicit bypass rules"), so an address on this PC goes to the proxy too and is
+/// refused there. The proxy looks each name up itself and connects only to a public address it checked. Pages served
+/// by a host mapping or answered in `WebResourceRequested` never reach the network stack, so they still load.
+pub fn net_proxy_flags(port: u16) -> String {
+    format!("--proxy-server=http://127.0.0.1:{port} --proxy-bypass-list=<-loopback>")
+}
+
+/// The extra browser arguments of a mini-app environment. Always the WebRTC policy; with no network (`None`) the dead
+/// proxy, and for an app that was granted `https:` the filtering proxy on the given port ([`net_proxy_flags`]).
+pub fn browser_arguments(network_proxy: Option<u16>) -> String {
+    match network_proxy {
+        Some(port) => format!("{WEBRTC_POLICY_FLAG} {}", net_proxy_flags(port)),
+        None => format!("{WEBRTC_POLICY_FLAG} {DEAD_PROXY_FLAGS}"),
     }
 }
 
@@ -748,17 +756,21 @@ mod tests {
     }
 
     #[test]
-    fn a_sealed_app_browser_has_the_webrtc_policy_and_a_dead_proxy_a_networked_one_only_the_policy()
-    {
-        let sealed = browser_arguments(false);
+    fn a_sealed_app_browser_has_the_webrtc_policy_and_a_dead_proxy_a_networked_one_the_filtering_proxy()
+     {
+        let sealed = browser_arguments(None);
         assert!(sealed.starts_with("--webrtc-ip-handling-policy=disable_non_proxied_udp "));
         assert!(sealed.contains("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"));
         assert!(sealed.contains("--proxy-server=http://127.0.0.1:9"));
         assert!(sealed.contains("--proxy-bypass-list=<-loopback>"));
         assert!(sealed.contains("--host-resolver-rules=\"MAP * ~NOTFOUND\""));
-        let net = browser_arguments(true);
+        let net = browser_arguments(Some(50123));
         assert!(net.contains("--webrtc-ip-handling-policy=disable_non_proxied_udp"));
-        assert!(!net.contains("proxy"));
+        assert!(
+            net.contains("--proxy-server=http://127.0.0.1:50123 --proxy-bypass-list=<-loopback>")
+        );
+        assert!(!net.contains("127.0.0.1:9 "), "not the dead proxy");
+        assert!(!net.contains("host-resolver-rules"), "the proxy resolves");
     }
 
     #[test]

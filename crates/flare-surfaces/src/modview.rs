@@ -37,18 +37,19 @@ pub fn profile_name(id: &str) -> String {
     format!("{HOST_PREFIX}{id}")
 }
 
-/// The extra arguments of the networked plugins' browser: the mini-apps' WebRTC policy, and a resolver for which the
-/// local names (`localhost`, `.local`, `.localhost`, `.lan`, `.internal`, `.home.arpa`) and the local address ranges
-/// ([`local_address_patterns`]) are not found. A plugin's own pages are answered by Flare and never use the resolver.
+/// The extra arguments of the networked plugins' browser: the mini-apps' WebRTC policy, Flare's filtering proxy on
+/// `proxy_port` for every connection ([`crate::app::net_proxy_flags`], issue #97), and a resolver for which the local
+/// names (`localhost`, `.local`, `.localhost`, `.lan`, `.internal`, `.home.arpa`) and the local address ranges
+/// ([`local_address_patterns`]) are not found. A plugin's own pages are answered by Flare and never use either.
 ///
-/// The resolver is the wall for what the request wall never sees: a WebSocket (`wss:`, which the policy's `https:`
-/// matches) and WebTransport do not reach `WebResourceRequested`, and this browser has a real route (no dead proxy).
-/// A proxy script cannot take loopback and link-local addresses instead: Chromium sends those direct whatever the
-/// script says, and `<-loopback>` only works with a fixed proxy (`net/docs/proxy.md`, "Implicit bypass rules"). The
-/// resolver's rules apply to an address written as numbers too (Chromium's `HostMappingRules` matches the host as
-/// written, before an address is looked up or taken as it is), so no connection of the browser's own reaches them.
-/// Read from Chromium's source, not yet measured on this runtime.
-pub fn net_browser_arguments() -> String {
+/// The proxy is the wall after resolution: it looks each name up itself and connects only to a public address it
+/// checked, so a public name pointed at this PC (DNS rebinding) reaches nothing here. It also takes what the request
+/// wall never sees, a WebSocket (`wss:`, which the policy's `https:` matches, arrives as a `CONNECT`). The resolver's
+/// rules stay behind it, for any lookup of the browser's own: they apply to an address written as numbers too
+/// (Chromium's `HostMappingRules` matches the host as written), so the proxy's own address (`127.0.0.1`) is excluded
+/// from them first, or the browser could not reach its proxy. Read from Chromium's source, not yet measured on this
+/// runtime.
+pub fn net_browser_arguments(proxy_port: u16) -> String {
     let names = [
         "localhost",
         "*.localhost",
@@ -65,10 +66,14 @@ pub fn net_browser_arguments() -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "{} --host-resolver-rules=\"{rules}\"",
-        crate::app::WEBRTC_POLICY_FLAG
+        "{} {} --host-resolver-rules=\"{PROXY_EXCLUSION}, {rules}\"",
+        crate::app::WEBRTC_POLICY_FLAG,
+        crate::app::net_proxy_flags(proxy_port),
     )
 }
+
+/// The resolver rule that leaves the proxy's own address alone (an `EXCLUDE` is checked before every `MAP`).
+pub const PROXY_EXCLUSION: &str = "EXCLUDE 127.0.0.1";
 
 /// The local address ranges as the resolver's patterns (`*` is any run of characters), past the two that take one a
 /// second octet: loopback (127/8), "this network" (0/8), private (10/8, 192.168/16), link-local (169.254/16), the
@@ -377,11 +382,23 @@ mod tests {
 
     #[test]
     fn a_networked_plugins_browser_keeps_the_webrtc_policy_and_knows_no_local_name() {
-        let a = net_browser_arguments();
+        let a = net_browser_arguments(50123);
         assert!(a.contains(crate::app::WEBRTC_POLICY_FLAG));
         assert!(a.contains("MAP localhost ~NOTFOUND") && a.contains("MAP *.local ~NOTFOUND"));
-        assert!(!a.contains("proxy-server"), "it has the real route");
         assert!(!a.contains("MAP * ~NOTFOUND"), "public names resolve");
+    }
+
+    #[test]
+    fn a_networked_plugins_browser_sends_everything_through_the_filtering_proxy() {
+        let a = net_browser_arguments(50123);
+        assert!(
+            a.contains("--proxy-server=http://127.0.0.1:50123 --proxy-bypass-list=<-loopback>"),
+            "{a}"
+        );
+        assert!(!a.contains("127.0.0.1:9 "), "not the dead proxy");
+        // The proxy's own address is left alone by the resolver's rules, which would otherwise map 127.* away.
+        assert!(a.contains(&format!("--host-resolver-rules=\"{PROXY_EXCLUSION}, ")));
+        assert_eq!(a, net_browser_arguments(50123), "the same every time");
     }
 
     /// `*` as the resolver's rules read it: any run of characters.
@@ -398,13 +415,14 @@ mod tests {
     #[test]
     fn a_networked_plugins_resolver_knows_no_local_address_and_every_public_one() {
         // A WebSocket never meets the request wall: the resolver is what refuses a local address written as numbers.
-        let a = net_browser_arguments();
+        let a = net_browser_arguments(50123);
         let rules: Vec<&str> = a
             .split("--host-resolver-rules=\"")
             .nth(1)
             .unwrap()
             .trim_end_matches('"')
             .split(", ")
+            .filter(|r| *r != PROXY_EXCLUSION)
             .map(|r| {
                 r.strip_prefix("MAP ")
                     .unwrap()

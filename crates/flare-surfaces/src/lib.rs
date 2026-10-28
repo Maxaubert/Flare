@@ -20,6 +20,7 @@ pub mod kind;
 pub mod layout;
 pub mod modview;
 pub mod net;
+pub mod netproxy;
 pub mod notify;
 pub mod overlay;
 pub mod preview;
