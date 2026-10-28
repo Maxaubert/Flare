@@ -190,6 +190,8 @@ impl AppCtl {
                 self.refresh();
                 self.panel_changed(&id);
             }
+            // Enter in an empty field does nothing.
+            Err(flare_surfaces::web::UrlError::Empty) => {}
             Err(e) => {
                 self.web.notice(&id, &e.to_string());
                 self.refresh();

@@ -1,5 +1,5 @@
 {
-  "description": "Flare reads the agent state from these. Each runs hook.cmd, which prints one fixed OSC 777 line through terminalSequence. The command is a placeholder that Flare replaces with the absolute System32 cmd.exe when it installs the plugin; this template is never valid as-is. Exec form (args): no shell, so it runs the same with Git Bash or PowerShell, in a folder with spaces or brackets. UserPromptSubmit and Stop add +sid: the turn's Claude session id.",
+  "description": "Flare reads the agent state from these. Each runs hook.cmd, which prints one fixed OSC 777 line through terminalSequence. The command is a placeholder that Flare replaces with the absolute System32 cmd.exe when it installs the plugin; this template is never valid as-is. Exec form (args): no shell, so it runs the same with Git Bash or PowerShell, in a folder with spaces or brackets. UserPromptSubmit and Stop add +sid: the turn's Claude session id. One more UserPromptSubmit hook runs flare-mcp --hook-context, which tells Claude which web page the browser panel beside the tab shows; its placeholder becomes the absolute flare-mcp.exe, and the hook is left out when there is none.",
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -15,6 +15,19 @@
               "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
               "working",
               "+sid"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_MCP_EXE@@",
+            "args": [
+              "--hook-context"
             ],
             "timeout": 5
           }

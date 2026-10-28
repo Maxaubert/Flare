@@ -1034,17 +1034,25 @@ one controller per tab with an open web panel, parented to Flare's window.
   `a_capture_that_never_answers_is_ended_by_its_timeout` in `web.rs`).
 - **The browser bar.** Back, forward, reload (stop while loading), an address field (Enter opens it; text with no scheme becomes
   https, `localhost` becomes http; `file:`, `javascript:`, `data:` and logins are refused with a dim line at the field's right
-  end; Escape restores the page's address and gives the keys back) and the panel's close at the row's right end. A web page
+  end; Escape restores the page's address and gives the keys back; anything that is not an address, such as `youtube`,
+  `cat videos` or `what is rust?`, is a Google search, `https://www.google.com/search?q=...`, and Enter on an empty field does
+  nothing; a page whose site cannot be reached says "Could not open <host>" in that dim line until the next load, see
+  `docs/superpowers/specs/2026-10-28-address-bar-search.md`) and the panel's close at the row's right end. A web page
   has no header (2026-10-27, Max: "I'd rather have more space for the browser"): the bar is the panel's top and the page starts
   right under it, 32 px taller than before. The page title still names the panel (`web.state`'s `title`) and the tab. A
   mini-app has no bar, so it keeps its header (title and close). Held by
   `a_web_page_has_no_header_and_the_address_row_holds_the_close` (100 to 300 percent), and by
   `the_address_field_opens_what_is_typed`, `the_address_field_refuses_what_a_panel_may_not_open`,
+  `the_address_field_searches_google_for_what_is_not_an_address`,
+  `a_site_that_cannot_be_reached_is_said_in_the_address_row_until_the_next_load`,
   `the_bar_buttons_drive_the_page_only_when_they_can`, `the_bar_follows_the_page`,
   `a_refused_navigation_is_said_in_the_header_and_leaves_the_page`, `the_address_field_shows_the_page_and_enter_and_escape_do_their_part`,
   `the_bar_buttons_call_back_and_a_dead_one_does_not`, `the_browser_bar_is_part_of_a_web_panels_head_and_of_nothing_else`, and the
   `normalize_url` tests (`text_with_no_scheme_becomes_https`, `a_local_host_with_no_scheme_becomes_http`,
-  `every_other_scheme_is_refused`, `bad_text_is_refused`, `a_login_in_the_address_is_refused`).
+  `every_other_scheme_is_refused`, `bad_text_is_refused`, `a_login_in_the_address_is_refused`), and the `address_or_search`
+  tests (`the_address_field_opens_an_address_as_an_address`, `the_address_field_searches_for_anything_else`,
+  `the_address_field_still_refuses_a_scheme_and_does_not_search_it`, `a_caller_and_a_stored_panel_never_get_a_search`,
+  `a_site_that_cannot_be_reached_is_named_and_the_rest_say_nothing`).
 - **Keys.** The page has its keys; the app's chords (the table less Ctrl+F and the agent guard) are taken from it by
   `AcceleratorKeyPressed`; a second Escape within 600 ms gives the keys back; Ctrl+Shift+O moves them both ways; a press on the
   window takes them back. Held by `the_app_takes_its_chords_from_the_page`, `the_page_keeps_every_other_key`,
@@ -1932,3 +1940,26 @@ network (DNS rebinding) passed the text checks of a networked page; now every co
   `flare_web::host` (`every_browser_kind_gets_the_same_arguments_each_time_it_is_made`,
   `the_networked_browsers_go_through_the_filtering_proxy_and_the_web_panel_does_not`) and the e2e `miniApp` "webrtc"
   (a WebSocket to loopback is now stopped with the network on too; not yet run live).
+## /browser and the page the agent is told about, 2026-10-28
+
+Spec: `docs/superpowers/specs/2026-10-28-browser-command.md`.
+
+- **`/browser [url or search words]`.** The `flare-status` plugin ships `commands/browser.md` (plugin version 1.2.0). Claude
+  calls `open_page` with the address (empty: `https://www.google.com/`; words that are not an address:
+  `https://www.google.com/search?q=...`), calls `browser_look` once, says in one line that the page is open and the user can
+  browse it, and then waits: no clicking, typing or navigating unless asked. Only `open_page` and `browser_look` are
+  pre-allowed (`allowed-tools`). Held by `the_browser_command_opens_a_page_looks_once_and_then_waits` and
+  `install_writes_the_prompt_hook_only_when_the_program_exists_and_ships_the_browser_command` (`plugin.rs`).
+- **The agent hears which page is open.** A second `UserPromptSubmit` hook runs `flare-mcp --hook-context` (the absolute
+  `flare-mcp.exe` written in at install like the MCP server's; the hook is left out when there is no program). It asks
+  `panel.state` with a 1 s timeout per step (2.5 s for the whole run) and adds context only when the tab's web page changed since it last told this tab and
+  Claude session (a state file in `%TEMP%\flare-mcp`, named by a hash of the tab token and the session id), or once when
+  the page has gone. The title and address are cleaned, quoted and between the page-content markers, as in a look. Outside
+  Flare or when Flare does not answer it prints nothing and exits 0; the state hook (`hook.cmd`) is unchanged. Held by
+  `the_prompt_hook_runs_flare_mcp_by_its_placeholder_with_one_flag`, `the_prompt_hook_gets_the_absolute_program_or_is_left_out`,
+  `install_writes_the_mcp_server_only_when_the_program_exists` (`plugin.rs`), the five `hook::tests` (`flare-mcp`) and
+  `the_prompt_hook_tells_the_agent_of_a_page_once_and_says_nothing_outside_flare` (the real binary over a real pipe, `stdio.rs`).
+- **`browser_state`.** A ninth browser tool wraps `panel.state`: no panel, a web page (title and address as page data), a
+  mini-app (the browser tools work on it) or another kind. 21 built-in tools now. Held by
+  `browser_state_says_what_the_panel_shows_with_the_page_as_quoted_data`, `the_tools_are_listed_with_descriptions_written_for_an_agent`
+  (`browser.rs`), `tools_list_has_the_show_tools_then_the_browser_tools_with_object_schemas` (`lib.rs`) and the e2e `mcpRoundTrip` list.

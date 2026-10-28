@@ -691,12 +691,13 @@ fn mcp_on(
                 "browser_wait",
                 "browser_navigate",
                 "browser_eval",
+                "browser_state",
                 "set_tab_badge",
                 "clear_tab_badge",
                 "set_tab_progress",
                 "clear_tab_progress",
             ],
-        format!("tools/list names the eight show tools, the eight browser tools and the four tab tools ({names:?})"),
+        format!("tools/list names the eight show tools, the nine browser tools and the four tab tools ({names:?})"),
     );
     ctx.ok(
         replies

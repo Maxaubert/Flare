@@ -784,8 +784,8 @@ fn the_address_field_refuses_what_a_panel_may_not_open() {
     for bad in [
         "file:///C:/Windows/win.ini",
         "javascript:alert(1)",
-        "two words",
         "",
+        "   ",
     ] {
         f.h.comp.invoke_panel_web_submit(bad.into());
         f.h.advance(0);
@@ -803,6 +803,88 @@ fn the_address_field_refuses_what_a_panel_may_not_open() {
         "the address row says why: {}",
         f.h.comp.get_panel_sub()
     );
+}
+
+/// 2026-10-28: `youtube` opened `https://youtube/`, a host that does not exist, and two words were refused.
+#[test]
+fn the_address_field_searches_google_for_what_is_not_an_address() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    for (typed, url) in [
+        ("youtube", "https://www.google.com/search?q=youtube"),
+        ("cat videos", "https://www.google.com/search?q=cat+videos"),
+        ("youtube.com", "https://youtube.com/"),
+    ] {
+        f.h.comp.invoke_panel_web_submit(typed.into());
+        f.h.advance(0);
+        let navigated: Vec<Call> = fake(&slot)
+            .calls()
+            .into_iter()
+            .filter(|c| matches!(c, Call::Navigate(..)))
+            .collect();
+        assert_eq!(
+            navigated.last(),
+            Some(&Call::Navigate(id.clone(), url.into())),
+            "{typed:?}"
+        );
+        assert_eq!(f.ctl.borrow().panels.web_target(&id).as_deref(), Some(url));
+    }
+    // An empty field: nothing is sent and nothing is said.
+    let before = fake(&slot).calls().len();
+    f.h.comp.invoke_panel_web_submit("  ".into());
+    f.h.advance(0);
+    assert_eq!(fake(&slot).calls().len(), before);
+    assert_eq!(f.h.comp.get_panel_sub().as_str(), "");
+}
+
+#[test]
+fn a_site_that_cannot_be_reached_is_said_in_the_address_row_until_the_next_load() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let say_load = |url: &str, nav: u64, ok: bool, status: &str| {
+        fake(&slot).say(WebEvent::Loading {
+            tab: id.clone(),
+            url: url.into(),
+            nav,
+        });
+        fake(&slot).say(WebEvent::Loaded {
+            tab: id.clone(),
+            url: url.into(),
+            ok,
+            status: status.into(),
+            nav,
+        });
+        f.pump();
+        f.h.advance(0);
+    };
+    // The host does not resolve (COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED).
+    say_load("https://youtube/", 950, false, "13");
+    assert_eq!(f.h.comp.get_panel_sub().as_str(), "Could not open youtube");
+    // The next page that loads clears it.
+    say_load(TWO, 951, true, "0");
+    assert_eq!(f.h.comp.get_panel_sub().as_str(), "");
+    // A navigation stopped or replaced, and a stream handed to the player, are not failures to show.
+    say_load("https://x.org/", 952, false, "14");
+    say_load("https://x.org/a.mp3", 953, false, "9");
+    assert_eq!(f.h.comp.get_panel_sub().as_str(), "");
+    // An older navigation that fails after a newer one started says nothing about the page now loading.
+    fake(&slot).say(WebEvent::Loading {
+        tab: id.clone(),
+        url: TWO.into(),
+        nav: 955,
+    });
+    fake(&slot).say(WebEvent::Loaded {
+        tab: id.clone(),
+        url: "https://gone.example/".into(),
+        ok: false,
+        status: "13".into(),
+        nav: 954,
+    });
+    f.pump();
+    f.h.advance(0);
+    assert_eq!(f.h.comp.get_panel_sub().as_str(), "");
 }
 
 #[test]
