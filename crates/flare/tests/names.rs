@@ -637,6 +637,9 @@ const E2E_SEAMS: &[&str] = &[
     "FLARE_E2E_UPDATE_OFFER",
     "FLARE_E2E_UPDATE_NOTES",
     "FLARE_E2E_UPDATE_SOURCE",
+    // Install when idle (2026-10-29): the idle hold and the countdown, shortened by the e2e idleInstall.
+    "FLARE_E2E_STAGED_HOLD_MS",
+    "FLARE_E2E_STAGED_COUNTDOWN_MS",
     "FLARE_E2E_PICK_COLOUR",
     // M10 Appendix F: reduced motion under --e2e (read in e2e.rs as a concatenated name).
     "FLARE_E2E_REDUCED_MOTION",

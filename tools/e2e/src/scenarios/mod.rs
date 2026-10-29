@@ -32,6 +32,7 @@ pub mod settings_b;
 pub mod settings_c;
 pub mod settings_d;
 pub mod settings_live;
+pub mod staged;
 pub mod strip;
 pub mod update;
 pub mod vertical;
@@ -635,6 +636,12 @@ pub const ALL: &[Scenario] = &[
         group: "preview",
         run: live_preview::question_toast,
         limit_secs: 300,
+    },
+    Scenario {
+        name: "idleInstall",
+        group: "staged",
+        run: staged::idle_install,
+        limit_secs: 180,
     },
 ];
 
