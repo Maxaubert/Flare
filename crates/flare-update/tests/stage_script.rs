@@ -70,6 +70,12 @@ fn the_stage_script_writes_a_stage_the_app_accepts_and_a_second_replaces_it() {
     assert!(m.files.contains_key("flare-mcp.exe"));
     assert!(m.files.contains_key("LICENSE"));
     assert!(m.files.keys().any(|k| k.starts_with("claude-plugin/")));
+    for f in ["conpty.dll", "OpenConsole.exe"] {
+        assert!(
+            m.files.contains_key(f),
+            "the pinned ConPTY pair ships beside the exe, as in pack.ps1: {f}"
+        );
+    }
     assert!(m.commit.len() >= 7);
     assert_eq!(
         std::fs::read(root.join("staged").join("FlareStable.exe")).unwrap(),

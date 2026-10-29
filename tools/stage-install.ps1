@@ -36,6 +36,9 @@ try {
   $files['flare-parakeet-host.exe'] = Join-Path $Bin 'flare-parakeet-host.exe'
   $files['LICENSE'] = Join-Path $Repo 'LICENSE'
   $files['THIRD-PARTY-NOTICES.md'] = Join-Path $Repo 'THIRD-PARTY-NOTICES.md'
+  # The pinned ConPTY pair beside the exe, as tools\release\pack.ps1 ships it: a build that pins a new one checks
+  # their hashes at start and will not run with the old pair. Unchanged files are left alone by the swap.
+  foreach ($f in 'conpty.dll', 'OpenConsole.exe') { $files[$f] = Join-Path $Repo "crates\flare-term\bundled\x64\$f" }
   $plugin = Join-Path $Repo 'crates\flare-agent\claude-plugin'
   if (Test-Path $plugin) {
     Get-ChildItem -Path $plugin -Recurse -File | ForEach-Object {
