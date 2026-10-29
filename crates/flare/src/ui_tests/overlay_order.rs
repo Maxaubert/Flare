@@ -17,8 +17,9 @@ const APP: &str = include_str!("../../ui/app.slint");
 /// one-line download question) is a Settings dialog like `AskThree` and takes the same rank (M8 Task 25). The
 /// Plugins dropdown (plugins phase 4) is a pop like the Settings dropdown: a section's header menu opens over it.
 /// A plugin's question (`PluginAsk`, the `fill` permission) is a modal declared under the close question.
-const RANKS: [(&str, u8, &str); 16] = [
+const RANKS: [(&str, u8, &str); 17] = [
     ("UpdateNotice", 1, "pop"),
+    ("StagedToast", 1, "pop"),
     ("SelectMenu", 1, "pop"),
     ("PluginsDropdown", 1, "pop"),
     ("ContextMenu", 2, "menu"),

@@ -522,6 +522,21 @@ fn sweep(layout: &Layout, m: &mut Marker) {
     }
 }
 
+/// A good swap whose new exe could not be started: the old files go back and the record goes, so the old build
+/// starts again as if nothing happened.
+pub fn abandon(layout: &Layout) {
+    let Some(mut m) = read_marker(layout) else {
+        return;
+    };
+    if m.state != MarkerState::Pending {
+        return;
+    }
+    m.left = undo(layout, &m.moved);
+    m.moved.clear();
+    m.state = MarkerState::Good;
+    sweep(layout, &mut m);
+}
+
 /// "Discard": the staged build goes.
 pub fn discard(layout: &Layout) -> std::io::Result<()> {
     match fs::remove_dir_all(layout.staged()) {
@@ -865,6 +880,19 @@ mod tests {
         );
         assert_eq!(on_start(&i.layout), Start::Plain);
         assert!(read_marker(&i.layout).is_none());
+    }
+
+    #[test]
+    fn a_restart_that_cannot_start_puts_the_old_build_back() {
+        let i = Inst::new();
+        i.stage_new();
+        swap(&i.layout).unwrap();
+        abandon(&i.layout);
+        assert_eq!(i.read("FlareStable.exe"), b"old exe");
+        assert_eq!(i.read("claude-plugin\\hooks.json"), b"old hooks");
+        assert!(!i.layout.current().join("LICENSE").exists());
+        assert!(read_marker(&i.layout).is_none());
+        assert_eq!(on_start(&i.layout), Start::Plain);
     }
 
     #[test]

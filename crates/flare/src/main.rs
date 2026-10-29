@@ -204,7 +204,12 @@ fn main() {
             Ok(startup::Launch::First {
                 guard,
                 server_names,
-            }) => Some(window::Instance::start(profile, server_names, guard)),
+            }) => {
+                // The last-good guard of an installed copy (install when idle): counts this start of a new
+                // build, and puts the old one back after two early deaths.
+                appctl::staged_glue::guard_at_start(&argv, args.user_data_dir.as_deref());
+                Some(window::Instance::start(profile, server_names, guard))
+            }
             Err(message) => {
                 attach_parent_console();
                 eprintln!("flare: {message}");

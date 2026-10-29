@@ -25,6 +25,8 @@ pub enum Overlay {
     UpdateWindow,
     /// The notice hung under the update chip.
     UpdateNotice,
+    /// The toast under the "Build ready" chip (install when idle).
+    StagedToast,
     /// The Settings page is in front (it covers the page, panel included).
     Settings,
     /// The Settings dropdown.
@@ -51,7 +53,7 @@ pub enum Overlay {
 
 impl Overlay {
     /// All of them.
-    pub const ALL: [Overlay; 18] = [
+    pub const ALL: [Overlay; 19] = [
         Overlay::Menu,
         Overlay::Overflow,
         Overlay::PluginsDropdown,
@@ -59,6 +61,7 @@ impl Overlay {
         Overlay::PluginAsk,
         Overlay::UpdateWindow,
         Overlay::UpdateNotice,
+        Overlay::StagedToast,
         Overlay::Settings,
         Overlay::SettingsSelect,
         Overlay::ThemeEditor,

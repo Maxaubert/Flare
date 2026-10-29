@@ -251,6 +251,20 @@ impl StagedFlow {
         }
     }
 
+    /// A busy moment seen between ticks: the quiet minute starts again, and a countdown the idle rule started stops.
+    pub fn note_busy(&mut self, now: u64) {
+        match self.phase {
+            Phase::Waiting => {
+                self.idle.observe(true, now, self.times.hold_ms);
+            }
+            Phase::Countdown { by_hand: false, .. } => {
+                self.phase = Phase::Waiting;
+                self.idle.reset();
+            }
+            _ => {}
+        }
+    }
+
     /// The swap ended. A good one is followed by the restart; a failed one put everything back.
     pub fn swapped(&mut self, ok: bool, now: u64) {
         if self.phase != Phase::Installing {
@@ -494,6 +508,24 @@ mod tests {
         assert_eq!(f.mode(), Mode::Manual);
         f.found(ready("s2"));
         assert_eq!(f.mode(), Mode::WhenIdle);
+    }
+
+    #[test]
+    fn a_busy_moment_between_ticks_starts_the_minute_again_and_stops_an_idle_countdown() {
+        let mut f = flow();
+        f.tick(0, false);
+        f.note_busy(30_000);
+        f.tick(60_000, false);
+        assert_eq!(f.phase(), Phase::Waiting);
+        f.tick(120_000, false);
+        assert!(matches!(f.phase(), Phase::Countdown { by_hand: false, .. }));
+        f.note_busy(121_000);
+        assert_eq!(f.phase(), Phase::Waiting);
+
+        let mut g = flow();
+        g.start_countdown(0, true);
+        g.note_busy(1_000);
+        assert!(matches!(g.phase(), Phase::Countdown { by_hand: true, .. }));
     }
 
     #[test]
