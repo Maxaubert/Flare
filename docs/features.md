@@ -2000,3 +2000,47 @@ Part A of the Bitwarden design (`Maxaubert/flare-plugins`, `docs/2026-10-28-bitw
   on `https://flare-test.local`, the dialog pressed by the e2e pointer like every dialog, Enter that does not allow, an
   early press and the agent's own key and click that do not allow, a
   login of another site refused, and the profile's logs, the plugins' logs and the helper's record scanned for the values.
+
+## Install when idle, 2026-10-29
+
+Spec: `docs/superpowers/specs/2026-10-29-idle-install.md`. The agent builds; Flare only installs what was staged, and
+only once no session is working. How to stage: `docs/shipping.md`, "Installing a local build when idle".
+
+- **Staging.** `tools/stage-install.ps1 [-Stable]` copies the release files into `<install>\staged\` under their names in
+  `current\` (`FlareStable.exe` or `Flare.exe`, `flare-mcp.exe`, `flare-parakeet-host.exe`, `LICENSE`,
+  `THIRD-PARTY-NOTICES.md`, `claude-plugin\`) and writes `staged.json` last: `{commit, built_at, files: {name: sha256}}`.
+  It never touches the running app; a second stage replaces the first. Held by `crates/flare-update/tests/stage_script.rs`
+  (runs the real script against a temp install).
+- **Only an installed copy.** An exe in a folder named `current` (`flare_update::staged::Layout::from_exe`); a build run
+  from `target\release` never looks. The install root is watched (`FindFirstChangeNotificationW`) and every change is one
+  check of `staged\` on a worker: every name a plain relative path, the copy's own exe among them, every hash right.
+  Anything else shows no chip.
+- **The chip.** "Build ready" in the title bar, left of the update chip (both tab layouts). Tooltip "Build <commit>
+  installs once no agent has worked for a minute" (after Cancel: "Build <commit> is ready to install"). A click drops its
+  menu: Install now, Install when idle (the default, greyed while chosen), Not today (hides it until the next start; a new
+  stage shows it again), Discard (removes `staged\`).
+- **The idle rule** (`flare_update::idle`). No agent working (`AgentHub::working_count` and the close question's own
+  list), no agent showing a question, no dictation, no close or install question open, for 60 s without a break. Any busy
+  moment, seen at a tick (250 ms) or at any refresh of the window, starts the minute again.
+- **The install.** A toast under the chip, "Installing the new build and restarting", with Cancel, for 10 s. Work that
+  starts during an idle countdown stops it. Install now asks the close question first when an agent is working ("Stop the
+  agent and install the update?", "Install and restart"); its countdown goes on regardless. Then a worker swaps: each file
+  in `current\` is renamed to `<name>.old` (a running exe can be renamed), the staged file copied in and its hash checked;
+  any failure puts every file back and says "The build could not be installed; nothing changed". A good swap writes
+  `<install>\install.json` and removes `staged.json`; the app ends through the normal end of life (tabs.json with the
+  agents, so the sessions resume) and starts the new exe with `handoff::restart_args_keeping` (the same
+  `--user-data-dir`, and `--e2e` / `--renderer` / `--no-plugins` / `--no-import` when given).
+- **After the restart.** The first start says "Installed <commit>" once (8 s) and removes `staged\`; after 20 s up, or a
+  clean quit, the build is good and the `.old` files go (one still in use is retried at the next start). The last-good
+  guard runs in `main` after the single-instance check: a new build that died before it was good is counted per start, and
+  the third start puts the `.old` files back, starts the old exe on the same profile and exits; the old build then says
+  "Build <commit> did not start, so the last build is back".
+- **Tests.** `flare_update::staged` (temp install: swap, a failed copy, a bad hash, a file held open, rollback after two
+  early deaths, confirm, leftovers), `staged_flow` and `idle` (pure), `ui_tests::staged_flows` (the real `AppCtl`: chip,
+  menu, idle hold, working agent, Cancel, Install now with the question, a failed swap, Not today, Discard, the start
+  notices, confirm at 20 s and at a clean quit, the chip and toast boxes), and the offscreen e2e `idleInstall` (a temp
+  install in the world, a stand-in Claude holds it, idle installs, the new process answers on the same pipe, parked, its
+  tab back, confirmed after 20 s).
+- **Not covered.** A new exe that crashes before `main` reaches the guard is still counted only when started again by
+  hand; nothing restarts it on its own. Files removed from `claude-plugin\` in a new build stay in `current\` (the swap is
+  per file, not a mirror).
