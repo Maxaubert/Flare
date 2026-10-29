@@ -95,6 +95,8 @@ pwsh tools\stage-install.ps1 -Stable -Bin <TARGET>\release -Repo <checkout>
 - A commit with uncommitted changes is named `<sha>-dirty`.
 - After an install `<install>\current\` holds `<name>.old` for 20 s (or until the next start, if in use), and
   `<install>\install.json` until the new build is good. A build that dies early twice is rolled back at the third start.
+  Only files that differ are swapped. A second stage installs only once the first build is confirmed (20 s up).
+  `install.json` in state `swapping` means a swap was cut off; the next start puts it back.
 - The Velopack path (public releases) is unchanged.
 
 ## SmartScreen
