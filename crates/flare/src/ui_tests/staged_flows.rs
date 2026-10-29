@@ -344,7 +344,12 @@ fn a_quiet_minute_counts_down_ten_seconds_then_swaps_and_restarts_on_the_same_pr
     assert_eq!(r[0].0, f.layout.exe());
     assert_eq!(
         r[0].1,
-        vec!["--user-data-dir=C:\\Users\\x\\AppData\\Roaming\\FlareStable".to_string()]
+        vec![
+            "--user-data-dir=C:\\Users\\x\\AppData\\Roaming\\FlareStable".to_string(),
+            "--after-pid".to_string(),
+            std::process::id().to_string(),
+        ],
+        "the same profile, and the new exe waits for this one to end"
     );
     assert_eq!(f.quits.get(), 1, "through the normal end of life");
     let m = staged::read_marker(&f.layout).unwrap();

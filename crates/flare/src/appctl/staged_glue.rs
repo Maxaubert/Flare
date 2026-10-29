@@ -386,10 +386,13 @@ impl AppCtl {
             return;
         };
         let exe = s.parts.layout.exe();
-        let args = flare_update::handoff::restart_args_keeping(
+        let mut args = flare_update::handoff::restart_args_keeping(
             s.parts.user_data_dir.as_deref(),
             &s.parts.argv,
         );
+        // The new exe waits for this one to end before it takes the lock (see `--after-pid`).
+        args.push("--after-pid".to_string());
+        args.push(std::process::id().to_string());
         let restart = Rc::clone(&s.parts.restart);
         let layout = s.parts.layout.clone();
         self.finish();
