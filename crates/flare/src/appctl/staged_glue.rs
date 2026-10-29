@@ -19,7 +19,7 @@ use std::time::Duration;
 use flare_update::copy;
 use flare_update::idle::Busy;
 use flare_update::staged::{self, Layout, Start};
-use flare_update::staged_flow::{Do, Pick, Ready, StagedFlow, Times};
+use flare_update::staged_flow::{Do, Phase, Pick, Ready, StagedFlow, Times};
 use slint::TimerMode;
 
 use super::{AppCtl, MenuKind, MenuRowData, Post, UiMsg};
@@ -41,8 +41,11 @@ pub enum StagedMsg {
     Found(Option<Ready>),
     /// The swap ended.
     Swapped(Result<(), String>),
-    /// The close question for "Install now" was answered yes (or was not needed).
-    GoAhead,
+    /// "Install now" may count down: `agreed` when the close question was answered yes (an agent was at work), false
+    /// when none was at work and no question was needed.
+    GoAhead { agreed: bool },
+    /// A swap this run took back (an agent got busy while it ran) is undone on disk.
+    TakenBack,
     /// The 20 s since the start of a new build are up.
     Confirm,
 }
@@ -79,6 +82,10 @@ pub(super) struct StagedState {
     unconfirmed: bool,
     /// This run swapped a build in (its own record must never be confirmed by this run).
     swapped_here: bool,
+    /// The running countdown (or swap) was agreed to in the close question: it goes on while agents work.
+    agreed: bool,
+    /// The running swap came from "Install now" (not the idle rule).
+    swap_by_hand: bool,
 }
 
 impl AppCtl {
@@ -111,6 +118,8 @@ impl AppCtl {
             again: false,
             unconfirmed,
             swapped_here: false,
+            agreed: false,
+            swap_by_hand: false,
         });
         if unconfirmed {
             let post = Arc::clone(&post);
@@ -141,10 +150,24 @@ impl AppCtl {
                     }
                 }
             }
-            StagedMsg::GoAhead => {
+            StagedMsg::GoAhead { agreed } => {
                 let now = self.now();
-                if let Some(s) = self.staged.as_mut() {
+                if let Some(s) = self.staged.as_mut()
+                    && s.flow.phase() == Phase::Waiting
+                {
+                    s.agreed = agreed;
                     s.flow.start_countdown(now, true);
+                }
+            }
+            StagedMsg::TakenBack => {
+                let again = self.staged.as_mut().map(|s| {
+                    s.swapped_here = false;
+                    s.flow.taken_back();
+                    std::mem::take(&mut s.swap_by_hand)
+                });
+                // "Install now" still stands: it asks now that an agent works.
+                if again == Some(true) {
+                    self.staged_ask();
                 }
             }
             StagedMsg::Swapped(r) => self.staged_swapped(r),
@@ -244,10 +267,10 @@ impl AppCtl {
     /// "Install now": with an agent at work the close question asks first (in its install words); else at once.
     fn staged_ask(&mut self) {
         let post = Arc::clone(&self.deps.post);
-        let go = move || post(UiMsg::Staged(StagedMsg::GoAhead));
+        let go = move |agreed: bool| post(UiMsg::Staged(StagedMsg::GoAhead { agreed }));
         let busy = self.busy_agents();
         let Some(mut ask) = super::window_ask(&busy) else {
-            go();
+            go(false);
             return;
         };
         ask.install = true;
@@ -255,7 +278,7 @@ impl AppCtl {
         self.drop_install_ask();
         self.install_cb = Some(Box::new(move |yes| {
             if yes {
-                go();
+                go(true);
             }
         }));
         (self.deps.raise)();
@@ -267,6 +290,7 @@ impl AppCtl {
     pub(super) fn staged_toast_clicked(&mut self) {
         if let Some(s) = self.staged.as_mut() {
             s.flow.cancel();
+            s.agreed = false;
         }
         self.staged_push();
     }
@@ -275,15 +299,31 @@ impl AppCtl {
     fn staged_tick(&mut self) {
         let now = self.now();
         let busy = self.staged_busy().any();
+        let working = !self.busy_agents().is_empty() || self.hub.working_count() > 0;
         let Some(s) = self.staged.as_mut() else {
             return;
         };
+        let by_hand = matches!(s.flow.phase(), Phase::Countdown { by_hand: true, .. });
+        if by_hand && !s.agreed && working {
+            // "Install now" was picked with no agent at work, and one started: the close question asks first.
+            s.flow.pause();
+            self.staged_ask();
+            self.staged_push();
+            return;
+        }
         if s.flow.tick(now, busy) == Do::Swap {
             s.swapped_here = true;
+            s.swap_by_hand = by_hand;
+            // A new build that has not been confirmed yet is the one being replaced: it has run well enough to be
+            // picked over, and the swap only goes ahead over a confirmed build (its `.old` files are the last good one).
+            let confirm_first = std::mem::take(&mut s.unconfirmed);
             let layout = s.parts.layout.clone();
             let post = Arc::clone(&self.deps.post);
             crate::diag_ctl::crumb("staged-install", &[]);
             (s.parts.spawn)(Box::new(move || {
+                if confirm_first {
+                    staged::confirm(&layout);
+                }
                 let r = staged::swap(&layout).map(|_| ()).map_err(|e| e.to_string());
                 post(UiMsg::Staged(StagedMsg::Swapped(r)));
             }));
@@ -291,9 +331,37 @@ impl AppCtl {
         self.staged_push();
     }
 
+    /// After a good swap: whether the restart must wait after all. The swap takes a moment; an agent that started
+    /// in it (or a question that came up) holds an idle install, and a working agent holds an "Install now" that
+    /// was not agreed to in the close question.
+    fn staged_held_after_swap(&self) -> bool {
+        let Some(s) = self.staged.as_ref() else {
+            return false;
+        };
+        if s.agreed {
+            return false;
+        }
+        if s.swap_by_hand {
+            !self.busy_agents().is_empty() || self.hub.working_count() > 0
+        } else {
+            self.staged_busy().any()
+        }
+    }
+
     fn staged_swapped(&mut self, r: Result<(), String>) {
         let now = self.now();
         match r {
+            Ok(()) if self.staged_held_after_swap() => {
+                crate::diag_ctl::crumb("staged-taken-back", &[]);
+                let post = Arc::clone(&self.deps.post);
+                if let Some(s) = self.staged.as_ref() {
+                    let layout = s.parts.layout.clone();
+                    (s.parts.spawn)(Box::new(move || {
+                        staged::take_back(&layout);
+                        post(UiMsg::Staged(StagedMsg::TakenBack));
+                    }));
+                }
+            }
             Ok(()) => {
                 if let Some(s) = self.staged.as_mut() {
                     s.flow.swapped(true, now);
@@ -304,6 +372,8 @@ impl AppCtl {
                 log::warn!("the staged build could not be installed: {e}");
                 crate::diag_ctl::crumb("staged-failed", &[("why", serde_json::Value::String(e))]);
                 if let Some(s) = self.staged.as_mut() {
+                    s.swapped_here = false;
+                    s.agreed = false;
                     s.flow.swapped(false, now);
                 }
             }
@@ -517,8 +587,23 @@ pub fn guard_at_start(argv: &[String], user_data_dir: Option<&Path>) {
         return;
     };
     let start = staged::on_start(&layout); // sync-ok: startup, before the window; one small file
-    if let Start::RollBack { commit } = &start {
-        log::warn!("build {commit} died early twice; starting the last good build");
+    let back = match &start {
+        Start::RollBack { commit } => {
+            log::warn!("build {commit} died early twice; starting the last good build");
+            true
+        }
+        Start::Interrupted {
+            commit,
+            restart: true,
+        } => {
+            log::warn!(
+                "the install of build {commit} was cut off; its files are back, starting the old exe"
+            );
+            true
+        }
+        _ => false,
+    };
+    if back {
         let args = flare_update::handoff::restart_args_keeping(user_data_dir, argv);
         let home = std::env::var("USERPROFILE").unwrap_or_default();
         spawn_exe()(&layout.exe(), &args, &home);

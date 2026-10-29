@@ -225,6 +225,24 @@ impl StagedFlow {
         }
     }
 
+    /// The controller stops a countdown to ask first (an agent started working after "Install now" was picked with
+    /// none at work): back to waiting, the mode kept.
+    pub fn pause(&mut self) {
+        if matches!(self.phase, Phase::Countdown { .. }) {
+            self.phase = Phase::Waiting;
+            self.idle.reset();
+        }
+    }
+
+    /// The controller took a good swap back before the restart (an agent got busy while it ran): back to waiting,
+    /// the mode kept, the minute starting again.
+    pub fn taken_back(&mut self) {
+        if self.phase == Phase::Installing {
+            self.phase = Phase::Waiting;
+            self.idle.reset();
+        }
+    }
+
     /// One reading of the clock and of the busy state.
     pub fn tick(&mut self, now: u64, busy: bool) -> Do {
         if self.notice.as_ref().is_some_and(|(_, until)| now >= *until) {
@@ -526,6 +544,27 @@ mod tests {
         g.start_countdown(0, true);
         g.note_busy(1_000);
         assert!(matches!(g.phase(), Phase::Countdown { by_hand: true, .. }));
+    }
+
+    #[test]
+    fn a_paused_countdown_or_a_swap_taken_back_waits_again_in_the_same_mode() {
+        let mut f = flow();
+        f.start_countdown(0, true);
+        f.pause();
+        assert_eq!(f.phase(), Phase::Waiting);
+        assert_eq!(f.mode(), Mode::WhenIdle);
+        f.tick(0, false);
+        f.tick(60_000, false);
+        assert_eq!(f.tick(70_000, false), Do::Swap);
+        f.taken_back();
+        assert_eq!(f.phase(), Phase::Waiting);
+        assert_eq!(f.mode(), Mode::WhenIdle);
+        assert!(f.view().toast.is_empty());
+        f.tick(70_001, false);
+        f.tick(130_000, false);
+        assert_eq!(f.phase(), Phase::Waiting, "the minute starts again");
+        f.tick(130_001, false);
+        assert!(matches!(f.phase(), Phase::Countdown { .. }));
     }
 
     #[test]

@@ -578,3 +578,81 @@ fn the_chip_is_drawn_in_the_bar_and_the_toast_hangs_under_it() {
         "the toast hides a web panel like the update notice"
     );
 }
+
+#[test]
+fn install_now_with_no_agent_at_work_asks_when_one_starts_during_the_countdown() {
+    let f = make(Start::Plain, true);
+    f.click_chip();
+    f.app().invoke_menu_picked(0);
+    f.pump();
+    assert!(matches!(f.phase(), Phase::Countdown { by_hand: true, .. }));
+    f.agent_working(true);
+    f.at(2_000);
+    let app = f.app();
+    assert!(app.get_dialog_open(), "the close question asks first");
+    assert_eq!(f.phase(), Phase::Waiting);
+    f.at(30_000);
+    assert!(f.restarts.borrow().is_empty(), "nothing while it asks");
+    app.invoke_dialog_confirm();
+    f.pump();
+    assert!(matches!(f.phase(), Phase::Countdown { by_hand: true, .. }));
+    f.at(41_000);
+    assert_eq!(f.restarts.borrow().len(), 1, "a yes goes ahead");
+}
+
+#[test]
+fn an_agent_that_starts_while_the_swap_runs_takes_the_swap_back() {
+    let f = make(Start::Plain, true);
+    f.at(1_000);
+    f.at(61_000);
+    // The countdown ends: the swap is queued on a worker, and an agent starts before it is done.
+    f.clock.set(71_000);
+    f.h.advance(250);
+    f.pump();
+    assert_eq!(f.phase(), Phase::Installing);
+    f.agent_working(true);
+    f.settle();
+    assert!(
+        f.restarts.borrow().is_empty(),
+        "no restart under a working agent"
+    );
+    assert_eq!(f.quits.get(), 0);
+    assert_eq!(f.read("FlareStable.exe"), b"old exe");
+    assert!(!f.layout.current().join("FlareStable.exe.old").exists());
+    assert!(staged::read_marker(&f.layout).is_none());
+    assert_eq!(f.phase(), Phase::Waiting);
+    assert!(
+        f.app().get_staged_chip_shown(),
+        "the build is still on offer"
+    );
+    // Once the agent is done and a quiet minute passes, it installs.
+    f.agent_working(false);
+    f.at(80_000);
+    f.at(140_000);
+    f.at(150_250);
+    assert_eq!(f.restarts.borrow().len(), 1);
+    assert_eq!(f.read("FlareStable.exe"), b"new exe");
+}
+
+#[test]
+fn a_new_build_not_yet_confirmed_can_be_replaced_and_the_one_it_ran_is_put_aside() {
+    let f = make_with(new_build_started);
+    stage(&f.layout, b"newer exe");
+    f.changed();
+    f.click_chip();
+    f.app().invoke_menu_picked(0);
+    f.pump();
+    f.at(10_000);
+    assert_eq!(
+        f.restarts.borrow().len(),
+        1,
+        "{}",
+        f.app().get_staged_toast()
+    );
+    assert_eq!(f.read("FlareStable.exe"), b"newer exe");
+    assert_eq!(
+        f.read("FlareStable.exe.old"),
+        b"new exe",
+        "the build it ran from is the one put aside"
+    );
+}
