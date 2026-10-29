@@ -232,8 +232,12 @@ pub fn idle_install(ctx: &mut Ctx) -> Result<(), String> {
         "a file the build added is there",
     );
     ctx.ok(
-        cur.join("Flare.exe.old").exists(),
-        "the old exe is kept aside until the new one is good",
+        std::fs::read(cur.join("marker.txt.old")).unwrap_or_default() == b"old",
+        "the old file is kept aside until the new build is good",
+    );
+    ctx.ok(
+        !cur.join("Flare.exe.old").exists(),
+        "a file that is already the staged one is left alone (the stand-in stages the same exe)",
     );
 
     // The new process: same profile, same pipe, offscreen, and it says what it found.
@@ -270,7 +274,7 @@ pub fn idle_install(ctx: &mut Ctx) -> Result<(), String> {
 
     // After 20 s the new build is good: the old files and the record go.
     let good = ctx.until("the new build to be confirmed", 30_000, &mut || {
-        !inst.join("install.json").exists() && !cur.join("Flare.exe.old").exists()
+        !inst.join("install.json").exists() && !cur.join("marker.txt.old").exists()
     });
     ctx.ok(
         good,

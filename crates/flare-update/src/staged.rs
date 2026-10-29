@@ -8,10 +8,12 @@
 //! - **Ready** ([`check`]): the manifest reads, every name is a plain relative path, the running exe is one of
 //!   them, and every staged file has the hash the manifest names. Only listed files are ever copied.
 //! - **Swap** ([`swap`]): each file in `current\` that is replaced is renamed aside to `<name>.old` (Windows allows
-//!   that for a running exe), the staged file is copied in and its hash checked. On any failure every file is put
-//!   back as it was. A good swap writes `install.json` in the root and removes `staged.json`.
+//!   that for a running exe), the staged file is copied in and its hash checked. Each move is written to
+//!   `install.json` before it happens, so a swap cut off by a crash is put back at the next start. On any failure
+//!   every file is put back as it was. A file already the staged one is left alone. `staged.json` stays until the
+//!   new build's first start. Two processes never swap at once (`install.lock`).
 //! - **After the restart** ([`on_start`], [`confirm`]): the first start says "installed"; one that stays up
-//!   [`START_GRACE_MS`] (or quits cleanly) confirms the build, and the `.old` files and `staged\` go. When the new exe
+//!   [`START_GRACE_MS`] (or quits cleanly) confirms the build, and the `.old` files go (a stage made since stays). When the new exe
 //!   dies early twice, the next start puts the `.old` files back and starts the old exe instead.
 //!
 //! Every function here touches the disk; the app calls them on a worker or at start, before the window.
@@ -195,8 +197,14 @@ pub fn read_manifest(layout: &Layout) -> Result<Manifest, NotReady> {
     if m.commit.trim().is_empty() {
         return Err(NotReady::Unreadable("no commit".into()));
     }
+    // Windows names ignore case and either slash: two keys for one file would put the first one's new copy aside
+    // as the old one, and the last good build would be lost.
+    let mut seen = std::collections::BTreeSet::new();
     for name in m.files.keys() {
-        if safe_name(name).is_none() {
+        let Some(p) = safe_name(name) else {
+            return Err(NotReady::BadName(name.clone()));
+        };
+        if !seen.insert(p.to_string_lossy().to_lowercase()) {
             return Err(NotReady::BadName(name.clone()));
         }
     }
@@ -246,7 +254,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// One file the swap replaced or added: its name in `current\`, and the name the old one was put aside under
+/// One file the swap replaced or added: its name in `current\`, and the name the old one is put aside under
 /// (`None` when the file is new).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Moved {
@@ -258,6 +266,9 @@ pub struct Moved {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MarkerState {
+    /// The swap is under way (or was cut off): `moved` lists every file it has touched or is about to touch, so a
+    /// start that finds this puts them back.
+    Swapping,
     /// Swapped, not yet confirmed: the new build has not stayed up long enough.
     Pending,
     /// The new build is good; only the leftovers in `left` remain to be removed.
@@ -284,9 +295,14 @@ pub struct Marker {
 #[derive(Debug)]
 pub enum SwapError {
     NotReady(NotReady),
-    Io { name: String, error: String },
+    Io {
+        name: String,
+        error: String,
+    },
     Hash(String),
     Marker(String),
+    /// The last swap is not confirmed yet (its `.old` files are the last good build) or another process swaps.
+    Busy(String),
 }
 
 impl std::fmt::Display for SwapError {
@@ -296,9 +312,34 @@ impl std::fmt::Display for SwapError {
             SwapError::Io { name, error } => write!(f, "{name}: {error}"),
             SwapError::Hash(n) => write!(f, "{n} did not copy whole"),
             SwapError::Marker(e) => write!(f, "install.json: {e}"),
+            SwapError::Busy(e) => write!(f, "{e}"),
         }
     }
 }
+
+/// The lock a swap, an undo and the start-up guard hold, so two processes on one install (two profiles) never
+/// move the same files at once. Windows lets go of it when the process ends, so it never goes stale.
+pub struct InstallLock {
+    _file: fs::File,
+}
+
+/// Takes the install's lock; `None` while another process holds it.
+pub fn lock(layout: &Layout) -> Option<InstallLock> {
+    let mut o = fs::OpenOptions::new();
+    o.create(true).truncate(false).write(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        o.share_mode(0);
+    }
+    // sync-ok: one small file, at start or on a worker
+    o.open(layout.root().join(LOCK))
+        .ok()
+        .map(|f| InstallLock { _file: f })
+}
+
+/// The lock file, in the install root.
+pub const LOCK: &str = "install.lock";
 
 /// The first free aside name for `name` in `dir`: `<name>.<tag>`, else `<name>.<tag>1`, `<name>.<tag>2`...
 fn aside_name(dir: &Path, name: &str, tag: &str) -> String {
@@ -317,8 +358,14 @@ fn aside_name(dir: &Path, name: &str, tag: &str) -> String {
 }
 
 /// Puts the staged build into `current\`. Checks it first (the hashes, right before the copy), then per file:
-/// the old one is renamed aside, the staged one copied in and its hash checked. Any failure puts every file
-/// back; the error says what failed. Success writes `install.json` (pending) and removes `staged.json`.
+/// the move is written to `install.json` (state swapping) before it happens, the old file is renamed aside, the
+/// staged one copied in and its hash checked. A file that is already the staged one is left alone. Any failure puts
+/// every file back; the error says what failed. Success leaves `install.json` pending. `staged.json` stays: the
+/// first start of the new build removes the stage, and a swap the window takes back (an agent started working)
+/// keeps it on offer.
+///
+/// Refused while the last swap is not confirmed: its `.old` files are the last good build, which a second swap
+/// would replace with the unconfirmed one.
 pub fn swap(layout: &Layout) -> Result<Marker, SwapError> {
     swap_with(layout, &|from, to| fs::copy(from, to).map(|_| ()))
 }
@@ -328,10 +375,28 @@ pub fn swap_with(
     layout: &Layout,
     copy: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<Marker, SwapError> {
+    let _lock =
+        lock(layout).ok_or_else(|| SwapError::Busy("another Flare is installing".into()))?;
+    let carried = match read_marker(layout) {
+        Some(m) if matches!(m.state, MarkerState::Pending | MarkerState::Swapping) => {
+            return Err(SwapError::Busy(format!(
+                "build {} is not confirmed yet",
+                short(&m.commit)
+            )));
+        }
+        Some(m) => m.left,
+        None => Vec::new(),
+    };
     let m = check(layout).map_err(SwapError::NotReady)?;
     let cur = layout.current();
     let staged = layout.staged();
-    let mut moved: Vec<Moved> = Vec::new();
+    let mut marker = Marker {
+        commit: m.commit.clone(),
+        state: MarkerState::Swapping,
+        starts: 0,
+        moved: Vec::new(),
+        left: carried,
+    };
     let result = (|| -> Result<(), SwapError> {
         for (name, want) in &m.files {
             let rel = safe_name(name)
@@ -341,23 +406,28 @@ pub fn swap_with(
                 name: name.clone(),
                 error: e.to_string(),
             };
+            let exists = target.is_file();
+            if exists && sha256_file(&target).is_ok_and(|h| h.eq_ignore_ascii_case(want.trim())) {
+                continue;
+            }
             let dir = target.parent().unwrap_or(&cur).to_path_buf();
             fs::create_dir_all(&dir).map_err(io)?;
             let file = rel
                 .file_name()
                 .map(|f| f.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let old = if target.exists() {
-                let aside = aside_name(&dir, &file, "old");
-                fs::rename(&target, dir.join(&aside)).map_err(io)?;
-                Some(rel.with_file_name(&aside).to_string_lossy().into_owned())
-            } else {
-                None
-            };
-            moved.push(Moved {
+            let aside = target.exists().then(|| aside_name(&dir, &file, "old"));
+            // The journal first: a swap cut off after this line is put back by the next start.
+            marker.moved.push(Moved {
                 name: rel.to_string_lossy().into_owned(),
-                old,
+                old: aside
+                    .as_ref()
+                    .map(|a| rel.with_file_name(a).to_string_lossy().into_owned()),
             });
+            write_marker(layout, &marker).map_err(SwapError::Marker)?;
+            if let Some(a) = &aside {
+                fs::rename(&target, dir.join(a)).map_err(io)?;
+            }
             copy(&staged.join(&rel), &target).map_err(io)?;
             let got = sha256_file(&target).map_err(io)?;
             if !got.eq_ignore_ascii_case(want.trim()) {
@@ -367,53 +437,86 @@ pub fn swap_with(
         Ok(())
     })();
     if let Err(e) = result {
-        undo(layout, &moved);
+        put_back(layout, &mut marker);
         return Err(e);
     }
-    let marker = Marker {
-        commit: m.commit.clone(),
-        state: MarkerState::Pending,
-        starts: 0,
-        moved,
-        left: Vec::new(),
-    };
+    marker.state = MarkerState::Pending;
     if let Err(e) = write_marker(layout, &marker) {
-        undo(layout, &marker.moved);
+        put_back(layout, &mut marker);
         return Err(SwapError::Marker(e));
     }
-    // The build is in place: it is no longer on offer (the folder itself goes after the restart).
-    let _ = fs::remove_file(layout.manifest());
     Ok(marker)
 }
 
-/// Puts back what a swap moved, last first: the new file goes aside (a running exe can be renamed, not deleted)
-/// and the old one takes its name again. Returns the aside names of the new files, to delete later.
-pub fn undo(layout: &Layout, moved: &[Moved]) -> Vec<String> {
+/// A swap that failed (or was cut off): every moved file goes back. What could not be put back stays in the record
+/// (state swapping), so the next start tries again; otherwise only the leftovers stay listed.
+fn put_back(layout: &Layout, m: &mut Marker) {
+    let undone = undo(layout, &m.moved);
+    m.left.extend(undone.left);
+    m.moved = undone.stuck;
+    if m.moved.is_empty() {
+        m.state = MarkerState::Good;
+        sweep(layout, m);
+    } else {
+        log::warn!(
+            "{} file(s) of the old build could not be put back yet",
+            m.moved.len()
+        );
+        m.state = MarkerState::Swapping;
+        let _ = write_marker(layout, m);
+    }
+}
+
+/// What [`undo`] did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Undone {
+    /// The aside names of new files that could not be deleted (in use), to delete later.
+    pub left: Vec<String>,
+    /// Moves that could not be put back.
+    pub stuck: Vec<Moved>,
+}
+
+/// Puts back what a swap moved, last first: the new file goes (or aside, as a running exe can be renamed, not
+/// deleted) and the old one takes its name again. A move whose old file was never put aside (the swap was cut off
+/// before the rename) leaves the file where it is.
+pub fn undo(layout: &Layout, moved: &[Moved]) -> Undone {
     let cur = layout.current();
-    let mut left = Vec::new();
+    let mut out = Undone::default();
     for mv in moved.iter().rev() {
         let target = cur.join(&mv.name);
+        let dir = target.parent().unwrap_or(&cur).to_path_buf();
+        if let Some(old) = &mv.old
+            && !cur.join(old).exists()
+        {
+            // Never renamed: the file at the name is still the old one (or the rename is what failed).
+            continue;
+        }
         if target.exists() && fs::remove_file(&target).is_err() {
-            let dir = target.parent().unwrap_or(&cur).to_path_buf();
             let file = Path::new(&mv.name)
                 .file_name()
                 .map(|f| f.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let bad = aside_name(&dir, &file, "bad");
             if fs::rename(&target, dir.join(&bad)).is_ok() {
-                left.push(
+                out.left.push(
                     Path::new(&mv.name)
                         .with_file_name(&bad)
                         .to_string_lossy()
                         .into_owned(),
                 );
+            } else {
+                out.stuck.push(mv.clone());
+                continue;
             }
         }
-        if let Some(old) = &mv.old {
-            let _ = fs::rename(cur.join(old), &target);
+        if let Some(old) = &mv.old
+            && fs::rename(cur.join(old), &target).is_err()
+        {
+            out.stuck.push(mv.clone());
         }
     }
-    left
+    out.stuck.reverse();
+    out
 }
 
 /// Reads `install.json`; `None` when there is none or it cannot be read.
@@ -444,15 +547,37 @@ pub enum Start {
     RollBack { commit: String },
     /// The old build runs again after a roll back: say so once.
     RolledBack { commit: String },
+    /// A swap was cut off (a crash or a power cut mid-copy): its files were put back. When this exe was one of
+    /// them (`restart`), the caller starts the old exe and exits; else it runs on. The stage stays on offer.
+    Interrupted { commit: String, restart: bool },
 }
 
 /// The last-good guard, run once per start of the copy (after the single-instance check, so a hand-off does not
-/// count). It counts the starts of a pending build; past [`EARLY_DEATHS`] it rolls back.
+/// count). It counts the starts of a pending build; past [`EARLY_DEATHS`] it rolls back. A swap that was cut off is
+/// put back. While another process holds the install's lock (it is swapping) this does nothing.
 pub fn on_start(layout: &Layout) -> Start {
+    if read_marker(layout).is_none() {
+        return Start::Plain;
+    }
+    let Some(_lock) = lock(layout) else {
+        return Start::Plain;
+    };
     let Some(mut m) = read_marker(layout) else {
         return Start::Plain;
     };
     match m.state {
+        MarkerState::Swapping => {
+            let commit = m.commit.clone();
+            let exe_moved = m
+                .moved
+                .iter()
+                .any(|mv| mv.name.eq_ignore_ascii_case(layout.exe_name()));
+            put_back(layout, &mut m);
+            // Only a whole put-back restarts: one that left files stuck keeps the record, and restarting on it
+            // would start this again and again.
+            let restart = exe_moved && m.state != MarkerState::Swapping;
+            Start::Interrupted { commit, restart }
+        }
         MarkerState::Good => {
             sweep(layout, &mut m);
             Start::Plain
@@ -460,6 +585,7 @@ pub fn on_start(layout: &Layout) -> Start {
         MarkerState::RolledBack => {
             let commit = m.commit.clone();
             // The new build's files and the staged copy go; this is the old build again.
+            let _ = fs::remove_file(layout.manifest());
             let _ = fs::remove_dir_all(layout.staged());
             m.state = MarkerState::Good;
             m.moved.clear();
@@ -469,16 +595,24 @@ pub fn on_start(layout: &Layout) -> Start {
         MarkerState::Pending => {
             m.starts += 1;
             if m.starts > EARLY_DEATHS {
-                let left = undo(layout, &m.moved);
+                let undone = undo(layout, &m.moved);
+                m.left.extend(undone.left);
+                if !undone.stuck.is_empty() {
+                    log::warn!(
+                        "{} file(s) of the last good build could not be put back",
+                        undone.stuck.len()
+                    );
+                }
                 m.state = MarkerState::RolledBack;
-                m.left.extend(left);
                 let commit = m.commit.clone();
                 let _ = write_marker(layout, &m);
                 return Start::RollBack { commit };
             }
             let _ = write_marker(layout, &m);
             if m.starts == 1 {
-                // The staged copy is in place now: the folder can go at once, so it is never offered again.
+                // The staged copy is in place now: the manifest goes first, so it is never offered again even when
+                // the folder cannot be removed whole.
+                let _ = fs::remove_file(layout.manifest());
                 let _ = fs::remove_dir_all(layout.staged());
                 Start::Installed { commit: m.commit }
             } else {
@@ -491,9 +625,12 @@ pub fn on_start(layout: &Layout) -> Start {
     }
 }
 
-/// The new build stayed up (or quit cleanly): it is good. The `.old` files and `staged\` go; what is still in use
+/// The new build stayed up (or quit cleanly): it is good. The `.old` files go; what is still in use
 /// is kept in `install.json` and tried again at the next start. Does nothing unless a swap is pending.
 pub fn confirm(layout: &Layout) {
+    let Some(_lock) = lock(layout) else {
+        return;
+    };
     let Some(mut m) = read_marker(layout) else {
         return;
     };
@@ -504,7 +641,7 @@ pub fn confirm(layout: &Layout) {
     let olds: Vec<String> = m.moved.iter().filter_map(|mv| mv.old.clone()).collect();
     m.left.extend(olds);
     m.moved.clear();
-    let _ = fs::remove_dir_all(layout.staged());
+    // `staged\` is not touched: the first start removed this build's stage, so what is there now is a newer one.
     sweep(layout, &mut m);
 }
 
@@ -522,19 +659,26 @@ fn sweep(layout: &Layout, m: &mut Marker) {
     }
 }
 
-/// A good swap whose new exe could not be started: the old files go back and the record goes, so the old build
-/// starts again as if nothing happened.
-pub fn abandon(layout: &Layout) {
+/// Takes back a swap this run made and has not restarted from: the old files go back and the record goes, so the
+/// old build runs on as if nothing happened. The stage stays on offer.
+pub fn take_back(layout: &Layout) {
+    let Some(_lock) = lock(layout) else {
+        return;
+    };
     let Some(mut m) = read_marker(layout) else {
         return;
     };
-    if m.state != MarkerState::Pending {
+    if m.state != MarkerState::Pending || m.starts != 0 {
         return;
     }
-    m.left = undo(layout, &m.moved);
-    m.moved.clear();
-    m.state = MarkerState::Good;
-    sweep(layout, &mut m);
+    put_back(layout, &mut m);
+}
+
+/// A good swap whose new exe could not be started: the old files go back, the record goes, and so does the stage
+/// (an exe that will not start must not be offered again at every idle minute).
+pub fn abandon(layout: &Layout) {
+    take_back(layout);
+    let _ = fs::remove_file(layout.manifest());
 }
 
 /// "Discard": the staged build goes.
@@ -712,9 +856,189 @@ mod tests {
         let lic = m.moved.iter().find(|mv| mv.name == "LICENSE").unwrap();
         assert_eq!(lic.old, None, "a new file has nothing put aside");
         assert!(
-            !i.layout.manifest().exists(),
-            "a swapped build is no longer on offer"
+            i.layout.manifest().exists(),
+            "the stage stays until the new build's first start (a swap taken back keeps it on offer)"
         );
+    }
+
+    #[test]
+    fn a_stage_made_after_the_first_start_survives_the_confirm() {
+        let i = Inst::new();
+        i.stage_new();
+        swap(&i.layout).unwrap();
+        on_start(&i.layout);
+        i.stage(&[("FlareStable.exe", b"newer exe")]);
+        confirm(&i.layout);
+        assert!(
+            check(&i.layout).is_ok(),
+            "the newer stage is still on offer"
+        );
+    }
+
+    #[test]
+    fn two_names_for_one_file_are_refused() {
+        let i = Inst::new();
+        let mut m = i.stage_new();
+        let h = m.files["FlareStable.exe"].clone();
+        m.files.insert("flarestable.EXE".into(), h);
+        fs::write(i.layout.manifest(), serde_json::to_string(&m).unwrap()).unwrap();
+        assert!(matches!(check(&i.layout), Err(NotReady::BadName(_))));
+        let mut m = i.stage_new();
+        let h = m.files["claude-plugin/hooks.json"].clone();
+        m.files.insert("claude-plugin\\hooks.json".into(), h);
+        fs::write(i.layout.manifest(), serde_json::to_string(&m).unwrap()).unwrap();
+        assert!(matches!(check(&i.layout), Err(NotReady::BadName(_))));
+    }
+
+    #[test]
+    fn a_file_already_the_staged_one_is_left_alone() {
+        let i = Inst::new();
+        i.stage(&[
+            ("FlareStable.exe", b"new exe"),
+            ("flare-mcp.exe", b"old mcp"),
+        ]);
+        let m = swap(&i.layout).unwrap();
+        assert_eq!(m.moved.len(), 1, "{:?}", m.moved);
+        assert!(!i.layout.current().join("flare-mcp.exe.old").exists());
+        assert_eq!(i.read("flare-mcp.exe"), b"old mcp");
+    }
+
+    #[test]
+    fn a_second_swap_waits_until_the_first_is_confirmed() {
+        let i = Inst::new();
+        i.stage_new();
+        swap(&i.layout).unwrap();
+        i.stage(&[("FlareStable.exe", b"newer exe")]);
+        assert!(matches!(swap(&i.layout), Err(SwapError::Busy(_))));
+        assert_eq!(i.read("FlareStable.exe"), b"new exe");
+        assert_eq!(
+            i.read("FlareStable.exe.old"),
+            b"old exe",
+            "the last good build stays put aside"
+        );
+        on_start(&i.layout);
+        confirm(&i.layout);
+        i.stage(&[("FlareStable.exe", b"newer exe")]);
+        swap(&i.layout).unwrap();
+        assert_eq!(i.read("FlareStable.exe.old"), b"new exe");
+    }
+
+    #[test]
+    fn leftovers_still_listed_are_kept_by_the_next_swap() {
+        let i = Inst::new();
+        fs::write(i.layout.current().join("busy.old"), b"x").unwrap();
+        let held = Marker {
+            commit: "c".into(),
+            state: MarkerState::Good,
+            starts: 1,
+            moved: Vec::new(),
+            left: vec!["busy.old".into()],
+        };
+        write_marker(&i.layout, &held).unwrap();
+        i.stage_new();
+        let m = swap(&i.layout).unwrap();
+        assert_eq!(m.left, vec!["busy.old".to_string()]);
+    }
+
+    #[test]
+    fn a_swap_cut_off_halfway_is_put_back_at_the_next_start() {
+        let i = Inst::new();
+        i.stage_new();
+        // What a crash after the exe and LICENSE went in, with the plugin file journaled but not yet renamed, leaves.
+        fs::rename(
+            i.layout.current().join("FlareStable.exe"),
+            i.layout.current().join("FlareStable.exe.old"),
+        )
+        .unwrap();
+        fs::write(i.layout.current().join("FlareStable.exe"), b"new e").unwrap();
+        fs::write(i.layout.current().join("LICENSE"), b"lic").unwrap();
+        let m = Marker {
+            commit: "abcdef0123456789".into(),
+            state: MarkerState::Swapping,
+            starts: 0,
+            moved: vec![
+                Moved {
+                    name: "FlareStable.exe".into(),
+                    old: Some("FlareStable.exe.old".into()),
+                },
+                Moved {
+                    name: "LICENSE".into(),
+                    old: None,
+                },
+                Moved {
+                    name: "claude-plugin\\hooks.json".into(),
+                    old: Some("claude-plugin\\hooks.json.old".into()),
+                },
+            ],
+            left: Vec::new(),
+        };
+        write_marker(&i.layout, &m).unwrap();
+        assert_eq!(
+            on_start(&i.layout),
+            Start::Interrupted {
+                commit: "abcdef0123456789".into(),
+                restart: true
+            }
+        );
+        assert_all_old(&i);
+        assert_eq!(on_start(&i.layout), Start::Plain);
+    }
+
+    #[test]
+    fn a_swap_cut_off_before_the_exe_runs_on_without_a_restart() {
+        let i = Inst::new();
+        i.stage_new();
+        fs::write(i.layout.current().join("LICENSE"), b"lic").unwrap();
+        let m = Marker {
+            commit: "c".into(),
+            state: MarkerState::Swapping,
+            starts: 0,
+            moved: vec![Moved {
+                name: "LICENSE".into(),
+                old: None,
+            }],
+            left: Vec::new(),
+        };
+        write_marker(&i.layout, &m).unwrap();
+        assert_eq!(
+            on_start(&i.layout),
+            Start::Interrupted {
+                commit: "c".into(),
+                restart: false
+            }
+        );
+        assert_all_old(&i);
+    }
+
+    #[test]
+    fn while_another_process_holds_the_lock_nothing_moves() {
+        let i = Inst::new();
+        i.stage_new();
+        let held = lock(&i.layout).unwrap();
+        assert!(matches!(swap(&i.layout), Err(SwapError::Busy(_))));
+        assert_eq!(i.read("FlareStable.exe"), b"old exe");
+        drop(held);
+        swap(&i.layout).unwrap();
+        let held = lock(&i.layout).unwrap();
+        assert_eq!(on_start(&i.layout), Start::Plain, "a start leaves it alone");
+        assert_eq!(read_marker(&i.layout).unwrap().starts, 0);
+        drop(held);
+        assert!(matches!(on_start(&i.layout), Start::Installed { .. }));
+    }
+
+    #[test]
+    fn a_swap_taken_back_keeps_the_stage_and_an_abandoned_one_drops_it() {
+        let i = Inst::new();
+        i.stage_new();
+        swap(&i.layout).unwrap();
+        take_back(&i.layout);
+        assert_all_old(&i);
+        assert!(check(&i.layout).is_ok(), "still on offer");
+        swap(&i.layout).unwrap();
+        abandon(&i.layout);
+        assert_eq!(i.read("FlareStable.exe"), b"old exe");
+        assert!(read_marker(&i.layout).is_none());
+        assert_eq!(check(&i.layout), Err(NotReady::Missing));
     }
 
     fn assert_all_old(i: &Inst) {
