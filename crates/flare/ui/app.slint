@@ -26,7 +26,7 @@ import { HelpPanel, HelpBridge } from "settings/help_panel.slint";
 import { PanelSlot } from "panel.slint";
 import { ConvoFileRow, ConvoDiffRow } from "convo.slint";
 import { PreviewChip } from "devchip.slint";
-import { UpdateChip, UpdateNotice, UpdateWindow, UpdateBridge, UpdateChipPreview, UpdateWindowPreview } from "update.slint";
+import { UpdateChip, UpdateNotice, UpdateWindow, UpdateBridge, UpdateChipPreview, UpdateWindowPreview, StagedToast } from "update.slint";
 
 export { Theme, Px, Motion, SettingsFixed } from "theme.slint";
 export { MarkMotion, MarkPreview, DictationTabMarkPreview, DictationTabMarkScene } from "tabmark.slint";
@@ -491,7 +491,7 @@ export component AppWindow inherits Window {
     // The collapsed sidebar, out on a hover (or sliding), reaches over the panel's slot (a wide sidebar beside a
     // wide panel): it is drawn over the page, so a web panel hides under it like under any overlay.
     property <bool> sidebar-over-slot: root.side-mode && root.sidebar-collapsed && (root.sidebar-revealed || root.sidebar-sliding) && root.panel-slot-w > 0px && root.sidebar-width > page.width - root.panel-slot-w;
-    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.pask-open || root.update-open || root.update-notice != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying || root.sidebar-over-slot;
+    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.pask-open || root.update-open || root.update-notice != "" || root.staged-toast != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying || root.sidebar-over-slot;
     changed overlay-open => { root.overlay-changed(); }
 
     // ---- tabs ----
@@ -613,6 +613,24 @@ export component AppWindow inherits Window {
     callback update-cancel();
     callback update-abort();
     callback update-notice-dismissed();
+    // The "Build ready" chip and its toast (install when idle, 2026-10-29). The staged-build glue pushes them.
+    in property <bool> staged-chip-shown;
+    in property <string> staged-chip-label;
+    in property <string> staged-chip-aria;
+    in property <string> staged-chip-tip;
+    in property <string> staged-toast;
+    in property <string> staged-toast-button;
+    // The chip's right edge, top and foot: its menu drops from it.
+    callback staged-chip-clicked(length, length, length);
+    callback staged-toast-clicked();
+    out property <length> staged-chip-x: root.side-mode ? side-staged.absolute-position.x : top-staged.absolute-position.x;
+    out property <length> staged-chip-y: root.side-mode ? side-staged.absolute-position.y : top-staged.absolute-position.y;
+    out property <length> staged-chip-w: root.side-mode ? side-staged.width : top-staged.width;
+    out property <length> staged-chip-h: top-staged.height;
+    out property <length> staged-toast-x: stoast.x;
+    out property <length> staged-toast-y: stoast.y;
+    out property <length> staged-toast-w: stoast.width;
+    out property <length> staged-toast-h: stoast.height;
     // Where the chip is now (the notice hangs under it), whichever bar holds it.
     out property <length> update-chip-x: root.side-mode ? side-chip.absolute-position.x : top-chip.absolute-position.x;
     out property <length> update-chip-y: root.side-mode ? side-chip.absolute-position.y : top-chip.absolute-position.y;
@@ -905,6 +923,22 @@ export component AppWindow inherits Window {
                         clicked(i) => { root.plugin-top-clicked(i); }
                         tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                     }
+                    // The "Build ready" chip (install when idle): left of the update chip, 8 px from it.
+                    Rectangle {
+                        width: (root.staged-chip-shown && !root.side-mode) ? top-staged.chip-width + (root.update-chip-shown ? Px.snap(8px) : Px.snap(10px - 8px)) : 0px;
+                        top-staged := UpdateChip {
+                            x: 0px;
+                            y: Px.snap((Theme.bar-height - self.height) / 2);
+                            width: self.chip-width;
+                            height: 24px;
+                            shown: root.staged-chip-shown && !root.side-mode;
+                            label: root.staged-chip-label;
+                            aria: root.staged-chip-aria;
+                            tip: root.staged-chip-tip;
+                            clicked => { root.staged-chip-clicked(self.absolute-position.x + self.width, self.absolute-position.y, self.absolute-position.y + self.height); }
+                            tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
+                        }
+                    }
                     // The update chip (M9 Task 30): 10 px left of the first BUTTON (PT `toNextControl`),
                     // in a slot that takes its width from the strip while an offer exists. The buttons'
                     // block opens with its own 8 px padding, so the slot adds only the other 2 (M9 Task
@@ -966,7 +1000,7 @@ export component AppWindow inherits Window {
                     size: 17px;
                 }
                 side-plugins := PluginBar {
-                    x: (root.update-chip-shown ? side-chip.x - Px.snap(10px) : side-buttons.x) - self.width;
+                    x: (root.staged-chip-shown ? side-staged.x - Px.snap(10px) : root.update-chip-shown ? side-chip.x - Px.snap(10px) : side-buttons.x) - self.width;
                     y: 0px;
                     height: parent.height;
                     shown: root.side-mode;
@@ -975,6 +1009,18 @@ export component AppWindow inherits Window {
                     ink: Theme.secondary-text;
                     clicked(i) => { root.plugin-top-clicked(i); }
                     tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
+                }
+                side-staged := UpdateChip {
+                    x: (root.update-chip-shown ? side-chip.x - Px.snap(8px) : side-buttons.x - Px.snap(10px - 8px)) - self.width;
+                    y: Px.snap((Theme.bar-height - self.height) / 2);
+                    width: self.chip-width;
+                    height: 24px;
+                    shown: root.staged-chip-shown && root.side-mode;
+                    label: root.staged-chip-label;
+                    aria: root.staged-chip-aria;
+                    tip: root.staged-chip-tip;
+                    clicked => { root.staged-chip-clicked(self.absolute-position.x + self.width, self.absolute-position.y, self.absolute-position.y + self.height); }
+                    tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                 }
                 side-chip := UpdateChip {
                     x: side-buttons.x - Px.snap(10px - 8px) - self.width;
@@ -1363,6 +1409,15 @@ export component AppWindow inherits Window {
             x: root.update-chip-x + root.update-chip-w - self.width;
             y: Px.snap(root.update-chip-y + root.update-chip-h + 8px);
             dismissed => { root.update-notice-dismissed(); }
+        }
+        // Under the "Build ready" chip, right-aligned to it; with no chip ("Installed abc1234" at start), under the
+        // title buttons.
+        stoast := StagedToast {
+            text: root.staged-toast;
+            button: root.staged-toast-button;
+            x: root.staged-chip-shown ? root.staged-chip-x + root.staged-chip-w - self.width : root.width - self.width - Px.snap(10px);
+            y: Px.snap((root.staged-chip-shown ? root.staged-chip-y + root.staged-chip-h : Theme.bar-height) + 8px);
+            clicked => { root.staged-toast-clicked(); }
         }
         SelectMenu {
             x: 0px;

@@ -170,6 +170,8 @@ pub enum UiMsg {
     ToastFailed,
     /// A worker's answer or a Settings action for the mods controller (Surfaces stage 8).
     Mods(crate::mods_ctl::ModsMsgBox),
+    /// The staged build (install when idle, 2026-10-29): a look, a swap, a go-ahead.
+    Staged(staged_glue::StagedMsg),
 }
 
 mod ask_glue;
@@ -178,6 +180,7 @@ mod install_glue;
 mod mods_glue;
 mod plugins_glue;
 mod sessions_glue;
+pub mod staged_glue;
 mod surfaces7;
 mod web_glue;
 
@@ -612,6 +615,8 @@ pub struct AppCtl {
     /// Where control channel events go (None: no channel, in tests and headless runs).
     ctl_events: Option<CtlEvents>,
     ctl_info: Option<CtlInfo>,
+    /// The staged build of an installed copy (install when idle); None for any other run.
+    staged: Option<staged_glue::StagedState>,
 }
 
 /// The row the terminal's menu gains on a tab that runs Claude (Surfaces stage 6; reworded 2026-10-22 so the
@@ -991,6 +996,7 @@ impl AppCtl {
             ctl_events: None,
             ctl_info: None,
             mods: None,
+            staged: None,
         };
         let rc = Rc::new(RefCell::new(ctl));
         rc.borrow_mut().me = Rc::downgrade(&rc);
@@ -1269,6 +1275,14 @@ impl AppCtl {
         bind!(app, rc, on_start_settings, |c| c.toggle_settings());
         bind!(app, rc, on_start_github, |c| c.open_github());
         bind!(app, rc, on_menu_picked, |c, i: i32| c.menu_picked(i));
+        bind!(
+            app,
+            rc,
+            on_staged_chip_clicked,
+            |c, r: f32, t: f32, f: f32| c.staged_chip_clicked(r, t, f)
+        );
+        bind!(app, rc, on_staged_toast_clicked, |c| c
+            .staged_toast_clicked());
         bind!(app, rc, on_menu_trailing, |c, i: i32| c.menu_trailing(i));
         bind!(app, rc, on_menu_dismissed, |c| c.close_menu());
         bind!(app, rc, on_menu_outside_right, |c, x: f32, y: f32| c
@@ -1511,6 +1525,7 @@ impl AppCtl {
     /// build_view, then push every property; a changed tab report goes to `tabs_store`.
     pub fn refresh(&mut self) {
         let Some(app) = self.app() else { return };
+        self.staged_note_busy();
         let now = self.now();
         let front = self.model.state.active_id.clone();
         if front != self.crumbed_front {
@@ -2762,6 +2777,7 @@ impl AppCtl {
             }
             MenuKind::Tab { id, .. } if self.plugin_menu_picked(&id.clone(), &path.clone()) => {}
             MenuKind::Section { sid } => self.section_menu_picked(&sid.clone(), &row.label.clone()),
+            MenuKind::Staged => self.staged_menu_picked(&row.label.clone()),
             MenuKind::Tab { id, cwd } => match row.label.as_str() {
                 "Close tab" => self.request_close(id),
                 "Copy folder path" => (self.deps.clipboard)(cwd),
@@ -4640,6 +4656,7 @@ impl AppCtl {
             return;
         }
         self.ended = true;
+        self.staged_on_finish();
         // Stop listening before anything slow: a launch that connects while the shells are killed
         // and waited for would get its folders acknowledged and then dropped.
         if let Some(stop) = self.handoff_stop.take() {
@@ -4852,6 +4869,7 @@ impl AppCtl {
             UiMsg::ToastClicked(tab) => self.on_toast_clicked(&tab),
             UiMsg::ToastFailed => self.on_toast_failed(),
             UiMsg::Mods(crate::mods_ctl::ModsMsgBox(m)) => self.on_mods_msg(m),
+            UiMsg::Staged(m) => self.on_staged_msg(m),
             UiMsg::Web(WebMsgBox(m)) => {
                 if let Some(app) = self.app() {
                     // A DevTools answer or a timer turn changes the window's properties only when a

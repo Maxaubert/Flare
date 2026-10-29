@@ -93,9 +93,70 @@ pub fn pct_text(p: u8) -> String {
     format!("{p}%")
 }
 
+// ---- install when idle (2026-10-29): a build the agent staged ------------------------------------
+
+/// The staged build's chip.
+pub const STAGED_CHIP: &str = "Build ready";
+/// The chip's menu.
+pub const STAGED_INSTALL_NOW: &str = "Install now";
+pub const STAGED_WHEN_IDLE: &str = "Install when idle";
+pub const STAGED_NOT_TODAY: &str = "Not today";
+pub const STAGED_DISCARD: &str = "Discard";
+/// The toast before the install, and its button.
+pub const STAGED_COUNTDOWN: &str = "Installing the new build and restarting";
+pub const STAGED_CANCEL: &str = "Cancel";
+/// A swap that failed and put everything back.
+pub const STAGED_FAILED: &str = "The build could not be installed; nothing changed";
+
+/// The staged chip's accessible name.
+pub fn staged_chip_aria(when_idle: bool) -> String {
+    if when_idle {
+        "Build ready, installs when idle".to_string()
+    } else {
+        STAGED_CHIP.to_string()
+    }
+}
+
+/// The staged chip's tooltip.
+pub fn staged_chip_tip(commit: &str, when_idle: bool) -> String {
+    if when_idle {
+        format!("Build {commit} installs once no agent has worked for a minute")
+    } else {
+        format!("Build {commit} is ready to install")
+    }
+}
+
+/// Said once by the first start of a new build.
+pub fn staged_installed(commit: &str) -> String {
+    format!("Installed {commit}")
+}
+
+/// Said once by the old build after the last-good guard put it back.
+pub fn staged_rolled_back(commit: &str) -> String {
+    format!("Build {commit} did not start, so the last build is back")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_staged_build_words() {
+        assert_eq!(staged_installed("abc1234"), "Installed abc1234");
+        assert_eq!(
+            staged_rolled_back("abc1234"),
+            "Build abc1234 did not start, so the last build is back"
+        );
+        for s in [
+            STAGED_CHIP,
+            STAGED_COUNTDOWN,
+            STAGED_FAILED,
+            &staged_chip_tip("abc1234", true),
+            &staged_chip_tip("abc1234", false),
+        ] {
+            assert!(!s.contains('\u{2014}'), "no em-dash: {s}");
+        }
+    }
 
     #[test]
     fn chip_label_names_the_version() {

@@ -199,12 +199,24 @@ fn main() {
                 profile.dir.display()
             );
         }
+        if let Some(pid) = args.after_pid {
+            // Restarted by an install: the old build is quitting. Wait for it, so the lock is free and this one
+            // is the first instance at once (not after the hand-off's wait, or never if the quit is slow).
+            if !flare_win::procs::wait_for_exit(pid, AFTER_PID_WAIT) {
+                log::warn!("the old Flare (pid {pid}) is still running; starting anyway");
+            }
+        }
         match startup::launch(&profile, &argv_with_exe(), HANDOFF_WAIT) {
             Ok(startup::Launch::HandedOver) => std::process::exit(0),
             Ok(startup::Launch::First {
                 guard,
                 server_names,
-            }) => Some(window::Instance::start(profile, server_names, guard)),
+            }) => {
+                // The last-good guard of an installed copy (install when idle): counts this start of a new
+                // build, and puts the old one back after two early deaths.
+                appctl::staged_glue::guard_at_start(&argv, args.user_data_dir.as_deref());
+                Some(window::Instance::start(profile, server_names, guard))
+            }
             Err(message) => {
                 attach_parent_console();
                 eprintln!("flare: {message}");
@@ -267,6 +279,8 @@ fn end_process_clean() {
 /// first instance that is quitting: it stops listening at once, and the lock comes free after
 /// the shells are gone (up to 3 s), when the second launch takes over as the first.
 const HANDOFF_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
+/// How long a build restarted by an install waits for the old one to end (it waits for its shells and agents).
+const AFTER_PID_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The command line with the exe first, as `folders_from_argv` expects it.
 fn argv_with_exe() -> Vec<String> {

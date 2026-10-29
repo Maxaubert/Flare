@@ -606,6 +606,9 @@ fn set_overlay(c: &AppWindow, which: Overlay, on: bool) {
         Overlay::PluginAsk => c.set_pask_open(on),
         Overlay::UpdateWindow => c.set_update_open(on),
         Overlay::UpdateNotice => c.set_update_notice(if on { "A new version" } else { "" }.into()),
+        Overlay::StagedToast => {
+            c.set_staged_toast(if on { "Installed abc1234" } else { "" }.into())
+        }
         Overlay::Settings => c.set_front_kind(if on { 1 } else { 0 }),
         Overlay::SettingsSelect => c.global::<SettingsBridge>().set_select_open(on),
         Overlay::ThemeEditor => c.global::<SettingsBridge>().set_editor_open(on),

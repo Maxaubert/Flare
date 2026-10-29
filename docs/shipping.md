@@ -76,6 +76,29 @@ writes the `first-run` crumb from it. Under `--e2e` the uninstall hook touches o
   one, and writes nothing when the owner has switched the row off in Settings (the one stored fact is the NO).
 - The Velopack uninstall hook deletes both keys. A portable copy never writes them.
 
+## Installing a local build when idle (2026-10-29)
+
+For Max's own copies (`%LOCALAPPDATA%\StableFlare\current\FlareStable.exe` on `--user-data-dir=%APPDATA%\FlareStable`,
+and `%LOCALAPPDATA%\Flare\current\Flare.exe`). It replaces closing Stable by hand to copy a build in. Ask Max first:
+"Stage the build for <copy>? It installs when your sessions are idle."
+
+```
+cargo build --release -p flare -p flare-mcp -p flare-parakeet-host
+pwsh tools\stage-install.ps1 -Stable          # or no switch for the plain Flare copy
+pwsh tools\stage-install.ps1 -Stable -Bin <TARGET>\release -Repo <checkout>
+```
+
+- The script writes only `<install>\staged\` (`staged.json` last); the running copy shows "Build ready" and installs once
+  no agent has worked for a minute (or on Install now). Nothing is closed by force; the restart uses the normal end of
+  life, so the sessions resume.
+- `-Root <folder> -ExeName <name>` stages into any folder with a `current\` (the tests use a temp one).
+- A commit with uncommitted changes is named `<sha>-dirty`.
+- After an install `<install>\current\` holds `<name>.old` for 20 s (or until the next start, if in use), and
+  `<install>\install.json` until the new build is good. A build that dies early twice is rolled back at the third start.
+  Only files that differ are swapped. A second stage installs only once the first build is confirmed (20 s up).
+  `install.json` in state `swapping` means a swap was cut off; the next start puts it back.
+- The Velopack path (public releases) is unchanged.
+
 ## SmartScreen
 
 Flare is unsigned. Windows SmartScreen may warn on the first run of `Flare-win-Setup.exe` ("More info", then

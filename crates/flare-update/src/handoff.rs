@@ -16,10 +16,64 @@ pub fn restart_args(user_data_dir: Option<&Path>) -> Vec<String> {
     }
 }
 
+/// The arguments the new exe starts with after a staged install (2026-10-29): [`restart_args`], plus the flags of
+/// `argv` (this run's arguments, without the exe) that the restarted run must keep. `--e2e` above all: a test run's
+/// window must come back offscreen. Folders named on the command line are not repeated (the tabs come back from
+/// `tabs.json`).
+pub fn restart_args_keeping(user_data_dir: Option<&Path>, argv: &[String]) -> Vec<String> {
+    let mut out = restart_args(user_data_dir);
+    let mut i = 0;
+    while i < argv.len() {
+        let a = argv[i].as_str();
+        match a {
+            "--e2e" | "--no-import" | "--no-plugins" => out.push(a.to_string()),
+            "--renderer" => {
+                if let Some(v) = argv.get(i + 1) {
+                    out.push(a.to_string());
+                    out.push(v.clone());
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn a_staged_restart_keeps_the_profile_and_the_test_flags_but_no_folders() {
+        let argv: Vec<String> = [
+            "--user-data-dir=C:\\p",
+            "--e2e",
+            "--renderer",
+            "software",
+            "C:\\some\\folder",
+            "--no-plugins",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            restart_args_keeping(Some(Path::new("C:\\p")), &argv),
+            vec![
+                "--user-data-dir=C:\\p",
+                "--e2e",
+                "--renderer",
+                "software",
+                "--no-plugins"
+            ]
+        );
+        assert_eq!(
+            restart_args_keeping(None, &["C:\\x".to_string()]),
+            Vec::<String>::new()
+        );
+    }
 
     #[test]
     fn restarts_plainly_when_no_profile_was_named() {

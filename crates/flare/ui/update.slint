@@ -171,6 +171,57 @@ export component UpdateNotice inherits Rectangle {
     accessible-label: root.text;
 }
 
+// The staged build's toast (install when idle, 2026-10-29): the notice's surface, one line, and a button when it has
+// one ("Cancel" while it counts down to the install). Hidden while its text is empty. The parent places it under the
+// "Build ready" chip, right-aligned to it.
+export component StagedToast inherits Rectangle {
+    in property <string> text;                // "" hides it
+    in property <string> button;              // "" for no button
+    callback clicked();                       // the button
+    out property <length> toast-w: Px.snap(10px + body.preferred-width + (root.button != "" ? 10px + btn.width : 0px) + 10px + 2 * Px.hair());
+    out property <length> toast-h: Px.snap(max(body.preferred-height + 12px, root.button != "" ? 30px + 12px : 0px) + 2 * Px.hair());
+
+    visible: root.text != "";
+    width: root.toast-w;
+    height: root.toast-h;
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.side-flat;
+        border-radius: 6px;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        drop-shadow-offset-y: 10px;
+        drop-shadow-blur: 30px;
+        drop-shadow-color: #00000073;
+    }
+
+    // Takes the pointer over the whole toast, so a press never falls through to the bar beneath.
+    TouchArea { }
+
+    body := Text {
+        x: Px.snap(10px) + Px.hair();
+        y: Px.snap((root.height - self.preferred-height) / 2);
+        text: root.text;
+        wrap: no-wrap;
+        font-family: Theme.font-ui;
+        font-size: 11.5px;
+        color: Theme.text;
+    }
+
+    btn := DialogButton {
+        x: root.width - Px.snap(10px) - Px.hair() - self.width;
+        y: Px.snap((root.height - self.height) / 2);
+        shown: root.button != "";
+        label: root.button;
+        clicked => { root.clicked(); }
+    }
+
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+}
+
 // The chip, its notice and the title-bar buttons' block in a 1000 x 120 window (the bar is 36 px high).
 // The chip sits 10 px left of a 154 px button block; positions use the same snapping as geom.rs.
 export component UpdateChipPreview inherits Window {

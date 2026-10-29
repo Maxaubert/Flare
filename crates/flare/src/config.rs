@@ -84,6 +84,9 @@ pub struct Args {
     pub no_import: bool,
     /// `--no-plugins`: every plugin stays off this start (safe mode); the switches are back the next start.
     pub no_plugins: bool,
+    /// `--after-pid N` (install when idle): the build that restarted into this one; start-up waits for it to end
+    /// before it takes the single-instance lock, so the new window comes back the moment the old one is gone.
+    pub after_pid: Option<u32>,
     /// `--scene <name>`: a headless scene for the screenshots.
     pub scene: Option<String>,
     /// `--live-tabs <n>`: how many live tabs a scene shows.
@@ -124,6 +127,7 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
         e2e: false,
         no_import: false,
         no_plugins: false,
+        after_pid: None,
         scene: None,
         live_tabs: None,
         instance_probe: false,
@@ -165,6 +169,12 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
             "--e2e" => out.e2e = true,
             "--no-import" => out.no_import = true,
             "--no-plugins" => out.no_plugins = true,
+            "--after-pid" => {
+                let pid: u32 = value(args, &mut i, flag)?
+                    .parse()
+                    .map_err(|_| "--after-pid needs a process id".to_string())?;
+                out.after_pid = Some(pid);
+            }
             "--instance-probe" => out.instance_probe = true,
             "--preview-update" => out.preview_update = true,
             "--scene" => out.scene = Some(value(args, &mut i, flag)?.to_string()),
@@ -459,6 +469,13 @@ mod tests {
         assert!(parse_args(&a(&["--no-import=yes"]), None).is_err());
         assert!(parse_args(&a(&["--no-plugins"]), None).unwrap().no_plugins);
         assert!(!parse_args(&a(&[]), None).unwrap().no_plugins);
+        assert_eq!(
+            parse_args(&a(&["--after-pid", "4242"]), None)
+                .unwrap()
+                .after_pid,
+            Some(4242)
+        );
+        assert!(parse_args(&a(&["--after-pid", "x"]), None).is_err());
     }
 
     #[test]

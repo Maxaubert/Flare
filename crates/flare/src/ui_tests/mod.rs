@@ -42,6 +42,7 @@ mod settings_view;
 mod settings_wall;
 mod sidebar;
 mod skeleton;
+mod staged_flows;
 mod start;
 mod strip;
 mod term;

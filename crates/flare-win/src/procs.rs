@@ -139,6 +139,23 @@ fn command_line(pid: u32) -> String {
     out
 }
 
+/// Waits until process `pid` has ended, at most `max`. True when it is gone (or was never there to open).
+pub fn wait_for_exit(pid: u32, max: std::time::Duration) -> bool {
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Threading::{PROCESS_SYNCHRONIZE, WaitForSingleObject};
+    // SAFETY: plain values in; a null handle means the process is gone or not ours, and is checked.
+    let h = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if h.is_null() {
+        return true;
+    }
+    let ms = u32::try_from(max.as_millis()).unwrap_or(u32::MAX);
+    // SAFETY: `h` is a live handle opened with SYNCHRONIZE.
+    let r = unsafe { WaitForSingleObject(h, ms) };
+    // SAFETY: `h` came from a successful OpenProcess and is closed once.
+    unsafe { CloseHandle(h) };
+    r == WAIT_OBJECT_0
+}
+
 /// When the process was created (FILETIME ticks); None when it cannot be opened or read.
 fn creation_time(pid: u32) -> Option<u64> {
     use windows_sys::Win32::Foundation::FILETIME;
@@ -215,6 +232,21 @@ pub fn snapshot_processes(roots: &[u32], wanted: &dyn Fn(&str) -> bool) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waiting_for_an_ended_process_returns_at_once_and_a_live_one_times_out() {
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "exit"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        assert!(wait_for_exit(pid, std::time::Duration::from_secs(2)));
+        let me = std::process::id();
+        let t = std::time::Instant::now();
+        assert!(!wait_for_exit(me, std::time::Duration::from_millis(100)));
+        assert!(t.elapsed() >= std::time::Duration::from_millis(90));
+    }
 
     #[test]
     fn descendants_walks_the_tree_and_survives_a_cycle() {

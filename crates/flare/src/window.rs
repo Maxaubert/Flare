@@ -1313,6 +1313,23 @@ pub fn run_window(
             );
             update_engine = Some((engine, choice.preset_offer));
         }
+        // Install when idle (2026-10-29): an installed copy watches for a build the agent staged.
+        if let Some((layout, start)) = crate::appctl::staged_glue::started() {
+            AppCtl::attach_staged(
+                &rc,
+                crate::appctl::staged_glue::StagedParts {
+                    layout,
+                    start,
+                    times: crate::appctl::staged_glue::times(),
+                    spawn: crate::update_ctl::std_spawn(),
+                    restart: crate::appctl::staged_glue::spawn_exe(),
+                    watch: true,
+                    user_data_dir: args.user_data_dir.clone(),
+                    argv: std::env::args().skip(1).collect(),
+                    e2e_dir: args.e2e.then(|| inst.profile.dir.clone()),
+                },
+            );
+        }
         // The Settings controller (Task 41). Task 44 swaps the stand-ins (the diagnostics control,
         // the shell list) for the real ones.
         {
