@@ -23,6 +23,7 @@ fn button(id: &str, label: &str) -> SetButton {
         label_alt: SharedString::new(),
         off: false,
         alt: false,
+        ..Default::default()
     }
 }
 

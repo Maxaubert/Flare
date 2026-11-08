@@ -82,8 +82,14 @@ pub enum ModsMsg {
         /// What the Settings card listed; None for a switch that did not come from a row (the tests).
         shown: Option<flare_mods::hub::Shown>,
     },
-    /// Settings: show the mod's panel in the most recent shell tab.
+    /// Settings: show the mod's panel in the most recent shell tab (its details sheet's "Open" button).
     ShowPanel { id: String },
+    /// Settings: the person set one of the plugin's permissions on its details sheet (`flare_mods::grants`).
+    SetChoice {
+        id: String,
+        key: String,
+        value: String,
+    },
     /// The ping timer (every [`PING_EVERY`] while a background page runs).
     Tick,
     /// A tab's follower read new entries of its Claude session (plugins phase 5): for the pages that listen to
@@ -154,6 +160,7 @@ impl std::fmt::Debug for ModsMsgBox {
             ModsMsg::Rescan => "ModsMsg::Rescan",
             ModsMsg::SetEnabled { .. } => "ModsMsg::SetEnabled",
             ModsMsg::ShowPanel { .. } => "ModsMsg::ShowPanel",
+            ModsMsg::SetChoice { .. } => "ModsMsg::SetChoice",
             ModsMsg::Tick => "ModsMsg::Tick",
             ModsMsg::Said { .. } => "ModsMsg::Said",
             ModsMsg::Enter { .. } => "ModsMsg::Enter",
@@ -817,6 +824,16 @@ pub fn info_of(
                     needs_approval: m.needs_approval,
                     stopped: m.stopped,
                     source: m.source.unwrap_or_default(),
+                    brand_color: m
+                        .brand
+                        .as_ref()
+                        .map(|b| b.color.clone())
+                        .unwrap_or_default(),
+                    logo: m
+                        .brand
+                        .as_ref()
+                        .and_then(|b| b.icon.clone())
+                        .unwrap_or_default(),
                 }
             })
             .collect(),
@@ -892,6 +909,23 @@ impl crate::settings_ctl::ModsPort for ModsSettings {
     fn remove(&self, id: &str) {
         (self.post)(UiMsg::Mods(ModsMsgBox(ModsMsg::Remove {
             id: id.to_string(),
+        })));
+    }
+
+    fn sheet(&self, id: &str) -> Option<crate::plugin_look::Sheet> {
+        let f = self.hub.found(id)?;
+        Some(crate::plugin_look::sheet_of(
+            &f.manifest,
+            &self.hub.choices_of(id),
+            self.hub.is_enabled(id),
+        ))
+    }
+
+    fn set_choice(&self, id: &str, key: &str, value: &str) {
+        (self.post)(UiMsg::Mods(ModsMsgBox(ModsMsg::SetChoice {
+            id: id.to_string(),
+            key: key.to_string(),
+            value: value.to_string(),
         })));
     }
 }

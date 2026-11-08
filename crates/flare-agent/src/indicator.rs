@@ -526,7 +526,7 @@ impl Indicator {
                 && self.agent_kinds.contains_key(tab)
                 && let Some(&state) = self.status.get(tab)
             {
-                self.apply_status(tab, state);
+                self.apply_status(tab, state, " (kept until the agent was found)");
             }
         } else {
             self.agent_ids.remove(tab);
@@ -636,12 +636,12 @@ impl Indicator {
         if self.hooked.contains_key(tab) {
             return;
         }
-        let state = match status {
+        let (state, note) = match status {
             ProgramStatus::Clear => {
                 self.drop_status(tab, "status cleared");
                 return;
             }
-            ProgramStatus::Report(r) => r.state,
+            ProgramStatus::Report(r) => (r.state, r.log_note()),
         };
         if self.status.insert(tab.to_string(), state).is_none() {
             self.output_runs.remove(tab);
@@ -653,7 +653,7 @@ impl Indicator {
             self.ask_look(now, tab, effects);
             return;
         }
-        self.apply_status(tab, state);
+        self.apply_status(tab, state, &note);
     }
 
     /// The reports go, and the marks they set with them: the tab's titles and output speak again.
@@ -672,8 +672,9 @@ impl Indicator {
     }
 
     /// The marks one status says: working, blocked (a question), done, error (failed) or idle.
-    fn apply_status(&mut self, tab: &str, state: ProgramState) {
-        self.why(tab, &format!("status {}", state.as_str()));
+    /// `note` is the report's log note (kind, app, message length), or empty.
+    fn apply_status(&mut self, tab: &str, state: ProgramState, note: &str) {
+        self.why(tab, &format!("status {}{note}", state.as_str()));
         self.agent_ids.insert(tab.to_string());
         let away = !self.looked_at(tab);
         match state {
@@ -2437,6 +2438,42 @@ mod tests {
         assert!(h.ind.failed_ids().is_empty());
         status(&mut h, 40, "front", "state=blocked:kind=question");
         assert!(has(h.ind.question_ids(), "front"));
+    }
+
+    #[test]
+    fn the_log_says_why_a_program_is_blocked_but_never_its_message() {
+        let mut h = H::fronted();
+        h.poll(0, "t1", true, Some(DetectedAgent::Agy));
+        h.ind.drain_log();
+        let msg = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "Run rm on secret.txt?",
+        );
+        status(
+            &mut h,
+            10,
+            "t1",
+            &format!("state=blocked:kind=permission:app=agy:msg={msg}"),
+        );
+        status(&mut h, 20, "t1", "state=blocked");
+        let whys: Vec<String> = h
+            .ind
+            .drain_log()
+            .into_iter()
+            .filter_map(|l| match l {
+                LogItem::Why { why, .. } => Some(why),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            whys.contains(&"status blocked (kind permission, app agy, msg 21 chars)".to_string()),
+            "{whys:?}"
+        );
+        assert!(
+            whys.contains(&"status blocked (kind none)".to_string()),
+            "{whys:?}"
+        );
+        assert!(whys.iter().all(|w| !w.contains("secret")), "{whys:?}");
     }
 
     #[test]

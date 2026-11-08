@@ -366,10 +366,38 @@ fn the_live_pipe_carries_the_owner_only_descriptor() {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{
-        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+        ConvertSecurityDescriptorToStringSecurityDescriptorW,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
         SE_KERNEL_OBJECT,
     };
-    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+
+    /// The DACL of `sd` as SDDL text, in the system's own spelling.
+    fn dacl_text(sd: PSECURITY_DESCRIPTOR) -> String {
+        let mut text: *mut u16 = std::ptr::null_mut();
+        let mut len = 0u32;
+        // SAFETY: `sd` is a valid descriptor; `text` receives a LocalAlloc'd string freed below.
+        let ok = unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                sd,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut text,
+                &mut len,
+            )
+        };
+        assert_ne!(ok, 0);
+        // SAFETY: `text` is `len` UTF-16 units including the NUL.
+        let out =
+            String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len as usize) })
+                .trim_end_matches('\0')
+                .to_string();
+        // SAFETY: it came from the call above and is freed once.
+        unsafe {
+            LocalFree(text as _);
+        }
+        out
+    }
 
     let (server, name) = start(ServerConfig::default());
     let file = std::fs::OpenOptions::new()
@@ -392,31 +420,39 @@ fn the_live_pipe_carries_the_owner_only_descriptor() {
         )
     };
     assert_eq!(rc, 0, "GetSecurityInfo failed");
-    let mut text: *mut u16 = std::ptr::null_mut();
-    let mut len = 0u32;
-    // SAFETY: `sd` is the descriptor just read; `text` receives a LocalAlloc'd string.
-    let ok = unsafe {
-        ConvertSecurityDescriptorToStringSecurityDescriptorW(
-            sd,
-            SDDL_REVISION_1,
-            DACL_SECURITY_INFORMATION,
-            &mut text,
-            &mut len,
-        )
-    };
-    assert_ne!(ok, 0);
-    // SAFETY: `text` is `len` UTF-16 units including the NUL.
-    let sddl = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len as usize) })
-        .trim_end_matches('\0')
-        .to_string();
-    // SAFETY: both came from the calls above and are freed once.
+    let sddl = dacl_text(sd);
+    // SAFETY: it came from GetSecurityInfo above and is freed once.
     unsafe {
-        LocalFree(text as _);
         LocalFree(sd);
     }
     let sid = flare_ctl::pipe::user_sid().unwrap();
-    // Generic-all reads back as file-all; there is exactly one ACE and the DACL is protected.
-    assert_eq!(sddl, format!("D:P(A;;FA;;;{sid})"));
+    // Generic-all reads back as file-all; there is exactly one ACE, for the current user's SID, and the
+    // DACL is protected. The expected DACL goes through the same SDDL writer as the live one, because
+    // that writer spells a well-known SID by its alias: on a GitHub runner the user IS the built-in
+    // Administrator (RID 500), so the live ACE reads `LA`, the same SID as `S-1-5-21-...-500`. The
+    // round trip changes only the spelling: a second ACE, another SID or a missing `P` still differ.
+    let want_text: Vec<u16> = format!("D:P(A;;FA;;;{sid})")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut want_sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: `want_text` is NUL-terminated UTF-16; `want_sd` receives a LocalAlloc'd descriptor.
+    let ok = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            want_text.as_ptr(),
+            SDDL_REVISION_1,
+            &mut want_sd,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(ok, 0, "the expected SDDL parses");
+    let want = dacl_text(want_sd);
+    // SAFETY: it came from the call above and is freed once.
+    unsafe {
+        LocalFree(want_sd);
+    }
+    assert!(want.starts_with("D:P(A;;FA;;;"), "{want}");
+    assert_eq!(sddl, want);
     drop(file);
     server.stop();
 }

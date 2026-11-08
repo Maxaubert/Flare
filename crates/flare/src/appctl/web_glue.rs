@@ -600,6 +600,7 @@ impl AppCtl {
                 json!({
                     "tab": t,
                     "visible": p.as_ref().map(|p| p.visible),
+                    "bounds": p.as_ref().map(|p| json!({"x": p.bounds.x, "y": p.bounds.y, "w": p.bounds.w, "h": p.bounds.h})),
                     "url": self.web.tab_url(t),
                 })
             })

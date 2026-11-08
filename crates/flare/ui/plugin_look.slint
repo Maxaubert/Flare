@@ -1,0 +1,79 @@
+// A plugin's own look on the surfaces it owns (2026-11-08, docs/surfaces/plugins.md "Brand"): its details sheet, its
+// questions (secret.ask, the fill approval) and its item in the tab menu. Never on Flare's own chrome.
+// A plugin with a brand gets the fixed dark brand surface (navy ground, slate cards and lines, white text) and its
+// own colour for the buttons, the chosen level, an on toggle and the focus ring; one without wears Flare's theme.
+// Amber (full control, "Always allow") is the same warning colour on both, never neutral.
+import { Theme, Px, SettingsInk, BrandInk } from "theme.slint";
+
+// `branded`: the plugin has a brand. `accent` its colour, `accent-hi` a lighter tint of it (links, focus ring, the
+// usual level). `logo`: SVG path data on the 24-unit box; with `plate` it is the brand's logo, filled in `accent` on
+// a white rounded tile, else a stroked glyph (Flare's chip) on the settings tile.
+export struct PluginLook { branded: bool, accent: color, accent-hi: color, logo: string, plate: bool }
+
+export global PluginInk {
+    pure public function bg(l: PluginLook) -> color { return l.branded ? BrandInk.bg : Theme.side-flat; }
+    pure public function field(l: PluginLook) -> color { return l.branded ? BrandInk.field : Theme.ground; }
+    pure public function card(l: PluginLook) -> color { return l.branded ? BrandInk.card : Theme.control; }
+    pure public function line(l: PluginLook) -> color { return l.branded ? BrandInk.line : Theme.divider; }
+    pure public function text(l: PluginLook) -> color { return l.branded ? BrandInk.text : Theme.text; }
+    pure public function muted(l: PluginLook) -> color { return l.branded ? BrandInk.muted : Theme.text-soft; }
+    pure public function dim(l: PluginLook) -> color { return l.branded ? BrandInk.dim : Theme.dim; }
+    pure public function accent(l: PluginLook) -> color { return l.branded ? l.accent : Theme.accent; }
+    pure public function accent-hi(l: PluginLook) -> color { return l.branded ? l.accent-hi : Theme.accent-hi; }
+    pure public function on-accent(l: PluginLook) -> color { return l.branded ? BrandInk.text : Theme.on-accent; }
+    pure public function warn(l: PluginLook) -> color { return l.branded ? BrandInk.warn : SettingsInk.warn; }
+    pure public function on-warn(l: PluginLook) -> color { return BrandInk.on-warn; }
+    // A tone (0 plain, 1 the brand's usual, 2 amber) as text on the surface.
+    pure public function tone(l: PluginLook, t: int) -> color {
+        return t == 2 ? PluginInk.warn(l) : (t == 1 ? PluginInk.accent-hi(l) : PluginInk.text(l));
+    }
+}
+
+// The plugin's logo at `size`: the brand's on its white tile, or Flare's chip glyph on a tile. The chip's tile is the
+// settings tile on Flare's theme, and a slate card with light ink on the fixed dark brand surface (a brand with a
+// colour and no logo), so it reads in the light theme too.
+export component PluginLogo inherits Rectangle {
+    in property <PluginLook> look;
+    in property <length> size: 40px;
+    width: root.size;
+    height: root.size;
+    accessible-role: none;
+
+    if root.look.plate: Rectangle {
+        x: root.size / 24;
+        y: root.size / 24;
+        width: root.size * 22 / 24;
+        height: root.size * 22 / 24;
+        border-radius: root.size * 3 / 24;
+        background: BrandInk.plate;
+    }
+    if root.look.plate: Path {
+        width: root.size;
+        height: root.size;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.look.logo;
+        fill: PluginInk.accent(root.look);
+        stroke: transparent;
+    }
+    if !root.look.plate: Rectangle {
+        width: root.size;
+        height: root.size;
+        border-radius: max(4px, root.size / 8);
+        background: root.look.branded ? PluginInk.card(root.look) : SettingsInk.tile-fill;
+        Path {
+            x: root.size / 4 - (1.7 * root.size / 2 / 24) / 2;
+            y: root.size / 4 - (1.7 * root.size / 2 / 24) / 2;
+            width: root.size / 2 + 1.7 * root.size / 2 / 24;
+            height: root.size / 2 + 1.7 * root.size / 2 / 24;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: root.look.logo;
+            fill: transparent;
+            stroke: root.look.branded ? PluginInk.muted(root.look) : Theme.text-soft;
+            stroke-width: 1.7 * root.size / 2 / 24;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+    }
+}

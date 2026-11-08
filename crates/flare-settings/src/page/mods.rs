@@ -1,18 +1,20 @@
-//! The Plugins page (Surfaces stage 8, plugins phase 2): the mods and plugins Flare found, what each may do in plain
-//! words, a switch for each (off until the user turns it on), the folders that are not mods and why, and a button
-//! that opens the plugins folder (the one folder for both protocols). Plugins phase 7 adds the install rows (from a
-//! `.zip` file, or from an `https` address typed in a text field) and an Update and a Remove button on each card's
-//! switch row; what the last install said is the install row's subtext. The page keeps its key `mods` and is titled
-//! Plugins. A protocol 1 mod's
-//! rows are what they always were; a protocol 2 plugin adds who made it (`modby:<id>`) and, for the permissions
-//! that reach furthest, the warnings (`modwarn:<id>`). The rows are not in the closed row tables: there is one set
-//! per mod found, so their ids are made from the mod's id (`mod:<id>`, `modperm:<id>`) and interned once. The
-//! contract is `docs/surfaces/plugins.md` (protocol 1: `docs/surfaces/mods.md`).
+//! The Plugins page (Surfaces stage 8, plugins phase 2): the mods and plugins Flare found, a switch for each (off until
+//! the user turns it on), the folders that are not mods and why, and a button that opens the plugins folder (the one
+//! folder for both protocols). Plugins phase 7 adds the install rows (from a `.zip` file, or from an `https` address
+//! typed in a text field); what the last install said is the install row's subtext. The page keeps its key `mods` and
+//! is titled Plugins.
+//!
+//! Each mod is a card of ONE row (2026-11-08, `docs/superpowers/specs/2026-11-08-plugin-brand-and-sheet.md`): its logo
+//! (the brand's, else the chip), name and version, its description, the switch, Update, an info button that opens
+//! the details sheet (what it may do in plain words, who made it, the warnings and the person's choices, drawn by the
+//! app) and a trash button (Remove). The rows are not in the closed row tables: there is one per mod found, so its id
+//! is made from the mod's id (`mod:<id>`) and interned once. The contract is `docs/surfaces/plugins.md` (protocol 1:
+//! `docs/surfaces/mods.md`).
 
 use std::collections::HashSet;
 use std::sync::Mutex;
 
-use super::{BlockModel, Button, Control, PageEnv, PageModel, RowModel, SectionModel};
+use super::{BlockModel, Button, Control, Logo, PageEnv, PageModel, RowModel, SectionModel};
 
 /// One mod as the page shows it. `permissions` are already plain words.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -41,6 +43,9 @@ pub struct ModInfo {
     pub stopped: Option<String>,
     /// Where Settings installed it from (an `https` address); empty for a file or a folder put there by hand.
     pub source: String,
+    /// Protocol 2: its brand colour (`#rrggbb`) and logo path, empty without a brand (the card draws its chip).
+    pub brand_color: String,
+    pub logo: String,
 }
 
 /// A folder in the plugins folder that is not a mod (or one left in the old mods folder), and why.
@@ -76,16 +81,16 @@ pub struct ModsInfo {
 
 /// The id of the row that opens the plugins folder.
 pub const FOLDER_ROW: &str = "plugins-folder";
-/// The prefix of a plugin's maker row (then the plugin's id).
-pub const BY_PREFIX: &str = "modby:";
-/// The prefix of a plugin's warnings row (then the plugin's id).
-pub const WARN_PREFIX: &str = "modwarn:";
 /// The page's title in the rail and at its top.
 pub const TITLE: &str = "Plugins";
-/// The prefix of a mod's switch row (then the mod's id).
+/// The prefix of a mod's row (then the mod's id): the card's one row.
 pub const SWITCH_PREFIX: &str = "mod:";
-/// The prefix of a mod's permissions row (then the mod's id).
-pub const PERMS_PREFIX: &str = "modperm:";
+/// The id of a card's info button: it opens the plugin's details sheet.
+pub const INFO_BUTTON: &str = "info";
+/// The tooltip of a card's trash button.
+pub const REMOVE_TIP: &str = "Remove (to the Recycle Bin)";
+/// The tooltip (and the screen reader's name) of a card's info button.
+pub const INFO_TIP: &str = "Details and permissions";
 /// The row that installs a plugin from a file, and the one with the address field.
 pub const INSTALL_ROW: &str = "plugins-install";
 pub const URL_ROW: &str = "plugins-url";
@@ -98,9 +103,8 @@ pub const INSTALLING: &str = "Working on it...";
 pub const FOLDER_UNKNOWN: &str = "Where plugins are kept.";
 /// The maker row when the plugin does not say who made it.
 pub const NO_AUTHOR: &str = "The plugin does not say who made it.";
-/// The label of the warnings row of a plugin that asks for full control.
-pub const FULL_CONTROL: &str = "Full control";
-/// The label of the warnings row of a plugin whose permissions together reach further than each alone.
+/// The lead of the warnings of a plugin whose permissions together reach further than each alone (a full control
+/// warning leads with its own "Full control:").
 pub const TAKE_NOTE: &str = "Before you turn it on";
 /// The words under a mod's switch when it asks for permissions that were never allowed.
 pub const NEEDS_APPROVAL: &str =
@@ -141,6 +145,7 @@ fn plain(id: &'static str, icon: &'static str, label: String, sub: String) -> Ro
         control: Control::None,
         reset: false,
         buttons: Vec::new(),
+        logo: None,
     }
 }
 
@@ -174,6 +179,7 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
             label: "Open plugins folder".to_string(),
             alt: None,
             off: info.dir.is_empty(),
+            ..Button::default()
         }],
         ..plain(
             FOLDER_ROW,
@@ -232,6 +238,7 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
                 label: "Install from file".to_string(),
                 alt: None,
                 off: info.installing,
+                ..Button::default()
             }],
             ..plain(
                 INSTALL_ROW,
@@ -253,6 +260,7 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
                 label: "Install".to_string(),
                 alt: None,
                 off: info.installing,
+                ..Button::default()
             }],
             ..plain(
                 URL_ROW,
@@ -264,21 +272,23 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
     );
     sections.push(section("mods", String::new(), top));
 
-    // One card per mod: the switch, and what the mod may do.
+    // One card per mod, one row: its logo, name and version, the description, the switch, Update, the info button
+    // (the details sheet: what it may do, who made it, the person's choices) and Remove. The card has no heading: its
+    // row names it.
     for m in &info.mods {
         let switch_id = intern(format!("{SWITCH_PREFIX}{}", m.id));
-        let perms_id = intern(format!("{PERMS_PREFIX}{}", m.id));
-        let words = if m.permissions.is_empty() {
-            "Nothing: it only answers when asked.".to_string()
-        } else {
-            m.permissions.join(", ")
-        };
         let mut switch = plain(
             switch_id,
             "chip",
             format!("{} {}", m.name, m.version),
             m.description.clone(),
         );
+        if !m.logo.is_empty() {
+            switch.logo = Some(Logo {
+                path: m.logo.clone(),
+                color: m.brand_color.clone(),
+            });
+        }
         if m.needs_approval {
             switch.sub = NEEDS_APPROVAL.to_string();
             switch.warn = true;
@@ -289,53 +299,29 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
         switch.tap = true;
         switch.control = Control::Switch { on: m.enabled };
         // Update installs a newer copy (from where it came, or a file); Remove sends the folder to the Recycle Bin.
-        switch.buttons = vec![
-            Button {
-                id: "update",
-                label: "Update".to_string(),
-                alt: None,
-                off: info.installing,
-            },
-            Button {
-                id: "remove",
-                label: "Remove".to_string(),
-                alt: None,
-                off: info.installing,
-            },
-        ];
-        let mut perms = plain(perms_id, "key", "Allowed to".to_string(), words);
-        if m.has_panel {
-            perms.buttons.push(Button {
-                id: "show",
-                label: "Show panel".to_string(),
-                alt: None,
-                off: !m.enabled,
-            });
-        }
-        let mut blocks = vec![BlockModel::Row(switch)];
-        if m.plugin {
-            blocks.push(BlockModel::Row(by_row(m)));
-        }
-        blocks.push(BlockModel::Row(perms));
-        if m.plugin && !m.warnings.is_empty() {
-            blocks.push(BlockModel::Row(RowModel {
-                warn: true,
-                ..plain(
-                    intern(format!("{WARN_PREFIX}{}", m.id)),
-                    "warn",
-                    if m.full_control {
-                        FULL_CONTROL.to_string()
-                    } else {
-                        TAKE_NOTE.to_string()
-                    },
-                    m.warnings.join(" "),
-                )
-            }));
-        }
+        switch.buttons.push(Button {
+            id: "update",
+            label: "Update".to_string(),
+            off: info.installing,
+            ..Button::default()
+        });
+        switch.buttons.push(Button {
+            id: INFO_BUTTON,
+            icon: "info",
+            tip: INFO_TIP.to_string(),
+            ..Button::default()
+        });
+        switch.buttons.push(Button {
+            id: "remove",
+            off: info.installing,
+            icon: "trash",
+            tip: REMOVE_TIP.to_string(),
+            ..Button::default()
+        });
         sections.push(section(
             intern(format!("modcard:{}", m.id)),
-            m.name.clone(),
-            blocks,
+            String::new(),
+            vec![BlockModel::Row(switch)],
         ));
     }
 
@@ -378,26 +364,9 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
     }
 }
 
-/// Who made a plugin and where it lives: `author, homepage`, or what is known of the two.
-fn by_row(m: &ModInfo) -> RowModel {
-    let sub = match (m.author.is_empty(), m.homepage.is_empty()) {
-        (false, false) => format!("{}, {}", m.author, m.homepage),
-        (false, true) => m.author.clone(),
-        (true, false) => format!("{NO_AUTHOR} {}", m.homepage),
-        (true, true) => NO_AUTHOR.to_string(),
-    };
-    plain(
-        intern(format!("{BY_PREFIX}{}", m.id)),
-        "about",
-        "Made by".to_string(),
-        sub,
-    )
-}
-
-/// The mod a row id names (its switch or its permissions row).
+/// The mod a row id names.
 pub fn mod_of_row(row: &str) -> Option<&str> {
     row.strip_prefix(SWITCH_PREFIX)
-        .or_else(|| row.strip_prefix(PERMS_PREFIX))
 }
 
 #[cfg(test)]
@@ -457,100 +426,61 @@ mod tests {
     }
 
     #[test]
-    fn a_protocol_1_mod_has_exactly_its_two_rows_and_no_plugin_rows() {
-        with_env_mods(info(vec![notes(true)]), |env| {
-            let page = build(env);
-            let card = page
-                .sections
-                .iter()
-                .find(|s| s.id == "modcard:notes")
-                .unwrap();
-            let ids: Vec<&str> = card
-                .blocks
-                .iter()
-                .filter_map(|b| match b {
-                    BlockModel::Row(r) => Some(r.id),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(ids, ["mod:notes", "modperm:notes"]);
-            assert_eq!(row_of(&page, "mod:notes").unwrap().label, "Notes 1.0.0");
-        });
-    }
-
-    #[test]
-    fn a_plugin_card_adds_who_made_it_and_the_warnings_in_plain_words() {
-        with_env_mods(info(vec![todo(false)]), |env| {
-            let page = build(env);
-            let card = page
-                .sections
-                .iter()
-                .find(|s| s.id == "modcard:todo")
-                .unwrap();
-            let ids: Vec<&str> = card
-                .blocks
-                .iter()
-                .filter_map(|b| match b {
-                    BlockModel::Row(r) => Some(r.id),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(
-                ids,
-                ["mod:todo", "modby:todo", "modperm:todo", "modwarn:todo"]
-            );
-            let sw = row_of(&page, "mod:todo").unwrap();
-            assert_eq!(sw.label, "Session to-dos 1.0.0");
-            assert_eq!(sw.control, Control::Switch { on: false });
-            let by = row_of(&page, "modby:todo").unwrap();
-            assert_eq!(by.label, "Made by");
-            assert_eq!(by.sub, "someone, https://example.com/todo");
-            let perms = row_of(&page, "modperm:todo").unwrap();
-            assert!(perms.sub.contains("(full control)"), "{}", perms.sub);
-            let warn = row_of(&page, "modwarn:todo").unwrap();
-            assert!(warn.warn);
-            assert_eq!(warn.label, FULL_CONTROL);
-            assert!(warn.sub.starts_with("Full control:"), "{}", warn.sub);
-            assert!(warn.sub.contains("steer Claude"), "{}", warn.sub);
-        });
-    }
-
-    #[test]
-    fn a_plugin_without_full_control_notes_the_combined_reach_and_one_without_warnings_has_no_row()
-    {
-        let mut t = todo(false);
-        t.full_control = false;
-        t.warnings = vec!["It can send what you and Claude say to the internet.".into()];
-        with_env_mods(info(vec![t.clone()]), |env| {
-            let page = build(env);
-            assert_eq!(row_of(&page, "modwarn:todo").unwrap().label, TAKE_NOTE);
-        });
-        t.warnings.clear();
-        with_env_mods(info(vec![t]), |env| {
-            assert!(row_of(&build(env), "modwarn:todo").is_none());
-        });
-    }
-
-    #[test]
-    fn the_maker_row_says_what_is_known() {
-        for (author, homepage, want) in [
-            ("me", "", "me".to_string()),
-            (
-                "",
-                "https://x.test/",
-                format!("{NO_AUTHOR} https://x.test/"),
-            ),
-            ("", "", NO_AUTHOR.to_string()),
-        ] {
-            let mut t = todo(false);
-            t.author = author.into();
-            t.homepage = homepage.into();
-            with_env_mods(info(vec![t]), |env| {
-                assert_eq!(row_of(&build(env), "modby:todo").unwrap().sub, want);
+    fn every_card_is_one_row_with_update_info_and_remove_and_no_heading() {
+        for m in [notes(false), todo(true)] {
+            with_env_mods(info(vec![m.clone()]), |env| {
+                let page = build(env);
+                let card = page
+                    .sections
+                    .iter()
+                    .find(|s| s.id == format!("modcard:{}", m.id))
+                    .expect("the mod's card");
+                assert_eq!(card.title, "", "the row names it");
+                assert_eq!(card.blocks.len(), 1);
+                let id = format!("mod:{}", m.id);
+                let sw = row_of(&page, &id).unwrap();
+                assert_eq!(sw.label, format!("{} {}", m.name, m.version));
+                assert_eq!(sw.sub, m.description);
+                assert!(sw.tap);
+                assert_eq!(sw.control, Control::Switch { on: m.enabled });
+                let b: Vec<(&str, &str, &str)> = sw
+                    .buttons
+                    .iter()
+                    .map(|b| (b.id, b.label.as_str(), b.icon))
+                    .collect();
+                assert_eq!(
+                    b,
+                    [
+                        ("update", "Update", ""),
+                        (INFO_BUTTON, "", "info"),
+                        ("remove", "", "trash")
+                    ]
+                );
+                // The icon buttons say what they are; the info button is never drawn as a warning.
+                assert_eq!(sw.buttons[1].tip, INFO_TIP);
+                assert_eq!(sw.buttons[2].tip, REMOVE_TIP);
+                assert!(sw.buttons.iter().all(|b| !b.warn));
+                assert!(sw.logo.is_none(), "no brand, the chip");
             });
         }
     }
 
+    #[test]
+    fn a_branded_plugin_card_draws_its_logo_in_its_colour() {
+        let mut t = todo(false);
+        t.brand_color = "#175ddc".into();
+        t.logo = "M3 3h18v18H3z".into();
+        with_env_mods(info(vec![t]), |env| {
+            let page = build(env);
+            assert_eq!(
+                row_of(&page, "mod:todo").unwrap().logo,
+                Some(Logo {
+                    path: "M3 3h18v18H3z".into(),
+                    color: "#175ddc".into()
+                })
+            );
+        });
+    }
     #[test]
     fn a_problem_with_the_plugins_folder_itself_names_it() {
         let mut i = info(vec![]);
@@ -611,66 +541,6 @@ mod tests {
             let sw = row_of(&page, "mod:todo").unwrap();
             assert!(!sw.warn && !sw.sub.starts_with("Stopped"));
             assert!(row_of(&page, SAFE_ROW).is_none());
-        });
-    }
-
-    #[test]
-    fn a_mod_is_a_switch_row_and_a_permissions_row_under_its_name() {
-        with_env_mods(info(vec![notes(false)]), |env| {
-            let page = build(env);
-            assert_eq!(page.id, "mods");
-            assert_eq!(page.label, "Plugins");
-            let card = page
-                .sections
-                .iter()
-                .find(|s| s.id == "modcard:notes")
-                .expect("the mod's card");
-            assert_eq!(card.title, "Notes");
-            let sw = row_of(&page, "mod:notes").unwrap();
-            assert_eq!(sw.label, "Notes 1.0.0");
-            assert_eq!(sw.sub, "A notes panel the agent can add a line to.");
-            assert!(sw.tap);
-            assert_eq!(sw.control, Control::Switch { on: false });
-            let perms = row_of(&page, "modperm:notes").unwrap();
-            assert_eq!(perms.label, "Allowed to");
-            assert_eq!(
-                perms.sub,
-                "Show its panel in a tab, Answer the agent's tool calls"
-            );
-            assert_eq!(perms.control, Control::None);
-        });
-    }
-
-    #[test]
-    fn the_permissions_show_before_the_mod_is_turned_on_and_the_panel_button_waits_for_it() {
-        with_env_mods(info(vec![notes(false)]), |env| {
-            let off = build(env);
-            let p = row_of(&off, "modperm:notes").unwrap();
-            assert!(!p.sub.is_empty(), "the words are there while it is off");
-            assert_eq!(p.buttons.len(), 1);
-            assert_eq!(p.buttons[0].id, "show");
-            assert!(p.buttons[0].off, "no panel while the mod is off");
-        });
-        with_env_mods(info(vec![notes(true)]), |env| {
-            let on = build(env);
-            assert!(!row_of(&on, "modperm:notes").unwrap().buttons[0].off);
-            assert_eq!(
-                row_of(&on, "mod:notes").unwrap().control,
-                Control::Switch { on: true }
-            );
-        });
-    }
-
-    #[test]
-    fn a_mod_without_a_panel_has_no_panel_button_and_one_without_permissions_says_so() {
-        let mut m = notes(true);
-        m.has_panel = false;
-        m.permissions.clear();
-        with_env_mods(info(vec![m]), |env| {
-            let page = build(env);
-            let p = row_of(&page, "modperm:notes").unwrap();
-            assert!(p.buttons.is_empty());
-            assert!(p.sub.starts_with("Nothing"), "{}", p.sub);
         });
     }
 
@@ -785,11 +655,10 @@ mod tests {
                 !url.buttons[0].off,
                 "an empty address is answered with a sentence"
             );
-            // Every card's switch row has Update and Remove; the permissions row keeps its Show panel alone.
+            // Every card's row has Update, the info button and Remove.
             let sw = row_of(&page, "mod:notes").unwrap();
             let b: Vec<&str> = sw.buttons.iter().map(|b| b.id).collect();
-            assert_eq!(b, ["update", "remove"]);
-            assert_eq!(row_of(&page, "modperm:notes").unwrap().buttons.len(), 1);
+            assert_eq!(b, ["update", INFO_BUTTON, "remove"]);
         });
         let mut i = info(vec![notes(false)]);
         i.url = "https://example.com/p.zip".into();
@@ -814,6 +683,7 @@ mod tests {
                     .unwrap()
                     .buttons
                     .iter()
+                    .filter(|b| b.id != INFO_BUTTON)
                     .all(|b| b.off)
             );
         });
@@ -847,7 +717,7 @@ mod tests {
     #[test]
     fn a_row_id_names_its_mod() {
         assert_eq!(mod_of_row("mod:notes"), Some("notes"));
-        assert_eq!(mod_of_row("modperm:notes"), Some("notes"));
+        assert_eq!(mod_of_row("modperm:notes"), None);
         assert_eq!(mod_of_row("plugins-folder"), None);
         assert_eq!(mod_of_row("modbad:0"), None);
     }
@@ -866,8 +736,9 @@ mod tests {
             NONE_FOUND,
             FOLDER_UNKNOWN,
             NO_AUTHOR,
-            FULL_CONTROL,
             TAKE_NOTE,
+            INFO_TIP,
+            REMOVE_TIP,
         ] {
             assert!(!t.contains('\u{2014}'));
         }

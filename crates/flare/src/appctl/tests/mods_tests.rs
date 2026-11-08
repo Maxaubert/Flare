@@ -76,6 +76,22 @@ struct World {
 /// The mods hub over the folder `plugins` of the test's directory, the real dispatcher on it, and the controller
 /// told about both. The first scan has finished when this returns.
 fn world(f: &Fx, make: impl FnOnce(&Path)) -> World {
+    world_on(f, make, None)
+}
+
+/// A still clock for the dispatcher's rate limits: a test that spends a second's worth "at once" must not
+/// see the bucket refill while a busy runner takes its time between the calls.
+fn still() -> std::time::Instant {
+    static AT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *AT.get_or_init(std::time::Instant::now)
+}
+
+/// `world` with the dispatcher's rate limits on the still clock.
+fn world_still(f: &Fx, make: impl FnOnce(&Path)) -> World {
+    world_on(f, make, Some(still))
+}
+
+fn world_on(f: &Fx, make: impl FnOnce(&Path), clock: Option<fn() -> std::time::Instant>) -> World {
     let root = f.dir.path().join("plugins");
     std::fs::create_dir_all(&root).unwrap(); // sync-ok: test code only, never the app
     make(&root);
@@ -89,16 +105,18 @@ fn world(f: &Fx, make: impl FnOnce(&Path)) -> World {
         let q = f.q.clone();
         Arc::new(move |m| q.lock().unwrap().push_back(m))
     };
-    let dispatcher = Arc::new(
-        AppDispatcher::new(
-            post,
-            Arc::new(|_| None),
-            Arc::new(|_, _, _| None),
-            "C:\\home".into(),
-            Arc::new(AtomicBool::new(false)),
-        )
-        .with_mods(Arc::clone(&hub)),
-    );
+    let mut dispatcher = AppDispatcher::new(
+        post,
+        Arc::new(|_| None),
+        Arc::new(|_, _, _| None),
+        "C:\\home".into(),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .with_mods(Arc::clone(&hub));
+    if let Some(clock) = clock {
+        dispatcher = dispatcher.with_clock(clock);
+    }
+    let dispatcher = Arc::new(dispatcher);
     let events: Arc<Mutex<Vec<String>>> = Arc::default();
     {
         let seen = Arc::clone(&events);

@@ -157,6 +157,7 @@ pub fn to_menu_row(r: &TermMenuRow) -> MenuRowData {
         flyout: false,
         parent: -1,
         icon_cmd: String::new(),
+        logo: None,
     }
 }
 

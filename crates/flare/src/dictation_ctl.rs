@@ -4794,9 +4794,10 @@ mod page_tests {
     fn the_first_downloaded_model_becomes_active_unless_one_is_and_removing_it_clears_it() {
         let p = page(["a", "b", "c"]);
         assert!(page_button("base", "download"));
-        assert_eq!(
-            run_view("base", 5).0,
-            Some(0),
+        // Under way until the UI thread takes the finish (not pumped yet). The percentage itself is
+        // whatever the download worker has reached: a fast worker is already at 100 on a busy runner.
+        assert!(
+            run_view("base", 5).0.is_some(),
             "the row shows a download under way"
         );
         pump_until("the first model", || active_model() == "base");

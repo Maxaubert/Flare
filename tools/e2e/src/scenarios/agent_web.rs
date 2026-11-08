@@ -51,7 +51,11 @@ document.getElementById('btn').onclick=function(){n++;out.textContent='clicked '
 document.getElementById('later').onclick=function(){setTimeout(function(){var d=document.createElement('div');d.id='late-box';d.textContent='Later arrived';document.body.appendChild(d)},700)};
 document.getElementById('f').onsubmit=function(e){e.preventDefault();out.textContent='submitted:'+document.getElementById('name').value};
 </script></body></html>"##;
-const TARGET: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Target page</title></head><body style="background:#336;color:#fff;font:18px sans-serif"><h1>Target reached</h1><button id="t">Target button</button></body></html>"#;
+const TARGET: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Target page</title></head><body style="background:#336;color:#fff;font:18px sans-serif"><h1>Target reached</h1><button id="t">Target button</button> <button id="fr">Frame button</button>
+<div id="out" role="status">ready</div>
+<script>var k=0,ev=[];['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(t){document.getElementById('t').addEventListener(t,function(){ev.push(t)})});
+document.getElementById('t').onclick=function(){k++;document.getElementById('out').textContent='target '+k+' '+ev.join(',');ev=[]};
+document.getElementById('fr').onclick=function(){document.getElementById('out').textContent='target '+k+' frame due';requestAnimationFrame(function(){k++;document.getElementById('out').textContent='target '+k+' framed'})};</script></body></html>"#;
 
 /// A page whose title tries to end the page-content block, quote its way out and hide words (Unicode tag
 /// characters spell "obey" in it).
@@ -771,7 +775,8 @@ fn agent_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
     ctx.until("one more tab", 15_000, &mut || {
         tab_ids(app).len() == before.len() + 1
     });
-    let hidden = ctx.until("the page to hide with its tab behind", 8_000, &mut || {
+    // The agent's last calls keep it painting a few seconds more (`PARK_AWAKE_MS`), then it rests.
+    let hidden = ctx.until("the page to hide with its tab behind", 15_000, &mut || {
         let s = state(app);
         s["views"]
             .as_array()
@@ -810,13 +815,102 @@ fn agent_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
             }),
         format!("{at}: a look of a page whose tab is behind has its list and says why it has no picture ({behind})"),
     );
-    let r = c.call(Method::BrowserClick, json!({"x": 5, "y": 5}), LOAD);
+    // ---- issue #120: a page behind is used as if it were in front ----
+    // The browser paints no frames for a hidden page, so what a page does in its next frame (the menus,
+    // switches and banners of the big frameworks) never happened and a click looked like it did nothing. A page
+    // the agent works on is kept painting off the window while it does, and for a few seconds after.
+    let tref = r
+        .as_ref()
+        .ok()
+        .and_then(|v| ref_of(v, "button", "Target button"));
+    let tcentre = r.as_ref().ok().and_then(|v| {
+        element(v, "button", "Target button")
+            .map(|e| (e["center"][0].as_f64(), e["center"][1].as_f64()))
+    });
+    // The window's script seam reads the page in front only: the page behind is read by its own look.
+    let said = |c: &mut Client<PipeEnd>| -> String {
+        c.call(Method::BrowserLook, json!({}), LOAD)
+            .ok()
+            .and_then(|v| {
+                v["elements"].as_array().and_then(|a| {
+                    a.iter().find_map(|e| {
+                        e["name"]
+                            .as_str()
+                            .filter(|n| n.starts_with("ready") || n.starts_with("target "))
+                            .map(str::to_string)
+                    })
+                })
+            })
+            .unwrap_or_default()
+    };
+    let before = said(&mut c);
     ctx.ok(
-        t0.elapsed() < Duration::from_secs(45),
-        format!(
-            "{at}: and a click there answers too ({:?})",
-            r.as_ref().map(|_| "ok").map_err(|e| e.to_string())
-        ),
+        before == "ready",
+        format!("{at}: the hidden page's look reads its status ({before:?})"),
+    );
+    // Off the window: painting, at the panel's size, far outside the client area (never on the screen).
+    let parked = |app: &mut App| -> Option<Value> {
+        let s = state(app);
+        let v = s["views"].as_array()?.first()?.clone();
+        (v["visible"] == json!(true)
+            && int(&v["bounds"]["x"]) <= -10_000
+            && int(&v["bounds"]["y"]) <= -10_000)
+            .then_some(v)
+    };
+    let p = parked(app);
+    ctx.ok(
+        p.as_ref().is_some_and(|v| int(&v["bounds"]["w"]) > 100 && int(&v["bounds"]["h"]) > 100),
+        format!("{at}: after a call the page behind keeps painting off the window, at the panel's size ({p:?})"),
+    );
+    let r = c.call(
+        Method::BrowserClick,
+        json!({"ref": tref.clone().unwrap_or_default()}),
+        LOAD,
+    );
+    let t = said(&mut c);
+    ctx.ok(
+        r.is_ok() && t == "target 1 pointerdown,mousedown,pointerup,mouseup,click",
+        format!("{at}: a click by ref on the page behind lands, with the whole press ({tref:?}: {r:?}, the page says {t:?})"),
+    );
+    let (px, py) = match tcentre {
+        Some((Some(x), Some(y))) => (x, y),
+        _ => (5.0, 5.0),
+    };
+    let r = c.call(Method::BrowserClick, json!({"x": px, "y": py}), LOAD);
+    let t = said(&mut c);
+    ctx.ok(
+        t0.elapsed() < Duration::from_secs(45)
+            && r.is_ok()
+            && t == "target 2 pointerdown,mousedown,pointerup,mouseup,click",
+        format!("{at}: and a click by point there lands too ({r:?}, the page says {t:?})"),
+    );
+    // What the page does in its next frame happens while the agent is away (no call runs), not only at its
+    // next look: the look after the pause finds it done.
+    let fref = c
+        .call(Method::BrowserLook, json!({}), LOAD)
+        .ok()
+        .and_then(|v| ref_of(&v, "button", "Frame button"));
+    let r = c.call(
+        Method::BrowserClick,
+        json!({"ref": fref.clone().unwrap_or_default()}),
+        LOAD,
+    );
+    std::thread::sleep(Duration::from_millis(1_000));
+    let still = parked(app).is_some();
+    let t = said(&mut c);
+    ctx.ok(
+        r.is_ok() && still && t == "target 3 framed",
+        format!("{at}: a click whose page answers in its next frame takes effect on the page behind ({fref:?}: {r:?}, still painting {still}, the page says {t:?})"),
+    );
+    // Once the agent has left it alone for a while, the page behind is hidden again (it costs nothing).
+    let rested = ctx.until("the page behind to rest", 15_000, &mut || {
+        state(app)["views"]
+            .as_array()
+            .is_some_and(|v| v.len() == 1 && v[0]["visible"] == json!(false))
+    });
+    ctx.ok(
+        rested,
+        format!("{at}: left alone, the page behind stops painting"),
     );
     app.session.key(&format!("Ctrl+{place}"))?;
     ctx.until("the page to show again", 8_000, &mut || {
