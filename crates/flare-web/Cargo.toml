@@ -15,5 +15,23 @@ webview2-com.workspace = true
 windows.workspace = true
 windows-sys.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+flare-cef = { path = "../flare-cef" }
+serde_json.workspace = true
+objc2.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+# The web host tests' browser process and its CEF helper, run inside a dev bundle (macOS only; on Windows they only
+# say so).
+[[bin]]
+name = "flare-web-cef-probe"
+path = "src/bin/cef_probe.rs"
+
+[[bin]]
+name = "flare-web-cef-helper"
+path = "src/bin/cef_helper.rs"
+
 [lints]
 workspace = true

@@ -876,3 +876,215 @@ account is root. Windows sees every account's listeners and is unchanged. Held b
 `an_in_tree_answer_stands_only_when_the_unseen_family_is_shown_free` and
 `the_loopback_probe_tells_a_held_address_from_a_free_one` (a second account cannot be staged in a test; the
 same-user and wildcard answers were measured on this Mac). Source: macOS port phase 4 review (2026-11-08).
+247. **macOS: the web engine is CEF, pinned to one build, cached outside the repo, and run from a bundle CEF can
+use.** `cef` and `cef-dll-sys` (tauri-apps/cef-rs) are pinned with `=156.2.0` (Cargo.lock: 156.2.0+156.0.14, CEF
+156.0.14, Chromium 156.0.8078.48; the newest release two weeks old on 2026-11-08) under
+`[target.'cfg(target_os = "macos")'.dependencies]` of `crates/flare-cef` only, so Windows builds nothing of it and
+keeps WebView2 unchanged. The binary is downloaded by cef-dll-sys's build script into `$CEF_PATH/156.0.14`
+(`~/Library/Caches/flare-cef`, the CI cache) or the target dir, never the repo; the build needs CMake and Ninja. The
+dev bundle (`flare_cef::macos::bundle`, `flare-cef-bundle`, built under the target dir) has the framework in
+`Contents/Frameworks` (an APFS clone of the cached build), five helper apps (`<Name> Helper`, `(GPU)`, `(Renderer)`,
+`(Plugin)`, `(Alerts)`, each running `flare-cef-helper`, `LSUIElement`), and an ad-hoc signature applied inside out
+(the framework's libraries, the framework, the helpers, the app) that verifies `--deep --strict`. Every helper
+enters CEF's sandbox before the framework loads; the browser process keeps `no_sandbox` off. A Developer ID
+signature, the hardened runtime, entitlements and notarization wait for the signed app (phase 8). Held by
+`the_pin_names_one_build_and_the_workspace_pins_both_crates_to_it`,
+`the_cache_is_outside_the_repo_and_the_helpers_are_the_five_cef_looks_for`,
+`the_helpers_are_named_and_numbered_the_way_cef_looks_for_them`,
+`a_helper_plist_hides_the_helper_and_the_probe_plist_is_background_only` and
+`the_dev_bundle_holds_the_framework_and_five_signed_helpers`. Source: macOS port phase 5, step 1 (2026-11-08), the
+phase 1 verdict (CEF).
+248. **macOS: a CEF browser process never takes the screen.** `FlareCefApplication` (an `NSApplication` with
+`CrAppProtocol`, `CrAppControlProtocol` and `CefAppProtocol`, `isHandlingSendEvent` set around every `sendEvent:`)
+is made the shared application before CEF loads, with activation policy Prohibited; a bundle that shows no window of
+its own (the probe) is `LSBackgroundOnly`. Every browser is windowless (Alloy style, `on_paint` into a BGRA buffer
+in device pixels), in an in-memory request context of its own. Nothing native may open: a popup (`window.open`,
+`target=_blank`) is refused, the context menu is emptied and its run cancelled, JavaScript dialogs are suppressed, the
+leave-page question is answered "leave", a file picker is cancelled, media and permission prompts are denied, and the
+keychain is the mock one (`use-mock-keychain`: the login keychain's "Chromium Safe Storage" prompt is a system
+dialog; its key is public, rule 260), no colour or print panel can be ordered in (rule 261); a `<select>` popup is a
+painted `PET_POPUP` layer, not a menu. The main thread's pump is AppKit's queued
+events, one non-blocking turn of the CFRunLoop and `do_message_loop_work`: without the run loop turn, or with a CEF
+log file, a windowless view never paints (measured on macOS 27.2; the log file is for diagnosis only). Held by the
+engine tests (`tests/engine_macos.rs`): the window server lists no on-screen window of the bundle's app or helpers
+before, during (every 50 ms) and after each run, the process owns 0 windows at its start and end, it is never
+active, and no handler was asked for anything native. Source: macOS port phase 5, step 1 (2026-11-08).
+249. **macOS: the agent's DevTools calls go to CEF unchanged, and a runaway script is stopped with the page kept.**
+`flare_cef::macos::view::View::cdp_send` hands `agent_job`'s calls to `SendDevToolsMessage` as
+`{"id","method","params"}` (ids within CEF's `int`); answers come back by id through the DevTools observer, a
+result's JSON as on Windows, an error as its message plus Chromium's error object. The real
+`flare_surfaces::agent_job::Job` drives look, click, type, press, scroll, wait and eval over it, and all 11 methods
+it sends (`DOM.enable`, `Page.getLayoutMetrics`, `Accessibility.getFullAXTree`, `Runtime.evaluate`,
+`Page.captureScreenshot`, `DOM.getContentQuads`, `DOM.scrollIntoViewIfNeeded`, `DOM.focus`,
+`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Input.insertText`) answer in Chromium's shapes. A
+`browser_eval` of `while(true){}`, of a page function that never returns, or one that runs into a page getter set as
+a trap is stopped by `Runtime.evaluate`'s timeout (10 s; Chromium answers error -32603, which the job reports as
+"the page did not run it"), and the same document answers again within milliseconds with its state and the agent's
+own marks kept, as on Windows: the gap that ruled WKWebView out. The look's fixed `devicePixelRatio` question on a
+trapped page costs its 2 s timeout, not the look. Held by
+`the_eleven_devtools_methods_agent_job_uses_answer_in_chromiums_shapes` and
+`a_runaway_eval_is_stopped_by_its_timeout_and_the_page_answers_again_with_its_state`. Source: macOS port phase 5,
+step 1 (2026-11-08); the verdict's "If it is CEF: what phase 5 must prove on a Mac".
+250. **macOS: the web panel is CEF behind the same `WebBackend`, and nothing waits for it.** `flare_web::host` on macOS
+(`crates/flare-web/src/macos/host.rs`) keeps the Windows host's shape: the first view asks the runtime question
+(`WebEvent::Runtime`: is `Chromium Embedded Framework.framework` in this app's `Contents/Frameworks`; a plain `cargo
+run` has none and its panel says so in a sentence, never with the Edge download link), the engine starts when it is
+answered, a view's profile (request context) is made and initialized before its browser, and a browser is made on
+`about:blank` and navigates only when its setup has answered (`Page.enable`, the script before the page's own through
+`Page.addScriptToEvaluateOnNewDocument`, a mod's binding), as a mini-app waits for its script on Windows; then
+`Page.resetNavigationHistory` forgets the blank page, so Back on the first page goes nowhere. CEF's handlers only queue
+into the host's inbox; `pump` hands it to the window. CEF asks for its turns (`external_message_pump`): a scheduler
+thread sends `WebEvent::Pump` when one is due, so winit keeps the run loop. CEF cannot be started twice in a process,
+so the engine stays from the first view to `close_all` (Windows lets its environment go with the last view). The real
+app makes the shared application `FlareCefApplication` at the start of `main` (`prepare_app`, before winit, which
+takes it as it finds it and swizzles `sendEvent:` on its class); its activation policy, windows and `terminate:` stay
+winit's and AppKit's, and Chromium's protocols are added to the class when the framework loads. Events are the
+Windows ones: `Loading`/`Loaded` by the request's number, WebView2's error status for a failed load (CEF's net error
+mapped, `flare_cef::status::web_error_status`, so the failure notice reads it), `Url` and `SameDocument` from
+`Page.frameNavigated` and `Page.navigatedWithinDocument`, `Title` again after a load that succeeded, `History`. A
+navigation the wall cancelled is `Refused` and its own aborted end is not reported. Held by
+`the_web_panel_on_cef_navigates_draws_takes_input_and_holds_its_walls_with_no_window` (`crates/flare-web/tests/
+cef_macos.rs`: the real host through the trait in a headless dev bundle), the `flare_cef::status` and
+`flare_cef::macos::view` unit tests and `without_the_framework_beside_it_the_runtime_check_says_why`. Source: macOS
+port phase 5, step 2 (2026-11-08).
+251. **macOS: the page is a picture in its box, and the window's input goes to it.** The browser is windowless: its
+picture (`on_paint`, BGRA in device pixels, a `<select>` list's popup layer laid over it) is `WebBackend::frame`, which
+the window shows in the panel's page box (`panel-web-frame`, `panel-web-live`) after every pump and sync; Windows'
+backend has no picture, so the box stays empty and takes no input there. The pointer and the wheel over the box go to
+`WebBackend::pointer` in device pixels (CSS pixels at the window's scale in the host; a wheel turned toward the person
+scrolls down; a press within 500 ms and 5 px is a double click), the keys to `WebBackend::key` with the Win32 virtual
+key, the macOS key code and the text (Slint's key names, `web_live::key_of`; a modifier alone goes nowhere), and every
+key carries AppKit's own character, because CEF makes an `NSEvent` of it (without it a Backspace's key up deletes a
+second time, measured on CEF 156). The input method's text is `WebBackend::ime`. The key filter decides first, as the
+accelerator hook does on Windows; the backend's `KeyPress::ctrl` carries Cmd on a Mac (rule 233), read as the event's
+`meta` by `web_ctl::key_event_for` in a Mac key context, so Cmd+T opens a tab and never reaches the page. A press or a
+typed key forwarded while an agent works in the page is the person taking it over (the stop-on-input monitor: the
+agent's own input is DevTools events and never comes through the box). A still is the picture as a PNG. Held by
+`an_off_screen_page_is_drawn_in_its_box_takes_the_input_there_and_a_press_stops_the_agent`,
+`on_a_mac_the_backends_ctrl_is_cmd_and_the_app_takes_its_cmd_chords`, `slints_keys_become_the_keys_chromium_knows`,
+`a_key_that_types_nothing_carries_appkits_character` and the panel scenario's frame, still, pointer, keys-and-ime,
+key-filter, wheel and select-list checks. Source: macOS port phase 5, step 2 (2026-11-08).
+252. **macOS: the walls are the Windows walls, decided in one place and re-proved against the network observers.**
+`flare_web::walls` decides for both hosts which address a frame may go to, what a request gets and which profile a view
+runs in. On CEF every request of a walled view is answered by the view's request wall
+(`ResourceRequestHandler::GetResourceHandler`, and the profile's own for requests of no browser): a mini-app's folder
+and a mod's files are served from the folder's real path (`/var` is `/private/var`) by `flare_mods::serve`, a refusal
+is a real response with its status and reason (an empty body reads as a broken response), and nothing else leaves.
+Behind it the profile holds what Windows passes as browser arguments: a sealed page's profile sends every request to
+the dead proxy with no bypass (`<-loopback>`), a networked one to Flare's filtering proxy, and WebRTC sends no UDP
+outside a proxy (`webrtc.ip_handling_policy`), set when CEF initializes the profile, before a browser of it is made;
+the peer-connection script runs before the page's own. A mod's page talks over `window.chrome.webview` (a shim over a
+DevTools binding that it hides), so the bridge runs unchanged; a message reaches the window only from the mod's own
+address and within its budget. The bindings' default for `on_before_resource_load` is `RV_CANCEL`: the wall answers
+`CONTINUE` there, or every request would be dropped. The web panel goes to http, https and about:blank, a new window
+loads in the same view, a mini-app or mod opens none; `mailto:` and other schemes never start a program. Held by
+`mini_apps_mods_and_plugin_views_on_cef_keep_their_walls_against_the_network_observers` (the spike's exfiltration page:
+19 channels reach the loopback server from a web panel control, none, no TCP accept and no mDNS query from a sealed
+mini-app; the observers prove they listen first) and the `walls` unit tests. Source: macOS port phase 5, step 2
+(2026-11-08); the verdict's request-interception item.
+253. **macOS: nothing native opens from a page, and nothing waits for the person in CEF.** Script dialogs are answered
+at once (`alert` returns, `confirm` is false, `prompt` is null) and never shown; camera, microphone, location,
+notifications and clipboard read are denied with no prompt; a file picker is cancelled; the context menu is emptied and
+its run cancelled; a popup is no window (same view or nothing). A download waits for the person's yes: CEF holds its
+before-download callback, nothing is written where the person keeps files while it is held or after a no (its bytes wait
+in Flare's staging folder, rule 258), a yes saves it in Downloads under its last name part, never over a file (` (2)` and so on); a bar or a background page refuses it
+before it starts. CEF is never called, and no CEF object is let go, while a view's state is locked: releasing a
+callback can run CEF's work and its handlers at once (a held download's no deadlocked that way). Held by the panel
+scenario's dialogs, permissions, downloads, external-schemes and new-window checks, the walls scenario's plugin-bar
+check, and `a_download_is_named_by_its_last_part_and_never_overwrites`. Source: macOS port phase 5, step 2
+(2026-11-08).
+254. **macOS: the agent drives the web panel through the same `WebBackend::cdp`, and its editing chords edit.**
+`agent_job` is unchanged: `web_ctl` sends its DevTools calls through `WebBackend::cdp`, the macOS host hands them to
+CEF's `SendDevToolsMessage`, and the answers come back as `WebEvent::Cdp`. One difference is closed in the host: on a
+Mac a chord becomes an editing command in the text system before the renderer sees it, and a DevTools key event skips
+that step, so `Control+a` (the chord the tool's text teaches) and `Meta+a` selected nothing and `Control+z` undid
+nothing (measured on CEF 156). `flare_cef::status::mac_devtools_params` gives a key down of an editing chord its
+command, the way Chromium's own Mac input does: Control or Cmd with a (select all), z (undo), Shift+z or y (redo), c, x,
+v; with Control the Windows meanings of the arrows (by word), Backspace and Delete (a word), Home and End (the
+document's ends), Shift extending the selection. Alt chords, both modifiers at once, and a call that names its own
+`commands` are left alone; plain keys (Backspace, the arrows, Home, End, Enter, Delete) already edit and get nothing.
+The agent's keys never pass the window's key filter (they are not the person's, so they neither end the agent's call
+nor fire an app chord); the person's go through the filter first. Held by
+`the_agent_drives_a_web_panel_on_cef_through_the_backend_as_on_windows_with_no_window` (look, click by ref and point,
+type, press-editing, scroll, the frames, wait, navigate and state, eval and its runaway, a download held for the yes,
+input-is-not-the-persons), `an_agents_editing_chord_is_chromiums_command_on_a_mac_with_control_or_cmd`,
+`only_a_key_down_of_an_editing_chord_gets_a_command` and
+`an_off_screen_page_is_drawn_in_its_box_takes_the_input_there_and_a_press_stops_the_agent` (a press or a typed key ends
+the call, a Cmd shortcut does not). Copy, cut and paste are mapped but not run in the tests: they would use the
+person's clipboard. Source: macOS port phase 5, step 3 (2026-11-08).
+255. **macOS: nothing behind Flare's proxy reaches this machine or its network, in any spelling.** A networked
+mini-app, a plugin with the network and a mod are re-proved against the spike's proxy page: loopback in five IPv4
+spellings, `0.0.0.0`, `localhost`, `localhost.` and `a.localhost`, `[::1]`, `[::ffff:127.0.0.1]`, the LAN address,
+`.local` names and names that resolve to loopback, each over http, https, ws and wss, reach the observers' dual-stack
+server 0 times, with no TCP accept and no mDNS query for the view's own `.local` name, while the same page in the web
+panel (no proxy) reaches it about 90 times and sends mDNS queries. The profile holds the proxy with no bypass
+(`<-loopback>`), so CEF never resolves or connects by itself; the request wall refuses http, ws and wss; Flare's
+filtering proxy refuses every address of this PC and every local name (`netproxy::public_rule`). This is what
+`modview::net_browser_arguments` holds on Windows. An mDNS name in a test must be unique to the view under test: the
+system resolver retries an earlier view's query for seconds after that view closed. Held by the walls scenario's
+netproxy-literals check in `mini_apps_mods_and_plugin_views_on_cef_keep_their_walls_against_the_network_observers`.
+Source: macOS port phase 5, step 3 (2026-11-08); the verdict's E.proxy-only finding.
+256. **macOS: every mini-app has a private profile of its own.** A CEF profile's request wall for the requests no browser
+makes (a shared worker's, a service worker's) is built once, from the view the profile was made for. When every sealed
+mini-app shared one in-memory profile, the second app's shared worker was judged by the first app's wall: it read the
+first app's `secret.txt` (no-cors fetch, 200) and ran its script (`importScripts`), and got a 403 for its own file
+(review of phase 5, 2026-11-08; a dedicated worker was walled correctly, it has a browser). The macOS host keys a
+mini-app's profile by its host (`walls::context_name`: `flare-app/<host>`), so each app has an in-memory profile, a
+wall and a shared-worker scope of its own, and the profile goes with the app's last view. A mod's or plugin's stays
+one per mod, on disk. `ControllerProbe::profile` still reports `flare-app`, private. Windows maps each app's folder
+on its own view, so it needs no such key. Held by the walls scenario's mini-app-shared-worker check (two sealed apps
+open at once; a shared and a dedicated worker of the second get its own file and a 403 for the first app's file and
+script; the check fails with the old shared key) and `every_kind_of_view_has_the_browser_windows_gives_it`. Source:
+macOS port phase 5 review (2026-11-08).
+257. **macOS: CEF takes Flare's switches, never the process's command line.** `Settings::command_line_args_disabled`
+is 1 and the switches are added in `FlareApp::on_before_command_line_processing` (`engine::SWITCHES`), which CEF still
+asks. With it at 0, `Flare --remote-debugging-port=N` (or `open -a Flare --args ...`) opened a DevTools port anyone on
+the machine could drive, and `--no-sandbox`, `--proxy-server` and `--disable-web-security` reached the helpers (the
+GPU helper was started with `--no-sandbox`; measured). The probe takes its scenario from the environment for this
+reason. Held by the quiet scenario's own-switches-only check in
+`the_engine_takes_only_flares_switches_and_calls_no_one_on_its_own` (the probe is started with all four switches: the
+port does not answer, there is no `DevToolsActivePort`, no helper has any of them; the check fails with the setting
+at 0). Source: macOS port phase 5 review (2026-11-08).
+258. **macOS: a held download's bytes wait in Flare's staging folder, never in `~/Downloads`.** Chromium writes a
+download's first part while CEF holds the before-download callback, into the profile's default download folder,
+which is `~/Downloads`: a held download left `.<bundle id>.XXXXXX` there before the person's answer (and the tests
+wrote into the real Downloads folder). Every profile's `download.default_directory` and `savefile.default_directory`
+are `<data_dir>/download-staging` (`walls::download_staging`), set with the walls before a browser of it is made; the
+folder is emptied when the engine starts (what a run left there is no one's download). A yes moves the file to
+Downloads (with `com.apple.quarantine`, Chromium's own); a no removes it. Held by the panel scenario's
+download-staging check (a slow download held: its part is in the staging folder, nothing new in `~/Downloads`, nothing
+left after the no; the profile's preference read back) and `every_kind_of_view_has_the_browser_windows_gives_it`.
+Source: macOS port phase 5 review (2026-11-08).
+259. **macOS: the engine calls no one on its own.** With only a sealed mini-app open, CEF 156 connected to Google
+within 3 s: the component updater (`update.googleapis.com`, then the on-device model manifest from `gvt1.com`), the
+network time tracker (`clients2.google.com/time`) and the AI mode eligibility check (`www.google.com/async/folae`, with
+the country), none from a page and none through a profile's proxy. `engine::SWITCHES` turns off component updates
+and background networking, and `DISABLED_FEATURES` the network time queries, the AI mode checks, the optimization
+guide's hints and models and the media router (CEF's own four disabled features are carried on: a `disable-features`
+switch replaces CEF's list). `--disable-component-update` alone does not stop the manifest's registration (measured),
+so the component updater's server is the dead address (`--component-updater=url-source=http://127.0.0.1:9/`): its check
+is refused on loopback and nothing is fetched. Held by the quiet scenario's no-outside-calls check (10 s with a sealed
+mini-app: no listener, no UDP socket, no connection past loopback in any process of the bundle, and Chromium's network
+log holds no address but the app's own and the dead address) and
+`the_engine_is_started_with_its_quiet_switches_and_keeps_cefs_own_disabled_features`. A new CEF pin re-runs the quiet
+scenario first: a new service is a new feature to turn off. Source: macOS port phase 5 review (2026-11-08).
+260. **macOS: a profile on disk is protected by its file's permissions only, until the signed app (accepted gap).**
+CEF runs with `use-mock-keychain` so Chromium never asks the login keychain for "Chromium Safe Storage" (a system
+prompt on the screen, asked again after every ad-hoc rebuild). The mock keychain's key is fixed and public
+(`mock_password` is in the framework), so what the web panel's profile (`<data_dir>/Default`) and each mod's and
+plugin's keep on disk (cookies, storage) is readable by anything that can read the file, a backup included; Windows
+encrypts it with DPAPI. The mini-apps' profiles are in memory and keep nothing. Phase 8 gives the signed `Flare.app`
+a keychain item of its own (its access tied to the Developer ID signature) and drops the switch; until then this gap
+is written here, in `engine.rs` and in `docs/parity.md`, and no one may describe the macOS profile as encrypted.
+Source: macOS port phase 5 review (2026-11-08).
+261. **macOS: no colour or print panel can come on screen from a page.** A windowless browser has no window for a
+sheet, so on a Mac Chromium would show AppKit's shared panels as windows of their own (`<input type=color>`, a print
+from `window.print()` or Cmd+P). Every profile has `printing.enabled` false, so a print is never asked for;
+`flare_cef::macos::panels::guard` (run by `app::install` and `app::install_for_app`, before CEF starts) replaces the
+methods that would order in `NSColorPanel` and run `NSPrintPanel`, `NSPageLayout` and `NSPrintOperation`, on those
+classes only (the app's own windows are untouched), and counts what it kept off. A test asks for a panel only after
+`panels::installed` says every replacement is in place. On CEF 156 a trusted click on a colour input asks for no
+panel at all (measured: 0 kept off, 0 windows); the guard stays for the build that does. Held by the panel scenario's
+no-native-pickers check (a trusted click on a colour input and `window.print()`: no window, the print returns at once,
+printing read back false) and `the_panels_are_replaced_on_their_own_classes_and_nothing_else`. Source: macOS port phase
+5 review (2026-11-08).

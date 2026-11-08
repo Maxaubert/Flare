@@ -69,6 +69,16 @@ pub const INVENTORY: &[(&str, &str)] = &[
     ("e2e/src/scenarios/fill.rs", "Filling logins"),
     ("flare/src/web_ctl.rs", "Web panel"),
     ("e2e/src/scenarios/web.rs", "Web panel"),
+    // The macOS engine (CEF, port phase 5): the dev bundle's Info.plist names Apple's plist DTD (text, no request),
+    // and the engine tests' probe serves its pages from a loopback server of its own.
+    ("flare-cef/src/macos/bundle.rs", "Web panel"),
+    ("flare-cef/src/macos/probe/server.rs", "Web panel"),
+    // The macOS web host (CEF, port phase 5, step 2): a walled profile's proxy is the dead one or Flare's filtering
+    // proxy on 127.0.0.1; the host tests' probe drives its pages from a loopback server and the network observers.
+    ("flare-web/src/macos/host.rs", "Web panel"),
+    ("flare-web/src/walls.rs", "Web panel"),
+    ("flare-web/src/macos/probe/mod.rs", "Web panel"),
+    ("flare-web/src/macos/probe/pages.rs", "Web panel"),
 ];
 
 /// Tokens that mark a line as possibly reaching the network.

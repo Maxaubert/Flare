@@ -1,0 +1,47 @@
+[package]
+name = "flare-cef"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+publish = false
+description = "The macOS web engine: CEF, windowless, headless (port phase 5)."
+
+# Everything here is macOS only. On Windows (WebView2 stays the engine there) the crate is empty and the binaries
+# say so, so the workspace builds unchanged.
+
+[dependencies]
+serde_json.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cef.workspace = true
+cef-dll-sys.workspace = true
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-app-kit.workspace = true
+objc2-core-graphics.workspace = true
+objc2-core-foundation.workspace = true
+flare-surfaces = { path = "../flare-surfaces" }
+base64.workspace = true
+png.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+# The process CEF starts for the GPU, the renderers and the utilities: a separate executable, copied into the dev
+# bundle's five helper apps.
+[[bin]]
+name = "flare-cef-helper"
+path = "src/bin/helper.rs"
+
+# The browser process of the engine tests: runs one scenario headless and writes a JSON report.
+[[bin]]
+name = "flare-cef-probe"
+path = "src/bin/probe.rs"
+
+# Builds the dev bundle (framework, helpers, ad-hoc signature) under the target dir.
+[[bin]]
+name = "flare-cef-bundle"
+path = "src/bin/bundle.rs"
+
+[lints]
+workspace = true

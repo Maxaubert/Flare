@@ -61,6 +61,10 @@ use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
 use crate::AppWindow;
 use crate::appctl::{Post, UiMsg};
+
+/// The page as a picture with the input handed over (macOS); inert on Windows.
+#[path = "web_live.rs"]
+mod live;
 use crate::panel_ctl::PanelCtl;
 
 /// Where a person gets the WebView2 Runtime when it is missing (Microsoft's evergreen bootstrapper page).
@@ -493,6 +497,8 @@ struct KeyState {
 
 pub struct WebCtl {
     post: Post,
+    /// The page's picture in the page box and the input over it (macOS: the backend draws off screen).
+    live: live::Live,
     factory: Option<WebFactory>,
     backend: Option<Box<dyn WebBackend>>,
     tabs: HashMap<String, TabWeb>,
@@ -613,10 +619,22 @@ pub fn key_event_of(k: &KeyPress) -> Option<KeyEvent> {
     })
 }
 
+/// The key the chord table reads for a key the page was about to get, in the keymap's own words: on a Mac the
+/// backend's `ctrl` carries Cmd, the app's key (rule 233), so it is the event's `meta` there. Windows' keys are
+/// [`key_event_of`]'s.
+pub fn key_event_for(k: &KeyPress, ctx: &KeyContext) -> Option<KeyEvent> {
+    let mut ev = key_event_of(k)?;
+    if ctx.os.is_mac() {
+        ev.meta = ev.ctrl;
+        ev.ctrl = false;
+    }
+    Some(ev)
+}
+
 /// Does the app take this key from the page? The chord table, less the two chords whose key a page
 /// has its own use for: Ctrl+F (the page's find) and Ctrl+D / Ctrl+C of the agent guard.
 pub fn app_takes(k: &KeyPress, ctx: &KeyContext) -> bool {
-    let Some(ev) = key_event_of(k) else {
+    let Some(ev) = key_event_for(k, ctx) else {
         return false;
     };
     match chord_of(&ev, ctx) {
@@ -667,6 +685,7 @@ impl WebCtl {
     pub fn new(post: Post) -> Self {
         Self {
             post,
+            live: live::Live::default(),
             factory: None,
             backend: None,
             tabs: HashMap::new(),
@@ -839,7 +858,10 @@ impl WebCtl {
             return;
         }
         self.has_focus = false;
-        // macOS: phase 5 of the port plan gives the keyboard back to the window.
+        // macOS: the page's view lets the keyboard go (on Windows focusing the window does it).
+        if let (Some(tab), Some(b)) = (self.shown_tab.clone(), self.backend.as_mut()) {
+            b.blur(&tab);
+        }
         #[cfg(windows)]
         if let Some(h) = hwnd {
             // SAFETY: SetFocus on Flare's own live window, from its own thread.
@@ -958,6 +980,9 @@ impl WebCtl {
         }
         let scale = app.get_scale();
         self.scale = scale;
+        if let Some(b) = self.backend.as_mut() {
+            b.set_scale(f64::from(scale));
+        }
         let rect = phys_rect(
             app.get_panel_web_x(),
             app.get_panel_web_y(),
@@ -1047,6 +1072,7 @@ impl WebCtl {
         }
         self.push(app, panels, front_web);
         self.update_cursor();
+        self.show_live_frame(app);
     }
 
     fn open_tab(
@@ -2486,6 +2512,8 @@ impl WebCtl {
                 if let Some(b) = self.backend.as_mut() {
                     b.pump();
                 }
+                // A backend that draws off screen (macOS) painted in its turn; Windows has no picture.
+                self.show_live_frame(app);
             }
             WebEvent::Runtime(r) => {
                 if let Some(b) = self.backend.as_mut() {
@@ -3065,6 +3093,28 @@ mod tests {
         ] {
             assert!(app_takes(&k, &ctx()), "{what}");
         }
+    }
+
+    #[test]
+    fn on_a_mac_the_backends_ctrl_is_cmd_and_the_app_takes_its_cmd_chords() {
+        let mac = KeyContext {
+            os: flare_tabs::keymap::KeyOs::Mac,
+            ..ctx()
+        };
+        let ev = key_event_for(&press(0x54, true, false, false), &mac).unwrap();
+        assert!(ev.meta && !ev.ctrl, "Cmd+T");
+        assert!(
+            app_takes(&press(0x54, true, false, false), &mac),
+            "Cmd+T: a new tab"
+        );
+        assert!(app_takes(&press(0x57, true, false, false), &mac), "Cmd+W");
+        assert!(
+            !app_takes(&press(0x50, false, false, false), &mac),
+            "a plain p"
+        );
+        // Windows reads the same press as Ctrl, unchanged.
+        let ev = key_event_for(&press(0x54, true, false, false), &ctx()).unwrap();
+        assert!(ev.ctrl && !ev.meta);
     }
 
     #[test]

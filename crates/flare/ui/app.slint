@@ -456,6 +456,13 @@ export component AppWindow inherits Window {
     in property <image> panel-web-still;
     in property <bool> panel-web-has-still;
     in property <bool> panel-web-missing-runtime;
+    // macOS (CEF): the page's picture and the input over it (see the panel's `web-live`).
+    in property <image> panel-web-frame;
+    in property <bool> panel-web-live;
+    callback panel-web-pointer(int, length, length, int, int);
+    callback panel-web-wheel(length, length, length, length, int);
+    callback panel-web-key(bool, string, int, bool);
+    public function focus-web-page() { panel-slot.focus-page(); }
     // The close at the address row's right end (a web page has no header, Max 2026-10-27).
     out property <length> panel-web-close-x: panel-slot.web-close-x;
     out property <length> panel-web-close-w: panel-slot.web-close-w;
@@ -1216,6 +1223,11 @@ export component AppWindow inherits Window {
                         web-still: root.panel-web-still;
                         web-has-still: root.panel-web-has-still;
                         web-missing-runtime: root.panel-web-missing-runtime;
+                        web-frame: root.panel-web-frame;
+                        web-live: root.panel-web-live;
+                        web-pointer(k, x, y, b, m) => { root.panel-web-pointer(k, x, y, b, m); }
+                        web-wheel(x, y, dx, dy, m) => { root.panel-web-wheel(x, y, dx, dy, m); }
+                        web-key(d, t, m, r) => { root.panel-web-key(d, t, m, r); }
                         web-back => { root.panel-web-back(); }
                         web-forward => { root.panel-web-forward(); }
                         web-reload => { root.panel-web-reload(); }

@@ -94,6 +94,12 @@ crate = "i-slint-renderer-software"
 allow = ["CDLA-Permissive-2.0"]
 crate = "webpki-roots"
 
+# libbz2-rs-sys (bzip2 via download-cef, the build script of cef-dll-sys on macOS) unpacks the CEF archive at BUILD
+# time; nothing of it ships. Its licence is the original bzip2 one (BSD-style, permissive), allowed for this crate only.
+[[licenses.exceptions]]
+allow = ["bzip2-1.0.6"]
+crate = "libbz2-rs-sys"
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"

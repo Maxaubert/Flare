@@ -504,6 +504,15 @@ export component PanelSlot inherits Rectangle {
     in property <image> web-still;
     in property <bool> web-has-still;
     in property <bool> web-missing-runtime;
+    // macOS (CEF, port phase 5): the page is a picture Flare draws here, and the pointer, the wheel and the keys over
+    // it are handed to the browser. Off (Windows): the page is a window of its own above this box.
+    in property <image> web-frame;
+    in property <bool> web-live;
+    // kind: 0 down, 1 up, 2 move, 3 leave; button: 0 left, 1 middle, 2 right; mods: 1 shift, 2 ctrl, 4 alt, 8 cmd.
+    callback web-pointer(int, length, length, int, int);
+    callback web-wheel(length, length, length, length, int);
+    callback web-key(bool, string, int, bool);
+    public function focus-page() { page-keys.focus(); }
     // A web page (not a mini-app) has no header: the bar is its head, and the page starts under it (Max
     // 2026-10-27: more room for the page). An agent at work shows only in the page's edge glow and its
     // cursor; the page title stays the tab's and `web.state`'s.
@@ -720,6 +729,49 @@ export component PanelSlot inherits Rectangle {
                     height: parent.height;
                     source: root.web-still;
                     image-fit: fill;
+                }
+                if root.web-live && !root.web-has-still: Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.web-frame;
+                    image-fit: fill;
+                }
+                page-keys := FocusScope {
+                    width: parent.width;
+                    height: parent.height;
+                    enabled: root.web-live;
+                    property <int> mods-now: 0;
+                    key-pressed(e) => {
+                        root.web-key(true, e.text, (e.modifiers.shift ? 1 : 0) + (e.modifiers.control ? 2 : 0) + (e.modifiers.alt ? 4 : 0) + (e.modifiers.meta ? 8 : 0), e.repeat);
+                        accept
+                    }
+                    key-released(e) => {
+                        root.web-key(false, e.text, (e.modifiers.shift ? 1 : 0) + (e.modifiers.control ? 2 : 0) + (e.modifiers.alt ? 4 : 0) + (e.modifiers.meta ? 8 : 0), false);
+                        accept
+                    }
+                    if root.web-live: TouchArea {
+                        width: parent.width;
+                        height: parent.height;
+                        pointer-event(e) => {
+                            if e.kind == PointerEventKind.down {
+                                page-keys.focus();
+                            }
+                            root.web-pointer(
+                                e.kind == PointerEventKind.down ? 0 : (e.kind == PointerEventKind.up ? 1 : (e.kind == PointerEventKind.move ? 2 : 3)),
+                                self.mouse-x, self.mouse-y,
+                                e.button == PointerEventButton.left ? 0 : (e.button == PointerEventButton.middle ? 1 : (e.button == PointerEventButton.right ? 2 : 3)),
+                                (e.modifiers.shift ? 1 : 0) + (e.modifiers.control ? 2 : 0) + (e.modifiers.alt ? 4 : 0) + (e.modifiers.meta ? 8 : 0));
+                        }
+                        changed has-hover => {
+                            if !self.has-hover {
+                                root.web-pointer(3, self.mouse-x, self.mouse-y, 0, 0);
+                            }
+                        }
+                        scroll-event(e) => {
+                            root.web-wheel(self.mouse-x, self.mouse-y, e.delta-x, e.delta-y, (e.modifiers.shift ? 1 : 0) + (e.modifiers.control ? 2 : 0) + (e.modifiers.alt ? 4 : 0) + (e.modifiers.meta ? 8 : 0));
+                            accept
+                        }
+                    }
                 }
             }
             img := ImageView {

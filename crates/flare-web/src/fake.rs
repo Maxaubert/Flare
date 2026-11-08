@@ -10,7 +10,10 @@ use std::rc::Rc;
 use flare_surfaces::app::AppSpec;
 use flare_surfaces::web::PhysRect;
 
-use crate::backend::{ControllerProbe, KeyFilter, Nav, Sink, Slot, ViewSink, WebBackend, WebEvent};
+use crate::backend::{
+    ControllerProbe, ImeInput, KeyFilter, KeyInput, Nav, Pointer, Sink, Slot, ViewFrame, ViewSink,
+    WebBackend, WebEvent,
+};
 use crate::seal::{Seal, plugin_seal};
 
 /// One call the window made.
@@ -60,6 +63,13 @@ pub enum Call {
     CloseView(Slot),
     /// A message posted to the page in a slot that is not a tab's panel.
     PostView(Slot, String),
+    /// The pointer over an off-screen view (a backend that draws, macOS).
+    Pointer(Slot, Pointer),
+    /// A key for an off-screen view.
+    Key(Slot, KeyInput),
+    Ime(Slot, ImeInput),
+    /// The window took the keyboard back from the tab's page.
+    Blur(String),
 }
 
 /// How a test plays the page's DevTools: method and params in, the answer out.
@@ -90,6 +100,8 @@ pub struct FakeState {
     pub filter: Option<KeyFilter>,
     /// Answers a DevTools call at once with this (else the call stays unanswered, like a hung page).
     pub cdp: Option<CdpResponder>,
+    /// When set, the fake draws off screen (as the macOS backend does): every view's picture is this one.
+    pub frame: Option<ViewFrame>,
 }
 
 #[derive(Clone)]
@@ -362,6 +374,37 @@ impl WebBackend for FakeWeb {
             .borrow_mut()
             .calls
             .push(Call::Script(tab.into(), id, js.into()));
+    }
+
+    fn frame(&self, slot: &Slot) -> Option<ViewFrame> {
+        let s = self.state.borrow();
+        s.views.get(slot)?;
+        s.frame.clone()
+    }
+
+    fn pointer(&mut self, slot: &Slot, p: Pointer) {
+        self.state
+            .borrow_mut()
+            .calls
+            .push(Call::Pointer(slot.clone(), p));
+    }
+
+    fn key(&mut self, slot: &Slot, k: KeyInput) {
+        self.state
+            .borrow_mut()
+            .calls
+            .push(Call::Key(slot.clone(), k));
+    }
+
+    fn ime(&mut self, slot: &Slot, i: ImeInput) {
+        self.state
+            .borrow_mut()
+            .calls
+            .push(Call::Ime(slot.clone(), i));
+    }
+
+    fn blur(&mut self, tab: &str) {
+        self.state.borrow_mut().calls.push(Call::Blur(tab.into()));
     }
 
     fn probe_view(&self, slot: &Slot) -> Option<ControllerProbe> {
