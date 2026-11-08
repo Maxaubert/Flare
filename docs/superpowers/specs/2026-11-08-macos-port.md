@@ -76,6 +76,21 @@ A review of the three steps (2026-11-08) proved six defects, fixed with checks t
 opened a DevTools port), held downloads staged outside `~/Downloads`, no call to Google from the engine with no page
 asking, the mock keychain written down as an accepted gap until phase 8, and no colour or print panel from a page.
 
+Phase 8 progress: step 1 (2026-11-08) is `Flare.app`: `tools/release/mac/make-app.sh` builds the release programs,
+`flare-mac-app` bundles them (the CEF framework, five helpers, `flare-mcp`, the icon, the plugin in `Resources`) and
+signs inside out with the Developer ID and per-program entitlements, then the script notarizes, staples and makes the
+DMG; `.github/workflows/macos-app.yml` does the same in CI from secrets (rules 263 to 266, `docs/parity.md` "macOS
+port, phase 8"). On Max's Mac a Developer ID `codesign` asked the keychain for the key with a prompt on the screen, so
+the signed and notarized run waits for the key's access list to let `codesign` in.
+
+A review of step 1 (2026-11-08) led to rules 267 to 270: no `codesign` with the identity unless an in-process check
+with the keychain UI off says the key cannot prompt (`flare-mac-app check-key`; Max's key lacks the `apple:`
+partition), the tests' own signing variables, the release check comparing each Mach-O's entitlements with its role's
+and requiring a Developer ID Application signer, Chromium 156's GPU `allow-jit`, a terminal's camera, microphone and
+Apple Events keys with their usage strings, CI cleanup that runs on failure and no cached CEF in the signing job, and
+the Velopack order: sign and notarize the bundle `vpk pack` produced (`flare-mac-app resign`), check it inside the
+update package.
+
 ## Known risks
 
 - **Agent browsing on WKWebView** (phase 1 decides). No DevTools protocol and no http(s) request

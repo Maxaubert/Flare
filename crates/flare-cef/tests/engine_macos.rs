@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use flare_cef::macos::{CEF_DIR, bundle, screen};
+use flare_cef::macos::{CEF_DIR, bundle, screen, sign};
 use serde_json::Value;
 
 const NAME: &str = "Flare CEF Probe";
@@ -27,6 +27,9 @@ fn bundle_for(test: &str) -> PathBuf {
         cef_dir: Path::new(CEF_DIR),
         out_dir: &out,
         background_only: true,
+        version: env!("CARGO_PKG_VERSION"),
+        signing: sign::Signing::for_tests(),
+        extras: Default::default(),
     };
     bundle::build(&spec).expect("the dev bundle builds")
 }

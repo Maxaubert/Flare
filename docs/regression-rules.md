@@ -1099,3 +1099,98 @@ frame could run script in the page above it. `popup_target_allowed` lets only `h
 view's `NavRule` allows for the main frame; `data:`, `file:`, `chrome:`, `devtools:`, `blob:` and every other scheme
 are dropped. Held by `a_popup_loads_only_a_web_address_the_navigation_rule_allows`. Source: commit security review of
 phase 5 (2026-11-08).
+263. **macOS: each program of `Flare.app` carries exactly the entitlements it is given, and never the broad ones.**
+The hardened runtime is on for every Mach-O of a Developer ID signature (`flare_cef::macos::sign`). The keys are
+Chromium 156.0.8078.48's own (`chrome/app/*-entitlements.plist`) minus its App Sandbox keys, plus a terminal's:
+`Flare` has `device.audio-input`, `device.camera` and `automation.apple-events` (rule 269); `Flare Helper (Renderer)`
+has `cs.allow-jit` (V8); `Flare Helper (GPU)` has `cs.allow-jit` (SwiftShader's software GL, Chromium's
+`helper-gpu-entitlements.plist`, read 2026-11-08); `Flare Helper`, `(Plugin)`, `(Alerts)` and `flare-mcp` have none
+(no Pepper in CEF 156). Never `allow-unsigned-executable-memory`, `disable-library-validation`, `get-task-allow` or the
+dyld environment key. Each key is written with why it is there, in the entitlements file itself. A signed run of the
+engine probes under the hardened runtime is how a key is proved (`FLARE_TEST_SIGN_IDENTITY` with
+`FLARE_TEST_SIGN_KEYCHAIN`, rule 267); until one has run, the keys stand on Chromium's files. Held by
+`each_program_carries_chromiums_keys_for_it_plus_the_terminals_and_never_the_broad_ones`. Source: macOS port phase 8,
+step 1 and its review (2026-11-08).
+264. **macOS: `Contents/MacOS` holds only code; everything else `Flare.app` ships is in `Contents/Resources`.** A
+folder or a text file beside the executable breaks the signature's seal, so the Claude Code plugin template, the
+licenses and CEF's credits go to `Resources`, and `flare_agent::plugin::candidate_plugin_dirs` looks in
+`<app>/Contents/Resources/claude-plugin` first when the app runs from a bundle (macOS only; the Windows candidates
+are unchanged). `flare-mcp` stays beside the app (code, found as before). The main executable is `Flare`, because CEF
+finds its helpers as `<executable> Helper (X).app`. The bundle id is `com.flare.terminal`, the id Windows gives the
+app, and it never changes (the keychain item, the microphone grant and the notification settings hang on it).
+`LSMinimumSystemVersion` is 15.0, the version is the workspace's, no document or URL types are declared. Held by
+`a_mac_app_bundle_finds_the_plugin_in_its_resources_first`,
+`the_app_plist_names_the_app_its_version_its_mac_its_category_and_why_it_wants_the_mic` (the plist is linted by
+`plutil`) and `the_bundle_id_is_the_id_windows_gives_flare`. Source: macOS port phase 8, step 1 (2026-11-08).
+265. **macOS: a release is signed inside out with the Developer ID and checked Mach-O by Mach-O.**
+`flare_cef::macos::bundle::sign_bundle` signs any Mach-O outside the frameworks, helpers and `Contents/MacOS`, each
+framework's own Mach-O files, the framework, the five helpers, the other programs, then the app (`--options runtime`,
+`--timestamp`, per-program entitlements and identifier); it works on a bundle a packager added programs to and refuses
+a helper app CEF does not start. `sign::verify_release` then requires `codesign --verify --deep --strict`, and for every
+Mach-O: team `WV7BY8CUM8`, a leaf certificate "Developer ID Application:" (an "Apple Development" one of the same team
+fails here, not at notarization), the hardened runtime, a secure timestamp, and exactly the entitlement keys its role
+(by its place in the bundle, `bundle::role_of`) is given, so a broad key or a key on the wrong program fails. Held by
+`a_release_mach_o_has_exactly_its_roles_keys_and_a_developer_id_application_signer`,
+`a_mach_os_role_is_read_from_its_place_in_the_bundle`,
+`any_bundle_of_this_layout_is_signed_inside_out_with_programs_it_did_not_make`,
+`a_developer_id_signature_has_the_runtime_and_a_timestamp_and_ad_hoc_has_neither` and
+`codesigns_display_is_read_for_team_runtime_timestamp_and_authority`. Source: macOS port phase 8, step 1 and its
+review (2026-11-08).
+266. **macOS: the signing key and the notary credentials never enter the repository, and the Mac build does not
+touch the Windows release.** `tools/release/mac/make-app.sh` takes the identity and the notary credentials from the
+environment (a notarytool keychain profile on a Mac, an App Store Connect API key in CI) and prints none of them;
+`tools/release/mac/ci-keychain.sh` puts the secrets `MACOS_CERT_P12_BASE64`, `MACOS_CERT_PASSWORD`,
+`APPLE_API_KEY_P8_BASE64`, `APPLE_API_KEY_ID` and `APPLE_API_ISSUER_ID` into a throwaway keychain with a random
+password that only `codesign` may use (`.github/workflows/macos-app.yml`, run by hand; no secret means an ad hoc build
+that says so). The script names the keychain and the `.p8` in `$GITHUB_ENV` before it makes them and removes the
+`.p12` on any exit (`trap`), and the cleanup step runs `if: always()`, so a failure halfway leaves no key material on
+a self-hosted runner. The CEF framework the job signs is downloaded fresh into `$RUNNER_TEMP`, never restored from
+`actions/cache`, and every action is pinned by commit SHA. The app is zipped with `ditto -c -k --keepParent`, notarized with
+`notarytool submit --wait` (anything but Accepted fails with Apple's log), stapled and checked with `stapler validate`
+and `spctl -a -t exec` ("source=Notarized Developer ID"); the DMG (the stapled app and an `/Applications` link) is
+signed, notarized and stapled too, and checked attached with `-nobrowse` (no Finder window). Every product is under
+`target/mac-release`. `release.yml` is unchanged. Source: macOS port phase 8, step 1 (2026-11-08).
+267. **macOS: `codesign` never runs with a Developer ID unless the key can be used without a prompt, and an
+ordinary test run never signs with one.** A Developer ID `codesign` whose key's access list does not let it in puts a
+SecurityAgent prompt on the screen that stays after `codesign` is stopped (measured on Max's Mac, 2026-11-08: the
+key's partition list was only `apple-tool:`, and `/usr/bin/codesign` is in `apple:`). So `sign::sign` first runs
+`flare_cef::macos::keychain::check`, in-process with `SecKeychainSetUserInteractionAllowed(false)` (the check itself
+cannot raise a prompt; it reads the certificate and the key's access list, never the key): the key's keychain
+unlocked, an access entry that allows signing naming `/usr/bin/codesign` (or any program) without the password, and
+`apple:` in the partition list; else it refuses and says the one command that fixes it
+(`security set-key-partition-list -S apple-tool:,apple: -s`). `make-app.sh` runs `flare-mac-app check-key` before
+building, and signs the DMG through `flare-mac-app sign-file` too: no `codesign` with the identity runs from a script.
+A Developer ID sign then runs one at a time across processes (a lock file in the temp dir), is stopped at once when a
+SecurityAgent window appears that was not there before (that prompt's process is stopped too), and otherwise after
+20 s plus 1 s per 4 MB hashed (plus 2 min for a timestamp), so a large legitimate sign is not cut short. The tests'
+identity is `FLARE_TEST_SIGN_IDENTITY` and needs `FLARE_TEST_SIGN_KEYCHAIN` too; `Signing::for_tests` never reads the
+release variable `FLARE_MAC_SIGN_IDENTITY`. Held by
+`a_key_codesign_would_have_to_ask_for_is_refused_before_codesign_runs`,
+`partitions_are_read_from_the_hex_plist_and_a_name_matches_like_codesign`,
+`the_check_runs_with_the_keychain_ui_off_and_finds_no_identity_that_is_not_there`,
+`the_tests_sign_only_with_their_own_identity_and_a_keychain_never_with_the_release_one` and
+`the_sign_timeout_grows_with_what_codesign_hashes`. Source: review of phase 8 step 1 (2026-11-08).
+268. **macOS: every TCC entitlement of the app has its usage string.** `Flare.app`'s `Info.plist` carries
+`NSMicrophoneUsageDescription`, `NSCameraUsageDescription` and `NSAppleEventsUsageDescription`, one for each key of
+rule 269 (`sign::Entitlement::usage_key`): without the string macOS refuses the request even with the key. Held by
+`the_app_plist_names_the_app_its_version_its_mac_its_category_and_why_it_wants_the_mic`. Source: review of phase 8
+step 1 (2026-11-08).
+269. **macOS: the app's TCC keys are a terminal's, and a library loaded later is signed by the team, never let in by
+an entitlement.** macOS holds the app that started a program responsible for what the program asks for, so a
+hardened Flare without a key refuses, silently, what Terminal and iTerm2 allow: `osascript` (`automation.apple-events`),
+`ffmpeg -f avfoundation` or `imagesnap` (`device.camera`), `sox` or ffmpeg's microphone (`device.audio-input`). Those
+three are given, as iTerm2 does; location, contacts, calendars and photos are not (no terminal program in common use
+needs them; a deliberate difference in `docs/parity.md`). The microphone key is also dictation's, provisional for
+dictation until the macOS dictation phase has a signed run. Dictation's engines are downloaded at run time on
+Windows (`flare_dictation::catalog`, `flare-parakeet-host`): on macOS library validation refuses a dylib not signed
+by the team in a hardened process, so an engine library is signed by the team when it is bundled or downloaded
+(checked with `codesign --verify` before it is loaded), or loaded in a helper of its own, and never through
+`disable-library-validation`. Source: review of phase 8 step 1 (2026-11-08).
+270. **macOS: the bundle that is notarized and checked is the one that ships in the update package.** `vpk pack` for
+osx adds its update program and `sq.version` to `Contents/MacOS`, which breaks a seal made before it. So the Velopack
+step signs again after packing what vpk produced (`flare-mac-app resign`, the roles of rule 265, vpk's program as a
+tool with no entitlements), or uses vpk's own signing only if it gives each program its own entitlements; then it
+notarizes and staples that bundle, and runs `flare-mac-app verify`, `codesign --verify --deep --strict`,
+`stapler validate` and `spctl -a -t exec` on the bundle extracted from the `.nupkg` and from the full update package,
+not on the bundle before packing. Phase 8 is done only when such a signed, notarized release updates itself. Source:
+review of phase 8 step 1 (2026-11-08).

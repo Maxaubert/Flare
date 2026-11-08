@@ -43,13 +43,19 @@ pub fn read_is_our_plugin(dir: &Path) -> bool {
     }
 }
 
-/// `FLARE_CLAUDE_PLUGIN_DIR` (set and non-empty) is the ONLY candidate; else `<exe dir>\claude-plugin`,
-/// and in a debug build or from a `deps` folder, `CARGO_MANIFEST_DIR\claude-plugin` as the last.
+/// `FLARE_CLAUDE_PLUGIN_DIR` (set and non-empty) is the ONLY candidate; else (macOS, inside an app bundle)
+/// `<app>/Contents/Resources/claude-plugin`, then `<exe dir>\claude-plugin`, and in a debug build or from a
+/// `deps` folder, `CARGO_MANIFEST_DIR\claude-plugin` as the last.
 pub fn candidate_plugin_dirs(env_dir: Option<&str>, exe_dir: Option<&Path>) -> Vec<PathBuf> {
     if let Some(dir) = env_dir.map(str::trim).filter(|dir| !dir.is_empty()) {
         return vec![PathBuf::from(dir)];
     }
     let mut out = Vec::new();
+    if cfg!(target_os = "macos")
+        && let Some(res) = exe_dir.and_then(bundle_resources)
+    {
+        out.push(res.join("claude-plugin"));
+    }
     if let Some(exe) = exe_dir {
         out.push(exe.join("claude-plugin"));
     }
@@ -60,6 +66,15 @@ pub fn candidate_plugin_dirs(env_dir: Option<&str>, exe_dir: Option<&Path>) -> V
         out.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("claude-plugin"));
     }
     out
+}
+
+/// `<app>/Contents/Resources` when `exe_dir` is an app bundle's `Contents/MacOS` (where `Flare.app` keeps its
+/// resources: `Contents/MacOS` holds only code, or the signature's seal breaks; port phase 8, rule 264).
+pub fn bundle_resources(exe_dir: &Path) -> Option<PathBuf> {
+    let contents = exe_dir.parent()?;
+    let is_bundle = exe_dir.file_name().is_some_and(|n| n == "MacOS")
+        && contents.file_name().is_some_and(|n| n == "Contents");
+    is_bundle.then(|| contents.join("Resources"))
 }
 
 /// What the shipped `hooks.json` carries where the program goes. It is never a valid command:
@@ -499,6 +514,32 @@ mod tests {
     use super::*;
     use crate::signal::agent_hook_events;
     use crate::signal::{AgentSignal, HookState, parse_agent_signal};
+
+    #[test]
+    fn a_mac_app_bundle_finds_the_plugin_in_its_resources_first() {
+        let macos = Path::new("/Applications/Flare.app/Contents/MacOS");
+        assert_eq!(
+            bundle_resources(macos),
+            Some(PathBuf::from("/Applications/Flare.app/Contents/Resources"))
+        );
+        assert_eq!(bundle_resources(Path::new("/opt/flare/bin")), None);
+        assert_eq!(bundle_resources(Path::new("/MacOS")), None);
+        let got = candidate_plugin_dirs(None, Some(macos));
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                got[0],
+                PathBuf::from("/Applications/Flare.app/Contents/Resources/claude-plugin")
+            );
+            assert_eq!(got[1], macos.join("claude-plugin"));
+        } else {
+            assert_eq!(got[0], macos.join("claude-plugin"));
+        }
+        // The override still wins alone.
+        assert_eq!(
+            candidate_plugin_dirs(Some("/x"), Some(macos)),
+            [PathBuf::from("/x")]
+        );
+    }
 
     #[test]
     fn two_flares_in_two_folders_never_share_an_installed_plugin() {

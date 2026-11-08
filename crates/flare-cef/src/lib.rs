@@ -19,6 +19,9 @@
 //! - `macos::helper`: the helper processes' `main`.
 //! - `macos::bundle`: the dev `.app` (the framework in `Contents/Frameworks`, five helper apps, an ad-hoc
 //!   signature) built under the target dir.
+//! - `macos::sign`: ad hoc or Developer ID signatures, each program's entitlements, the release checks (phase 8).
+//! - `macos::keychain`: whether codesign can use a signing key without a prompt (read with the keychain UI off).
+//! - `macos::release`: the release `Flare.app` (icon, `flare-mcp`, resources), built by `flare-mac-app`.
 //! - `macos::screen`: the window server's list, the screen rule's evidence.
 //! - `macos::probe`: the scenarios the engine tests run in a bundled browser process.
 

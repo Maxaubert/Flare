@@ -1602,3 +1602,52 @@ A frame's contents are not in the numbered list (the agent uses a frame by point
 call gives the root frame's tree, but a Windows look of the agent page has not been diffed with the Mac one yet. Waits for the Developer ID (phase 8): the signed
 bundle, the hardened runtime and its entitlements, notarization, camera and microphone prompts, a real keychain item
 for the profiles kept on disk (the mock keychain is used until then, rule 260).
+
+## macOS port, phase 8: shipping the Mac app (2026-11-08)
+
+Step 1, `Flare.app` (regression rules 263 to 266). Windows ships through Velopack (`tools/release/pack.ps1`); the Mac
+ships an app bundle built by `tools/release/mac/make-app.sh` (`flare-mac-app`, `flare_cef::macos::{release, bundle,
+sign}`), under `target/mac-release`.
+
+- [x] The app bundle: `Flare.app` for Apple Silicon, macOS 15+, id `com.flare.terminal` (Windows' AppUserModelID), the
+  workspace version, the developer-tools category, the microphone's reason; `Contents/MacOS/Flare` and `flare-mcp`, the
+  CEF framework and its five helpers, `Flare.icns` from `build/icon-source.png`, the Claude plugin, the licenses and
+  CEF's credits in `Resources`. Stands in for the Velopack staging folder. (macOS:
+  the_app_plist_names_the_app_its_version_its_mac_its_category_and_why_it_wants_the_mic,
+  a_mac_app_bundle_finds_the_plugin_in_its_resources_first, crates/flare-cef/src/macos/release.rs,
+  crates/flare-agent/src/plugin.rs)
+- [x] Signing inside out with the Developer ID, hardened runtime, secure timestamp, each program's entitlements
+  (Chromium 156's, plus a terminal's camera, microphone and Apple Events keys with their usage strings), and every
+  Mach-O checked for the team, a Developer ID Application signer and exactly its role's keys; no `codesign` with the
+  identity unless the key cannot raise a prompt (rules 263, 265, 267 to 269). Stands in for Authenticode (not done on
+  Windows yet). (macOS: each_program_carries_chromiums_keys_for_it_plus_the_terminals_and_never_the_broad_ones,
+  a_release_mach_o_has_exactly_its_roles_keys_and_a_developer_id_application_signer,
+  a_key_codesign_would_have_to_ask_for_is_refused_before_codesign_runs, crates/flare-cef/src/macos/sign.rs,
+  crates/flare-cef/src/macos/keychain.rs)
+
+Not yet (the next steps of phase 8, not ratchet lines): the notarized and stapled app and DMG with `spctl` saying
+"source=Notarized Developer ID". The script does it (`make-app.sh`, `macos-app.yml`), but on Max's Mac
+`flare-mac-app check-key` refuses: the Developer ID key's partition list is only `apple-tool:`, so `codesign` would
+put a keychain prompt on the screen (rule 267). It runs once Max has run `security set-key-partition-list -S
+apple-tool:,apple: -s ~/Library/Keychains/login.keychain-db` himself. Then: the entitlements proved by the engine
+probes under the hardened runtime (`FLARE_TEST_SIGN_IDENTITY` and `FLARE_TEST_SIGN_KEYCHAIN`, `cargo nextest run -p
+flare-cef -p flare-web`), with WebGL on SwiftShader (`--use-angle=swiftshader`) for the GPU helper's JIT key;
+Velopack osx-arm64 updates with a whole-bundle swap, signed and notarized after `vpk pack` and checked on the bundle
+inside the update package (rule 270), the release notes and the Mac build in `release.yml`; a keychain item of the
+signed app's own for the profiles on disk (dropping `use-mock-keychain`, rule 260).
+
+Open on macOS, so shipping a part is not read as the feature working:
+
+- Installing the Claude Code plugin fails on macOS: the template is found in `Contents/Resources`, but
+  `flare_agent::plugin::install_plugin_with` still requires an absolute System32 `cmd.exe` and returns InvalidInput.
+  It waits for the agent-tools phase's macOS hooks.
+- The microphone key is provisional for dictation (rule 269): `crates/flare-dictation/src/macos/` holds no audio
+  path yet, and `flare-parakeet-host` (shipped by `release.yml` on Windows) is not in the bundle. The engines it
+  downloads must be signed by the team or loaded in a helper of their own before dictation runs in a hardened Flare.
+
+Deliberate differences: the DMG is a plain drag-to-Applications volume (the app and an `/Applications` link) with no
+background picture or icon positions, because those are set through a Finder window (the screen rule); Finder shows
+the two icons as they are. A program in Flare's terminal can ask for the microphone, the camera and Apple Events, but
+not for location, contacts, calendars or photos (the hardened runtime needs a key for each, and no terminal program in
+common use asks for them; Terminal and iTerm2 users who need one run that program elsewhere). Windows has no such
+gate.
