@@ -8,6 +8,7 @@ import { ContextMenu, OverflowList, MenusPreview } from "menus.slint";
 import { Tip } from "tip.slint";
 import { Dialog, DialogPreview } from "dialog.slint";
 import { PluginAsk } from "plugin_ask.slint";
+import { PluginLook } from "plugin_look.slint";
 import { TabRow, StripGeom, Place, MenuRow, OverflowRow, NoteSection, PluginRow, PluginButton } from "types.slint";
 import { PluginChip } from "decor.slint";
 import { PluginsDropdown } from "plugin_sections.slint";
@@ -22,6 +23,7 @@ import { SelectMenu } from "settings/select.slint";
 import { ColourPopover } from "settings/colour.slint";
 import { ThemeEditor, AskThree } from "settings/wall.slint";
 import { DictAsk } from "settings/dictation.slint";
+import { PluginSheet } from "settings/plugin_sheet.slint";
 import { HelpPanel, HelpBridge } from "settings/help_panel.slint";
 import { PanelSlot } from "panel.slint";
 import { ConvoFileRow, ConvoDiffRow } from "convo.slint";
@@ -505,7 +507,7 @@ export component AppWindow inherits Window {
     // The collapsed sidebar, out on a hover (or sliding), reaches over the panel's slot (a wide sidebar beside a
     // wide panel): it is drawn over the page, so a web panel hides under it like under any overlay.
     property <bool> sidebar-over-slot: root.side-mode && root.sidebar-collapsed && (root.sidebar-revealed || root.sidebar-sliding) && root.panel-slot-w > 0px && root.sidebar-width > page.width - root.panel-slot-w;
-    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.pask-open || root.update-open || root.update-notice != "" || root.staged-toast != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying || root.sidebar-over-slot;
+    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.pask-open || root.update-open || root.update-notice != "" || root.staged-toast != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.sheet-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying || root.sidebar-over-slot;
     changed overlay-open => { root.overlay-changed(); }
 
     // ---- tabs ----
@@ -687,8 +689,14 @@ export component AppWindow inherits Window {
     in property <bool> pask-open;
     in property <int> pask-kind;
     in property <string> pask-title;
-    in property <styled-text> pask-body;
+    in property <string> pask-sub;
     in property <string> pask-label;
+    in property <string> pask-button;
+    in property <string> pask-site;
+    in property <string> pask-asker;
+    in property <string> pask-letter;
+    in property <string> pask-foot;
+    in property <PluginLook> pask-look;
     in property <bool> tip-visible;
     in property <string> tip-text;
     in property <length> tip-x;
@@ -742,8 +750,37 @@ export component AppWindow inherits Window {
     out property <length> dialog-box-w: dlg.box-w;
     out property <length> dialog-box-h: dlg.box-h;
     out property <int> dialog-focus: dlg.focused-button;
+    // Where a plugin's details sheet is, for the e2e's pointer.
+    out property <length> sheet-box-x: sheet.box-x;
+    out property <length> sheet-box-y: sheet.box-y;
+    out property <length> sheet-box-w: sheet.box-w;
+    out property <length> sheet-box-h: sheet.box-h;
+    out property <length> sheet-grid-y: sheet.grid-y;
+    out property <length> sheet-cell-w: sheet.cell-w;
+    out property <length> sheet-cell-h: sheet.cell-h;
+    out property <length> sheet-close-x: sheet.close-x;
+    out property <length> sheet-close-y: sheet.close-y;
+    out property <int> sheet-menu-tile: sheet.menu-tile;
+    out property <length> sheet-menu-drop: sheet.menu-drop;
+    out property <length> sheet-scroll-max: sheet.scroll-max;
+    out property <length> sheet-scroll-y: sheet.scroll-y;
+    out property <length> sheet-turn-on-x: sheet.turn-on-x;
+    out property <length> sheet-turn-on-y: sheet.turn-on-y;
+    out property <length> sheet-turn-on-w: sheet.turn-on-w;
+    out property <length> sheet-turn-on-h: sheet.turn-on-h;
+    out property <length> sheet-panel-x: sheet.panel-x;
+    out property <length> sheet-panel-y: sheet.panel-y;
+    out property <length> sheet-panel-w: sheet.panel-w;
+    out property <length> sheet-panel-h: sheet.panel-h;
     out property <bool> pask-field-focus: pask.field-has-focus;
     out property <bool> pask-allow-armed: pask.allow-armed;
+    out property <bool> pask-revealed: pask.revealed;
+    out property <length> pask-eye-x: pask.eye-x;
+    out property <length> pask-eye-y: pask.eye-y;
+    out property <length> pask-box-x: pask.box-x;
+    out property <length> pask-box-y: pask.box-y;
+    out property <length> pask-box-w: pask.box-w;
+    out property <length> pask-box-h: pask.box-h;
     out property <length> pask-allow-x: pask.allow-x;
     out property <length> pask-allow-y: pask.allow-y;
     out property <length> pask-allow-w: pask.allow-w;
@@ -1627,6 +1664,30 @@ export component AppWindow inherits Window {
             abort => { root.update-abort(); }
             tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
         }
+        // A plugin's details sheet (the info button on its card, 2026-11-08): a modal over
+        // the Settings overlays, under a plugin's question and the close question.
+        sheet := PluginSheet {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.sheet-open;
+            name: SettingsBridge.sheet-name;
+            sub: SettingsBridge.sheet-sub;
+            desc: SettingsBridge.sheet-desc;
+            warnings: SettingsBridge.sheet-warnings;
+            tiles: SettingsBridge.sheet-tiles;
+            tall: SettingsBridge.sheet-tall;
+            look: SettingsBridge.sheet-look;
+            can-turn-on: SettingsBridge.sheet-can-turn-on;
+            panel: SettingsBridge.sheet-panel;
+            close => { SettingsBridge.sheet-close(); }
+            toggled(k, v) => { SettingsBridge.sheet-toggle(k, v); }
+            chosen(k, v) => { SettingsBridge.sheet-choose(k, v); }
+            turn-on => { SettingsBridge.sheet-turn-on(); }
+            open-panel => { SettingsBridge.sheet-open-panel(); }
+            tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+        }
         // A plugin's question sits under the close question: that one is answered first.
         pask := PluginAsk {
             x: 0px;
@@ -1636,8 +1697,14 @@ export component AppWindow inherits Window {
             open: root.pask-open;
             kind: root.pask-kind;
             title: root.pask-title;
-            body: root.pask-body;
+            sub: root.pask-sub;
             label: root.pask-label;
+            button: root.pask-button;
+            site: root.pask-site;
+            asker: root.pask-asker;
+            letter: root.pask-letter;
+            foot: root.pask-foot;
+            look: root.pask-look;
             fill-answer(c) => { root.pask-fill(c); }
             secret-answer(ok, t) => { root.pask-secret(ok, t); }
         }

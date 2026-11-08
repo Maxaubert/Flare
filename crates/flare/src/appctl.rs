@@ -782,6 +782,12 @@ fn menu_row(r: &MenuRowData) -> MenuRow {
         flyout: r.flyout,
         flyout_pick: false,
         parent: r.parent,
+        logo: r.logo.as_ref().map_or("", |(p, _)| p.as_str()).into(),
+        logo_fill: r
+            .logo
+            .as_ref()
+            .map(|(_, c)| crate::plugin_look::brand_colours(c).0)
+            .unwrap_or_default(),
     }
 }
 
@@ -3449,6 +3455,7 @@ impl AppCtl {
                     flyout: false,
                     parent: -1,
                     icon_cmd: String::new(),
+                    logo: None,
                 },
                 String::new(),
             )

@@ -247,6 +247,7 @@ impl Hub {
             g.stopped.remove(id);
             g.helper_stopped.remove(id);
             g.paused.remove(id);
+            g.choices.remove(id);
             *g.generations.entry(id.to_string()).or_insert(0) += 1;
         }
         self.wipe_data(id);

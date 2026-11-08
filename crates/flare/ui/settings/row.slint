@@ -1,6 +1,7 @@
 // The row, section and panel frames (M7 Task 34). PT SettingRow.tsx, SettingsSection.tsx and
 // SettingBlock.tsx. Rows take their height from Rust; nothing here measures a row to size itself.
 import { Theme, Px, SettingsInk, SettingsShape } from "../theme.slint";
+import { PluginLogo } from "../plugin_look.slint";
 
 // The 32 by 32 icon tile. `icon` is the SVG path data on a 24 unit box (settings icons.rs).
 export component SetIconTile inherits Rectangle {
@@ -62,6 +63,9 @@ export component SetSubtext inherits Rectangle {
 // One row: tile | label + subtext | control slot (@children). The label starts at x 60 (14 + 32 + 14).
 export component SetRowFrame inherits Rectangle {
     in property <string> icon;
+    // A plugin's brand logo in place of the tile (its card), filled in logo-fill; "" draws the icon tile.
+    in property <string> logo;
+    in property <color> logo-fill;
     in property <string> label;
     in property <string> sub;
     in property <string> sub-tip;
@@ -108,7 +112,11 @@ export component SetRowFrame inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 width: SettingsShape.tile;
-                SetIconTile { icon: root.icon; }
+                if root.logo == "": SetIconTile { icon: root.icon; }
+                if root.logo != "": PluginLogo {
+                    size: SettingsShape.tile;
+                    look: { branded: true, accent: root.logo-fill, accent-hi: root.logo-fill, logo: root.logo, plate: true };
+                }
             }
             text-col := VerticalLayout {
                 alignment: center;

@@ -53,6 +53,42 @@ pub enum BlockedKind {
     Auth,
 }
 
+impl BlockedKind {
+    /// The word on the wire.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BlockedKind::Permission => "permission",
+            BlockedKind::Question => "question",
+            BlockedKind::Auth => "auth",
+        }
+    }
+}
+
+impl ProgramReport {
+    /// What the log may say about a report beyond its state: the kind, the app and the message's
+    /// length. Never the message itself: a program's own text can carry the person's work.
+    pub fn log_note(&self) -> String {
+        let mut parts = Vec::new();
+        if self.state == ProgramState::Blocked {
+            parts.push(format!(
+                "kind {}",
+                self.kind.map_or("none", BlockedKind::as_str)
+            ));
+        }
+        if let Some(app) = &self.app {
+            parts.push(format!("app {app}"));
+        }
+        if let Some(msg) = &self.msg {
+            parts.push(format!("msg {} chars", msg.chars().count()));
+        }
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", parts.join(", "))
+        }
+    }
+}
+
 /// One root-record report.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProgramReport {

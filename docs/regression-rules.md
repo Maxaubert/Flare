@@ -433,7 +433,11 @@ Held by `a_second_call_while_one_runs_is_refused_and_the_first_is_not_disturbed`
 `agentBrowser`. A call that is cut short in the middle of a press (a takeover, a timeout) lets go of the button or key it had pressed
 (`a_click_cut_short_lets_go_of_the_button`, `a_click_that_times_out_still_lets_go`,
 `the_person_taking_over_a_click_lets_go_of_the_button`), and an agent in a tab that is behind gets a hidden page made for it, never a
-"no web page is open" loop (`an_agent_in_a_tab_behind_gets_a_hidden_page_and_does_not_loop_on_open_page`).
+"no web page is open" loop (`an_agent_in_a_tab_behind_gets_a_hidden_page_and_does_not_loop_on_open_page`). That page paints off the window
+(at (-32000, -32000), the panel's size) while a call runs on it and for 5 s after, so what it does in its next frame happens
+(issue #120), and is never moved while it is the live page in front or its still is being taken for a Flare menu: it is hidden
+for real first, which hands the keyboard back to the window (`a_page_behind_paints_off_the_window_while_the_agent_works_on_it`,
+`a_page_in_front_is_not_parked`, `a_menu_over_the_page_the_agent_uses_keeps_it_in_place_until_the_still`, the e2e `agentBrowser`).
 194. **The agent never runs its own script in a page unless the user switched it on, and a wait is never a script runner.**
 `browser.eval` needs "Let agents run scripts in pages" (off by default, read at every request); a text or selector wait sends ONE fixed
 checker whose only variable part is a JSON string literal. Held by `the_agent_grant_follows_the_users_switch_for_scripts`,

@@ -20,6 +20,8 @@ ignore = [
     { id = "RUSTSEC-2026-0368", reason = "zip 8.6.0 ONLY, via velopack 1.2.161 (updater, off until public; bump velopack first). flare-dictation uses zip 9.0.0, proven clean with these three ignores removed (2026-10-19)" },
     { id = "RUSTSEC-2026-0369", reason = "zip 8.6.0 ONLY, via velopack 1.2.161 (updater, off until public; bump velopack first). flare-dictation uses zip 9.0.0, proven clean with these three ignores removed (2026-10-19)" },
     { id = "RUSTSEC-2024-0388", reason = "derivative unmaintained notice via velopack 1.2.161; not a vulnerability" },
+    { id = "RUSTSEC-2026-0429", reason = "zip 8.6.0 ONLY, via velopack 1.2.161 (updater, off until public; bump velopack first), same as 0367-0369. Published 2026-11-08; flare-dictation is on zip 9.x, the fixed line" },
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils unmaintained notice (2026-11-08), via spin_on in Slint 1.18.1's skia renderer and slint-build; not a vulnerability, no safe upgrade until Slint drops it" },
 ]
 
 [licenses]

@@ -229,6 +229,7 @@ fn app_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
                 "label": r.label.to_string(),
                 "hint": r.hint.to_string(),
                 "icon": r.icon.to_string(),
+                "logo": !r.logo.is_empty(),
                 "disabled": r.disabled,
             })
         })

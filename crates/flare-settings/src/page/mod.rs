@@ -78,13 +78,18 @@ pub enum Control {
     },
 }
 
-/// A small text button beside a row's control (ROW_BUTTON, 32 high).
-#[derive(Clone, Debug, PartialEq)]
+/// A small text button beside a row's control (ROW_BUTTON, 32 high). With an `icon` (a name in `icons`) and an empty
+/// `label` it is a square icon button; `tip` is said on hover (an icon button's only words, so it must be set).
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Button {
     pub id: &'static str,
     pub label: String,
     pub alt: Option<String>,
     pub off: bool,
+    pub icon: &'static str,
+    pub tip: String,
+    /// The icon is drawn in the warning colour (a plugin's info button while it has warnings).
+    pub warn: bool,
 }
 
 /// One row of a page, ready to draw.
@@ -102,6 +107,15 @@ pub struct RowModel {
     pub control: Control,
     pub reset: bool,
     pub buttons: Vec<Button>,
+    /// A logo drawn in place of the icon tile (a plugin's brand, on its card); None draws `icon`.
+    pub logo: Option<Logo>,
+}
+
+/// A plugin's logo: SVG path data on the 24-unit box, filled in `color` (`#rrggbb`) on a white rounded tile.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Logo {
+    pub path: String,
+    pub color: String,
 }
 
 /// One block of a section's panel.
@@ -252,6 +266,7 @@ pub(crate) fn plain_row(def: &RowDef, control: Control) -> RowModel {
         control,
         reset: false,
         buttons: Vec::new(),
+        logo: None,
     }
 }
 
