@@ -11,6 +11,9 @@ pub mod chrome;
 pub mod clipboard;
 pub mod clipboard_port;
 pub mod dblclick;
+#[cfg(target_os = "macos")]
+#[path = "macos/dock.rs"]
+pub mod dock;
 pub mod dwm;
 pub mod edge_watch;
 pub mod eyedrop;

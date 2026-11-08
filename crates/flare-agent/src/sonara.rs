@@ -198,14 +198,38 @@ mod tests {
         }
     }
 
+    /// How long the stand-in waits for a client before it gives up: a post that never comes fails the
+    /// test instead of hanging it (on macOS before the port owner table existed, the post refused
+    /// every port and the old blocking `accept` waited forever).
+    const ACCEPT_WAIT: Duration = Duration::from_secs(10);
+
+    /// The next client of `listener` (made nonblocking), within [`ACCEPT_WAIT`]; a panic after it.
+    fn accept_within(listener: &TcpListener) -> TcpStream {
+        let end = Instant::now() + ACCEPT_WAIT;
+        loop {
+            match listener.accept() {
+                Ok((s, _)) => {
+                    s.set_nonblocking(false).expect("blocking");
+                    s.set_read_timeout(Some(ACCEPT_WAIT)).expect("timeout");
+                    return s;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < end => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("no client came: {e}"),
+            }
+        }
+    }
+
     /// A stand-in Sonara on 127.0.0.1: answers `answers` connections with `status`, recording each.
     fn fake_sonara(answers: usize, status: &'static str) -> (u16, thread::JoinHandle<Vec<Got>>) {
         let listener = TcpListener::bind((LOOPBACK, 0)).expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
         let port = listener.local_addr().expect("addr").port();
         let handle = thread::spawn(move || {
             let mut got = Vec::new();
             for _ in 0..answers {
-                let (mut s, _) = listener.accept().expect("accept");
+                let mut s = accept_within(&listener);
                 got.push(read_request(&mut s));
                 let body = "{\"ok\":true,\"moved\":true}";
                 let reply = format!(
@@ -250,10 +274,6 @@ mod tests {
         assert_eq!(sonara_home(&none), None);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "the port owner check reads the Windows TCP table; macOS phase 4 of the port plan"
-    )]
     #[test]
     fn posts_the_tab_and_the_question_to_the_sonara_in_runtime_json() {
         let (port, server) = fake_sonara(2, "200 OK");
@@ -324,10 +344,6 @@ mod tests {
         ));
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "the port owner check reads the Windows TCP table; macOS phase 4 of the port plan"
-    )]
     #[test]
     fn a_non_200_is_false_and_a_slow_server_times_out() {
         // A 500 answer is not a success.
@@ -348,9 +364,10 @@ mod tests {
 
         // A server that accepts and never answers: false within the timeout (plus a second).
         let listener = TcpListener::bind((LOOPBACK, 0)).expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
         let slow_port = listener.local_addr().expect("addr").port();
         let holder = thread::spawn(move || {
-            let (s, _) = listener.accept().expect("accept");
+            let s = accept_within(&listener);
             thread::sleep(Duration::from_millis(2000));
             drop(s);
         });

@@ -1507,26 +1507,49 @@ mod tests {
         )
     }
 
+    /// Plugin folders in the platform's spelling, and the list joined the way Claude Code reads it.
+    #[cfg(windows)]
+    const P_MINE: &str = "D:\\mine";
+    #[cfg(not(windows))]
+    const P_MINE: &str = "/Volumes/D/mine";
+    #[cfg(windows)]
+    const P_TOO: &str = "E:\\too";
+    #[cfg(not(windows))]
+    const P_TOO: &str = "/Volumes/E/too";
+    #[cfg(windows)]
+    const P_FLARE: &str = "C:\\F\\claude-plugin";
+    #[cfg(not(windows))]
+    const P_FLARE: &str = "/F/claude-plugin";
+    #[cfg(windows)]
+    const P_OTHER: &str = "C:\\other-flare\\claude-plugin";
+    #[cfg(not(windows))]
+    const P_OTHER: &str = "/other-flare/claude-plugin";
+
+    fn plugin_list(dirs: &[&str]) -> String {
+        dirs.join(flare_shells::env::PLUGIN_DIRS_SEP)
+    }
+
     #[test]
     fn the_plugin_folder_reaches_a_new_shell_once_after_the_users_own() {
         let key = "CLAUDE_CODE_PLUGIN_DIRS";
         let sp = FakeSpawner::new();
-        let m = with_base(&sp, &[(key, "D:\\mine;E:\\too")], |_| false);
+        let users = plugin_list(&[P_MINE, P_TOO]);
+        let m = with_base(&sp, &[(key, &users)], |_| false);
         let on = PluginEnv {
-            dir: "C:\\F\\claude-plugin".into(),
+            dir: P_FLARE.into(),
             on: true,
         };
         assert!(m.spawn("a", "C:\\x", Some("pwsh"), null(), None, Some(&on)));
         assert_eq!(
             env_of(&sp, 0, key).as_deref(),
-            Some("D:\\mine;E:\\too;C:\\F\\claude-plugin")
+            Some(plugin_list(&[P_MINE, P_TOO, P_FLARE]).as_str())
         );
         let off = PluginEnv {
             on: false,
             ..on.clone()
         };
         assert!(m.spawn("b", "C:\\x", Some("pwsh"), null(), None, Some(&off)));
-        assert_eq!(env_of(&sp, 1, key).as_deref(), Some("D:\\mine;E:\\too"));
+        assert_eq!(env_of(&sp, 1, key).as_deref(), Some(users.as_str()));
         let sp2 = FakeSpawner::new();
         let m2 = with_base(&sp2, &[], |_| false);
         assert!(m2.spawn("a", "C:\\x", Some("pwsh"), null(), None, Some(&off)));
@@ -1536,15 +1559,12 @@ mod tests {
     #[test]
     fn an_inherited_copy_of_our_plugin_is_dropped() {
         let key = "CLAUDE_CODE_PLUGIN_DIRS";
-        let ours: fn(&str) -> bool = |d| d.ends_with("other-flare\\claude-plugin");
+        let ours: fn(&str) -> bool = |d| d == P_OTHER;
         let sp = FakeSpawner::new();
-        let m = with_base(
-            &sp,
-            &[(key, "D:\\mine;C:\\other-flare\\claude-plugin")],
-            ours,
-        );
+        let both = plugin_list(&[P_MINE, P_OTHER]);
+        let m = with_base(&sp, &[(key, &both)], ours);
         let on = PluginEnv {
-            dir: "C:\\F\\claude-plugin".into(),
+            dir: P_FLARE.into(),
             on: true,
         };
         let off = PluginEnv {
@@ -1554,12 +1574,12 @@ mod tests {
         assert!(m.spawn("a", "C:\\x", Some("pwsh"), null(), None, Some(&on)));
         assert_eq!(
             env_of(&sp, 0, key).as_deref(),
-            Some("D:\\mine;C:\\F\\claude-plugin")
+            Some(plugin_list(&[P_MINE, P_FLARE]).as_str())
         );
         assert!(m.spawn("b", "C:\\x", Some("pwsh"), null(), None, Some(&off)));
-        assert_eq!(env_of(&sp, 1, key).as_deref(), Some("D:\\mine"));
+        assert_eq!(env_of(&sp, 1, key).as_deref(), Some(P_MINE));
         let sp2 = FakeSpawner::new();
-        let m2 = with_base(&sp2, &[(key, "C:\\other-flare\\claude-plugin")], ours);
+        let m2 = with_base(&sp2, &[(key, P_OTHER)], ours);
         assert!(m2.spawn("a", "C:\\x", Some("pwsh"), null(), None, Some(&off)));
         assert_eq!(env_of(&sp2, 0, key), None);
     }

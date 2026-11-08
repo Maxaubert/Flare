@@ -8,7 +8,7 @@
 //! (2.5 s doubling to 20 s) while the answer holds, and let a failing query back off for everyone
 //! (doubling to a minute, forced looks included).
 
-use crate::detect::{ProcRow, tree_agent_kind};
+use crate::detect::{ProcRow, tab_agent_kind};
 use crate::kinds::DetectedAgent;
 use std::collections::{HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
@@ -173,7 +173,7 @@ impl AgentPoll {
         let mut changed = false;
         let live = (self.deps.pids)();
         for (id, pid) in &live {
-            let kind = tree_agent_kind(&rows, *pid);
+            let kind = tab_agent_kind(&rows, *pid);
             let has = kind.is_some();
             // Presence AND kind: Codex quit and Claude started inside one back-off window is a
             // change the tab must hear (what it resumes on the next start depends on it).

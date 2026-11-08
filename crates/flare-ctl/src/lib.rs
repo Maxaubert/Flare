@@ -10,8 +10,10 @@
 //!   implements.
 //! - `client`: the client library, over any wire.
 //! - `text`: words from outside made safe for a model (one copy for both sides).
-//! - `pipe` (Windows): the named pipe, its owner-only descriptor, the accept loop, `connect`.
-//!   Elsewhere `pipe_stub.rs` stands in (macOS: phase 4 of the port plan).
+//! - `pipe`: the endpoint, one API on both systems. Windows (`pipe.rs`): the named pipe, its
+//!   owner-only descriptor, the accept loop, `connect`. macOS (`uds.rs`): a Unix socket in a 0700
+//!   per-user folder, mode 0600, the peer's uid and pid checked on both ends (rule 239). Any other
+//!   system: `pipe_stub.rs`, no channel.
 //!
 //! The contract is `docs/surfaces/protocol.md`; this crate must stay app-neutral so the same rules
 //! can be ported to Prism Terminal.
@@ -23,7 +25,10 @@ pub mod grant;
 pub mod method;
 #[cfg(windows)]
 pub mod pipe;
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+#[path = "uds.rs"]
+pub mod pipe;
+#[cfg(not(any(windows, target_os = "macos")))]
 #[path = "pipe_stub.rs"]
 pub mod pipe;
 pub mod proto;

@@ -5275,6 +5275,8 @@ impl AppCtl {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    mod ctl_socket_tests;
     mod mods_tests;
     mod splitter_tests;
     mod web_tests;

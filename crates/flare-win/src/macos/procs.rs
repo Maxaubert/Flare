@@ -46,8 +46,10 @@ pub fn join_argv(argv: &[String]) -> String {
     }
 }
 
-/// BLOCKING (the poll's worker). Every process as (pid, ppid); `cmd` is read ONLY for descendants of
-/// `roots` and kept only when `wanted(&cmd)` says so. None when the table cannot be read.
+/// BLOCKING (the poll's worker). Every process as (pid, ppid); `cmd` is read ONLY for `roots` and their
+/// descendants and kept only when `wanted(&cmd)` says so. Unlike Windows the roots' own command lines
+/// are read: a shell that ran `exec claude` IS the agent, with the shell's pid
+/// (`flare_agent::detect::tab_agent_kind`). None when the table cannot be read.
 pub fn snapshot_processes(roots: &[u32], wanted: &dyn Fn(&str) -> bool) -> Option<Vec<ProcEntry>> {
     let table = flare_proc::table();
     if table.is_empty() {
@@ -62,6 +64,7 @@ pub fn snapshot_processes(roots: &[u32], wanted: &dyn Fn(&str) -> bool) -> Optio
         )
     })
     .into_iter()
+    .chain(roots.iter().copied().filter(|r| *r != 0))
     .collect();
     Some(
         rows.into_iter()
@@ -130,7 +133,9 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let rows = loop {
             let rows = snapshot_processes(&[std::process::id()], &|c| {
-                c.to_lowercase().contains("claude") || c.contains("sleep")
+                c.to_lowercase().contains("claude")
+                    || c.contains("sleep")
+                    || c.contains("flare_win")
             })
             .expect("snapshot");
             if rows.iter().any(|r| r.ppid == me) || std::time::Instant::now() > end {
@@ -143,6 +148,12 @@ mod tests {
             .status(); // sync-ok: test code on the test thread only
         let _ = child.kill();
         let _ = child.wait(); // sync-ok: test code on the test thread only
+        // The root's own command line is read too (a shell that became the agent by `exec`).
+        let own = rows
+            .iter()
+            .find(|r| r.pid == std::process::id())
+            .expect("self");
+        assert!(!own.cmd.is_empty(), "the root's own command line is read");
         let c = rows.iter().find(|r| r.pid == me).expect("child present");
         assert!(c.cmd.contains("claude-code-test"), "cmd was {:?}", c.cmd);
         assert!(c.cmd.starts_with("/bin/sh -c "), "cmd was {:?}", c.cmd);

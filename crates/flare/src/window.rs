@@ -1663,7 +1663,9 @@ pub fn run_window(
         let weak = app.as_weak();
         let e2e = args.e2e;
         rc.borrow_mut().set_flash(Rc::new(move || {
-            let Some(hwnd) = weak.upgrade().and_then(|a| hwnd_of(&a)) else {
+            // The HWND on Windows; on macOS the content view, which only says the window exists (the
+            // Dock's attention is the app's, `flare_win::dock`).
+            let Some(hwnd) = weak.upgrade().and_then(|a| native_view_of(&a)) else {
                 return;
             };
             if e2e {
@@ -1696,6 +1698,11 @@ pub fn run_window(
             c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::with_shell(Box::new(
                 flare_win::taskbar::RecordShell,
             )));
+        } else {
+            // macOS: the badge is the Dock tile's, which needs no window handle (Windows waits for
+            // the HWND below).
+            #[cfg(target_os = "macos")]
+            c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(0));
         }
     }
     // What needs the window's handle, once it has one: the watchdog's hung-window poll, the exe's

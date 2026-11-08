@@ -75,6 +75,24 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
   request and a big event write can never block each other on full pipe buffers.
 - Byte mode, duplex, up to 255 instances; the app keeps one waiting and makes the next before it
   serves the one that just connected.
+- **macOS** (port phase 4, regression rule 239, `crates/flare-ctl/src/uds.rs`): a **Unix domain socket**
+  with the same framing, grants and names. Node: `net.createServer().listen(path)`.
+  - **Path**: `<per-user temp folder>/flare-ctl/<h>[-<s>].sock`, the per-user temp folder being
+    `confstr(_CS_DARWIN_USER_TEMP_DIR)` (`/var/folders/.../T/`, mode 0700), `h` and `s` the same hashes as
+    above with the uid (decimal, from `geteuid`) in place of the SID: SID `S-1-5-21-1` hashes to
+    `81be4daa4a464916.sock`, with scope `e2e` to `81be4daa4a464916-f1179b09.sock`
+    (`the_socket_name_has_the_pipe_names_known_answers`). At most 103 bytes (`sun_path`).
+  - **Who may connect**: the folder `flare-ctl` is made mode 0700 and must belong to the user with no group
+    or other bits, or the server does not start; the socket is mode 0600; on accept the server reads the
+    client's uid (`getpeereid`) and drops any other user before reading a byte.
+  - **First instance**: a live server on the path fails the start; the dead socket of a Flare that crashed
+    is removed; anything else in the way fails the start. Stop removes the socket only while it is still the
+    one this server bound (same device and inode).
+  - **Client check**: before sending a byte the client reads the server's pid (`LOCAL_PEERPID`, the
+    `GetNamedPipeServerProcessId` of the Mac) and uid (`getpeereid`), with the same two rules as above.
+  - **Reading**: `recv` with `MSG_DONTWAIT` is the probe; writes block, and a stop shuts the socket down
+    (`shutdown(SHUT_RDWR)`, the `CancelIoEx` of the Mac). `SO_NOSIGPIPE` keeps a write to a gone client an
+    error.
 
 ## 2. Framing
 

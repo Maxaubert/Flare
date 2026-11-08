@@ -17,8 +17,11 @@ pub const CTL_PIPE_VAR: &str = "FLARE_CTL_PIPE";
 pub const CTL_PID_VAR: &str = "FLARE_CTL_PID";
 /// Where `flare-mcp.exe` is, for the bundled Claude Code plugin's `.mcp.json`.
 pub const MCP_EXE_VAR: &str = "FLARE_MCP_EXE";
-/// The Claude Code plugin folder list (`;`-separated).
+/// The Claude Code plugin folder list (`;`-separated on Windows, `:` on macOS: [`PLUGIN_DIRS_SEP`]).
 pub const PLUGIN_DIRS_VAR: &str = "CLAUDE_CODE_PLUGIN_DIRS";
+/// What separates the folders of [`PLUGIN_DIRS_VAR`]: Claude Code splits it on Node's `path.delimiter`,
+/// `;` on Windows and `:` on macOS (read in Claude Code 2.1.319's `pluginDirsFromEnv`, 2026-11-08).
+pub const PLUGIN_DIRS_SEP: &str = if cfg!(windows) { ";" } else { ":" };
 /// agy's switch for its OSC 7501 status reports. agy asks the terminal first (`OSC 7501 ; ?`); Flare
 /// sets the switch instead of answering, so every shell gets it `on` unless the user set it already.
 pub const AGY_STATUS_VAR: &str = "AGY_CLI_OSC7501";
@@ -76,8 +79,8 @@ pub fn plugin_key(p: Option<&PluginEnv>) -> String {
     }
 }
 
-/// The user's plugin folders (split on ';', blank entries and entries `is_ours` names dropped), with `dir`
-/// appended when given and not already present (case-insensitive). Joined with ';'.
+/// The user's plugin folders (split on [`PLUGIN_DIRS_SEP`], blank entries and entries `is_ours` names dropped),
+/// with `dir` appended when given and not already present (case-insensitive). Joined with the same separator.
 pub fn with_plugin_dir(
     dirs: Option<&str>,
     dir: Option<&str>,
@@ -85,7 +88,7 @@ pub fn with_plugin_dir(
 ) -> String {
     let mut out: Vec<String> = dirs
         .unwrap_or("")
-        .split(';')
+        .split(PLUGIN_DIRS_SEP)
         .map(str::trim)
         .filter(|s| !s.is_empty() && !is_ours(s))
         .map(str::to_string)
@@ -95,7 +98,7 @@ pub fn with_plugin_dir(
     {
         out.push(d.to_string());
     }
-    out.join(";")
+    out.join(PLUGIN_DIRS_SEP)
 }
 
 /// The environment a shell in a Flare tab sees (see the plan, Task 6).
@@ -184,7 +187,28 @@ pub fn pty_env(
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     const DIR: &str = "C:\\PT\\resources\\claude-plugin";
+    #[cfg(not(windows))]
+    const DIR: &str = "/PT/resources/claude-plugin";
+    /// The user's own plugin folders and an inherited copy of Flare's, in the platform's spelling.
+    #[cfg(windows)]
+    const MINE: &str = "D:\\mine";
+    #[cfg(not(windows))]
+    const MINE: &str = "/Volumes/D/mine";
+    #[cfg(windows)]
+    const TOO: &str = "E:\\too";
+    #[cfg(not(windows))]
+    const TOO: &str = "/Volumes/E/too";
+    #[cfg(windows)]
+    const STABLE: &str = "C:\\stable\\claude-plugin";
+    #[cfg(not(windows))]
+    const STABLE: &str = "/stable/claude-plugin";
+
+    /// Folders joined the way Claude Code reads the list on this platform.
+    fn list(dirs: &[&str]) -> String {
+        dirs.join(PLUGIN_DIRS_SEP)
+    }
 
     fn e(p: &[(&str, &str)]) -> Env {
         p.iter()
@@ -470,8 +494,9 @@ mod tests {
 
     #[test]
     fn plugin_dir_appended_after_the_users() {
+        let users = list(&[MINE, TOO]);
         let r = pty_env(
-            &e(&[("CLAUDE_CODE_PLUGIN_DIRS", "D:\\mine;E:\\too")]),
+            &e(&[("CLAUDE_CODE_PLUGIN_DIRS", &users)]),
             Some("pwsh"),
             Some(&on()),
             None,
@@ -480,14 +505,14 @@ mod tests {
         );
         assert_eq!(
             get(&r, PLUGIN_DIRS_VAR),
-            Some("D:\\mine;E:\\too;C:\\PT\\resources\\claude-plugin")
+            Some(list(&[MINE, TOO, DIR]).as_str())
         );
     }
 
     #[test]
     fn plugin_dir_keeps_the_existing_spelling() {
         let r = pty_env(
-            &e(&[("Claude_Code_Plugin_Dirs", "D:\\mine")]),
+            &e(&[("Claude_Code_Plugin_Dirs", MINE)]),
             Some("pwsh"),
             Some(&on()),
             None,
@@ -496,7 +521,7 @@ mod tests {
         );
         assert_eq!(
             get(&r, "Claude_Code_Plugin_Dirs"),
-            Some("D:\\mine;C:\\PT\\resources\\claude-plugin")
+            Some(list(&[MINE, DIR]).as_str())
         );
         assert!(!r.iter().any(|(k, _)| k == PLUGIN_DIRS_VAR));
     }
@@ -520,31 +545,26 @@ mod tests {
         let r = pty_env(&[], Some("pwsh"), Some(&off()), None, None, None);
         assert!(!env_has(&r, PLUGIN_DIRS_VAR));
         let r = pty_env(
-            &e(&[("CLAUDE_CODE_PLUGIN_DIRS", "D:\\mine")]),
+            &e(&[("CLAUDE_CODE_PLUGIN_DIRS", MINE)]),
             Some("pwsh"),
             Some(&off()),
             None,
             None,
             None,
         );
-        assert_eq!(get(&r, PLUGIN_DIRS_VAR), Some("D:\\mine"));
+        assert_eq!(get(&r, PLUGIN_DIRS_VAR), Some(MINE));
     }
 
     #[test]
     fn inherited_copy_of_our_plugin_is_dropped() {
-        let ours = |d: &str| d.ends_with("stable\\claude-plugin");
-        let input = e(&[(
-            "CLAUDE_CODE_PLUGIN_DIRS",
-            "D:\\mine;C:\\stable\\claude-plugin",
-        )]);
+        let ours = |d: &str| d == STABLE;
+        let both = list(&[MINE, STABLE]);
+        let input = e(&[("CLAUDE_CODE_PLUGIN_DIRS", &both)]);
         let r = pty_env(&input, Some("pwsh"), Some(&on()), Some(&ours), None, None);
-        assert_eq!(
-            get(&r, PLUGIN_DIRS_VAR),
-            Some("D:\\mine;C:\\PT\\resources\\claude-plugin")
-        );
+        assert_eq!(get(&r, PLUGIN_DIRS_VAR), Some(list(&[MINE, DIR]).as_str()));
         let r = pty_env(&input, Some("pwsh"), Some(&off()), Some(&ours), None, None);
-        assert_eq!(get(&r, PLUGIN_DIRS_VAR), Some("D:\\mine"));
-        let only = e(&[("CLAUDE_CODE_PLUGIN_DIRS", "C:\\stable\\claude-plugin")]);
+        assert_eq!(get(&r, PLUGIN_DIRS_VAR), Some(MINE));
+        let only = e(&[("CLAUDE_CODE_PLUGIN_DIRS", STABLE)]);
         let r = pty_env(&only, Some("pwsh"), Some(&off()), Some(&ours), None, None);
         assert!(!env_has(&r, PLUGIN_DIRS_VAR));
     }
@@ -552,26 +572,36 @@ mod tests {
     #[test]
     fn no_plugin_means_the_variable_is_untouched() {
         let ours = |_: &str| true;
-        let from = e(&[
-            (
-                "CLAUDE_CODE_PLUGIN_DIRS",
-                "D:\\mine;;C:\\stable\\claude-plugin",
-            ),
-            ("FOO", "x"),
-        ]);
+        let odd = list(&[MINE, "", STABLE]);
+        let from = e(&[("CLAUDE_CODE_PLUGIN_DIRS", &odd), ("FOO", "x")]);
         assert_eq!(
             pty_env(&from, Some("pwsh"), None, Some(&ours), None, None),
             pty_env(&from, Some("pwsh"), None, None, None, None)
         );
         let kept = pty_env(&from, Some("pwsh"), None, None, None, None);
-        assert_eq!(
-            get(&kept, PLUGIN_DIRS_VAR),
-            Some("D:\\mine;;C:\\stable\\claude-plugin")
-        );
+        assert_eq!(get(&kept, PLUGIN_DIRS_VAR), Some(odd.as_str()));
         assert!(!env_has(
             &pty_env(&[], Some("pwsh"), None, Some(&ours), None, None),
             PLUGIN_DIRS_VAR
         ));
+    }
+
+    #[test]
+    fn the_folder_list_is_split_the_way_claude_code_splits_it() {
+        // Node's `path.delimiter`: `;` on Windows, `:` on macOS. A `;` inside a Mac folder name is a name
+        // character, and a `:` in a Windows drive path is no separator.
+        assert_eq!(PLUGIN_DIRS_SEP, if cfg!(windows) { ";" } else { ":" });
+        let never = |_: &str| false;
+        #[cfg(not(windows))]
+        assert_eq!(
+            with_plugin_dir(Some("/a;b:/c"), Some("/F/claude-plugin"), &never),
+            "/a;b:/c:/F/claude-plugin"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            with_plugin_dir(Some("D:\\a;E:\\b"), Some("C:\\F\\claude-plugin"), &never),
+            "D:\\a;E:\\b;C:\\F\\claude-plugin"
+        );
     }
 
     #[test]
@@ -583,7 +613,11 @@ mod tests {
 
     #[test]
     fn with_plugin_dir_drops_empty_entries() {
-        assert_eq!(with_plugin_dir(Some(";a;;"), Some("b"), &|_| false), "a;b");
+        let sep = PLUGIN_DIRS_SEP;
+        assert_eq!(
+            with_plugin_dir(Some(&format!("{sep}a{sep}{sep}")), Some("b"), &|_| false),
+            format!("a{sep}b")
+        );
         assert_eq!(with_plugin_dir(None, None, &|_| false), "");
     }
 

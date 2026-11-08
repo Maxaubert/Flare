@@ -1589,6 +1589,7 @@ dependencies = [
  "flare-dictation",
  "flare-e2e-proto",
  "flare-help",
+ "flare-mcp",
  "flare-mods",
  "flare-proc",
  "flare-render",
@@ -1647,6 +1648,7 @@ dependencies = [
 name = "flare-ctl"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "log",
  "serde",
  "serde_json",

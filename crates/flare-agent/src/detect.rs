@@ -4,6 +4,13 @@
 //! PACKAGE signatures and program names, not bare words: this machine's dev folder is literally named
 //! "Claude", and a tool touching files there must not light a tab. A bare name counts only as the
 //! program itself, the FIRST token (a native `claude.exe` started as `claude --resume`).
+//!
+//! macOS command lines differ (read off `KERN_PROCARGS2` and joined by `flare_win::procs`): the native
+//! `~/.local/bin/claude` and Homebrew's `codex` are their own first token, but an npm or bun install
+//! is a `#!/usr/bin/env node` script, and the kernel hands it on as `node /opt/homebrew/bin/claude`.
+//! So off Windows the script an interpreter runs counts too (its first argument that is not an
+//! option, by its exact lower-case file name), and an app bundle's own executable
+//! (`/Applications/Claude.app/Contents/MacOS/Claude`, the desktop app) is never the CLI of that name.
 
 use crate::kinds::DetectedAgent;
 use regex::Regex;
@@ -35,10 +42,17 @@ static PREFILTER_RE: LazyLock<Regex> =
 /// `claude` or `gemini`, or `git -C C:\src\claude status`, is not an agent.
 pub fn classify(cmd: &str) -> Option<DetectedAgent> {
     let argv = split_command_line(cmd);
-    let first = argv.first().map(|a| program_name(a));
+    let first = argv
+        .first()
+        .filter(|a| !(POSIX_RULES && is_bundle_app(a)))
+        .map(|a| program_name(a));
     let by_program = first.and_then(agent_named);
     if by_program.is_some() {
         return by_program;
+    }
+    // macOS: an agent's launcher script under its interpreter (`node /opt/homebrew/bin/claude`).
+    if POSIX_RULES && let Some(kind) = script_agent(&argv) {
+        return Some(kind);
     }
     // A shim or exe in a later argument (`cmd /c C:\npm\claude.cmd`) counts only when it IS a
     // program file of that name; a folder or a plain word never does.
@@ -54,6 +68,105 @@ pub fn classify(cmd: &str) -> Option<DetectedAgent> {
     } else {
         DetectedAgent::Other
     })
+}
+
+/// The macOS rules ([`script_agent`], [`is_bundle_app`]) apply off Windows only; Windows reads its command
+/// lines as it always has.
+const POSIX_RULES: bool = cfg!(not(windows));
+
+/// The programs an agent's launcher script runs under on macOS: `#!/usr/bin/env node` (npm, Homebrew's
+/// node, bun's global installs), `bun` and `deno` themselves, the shells a wrapper such as
+/// `~/.claude/local/claude` is written for, and Python (aider under pipx or uv).
+const SCRIPT_HOSTS: [&str; 10] = [
+    "node", "nodejs", "bun", "deno", "sh", "bash", "zsh", "dash", "python3", "python",
+];
+
+/// Whether `name` (a program's lower-case file name) is one of [`SCRIPT_HOSTS`], or a versioned
+/// Python (`python3.12`).
+fn is_script_host(name: &str) -> bool {
+    SCRIPT_HOSTS.contains(&name)
+        || name
+            .strip_prefix("python")
+            .is_some_and(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit() || c == '.'))
+}
+
+/// The agent whose launcher script `argv` runs under an interpreter: the interpreter's first argument
+/// that is not an option, named EXACTLY as the agent's program (`/opt/homebrew/bin/claude`,
+/// `~/.bun/bin/codex`; `-c claude` too, which runs it). The value of an interpreter option that takes
+/// one (`node -r ts-node/register`, `--require x.js`) is not the script, and neither is the `run`
+/// subcommand of `deno` and `bun` (`deno run -A /x/claude`). A folder or file with the word in another
+/// case (`~/Documents/Claude`) or with an extension (`claude.txt`) never counts, and neither does a
+/// later argument (`node build.js claude`). An `npm:` package spec (`deno run -A
+/// npm:@anthropic-ai/claude-code`, a `deno install` wrapper) is read by its package signature in
+/// [`classify`].
+pub fn script_agent(argv: &[String]) -> Option<DetectedAgent> {
+    let host = program_name(argv.first()?);
+    if !is_script_host(&host) {
+        return None;
+    }
+    let mut rest = argv.iter().skip(1);
+    let mut subcommand_seen = false;
+    let script = loop {
+        let a = rest.next()?;
+        if a.starts_with('-') {
+            if !a.contains('=') && option_takes_value(&host, a) {
+                rest.next();
+            }
+            continue;
+        }
+        if !subcommand_seen && (host == "deno" || host == "bun") && a == "run" {
+            subcommand_seen = true;
+            continue;
+        }
+        break a;
+    };
+    let base = script.rsplit('/').next().unwrap_or(script);
+    agent_named(base)
+}
+
+/// Whether `opt` of interpreter `host` takes the next argument as its value (so that argument is not
+/// the script). Only the options a launcher or a wrapper plausibly passes; a value glued on with `=`
+/// is handled by the caller.
+fn option_takes_value(host: &str, opt: &str) -> bool {
+    let list: &[&str] = match host {
+        "node" | "nodejs" => &[
+            "-r",
+            "--require",
+            "--import",
+            "--loader",
+            "--experimental-loader",
+            "--env-file",
+            "--title",
+            "--conditions",
+            "-C",
+            "--input-type",
+            "--inspect-port",
+            "--stack-size",
+        ],
+        "bun" => &["-r", "--preload", "--cwd", "--config", "--env-file"],
+        "deno" => &[
+            "-c",
+            "--config",
+            "--import-map",
+            "--location",
+            "--seed",
+            "--cert",
+            "--lock",
+        ],
+        h if h.starts_with("python") => &["-W", "-X", "--check-hash-based-pycs"],
+        _ => &[],
+    };
+    list.contains(&opt)
+}
+
+/// An app bundle's own executable whose name is not all lower case (`.../Claude.app/Contents/MacOS/Claude`,
+/// the desktop app): never the command-line agent of that name. A CLI shipped inside a bundle keeps its
+/// lower-case name (`CodexCLI.app/Contents/MacOS/codex`) and still counts.
+pub fn is_bundle_app(arg: &str) -> bool {
+    let Some((_, name)) = arg.rsplit_once(".app/Contents/MacOS/") else {
+        return false;
+    };
+    name.chars().any(|c| c.is_uppercase())
 }
 
 /// Whether a command line is an AI agent (Claude Code, codex and kin).
@@ -158,6 +271,53 @@ pub fn tree_agent_kind(rows: &[ProcRow], root_pid: u32) -> Option<DetectedAgent>
         None => false,
     });
     kind
+}
+
+/// Which agent the tab whose shell is `root_pid` runs: [`tree_agent_kind`], and the shell's own process
+/// too, which IS the agent after `exec claude` (the pid stays the shell's). The higher of the two wins
+/// (Claude, then Codex, then agy, then any other). On Windows the shell's own command line is never
+/// read (`flare_win::procs`), so this is `tree_agent_kind` there.
+pub fn tab_agent_kind(rows: &[ProcRow], root_pid: u32) -> Option<DetectedAgent> {
+    let own = rows
+        .iter()
+        .find(|r| r.pid == root_pid)
+        .and_then(|r| classify(&r.cmd));
+    let tree = tree_agent_kind(rows, root_pid);
+    match (own, tree) {
+        (Some(a), Some(b)) => Some(if rank(a) >= rank(b) { a } else { b }),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The order [`tree_agent_kind`] prefers the agents in.
+fn rank(kind: DetectedAgent) -> u8 {
+    match kind {
+        DetectedAgent::Claude => 3,
+        DetectedAgent::Codex => 2,
+        DetectedAgent::Agy => 1,
+        _ => 0,
+    }
+}
+
+/// macOS: the job in a tab's terminal foreground (`tcgetpgrp`, `fg`) belongs to that tab even when its
+/// parent has gone and it hangs off launchd: only a process of the tab's own session can be its
+/// foreground job. Such a leader is given the shell as its parent, so the tree walk finds it. Nothing
+/// changes when `fg` is the shell, is already in its tree, is 0 or is not in the rows.
+pub fn adopt_foreground(rows: &mut [ProcRow], shell: u32, fg: u32) {
+    if fg == 0 || shell == 0 || fg == shell {
+        return;
+    }
+    let mut inside = false;
+    for_each_descendant(rows, shell, |r| {
+        inside = r.pid == fg;
+        inside
+    });
+    if inside {
+        return;
+    }
+    if let Some(row) = rows.iter_mut().find(|r| r.pid == fg) {
+        row.ppid = shell;
+    }
 }
 
 /// Whether any process under `root_pid` looks like an agent.
@@ -321,6 +481,219 @@ mod tests {
             row(82, 80, "agy.exe"),
         ];
         assert_eq!(tree_agent_kind(&beside_aider, 80), Some(DetectedAgent::Agy));
+    }
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_launcher_script_under_its_interpreter_is_the_agent_it_is_named_for() {
+        for (argv, want) in [
+            (
+                vec!["node", "/opt/homebrew/bin/claude"],
+                Some(DetectedAgent::Claude),
+            ),
+            (
+                vec![
+                    "node",
+                    "--no-warnings",
+                    "/Users/me/.bun/bin/codex",
+                    "resume",
+                ],
+                Some(DetectedAgent::Codex),
+            ),
+            (
+                vec![
+                    "/opt/homebrew/Cellar/node/24.1.0/bin/node",
+                    "/usr/local/bin/gemini",
+                ],
+                Some(DetectedAgent::Other),
+            ),
+            (
+                vec!["/bin/bash", "/Users/me/.claude/local/claude", "--resume"],
+                Some(DetectedAgent::Claude),
+            ),
+            (
+                vec![
+                    "/Users/me/.local/share/uv/tools/aider-chat/bin/python3.12",
+                    "/Users/me/.local/bin/aider",
+                ],
+                Some(DetectedAgent::Other),
+            ),
+            (
+                vec!["bun", "/Users/me/.bun/bin/agy"],
+                Some(DetectedAgent::Agy),
+            ),
+            (vec!["/bin/sh", "-c", "claude"], Some(DetectedAgent::Claude)),
+            // An option's value is not the script; nor is the `run` of deno and bun.
+            (
+                vec!["node", "--require", "x.js", "/opt/homebrew/bin/claude"],
+                Some(DetectedAgent::Claude),
+            ),
+            (
+                vec!["node", "-r", "ts-node/register", "/opt/homebrew/bin/codex"],
+                Some(DetectedAgent::Codex),
+            ),
+            (
+                vec!["node", "--import=tsx", "/opt/homebrew/bin/claude"],
+                Some(DetectedAgent::Claude),
+            ),
+            (
+                vec!["deno", "run", "-A", "/Users/me/.deno/bin/claude"],
+                Some(DetectedAgent::Claude),
+            ),
+            (
+                vec!["bun", "run", "--cwd", "/x", "/Users/me/.bun/bin/codex"],
+                Some(DetectedAgent::Codex),
+            ),
+            (vec!["node", "-r", "claude", "server.js"], None),
+            (vec!["deno", "run", "-A", "main.ts", "claude"], None),
+            (vec!["node", "run"], None),
+            // Not the script: a folder in another case, a file with an extension, a later argument, a
+            // program that is no interpreter, a script of another name.
+            (vec!["node", "/Users/me/Documents/Claude"], None),
+            (vec!["node", "/src/claude.txt"], None),
+            (vec!["node", "build.js", "claude"], None),
+            (vec!["vim", "/src/claude"], None),
+            (vec!["node", "/src/claude-code-ui/vite.js"], None),
+            (vec!["python3", "-m", "http.server"], None),
+            (vec!["bash", "-c", "cd claude && make"], None),
+            (vec!["pythonista", "/x/claude"], None),
+        ] {
+            assert_eq!(script_agent(&args(&argv)), want, "{argv:?}");
+        }
+        assert_eq!(script_agent(&[]), None);
+    }
+
+    #[test]
+    fn an_app_bundles_own_executable_is_not_the_cli_of_its_name() {
+        assert!(is_bundle_app(
+            "/Applications/Claude.app/Contents/MacOS/Claude"
+        ));
+        assert!(!is_bundle_app(
+            "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+        ));
+        assert!(!is_bundle_app("/Users/me/.local/bin/claude"));
+        assert!(!is_bundle_app(r"C:\Program Files\Claude\Claude.exe"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn macos_command_lines_are_read_for_the_agent_they_run() {
+        // As `flare_win::procs::join_argv` writes them.
+        for (cmd, want) in [
+            ("claude --resume", Some(DetectedAgent::Claude)),
+            ("/Users/me/.local/bin/claude", Some(DetectedAgent::Claude)),
+            ("node /opt/homebrew/bin/claude", Some(DetectedAgent::Claude)),
+            (
+                "node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+                Some(DetectedAgent::Claude),
+            ),
+            (
+                "/opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex exec",
+                Some(DetectedAgent::Codex),
+            ),
+            ("node /opt/homebrew/bin/codex", Some(DetectedAgent::Codex)),
+            // A `deno install` wrapper runs the package spec; its signature names the agent.
+            (
+                "/opt/homebrew/bin/deno run --allow-all --no-config npm:@anthropic-ai/claude-code --resume",
+                Some(DetectedAgent::Claude),
+            ),
+            (
+                "deno run -A npm:@openai/codex@0.40.0",
+                Some(DetectedAgent::Codex),
+            ),
+            (
+                "node --require /x/hook.js /opt/homebrew/bin/claude",
+                Some(DetectedAgent::Claude),
+            ),
+            (
+                "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex app-server",
+                Some(DetectedAgent::Codex),
+            ),
+            (
+                "\"/Users/me/Library/Application Support/x/agy\" -c",
+                Some(DetectedAgent::Agy),
+            ),
+            ("/Applications/Claude.app/Contents/MacOS/Claude", None),
+            (
+                "\"/Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper\" --type=gpu",
+                None,
+            ),
+            (
+                "node /Users/me/Documents/Claude/Github/site/node_modules/.bin/vite",
+                None,
+            ),
+            ("git -C /Users/me/Documents/Claude status", None),
+            ("-zsh", None),
+            ("/bin/zsh -l", None),
+        ] {
+            assert_eq!(classify(cmd), want, "{cmd}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_keeps_its_rules_for_scripts_and_bundles() {
+        // Off Windows only: Windows reads a script argument by its extension, as it always has.
+        assert_eq!(classify("node C:/npm/claude"), None);
+        assert_eq!(
+            classify("C:/x/Claude.app/Contents/MacOS/Claude"),
+            Some(DetectedAgent::Claude)
+        );
+    }
+
+    #[test]
+    fn a_shell_that_became_the_agent_is_the_agent() {
+        // `exec claude`: the shell's own pid now runs claude, with nothing below it.
+        assert_eq!(
+            tab_agent_kind(&[row(10, 1, "claude --resume")], 10),
+            Some(DetectedAgent::Claude)
+        );
+        // The higher of the shell's own and its tree's.
+        assert_eq!(
+            tab_agent_kind(&[row(10, 1, "codex"), row(11, 10, CLAUDE)], 10),
+            Some(DetectedAgent::Claude)
+        );
+        assert_eq!(
+            tab_agent_kind(&[row(10, 1, "claude"), row(11, 10, CODEX)], 10),
+            Some(DetectedAgent::Claude)
+        );
+        assert_eq!(
+            tab_agent_kind(&[row(10, 1, "aider"), row(11, 10, "agy")], 10),
+            Some(DetectedAgent::Agy)
+        );
+        // A shell whose command line was not read (Windows never reads it) is just its tree.
+        assert_eq!(
+            tab_agent_kind(&[row(10, 1, ""), row(11, 10, CODEX)], 10),
+            Some(DetectedAgent::Codex)
+        );
+        assert_eq!(tab_agent_kind(&[row(10, 1, "")], 10), None);
+        assert_eq!(tab_agent_kind(&[], 10), None);
+    }
+
+    #[test]
+    fn the_foreground_job_of_a_tab_is_adopted_only_when_it_is_outside_the_tree() {
+        // 30 is the tab's foreground job; its parent (20) is gone and it hangs off launchd.
+        let mut rows = vec![
+            row(10, 1, "zsh"),
+            row(30, 1, "claude"),
+            row(40, 1, "claude"),
+        ];
+        assert_eq!(tab_agent_kind(&rows, 10), None);
+        adopt_foreground(&mut rows, 10, 30);
+        assert_eq!(rows[1].ppid, 10);
+        assert_eq!(tab_agent_kind(&rows, 10), Some(DetectedAgent::Claude));
+        // Another tab's process is never touched by it.
+        assert_eq!(rows[2].ppid, 1);
+        // Already in the tree, the shell itself, 0 or missing: nothing moves.
+        let mut tree = vec![row(10, 1, "zsh"), row(11, 10, "sh"), row(12, 11, "claude")];
+        let before = tree.clone();
+        for fg in [12, 10, 0, 99] {
+            adopt_foreground(&mut tree, 10, fg);
+        }
+        assert_eq!(tree, before);
     }
 
     #[test]

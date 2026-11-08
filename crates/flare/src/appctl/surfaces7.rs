@@ -479,6 +479,9 @@ impl AppCtl {
     }
 }
 
+/// The once-a-run warning that the system cannot show notifications (macOS before the signed app).
+static UNAVAILABLE_LOGGED: flare_win::toast::FirstTime = flare_win::toast::FirstTime::new();
+
 /// Installs Windows' notifications and the system's listening table for the real window, or under `--e2e` the
 /// recorder (nothing reaches the desktop).
 pub fn install(rc: &Rc<RefCell<AppCtl>>, post: Post, e2e: bool) {
@@ -502,6 +505,15 @@ pub fn install(rc: &Rc<RefCell<AppCtl>>, post: Post, e2e: bool) {
         return;
     }
     c.set_toast_sink(Rc::new(move |t: &Toast| {
+        // macOS until the signed app (port phase 8): the system cannot take the request, so no worker is
+        // started to fail; the fallback (the Dock bounce) runs at once and the reason is logged once a run.
+        if let Some(why) = flare_win::toast::system_unavailable() {
+            if UNAVAILABLE_LOGGED.take() {
+                log::warn!("the notification was not accepted: {why}");
+            }
+            post(UiMsg::ToastFailed);
+            return;
+        }
         let req = flare_win::toast::ToastRequest {
             tab: t.tab.clone(),
             title: t.title.clone(),
