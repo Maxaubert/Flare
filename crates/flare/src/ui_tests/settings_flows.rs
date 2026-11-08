@@ -150,6 +150,23 @@ impl Fx {
             }
         }
     }
+    /// Pumps until nothing has been posted for 150 ms in a row (at most 10 s).
+    fn quiet(&self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut calm = 0;
+        while calm < 15 && std::time::Instant::now() < deadline {
+            let had = !self
+                .q
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_empty();
+            self.pump();
+            self.h.advance(0);
+            calm = if had { 0 } else { calm + 1 };
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     /// Hands every queued message to the controller, as the window's pump does.
     fn pump(&self) {
         let msgs: Vec<UiMsg> = self
@@ -756,6 +773,10 @@ impl Fx {
 /// The rail by keyboard in the whole window (e2e settingsKeys): Tab from the Find field lands on the
 /// rail's first page, Down walks it, Enter opens the page.
 fn tab_from_the_field_lands_on_the_rail_and_enter_opens_the_page_at(f: &Fx) {
+    // Any rebuild between the Tab and the Enter takes the focus off the rail (the page is drawn anew), so
+    // the flow starts only once nothing has been posted for a while: a late store change or worker answer
+    // on a busy macOS runner landed mid-flow even after `settle`, and Enter then opened nothing.
+    f.quiet();
     f.h.activate();
     f.h.comp.invoke_settings_focus_find();
     f.h.advance(0);
