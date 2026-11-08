@@ -82,8 +82,6 @@ pub enum ModsMsg {
         /// What the Settings card listed; None for a switch that did not come from a row (the tests).
         shown: Option<flare_mods::hub::Shown>,
     },
-    /// Settings: show the mod's panel in the most recent shell tab (its details sheet's "Open" button).
-    ShowPanel { id: String },
     /// Settings: the person set one of the plugin's permissions on its details sheet (`flare_mods::grants`).
     SetChoice {
         id: String,
@@ -145,8 +143,8 @@ pub struct InstallState {
 /// Where the channel's events for one plugin's helper go: (event, params, plugin id). Answers how many of the
 /// plugin's connections it was queued for (0: its helper is not connected).
 pub type OwnerEvents = Arc<dyn Fn(&str, Value, &str) -> usize + Send + Sync>;
-/// The file picker for a plugin zip; its answer comes on a worker.
-pub type PickZip = std::rc::Rc<dyn Fn(crate::settings_ctl::PickAnswer)>;
+/// The file picker for a plugin zip, opened in the folder given (else where Windows likes); its answer comes on a worker.
+pub type PickZip = std::rc::Rc<dyn Fn(Option<std::path::PathBuf>, crate::settings_ctl::PickAnswer)>;
 
 /// A `ModsMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never a call's data.
 pub struct ModsMsgBox(pub ModsMsg);
@@ -159,7 +157,6 @@ impl std::fmt::Debug for ModsMsgBox {
             ModsMsg::Reply { .. } => "ModsMsg::Reply",
             ModsMsg::Rescan => "ModsMsg::Rescan",
             ModsMsg::SetEnabled { .. } => "ModsMsg::SetEnabled",
-            ModsMsg::ShowPanel { .. } => "ModsMsg::ShowPanel",
             ModsMsg::SetChoice { .. } => "ModsMsg::SetChoice",
             ModsMsg::Tick => "ModsMsg::Tick",
             ModsMsg::Said { .. } => "ModsMsg::Said",
@@ -877,12 +874,6 @@ impl crate::settings_ctl::ModsPort for ModsSettings {
             id: id.to_string(),
             on,
             shown: Some(shown),
-        })));
-    }
-
-    fn show_panel(&self, id: &str) {
-        (self.post)(UiMsg::Mods(ModsMsgBox(ModsMsg::ShowPanel {
-            id: id.to_string(),
         })));
     }
 

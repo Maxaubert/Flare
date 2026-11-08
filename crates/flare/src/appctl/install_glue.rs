@@ -88,19 +88,23 @@ impl AppCtl {
         self.settings_redraw();
     }
 
-    fn pick_zip_for(&self, expect: Option<String>) {
+    /// The file picker for a zip, in `folder` when one is known; `expect` is the id an update must hold.
+    fn pick_zip_for(&self, expect: Option<String>, folder: Option<std::path::PathBuf>) {
         let Some(m) = self.mods.as_ref() else { return };
         let Some(pick) = m.pick_zip.clone() else {
             self.install_say(true, NO_PICKER);
             return;
         };
         let post = Arc::clone(&self.deps.post);
-        pick(Arc::new(move |path| {
-            post(UiMsg::Mods(ModsMsgBox(ModsMsg::Picked {
-                path,
-                expect: expect.clone(),
-            })));
-        }));
+        pick(
+            folder,
+            Arc::new(move |path| {
+                post(UiMsg::Mods(ModsMsgBox(ModsMsg::Picked {
+                    path,
+                    expect: expect.clone(),
+                })));
+            }),
+        );
     }
 
     /// The install messages of the mods controller (Settings and the workers).
@@ -110,7 +114,7 @@ impl AppCtl {
         };
         let post = Arc::clone(&self.deps.post);
         match m {
-            ModsMsg::InstallFile => self.pick_zip_for(None),
+            ModsMsg::InstallFile => self.pick_zip_for(None, None),
             ModsMsg::InstallUrl { url } => {
                 if url.trim().is_empty() {
                     self.install_say(true, "Paste the https address of a plugin's .zip first.");
@@ -121,12 +125,12 @@ impl AppCtl {
                 }
             }
             ModsMsg::Update { id } => {
-                let source = hub
+                let (source, folder) = hub
                     .snapshot()
                     .mods
                     .into_iter()
                     .find(|e| e.id == id)
-                    .and_then(|e| e.source);
+                    .map_or((None, None), |e| (e.source, e.folder));
                 match source {
                     Some(url) => {
                         if self.install_begin()
@@ -135,7 +139,7 @@ impl AppCtl {
                             self.install_end(true, "The update could not start.".into());
                         }
                     }
-                    None => self.pick_zip_for(Some(id)),
+                    None => self.pick_zip_for(Some(id), folder.map(std::path::PathBuf::from)),
                 }
             }
             ModsMsg::Picked { path: None, .. } => {}
