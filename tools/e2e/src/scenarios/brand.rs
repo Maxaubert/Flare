@@ -167,7 +167,10 @@ fn press(app: &mut App, q: &Value, button: &str) -> Result<(), String> {
 }
 
 fn shot(ctx: &mut Ctx, app: &mut App, dir: &Path, name: &str) {
-    std::thread::sleep(Duration::from_millis(250)); // sync-ok: e2e driver, the frame settles
+    // The frame settles before the picture (250 ms, in the steps `settle` allows).
+    for _ in 0..5 {
+        ctx.settle(50);
+    }
     let path = dir.join(format!("{name}.png"));
     let taken = app.session.snapshot(&path);
     ctx.ok(

@@ -9,7 +9,7 @@
 // Fill takes no press for its first moment (ARM-DELAY): a question that pops up under a click already on its way
 // (an agent can time its fill to the person's clicks) is never approved by that click.
 // The field's text is cleared as the dialog closes; it is handed to the glue once, with the button or Enter.
-import { Theme, Px } from "theme.slint";
+import { Theme, Px, BrandInk } from "theme.slint";
 import { PluginLook, PluginInk, PluginLogo } from "plugin_look.slint";
 
 // A button of the question: primary (the brand's colour), outlined, or a link (words only).
@@ -209,7 +209,7 @@ export component PluginAsk inherits Rectangle {
         border-color: PluginInk.line(root.look);
         drop-shadow-offset-y: 20px;
         drop-shadow-blur: 50px;
-        drop-shadow-color: #000000bb;
+        drop-shadow-color: BrandInk.shadow;
         // Presses inside the box never reach the scrim.
         TouchArea {
             width: parent.width;
@@ -263,7 +263,7 @@ export component PluginAsk inherits Rectangle {
                             width: 32px;
                             height: 32px;
                             border-radius: 8px;
-                            background: root.look.branded ? #0d1117 : Theme.ground;
+                            background: root.look.branded ? BrandInk.site : Theme.ground;
                             Text {
                                 text: root.letter;
                                 horizontal-alignment: center;
@@ -271,7 +271,7 @@ export component PluginAsk inherits Rectangle {
                                 font-family: Theme.font-ui;
                                 font-size: 15px;
                                 font-weight: 600;
-                                color: #ffffff;
+                                color: BrandInk.plate;
                             }
                         }
                     }

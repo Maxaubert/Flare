@@ -10,7 +10,7 @@
 // Each tile's tooltip says its permission's words and the whole of what it covers.
 // Escape and a press outside close the dropdown first, then the sheet. Every change goes to Rust, which applies it to
 // the plugin's grant and draws the sheet again from the new state.
-import { Theme, Px } from "../theme.slint";
+import { Theme, Px, BrandInk } from "../theme.slint";
 import { PluginLook, PluginInk, PluginLogo } from "../plugin_look.slint";
 import { SheetTile } from "types.slint";
 
@@ -38,7 +38,7 @@ component SheetToggle inherits Rectangle {
         width: 14px;
         height: 14px;
         border-radius: 7px;
-        background: #ffffff;
+        background: BrandInk.plate;
     }
     // The focus ring, outside the track.
     Rectangle {
@@ -456,7 +456,7 @@ export component PluginSheet inherits Rectangle {
         border-color: PluginInk.line(root.look);
         drop-shadow-offset-y: 20px;
         drop-shadow-blur: 50px;
-        drop-shadow-color: #000000bb;
+        drop-shadow-color: BrandInk.shadow;
         accessible-role: groupbox;
         accessible-label: root.name;
 
@@ -653,7 +653,7 @@ export component PluginSheet inherits Rectangle {
             border-radius: 8px;
             drop-shadow-offset-y: 12px;
             drop-shadow-blur: 28px;
-            drop-shadow-color: #000000aa;
+            drop-shadow-color: BrandInk.shadow-soft;
             accessible-role: list;
             TouchArea {}
             menu-col := VerticalLayout {
