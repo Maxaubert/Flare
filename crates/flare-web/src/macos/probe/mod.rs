@@ -547,6 +547,21 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
         h.wait(50);
     }
     let text = std::fs::read_to_string(&saved).unwrap_or_default();
+    // A saved file carries Gatekeeper's quarantine mark (Chromium's own, as Safari's), so a downloaded app or
+    // script is checked by the system before it first runs.
+    let quarantine = Command::new("/usr/bin/xattr")
+        .args(["-p", "com.apple.quarantine"])
+        .arg(&saved)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    rep.check(
+        "panel.download-quarantine",
+        quarantine.as_deref().is_some_and(|q| !q.is_empty()),
+        "a file saved after the yes carries com.apple.quarantine",
+        json!({"quarantine": quarantine}),
+    );
     rep.check(
         "panel.downloads",
         matches!(&d1, Some(WebEvent::Download { file, host, .. }) if file == "report.txt" && host == "127.0.0.1")

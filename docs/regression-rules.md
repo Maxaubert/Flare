@@ -1055,7 +1055,7 @@ which is `~/Downloads`: a held download left `.<bundle id>.XXXXXX` there before 
 wrote into the real Downloads folder). Every profile's `download.default_directory` and `savefile.default_directory`
 are `<data_dir>/download-staging` (`walls::download_staging`), set with the walls before a browser of it is made; the
 folder is emptied when the engine starts (what a run left there is no one's download). A yes moves the file to
-Downloads (with `com.apple.quarantine`, Chromium's own); a no removes it. Held by the panel scenario's
+Downloads (with `com.apple.quarantine`, Chromium's own, held by the panel scenario's download-quarantine check); a no removes it. Held by the panel scenario's
 download-staging check (a slow download held: its part is in the staging folder, nothing new in `~/Downloads`, nothing
 left after the no; the profile's preference read back) and `every_kind_of_view_has_the_browser_windows_gives_it`.
 Source: macOS port phase 5 review (2026-11-08).
@@ -1092,3 +1092,10 @@ panel at all (measured: 0 kept off, 0 windows); the guard stays for the build th
 no-native-pickers check (a trusted click on a colour input and `window.print()`: no window, the print returns at once,
 printing read back false) and `the_panels_are_replaced_on_their_own_classes_and_nothing_else`. Source: macOS port phase
 5 review (2026-11-08).
+262. **macOS: a popup or new-tab request loads only a web address the navigation rule allows.** CEF's `on_before_popup`
+and `on_open_urlfrom_tab` load the target into the view's own main frame (`NewWindows::SameView`). `load_url` of a
+`javascript:` address runs it in the top frame without a navigation, so the browse wall never sees it: a cross-origin
+frame could run script in the page above it. `popup_target_allowed` lets only `http`/`https` through, and only what the
+view's `NavRule` allows for the main frame; `data:`, `file:`, `chrome:`, `devtools:`, `blob:` and every other scheme
+are dropped. Held by `a_popup_loads_only_a_web_address_the_navigation_rule_allows`. Source: commit security review of
+phase 5 (2026-11-08).

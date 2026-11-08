@@ -179,6 +179,16 @@ pub enum ViewEvent {
     Closed,
 }
 
+/// May a popup or a new-tab request load `url` into this view's main frame? Only a web address, and only
+/// one the view's navigation rule allows for the main frame. `load_url` of a `javascript:` address runs it
+/// in the top frame without a navigation (so the browse wall never sees it): a cross-origin frame could
+/// otherwise run script in the page above it. `data:`, `file:` and every other scheme are refused too.
+pub fn popup_target_allowed(url: &str, nav: Option<&NavRule>) -> bool {
+    let lower = url.trim_start().to_ascii_lowercase();
+    let web = lower.starts_with("https://") || lower.starts_with("http://");
+    web && nav.is_none_or(|rule| rule(url, true))
+}
+
 /// Where a view's events go.
 pub type EventSink = Arc<dyn Fn(ViewEvent) + Send + Sync>;
 /// May a frame navigate to this address? (`url`, whether it is the main frame.)
@@ -608,7 +618,7 @@ wrap_life_span_handler! {
             lock(&self.c.state).refused.popups += 1;
             let url = text(target_url);
             if self.c.walls.new_windows == NewWindows::SameView
-                && !url.is_empty()
+                && popup_target_allowed(&url, self.c.walls.nav.as_ref())
                 && let Some(f) = browser.and_then(|b| b.main_frame())
             {
                 f.load_url(Some(&url.as_str().into()));
@@ -1142,6 +1152,7 @@ wrap_request_handler! {
         ) -> ::std::os::raw::c_int {
             let url = text(target_url);
             if self.c.walls.new_windows == NewWindows::SameView
+                && popup_target_allowed(&url, self.c.walls.nav.as_ref())
                 && let Some(f) = browser.and_then(|b| b.main_frame())
             {
                 f.load_url(Some(&url.as_str().into()));
@@ -1872,6 +1883,27 @@ impl View {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_popup_loads_only_a_web_address_the_navigation_rule_allows() {
+        for bad in [
+            "javascript:alert(document.domain)",
+            " JavaScript:alert(1)",
+            "data:text/html,<script>1</script>",
+            "file:///etc/passwd",
+            "chrome://settings",
+            "devtools://devtools/bundled/inspector.html",
+            "blob:https://a.test/1",
+            "",
+        ] {
+            assert!(!popup_target_allowed(bad, None), "{bad}");
+        }
+        assert!(popup_target_allowed("https://example.com/", None));
+        assert!(popup_target_allowed("http://example.com/", None));
+        let only_a: NavRule = Arc::new(|u, main| main && u.starts_with("https://a.test/"));
+        assert!(popup_target_allowed("https://a.test/x", Some(&only_a)));
+        assert!(!popup_target_allowed("https://b.test/x", Some(&only_a)));
+    }
 
     #[test]
     fn a_devtools_call_is_one_message_with_the_callers_id_and_an_object_for_params() {

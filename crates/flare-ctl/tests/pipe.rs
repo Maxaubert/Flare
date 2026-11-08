@@ -596,21 +596,29 @@ mod macos {
             own_uid() + 1,
         )
         .unwrap();
-        let mut c = connect(&name, WAIT).expect("the socket accepts the connect");
-        let r = c.hello(
-            &HelloParams {
-                client: "x".into(),
-                version: "1".into(),
-                token: None,
-                tab_token: Some("tok1".into()),
-                no_events: false,
-            },
-            WAIT,
-        );
-        assert!(
-            matches!(r, Err(ClientError::Closed | ClientError::Io(_))),
-            "{r:?}"
-        );
+        // The server drops a stranger as soon as it accepts it. Under load that can come before the
+        // client has asked who serves the socket, and the client then refuses at the connect: the same
+        // refusal, seen one step earlier. Either way no hello gets through.
+        match connect(&name, WAIT) {
+            Err(ClientError::Protocol(m)) => assert!(m.contains("who serves"), "{m}"),
+            Err(e) => panic!("{e:?}"),
+            Ok(mut c) => {
+                let r = c.hello(
+                    &HelloParams {
+                        client: "x".into(),
+                        version: "1".into(),
+                        token: None,
+                        tab_token: Some("tok1".into()),
+                        no_events: false,
+                    },
+                    WAIT,
+                );
+                assert!(
+                    matches!(r, Err(ClientError::Closed | ClientError::Io(_))),
+                    "{r:?}"
+                );
+            }
+        }
         assert!(wait_for(|| server.client_count() == 0));
         server.stop();
     }
