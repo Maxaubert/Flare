@@ -82,12 +82,20 @@ pub struct FillRequest {
     pub values: Values,
 }
 
-/// `secret.ask`'s params, checked.
+/// `secret.ask`'s params, checked. `sub` (a line under the title, such as the account) and `button` (the word on the
+/// button) are empty when the plugin leaves them out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SecretRequest {
     pub title: String,
     pub label: String,
+    pub sub: String,
+    pub button: String,
 }
+
+/// The longest word `secret.ask` may put on its button.
+pub const MAX_BUTTON_CHARS: usize = 24;
+/// The keys `secret.ask` takes.
+const SECRET_KEYS: [&str; 4] = ["title", "label", "sub", "button"];
 
 fn bad(m: impl Into<String>) -> CtlError {
     CtlError::new(code::BAD_PARAMS, m.into())
@@ -207,18 +215,17 @@ pub fn parse_secret(params: &Value) -> Result<SecretRequest, CtlError> {
     let obj = params
         .as_object()
         .ok_or_else(|| bad("params must be an object"))?;
-    if let Some(k) = obj
-        .keys()
-        .find(|k| !["title", "label"].contains(&k.as_str()))
-    {
+    if let Some(k) = obj.keys().find(|k| !SECRET_KEYS.contains(&k.as_str())) {
         return Err(bad(format!(
-            "unknown param \"{}\"; secret.ask takes title and label",
+            "unknown param \"{}\"; secret.ask takes title, label, sub and button",
             k.chars().take(40).collect::<String>()
         )));
     }
     Ok(SecretRequest {
         title: clean_line(params, "title", MAX_TITLE_CHARS, true)?,
         label: clean_line(params, "label", MAX_LABEL_CHARS, true)?,
+        sub: clean_line(params, "sub", MAX_LABEL_CHARS, false)?,
+        button: clean_line(params, "button", MAX_BUTTON_CHARS, false)?,
     })
 }
 
@@ -691,6 +698,18 @@ mod tests {
         assert!(parse_secret(&json!({"title": "x"})).is_err());
         assert!(parse_secret(&json!({"title": "x", "label": "y", "default": "z"})).is_err());
         assert!(parse_secret(&json!({"title": "x\u{200B}", "label": "y"})).is_err());
+        // `sub` and `button` are optional clean lines; the button is short.
+        assert_eq!((r.sub.as_str(), r.button.as_str()), ("", ""));
+        let r = parse_secret(&json!({"title": "Your vault is locked", "label": "Master password", "sub": "me@example.com", "button": "Unlock"}))
+            .unwrap();
+        assert_eq!(
+            (r.sub.as_str(), r.button.as_str()),
+            ("me@example.com", "Unlock")
+        );
+        let long = "b".repeat(MAX_BUTTON_CHARS + 1);
+        assert!(parse_secret(&json!({"title": "x", "label": "y", "button": long})).is_err());
+        assert!(parse_secret(&json!({"title": "x", "label": "y", "sub": "a\nb"})).is_err());
+        assert!(parse_secret(&json!({"title": "x", "label": "y", "button": 3})).is_err());
     }
 
     #[test]

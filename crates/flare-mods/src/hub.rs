@@ -27,6 +27,7 @@ use serde_json::Value;
 
 use crate::discover::{FolderError, Found, discover};
 use crate::enabled::{EnabledStore, Identity};
+use crate::grants::Choices;
 use crate::limit::Limits;
 use crate::tokens::Tokens;
 use crate::tools::{Collision, Route, TooLong, ToolTable};
@@ -84,6 +85,24 @@ pub const WARN_NETWORK_FILL: &str = "It can send the passwords you type for it t
 pub const WARN_NETWORK: &str = "It can change what it does from the internet.";
 /// `fill`: the card says what it can do, and that Flare asks each time.
 pub const WARN_FILL: &str = "Can type passwords into pages, after you approve each one.";
+/// `fill` set to "Always allow" on the details sheet: the fill goes in with no question.
+pub const WARN_FILL_ALWAYS: &str = "Fills logins with no question: Flare types a login it has for the page without asking you first.";
+
+/// The warnings for what a plugin holds with the person's choices `c` applied: what is held back gives no warning,
+/// and a fill set to "Always allow" says so in place of [`WARN_FILL`].
+pub fn choice_warnings(perms: &[Permission], c: &crate::grants::Choices) -> Vec<&'static str> {
+    let held = c.grants(perms);
+    permission_warnings(&held)
+        .into_iter()
+        .map(|w| {
+            if w == WARN_FILL && c.fills_without_asking() {
+                WARN_FILL_ALWAYS
+            } else {
+                w
+            }
+        })
+        .collect()
+}
 
 /// The warnings Settings shows with a plugin's permissions, most serious first: the full-control ones for `process`
 /// and `input`, then the combinations that reach further than either permission alone, then `network`'s own, then
@@ -194,6 +213,8 @@ pub struct ModEntry {
     pub stopped: Option<String>,
     /// Where Settings installed it from (an `https` address or `a file`), when it did (plugins phase 7).
     pub source: Option<String>,
+    /// Protocol 2: its colour and logo (the card, its details sheet, its questions and menu item).
+    pub brand: Option<crate::manifest::Brand>,
 }
 
 /// What the hub knows now.
@@ -267,6 +288,8 @@ struct Inner {
     /// Plugins whose helper program was stopped (it ended too often, or did not start), with the sentence. Cleared
     /// when the plugin is switched.
     helper_stopped: BTreeMap<String, String>,
+    /// What the person held back of each plugin's permissions (the details sheet), kept with the switch, on or off.
+    choices: BTreeMap<String, Choices>,
 }
 
 /// The tabs one plugin may hold click scope on at once; a click on one more forgets the oldest.
@@ -669,7 +692,7 @@ impl Hub {
                 false
             }
         };
-        let (store_ids, read_only, installed) = {
+        let (store_ids, read_only, installed, choices) = {
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             store
                 .as_ref()
@@ -682,13 +705,14 @@ impl Hub {
                             s.approved(&id).map(|a| (id, a, who))
                         })
                         .collect();
-                    (ids, s.is_read_only(), s.all_installed())
+                    (ids, s.is_read_only(), s.all_installed(), s.all_choices())
                 })
                 .unwrap_or_default()
         };
         let mut g = self.lock();
         if first_load {
             g.installed = installed.into_iter().collect();
+            g.choices = choices.into_iter().collect();
             // Safe mode reads the switches and applies none of them: nothing is on this run, nothing is written.
             if g.safe.is_none() {
                 g.on = store_ids.iter().map(|(id, ..)| id.clone()).collect();
@@ -776,13 +800,19 @@ impl Hub {
         for id in gone {
             g.needs.remove(&id);
         }
+        // The live grant is what the manifest asks for less what the person held back on the details sheet: a held
+        // back permission is answered exactly like one never asked for.
         let live: Vec<(String, Vec<Permission>, bool)> = g
             .found
             .iter()
             .filter(|f| g.on.contains(&f.manifest.id))
             .map(|f| {
                 let m = &f.manifest;
-                (m.id.clone(), m.permissions.clone(), m.is_plugin())
+                let grants = g
+                    .choices
+                    .get(&m.id)
+                    .map_or_else(|| m.permissions.clone(), |c| c.grants(&m.permissions));
+                (m.id.clone(), grants, m.is_plugin())
             })
             .collect();
         // A token of a mod that is off, gone or invalid dies.
@@ -815,14 +845,21 @@ impl Hub {
         // The tool table: only mods that are on and hold a token, and that have something to answer the calls: a
         // panel, or for a protocol 2 plugin its background page (which then answers them, design 13) or its helper
         // (2026-10-28).
+        // A tool needs `tools` in the live grant, and a panel or a helper answers only while its permission is held.
         let manifests: Vec<&crate::manifest::Manifest> = g
             .found
             .iter()
             .filter(|f| {
                 let m = &f.manifest;
-                let answers = m.panel.is_some()
-                    || (m.is_plugin() && (m.background.is_some() || m.helper.is_some()));
-                g.tokens.token_of(&m.id).is_some() && answers
+                let held = |p: Permission| {
+                    live.iter()
+                        .any(|(id, perms, _)| *id == m.id && perms.contains(&p))
+                };
+                let answers = (m.panel.is_some() && held(Permission::Panel))
+                    || (m.is_plugin()
+                        && (m.background.is_some()
+                            || (m.helper.is_some() && held(Permission::Process))));
+                g.tokens.token_of(&m.id).is_some() && held(Permission::Tools) && answers
             })
             .map(|f| &f.manifest)
             .collect();
@@ -969,20 +1006,70 @@ impl Hub {
             }
         }
         let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        let (on, approved, who) = {
+        let (on, approved, who, choices) = {
             let g = self.lock();
             (
                 g.on.contains(id),
                 g.approved.get(id).cloned().unwrap_or_default(),
                 g.identity.get(id).cloned().unwrap_or_default(),
+                g.choices.get(id).cloned().unwrap_or_default(),
             )
         };
         let store = store.get_or_insert_with(|| EnabledStore::load(self.cfg.state_file.clone())); // sync-ok: runs on a worker
-        store.set_with(id, on, &approved, &who)
+        store.set_full(id, on, &approved, &who, &choices)
     }
 
     pub fn is_enabled(&self, id: &str) -> bool {
         self.lock().on.contains(id)
+    }
+
+    /// The `https` address the plugin was installed from by Settings; None for a file or a folder put there by hand.
+    pub fn source_of(&self, id: &str) -> Option<String> {
+        self.lock().installed.get(id).and_then(|i| i.source.clone())
+    }
+
+    /// What the person held back of the plugin's permissions (the details sheet). The default for a plugin with no
+    /// choice made.
+    pub fn choices_of(&self, id: &str) -> Choices {
+        self.lock().choices.get(id).cloned().unwrap_or_default()
+    }
+
+    /// Whether a fill of this plugin goes in with no question ("Always allow", and `fill` held).
+    pub fn fills_without_asking(&self, id: &str) -> bool {
+        self.lock()
+            .choices
+            .get(id)
+            .is_some_and(Choices::fills_without_asking)
+    }
+
+    /// The person set permission `key` of the plugin to `value` on its details sheet (`grants::choose`). Only a
+    /// permission the manifest asks for can be set. Applied in memory at once: a plugin that is on gets a new token
+    /// with the new grant (its views close and start again), so nothing checked before is applied after. The caller
+    /// writes the file with [`Hub::persist`] on a worker.
+    pub fn set_choice(&self, id: &str, key: &str, value: &str) -> Result<Change, String> {
+        let mut g = self.lock();
+        let Some(f) = g.found.iter().find(|f| f.manifest.id == id) else {
+            return Err(format!("there is no plugin \"{id}\""));
+        };
+        let Some(p) = Permission::parse(key).filter(|p| f.manifest.permissions.contains(p)) else {
+            return Err(format!("\"{id}\" does not ask for \"{key}\""));
+        };
+        let mut c = g.choices.get(id).cloned().unwrap_or_default();
+        crate::grants::choose(&mut c, p, value)?;
+        if c.is_default() {
+            g.choices.remove(id);
+        } else {
+            g.choices.insert(id.to_string(), c);
+        }
+        let before_tools: Vec<Route> = g.table.tools().cloned().collect();
+        let revoked = Self::reconcile(&mut g);
+        let after_tools: Vec<Route> = g.table.tools().cloned().collect();
+        drop(g);
+        self.sync_limits();
+        Ok(Change {
+            tools_changed: before_tools != after_tools,
+            revoked,
+        })
     }
 
     /// What Settings and the window show.
@@ -1014,6 +1101,7 @@ impl Hub {
                     .installed
                     .get(&f.manifest.id)
                     .and_then(|i| i.source.clone()),
+                brand: f.manifest.brand.clone(),
             })
             .collect();
         let mut notes = Vec::new();
@@ -1411,6 +1499,23 @@ mod tests {
         for w in permission_warnings(&crate::manifest::ASKABLE_V2) {
             assert!(!w.contains('\u{2014}'), "{w}");
         }
+        assert!(!WARN_FILL_ALWAYS.contains('\u{2014}'));
+    }
+
+    #[test]
+    fn the_warnings_follow_the_persons_choices() {
+        use crate::grants::{Choices, choose};
+        use Permission as P;
+        let asked = [P::Process, P::Tools, P::Fill];
+        let mut c = Choices::default();
+        assert_eq!(choice_warnings(&asked, &c), [WARN_PROCESS, WARN_FILL]);
+        // Always allow says the fill asks nothing; Access off drops its full control warning.
+        choose(&mut c, P::Fill, "always").unwrap();
+        choose(&mut c, P::Process, "off").unwrap();
+        assert_eq!(choice_warnings(&asked, &c), [WARN_FILL_ALWAYS]);
+        // Fills off: no fill warning at all, whatever "Always allow" was.
+        choose(&mut c, P::Fill, "off").unwrap();
+        assert!(choice_warnings(&asked, &c).is_empty());
     }
 
     #[test]
@@ -2002,6 +2107,86 @@ mod tests {
             &plugin_json("todo", "someone", r#"["decorate","tabs"]"#, ""),
         );
         w
+    }
+
+    #[test]
+    fn a_held_back_permission_leaves_the_grant_survives_a_restart_and_an_update_and_never_widens() {
+        let w = world(&[]);
+        put_plugin(
+            &w,
+            "vault",
+            &plugin_json(
+                "vault",
+                "someone",
+                r#"["panel","tools","decorate","fill"]"#,
+                r#","panel":{"entry":"index.html","title":"V"},"tools":[{"name":"go","description":"d","input_schema":{"type":"object"}}]"#,
+            ),
+        );
+        w.hub.scan();
+        w.hub.set_enabled("vault", true).unwrap();
+        let gen0 = w.hub.generation("vault");
+        assert_eq!(w.hub.tools().len(), 1);
+        // Held back: the grant drops it, the token is new, and the tool goes with `tools`.
+        let c = w.hub.set_choice("vault", "tools", "off").unwrap();
+        assert_eq!(c.revoked, ["vault"]);
+        assert!(c.tools_changed);
+        assert!(w.hub.tools().is_empty());
+        assert!(w.hub.generation("vault") > gen0);
+        let Some(Grant::Mod { permissions, .. }) = w.hub.grant_of_mod("vault") else {
+            panic!("on");
+        };
+        assert_eq!(
+            permissions,
+            [Permission::Panel, Permission::Decorate, Permission::Fill]
+        );
+        // "Always allow" changes no grant.
+        let c = w.hub.set_choice("vault", "fill", "always").unwrap();
+        assert!(c.revoked.is_empty());
+        assert!(w.hub.fills_without_asking("vault"));
+        // A permission it does not ask for, or a value it does not have, is refused.
+        assert!(w.hub.set_choice("vault", "input", "off").is_err());
+        assert!(w.hub.set_choice("vault", "tools", "always").is_err());
+        assert!(w.hub.set_choice("nobody", "tools", "off").is_err());
+        w.hub.persist("vault").unwrap();
+        let text = std::fs::read_to_string(&w.hub.config().state_file).unwrap(); // sync-ok: test code only
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["mods"]["vault"]["withheld"], json!(["tools"]));
+        assert_eq!(v["mods"]["vault"]["fill"], "always");
+        assert_eq!(
+            v["mods"]["vault"]["permissions"],
+            json!(["panel", "decorate", "fill"])
+        );
+        // A restart keeps it on with the same choices.
+        let again = Hub::new(w.hub.config().clone());
+        again.scan();
+        assert!(again.is_enabled("vault"));
+        assert!(again.tools().is_empty());
+        assert!(again.fills_without_asking("vault"));
+        // An update that asks for the same keeps the choices; one that asks for more is still off until approved.
+        put_plugin(
+            &w,
+            "vault",
+            &plugin_json(
+                "vault",
+                "someone",
+                r#"["panel","tools","decorate","fill","tabs"]"#,
+                r#","panel":{"entry":"index.html","title":"V"},"tools":[{"name":"go","description":"d","input_schema":{"type":"object"}}]"#,
+            ),
+        );
+        again.scan();
+        assert!(!again.is_enabled("vault"));
+        assert_eq!(again.choices_of("vault").withheld, [Permission::Tools]);
+        again.set_enabled("vault", true).unwrap();
+        assert!(
+            again.tools().is_empty(),
+            "still held back after the approval"
+        );
+        // Giving it back restores the tool.
+        again.set_choice("vault", "tools", "on").unwrap();
+        assert_eq!(again.tools().len(), 1);
+        // Off at the plugin level: `fill` off ends "Always allow" with it.
+        again.set_choice("vault", "fill", "off").unwrap();
+        assert!(!again.fills_without_asking("vault"));
     }
 
     #[test]

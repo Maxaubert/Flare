@@ -1,0 +1,687 @@
+// A plugin's details sheet (2026-11-08, spec B4): the info button on its card opens it, a modal in the plugin's own
+// look (plugin_look.slint). A header with its logo, name, `version · author` and a close X; its description; then a
+// two-column grid of tiles, one per permission it asks for, from the manifest and Flare's permission catalog
+// (flare_mods::grants): a permission with levels is a dropdown (Full control drawn amber, Ask each time in the brand
+// colour), every other one an on/off toggle, and a fact (its program, its homepage) a plain value. A long list wraps
+// into more rows. The warnings for what it holds with the person's choices close the sheet, in amber. The box is never
+// taller than the window: the description, the grid and the warnings scroll between the header and the foot.
+// The foot has "Open <panel>" for a plugin that is on with a panel, and "Turn on" for one that is off: turning a
+// plugin on from its card opens this sheet, so the person sees what they approve before they approve it.
+// Each tile's tooltip says its permission's words and the whole of what it covers.
+// Escape and a press outside close the dropdown first, then the sheet. Every change goes to Rust, which applies it to
+// the plugin's grant and draws the sheet again from the new state.
+import { Theme, Px, BrandInk } from "../theme.slint";
+import { PluginLook, PluginInk, PluginLogo } from "../plugin_look.slint";
+import { SheetTile } from "types.slint";
+
+// The on/off switch of a tile: 36 by 20, a 14 px white knob; on is the brand colour.
+component SheetToggle inherits Rectangle {
+    in property <PluginLook> look;
+    in property <bool> on;
+    in property <string> label;
+    in property <string> words;
+    callback toggled(bool);
+    callback escape();
+    out property <bool> has-focus: fs.has-focus;
+    width: 36px;
+    height: 20px;
+    border-radius: 10px;
+    background: root.on ? PluginInk.accent(root.look) : PluginInk.line(root.look);
+    accessible-role: switch;
+    accessible-label: root.label;
+    accessible-description: root.words;
+    accessible-checked: root.on;
+    accessible-action-default => { root.toggled(!root.on); }
+    Rectangle {
+        x: root.on ? 19px : 3px;
+        y: 3px;
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        background: BrandInk.plate;
+    }
+    // The focus ring, outside the track.
+    Rectangle {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        border-radius: 13px;
+        border-width: 2px;
+        border-color: fs.has-focus && root.by-key ? PluginInk.accent-hi(root.look) : transparent;
+    }
+    property <bool> by-key;
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                root.escape();
+                return accept;
+            }
+            if e.text == Key.Space || e.text == Key.Return {
+                root.by-key = true;
+                root.toggled(!root.on);
+                return accept;
+            }
+            return reject;
+        }
+    }
+    TouchArea {
+        clicked => {
+            root.by-key = false;
+            fs.focus();
+            root.toggled(!root.on);
+        }
+    }
+}
+
+// One tile. `opened`: its dropdown is open (the sheet draws the list over the grid).
+component SheetTileView inherits Rectangle {
+    in property <SheetTile> tile;
+    in property <PluginLook> look;
+    in property <bool> opened;
+    callback toggled(bool);
+    callback open-menu();
+    // Escape while a tile holds the keys.
+    callback escape();
+    // A press on the tile off its controls (the sheet closes an open dropdown).
+    callback idle-press();
+    callback tip(string, length, length, length, length);
+    // Amber tile: the ground with a little of the warning colour in it (opaque: the grid's lines are under it).
+    background: root.tile.tone == 2 ? PluginInk.bg(root.look).mix(PluginInk.warn(root.look), 0.92) : PluginInk.bg(root.look);
+
+    // The tooltip: over the words (a toggle keeps its switch), under a dropdown's own press area.
+    hover := TouchArea {
+        width: root.tile.kind == 0 ? parent.width - 60px : parent.width;
+        height: parent.height;
+        clicked => { root.idle-press(); }
+        changed has-hover => {
+            if self.has-hover {
+                root.tip(root.tile.tip, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+            }
+        }
+    }
+    VerticalLayout {
+        x: 14px;
+        y: 0px;
+        width: parent.width - 28px - (root.tile.kind == 0 ? 46px : 0px);
+        height: parent.height;
+        alignment: center;
+        spacing: 3px;
+        Text {
+            text: root.tile.caps;
+            font-family: Theme.font-ui;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.9px;
+            color: PluginInk.dim(root.look);
+            overflow: elide;
+        }
+        if root.tile.kind != 0: HorizontalLayout {
+            alignment: start;
+            spacing: 8px;
+            Text {
+                text: root.tile.value-name;
+                font-family: Theme.font-ui;
+                font-size: 13.5px;
+                font-weight: 600;
+                color: root.tile.kind == 1 ? PluginInk.tone(root.look, root.tile.tone) : PluginInk.text(root.look);
+                overflow: elide;
+            }
+            // The dropdown's chevron.
+            if root.tile.kind == 1: Rectangle {
+                width: 9px;
+                Path {
+                    width: 9px + 1.6px;
+                    height: 9px + 1.6px;
+                    x: -0.8px;
+                    y: (parent.height - 9px) / 2 - 0.8px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: "M5 9l7 7 7-7";
+                    fill: transparent;
+                    stroke: PluginInk.tone(root.look, root.tile.tone);
+                    stroke-width: 1.6px;
+                    stroke-line-cap: round;
+                    stroke-line-join: round;
+                    opacity: root.opened ? 1 : 0.7;
+                }
+            }
+        }
+        if root.tile.detail != "": Text {
+            text: root.tile.detail;
+            font-family: Theme.font-ui;
+            font-size: 11.5px;
+            color: PluginInk.dim(root.look);
+            overflow: elide;
+        }
+    }
+    // A dropdown tile: the whole tile opens it, by the pointer or by a key.
+    if root.tile.kind == 1: Rectangle {
+        width: root.width;
+        height: root.height;
+        property <bool> by-key;
+        Rectangle {
+            x: 6px;
+            y: 4px;
+            width: parent.width - 12px;
+            height: parent.height - 8px;
+            border-radius: 6px;
+            border-width: 2px;
+            border-color: dfs.has-focus && parent.by-key ? PluginInk.accent-hi(root.look) : transparent;
+        }
+        dfs := FocusScope {
+            width: parent.width;
+            height: parent.height;
+            accessible-role: combobox;
+            accessible-label: root.tile.label;
+            accessible-value: root.tile.value-name;
+            accessible-description: root.tile.words;
+            accessible-action-default => { root.open-menu(); }
+            key-pressed(e) => {
+                if e.text == Key.Escape {
+                    root.escape();
+                    return accept;
+                }
+                if e.text == Key.Space || e.text == Key.Return || e.text == Key.DownArrow {
+                    parent.by-key = true;
+                    root.open-menu();
+                    return accept;
+                }
+                return reject;
+            }
+        }
+        // The pointer: over the FocusScope, which would take the press.
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            mouse-cursor: pointer;
+            clicked => {
+                parent.by-key = false;
+                dfs.focus();
+                root.open-menu();
+            }
+            changed has-hover => {
+                if self.has-hover {
+                    root.tip(root.tile.tip, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+                }
+            }
+        }
+    }
+    if root.tile.kind == 0: SheetToggle {
+        x: parent.width - 14px - self.width;
+        y: (parent.height - self.height) / 2;
+        look: root.look;
+        on: root.tile.on;
+        label: root.tile.label;
+        words: root.tile.words;
+        toggled(v) => { root.toggled(v); }
+        escape => { root.escape(); }
+    }
+}
+
+// A button of the sheet's foot: primary (the plugin's colour) or outlined. The pointer or Enter and Space press it.
+component SheetButton inherits Rectangle {
+    in property <PluginLook> look;
+    in property <string> label;
+    in property <bool> primary;
+    // False: not there (no width, no focus).
+    in property <bool> shown: true;
+    callback clicked();
+    callback escape();
+    property <bool> by-key;
+    visible: root.shown;
+    height: 32px;
+    width: root.shown ? lbl.preferred-width + 28px : 0px;
+    border-radius: 8px;
+    background: root.primary ? (ta.has-hover ? PluginInk.accent(root.look).brighter(0.1) : PluginInk.accent(root.look))
+        : (ta.has-hover ? PluginInk.card(root.look) : transparent);
+    border-width: root.primary ? 0px : Px.hair();
+    border-color: PluginInk.line(root.look);
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    lbl := Text {
+        text: root.label;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+        font-family: Theme.font-ui;
+        font-size: 12.5px;
+        font-weight: 600;
+        color: root.primary ? PluginInk.on-accent(root.look) : PluginInk.text(root.look);
+    }
+    // The keyboard focus ring, 2 px outside the button.
+    Rectangle {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        border-radius: 10px;
+        border-width: 2px;
+        border-color: bfs.has-focus && root.by-key ? PluginInk.accent-hi(root.look) : transparent;
+    }
+    bfs := FocusScope {
+        enabled: root.shown;
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                root.escape();
+                return accept;
+            }
+            if e.text == Key.Space || e.text == Key.Return {
+                root.by-key = true;
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.by-key = false;
+            root.clicked();
+        }
+    }
+}
+
+export component PluginSheet inherits Rectangle {
+    in property <bool> open;
+    in property <string> name;
+    // `version · author`
+    in property <string> sub;
+    in property <string> desc;
+    // The warnings, one paragraph (amber), or "".
+    in property <string> warnings;
+    in property <[SheetTile]> tiles;
+    in property <PluginLook> look;
+    // The plugin is off: the foot offers "Turn on".
+    in property <bool> can-turn-on;
+    // Its panel's title when the foot offers to open it, else "".
+    in property <string> panel;
+    callback close();
+    callback toggled(string, bool);
+    callback chosen(string, string);
+    callback turn-on();
+    callback open-panel();
+    callback tip(string, length, length, length, length);
+
+    // The tile whose dropdown is open (-1 none) and the highlighted level in it.
+    in-out property <int> menu-tile: -1;
+    in-out property <int> menu-hi: 0;
+    // A tile has a detail line: every tile is taller.
+    in property <bool> tall;
+    property <length> tile-h: root.tall ? 78px : 62px;
+    property <length> tile-w: (box.width - 1px) / 2;
+    property <int> rows: floor((root.tiles.length + 1) / 2);
+    // The open dropdown sits this far under its tile's top: at its foot, under the value and the detail line alike.
+    out property <length> menu-drop: root.tile-h - 4px;
+    // The foot: its buttons, or the round of the bottom corners alone.
+    property <bool> has-foot: root.can-turn-on || root.panel != "";
+    property <length> foot-h: root.has-foot ? 56px : 6px;
+    // The box is at most the window less 24 px above and below; what does not fit scrolls.
+    property <length> max-h: root.height - 48px;
+    property <length> body-h: min(body.preferred-height, max(0px, root.max-h - head.preferred-height - root.foot-h));
+    // Where the box is, for the e2e and the tests.
+    out property <length> box-x: box.x;
+    out property <length> box-y: box.y;
+    out property <length> box-w: box.width;
+    out property <length> box-h: box.height;
+    out property <length> grid-y: box.y + scroller.y + scroller.content-y + grid.y;
+    out property <length> close-x: close-btn.absolute-position.x;
+    out property <length> close-y: close-btn.absolute-position.y;
+    out property <length> cell-w: root.tile-w;
+    out property <length> cell-h: root.tile-h;
+    // The scroll: how far it can go, and where it is now (0 at the top).
+    out property <length> scroll-max: max(0px, body.preferred-height - root.body-h);
+    out property <length> scroll-y: -scroller.content-y;
+    // The foot's buttons (absolute css px; 0 wide when not shown).
+    out property <length> turn-on-x: turn-on-btn.absolute-position.x;
+    out property <length> turn-on-y: turn-on-btn.absolute-position.y;
+    out property <length> turn-on-w: root.can-turn-on ? turn-on-btn.width : 0px;
+    out property <length> turn-on-h: turn-on-btn.height;
+    out property <length> panel-x: panel-btn.absolute-position.x;
+    out property <length> panel-y: panel-btn.absolute-position.y;
+    out property <length> panel-w: root.panel != "" ? panel-btn.width : 0px;
+    out property <length> panel-h: panel-btn.height;
+
+    function escape() {
+        if root.menu-tile >= 0 {
+            root.menu-tile = -1;
+            fs.focus();
+        } else {
+            root.close();
+        }
+    }
+    function pick(i: int) {
+        if root.menu-tile >= 0 && i >= 0 && i < root.tiles[root.menu-tile].options.length {
+            let key = root.tiles[root.menu-tile].key;
+            let id = root.tiles[root.menu-tile].options[i].id;
+            root.menu-tile = -1;
+            fs.focus();
+            root.chosen(key, id);
+        }
+    }
+    // Scrolls by `d` (a wheel's notch, a key), kept inside the content.
+    public function scroll-by(d: length) {
+        scroller.content-y = max(-root.scroll-max, min(0px, scroller.content-y - d));
+    }
+    visible: root.open;
+    width: 100%;
+    height: 100%;
+    changed open => {
+        root.menu-tile = -1;
+        scroller.content-y = 0px;
+        if root.open {
+            fs.focus();
+        }
+    }
+    // Drawn again from Rust (a choice applied): the tiles are new, so the sheet keeps the keys.
+    changed tiles => {
+        if root.open && root.menu-tile < 0 {
+            fs.focus();
+        }
+    }
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.scrim;
+    }
+    // A press outside the box closes the dropdown, else the sheet (a press inside it falls through to here only off
+    // the controls, and closes an open dropdown).
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        pointer-event(e) => {
+            let inside = self.mouse-x >= box.x && self.mouse-x < box.x + box.width && self.mouse-y >= box.y && self.mouse-y < box.y + box.height;
+            if e.kind == PointerEventKind.down {
+                if root.menu-tile >= 0 {
+                    root.menu-tile = -1;
+                } else if !inside {
+                    root.close();
+                }
+            }
+        }
+    }
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                if root.menu-tile >= 0 {
+                    root.menu-tile = -1;
+                } else {
+                    root.close();
+                }
+                return accept;
+            }
+            if root.menu-tile >= 0 {
+                let n = root.tiles[root.menu-tile].options.length;
+                if e.text == Key.DownArrow {
+                    root.menu-hi = min(n - 1, root.menu-hi + 1);
+                    return accept;
+                }
+                if e.text == Key.UpArrow {
+                    root.menu-hi = max(0, root.menu-hi - 1);
+                    return accept;
+                }
+                if e.text == Key.Return || e.text == Key.Space {
+                    root.pick(root.menu-hi);
+                    return accept;
+                }
+                return accept;
+            }
+            // The keys scroll a long sheet.
+            if e.text == Key.DownArrow || e.text == Key.PageDown {
+                root.scroll-by(e.text == Key.PageDown ? root.body-h - 40px : 40px);
+                return accept;
+            }
+            if e.text == Key.UpArrow || e.text == Key.PageUp {
+                root.scroll-by(e.text == Key.PageUp ? 40px - root.body-h : -40px);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    box := Rectangle {
+        width: min(460px, root.width - 48px);
+        height: head.preferred-height + root.body-h + root.foot-h;
+        x: Px.snap((root.width - self.width) / 2);
+        y: Px.snap(max(24px, (root.height - self.height) / 2));
+        background: PluginInk.bg(root.look);
+        border-radius: 14px;
+        border-width: Px.hair();
+        border-color: PluginInk.line(root.look);
+        drop-shadow-offset-y: 20px;
+        drop-shadow-blur: 50px;
+        drop-shadow-color: BrandInk.shadow;
+        accessible-role: groupbox;
+        accessible-label: root.name;
+
+        // The header: logo, name, `version · author`, close.
+        head := HorizontalLayout {
+            y: 0px;
+            width: parent.width;
+            height: self.preferred-height;
+            padding: 16px;
+            spacing: 12px;
+            PluginLogo {
+                look: root.look;
+                size: 40px;
+            }
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                Text {
+                    text: root.name;
+                    font-family: Theme.font-ui;
+                    font-size: 17px;
+                    font-weight: 650;
+                    color: PluginInk.text(root.look);
+                    overflow: elide;
+                }
+                Text {
+                    text: root.sub;
+                    font-family: Theme.font-ui;
+                    font-size: 12.5px;
+                    color: PluginInk.dim(root.look);
+                    overflow: elide;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                close-btn := Rectangle {
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 6px;
+                    background: cta.has-hover ? PluginInk.card(root.look) : transparent;
+                    accessible-role: button;
+                    accessible-label: "Close";
+                    accessible-action-default => { root.close(); }
+                    Path {
+                        x: 7px - 1px;
+                        y: 7px - 1px;
+                        width: 14px + 2px;
+                        height: 14px + 2px;
+                        viewbox-width: 24;
+                        viewbox-height: 24;
+                        commands: "M6 6l12 12M18 6L6 18";
+                        fill: transparent;
+                        stroke: PluginInk.muted(root.look);
+                        stroke-width: 2px;
+                        stroke-line-cap: round;
+                    }
+                    cta := TouchArea {
+                        clicked => { root.close(); }
+                    }
+                }
+            }
+        }
+        // The description, the grid and the warnings: they scroll when the window is too short for them (the wheel,
+        // the arrow and page keys). No drag: a press goes to the tile under it at once.
+        scroller := Flickable {
+            y: head.preferred-height;
+            width: parent.width;
+            height: root.body-h;
+            content-width: self.width;
+            content-height: body.preferred-height;
+            interactive: false;
+            body := VerticalLayout {
+                width: parent.width;
+                // Always there (an `if` would leave the box's height stale for a moment): no height without words.
+                Rectangle {
+                    visible: root.desc != "";
+                    height: root.desc == "" ? 0px : desc-text.preferred-height + 12px;
+                    desc-text := Text {
+                        x: 16px;
+                        y: 0px;
+                        width: parent.width - 32px;
+                        text: root.desc;
+                        wrap: word-wrap;
+                        font-family: Theme.font-ui;
+                        font-size: 12.5px;
+                        color: PluginInk.muted(root.look);
+                    }
+                }
+                // The grid: a hairline above it and between the tiles.
+                grid := Rectangle {
+                    height: root.tiles.length == 0 ? 0px : 1px + root.rows * (root.tile-h + 1px) - 1px;
+                    background: PluginInk.line(root.look);
+                    for t[i] in root.tiles: SheetTileView {
+                        x: mod(i, 2) * (root.tile-w + 1px);
+                        y: 1px + floor(i / 2) * (root.tile-h + 1px);
+                        width: root.tile-w;
+                        height: root.tile-h;
+                        tile: t;
+                        look: root.look;
+                        opened: root.menu-tile == i;
+                        toggled(v) => { root.toggled(t.key, v); }
+                        escape => { root.escape(); }
+                        idle-press => {
+                            if root.menu-tile >= 0 {
+                                root.menu-tile = -1;
+                                fs.focus();
+                            }
+                        }
+                        tip(a, b, c, d, e) => { root.tip(a, b, c, d, e); }
+                        open-menu => {
+                            if root.menu-tile == i {
+                                root.menu-tile = -1;
+                            } else {
+                                root.menu-hi = t.chosen;
+                                root.menu-tile = i;
+                                fs.focus();
+                            }
+                        }
+                    }
+                    // An odd last row: the empty cell wears the ground.
+                    if mod(root.tiles.length, 2) == 1: Rectangle {
+                        x: root.tile-w + 1px;
+                        y: 1px + (root.rows - 1) * (root.tile-h + 1px);
+                        width: root.tile-w;
+                        height: root.tile-h;
+                        background: PluginInk.bg(root.look);
+                    }
+                }
+                Rectangle {
+                    visible: root.warnings != "";
+                    height: root.warnings == "" ? 0px : warn-text.preferred-height + 24px;
+                    Rectangle {
+                        y: 0px;
+                        height: 1px;
+                        background: PluginInk.line(root.look);
+                    }
+                    warn-text := Text {
+                        x: 16px;
+                        y: 12px;
+                        width: parent.width - 32px;
+                        text: root.warnings;
+                        wrap: word-wrap;
+                        font-family: Theme.font-ui;
+                        font-size: 12px;
+                        color: PluginInk.warn(root.look);
+                    }
+                }
+            }
+        }
+        // The foot: a hairline, then Open <panel> and Turn on at the right; without them the bottom corners stay round
+        // under the last tile.
+        foot := Rectangle {
+            y: head.preferred-height + root.body-h;
+            width: parent.width;
+            height: root.foot-h;
+            if root.has-foot: Rectangle {
+                y: 0px;
+                height: 1px;
+                background: PluginInk.line(root.look);
+            }
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 12px;
+                padding-bottom: 12px;
+                spacing: root.panel != "" && root.can-turn-on ? 8px : 0px;
+                alignment: end;
+                panel-btn := SheetButton {
+                    shown: root.panel != "";
+                    look: root.look;
+                    label: "Open " + root.panel;
+                    clicked => { root.open-panel(); }
+                    escape => { root.escape(); }
+                }
+                turn-on-btn := SheetButton {
+                    shown: root.can-turn-on;
+                    look: root.look;
+                    label: "Turn on";
+                    primary: true;
+                    clicked => { root.turn-on(); }
+                    escape => { root.escape(); }
+                }
+            }
+        }
+        // The open dropdown, over the tiles under its value (the scroll moves it with its tile).
+        if root.menu-tile >= 0: Rectangle {
+            x: mod(root.menu-tile, 2) * (root.tile-w + 1px) + 10px;
+            y: scroller.y + scroller.content-y + grid.y + 1px + floor(root.menu-tile / 2) * (root.tile-h + 1px) + root.menu-drop;
+            width: 180px;
+            height: menu-col.preferred-height;
+            background: PluginInk.card(root.look);
+            border-width: Px.hair();
+            border-color: PluginInk.line(root.look);
+            border-radius: 8px;
+            drop-shadow-offset-y: 12px;
+            drop-shadow-blur: 28px;
+            drop-shadow-color: BrandInk.shadow-soft;
+            accessible-role: list;
+            TouchArea {}
+            menu-col := VerticalLayout {
+                padding: 4px;
+                for o[j] in root.tiles[root.menu-tile].options: opt := Rectangle {
+                    height: 30px;
+                    border-radius: 5px;
+                    property <bool> chosen: j == root.tiles[root.menu-tile].chosen;
+                    background: ota.has-hover || j == root.menu-hi ? PluginInk.accent-hi(root.look).with-alpha(0.16) : transparent;
+                    accessible-role: list-item;
+                    accessible-label: o.name;
+                    accessible-action-default => { root.pick(j); }
+                    Text {
+                        x: 9px;
+                        width: parent.width - 18px;
+                        height: parent.height;
+                        text: o.name;
+                        vertical-alignment: center;
+                        font-family: Theme.font-ui;
+                        font-size: 13px;
+                        font-weight: opt.chosen ? 600 : 400;
+                        color: o.tone == 2 ? PluginInk.warn(root.look) : (opt.chosen || ota.has-hover || j == root.menu-hi ? PluginInk.text(root.look) : PluginInk.muted(root.look));
+                    }
+                    ota := TouchArea {
+                        clicked => { root.pick(j); }
+                    }
+                }
+            }
+        }
+    }
+}

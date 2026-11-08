@@ -393,7 +393,7 @@ while that call waits for the plugin's answer (**tool scope**), else `forbidden`
 |---|---|---|
 | `browser.fill.page` | `tab?` | `{"tab": string, "url": string, "host": string \| null}`: the address of the tab's web page now |
 | `browser.fill` | `tab?`, `login_name` (one clean line, at most 120 characters), `login_uris` (1 to 32 strings, each at most 2048), `username?`, `password?`, `totp?` (each 1 to 1024 characters, no control character; at least one) | `{"filled": [kind], "missing": [kind]}` with kind `"username"`, `"password"` or `"totp"`; or `{"declined": true}`, `{"declined": true, "for_session": true}`, `{"declined": true, "timed_out": true}` |
-| `secret.ask` | `title` (one clean line, at most 80), `label` (one clean line, at most 120) | `{"text": string}` (what the person typed, to this caller only), or `{"cancelled": true}`, `{"cancelled": true, "timed_out": true}` |
+| `secret.ask` | `title` (one clean line, at most 80), `label` (one clean line, at most 120), `sub?` (one clean line, at most 120: a line under the title, such as the account), `button?` (one clean line, at most 24: the button's word, `OK` without it) | `{"text": string}` (what the person typed, to this caller only), or `{"cancelled": true}`, `{"cancelled": true, "timed_out": true}` |
 
 Any other key is `bad_params`, and no error names a value. **The site rule:** the page's address must be `http` or
 `https` with a host, and a site of one of `login_uris`: the login's host or a subdomain of it (a leading `www.` of the

@@ -292,6 +292,24 @@ impl AppCtl {
                 self.settings_changed();
             }
             ModsMsg::ShowPanel { id } => self.show_mod_in_recent_tab(&id),
+            ModsMsg::SetChoice { id, key, value } => {
+                let applied = self
+                    .mods
+                    .as_ref()
+                    .map(|c| (c.hub().set_choice(&id, &key, &value), c));
+                match applied {
+                    Some((Ok(change), c)) => {
+                        // The person's choices are theirs: no log line names them.
+                        c.persist(&id);
+                        self.apply_mods_change(&change);
+                    }
+                    Some((Err(why), c)) => {
+                        *c.save_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
+                    }
+                    None => {}
+                }
+                self.settings_changed();
+            }
             ModsMsg::Said { tab, session, said } => self.on_said(&tab, &session, said),
             ModsMsg::Enter {
                 plugin,
@@ -1008,8 +1026,20 @@ impl AppCtl {
         let _ = reply.send(Ok(json!({})));
     }
 
-    /// The Settings button: the mod's panel in the shell tab used last, which comes to the front.
+    /// The details sheet's "Open <panel>": the mod's panel in the shell tab used last, which comes to the front. Only
+    /// while the live grant holds `panel` (the person may have turned it off on the sheet).
     fn show_mod_in_recent_tab(&mut self, id: &str) {
+        let holds_panel = self.mods.as_ref().is_some_and(|m| {
+            matches!(
+                m.hub().grant_of_mod(id),
+                Some(flare_ctl::Grant::Mod { permissions, .. })
+                    if permissions.contains(&flare_ctl::Permission::Panel)
+            )
+        });
+        if !holds_panel {
+            log::info!("the mod's panel was not shown: it is off or does not hold panel");
+            return;
+        }
         let tab = self
             .model
             .mru()

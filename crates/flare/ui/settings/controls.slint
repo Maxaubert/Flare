@@ -227,8 +227,12 @@ export component SetRowButton inherits Rectangle {
     in property <bool> in-row: true;
     // A stroked 11 px glyph (24 unit path data) left of the label, 6 px away (the dictation Uninstall's cross).
     in property <string> icon;
-    // The tooltip said on hover (the Uninstall and Disable buttons).
+    // The tooltip said on hover (the Uninstall and Disable buttons, and every icon button).
     in property <string> title;
+    // The glyph in the warning colour (a plugin's info button while it has warnings).
+    in property <bool> warn;
+    // No words, only the icon: a square button with a 15 px glyph (a plugin's info and trash buttons).
+    property <bool> bare: root.label == "" && root.icon != "";
     out property <bool> keyboard-focus: fs.has-focus && root.by-key;
     // What the button draws, read by the Dictation rows' look report.
     out property <color> fill: ta.has-hover && !root.off ? Theme.hover : Theme.control;
@@ -245,7 +249,7 @@ export component SetRowButton inherits Rectangle {
         fs.focus();
     }
 
-    width: max(m1.preferred-width, m2.preferred-width) + 24px + root.icon-room;
+    width: root.bare ? SettingsShape.control-h : max(m1.preferred-width, m2.preferred-width) + 24px + root.icon-room;
     height: SettingsShape.control-h;
     border-radius: root.radius;
     background: root.fill;
@@ -253,7 +257,7 @@ export component SetRowButton inherits Rectangle {
     border-color: root.edge;
     opacity: root.off ? 0.5 : 1;
     accessible-role: button;
-    accessible-label: root.alt ? root.label-alt : root.label;
+    accessible-label: root.bare ? root.title : (root.alt ? root.label-alt : root.label);
     accessible-action-default => {
         if !root.off {
             root.clicked();
@@ -289,8 +293,24 @@ export component SetRowButton inherits Rectangle {
         color: root.ink;
     }
 
+    // The bare glyph, 15 px, centred in the square.
+    if root.bare: Path {
+        x: (root.width - 15px) / 2 - (1.9 * 15px / 24) / 2;
+        y: (root.height - 15px) / 2 - (1.9 * 15px / 24) / 2;
+        width: 15px + (1.9 * 15px / 24);
+        height: 15px + (1.9 * 15px / 24);
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.icon;
+        fill: transparent;
+        stroke: root.warn ? SettingsInk.warn : Theme.text;
+        stroke-width: 1.9 * 15px / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+
     // The glyph, 11 px, centred with its label. The stroked box grows by one stroke and moves back.
-    if root.icon != "": Path {
+    if root.icon != "" && !root.bare: Path {
         x: (root.width - root.label-w - 17px) / 2 - (2.6 * 11px / 24) / 2;
         y: (root.height - 11px) / 2 - (2.6 * 11px / 24) / 2;
         width: 11px + (2.6 * 11px / 24);

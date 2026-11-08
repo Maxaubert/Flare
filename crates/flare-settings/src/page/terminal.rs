@@ -71,6 +71,7 @@ fn opening_section(env: &PageEnv<'_>) -> SectionModel {
             label: "Use my user folder".to_string(),
             alt: None,
             off: false,
+            ..Button::default()
         });
     }
     buttons.push(Button {
@@ -78,6 +79,7 @@ fn opening_section(env: &PageEnv<'_>) -> SectionModel {
         label: "Choose folder\u{2026}".to_string(),
         alt: None,
         off: false,
+        ..Button::default()
     });
     let newtab_row = RowModel {
         sub,

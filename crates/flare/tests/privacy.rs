@@ -64,6 +64,17 @@ pub const INVENTORY: &[(&str, &str)] = &[
     ("flare-settings/src/page/mods.rs", "Installing a plugin"),
     ("flare/src/web_ctl.rs", "Web panel"),
     ("e2e/src/scenarios/web.rs", "Web panel"),
+    // The plugin fill API and brand (2026-10-28, 2026-11-08): string work on addresses, no request. The fill's site
+    // check builds an `https://` address from a login's host to compare it with the page's; the details sheet and a
+    // plugin's question show a homepage's or an install address's host.
+    ("flare-mods/src/fill.rs", "Mods"),
+    ("flare-mods/src/grants.rs", "Mods"),
+    ("flare/src/plugin_ask.rs", "Mods"),
+    // The fill and brand scenarios: a test login's addresses and a test plugin's homepage, never requested (the page
+    // is served by the loopback stand-in).
+    ("e2e/src/fake_fill_helper.rs", "Web panel"),
+    ("e2e/src/scenarios/brand.rs", "Web panel"),
+    ("e2e/src/scenarios/fill.rs", "Web panel"),
 ];
 
 /// Tokens that mark a line as possibly reaching the network.

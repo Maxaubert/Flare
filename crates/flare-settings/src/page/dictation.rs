@@ -216,6 +216,7 @@ fn button(id: &'static str, label: &str) -> Button {
         label: label.to_string(),
         alt: None,
         off: false,
+        ..Button::default()
     }
 }
 
