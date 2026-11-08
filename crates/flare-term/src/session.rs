@@ -1662,7 +1662,13 @@ mod tests {
         assert!(wait_until(|| f.size() == (90, 30)));
         f.fail_next_resizes(100);
         m.resize("a", 91, 30);
-        std::thread::sleep(Duration::from_millis(150));
+        // Wait for the six tries (one plus five retries) on a deadline, then hold still: no seventh.
+        assert!(
+            wait_until(|| f.resize_calls() >= 10),
+            "{}",
+            f.resize_calls()
+        );
+        std::thread::sleep(Duration::from_millis(100));
         assert_eq!(f.resize_calls(), 10);
         // A newer wish stops the old retries.
         let slow = mgr_with(
@@ -1680,8 +1686,12 @@ mod tests {
         // The try runs on a helper, never on the caller.
         assert!(wait_until(|| h.resize_calls() == 1));
         slow.resize("c", 92, 30);
-        std::thread::sleep(Duration::from_millis(400));
         // 1 for 91, 1 for 92, then only 92 keeps retrying (5 more); 91 never retried after the change.
+        // The retries sleep on a helper thread, which a loaded runner can stretch well past 5 x 40 ms:
+        // wait for the seventh on a deadline, then hold still longer than a whole retry run of 91 would
+        // take (5 x 40 ms), so any try 91 kept making would show up as an eighth.
+        assert!(wait_until(|| h.resize_calls() >= 7), "{}", h.resize_calls());
+        std::thread::sleep(Duration::from_millis(300));
         assert_eq!(h.resize_calls(), 7);
     }
 

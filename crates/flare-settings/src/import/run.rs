@@ -754,16 +754,19 @@ mod tests {
         let reader = slow_then_empty(Duration::from_millis(300), calls.clone());
         CEILINGS_SEEN.with(|s| s.borrow_mut().clear());
         let prefs = PrefStore::memory();
+        // A budget well above the first read's 300 ms, so a runner that stretches that sleep still leaves
+        // time for the second profile (a 400 ms budget left 100 ms, which a busy macOS runner ate).
+        // Shared means the second profile gets what the first left, never a fresh 2 s: at most 1.7 s.
         let r = run_once_with(
             &prefs,
             &paths(a.path(), t.path()),
-            Duration::from_millis(400),
+            Duration::from_millis(2000),
             reader,
         );
         let seen = seen();
         assert_eq!(seen.len(), 2, "both profiles are read");
         assert!(
-            seen[1] <= Duration::from_millis(100),
+            seen[1] <= Duration::from_millis(1700),
             "the second profile got {:?}",
             seen[1]
         );

@@ -298,28 +298,6 @@ mod tests {
         }
     }
 
-    /// A port whose text read takes `delay`.
-    struct Slow {
-        delay: Duration,
-        text: String,
-    }
-
-    impl ClipboardPort for Slow {
-        fn write_text(&self, _text: &str, _max: usize) -> Result<(), String> {
-            Err("read only".to_string())
-        }
-        fn read_text(&self) -> Option<String> {
-            thread::sleep(self.delay);
-            Some(self.text.clone())
-        }
-        fn read_state(&self) -> ClipboardState {
-            ClipboardState::default()
-        }
-        fn sequence(&self) -> u32 {
-            0
-        }
-    }
-
     const WAIT: Duration = Duration::from_secs(5);
 
     #[test]
@@ -584,22 +562,67 @@ mod tests {
         assert_eq!(got.as_deref(), Some("quick"));
     }
 
+    /// A clipboard whose read blocks until the test opens the gate: "slow" without a wall-clock race.
+    struct Gated {
+        open: Mutex<bool>,
+        cv: std::sync::Condvar,
+        text: String,
+    }
+
+    impl ClipboardPort for Gated {
+        fn write_text(&self, _text: &str, _max: usize) -> Result<(), String> {
+            Err("read only".to_string())
+        }
+        fn read_text(&self) -> Option<String> {
+            let mut open = self.open.lock().unwrap();
+            while !*open {
+                open = self.cv.wait(open).unwrap();
+            }
+            Some(self.text.clone())
+        }
+        fn read_state(&self) -> ClipboardState {
+            ClipboardState::default()
+        }
+        fn sequence(&self) -> u32 {
+            0
+        }
+    }
+
     #[test]
     fn bounded_clip_gives_up_after_the_cap_and_returns_the_late_answer_next_time() {
-        let port = Arc::new(Slow {
-            delay: Duration::from_millis(60),
+        // The port answers only once the gate opens, so a read that returns at all while it is shut has
+        // given up rather than waited for the answer. (A 60 ms port against a 40 ms wall-clock bound
+        // raced the runner's scheduler: 41 ms once on a busy macOS runner.)
+        let port = Arc::new(Gated {
+            open: Mutex::new(false),
+            cv: std::sync::Condvar::new(),
             text: "late".to_string(),
         });
-        let mut clip = BoundedClip::new(port);
+        let mut clip = BoundedClip::new(port.clone());
         let started = Instant::now();
-        assert_eq!(clip.read(), None);
+        assert_eq!(clip.read(), None, "no answer while the clipboard is busy");
+        // Only a gross overrun of the 8 ms cap fails here; the race-free proof is the None above.
         assert!(
-            started.elapsed() < Duration::from_millis(40),
+            started.elapsed() < Duration::from_secs(1),
             "the UI thread waited {:?}",
             started.elapsed()
         );
-        thread::sleep(Duration::from_millis(80));
-        assert_eq!(clip.read().as_deref(), Some("late"));
+        // A second read while still busy also gives up, and reuses the read in flight.
+        assert_eq!(clip.read(), None);
+        *port.open.lock().unwrap() = true;
+        port.cv.notify_all();
+        // The late answer is handed over on a later call.
+        let deadline = Instant::now() + WAIT;
+        let got = loop {
+            if let Some(t) = clip.read() {
+                break Some(t);
+            }
+            if Instant::now() > deadline {
+                break None;
+            }
+            thread::sleep(Duration::from_millis(2));
+        };
+        assert_eq!(got.as_deref(), Some("late"));
     }
 
     #[test]

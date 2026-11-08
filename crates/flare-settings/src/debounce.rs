@@ -257,17 +257,37 @@ mod tests {
 
     #[test]
     fn a_new_save_restarts_the_wait() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("tabs.json");
-        let d = Debounced::new(&file, Duration::from_millis(200));
-        d.save("a".to_string());
-        thread::sleep(Duration::from_millis(120));
-        d.save("b".to_string());
-        thread::sleep(Duration::from_millis(120));
-        assert!(!file.exists());
-        assert!(wait_until(|| file.exists(), Duration::from_secs(2)));
-        d.idle();
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "b");
+        // The claim: the file is written no sooner than `delay` after the LAST save. It is checked
+        // against measured times, not against sleeps (a busy runner stretched a 120 ms sleep past the
+        // first save's deadline and the old fixed-sleep check failed). A run where the second save
+        // itself landed after the first one's deadline proves nothing either way and is tried again.
+        let delay = Duration::from_millis(200);
+        for _ in 0..5 {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("tabs.json");
+            let d = Debounced::new(&file, delay);
+            let first = Instant::now();
+            d.save("a".to_string());
+            thread::sleep(Duration::from_millis(100));
+            let second = Instant::now();
+            d.save("b".to_string());
+            if first.elapsed() >= delay {
+                continue; // the first save may legitimately have come due: inconclusive
+            }
+            // The first save's deadline passes (it would have written by now without the restart) ...
+            assert!(wait_until(|| file.exists(), Duration::from_secs(5)));
+            let seen = Instant::now();
+            // ... yet the write came only after the wait the second save started.
+            assert!(
+                seen.duration_since(second) >= delay,
+                "written {:?} after the second save, inside its {delay:?} wait",
+                seen.duration_since(second)
+            );
+            d.idle();
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), "b");
+            return;
+        }
+        panic!("the runner never let the second save land inside the first one's wait");
     }
 
     #[test]

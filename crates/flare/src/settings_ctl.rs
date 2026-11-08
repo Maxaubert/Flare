@@ -3218,13 +3218,21 @@ mod tests {
         }
         f.look.set_font_pct(110);
         f.look.set_font_pct(120);
-        let n = f.q.lock().unwrap().len();
-        assert_eq!(n, 1, "one message for seven changes");
+        // Only the store's Changed posts are counted: a worker's late answer (the shell list, the verb
+        // status) can still land in the queue on a slow runner, and it is not a rebuild request.
+        let changed = |f: &Fx| {
+            f.q.lock()
+                .unwrap()
+                .iter()
+                .filter(|m| matches!(m, UiMsg::Settings(SettingsMsg::Changed)))
+                .count()
+        };
+        assert_eq!(changed(&f), 1, "one message for seven changes");
         f.pump();
         assert_eq!(f.ctl.borrow().rebuilds, before + 1);
         // After the rebuild the next change posts again.
         f.look.set_font_pct(130);
-        assert_eq!(f.q.lock().unwrap().len(), 1);
+        assert_eq!(changed(&f), 1);
     }
 
     #[test]

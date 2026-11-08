@@ -1326,7 +1326,7 @@ impl AppDispatcher {
 
     /// A still clock for the decor limit, so a test can spend a second's worth at one instant.
     #[cfg(test)]
-    fn with_clock(mut self, clock: fn() -> Instant) -> Self {
+    pub(crate) fn with_clock(mut self, clock: fn() -> Instant) -> Self {
         self.clock = clock;
         self
     }

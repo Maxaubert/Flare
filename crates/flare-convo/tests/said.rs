@@ -207,6 +207,27 @@ fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
     }
 }
 
+/// Appends `<tag> N` lines until one of them is handed over: from then on the follower is reading
+/// the file's live end, and every line written after must come through. Lines written before it got
+/// there (the start, a rewrite) are rightly not news, so a probe may be dropped; the next one is not.
+fn probe_through(path: &Path, got: &Mutex<Vec<Said>>, tag: &str) {
+    let prefix = format!("{tag} ");
+    let t = Instant::now();
+    let mut n = 0;
+    while !all_texts(got).iter().any(|x| x.starts_with(&prefix)) {
+        assert!(
+            t.elapsed() < Duration::from_secs(20),
+            "no {tag} line came through"
+        );
+        append(path, &format!("{}\n", user(&format!("{tag} {n}"))));
+        n += 1;
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    // The follower is live now, so the last probe arrives too: wait for it, so no probe trails behind.
+    let last = format!("{tag} {}", n - 1);
+    wait_for("the last probe", || all_texts(got).contains(&last));
+}
+
 fn all_texts(got: &Mutex<Vec<Said>>) -> Vec<String> {
     got.lock()
         .unwrap()
@@ -229,21 +250,42 @@ fn the_follower_hands_over_only_what_is_written_after_it_started_and_stops_when_
         session: "s".into(),
     };
     let (f, got) = follow(src);
-    // Give it a moment to settle at the end, then write.
-    std::thread::sleep(Duration::from_millis(300));
+    // The worker settles at the file's end when its thread runs, which a busy runner can delay past any
+    // fixed wait (a line written before that is rightly not news). Probe until a line comes through.
+    probe_through(&path, &got, "start");
+    let before = all_texts(&got).len();
     append(
         &path,
         &format!("{}\n{}\n", user("new one"), reply("new reply")),
     );
-    wait_for("the new entries", || all_texts(&got).len() >= 2);
-    assert_eq!(all_texts(&got), ["new one", "new reply"]);
+    wait_for("the new entries", || all_texts(&got).len() >= before + 2);
+    let texts = all_texts(&got);
+    assert_eq!(&texts[before..], ["new one", "new reply"]);
+    assert!(
+        texts[..before].iter().all(|x| x.starts_with("start ")),
+        "only probes before: the old lines are never handed over, {texts:?}"
+    );
     // A rewrite is not news: the old lines are not handed over again.
     std::fs::write(&path, format!("{}\n", user("rewritten history"))).unwrap();
-    std::thread::sleep(Duration::from_millis(600));
+    // A line written before the follower has seen the rewrite is part of the rewritten file, which is
+    // not news, so it is rightly dropped. A fixed 600 ms wait was a guess at when the follower had
+    // looked, and a busy runner's worker missed it. Instead, probe until one line comes through: from
+    // then on the follower is past the rewrite and every new line must be handed over.
+    let mid = all_texts(&got).len();
+    probe_through(&path, &got, "probe");
     append(&path, &format!("{}\n", user("after the rewrite")));
-    wait_for("the line after the rewrite", || all_texts(&got).len() >= 3);
-    assert_eq!(all_texts(&got)[2], "after the rewrite");
-    assert!(!all_texts(&got).iter().any(|t| t == "rewritten history"));
+    wait_for("the line after the rewrite", || {
+        all_texts(&got).iter().any(|x| x == "after the rewrite")
+    });
+    let texts = all_texts(&got);
+    assert_eq!(texts.last().map(String::as_str), Some("after the rewrite"));
+    assert!(
+        texts[mid..texts.len() - 1]
+            .iter()
+            .all(|x| x.starts_with("probe ")),
+        "{texts:?}"
+    );
+    assert!(!texts.iter().any(|t| t == "rewritten history"));
     let exit = f.exit_flag();
     drop(f);
     wait_for("the worker to end", || exit.load(Ordering::SeqCst));
