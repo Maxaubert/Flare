@@ -4,7 +4,9 @@
 // below its 1 hairline border, so the view adds `Px.hair()` the way the frame's Results list does.
 // For the non-row blocks: `about` reads `label` (name), `sub` (line one) and `note` (line two).
 import { Theme, Px, SettingsInk, SettingsShape, SettingsFixed } from "../theme.slint";
-import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell, RowLook } from "types.slint";
+import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell, RowLook, SheetTile } from "types.slint";
+import { PluginLook } from "../plugin_look.slint";
+import { PluginSheet } from "plugin_sheet.slint";
 import { SetFrame } from "frame.slint";
 import { SetRowFrame, SetBlockFrame, SetPanel, SetSectionHeading } from "row.slint";
 import { SetSwitch, SetSegmented, SetSaveButton, SetRowButton, SetResetLink, SetTextField } from "controls.slint";
@@ -97,6 +99,15 @@ export global SettingsBridge {
     in-out property <float> dict-level;
     in-out property <bool> dict-ask-open;
     in-out property <string> dict-ask-text;
+    // A plugin's details sheet (the info button on its card, 2026-11-08): what it shows, filled by Rust.
+    in-out property <bool> sheet-open;
+    in-out property <string> sheet-name;
+    in-out property <string> sheet-sub;
+    in-out property <string> sheet-desc;
+    in-out property <string> sheet-warnings;
+    in-out property <[SheetTile]> sheet-tiles;
+    in-out property <bool> sheet-tall;
+    in-out property <PluginLook> sheet-look;
     // events
     callback page-chosen(string);
     callback find-edited(string);
@@ -139,6 +150,10 @@ export global SettingsBridge {
     callback editor-cancel();
     callback ask-answered(int);
     callback dict-ask-answered(int);
+    callback sheet-close();
+    // A toggle tile (its key, the new state) and a dropdown tile (its key, the level's id).
+    callback sheet-toggle(string, bool);
+    callback sheet-choose(string, string);
     callback frame-resized(length, length);
     // The window's scale changed (a move to a monitor with another DPI keeps the logical size, so
     // frame-resized never fires): the Rust-snapped layout is laid out again.
@@ -386,7 +401,11 @@ component RowControls inherits HorizontalLayout {
             label-alt: b.label-alt;
             alt: b.alt;
             off: b.off;
+            icon: b.icon;
+            title: b.tip;
+            warn: b.warn;
             clicked => { SettingsBridge.row-button(root.data.id, b.id); }
+            tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
         }
     }
 }
@@ -493,6 +512,8 @@ export component SettingsView inherits Rectangle {
                         first: i == 0;
                         after-block: i > 0 && section.rows[i - 1].block != BlockKind.row;
                         icon: row.icon;
+                        logo: row.logo;
+                        logo-fill: row.logo-fill;
                         label: row.label;
                         sub: row.sub;
                         sub-tip: row.sub-tip;
@@ -636,6 +657,21 @@ export component SettingsPreview inherits Window {
         height: parent.height;
         open: SettingsBridge.ask-open;
         answered(n) => { SettingsBridge.ask-answered(n); }
+    }
+    PluginSheet {
+        width: parent.width;
+        height: parent.height;
+        open: SettingsBridge.sheet-open;
+        name: SettingsBridge.sheet-name;
+        sub: SettingsBridge.sheet-sub;
+        desc: SettingsBridge.sheet-desc;
+        warnings: SettingsBridge.sheet-warnings;
+        tiles: SettingsBridge.sheet-tiles;
+        tall: SettingsBridge.sheet-tall;
+        look: SettingsBridge.sheet-look;
+        close => { SettingsBridge.sheet-close(); }
+        toggled(k, v) => { SettingsBridge.sheet-toggle(k, v); }
+        chosen(k, v) => { SettingsBridge.sheet-choose(k, v); }
     }
     DictAsk {
         width: parent.width;

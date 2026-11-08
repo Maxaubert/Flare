@@ -1,8 +1,8 @@
 //! Settings > Plugins (the page key `mods`; Surfaces stage 8, plugins phase 2), headless, at 100 and 225 percent:
-//! the rail lists the page, each mod is a switch row and a permissions row in plain words (a plugin adds who made
-//! it and its warnings), a folder that is not a mod is a warning with its reason, the
-//! buttons and the switch reach the mods port, and every row sits in the panel on whole device pixels whatever
-//! the length of its words.
+//! the rail lists the page, each mod is a card of one row (its logo, name, description, switch, Update, the info
+//! button and Remove, 2026-11-08), the info button opens the plugin's details sheet whose tiles reach the mods port,
+//! a folder that is not a mod is a warning with its reason, the buttons and the switch reach the mods port, and every
+//! row sits in the panel on whole device pixels whatever the length of its words.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -32,9 +32,12 @@ struct FakePort {
     switched: RefCell<Vec<(String, bool)>>,
     /// What each switch carried (what the card listed).
     switched_with: RefCell<Vec<flare_mods::hub::Shown>>,
-    shown: RefCell<Vec<String>>,
+
     /// The install, update and remove asks, as `what:argument`.
     installs: RefCell<Vec<String>>,
+    /// The details sheet the port shows (None: the plugin is gone), and the choices made on it.
+    sheet: RefCell<Option<crate::plugin_look::Sheet>>,
+    choices: RefCell<Vec<(String, String, String)>>,
 }
 
 impl ModsPort for FakePort {
@@ -48,9 +51,7 @@ impl ModsPort for FakePort {
         self.switched_with.borrow_mut().push(shown);
         self.switched.borrow_mut().push((id.to_string(), on));
     }
-    fn show_panel(&self, id: &str) {
-        self.shown.borrow_mut().push(id.to_string());
-    }
+
     fn dir(&self) -> PathBuf {
         PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\plugins")
     }
@@ -65,6 +66,14 @@ impl ModsPort for FakePort {
     }
     fn remove(&self, id: &str) {
         self.installs.borrow_mut().push(format!("remove:{id}"));
+    }
+    fn sheet(&self, _id: &str) -> Option<crate::plugin_look::Sheet> {
+        self.sheet.borrow().clone()
+    }
+    fn set_choice(&self, id: &str, key: &str, value: &str) {
+        self.choices
+            .borrow_mut()
+            .push((id.to_string(), key.to_string(), value.to_string()));
     }
 }
 
@@ -250,18 +259,13 @@ fn each_mod_shows_its_name_version_description_permissions_and_a_switch_that_is_
         assert!(sw.sub.as_str().contains("append_note"));
         assert!(sw.tap, "a press anywhere on the row flips it");
         assert!(!sw.on, "off until the user turns it on");
-        let perms = f.row("modperm:notes").expect("the permissions row");
-        assert_eq!(
-            perms.sub.as_str(),
-            "Show its panel in a tab, Answer the agent's tool calls",
-            "the words are shown while the mod is still off"
-        );
-        let heading = f
+        let card = f
             .sections()
             .into_iter()
             .find(|sec| sec.id == "modcard:notes")
             .expect("the mod's card");
-        assert_eq!(heading.title.as_str(), "Notes");
+        assert_eq!(card.title.as_str(), "", "its row names it");
+        assert_eq!(card.rows.iter().count(), 1, "one row");
     }
 }
 
@@ -288,33 +292,88 @@ fn the_switch_reaches_the_mods_port_and_the_page_draws_what_the_port_then_says()
         *f.port.info.borrow_mut() = info(vec![notes(true)]);
         f.ctl.borrow_mut().on_msg(SettingsMsg::Mods);
         assert!(f.row("mod:notes").unwrap().on);
-        let show = f.row("modperm:notes").unwrap();
-        assert!(
-            !show.buttons.iter().next().unwrap().off,
-            "Show panel is offered once it is on"
-        );
     }
 }
 
-#[test]
-fn the_panel_button_waits_for_the_mod_and_the_folder_button_opens_the_mods_folder() {
-    let f = fx_at(1.0, info(vec![notes(false)]));
-    f.page("mods");
-    let perms = f.row("modperm:notes").unwrap();
-    let btn = perms.buttons.iter().next().unwrap();
-    assert_eq!(btn.id.as_str(), "show");
-    assert!(btn.off, "no panel while the mod is off");
-    *f.port.info.borrow_mut() = info(vec![notes(true)]);
-    f.ctl.borrow_mut().on_msg(SettingsMsg::Mods);
-    f.b()
-        .invoke_row_button("modperm:notes".into(), "show".into());
-    assert_eq!(f.port.shown.borrow().as_slice(), ["notes".to_string()]);
-    assert!(
-        f.row("mods-folder").is_none(),
-        "one folder row, the plugins one"
-    );
+/// A plugin's sheet as the app builds it from a manifest: levels, toggles and a fact.
+fn vault_sheet(c: &flare_mods::grants::Choices) -> crate::plugin_look::Sheet {
+    let m = flare_mods::manifest::parse_plugin(
+        r##"{"id":"notes","name":"Notes","version":"1.0.0","protocol":2,"description":"d","author":"someone",
+        "permissions":["tools","panel","process","fill"],"panel":{"entry":"p.html","title":"Notes"},
+        "helper":{"command":"bin/notes.exe"},"brand":{"color":"#175ddc","icon":"M3 3h18v18H3z"},
+        "tools":[{"name":"append_note","description":"d","input_schema":{"type":"object"}}]}"##,
+    )
+    .unwrap();
+    crate::plugin_look::sheet_of(&m, c)
 }
 
+#[test]
+fn the_info_button_opens_the_details_sheet_whose_tiles_reach_the_port_and_escape_closes_it() {
+    for s in SCALES2 {
+        let f = fx_at(s, info(vec![notes(true)]));
+        *f.port.sheet.borrow_mut() = Some(vault_sheet(&Default::default()));
+        f.page("mods");
+        assert!(!f.b().get_sheet_open());
+        f.b().invoke_row_button("mod:notes".into(), "info".into());
+        assert!(f.b().get_sheet_open(), "{s}");
+        assert_eq!(f.ctl.borrow().sheet_of(), Some("notes"));
+        assert_eq!(f.b().get_sheet_name().as_str(), "Notes");
+        assert_eq!(f.b().get_sheet_sub().as_str(), "1.0.0 \u{b7} someone");
+        assert!(f.b().get_sheet_look().branded);
+        assert!(f.b().get_sheet_tall(), "the tools tile names its tool");
+        let tiles: Vec<crate::SheetTile> = f.b().get_sheet_tiles().iter().collect();
+        let keys: Vec<&str> = tiles.iter().map(|t| t.key.as_str()).collect();
+        assert_eq!(keys, ["process", "fill", "tools", "panel", "fact:program"]);
+        assert_eq!(tiles[0].value_name.as_str(), "Full control");
+        assert_eq!(tiles[0].tone, 2, "full control is amber");
+        assert_eq!(tiles[1].value_name.as_str(), "Ask each time");
+        assert_eq!(tiles[1].tone, 1, "the usual level is the brand's");
+        assert!(
+            f.b()
+                .get_sheet_warnings()
+                .as_str()
+                .starts_with("Full control:")
+        );
+        // A toggle and a level reach the port; the sheet is drawn again from what the port says.
+        f.b().invoke_sheet_toggle("tools".into(), false);
+        f.b().invoke_sheet_choose("fill".into(), "always".into());
+        assert_eq!(
+            f.port.choices.borrow().as_slice(),
+            [
+                ("notes".into(), "tools".into(), "off".into()),
+                ("notes".into(), "fill".into(), "always".into())
+            ]
+        );
+        let mut c = flare_mods::grants::Choices::default();
+        flare_mods::grants::choose(&mut c, flare_ctl::Permission::Tools, "off").unwrap();
+        flare_mods::grants::choose(&mut c, flare_ctl::Permission::Fill, "always").unwrap();
+        *f.port.sheet.borrow_mut() = Some(vault_sheet(&c));
+        f.ctl.borrow_mut().on_msg(SettingsMsg::Mods);
+        let tiles: Vec<crate::SheetTile> = f.b().get_sheet_tiles().iter().collect();
+        assert!(!tiles[2].on);
+        assert_eq!(
+            (tiles[1].value_name.as_str(), tiles[1].tone),
+            ("Always allow", 2)
+        );
+        // Escape closes it; a plugin that is gone closes it too.
+        assert!(f.ctl.borrow_mut().escape());
+        assert!(!f.b().get_sheet_open());
+        f.b().invoke_row_button("mod:notes".into(), "info".into());
+        *f.port.sheet.borrow_mut() = None;
+        f.ctl.borrow_mut().on_msg(SettingsMsg::Mods);
+        assert!(!f.b().get_sheet_open());
+        assert_eq!(f.ctl.borrow().sheet_of(), None);
+        // The X closes it.
+        *f.port.sheet.borrow_mut() = Some(vault_sheet(&Default::default()));
+        f.b().invoke_row_button("mod:notes".into(), "info".into());
+        f.b().invoke_sheet_close();
+        assert!(!f.b().get_sheet_open());
+        assert!(
+            f.row("mods-folder").is_none(),
+            "one folder row, the plugins one"
+        );
+    }
+}
 #[test]
 fn the_install_buttons_the_address_field_and_each_cards_update_and_remove_reach_the_port() {
     let f = fx_at(1.0, info(vec![notes(true)]));
@@ -498,10 +557,12 @@ fn todo_plugin() -> ModInfo {
 }
 
 #[test]
-fn a_plugin_card_draws_its_maker_its_permissions_and_a_full_control_warning_and_a_mod_card_is_unchanged()
- {
+fn every_card_is_one_row_with_update_info_and_remove_and_a_branded_one_draws_its_logo() {
+    let mut branded = todo_plugin();
+    branded.brand_color = "#175ddc".into();
+    branded.logo = "M3 3h18v18H3z".into();
     for s in SCALES2 {
-        let f = fx_at(s, info(vec![notes(false), todo_plugin()]));
+        let f = fx_at(s, info(vec![notes(false), branded.clone()]));
         f.page("mods");
         let card = |id: &str| -> Vec<String> {
             f.sections()
@@ -510,30 +571,49 @@ fn a_plugin_card_draws_its_maker_its_permissions_and_a_full_control_warning_and_
                 .map(|sec| sec.rows.iter().map(|r| r.id.to_string()).collect())
                 .unwrap_or_default()
         };
-        assert_eq!(card("modcard:notes"), ["mod:notes", "modperm:notes"]);
+        assert_eq!(card("modcard:notes"), ["mod:notes"]);
+        assert_eq!(card("modcard:todo"), ["mod:todo"]);
+        let row = f.row("mod:todo").unwrap();
+        assert_eq!(row.label.as_str(), "Session to-dos 1.0.0");
+        assert!(!row.on, "off until the user turns it on");
+        let b: Vec<(String, String, bool, bool)> = row
+            .buttons
+            .iter()
+            .map(|b| {
+                (
+                    b.id.to_string(),
+                    b.tip.to_string(),
+                    b.icon.is_empty(),
+                    b.warn,
+                )
+            })
+            .collect();
         assert_eq!(
-            card("modcard:todo"),
-            ["mod:todo", "modby:todo", "modperm:todo", "modwarn:todo"]
+            b,
+            [
+                ("update".into(), String::new(), true, false),
+                (
+                    "info".into(),
+                    "Details and permissions".into(),
+                    false,
+                    false
+                ),
+                (
+                    "remove".into(),
+                    "Remove (to the Recycle Bin)".into(),
+                    false,
+                    false
+                ),
+            ]
         );
-        assert_eq!(
-            f.row("mod:todo").unwrap().label.as_str(),
-            "Session to-dos 1.0.0"
-        );
+        assert_eq!(row.logo.as_str(), "M3 3h18v18H3z");
+        assert_eq!(row.logo_fill, slint::Color::from_rgb_u8(0x17, 0x5d, 0xdc));
         assert!(
-            !f.row("mod:todo").unwrap().on,
-            "off until the user turns it on"
+            f.row("mod:notes").unwrap().logo.is_empty(),
+            "no brand: the chip"
         );
-        let by = f.row("modby:todo").unwrap();
-        assert_eq!(by.sub.as_str(), "someone, https://example.com/todo");
-        let perms = f.row("modperm:todo").unwrap();
-        assert!(perms.sub.as_str().contains("(full control)"));
-        let warn = f.row("modwarn:todo").unwrap();
-        assert!(warn.warn);
-        assert_eq!(warn.label.as_str(), "Full control");
-        assert!(warn.sub.as_str().contains("steer Claude"));
     }
 }
-
 #[test]
 fn the_plugins_folder_button_opens_the_plugins_folder() {
     let f = fx_at(1.0, info(vec![]));

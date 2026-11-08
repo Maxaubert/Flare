@@ -22,6 +22,7 @@ import { SelectMenu } from "settings/select.slint";
 import { ColourPopover } from "settings/colour.slint";
 import { ThemeEditor, AskThree } from "settings/wall.slint";
 import { DictAsk } from "settings/dictation.slint";
+import { PluginSheet } from "settings/plugin_sheet.slint";
 import { HelpPanel, HelpBridge } from "settings/help_panel.slint";
 import { PanelSlot } from "panel.slint";
 import { ConvoFileRow, ConvoDiffRow } from "convo.slint";
@@ -491,7 +492,7 @@ export component AppWindow inherits Window {
     // The collapsed sidebar, out on a hover (or sliding), reaches over the panel's slot (a wide sidebar beside a
     // wide panel): it is drawn over the page, so a web panel hides under it like under any overlay.
     property <bool> sidebar-over-slot: root.side-mode && root.sidebar-collapsed && (root.sidebar-revealed || root.sidebar-sliding) && root.panel-slot-w > 0px && root.sidebar-width > page.width - root.panel-slot-w;
-    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.pask-open || root.update-open || root.update-notice != "" || root.staged-toast != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying || root.sidebar-over-slot;
+    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.pask-open || root.update-open || root.update-notice != "" || root.staged-toast != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.sheet-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying || root.sidebar-over-slot;
     changed overlay-open => { root.overlay-changed(); }
 
     // ---- tabs ----
@@ -728,6 +729,17 @@ export component AppWindow inherits Window {
     out property <length> dialog-box-w: dlg.box-w;
     out property <length> dialog-box-h: dlg.box-h;
     out property <int> dialog-focus: dlg.focused-button;
+    // Where a plugin's details sheet is, for the e2e's pointer.
+    out property <length> sheet-box-x: sheet.box-x;
+    out property <length> sheet-box-y: sheet.box-y;
+    out property <length> sheet-box-w: sheet.box-w;
+    out property <length> sheet-box-h: sheet.box-h;
+    out property <length> sheet-grid-y: sheet.grid-y;
+    out property <length> sheet-cell-w: sheet.cell-w;
+    out property <length> sheet-cell-h: sheet.cell-h;
+    out property <length> sheet-close-x: sheet.close-x;
+    out property <length> sheet-close-y: sheet.close-y;
+    out property <int> sheet-menu-tile: sheet.menu-tile;
     out property <bool> pask-field-focus: pask.field-has-focus;
     out property <bool> pask-allow-armed: pask.allow-armed;
     out property <length> pask-allow-x: pask.allow-x;
@@ -1518,6 +1530,24 @@ export component AppWindow inherits Window {
             height: root.height;
             open: SettingsBridge.ask-open;
             answered(n) => { SettingsBridge.ask-answered(n); }
+        }
+        // A plugin's details sheet (the info button on its card, 2026-11-08).
+        sheet := PluginSheet {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.sheet-open;
+            name: SettingsBridge.sheet-name;
+            sub: SettingsBridge.sheet-sub;
+            desc: SettingsBridge.sheet-desc;
+            warnings: SettingsBridge.sheet-warnings;
+            tiles: SettingsBridge.sheet-tiles;
+            tall: SettingsBridge.sheet-tall;
+            look: SettingsBridge.sheet-look;
+            close => { SettingsBridge.sheet-close(); }
+            toggled(k, v) => { SettingsBridge.sheet-toggle(k, v); }
+            chosen(k, v) => { SettingsBridge.sheet-choose(k, v); }
         }
         // The Dictation page's one-line question before a download (M8 Task 25).
         dict-ask := DictAsk {

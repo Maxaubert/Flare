@@ -291,7 +291,25 @@ impl AppCtl {
                 }
                 self.settings_changed();
             }
-            ModsMsg::ShowPanel { id } => self.show_mod_in_recent_tab(&id),
+
+            ModsMsg::SetChoice { id, key, value } => {
+                let applied = self
+                    .mods
+                    .as_ref()
+                    .map(|c| (c.hub().set_choice(&id, &key, &value), c));
+                match applied {
+                    Some((Ok(change), c)) => {
+                        // The person's choices are theirs: no log line names them.
+                        c.persist(&id);
+                        self.apply_mods_change(&change);
+                    }
+                    Some((Err(why), c)) => {
+                        *c.save_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
+                    }
+                    None => {}
+                }
+                self.settings_changed();
+            }
             ModsMsg::Said { tab, session, said } => self.on_said(&tab, &session, said),
             ModsMsg::Enter {
                 plugin,
@@ -1006,32 +1024,6 @@ impl AppCtl {
         }
         self.web_moved();
         let _ = reply.send(Ok(json!({})));
-    }
-
-    /// The Settings button: the mod's panel in the shell tab used last, which comes to the front.
-    fn show_mod_in_recent_tab(&mut self, id: &str) {
-        let tab = self
-            .model
-            .mru()
-            .iter()
-            .find(|t| self.is_shell_tab(t))
-            .cloned()
-            .or_else(|| {
-                flare_tabs::tabs::shell_tabs(&self.model.state)
-                    .first()
-                    .map(|t| t.id.clone())
-            });
-        let Some(tab) = tab else { return };
-        match self.show_mod_panel(&tab, id) {
-            Ok(spec) => {
-                let url = spec.url.clone();
-                self.web.ensure_hidden(&tab, &url, Some(spec));
-                self.model.pick(&tab);
-                self.refresh();
-                self.focus_terminal();
-            }
-            Err(e) => log::info!("the mod's panel was not shown: {}", e.message),
-        }
     }
 
     /// The `mods.state` probe: what the window and the hub hold (no token).
