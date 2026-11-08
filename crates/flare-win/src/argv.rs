@@ -119,6 +119,7 @@ mod tests {
         v.iter().map(|a| (a.path.clone(), a.dir)).collect()
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_relative_path_is_resolved_against_the_typing_folder() {
         let dir = tempfile::tempdir().unwrap();
@@ -138,6 +139,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_drive_root_with_the_escaped_quote_is_the_root() {
         assert_eq!(unquote_arg("C:\""), "C:\\");

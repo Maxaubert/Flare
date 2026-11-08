@@ -18,6 +18,10 @@
 //! restart through the manifest, the old pid and the process list.
 //!
 //! The tests that need no install (the throttled server and the small helpers) run everywhere.
+//!
+//! Windows-only: the e2e harness drives the Windows app (job objects, the hidden desktop, named pipes).
+//! The Mac E2E is the port plan's "Ongoing" row.
+#![cfg(windows)]
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};

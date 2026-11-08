@@ -128,6 +128,8 @@ fn main() {
         ));
     }
     if let (Some(n), None) = (args.live_tabs, args.scene.as_ref()) {
+        // ConPTY is Windows-only; the macOS pty needs no bundle (port plan phase 2).
+        #[cfg(windows)]
         if let Err(e) = flare_term::conpty::verify_bundled() {
             show_fatal("Flare cannot start", &e.to_string(), false);
             std::process::exit(3);
@@ -157,6 +159,8 @@ fn main() {
 
     if args.live_screenshot.is_some() {
         // The bundled ConPTY is checked before any live session starts (exit code 3).
+        // ConPTY is Windows-only; the macOS pty needs no bundle (port plan phase 2).
+        #[cfg(windows)]
         if let Err(e) = flare_term::conpty::verify_bundled() {
             show_fatal("Flare cannot start", &e.to_string(), false);
             std::process::exit(3);
@@ -247,6 +251,8 @@ fn main() {
         };
         startup::start_diagnostics(&inst.profile, backend, args.e2e);
     }
+    // ConPTY is Windows-only; the macOS pty needs no bundle (port plan phase 2).
+    #[cfg(windows)]
     if let Err(e) = flare_term::conpty::verify_bundled() {
         show_fatal("Flare cannot start", &e.to_string(), true);
         std::process::exit(3);
@@ -306,6 +312,7 @@ fn attach_parent_console() {}
 /// Says why Flare cannot start: always on stderr, and in a message box when `dialog` is set and
 /// this run has no console (the release build, or a window started from Explorer). A test run
 /// never passes `dialog`, so no box can block it.
+#[cfg_attr(not(windows), allow(dead_code))] // only the ConPTY check calls it so far
 fn show_fatal(title: &str, message: &str, dialog: bool) {
     eprintln!("flare: {message}");
     if fatal_dialog_shows(
@@ -320,6 +327,7 @@ fn show_fatal(title: &str, message: &str, dialog: bool) {
 
 /// Whether a fatal error is also shown in a message box: never under --e2e (no window is ever
 /// shown to the owner), and not in a debug run that has a console to print to.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn fatal_dialog_shows(dialog: bool, debug: bool, console: bool, e2e: bool) -> bool {
     dialog && !e2e && (!debug || !console)
 }
@@ -333,6 +341,7 @@ fn console_attached() -> bool {
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)]
 fn console_attached() -> bool {
     true
 }
@@ -356,6 +365,7 @@ fn message_box(title: &str, message: &str) {
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)]
 fn message_box(_title: &str, _message: &str) {}
 
 #[cfg(test)]

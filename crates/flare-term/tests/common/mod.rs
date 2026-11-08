@@ -275,6 +275,7 @@ pub fn temp_dir_named(name: &str) -> NamedDir {
 }
 
 /// True while process `pid` runs (its exit code is still STILL_ACTIVE).
+#[cfg(windows)]
 pub fn process_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
     use windows_sys::Win32::System::Threading::{

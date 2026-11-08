@@ -1,16 +1,23 @@
 //! set_text: the clipboard write for Copy folder path (Task 17).
 
+#[cfg(windows)]
 use std::ptr;
+#[cfg(windows)]
 use std::thread::sleep; // sync-ok: the clipboard retry below, at most 80 ms
+#[cfg(windows)]
 use std::time::Duration;
 
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::GlobalFree;
+#[cfg(windows)]
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
+#[cfg(windows)]
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 
 /// CF_UNICODETEXT.
+#[cfg(windows)]
 const CF_UNICODETEXT: u32 = 13;
 
 /// UTF-16 code units of `s`, with a terminating zero.
@@ -20,6 +27,7 @@ pub fn utf16_with_nul(s: &str) -> Vec<u16> {
 
 /// A movable global block holding `wide` (already zero-terminated), or why it could not be made.
 /// `size` is the block's byte size (the text's, except in the test that asks for an impossible one).
+#[cfg(windows)]
 fn alloc_text_block(wide: &[u16], size: usize) -> Result<*mut core::ffi::c_void, String> {
     let bytes = std::mem::size_of_val(wide);
     // SAFETY: the block is ours until SetClipboardData takes it or the caller frees it; every
@@ -47,6 +55,7 @@ fn alloc_text_block(wide: &[u16], size: usize) -> Result<*mut core::ffi::c_void,
 /// Puts `text` on the clipboard as Unicode text. The block is made BEFORE the clipboard is
 /// touched, so a failed allocation never wipes what the user already copied. Opening the
 /// clipboard can fail while another program holds it, so it is retried five times, 20 ms apart.
+#[cfg(windows)]
 pub fn set_text(text: &str) -> Result<(), String> {
     let wide = utf16_with_nul(text);
     let bytes = wide.len() * std::mem::size_of::<u16>();
@@ -87,10 +96,47 @@ pub fn set_text(text: &str) -> Result<(), String> {
     result
 }
 
+/// Puts `text` on the clipboard through `/usr/bin/pbcopy` (macOS). The native pasteboard is
+/// phase 3 of the port plan.
+#[cfg(not(windows))]
+pub fn set_text(text: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    // pbcopy reads its input in the locale's encoding; an app started from Finder or launchd
+    // usually has no LANG, and non-ASCII text would then be garbled, so UTF-8 is set here.
+    // sync-ok: pbcopy starts at once; callers already run the clipboard write off the UI thread
+    let mut child = Command::new("/usr/bin/pbcopy")
+        .env("LANG", "en_US.UTF-8")
+        .env("LC_CTYPE", "en_US.UTF-8")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("pbcopy failed: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take()
+        && let Err(e) = stdin.write_all(text.as_bytes())
+    {
+        // Close the pipe and reap the child before reporting, so no pbcopy is left behind.
+        drop(stdin);
+        let _ = child.kill();
+        let _ = child.wait(); // sync-ok: the child was just killed
+        return Err(format!("pbcopy failed: {e}"));
+    }
+    let status = child
+        .wait() // sync-ok: pbcopy exits as soon as its input closes
+        .map_err(|e| format!("pbcopy failed: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("pbcopy failed with {status}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn the_block_is_made_before_the_clipboard_is_touched_and_can_fail_alone() {
         let wide = utf16_with_nul("kept");
@@ -107,6 +153,7 @@ mod tests {
     }
 
     /// Reads the clipboard's Unicode text back (test only).
+    #[cfg(windows)]
     fn read_text() -> Option<String> {
         use windows_sys::Win32::System::DataExchange::GetClipboardData;
         // SAFETY: the clipboard is opened, read and closed on this thread, so the handle from
@@ -122,6 +169,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     #[ignore = "touches the real clipboard"]
     fn set_text_round_trips() {

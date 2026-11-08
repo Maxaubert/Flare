@@ -16,9 +16,11 @@ base64.workspace = true
 ureq.workspace = true
 zip.workspace = true
 libloading.workspace = true
+log.workspace = true
+
+[target.'cfg(windows)'.dependencies]
 windows.workspace = true
 windows-sys.workspace = true
-log.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

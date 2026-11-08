@@ -4,6 +4,7 @@ pub mod batcher;
 pub mod caret_hold;
 pub mod cells;
 pub mod click_caret;
+#[cfg(windows)]
 pub mod conpty;
 pub mod dev_server;
 pub mod emulator;

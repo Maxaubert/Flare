@@ -5,44 +5,61 @@
 //! with a DACL for the current user only; the client checks the server's user and session before it
 //! writes a byte, and lets only that verified pid take the foreground (never ASFW_ANY).
 
+#[cfg(windows)]
 use std::io::Write;
+#[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
+#[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
+#[cfg(windows)]
 use std::sync::Arc;
+#[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(any(windows, test))]
+use std::time::Instant;
 
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_NO_DATA, ERROR_PIPE_BUSY,
     ERROR_PIPE_CONNECTED, GetLastError, INVALID_HANDLE_VALUE, LocalFree,
 };
+#[cfg(windows)]
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
+#[cfg(windows)]
 use windows_sys::Win32::Security::{
     GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
     TokenUser,
 };
+#[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND, ReadFile, SECURITY_IDENTIFICATION,
 };
+#[cfg(windows)]
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeServerProcessId,
     PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
+#[cfg(windows)]
 use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
     CreateMutexW, GetCurrentProcessId, OpenProcess, OpenProcessToken,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
 
 pub const MAX_HANDOFF: usize = 65_536;
 pub const MAX_ARGS: usize = 256;
 pub const MAX_ARG_LEN: usize = 32_768;
 /// How long `PipeServer::stop` tries to reach its own pipe before it leaves the thread behind.
+#[cfg(windows)]
 const STOP_WAIT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -78,8 +95,10 @@ pub trait IdentitySource {
 }
 
 /// The real source: the process token's user and `ProcessIdToSessionId`.
+#[cfg(windows)]
 pub struct WindowsIdentity;
 
+#[cfg(windows)]
 impl IdentitySource for WindowsIdentity {
     fn of_pid(&self, pid: u32) -> Option<Identity> {
         let mut session: u32 = 0;
@@ -100,12 +119,14 @@ impl IdentitySource for WindowsIdentity {
 }
 
 /// The identity of this process.
+#[cfg(windows)]
 pub fn current_identity() -> Option<Identity> {
     // SAFETY: GetCurrentProcessId has no preconditions.
     let pid = unsafe { GetCurrentProcessId() };
     WindowsIdentity.of_pid(pid)
 }
 
+#[cfg(windows)]
 fn token_sid_string(process: windows_sys::Win32::Foundation::HANDLE) -> Option<String> {
     let mut token = std::ptr::null_mut();
     // SAFETY: `token` outlives the call; `process` is a valid process handle.
@@ -197,6 +218,7 @@ pub fn mutex_sddl(sid: &str) -> String {
 }
 
 /// Builds a security descriptor from SDDL (LocalAlloc'd; free with LocalFree).
+#[cfg(windows)]
 fn descriptor_from_sddl(sddl: &str) -> Result<PSECURITY_DESCRIPTOR, String> {
     let sddl = wide(sddl);
     let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
@@ -216,6 +238,7 @@ fn descriptor_from_sddl(sddl: &str) -> Result<PSECURITY_DESCRIPTOR, String> {
 }
 
 /// Builds the pipe's security descriptor (LocalAlloc'd; free with LocalFree).
+#[cfg(windows)]
 fn security_descriptor(sid: &str) -> Result<PSECURITY_DESCRIPTOR, String> {
     descriptor_from_sddl(&dacl_sddl(sid))
         .map_err(|_| "could not build the hand-off pipe's DACL".to_string())
@@ -258,14 +281,21 @@ pub fn decode_handoff(bytes: &[u8]) -> Option<Handoff> {
     Some(Handoff { cwd, args })
 }
 
+#[cfg(windows)]
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 pub struct InstanceGuard {
+    #[cfg(windows)]
     handle: usize,
+    /// Off Windows: the open lock file; its advisory lock is released when it closes.
+    #[cfg(not(windows))]
+    // sync-ok: a type, not a call
+    _lock: std::fs::File,
 }
 
+#[cfg(windows)]
 impl Drop for InstanceGuard {
     fn drop(&mut self) {
         // SAFETY: the handle came from CreateMutexW and is closed exactly once, here.
@@ -279,6 +309,7 @@ pub enum Acquired {
 }
 
 /// What `CreateMutexW` said.
+#[cfg(windows)]
 #[derive(Debug, PartialEq, Eq)]
 enum Created {
     /// This call made the mutex.
@@ -289,6 +320,7 @@ enum Created {
 
 /// Reads the result of `CreateMutexW`. ACCESS_DENIED means the mutex exists and this token may not
 /// open it (an older elevated instance, or a squatter): a running instance, not a missing lock.
+#[cfg(windows)]
 fn classify_create(null_handle: bool, err: u32) -> Result<Created, String> {
     if null_handle {
         if err == ERROR_ACCESS_DENIED {
@@ -303,6 +335,7 @@ fn classify_create(null_handle: bool, err: u32) -> Result<Created, String> {
     })
 }
 
+#[cfg(windows)]
 pub fn acquire(names: &InstanceNames) -> Result<Acquired, String> {
     let name = wide(&names.mutex);
     // An explicit descriptor, so an elevated first instance still lets a normal launch see the lock.
@@ -344,12 +377,14 @@ pub fn acquire(names: &InstanceNames) -> Result<Acquired, String> {
         })),
     }
 }
+#[cfg(windows)]
 pub struct PipeServer {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     pipe: String,
 }
 
+#[cfg(windows)]
 impl PipeServer {
     pub fn stop(mut self) {
         self.shutdown();
@@ -384,6 +419,7 @@ impl PipeServer {
     }
 }
 
+#[cfg(windows)]
 impl Drop for PipeServer {
     fn drop(&mut self) {
         self.shutdown();
@@ -393,9 +429,11 @@ impl Drop for PipeServer {
 /// How long a client that connected may take to write its message. A client that stalls between
 /// opening the pipe and writing (frozen, or just holding it) would jam the one pipe instance for
 /// the rest of the session; past this the read is cancelled and the client dropped.
+#[cfg(windows)]
 const READ_DEADLINE: Duration = Duration::from_secs(2);
 
 /// `read_message` with a watchdog that cancels the blocked read of this thread after `deadline`.
+#[cfg(windows)]
 fn read_message_within(pipe: usize, deadline: Duration) -> Option<Vec<u8>> {
     use windows_sys::Win32::System::IO::CancelSynchronousIo;
     use windows_sys::Win32::System::Threading::{GetCurrentThreadId, OpenThread, THREAD_TERMINATE};
@@ -427,6 +465,7 @@ fn read_message_within(pipe: usize, deadline: Duration) -> Option<Vec<u8>> {
     got
 }
 
+#[cfg(windows)]
 fn read_message(pipe: usize) -> Option<Vec<u8>> {
     let mut data: Vec<u8> = Vec::new();
     let mut overflow = false;
@@ -459,6 +498,7 @@ fn read_message(pipe: usize) -> Option<Vec<u8>> {
     if overflow { None } else { Some(data) }
 }
 
+#[cfg(windows)]
 pub fn serve(
     names: &InstanceNames,
     on_handoff: impl Fn(Handoff) + Send + 'static,
@@ -556,6 +596,7 @@ impl std::fmt::Display for HandoffError {
     }
 }
 
+#[cfg(windows)]
 pub fn send_handoff(
     names: &InstanceNames,
     h: &Handoff,
@@ -565,6 +606,7 @@ pub fn send_handoff(
 }
 
 /// `send_handoff` with the identity source made explicit, so a test can stand in another user.
+#[cfg(windows)]
 pub fn send_handoff_with(
     names: &InstanceNames,
     h: &Handoff,
@@ -624,6 +666,7 @@ pub fn split_handoff(h: &Handoff) -> Vec<Handoff> {
     out
 }
 
+#[cfg(windows)]
 fn send_one(
     names: &InstanceNames,
     h: &Handoff,
@@ -679,14 +722,116 @@ fn send_one(
     }
 }
 
+// ---- off Windows: macOS phase 3 of the port plan (a lock file and a Unix socket hand-off) ----------
+
+/// The identity source off Windows. macOS: phase 3 of the port plan (the uid); nobody is known until
+/// then, so no peer is ever trusted.
+#[cfg(not(windows))]
+pub struct WindowsIdentity;
+
+#[cfg(not(windows))]
+impl IdentitySource for WindowsIdentity {
+    fn of_pid(&self, _pid: u32) -> Option<Identity> {
+        None
+    }
+}
+
+/// Who this process is. macOS: phase 3 of the port plan; None until then.
+#[cfg(not(windows))]
+pub fn current_identity() -> Option<Identity> {
+    None
+}
+
+/// Where the lock file lives off Windows: the per-user temp folder (`$TMPDIR` on macOS), named after
+/// the mutex (`Flare.Single.<who>.<hash>.lock`), so it is per user and per profile like the mutex.
+#[cfg(not(windows))]
+fn lock_path(names: &InstanceNames) -> std::path::PathBuf {
+    let base = names.mutex.rsplit('\\').next().unwrap_or(&names.mutex);
+    let file: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    std::env::temp_dir().join(format!("{file}.lock"))
+}
+
+/// Off Windows: an advisory lock (`flock`) on a lock file named from `names`. First when this call
+/// took it, Second when another process (or another guard in this one) holds it. The lock goes with
+/// the guard, and with the process if it dies. The Unix socket hand-off is phase 3 of the port plan.
+#[cfg(not(windows))]
+pub fn acquire(names: &InstanceNames) -> Result<Acquired, String> {
+    use std::fs::{OpenOptions, TryLockError}; // sync-ok: names only; the open below is marked
+    let path = lock_path(names);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path) // sync-ok: startup, before any window
+        .map_err(|e| format!("cannot open the lock file {}: {e}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Acquired::First(InstanceGuard { _lock: file })),
+        Err(TryLockError::WouldBlock) => Ok(Acquired::Second),
+        Err(TryLockError::Error(e)) => Err(format!("cannot lock {}: {e}", path.display())),
+    }
+}
+
+/// The hand-off server. None can exist until phase 3: `serve` always fails.
+#[cfg(not(windows))]
+pub struct PipeServer(std::convert::Infallible);
+
+#[cfg(not(windows))]
+impl PipeServer {
+    pub fn stop(self) {
+        match self.0 {}
+    }
+}
+
+#[cfg(not(windows))]
+pub fn serve(
+    _names: &InstanceNames,
+    _on_handoff: impl Fn(Handoff) + Send + 'static,
+) -> Result<PipeServer, String> {
+    Err("the hand-off server is not built on this platform yet".into())
+}
+
+#[cfg(not(windows))]
+pub fn send_handoff(
+    names: &InstanceNames,
+    h: &Handoff,
+    total_wait: Duration,
+) -> Result<(), HandoffError> {
+    send_handoff_with(names, h, total_wait, &WindowsIdentity)
+}
+
+#[cfg(not(windows))]
+pub fn send_handoff_with(
+    _names: &InstanceNames,
+    _h: &Handoff,
+    _total_wait: Duration,
+    _source: &dyn IdentitySource,
+) -> Result<(), HandoffError> {
+    Err(HandoffError::Failed(
+        "the hand-off is not built on this platform yet".into(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use std::sync::atomic::AtomicU64;
+    #[cfg(windows)]
     use std::sync::mpsc;
 
     /// How long the server thread waits before its first `ConnectNamedPipe` (tests only; each
     /// nextest test is its own process, so one test setting it touches no other).
+    #[cfg(windows)]
     pub(super) static FIRST_CONNECT_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 
     #[test]
@@ -712,6 +857,7 @@ mod tests {
         assert_eq!(got, args[1..]);
     }
 
+    #[cfg(windows)]
     /// A client that connects and never writes must not jam the one pipe instance for good.
     #[test]
     fn a_stalled_client_does_not_jam_the_server() {
@@ -735,6 +881,7 @@ mod tests {
         assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), h);
     }
 
+    #[cfg(windows)]
     /// A server that has stopped listening takes nothing: the client is told so (and retries the
     /// lock), never handed an Ok for a message nobody will read.
     #[test]
@@ -755,6 +902,7 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
+    #[cfg(windows)]
     /// Review fix: a client that connects, writes and closes before the server thread first
     /// reaches `ConnectNamedPipe` makes it answer ERROR_NO_DATA. The message is still in the pipe
     /// and must be read, not dropped (a second launch right after the first lost its folder).
@@ -784,6 +932,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     fn raw_write(names: &InstanceNames, bytes: &[u8]) {
         let started = Instant::now();
         while started.elapsed() < Duration::from_secs(3) {
@@ -852,6 +1001,7 @@ mod tests {
         assert!(matches!(acquire(&n).unwrap(), Acquired::First(_)));
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_handoff_reaches_the_running_instance() {
         let n = names_for_test();
@@ -873,6 +1023,7 @@ mod tests {
         assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), h2);
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_handoff_waits_for_a_server_that_starts_late() {
         let n = names_for_test();
@@ -902,6 +1053,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
+    #[cfg(windows)]
     #[test]
     fn an_oversized_or_junk_write_is_dropped_and_the_server_keeps_serving() {
         let n = names_for_test();
@@ -921,6 +1073,7 @@ mod tests {
         assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_second_server_on_the_same_name_fails_loudly() {
         let n = names_for_test();
@@ -928,6 +1081,7 @@ mod tests {
         assert!(serve(&n, |_| {}).is_err());
     }
 
+    #[cfg(windows)]
     #[test]
     fn stop_ends_the_server_thread() {
         let n = names_for_test();
@@ -939,6 +1093,7 @@ mod tests {
         again.stop();
     }
 
+    #[cfg(windows)]
     #[test]
     fn stop_never_hangs_on_a_client_that_holds_the_pipe() {
         let n = names_for_test();
@@ -967,13 +1122,16 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     struct Fake(Option<Identity>);
+    #[cfg(windows)]
     impl IdentitySource for Fake {
         fn of_pid(&self, _pid: u32) -> Option<Identity> {
             self.0.clone()
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn names_carry_the_user_sid_and_the_session() {
         let p = Path::new("C:\\a\\Flare");
@@ -1000,6 +1158,7 @@ mod tests {
         assert!(verify_peer(&me, None).is_err());
     }
 
+    #[cfg(windows)]
     #[test]
     fn nothing_is_written_to_a_server_that_is_another_user() {
         let n = names_for_test();
@@ -1017,6 +1176,7 @@ mod tests {
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_dacl_is_one_ace_for_the_current_sid() {
         let sid = current_identity().unwrap().sid;
@@ -1043,6 +1203,7 @@ mod tests {
         unsafe { LocalFree(sd) };
     }
 
+    #[cfg(windows)]
     /// L11 (audit 2026-10-20): the mutex had the creating token's default DACL. An elevated first
     /// instance owns it as Administrators, a normal launch of the same user then gets ACCESS_DENIED
     /// from `CreateMutexW`, and used to run a second full instance. The mutex now carries one
@@ -1085,6 +1246,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_mutex_this_user_cannot_open_means_a_running_instance_not_a_missing_lock() {
         use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
@@ -1100,6 +1262,7 @@ mod tests {
         assert!(matches!(classify_create(false, 0), Ok(Created::Fresh)));
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_lock_still_works_with_the_explicit_label() {
         let n = names_for_test();

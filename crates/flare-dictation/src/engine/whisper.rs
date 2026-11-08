@@ -7,6 +7,7 @@
 //! else still holds open).
 
 use std::io::Read;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -23,6 +24,7 @@ use crate::job::Job;
 /// How much of the server's stderr is kept: its last few lines, which is where it says why it died.
 pub const STDERR_KEEP: usize = 2000;
 /// `CREATE_NO_WINDOW`: a console engine must never flash a window.
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// How long after the process is gone a pipe that stays open is waited for.
 const STDERR_GRACE: Duration = Duration::from_millis(250);
@@ -83,8 +85,9 @@ impl Server {
             .current_dir(dir)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW);
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
         for (k, v) in env {
             cmd.env(k, v);
         }

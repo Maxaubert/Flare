@@ -310,8 +310,18 @@ impl Tz for Utc {
 }
 
 /// Milliseconds from 1601-01-01 (the FILETIME epoch) to 1970-01-01.
+#[cfg(windows)]
 const FILETIME_EPOCH_MS: i64 = 11_644_473_600_000;
 
+/// macOS: phase 3 of the port plan (the local zone through CoreFoundation). UTC until then.
+#[cfg(not(windows))]
+impl Tz for WinLocal {
+    fn local(&self, ms: i64) -> [i32; 7] {
+        utc_fields(ms)
+    }
+}
+
+#[cfg(windows)]
 impl Tz for WinLocal {
     fn local(&self, ms: i64) -> [i32; 7] {
         use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};

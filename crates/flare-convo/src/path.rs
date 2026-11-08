@@ -90,6 +90,10 @@ mod tests {
 
     const ID: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn the_claude_folder_is_the_config_dir_when_it_is_absolute() {
         let home = Path::new(r"C:\Users\x");
@@ -103,6 +107,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_transcript_lives_under_projects_in_the_claude_folder() {
         let dir = Path::new(r"D:\cfg\claude");

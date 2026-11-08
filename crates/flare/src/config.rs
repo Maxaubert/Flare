@@ -431,6 +431,10 @@ mod tests {
         assert_eq!(dir, spelled);
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn user_data_dir_equals_form_and_e2e_are_parsed() {
         let args = parse_args(&a(&["--user-data-dir=C:\\p", "--e2e"]), None).unwrap();

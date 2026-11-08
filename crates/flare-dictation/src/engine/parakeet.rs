@@ -10,6 +10,7 @@
 //! answered within the request timeout is killed.
 
 use std::io::{Read, Write};
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -23,6 +24,7 @@ use super::EngineKind;
 use crate::job::Job;
 
 /// `CREATE_NO_WINDOW`: a console engine must never flash a window.
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// How often a running pass is asked whether it is done.
 const POLL: Duration = Duration::from_millis(5);
@@ -84,8 +86,9 @@ pub fn run(spec: &Spec<'_>, job: &Job, register: &dyn Fn(&Arc<Pass>)) -> Answer 
         .current_dir(spec.dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW);
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
     for (k, v) in spec.env {
         cmd.env(k, v);
     }

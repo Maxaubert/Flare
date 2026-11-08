@@ -1767,6 +1767,10 @@ mod flow {
     }
 
     /// PT scenario pathLinks.
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_path_is_a_link_only_if_it_exists_and_opens_by_the_allowlist() {
         let w = Wx::with(
@@ -1816,6 +1820,10 @@ mod flow {
     }
 
     /// PT scenario pathLinks.
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_path_menu_open_and_show_go_through_the_allowlist() {
         let w = Wx::with(
@@ -2115,6 +2123,10 @@ mod flow {
         w.quiet()
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn copied_files_paste_quoted_paths_for_each_shell() {
         let plain = "C:\\My Dir\\a b.txt";

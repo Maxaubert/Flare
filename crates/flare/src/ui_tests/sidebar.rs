@@ -156,6 +156,10 @@ fn ink_runs(f: &Frame, x0: u32, x1: u32, y0: u32, y1: u32) -> Vec<(u32, u32)> {
     runs
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+)]
 #[test]
 fn the_name_and_folder_baselines_are_as_far_apart_as_pts() {
     for scale in SCALES {

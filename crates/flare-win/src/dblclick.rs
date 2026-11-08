@@ -1,6 +1,8 @@
 //! The double-click time and distance from the system.
 
+#[cfg(windows)]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_CXDOUBLECLK, SM_CYDOUBLECLK,
 };
@@ -21,6 +23,7 @@ pub const FALLBACK: DoubleClick = DoubleClick {
 };
 
 /// The system's double-click time and distance.
+#[cfg(windows)]
 pub fn system_double_click() -> DoubleClick {
     // SAFETY: GetDoubleClickTime takes no arguments and only reads a system setting.
     let time = unsafe { GetDoubleClickTime() };
@@ -36,6 +39,12 @@ pub fn system_double_click() -> DoubleClick {
         dx: f64::from(dx),
         dy: f64::from(dy),
     }
+}
+
+/// macOS: phase 3 of the port plan (NSEvent.doubleClickInterval); the fallback until then.
+#[cfg(not(windows))]
+pub fn system_double_click() -> DoubleClick {
+    FALLBACK
 }
 
 #[cfg(test)]

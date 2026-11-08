@@ -133,6 +133,7 @@ impl EdgeWatch {
 }
 
 /// The cursor in physical pixels (GetCursorPos), or None when the call fails.
+#[cfg(windows)]
 pub fn real_cursor_phys() -> Option<(i32, i32)> {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
@@ -140,6 +141,12 @@ pub fn real_cursor_phys() -> Option<(i32, i32)> {
     // SAFETY: `point` is a valid, writable POINT for the duration of the call.
     let ok = unsafe { GetCursorPos(&mut point) };
     (ok != 0).then_some((point.x, point.y))
+}
+
+/// macOS: phase 3 of the port plan (NSEvent mouseLocation). None: the call fails.
+#[cfg(not(windows))]
+pub fn real_cursor_phys() -> Option<(i32, i32)> {
+    None
 }
 
 #[cfg(test)]

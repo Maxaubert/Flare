@@ -12,6 +12,7 @@ use flare_ctl::{Grant, Permission};
 pub const TOKEN_BYTES: usize = 32;
 
 /// Fills `buf` from the system's random number generator. False when Windows refuses.
+#[cfg(windows)]
 pub fn random_bytes(buf: &mut [u8]) -> bool {
     use windows_sys::Win32::Security::Cryptography::{
         BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
@@ -27,6 +28,15 @@ pub fn random_bytes(buf: &mut [u8]) -> bool {
         )
     };
     status >= 0
+}
+
+/// Fills `buf` from the kernel's random number generator (`/dev/urandom`). False when it cannot be read.
+#[cfg(not(windows))]
+pub fn random_bytes(buf: &mut [u8]) -> bool {
+    use std::io::Read;
+    std::fs::File::open("/dev/urandom") // sync-ok: a device read of 32 bytes, returns at once
+        .and_then(|mut f| f.read_exact(buf))
+        .is_ok()
 }
 
 /// A fresh token: 64 lower-case hex digits. Err when Windows refuses to make random bytes.

@@ -4,6 +4,8 @@
 //! `FLARE_PACKED_DIR=<Releases folder with 0.0.1 and 0.0.2> cargo test -p flare-update --test packed_feed -- --ignored`.
 //! Nothing here installs an app: the "installed" layout is a temp folder with a dummy `Update.exe`
 //! and a `sq.version` that says 0.0.1. `apply` is never called.
+//! Windows-only: the installed layout (`Update.exe`, `create_config_from_root_dir`) is Velopack's Windows one.
+#![cfg(windows)]
 
 use std::path::{Path, PathBuf};
 

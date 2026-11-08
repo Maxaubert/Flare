@@ -3718,6 +3718,10 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn an_absolute_path_never_asks_the_ui_for_a_folder_and_a_relative_one_does() {
         const REL: &[(&str, &str)] = &[("a.png", "C:\\work\\a.png")];
@@ -4009,6 +4013,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_page_named_by_path_is_resolved_again_vetted_and_read() {
         let dir = tempfile::tempdir().unwrap();

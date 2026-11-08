@@ -62,6 +62,11 @@ pub const INVENTORY: &[(&str, &str)] = &[
     ("flare-mods/src/fetch.rs", "Installing a plugin"),
     // The install field's placeholder text, `https://` (shown in the empty field; no request).
     ("flare-settings/src/page/mods.rs", "Installing a plugin"),
+    // A saved login's bare host read as `https://<host>` to compare sites (no request).
+    ("flare-mods/src/fill.rs", "Filling logins"),
+    // The fill e2e: its stand-in plugin helper and scenario name test pages (no request of their own).
+    ("e2e/src/fake_fill_helper.rs", "Filling logins"),
+    ("e2e/src/scenarios/fill.rs", "Filling logins"),
     ("flare/src/web_ctl.rs", "Web panel"),
     ("e2e/src/scenarios/web.rs", "Web panel"),
 ];

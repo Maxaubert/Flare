@@ -1,5 +1,9 @@
 //! Task 14: the world folder, the guards and the stall report, each tested with fakes where the
 //! real thing would touch the owner's PC (the clipboard, the foreground window, %TEMP%).
+//!
+//! Windows-only: the e2e harness drives the Windows app (job objects, the hidden desktop, named pipes).
+//! The Mac E2E is the port plan's "Ongoing" row.
+#![cfg(windows)]
 
 use std::cell::Cell;
 use std::os::windows::process::CommandExt;

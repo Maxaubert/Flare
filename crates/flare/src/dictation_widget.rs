@@ -306,20 +306,26 @@ pub fn creating() -> bool {
 pub fn attributes(
     a: slint::winit_030::winit::window::WindowAttributes,
 ) -> slint::winit_030::winit::window::WindowAttributes {
+    #[cfg(windows)]
     use slint::winit_030::winit::platform::windows::WindowAttributesExtWindows;
     use slint::winit_030::winit::window::WindowLevel;
     let (x, y) = flare_win::window_park::parked_origin();
-    a.with_decorations(false)
+    let a = a
+        .with_decorations(false)
         .with_transparent(true)
-        .with_active(false)
-        .with_skip_taskbar(true)
-        .with_resizable(false)
-        .with_undecorated_shadow(false)
-        .with_window_level(WindowLevel::AlwaysOnTop)
+        .with_active(false);
+    // Off the taskbar and with no shadow: Windows-only attributes (macOS: phase 7 of the port plan).
+    #[cfg(windows)]
+    let a = a.with_skip_taskbar(true);
+    let a = a.with_resizable(false);
+    #[cfg(windows)]
+    let a = a.with_undecorated_shadow(false);
+    a.with_window_level(WindowLevel::AlwaysOnTop)
         .with_position(slint::winit_030::winit::dpi::PhysicalPosition::new(x, y))
 }
 
 /// The Win32 half: styles, places and shows a window without ever activating it.
+#[cfg(windows)]
 pub mod win {
     use super::{Bounds, Display};
     use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
@@ -476,6 +482,49 @@ pub mod win {
         })
     }
 }
+
+/// The window half off Windows. macOS: phase 7 of the port plan (an NSPanel that never activates). Until
+/// then nothing is styled, placed or shown, and no display is known.
+#[cfg(not(windows))]
+pub mod win {
+    use super::{Bounds, Display};
+
+    /// The bits the Windows widget sets; here a plain value with no window behind it.
+    pub const WS_EX_NOACTIVATE: u32 = 0x0800_0000;
+    pub const WS_EX_TOPMOST: u32 = 0x0000_0008;
+
+    pub fn prepare(_hwnd: isize) {}
+
+    pub fn set_click_through(_hwnd: isize, _pass: bool) {}
+
+    pub fn is_prepared(_hwnd: isize) -> bool {
+        false
+    }
+
+    pub fn place(_hwnd: isize, _b: Bounds) {}
+
+    pub fn show(_hwnd: isize) {}
+
+    pub fn hide(_hwnd: isize) {}
+
+    pub fn ex_style(_hwnd: isize) -> u32 {
+        0
+    }
+
+    pub fn is_visible(_hwnd: isize) -> bool {
+        false
+    }
+
+    pub fn display_under_cursor() -> Option<Display> {
+        None
+    }
+}
+
+#[cfg(not(windows))]
+use win::{WS_EX_NOACTIVATE, WS_EX_TOPMOST};
+/// The extended-style bits the probe reads.
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::{WS_EX_NOACTIVATE, WS_EX_TOPMOST};
 
 /// What the probe reads (Task 27): the widget as it is, without drawing anything.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -905,8 +954,8 @@ pub fn snapshot() -> Snapshot {
         Snapshot {
             exists: true,
             visible: w.shown && w.hwnd.is_some_and(win::is_visible),
-            focusable: ex & windows_sys::Win32::UI::WindowsAndMessaging::WS_EX_NOACTIVATE == 0,
-            topmost: ex & windows_sys::Win32::UI::WindowsAndMessaging::WS_EX_TOPMOST != 0,
+            focusable: ex & WS_EX_NOACTIVATE == 0,
+            topmost: ex & WS_EX_TOPMOST != 0,
             phase: f.map_or(0, |f| f.phase),
             title: f.map(|f| f.title.clone()).unwrap_or_default(),
             text: f.map(|f| f.text.clone()).unwrap_or_default(),

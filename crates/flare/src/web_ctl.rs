@@ -294,6 +294,7 @@ pub fn cursor_tag(label: &str) -> String {
 }
 
 /// Where the client area of Flare's window starts on the screen.
+#[cfg(windows)]
 fn client_origin(hwnd: isize) -> (i32, i32) {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
@@ -305,12 +306,42 @@ fn client_origin(hwnd: isize) -> (i32, i32) {
     (p.x, p.y)
 }
 
+/// macOS: phase 5 of the port plan (the window's content origin). The screen's corner until then.
+#[cfg(not(windows))]
+fn client_origin(_hwnd: isize) -> (i32, i32) {
+    (0, 0)
+}
+
+/// macOS: phase 5 of the port plan. Never minimized until then.
+#[cfg(not(windows))]
+fn window_minimized(_hwnd: isize) -> bool {
+    false
+}
+
+/// macOS: phase 5 of the port plan (the person's input through NSEvent). Nothing to flush until then.
+#[cfg(not(windows))]
+fn flush_button_edges() {}
+
+/// macOS: phase 5 of the port plan. No key is seen until then.
+#[cfg(not(windows))]
+fn real_key_pressed() -> bool {
+    false
+}
+
+/// macOS: phase 5 of the port plan. No click is seen until then.
+#[cfg(not(windows))]
+fn real_button_down_over(_hwnd: isize, _r: &PhysRect) -> bool {
+    false
+}
+
 /// Is a point inside a rectangle (client pixels).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn point_in(r: &PhysRect, x: i32, y: i32) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
 
 /// Is Flare's window minimized (nothing paints).
+#[cfg(windows)]
 fn window_minimized(hwnd: isize) -> bool {
     // SAFETY: a plain read of the state of Flare's own window.
     unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsIconic(hwnd as *mut _) != 0 }
@@ -318,6 +349,7 @@ fn window_minimized(hwnd: isize) -> bool {
 
 /// Forgets the mouse presses so far: `real_button_down_over` also sees a press that came and went since
 /// the last look, and a call starting must not count one from before it.
+#[cfg(windows)]
 fn flush_button_edges() {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
@@ -338,10 +370,12 @@ fn flush_button_edges() {
 
 /// The keys that count as the person typing: every key but the mouse buttons and the modifiers alone
 /// (a held Shift or Ctrl is not typing; the key pressed with it is).
+#[cfg_attr(not(windows), allow(dead_code))]
 const TYPING_KEYS: std::ops::RangeInclusive<u8> = 0x08..=0xFE;
 
 /// Tab and Escape hand the keyboard back, the F-keys, the media and browser keys and the IME packet are
 /// not text either; none of them is the person typing at the page.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn is_typing_key(vk: u8) -> bool {
     TYPING_KEYS.contains(&vk)
         && !matches!(
@@ -354,6 +388,7 @@ fn is_typing_key(vk: u8) -> bool {
 /// Was a real key pressed (down now, or since the last look)? WebView2 hands the host only chords and
 /// non-character keys, so plain typing in the page never reaches the key filter: the keyboard is read here.
 /// The agent's own keys are browser events and press nothing.
+#[cfg(windows)]
 fn real_key_pressed() -> bool {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
     let down = |vk: u8| {
@@ -374,6 +409,7 @@ fn real_key_pressed() -> bool {
 /// (client pixels of `hwnd`)? The agent's own clicks are browser events and move neither the pointer
 /// nor a button, so this is the person. The "pressed since" bit catches a click that began and ended
 /// between two looks.
+#[cfg(windows)]
 fn real_button_down_over(hwnd: isize, r: &PhysRect) -> bool {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
@@ -797,10 +833,14 @@ impl WebCtl {
 
     /// The window gets the keyboard back from the page (a click on the terminal, the chord, Escape).
     pub fn release_focus(&mut self, hwnd: Option<isize>) {
+        #[cfg(not(windows))]
+        let _ = hwnd;
         if !self.has_focus {
             return;
         }
         self.has_focus = false;
+        // macOS: phase 5 of the port plan gives the keyboard back to the window.
+        #[cfg(windows)]
         if let Some(h) = hwnd {
             // SAFETY: SetFocus on Flare's own live window, from its own thread.
             unsafe {
@@ -1462,6 +1502,8 @@ impl WebCtl {
                 json,
             }),
             WebEvent::Focus { has: true, .. } => {
+                // macOS: phase 5 of the port plan gives the keyboard back to the window.
+                #[cfg(windows)]
                 if let Some(h) = self.hwnd {
                     // SAFETY: SetFocus on Flare's own live window, from its own thread.
                     unsafe {

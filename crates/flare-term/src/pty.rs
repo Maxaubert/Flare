@@ -1,3 +1,6 @@
+// Off Windows the tree walk and the PE probe wait for phase 2 of the port plan (process groups).
+#![cfg_attr(not(windows), allow(dead_code))]
+
 //! PtyProcess trait, SpawnSpec, PortablePty.
 
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -39,6 +42,7 @@ pub struct PortableSpawner;
 
 impl PtySpawner for PortableSpawner {
     fn spawn(&self, spec: &SpawnSpec) -> Result<Box<dyn PtyProcess>, String> {
+        #[cfg(windows)]
         crate::conpty::load_bundled().map_err(|e| e.to_string())?;
         if !std::path::Path::new(&spec.cwd).is_dir() {
             return Err(format!("The folder does not exist: {}", spec.cwd));
@@ -267,6 +271,7 @@ fn pe_subsystem(path: &std::path::Path) -> Option<u16> {
     Some(u16::from_le_bytes(s))
 }
 
+#[cfg(windows)]
 fn proc_info(pid: u32) -> ProcInfo {
     use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
     use windows_sys::Win32::System::Threading::{
@@ -325,10 +330,12 @@ fn proc_info(pid: u32) -> ProcInfo {
 }
 
 /// The console host of a process (flags masked off), None when it cannot be read.
+#[cfg(windows)]
 fn console_host_of(pid: u32) -> Option<usize> {
     proc_info(pid).console
 }
 
+#[cfg(windows)]
 fn hosts_of(windowed: &std::collections::HashSet<u32>) -> std::collections::HashSet<usize> {
     windowed
         .iter()
@@ -353,6 +360,7 @@ fn host_is_visible(
 }
 
 /// The ids of the processes that own a visible top-level window.
+#[cfg(windows)]
 fn visible_window_owners() -> std::collections::HashSet<u32> {
     use windows_sys::Win32::Foundation::{HWND, LPARAM};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -379,6 +387,7 @@ fn visible_window_owners() -> std::collections::HashSet<u32> {
 }
 
 /// (pid, parent pid) for every process.
+#[cfg(windows)]
 fn process_rows() -> Vec<(u32, u32)> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -408,6 +417,7 @@ fn process_rows() -> Vec<(u32, u32)> {
 
 /// Ends the console processes below `root` (TerminateProcess), sparing GUI apps. Never waits; failures are
 /// ignored.
+#[cfg(windows)]
 fn kill_descendants(root: u32) {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
@@ -450,6 +460,7 @@ fn kill_descendants(root: u32) {
 /// ends the shells with it. SILENT_BREAKAWAY_OK: only the shells themselves are members, what a shell starts
 /// is not, so a window app the user opened (Notepad, Excel) outlives the tab, the quit and a crash. The
 /// console processes of a shell end with their pseudo console, and kill ends them first (audit H1).
+#[cfg(windows)]
 fn join_kill_on_close_job(pid: u32) {
     use std::sync::OnceLock;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
@@ -506,6 +517,15 @@ fn join_kill_on_close_job(pid: u32) {
         CloseHandle(p);
     }
 }
+/// macOS: phase 2 of the port plan (the process group, killpg). Until then only the shell itself is
+/// killed, through portable-pty.
+#[cfg(not(windows))]
+fn kill_descendants(_root: u32) {}
+
+/// macOS: phase 2 of the port plan (a process group the shells lead). No job to join until then.
+#[cfg(not(windows))]
+fn join_kill_on_close_job(_pid: u32) {}
+
 impl Drop for PortablePty {
     fn drop(&mut self) {
         // End the shell so the waiter returns, then close the pseudo console, which is what finally
@@ -522,6 +542,7 @@ impl Drop for PortablePty {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use std::time::{Duration, Instant};
 
     #[test]
@@ -633,6 +654,7 @@ mod tests {
     type Shared = Arc<Mutex<Vec<u8>>>;
     type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
+    #[cfg(windows)]
     /// Reads into a shared buffer on a thread and answers the cursor query ConPTY sends at startup.
     fn pump(p: &mut Box<dyn PtyProcess>) -> (Shared, SharedWriter, JoinHandle<()>) {
         let mut reader = p.take_reader().unwrap();
@@ -656,12 +678,14 @@ mod tests {
         (buf, writer, h)
     }
 
+    #[cfg(windows)]
     fn count(buf: &Shared, needle: &str) -> usize {
         String::from_utf8_lossy(&buf.lock().unwrap())
             .matches(needle)
             .count()
     }
 
+    #[cfg(windows)]
     fn wait_for(buf: &Shared, needle: &str, times: usize) -> bool {
         let end = Instant::now() + Duration::from_secs(10);
         while Instant::now() < end {
@@ -701,6 +725,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn spawns_cmd_and_reads_its_banner() {
         let p = PortableSpawner
@@ -712,6 +737,7 @@ mod tests {
         assert!(wait_for(&buf, "Microsoft Windows", 1));
     }
 
+    #[cfg(windows)]
     #[test]
     fn writes_reach_the_shell() {
         let p = PortableSpawner
@@ -724,6 +750,7 @@ mod tests {
         assert!(wait_for(&buf, "flare-m2-ok", 2));
     }
 
+    #[cfg(windows)]
     #[test]
     fn exit_is_reported_without_an_eof() {
         let p = PortableSpawner
@@ -754,6 +781,7 @@ mod tests {
         assert!(h.is_finished(), "dropping the process ends the read");
     }
 
+    #[cfg(windows)]
     #[test]
     fn kill_ends_the_process() {
         let p = PortableSpawner
@@ -780,6 +808,7 @@ mod tests {
         assert!(msg.contains("folder"), "{msg}");
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_environment_is_exactly_what_was_given() {
         let pick = |k: &str| std::env::var(k).unwrap_or_default();
@@ -799,6 +828,7 @@ mod tests {
         assert_eq!(count(&buf, "USERPROFILE="), 0);
     }
 
+    #[cfg(windows)]
     #[test]
     fn resize_is_accepted() {
         let p = PortableSpawner
@@ -810,6 +840,7 @@ mod tests {
         assert!(g.0.as_mut().unwrap().resize(100, 30).is_ok());
     }
 
+    #[cfg(windows)]
     /// Real Win32: is `pid`'s console visible by the rule the kill uses?
     fn console_visible_now(pid: u32) -> Option<bool> {
         let rows = process_rows();
@@ -825,12 +856,14 @@ mod tests {
         ))
     }
 
+    #[cfg(windows)]
     fn kill_tree(pid: u32) {
         let _ = std::process::Command::new("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .output();
     }
 
+    #[cfg(windows)]
     /// A CREATE_NO_WINDOW child (Claude Code's Bash tool, an MCP server) has a windowless console host.
     #[test]
     fn real_hidden_console_child_is_not_visible() {
@@ -849,6 +882,7 @@ mod tests {
         assert_eq!(v, Some(false));
     }
 
+    #[cfg(windows)]
     /// `start /min cmd /k` opens a console window of its own (classic conhost or Windows Terminal, whichever
     /// is the default terminal): it must count as visible (NEW-A). Opens a minimised window for a moment, so
     /// it only runs on request: `cargo test -p flare-term real_start_window -- --ignored`.
@@ -888,6 +922,7 @@ mod tests {
         assert_eq!(v, Some(true));
     }
 
+    #[cfg(windows)]
     fn proc_name(pid: u32) -> Option<String> {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::Threading::{
@@ -913,6 +948,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     fn alive(pid: u32) -> bool {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::Threading::{
@@ -931,6 +967,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     /// Helper half: only runs when the parent test sets the variable. Starts shells, writes their
     /// pids, then dies without any destructor, the way a crash or a timeout kill does.
     #[test]
@@ -965,6 +1002,7 @@ mod tests {
         std::process::abort();
     }
 
+    #[cfg(windows)]
     /// Two copies of ping.exe in `dir`: a console one and one whose PE header says GUI subsystem (a window
     /// app with no window), named uniquely so they can be found by name.
     fn probes(dir: &std::path::Path, tag: &str) -> (String, String) {
@@ -986,6 +1024,7 @@ mod tests {
         (con, gui)
     }
 
+    #[cfg(windows)]
     fn pids_named(name: &str) -> Vec<u32> {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -1011,12 +1050,14 @@ mod tests {
         out
     }
 
+    #[cfg(windows)]
     fn end_pid(pid: u32) {
         let _ = std::process::Command::new("taskkill")
             .args(["/F", "/PID", &pid.to_string()])
             .output();
     }
 
+    #[cfg(windows)]
     /// A cmd shell that starts the console probe and the GUI probe, both under the shell.
     fn start_probes(dir: &std::path::Path, con: &str, gui: &str) -> Box<dyn PtyProcess> {
         let script = dir.join("go.cmd");
@@ -1040,6 +1081,7 @@ start \"\" /b \"{d}\\{gui}\" -n 120 127.0.0.1 >nul\r
             .unwrap()
     }
 
+    #[cfg(windows)]
     fn wait_pid(name: &str) -> Option<u32> {
         let end = Instant::now() + Duration::from_secs(10);
         while Instant::now() < end {
@@ -1051,6 +1093,7 @@ start \"\" /b \"{d}\\{gui}\" -n 120 127.0.0.1 >nul\r
         None
     }
 
+    #[cfg(windows)]
     #[test]
     fn closing_a_tab_ends_its_console_children_and_spares_a_gui_app() {
         let dir = tempfile::tempdir().unwrap();
@@ -1074,6 +1117,7 @@ start \"\" /b \"{d}\\{gui}\" -n 120 127.0.0.1 >nul\r
         assert!(gui_alive, "a GUI app the user started outlives the tab");
     }
 
+    #[cfg(windows)]
     /// Helper half: starts a shell with a GUI child, writes its pid, then dies without a destructor.
     #[test]
     fn gui_job_helper_starts_a_gui_app_then_aborts() {
@@ -1102,6 +1146,7 @@ start \"\" /b \"{d}\\{gui}\" -n 120 127.0.0.1 >nul\r
         std::process::abort();
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_gui_app_outlives_a_crash_of_the_terminal_that_started_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -1142,6 +1187,7 @@ start \"\" /b \"{d}\\{gui}\" -n 120 127.0.0.1 >nul\r
             "a console child still ends with a crash of its terminal"
         );
     }
+    #[cfg(windows)]
     #[test]
     fn shells_die_with_the_process_that_started_them() {
         let dir = tempfile::tempdir().unwrap();

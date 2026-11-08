@@ -98,8 +98,15 @@ pub fn is_marked(phase: Phase) -> bool {
     MARKS.get(phase).is_some()
 }
 
+/// macOS: phase 3 of the port plan (the process start time through sysctl). Zero until then.
+#[cfg(not(windows))]
+pub fn since_process_start() -> Duration {
+    Duration::ZERO
+}
+
 /// Time since the process was created (the kernel's creation time against now), so it counts
 /// the loader's time before `main`. Zero if the kernel refuses the query.
+#[cfg(windows)]
 pub fn since_process_start() -> Duration {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
@@ -164,6 +171,7 @@ fn line_of(marks: &Marks) -> String {
 }
 
 /// The elapsed time between two Windows FILETIMEs (100 ns units), zero when `now` is earlier.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn between_filetimes(creation: u64, now: u64) -> Duration {
     Duration::from_nanos(now.saturating_sub(creation).saturating_mul(100))
 }

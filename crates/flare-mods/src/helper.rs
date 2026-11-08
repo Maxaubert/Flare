@@ -18,21 +18,30 @@
 //!
 //! Everything that waits (the start, the reads of its output, the wait for its end) runs on threads of its own; the
 //! calls the window makes ([`Host::start`], [`Host::stop`]) return at once.
+// Off Windows the spawn is refused until phase 6, so the log, the pump and the policy fields are unused there.
+#![cfg_attr(not(windows), allow(dead_code))]
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+#[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Child;
+#[cfg(windows)]
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
+#[cfg(windows)]
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
+#[cfg(windows)]
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -40,6 +49,7 @@ use windows_sys::Win32::System::JobObjects::{
     JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
     TerminateJobObject,
 };
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_SUSPENDED, OpenProcess, OpenThread, PROCESS_SYNCHRONIZE, ResumeThread,
     THREAD_SUSPEND_RESUME, WaitForSingleObject,
@@ -133,14 +143,45 @@ pub enum Note {
     Stopped { id: String, why: String },
 }
 
+/// A process of a stopped job, to wait on.
+#[cfg(windows)]
+type ProcHandle = OwnedHandle;
+/// None can exist off Windows until phase 6.
+#[cfg(not(windows))]
+type ProcHandle = std::convert::Infallible;
+
+/// macOS: phase 6 of the port plan (process groups plus a reaper). No job can be made until then, so
+/// no helper starts.
+#[cfg(not(windows))]
+struct Job(std::convert::Infallible);
+
+#[cfg(not(windows))]
+impl Job {
+    fn terminate(&self) {
+        match self.0 {}
+    }
+
+    fn processes(&self) -> Vec<ProcHandle> {
+        match self.0 {}
+    }
+
+    fn active(&self) -> u32 {
+        match self.0 {}
+    }
+}
+
 /// A kill-on-close job object: closing it, or terminating it, ends every process in it.
+#[cfg(windows)]
 struct Job(HANDLE);
 
 // SAFETY: a job handle is a kernel object; the job calls are thread-safe on one handle.
+#[cfg(windows)]
 unsafe impl Send for Job {}
 // SAFETY: as above; the struct holds nothing else, so a shared reference only makes calls.
+#[cfg(windows)]
 unsafe impl Sync for Job {}
 
+#[cfg(windows)]
 impl Job {
     fn new() -> std::io::Result<Self> {
         // SAFETY: null attributes and name make an unnamed job with the default security.
@@ -187,7 +228,7 @@ impl Job {
 
     /// A handle to wait on for each process in the job now (at most [`PIDS_MAX`]). Taken before the job is
     /// terminated: a process is signalled only once its handles (its current folder among them) are closed.
-    fn processes(&self) -> Vec<OwnedHandle> {
+    fn processes(&self) -> Vec<ProcHandle> {
         #[repr(C)]
         struct PidList {
             assigned: u32,
@@ -251,9 +292,10 @@ struct Ending {
     seq: u64,
     /// None while that start had no job yet: its own thread terminates what it spawned, and puts the job here.
     job: Option<Arc<Job>>,
-    procs: Vec<OwnedHandle>,
+    procs: Vec<ProcHandle>,
 }
 
+#[cfg(windows)]
 impl Drop for Job {
     fn drop(&mut self) {
         // SAFETY: the handle came from CreateJobObjectW and is closed once, here.
@@ -264,6 +306,7 @@ impl Drop for Job {
 }
 
 /// Lets the threads of a process started suspended run. Error when none could be resumed.
+#[cfg(windows)]
 fn resume_process(pid: u32) -> std::io::Result<()> {
     // SAFETY: a snapshot of every thread; the handle is checked and closed below.
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
@@ -551,6 +594,11 @@ impl Host {
             }
             std::thread::sleep(Duration::from_millis(10)); // sync-ok: a worker's wait
         };
+        #[cfg(not(windows))]
+        if let Some(p) = procs.first() {
+            match *p {}
+        }
+        #[cfg(windows)]
         for p in &procs {
             // SAFETY: `p` is a live process handle with SYNCHRONIZE access.
             if unsafe { WaitForSingleObject(p.as_raw_handle().cast(), left_ms()) } != WAIT_OBJECT_0
@@ -630,6 +678,15 @@ impl Host {
         }
     }
 
+    /// macOS: phase 6 of the port plan. The folder check still runs; then the start is refused.
+    #[cfg(not(windows))]
+    fn spawn(&self, spec: &Spec) -> Result<(Child, Job), String> {
+        crate::paths::program_inside(&spec.folder, &spec.command)
+            .map_err(|r| format!("helper.command {r}"))?;
+        Err("plugin helpers are not built on this platform yet".into())
+    }
+
+    #[cfg(windows)]
     fn spawn(&self, spec: &Spec) -> Result<(Child, Job), String> {
         let program = crate::paths::program_inside(&spec.folder, &spec.command)
             .map_err(|r| format!("helper.command {r}"))?;
@@ -725,9 +782,11 @@ fn pump(mut from: impl Read + Send + 'static, log: Arc<Mutex<Log>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use std::sync::mpsc;
 
     /// A plugin folder whose `helper.exe` is a copy of the system's cmd.exe (a real console program).
+    #[cfg(windows)]
     fn folder_with_cmd() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let sys = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
@@ -772,6 +831,7 @@ mod tests {
         assert!(r.ended(t0 + Duration::from_secs(400)));
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_helper_gets_its_token_and_pipe_but_not_the_tab_secret_and_logs_its_output() {
         let dir = folder_with_cmd();
@@ -805,6 +865,7 @@ mod tests {
         assert!(!text.contains("FLARE_RESUME_ID"), "{text}");
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_stopped_helper_dies_with_its_job_and_is_not_restarted() {
         let dir = folder_with_cmd();
@@ -826,6 +887,7 @@ mod tests {
         assert!(rx.recv_timeout(Duration::from_millis(800)).is_err());
     }
 
+    #[cfg(windows)]
     #[test]
     fn after_a_stop_and_wait_the_plugin_folder_can_be_moved_at_once() {
         // The helper and its grandchild run in the plugin folder; a terminated job ends them a moment later, and an
@@ -860,6 +922,7 @@ mod tests {
         assert!(host.wait_stopped("other", Duration::ZERO));
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_helper_that_keeps_ending_is_started_three_times_more_then_stopped() {
         let dir = folder_with_cmd();
@@ -897,6 +960,7 @@ mod tests {
         assert!(!host.is_running("demo"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn only_an_exe_inside_the_folder_starts() {
         let dir = folder_with_cmd();
@@ -946,6 +1010,7 @@ mod tests {
         assert!(!format!("{s:?}").contains("secret-token"));
     }
 
+    #[cfg(windows)]
     fn process_alive(pid: u32) -> bool {
         use windows_sys::Win32::System::Threading::{
             GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,

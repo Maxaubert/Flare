@@ -125,6 +125,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_folder_open_goes_through_open_folder_never_open_path() {
         let dir = tempfile::tempdir().unwrap();

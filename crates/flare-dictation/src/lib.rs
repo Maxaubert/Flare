@@ -2,6 +2,10 @@
 //! reducer, cleaning, WAV, preferences, cues, send rules, key feed, controller), the machinery (store,
 //! engine, microphone, media, hook, link) and the service. Each module is filled by its own task.
 
+#[cfg(windows)]
+pub mod ansi_path;
+#[cfg(not(windows))]
+#[path = "macos/ansi_path.rs"]
 pub mod ansi_path;
 pub mod catalog;
 pub mod clean;
@@ -12,6 +16,10 @@ pub mod fetch_ureq;
 pub mod gpu;
 pub mod hmac;
 pub mod hotkey;
+#[cfg(windows)]
+pub mod job;
+#[cfg(not(windows))]
+#[path = "macos/job.rs"]
 pub mod job;
 pub mod keyfeed;
 pub mod keyhook;

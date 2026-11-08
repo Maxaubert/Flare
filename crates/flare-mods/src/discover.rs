@@ -466,7 +466,11 @@ mod tests {
         let folder = dir.path().join("notes");
         fs::create_dir(&folder).unwrap(); // sync-ok: test code only
         fs::write(folder.join("index.html"), "<p>x</p>").unwrap(); // sync-ok: test code only
-        if std::os::windows::fs::symlink_file(&real, folder.join("mod.json")).is_err() {
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(&real, folder.join("mod.json"));
+        #[cfg(not(windows))]
+        let made = std::os::unix::fs::symlink(&real, folder.join("mod.json"));
+        if made.is_err() {
             eprintln!("skipped: this account cannot make file symlinks");
             return;
         }

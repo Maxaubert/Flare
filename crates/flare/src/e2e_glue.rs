@@ -573,6 +573,7 @@ pub fn encode_png(s: &Snap) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+#[cfg(windows)]
 #[link(name = "user32")]
 unsafe extern "system" {
     fn PrintWindow(
@@ -584,6 +585,7 @@ unsafe extern "system" {
 
 /// `PrintWindow` with `PW_RENDERFULLCONTENT` into a 32-bit DIB: works for a swapchain while the
 /// window is parked off every monitor.
+#[cfg(windows)]
 fn print_window_snapshot(hwnd: isize) -> Result<Snap, String> {
     use windows_sys::Win32::Foundation::{HWND, RECT};
     use windows_sys::Win32::Graphics::Gdi::{
@@ -1131,6 +1133,7 @@ pub fn wheel_lines(dy: f32) -> f32 {
 
 /// The placement a restore asks for: the normal size and place, shown WITHOUT activation, so a
 /// restore from the pipe can never take the foreground from the user's window (L58).
+#[cfg(windows)]
 fn restore_placement(
     mut p: windows_sys::Win32::UI::WindowsAndMessaging::WINDOWPLACEMENT,
 ) -> windows_sys::Win32::UI::WindowsAndMessaging::WINDOWPLACEMENT {
@@ -1140,6 +1143,7 @@ fn restore_placement(
 
 /// Restores a minimised or maximised window with `SetWindowPlacement(SW_SHOWNOACTIVATE)`; the
 /// Slint calls (`set_minimized(false)`, `set_maximized(false)`) end in `SW_RESTORE`, which activates.
+#[cfg(windows)]
 fn restore_without_activating(app: &AppWindow) -> Result<(), String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetWindowPlacement, IsIconic, SW_SHOWNOACTIVATE, SetWindowPlacement, ShowWindow,
@@ -1757,6 +1761,13 @@ pub fn apply_dpi(
     let size = window.size();
     let logical = (size.width as f32 / scale, size.height as f32 / scale);
     match mode {
+        #[cfg(not(windows))]
+        DpiMode::Message => {
+            // macOS: no WM_DPICHANGED; the event path stands in (the Mac E2E, port plan "Ongoing").
+            let _ = (hwnd, origin);
+            apply_dpi_event(&mut WindowRef(window), logical, dpi)
+        }
+        #[cfg(windows)]
         DpiMode::Message => {
             use windows_sys::Win32::Foundation::RECT;
             use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -1928,6 +1939,18 @@ pub fn install(
     crate::e2e_hook::register_ui_handler(Rc::new(move |req, resp| handle(&ctx, req, resp)));
 }
 
+/// macOS: the Mac E2E's own capture (port plan "Ongoing"). Refused until then.
+#[cfg(not(windows))]
+fn print_window_snapshot(_hwnd: isize) -> Result<Snap, String> {
+    Err("the window snapshot is not built on this platform yet".into())
+}
+
+/// macOS: the Mac E2E (port plan "Ongoing"). Refused until then.
+#[cfg(not(windows))]
+fn restore_without_activating(_app: &AppWindow) -> Result<(), String> {
+    Err("restoring without activation is not built on this platform yet".into())
+}
+
 #[cfg(test)]
 mod tests {
     // L59: pipe input must not panic the app or exhaust memory.
@@ -1946,6 +1969,7 @@ mod tests {
     }
 
     // L58: a restore from the pipe must not take the foreground.
+    #[cfg(windows)]
     #[test]
     fn a_restore_shows_the_window_without_activating_it() {
         use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, WINDOWPLACEMENT};

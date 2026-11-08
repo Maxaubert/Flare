@@ -1,4 +1,8 @@
 //! The runner, the context, the one wait primitive and the report (M10 Task 13).
+//!
+//! Windows-only: the e2e harness drives the Windows app (job objects, the hidden desktop, named pipes).
+//! The Mac E2E is the port plan's "Ongoing" row.
+#![cfg(windows)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

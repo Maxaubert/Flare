@@ -89,8 +89,12 @@ pub fn relabel_verb(reg: &dyn Registry, root: &str, keys: &[String]) -> bool {
 mod tests {
     use super::*;
     use crate::names::VERB_LABEL;
-    use crate::registry::{FakeRegistry, SandboxRoot, WinRegistry};
-    use crate::verb_keys::{DEFAULT_CLASSES_ROOT, command_key, verb_keys};
+    use crate::registry::FakeRegistry;
+    #[cfg(windows)]
+    use crate::registry::{SandboxRoot, WinRegistry};
+    #[cfg(windows)]
+    use crate::verb_keys::DEFAULT_CLASSES_ROOT;
+    use crate::verb_keys::{command_key, verb_keys};
 
     const ROOT: &str = r"Software\Classes";
     const EXE: &str = r"C:\Program Files\Flare\flare.exe";
@@ -257,6 +261,7 @@ mod tests {
         assert!(reg.key_exists(&format!("{ROOT}\\Directory")).unwrap());
     }
 
+    #[cfg(windows)]
     #[test]
     fn real_install_and_remove_under_a_sandbox_root() {
         let sandbox = SandboxRoot::new();

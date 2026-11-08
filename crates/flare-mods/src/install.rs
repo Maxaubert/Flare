@@ -408,9 +408,16 @@ fn discard(path: &Path, recycle: &dyn Fn(&Path) -> Result<(), String>) -> Result
     recycle(path)
 }
 
+#[cfg(windows)]
 fn is_link(meta: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     meta.file_type().is_symlink() || meta.file_attributes() & REPARSE_ATTRIBUTE != 0
+}
+
+/// A link off Windows: a symlink (there are no junctions).
+#[cfg(not(windows))]
+fn is_link(meta: &fs::Metadata) -> bool {
+    meta.file_type().is_symlink()
 }
 
 /// Deletes what an earlier run left in the staging folder (start, on the scan worker).
@@ -425,6 +432,7 @@ pub fn clean_staging(plugins: &Path) {
 }
 
 /// Moves `path` to the Recycle Bin, silently (no dialog, no progress). A failure is a sentence.
+#[cfg(windows)]
 pub fn recycle(path: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::UI::Shell::{
@@ -453,6 +461,12 @@ pub fn recycle(path: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// macOS: phase 6 of the port plan (the Trash through NSFileManager). Refused until then.
+#[cfg(not(windows))]
+pub fn recycle(_path: &Path) -> Result<(), String> {
+    Err("it could not be moved to the Trash: not built on this platform yet".to_string())
 }
 
 /// Deletes `path` for good (a folder or a file); one that is not there is fine.

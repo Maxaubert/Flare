@@ -6,8 +6,11 @@
 //! calls run on the thread that owns the window (the UI thread): a caret belongs to a thread, and only the window with
 //! the keyboard focus has one.
 
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::HWND;
+#[cfg(windows)]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateCaret, DestroyCaret, HideCaret, SetCaretPos,
 };
@@ -85,12 +88,14 @@ impl CaretPlan {
 }
 
 /// True when `hwnd` has the keyboard focus of the calling thread (the UI thread, for Flare's window).
+#[cfg(windows)]
 pub fn has_focus(hwnd: isize) -> bool {
     // SAFETY: a plain query of the calling thread's focus.
     unsafe { GetFocus() as isize == hwnd }
 }
 
 /// Makes the planned calls for `hwnd`. Call on the thread that owns the window.
+#[cfg(windows)]
 pub fn apply(hwnd: isize, ops: &[CaretOp]) {
     for op in ops {
         // SAFETY: plain calls on the caller's own window and thread; a stale handle or a missing caret just fails.
@@ -111,6 +116,16 @@ pub fn apply(hwnd: isize, ops: &[CaretOp]) {
         }
     }
 }
+
+/// macOS: phase 3 of the port plan (the accessibility insertion point). No window has focus here yet.
+#[cfg(not(windows))]
+pub fn has_focus(_hwnd: isize) -> bool {
+    false
+}
+
+/// macOS: phase 3 of the port plan. No system caret to drive; the plan's calls are dropped.
+#[cfg(not(windows))]
+pub fn apply(_hwnd: isize, _ops: &[CaretOp]) {}
 
 #[cfg(test)]
 mod tests {
@@ -192,6 +207,7 @@ mod tests {
     }
 
     /// What a magnifier reads of this thread: the caret's window and rectangle (`GetGUIThreadInfo`).
+    #[cfg(windows)]
     fn read_caret() -> (isize, (i32, i32, i32, i32)) {
         use windows_sys::Win32::System::Threading::GetCurrentThreadId;
         use windows_sys::Win32::UI::WindowsAndMessaging::{GUITHREADINFO, GetGUIThreadInfo};
@@ -205,6 +221,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_calls_report_a_thin_hidden_caret_where_the_cell_is() {
         use windows_sys::Win32::UI::WindowsAndMessaging::{

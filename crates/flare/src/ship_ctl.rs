@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(windows)]
 use std::sync::atomic::{AtomicIsize, Ordering};
 
 use flare_update::engine::{CondvarSleeper, Engine, Events, Mode, mode_for};
@@ -30,6 +31,7 @@ use crate::e2e;
 pub static FIRST_RUN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// The id `rc_text` gives the exe's icon resource (M9 Task 26).
+#[cfg_attr(not(windows), allow(dead_code))]
 const ICON_RESOURCE_ID: usize = 1;
 
 /// A `FLARE_E2E_<suffix>` variable: present only under `--e2e`. The ONE place this crate reads
@@ -135,6 +137,7 @@ pub fn effective_aumid() -> String {
 /// Sets the taskbar identity in every build, so a dev run and an installed run share it. A second
 /// copy with its own profile gets its own identity, or it would group under the installed Flare's
 /// shortcut and show that shortcut's icon.
+#[cfg(windows)]
 pub fn set_aumid() {
     use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
     let wide: Vec<u16> = effective_aumid()
@@ -144,6 +147,10 @@ pub fn set_aumid() {
     // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call; the call copies it.
     let _ = unsafe { SetCurrentProcessExplicitAppUserModelID(wide.as_ptr()) };
 }
+
+/// The taskbar identity is a Windows notion; the Mac app is identified by its bundle (phase 8).
+#[cfg(not(windows))]
+pub fn set_aumid() {}
 
 // ---- what this run is ----------------------------------------------------------------------------
 
@@ -323,12 +330,19 @@ pub fn build_engine(
 
 // ---- the window icon -----------------------------------------------------------------------------
 
+#[cfg(windows)]
 static BIG_ICON: AtomicIsize = AtomicIsize::new(0);
+#[cfg(windows)]
 static SMALL_ICON: AtomicIsize = AtomicIsize::new(0);
+
+/// The window icon comes from the app bundle on macOS (phase 8 of the port plan): nothing to set.
+#[cfg(not(windows))]
+pub fn set_window_icon(_hwnd: isize) {}
 
 /// Puts the exe's own icon (resource 1) on the window at its monitor's DPI. A null handle (a test
 /// binary without the resource) is ignored. The handles are shared system-cached icons, kept for
 /// the process lifetime and never destroyed.
+#[cfg(windows)]
 pub fn set_window_icon(hwnd: isize) {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};

@@ -328,7 +328,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let folder = std::fs::canonicalize(dir.path()).unwrap();
         let link = folder.join("link.html");
-        if std::os::windows::fs::symlink_file(&secret, &link).is_err() {
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(&secret, &link);
+        #[cfg(not(windows))]
+        let made = std::os::unix::fs::symlink(&secret, &link);
+        if made.is_err() {
             eprintln!("skipped: this account cannot make file symlinks");
             return;
         }

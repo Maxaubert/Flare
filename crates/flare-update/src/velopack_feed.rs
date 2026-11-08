@@ -43,14 +43,18 @@ pub fn bootstrap(hooks: Hooks, aumid: &str) {
         before_uninstall,
         first_run,
     } = hooks;
-    VelopackApp::build()
-        .set_auto_apply_on_startup(false)
+    let app = VelopackApp::build().set_auto_apply_on_startup(false);
+    // The taskbar identity and the fast install hooks exist only in Velopack's Windows build.
+    #[cfg(windows)]
+    let app = app
         .set_app_user_model_id(aumid)
         .on_before_uninstall_fast_callback(move |_v| before_uninstall())
         .on_after_install_fast_callback(|_v| {})
-        .on_after_update_fast_callback(|_v| {})
-        .on_first_run(move |v| first_run(v.to_string()))
-        .run();
+        .on_after_update_fast_callback(|_v| {});
+    // macOS: phase 8 of the port plan (the bundle updater has no uninstall hook to run).
+    #[cfg(not(windows))]
+    let _ = (aumid, before_uninstall);
+    app.on_first_run(move |v| first_run(v.to_string())).run();
 }
 
 /// The files a discard removes: the target package, its `.partial`, and the same two for every

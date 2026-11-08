@@ -34,6 +34,10 @@ fn window_park(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
 mod tests {
     use super::*;
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "the --e2e window park is Windows-only; the Mac E2E is the port plan's Ongoing row"
+    )]
     #[test]
     fn the_probe_lists_every_problem_and_none_for_a_safe_window() {
         let safe = ParkReport {

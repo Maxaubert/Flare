@@ -431,6 +431,8 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), r#"{"a":"1"}"#);
     }
 
+    // Windows-only: the test holds the file with share_mode(0); Unix has no mandatory locks.
+    #[cfg(windows)]
     #[test]
     fn a_file_that_cannot_be_read_or_moved_is_never_overwritten() {
         use std::os::windows::fs::OpenOptionsExt;

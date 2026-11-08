@@ -267,6 +267,10 @@ fn helpers_running(f: &Fx) -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "plugin helpers need the Windows job object; macOS phase 6 of the port plan"
+)]
 #[test]
 fn a_helper_runs_only_while_its_plugin_is_on_and_hears_the_events_it_may_see() {
     let f = fx();
@@ -310,6 +314,10 @@ fn a_helper_runs_only_while_its_plugin_is_on_and_hears_the_events_it_may_see() {
     assert!(w.hub.helper_of("demo").is_none());
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "plugin helpers need the Windows job object; macOS phase 6 of the port plan"
+)]
 #[test]
 fn a_helper_without_tabs_hears_no_tab_events_and_one_that_ends_too_often_is_stopped() {
     let f = fx();
@@ -349,6 +357,10 @@ fn a_helper_without_tabs_hears_no_tab_events_and_one_that_ends_too_often_is_stop
     assert!(w.hub.helper_stopped("demo").is_none());
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "plugin helpers need the Windows job object; macOS phase 6 of the port plan"
+)]
 #[test]
 fn an_update_of_a_plugin_whose_helper_runs_waits_for_it_to_end_and_starts_it_again() {
     // The helper (and its grandchild) run in the plugin folder, which the update moves aside: the update waits for

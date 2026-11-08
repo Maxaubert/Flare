@@ -265,6 +265,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn canonical_path_strips_the_verbatim_prefix() {
         let c =

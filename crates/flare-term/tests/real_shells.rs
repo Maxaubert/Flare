@@ -1,4 +1,6 @@
 //! Real-shell tests through the rig: prompts, folder reports, environment, cd lines, exit.
+//! Windows-only until macOS phase 2 (the real bundled ConPTY and the Windows shells).
+#![cfg(windows)]
 
 mod common;
 

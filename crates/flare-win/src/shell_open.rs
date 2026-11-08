@@ -1,10 +1,14 @@
 //! open_url: ShellExecuteW; the caller checks http(s) (Task 17).
 
+#[cfg(windows)]
 use std::ptr;
 
+#[cfg(windows)]
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
+#[cfg(windows)]
 use crate::clipboard::utf16_with_nul;
 
 /// The link as the browser's command line may safely carry it: a host after the scheme, and every
@@ -38,9 +42,14 @@ pub fn open_url(url: &str) -> Result<(), String> {
     if !(lower.starts_with("http://") || lower.starts_with("https://")) {
         return Err("only http and https links open".to_string());
     }
-    let verb = utf16_with_nul("open");
     let escaped = escape_web_url(url)?;
-    let target = utf16_with_nul(&escaped);
+    open_escaped(&escaped)
+}
+
+#[cfg(windows)]
+fn open_escaped(escaped: &str) -> Result<(), String> {
+    let verb = utf16_with_nul("open");
+    let target = utf16_with_nul(escaped);
     // SAFETY: both strings are zero-terminated UTF-16 buffers that live across the call; the
     // null window, parameters and directory are all allowed by ShellExecuteW.
     let code = unsafe {
@@ -57,6 +66,24 @@ pub fn open_url(url: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("ShellExecuteW failed with {code}"))
+    }
+}
+
+/// macOS: `/usr/bin/open` hands the (already escaped) web link to the default browser.
+#[cfg(not(windows))]
+fn open_escaped(escaped: &str) -> Result<(), String> {
+    // sync-ok: `open` hands the link over and returns, like ShellExecuteW
+    let status = std::process::Command::new("/usr/bin/open")
+        .arg(escaped)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status() // sync-ok: `open` returns as soon as the browser has the link
+        .map_err(|e| format!("open failed: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("open failed with {status}"))
     }
 }
 

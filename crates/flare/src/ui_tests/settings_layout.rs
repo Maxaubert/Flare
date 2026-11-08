@@ -655,6 +655,10 @@ fn the_rail_and_the_find_field_match_reference() {
     assert_eq!(rail_layout(760.0, 1.0, 6).width, 244.0);
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+)]
 #[test]
 fn the_rows_and_controls_match_the_reference_boxes() {
     // (page, PT selector, Flare path as (width, height) in css px). The Flare path is the component's own

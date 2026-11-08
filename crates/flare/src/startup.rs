@@ -748,6 +748,10 @@ mod tests {
         (dir, profile)
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "the single instance and hand-off are Windows-only; macOS phase 3 of the port plan"
+    )]
     #[test]
     fn a_second_launch_hands_over_and_a_first_runs() {
         let (_d, profile) = temp_profile();
@@ -782,6 +786,10 @@ mod tests {
     /// L41 (audit 2026-10-20): an answer that is not this user in this session used to start a
     /// normal instance on the SAME profile without the lock (two writers on tabs.json). Now the
     /// launch refuses, and nothing is written to the stranger.
+    #[cfg_attr(
+        not(windows),
+        ignore = "the single instance and hand-off are Windows-only; macOS phase 3 of the port plan"
+    )]
     #[test]
     fn a_hand_off_server_that_is_not_trusted_refuses_the_launch() {
         struct Stranger;
@@ -830,6 +838,10 @@ mod tests {
         assert!(matches!(two, Launch::First { .. }));
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "the single instance and hand-off are Windows-only; macOS phase 3 of the port plan"
+    )]
     #[test]
     fn a_handoff_to_a_quitting_instance_runs_as_first() {
         let (_d, profile) = temp_profile();
@@ -1178,6 +1190,10 @@ mod m7_start_tests {
         );
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn the_log_folder_follows_the_profile() {
         let appdata = Some("C:\\Users\\x\\AppData\\Roaming");

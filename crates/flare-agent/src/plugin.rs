@@ -377,7 +377,9 @@ pub fn plugin_dir_in(candidates: &[PathBuf]) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signal::{AgentSignal, HookState, agent_hook_events, parse_agent_signal};
+    use crate::signal::agent_hook_events;
+    #[cfg(windows)]
+    use crate::signal::{AgentSignal, HookState, parse_agent_signal};
 
     #[test]
     fn two_flares_in_two_folders_never_share_an_installed_plugin() {
@@ -516,6 +518,10 @@ mod tests {
         assert!(render_hooks_with(&template, cmd, Some("..\\flare-mcp.exe")).is_none());
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "the plugin install checks an absolute System32 folder; macOS phase 4 of the port plan"
+    )]
     #[test]
     fn install_writes_the_prompt_hook_only_when_the_program_exists_and_ships_the_browser_command() {
         let tmp = tempfile::tempdir().expect("tmp");
@@ -644,6 +650,10 @@ mod tests {
         assert!(render_manifest("not json", None).is_none());
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "the plugin install checks an absolute System32 folder; macOS phase 4 of the port plan"
+    )]
     #[test]
     fn install_writes_the_mcp_server_only_when_the_program_exists() {
         let tmp = tempfile::tempdir().expect("tmp");
@@ -922,6 +932,10 @@ mod tests {
         assert!(!hooks_commands_are_absolute(&text));
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "the plugin install checks an absolute System32 folder; macOS phase 4 of the port plan"
+    )]
     #[test]
     fn install_leaves_no_bare_program_name() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -948,6 +962,10 @@ mod tests {
         assert!(is_our_plugin(&dest.to_string_lossy()));
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "the plugin install checks an absolute System32 folder; macOS phase 4 of the port plan"
+    )]
     #[test]
     fn a_second_install_writes_nothing() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -960,6 +978,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "the plugin install checks an absolute System32 folder; macOS phase 4 of the port plan"
+    )]
     #[test]
     fn an_installed_plugin_with_a_bare_name_is_rewritten() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -982,6 +1004,10 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&hooks).expect("read"), good); // sync-ok: test fixture on a temp folder
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "the plugin install checks an absolute System32 folder; macOS phase 4 of the port plan"
+    )]
     #[test]
     fn a_refresh_goes_through_a_temp_file_and_a_rename() {
         // A refresh must never leave a half-written file for Claude Code to read (audit L26). With the
@@ -1007,6 +1033,10 @@ mod tests {
         assert!(!temp_name(&hooks).exists());
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "the plugin install checks an absolute System32 folder; macOS phase 4 of the port plan"
+    )]
     #[test]
     fn a_moved_system_folder_is_rewritten() {
         let tmp = tempfile::tempdir().expect("tempdir");

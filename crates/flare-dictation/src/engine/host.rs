@@ -14,6 +14,7 @@
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -30,6 +31,7 @@ use super::EngineKind;
 use crate::job::Job;
 
 /// `CREATE_NO_WINDOW`: a console engine must never flash a window.
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// How long after the process is gone a pipe that stays open is waited for.
 const PIPE_GRACE: Duration = Duration::from_millis(250);
@@ -113,8 +115,9 @@ impl Host {
             .current_dir(dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW);
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
         for (k, v) in env {
             cmd.env(k, v);
         }

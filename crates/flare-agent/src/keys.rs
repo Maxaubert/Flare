@@ -29,7 +29,8 @@ pub fn newline_key(agent: Option<AgentKind>) -> &'static str {
 pub fn word_rubout_key(agent: Option<AgentKind>) -> Option<&'static str> {
     match agent {
         Some(AgentKind::Agy) => Some("\x17"),
-        Some(AgentKind::Claude) | Some(AgentKind::Codex) | None => None,
+        // Every other agent, and a plain shell, keeps ^H.
+        Some(_) | None => None,
     }
 }
 

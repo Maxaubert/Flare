@@ -11,6 +11,8 @@
 //! blocks the caller: `pause` returns a receiver at once. One worker thread (MTA) owns the manager;
 //! it starts on the first pause.
 
+// Off Windows the WinRT wait and the paused set wait for phase 7 of the port plan.
+#![cfg_attr(not(windows), allow(dead_code, unused_macros))]
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -316,11 +318,13 @@ fn run_worker(factory: &PortFactory, rx: &Receiver<Req>, stopped: &AtomicBool) {
 // ---------------------------------------------------------------------------------------------
 // The real port: Windows' media session manager.
 
+#[cfg(windows)]
 use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSession as Session,
     GlobalSystemMediaTransportControlsSessionManager as Manager,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status,
 };
+#[cfg(windows)]
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
 /// `Windows.Foundation.AsyncStatus` values.
@@ -410,11 +414,13 @@ impl<S> PausedSet<S> {
     }
 }
 
+#[cfg(windows)]
 struct RealPort {
     manager: Option<Manager>,
     paused: PausedSet<Session>,
 }
 
+#[cfg(windows)]
 impl RealPort {
     /// The manager, loaded on the first request and retried on the next if that failed.
     fn sessions(&mut self) -> Vec<Session> {
@@ -430,12 +436,14 @@ impl RealPort {
     }
 }
 
+#[cfg(windows)]
 fn is_status(s: &Session, want: Status) -> bool {
     s.GetPlaybackInfo()
         .and_then(|i| i.PlaybackStatus())
         .is_ok_and(|st| st == want)
 }
 
+#[cfg(windows)]
 fn session_id(s: &Session) -> Option<String> {
     s.SourceAppUserModelId()
         .ok()
@@ -443,6 +451,7 @@ fn session_id(s: &Session) -> Option<String> {
         .filter(|id| !id.is_empty())
 }
 
+#[cfg(windows)]
 impl MediaPort for RealPort {
     fn pause_playing(&mut self) -> Vec<String> {
         let mut found: Vec<String> = Vec::new();
@@ -477,6 +486,7 @@ impl MediaPort for RealPort {
     }
 }
 
+#[cfg(windows)]
 fn real_port() -> Option<Box<dyn MediaPort>> {
     // SAFETY: CoInitializeEx takes no pointers we own; this thread is the worker and is made MTA.
     // A repeat call on a thread already initialised is harmless (S_FALSE) and the result is ignored.
@@ -485,6 +495,13 @@ fn real_port() -> Option<Box<dyn MediaPort>> {
         manager: None,
         paused: PausedSet::new(),
     }))
+}
+
+/// macOS: no port. The media pause is phase 7 of the port plan, and only if a public API allows it
+/// (MediaRemote is locked since macOS 15.4). Nothing is ever paused until then.
+#[cfg(not(windows))]
+fn real_port() -> Option<Box<dyn MediaPort>> {
+    None
 }
 
 #[cfg(test)]

@@ -3,9 +3,11 @@
 
 use std::sync::OnceLock;
 
+#[cfg(windows)]
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
 
 /// The PCI vendor id of NVIDIA.
+#[cfg(windows)]
 const NVIDIA_VENDOR: u32 = 0x10DE;
 
 /// True when an NVIDIA adapter is present (or the e2e seam says so). Answered once per process.
@@ -25,6 +27,7 @@ fn decide(cell: &OnceLock<bool>, seam: Option<&str>, probe: impl FnOnce() -> boo
 }
 
 /// Enumerates the DXGI adapters (no device is created) and looks for NVIDIA's vendor id.
+#[cfg(windows)]
 fn probe() -> bool {
     // sync-ok: a DXGI enumeration of the adapters, a few milliseconds, answered once per process
     // SAFETY: CreateDXGIFactory1 takes no pointers from us; it returns a new factory or an error.
@@ -42,6 +45,12 @@ fn probe() -> bool {
         }
         index += 1;
     }
+    false
+}
+
+/// No NVIDIA adapter on a Mac (Apple Silicon only, port plan targets).
+#[cfg(not(windows))]
+fn probe() -> bool {
     false
 }
 

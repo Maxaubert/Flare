@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
 #[path = "src/rc_text.rs"]
 mod rc_text;
 
@@ -9,14 +10,19 @@ const BUNDLED: [&str; 2] = ["conpty.dll", "OpenConsole.exe"];
 
 fn main() {
     slint_build::compile("ui/app.slint").expect("Slint UI failed to compile");
-    write_resource();
-    copy_bundled_conpty();
+    // The target, not the host: `cfg!(windows)` in a build script describes the machine running it.
+    let target_windows = env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows");
+    if target_windows {
+        write_resource();
+        copy_bundled_conpty();
+    }
     copy_claude_plugin();
 }
 
 /// The exe's icon and version resource (M9 Task 26): the owner's icon (`build/icon.ico`, made by
 /// `tools/make-icon.py`) and the workspace version, written as resource text into OUT_DIR and compiled
 /// there. A missing RC.EXE fails the build here, loudly.
+#[cfg(windows)]
 fn write_resource() {
     let manifest =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("cargo sets the manifest dir"));
@@ -37,6 +43,13 @@ fn write_resource() {
     embed_resource::compile(&out, embed_resource::NONE)
         .manifest_required()
         .expect("embed the exe resource (flare.rc)");
+}
+
+/// A Windows exe built on a non-Windows host: embed-resource is a Windows-host build dependency, so
+/// the resource cannot be compiled here. Cross-building the Windows exe is not supported.
+#[cfg(not(windows))]
+fn write_resource() {
+    panic!("the Windows exe resource (flare.rc) can only be built on a Windows host");
 }
 
 /// Copies the bundled Claude Code plugin (`flare-agent/claude-plugin`) to `<profile>/claude-plugin`,

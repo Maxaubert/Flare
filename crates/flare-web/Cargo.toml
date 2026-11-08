@@ -8,10 +8,12 @@ publish = false
 [dependencies]
 flare-surfaces = { path = "../flare-surfaces" }
 flare-mods = { path = "../flare-mods" }
+log.workspace = true
+
+[target.'cfg(windows)'.dependencies]
 webview2-com.workspace = true
 windows.workspace = true
 windows-sys.workspace = true
-log.workspace = true
 
 [lints]
 workspace = true

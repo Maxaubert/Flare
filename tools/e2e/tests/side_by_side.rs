@@ -10,6 +10,10 @@
 //!
 //! The exe comes from `FLARE_EXE` (absolute, or relative to any folder above this crate), else the
 //! `flare.exe` next to the test binary's target folder.
+//!
+//! Windows-only: the e2e harness drives the Windows app (job objects, the hidden desktop, named pipes).
+//! The Mac E2E is the port plan's "Ongoing" row.
+#![cfg(windows)]
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;

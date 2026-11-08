@@ -13,6 +13,7 @@
 
 use std::fs::File; // sync-ok: the imports of the file tail (no call here)
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
+#[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::time::Duration;
 
+#[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
 };
@@ -237,6 +239,7 @@ impl Tail {
 
 /// The volume serial and file index of an open file: the identity that survives a rename but not a replacement.
 /// `None` when Windows will not say (the caller then cannot see a replacement, and keeps the offset).
+#[cfg(windows)]
 fn file_key(file: &File) -> Option<(u32, u64)> {
     // SAFETY: the handle belongs to `file`, which lives across the call; `info` is a plain out-struct that the call
     // fills in full on success and that is read only after a success.
@@ -248,6 +251,14 @@ fn file_key(file: &File) -> Option<(u32, u64)> {
         let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
         Some((info.dwVolumeSerialNumber, index))
     }
+}
+
+/// The device and inode of an open file off Windows: the same identity (a rename keeps it, a replacement does not).
+#[cfg(not(windows))]
+fn file_key(file: &File) -> Option<(u32, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = file.metadata().ok()?; // sync-ok: one fstat on the tail worker
+    Some((u32::try_from(meta.dev()).ok()?, meta.ino()))
 }
 
 /// A live view of one transcript (and its subagents). Dropping it stops the worker thread within one sleep slice.

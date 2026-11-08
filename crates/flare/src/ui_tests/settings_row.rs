@@ -91,6 +91,10 @@ fn the_first_row_has_no_rule() {
     }
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+)]
 #[test]
 fn a_tap_row_fires_tapped_off_the_control_only() {
     for scale in SCALES {

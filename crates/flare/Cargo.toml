@@ -31,11 +31,13 @@ png.workspace = true
 image.workspace = true
 log.workspace = true
 env_logger.workspace = true
-windows-sys.workspace = true
 serde_json.workspace = true
 raw-window-handle.workspace = true
 flare-update = { path = "../flare-update" }
 velopack.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
 
 [features]
 default = []
@@ -50,6 +52,8 @@ sha2.workspace = true
 
 [build-dependencies]
 slint-build.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
 embed-resource.workspace = true
 
 [lints]

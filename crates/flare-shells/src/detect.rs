@@ -5,6 +5,7 @@ use crate::list::{ShellDef, canonical_path, parse_wsl_list, pwsh_path};
 use crate::prompt::{PS_FILE_STYLE, PS_PROMPT_HOOK};
 use crate::sys::{SysTools, sys_tools};
 use std::io::Read;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -12,6 +13,7 @@ use std::time::{Duration, Instant};
 
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub struct ProbeResult {
@@ -62,9 +64,10 @@ impl Probe for RealProbe {
         if let Some(dir) = probe_dir(exe) {
             cmd.current_dir(dir);
         }
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
         let Ok(mut child) = cmd
             .args(args)
-            .creation_flags(CREATE_NO_WINDOW)
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .stdout(Stdio::piped())
@@ -88,17 +91,21 @@ impl Probe for RealProbe {
             }
             if start.elapsed() >= self.timeout {
                 // Kill the whole tree so a grandchild cannot keep the stdout pipe open.
-                let tree = Command::new(format!(
-                    "{}\\taskkill.exe",
-                    sys_tools().cmd.trim_end_matches("\\cmd.exe")
-                ))
-                .args(["/PID", &child.id().to_string(), "/T", "/F"])
-                .creation_flags(CREATE_NO_WINDOW)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status(); // sync-ok: runs on a worker, after the probe timed out
-                let _ = tree;
+                // macOS: phase 2 of the port plan (process groups); only the child is killed there.
+                #[cfg(windows)]
+                {
+                    let tree = Command::new(format!(
+                        "{}\\taskkill.exe",
+                        sys_tools().cmd.trim_end_matches("\\cmd.exe")
+                    ))
+                    .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status(); // sync-ok: runs on a worker, after the probe timed out
+                    let _ = tree;
+                }
                 let _ = child.kill();
                 let _ = child.wait(); // sync-ok: runs on a worker, reaps the killed probe
                 break None;
@@ -396,6 +403,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn real_probe_times_out_and_kills_the_child() {
         let sys = sys_tools();
@@ -408,6 +416,7 @@ mod tests {
         assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
     }
 
+    #[cfg(windows)]
     #[test]
     fn real_probe_reads_stdout() {
         let sys = sys_tools();

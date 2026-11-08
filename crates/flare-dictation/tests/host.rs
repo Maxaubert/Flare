@@ -3,6 +3,8 @@
 //! "the resident Parakeet host", 3 tests), plus the rules N6 and N7 that its three host tests do not
 //! pin. The stand-ins are `fake-parakeet-cli` and `fake-parakeet-host`, started through the engine's
 //! `command` seam (the exe's file name says which one is wanted).
+//! Windows-only until macOS phase 7 of the port plan (the reaping job, the named-pipe link, the pid checks).
+#![cfg(windows)]
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;

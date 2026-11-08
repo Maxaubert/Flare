@@ -374,6 +374,10 @@ fn a_row_is_two_columns_with_the_well_and_the_copy_button() {
     }
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+)]
 #[test]
 fn a_two_line_name_makes_the_row_taller() {
     let h = harness(1.0);

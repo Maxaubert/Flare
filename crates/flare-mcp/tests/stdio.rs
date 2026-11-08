@@ -99,6 +99,10 @@ fn with_a_tab_but_no_server_it_is_still_not_running() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the control channel server is Windows-only until macOS phase 4"
+)]
 fn a_tool_call_reaches_the_server_with_the_tab() {
     let pipe = format!("\\\\.\\pipe\\flare-mcp-test-{}", std::process::id());
     let rec = Arc::new(Recorder::default());
@@ -145,6 +149,10 @@ fn a_tool_call_reaches_the_server_with_the_tab() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the control channel server is Windows-only until macOS phase 4"
+)]
 fn an_unknown_tab_token_is_reported_as_flare_refusing() {
     let pipe = format!("\\\\.\\pipe\\flare-mcp-test-badtab-{}", std::process::id());
     let server = Server::start(
@@ -170,6 +178,10 @@ fn an_unknown_tab_token_is_reported_as_flare_refusing() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the control channel server is Windows-only until macOS phase 4"
+)]
 fn a_pipe_served_by_another_process_is_never_given_the_secret() {
     // The server here is this process; the shell was told another process serves the pipe. The binary
     // leaves before it says hello, so the recorder never sees a token, and the model is told Flare is
@@ -232,6 +244,10 @@ impl Dispatcher for ModServer {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the control channel server is Windows-only until macOS phase 4"
+)]
 fn a_mods_tools_are_listed_called_and_announced_when_they_change() {
     let pipe = format!(r"\\.\pipe\flare-mcp-test-mods-{}", std::process::id());
     let srv = Arc::new(ModServer {
@@ -369,6 +385,10 @@ fn prompt_hook(
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the control channel server is Windows-only until macOS phase 4"
+)]
 fn the_prompt_hook_tells_the_agent_of_a_page_once_and_says_nothing_outside_flare() {
     // Its own temp folder, so the state the hook keeps is this test's alone.
     let temp = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))

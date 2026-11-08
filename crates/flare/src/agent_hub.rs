@@ -1733,6 +1733,10 @@ mod tests {
         assert_eq!(flare_agent::sonara::sonara_home(&read), None);
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "the port owner check reads the Windows TCP table; macOS phase 4 of the port plan"
+    )]
     #[test]
     fn sonara_is_never_called_on_the_ui_thread() {
         use std::io::{Read, Write};

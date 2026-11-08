@@ -1,4 +1,6 @@
 //! Quit and kill with real shells: none remain (rules 28, 29, 30).
+//! Windows-only until macOS phase 2 (the real bundled ConPTY and the Windows shells).
+#![cfg(windows)]
 
 mod common;
 

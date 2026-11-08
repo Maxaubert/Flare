@@ -14,7 +14,9 @@
 //!
 //! Everything that touches WinRT runs on a short-lived worker, never on the UI thread (rule 34).
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(windows)]
+use std::sync::Mutex;
 
 /// What to show.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,7 +64,9 @@ pub fn tag_of(tab: &str) -> String {
 }
 
 /// The toasts shown by this process, kept so their events can still be delivered. Oldest dropped first.
+#[cfg(windows)]
 static LIVE: Mutex<Vec<windows::UI::Notifications::ToastNotification>> = Mutex::new(Vec::new());
+#[cfg(windows)]
 const LIVE_MAX: usize = 24;
 
 /// Shows the toast on a worker thread. `on_click(tab)` is called when it is clicked; `on_done(result)` once, with
@@ -85,6 +89,7 @@ pub fn show_async(
     }
 }
 
+#[cfg(windows)]
 fn show_now(
     aumid: &str,
     req: &ToastRequest,
@@ -125,6 +130,17 @@ fn show_now(
         }
     }
     Ok(())
+}
+
+/// macOS: phase 4 of the port plan (UNUserNotificationCenter, which needs the Developer ID). Until
+/// then the request is refused, so the caller falls back as it does when Windows refuses a toast.
+#[cfg(not(windows))]
+fn show_now(
+    _aumid: &str,
+    _req: &ToastRequest,
+    _on_click: Arc<dyn Fn(String) + Send + Sync>,
+) -> Result<(), String> {
+    Err("notifications are not built on this platform yet".to_string())
 }
 
 #[cfg(test)]

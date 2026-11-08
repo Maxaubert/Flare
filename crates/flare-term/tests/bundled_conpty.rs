@@ -1,4 +1,6 @@
 //! The ConPTY serving a Flare pty is the bundled one (module path and process image path).
+//! ConPTY is Windows-only.
+#![cfg(windows)]
 
 mod common;
 

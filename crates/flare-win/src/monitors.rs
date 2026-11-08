@@ -4,19 +4,25 @@
 //! without the taskbar), and the scale a monitor shows at, so a window that moves between monitors of
 //! different scales keeps its size in logical pixels.
 
+#[cfg(windows)]
 use std::mem::size_of;
 
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{LPARAM, POINT, RECT, TRUE};
+#[cfg(windows)]
 use windows_sys::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
     MonitorFromPoint,
 };
+#[cfg(windows)]
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+#[cfg(windows)]
 use windows_sys::core::BOOL;
 
 use crate::window_state::Area;
 
 /// Every monitor's work area, in device pixels. Empty when the enumeration fails.
+#[cfg(windows)]
 pub fn work_areas() -> Vec<Area> {
     let mut areas: Vec<Area> = Vec::new();
     // SAFETY: EnumDisplayMonitors calls `monitor_proc` synchronously on this thread before it returns,
@@ -33,6 +39,7 @@ pub fn work_areas() -> Vec<Area> {
 }
 
 /// Called once per monitor by EnumDisplayMonitors; `data` is the `&mut Vec<Area>` from `work_areas`.
+#[cfg(windows)]
 unsafe extern "system" fn monitor_proc(
     hmon: HMONITOR,
     _hdc: HDC,
@@ -74,6 +81,7 @@ unsafe extern "system" fn monitor_proc(
 }
 
 /// The effective DPI of the monitor holding the point, divided by 96. 1.0 on any failure.
+#[cfg(windows)]
 pub fn scale_at(x: i32, y: i32) -> f64 {
     let pt = POINT { x, y };
     // SAFETY: MonitorFromPoint takes the point by value and returns a monitor handle or null.
@@ -90,6 +98,18 @@ pub fn scale_at(x: i32, y: i32) -> f64 {
     } else {
         1.0
     }
+}
+
+/// macOS: phase 3 of the port plan (NSScreen visibleFrame); no monitor is known until then.
+#[cfg(not(windows))]
+pub fn work_areas() -> Vec<Area> {
+    Vec::new()
+}
+
+/// macOS: phase 3 of the port plan (NSScreen backingScaleFactor); 1.0 until then.
+#[cfg(not(windows))]
+pub fn scale_at(_x: i32, _y: i32) -> f64 {
+    1.0
 }
 
 #[cfg(test)]

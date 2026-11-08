@@ -77,6 +77,7 @@ mod tests {
     use flare_term::handle::StartOptions;
     use flare_term::session::{SessionManager, SessionOptions};
     use std::ffi::OsString;
+    #[cfg(windows)]
     use std::os::windows::ffi::OsStringExt;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -120,7 +121,13 @@ mod tests {
 
     #[test]
     fn a_path_that_is_not_utf8_is_skipped() {
+        #[cfg(windows)]
         let bad = OsString::from_wide(&[0x43, 0x3a, 0x5c, 0xD800]);
+        #[cfg(not(windows))]
+        let bad = {
+            use std::os::unix::ffi::OsStringExt;
+            OsString::from_vec(vec![b'/', 0xff])
+        };
         let mut b = DropBatcher::new();
         b.push(Path::new(&bad), 0);
         b.push(Path::new(r"C:\ok.txt"), 1);

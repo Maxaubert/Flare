@@ -13,6 +13,8 @@
 //! stdout: `ready` once the model is loaded; per pass `ok <base64 of the UTF-8 text>` or `err <why>`.
 //!         Nothing else is ever written there by this program.
 
+// Off Windows the library glue waits for phase 7 of the port plan.
+#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -206,11 +208,14 @@ impl Recognizer for Parakeet {
     }
 }
 
+#[cfg(windows)]
 fn wide(s: &Path) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
     s.as_os_str().encode_wide().chain(Some(0)).collect()
 }
 
+#[cfg(windows)]
+#[cfg(windows)]
 #[link(name = "kernel32")]
 extern "system" {
     fn WideCharToMultiByte(
@@ -227,6 +232,7 @@ extern "system" {
 
 /// The model's path as the engine opens it: the script marshalled it as ANSI (`LPStr`), the system code
 /// page, so the same bytes go in here. A path the code page cannot spell is handed over as UTF-8.
+#[cfg(windows)]
 fn model_c_string(model: &str) -> Option<CString> {
     // A path the code page cannot spell goes in as its 8.3 short form (audit L32/L63).
     let safe = flare_dictation::ansi_path::engine_safe_path(Path::new(model));
@@ -281,6 +287,7 @@ enum LoadError {
 
 type Loaded = (Parakeet, [libloading::Library; 2]);
 
+#[cfg(windows)]
 fn load(dir: &Path, model: &str, gpu: bool, threads: i32) -> Result<Loaded, LoadError> {
     let other = |s: String| LoadError::Other(s);
     use windows_sys::Win32::System::LibraryLoader::SetDllDirectoryW;
@@ -355,6 +362,14 @@ fn load(dir: &Path, model: &str, gpu: bool, threads: i32) -> Result<Loaded, Load
     ))
 }
 
+/// macOS: phase 7 of the port plan (the Parakeet library built for Metal). Nothing loads until then.
+#[cfg(not(windows))]
+fn load(_dir: &Path, _model: &str, _gpu: bool, _threads: i32) -> Result<Loaded, LoadError> {
+    Err(LoadError::Other(
+        "the Parakeet host is not built on this platform yet".into(),
+    ))
+}
+
 fn main() {
     std::process::exit(run());
 }
@@ -395,6 +410,7 @@ fn run() -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
     #[test]
     fn a_model_path_outside_the_code_page_reaches_the_engine_as_a_path_that_opens() {
         use std::os::windows::ffi::OsStrExt;

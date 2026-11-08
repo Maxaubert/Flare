@@ -1,5 +1,9 @@
 //! The performance harness (M10 Task 60): the bar, the start-up statistics, the process-tree rules,
 //! the plans of the latency, flood and scroll measures, and the report. Nothing here starts an app.
+//!
+//! Windows-only: the e2e harness drives the Windows app (job objects, the hidden desktop, named pipes).
+//! The Mac E2E is the port plan's "Ongoing" row.
+#![cfg(windows)]
 
 use std::collections::HashMap;
 
