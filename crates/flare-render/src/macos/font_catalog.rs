@@ -75,7 +75,13 @@ pub const FALLBACK_FAMILIES: &[&str] = &[
     "Apple Color Emoji",
     "Geneva",
     "Arial Unicode MS",
-    // Symbols and the older monospace faces.
+    // Symbols and the older monospace faces. Apple Braille comes before Apple Symbols, which also
+    // has the braille cells: no face cosmic-text names covers U+2800..U+28FF, so the all-fonts
+    // build takes the first face in load order that does, and in /System/Library/Fonts that is
+    // Apple Braille.ttf (the folder lists it before Apple Symbols.ttf). Loaded lazily, it was
+    // never asked for, since Apple Symbols already drew the cell (CI run 42520841627, macOS 26).
+    // Its five files are about 140 KB.
+    "Apple Braille",
     "Apple Symbols",
     "Monaco",
     "Courier New",
@@ -113,7 +119,6 @@ pub const LAZY_FALLBACK_FAMILIES: &[&str] = &[
     "Noto Serif Ahom",
     "Plantagenet Cherokee",
     "Kefa III",
-    "Apple Braille",
     "STIX Two Math",
 ];
 
