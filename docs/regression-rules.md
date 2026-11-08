@@ -621,3 +621,8 @@ Native: `background.rs` (`looks_like_background_work`). Held by `a_dev_server_in
 `a_stop_with_only_the_footer_shell_count_raises_finished`, `a_stop_with_a_workflow_progress_row_stays_working`,
 `a_stop_with_claudes_own_still_running_summary_stays_working` and the e2e backgroundWork. Source: PT general review
 #45 (owner, 2026-10-23, "Finished at turn end").
+227. **Win32 stays in `flare-win` or behind `cfg(windows)`.** Shared logic must compile on macOS: Windows-only crates
+(`windows`, `windows-sys`, `webview2-com`, `embed-resource`) sit under `[target.'cfg(windows)'.dependencies]`, and
+`std::os::windows` imports, Windows paths and Windows tools live in Windows modules with a macOS counterpart or stub.
+Held by the `macos` CI job (cargo check, clippy and nextest on macos-latest). Source: macOS port plan
+(`docs/superpowers/specs/2026-11-08-macos-port.md`, owner, 2026-11-08).

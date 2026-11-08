@@ -51,7 +51,7 @@ lighter (startup, memory, heavy output, scrolling), measured against Prism Termi
   profiles, a tray icon, multiple windows, SSH management, app styles separate from the terminal
   theme, anything that reads or shows files.
 - Embedding in Prism, or sharing code with Prism Terminal's `core/`. Flare is standalone.
-- macOS or Linux. Code need not be deliberately portable.
+- Linux. (macOS was a non-goal until 2026-11-08; see `2026-11-08-macos-port.md`.)
 - Command help (#12): it is Prism Terminal's; port it only as part of parity (it is in scope
   because it is in Prism Terminal), never extend it.
 
