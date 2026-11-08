@@ -76,6 +76,13 @@ const AGENT_TICK_MS: u64 = 16;
 /// How long the agent counts as using the page after its call ends: the glow and the cursor stay
 /// this long, then fade. It was the ribbon's hold; the panel header and its ribbon went (Max 2026-10-27).
 pub const AGENT_HOLD_MS: u64 = 1_500;
+/// How long a page the agent used while it was not on screen keeps painting after the call ends: what the
+/// page does in its next frames (a menu opening, a switch flipping, a banner leaving) happens before the
+/// agent looks again (issue #120).
+pub const PARK_AWAKE_MS: u64 = 5_000;
+/// Where such a page is kept painting: far off the window's client area (a child window is clipped to it),
+/// at the panel's size so its layout does not change.
+pub const PARK_AT: i32 = -32_000;
 
 /// Makes the browser (the first time a web panel needs it).
 pub type WebFactory = Box<dyn FnMut(Sink) -> Box<dyn WebBackend>>;
@@ -438,6 +445,12 @@ struct TabWeb {
     probe: Option<Probe>,
     /// The browser's number of the last navigation the host allowed (one it cancelled never has its own).
     started_nav: Option<u64>,
+    /// The page keeps painting until then after an agent call (see [`PARK_AWAKE_MS`]).
+    awake_until: u64,
+    /// The page is not on screen but kept painting off the window for the agent: shown to the browser at
+    /// [`PARK_AT`]. A hidden page paints no frames, so what a page does in its next frame never happens,
+    /// and a click there looks like it did nothing (issue #120).
+    parked: bool,
 }
 
 /// The state the key hook reads (it runs inside a WebView2 callback and may not borrow the window).
@@ -465,6 +478,8 @@ pub struct WebCtl {
     phase: Phase,
     token: u64,
     bounds: Option<(String, PhysRect)>,
+    /// The web panel's last rectangle while a web page was in front: the size a parked page keeps.
+    slot_rect: Option<PhysRect>,
     /// The splitter is held (read at each sync): the glow is off the screen, not rebuilt at every step.
     splitting: bool,
     keys: Rc<KeyState>,
@@ -638,6 +653,7 @@ impl WebCtl {
             phase: Phase::Hidden,
             token: 0,
             bounds: None,
+            slot_rect: None,
             splitting: false,
             full: None,
             covers: false,
@@ -958,6 +974,9 @@ impl WebCtl {
         } else {
             rect
         };
+        if front_web.is_some() && shown && !rect.is_empty() {
+            self.slot_rect = Some(rect);
+        }
 
         // The tab in front gets its browser the first time it has a place to be.
         if let (Some(tab), true) = (front_web, shown && !rect.is_empty())
@@ -992,7 +1011,9 @@ impl WebCtl {
             // The window follows the slot: only a change is sent.
             if !rect.is_empty() && self.bounds.as_ref() != Some(&(tab.clone(), rect)) {
                 self.bounds = Some((tab.clone(), rect));
-                if let Some(b) = self.backend() {
+                // A parked page stays off the window; it is put back here when it stops being parked.
+                let parked = self.tabs.get(&tab).is_some_and(|t| t.parked);
+                if let (Some(b), false) = (self.backend(), parked) {
                     b.set_bounds(&tab, rect);
                 }
             }
@@ -1005,8 +1026,81 @@ impl WebCtl {
         } else {
             self.bounds = None;
         }
+        self.update_parked();
         self.push(app, panels, front_web);
         self.update_cursor();
+    }
+
+    /// Keeps the pages the agent is using while they are not on screen painting, off the window, and puts
+    /// each back once it is on screen again or the agent has left it for [`PARK_AWAKE_MS`] (issue #120: a
+    /// hidden page paints no frames, so a menu, switch or banner that changes in the page's next frame never
+    /// did, and a click looked like it did nothing). The page keeps the panel's size, so nothing reflows.
+    fn update_parked(&mut self) {
+        let now = self.now_ms();
+        // The page in front stays where it is while it is live or its still is being taken: a menu opened over it
+        // keeps the page in its panel until the still is there (no blank panel), and the hide that follows hands
+        // the keyboard back to the window (a hidden WebView2 gives its focus to its parent; a parked one would
+        // keep it, off the screen).
+        let on_screen = self
+            .shown_tab
+            .clone()
+            .filter(|_| matches!(self.phase, Phase::Live | Phase::Capturing(_)));
+        let moves: Vec<(String, bool)> = self
+            .tabs
+            .iter_mut()
+            .filter_map(|(tab, t)| {
+                let want = on_screen.as_deref() != Some(tab.as_str())
+                    && t.ready
+                    && t.failed.is_none()
+                    && (t.agent.is_some() || now < t.awake_until);
+                (want != t.parked).then(|| {
+                    t.parked = want;
+                    (tab.clone(), want)
+                })
+            })
+            .collect();
+        let size = self
+            .slot_rect
+            .or_else(|| self.bounds.as_ref().map(|(_, r)| *r))
+            .unwrap_or(PhysRect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            });
+        if self.tabs.values().any(|t| t.parked) {
+            // The agent timer puts the page back when its time is up.
+            self.ensure_agent_timer();
+        }
+        let shown = self.shown_tab.clone();
+        let phase = self.phase;
+        let bounds = self.bounds.clone();
+        let Some(b) = self.backend.as_mut() else {
+            return;
+        };
+        for (tab, park) in moves {
+            if park {
+                b.set_bounds(
+                    &tab,
+                    PhysRect {
+                        x: PARK_AT,
+                        y: PARK_AT,
+                        w: size.w,
+                        h: size.h,
+                    },
+                );
+                b.set_visible(&tab, true);
+                continue;
+            }
+            // Back where the window wants it: in the panel and live when it is the page in front, hidden otherwise
+            // (its rectangle is sent again when it comes to the front, since the window's `bounds` are another tab's).
+            let front = shown.as_deref() == Some(tab.as_str());
+            match &bounds {
+                Some((t, r)) if *t == tab => b.set_bounds(&tab, *r),
+                _ => b.set_bounds(&tab, size),
+            }
+            b.set_visible(&tab, front && phase == Phase::Live);
+        }
     }
 
     fn open_tab(
@@ -1048,11 +1142,7 @@ impl WebCtl {
                     b.set_visible(tab, true);
                 }
             }
-            Act::Hide => {
-                if let Some(b) = self.backend() {
-                    b.set_visible(tab, false);
-                }
-            }
+            Act::Hide => self.hide(tab),
             Act::Capture(token) => {
                 // A page that is busy or hung never answers: the timeout stands in for the answer (a
                 // still of nothing), so its window cannot stay on top of the overlay.
@@ -1072,7 +1162,11 @@ impl WebCtl {
         }
     }
 
+    /// Takes the tab's page off the screen. A parked page is already off the window and keeps painting.
     fn hide(&mut self, tab: &str) {
+        if self.tabs.get(tab).is_some_and(|t| t.parked) {
+            return;
+        }
         if let Some(b) = self.backend.as_mut() {
             b.set_visible(tab, false);
         }
@@ -1908,6 +2002,8 @@ impl WebCtl {
         flush_button_edges();
         self.refresh_key_flags();
         self.ensure_agent_timer();
+        // A page that is not on screen paints while the agent works on it (issue #120).
+        self.update_parked();
         self.drive(tab, out);
     }
 
@@ -2190,6 +2286,8 @@ impl WebCtl {
         } else {
             t.hold = Some((a.label.clone(), now + AGENT_HOLD_MS));
         }
+        // What the page does next (in its next frames) still happens if it is not on screen.
+        t.awake_until = now + PARK_AWAKE_MS;
         let _ = a.reply.send(result.map_err(ctl_error));
         self.refresh_key_flags();
     }
@@ -2259,9 +2357,10 @@ impl WebCtl {
                 t.hold = None;
             }
         }
+        self.update_parked();
         self.update_cursor();
         self.agent_busy()
-            || self.tabs.values().any(|t| t.hold.is_some())
+            || self.tabs.values().any(|t| t.hold.is_some() || t.parked)
             || self.cursor.shown()
             || self.border.shown()
     }
