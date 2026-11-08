@@ -5,6 +5,7 @@ pub mod agent_launch;
 pub mod agent_misc;
 pub mod agent_web;
 pub mod anywhere;
+pub mod brand;
 pub mod chrome;
 pub mod closeask;
 pub mod convo;
@@ -624,6 +625,12 @@ pub const ALL: &[Scenario] = &[
         group: "web",
         run: fill::plugin_fill,
         limit_secs: 300,
+    },
+    Scenario {
+        name: "pluginBrand",
+        group: "web",
+        run: brand::plugin_brand,
+        limit_secs: 480,
     },
     Scenario {
         name: "devPreview",

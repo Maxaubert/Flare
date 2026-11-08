@@ -1,6 +1,8 @@
-//! A plugin's question in Flare's own dialog (the `fill` permission, 2026-10-28): a login to fill into a tab's web
-//! page, approved with Allow, Deny or "Deny for this session", and a secret the plugin asks for, typed into a masked
-//! field. One question at a time; it waits at most [`fill::ASK_WAIT`] and then counts as a no.
+//! A plugin's question in Flare's own dialog (the `fill` permission, 2026-10-28), centred in the plugin's own look
+//! (2026-11-08): a login to fill into a tab's web page, approved with Fill, Deny or "Deny for this session", and a
+//! secret the plugin asks for, typed into a masked field. One question at a time; it waits at most [`fill::ASK_WAIT`]
+//! and then counts as a no. A plugin the person set to "Always allow" on its details sheet has its fill typed with
+//! no question; every other check (the site, the tab, a waiting call, the page that moved) is made just the same.
 //!
 //! The call's thread checked the plugin, the params, the tab and the plugin's asks; here the window checks the page's
 //! site against the login's addresses (again after Allow, since the page may have moved), and only Allow's pointer
@@ -130,7 +132,6 @@ impl AppCtl {
             )));
             return;
         }
-        let ink = crate::chrome_apply::text_ink();
         match op {
             CtlOp::Fill {
                 plugin,
@@ -168,8 +169,29 @@ impl AppCtl {
                         return;
                     }
                 };
-                let view =
-                    crate::plugin_ask::fill_view(&plugin_name, &login_name, &site.host, &ink);
+                let tab_title = self
+                    .tab_facts()
+                    .into_iter()
+                    .find(|f| f.id == tab)
+                    .map(|f| f.title)
+                    .unwrap_or_default();
+                let source = self
+                    .mods
+                    .as_ref()
+                    .and_then(|m| m.hub().source_of(&plugin))
+                    .unwrap_or_default();
+                let view = crate::plugin_ask::fill_view(
+                    &plugin_name,
+                    &source,
+                    &login_name,
+                    &site.host,
+                    &tab_title,
+                    via_call,
+                );
+                let always = self
+                    .mods
+                    .as_ref()
+                    .is_some_and(|m| m.hub().fills_without_asking(&plugin));
                 let ask = PluginAsk {
                     plugin,
                     generation,
@@ -183,6 +205,15 @@ impl AppCtl {
                     seq: 0,
                     running: None,
                 };
+                if always {
+                    // "Always allow": no question, the fill runs as if Fill were pressed now. The person's choice is
+                    // theirs: the log says what the fill did, as for any fill, and nothing of the choice.
+                    self.plugin_ask_seq += 1;
+                    let mut ask = ask;
+                    ask.seq = self.plugin_ask_seq;
+                    self.run_fill(ask);
+                    return;
+                }
                 self.open_plugin_ask(ask, &view);
             }
             CtlOp::SecretAsk {
@@ -190,6 +221,8 @@ impl AppCtl {
                 plugin_name,
                 title,
                 label,
+                sub,
+                button,
                 generation,
             } => {
                 if !self.plugin_live(&plugin, generation) {
@@ -199,7 +232,19 @@ impl AppCtl {
                     )));
                     return;
                 }
-                let view = crate::plugin_ask::secret_view(&plugin_name, &title, &label, &ink);
+                let source = self
+                    .mods
+                    .as_ref()
+                    .and_then(|m| m.hub().source_of(&plugin))
+                    .unwrap_or_default();
+                let view = crate::plugin_ask::secret_view(
+                    &plugin_name,
+                    &source,
+                    &title,
+                    &label,
+                    &sub,
+                    &button,
+                );
                 let ask = PluginAsk {
                     plugin,
                     generation,
@@ -220,16 +265,26 @@ impl AppCtl {
         self.plugin_ask_seq += 1;
         ask.seq = self.plugin_ask_seq;
         let seq = ask.seq;
+        let ask_plugin = ask.plugin.clone();
         self.plugin_ask = Some(ask);
         if let Some(app) = self.app() {
             self.clear_tip();
             self.close_menu_quietly();
-            let body = slint::StyledText::from_markdown(&v.body)
-                .unwrap_or_else(|_| slint::StyledText::from_plain_text(&v.body));
+            let brand = self
+                .mods
+                .as_ref()
+                .and_then(|m| m.hub().found(&ask_plugin))
+                .and_then(|f| f.manifest.brand);
             app.set_pask_kind(v.kind);
             app.set_pask_title(v.title.as_str().into());
-            app.set_pask_body(body);
+            app.set_pask_sub(v.sub.as_str().into());
             app.set_pask_label(v.label.as_str().into());
+            app.set_pask_button(v.button.as_str().into());
+            app.set_pask_site(v.site.as_str().into());
+            app.set_pask_asker(v.asker.as_str().into());
+            app.set_pask_letter(v.letter.as_str().into());
+            app.set_pask_foot(v.foot.as_str().into());
+            app.set_pask_look(crate::plugin_look::look_of(brand.as_ref()));
             // The question has the keys: a page that holds them gives them back (Escape must reach the question).
             self.web.release_focus(crate::window::hwnd_of(&app));
             app.set_pask_open(true);
@@ -249,7 +304,6 @@ impl AppCtl {
     fn close_plugin_ask_view(&mut self) {
         if let Some(app) = self.app() {
             app.set_pask_open(false);
-            app.set_pask_body(slint::StyledText::from_plain_text(""));
         }
         self.refresh();
         self.focus_terminal();

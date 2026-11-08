@@ -6,7 +6,9 @@ export enum BlockKind { row, wall, about, slint, note, model }
 // face: the font-family for the font select ("" = the UI font)
 export struct SetOption { id: string, name: string, face: string }
 // alt: show label-alt instead (Mark, then Marked); both words are laid out in one cell
-export struct SetButton { id: string, label: string, label-alt: string, off: bool, alt: bool }
+// icon: path data (24 unit box); with an empty label it is a square icon button. tip: said on hover. warn: the
+// icon in the warning colour.
+export struct SetButton { id: string, label: string, label-alt: string, off: bool, alt: bool, icon: string, tip: string, warn: bool }
 export struct SetRow {
     id: string, icon: string, label: string, sub: string, sub-tip: string, row-tip: string,
     warn: bool, off: bool, tap: bool,
@@ -30,6 +32,8 @@ export struct SetRow {
     size-text: string, recommended: bool, badge: string,
     state: string,                              // model block: absent, downloading, installed or active
     button-title: string,                       // the tooltip of the Uninstall or Disable button
+    // A plugin's card (2026-11-08): its brand logo (path data, filled in logo-fill on a white tile); "" draws icon.
+    logo: string, logo-fill: color,
 }
 export struct SetSection {
     id: string, title: string, tag: string,
@@ -63,4 +67,14 @@ export struct RowLook {
     b0-fill: color, b0-edge: color, b0-radius: length, b0-ink: color,
     b1-id: string, b1-x: length, b1-y: length, b1-w: length, b1-h: length,
     b1-fill: color, b1-edge: color, b1-radius: length, b1-ink: color,
+}
+
+// A plugin's details sheet (plugin_sheet.slint): one level of a dropdown tile (tone 0 plain, 1 the brand's usual, 2
+// amber), and one tile (kind 0 toggle, 1 dropdown, 2 fact). caps: the label in capitals. value: a dropdown's level id
+// or a fact; value-name: what is shown; chosen: the level's index; words: the permission's words in Settings; tip: the
+// tooltip, its words and the whole of what it covers.
+export struct SheetOption { id: string, name: string, tone: int }
+export struct SheetTile {
+    key: string, label: string, caps: string, kind: int, on: bool, value: string, value-name: string, tone: int,
+    chosen: int, options: [SheetOption], detail: string, words: string, tip: string,
 }

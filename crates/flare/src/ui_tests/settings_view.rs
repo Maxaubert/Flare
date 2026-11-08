@@ -85,6 +85,7 @@ fn every_kind() -> Vec<SetRow> {
         label_alt: "Gone".into(),
         off: false,
         alt: false,
+        ..Default::default()
     }]));
     v.push(r);
     v

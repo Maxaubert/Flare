@@ -127,6 +127,9 @@ pub struct MenuRowData {
     pub parent: i32,
     /// A glyph path drawn instead of `icon` when not empty (a plugin's own icon, which is no named glyph).
     pub icon_cmd: String,
+    /// A plugin's brand logo drawn in place of the icon (its item in the tab menu, 2026-11-08): the path, filled in the
+    /// colour (`#rrggbb`) on a white rounded tile.
+    pub logo: Option<(String, String)>,
 }
 
 impl MenuRowData {
@@ -144,6 +147,7 @@ impl MenuRowData {
             flyout: false,
             parent: -1,
             icon_cmd: String::new(),
+            logo: None,
         }
     }
 

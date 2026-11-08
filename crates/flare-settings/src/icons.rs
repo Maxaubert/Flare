@@ -122,6 +122,27 @@ pub const SETTING_ICONS: &[(&str, &str)] = &[
     ("x", "M6 6l12 12M18 6L6 18"),
 ];
 
+/// Icons only an icon button draws (not in Prism Terminal's set), same 24 unit stroke paths.
+pub const BUTTON_ICONS: &[(&str, &str)] = &[
+    (
+        "trash",
+        "M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3",
+    ),
+    (
+        "info",
+        "M12 8h.01M11 12h1v4h1M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z",
+    ),
+];
+
+/// The path data of an icon button's icon: a button icon, else a settings icon.
+pub fn button_icon_path(name: &str) -> Option<&'static str> {
+    BUTTON_ICONS
+        .iter()
+        .find(|(icon, _)| *icon == name)
+        .map(|(_, path)| *path)
+        .or_else(|| icon_path(name))
+}
+
 /// The path data of a named icon, or `None` when the name is not in the set.
 pub fn icon_path(name: &str) -> Option<&'static str> {
     SETTING_ICONS

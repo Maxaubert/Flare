@@ -203,7 +203,9 @@ line. Nothing is fetched, no real window gets input (the person's takeover is th
   list scrolling under the wheel; waits (text with a case change, a selector, a timeout with `met` false, a pause, a hostile text);
   the address row holding the panel's close (no header since 2026-10-27); the page in use (`using`) during and after a call and the page's rectangle unchanged by it; the panel zoomed to 150 percent (`WebZoom`) with a click by ref and by point still landing; the person's takeover ending a 30 s wait `interrupted`
   with the page no longer in use and the refs forgotten; a link click that navigates, then a stale ref `not_found`; a tab that is behind (a
-  list but no picture, answered at once) and back in front; a connection with no tab; shell input still forbidden; closing the panel
+  list but no picture, answered at once; issue #120: the page paints off the window at the panel's size after a call, a click by ref
+  and by point lands with the whole press, what the page does in its next frame happens while no call runs, and left alone it rests
+  hidden) and back in front; a connection with no tab; shell input still forbidden; closing the panel
   answering a running call. A second launch with `flare.web.agentEval` seeded in the profile holds `browser.eval` (a value, an object, a
   promise, an exception as `bad_params`).
 - `mcpBrowser` runs `flare-mcp.exe` over stdio with the tab's environment and a session that reads each reply before the next call:

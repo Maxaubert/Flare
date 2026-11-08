@@ -52,6 +52,11 @@ pub const MAX_ICON_PATH_BYTES: usize = 2 * 1024;
 /// The most path commands one icon may have, and how far from 0 any of its numbers may be (the box is 24 units).
 pub const MAX_ICON_COMMANDS: usize = 256;
 pub const MAX_ICON_COORD: f64 = 1000.0;
+/// The brand logo's path: a filled shape, so it may be longer than a stroked icon.
+pub const MAX_BRAND_ICON_BYTES: usize = 8 * 1024;
+pub const MAX_BRAND_ICON_COMMANDS: usize = 1024;
+/// The least contrast a brand colour keeps against white: its buttons carry white words.
+pub const MIN_BRAND_CONTRAST: f64 = 3.0;
 /// Arguments of the helper program, and the longest one (characters).
 pub const MAX_HELPER_ARGS: usize = 16;
 pub const MAX_HELPER_ARG_CHARS: usize = 200;
@@ -97,15 +102,16 @@ const TOP_KEYS_V1: [&str; 8] = [
     "tools",
 ];
 /// The keys protocol 2 adds to the top level.
-const TOP_KEYS_V2_ONLY: [&str; 6] = [
+const TOP_KEYS_V2_ONLY: [&str; 7] = [
     "author",
+    "brand",
     "homepage",
     "background",
     "bar",
     "contributes",
     "helper",
 ];
-const TOP_KEYS_V2: [&str; 14] = [
+const TOP_KEYS_V2: [&str; 15] = [
     "id",
     "name",
     "version",
@@ -113,6 +119,7 @@ const TOP_KEYS_V2: [&str; 14] = [
     "description",
     "author",
     "homepage",
+    "brand",
     "permissions",
     "background",
     "panel",
@@ -128,6 +135,7 @@ const CONTRIBUTES_KEYS: [&str; 3] = ["sidebar", "actions", "icons"];
 const SIDEBAR_KEYS: [&str; 2] = ["key", "title"];
 const ACTION_KEYS: [&str; 4] = ["key", "title", "icon", "where"];
 const HELPER_KEYS: [&str; 2] = ["command", "args"];
+const BRAND_KEYS: [&str; 2] = ["color", "icon"];
 
 /// Device names Windows reserves; a mod id cannot be a folder named one of them.
 const RESERVED_IDS: [&str; 22] = [
@@ -209,6 +217,9 @@ pub struct Manifest {
     pub contributes: Contributes,
     /// Protocol 2: a program inside the plugin folder Flare starts while the plugin is on.
     pub helper: Option<Helper>,
+    /// Protocol 2: the colour and logo of the surfaces the plugin owns (its details sheet, its questions, its menu
+    /// item). None: those surfaces wear Flare's own look.
+    pub brand: Option<Brand>,
 }
 
 impl Manifest {
@@ -371,6 +382,14 @@ pub struct IconDef {
     pub path: String,
 }
 
+/// A plugin's brand: `color` (`#rrggbb`, lower case, dark enough for white words) and an optional logo, an SVG
+/// path on the 24-unit box drawn filled in `color` on a white rounded tile.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Brand {
+    pub color: String,
+    pub icon: Option<String>,
+}
+
 /// The plugin's helper program.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Helper {
@@ -475,8 +494,8 @@ fn parse_inner(kind: Kind, text: &str) -> Result<Manifest, String> {
     if !tools.is_empty() && !permissions.contains(&Permission::Tools) {
         return Err("tools need the \"tools\" permission; add it to permissions".into());
     }
-    let (author, homepage, background, bar, contributes, helper) = match kind {
-        Kind::Mod => (None, None, None, None, Contributes::default(), None),
+    let (author, homepage, background, bar, contributes, helper, brand) = match kind {
+        Kind::Mod => (None, None, None, None, Contributes::default(), None, None),
         Kind::Plugin => (
             optional_clean(obj, "author", MAX_AUTHOR_CHARS)?,
             homepage(obj)?,
@@ -484,6 +503,7 @@ fn parse_inner(kind: Kind, text: &str) -> Result<Manifest, String> {
             bar(obj, &permissions)?,
             contributes(obj, &permissions)?,
             helper(obj, &permissions)?,
+            brand(obj)?,
         ),
     };
     // A tool is answered by the panel's page (or, for a plugin, its background page or its helper): with none of
@@ -520,6 +540,7 @@ fn parse_inner(kind: Kind, text: &str) -> Result<Manifest, String> {
         bar,
         contributes,
         helper,
+        brand,
     })
 }
 
@@ -960,11 +981,13 @@ fn icons(c: &Map<String, Value>) -> Result<Vec<IconDef>, String> {
 /// What is wrong with an icon's SVG path, if anything: it must start with a move, be at most 2 KB, and hold only
 /// path commands, numbers, signs, dots, commas and spaces (nothing a renderer could read as markup or a URL).
 fn icon_path_problem(path: &str) -> Option<String> {
-    if path.len() > MAX_ICON_PATH_BYTES {
-        return Some(format!(
-            "is {} bytes; the limit is {MAX_ICON_PATH_BYTES}",
-            path.len()
-        ));
+    path_problem(path, MAX_ICON_PATH_BYTES, MAX_ICON_COMMANDS)
+}
+
+/// [`icon_path_problem`] with the size and command limits given.
+fn path_problem(path: &str, max_bytes: usize, max_commands: usize) -> Option<String> {
+    if path.len() > max_bytes {
+        return Some(format!("is {} bytes; the limit is {max_bytes}", path.len()));
     }
     if !path.trim_start().starts_with(['M', 'm']) {
         return Some("must start with a move command (M or m)".into());
@@ -986,9 +1009,9 @@ fn icon_path_problem(path: &str) -> Option<String> {
         .chars()
         .filter(|c| c.is_ascii_alphabetic() && !matches!(c, 'e' | 'E'))
         .count();
-    if commands > MAX_ICON_COMMANDS {
+    if commands > max_commands {
         return Some(format!(
-            "has {commands} commands; the limit is {MAX_ICON_COMMANDS}"
+            "has {commands} commands; the limit is {max_commands}"
         ));
     }
     match path_numbers(path) {
@@ -1048,6 +1071,68 @@ fn path_numbers(path: &str) -> Option<Vec<f64>> {
     }
     flush(&mut cur, &mut out)?;
     Some(out)
+}
+
+/// `brand`: `{color, icon?}`. The colour is `#rrggbb` with at least [`MIN_BRAND_CONTRAST`] against white (its buttons
+/// carry white words); the icon follows the icon path rules with a filled logo's larger limits.
+fn brand(obj: &Map<String, Value>) -> Result<Option<Brand>, String> {
+    let Some(v) = obj.get("brand") else {
+        return Ok(None);
+    };
+    let b = v.as_object().ok_or_else(|| {
+        "brand must be an object with \"color\" and, if you like, \"icon\"".to_string()
+    })?;
+    no_unknown(b, &BRAND_KEYS, "brand")?;
+    let color = text_of(b, "color", "brand.color")?;
+    let Some(rgb) = hex_rgb(&color) else {
+        return Err("brand.color must be a colour written #rrggbb, such as #2a6df4".into());
+    };
+    let contrast = contrast_with_white(rgb);
+    if contrast < MIN_BRAND_CONTRAST {
+        return Err(format!(
+            "brand.color {color} is too light for white words on it (contrast {contrast:.1}, at least {MIN_BRAND_CONTRAST:.0} is needed); pick a darker colour"
+        ));
+    }
+    let icon = match b.get("icon") {
+        None => None,
+        Some(i) => {
+            let path = i.as_str().ok_or_else(|| {
+                "brand.icon must be an SVG path, such as \"M4 4h16v16H4z\"".to_string()
+            })?;
+            if let Some(why) = path_problem(path, MAX_BRAND_ICON_BYTES, MAX_BRAND_ICON_COMMANDS) {
+                return Err(format!("brand.icon {why}"));
+            }
+            Some(path.to_string())
+        }
+    };
+    Ok(Some(Brand {
+        color: color.to_ascii_lowercase(),
+        icon,
+    }))
+}
+
+/// The red, green and blue of `#rrggbb`; None for anything else.
+pub fn hex_rgb(s: &str) -> Option<[u8; 3]> {
+    let hex = s.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
+}
+
+/// The WCAG contrast of white against the colour (1 to 21).
+pub fn contrast_with_white(rgb: [u8; 3]) -> f64 {
+    let lin = |c: u8| {
+        let c = f64::from(c) / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let l = 0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2]);
+    1.05 / (l + 0.05)
 }
 
 /// `helper`: `{command, args?}`, and the `process` permission goes with it.
@@ -1693,6 +1778,87 @@ mod tests {
         assert!(m.is_plugin());
         assert_eq!(m.author, None);
         assert_eq!(m.contributes, Contributes::default());
+        assert_eq!(m.brand, None);
+    }
+
+    #[test]
+    fn a_brand_is_a_dark_enough_hex_colour_and_an_optional_logo_path() {
+        let m = with_plugin(|v| {
+            v["brand"] =
+                serde_json::json!({"color": "#175DDC", "icon": "M3 3h18v18H3zM8 8h8v8H8z"});
+        })
+        .unwrap();
+        assert_eq!(
+            m.brand,
+            Some(Brand {
+                color: "#175ddc".into(),
+                icon: Some("M3 3h18v18H3zM8 8h8v8H8z".into())
+            })
+        );
+        let m = with_plugin(|v| v["brand"] = serde_json::json!({"color": "#2a2a2a"})).unwrap();
+        assert_eq!(m.brand.unwrap().icon, None);
+        for (brand, want) in [
+            (serde_json::json!("#175ddc"), "brand must be an object"),
+            (serde_json::json!({}), "brand.color is missing"),
+            (serde_json::json!({"color": "blue"}), "#rrggbb"),
+            (serde_json::json!({"color": "#175ddc80"}), "#rrggbb"),
+            (
+                serde_json::json!({"color": "#ffd400"}),
+                "too light for white words",
+            ),
+            (
+                serde_json::json!({"color": "#175ddc", "logo": "M0 0"}),
+                "unknown field \"logo\" in brand",
+            ),
+            (
+                serde_json::json!({"color": "#175ddc", "icon": 3}),
+                "brand.icon must be an SVG path",
+            ),
+            (
+                serde_json::json!({"color": "#175ddc", "icon": "<svg/>"}),
+                "brand.icon must start with a move",
+            ),
+            (
+                serde_json::json!({"color": "#175ddc", "icon": "M0 0 url(x)"}),
+                "brand.icon has 'u'",
+            ),
+            (
+                serde_json::json!({"color": "#175ddc", "icon": "M2000 0"}),
+                "brand.icon has the number 2000",
+            ),
+        ] {
+            let e = plugin_err(|v| v["brand"] = brand.clone());
+            assert!(e.contains(want), "{brand}: {e}");
+        }
+        // A logo may be longer than a stroked icon, to 8 KB.
+        let long = format!("M0 0{}", "l1 1".repeat(600));
+        assert!(long.len() > MAX_ICON_PATH_BYTES);
+        assert!(
+            with_plugin(|v| v["brand"] = serde_json::json!({"color": "#175ddc", "icon": long}))
+                .is_ok()
+        );
+        let too_long = format!("M0 0{}", "l1 1".repeat(2100));
+        assert!(
+            plugin_err(|v| v["brand"] = serde_json::json!({"color": "#175ddc", "icon": too_long}))
+                .contains("bytes")
+        );
+        // A protocol 1 mod has no brand.
+        let mut g = good();
+        g["brand"] = serde_json::json!({"color": "#175ddc"});
+        assert!(
+            parse(&g.to_string())
+                .unwrap_err()
+                .contains("protocol 2 key")
+        );
+    }
+
+    #[test]
+    fn the_contrast_with_white_follows_wcag() {
+        assert!((contrast_with_white([0, 0, 0]) - 21.0).abs() < 0.01);
+        assert!((contrast_with_white([255, 255, 255]) - 1.0).abs() < 0.01);
+        assert!(contrast_with_white(hex_rgb("#175ddc").unwrap()) > 5.0);
+        assert_eq!(hex_rgb("#0aFf10"), Some([10, 255, 16]));
+        assert_eq!(hex_rgb("0aff10"), None);
     }
 
     #[test]

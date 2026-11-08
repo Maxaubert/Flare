@@ -375,12 +375,71 @@ fn the_conversation_glyphs_draw_at_full_size_at_every_scale() {
     }
 }
 
+// --- A plugin's question (plugin_ask.slint): the eye of the secret field (17 px), and Flare's chip in the logo of a
+// plugin with no brand (plugin_look.slint, half the logo's size). ---
+
+const EYE: &str = "M2 12C2 12 5.5 6 12 6C18.5 6 22 12 22 12C22 12 18.5 18 12 18C5.5 18 2 12 2 12ZM9.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0";
+const CHIP: &str = "M7 7h10v10H7zM10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4";
+/// `Theme.text-soft`: the eye and the chip of a plugin with no brand.
+const TEXT_SOFT: [f32; 3] = [194.0, 191.0, 181.0];
+
+fn secret_ask(s: f32) -> Harness<AppWindow> {
+    let h = Harness::new(s, 1000, 640, || {
+        AppWindow::new().expect("the window builds")
+    });
+    h.comp.set_pask_kind(1);
+    h.comp.set_pask_title("Unlock".into());
+    h.comp.set_pask_label("Password".into());
+    h.comp.set_pask_button("OK".into());
+    h.comp.set_pask_look(crate::plugin_look::look_of(None));
+    h.comp.set_pask_open(true);
+    h.advance(0);
+    h
+}
+
+fn draw_eye(s: f32) -> Drawn {
+    let h = secret_ask(s);
+    let f = h.render();
+    let (cx, cy) = (
+        h.comp.get_pask_eye_x() + 16.0,
+        h.comp.get_pask_eye_y() + 21.0,
+    );
+    let r = region_around(&f, cx * s, cy * s, 12.0 * s);
+    (
+        drawn(&f, r, TEXT_SOFT),
+        expected_extent_px(EYE, 17.0, 24.0, 1.8, s),
+    )
+}
+
+fn draw_chip_logo(s: f32) -> Drawn {
+    let h = secret_ask(s);
+    let f = h.render();
+    let cx = h.comp.get_pask_box_x() + h.comp.get_pask_box_w() / 2.0;
+    let cy = h.comp.get_pask_box_y() + 22.0 + 22.0;
+    let r = region_around(&f, cx * s, cy * s, 15.0 * s);
+    (
+        drawn(&f, r, TEXT_SOFT),
+        expected_extent_px(CHIP, 22.0, 24.0, 1.7 * 22.0 / 24.0, s),
+    )
+}
+
+#[test]
+fn the_secret_fields_eye_and_the_chip_logo_draw_at_full_size_at_every_scale() {
+    for s in SCALES {
+        assert_size("secret eye", s, draw_eye(s));
+        assert_size("chip logo", s, draw_chip_logo(s));
+    }
+}
+
 // --- The scan: every stroked path in the top-level ui files is either a hairline rule or a glyph with a size test. ---
 
 /// Stroked paths per top-level `ui/*.slint` file that are glyphs with a size test (the test files named in each
 /// file's comment). `tabs.slint`, `tabmark.slint`, `sidebar.slint` and `menus.slint` are covered by `icons_tabs.rs`
 /// and `icons_side.rs`; the rest by this file.
-const SIZED: [(&str, usize); 13] = [
+const SIZED: [(&str, usize); 15] = [
+    // `the_secret_fields_eye_and_the_chip_logo_draw_at_full_size_at_every_scale`.
+    ("plugin_ask.slint", 1),
+    ("plugin_look.slint", 1),
     ("convo.slint", 1),
     ("tabs.slint", 5),
     ("tabmark.slint", 7),

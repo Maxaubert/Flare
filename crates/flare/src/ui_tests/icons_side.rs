@@ -74,6 +74,7 @@ fn row(label: &str) -> MenuRow {
         flyout: false,
         flyout_pick: false,
         parent: -1,
+        ..Default::default()
     }
 }
 

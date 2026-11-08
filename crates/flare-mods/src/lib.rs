@@ -27,6 +27,8 @@
 //! - `install`: a plugin from a zip (staged, checked, then put in place by rename), its update and its removal.
 //! - `fetch`: the download of a plugin zip from an `https` address the person gave (the one network use here).
 //! - `helper`: a plugin's helper program, in a job object, with its log and its restarts.
+//! - `grants`: what the person held back of a plugin's permissions (and "Always allow" for its fills), and the tiles of
+//!   the details sheet that shows them.
 //! - `fill`: a saved login filled into a web page and a secret asked of the person (the `fill` permission): the
 //!   params, the site rule, the asks a plugin may make and the script that types the values as JSON data.
 //!
@@ -38,6 +40,7 @@ pub mod discover;
 pub mod enabled;
 pub mod fetch;
 pub mod fill;
+pub mod grants;
 pub mod hash;
 pub mod helper;
 pub mod hub;

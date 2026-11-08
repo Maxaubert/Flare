@@ -9,7 +9,7 @@
 //! The scenario plays the agent on the channel (`mods.call` with the tab's secret, as `flare-mcp` does) and the
 //! person with the pointer on Flare's own dialog, through the e2e hook like every other dialog press. It holds: the
 //! helper hears the tool call as a `tool` event; Flare asks before any fill, naming the plugin, the login and the
-//! host, with the page hidden under the question; Enter presses Deny, never Allow; Allow by the pointer fills the
+//! host, with the page hidden under the question; Enter presses Deny, never Fill; Fill by the pointer fills the
 //! user name, the password and the one-time code and fires `input` and `change`; a login of another site is refused
 //! with no question; and no value is in the agent's results, the helper's record, Flare's logs or the plugins' logs.
 
@@ -259,11 +259,13 @@ fn run(ctx: &mut Ctx, app: &mut App, profile: &Path, record: &Path) -> Result<()
     ctx.ok(
         q["kind"] == json!("fill")
             && q["plugin"] == json!(ID)
-            && q["title"] == json!("Fill test wants to fill a login")
-            && q["body"]
+            && q["title"] == json!("Fill E2E test login?")
+            && q["site"] == json!("flare-test.local")
+            && q["foot"]
                 .as_str()
-                .is_some_and(|b| b.contains("E2E test login") && b.contains("flare-test")),
-        format!("the question names the plugin, the login and the host ({q})"),
+                .is_some_and(|f| f.starts_with("Fill test fills it"))
+            && q["branded"] == json!(false),
+        format!("the question names the login, the host and the plugin, in Flare's own look (no brand) ({q})"),
     );
     ctx.ok(
         q["overlay_open"] == json!(true),

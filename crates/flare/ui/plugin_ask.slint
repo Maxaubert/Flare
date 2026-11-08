@@ -1,43 +1,112 @@
-// A plugin's question in Flare's own dialog (the `fill` permission, 2026-10-28), drawn on the same frame as the close
-// question (dialog.slint): a fill to approve ("Fill <login> into <host>?" with Deny for this session, Deny and Allow),
-// or a secret the plugin asks for, typed into a masked field.
-// Allow is pressed by the pointer only: no key presses it (Enter and Space press the Deny button that has the focus),
+// A plugin's question in Flare's own dialog (the `fill` permission, 2026-10-28), centred and in the plugin's own look
+// (2026-11-08, spec: unlock B and fill approval B; plugin_look.slint): a fill to approve ("Fill <login>?", a card with
+// the site and who asked in which tab, wide Deny and Fill, "Deny for this session" as a link), or a secret the plugin
+// asks for (`secret.ask`: its logo, the title as the heading, the optional sub under it, one masked field with the
+// label as its placeholder and an eye to show it, a full-width button with the plugin's word, Cancel as a link).
+// The words under each say whose question it is: the plugin's name comes from Flare, never from the plugin.
+// Fill is pressed by the pointer only: no key presses it (Enter and Space press the Deny button that has the focus),
 // so a key sent at the window cannot approve a fill. Escape and a press outside the box are Deny (or Cancel).
-// Allow takes no press for its first moment (ARM-DELAY): a question that pops up under a click already on its way
+// Fill takes no press for its first moment (ARM-DELAY): a question that pops up under a click already on its way
 // (an agent can time its fill to the person's clicks) is never approved by that click.
-// The field's text is cleared as the dialog closes; it is handed to the glue once, with OK or Enter.
-import { Theme, Px } from "theme.slint";
-import { DialogButton } from "dialog.slint";
+// The field's text is cleared as the dialog closes; it is handed to the glue once, with the button or Enter.
+import { Theme, Px, BrandInk } from "theme.slint";
+import { PluginLook, PluginInk, PluginLogo } from "plugin_look.slint";
+
+// A button of the question: primary (the brand's colour), outlined, or a link (words only).
+component AskButton inherits Rectangle {
+    in property <PluginLook> look;
+    in property <string> label;
+    in property <bool> primary;
+    in property <bool> link;
+    in property <bool> enabled: true;
+    in property <bool> ringed;
+    // True leaves out the accessible default action, so only the pointer presses it (a fill's Fill).
+    in property <bool> pointer-only;
+    callback clicked();
+    height: 36px;
+    min-width: lbl.preferred-width + (root.link ? 12px : 32px);
+    border-radius: 8px;
+    opacity: root.enabled ? 1 : 0.45;
+    background: root.primary ? (ta.has-hover && root.enabled ? PluginInk.accent(root.look).brighter(0.1) : PluginInk.accent(root.look))
+        : (!root.link && ta.has-hover && root.enabled ? PluginInk.card(root.look) : transparent);
+    border-width: root.primary || root.link ? 0px : Px.hair();
+    border-color: PluginInk.line(root.look);
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled && !root.pointer-only {
+            root.clicked();
+        }
+    }
+    lbl := Text {
+        text: root.label;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+        font-family: Theme.font-ui;
+        font-size: 13px;
+        font-weight: 600;
+        color: root.primary ? PluginInk.on-accent(root.look) : (root.link ? PluginInk.accent-hi(root.look) : PluginInk.text(root.look));
+    }
+    // The keyboard focus ring, 2 px outside the button.
+    Rectangle {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        border-radius: 10px;
+        border-width: 2px;
+        border-color: root.ringed && root.enabled ? PluginInk.accent-hi(root.look) : transparent;
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
 
 export component PluginAsk inherits Rectangle {
     in property <bool> open;
     // 0 a fill to approve, 1 a secret to type.
     in property <int> kind;
+    // The heading: "Fill <login>?", or the secret's title.
     in property <string> title;
-    in property <styled-text> body;
-    // What the field is for (a secret only).
+    // A secret's sub line (an account), or "".
+    in property <string> sub;
+    // What the field is for (a secret's placeholder).
     in property <string> label;
-    // A fill's answer: 0 Deny, 1 Allow, 2 Deny for this session.
+    // The secret's button ("OK" when the plugin names none).
+    in property <string> button;
+    // A fill's card: the site, who asked and where, and the letter on its tile.
+    in property <string> site;
+    in property <string> asker;
+    in property <string> letter;
+    // Whose question it is, from Flare.
+    in property <string> foot;
+    in property <PluginLook> look;
+    // A fill's answer: 0 Deny, 1 Fill, 2 Deny for this session.
     callback fill-answer(int);
-    // A secret's answer: OK with the text, or Cancel.
+    // A secret's answer: the button with the text, or Cancel.
     callback secret-answer(bool, string);
 
-    // The Deny button that holds the keys in a fill (0 Deny, 1 Deny for this session); never Allow.
+    // The Deny button that holds the keys in a fill (0 Deny, 1 Deny for this session); never Fill.
     property <int> focus-idx: 0;
     property <bool> by-key;
-    // Allow takes presses (ARM-DELAY after the question went up).
+    // Fill takes presses (ARM-DELAY after the question went up).
     property <bool> armed;
+    // The eye: the secret is shown as typed.
+    property <bool> reveal;
     out property <bool> allow-armed: root.armed;
     out property <bool> field-has-focus: field.has-focus;
+    out property <bool> revealed: root.reveal;
     // Where the buttons are, for the e2e's pointer (it presses them as the person would).
     out property <length> allow-x: allow-btn.absolute-position.x;
     out property <length> allow-y: allow-btn.absolute-position.y;
     out property <length> allow-w: allow-btn.width;
     out property <length> allow-h: allow-btn.height;
-    out property <length> deny-x: deny-btn.absolute-position.x;
-    out property <length> deny-y: deny-btn.absolute-position.y;
-    out property <length> deny-w: deny-btn.width;
-    out property <length> deny-h: deny-btn.height;
+    out property <length> deny-x: root.kind == 1 ? cancel-btn.absolute-position.x : deny-btn.absolute-position.x;
+    out property <length> deny-y: root.kind == 1 ? cancel-btn.absolute-position.y : deny-btn.absolute-position.y;
+    out property <length> deny-w: root.kind == 1 ? cancel-btn.width : deny-btn.width;
+    out property <length> deny-h: root.kind == 1 ? cancel-btn.height : deny-btn.height;
     out property <length> session-x: session-btn.absolute-position.x;
     out property <length> session-y: session-btn.absolute-position.y;
     out property <length> session-w: session-btn.width;
@@ -46,6 +115,12 @@ export component PluginAsk inherits Rectangle {
     out property <length> ok-y: ok-btn.absolute-position.y;
     out property <length> ok-w: ok-btn.width;
     out property <length> ok-h: ok-btn.height;
+    out property <length> eye-x: eye.absolute-position.x;
+    out property <length> eye-y: eye.absolute-position.y;
+    out property <length> box-x: box.x;
+    out property <length> box-y: box.y;
+    out property <length> box-w: box.width;
+    out property <length> box-h: box.height;
 
     function cancel() {
         if root.kind == 1 {
@@ -66,6 +141,7 @@ export component PluginAsk inherits Rectangle {
     height: 100%;
     changed open => {
         field.text = "";
+        root.reveal = false;
         if root.open {
             root.focus-idx = 0;
             root.by-key = false;
@@ -123,67 +199,142 @@ export component PluginAsk inherits Rectangle {
     }
 
     box := Rectangle {
-        width: min(440px, root.width - 48px);
+        width: min(380px, root.width - 48px);
         height: col.preferred-height;
-        x: (root.width - self.width) / 2;
-        y: (root.height - self.height) / 2;
-        background: Theme.side-flat;
-        border-radius: 2px;
+        x: Px.snap((root.width - self.width) / 2);
+        y: Px.snap((root.height - self.height) / 2);
+        background: PluginInk.bg(root.look);
+        border-radius: 14px;
         border-width: Px.hair();
-        border-color: Theme.divider;
-        drop-shadow-offset-y: 24px;
-        drop-shadow-blur: 70px;
-        drop-shadow-color: #00000099;
+        border-color: PluginInk.line(root.look);
+        drop-shadow-offset-y: 20px;
+        drop-shadow-blur: 50px;
+        drop-shadow-color: BrandInk.shadow;
         // Presses inside the box never reach the scrim.
         TouchArea {
             width: parent.width;
             height: parent.height;
         }
         col := VerticalLayout {
-            padding: 20px;
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-top: 22px;
+            padding-bottom: 16px;
+            HorizontalLayout {
+                alignment: center;
+                PluginLogo {
+                    look: root.look;
+                    size: root.kind == 1 ? 44px : 40px;
+                }
+            }
+            Rectangle { height: 10px; }
             Text {
                 text: root.title;
                 wrap: word-wrap;
+                horizontal-alignment: center;
                 font-family: Theme.font-ui;
-                font-size: 14.5px;
-                font-weight: 600;
-                color: Theme.text;
+                font-size: 16px;
+                font-weight: 650;
+                color: PluginInk.text(root.look);
             }
-            Rectangle { height: 6px; }
-            StyledText {
-                text: root.body;
-                default-color: Theme.dim;
-                default-font-size: 12.5px;
-                default-font-family: Theme.font-ui;
+            if root.kind == 1 && root.sub != "": Text {
+                text: root.sub;
+                horizontal-alignment: center;
+                font-family: Theme.font-ui;
+                font-size: 12.5px;
+                color: PluginInk.dim(root.look);
+                overflow: elide;
             }
-            if root.kind == 1: VerticalLayout {
-                Rectangle { height: 14px; }
-                Text {
-                    text: root.label;
-                    wrap: word-wrap;
-                    font-family: Theme.font-ui;
-                    font-size: 12px;
-                    color: Theme.text-soft;
+            Rectangle { height: root.kind == 1 ? 14px : 12px; }
+            // A fill: the site's card.
+            if root.kind == 0: Rectangle {
+                height: 54px;
+                background: PluginInk.card(root.look);
+                border-width: Px.hair();
+                border-color: PluginInk.line(root.look);
+                border-radius: 10px;
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 12px;
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 32px;
+                            height: 32px;
+                            border-radius: 8px;
+                            background: root.look.branded ? BrandInk.site : Theme.ground;
+                            Text {
+                                text: root.letter;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                font-family: Theme.font-ui;
+                                font-size: 15px;
+                                font-weight: 600;
+                                color: BrandInk.plate;
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: root.site;
+                            font-family: Theme.font-ui;
+                            font-size: 13.5px;
+                            font-weight: 600;
+                            color: PluginInk.text(root.look);
+                            overflow: elide;
+                        }
+                        Text {
+                            text: root.asker;
+                            font-family: Theme.font-ui;
+                            font-size: 12.5px;
+                            color: PluginInk.muted(root.look);
+                            overflow: elide;
+                        }
+                    }
                 }
-                Rectangle { height: 6px; }
             }
+            // A secret: the masked field, its placeholder and the eye.
             Rectangle {
                 visible: root.kind == 1;
-                height: root.kind == 1 ? 30px : 0px;
-                border-radius: 6px;
+                height: root.kind == 1 ? 42px : 0px;
+                border-radius: 8px;
+                background: PluginInk.field(root.look);
                 border-width: Px.hair();
-                border-color: field.has-focus ? Theme.accent : Theme.divider;
-                background: Theme.ground;
+                border-color: field.has-focus ? PluginInk.accent-hi(root.look) : PluginInk.line(root.look);
+                // The glow of the focused field.
+                Rectangle {
+                    x: -3px;
+                    y: -3px;
+                    width: parent.width + 6px;
+                    height: parent.height + 6px;
+                    border-radius: 11px;
+                    border-width: 3px;
+                    border-color: field.has-focus ? PluginInk.accent-hi(root.look).with-alpha(0.2) : transparent;
+                }
+                if field.text == "": Text {
+                    x: 12px;
+                    width: parent.width - 48px;
+                    height: parent.height;
+                    text: root.label;
+                    vertical-alignment: center;
+                    font-family: Theme.font-ui;
+                    font-size: 13.5px;
+                    color: PluginInk.dim(root.look);
+                    overflow: elide;
+                }
                 field := TextInput {
-                    x: 10px;
-                    width: parent.width - 20px;
+                    x: 12px;
+                    width: parent.width - 48px;
                     height: parent.height;
                     enabled: root.kind == 1;
                     single-line: true;
-                    input-type: InputType.password;
+                    input-type: root.reveal ? InputType.text : InputType.password;
                     font-family: Theme.font-ui;
-                    font-size: 12.5px;
-                    color: Theme.text;
+                    font-size: 13.5px;
+                    color: PluginInk.text(root.look);
                     vertical-alignment: center;
                     accessible-role: text-input;
                     accessible-label: root.label;
@@ -196,37 +347,96 @@ export component PluginAsk inherits Rectangle {
                         return reject;
                     }
                 }
-            }
-            Rectangle { height: 20px; }
-            HorizontalLayout {
-                alignment: end;
-                spacing: 8px;
-                session-btn := DialogButton {
-                    shown: root.kind == 0;
-                    label: "Deny for this session";
-                    ringed: root.by-key && root.focus-idx == 1;
-                    clicked => { root.fill-answer(2); }
+                eye := Rectangle {
+                    x: parent.width - 36px;
+                    width: 32px;
+                    height: parent.height;
+                    accessible-role: AccessibleRole.button;
+                    accessible-label: root.reveal ? "Hide what you typed" : "Show what you typed";
+                    accessible-action-default => { root.reveal = !root.reveal; }
+                    Path {
+                        x: (parent.width - 17px) / 2 - 0.9px;
+                        y: (parent.height - 17px) / 2 - 0.9px;
+                        width: 17px + 1.8px;
+                        height: 17px + 1.8px;
+                        viewbox-width: 24;
+                        viewbox-height: 24;
+                        commands: root.reveal ? "M2 12C2 12 5.5 6 12 6C18.5 6 22 12 22 12C22 12 18.5 18 12 18C5.5 18 2 12 2 12ZM9.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0M4 4l16 16" : "M2 12C2 12 5.5 6 12 6C18.5 6 22 12 22 12C22 12 18.5 18 12 18C5.5 18 2 12 2 12ZM9.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0";
+                        fill: transparent;
+                        stroke: eta.has-hover ? PluginInk.text(root.look) : PluginInk.muted(root.look);
+                        stroke-width: 1.8px;
+                        stroke-line-cap: round;
+                        stroke-line-join: round;
+                    }
+                    eta := TouchArea {
+                        clicked => {
+                            root.reveal = !root.reveal;
+                            field.focus();
+                        }
+                    }
                 }
-                deny-btn := DialogButton {
-                    label: root.kind == 1 ? "Cancel" : "Deny";
-                    ringed: root.by-key && root.focus-idx == 0 && root.kind == 0;
+            }
+            Rectangle { height: root.kind == 1 ? 12px : 16px; }
+            // A secret: the full-width button. A fill: Deny and Fill, side by side.
+            ok-btn := AskButton {
+                visible: root.kind == 1;
+                height: root.kind == 1 ? 36px : 0px;
+                look: root.look;
+                label: root.button;
+                primary: true;
+                clicked => { root.send-secret(); }
+            }
+            HorizontalLayout {
+                visible: root.kind == 0;
+                height: root.kind == 0 ? 36px : 0px;
+                spacing: 8px;
+                deny-btn := AskButton {
+                    horizontal-stretch: 1;
+                    look: root.look;
+                    label: "Deny";
+                    ringed: root.by-key && root.focus-idx == 0;
                     clicked => { root.cancel(); }
                 }
-                allow-btn := DialogButton {
-                    shown: root.kind == 0;
-                    label: "Allow";
-                    is-primary: true;
+                allow-btn := AskButton {
+                    horizontal-stretch: 1;
+                    look: root.look;
+                    label: "Fill";
+                    primary: true;
                     enabled: root.armed;
                     // Pointer only: a screen reader reads it, but no key or default action presses it.
                     pointer-only: true;
                     clicked => { root.fill-answer(1); }
                 }
-                ok-btn := DialogButton {
-                    shown: root.kind == 1;
-                    label: "OK";
-                    is-primary: true;
-                    clicked => { root.send-secret(); }
+            }
+            Rectangle { height: 6px; }
+            HorizontalLayout {
+                alignment: center;
+                cancel-btn := AskButton {
+                    visible: root.kind == 1;
+                    width: root.kind == 1 ? self.min-width : 0px;
+                    look: root.look;
+                    label: "Cancel";
+                    link: true;
+                    clicked => { root.cancel(); }
                 }
+                session-btn := AskButton {
+                    visible: root.kind == 0;
+                    width: root.kind == 0 ? self.min-width : 0px;
+                    look: root.look;
+                    label: "Deny for this session";
+                    link: true;
+                    ringed: root.by-key && root.focus-idx == 1;
+                    clicked => { root.fill-answer(2); }
+                }
+            }
+            Rectangle { height: 4px; }
+            Text {
+                text: root.foot;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                font-family: Theme.font-ui;
+                font-size: 11.5px;
+                color: PluginInk.dim(root.look);
             }
         }
     }

@@ -273,16 +273,48 @@ impl AppCtl {
         app.set_plugins_open(self.plugins.open);
     }
 
-    /// The plugins' groups in a shell tab's menu: one flyout per plugin under its name, its actions in it.
+    /// The plugins' rows in a shell tab's menu (2026-11-08, the same rule for every plugin): a plugin with ONE action
+    /// there shows it flat, its title beside the plugin's logo; one with more has a flyout under its name, the logo on
+    /// that entry and its actions in it. The logo is the brand's, else Flare's chip: a flat row never wears the
+    /// action's own icon, so a plugin's row cannot pass for one of Flare's own items. A flat row whose title does not
+    /// name the plugin carries the plugin's name as its hint. A ticked action wears the tick instead of the logo.
     pub(super) fn plugin_menu_rows(&self, tab: &str, rows: &mut Vec<(MenuRowData, String)>) {
         let p = &self.plugins;
         let glyph = |plugin: &str, icon: &str| p.glyph(plugin, icon);
         let groups = plugin_ui::menu_groups(&p.actions, &p.ui, tab, &glyph);
+        let logo_of = |plugin: &str| -> Option<(String, String)> {
+            let brand = self.mods.as_ref()?.hub().found(plugin)?.manifest.brand?;
+            Some((brand.icon?, brand.color))
+        };
+        let chip = flare_settings::icons::icon_path("chip").unwrap_or("");
         for (i, (name, buttons)) in groups.into_iter().enumerate() {
+            let logo = buttons.first().and_then(|b| logo_of(&b.plugin));
+            if let [b] = buttons.as_slice() {
+                let mut r = MenuRowData::labelled(&b.title);
+                r.group = i == 0;
+                r.disabled = !b.enabled;
+                if !b.title.to_lowercase().contains(&name.to_lowercase()) {
+                    r.hint = name.clone();
+                }
+                if b.checked {
+                    r.icon_cmd = TICK.to_string();
+                } else if logo.is_some() {
+                    r.logo = logo;
+                } else {
+                    r.icon_cmd = chip.to_string();
+                }
+                rows.push((r, format!("{ACTION_ROW}{}\u{1f}{}", b.plugin, b.key)));
+                continue;
+            }
             let parent = rows.len() as i32;
             let mut head = MenuRowData::labelled(&name);
             head.flyout = true;
             head.group = i == 0;
+            if logo.is_some() {
+                head.logo = logo;
+            } else {
+                head.icon_cmd = chip.to_string();
+            }
             rows.push((head, String::new()));
             for b in buttons {
                 let mut r = MenuRowData::labelled(&b.title);
