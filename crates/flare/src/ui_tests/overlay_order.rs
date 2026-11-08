@@ -131,6 +131,7 @@ fn rows() -> ModelRc<MenuRow> {
         flyout: false,
         flyout_pick: false,
         parent: -1,
+        ..Default::default()
     };
     ModelRc::new(VecModel::from(vec![
         row("Copy"),

@@ -298,6 +298,84 @@ fn sidebar_set_is_five_a_second_for_one_section_and_only_a_plugin_calls_it() {
 }
 
 #[test]
+fn one_tab_menu_action_is_flat_with_the_plugins_logo_and_more_are_a_flyout_whose_entry_wears_it() {
+    let (f, _a, b) = two_tabs();
+    let slot = with_fake(&f);
+    let _w = world(&f, |r| {
+        surface_plugin(
+            r,
+            "solo",
+            &["actions"],
+            r##"{"actions":[{"key":"toggle","title":"Lock it","where":["tab-menu"]}]},"brand":{"color":"#175ddc","icon":"M3 3h18v18H3z"}"##,
+        );
+        surface_plugin(
+            r,
+            "duo",
+            &["actions"],
+            r##"{"actions":[{"key":"a","title":"First","where":["tab-menu"]},{"key":"b","title":"Second","where":["tab-menu"]}]},"brand":{"color":"#2a6a2a","icon":"M4 4h16v16H4z"}"##,
+        );
+        surface_plugin(
+            r,
+            "plain",
+            &["actions"],
+            r#"{"actions":[{"key":"a","title":"One","where":["tab-menu"]},{"key":"b","title":"Two","where":["tab-menu"]}]}"#,
+        );
+    });
+    for id in ["solo", "duo", "plain"] {
+        turn(&f, id, true);
+        bg_up(&f, &slot, id);
+    }
+    f.ctl.borrow_mut().open_tab_menu(&b, 10.0, 10.0);
+    let rows: Vec<(MenuRowData, String)> = f.ctl.borrow().menu.as_ref().unwrap().rows.clone();
+    let at = |label: &str| {
+        rows.iter()
+            .position(|(r, _)| r.label == label)
+            .unwrap_or_else(|| panic!("{label}"))
+    };
+    // One action: flat, the brand's logo in its colour, its title set by the plugin.
+    let solo = at("Lock it");
+    assert_eq!(rows[solo].0.parent, -1);
+    assert!(!rows[solo].0.flyout);
+    assert_eq!(
+        rows[solo].0.logo,
+        Some(("M3 3h18v18H3z".to_string(), "#175ddc".to_string()))
+    );
+    let drawn = f.h.comp.get_menu_rows().row_data(solo).unwrap();
+    assert_eq!(drawn.logo.as_str(), "M3 3h18v18H3z");
+    assert_eq!(drawn.logo_fill, slint::Color::from_rgb_u8(0x17, 0x5d, 0xdc));
+    // Two actions: a flyout under the plugin's name, the logo on the entry, the actions inside.
+    let duo = at("Plugin duo");
+    assert!(rows[duo].0.flyout);
+    assert_eq!(
+        rows[duo].0.logo.as_ref().map(|l| l.1.as_str()),
+        Some("#2a6a2a")
+    );
+    assert_eq!(rows[at("First")].0.parent, duo as i32);
+    assert_eq!(rows[at("Second")].0.parent, duo as i32);
+    // No brand: Flare's chip on the entry.
+    let plain = at("Plugin plain");
+    assert!(rows[plain].0.flyout && rows[plain].0.logo.is_none());
+    assert_eq!(
+        rows[plain].0.icon_cmd,
+        flare_settings::icons::icon_path("chip").unwrap()
+    );
+    // The title the plugin sets is the flat row's words.
+    bg_message(&f, &slot, "solo", r#"{"t":"listen","name":"action"}"#);
+    let r = bg_call(
+        &f,
+        &slot,
+        "solo",
+        1,
+        "actions.set",
+        json!({"key": "toggle", "title": "Unlock it"}),
+    );
+    assert_eq!(code_of_reply(&r), "", "{r}");
+    f.ctl.borrow_mut().open_tab_menu(&b, 10.0, 10.0);
+    let rows: Vec<(MenuRowData, String)> = f.ctl.borrow().menu.as_ref().unwrap().rows.clone();
+    assert!(rows.iter().any(|(r, _)| r.label == "Unlock it"));
+}
+
+#[test]
 fn actions_show_in_the_tab_menu_on_hover_and_in_the_top_bar_and_a_click_is_an_event_with_click_scope()
  {
     let (f, a, b) = two_tabs();
@@ -314,21 +392,22 @@ fn actions_show_in_the_tab_menu_on_hover_and_in_the_top_bar_and_a_click_is_an_ev
     bg_up(&f, &slot, "caller");
     bg_message(&f, &slot, "caller", r#"{"t":"listen","name":"action"}"#);
 
-    // The tab's menu: Flare's own rows, then one flyout under the plugin's name holding its action.
+    // The tab's menu: Flare's own rows, then the plugin's one tab-menu action, flat (no flyout for one item).
     f.ctl.borrow_mut().open_tab_menu(&b, 10.0, 10.0);
     let rows: Vec<(MenuRowData, String)> = f.ctl.borrow().menu.as_ref().unwrap().rows.clone();
     assert_eq!(rows[0].0.label, "Close tab");
-    let head = rows
-        .iter()
-        .position(|(r, _)| r.label == "Plugin caller")
-        .expect("the plugin's group");
-    assert!(rows[head].0.flyout && rows[head].0.group);
+    assert!(
+        !rows.iter().any(|(r, _)| r.label == "Plugin caller"),
+        "no flyout for one action"
+    );
     let child = rows
         .iter()
         .position(|(r, _)| r.label == "Add to-do")
         .expect("the action");
-    assert_eq!(rows[child].0.parent, head as i32);
-    // The Slint row draws the action's own icon.
+    assert_eq!(rows[child].0.parent, -1);
+    assert!(rows[child].0.group && !rows[child].0.flyout);
+    assert_eq!(rows[child].0.logo, None, "no brand: no logo");
+    // The Slint row draws the action's own icon (the plugin has no brand).
     assert_eq!(
         f.h.comp
             .get_menu_rows()

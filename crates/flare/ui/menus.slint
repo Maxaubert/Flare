@@ -6,6 +6,7 @@ import { Glyphs } from "glyphs.slint";
 import { Tip } from "tip.slint";
 import { MarkRing, AgentIcon } from "tabmark.slint";
 import { LoadingRing } from "tabs.slint";
+import { PluginLogo } from "plugin_look.slint";
 
 component MenuItem inherits Rectangle {
     in property <MenuRow> item;
@@ -49,7 +50,16 @@ component MenuItem inherits Rectangle {
         padding-left: 11px;
         padding-right: 11px;
         spacing: 8px;
-        if root.item.icon != "": Rectangle {
+        // A plugin's brand logo (its item in the tab menu), 15 px.
+        if root.item.logo != "": Rectangle {
+            width: 15px;
+            PluginLogo {
+                y: (parent.height - 15px) / 2;
+                size: 15px;
+                look: { branded: true, accent: root.item.logo-fill, accent-hi: root.item.logo-fill, logo: root.item.logo, plate: true };
+            }
+        }
+        if root.item.icon != "" && root.item.logo == "": Rectangle {
             width: 13px;
             // Slint fits the path into its box less the stroke: the box is grown by one stroke and moved back by half.
             Path {
