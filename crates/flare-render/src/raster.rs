@@ -902,32 +902,6 @@ mod tests {
         s
     }
 
-    fn diag_face(r: &mut Rasterizer, ch: char) -> String {
-        let px = font_px_for(r.base_px, 1.0);
-        let family = r.family.clone();
-        let attrs = Attrs::new().family(Family::Name(&family));
-        let mut buffer = Buffer::new_empty(Metrics::new(px, px));
-        buffer.set_text(&ch.to_string(), &attrs, Shaping::Advanced, None);
-        buffer.shape_until_scroll(&mut r.fs, false);
-        let mut out = String::new();
-        for run in buffer.layout_runs() {
-            for g in run.glyphs {
-                if let Some(f) = r.fs.db().face(g.font_id) {
-                    let path = match &f.source {
-                        cosmic_text::fontdb::Source::File(p)
-                        | cosmic_text::fontdb::Source::SharedFile(p, _) => p.display().to_string(),
-                        cosmic_text::fontdb::Source::Binary(_) => "binary".into(),
-                    };
-                    out.push_str(&format!(
-                        "[{} {} idx{} gid{}]",
-                        f.post_script_name, path, f.index, g.glyph_id
-                    ));
-                }
-            }
-        }
-        out
-    }
-
     #[test]
     fn glyph_images_are_identical_to_the_all_fonts_build_for_the_theme_sample() {
         let text = sample_text();
@@ -947,20 +921,10 @@ mod tests {
             {
                 let k = key(&ch.to_string());
                 if glyph_settled(&mut old, &k) != glyph_settled(&mut new, &k) {
-                    differing.push(format!(
-                        "U+{:04X} old={} new={}",
-                        ch as u32,
-                        diag_face(&mut old, ch),
-                        diag_face(&mut new, ch)
-                    ));
+                    differing.push(format!("U+{:04X}", ch as u32));
                 }
                 checked += 1;
             }
-            eprintln!(
-                "DIAG U+28FF old={} new={}",
-                diag_face(&mut old, '\u{28FF}'),
-                diag_face(&mut new, '\u{28FF}')
-            );
             assert!(
                 differing.is_empty(),
                 "differ at scale {scale}: {differing:?}"
