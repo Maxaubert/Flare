@@ -37,6 +37,8 @@ pub enum Overlay {
     SettingsAsk,
     /// The Dictation page's question.
     DictationAsk,
+    /// A plugin's details sheet (Settings > Plugins, its card's info button).
+    PluginSheet,
     /// The colour picker.
     ColourPicker,
     /// The Command help panel.
@@ -53,7 +55,7 @@ pub enum Overlay {
 
 impl Overlay {
     /// All of them.
-    pub const ALL: [Overlay; 19] = [
+    pub const ALL: [Overlay; 20] = [
         Overlay::Menu,
         Overlay::Overflow,
         Overlay::PluginsDropdown,
@@ -67,6 +69,7 @@ impl Overlay {
         Overlay::ThemeEditor,
         Overlay::SettingsAsk,
         Overlay::DictationAsk,
+        Overlay::PluginSheet,
         Overlay::ColourPicker,
         Overlay::Help,
         Overlay::Find,

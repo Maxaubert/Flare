@@ -3199,13 +3199,19 @@ mod tests {
             );
         }
         e.feed(b"Local: http://localhost:3000/\r\n");
-        let t = Instant::now();
-        let s = dev(&mut e);
-        let took = t.elapsed();
-        assert_eq!(s.server.map(|s| s.port), Some(3000));
+        // The cost of the work is the fastest of a few full readings (`dev` drops the scan cache, so each
+        // one reads the whole screen): one reading alone on a shared runner also measures however long
+        // the scheduler parked the thread, which once read as 37 ms for a scan that takes a few.
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..5 {
+            let t = Instant::now();
+            let s = dev(&mut e);
+            best = best.min(t.elapsed());
+            assert_eq!(s.server.map(|s| s.port), Some(3000));
+        }
         assert!(
-            took < std::time::Duration::from_millis(30),
-            "one reading took {took:?}"
+            best < std::time::Duration::from_millis(30),
+            "the fastest of five readings took {best:?}"
         );
     }
 

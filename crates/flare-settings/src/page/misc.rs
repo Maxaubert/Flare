@@ -32,6 +32,7 @@ pub fn build_diagnostics(env: &PageEnv<'_>) -> PageModel {
             label: "Open folder".to_string(),
             alt: None,
             off: !has_dir,
+            ..Button::default()
         }],
         ..plain_row(def("diag-folder"), Control::None)
     };
@@ -42,6 +43,7 @@ pub fn build_diagnostics(env: &PageEnv<'_>) -> PageModel {
             label: "Mark".to_string(),
             alt: env.diag_marked.then(|| "Marked".to_string()),
             off: false,
+            ..Button::default()
         }],
         ..plain_row(def("diag-mark"), Control::None)
     };

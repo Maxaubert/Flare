@@ -1238,12 +1238,20 @@ fn the_slide_holds_the_terminals_size_and_fits_once() {
         f.step(16);
     }
     f.step(40);
+    // The fit reaches the shell on the session's resize helper thread, so on a busy runner it can land a
+    // moment after the step that asked for it: wait for it (generous deadline), then hold still a while
+    // in real time and check no second fit follows.
+    f.pump_until("the fit after the slide", |_| fake.resize_calls() > base);
     assert_eq!(
         fake.resize_calls(),
         base + 1,
         "exactly one fit after the slide"
     );
     f.step(100);
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(20));
+        f.pump();
+    }
     assert_eq!(fake.resize_calls(), base + 1);
 }
 

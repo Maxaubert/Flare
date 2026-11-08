@@ -141,6 +141,26 @@ export global SettingsInk {
     out property <color> selection: Theme.accent.with-alpha(0.45);
 }
 
+// A plugin's fixed dark brand surface (2026-11-08, docs/surfaces/plugins.md "Brand"): the same for every plugin with a
+// brand, whatever Flare's theme; the brand's own colour comes from its manifest at run time (plugin_look.slint).
+export global BrandInk {
+    out property <color> bg: #1f242e;
+    out property <color> field: #161c26;
+    out property <color> card: #2a303c;
+    out property <color> line: #353d4c;
+    out property <color> text: #ffffff;
+    out property <color> muted: #bac0ce;
+    out property <color> dim: #8d94a5;
+    out property <color> warn: #e8a33d;
+    out property <color> on-warn: #1a1205;
+    // The logo's white tile, a switch's knob, and the fill question's site tile.
+    out property <color> plate: #ffffff;
+    out property <color> site: #0d1117;
+    // The shadows under a plugin's modal box and its dropdown.
+    out property <color> shadow: #000000bb;
+    out property <color> shadow-soft: #000000aa;
+}
+
 export global SettingsFixed {
     out property <color> warn-dark: #e0a84b;
     out property <color> warn-light: #a46400;

@@ -3,3 +3,10 @@
 [[profile.default.overrides]]
 filter = 'test(find_and_a_big_scrollback_never_hold_the_window)'
 threads-required = "num-cpus"
+
+# The emulator's lock-hold and screen-read budgets measure wall-clock time of a debug build; with every
+# other test running beside them a shared macOS runner starved the hold to a 41 ms p90 (limit 40) for a
+# copy that takes a few ms alone. They take every slot too, so they measure the code, not the neighbours.
+[[profile.default.overrides]]
+filter = 'package(flare-term) & (test(snapshot_holds_the_lock_under_1_ms) | test(reading_a_huge_screen_full_of_addresses_stays_cheap))'
+threads-required = "num-cpus"

@@ -6,6 +6,11 @@
 //!
 //! What it heard back is appended to the record file, one JSON line per call, so the scenario can check it; the
 //! values it sent are never written there (the scenario scans that file for them too).
+//!
+//! For the `pluginBrand` scenario (2026-11-08) it also titles its one tab-menu action when its grant holds `actions`
+//! (`actions.set`, as a password manager says "Lock" or "Unlock" by its state), and a `tool` event whose input says
+//! `case: "secret"` asks the person for a secret (`secret.ask` with a `sub` and a `button`) and answers with only
+//! whether one was typed and its length, never the text.
 
 use std::io::Write;
 use std::path::Path;
@@ -20,6 +25,9 @@ pub const PASS: &str = "Flare-e2e-PASS-7Qx9";
 pub const CODE: &str = "402719";
 /// The tool the test plugin offers (`mod_filltest_fill_login`).
 pub const TOOL: &str = "fill_login";
+/// The tab-menu action the `pluginBrand` plugin declares, and the title its helper gives it.
+pub const ACTION: &str = "toggle";
+pub const ACTION_TITLE: &str = "Lock vault";
 
 fn record(file: &Path, line: &Value) {
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -69,8 +77,17 @@ pub fn run(record_file: &Path) -> i32 {
         record_file,
         &json!({"hello": hello.as_ref().map(|h| h.permissions.clone()).map_err(|e| e.to_string())}),
     );
-    if hello.is_err() {
-        return 1;
+    let perms = match &hello {
+        Ok(h) => h.permissions.clone(),
+        Err(_) => return 1,
+    };
+    if perms.iter().any(|p| p == "actions") {
+        let set = outcome(c.call(
+            Method::ActionsSet,
+            json!({"key": ACTION, "title": ACTION_TITLE}),
+            Duration::from_secs(10),
+        ));
+        record(record_file, &json!({"actions.set": set}));
     }
     while let Ok(next) = c.wait_event(Duration::from_secs(1)) {
         let Some(e) = next else { continue };
@@ -81,6 +98,31 @@ pub fn run(record_file: &Path) -> i32 {
         let call_id = p["call_id"].as_str().unwrap_or_default().to_string();
         let tab = p["tab"].as_str().unwrap_or_default().to_string();
         let case = p["input"]["case"].as_str().unwrap_or("match").to_string();
+        if case == "secret" {
+            let asked = c.call(
+                Method::SecretAsk,
+                json!({"title": "Your vault is locked", "label": "Master password", "sub": "e2e@flare-test.local", "button": "Unlock"}),
+                Duration::from_secs(90),
+            );
+            // Only whether a secret came, and its length: the text is never written or sent on.
+            let got = match asked {
+                Ok(v) => match v["text"].as_str() {
+                    Some(t) => json!({"answered": true, "length": t.chars().count()}),
+                    None => v,
+                },
+                Err(e) => outcome(Err(e)),
+            };
+            let answered = outcome(c.call(
+                Method::ToolsRespond,
+                json!({"call_id": call_id, "result": {"outcome": got}}),
+                Duration::from_secs(10),
+            ));
+            record(
+                record_file,
+                &json!({"event": e.event, "case": case, "secret": got, "respond": answered}),
+            );
+            continue;
+        }
         let page = outcome(c.call(
             Method::BrowserFillPage,
             json!({"tab": tab}),

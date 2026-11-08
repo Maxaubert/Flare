@@ -2272,6 +2272,20 @@ mod flow {
             w.pump();
         }
         assert_eq!(w.h.comp.get_tab_rows().row_count(), 0, "no tab is left");
+        // The closed tab's shell is ended on a helper thread, which answers ConPTY's start-up queries
+        // (ESC[1;1R ESC[?1;2c) into the dying pty: wait until it is killed and its pty has gone quiet,
+        // so those bytes are not taken for typing by the drop below (a busy runner wrote them late).
+        let t = Instant::now();
+        let mut last = w.written();
+        let mut calm = 0;
+        while (!w.fake.killed() || calm < 10) && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+            w.pump();
+            let now = w.written();
+            calm = if now == last { calm + 1 } else { 0 };
+            last = now;
+        }
+        assert!(w.fake.killed(), "the closed tab's shell is ended");
         let before = w.written();
         w.ctl
             .borrow_mut()
