@@ -268,6 +268,9 @@ pub enum CtlOp {
         plugin_name: String,
         title: String,
         label: String,
+        /// The line under the title and the button's word; empty when the plugin left them out.
+        sub: String,
+        button: String,
         /// As for `BadgeSet`.
         generation: u64,
     },
@@ -1261,7 +1264,7 @@ impl AppDispatcher {
         self.ask_by(op, Instant::now() + ASK_CALL_WAIT)
     }
 
-    /// `secret.ask {title, label}`: Flare's own masked field; the text comes back to this plugin only.
+    /// `secret.ask {title, label, sub?, button?}`: Flare's own masked field; the text comes back to this plugin only.
     fn secret_ask(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
         let (plugin, plugin_name, generation) = self.fill_caller(ctx, "asking for a secret")?;
         let req = flare_mods::fill::parse_secret(params)?;
@@ -1272,6 +1275,8 @@ impl AppDispatcher {
                 plugin_name,
                 title: req.title,
                 label: req.label,
+                sub: req.sub,
+                button: req.button,
                 generation,
             },
             Instant::now() + ASK_CALL_WAIT,
@@ -1321,7 +1326,7 @@ impl AppDispatcher {
 
     /// A still clock for the decor limit, so a test can spend a second's worth at one instant.
     #[cfg(test)]
-    fn with_clock(mut self, clock: fn() -> Instant) -> Self {
+    pub(crate) fn with_clock(mut self, clock: fn() -> Instant) -> Self {
         self.clock = clock;
         self
     }
