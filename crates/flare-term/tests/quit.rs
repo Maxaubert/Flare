@@ -1,5 +1,5 @@
 //! Quit and kill with real shells: none remain (rules 28, 29, 30).
-//! Windows-only until macOS phase 2 (the real bundled ConPTY and the Windows shells).
+//! Windows-only (cmd in the bundled ConPTY); the macOS twin with `/bin/sh` is `quit_macos.rs`.
 #![cfg(windows)]
 
 mod common;

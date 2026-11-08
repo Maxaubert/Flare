@@ -249,10 +249,6 @@ mod tests {
         seen.len()
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn the_scene_renders_every_page_without_a_window_and_is_not_blank() {
         let dir = tempfile::tempdir().unwrap();
@@ -268,10 +264,6 @@ mod tests {
         }
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn the_scene_state_is_deterministic() {
         let dir = tempfile::tempdir().unwrap();
@@ -286,10 +278,6 @@ mod tests {
         assert_ne!(decode(&a).2, decode(&c).2);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn every_overlay_and_a_find_result_renders() {
         let dir = tempfile::tempdir().unwrap();

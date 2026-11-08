@@ -120,16 +120,27 @@ fn the_chosen_option_wears_the_accent_hi_ink_and_a_check() {
 
 #[cfg_attr(
     not(windows),
-    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    ignore = "names Windows faces (Consolas, Segoe UI); the macOS twin is the_font_options_are_drawn_in_their_own_face_on_macos"
 )]
 #[test]
 fn the_font_options_are_drawn_in_their_own_face() {
+    font_options_draw_in_their_own_face("Consolas", "Segoe UI");
+}
+
+/// macOS twin of `the_font_options_are_drawn_in_their_own_face`, with two faces every Mac has.
+#[cfg(not(windows))]
+#[test]
+fn the_font_options_are_drawn_in_their_own_face_on_macos() {
+    font_options_draw_in_their_own_face("Menlo", "Helvetica");
+}
+
+fn font_options_draw_in_their_own_face(mono: &str, ui: &str) {
     for s in SCALES {
         let h = make(
             s,
             vec![
-                opt("mono", "WWWWiiiilll", "Consolas"),
-                opt("ui", "WWWWiiiilll", "Segoe UI"),
+                opt("mono", "WWWWiiiilll", mono),
+                opt("ui", "WWWWiiiilll", ui),
             ],
             "",
         );

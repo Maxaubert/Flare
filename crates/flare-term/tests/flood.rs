@@ -1,7 +1,6 @@
 //! The runaway `cat`: a 100 MB flood keeps snapshots fast and arrives complete, Ctrl+C stops an
 //! endless writer, and the parser alone keeps up.
-//! Windows-only until macOS phase 2 (the real bundled ConPTY and the Windows shells).
-#![cfg(windows)]
+//! Windows: the bundled ConPTY. macOS: a real pty (openpty), where Ctrl+C is the terminal's SIGINT.
 
 mod common;
 
@@ -99,6 +98,11 @@ fn a_100_mb_flood_keeps_snapshots_fast_and_arrives_complete() {
 
 /// A test runner can start us with Ctrl+C ignored, and children inherit that flag. The app is a GUI
 /// process with no such flag, so the test clears it to see what a real tab sees.
+/// macOS: nothing to clear; portable-pty resets SIGINT to its default in the child before exec.
+#[cfg(not(windows))]
+fn clear_inherited_ctrl_c_ignore() {}
+
+#[cfg(windows)]
 fn clear_inherited_ctrl_c_ignore() {
     use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
     // SAFETY: a null handler with FALSE restores normal Ctrl+C processing for this process.

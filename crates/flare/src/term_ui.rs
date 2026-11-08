@@ -2188,10 +2188,6 @@ mod tests {
         r.pump();
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_printed_path_lights_up_after_the_worker_answers() {
         let dir = tempfile::tempdir().unwrap();
@@ -2211,10 +2207,6 @@ mod tests {
     }
 
     /// The owner's log path (2026-10-24): printed before the script that writes it had started, it stayed plain.
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_file_made_after_its_path_was_printed_lights_up_on_a_quiet_screen() {
         let dir = tempfile::tempdir().unwrap();
@@ -2244,10 +2236,6 @@ mod tests {
         );
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_path_link_click_opens_through_the_allowlist_on_a_worker() {
         let dir = tempfile::tempdir().unwrap();
@@ -2296,10 +2284,6 @@ mod tests {
             .collect()
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_click_on_a_text_file_or_a_picture_asks_for_a_preview_and_a_script_is_still_revealed() {
         let dir = tempfile::tempdir().unwrap();
@@ -2334,10 +2318,6 @@ mod tests {
         );
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn show_in_side_panel_asks_for_the_preview_the_click_asks_for_and_opens_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -2408,10 +2388,6 @@ mod tests {
         assert!(r.openers.records().is_empty(), "{:?}", r.openers.records());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn with_previews_off_no_preview_is_asked_for() {
         let dir = tempfile::tempdir().unwrap();
@@ -2425,10 +2401,6 @@ mod tests {
         assert!(previews(&r).is_empty());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_path_menu_pick_re_resolves_and_never_opens_abs_directly() {
         let dir = tempfile::tempdir().unwrap();

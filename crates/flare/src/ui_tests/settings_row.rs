@@ -91,10 +91,6 @@ fn the_first_row_has_no_rule() {
     }
 }
 
-#[cfg_attr(
-    not(windows),
-    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-)]
 #[test]
 fn a_tap_row_fires_tapped_off_the_control_only() {
     for scale in SCALES {
@@ -139,11 +135,27 @@ fn an_off_row_is_dimmed_and_ignores_the_pointer() {
     }
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "260 px cuts the sub in Segoe UI (Windows); the macOS twin is the_subtext_tooltip_appears_only_when_it_is_cut_on_macos"
+)]
 #[test]
 fn the_subtext_tooltip_appears_only_when_it_is_cut() {
+    // A 260 px panel: row 2's long sub is cut, row 1's short sub fits.
+    subtext_tip_only_when_cut(260.0);
+}
+
+/// macOS twin of `the_subtext_tooltip_appears_only_when_it_is_cut`: SF is narrower than Segoe UI,
+/// so the long sub still fits a 260 px panel there; a 220 px one cuts it and keeps the short one.
+#[cfg(not(windows))]
+#[test]
+fn the_subtext_tooltip_appears_only_when_it_is_cut_on_macos() {
+    subtext_tip_only_when_cut(220.0);
+}
+
+fn subtext_tip_only_when_cut(panel_w: f32) {
     for scale in SCALES {
-        // A 260 px panel: row 2's long sub is cut, row 1's short sub fits.
-        let h = harness(scale, 260.0);
+        let h = harness(scale, panel_w);
         h.move_to(100.0, 49.0);
         assert_eq!(
             h.comp.get_tip_count(),

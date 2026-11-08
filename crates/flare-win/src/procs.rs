@@ -240,52 +240,12 @@ pub fn snapshot_processes(roots: &[u32], wanted: &dyn Fn(&str) -> bool) -> Optio
     )
 }
 
-/// Waits until process `pid` has ended, at most `max`. True when it is gone. Off Windows it polls
-/// `kill(pid, 0)`, which sends no signal and only asks whether the pid exists. Phase 2 of the port
-/// plan replaces the poll with a kqueue `NOTE_EXIT` wait.
+// macOS: libproc, KERN_PROCARGS2 and kqueue (through flare-proc).
 #[cfg(not(windows))]
-pub fn wait_for_exit(pid: u32, max: std::time::Duration) -> bool {
-    use std::time::{Duration, Instant};
-    unsafe extern "C" {
-        fn kill(pid: i32, sig: i32) -> i32;
-    }
-    const ESRCH: i32 = 3;
-    let Ok(pid) = i32::try_from(pid) else {
-        return true;
-    };
-    if pid <= 0 {
-        // 0 and negative pids name process groups, never one process.
-        return true;
-    }
-    let alive = || {
-        // SAFETY: signal 0 sends nothing; kill only checks that the pid exists.
-        if unsafe { kill(pid, 0) } == 0 {
-            return true;
-        }
-        // EPERM: it exists but belongs to someone else. Only ESRCH means it is gone.
-        std::io::Error::last_os_error().raw_os_error() != Some(ESRCH)
-    };
-    let started = Instant::now();
-    loop {
-        if !alive() {
-            return true;
-        }
-        let left = max.saturating_sub(started.elapsed());
-        if left.is_zero() {
-            return false;
-        }
-        std::thread::sleep(left.min(Duration::from_millis(50))); // sync-ok: startup only, before any window
-    }
-}
-
-/// macOS: phase 2 of the port plan (libproc for the child tree). None: the snapshot fails.
+#[path = "macos/procs.rs"]
+mod macos;
 #[cfg(not(windows))]
-pub fn snapshot_processes(
-    _roots: &[u32],
-    _wanted: &dyn Fn(&str) -> bool,
-) -> Option<Vec<ProcEntry>> {
-    None
-}
+pub use macos::{join_argv, snapshot_processes, wait_for_exit};
 
 #[cfg(test)]
 mod tests {

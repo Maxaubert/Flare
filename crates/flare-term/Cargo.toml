@@ -23,6 +23,9 @@ log.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
 
+[target.'cfg(not(windows))'.dependencies]
+flare-proc = { path = "../flare-proc" }
+
 [dev-dependencies]
 tempfile.workspace = true
 

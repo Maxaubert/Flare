@@ -349,7 +349,7 @@ fn the_preview_paints_the_cards_own_palette() {
 
 #[cfg_attr(
     not(windows),
-    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    ignore = "PT's baselines are Cascadia Mono's on Windows; the macOS twin is the_previews_text_sits_on_its_macos_baselines"
 )]
 #[test]
 fn the_previews_text_sits_on_pts_baselines() {
@@ -358,14 +358,38 @@ fn the_previews_text_sits_on_pts_baselines() {
     // percent, 34.67 at 150 and 35.67 at 225 (Chromium puts a baseline on a device pixel; 300 percent was not measured, its 35.5 is the middle). Flare's sat
     // 1.3 to 1.8 css px lower (audit V13, 2026-10-21): the same Cascadia Mono, a different centring
     // inside the 15.75 px line.
-    for (scale, want, tol) in [
-        (1.0_f32, 35.0_f32, 0.2_f32),
-        (1.5, 34.67, 0.2),
-        // 225 percent sat 0.56 css px high under the old 0.6 tolerance (audit V13-preview, 2026-10-21)
-        (2.25, 35.67, 0.2),
-        // 300 percent was not measured: its 35.5 is the middle, so the band stays wide
-        (3.0, 35.5, 0.6),
-    ] {
+    baselines_hold(
+        &[
+            (1.0_f32, 35.0_f32, 0.2_f32),
+            (1.5, 34.67, 0.2),
+            // 225 percent sat 0.56 css px high under the old 0.6 tolerance (audit V13-preview, 2026-10-21)
+            (2.25, 35.67, 0.2),
+            // 300 percent was not measured: its 35.5 is the middle, so the band stays wide
+            (3.0, 35.5, 0.6),
+        ],
+        "PT's",
+    );
+}
+
+/// macOS twin of `the_previews_text_sits_on_pts_baselines`: the preview's face is Menlo there (no
+/// Cascadia Mono), measured on the port (2026-11-08) with the same probe. A change in how the line
+/// is centred moves these as it moved PT's.
+#[cfg(not(windows))]
+#[test]
+fn the_previews_text_sits_on_its_macos_baselines() {
+    baselines_hold(
+        &[
+            (1.0_f32, 35.0_f32, 0.2_f32),
+            (1.5, 35.33, 0.2),
+            (2.25, 35.56, 0.2),
+            (3.0, 35.67, 0.2),
+        ],
+        "the macOS reference",
+    );
+}
+
+fn baselines_hold(table: &[(f32, f32, f32)], whose: &str) {
+    for &(scale, want, tol) in table {
         let h = harness(scale);
         h.comp.set_solo(card("s", "Solo", false, false, 0.0, 0.0));
         h.advance(0);
@@ -392,7 +416,7 @@ fn the_previews_text_sits_on_pts_baselines() {
         let baseline = (last + 1) as f32 / scale - h.comp.get_solo_y();
         assert!(
             close(baseline, want, tol),
-            "line 2's baseline is {baseline} css px under the card's top at {scale}, PT's is {want}"
+            "line 2's baseline is {baseline} css px under the card's top at {scale}, {whose} is {want}"
         );
     }
 }

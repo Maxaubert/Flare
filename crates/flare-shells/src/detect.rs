@@ -3,7 +3,9 @@
 
 use crate::list::{ShellDef, canonical_path, parse_wsl_list, pwsh_path};
 use crate::prompt::{PS_FILE_STYLE, PS_PROMPT_HOOK};
-use crate::sys::{SysTools, sys_tools};
+use crate::sys::SysTools;
+#[cfg(windows)]
+use crate::sys::sys_tools;
 use std::io::Read;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -66,6 +68,9 @@ impl Probe for RealProbe {
         }
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
+        // macOS: the probe leads a process group of its own, so a timeout can end all of it.
+        #[cfg(not(windows))]
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
         let Ok(mut child) = cmd
             .args(args)
             .stdin(Stdio::null())
@@ -91,7 +96,6 @@ impl Probe for RealProbe {
             }
             if start.elapsed() >= self.timeout {
                 // Kill the whole tree so a grandchild cannot keep the stdout pipe open.
-                // macOS: phase 2 of the port plan (process groups); only the child is killed there.
                 #[cfg(windows)]
                 {
                     let tree = Command::new(format!(
@@ -106,6 +110,8 @@ impl Probe for RealProbe {
                     .status(); // sync-ok: runs on a worker, after the probe timed out
                     let _ = tree;
                 }
+                #[cfg(not(windows))]
+                flare_proc::signal_group(child.id(), flare_proc::Signal::Kill);
                 let _ = child.kill();
                 let _ = child.wait(); // sync-ok: runs on a worker, reaps the killed probe
                 break None;
@@ -213,12 +219,20 @@ pub fn get_or_detect<'a>(
 
 /// Detected once per run and cached. The FIRST call blocks (up to two probes): worker threads only.
 pub fn cached_shells() -> &'static [ShellDef] {
-    // sync-ok: runs only on the spawn worker, cached for the run
-    static CELL: OnceLock<Vec<ShellDef>> = OnceLock::new();
-    let cwd = std::env::current_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    get_or_detect(&CELL, &RealProbe::default(), sys_tools(), &cwd)
+    // macOS: zsh, bash, fish and pwsh, the login shell first (`macos::detect`).
+    #[cfg(not(windows))]
+    {
+        crate::macos::detect::cached()
+    }
+    #[cfg(windows)]
+    {
+        // sync-ok: runs only on the spawn worker, cached for the run
+        static CELL: OnceLock<Vec<ShellDef>> = OnceLock::new();
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        get_or_detect(&CELL, &RealProbe::default(), sys_tools(), &cwd)
+    }
 }
 
 #[cfg(test)]
@@ -414,6 +428,41 @@ mod tests {
         let r = p.run(&sys.cmd, &["/c", "ping -n 6 127.0.0.1 >nul"]);
         assert!(!r.ok);
         assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn real_probe_times_out_and_kills_the_child_and_its_children() {
+        let p = RealProbe {
+            timeout: Duration::from_millis(300),
+        };
+        let dir = std::env::temp_dir().join(format!("flare-probe-{}", std::process::id()));
+        let _ = std::fs::create_dir(&dir);
+        let pidfile = dir.join("grandchild.pid");
+        let script = format!("/bin/sleep 30 & echo $! > '{}'; wait", pidfile.display());
+        let t = Instant::now();
+        let r = p.run("/bin/sh", &["-c", &script]);
+        assert!(!r.ok);
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        let grandchild: u32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let gone = flare_proc::wait_for_exit(grandchild, Duration::from_secs(3));
+        if !gone {
+            flare_proc::signal(grandchild, flare_proc::Signal::Kill);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(gone, "the probe's child outlived the timeout");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn real_probe_reads_stdout_on_macos() {
+        let r = RealProbe::default().run("/bin/sh", &["-c", "echo flare"]);
+        assert!(r.ok);
+        assert!(String::from_utf8_lossy(&r.stdout).contains("flare"));
     }
 
     #[cfg(windows)]

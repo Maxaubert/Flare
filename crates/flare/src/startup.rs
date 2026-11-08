@@ -1190,10 +1190,7 @@ mod m7_start_tests {
         );
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
+    #[cfg(windows)]
     #[test]
     fn the_log_folder_follows_the_profile() {
         let appdata = Some("C:\\Users\\x\\AppData\\Roaming");
@@ -1208,6 +1205,23 @@ mod m7_start_tests {
             dir: profile_dir(Some(Path::new("D:\\data")), appdata),
         };
         assert_eq!(custom.logs_dir(), PathBuf::from("D:\\data\\logs"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_log_folder_follows_the_profile_posix() {
+        let appdata = Some("/Users/x/Library/Application Support");
+        let default = Profile {
+            dir: profile_dir(None, appdata),
+        };
+        assert_eq!(
+            default.logs_dir(),
+            PathBuf::from("/Users/x/Library/Application Support/Flare/logs")
+        );
+        let custom = Profile {
+            dir: profile_dir(Some(Path::new("/data")), appdata),
+        };
+        assert_eq!(custom.logs_dir(), PathBuf::from("/data/logs"));
     }
 
     #[test]

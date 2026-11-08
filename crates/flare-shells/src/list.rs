@@ -25,13 +25,19 @@ pub fn parse_wsl_list(out: &str) -> Vec<String> {
 }
 
 /// The saved shell if present, else id "pwsh", else "powershell", else the first; None only for an empty list.
+/// On macOS the first is the default: detection puts the user's login shell there.
 pub fn shell_by_id<'a>(id: Option<&str>, list: &'a [ShellDef]) -> Option<&'a ShellDef> {
     let find = |wanted: &str| list.iter().find(|s| s.id == wanted);
     id.and_then(find)
-        .or_else(|| find("pwsh"))
-        .or_else(|| find("powershell"))
+        .or_else(|| DEFAULT_IDS.iter().find_map(|d| find(d)))
         .or_else(|| list.first())
 }
+
+/// The shells a tab falls back to, in order, before the first of the list.
+#[cfg(windows)]
+const DEFAULT_IDS: [&str; 2] = ["pwsh", "powershell"];
+#[cfg(not(windows))]
+const DEFAULT_IDS: [&str; 0] = [];
 
 /// PowerShell 7's full path out of `where pwsh.exe` output: the first non-empty trimmed line that is an
 /// absolute Windows path (drive form `X:\` or `X:/`, or starting with `\\`, `//`, `\` or `/`) whose
@@ -145,6 +151,7 @@ mod tests {
         assert_eq!(shell_by_id(Some("cmd"), &l).unwrap().id, "cmd");
     }
 
+    #[cfg(windows)]
     #[test]
     fn shell_by_id_falls_back_to_pwsh() {
         let l = list();
@@ -152,10 +159,22 @@ mod tests {
         assert_eq!(shell_by_id(None, &l).unwrap().id, "pwsh");
     }
 
+    #[cfg(windows)]
     #[test]
     fn shell_by_id_falls_back_to_powershell() {
         let l = list();
         assert_eq!(shell_by_id(Some("x"), &l[1..]).unwrap().id, "powershell");
+    }
+
+    /// macOS: no shell is preferred by name; the first (the login shell) is the default.
+    #[cfg(not(windows))]
+    #[test]
+    fn shell_by_id_falls_back_to_the_first_on_macos() {
+        let mut l = list();
+        l.rotate_left(2);
+        assert_eq!(shell_by_id(Some("wsl-Arch"), &l).unwrap().id, "cmd");
+        assert_eq!(shell_by_id(None, &l).unwrap().id, "cmd");
+        assert_eq!(shell_by_id(Some("pwsh"), &l).unwrap().id, "pwsh");
     }
 
     #[test]

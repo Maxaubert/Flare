@@ -648,12 +648,51 @@ const CENTRES_BEFORE: &[(&str, [(f32, f32); 8])] = &[
 
 #[cfg_attr(
     not(windows),
-    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    ignore = "the update arrow sits after Segoe UI text (Windows); the macOS twin is centre_of_the_glyph_is_unchanged_on_macos"
 )]
 #[test]
 fn centre_of_the_glyph_is_unchanged() {
+    centres_hold(CENTRES_BEFORE);
+}
+
+/// macOS: the update chip's arrow sits after its label, which is SF there, so its centre moves with
+/// the label's width. Measured on the port (2026-11-08) by the same drawer; every other glyph keeps
+/// the centre recorded on Windows.
+#[cfg(not(windows))]
+const MAC_UPDATE_ARROW: [(f32, f32); 8] = [
+    (739.50, 18.56),
+    (928.87, 22.97),
+    (1115.24, 27.33),
+    (1301.68, 31.67),
+    (1481.00, 36.11),
+    (1662.38, 41.44),
+    (1845.73, 44.81),
+    (2215.50, 54.55),
+];
+
+/// macOS twin of `centre_of_the_glyph_is_unchanged`.
+#[cfg(not(windows))]
+#[test]
+fn centre_of_the_glyph_is_unchanged_on_macos() {
+    let table: Vec<(&str, [(f32, f32); 8])> = CENTRES_BEFORE
+        .iter()
+        .map(|&(n, c)| {
+            (
+                n,
+                if n == "update arrow" {
+                    MAC_UPDATE_ARROW
+                } else {
+                    c
+                },
+            )
+        })
+        .collect();
+    centres_hold(&table);
+}
+
+fn centres_hold(centres: &[(&str, [(f32, f32); 8])]) {
     for (what, draw) in glyphs() {
-        let want = CENTRES_BEFORE
+        let want = centres
             .iter()
             .find(|(n, _)| *n == what)
             .unwrap_or_else(|| panic!("{what}: no recorded centre"))

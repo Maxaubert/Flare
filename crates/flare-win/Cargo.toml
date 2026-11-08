@@ -20,6 +20,9 @@ uuid.workspace = true
 windows-sys.workspace = true
 windows.workspace = true
 
+[target.'cfg(not(windows))'.dependencies]
+flare-proc = { path = "../flare-proc" }
+
 [dev-dependencies]
 tempfile.workspace = true
 

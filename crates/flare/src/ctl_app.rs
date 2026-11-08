@@ -2397,6 +2397,25 @@ mod tests {
         ("C:\\work\\sneaky.png", "C:\\work\\sneaky.exe"),
     ];
 
+    /// `FILES` with POSIX paths, for the macOS twins.
+    #[cfg(not(windows))]
+    const FILES_POSIX: &[(&str, &str)] = &[
+        ("/work/a.png", "/work/a.png"),
+        ("/work/a.txt", "/work/a.txt"),
+        ("/work/link.png", "/work/run.txt"),
+        ("/work/doc.pdf", "/work/doc.pdf"),
+        ("/work/sneaky.png", "/work/sneaky.exe"),
+    ];
+
+    /// `ok_all` with a POSIX tab folder, for the macOS twins.
+    #[cfg(not(windows))]
+    fn ok_all_posix(op: &CtlOp) -> Result<Value, CtlError> {
+        Ok(match op {
+            CtlOp::TabCwd { .. } => json!({"cwd": "/work"}),
+            _ => json!({"panel": {"kind": "image"}}),
+        })
+    }
+
     /// The review (2026-10-24): a picture on a mapped network drive was refused as "not a picture; show_file
     /// shows it", and show_file sent the caller back.
     #[test]
@@ -3439,6 +3458,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn view_image_resolves_vets_and_then_shows_on_the_callers_tab() {
         let shown = Arc::new(Mutex::new(Vec::new()));
@@ -3484,6 +3504,52 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn view_image_resolves_vets_and_then_shows_on_the_callers_tab_posix() {
+        let shown = Arc::new(Mutex::new(Vec::new()));
+        let s = shown.clone();
+        let r = rig(
+            move |op| match op {
+                CtlOp::TabCwd { tab } => {
+                    assert_eq!(tab, "tab-1");
+                    Ok(json!({"cwd": "/work"}))
+                }
+                CtlOp::ShowFile {
+                    tab,
+                    kind,
+                    abs,
+                    title,
+                } => {
+                    s.lock()
+                        .unwrap()
+                        .push((tab.clone(), kind.clone(), abs.clone(), title.clone()));
+                    Ok(json!({"panel": {"kind": "image"}}))
+                }
+                _ => unreachable!(),
+            },
+            false,
+            FILES_POSIX,
+        );
+        let v =
+            r.d.call(
+                &agent_in_tab(),
+                Method::ViewImage,
+                json!({"path": "/work/a.png", "title": "  A\ncat  "}),
+            )
+            .unwrap();
+        assert_eq!(v["panel"]["kind"], "image");
+        assert_eq!(
+            shown.lock().unwrap().as_slice(),
+            [(
+                "tab-1".to_string(),
+                PanelKind::Image,
+                "/work/a.png".to_string(),
+                Some("A cat".to_string())
+            )]
+        );
+    }
+
     #[test]
     fn a_path_nobody_may_open_is_not_found_and_never_reaches_the_ui_thread() {
         let r = rig(ok_all, false, FILES);
@@ -3501,6 +3567,7 @@ mod tests {
         assert!(ops.iter().all(|o| o == "CtlOp::TabCwd"), "{ops:?}");
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_kind_must_match_and_a_link_that_changes_kind_shows_nothing() {
         let r = rig(ok_all, false, FILES);
@@ -3525,6 +3592,39 @@ mod tests {
         );
         assert_eq!(
             code_of(call(Method::ViewImage, "C:\\work\\sneaky.png")),
+            code::BAD_PARAMS
+        );
+        assert!(
+            r.ops.lock().unwrap().iter().all(|o| o == "CtlOp::TabCwd"),
+            "nothing was shown"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_kind_must_match_and_a_link_that_changes_kind_shows_nothing_posix() {
+        let r = rig(ok_all_posix, false, FILES_POSIX);
+        let call = |m, p: &str| r.d.call(&agent_in_tab(), m, json!({"path": p}));
+        // A picture through view.file, a text file through view.image, a pdf through either.
+        assert_eq!(
+            code_of(call(Method::ViewFile, "/work/a.png")),
+            code::BAD_PARAMS
+        );
+        assert_eq!(
+            code_of(call(Method::ViewImage, "/work/a.txt")),
+            code::BAD_PARAMS
+        );
+        assert_eq!(
+            code_of(call(Method::ViewImage, "/work/doc.pdf")),
+            code::BAD_PARAMS
+        );
+        // a.png as named, but the file system says run.txt / sneaky.exe (rule 14).
+        assert_eq!(
+            code_of(call(Method::ViewImage, "/work/link.png")),
+            code::BAD_PARAMS
+        );
+        assert_eq!(
+            code_of(call(Method::ViewImage, "/work/sneaky.png")),
             code::BAD_PARAMS
         );
         assert!(
@@ -3718,10 +3818,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
+    #[cfg(windows)]
     #[test]
     fn an_absolute_path_never_asks_the_ui_for_a_folder_and_a_relative_one_does() {
         const REL: &[(&str, &str)] = &[("a.png", "C:\\work\\a.png")];
@@ -3742,6 +3839,28 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn an_absolute_path_never_asks_the_ui_for_a_folder_and_a_relative_one_does_posix() {
+        const REL: &[(&str, &str)] = &[("a.png", "/work/a.png")];
+        let r = rig(ok_all_posix, false, FILES_POSIX);
+        r.d.call(
+            &agent_in_tab(),
+            Method::ViewImage,
+            json!({"path": "/work/a.png"}),
+        )
+        .unwrap();
+        assert_eq!(r.ops.lock().unwrap().as_slice(), ["CtlOp::ShowFile"]);
+        let r = rig(ok_all_posix, false, REL);
+        r.d.call(&agent_in_tab(), Method::ViewImage, json!({"path": "a.png"}))
+            .unwrap();
+        assert_eq!(
+            r.ops.lock().unwrap().as_slice(),
+            ["CtlOp::TabCwd", "CtlOp::ShowFile"]
+        );
+    }
+
+    #[cfg(windows)]
     #[test]
     fn every_request_carries_one_deadline_inside_the_channel_s_own_timeout() {
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -3757,6 +3876,47 @@ mod tests {
         });
         let resolve: Resolve = Arc::new(|_b, t, _h| {
             let full = format!("C:\\work\\{t}");
+            Some((full.clone(), full))
+        });
+        let d = AppDispatcher::new(
+            post,
+            Arc::new(|_| None),
+            resolve,
+            String::new(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let before = Instant::now();
+        d.call(&agent_in_tab(), Method::ViewImage, json!({"path": "a.png"}))
+            .unwrap();
+        let deadlines = seen.lock().unwrap().clone();
+        assert_eq!(deadlines.len(), 2, "the folder question and the show");
+        assert_eq!(
+            deadlines[0], deadlines[1],
+            "one deadline for the whole call"
+        );
+        assert!(deadlines[0] > before && deadlines[0] <= Instant::now() + UI_WAIT);
+        assert!(
+            UI_WAIT < Method::ViewImage.timeout(),
+            "the call answers `timeout` itself before the server gives up on it"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn every_request_carries_one_deadline_inside_the_channel_s_own_timeout_posix() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let post: Post = Arc::new(move |m: UiMsg| {
+            let UiMsg::Ctl(CtlRequestBox(req)) = m else {
+                return;
+            };
+            s.lock().unwrap().push(req.deadline);
+            let _ = req
+                .reply
+                .send(Ok(json!({"cwd": "/work", "panel": {"kind": "image"}})));
+        });
+        let resolve: Resolve = Arc::new(|_b, t, _h| {
+            let full = format!("/work/{t}");
             Some((full.clone(), full))
         });
         let d = AppDispatcher::new(
@@ -4013,10 +4173,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
+    #[cfg(windows)]
     #[test]
     fn a_page_named_by_path_is_resolved_again_vetted_and_read() {
         let dir = tempfile::tempdir().unwrap();
@@ -4078,6 +4235,71 @@ mod tests {
         let before = r.ops.lock().unwrap().len();
         let _ =
             r.d.call(&c, Method::ViewHtml, json!({"path": "C:\\abs\\x.html"}));
+        assert_eq!(r.ops.lock().unwrap().len(), before);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_page_named_by_path_is_resolved_again_vetted_and_read_posix() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let good = src.path().join("chart.html");
+        std::fs::write(&good, "<p id=g>from a file</p>").unwrap();
+        let big = src.path().join("big.html");
+        std::fs::write(&big, vec![b'x'; app::HTML_MAX + 1]).unwrap();
+        let bin = src.path().join("bin.html");
+        std::fs::write(&bin, [0xffu8, 0xfe, 0x00, 0x80]).unwrap();
+        let empty = src.path().join("empty.html");
+        std::fs::write(&empty, "  \n").unwrap();
+        // The resolver stands in for the backend's: it knows these names only.
+        let leak: &'static [(&'static str, &'static str)] = Box::leak(
+            vec![
+                (
+                    "chart.html",
+                    &*Box::leak(good.to_string_lossy().into_owned().into_boxed_str()),
+                ),
+                (
+                    "big.html",
+                    &*Box::leak(big.to_string_lossy().into_owned().into_boxed_str()),
+                ),
+                (
+                    "bin.html",
+                    &*Box::leak(bin.to_string_lossy().into_owned().into_boxed_str()),
+                ),
+                (
+                    "empty.html",
+                    &*Box::leak(empty.to_string_lossy().into_owned().into_boxed_str()),
+                ),
+                ("gone.html", "/no/such/gone.html"),
+            ]
+            .into_boxed_slice(),
+        );
+        let r = app_rig(dir.path(), false, leak);
+        let c = agent_in_tab();
+        r.d.call(&c, Method::ViewHtml, json!({"path": "chart.html"}))
+            .unwrap();
+        let (_, spec, title, _) = last_app(&r);
+        assert_eq!(title, "Mini-app");
+        let page = std::fs::read_to_string(spec.folder.join(app::PAGE)).unwrap();
+        assert!(page.contains("<p id=g>from a file</p>"));
+        assert!(page.contains("Content-Security-Policy"));
+        for (p, want) in [
+            ("not-listed.html", code::NOT_FOUND),
+            ("gone.html", code::NOT_FOUND),
+            ("big.html", code::BAD_PARAMS),
+            ("bin.html", code::BAD_PARAMS),
+            ("empty.html", code::BAD_PARAMS),
+        ] {
+            assert_eq!(
+                code_of(r.d.call(&c, Method::ViewHtml, json!({"path": p}))),
+                want,
+                "{p}"
+            );
+        }
+        // A relative path asks the UI thread for the tab's folder first; an absolute one does not.
+        let before = r.ops.lock().unwrap().len();
+        let _ =
+            r.d.call(&c, Method::ViewHtml, json!({"path": "/abs/x.html"}));
         assert_eq!(r.ops.lock().unwrap().len(), before);
     }
 

@@ -158,10 +158,26 @@ fn ink_runs(f: &Frame, x0: u32, x1: u32, y0: u32, y1: u32) -> Vec<(u32, u32)> {
 
 #[cfg_attr(
     not(windows),
-    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    ignore = "PT's gap is Segoe UI's (Windows); the macOS twin is the_name_and_folder_baselines_keep_their_gap_on_macos"
 )]
 #[test]
 fn the_name_and_folder_baselines_are_as_far_apart_as_pts() {
+    baseline_gaps_hold(PT_BASELINE_GAP_CSS, "PT");
+}
+
+/// macOS: the gap with SF, measured on the port at every scale (14.0 to 14.9 css px, 2026-11-08).
+/// There is no PT capture on a Mac; this holds the gap where the two lines' own heights put it.
+#[cfg(not(windows))]
+const MAC_BASELINE_GAP_CSS: f32 = 14.5;
+
+/// macOS twin of `the_name_and_folder_baselines_are_as_far_apart_as_pts`.
+#[cfg(not(windows))]
+#[test]
+fn the_name_and_folder_baselines_keep_their_gap_on_macos() {
+    baseline_gaps_hold(MAC_BASELINE_GAP_CSS, "macOS");
+}
+
+fn baseline_gaps_hold(gap_css: f32, whose: &str) {
     for scale in SCALES {
         let h = harness(scale);
         // One row, the name and folder without a descender, so each run's last row is its baseline.
@@ -190,10 +206,10 @@ fn the_name_and_folder_baselines_are_as_far_apart_as_pts() {
             "scale {scale}: a name run and a folder run: {runs:?}"
         );
         let gap = i64::from(runs[1].1) - i64::from(runs[0].1);
-        let want = (PT_BASELINE_GAP_CSS * scale).round() as i64;
+        let want = (gap_css * scale).round() as i64;
         assert!(
             (gap - want).abs() <= 2,
-            "scale {scale}: name-to-folder baseline {gap} device px, PT {want}"
+            "scale {scale}: name-to-folder baseline {gap} device px, {whose} {want}"
         );
     }
 }

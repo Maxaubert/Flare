@@ -1766,11 +1766,8 @@ mod flow {
         w.frame_until("the path links", |w, f| w.inked(f, 0, cols.clone()) > 0)
     }
 
+    #[cfg(windows)]
     /// PT scenario pathLinks.
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_path_is_a_link_only_if_it_exists_and_opens_by_the_allowlist() {
         let w = Wx::with(
@@ -1819,11 +1816,52 @@ mod flow {
         });
     }
 
+    #[cfg(not(windows))]
     /// PT scenario pathLinks.
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
+    #[test]
+    fn a_path_is_a_link_only_if_it_exists_and_opens_by_the_allowlist_posix() {
+        let w = Wx::with(
+            1.0,
+            Opts {
+                files: vec!["a.pdf", "b.bat", "folder/"],
+                ..Opts::default()
+            },
+        );
+        // a.pdf 0..5, b.bat 6..11, missing.txt 12..23, folder\ 24..31
+        w.feed("a.pdf b.bat missing.txt folder/");
+        let f = light_paths(&w, 0..5);
+        for _ in 0..4 {
+            w.step(50);
+        }
+        let f2 = w.frame();
+        let _ = f;
+        assert!(w.inked(&f2, 0, 6..11) > 0, "b.bat exists");
+        assert!(w.inked(&f2, 0, 24..31) > 0, "a folder is a link too");
+        assert_eq!(w.inked(&f2, 0, 12..23), 0, "a missing name is not");
+        let a = w.work().join("a.pdf").to_string_lossy().into_owned();
+        let b = w.work().join("b.bat").to_string_lossy().into_owned();
+        w.click(2, 0);
+        w.pump_until("the open", |w| !w.records().is_empty());
+        assert_eq!(w.records(), [OpenedRecord::Open(a.clone())]);
+        // A script is never run by a click: revealed, and never opened (O22).
+        w.click(8, 0);
+        w.pump_until("the reveal", |w| w.records().len() == 2);
+        assert_eq!(w.records()[1], OpenedRecord::Reveal(b.clone()));
+        assert!(!w.records().contains(&OpenedRecord::Open(b)));
+        // The menu on a path: open, show, copy the whole absolute path.
+        w.right_click(2, 0);
+        let labels = w.menu_labels();
+        assert!(
+            labels.iter().any(|l| l == "Open") && labels.iter().any(|l| l == "Copy path"),
+            "{labels:?}"
+        );
+        w.pick("Copy path");
+        w.pump_until("the path copy", |w| {
+            w.clip_text().as_deref() == Some(a.as_str())
+        });
+    }
+
+    /// PT scenario pathLinks.
     #[test]
     fn a_path_menu_open_and_show_go_through_the_allowlist() {
         let w = Wx::with(
@@ -2120,13 +2158,16 @@ mod flow {
         w.clip
             .set_files(files.iter().map(ToString::to_string).collect());
         assert_eq!(w.key(ctrl("v", "KeyV")), KeyOutcome::Consumed);
+        // The first write can take longer than `quiet`'s 80 ms on a loaded run (seen on macOS,
+        // where the tab's font database is larger): wait up to 2 s for it, then for quiet.
+        let t = Instant::now();
+        while w.written().is_empty() && t.elapsed() < Duration::from_secs(2) {
+            w.pump();
+            std::thread::sleep(Duration::from_millis(3));
+        }
         w.quiet()
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn copied_files_paste_quoted_paths_for_each_shell() {
         let plain = "C:\\My Dir\\a b.txt";

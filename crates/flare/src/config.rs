@@ -431,10 +431,7 @@ mod tests {
         assert_eq!(dir, spelled);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
+    #[cfg(windows)]
     #[test]
     fn user_data_dir_equals_form_and_e2e_are_parsed() {
         let args = parse_args(&a(&["--user-data-dir=C:\\p", "--e2e"]), None).unwrap();
@@ -443,6 +440,18 @@ mod tests {
         assert!(parse_args(&a(&["--user-data-dir", "C:\\p"]), None).is_err());
         let args = parse_args(&a(&["C:\\x"]), None).unwrap();
         assert_eq!(args.positional, vec!["C:\\x".to_string()]);
+        assert!(parse_args(&a(&["--bogus"]), None).is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn user_data_dir_equals_form_and_e2e_are_parsed_posix() {
+        let args = parse_args(&a(&["--user-data-dir=/p", "--e2e"]), None).unwrap();
+        assert_eq!(args.user_data_dir, Some(PathBuf::from("/p")));
+        assert!(args.e2e);
+        assert!(parse_args(&a(&["--user-data-dir", "/p"]), None).is_err());
+        let args = parse_args(&a(&["/x"]), None).unwrap();
+        assert_eq!(args.positional, vec!["/x".to_string()]);
         assert!(parse_args(&a(&["--bogus"]), None).is_err());
     }
 

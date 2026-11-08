@@ -682,10 +682,6 @@ mod scales {
         }
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn the_box_height_is_identical_idle_running_and_with_a_notice() {
         for s in SCALES {

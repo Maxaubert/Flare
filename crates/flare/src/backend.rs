@@ -241,11 +241,12 @@ pub fn take(p: Prewarm) -> Result<Prepared, String> {
 /// The backends the prewarm instance starts. Without `WGPU_BACKEND` that is DX12 alone: the glass
 /// swapchain (`DxgiFromVisual`) is DX12-only, and an instance that also starts Vulkan loads the
 /// Vulkan and OpenGL driver stacks of every GPU in the PC (about 32 MB of private memory, M10 Task
-/// 66). A named choice is kept, without OpenGL as Slint's own `Automatic` path leaves it out
-/// (`mask_backends`); a choice that would leave nothing is kept whole.
+/// 66). On macOS it is Metal alone, the only native backend there. A named choice is kept, without
+/// OpenGL as Slint's own `Automatic` path leaves it out (`mask_backends`); a choice that would leave
+/// nothing is kept whole.
 fn prewarm_backends(named: Option<wgpu::Backends>) -> wgpu::Backends {
     match named {
-        None => wgpu::Backends::DX12,
+        None => flare_render::gpu::NATIVE_BACKEND,
         Some(b) => {
             let masked = b & !wgpu::Backends::GL;
             if masked.is_empty() { b } else { masked }
@@ -493,12 +494,26 @@ mod tests {
         ));
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_prewarm_instance_starts_dx12_alone_unless_a_backend_is_named() {
         // Slint's own device path avoids GL, and the glass swapchain is DX12-only: an instance
         // that also starts Vulkan and OpenGL loads every GPU driver stack for nothing.
         assert_eq!(prewarm_backends(None), wgpu::Backends::DX12);
         // A named choice is kept, minus OpenGL; an OpenGL-only choice is kept whole.
+        let named = wgpu::Backends::VULKAN | wgpu::Backends::GL;
+        assert_eq!(prewarm_backends(Some(named)), wgpu::Backends::VULKAN);
+        assert_eq!(
+            prewarm_backends(Some(wgpu::Backends::GL)),
+            wgpu::Backends::GL
+        );
+    }
+
+    /// macOS twin of `the_prewarm_instance_starts_dx12_alone_unless_a_backend_is_named`.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_prewarm_instance_starts_metal_alone_unless_a_backend_is_named() {
+        assert_eq!(prewarm_backends(None), wgpu::Backends::METAL);
         let named = wgpu::Backends::VULKAN | wgpu::Backends::GL;
         assert_eq!(prewarm_backends(Some(named)), wgpu::Backends::VULKAN);
         assert_eq!(

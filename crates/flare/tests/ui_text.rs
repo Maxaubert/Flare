@@ -96,7 +96,19 @@ fn theme_tokens_are_the_pt_default_values() {
         .lines()
         .find(|l| l.contains("property <string> font-ui:"))
         .expect("Theme.font-ui declared");
-    assert!(font.contains("\"Segoe UI\""), "font-ui is Segoe UI: {font}");
+    // The face itself is in the platform seam (macOS port phase 2, step 4): Segoe UI on Windows.
+    assert!(
+        font.contains("font-ui: PlatformFonts.ui;"),
+        "font-ui reads the platform seam: {font}"
+    );
+    let fonts = read("platform_fonts.slint");
+    assert!(
+        fonts.contains("out property <string> windows-ui: \"Segoe UI\";"),
+        "font-ui is Segoe UI on Windows"
+    );
+    assert!(
+        fonts.contains("out property <string> ui: self.mac ? self.macos-ui : self.windows-ui;")
+    );
 }
 
 #[test]

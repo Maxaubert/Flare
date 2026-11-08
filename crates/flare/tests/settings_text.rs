@@ -184,9 +184,11 @@ fn no_text_property_uses_a_dash_family_name() {
     for name in ["font-text", "font-display", "font-fallback", "font-mono"] {
         let value = property_value(&fixed, name)
             .unwrap_or_else(|| panic!("SettingsFixed.{name} is declared"));
+        // Each reads the platform seam (macOS port phase 2, step 4), whose faces are all quoted
+        // string literals, checked below.
         assert!(
-            value.starts_with('"') && value.ends_with('"') && value.len() > 2,
-            "SettingsFixed.{name} is a quoted string: {value}"
+            value.starts_with("PlatformFonts.") && !value.contains(' '),
+            "SettingsFixed.{name} reads the platform seam: {value}"
         );
         assert!(
             fixed.contains(&format!("property <string> {name}:")),
@@ -195,6 +197,29 @@ fn no_text_property_uses_a_dash_family_name() {
     }
     assert_eq!(
         property_value(&fixed, "font-mono").as_deref(),
+        Some("PlatformFonts.mono")
+    );
+    let fonts_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/platform_fonts.slint");
+    let fonts = std::fs::read_to_string(&fonts_path).expect("read platform_fonts.slint");
+    let seam = global_body(&fonts, "PlatformFonts");
+    for name in [
+        "windows-ui",
+        "windows-text",
+        "windows-display",
+        "windows-mono",
+        "macos-ui",
+        "macos-mono",
+    ] {
+        let value = property_value(&seam, name)
+            .unwrap_or_else(|| panic!("PlatformFonts.{name} is declared"));
+        assert!(
+            value.starts_with('"') && value.ends_with('"') && value.len() > 2,
+            "PlatformFonts.{name} is a quoted string: {value}"
+        );
+    }
+    assert_eq!(
+        property_value(&seam, "windows-mono").as_deref(),
         Some("\"Cascadia Mono\"")
     );
 }

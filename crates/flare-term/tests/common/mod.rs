@@ -296,3 +296,9 @@ pub fn process_alive(pid: u32) -> bool {
         ok != 0 && code == STILL_ACTIVE as u32
     }
 }
+
+/// True while process `pid` runs (macOS: it exists and is not a zombie).
+#[cfg(not(windows))]
+pub fn process_alive(pid: u32) -> bool {
+    flare_proc::alive(pid)
+}

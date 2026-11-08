@@ -8,6 +8,8 @@
 //! forgotten after `NO_TTL_MS`, a "yes" stays. Text positions are char indices.
 
 use crate::links::{LinkSpan, char_slice, find_links_in, segments_of};
+use crate::path_grammar::is_relative;
+pub use crate::path_grammar::{is_cwd, parent_dir};
 use crate::path_open::{PATHS_MAX, PathHit, PathKind};
 use crate::paths::{PathCandidate, find_paths};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -58,39 +60,8 @@ enum Known {
     Unknown,
 }
 
-fn is_relative(p: &str) -> bool {
-    let mut it = p.chars();
-    match it.next() {
-        None => true,
-        Some('\\' | '/' | '~') => false,
-        Some(c) if c.is_ascii_alphabetic() => it.next() != Some(':'),
-        Some(_) => true,
-    }
-}
-
 fn has_separator(p: &str) -> bool {
     p.contains(['\\', '/'])
-}
-
-/// Whether `dir` is `cwd` itself. Such a folder found from a shown folder is the one the shell is
-/// already in said another way (a status line prints it on every redraw). A folder above `cwd` is
-/// a real place the text names (`Documents/Claude` from inside `...\Claude\Github\Flare`), so it links.
-pub fn is_cwd(dir: &str, cwd: &str) -> bool {
-    let norm = |p: &str| p.replace('/', "\\").trim_end_matches('\\').to_lowercase();
-    norm(dir) == norm(cwd)
-}
-
-/// The folder above `dir`, or None at a drive's root.
-pub fn parent_dir(dir: &str) -> Option<String> {
-    let d = dir.trim_end_matches(['\\', '/']);
-    let i = d.rfind(['\\', '/'])?;
-    let up = &d[..i];
-    let b = up.as_bytes();
-    if b.len() == 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
-        None
-    } else {
-        Some(up.to_string())
-    }
 }
 
 /// The path candidates in `text` that are not inside a web link, and not a PROMPT: a path that
@@ -809,6 +780,7 @@ mod tests {
         assert!(pl.take_asked("A"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn parent_dir_climbs_and_stops_at_the_drive() {
         assert_eq!(parent_dir("C:\\a\\b\\"), Some("C:\\a".to_string()));
@@ -816,9 +788,12 @@ mod tests {
         assert_eq!(parent_dir("x"), None);
     }
 
+    #[cfg(windows)]
     const REPO: &str = "C:\\c\\Github\\Repo";
+    #[cfg(windows)]
     const MISC: &str = "C:\\c\\zz-Misc";
 
+    #[cfg(windows)]
     fn misc_pump() -> Pump {
         Pump::new(set_resolver(&[
             "C:\\c\\zz-Misc\\dto\\b\\out\\b.mp4",
@@ -827,6 +802,7 @@ mod tests {
         ]))
     }
 
+    #[cfg(windows)]
     fn teach_full_path(p: &mut Pump) {
         p.pl.subscribe("A");
         let full = "at C:\\c\\zz-Misc\\dto\\b\\out\\b.mp4.";
@@ -836,6 +812,7 @@ mod tests {
         p.pump();
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_relative_path_lights_up_from_a_shown_folder() {
         let mut p = misc_pump();
@@ -864,6 +841,7 @@ mod tests {
         assert!(p.lr(rel, REPO, "B").is_empty());
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_bare_name_is_tried_in_the_shown_folder_only() {
         let mut p = misc_pump();
@@ -886,6 +864,7 @@ mod tests {
         assert_eq!(bases, vec![REPO, out]);
     }
 
+    #[cfg(windows)]
     #[test]
     fn is_cwd_is_only_the_folder_itself() {
         let cwd = "C:\\c\\Github-loftspace\\Stutter";
@@ -944,6 +923,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_folder_above_the_shells_folder_links_like_its_neighbour() {
         // "Documents/Claude" from inside Documents\Claude\Github\Flare links, as "Documents/DuckStation" does.
@@ -1072,5 +1052,196 @@ mod tests {
         assert_eq!(pl.owners_kept(), 1);
         pl.forget_owner("A");
         assert_eq!(pl.owners_kept(), 0);
+    }
+
+    /// The POSIX twins of the tests above that spell a Windows path.
+    #[cfg(not(windows))]
+    mod posix {
+        use super::*;
+
+        fn pjoin(base: &str, text: &str) -> String {
+            format!("{base}/{text}")
+        }
+
+        fn set_resolver(files: &[&str]) -> Resolver {
+            let set: HashSet<String> = files.iter().map(|s| s.to_string()).collect();
+            Box::new(move |base, text| {
+                let abs = if text.starts_with('/') {
+                    text.to_string()
+                } else {
+                    pjoin(base, text)
+                };
+                set.contains(&abs).then(|| file(&abs))
+            })
+        }
+
+        #[test]
+        fn parent_dir_climbs_and_stops_under_the_root() {
+            assert_eq!(parent_dir("/a/b/"), Some("/a".to_string()));
+            assert_eq!(parent_dir("/a"), None);
+            assert_eq!(parent_dir("x"), None);
+        }
+
+        #[test]
+        fn is_cwd_is_only_the_folder_itself() {
+            let cwd = "/Users/me/Github-loftspace/Stutter";
+            assert!(is_cwd("/Users/me/Github-loftspace/Stutter", cwd));
+            assert!(is_cwd("/Users/me/Github-loftspace/Stutter/", cwd));
+            assert!(!is_cwd("/Users/me/Github-loftspace", cwd));
+            assert!(!is_cwd("/Users/me/Github-loftspace/Stutter/src", cwd));
+        }
+
+        const REPO: &str = "/c/Github/Repo";
+        const MISC: &str = "/c/zz-Misc";
+
+        fn misc_pump() -> Pump {
+            Pump::new(set_resolver(&[
+                "/c/zz-Misc/dto/b/out/b.mp4",
+                "/c/zz-Misc/dto/a/out/a.mp4",
+                "/c/zz-Misc/dto/b/out/notes.md",
+            ]))
+        }
+
+        fn teach_full_path(p: &mut Pump) {
+            p.pl.subscribe("A");
+            let full = "at /c/zz-Misc/dto/b/out/b.mp4.";
+            p.lr(full, REPO, "A");
+            p.pump();
+            p.lr(full, REPO, "A");
+            p.pump();
+        }
+
+        #[test]
+        fn a_relative_path_lights_up_from_a_shown_folder() {
+            let mut p = misc_pump();
+            let rel = "see dto/a/out/a.mp4 now";
+            p.lr(rel, REPO, "A");
+            p.pump();
+            assert!(p.lr(rel, REPO, "A").is_empty());
+            teach_full_path(&mut p);
+            assert!(p.wakes.contains(&"A".to_string()));
+            p.lr(rel, REPO, "A");
+            p.pump();
+            assert_eq!(
+                p.lr(rel, REPO, "A"),
+                vec![LinkRange {
+                    start: 4,
+                    end: 19,
+                    path: Some("dto/a/out/a.mp4".into())
+                }]
+            );
+            match p.pl.find_path("A", REPO, "dto/a/out/a.mp4", p.now) {
+                Found::Hit(f) => assert_eq!(f.base, MISC),
+                other => panic!("{other:?}"),
+            }
+            p.lr(rel, REPO, "B");
+            p.pump();
+            assert!(p.lr(rel, REPO, "B").is_empty());
+        }
+
+        #[test]
+        fn a_bare_name_is_tried_in_the_shown_folder_only() {
+            let mut p = misc_pump();
+            teach_full_path(&mut p);
+            p.lr("see notes.md", REPO, "A");
+            p.pump();
+            p.lr("see notes.md", REPO, "A");
+            p.pump();
+            let out = "/c/zz-Misc/dto/b/out";
+            match p.pl.find_path("A", REPO, "notes.md", p.now) {
+                Found::Hit(f) => assert_eq!(f.base, out),
+                other => panic!("{other:?}"),
+            }
+            let bases: Vec<&str> = p
+                .asks
+                .iter()
+                .filter(|a| a.paths.iter().any(|x| x == "notes.md"))
+                .map(|a| a.base.as_str())
+                .collect();
+            assert_eq!(bases, vec![REPO, out]);
+        }
+
+        #[test]
+        fn a_folder_above_the_shells_folder_links_like_its_neighbour() {
+            let home = "/Users/A";
+            let cwd = "/Users/A/Documents/Claude/Github/Flare";
+            let dirs: HashSet<String> = [
+                format!("{home}/Documents"),
+                format!("{home}/Documents/Claude"),
+                format!("{home}/Documents/DuckStation"),
+                format!("{home}/Documents/Claude/Github"),
+                cwd.to_string(),
+            ]
+            .into_iter()
+            .collect();
+            let mut p = Pump::new(Box::new(move |base, text| {
+                let abs = if text.starts_with('/') {
+                    text.to_string()
+                } else {
+                    pjoin(base, text)
+                };
+                let hit = dirs.contains(&abs);
+                hit.then_some(PathHit {
+                    kind: PathKind::Dir,
+                    abs,
+                })
+            }));
+            p.pl.subscribe("A");
+            let shown = format!("{home}/Documents");
+            for _ in 0..3 {
+                p.lr(&shown, cwd, "A");
+                p.pump();
+            }
+            for text in ["Documents/Claude", "Documents/DuckStation"] {
+                for _ in 0..8 {
+                    p.lr(text, cwd, "A");
+                    p.pump();
+                }
+                assert_eq!(p.lr(text, cwd, "A").len(), 1, "{text} should link");
+            }
+        }
+
+        #[test]
+        fn a_file_url_and_an_escaped_path_light_up_as_their_whole_text() {
+            let mut p = Pump::new(set_resolver(&[
+                "/Users/me/My Files/a b.txt",
+                "/w/My Files/notes 1.md",
+            ]));
+            let text = "see file:///Users/me/My%20Files/a%20b.txt:3 and My\\ Files/notes\\ 1.md.";
+            for _ in 0..3 {
+                p.lr(text, "/w", "A");
+                p.pump();
+            }
+            let r = p.lr(text, "/w", "A");
+            let shown: Vec<String> = r
+                .iter()
+                .map(|l| text.chars().skip(l.start).take(l.end - l.start).collect())
+                .collect();
+            assert_eq!(
+                shown,
+                vec![
+                    "file:///Users/me/My%20Files/a%20b.txt".to_string(),
+                    "My\\ Files/notes\\ 1.md".to_string()
+                ]
+            );
+            assert_eq!(
+                r.iter()
+                    .map(|l| l.path.clone().unwrap())
+                    .collect::<Vec<_>>(),
+                vec!["/Users/me/My Files/a b.txt", "My Files/notes 1.md"]
+            );
+        }
+
+        #[test]
+        fn a_posix_path_in_a_status_line_stops_at_the_prompt() {
+            assert_eq!(
+                texts("me@mac ~/work % ls docs/a.pdf"),
+                vec!["~/work", "docs/a.pdf"]
+            );
+            assert_eq!(
+                texts("/Users/me/work/a.rs:12:5: error"),
+                vec!["/Users/me/work/a.rs"]
+            );
+        }
     }
 }

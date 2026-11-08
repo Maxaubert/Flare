@@ -8,5 +8,12 @@ publish = false
 [dependencies]
 log.workspace = true
 
+[target.'cfg(not(windows))'.dependencies]
+flare-proc = { path = "../flare-proc" }
+libc.workspace = true
+
+[target.'cfg(not(windows))'.dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

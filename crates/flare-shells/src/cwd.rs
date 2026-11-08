@@ -19,6 +19,19 @@ pub fn parse_osc9(data: &str) -> Option<String> {
     }
 }
 
+/// The folder out of a folder report: OSC 9;9 (the Windows Terminal convention, what Flare's
+/// PowerShell and cmd hooks send) on every platform, and on macOS also OSC 7 (`file://host/path`,
+/// what Flare's zsh, bash, fish and pwsh hooks send there). `ident` is the OSC number, `data`
+/// the text after its ';'. None for anything else.
+pub fn parse_cwd_report(ident: u32, data: &str) -> Option<String> {
+    match ident {
+        9 => parse_osc9(data),
+        #[cfg(not(windows))]
+        7 => crate::macos::osc7::parse_osc7(data),
+        _ => None,
+    }
+}
+
 /// True when the text holds a C0 control, DEL or a C1 control. A real Windows folder name never does, and in
 /// a typed `cd` line a CR or LF would end the command and run the rest.
 pub fn has_control(p: &str) -> bool {
@@ -46,11 +59,25 @@ pub fn is_unc(p: &str) -> bool {
     }
 }
 
-/// The folder a tab may spawn, restore or stat after an OSC 9 report: a UNC report is never trusted (Windows
-/// would connect over SMB and can leak the NTLM hash), so the tab keeps its last local folder. Only an
-/// explicit user action may use a UNC folder.
+/// True for a folder that may leave this machine (the platform's rule): `is_unc` on Windows.
+#[cfg(windows)]
+pub fn is_remote(p: &str) -> bool {
+    is_unc(p)
+}
+
+/// True for a folder that may leave this machine (the platform's rule): on macOS a `//` path, a
+/// path under an autofs mount point (`/net`, `/Network`) or one with a `.` or `..` segment
+/// (`macos::paths::is_remote`).
+#[cfg(not(windows))]
+pub fn is_remote(p: &str) -> bool {
+    crate::macos::paths::is_remote(p)
+}
+
+/// The folder a tab may spawn, restore or stat after a folder report: a remote report is never trusted
+/// (Windows would connect over SMB and can leak the NTLM hash; a Mac would mount the server), so the tab
+/// keeps its last local folder. Only an explicit user action may use a remote folder.
 pub fn folder_after_report<'a>(last_local: &'a str, reported: &'a str) -> &'a str {
-    if is_unc(reported) {
+    if is_remote(reported) {
         last_local
     } else {
         reported
@@ -78,6 +105,15 @@ pub enum Follow {
 /// norm = replace every run of '\' or '/' by one '\', drop one trailing '\', lower-case.
 /// Either empty after norm -> Outside; equal -> Same; cwd starts with root + "\" -> Inside; else Outside.
 pub fn decide_follow(root: &str, cwd: &str) -> Follow {
+    #[cfg(not(windows))]
+    return crate::macos::paths::decide_follow(root, cwd);
+    #[cfg(windows)]
+    decide_follow_win(root, cwd)
+}
+
+/// The Windows rule above (macOS keeps case and `/` only: `macos::paths::decide_follow`).
+#[cfg(windows)]
+fn decide_follow_win(root: &str, cwd: &str) -> Follow {
     let r = norm(root);
     let c = norm(cwd);
     if r.is_empty() || c.is_empty() {
@@ -91,6 +127,7 @@ pub fn decide_follow(root: &str, cwd: &str) -> Follow {
     }
 }
 
+#[cfg(windows)]
 fn norm(p: &str) -> String {
     let mut out = String::with_capacity(p.len());
     let mut last_sep = false;
@@ -124,6 +161,9 @@ pub fn cd_command(shell_id: Option<&str>, path: &str) -> Option<String> {
             Some(format!("Set-Location -LiteralPath {}\r", ps_quote(path)))
         }
         Some("cmd") if !path.contains(['%', '"', '!', '^']) => Some(format!("cd /d \"{path}\"\r")),
+        // macOS: zsh, bash and fish (`macos::cd`).
+        #[cfg(not(windows))]
+        Some(id) => crate::macos::cd::cd_line(id, path),
         _ => None,
     }
 }
@@ -156,6 +196,7 @@ mod tests {
         assert_eq!(parse_osc9("9;/home/me"), None);
     }
 
+    #[cfg(windows)]
     #[test]
     fn decide_follow_tells_same_inside_outside() {
         let root = "C:\\work\\Atlas";
@@ -257,6 +298,7 @@ mod tests {
         assert_eq!(cd_command(Some("cmd"), "D:\\a^b"), None);
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_unc_report_never_replaces_the_local_folder() {
         for unc in [
@@ -283,9 +325,82 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_report_is_osc_9_9_on_every_platform() {
+        assert_eq!(parse_cwd_report(9, "9;C:\\w").as_deref(), Some("C:\\w"));
+        assert!(parse_cwd_report(9, "file:///tmp").is_none());
+        assert!(parse_cwd_report(8, "9;C:\\w").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn osc_7_is_no_folder_report_on_windows() {
+        assert!(parse_cwd_report(7, "file:///C:/w").is_none());
+        assert!(parse_cwd_report(7, "file:///tmp").is_none());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn osc_7_is_the_folder_report_on_macos() {
+        assert_eq!(
+            parse_cwd_report(7, "file:///tmp/a%20b").as_deref(),
+            Some("/tmp/a b")
+        );
+        assert!(parse_cwd_report(7, "file://far-away/tmp").is_none());
+        assert!(parse_cwd_report(7, "9;C:\\w").is_none());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn cd_command_for_the_mac_shells() {
+        assert_eq!(
+            cd_command(Some("zsh"), "/Users/me/a b").as_deref(),
+            Some("cd -- '/Users/me/a b'\r")
+        );
+        assert_eq!(
+            cd_command(Some("bash"), "/tmp/it's").as_deref(),
+            Some("cd -- '/tmp/it'\\''s'\r")
+        );
+        assert_eq!(
+            cd_command(Some("fish"), "/tmp").as_deref(),
+            Some("cd '/tmp'\r")
+        );
+        assert_eq!(
+            cd_command(Some("pwsh"), "/tmp/a b").as_deref(),
+            Some("Set-Location -LiteralPath '/tmp/a b'\r")
+        );
+        for shell in ["zsh", "bash", "fish"] {
+            for bad in [
+                "/tmp/a\rcalc",
+                "/tmp/a\ncalc",
+                "/tmp/\u{1b}x",
+                "/tmp/\u{85}x",
+                "",
+            ] {
+                assert_eq!(cd_command(Some(shell), bad), None, "{shell} {bad:?}");
+            }
+        }
+        assert_eq!(cd_command(Some("cmd"), "D:\\%PATH%"), None);
+    }
+
+    #[test]
     fn cd_command_for_other_shells_is_none() {
         assert_eq!(cd_command(Some("wsl-Ubuntu"), "C:\\x"), None);
         assert_eq!(cd_command(None, "C:\\x"), None);
         assert_eq!(cd_command(Some("pwsh"), ""), None);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_remote_report_never_replaces_the_local_folder_on_macos() {
+        for remote in [
+            "//evil/share",
+            "/net/evil/share",
+            "/Network/Servers/evil",
+            "/a/../net/h",
+        ] {
+            assert!(is_remote(remote), "{remote}");
+            assert_eq!(folder_after_report("/Users/me", remote), "/Users/me");
+        }
+        assert_eq!(folder_after_report("/Users/me", "/tmp/x"), "/tmp/x");
     }
 }

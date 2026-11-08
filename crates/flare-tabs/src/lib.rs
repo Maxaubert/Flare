@@ -9,6 +9,8 @@ pub mod fit_hold;
 pub mod folder_names;
 pub mod hidden_title;
 pub mod keymap;
+#[cfg(not(windows))]
+mod macos;
 pub mod modal;
 pub mod model;
 pub mod places;

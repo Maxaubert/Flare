@@ -14,6 +14,10 @@ log.workspace = true
 url.workspace = true
 unicode-width.workspace = true
 
+# macOS: the one automount refusal shared with the tab folder and terminal link checks.
+[target.'cfg(not(windows))'.dependencies]
+flare-shells = { path = "../flare-shells" }
+
 [dev-dependencies]
 tempfile.workspace = true
 

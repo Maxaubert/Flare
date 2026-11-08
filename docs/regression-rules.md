@@ -626,3 +626,59 @@ Native: `background.rs` (`looks_like_background_work`). Held by `a_dev_server_in
 `std::os::windows` imports, Windows paths and Windows tools live in Windows modules with a macOS counterpart or stub.
 Held by the `macos` CI job (cargo check, clippy and nextest on macos-latest). Source: macOS port plan
 (`docs/superpowers/specs/2026-11-08-macos-port.md`, owner, 2026-11-08).
+228. **macOS: closing a tab ends its whole session, and throws away the output nobody will read.** The shell leads
+its own session (portable-pty `setsid`); a kill sends SIGHUP to the session's process groups and to the shell's
+descendants, then SIGTERM and SIGKILL after 250 ms and 500 ms more (`flare-term/src/macos/pty.rs`), sparing an
+`.app` bundle the shell launched. While it waits the reaper runs `tcflush(TCOFLUSH)` on a duplicate of the master:
+macOS makes an exiting process wait until its terminal's output is read, and the tab's reader has stopped, so
+without the flush the shell hangs in its exit (`ps` state `E`) and the quit wait runs out. Every process a round
+found to be the tab's (pid and start time) stays a target while it is that process, so one whose parent exits after
+it called `setsid` is still ended. The quit (`shells_gone`) also hurries the reapers to SIGTERM and SIGKILL and waits
+for them (well under a second), so a job that ignores SIGHUP never outlives Flare. Known gaps, with no macOS
+mechanism to close them (no job object; `NOTE_TRACK` is gone, and since Darwin 25 `KERN_PROCARGS2` no longer hands
+out another process's environment, checked 2026-11-08 on 27.2, so a tab marker cannot be read back): a daemon that
+forks, calls `setsid` and forks again before any round sees it (parent launchd, a session of its own) survives the
+tab, and a crash of Flare leaves a job that ignores SIGHUP running. Held by `quit_macos.rs`
+(`ten_real_shells_with_jobs_killed_none_remain`,
+`quitting_ends_a_job_that_ignores_the_hangup_before_the_process_exits`) and `pty::macos::tests`. Source: macOS port
+phase 2, step 1 (measured 2026-11-08: 6 of 10 shells stuck in exit without the flush), and the phase 2 review.
+229. **macOS: every shell starts as a login shell and reports its folder with OSC 7, without touching the user's
+dotfiles.** zsh, bash, fish and pwsh are found by absolute path (the login shell from the user record first, then
+Homebrew, `/etc/shells`, `/bin`), never through PATH; the login shell is listed first and is the default
+(`shell_by_id` prefers no name on macOS). zsh starts with `ZDOTDIR` on Flare's shim, whose `.zshenv` hands the
+user's `ZDOTDIR` straight back and sources their `.zshenv` (the user's value waits in `FLARE_USER_ZDOTDIR`); bash
+gets `--rcfile` with a file that reads the login files (bash ignores `--rcfile` with `-l`); fish gets
+`-l --init-command`; pwsh gets `-Login` first and the Windows prompt wrapper reporting OSC 7. A missing shim is
+never handed to zsh (it would read none of the user's files). OSC 7 counts only for this machine (empty host,
+`localhost` or the host name; Flare's own hooks send no host, since zsh and bash read the name once at startup and
+a Mac named by its network can be renamed mid-session), decoded, absolute, with no control character or `.`/`..` segment; on Windows
+OSC 7 is no folder report. The files live in `~/Library/Application Support/Flare/shell-integration/<version>`
+(`flare-shells/src/macos/`). Held by `flare-term/tests/real_shells_macos.rs` and `flare-shells` `macos::*` tests.
+Source: macOS port phase 2, step 2 (2026-11-08).
+230. **macOS: paths are read with the POSIX grammar behind one seam, and a path that would reach a server is never
+statted, restored or adopted.** `flare-term/src/path_grammar.rs` picks the grammar: Windows
+(`path_grammar/windows.rs`, the drive and UNC rules moved there unchanged) or macOS (`macos/path_grammar.rs`): one
+root `/`, `~` and `~/` for home (`~user` is refused), `/` the only separator (a `\` is a name character), case kept,
+`..` never above the root. Terminal text also links a `file://` URL on this machine (percent-decoded, its
+`:line:col` off) and a word whose spaces are escaped with `\`. A `//` path and anything under an automount point
+(`/net`, `/Network`, `/home`, each also under `/System/Volumes/Data`, and any mount of type `autofs` that
+`getfsstat` lists; any case, also after `..`) is never resolved, statted or read in a panel (`flare-surfaces`
+`preview::loadable`). One function holds that refusal, `flare_shells::macos::paths::is_automount`, used by the
+link grammar, `is_remote` and the panels' `is_local_path`, which also refuses a `.` or `..` segment; a mounted volume (`/Volumes/<name>`) gets its own slow-volume key in the
+stat meter. A tab's reported folder and a restored one go through `flare_shells::cwd::is_remote`: on macOS it
+refuses the same autofs and `//` paths, a `.` or `..` segment and the Windows UNC forms. The sidebar line and the +
+menu read POSIX folders (`~/code`, `.../Claude/Github`). Held by the `posix` twins in `path_open`, `path_links`,
+`paths`, the `macos::*` tests of flare-term, flare-shells, flare-tabs and flare-surfaces, and
+`restore_never_spawns_in_a_remote_folder_on_macos`. Source: macOS port phase 2, step 3 (2026-11-08).
+231. **macOS: fonts come from the font folders, the stacks fall to SF Mono and Menlo, the UI is SF, and wgpu
+draws on Metal.** `flare-render/src/macos/font_catalog.rs` reads `/System/Library/Fonts`, the downloadable
+`AssetsV2` fonts, `/Library/Fonts` and `~/Library/Fonts` once (never `/Network/Library/Fonts`, an autofs mount). Its
+start-up fallbacks are SF Mono, Menlo and every face cosmic-text's macOS fallback names (per-script, Han, common):
+Arial Unicode MS covers most scripts, so a script face left lazy would lose to it and draw differently from an
+all-fonts build. The generic `monospace` at the end of a stack is SF Mono, Menlo, Monaco (`MONOSPACE_FAMILIES`;
+empty on Windows). The Slint faces come from `ui/platform_fonts.slint`: "System Font" (SF) and Menlo on macOS,
+Segoe UI and Cascadia Mono on Windows; Helvetica, Slint's own fallback, has a one-em line and shrinks every row.
+`flare_render::gpu::NATIVE_BACKEND` is DX12 on Windows and Metal on macOS, for the prewarm instance and the headless
+painter. Held by `font_catalog::macos::tests`, `glyph_images_are_identical_to_the_all_fonts_build_for_the_theme_sample`,
+`tests/metal_macos.rs`, `the_prewarm_instance_starts_metal_alone_unless_a_backend_is_named` and the `_on_macos`
+twins of the Windows pixel tests. Source: macOS port phase 2, step 4 (2026-11-08).

@@ -255,10 +255,6 @@ fn a_new_session_switches_the_file_and_forgets_the_pick() {
     assert_eq!(files(&f), ["fresh.rs|1 edit"]);
 }
 
-#[cfg_attr(
-    not(windows),
-    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-)]
 #[test]
 fn closing_the_panel_stops_the_tracker_and_reopening_starts_it_again() {
     let f = Fx::new();
@@ -363,10 +359,6 @@ fn an_edit_of_another_file_leaves_the_selected_diff_rows_alone() {
     assert!(diff_text(&f).iter().any(|t| t == "mark"));
 }
 
-#[cfg_attr(
-    not(windows),
-    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-)]
 #[test]
 fn a_path_answer_that_arrives_after_the_panel_changed_is_dropped() {
     let f = Fx::new();
@@ -642,10 +634,6 @@ fn a_stored_panel_of_a_kind_with_the_wrong_target_is_dropped() {
 
 // ---- clicking a path ----
 
-#[cfg_attr(
-    not(windows),
-    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-)]
 #[test]
 fn a_click_on_the_path_in_a_diff_shows_the_file_and_a_program_shows_nothing() {
     let f = Fx::new();

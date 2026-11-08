@@ -62,18 +62,27 @@ pub fn classify_resolved(abs: &str, canonical: &str) -> Option<PanelKind> {
     (classify(canonical)? == a).then_some(a)
 }
 
-/// True when a panel may load this path as `kind`: a path on a local drive (`C:\\...`, never a
-/// network path, which would make Windows reach out), with no NUL, whose name is of that kind. The
-/// controller asks this before it starts a read, for a target that came from a click and for one
-/// that came back from `panels.json`, a file anyone can edit.
+/// True when a panel may load this path as `kind`: a local path (`C:\\...` on Windows, `/...` on
+/// macOS; never a network path, which would make the system reach out), with no NUL, whose name is
+/// of that kind. The controller asks this before it starts a read, for a target that came from a
+/// click and for one that came back from `panels.json`, a file anyone can edit.
 pub fn loadable(path: &str, kind: &PanelKind) -> bool {
-    let b = path.as_bytes();
-    let local = b.len() >= 3
-        && b[0].is_ascii_alphabetic()
-        && b[1] == b':'
-        && (b[2] == b'\\' || b[2] == b'/');
-    local && !path.contains('\0') && classify(path).as_ref() == Some(kind)
+    is_local_path(path) && !path.contains('\0') && classify(path).as_ref() == Some(kind)
 }
+
+/// A path on a local drive (`C:\\...` or `C:/...`).
+#[cfg(windows)]
+fn is_local_path(path: &str) -> bool {
+    let b = path.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
+}
+
+/// macOS: an absolute path that reaches no server (`macos/local_path.rs`).
+#[cfg(not(windows))]
+#[path = "macos/local_path.rs"]
+mod local_path;
+#[cfg(not(windows))]
+use local_path::is_local_path;
 
 /// Why a file could not be shown: plain words for the panel.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -373,6 +382,7 @@ mod tests {
         assert_eq!(classify_resolved("a.exe", "b.png"), None);
     }
 
+    #[cfg(windows)]
     #[test]
     fn only_a_local_file_of_the_right_kind_is_loadable() {
         let img = PanelKind::Image;
@@ -391,6 +401,31 @@ mod tests {
             r"a\p.png",
             "C:p.png",
             "C:\\p\0.png",
+            "",
+        ] {
+            assert!(!loadable(bad, &img), "{bad:?}");
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn only_a_local_file_of_the_right_kind_is_loadable_posix() {
+        let img = PanelKind::Image;
+        let txt = PanelKind::Text;
+        assert!(loadable("/Users/me/p.png", &img));
+        assert!(loadable("/tmp/a/p.JPG", &img));
+        assert!(loadable("/Users/me/n.md", &txt));
+        assert!(!loadable("/Users/me/n.md", &img), "the wrong kind");
+        assert!(!loadable("/Users/me/run.sh", &txt));
+        for bad in [
+            "//server/share/p.png",
+            "/net/host/share/p.png",
+            "/Network/Servers/h/p.png",
+            r"C:\a\p.png",
+            "p.png",
+            "a/p.png",
+            "~/p.png",
+            "/p\0.png",
             "",
         ] {
             assert!(!loadable(bad, &img), "{bad:?}");

@@ -53,7 +53,7 @@ use crate::appctl::{Post, UiMsg};
 use crate::picker_ctl::{PickerCtl, PickerCtx, RowColour};
 use crate::{
     AppWindow, BlockKind as SlintBlock, EditorWell, RailItem, SetButton, SetHit, SetKind,
-    SetOption, SetRow, SetSection, SettingsBridge, SettingsFixed, WallCard,
+    SetOption, SetRow, SetSection, SettingsBridge, WallCard,
 };
 
 /// How long the Mark button says Marked.
@@ -721,6 +721,7 @@ impl SettingsCtl {
     }
 
     /// The two fonts of the page: Segoe UI Variable when installed, else Segoe UI.
+    #[cfg(windows)]
     fn set_fonts(app: &AppWindow, deps: &SettingsDeps) {
         let pick = |family: &str| {
             if (deps.face_of)(family) == family {
@@ -729,10 +730,15 @@ impl SettingsCtl {
                 "Segoe UI".to_string()
             }
         };
-        let g = app.global::<SettingsFixed>();
+        let g = app.global::<crate::SettingsFixed>();
         g.set_font_text(pick("Segoe UI Variable Text").into());
         g.set_font_display(pick("Segoe UI Variable Display").into());
     }
+
+    /// macOS: the page's two fonts are the system face, which every Mac has, so the defaults of
+    /// `ui/platform_fonts.slint` stay (setting them here would only cut their binding).
+    #[cfg(not(windows))]
+    fn set_fonts(_app: &AppWindow, _deps: &SettingsDeps) {}
 
     /// Any change of a key a row, the look or the help panel stores asks for ONE rebuild: the
     /// first change posts a message, later ones find the flag set until the rebuild clears it.

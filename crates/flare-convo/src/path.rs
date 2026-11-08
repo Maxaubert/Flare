@@ -90,10 +90,7 @@ mod tests {
 
     const ID: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
+    #[cfg(windows)]
     #[test]
     fn the_claude_folder_is_the_config_dir_when_it_is_absolute() {
         let home = Path::new(r"C:\Users\x");
@@ -107,10 +104,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
+    #[cfg(windows)]
     #[test]
     fn a_transcript_lives_under_projects_in_the_claude_folder() {
         let dir = Path::new(r"D:\cfg\claude");
@@ -135,6 +129,51 @@ mod tests {
         assert_eq!(
             subagent_dir(home, r"C:\p", ID),
             subagent_dir_of(&transcript_path(home, r"C:\p", ID).unwrap())
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_claude_folder_is_the_config_dir_when_it_is_absolute_posix() {
+        let home = Path::new("/Users/x");
+        assert_eq!(claude_dir(None, home), home.join(".claude"));
+        assert_eq!(claude_dir(Some(""), home), home.join(".claude"));
+        assert_eq!(claude_dir(Some("  "), home), home.join(".claude"));
+        assert_eq!(claude_dir(Some("rel/dir"), home), home.join(".claude"));
+        // A drive path is no absolute path on a Mac.
+        assert_eq!(claude_dir(Some(r"D:\cfg"), home), home.join(".claude"));
+        assert_eq!(
+            claude_dir(Some("/opt/cfg/claude"), home),
+            PathBuf::from("/opt/cfg/claude")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_transcript_lives_under_projects_in_the_claude_folder_posix() {
+        let dir = Path::new("/opt/cfg/claude");
+        let t = transcript_path_in(dir, "/Users/me/my proj", ID).expect("a path");
+        assert_eq!(
+            t,
+            PathBuf::from(format!(
+                "/opt/cfg/claude/projects/-Users-me-my-proj/{ID}.jsonl"
+            ))
+        );
+        assert_eq!(
+            subagent_dir_of(&t),
+            Some(PathBuf::from(format!(
+                "/opt/cfg/claude/projects/-Users-me-my-proj/{ID}/subagents"
+            )))
+        );
+        assert!(transcript_path_in(dir, "/x", "../y").is_none());
+        let home = Path::new("/Users/x");
+        assert_eq!(
+            transcript_path(home, "/p", ID),
+            transcript_path_in(&home.join(".claude"), "/p", ID)
+        );
+        assert_eq!(
+            subagent_dir(home, "/p", ID),
+            subagent_dir_of(&transcript_path(home, "/p", ID).unwrap())
         );
     }
 }
