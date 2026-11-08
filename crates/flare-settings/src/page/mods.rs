@@ -103,9 +103,6 @@ pub const INSTALLING: &str = "Working on it...";
 pub const FOLDER_UNKNOWN: &str = "Where plugins are kept.";
 /// The maker row when the plugin does not say who made it.
 pub const NO_AUTHOR: &str = "The plugin does not say who made it.";
-/// The lead of the warnings of a plugin whose permissions together reach further than each alone (a full control
-/// warning leads with its own "Full control:").
-pub const TAKE_NOTE: &str = "Before you turn it on";
 /// The words under a mod's switch when it asks for permissions that were never allowed.
 pub const NEEDS_APPROVAL: &str =
     "Asks for new permissions, so it was turned off. Switch it on to allow what is listed below.";
@@ -736,7 +733,6 @@ mod tests {
             NONE_FOUND,
             FOLDER_UNKNOWN,
             NO_AUTHOR,
-            TAKE_NOTE,
             INFO_TIP,
             REMOVE_TIP,
         ] {

@@ -1238,7 +1238,7 @@ pub fn run_window(
         }
         {
             let weak = app.as_weak();
-            rc.borrow_mut().set_pick_zip(Rc::new(move |answer| {
+            rc.borrow_mut().set_pick_zip(Rc::new(move |folder, answer| {
                 let parent = weak
                     .upgrade()
                     .and_then(|a| hwnd_of(&a))
@@ -1249,7 +1249,7 @@ pub fn run_window(
                 flare_win::pick::pick_file(
                     PickOptions {
                         parent,
-                        default_dir: None,
+                        default_dir: folder,
                         seam,
                     },
                     ("Plugin (.zip)", &["zip"]),
