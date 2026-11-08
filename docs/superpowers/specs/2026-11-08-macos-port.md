@@ -49,7 +49,7 @@ Estimates are rough; the plan runs phase after phase, each as several small PRs.
 | Phase | What | Done when | Est. |
 |---|---|---|---|
 | 0 Compile | Add the aarch64-apple-darwin target, gate Windows deps under `[target.'cfg(windows)']`, wgpu `metal`, `build.rs` keyed on `CARGO_CFG_TARGET_OS`, stub Windows-only modules, add the macOS CI job | `cargo check`, clippy and the portable tests pass on macOS | 1 wk |
-| 1 Web spike | Prove WKWebView (objc2) against the agent browsing contract: `browser_look` screenshot and numbered controls, trusted clicks and keys (NSEvent into the view), scroll, wait, navigate, iframes, downloads, the sandbox for mini-apps (content rules, no network), the "Claude is using this page" stop-on-user-input | A written verdict per tool. Any gap that cannot be closed = switch to CEF | 1 wk |
+| 1 Web spike | Prove WKWebView (objc2) against the agent browsing contract: `browser_look` screenshot and numbered controls, trusted clicks and keys (NSEvent into the view), scroll, wait, navigate, iframes, downloads, the sandbox for mini-apps (content rules, no network), the "Claude is using this page" stop-on-user-input | A written verdict per tool. Any gap that cannot be closed = switch to CEF. **Verdict (2026-11-08): CEF** (`2026-11-08-macos-web-verdict.md`): a `browser_eval` that never returns hangs a WKWebView page for good, with no public API to stop it | 1 wk |
 | 2 Terminal core | PTY via openpty, process groups (killpg) and libproc for the child tree; shells: zsh, bash, fish, pwsh with OSC 7 cwd hooks and login-shell PATH; POSIX path grammar for links, cwd follow and tab restore; Metal render; fonts | Shells run, tabs restore, links and selection pass their tests on Mac | 2-3 wk |
 | 3 Mac chrome | Native window (transparent titlebar, traffic lights, glass via NSVisualEffectView), Mac menu bar, Cmd keymap, clipboard, file drop, openers, single instance, settings in `~/Library/Application Support/Flare` | Flare looks and behaves like a Mac app | 2 wk |
 | 4 Agent tools | `flare-ctl` over a Unix socket with peer-uid checks, `flare-mcp`, agent detection, changes panel, dock badge and attention, notifications | All `show_*`, `set_tab_*`, `convo.state` tools pass on Mac | 1-2 wk |
@@ -63,8 +63,11 @@ Total: about 3 months to full parity at a steady pace.
 
 ## Known risks
 
-- **Agent browsing on WKWebView** (phase 1 decides). No DevTools protocol and no http(s) request
-  interception; replaced by JS snapshots, NSEvent input, WKContentRuleList and proxy settings (macOS 14+).
+Phase 1 is done: `2026-11-08-macos-web-verdict.md` (CEF; what CEF must prove on a Mac is listed there).
+
+- **Agent browsing on WKWebView** (phase 1 decided against it: see the verdict). No DevTools protocol and no
+  way to stop a running script; the rest closed with JS snapshots, NSEvent input, WKContentRuleList and proxy
+  settings (macOS 14+).
 - **Headless E2E on macOS**: no hidden desktop, offscreen windows get clamped; CI only.
 - **Signing gates features**: notifications, mic, updates and downloaded engines need the Developer ID
   before they can be tested for real.

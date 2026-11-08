@@ -15,5 +15,17 @@ webview2-com.workspace = true
 windows.workspace = true
 windows-sys.workspace = true
 
+# The phase 1 WKWebView spike (`examples/wk_spike/`, macOS only): a runnable proof against the agent
+# browsing contract, not production code. Nothing here reaches the library or the Windows build.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+objc2-web-kit = "0.3"
+objc2-core-graphics = "0.3"
+objc2-core-foundation = "0.3"
+serde_json.workspace = true
+
 [lints]
 workspace = true
