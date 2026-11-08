@@ -10,7 +10,11 @@ use std::process::Command;
 use std::ptr;
 use std::time::Duration;
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
+use windows::Win32::System::Variant::VARIANT;
+use windows::Win32::UI::Shell::{IShellWindows, IWebBrowser2, ShellWindows};
+use windows::core::Interface;
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
@@ -21,7 +25,9 @@ use windows_sys::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx,
 };
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
-use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOWNORMAL, SetForegroundWindow, ShowWindowAsync,
+};
 
 use crate::clipboard::utf16_with_nul;
 
@@ -227,24 +233,108 @@ fn hold_folder(canon: &str) -> Option<FolderHold> {
         .then_some(hold)
 }
 
-/// Holds the canonical path as a directory (refused otherwise), then hands that path to `spawn`.
-/// The hold is returned so it outlives the spawn: the name stays a folder while Explorer reads it.
+/// The Windows path a `file:` address names (`%XX` read as UTF-8), None for any other address.
+fn file_url_path(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("file://")?;
+    let body = rest
+        .strip_prefix('/')
+        .map_or_else(|| format!("//{rest}"), str::to_string);
+    let raw = body.as_bytes();
+    let mut bytes = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        let hex = (raw[i] == b'%')
+            .then(|| raw.get(i + 1..i + 3))
+            .flatten()
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        bytes.push(hex.unwrap_or(raw[i]));
+        i += if hex.is_some() { 3 } else { 1 };
+    }
+    Some(String::from_utf8(bytes).ok()?.replace('/', "\\"))
+}
+
+/// Whether two absolute paths name the same folder, as Windows compares names.
+fn same_folder(a: &str, b: &str) -> bool {
+    a.trim_end_matches('\\').to_lowercase() == b.trim_end_matches('\\').to_lowercase()
+}
+
+/// The visible Explorer window showing `canon` now. None when there is none, or when the shell
+/// cannot be asked: the caller then starts Explorer, as it would for a folder that is not open.
+/// Call it from a worker: a busy Explorer can hold the answer up.
+fn explorer_window_showing(canon: &str) -> Option<HWND> {
+    ensure_com();
+    // SAFETY: COM is initialised on this thread by `ensure_com`; every interface is a live one
+    // the shell returned and is released on drop, and the index VARIANT outlives its call.
+    unsafe {
+        let windows: IShellWindows = CoCreateInstance(&ShellWindows, None, CLSCTX_ALL).ok()?;
+        for i in 0..windows.Count().ok()? {
+            let Some(browser) = windows
+                .Item(&VARIANT::from(i))
+                .ok()
+                .and_then(|item| item.cast::<IWebBrowser2>().ok())
+            else {
+                continue;
+            };
+            let Some(url) = browser.LocationURL().ok().map(|u| u.to_string()) else {
+                continue;
+            };
+            if !file_url_path(&url).is_some_and(|p| same_folder(&p, canon)) {
+                continue;
+            }
+            let hwnd = browser.HWND().ok()?.0 as HWND;
+            if IsWindowVisible(hwnd) != 0 {
+                return Some(hwnd);
+            }
+        }
+    }
+    None
+}
+
+/// Brings the Explorer window already showing `canon` to the front; false when no window shows it.
+/// A second `explorer.exe` hands the folder to the Explorer that owns the window and leaves the
+/// raise to it, and the foreground lock can refuse that process (issue #55). This process is the
+/// foreground one during the click, so the raise is made from here. Should the user have moved on
+/// since, Windows refuses it and nothing takes the focus.
+fn bring_open_folder_forward(canon: &str) -> bool {
+    let Some(hwnd) = explorer_window_showing(canon) else {
+        return false;
+    };
+    // SAFETY: plain Win32 calls that accept any window handle, a stale one included; the async
+    // show cannot block on a busy Explorer.
+    unsafe {
+        if IsIconic(hwnd) != 0 {
+            ShowWindowAsync(hwnd, SW_RESTORE);
+        }
+        SetForegroundWindow(hwnd);
+    }
+    true
+}
+
+/// Holds the canonical path as a directory (refused otherwise), asks `bring_forward` to raise a
+/// window already showing it, and otherwise hands that path to `spawn`, so a folder that is open
+/// is never opened twice. The hold is returned so it outlives the spawn: the name stays a folder
+/// while Explorer reads it.
 fn open_folder_with(
     abs: &str,
+    bring_forward: impl FnOnce(&str) -> bool,
     spawn: impl FnOnce(&str) -> Result<(), String>,
 ) -> Result<FolderHold, String> {
     let canon = canonical(abs).ok_or_else(|| "path not found".to_string())?;
     let hold = hold_folder(&canon).ok_or_else(|| "not a folder".to_string())?;
+    if bring_forward(&canon) {
+        return Ok(hold);
+    }
     let args = folder_args(&canon).ok_or_else(|| "path refused".to_string())?;
     spawn(&args)?;
     Ok(hold)
 }
 
-/// Opens a folder in Explorer. The canonical path is held open as a directory (no rename, no
+/// Opens a folder in Explorer, or brings forward the window already showing it. The canonical path is held open as a directory (no rename, no
 /// delete) from before the spawn until `FOLDER_HOLD` after it, so a file swapped in under that
 /// name is never what Explorer runs.
 pub fn explorer_open_folder(abs: &str) -> Result<(), String> {
-    let hold = open_folder_with(abs, spawn_explorer)?;
+    let hold = open_folder_with(abs, bring_open_folder_forward, spawn_explorer)?;
     std::thread::spawn(move || {
         std::thread::sleep(FOLDER_HOLD); // sync-ok: a detached thread that only keeps the hold
         drop(hold);
@@ -388,10 +478,14 @@ mod tests {
         let f = dir.path().join("evil.exe");
         std::fs::write(&f, "x").unwrap();
         let mut spawned = false;
-        let r = open_folder_with(f.to_str().unwrap(), |_| {
-            spawned = true;
-            Ok(())
-        });
+        let r = open_folder_with(
+            f.to_str().unwrap(),
+            |_| panic!("a file is never looked for"),
+            |_| {
+                spawned = true;
+                Ok(())
+            },
+        );
         assert!(r.is_err());
         assert!(!spawned);
     }
@@ -402,10 +496,14 @@ mod tests {
         let sub = dir.path().join("a b");
         std::fs::create_dir(&sub).unwrap();
         let mut got = String::new();
-        open_folder_with(sub.to_str().unwrap(), |a| {
-            got = a.to_string();
-            Ok(())
-        })
+        open_folder_with(
+            sub.to_str().unwrap(),
+            |_| false,
+            |a| {
+                got = a.to_string();
+                Ok(())
+            },
+        )
         .unwrap();
         assert!(got.starts_with('"') && got.ends_with('"'), "{got}");
         assert!(!got.contains(r"\\?\"), "{got}");
@@ -421,15 +519,19 @@ mod tests {
         let moved = parent.join("moved");
         let parent_moved = dir.path().join("q");
         let mut checked = false;
-        let hold = open_folder_with(sub.to_str().unwrap(), |_| {
-            // The name cannot be freed for a runnable file while Explorer resolves it, neither
-            // by moving the folder nor by moving the folder above it.
-            assert!(std::fs::rename(&sub, &moved).is_err());
-            assert!(std::fs::remove_dir(&sub).is_err());
-            assert!(std::fs::rename(&parent, &parent_moved).is_err());
-            checked = true;
-            Ok(())
-        })
+        let hold = open_folder_with(
+            sub.to_str().unwrap(),
+            |_| false,
+            |_| {
+                // The name cannot be freed for a runnable file while Explorer resolves it, neither
+                // by moving the folder nor by moving the folder above it.
+                assert!(std::fs::rename(&sub, &moved).is_err());
+                assert!(std::fs::remove_dir(&sub).is_err());
+                assert!(std::fs::rename(&parent, &parent_moved).is_err());
+                checked = true;
+                Ok(())
+            },
+        )
         .unwrap();
         assert!(checked);
         assert!(
@@ -446,13 +548,102 @@ mod tests {
         let gone = dir.path().join("gone");
         let mut spawned = false;
         assert!(
-            open_folder_with(gone.to_str().unwrap(), |_| {
-                spawned = true;
-                Ok(())
-            })
+            open_folder_with(
+                gone.to_str().unwrap(),
+                |_| false,
+                |_| {
+                    spawned = true;
+                    Ok(())
+                }
+            )
             .is_err()
         );
         assert!(!spawned);
+    }
+
+    #[test]
+    fn a_folder_already_showing_is_brought_forward_and_explorer_is_not_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("a b");
+        std::fs::create_dir(&sub).unwrap();
+        let mut asked = String::new();
+        let mut spawned = false;
+        let hold = open_folder_with(
+            sub.to_str().unwrap(),
+            |canon| {
+                asked = canon.to_string();
+                true
+            },
+            |_| {
+                spawned = true;
+                Ok(())
+            },
+        );
+        assert!(hold.is_ok());
+        assert!(!spawned, "a second Explorer would duplicate the window");
+        assert!(!asked.starts_with(r"\\?\"), "{asked}");
+        assert!(asked.ends_with("a b"), "{asked}");
+    }
+
+    #[test]
+    fn a_folder_no_window_shows_starts_explorer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spawned = false;
+        open_folder_with(
+            dir.path().to_str().unwrap(),
+            |_| false,
+            |_| {
+                spawned = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(spawned);
+    }
+
+    #[test]
+    fn an_explorer_address_reads_back_as_its_windows_path() {
+        assert_eq!(
+            file_url_path("file:///C:/a%20b/m%C3%B8te").as_deref(),
+            Some("C:\\a b\\m\u{f8}te")
+        );
+        assert_eq!(file_url_path("file:///C:/").as_deref(), Some("C:\\"));
+        assert_eq!(
+            file_url_path("file://host/share/d").as_deref(),
+            Some(r"\\host\share\d")
+        );
+        assert_eq!(
+            file_url_path("file:///C:/100%").as_deref(),
+            Some("C:\\100%")
+        );
+        assert_eq!(
+            file_url_path("file:///C:/m\u{f8}te").as_deref(),
+            Some("C:\\m\u{f8}te")
+        );
+        for other in [
+            "",
+            "about:blank",
+            "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}",
+            "file:///C:/%FF",
+        ] {
+            assert_eq!(file_url_path(other), None, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn the_same_folder_is_matched_across_case_and_a_trailing_backslash_only() {
+        assert!(same_folder("C:\\Users\\Me", "c:\\users\\me\\"));
+        assert!(same_folder("C:\\", "c:\\"));
+        assert!(same_folder(r"\\host\share", r"\\HOST\share"));
+        assert!(!same_folder("C:\\a", "C:\\a b"));
+        assert!(!same_folder("C:\\a", "C:\\a\\b"));
+    }
+
+    #[test]
+    fn a_folder_no_explorer_shows_is_not_found_and_nothing_is_raised() {
+        // Only reads the shell's window list: nothing opens and nothing comes forward.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!bring_open_folder_forward(dir.path().to_str().unwrap()));
     }
 
     #[test]

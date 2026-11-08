@@ -293,7 +293,10 @@ are added as milestones land.
   `an_osc8_label_showing_another_host_opens_what_it_shows` and `any_other_button_opens_nothing`.
 - **Paths.** A path is a link only when it exists; the backend resolves and checks it again; a click
   opens only allowlisted types and reveals everything else in Explorer (O22, rule 134). A folder opens
-  in Explorer. The user's chosen folder handler is M9. Held by `a_path_is_a_link_only_if_it_exists_and_opens_by_the_allowlist`
+  in Explorer; when an Explorer window already shows that folder, that window comes forward (restored if
+  minimized) and no second Explorer starts, because the foreground lock could stop Explorer raising it itself
+  (issue #55; `a_folder_already_showing_is_brought_forward_and_explorer_is_not_started`). A folder sitting in a
+  background Explorer tab brings its window forward without switching tab. The user's chosen folder handler is M9. Held by `a_path_is_a_link_only_if_it_exists_and_opens_by_the_allowlist`
   and `a_path_menu_open_and_show_go_through_the_allowlist`. A path a program breaks at the window's
   edge by hand (Claude Code writes each row on its own, so the next row is not marked wrapped) is
   read across the break and is ONE link on both rows, for the paint, the click and the menu; a web
