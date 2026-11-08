@@ -17,6 +17,7 @@ component SheetToggle inherits Rectangle {
     in property <string> label;
     in property <string> words;
     callback toggled(bool);
+    callback escape();
     out property <bool> has-focus: fs.has-focus;
     width: 36px;
     height: 20px;
@@ -50,6 +51,10 @@ component SheetToggle inherits Rectangle {
         width: parent.width;
         height: parent.height;
         key-pressed(e) => {
+            if e.text == Key.Escape {
+                root.escape();
+                return accept;
+            }
             if e.text == Key.Space || e.text == Key.Return {
                 root.by-key = true;
                 root.toggled(!root.on);
@@ -74,7 +79,10 @@ component SheetTileView inherits Rectangle {
     in property <bool> opened;
     callback toggled(bool);
     callback open-menu();
-    background: root.tile.tone == 2 ? PluginInk.warn(root.look).with-alpha(0.08) : PluginInk.bg(root.look);
+    // Escape while a tile holds the keys.
+    callback escape();
+    // Amber tile: the ground with a little of the warning colour in it (opaque: the grid's lines are under it).
+    background: root.tile.tone == 2 ? PluginInk.bg(root.look).mix(PluginInk.warn(root.look), 0.92) : PluginInk.bg(root.look);
 
     VerticalLayout {
         x: 14px;
@@ -133,6 +141,8 @@ component SheetTileView inherits Rectangle {
     }
     // A dropdown tile: the whole tile opens it, by the pointer or by a key.
     if root.tile.kind == 1: Rectangle {
+        width: root.width;
+        height: root.height;
         property <bool> by-key;
         Rectangle {
             x: 6px;
@@ -143,13 +153,6 @@ component SheetTileView inherits Rectangle {
             border-width: 2px;
             border-color: dfs.has-focus && parent.by-key ? PluginInk.accent-hi(root.look) : transparent;
         }
-        TouchArea {
-            mouse-cursor: pointer;
-            clicked => {
-                parent.by-key = false;
-                root.open-menu();
-            }
-        }
         dfs := FocusScope {
             width: parent.width;
             height: parent.height;
@@ -159,12 +162,27 @@ component SheetTileView inherits Rectangle {
             accessible-description: root.tile.words;
             accessible-action-default => { root.open-menu(); }
             key-pressed(e) => {
+                if e.text == Key.Escape {
+                    root.escape();
+                    return accept;
+                }
                 if e.text == Key.Space || e.text == Key.Return || e.text == Key.DownArrow {
                     parent.by-key = true;
                     root.open-menu();
                     return accept;
                 }
                 return reject;
+            }
+        }
+        // The pointer: over the FocusScope, which would take the press.
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            mouse-cursor: pointer;
+            clicked => {
+                parent.by-key = false;
+                dfs.focus();
+                root.open-menu();
             }
         }
     }
@@ -176,6 +194,7 @@ component SheetTileView inherits Rectangle {
         label: root.tile.label;
         words: root.tile.words;
         toggled(v) => { root.toggled(v); }
+        escape => { root.escape(); }
     }
 }
 
@@ -212,6 +231,14 @@ export component PluginSheet inherits Rectangle {
     out property <length> cell-w: root.tile-w;
     out property <length> cell-h: root.tile-h;
 
+    function escape() {
+        if root.menu-tile >= 0 {
+            root.menu-tile = -1;
+            fs.focus();
+        } else {
+            root.close();
+        }
+    }
     function pick(i: int) {
         if root.menu-tile >= 0 && i >= 0 && i < root.tiles[root.menu-tile].options.length {
             let key = root.tiles[root.menu-tile].key;
@@ -230,21 +257,29 @@ export component PluginSheet inherits Rectangle {
             fs.focus();
         }
     }
+    // Drawn again from Rust (a choice applied): the tiles are new, so the sheet keeps the keys.
+    changed tiles => {
+        if root.open && root.menu-tile < 0 {
+            fs.focus();
+        }
+    }
 
     Rectangle {
         width: parent.width;
         height: parent.height;
         background: Theme.scrim;
     }
-    // A press outside the box closes the dropdown, else the sheet.
+    // A press outside the box closes the dropdown, else the sheet (a press inside it falls through to here only off
+    // the controls, and closes an open dropdown).
     TouchArea {
         width: parent.width;
         height: parent.height;
         pointer-event(e) => {
+            let inside = self.mouse-x >= box.x && self.mouse-x < box.x + box.width && self.mouse-y >= box.y && self.mouse-y < box.y + box.height;
             if e.kind == PointerEventKind.down {
                 if root.menu-tile >= 0 {
                     root.menu-tile = -1;
-                } else {
+                } else if !inside {
                     root.close();
                 }
             }
@@ -280,6 +315,8 @@ export component PluginSheet inherits Rectangle {
             }
             return reject;
         }
+
+
     }
 
     box := Rectangle {
@@ -296,13 +333,10 @@ export component PluginSheet inherits Rectangle {
         drop-shadow-color: #000000bb;
         accessible-role: groupbox;
         accessible-label: root.name;
-        // Presses inside the box never reach the scrim; one on a tile that is not the open dropdown closes it.
-        TouchArea {
-            width: parent.width;
-            height: parent.height;
-            clicked => { root.menu-tile = -1; }
-        }
+
+
         col := VerticalLayout {
+            width: parent.width;
             // The header: logo, name, `version · author`, close.
             HorizontalLayout {
                 padding: 16px;
@@ -359,8 +393,10 @@ export component PluginSheet inherits Rectangle {
                     }
                 }
             }
-            if root.desc != "": Rectangle {
-                height: desc-text.preferred-height + 12px;
+            // Always there (an `if` would leave the box's height stale for a moment): no height without words.
+            Rectangle {
+                visible: root.desc != "";
+                height: root.desc == "" ? 0px : desc-text.preferred-height + 12px;
                 desc-text := Text {
                     x: 16px;
                     y: 0px;
@@ -385,6 +421,7 @@ export component PluginSheet inherits Rectangle {
                     look: root.look;
                     opened: root.menu-tile == i;
                     toggled(v) => { root.toggled(t.key, v); }
+                escape => { root.escape(); }
                     open-menu => {
                         if root.menu-tile == i {
                             root.menu-tile = -1;
@@ -404,8 +441,9 @@ export component PluginSheet inherits Rectangle {
                     background: PluginInk.bg(root.look);
                 }
             }
-            if root.warnings != "": Rectangle {
-                height: warn-text.preferred-height + 24px;
+            Rectangle {
+                visible: root.warnings != "";
+                height: root.warnings == "" ? 0px : warn-text.preferred-height + 24px;
                 Rectangle {
                     y: 0px;
                     height: 1px;
@@ -428,7 +466,7 @@ export component PluginSheet inherits Rectangle {
         // The open dropdown, over the tiles under its value.
         if root.menu-tile >= 0: Rectangle {
             x: mod(root.menu-tile, 2) * (root.tile-w + 1px) + 10px;
-            y: grid.y + 1px + floor(root.menu-tile / 2) * (root.tile-h + 1px) + 50px;
+            y: grid.y + 1px + floor(root.menu-tile / 2) * (root.tile-h + 1px) + 58px;
             width: 180px;
             height: menu-col.preferred-height;
             background: PluginInk.card(root.look);

@@ -7,7 +7,8 @@
 //! (the page's own `fetch` of an outside address is checked to be blocked, against nothing that listens), no
 //! real window gets input, and the window is parked off the screen like every scenario.
 //!
-//! It holds: the page lists the sample (name, version, plain-word permissions, off) and the broken folder with
+//! It holds: the page lists the sample (name, version, off; its info button opens the details sheet with a tile per
+//! permission) and the broken folder with
 //! its reason; the switch turns the mod on (its token and its tool appear, `mods.json` holds the switch and
 //! no token); `flare-mcp`'s `tools/list` offers `mod_notes_append_note`; `tools/call` opens the mod's panel in
 //! the caller's tab, the page gets the call over its bridge and the note it was given is in the panel; the page
@@ -17,7 +18,8 @@
 //! closes its panel and frees its browser, and a call to the tool is refused; and a restart keeps the switch,
 //! mints a new token and keeps the page's own storage (the notes it kept); and a manifest edited on disk to ask
 //! for `browser` turns the mod off at the next look (tool gone, panel closed, the page says why) until the
-//! person switches it on again, which approves the new list.
+//! person switches it on again, which approves the new list. The sheet's Agent tool switch takes the tool from the
+//! agent while off, keeps that in `mods.json`, and gives it back when on (2026-11-08).
 
 use std::fs;
 use std::path::Path;
@@ -121,6 +123,43 @@ fn click_row(app: &mut App, id: &str) -> bool {
         .is_ok()
 }
 
+fn sheet(app: &mut App) -> Value {
+    probe(app, "plugin.sheet", Value::Null)
+}
+
+/// Presses a card's info button: the second from the row's right end (16 in, the trash 32 wide, a gap of 10).
+fn click_info(app: &mut App, id: &str) -> bool {
+    let r = row(app, id);
+    let rect = &r["rect"];
+    let (Some(x), Some(y), Some(w), Some(h)) = (
+        rect["x"].as_f64(),
+        rect["y"].as_f64(),
+        rect["w"].as_f64(),
+        rect["h"].as_f64(),
+    ) else {
+        return false;
+    };
+    app.session
+        .click(
+            (x + w - 16.0 - 32.0 - 10.0 - 16.0) as f32,
+            (y + h / 2.0) as f32,
+        )
+        .is_ok()
+}
+
+/// The middle of the switch of the open sheet's tile `i`.
+fn toggle_of(s: &Value, i: usize) -> (f32, f32) {
+    let bx = s["box"]["x"].as_f64().unwrap_or(0.0);
+    let gy = s["grid_y"].as_f64().unwrap_or(0.0);
+    let (cw, ch) = (
+        s["cell"]["w"].as_f64().unwrap_or(0.0),
+        s["cell"]["h"].as_f64().unwrap_or(0.0),
+    );
+    let x = bx + (i % 2) as f64 * (cw + 1.0) + cw - 14.0 - 18.0;
+    let y = gy + 1.0 + (i / 2) as f64 * (ch + 1.0) + ch / 2.0;
+    (x as f32, y as f32)
+}
+
 fn names_of(reply: &Value) -> Vec<String> {
     reply["result"]["tools"]
         .as_array()
@@ -202,11 +241,35 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
         sw["label"] == json!("Notes 1.0.0") && sw["on"] == json!(false),
         format!("its name and version, and the switch is off ({sw})"),
     );
-    let perms = row(app, "modperm:notes");
+    // The card's info button opens the details sheet: what it may do, a tile per permission, before it is on.
+    ctx.ok(click_info(app, "mod:notes"), "the info button is pressed");
+    let up = ctx.until("the details sheet", 5_000, &mut || {
+        sheet(app)["open"] == json!(true)
+    });
+    let s = sheet(app);
+    let tiles: Vec<(String, String)> = s["tiles"]
+        .as_array()
+        .map(|t| {
+            t.iter()
+                .map(|x| {
+                    (
+                        x["label"].as_str().unwrap_or_default().to_string(),
+                        x["words"].as_str().unwrap_or_default().to_string(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     ctx.ok(
-        perms["sub"] == json!("Show its panel in a tab, Answer the agent's tool calls"),
-        format!("its permissions are in plain words before it is turned on ({perms})"),
+        up && s["name"] == json!("Notes")
+            && tiles.iter().map(|t| t.0.as_str()).collect::<Vec<_>>() == ["Panel", "Agent tool"],
+        format!("the sheet lists its permissions as tiles before it is turned on ({s})"),
     );
+    let _ = app.session.key("Escape");
+    let shut = ctx.until("the sheet to close", 3_000, &mut || {
+        sheet(app)["open"] == json!(false)
+    });
+    ctx.ok(shut, "Escape closes the sheet");
     let bad = row(app, "modbad:0");
     ctx.ok(
         bad["label"] == json!("broken-mod")
@@ -254,11 +317,7 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
         !file.to_lowercase().contains("token"),
         "mods.json holds the switch and no token",
     );
-    let shown = row(app, "modperm:notes");
-    ctx.ok(
-        shown["buttons"][0]["id"] == json!("show") && shown["buttons"][0]["off"] == json!(false),
-        format!("its Show panel button is offered now ({shown})"),
-    );
+
     // Back to the shell tab, where the agent works.
     let _ = app.session.key("Ctrl+Tab");
     let left = ctx.until("the shell tab in front", 8_000, &mut || {
@@ -517,32 +576,35 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
             .is_ok_and(|t| t.contains("\"notes\":{\"on\":true"))
     });
     ctx.ok(saved, "the last switch was saved");
-    // The Show panel button: the mod's panel opens in the shell tab and that tab comes to the front.
-    let r = row(app, "modperm:notes");
-    let (x, y, w, h) = (
-        r["rect"]["x"].as_f64().unwrap_or(0.0),
-        r["rect"]["y"].as_f64().unwrap_or(0.0),
-        r["rect"]["w"].as_f64().unwrap_or(0.0),
-        r["rect"]["h"].as_f64().unwrap_or(0.0),
-    );
-    // Buttons sit 16 px in from the row's right end: a point 30 px in lands on a button wider than 14 px.
-    let _ = app
-        .session
-        .click((x + w - 30.0) as f32, (y + h / 2.0) as f32);
-    let shown = ctx.until(
-        "the mod's panel to be shown by the button",
-        15_000,
-        &mut || {
-            let s = mods_state(app);
-            s["panels"][0]["mod"] == json!("notes")
-                && !settings_front(app)
-                && s["panel_kind"] == json!(3)
-        },
-    );
+    // The sheet's Agent tool switch (the same for a protocol 1 mod): off takes the tool from the agent and is kept
+    // with the switch; on gives it back.
     ctx.ok(
-        shown,
-        "the Show panel button opens the mod's panel in the shell tab and brings it forward",
+        click_info(app, "mod:notes"),
+        "the info button is pressed again",
     );
+    let up = ctx.until("the details sheet", 5_000, &mut || {
+        sheet(app)["open"] == json!(true)
+    });
+    ctx.ok(up, "the sheet is open");
+    let tool_switch = toggle_of(&sheet(app), 1);
+    let _ = app.session.click(tool_switch.0, tool_switch.1);
+    let held = ctx.until("the tool to leave the agent", 10_000, &mut || {
+        mods_state(app)["tools"] == json!([])
+    });
+    let kept = ctx.until("mods.json to hold it back", 10_000, &mut || {
+        fs::read_to_string(profile.join("mods.json"))
+            .is_ok_and(|t| t.contains("\"withheld\":[\"tools\"]"))
+    });
+    ctx.ok(
+        held && kept,
+        "the Agent tool switch off takes the tool from the agent and mods.json keeps it",
+    );
+    let _ = app.session.click(tool_switch.0, tool_switch.1);
+    let back = ctx.until("the tool to come back", 10_000, &mut || {
+        mods_state(app)["tools"] == json!(["mod_notes_append_note"])
+    });
+    ctx.ok(back, "on again, the agent has the tool back");
+    let _ = app.session.key("Escape");
     Ok(())
 }
 

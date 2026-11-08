@@ -1545,24 +1545,6 @@ export component AppWindow inherits Window {
             open: SettingsBridge.ask-open;
             answered(n) => { SettingsBridge.ask-answered(n); }
         }
-        // A plugin's details sheet (the info button on its card, 2026-11-08).
-        sheet := PluginSheet {
-            x: 0px;
-            y: 0px;
-            width: root.width;
-            height: root.height;
-            open: SettingsBridge.sheet-open;
-            name: SettingsBridge.sheet-name;
-            sub: SettingsBridge.sheet-sub;
-            desc: SettingsBridge.sheet-desc;
-            warnings: SettingsBridge.sheet-warnings;
-            tiles: SettingsBridge.sheet-tiles;
-            tall: SettingsBridge.sheet-tall;
-            look: SettingsBridge.sheet-look;
-            close => { SettingsBridge.sheet-close(); }
-            toggled(k, v) => { SettingsBridge.sheet-toggle(k, v); }
-            chosen(k, v) => { SettingsBridge.sheet-choose(k, v); }
-        }
         // The Dictation page's one-line question before a download (M8 Task 25).
         dict-ask := DictAsk {
             x: 0px;
@@ -1640,6 +1622,25 @@ export component AppWindow inherits Window {
             cancel => { root.update-cancel(); }
             abort => { root.update-abort(); }
             tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
+        }
+        // A plugin's details sheet (the info button on its card, 2026-11-08): a modal over
+        // the Settings overlays, under a plugin's question and the close question.
+        sheet := PluginSheet {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.sheet-open;
+            name: SettingsBridge.sheet-name;
+            sub: SettingsBridge.sheet-sub;
+            desc: SettingsBridge.sheet-desc;
+            warnings: SettingsBridge.sheet-warnings;
+            tiles: SettingsBridge.sheet-tiles;
+            tall: SettingsBridge.sheet-tall;
+            look: SettingsBridge.sheet-look;
+            close => { SettingsBridge.sheet-close(); }
+            toggled(k, v) => { SettingsBridge.sheet-toggle(k, v); }
+            chosen(k, v) => { SettingsBridge.sheet-choose(k, v); }
         }
         // A plugin's question sits under the close question: that one is answered first.
         pask := PluginAsk {

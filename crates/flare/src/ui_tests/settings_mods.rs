@@ -630,3 +630,39 @@ fn the_plugins_folder_button_opens_the_plugins_folder() {
         [PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\plugins")]
     );
 }
+
+#[test]
+fn the_pointer_opens_a_dropdown_picks_a_level_and_flips_a_toggle_on_the_sheet() {
+    for s in SCALES2 {
+        let f = fx_at(s, info(vec![notes(true)]));
+        *f.port.sheet.borrow_mut() = Some(vault_sheet(&Default::default()));
+        f.page("mods");
+        f.b().invoke_row_button("mod:notes".into(), "info".into());
+        f.h.advance(0);
+        let a = &f.h.comp;
+        let (bx, gy, cw, ch) = (
+            a.get_sheet_box_x(),
+            a.get_sheet_grid_y(),
+            a.get_sheet_cell_w(),
+            a.get_sheet_cell_h(),
+        );
+        // Tile 1 (Fills logins): its dropdown opens, and its second level is picked.
+        f.h.click(bx + cw + 1.0 + cw / 2.0, gy + 1.0 + ch / 2.0);
+        f.h.advance(0);
+        assert_eq!(a.get_sheet_menu_tile(), 1, "{s}");
+        f.h.click(bx + cw + 1.0 + 100.0, gy + 1.0 + 58.0 + 4.0 + 30.0 + 15.0);
+        f.h.advance(0);
+        assert_eq!(a.get_sheet_menu_tile(), -1);
+        // Tile 2 (Agent tool): its switch.
+        f.h.click(bx + cw - 32.0, gy + 1.0 + ch + 1.0 + ch / 2.0);
+        f.h.advance(0);
+        assert_eq!(
+            f.port.choices.borrow().as_slice(),
+            [
+                ("notes".into(), "fill".into(), "always".into()),
+                ("notes".into(), "tools".into(), "off".into())
+            ],
+            "{s}"
+        );
+    }
+}

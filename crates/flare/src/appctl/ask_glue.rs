@@ -200,11 +200,8 @@ impl AppCtl {
                     running: None,
                 };
                 if always {
-                    // "Always allow": no question, the fill runs as if Fill were pressed now.
-                    log::info!(
-                        "{}",
-                        fill::log_line(&ask.plugin, ask.host(), "allowed with no question")
-                    );
+                    // "Always allow": no question, the fill runs as if Fill were pressed now. The person's choice is
+                    // theirs: the log says what the fill did, as for any fill, and nothing of the choice.
                     self.plugin_ask_seq += 1;
                     let mut ask = ask;
                     ask.seq = self.plugin_ask_seq;
