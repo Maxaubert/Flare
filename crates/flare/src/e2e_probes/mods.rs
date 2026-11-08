@@ -10,6 +10,38 @@ use super::{ProbeCtx, ProbeRegistry};
 pub fn register(r: &mut ProbeRegistry) {
     r.add("mods.state", state);
     r.add("plugin.ask", plugin_ask);
+    r.add("plugin.sheet", plugin_sheet);
+}
+
+/// `plugin.sheet`: whether a plugin's details sheet is open, for which plugin, its tiles (key, kind, on, the level
+/// and its tone), where its box, grid and close X are (css px, for the scenario's pointer) and which dropdown is open.
+fn plugin_sheet(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
+    use crate::SettingsBridge;
+    use slint::{ComponentHandle, Model};
+    let a = ctx.app;
+    let b = a.global::<SettingsBridge>();
+    let tiles: Vec<Value> = b
+        .get_sheet_tiles()
+        .iter()
+        .map(|t| {
+            json!({"key": t.key.to_string(), "label": t.label.to_string(), "kind": t.kind, "on": t.on,
+                "value": t.value.to_string(), "value_name": t.value_name.to_string(), "tone": t.tone,
+                "detail": t.detail.to_string()})
+        })
+        .collect();
+    Ok(json!({
+        "open": b.get_sheet_open(),
+        "name": b.get_sheet_name().to_string(),
+        "sub": b.get_sheet_sub().to_string(),
+        "warnings": b.get_sheet_warnings().to_string(),
+        "branded": b.get_sheet_look().branded,
+        "tiles": tiles,
+        "box": {"x": a.get_sheet_box_x(), "y": a.get_sheet_box_y(), "w": a.get_sheet_box_w(), "h": a.get_sheet_box_h()},
+        "grid_y": a.get_sheet_grid_y(),
+        "cell": {"w": a.get_sheet_cell_w(), "h": a.get_sheet_cell_h()},
+        "close": {"x": a.get_sheet_close_x(), "y": a.get_sheet_close_y()},
+        "menu_tile": a.get_sheet_menu_tile(),
+    }))
 }
 
 /// `plugin.ask` (the `fill` permission): whether a plugin's question is up, its kind, plugin and host, what the
@@ -25,8 +57,20 @@ fn plugin_ask(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     let mut v = c.e2e_plugin_ask();
     v["open"] = json!(a.get_pask_open());
     v["title"] = json!(a.get_pask_title().to_string());
-    v["body"] = json!(format!("{:?}", a.get_pask_body()));
+    v["sub"] = json!(a.get_pask_sub().to_string());
     v["label"] = json!(a.get_pask_label().to_string());
+    v["button"] = json!(a.get_pask_button().to_string());
+    v["site"] = json!(a.get_pask_site().to_string());
+    v["asker"] = json!(a.get_pask_asker().to_string());
+    v["foot"] = json!(a.get_pask_foot().to_string());
+    v["branded"] = json!(a.get_pask_look().branded);
+    v["revealed"] = json!(a.get_pask_revealed());
+    v["box"] = rect(
+        a.get_pask_box_x(),
+        a.get_pask_box_y(),
+        a.get_pask_box_w(),
+        a.get_pask_box_h(),
+    );
     v["field_focus"] = json!(a.get_pask_field_focus());
     v["allow_armed"] = json!(a.get_pask_allow_armed());
     v["overlay_open"] = json!(a.get_overlay_open());
@@ -35,6 +79,7 @@ fn plugin_ask(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         "deny": rect(a.get_pask_deny_x(), a.get_pask_deny_y(), a.get_pask_deny_w(), a.get_pask_deny_h()),
         "session": rect(a.get_pask_session_x(), a.get_pask_session_y(), a.get_pask_session_w(), a.get_pask_session_h()),
         "ok": rect(a.get_pask_ok_x(), a.get_pask_ok_y(), a.get_pask_ok_w(), a.get_pask_ok_h()),
+        "eye": rect(a.get_pask_eye_x(), a.get_pask_eye_y(), 32.0, 42.0),
     });
     Ok(v)
 }

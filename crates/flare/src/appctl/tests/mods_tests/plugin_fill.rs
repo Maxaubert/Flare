@@ -146,10 +146,20 @@ fn a_fill_needs_the_logins_site_and_the_persons_allow_and_answers_kinds_of_field
     );
     f.pump_until("the question", asking);
     assert_eq!(f.h.comp.get_pask_kind(), 0);
-    assert_eq!(
-        f.h.comp.get_pask_title(),
-        "Vault vault wants to fill a login"
+    assert_eq!(f.h.comp.get_pask_title(), "Fill Example account?");
+    assert_eq!(f.h.comp.get_pask_site(), "accounts.example.com");
+    assert!(
+        f.h.comp
+            .get_pask_asker()
+            .starts_with("asked by Vault vault"),
+        "{}",
+        f.h.comp.get_pask_asker()
     );
+    assert_eq!(
+        f.h.comp.get_pask_foot(),
+        "Vault vault fills it into the page; the agent never sees it."
+    );
+    assert!(!f.h.comp.get_pask_look().branded, "no brand: Flare's look");
     assert!(
         f.h.comp.get_overlay_open(),
         "the page hides under the question"
@@ -407,7 +417,9 @@ fn secret_ask_hands_the_typed_text_to_the_plugin_that_asked_or_says_cancelled() 
     let rx = ask();
     f.pump_until("the question", asking);
     assert_eq!(f.h.comp.get_pask_kind(), 1);
-    assert_eq!(f.h.comp.get_pask_title(), "Vault vault: Unlock the vault");
+    assert_eq!(f.h.comp.get_pask_title(), "Unlock the vault");
+    assert_eq!(f.h.comp.get_pask_button(), "OK");
+    assert!(f.h.comp.get_pask_foot().contains("Vault vault only"));
     assert_eq!(f.h.comp.get_pask_label(), "Master password");
     f.h.comp.invoke_pask_secret(true, PASS.into());
     assert_eq!(answer_of(&f, &rx).unwrap(), json!({"text": PASS}));
@@ -572,4 +584,66 @@ fn a_helper_that_is_not_connected_fails_the_tool_call_at_once() {
     let e = answer_of(&f, &tool_call).unwrap_err();
     assert_eq!(e.code, code::UNAVAILABLE);
     assert!(e.message.contains("helper"), "{}", e.message);
+}
+
+#[test]
+fn always_allow_fills_with_no_question_and_a_held_back_fill_is_forbidden_like_one_never_asked() {
+    let (f, a, _b) = two_tabs();
+    let slot = with_fake(&f);
+    let w = world(&f, |r| fill_plugin(r, "vault", &["fill", "tabs"]));
+    turn(&f, "vault", true);
+    web_up(&f, &w, &slot, &a, PAGE);
+    // "Always allow" on the details sheet: the grant is the same, the fill runs with no question.
+    let c = w.hub.set_choice("vault", "fill", "always").unwrap();
+    assert!(c.revoked.is_empty());
+    let rx = call_on_thread(
+        &w.dispatcher,
+        helper_ctx(&w, "vault"),
+        Method::BrowserFill,
+        fill_params(&a, &["example.com"]),
+    );
+    f.pump_until("the script", |_| !scripts(&slot).is_empty());
+    assert!(!asking(&f), "no question was put");
+    let (_, id, _) = scripts(&slot)[0].clone();
+    fake(&slot).say(WebEvent::Script {
+        id,
+        result: Ok(r#"{"ok":true,"filled":["password"],"missing":[]}"#.into()),
+    });
+    assert_eq!(
+        answer_of(&f, &rx).unwrap(),
+        json!({"filled": ["password"], "missing": []})
+    );
+    // The site rule still holds with no question.
+    let e = call(
+        &f,
+        &w,
+        "vault",
+        Method::BrowserFill,
+        fill_params(&a, &["https://example.org"]),
+    )
+    .unwrap_err();
+    assert_eq!(e.code, code::FORBIDDEN);
+    // Off: `fill` leaves the grant, and both its methods answer forbidden, as for a plugin that never asked.
+    // (The channel checks the grant before the dispatcher runs, so the check is read from the grant itself.)
+    w.hub.set_choice("vault", "fill", "off").unwrap();
+    let grant = w.hub.grant_of_mod("vault").expect("still on");
+    for m in [
+        Method::BrowserFill,
+        Method::BrowserFillPage,
+        Method::SecretAsk,
+    ] {
+        assert_eq!(grant.check(m).unwrap_err().code, code::FORBIDDEN, "{m:?}");
+    }
+    let never = Grant::Mod {
+        id: "vault".into(),
+        permissions: vec![flare_ctl::Permission::Tabs],
+        plugin: true,
+    };
+    assert_eq!(
+        grant.check(Method::SecretAsk).unwrap_err().message,
+        never.check(Method::SecretAsk).unwrap_err().message,
+        "the same refusal as for a plugin that never asked"
+    );
+    assert!(!w.hub.fills_without_asking("vault"));
+    assert!(!asking(&f));
 }

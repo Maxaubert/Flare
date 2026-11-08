@@ -8,6 +8,7 @@ import { ContextMenu, OverflowList, MenusPreview } from "menus.slint";
 import { Tip } from "tip.slint";
 import { Dialog, DialogPreview } from "dialog.slint";
 import { PluginAsk } from "plugin_ask.slint";
+import { PluginLook } from "plugin_look.slint";
 import { TabRow, StripGeom, Place, MenuRow, OverflowRow, NoteSection, PluginRow, PluginButton } from "types.slint";
 import { PluginChip } from "decor.slint";
 import { PluginsDropdown } from "plugin_sections.slint";
@@ -674,8 +675,14 @@ export component AppWindow inherits Window {
     in property <bool> pask-open;
     in property <int> pask-kind;
     in property <string> pask-title;
-    in property <styled-text> pask-body;
+    in property <string> pask-sub;
     in property <string> pask-label;
+    in property <string> pask-button;
+    in property <string> pask-site;
+    in property <string> pask-asker;
+    in property <string> pask-letter;
+    in property <string> pask-foot;
+    in property <PluginLook> pask-look;
     in property <bool> tip-visible;
     in property <string> tip-text;
     in property <length> tip-x;
@@ -742,6 +749,13 @@ export component AppWindow inherits Window {
     out property <int> sheet-menu-tile: sheet.menu-tile;
     out property <bool> pask-field-focus: pask.field-has-focus;
     out property <bool> pask-allow-armed: pask.allow-armed;
+    out property <bool> pask-revealed: pask.revealed;
+    out property <length> pask-eye-x: pask.eye-x;
+    out property <length> pask-eye-y: pask.eye-y;
+    out property <length> pask-box-x: pask.box-x;
+    out property <length> pask-box-y: pask.box-y;
+    out property <length> pask-box-w: pask.box-w;
+    out property <length> pask-box-h: pask.box-h;
     out property <length> pask-allow-x: pask.allow-x;
     out property <length> pask-allow-y: pask.allow-y;
     out property <length> pask-allow-w: pask.allow-w;
@@ -1636,8 +1650,14 @@ export component AppWindow inherits Window {
             open: root.pask-open;
             kind: root.pask-kind;
             title: root.pask-title;
-            body: root.pask-body;
+            sub: root.pask-sub;
             label: root.pask-label;
+            button: root.pask-button;
+            site: root.pask-site;
+            asker: root.pask-asker;
+            letter: root.pask-letter;
+            foot: root.pask-foot;
+            look: root.pask-look;
             fill-answer(c) => { root.pask-fill(c); }
             secret-answer(ok, t) => { root.pask-secret(ok, t); }
         }
