@@ -16,8 +16,9 @@ const APP: &str = include_str!("../../ui/app.slint");
 /// it), so they share the picker's rank and the picker is declared after them. `DictAsk` (the Dictation page's
 /// one-line download question) is a Settings dialog like `AskThree` and takes the same rank (M8 Task 25). The
 /// Plugins dropdown (plugins phase 4) is a pop like the Settings dropdown: a section's header menu opens over it.
-/// A plugin's question (`PluginAsk`, the `fill` permission) is a modal declared under the close question.
-const RANKS: [(&str, u8, &str); 17] = [
+/// A plugin's question (`PluginAsk`, the `fill` permission) is a modal declared under the close question. A plugin's
+/// details sheet (`PluginSheet`, 2026-11-08) is a Settings dialog like `AskThree` and takes the same rank.
+const RANKS: [(&str, u8, &str); 18] = [
     ("UpdateNotice", 1, "pop"),
     ("StagedToast", 1, "pop"),
     ("SelectMenu", 1, "pop"),
@@ -27,6 +28,7 @@ const RANKS: [(&str, u8, &str); 17] = [
     ("ThemeEditor", 3, "picker"),
     ("AskThree", 3, "picker"),
     ("DictAsk", 3, "picker"),
+    ("PluginSheet", 3, "picker"),
     ("ColourPopover", 3, "picker"),
     ("UpdateWindow", 4, "modal"),
     ("PluginAsk", 4, "modal"),

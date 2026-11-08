@@ -361,7 +361,7 @@ export component PluginAsk inherits Rectangle {
                         height: 17px + 1.8px;
                         viewbox-width: 24;
                         viewbox-height: 24;
-                        commands: root.reveal ? "M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12ZM9.5 12a2.5 2.5 0 1 0 5 0 2.5 2.5 0 1 0-5 0M4 4l16 16" : "M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12ZM9.5 12a2.5 2.5 0 1 0 5 0 2.5 2.5 0 1 0-5 0";
+                        commands: root.reveal ? "M2 12C2 12 5.5 6 12 6C18.5 6 22 12 22 12C22 12 18.5 18 12 18C5.5 18 2 12 2 12ZM9.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0M4 4l16 16" : "M2 12C2 12 5.5 6 12 6C18.5 6 22 12 22 12C22 12 18.5 18 12 18C5.5 18 2 12 2 12ZM9.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0";
                         fill: transparent;
                         stroke: eta.has-hover ? PluginInk.text(root.look) : PluginInk.muted(root.look);
                         stroke-width: 1.8px;
