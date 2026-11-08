@@ -565,7 +565,11 @@ All act on the tab's web panel and take up to 60 s. They answer `unavailable` wh
 tab's** panel only (the tab comes from the connection, never from params: a `tab` param is not read). The
 stage 4 calls work with the window parked or unfocused (the agent works while the person is elsewhere). A page whose
 tab is behind (or that a Flare menu covers) paints nothing: a look of it answers at once with the list and no
-`image` (`image_error` says why), the other calls are answered as usual; a tab whose panel was never shown has no
+`image` (`image_error` says why), the other calls are answered as usual. While a call runs on such a page and for 5 s after
+(`PARK_AWAKE_MS`), Flare keeps it painting off the window (shown to the browser at (-32000, -32000) at the panel's size, so
+nothing reflows and nothing reaches the screen), then hides it again: a hidden page paints no frames, so what a page does in
+its next frame (a menu opening, a switch flipping, a banner leaving) never happened and a click looked like it did nothing
+(issue #120). A tab whose panel was never shown has no
 browser yet (`unavailable`: "the page is not ready yet"). One call runs on a page at a time (a second answers
 `unavailable`, "another browser call is still running on this page").
 

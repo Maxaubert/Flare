@@ -83,7 +83,7 @@ and `%LOCALAPPDATA%\Flare\current\Flare.exe`). It replaces closing Stable by han
 "Stage the build for <copy>? It installs when your sessions are idle."
 
 ```
-cargo build --release -p flare -p flare-mcp -p flare-parakeet-host
+cargo build --release -p flare -p flare-mcp -p flare-dictation --bin flare --bin flare-mcp --bin flare-parakeet-host
 pwsh tools\stage-install.ps1 -Stable          # or no switch for the plain Flare copy
 pwsh tools\stage-install.ps1 -Stable -Bin <TARGET>\release -Repo <checkout>
 ```

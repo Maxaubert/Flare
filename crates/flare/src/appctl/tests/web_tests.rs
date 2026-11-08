@@ -1774,7 +1774,11 @@ fn a_look_of_a_tab_that_is_behind_has_the_list_but_no_picture() {
     let rx = look(&f, &id);
     f.pump();
     assert!(rx.try_recv().unwrap().unwrap()["image"].is_object());
-    // A second tab takes the front: the page is hidden and paints nothing.
+    // A second tab takes the front once the agent has left the page alone: it is hidden and paints nothing.
+    f.ctl
+        .borrow_mut()
+        .web
+        .skip_clock(crate::web_ctl::PARK_AWAKE_MS);
     assert_eq!(f.key(ctrl("t", "KeyT")), KeyOutcome::Consumed);
     f.h.advance(0);
     f.pump();
@@ -2026,8 +2030,13 @@ fn an_agent_in_a_tab_behind_gets_a_hidden_page_and_does_not_loop_on_open_page() 
     let v = rx.try_recv().unwrap().unwrap();
     assert_eq!(v["elements"].as_array().unwrap().len(), 2);
     assert!(v.get("image").is_none());
-    // It was never made visible while behind.
-    assert_ne!(last_visible(&slot, &a), Some(true));
+    // It was never on screen while behind: it paints for the agent only off the window (issue #120).
+    if last_visible(&slot, &a) == Some(true) {
+        assert_eq!(
+            last_bounds(&slot, &a).map(|r| (r.x, r.y)),
+            Some((crate::web_ctl::PARK_AT, crate::web_ctl::PARK_AT))
+        );
+    }
 }
 
 /// Answers every DevTools call sent so far that has not been answered, from the stand-in shop page.
@@ -2569,6 +2578,86 @@ fn a_menu_over_the_page_or_a_tab_in_front_hides_the_cursor_and_a_hidden_page_doe
     f.pump();
     assert!(rx.try_recv().unwrap().is_ok(), "answered with no wait");
     assert_eq!(cursor_at(&f), None);
+}
+
+/// Issue #120: a hidden page paints no frames, so what it does in its next frame (a menu opening, a switch
+/// flipping) never happened, and a click there looked like it did nothing. A page behind that the agent works
+/// on paints off the window while the call runs and for `PARK_AWAKE_MS` after, at the panel's size, then
+/// rests hidden; back in front it is in its panel again.
+#[test]
+fn a_page_behind_paints_off_the_window_while_the_agent_works_on_it() {
+    use crate::web_ctl::{PARK_AT, PARK_AWAKE_MS};
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    f.pump();
+    let panel = last_bounds(&slot, &id).expect("the page has its place");
+    let _b = f.ctl.borrow_mut().open_folder("C:\\b");
+    f.ctl.borrow_mut().refresh();
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(
+        last_visible(&slot, &id),
+        Some(false),
+        "behind, it is hidden"
+    );
+    looked(&f, &slot, &id);
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    assert!(rx.try_recv().unwrap().is_ok(), "the click is answered");
+    let parked = last_bounds(&slot, &id).unwrap();
+    assert_eq!(
+        (parked.x, parked.y, parked.w, parked.h),
+        (PARK_AT, PARK_AT, panel.w, panel.h),
+        "off the window, at the panel's size"
+    );
+    assert_eq!(last_visible(&slot, &id), Some(true), "and painting");
+    agent_turn(&f, PARK_AWAKE_MS - 100);
+    assert_eq!(
+        last_visible(&slot, &id),
+        Some(true),
+        "a moment after the call it still paints"
+    );
+    agent_turn(&f, 200);
+    assert_eq!(
+        last_visible(&slot, &id),
+        Some(false),
+        "then it rests hidden"
+    );
+    // Back in front it is in its panel and on screen.
+    assert_eq!(
+        f.key(KeyEvent::new("1", "Digit1").ctrl()),
+        KeyOutcome::Consumed
+    );
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(last_visible(&slot, &id), Some(true));
+    assert_eq!(last_bounds(&slot, &id), Some(panel));
+}
+
+/// A page in front, live, is never moved off the window for the agent: it is used where it is.
+#[test]
+fn a_page_in_front_is_not_parked() {
+    use crate::web_ctl::PARK_AT;
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    f.pump();
+    looked(&f, &slot, &id);
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    agent_turn(&f, GLIDE_MAX_MS);
+    assert!(rx.try_recv().unwrap().is_ok());
+    assert!(
+        !fake(&slot)
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Bounds(t, r) if *t == id && r.x == PARK_AT)),
+        "never sent off the window"
+    );
+    assert_eq!(last_visible(&slot, &id), Some(true));
 }
 
 #[test]
