@@ -16,9 +16,15 @@
 //! alone (the store is read-only for the session). An entry whose id is not a legal mod id or whose value
 //! is not a boolean or an entry object is dropped and never written back. A mod with no entry is disabled.
 //!
+//! The person's choices of a plugin's permissions (`grants::Choices`, 2026-11-08) are kept in the same entry, on or off:
+//! `"withheld":[names]` and `"fill":"always"`. An entry that is on writes `permissions` WITHOUT the held-back names, so
+//! an older Flare that does not know `withheld` reads a smaller approval and turns the plugin off (it fails closed and
+//! never hands back what the person held back); this Flare reads the approval as `permissions` plus `withheld`.
+//!
 //! The save is synchronous. It is called on a worker (the Settings click hands the change to one), never
 //! on the UI thread (rule 34).
 
+use crate::grants::Choices;
 use crate::manifest::valid_id;
 use flare_ctl::Permission;
 use flare_settings::atomic::{Opened, open_text, write_atomic};
@@ -40,6 +46,8 @@ pub struct Entry {
     /// Where Settings installed it from and the hash of what it installed (plugins phase 7): kept whether the plugin
     /// is on or off, under the entry's own `installed` key. Empty for a folder put in the plugins folder by hand.
     pub installed: Identity,
+    /// What the person held back of its permissions, on or off.
+    pub choices: Choices,
 }
 
 /// What a plugin said about itself when the person approved it, kept with the approval: its `author` and
@@ -152,6 +160,15 @@ impl EnabledStore {
             .unwrap_or_default()
     }
 
+    /// The person's choices for every entry that has any, by id.
+    pub fn all_choices(&self) -> Vec<(String, Choices)> {
+        self.mods
+            .iter()
+            .filter(|(_, e)| !e.choices.is_default())
+            .map(|(id, e)| (id.clone(), e.choices.clone()))
+            .collect()
+    }
+
     /// Every install record, by id (the entries Settings installed).
     pub fn all_installed(&self) -> Vec<(String, Identity)> {
         self.mods
@@ -206,7 +223,8 @@ impl EnabledStore {
         self.set_with(id, enabled, approved, &Identity::default())
     }
 
-    /// [`EnabledStore::set`] for a protocol 2 plugin: switching on keeps `identity` with the approval.
+    /// [`EnabledStore::set`] for a protocol 2 plugin: switching on keeps `identity` with the approval. The choices
+    /// the entry holds are kept.
     pub fn set_with(
         &mut self,
         id: &str,
@@ -214,7 +232,25 @@ impl EnabledStore {
         approved: &[Permission],
         identity: &Identity,
     ) -> Result<(), String> {
+        let choices = self
+            .mods
+            .get(id)
+            .map(|e| e.choices.clone())
+            .unwrap_or_default();
+        self.set_full(id, enabled, approved, identity, &choices)
+    }
+
+    /// [`EnabledStore::set_with`] that also writes the person's choices.
+    pub fn set_full(
+        &mut self,
+        id: &str,
+        enabled: bool,
+        approved: &[Permission],
+        identity: &Identity,
+        choices: &Choices,
+    ) -> Result<(), String> {
         let entry = Entry {
+            choices: choices.clone(),
             on: enabled,
             approved: enabled.then(|| approved.to_vec()),
             identity: if enabled {
@@ -263,9 +299,15 @@ impl EnabledStore {
                     Some(p) if e.on => {
                         let mut o = Map::new();
                         o.insert("on".into(), Value::Bool(true));
+                        // Held back names are not in `permissions` (an older reader turns the plugin off).
                         o.insert(
                             "permissions".into(),
-                            json!(p.iter().map(|p| p.name()).collect::<Vec<_>>()),
+                            json!(
+                                p.iter()
+                                    .filter(|p| !e.choices.withheld.contains(p))
+                                    .map(|p| p.name())
+                                    .collect::<Vec<_>>()
+                            ),
                         );
                         let i = &e.identity;
                         for (key, val) in [
@@ -282,6 +324,13 @@ impl EnabledStore {
                     }
                     _ => json!({ "on": false }),
                 };
+                let c = &e.choices;
+                if !c.withheld.is_empty() {
+                    v["withheld"] = json!(c.withheld.iter().map(|p| p.name()).collect::<Vec<_>>());
+                }
+                if c.fill_always {
+                    v["fill"] = json!("always");
+                }
                 let i = &e.installed;
                 if i.source.is_some() || i.hash.is_some() {
                     let mut o = Map::new();
@@ -361,19 +410,41 @@ fn entry_of(v: &Value) -> Option<Entry> {
             ..Identity::default()
         })
         .unwrap_or_default();
-    let approved = o
-        .get("permissions")
-        .and_then(Value::as_array)
-        .and_then(|a| {
+    let names = |key: &str| {
+        o.get(key).and_then(Value::as_array).and_then(|a| {
             a.iter()
                 .map(|n| n.as_str().and_then(Permission::parse))
                 .collect::<Option<Vec<_>>>()
-        });
+        })
+    };
+    // A `withheld` that cannot be read makes the approval unreadable too: the entry fails closed.
+    let withheld = match o.get("withheld") {
+        None => Some(Vec::new()),
+        Some(_) => names("withheld"),
+    };
+    let approved = match (names("permissions"), &withheld) {
+        (Some(mut p), Some(w)) => {
+            for q in w {
+                if !p.contains(q) {
+                    p.push(*q);
+                }
+            }
+            Some(p)
+        }
+        _ => None,
+    };
+    let mut held: Vec<Permission> = withheld.unwrap_or_default();
+    held.sort_by_key(|p| p.name());
+    held.dedup();
     Some(Entry {
         on,
         approved,
         identity: identity_of(o),
         installed,
+        choices: Choices {
+            withheld: held,
+            fill_always: o.get("fill").and_then(Value::as_str) == Some("always"),
+        },
     })
 }
 
@@ -432,6 +503,44 @@ mod tests {
             std::fs::read_to_string(&file).unwrap(), // sync-ok: test code only
             r#"{"version":1,"mods":{"notes":{"on":true,"permissions":["panel","tools"]}}}"#
         );
+    }
+
+    #[test]
+    fn choices_are_kept_on_and_off_and_an_older_reader_sees_less_approved() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("mods.json");
+        let mut s = EnabledStore::load(&file);
+        let choices = Choices {
+            withheld: vec![Permission::Tools],
+            fill_always: true,
+        };
+        s.set_full("notes", true, P, &Identity::default(), &choices)
+            .unwrap();
+        let text = std::fs::read_to_string(&file).unwrap(); // sync-ok: test code only
+        assert_eq!(
+            text,
+            r#"{"version":1,"mods":{"notes":{"on":true,"permissions":["panel"],"withheld":["tools"],"fill":"always"}}}"#
+        );
+        // This Flare reads the whole approval back, with the choices.
+        let again = EnabledStore::load(&file);
+        assert_eq!(again.approved("notes").unwrap(), P);
+        assert_eq!(
+            again.all_choices(),
+            [("notes".to_string(), choices.clone())]
+        );
+        // A switch keeps the choices, off and on.
+        let mut s = again;
+        s.set("notes", false, &[]).unwrap();
+        assert_eq!(EnabledStore::load(&file).all_choices()[0].1, choices);
+        s.set("notes", true, P).unwrap();
+        assert_eq!(EnabledStore::load(&file).all_choices()[0].1, choices);
+        // An unreadable `withheld` makes the approval unreadable: the entry is not on.
+        std::fs::write(
+            &file,
+            r#"{"version":1,"mods":{"notes":{"on":true,"permissions":["panel"],"withheld":["nope"]}}}"#,
+        )
+        .unwrap(); // sync-ok: test code only
+        assert!(!EnabledStore::load(&file).is_enabled("notes"));
     }
 
     #[test]
