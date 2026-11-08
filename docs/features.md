@@ -1290,6 +1290,12 @@ the MCP tools `show_html` and `show_diagram`); the rule: `docs/regression-rules.
 - **The agent can look at its own page.** The `browser_*` tools work on a mini-app as on any web panel of the tab (it sees its chart
   and clicks in it); `browser_navigate` with an address is `unavailable`. Held by `the_agents_browser_calls_work_on_a_mini_app`
   (`web_tests.rs`) and the e2e (`browser.look` finds the page's button, `browser.click` changes its text; through MCP the same).
+- **A click by ref does not press what is covered.** Right before the press the page is asked what is at the point; when something else
+  is on top nothing is pressed, and the agent is told what covers the element instead of "Clicked". The target's own child, a label of
+  it and what wraps it count as the target; a click by point has no target and is not asked about. Held by
+  `a_covered_click_presses_nothing_and_names_what_is_on_top`, `a_click_on_the_target_or_a_child_of_it_is_pressed`,
+  `a_page_that_cannot_answer_the_check_is_clicked_as_before` (`agent_job.rs`), `a_covered_click_is_refused_and_presses_nothing`
+  (`web_tests.rs`), `a_hostile_covering_element_cannot_end_the_block_or_pose_as_an_element` (`browser.rs`) and the e2e `agentCoveredClick`.
 - **MCP.** `flare-mcp` lists 15 tools (the seven that show things and the eight browser tools); `show_html` and `show_diagram` are
   described for an agent: what they are for, the 4 MB and 200 KB caps, no network by default and what `allow_network` needs, that
   Mermaid errors come back. Held by `tools_list_has_the_show_tools_then_the_browser_tools_with_object_schemas`,
