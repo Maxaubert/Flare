@@ -82,7 +82,8 @@ pub enum ModsMsg {
         /// What the Settings card listed; None for a switch that did not come from a row (the tests).
         shown: Option<flare_mods::hub::Shown>,
     },
-
+    /// Settings: show the mod's panel in the most recent shell tab (its details sheet's "Open" button).
+    ShowPanel { id: String },
     /// Settings: the person set one of the plugin's permissions on its details sheet (`flare_mods::grants`).
     SetChoice {
         id: String,
@@ -158,7 +159,7 @@ impl std::fmt::Debug for ModsMsgBox {
             ModsMsg::Reply { .. } => "ModsMsg::Reply",
             ModsMsg::Rescan => "ModsMsg::Rescan",
             ModsMsg::SetEnabled { .. } => "ModsMsg::SetEnabled",
-
+            ModsMsg::ShowPanel { .. } => "ModsMsg::ShowPanel",
             ModsMsg::SetChoice { .. } => "ModsMsg::SetChoice",
             ModsMsg::Tick => "ModsMsg::Tick",
             ModsMsg::Said { .. } => "ModsMsg::Said",
@@ -879,6 +880,12 @@ impl crate::settings_ctl::ModsPort for ModsSettings {
         })));
     }
 
+    fn show_panel(&self, id: &str) {
+        (self.post)(UiMsg::Mods(ModsMsgBox(ModsMsg::ShowPanel {
+            id: id.to_string(),
+        })));
+    }
+
     fn dir(&self) -> std::path::PathBuf {
         self.hub.config().dir.clone()
     }
@@ -910,6 +917,7 @@ impl crate::settings_ctl::ModsPort for ModsSettings {
         Some(crate::plugin_look::sheet_of(
             &f.manifest,
             &self.hub.choices_of(id),
+            self.hub.is_enabled(id),
         ))
     }
 

@@ -216,6 +216,8 @@ pub struct Tile {
     pub detail: String,
     /// The permission's words in Settings (`hub::permission_words`), for the screen reader and the tooltip.
     pub words: String,
+    /// The tile's tooltip: its words, then the whole of what it covers (the detail line is cut and may be elided).
+    pub tip: String,
 }
 
 impl Tile {
@@ -242,9 +244,18 @@ fn cut(s: String) -> String {
     format!("{head}...")
 }
 
-/// What a permission covers in this manifest, as one line.
+/// The words and the whole of what a tile covers, for its tooltip.
+fn tip_of(words: &str, full: &str) -> String {
+    if full.is_empty() {
+        words.to_string()
+    } else {
+        format!("{words}: {full}")
+    }
+}
+
+/// What a permission covers in this manifest, as one line, uncut (the tile cuts it, its tooltip does not).
 fn detail(p: Permission, m: &Manifest) -> String {
-    let list = |items: Vec<String>| cut(items.join(", "));
+    let list = |items: Vec<String>| items.join(", ");
     match p {
         Permission::Tools => list(m.tools.iter().map(|t| t.name.clone()).collect()),
         Permission::Actions => list(
@@ -284,12 +295,17 @@ fn program_name(command: &str) -> String {
 /// manifest's order, then the facts. A plugin that asks for nothing has only its facts.
 pub fn tiles(m: &Manifest, c: &Choices) -> Vec<Tile> {
     let mut out = Vec::new();
-    let tile = |p: Permission, kind: TileKind| Tile {
-        key: p.name().to_string(),
-        label: label(p, Some(m)).to_string(),
-        kind,
-        detail: detail(p, m),
-        words: crate::hub::permission_words(p).to_string(),
+    let tile = |p: Permission, kind: TileKind| {
+        let full = detail(p, m);
+        let words = crate::hub::permission_words(p);
+        Tile {
+            key: p.name().to_string(),
+            label: label(p, Some(m)).to_string(),
+            kind,
+            tip: tip_of(words, &full),
+            detail: cut(full),
+            words: words.to_string(),
+        }
     };
     for p in [Permission::Process, Permission::Input, Permission::Fill] {
         if let (true, Some(levels)) = (m.permissions.contains(&p), levels(p)) {
@@ -324,6 +340,7 @@ pub fn tiles(m: &Manifest, c: &Choices) -> Vec<Tile> {
             },
             detail: String::new(),
             words: "The program Flare runs for it".into(),
+            tip: tip_of("The program Flare runs for it", &h.command),
         });
     }
     if let Some(url) = &m.homepage {
@@ -339,6 +356,7 @@ pub fn tiles(m: &Manifest, c: &Choices) -> Vec<Tile> {
             kind: TileKind::Fact { value: host },
             detail: String::new(),
             words: url.clone(),
+            tip: url.clone(),
         });
     }
     out
@@ -425,6 +443,22 @@ mod tests {
             }
         );
         assert!(t.iter().all(|t| !t.words.is_empty()));
+        assert_eq!(t[2].tip, "Answer the agent's tool calls: fill_login");
+    }
+
+    #[test]
+    fn a_long_detail_is_cut_on_the_tile_and_whole_in_its_tooltip() {
+        let tools: Vec<serde_json::Value> = (0..20)
+            .map(|i| serde_json::json!({"name": format!("tool_number_{i}"), "description": "d", "input_schema": {"type": "object"}}))
+            .collect();
+        let t = tiles(
+            &plugin(serde_json::json!({"tools": tools})),
+            &Choices::default(),
+        );
+        let tools = t.iter().find(|t| t.key == "tools").unwrap();
+        assert_eq!(tools.detail.chars().count(), DETAIL_MAX);
+        assert!(tools.detail.ends_with("..."));
+        assert!(tools.tip.ends_with("tool_number_19"), "{}", tools.tip);
     }
 
     #[test]

@@ -85,6 +85,24 @@ pub const WARN_NETWORK_FILL: &str = "It can send the passwords you type for it t
 pub const WARN_NETWORK: &str = "It can change what it does from the internet.";
 /// `fill`: the card says what it can do, and that Flare asks each time.
 pub const WARN_FILL: &str = "Can type passwords into pages, after you approve each one.";
+/// `fill` set to "Always allow" on the details sheet: the fill goes in with no question.
+pub const WARN_FILL_ALWAYS: &str = "Fills logins with no question: Flare types a login it has for the page without asking you first.";
+
+/// The warnings for what a plugin holds with the person's choices `c` applied: what is held back gives no warning,
+/// and a fill set to "Always allow" says so in place of [`WARN_FILL`].
+pub fn choice_warnings(perms: &[Permission], c: &crate::grants::Choices) -> Vec<&'static str> {
+    let held = c.grants(perms);
+    permission_warnings(&held)
+        .into_iter()
+        .map(|w| {
+            if w == WARN_FILL && c.fills_without_asking() {
+                WARN_FILL_ALWAYS
+            } else {
+                w
+            }
+        })
+        .collect()
+}
 
 /// The warnings Settings shows with a plugin's permissions, most serious first: the full-control ones for `process`
 /// and `input`, then the combinations that reach further than either permission alone, then `network`'s own, then
@@ -1005,6 +1023,11 @@ impl Hub {
         self.lock().on.contains(id)
     }
 
+    /// The `https` address the plugin was installed from by Settings; None for a file or a folder put there by hand.
+    pub fn source_of(&self, id: &str) -> Option<String> {
+        self.lock().installed.get(id).and_then(|i| i.source.clone())
+    }
+
     /// What the person held back of the plugin's permissions (the details sheet). The default for a plugin with no
     /// choice made.
     pub fn choices_of(&self, id: &str) -> Choices {
@@ -1476,6 +1499,23 @@ mod tests {
         for w in permission_warnings(&crate::manifest::ASKABLE_V2) {
             assert!(!w.contains('\u{2014}'), "{w}");
         }
+        assert!(!WARN_FILL_ALWAYS.contains('\u{2014}'));
+    }
+
+    #[test]
+    fn the_warnings_follow_the_persons_choices() {
+        use crate::grants::{Choices, choose};
+        use Permission as P;
+        let asked = [P::Process, P::Tools, P::Fill];
+        let mut c = Choices::default();
+        assert_eq!(choice_warnings(&asked, &c), [WARN_PROCESS, WARN_FILL]);
+        // Always allow says the fill asks nothing; Access off drops its full control warning.
+        choose(&mut c, P::Fill, "always").unwrap();
+        choose(&mut c, P::Process, "off").unwrap();
+        assert_eq!(choice_warnings(&asked, &c), [WARN_FILL_ALWAYS]);
+        // Fills off: no fill warning at all, whatever "Always allow" was.
+        choose(&mut c, P::Fill, "off").unwrap();
+        assert!(choice_warnings(&asked, &c).is_empty());
     }
 
     #[test]

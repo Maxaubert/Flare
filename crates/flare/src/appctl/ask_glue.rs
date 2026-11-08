@@ -175,8 +175,14 @@ impl AppCtl {
                     .find(|f| f.id == tab)
                     .map(|f| f.title)
                     .unwrap_or_default();
+                let source = self
+                    .mods
+                    .as_ref()
+                    .and_then(|m| m.hub().source_of(&plugin))
+                    .unwrap_or_default();
                 let view = crate::plugin_ask::fill_view(
                     &plugin_name,
+                    &source,
                     &login_name,
                     &site.host,
                     &tab_title,
@@ -226,8 +232,19 @@ impl AppCtl {
                     )));
                     return;
                 }
-                let view =
-                    crate::plugin_ask::secret_view(&plugin_name, &title, &label, &sub, &button);
+                let source = self
+                    .mods
+                    .as_ref()
+                    .and_then(|m| m.hub().source_of(&plugin))
+                    .unwrap_or_default();
+                let view = crate::plugin_ask::secret_view(
+                    &plugin_name,
+                    &source,
+                    &title,
+                    &label,
+                    &sub,
+                    &button,
+                );
                 let ask = PluginAsk {
                     plugin,
                     generation,

@@ -747,6 +747,17 @@ export component AppWindow inherits Window {
     out property <length> sheet-close-x: sheet.close-x;
     out property <length> sheet-close-y: sheet.close-y;
     out property <int> sheet-menu-tile: sheet.menu-tile;
+    out property <length> sheet-menu-drop: sheet.menu-drop;
+    out property <length> sheet-scroll-max: sheet.scroll-max;
+    out property <length> sheet-scroll-y: sheet.scroll-y;
+    out property <length> sheet-turn-on-x: sheet.turn-on-x;
+    out property <length> sheet-turn-on-y: sheet.turn-on-y;
+    out property <length> sheet-turn-on-w: sheet.turn-on-w;
+    out property <length> sheet-turn-on-h: sheet.turn-on-h;
+    out property <length> sheet-panel-x: sheet.panel-x;
+    out property <length> sheet-panel-y: sheet.panel-y;
+    out property <length> sheet-panel-w: sheet.panel-w;
+    out property <length> sheet-panel-h: sheet.panel-h;
     out property <bool> pask-field-focus: pask.field-has-focus;
     out property <bool> pask-allow-armed: pask.allow-armed;
     out property <bool> pask-revealed: pask.revealed;
@@ -1638,9 +1649,14 @@ export component AppWindow inherits Window {
             tiles: SettingsBridge.sheet-tiles;
             tall: SettingsBridge.sheet-tall;
             look: SettingsBridge.sheet-look;
+            can-turn-on: SettingsBridge.sheet-can-turn-on;
+            panel: SettingsBridge.sheet-panel;
             close => { SettingsBridge.sheet-close(); }
             toggled(k, v) => { SettingsBridge.sheet-toggle(k, v); }
             chosen(k, v) => { SettingsBridge.sheet-choose(k, v); }
+            turn-on => { SettingsBridge.sheet-turn-on(); }
+            open-panel => { SettingsBridge.sheet-open-panel(); }
+            tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
         }
         // A plugin's question sits under the close question: that one is answered first.
         pask := PluginAsk {

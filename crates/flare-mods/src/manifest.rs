@@ -1085,7 +1085,7 @@ fn brand(obj: &Map<String, Value>) -> Result<Option<Brand>, String> {
     no_unknown(b, &BRAND_KEYS, "brand")?;
     let color = text_of(b, "color", "brand.color")?;
     let Some(rgb) = hex_rgb(&color) else {
-        return Err("brand.color must be a colour written #rrggbb, such as #175ddc".into());
+        return Err("brand.color must be a colour written #rrggbb, such as #2a6df4".into());
     };
     let contrast = contrast_with_white(rgb);
     if contrast < MIN_BRAND_CONTRAST {

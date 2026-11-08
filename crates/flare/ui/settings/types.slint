@@ -71,9 +71,10 @@ export struct RowLook {
 
 // A plugin's details sheet (plugin_sheet.slint): one level of a dropdown tile (tone 0 plain, 1 the brand's usual, 2
 // amber), and one tile (kind 0 toggle, 1 dropdown, 2 fact). caps: the label in capitals. value: a dropdown's level id
-// or a fact; value-name: what is shown; chosen: the level's index; words: the permission's words in Settings.
+// or a fact; value-name: what is shown; chosen: the level's index; words: the permission's words in Settings; tip: the
+// tooltip, its words and the whole of what it covers.
 export struct SheetOption { id: string, name: string, tone: int }
 export struct SheetTile {
     key: string, label: string, caps: string, kind: int, on: bool, value: string, value-name: string, tone: int,
-    chosen: int, options: [SheetOption], detail: string, words: string,
+    chosen: int, options: [SheetOption], detail: string, words: string, tip: string,
 }

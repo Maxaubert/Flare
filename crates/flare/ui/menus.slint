@@ -50,10 +50,12 @@ component MenuItem inherits Rectangle {
         padding-left: 11px;
         padding-right: 11px;
         spacing: 8px;
-        // A plugin's brand logo (its item in the tab menu), 15 px.
+        // A plugin's brand logo (its item in the tab menu), 15 px centred in the 13 px icon slot, so its label lines
+        // up with the other rows'.
         if root.item.logo != "": Rectangle {
-            width: 15px;
+            width: 13px;
             PluginLogo {
+                x: (parent.width - 15px) / 2;
                 y: (parent.height - 15px) / 2;
                 size: 15px;
                 look: { branded: true, accent: root.item.logo-fill, accent-hi: root.item.logo-fill, logo: root.item.logo, plate: true };

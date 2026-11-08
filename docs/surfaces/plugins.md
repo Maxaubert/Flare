@@ -117,14 +117,24 @@ lines `#353d4c`, text white, muted `#bac0ce`) and the brand's colour for the pri
 toggle and links (a lighter tint, 35 percent toward white). `color` is the only input: a plugin cannot set the surface,
 fonts or the warning colour. Without a brand they wear Flare's theme and its chip. Amber (full control, "Always
 allow") is the same on both and never neutral. The words that say whose surface it is (the plugin's name under a
-question) are always Flare's, so a plugin dressed as another still shows its own name. Rust:
+question) are always Flare's, so a plugin dressed as another still shows its own name, with the host it was installed
+from when Settings installed it from an address ("Vault (from example.com)"); the tab named in a fill approval is in
+quotes, as the tab's own words (what runs in a tab can set its title). Rust:
 `flare_mods::manifest::Brand`, `flare::plugin_look`; Slint: `ui/plugin_look.slint`.
 
 ## The details sheet
 
 The card's info button opens the plugin's details sheet: its logo, name, `version · author`, description, a
 two-column grid of tiles, one per permission its manifest asks for, then its facts (its program, its homepage) and the
-warnings. The tiles come from the manifest and Flare's catalog (`flare_mods::grants`), the same for every plugin:
+warnings. The card itself lists no permission, so its switch turned ON opens this sheet for a mod that asks for
+anything or names a maker; the sheet's **Turn on** then approves exactly what the sheet lists (the hub refuses a sheet
+drawn before the manifest changed). Only a mod with nothing to approve goes on from the card; off always goes at once.
+A plugin that is on with a panel, and holds `panel`, has **Open <panel title>** in the sheet's foot: its panel in the
+shell tab used last. The warnings follow the person's choices: a permission turned off gives none, and a fill set to
+"Always allow" says it fills with no question. The box is never taller than the window less 24 px above and below: the
+description, the grid and the warnings scroll (the wheel, the arrow and page keys) between the header and the foot. Each
+tile's tooltip gives its words and the whole of what it covers (the line on the tile is cut). The tiles come from the
+manifest and Flare's catalog (`flare_mods::grants`), the same for every plugin:
 
 | Permission | Tile | Choices |
 |---|---|---|
@@ -143,6 +153,12 @@ plugin a new token (its views close and start again with the new grant). The cho
 removal. An entry that is on writes its `permissions` WITHOUT the held back names, so an older Flare reads a smaller
 approval and turns the plugin off. A choice never widens anything: a permission the manifest does not ask for cannot be
 set, and a new one still turns the plugin off until approved. No log line names a choice.
+
+**Known gap: a downgrade loses the choices.** An older Flare that rewrites `mods.json` drops `withheld` and `fill`.
+Since an entry that is on stores its `permissions` without the held back names, the older Flare turns such a plugin off
+(the stored approval is smaller than the manifest's list); if the person then turns it on there, it approves the whole
+list, and after an upgrade the plugin holds everything again with no notice. Set the choices again on the details sheet
+after going back to an older Flare.
 
 ## Permissions
 
@@ -348,8 +364,9 @@ Sample: `../../sample-plugins/todo/`.
   keeps its value; a tab's own state wins over the every-tab one field by field. `enabled: false` draws it faint and a
   click does nothing; `checked` draws it ticked; `title` (80 characters) replaces its words.
 - **Where actions show.** `tab-menu`: in a shell tab's right-click menu; a plugin with exactly one there shows it flat,
-  its title beside the plugin's logo (its action's own icon without a brand), and one with more has a flyout under its
-  name whose entry wears the logo (Flare's chip without a brand). A plugin titles its item by state with `actions.set`. `tab-hover`: a
+  its title beside the plugin's logo (Flare's chip without a brand, never the action's own icon, so it cannot pass for
+  one of Flare's items) and the plugin's name as its hint when the title does not name it; one with more has a flyout
+  under its name whose entry wears the logo (Flare's chip without a brand). A plugin titles its item by state with `actions.set`. `tab-hover`: a
   small button in Flare's outlined chip on a hovered tab (named tabs of 110 px or more, and sidebar rows), never over
   the agent's ring. `top-bar`: a button left of the window buttons. `session-bar`: a chip at the right end of the
   plugin's own bar (at most 4). An action without an icon shows its title's first letter.

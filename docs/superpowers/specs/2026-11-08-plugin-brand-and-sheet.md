@@ -19,7 +19,8 @@ approval B, tab menu A. Rule from Max: any plugin UI is mocked in the browser an
    that plugin (it is said in the tile as amber, like Full control). Choices live in the plugin switch file next to
    the on/off, survive updates, and a new permission still turns the plugin off until approved (today's rule).
 4. **Brand** in `plugin.json` (optional, protocol 2): `brand {color, icon}`: `color` an sRGB hex for buttons, focus
-   ring and the header, `icon` a file in the plugin (SVG path data or the existing icon path rules). Without it Flare
+   ring and the header, `icon` inline SVG path data on the 24-unit box (the icon path rules, at most 8 KB and 1024
+   commands; not a file name: the manifest holds the path itself, so it is checked with the manifest). Without it Flare
    uses its own look and the chip icon. Flare draws the brand only on surfaces the plugin owns (the sheet, its
    prompts, its menu item), never on Flare's own chrome. The Bitwarden palette (navy `#1f242e`, card `#2a303c`,
    line `#353d4c`, text white, muted `#bac0ce`) is a fixed "dark brand" surface; `color` is the only input.
@@ -79,9 +80,15 @@ is in Flare's code. Another plugin gets each part by what its manifest says and 
   never asked for). They are kept with the switch, survive updates, and never widen the grant. "Always allow" applies
   to any plugin's fills.
 - **Questions.** Any plugin's `secret.ask` may add `sub` and `button`; every fill approval names the login, the site
-  and the tab, centred in the plugin's look, with Flare's own line naming the plugin.
-- **Tab menu.** Any plugin with exactly one `tab-menu` action gets it flat with its logo; with more, a flyout whose
+  and the tab (in quotes, the tab's own words), centred in the plugin's look, with Flare's own line naming the plugin
+  (and the host it was installed from, for one installed from an address).
+- **Tab menu.** Any plugin with exactly one `tab-menu` action gets it flat with its logo (Flare's chip without a brand,
+  never the action's own icon) and its name as the hint when the title does not say it; with more, a flyout whose
   entry wears the logo. It titles the item by state with `actions.set`.
+- **Approval from the sheet (review, 2026-11-08).** The one-row card lists no permission, so turning a plugin on from
+  its card opens its details sheet, whose Turn on approves exactly what the sheet lists; only a mod with nothing to
+  approve goes on from the card. A plugin that is on and holds `panel` has "Open <panel title>" in the sheet's foot.
+  The sheet's warnings follow the choices, and the sheet scrolls inside the window when its list is long.
 
 Flare's surfaces and the contract: `docs/surfaces/plugins.md` ("Brand", "The details sheet", "Filling logins").
-Screenshots (offscreen e2e `pluginBrand`, 100 and 150 percent): `docs/screenshots/plugin-brand/`.
+Screenshots (offscreen e2e `pluginBrand`, 100, 150 and 225 percent, branded and unbranded): `docs/screenshots/plugin-brand/`.

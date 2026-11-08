@@ -29,7 +29,9 @@ export global PluginInk {
     }
 }
 
-// The plugin's logo at `size`: the brand's on its white tile, or Flare's chip glyph on the settings tile.
+// The plugin's logo at `size`: the brand's on its white tile, or Flare's chip glyph on a tile. The chip's tile is the
+// settings tile on Flare's theme, and a slate card with light ink on the fixed dark brand surface (a brand with a
+// colour and no logo), so it reads in the light theme too.
 export component PluginLogo inherits Rectangle {
     in property <PluginLook> look;
     in property <length> size: 40px;
@@ -58,7 +60,7 @@ export component PluginLogo inherits Rectangle {
         width: root.size;
         height: root.size;
         border-radius: max(4px, root.size / 8);
-        background: SettingsInk.tile-fill;
+        background: root.look.branded ? PluginInk.card(root.look) : SettingsInk.tile-fill;
         Path {
             x: root.size / 4 - (1.7 * root.size / 2 / 24) / 2;
             y: root.size / 4 - (1.7 * root.size / 2 / 24) / 2;
@@ -68,7 +70,7 @@ export component PluginLogo inherits Rectangle {
             viewbox-height: 24;
             commands: root.look.logo;
             fill: transparent;
-            stroke: Theme.text-soft;
+            stroke: root.look.branded ? PluginInk.muted(root.look) : Theme.text-soft;
             stroke-width: 1.7 * root.size / 2 / 24;
             stroke-line-cap: round;
             stroke-line-join: round;

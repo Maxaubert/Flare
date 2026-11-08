@@ -30,9 +30,10 @@ struct FakePort {
     info: RefCell<ModsInfo>,
     asked: Cell<u32>,
     switched: RefCell<Vec<(String, bool)>>,
-    /// What each switch carried (what the card listed).
+    /// What each switch carried (what the details sheet listed).
     switched_with: RefCell<Vec<flare_mods::hub::Shown>>,
-
+    /// The panels asked for.
+    panels: RefCell<Vec<String>>,
     /// The install, update and remove asks, as `what:argument`.
     installs: RefCell<Vec<String>>,
     /// The details sheet the port shows (None: the plugin is gone), and the choices made on it.
@@ -51,7 +52,9 @@ impl ModsPort for FakePort {
         self.switched_with.borrow_mut().push(shown);
         self.switched.borrow_mut().push((id.to_string(), on));
     }
-
+    fn show_panel(&self, id: &str) {
+        self.panels.borrow_mut().push(id.to_string());
+    }
     fn dir(&self) -> PathBuf {
         PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\plugins")
     }
@@ -270,33 +273,174 @@ fn each_mod_shows_its_name_version_description_permissions_and_a_switch_that_is_
 }
 
 #[test]
-fn the_switch_reaches_the_mods_port_and_the_page_draws_what_the_port_then_says() {
+fn turning_a_plugin_on_from_its_card_opens_its_sheet_and_turn_on_there_approves_what_it_lists() {
     for s in SCALES2 {
         let f = fx_at(s, info(vec![notes(false)]));
+        *f.port.sheet.borrow_mut() = Some(vault_sheet_on(&Default::default(), false));
         f.page("mods");
+        // The card lists no permission: its switch opens the sheet, and nothing is approved yet.
         f.b().invoke_row_switch("mod:notes".into(), true);
         f.pump();
+        assert!(f.port.switched.borrow().is_empty(), "{s}");
+        assert!(f.b().get_sheet_open());
+        assert!(
+            f.b().get_sheet_can_turn_on(),
+            "off: the sheet offers Turn on"
+        );
+        assert!(!f.row("mod:notes").unwrap().on, "the switch stays off");
+        // Turn on carries what the sheet lists (a tile per permission, the maker, the homepage), so only that is
+        // approved; Full control was on the sheet in amber.
+        assert!(
+            f.b()
+                .get_sheet_warnings()
+                .as_str()
+                .starts_with("Full control:")
+        );
+        f.b().invoke_sheet_turn_on();
+        let listed = vault_sheet_on(&Default::default(), false).shown;
+        assert_eq!(listed.author, "someone");
+        assert_eq!(listed.permissions.len(), 4);
         assert_eq!(
             f.port.switched.borrow().as_slice(),
             [("notes".to_string(), true)]
         );
-        // The click carries what the card listed (permission words, maker, address), so only that is approved.
-        let m = f.port.info.borrow().mods[0].clone();
-        let listed = flare_mods::hub::Shown {
-            permissions: m.permissions,
-            author: m.author,
-            homepage: m.homepage,
-        };
         assert_eq!(f.port.switched_with.borrow().as_slice(), [listed]);
-        // The port answers in the window; the page then draws the new state.
+        // The port answers in the window; the page and the sheet then draw the new state.
         *f.port.info.borrow_mut() = info(vec![notes(true)]);
+        *f.port.sheet.borrow_mut() = Some(vault_sheet_on(&Default::default(), true));
         f.ctl.borrow_mut().on_msg(SettingsMsg::Mods);
         assert!(f.row("mod:notes").unwrap().on);
+        assert!(!f.b().get_sheet_can_turn_on(), "on: no Turn on");
+        // Off from the card goes at once and approves nothing.
+        f.b().invoke_sheet_close();
+        f.b().invoke_row_switch("mod:notes".into(), false);
+        assert_eq!(
+            f.port.switched.borrow().last().cloned(),
+            Some(("notes".to_string(), false))
+        );
+        assert_eq!(
+            f.port.switched_with.borrow().last().cloned(),
+            Some(flare_mods::hub::Shown::default())
+        );
+        assert!(!f.b().get_sheet_open());
+    }
+}
+
+#[test]
+fn a_mod_with_nothing_to_approve_goes_on_from_its_card() {
+    let f = fx_at(1.0, info(vec![notes(false)]));
+    let tiny = flare_mods::manifest::parse_plugin(
+        r#"{"id":"notes","name":"Notes","version":"1.0.0","protocol":2,"description":"d","permissions":[]}"#,
+    )
+    .unwrap();
+    *f.port.sheet.borrow_mut() = Some(crate::plugin_look::sheet_of(
+        &tiny,
+        &Default::default(),
+        false,
+    ));
+    f.page("mods");
+    f.b().invoke_row_switch("mod:notes".into(), true);
+    assert!(!f.b().get_sheet_open(), "nothing to show first");
+    assert_eq!(
+        f.port.switched.borrow().as_slice(),
+        [("notes".to_string(), true)]
+    );
+    assert_eq!(
+        f.port.switched_with.borrow().as_slice(),
+        [flare_mods::hub::Shown::default()]
+    );
+}
+
+#[test]
+fn the_sheet_opens_the_panel_of_a_plugin_that_is_on_and_holds_it() {
+    for s in SCALES2 {
+        let f = fx_at(s, info(vec![notes(true)]));
+        *f.port.sheet.borrow_mut() = Some(vault_sheet_on(&Default::default(), true));
+        f.page("mods");
+        f.b().invoke_row_button("mod:notes".into(), "info".into());
+        assert_eq!(f.b().get_sheet_panel().as_str(), "Notes", "{s}");
+        f.h.advance(0);
+        assert!(
+            f.h.comp.get_sheet_panel_w() > 0.0,
+            "the Open button is drawn"
+        );
+        assert!(f.h.comp.get_sheet_turn_on_w() == 0.0, "on: no Turn on");
+        f.b().invoke_sheet_open_panel();
+        assert_eq!(f.port.panels.borrow().as_slice(), ["notes".to_string()]);
+        assert!(!f.b().get_sheet_open(), "the panel opens in its tab");
+        // The panel held back on the sheet: no Open button.
+        let mut c = flare_mods::grants::Choices::default();
+        flare_mods::grants::choose(&mut c, flare_ctl::Permission::Panel, "off").unwrap();
+        *f.port.sheet.borrow_mut() = Some(vault_sheet_on(&c, true));
+        f.b().invoke_row_button("mod:notes".into(), "info".into());
+        f.h.advance(0);
+        assert_eq!(f.b().get_sheet_panel().as_str(), "");
+        assert!(f.h.comp.get_sheet_panel_w() == 0.0);
+    }
+}
+
+#[test]
+fn a_long_sheet_never_leaves_the_window_and_scrolls_to_its_last_tile() {
+    // Thirteen permissions, every tile tall: taller than the window at 225 percent.
+    let m = flare_mods::manifest::parse_plugin(
+        r##"{"id":"notes","name":"Notes","version":"1.0.0","protocol":2,"description":"A plugin that asks for everything.","author":"someone",
+        "homepage":"https://example.com/notes",
+        "permissions":["tools","actions","panel","process","fill","tabs","decorate","sessions","network","input","view","convo","agent-looks"],
+        "panel":{"entry":"p.html","title":"Notes"},"helper":{"command":"bin/notes.exe"},
+        "contributes":{"actions":[{"key":"a","title":"Lock","where":["tab-menu"]}]},
+        "tools":[{"name":"append_note","description":"d","input_schema":{"type":"object"}}]}"##,
+    )
+    .unwrap();
+    for s in SCALES2 {
+        let f = fx_at(s, info(vec![notes(false)]));
+        *f.port.sheet.borrow_mut() =
+            Some(crate::plugin_look::sheet_of(&m, &Default::default(), false));
+        f.page("mods");
+        f.b().invoke_row_button("mod:notes".into(), "info".into());
+        f.h.advance(0);
+        let a = &f.h.comp;
+        let win_h = 640.0;
+        let (by, bh) = (a.get_sheet_box_y(), a.get_sheet_box_h());
+        assert!(by >= 24.0 - 1e-3, "{by} at {s}");
+        assert!(
+            by + bh <= win_h - 24.0 + 1.0,
+            "the box ends at {} at {s}",
+            by + bh
+        );
+        assert!(a.get_sheet_scroll_max() > 0.0, "the body scrolls at {s}");
+        // The Turn on button stays in the window, under the scrolled part.
+        let (ty, th) = (a.get_sheet_turn_on_y(), a.get_sheet_turn_on_h());
+        assert!(
+            a.get_sheet_turn_on_w() > 0.0 && ty + th <= by + bh,
+            "at {s}"
+        );
+        // The keys scroll it to the end: the last tile's row is then inside the box.
+        let page_down: slint::SharedString = slint::platform::Key::PageDown.into();
+        for _ in 0..40 {
+            f.h.key_text(&page_down);
+        }
+        f.h.advance(0);
+        assert!(
+            (a.get_sheet_scroll_y() - a.get_sheet_scroll_max()).abs() < 1.0,
+            "{} of {} at {s}",
+            a.get_sheet_scroll_y(),
+            a.get_sheet_scroll_max()
+        );
+        let rows = (15.0f32 / 2.0).ceil();
+        let last_end = a.get_sheet_grid_y() + 1.0 + rows * (a.get_sheet_cell_h() + 1.0);
+        assert!(
+            last_end <= ty,
+            "the last tile ends at {last_end}, above the foot at {ty}, at {s}"
+        );
     }
 }
 
 /// A plugin's sheet as the app builds it from a manifest: levels, toggles and a fact.
 fn vault_sheet(c: &flare_mods::grants::Choices) -> crate::plugin_look::Sheet {
+    vault_sheet_on(c, true)
+}
+
+fn vault_sheet_on(c: &flare_mods::grants::Choices, on: bool) -> crate::plugin_look::Sheet {
     let m = flare_mods::manifest::parse_plugin(
         r##"{"id":"notes","name":"Notes","version":"1.0.0","protocol":2,"description":"d","author":"someone",
         "permissions":["tools","panel","process","fill"],"panel":{"entry":"p.html","title":"Notes"},
@@ -304,7 +448,7 @@ fn vault_sheet(c: &flare_mods::grants::Choices) -> crate::plugin_look::Sheet {
         "tools":[{"name":"append_note","description":"d","input_schema":{"type":"object"}}]}"##,
     )
     .unwrap();
-    crate::plugin_look::sheet_of(&m, c)
+    crate::plugin_look::sheet_of(&m, c, on)
 }
 
 #[test]
@@ -650,7 +794,13 @@ fn the_pointer_opens_a_dropdown_picks_a_level_and_flips_a_toggle_on_the_sheet() 
         f.h.click(bx + cw + 1.0 + cw / 2.0, gy + 1.0 + ch / 2.0);
         f.h.advance(0);
         assert_eq!(a.get_sheet_menu_tile(), 1, "{s}");
-        f.h.click(bx + cw + 1.0 + 100.0, gy + 1.0 + 58.0 + 4.0 + 30.0 + 15.0);
+        // The dropdown hangs from its tile's foot, under the detail line (the tiles are tall here).
+        let drop = a.get_sheet_menu_drop();
+        assert!(
+            (drop - (ch - 4.0)).abs() < 1e-3,
+            "{drop} under a tile {ch} high"
+        );
+        f.h.click(bx + cw + 1.0 + 100.0, gy + 1.0 + drop + 4.0 + 30.0 + 15.0);
         f.h.advance(0);
         assert_eq!(a.get_sheet_menu_tile(), -1);
         // Tile 2 (Agent tool): its switch.

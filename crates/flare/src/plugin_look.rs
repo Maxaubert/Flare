@@ -5,6 +5,7 @@
 //! catalog (`flare_mods::grants`), so a plugin gets them by asking for permissions, with nothing of its own to draw.
 
 use flare_mods::grants::{Choices, Tile, TileKind, Tone};
+use flare_mods::hub::Shown;
 use flare_mods::manifest::{Brand, Manifest, hex_rgb};
 use slint::{Color, ModelRc, SharedString, VecModel};
 
@@ -60,22 +61,31 @@ pub struct Sheet {
     /// `version · author` (the version alone without an author).
     pub sub: String,
     pub desc: String,
-    /// The warnings for what its permissions add up to, as one paragraph; empty without any.
+    /// The warnings for what it holds with the person's choices applied, as one paragraph; empty without any.
     pub warnings: String,
     pub tiles: Vec<Tile>,
     pub brand: Option<Brand>,
+    /// Whether it is on. Off, the sheet offers "Turn on", which approves what the sheet lists (`shown`).
+    pub on: bool,
+    /// What the sheet lists, as the hub compares it when the person turns the plugin on here: a tile per permission
+    /// the manifest asks for (its words), the maker in the sub line and the homepage tile.
+    pub shown: Shown,
+    /// The title of its panel when the sheet can open it (on, with a panel, `panel` held); empty otherwise.
+    pub panel: String,
 }
 
-/// The sheet of the plugin `m` with the person's choices `c`.
-pub fn sheet_of(m: &Manifest, c: &Choices) -> Sheet {
+/// The sheet of the plugin `m` with the person's choices `c`; `on` says whether it is on now.
+pub fn sheet_of(m: &Manifest, c: &Choices, on: bool) -> Sheet {
     let sub = match &m.author {
         Some(a) => format!("{} \u{b7} {a}", m.version),
         None => m.version.clone(),
     };
-    let warns = flare_mods::hub::permission_warnings(&m.permissions);
+    // What it would hold: a permission the person held back gives no warning, and "Always allow" says so.
+    let held = c.grants(&m.permissions);
+    let warns = flare_mods::hub::choice_warnings(&m.permissions, c);
     let warnings = if warns.is_empty() || !m.is_plugin() {
         String::new()
-    } else if flare_mods::hub::is_full_control(&m.permissions) {
+    } else if flare_mods::hub::is_full_control(&held) {
         warns.join(" ")
     } else {
         format!(
@@ -92,6 +102,20 @@ pub fn sheet_of(m: &Manifest, c: &Choices) -> Sheet {
         warnings,
         tiles: flare_mods::grants::tiles(m, c),
         brand: m.brand.clone(),
+        on,
+        shown: Shown {
+            permissions: m
+                .permissions
+                .iter()
+                .map(|p| flare_mods::hub::permission_words(*p).to_string())
+                .collect(),
+            author: m.author.clone().unwrap_or_default(),
+            homepage: m.homepage.clone().unwrap_or_default(),
+        },
+        panel: match &m.panel {
+            Some(p) if on && held.contains(&flare_ctl::Permission::Panel) => p.title.clone(),
+            _ => String::new(),
+        },
     }
 }
 
@@ -111,6 +135,7 @@ pub fn slint_tile(t: &Tile) -> SheetTile {
         caps: t.label.to_uppercase().into(),
         detail: t.detail.as_str().into(),
         words: t.words.as_str().into(),
+        tip: t.tip.as_str().into(),
         tone: tone(t.tone()),
         ..SheetTile::default()
     };
@@ -159,6 +184,8 @@ pub fn show_sheet(b: &crate::SettingsBridge<'_>, sheet: Option<&Sheet>) {
     b.set_sheet_tall(s.tiles.iter().any(|t| !t.detail.is_empty()));
     b.set_sheet_look(look_of(s.brand.as_ref()));
     b.set_sheet_tiles(ModelRc::new(VecModel::from(tiles)));
+    b.set_sheet_can_turn_on(!s.on);
+    b.set_sheet_panel(s.panel.as_str().into());
     b.set_sheet_open(true);
 }
 
@@ -193,7 +220,7 @@ mod tests {
 
     #[test]
     fn the_sheet_has_its_header_tiles_and_warnings_from_the_manifest() {
-        let s = sheet_of(&vault(""), &Choices::default());
+        let s = sheet_of(&vault(""), &Choices::default(), false);
         assert_eq!(s.name, "Vault");
         assert_eq!(s.sub, "0.2.0 \u{b7} someone");
         assert!(s.warnings.starts_with("Full control:"), "{}", s.warnings);
@@ -214,5 +241,64 @@ mod tests {
             (0, true, "fill_login")
         );
         assert_eq!((t[3].kind, t[3].value_name.as_str()), (2, "vault"));
+        // Off, it can be turned on here, and what the sheet lists is what that approves.
+        assert!(!s.on);
+        assert_eq!(s.shown.author, "someone");
+        assert_eq!(
+            s.shown.permissions,
+            ["tools", "process", "fill"]
+                .iter()
+                .map(|p| flare_mods::hub::permission_words(
+                    flare_ctl::Permission::parse(p).unwrap()
+                ))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(s.panel, "", "no panel");
+    }
+
+    #[test]
+    fn the_warnings_follow_the_choices_on_the_sheet() {
+        use flare_ctl::Permission as P;
+        let m = vault("");
+        let mut c = Choices::default();
+        flare_mods::grants::choose(&mut c, P::Fill, "always").unwrap();
+        let s = sheet_of(&m, &c, true);
+        assert!(
+            s.warnings.contains(flare_mods::hub::WARN_FILL_ALWAYS),
+            "{}",
+            s.warnings
+        );
+        assert!(
+            !s.warnings.contains(flare_mods::hub::WARN_FILL),
+            "{}",
+            s.warnings
+        );
+        // Access off: no full control warning, and the lead is the plain one.
+        flare_mods::grants::choose(&mut c, P::Process, "off").unwrap();
+        let s = sheet_of(&m, &c, true);
+        assert!(!s.warnings.contains("Full control"), "{}", s.warnings);
+        assert!(
+            s.warnings
+                .starts_with(flare_settings::page::mods::TAKE_NOTE),
+            "{}",
+            s.warnings
+        );
+        flare_mods::grants::choose(&mut c, P::Fill, "off").unwrap();
+        assert_eq!(sheet_of(&m, &c, true).warnings, "");
+    }
+
+    #[test]
+    fn the_sheet_opens_the_panel_only_while_on_with_panel_held() {
+        use flare_ctl::Permission as P;
+        let m = flare_mods::manifest::parse_plugin(
+            r#"{"id":"notes","name":"Notes","version":"1.0.0","protocol":2,"description":"d",
+            "permissions":["panel"],"panel":{"entry":"p.html","title":"My notes"}}"#,
+        )
+        .unwrap();
+        let mut c = Choices::default();
+        assert_eq!(sheet_of(&m, &c, true).panel, "My notes");
+        assert_eq!(sheet_of(&m, &c, false).panel, "", "off: nothing to open");
+        flare_mods::grants::choose(&mut c, P::Panel, "off").unwrap();
+        assert_eq!(sheet_of(&m, &c, true).panel, "", "panel held back");
     }
 }

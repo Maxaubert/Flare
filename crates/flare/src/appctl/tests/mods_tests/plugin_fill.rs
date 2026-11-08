@@ -647,3 +647,40 @@ fn always_allow_fills_with_no_question_and_a_held_back_fill_is_forbidden_like_on
     assert!(!w.hub.fills_without_asking("vault"));
     assert!(!asking(&f));
 }
+
+#[test]
+fn deny_for_this_session_holds_after_always_allow_is_chosen_and_nothing_is_filled() {
+    let (f, a, _b) = two_tabs();
+    let slot = with_fake(&f);
+    let w = world(&f, |r| fill_plugin(r, "vault", &["fill", "tabs"]));
+    turn(&f, "vault", true);
+    web_up(&f, &w, &slot, &a, PAGE);
+    let ask = || {
+        call_on_thread(
+            &w.dispatcher,
+            helper_ctx(&w, "vault"),
+            Method::BrowserFill,
+            fill_params(&a, &["https://accounts.example.com/"]),
+        )
+    };
+    let rx = ask();
+    f.pump_until("the question", asking);
+    f.h.comp.invoke_pask_fill(2);
+    assert_eq!(
+        answer_of(&f, &rx).unwrap(),
+        json!({"declined": true, "for_session": true})
+    );
+    // "Always allow" chosen afterwards never lifts the session's deny: the fill is declined, with no question and
+    // no script typed, however the checks are ordered.
+    w.hub.set_choice("vault", "fill", "always").unwrap();
+    assert!(w.hub.fills_without_asking("vault"));
+    for _ in 0..2 {
+        let rx = ask();
+        assert_eq!(
+            answer_of(&f, &rx).unwrap(),
+            json!({"declined": true, "for_session": true})
+        );
+        assert!(!asking(&f));
+    }
+    assert!(scripts(&slot).is_empty(), "nothing was typed");
+}

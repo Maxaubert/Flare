@@ -14,7 +14,8 @@ pub fn register(r: &mut ProbeRegistry) {
 }
 
 /// `plugin.sheet`: whether a plugin's details sheet is open, for which plugin, its tiles (key, kind, on, the level
-/// and its tone), where its box, grid and close X are (css px, for the scenario's pointer) and which dropdown is open.
+/// and its tone), where its box, grid, close X and foot buttons are (css px, for the scenario's pointer), which
+/// dropdown is open and how far under its tile, and how far the sheet scrolls.
 fn plugin_sheet(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     use crate::SettingsBridge;
     use slint::{ComponentHandle, Model};
@@ -26,7 +27,7 @@ fn plugin_sheet(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         .map(|t| {
             json!({"key": t.key.to_string(), "label": t.label.to_string(), "kind": t.kind, "on": t.on,
                 "value": t.value.to_string(), "value_name": t.value_name.to_string(), "tone": t.tone,
-                "detail": t.detail.to_string()})
+                "detail": t.detail.to_string(), "tip": t.tip.to_string()})
         })
         .collect();
     Ok(json!({
@@ -35,12 +36,19 @@ fn plugin_sheet(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         "sub": b.get_sheet_sub().to_string(),
         "warnings": b.get_sheet_warnings().to_string(),
         "branded": b.get_sheet_look().branded,
+        "plate": b.get_sheet_look().plate,
         "tiles": tiles,
         "box": {"x": a.get_sheet_box_x(), "y": a.get_sheet_box_y(), "w": a.get_sheet_box_w(), "h": a.get_sheet_box_h()},
         "grid_y": a.get_sheet_grid_y(),
         "cell": {"w": a.get_sheet_cell_w(), "h": a.get_sheet_cell_h()},
         "close": {"x": a.get_sheet_close_x(), "y": a.get_sheet_close_y()},
         "menu_tile": a.get_sheet_menu_tile(),
+        "menu_drop": a.get_sheet_menu_drop(),
+        "scroll": {"y": a.get_sheet_scroll_y(), "max": a.get_sheet_scroll_max()},
+        "can_turn_on": b.get_sheet_can_turn_on(),
+        "panel": b.get_sheet_panel().to_string(),
+        "turn_on": {"x": a.get_sheet_turn_on_x(), "y": a.get_sheet_turn_on_y(), "w": a.get_sheet_turn_on_w(), "h": a.get_sheet_turn_on_h()},
+        "open_panel": {"x": a.get_sheet_panel_x(), "y": a.get_sheet_panel_y(), "w": a.get_sheet_panel_w(), "h": a.get_sheet_panel_h()},
     }))
 }
 
@@ -64,6 +72,7 @@ fn plugin_ask(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     v["asker"] = json!(a.get_pask_asker().to_string());
     v["foot"] = json!(a.get_pask_foot().to_string());
     v["branded"] = json!(a.get_pask_look().branded);
+    v["plate"] = json!(a.get_pask_look().plate);
     v["revealed"] = json!(a.get_pask_revealed());
     v["box"] = rect(
         a.get_pask_box_x(),

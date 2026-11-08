@@ -342,6 +342,8 @@ fn one_tab_menu_action_is_flat_with_the_plugins_logo_and_more_are_a_flyout_whose
     );
     let drawn = f.h.comp.get_menu_rows().row_data(solo).unwrap();
     assert_eq!(drawn.logo.as_str(), "M3 3h18v18H3z");
+    // Its title does not name the plugin: the plugin's name is the hint.
+    assert_eq!(drawn.hint.as_str(), "Plugin solo");
     assert_eq!(drawn.logo_fill, slint::Color::from_rgb_u8(0x17, 0x5d, 0xdc));
     // Two actions: a flyout under the plugin's name, the logo on the entry, the actions inside.
     let duo = at("Plugin duo");
@@ -407,16 +409,18 @@ fn actions_show_in_the_tab_menu_on_hover_and_in_the_top_bar_and_a_click_is_an_ev
     assert_eq!(rows[child].0.parent, -1);
     assert!(rows[child].0.group && !rows[child].0.flyout);
     assert_eq!(rows[child].0.logo, None, "no brand: no logo");
-    // The Slint row draws the action's own icon (the plugin has no brand).
+    // No brand: the flat row wears Flare's chip, never the action's own icon (so no plugin row can pass for one of
+    // Flare's own items), and the plugin's name as its hint.
+    let drawn = f.h.comp.get_menu_rows().row_data(child).unwrap();
     assert_eq!(
-        f.h.comp
-            .get_menu_rows()
-            .row_data(child)
-            .unwrap()
-            .icon
-            .as_str(),
+        drawn.icon.as_str(),
+        flare_settings::icons::icon_path("chip").unwrap()
+    );
+    assert_ne!(
+        drawn.icon.as_str(),
         glyph_path(crate::menus_ui::GLYPH_BADGE_PLUS)
     );
+    assert_eq!(drawn.hint.as_str(), "Plugin caller");
     f.ctl.borrow_mut().menu_picked(child as i32);
     assert_eq!(
         events_of(&slot, "caller", "action"),

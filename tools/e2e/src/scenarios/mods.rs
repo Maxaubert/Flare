@@ -147,6 +147,52 @@ fn click_info(app: &mut App, id: &str) -> bool {
         .is_ok()
 }
 
+/// Turns a mod on as the person does: its card lists no permission, so its switch opens the details sheet (the mod
+/// stays off), and the sheet's Turn on approves what the sheet lists. Escape then closes the sheet.
+fn turn_on_via_sheet(ctx: &mut Ctx, app: &mut App, id: &str, mod_id: &str) -> bool {
+    if !click_row(app, id) {
+        return false;
+    }
+    let up = ctx.until("the sheet the switch opens", 5_000, &mut || {
+        let s = sheet(app);
+        s["open"] == json!(true) && s["can_turn_on"] == json!(true)
+    });
+    let still_off = mods_state(app)["mods"]
+        .as_array()
+        .and_then(|m| m.iter().find(|m| m["id"] == json!(mod_id)))
+        .is_some_and(|m| m["enabled"] == json!(false));
+    ctx.ok(
+        up && still_off,
+        "the card's switch opens the details sheet with Turn on, and the mod stays off until it is pressed",
+    );
+    let s = sheet(app);
+    let b = &s["turn_on"];
+    let (Some(x), Some(y), Some(w), Some(h)) = (
+        b["x"].as_f64(),
+        b["y"].as_f64(),
+        b["w"].as_f64(),
+        b["h"].as_f64(),
+    ) else {
+        return false;
+    };
+    if w <= 0.0
+        || app
+            .session
+            .click((x + w / 2.0) as f32, (y + h / 2.0) as f32)
+            .is_err()
+    {
+        return false;
+    }
+    let taken = ctx.until("Turn on to be taken", 10_000, &mut || {
+        sheet(app)["can_turn_on"] == json!(false)
+    });
+    let _ = app.session.key("Escape");
+    let shut = ctx.until("the sheet to close", 3_000, &mut || {
+        sheet(app)["open"] == json!(false)
+    });
+    taken && shut
+}
+
 /// The middle of the switch of the open sheet's tile `i`.
 fn toggle_of(s: &Value, i: usize) -> (f32, f32) {
     let bx = s["box"]["x"].as_f64().unwrap_or(0.0);
@@ -295,8 +341,9 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
         ),
     );
 
-    // ---- the person turns it on ----
-    ctx.ok(click_row(app, "mod:notes"), "the switch row is pressed");
+    // ---- the person turns it on: the switch, then Turn on on the sheet ----
+    let turned = turn_on_via_sheet(ctx, app, "mod:notes", "notes");
+    ctx.ok(turned, "Turn on on the sheet is pressed");
     let on = ctx.until("the mod to be on", 10_000, &mut || {
         let s = mods_state(app);
         s["mods"][0]["enabled"] == json!(true)
@@ -563,10 +610,8 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
         format!("a call to the tool is refused ({text})"),
     );
     // Turned on again for the restart check.
-    ctx.ok(
-        click_row(app, "mod:notes"),
-        "the switch row is pressed a third time",
-    );
+    let turned = turn_on_via_sheet(ctx, app, "mod:notes", "notes");
+    ctx.ok(turned, "the switch and Turn on are pressed a third time");
     let again = ctx.until("the mod to be on again", 10_000, &mut || {
         mods_state(app)["tools"] == json!(["mod_notes_append_note"])
     });
@@ -604,7 +649,35 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
         mods_state(app)["tools"] == json!(["mod_notes_append_note"])
     });
     ctx.ok(back, "on again, the agent has the tool back");
-    let _ = app.session.key("Escape");
+    // The sheet's Open button: the mod's panel opens in the shell tab, which comes to the front.
+    let s = sheet(app);
+    let b = s["open_panel"].clone();
+    ctx.ok(
+        s["panel"].as_str().is_some_and(|p| !p.is_empty()) && b["w"].as_f64().unwrap_or(0.0) > 0.0,
+        format!(
+            "the sheet of a mod that is on offers its panel ({})",
+            s["panel"]
+        ),
+    );
+    let (x, y, w, h) = (
+        b["x"].as_f64().unwrap_or(0.0),
+        b["y"].as_f64().unwrap_or(0.0),
+        b["w"].as_f64().unwrap_or(0.0),
+        b["h"].as_f64().unwrap_or(0.0),
+    );
+    let _ = app
+        .session
+        .click((x + w / 2.0) as f32, (y + h / 2.0) as f32);
+    let shown = ctx.until("the mod's panel from the sheet", 15_000, &mut || {
+        let s = mods_state(app);
+        s["panels"][0]["mod"] == json!("notes")
+            && !settings_front(app)
+            && s["panel_kind"] == json!(3)
+    });
+    ctx.ok(
+        shown,
+        "the sheet's Open button opens the mod's panel in the shell tab and brings it forward",
+    );
     Ok(())
 }
 
@@ -688,9 +761,10 @@ fn second_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Resul
         format!("the Mods page says it needs to be switched on again ({say})"),
     );
     // Switching it on approves the new list.
+    let turned = turn_on_via_sheet(ctx, app, "mod:notes", "notes");
     ctx.ok(
-        click_row(app, "mod:notes"),
-        "the switch row is pressed to allow the new list",
+        turned,
+        "the switch and Turn on are pressed to allow the new list",
     );
     let back = ctx.until("the mod to be on with the new list", 10_000, &mut || {
         let s = mods_state(app);

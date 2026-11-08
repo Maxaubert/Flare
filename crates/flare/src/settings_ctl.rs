@@ -95,10 +95,11 @@ pub trait ModsPort {
     fn info(&self) -> flare_settings::page::mods::ModsInfo;
     /// The page opened: look at the folder again (on a worker).
     fn page_shown(&self);
-    /// The person turned a mod on or off. `shown` is what the card listed: permission words, author and homepage
-    /// (what turning it on approves).
+    /// The person turned a mod on or off. `shown` is what the details sheet listed: permission words, author and
+    /// homepage (what turning it on approves); empty for a switch off, or a mod that asks for nothing.
     fn set_enabled(&self, id: &str, on: bool, shown: flare_mods::hub::Shown);
-
+    /// The person asked for the mod's panel (its details sheet's "Open" button).
+    fn show_panel(&self, id: &str);
     /// The plugins folder, the one folder for every plugin (the scan worker makes it, at start and when the page
     /// opens).
     fn dir(&self) -> PathBuf;
@@ -188,11 +189,12 @@ pub struct SettingsCtl {
     /// wrote it). A rebuild runs per wall frame and per slider step, so it never reads the file.
     diag_verbose: Cell<Option<bool>>,
     /// What each mod's card listed when the Mods page was last drawn (a switch approves exactly this).
-    mods_shown: RefCell<std::collections::HashMap<String, flare_mods::hub::Shown>>,
+
     /// The address typed in the Plugins page's install field (kept while the field is edited, never saved).
     plugin_url: String,
-    /// The plugin whose details sheet is open.
+    /// The plugin whose details sheet is open, and what it lists now (what its "Turn on" approves).
     sheet: Option<String>,
+    sheet_shown: Option<flare_mods::hub::Shown>,
     pending_pick: RefCell<Option<String>>,
     /// The colour popover, the typed codes of the colour rows and the dropper.
     picker: PickerCtl,
@@ -677,9 +679,10 @@ impl SettingsCtl {
             watch: None,
             marked_until: None,
             diag_verbose: Cell::new(None),
-            mods_shown: RefCell::new(std::collections::HashMap::new()),
+
             plugin_url: String::new(),
             sheet: None,
+            sheet_shown: None,
             pending_pick: RefCell::new(None),
             picker: PickerCtl::default(),
             picker_timer: slint::Timer::default(),
@@ -880,6 +883,8 @@ impl SettingsCtl {
             on_sheet_choose,
             |c, k: SharedString, v: SharedString| c.sheet_choice(&k, &v)
         );
+        on!(app, rc, on_sheet_turn_on, |c| c.sheet_turn_on());
+        on!(app, rc, on_sheet_open_panel, |c| c.sheet_open_panel());
         on!(app, rc, on_frame_resized, |c, w: f32, h: f32| c
             .frame_resized(f64::from(w), f64::from(h)));
         on!(app, rc, on_scale_changed, |c| c.scale_changed());
@@ -1045,12 +1050,14 @@ impl SettingsCtl {
         if sheet.is_none() {
             self.sheet = None;
         }
+        self.sheet_shown = sheet.as_ref().map(|s| s.shown.clone());
         if let Some(app) = self.weak.upgrade() {
             crate::plugin_look::show_sheet(&app.global::<SettingsBridge>(), sheet.as_ref());
         }
     }
 
     fn close_sheet(&mut self) {
+        self.sheet_shown = None;
         if self.sheet.take().is_some()
             && let Some(app) = self.weak.upgrade()
         {
@@ -1062,6 +1069,22 @@ impl SettingsCtl {
     fn sheet_choice(&mut self, key: &str, value: &str) {
         if let (Some(id), Some(m)) = (&self.sheet, &self.mods) {
             m.set_choice(id, key, value);
+        }
+    }
+
+    /// The sheet's "Turn on": the plugin goes on with what the sheet lists now as the approval. A sheet drawn before
+    /// the manifest changed carries the old list, and the hub refuses it.
+    fn sheet_turn_on(&mut self) {
+        if let (Some(id), Some(shown), Some(m)) = (&self.sheet, &self.sheet_shown, &self.mods) {
+            m.set_enabled(id, true, shown.clone());
+        }
+    }
+
+    /// The sheet's "Open <panel>": the plugin's panel in the shell tab used last. The sheet closes with Settings.
+    fn sheet_open_panel(&mut self) {
+        if let (Some(id), Some(m)) = (self.sheet.clone(), &self.mods) {
+            m.show_panel(&id);
+            self.close_sheet();
         }
     }
 
@@ -1158,20 +1181,7 @@ impl SettingsCtl {
                 i.url = self.plugin_url.clone();
                 i
             });
-        if let Some(info) = &mods_info {
-            *self.mods_shown.borrow_mut() = info
-                .mods
-                .iter()
-                .map(|m| {
-                    let shown = flare_mods::hub::Shown {
-                        permissions: m.permissions.clone(),
-                        author: m.author.clone(),
-                        homepage: m.homepage.clone(),
-                    };
-                    (m.id.clone(), shown)
-                })
-                .collect();
-        }
+
         let env = PageEnv {
             prefs: &self.deps.prefs,
             look: &self.deps.look,
@@ -1589,20 +1599,28 @@ impl SettingsCtl {
             return;
         }
         // A mod's switch is the mods controller's: it turns the mod on or off in memory at once, saves the
-        // switch on a worker and tells the page to draw again.
+        // switch on a worker and tells the page to draw again. The card shows no permission, so turning one on that
+        // asks for anything (or names a maker) opens its details sheet instead, whose "Turn on" approves what the
+        // sheet lists; the switch stays off until then. Only a mod with nothing to approve goes on from the card.
         if let Event::Switch { row, on } = &ev
             && let Some(id) = row.strip_prefix(flare_settings::page::mods::SWITCH_PREFIX)
         {
-            if let Some(m) = &self.mods {
-                // A mod the page never drew has nothing shown: an empty card, which only a mod asking for nothing and
-                // naming no maker matches.
-                let shown = self
-                    .mods_shown
-                    .borrow()
-                    .get(id)
-                    .cloned()
-                    .unwrap_or_default();
-                m.set_enabled(id, *on, shown);
+            let id = id.to_string();
+            let Some(m) = self.mods.clone() else {
+                return;
+            };
+            if !*on {
+                m.set_enabled(&id, false, flare_mods::hub::Shown::default());
+                return;
+            }
+            let lists = m
+                .sheet(&id)
+                .is_some_and(|s| s.shown != flare_mods::hub::Shown::default());
+            if lists {
+                self.open_sheet(&id);
+                self.refresh_if_visible();
+            } else {
+                m.set_enabled(&id, true, flare_mods::hub::Shown::default());
             }
             return;
         }
