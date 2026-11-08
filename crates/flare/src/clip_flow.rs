@@ -601,9 +601,9 @@ mod tests {
         let mut clip = BoundedClip::new(port.clone());
         let started = Instant::now();
         assert_eq!(clip.read(), None, "no answer while the clipboard is busy");
-        // Only a gross overrun of the 8 ms cap fails here; the race-free proof is the None above.
+        // The race-free proof is the None above; 200 ms still catches a cap raised far past 8 ms.
         assert!(
-            started.elapsed() < Duration::from_secs(1),
+            started.elapsed() < Duration::from_millis(200),
             "the UI thread waited {:?}",
             started.elapsed()
         );
