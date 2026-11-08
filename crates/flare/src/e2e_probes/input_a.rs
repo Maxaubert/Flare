@@ -12,6 +12,7 @@ pub fn register(r: &mut ProbeRegistry) {
     r.add("term.mouse", term_mouse);
     r.add("scrollbar.rect", scrollbar_rect);
     r.add("ime.rect", ime_rect);
+    r.add("caret.rect", caret_rect);
     r.add("pointer.shape", pointer_shape);
 }
 
@@ -77,6 +78,21 @@ fn ime_rect(_ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     Ok(json!({ "x": a.x, "y": a.y, "w": a.w, "h": a.h }))
 }
 
+/// The system caret as Windows reports it to a magnifier (`GetGUIThreadInfo` on this, the UI thread), in client pixels.
+fn caret_rect(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
+    let Some((owner, (left, top, right, bottom))) = flare_win::system_caret::reported() else {
+        return Ok(json!({ "shown": false }));
+    };
+    Ok(json!({
+        "shown": true,
+        "on_window": crate::window::hwnd_of(ctx.app) == Some(owner),
+        "x": left,
+        "y": top,
+        "w": right - left,
+        "h": bottom - top,
+    }))
+}
+
 /// The name of a mouse cursor from its debug text: text, pointer or default.
 fn shape_name(debug: &str) -> &'static str {
     if debug.contains("Text") {
@@ -137,6 +153,7 @@ mod tests {
         assert!(names.contains(&"term.mouse"));
         assert!(names.contains(&"scrollbar.rect"));
         assert!(names.contains(&"ime.rect"));
+        assert!(names.contains(&"caret.rect"));
         assert!(names.contains(&"pointer.shape"));
     }
 }

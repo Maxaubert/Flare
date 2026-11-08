@@ -1823,6 +1823,7 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
             .ok_or_else(|| "the window is gone".to_string())
             .map(|a| a.window().set_size(slint::LogicalSize::new(w, h))),
         Request::Focus { on } => {
+            crate::window::claim_caret_focus(on);
             crate::window::handle_focus(&ctx.kp, on);
             ctx.dispatch(vec![WindowEvent::WindowActiveChanged(on)])
         }

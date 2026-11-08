@@ -449,6 +449,121 @@ fn caret_hold_run(ctx: &mut Ctx, app: &mut App, agent: &Path) -> Result<(), Stri
     app.session.key("Ctrl+C")
 }
 
+/// The system caret a magnifier reads (issue #70, not one of PT's scenarios): `caret.rect` is Windows' own answer
+/// (`GetGUIThreadInfo`). The `--e2e` window is unfocusable, so the hook's `Focus` claims the focus; everything after
+/// that is the real caret of the real window.
+///
+/// Both renderers, since each has its own frame path; the GPU leg runs at 225 percent.
+pub fn system_caret(ctx: &mut Ctx) -> Result<(), String> {
+    let alpha = ctx.ensure_world().alpha.clone();
+    for (renderer, scale_dpi) in [("software", None), ("gpu", Some(SCALE_225))] {
+        let opts = Launch {
+            renderer: Some(renderer),
+            folders: vec![alpha.clone()],
+            scale_dpi,
+            ..Launch::default()
+        };
+        with_app(ctx, opts, system_caret_run)?;
+    }
+    Ok(())
+}
+
+/// The caret's rectangle (x, y, w, h), None while there is none.
+fn caret_now(app: &mut App) -> Option<(i64, i64, i64, i64)> {
+    let c = probe(app, "caret.rect", Value::Null);
+    if c["shown"] != json!(true) || c["on_window"] != json!(true) {
+        return None;
+    }
+    Some((
+        c["x"].as_i64()?,
+        c["y"].as_i64()?,
+        c["w"].as_i64()?,
+        c["h"].as_i64()?,
+    ))
+}
+
+/// Whether the caret is thin and on the very cell the IME was given.
+fn caret_on_ime_cell(app: &mut App) -> bool {
+    let ime = probe(app, "ime.rect", Value::Null);
+    caret_now(app).is_some_and(|(x, y, w, h)| {
+        w == 2
+            && Some(x) == ime["x"].as_i64()
+            && Some(y) == ime["y"].as_i64()
+            && Some(h) == ime["h"].as_i64()
+    })
+}
+
+fn system_caret_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
+    if !wait_prompt(app) {
+        return Err("the shell showed no prompt".into());
+    }
+    ctx.ok(
+        caret_now(app).is_none(),
+        "no caret while the window has no focus",
+    );
+    app.session.call(&Request::Focus { on: true })?;
+    let shown = wait_for("the caret on the cursor's cell", 5_000, &mut || {
+        caret_on_ime_cell(app)
+    });
+    ctx.ok(
+        shown,
+        "with the focus the caret is on the cursor's cell, 2 px wide",
+    );
+    let start = caret_now(app).map_or(0, |c| c.0);
+    let cell_w = probe(app, "dpi.state", Value::Null)["cell_w"]
+        .as_i64()
+        .unwrap_or(0);
+    app.session.type_text("abc")?;
+    let moved = wait_for("the caret after typing", 5_000, &mut || {
+        caret_now(app).is_some_and(|c| c.0 == start + 3 * cell_w) && caret_on_ime_cell(app)
+    });
+    ctx.ok(moved, "three typed cells move it three cells");
+
+    app.session.key("Ctrl+F")?;
+    let gone = wait_for("the find field to take the keys", 5_000, &mut || {
+        find_open(app) && caret_now(app).is_none()
+    });
+    ctx.ok(gone, "the find field has the keys: no caret");
+    app.session.key("Escape")?;
+    let back = wait_for("the terminal to take the keys back", 5_000, &mut || {
+        !find_open(app) && caret_on_ime_cell(app)
+    });
+    ctx.ok(back, "find closed: the caret is back on the cell");
+
+    let first = front_id(app);
+    let at = caret_now(app);
+    app.session.key("Ctrl+T")?;
+    let new_tab = wait_for("the new tab in front", 15_000, &mut || {
+        front_id(app) != first
+    });
+    ctx.ok(new_tab, "a new tab comes to the front");
+    if !wait_prompt(app) {
+        return Err("the new tab showed no prompt".into());
+    }
+    let followed = wait_for("the caret in the new tab", 5_000, &mut || {
+        caret_on_ime_cell(app) && caret_now(app) != at
+    });
+    ctx.ok(followed, "the caret follows to the new tab's cursor");
+
+    let cog = css_rect(&probe(app, "ui.rect", json!({ "name": "cog" })));
+    if let Some((x, y, w, h)) = cog {
+        app.session
+            .click((x + w / 2.0) as f32, (y + h / 2.0) as f32)?;
+    }
+    let settings = wait_for("Settings in front with no caret", 8_000, &mut || {
+        probe(app, "settings.state", Value::Null)["front"] == json!(true)
+            && caret_now(app).is_none()
+    });
+    ctx.ok(settings, "Settings in front: no caret");
+
+    app.session.call(&Request::Focus { on: false })?;
+    let lost = wait_for("the caret to go with the focus", 5_000, &mut || {
+        caret_now(app).is_none()
+    });
+    ctx.ok(lost, "losing the focus destroys it");
+    Ok(())
+}
+
 /// PT: run.mjs:1274-1326. A program that asks for the mouse gets the mouse: xterm takes the mode,
 /// a key and a click reach it.
 ///

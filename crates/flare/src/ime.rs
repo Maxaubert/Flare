@@ -32,6 +32,30 @@ pub fn ime_area(row: usize, col: usize, m: &CellMetrics, grid_origin_phys: (i32,
     }
 }
 
+/// The grid cell (row, column) the system caret reports for the cursor or its hold. A scrolled-back view shows the
+/// cursor lower down, and has left it behind altogether once it is below the last row: then there is no cell.
+pub fn caret_cell(held: CaretPos, display_offset: usize, rows: usize) -> Option<(usize, usize)> {
+    let row = held.line.max(0) as usize + display_offset;
+    (row < rows).then_some((row, held.x.max(0) as usize))
+}
+
+/// The system caret's top-left and height in window device pixels: the same cell the IME is given.
+pub fn caret_rect(
+    cell: Option<(usize, usize)>,
+    m: &CellMetrics,
+    grid_origin_phys: (i32, i32),
+) -> Option<(i32, i32, i32)> {
+    let (row, col) = cell?;
+    let a = ime_area(row, col, m, grid_origin_phys);
+    Some((a.x, a.y, a.h as i32))
+}
+
+/// Whether the keyboard is the terminal's: the window has the focus, a terminal is in front (not Settings or the start
+/// screen) and no field, dialog or popup holds the keys (`hollow`).
+pub fn terminal_holds_keys(window_focus: bool, front_is_terminal: bool, hollow: bool) -> bool {
+    window_focus && front_is_terminal && !hollow
+}
+
 thread_local! {
     /// The rectangle last handed to the window (read by the e2e ime.rect probe).
     static LAST_AREA: std::cell::Cell<Option<ImeArea>> = const { std::cell::Cell::new(None) };
@@ -151,6 +175,56 @@ mod tests {
             assert_eq!(a.w, m.cell_w, "scale {scale}");
             assert_eq!(a.h, m.cell_h, "scale {scale}");
         }
+    }
+
+    #[test]
+    fn the_system_caret_is_the_ime_cell_at_every_scale_and_origin() {
+        for scale in SCALES {
+            let m = cell_metrics(&cascadia(), scale);
+            for origin in [(0, 0), (37, 61), (412, 96)] {
+                let a = ime_area(4, 11, &m, origin);
+                assert_eq!(
+                    caret_rect(Some((4, 11)), &m, origin),
+                    Some((a.x, a.y, a.h as i32)),
+                    "scale {scale} origin {origin:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_sidebar_or_a_taller_strip_moves_the_system_caret_with_the_grid() {
+        let m = cell_metrics(&cascadia(), 1.5);
+        let (x0, y0, _) = caret_rect(Some((2, 3)), &m, (0, 0)).unwrap();
+        let (x1, y1, _) = caret_rect(Some((2, 3)), &m, (240, 48)).unwrap();
+        assert_eq!((x1 - x0, y1 - y0), (240, 48));
+    }
+
+    #[test]
+    fn no_cell_means_no_system_caret() {
+        let m = cell_metrics(&cascadia(), 1.0);
+        assert_eq!(caret_rect(None, &m, (10, 10)), None);
+    }
+
+    #[test]
+    fn a_scrolled_back_view_moves_the_cursor_down_and_then_loses_it() {
+        assert_eq!(caret_cell(pos(10, 4), 0, 24), Some((10, 4)));
+        assert_eq!(caret_cell(pos(10, 4), 13, 24), Some((23, 4)));
+        assert_eq!(caret_cell(pos(10, 4), 14, 24), None);
+    }
+
+    #[test]
+    fn the_terminal_holds_the_keys_only_with_the_focus_in_front_and_nothing_over_it() {
+        assert!(terminal_holds_keys(true, true, false));
+        assert!(!terminal_holds_keys(false, true, false), "another window");
+        assert!(
+            !terminal_holds_keys(true, false, false),
+            "Settings or the start screen"
+        );
+        assert!(
+            !terminal_holds_keys(true, true, true),
+            "a field, dialog or popup"
+        );
     }
 
     #[test]

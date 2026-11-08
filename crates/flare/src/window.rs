@@ -782,6 +782,7 @@ pub fn run_window(
                     log::info!("first frame after {} ms", start.elapsed().as_millis());
                 }
             }
+            sync_system_caret(&app, &front, &host);
         }
     };
 
@@ -848,6 +849,8 @@ pub fn run_window(
                             app.window().request_redraw();
                         }
                     }
+                    // Every frame, not only a repainted grid: a sliding sidebar moves the grid without dirtying it.
+                    sync_system_caret(&app, &front, &host);
                 }
                 RenderingState::AfterRendering => {
                     crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::After);
@@ -1544,6 +1547,7 @@ pub fn run_window(
         let caret_weak = app.as_weak();
         frame_timer.start(slint::TimerMode::Repeated, FRAME_POLL, {
             let host = host.clone();
+            let front = front.clone();
             let render_now = render_now.clone();
             let last_paint = last_paint.clone();
             let caret_weak = caret_weak.clone();
@@ -1554,6 +1558,9 @@ pub fn run_window(
                 if repaint_due(host.borrow().is_dirty()) {
                     last_paint.set(std::time::Instant::now());
                     crate::diag_ctl::timed("frame_render", &render_now);
+                } else if let Some(app) = caret_weak.upgrade() {
+                    // Nothing to paint can still move the caret: a popup took the keyboard, the sidebar slid.
+                    sync_system_caret(&app, &front, &host);
                 }
             }
         });
@@ -1986,7 +1993,11 @@ pub(crate) fn handle_key(kp: &KeyPath, ev: &KeyEvent) -> EventResult {
 /// The window gained or lost the focus (winit's `Focused`, or the test hook's `Focus`).
 pub(crate) fn handle_focus(kp: &KeyPath, on: bool) {
     if let Some(app) = kp.app.upgrade() {
-        system_caret(&app, |p| p.focus(on));
+        if on {
+            sync_system_caret(&app, &kp.front, &kp.host);
+        } else {
+            system_caret(&app, |p| p.focus(false));
+        }
     }
     if on {
         // Coming back to the window is a look at the tab in front.
@@ -2000,6 +2011,42 @@ thread_local! {
     /// The Win32 system caret (issue #70): it follows the IME area, so magnifiers and screen readers see where the
     /// typing goes. Kept on the UI thread, which owns the window and so the caret.
     static SYSTEM_CARET: RefCell<flare_win::system_caret::CaretPlan> = RefCell::default();
+    /// The grid cell the system caret reports, kept by the last painted frame; none when the view has left the cursor.
+    static CARET_CELL: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
+    /// The focus the e2e hook claims: an `--e2e` window can never really hold it, and Windows is asked otherwise.
+    static CARET_E2E_FOCUS: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// The e2e hook's `Focus`: the system caret believes it from now on, since that window is unfocusable.
+pub(crate) fn claim_caret_focus(on: bool) {
+    CARET_E2E_FOCUS.with(|c| c.set(Some(on)));
+}
+
+/// Where the system caret should be now: at the cursor's cell while the terminal in front holds the keyboard, and
+/// nowhere otherwise. Cheap, and makes no Win32 call unless something changed, so it runs on every frame.
+fn sync_system_caret(app: &AppWindow, front: &FrontCell, host: &RefCell<GridHost>) {
+    let Some(hwnd) = hwnd_of(app) else {
+        return;
+    };
+    let focused = CARET_E2E_FOCUS
+        .with(Cell::get)
+        .unwrap_or_else(|| flare_win::system_caret::has_focus(hwnd));
+    let keys = crate::ime::terminal_holds_keys(
+        focused,
+        front.borrow().is_some() && app.get_front_kind() == 0,
+        crate::live::caret_is_hollow(
+            app.get_chrome_has_focus(),
+            app.get_find_input_focused(),
+            app.get_menu_open(),
+        ),
+    );
+    let scale = app.get_scale();
+    let origin = (
+        (app.get_grid_left() * scale).round() as i32,
+        (app.get_grid_top() * scale).round() as i32,
+    );
+    let rect = crate::ime::caret_rect(CARET_CELL.with(Cell::get), &host.borrow().metrics(), origin);
+    system_caret(app, |p| p.frame(keys, rect));
 }
 
 /// Plans a change to the system caret and makes its calls on the window.
@@ -2041,17 +2088,19 @@ fn place_ime(
     };
     let dims = host.dims();
     let resized = last_dims.replace(dims) != dims;
-    let (cursor, scrolled, alt) = handle.with_emu_quiet(|e| {
+    let (cursor, offset, alt, rows) = handle.with_emu_quiet(|e| {
         let (line, col) = e.cursor();
         (
             CaretPos {
                 line: i64::from(line),
                 x: col as i64,
             },
-            e.display_offset() > 0,
+            e.display_offset(),
             e.mode().alt_screen,
+            e.rows(),
         )
     });
+    let scrolled = offset > 0;
     let stops: Vec<(CaretPos, i64)> = handle
         .take_cursor_stops()
         .into_iter()
@@ -2083,14 +2132,7 @@ fn place_ime(
         origin,
     );
     crate::ime::record_area(area);
-    // The focus is read here too, from Windows: a window that had it before the filter was installed never saw the
-    // event.
-    let focused = hwnd_of(app).is_some_and(flare_win::system_caret::has_focus);
-    system_caret(app, |p| {
-        let mut ops = p.focus(focused);
-        ops.extend(p.place(area.x, area.y, area.h as i32));
-        ops
-    });
+    CARET_CELL.with(|c| c.set(crate::ime::caret_cell(held, offset, rows)));
     let _ = app.window().with_winit_window(|w| {
         w.set_ime_cursor_area(
             PhysicalPosition::new(area.x, area.y),

@@ -332,6 +332,11 @@ are added as milestones land.
 - **IME caret hold.** A key opens a 250 ms window that holds the caret on the input line for IME and
   screen readers; it is released on the alternate screen, a resize, a buffer change or scrollback.
   Held by `the_hold_is_released_on_the_alternate_screen_a_resize_and_scrollback` and the flare-term `caret_hold.rs` tests.
+- **System caret for magnifiers (#70).** While a terminal has the keyboard, a hidden 2 px Win32 caret sits on the
+  cursor's cell, so Windows Magnifier and tools that follow `GetGUIThreadInfo` or `OBJID_CARET` can follow typing. It
+  is destroyed when the window loses focus, when a field, dialog or popup takes the keys, on Settings and the start
+  screen, and on a scrolled-back view that has left the cursor. It draws nothing. UI Automation (TextPattern) is still
+  to do. Held by `flare_win::system_caret`'s tests, the `ime.rs` caret tests and the e2e `systemCaret`.
 - **Clipboard.** Reads and writes run on a worker. A copy is refused, never trimmed, when it is empty or
   too large. The test flag uses an in-memory clipboard and records openers. Held by
   `copy_async_refuses_empty_and_oversize_without_touching_the_clipboard` and

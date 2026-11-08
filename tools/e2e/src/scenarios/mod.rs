@@ -105,6 +105,12 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 180,
     },
     Scenario {
+        name: "systemCaret",
+        group: "input_a",
+        run: input_a::system_caret,
+        limit_secs: 180,
+    },
+    Scenario {
         name: "mouseReport",
         group: "input_a",
         run: input_a::mouse_report,
