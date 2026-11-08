@@ -1037,12 +1037,19 @@ impl WebCtl {
     /// did, and a click looked like it did nothing). The page keeps the panel's size, so nothing reflows.
     fn update_parked(&mut self) {
         let now = self.now_ms();
-        let live = self.shown_tab.clone().filter(|_| self.phase == Phase::Live);
+        // The page in front stays where it is while it is live or its still is being taken: a menu opened over it
+        // keeps the page in its panel until the still is there (no blank panel), and the hide that follows hands
+        // the keyboard back to the window (a hidden WebView2 gives its focus to its parent; a parked one would
+        // keep it, off the screen).
+        let on_screen = self
+            .shown_tab
+            .clone()
+            .filter(|_| matches!(self.phase, Phase::Live | Phase::Capturing(_)));
         let moves: Vec<(String, bool)> = self
             .tabs
             .iter_mut()
             .filter_map(|(tab, t)| {
-                let want = live.as_deref() != Some(tab.as_str())
+                let want = on_screen.as_deref() != Some(tab.as_str())
                     && t.ready
                     && t.failed.is_none()
                     && (t.agent.is_some() || now < t.awake_until);

@@ -2660,6 +2660,69 @@ fn a_page_in_front_is_not_parked() {
     assert_eq!(last_visible(&slot, &id), Some(true));
 }
 
+/// A Flare menu opens over the page in front while the agent works on it: the page stays in its panel until its
+/// still is there (no blank panel), and is then hidden for real, which gives the keyboard back to the window. Only
+/// after that may it paint off the window for the agent.
+#[test]
+fn a_menu_over_the_page_the_agent_uses_keeps_it_in_place_until_the_still() {
+    use crate::web_ctl::PARK_AT;
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    f.pump();
+    let panel = last_bounds(&slot, &id).expect("the page has its place");
+    looked(&f, &slot, &id);
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    fake(&slot).state.borrow_mut().still_silent = true;
+    f.h.comp.set_dialog_open(true);
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(f.ctl.borrow().web.phase_name(), "capturing");
+    assert_eq!(
+        last_bounds(&slot, &id),
+        Some(panel),
+        "in its panel while the still is taken"
+    );
+    assert_eq!(last_visible(&slot, &id), Some(true));
+    let token = fake(&slot)
+        .calls()
+        .iter()
+        .find_map(|c| match c {
+            Call::Capture(t, k) if *t == id => Some(*k),
+            _ => None,
+        })
+        .expect("a still was asked for");
+    fake(&slot).say(WebEvent::Still {
+        tab: id.clone(),
+        token,
+        png: None,
+    });
+    f.pump();
+    assert_eq!(f.ctl.borrow().web.phase_name(), "still");
+    let calls = fake(&slot).calls();
+    let hide = calls
+        .iter()
+        .rposition(|c| *c == Call::Visible(id.clone(), false))
+        .expect("the page is hidden once the still is there");
+    let park = calls
+        .iter()
+        .position(|c| matches!(c, Call::Bounds(t, r) if *t == id && r.x == PARK_AT));
+    assert!(
+        park.is_none_or(|p| p > hide),
+        "never sent off the window before it was hidden"
+    );
+    agent_turn(&f, GLIDE_MAX_MS);
+    assert!(rx.try_recv().unwrap().is_ok(), "the click still goes");
+    // The menu closes: the page is back in its panel, live.
+    f.h.comp.set_dialog_open(false);
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(last_bounds(&slot, &id), Some(panel));
+    assert_eq!(last_visible(&slot, &id), Some(true));
+}
+
 #[test]
 fn closing_the_panel_takes_the_cursor_with_it() {
     let (f, _h, _) = live(Opts::default());
