@@ -20,6 +20,9 @@ approve. This file is the contract, for plugin authors and for the Prism Termina
   motions (`agents.motion.*`, owner decision 2026-10-26). Not built: a tab's own icon and effects (`tabs.icon.*`,
   `tabs.effect.*` in design 5.2), the cap of 4 pipe connections per plugin token, a
   plugin store, signing and automatic updates.
+- **Brand, details sheet and choices (2026-11-08):** `brand` in the manifest, the details sheet with the person's own
+  choice per permission, the centred questions and the flat tab-menu item (see "Brand", "The details sheet" and the
+  rules below). Spec: `../superpowers/specs/2026-11-08-plugin-brand-and-sheet.md`.
 - **Fill (2026-10-28):** the `fill` permission (`browser.fill`, `browser.fill.page`, `secret.ask`), tool scope, and tool
   calls answered by a helper (see "Filling logins"). Design: `../superpowers/specs/2026-10-28-plugin-fill.md`.
 
@@ -77,6 +80,7 @@ spaces, bidi overrides, the BOM).
 | `protocol` | Required. `2` in a `plugin.json` (a `mod.json` says `1`; anything else is refused). |
 | `description` | Required. Not blank, at most 500 characters. |
 | `author` | Optional. One line of at most 80 characters. |
+| `brand` | Optional. `{"color": "#175ddc", "icon": "M..."}`: `color` is `#rrggbb` with at least 3:1 contrast against white (its buttons carry white words); `icon` (optional) an SVG path on the 24-unit box with the `contributes.icons` character and number rules, at most 8 KB and 1024 commands, drawn FILLED in `color` on a white rounded tile. See "Brand". |
 | `homepage` | Optional. `https://` and a host, no space or user name, at most 200 characters. |
 | `permissions` | Required (may be `[]`). Each name once, from the table under "Permissions". |
 | `background` | Optional. An `.html` file in the folder: the hidden page that runs while the plugin is on. Needs no permission. |
@@ -104,9 +108,46 @@ name that is too long, or two that map to the same name, are left out and named 
 lists the tools at every `tools/list` and tells the client when the set changes (`notifications/tools/list_changed`),
 so a plugin turned on or off reaches a running session that lists again.
 
+## Brand
+
+A plugin's `brand` dresses only the surfaces the plugin owns: its card's logo in Settings > Plugins, its details sheet,
+its questions (`secret.ask`, the fill approval) and its item in the tab menu. Never Flare's own chrome, menus or
+dialogs. With a brand those surfaces use one fixed dark surface (ground `#1f242e`, field `#161c26`, cards `#2a303c`,
+lines `#353d4c`, text white, muted `#bac0ce`) and the brand's colour for the primary button, the usual level, an on
+toggle and links (a lighter tint, 35 percent toward white). `color` is the only input: a plugin cannot set the surface,
+fonts or the warning colour. Without a brand they wear Flare's theme and its chip. Amber (full control, "Always
+allow") is the same on both and never neutral. The words that say whose surface it is (the plugin's name under a
+question) are always Flare's, so a plugin dressed as another still shows its own name. Rust:
+`flare_mods::manifest::Brand`, `flare::plugin_look`; Slint: `ui/plugin_look.slint`.
+
+## The details sheet
+
+The card's info button opens the plugin's details sheet: its logo, name, `version · author`, description, a
+two-column grid of tiles, one per permission its manifest asks for, then its facts (its program, its homepage) and the
+warnings. The tiles come from the manifest and Flare's catalog (`flare_mods::grants`), the same for every plugin:
+
+| Permission | Tile | Choices |
+|---|---|---|
+| `process` | Access | dropdown: Full control (amber), Off |
+| `input` | Typing | dropdown: Full control (amber), Off |
+| `fill` | Fills logins | dropdown: Ask each time (brand), Always allow (amber), Off |
+| every other | its noun (Panel, Agent tool(s), Tab menu or Buttons and menus, Sidebar, Internet, ...) | toggle on/off |
+
+A tile names what it covers in the manifest under its value (the tools by name, the menu items, the panel's title, the
+sections). The person's choices are enforced: a permission turned off leaves the plugin's live grant, so its methods
+answer `forbidden` exactly like one never asked for and what it would open is not there (Access Off: the helper is
+stopped; Agent tool off: the tools leave the agent; Tab menu off: the items go). "Always allow" types a fill with no
+question; the site, the tab, a waiting agent call and a page that moved are checked just the same. A change gives the
+plugin a new token (its views close and start again with the new grant). The choices are kept with the switch in
+`mods.json` (`"withheld": [names]`, `"fill": "always"`), on or off, survive updates and an off and on, and go with a
+removal. An entry that is on writes its `permissions` WITHOUT the held back names, so an older Flare reads a smaller
+approval and turns the plugin off. A choice never widens anything: a permission the manifest does not ask for cannot be
+set, and a new one still turns the plugin off until approved. No log line names a choice.
+
 ## Permissions
 
-A plugin gets exactly what it lists and you approved (rule S5); nothing else, and nothing after it is turned off.
+A plugin gets exactly what it lists and you approved (rule S5), less what you turned off on its details sheet; nothing
+else, and nothing after it is turned off.
 `eval` (`browser.eval`) is your own switch in Settings and never a plugin permission.
 
 | Permission | What it opens | Words in Settings | Warning on the card |
@@ -231,7 +272,7 @@ worker, and every limit spent there, before the window hears of it.
 | Convo (`convo`) | `convo.state` | |
 | Tools (`tools`) | `tools.respond` (the bridge's `respond`) | 8 calls waiting per plugin |
 | Browser (`browser`) | `browser.*` | answered `unavailable` (not built) |
-| Fill (`fill`) | `browser.fill {tab?, login_name, login_uris, username?, password?, totp?}`, `browser.fill.page {tab?}`, `secret.ask {title, label}` | one question at a time in all (`busy`); 6 asks a minute per plugin, fills and secrets together; a minute to answer |
+| Fill (`fill`) | `browser.fill {tab?, login_name, login_uris, username?, password?, totp?}`, `browser.fill.page {tab?}`, `secret.ask {title, label, sub?, button?}` | one question at a time in all (`busy`); 6 asks a minute per plugin, fills and secrets together; a minute to answer |
 
 **Decor.** A badge is a bare glyph (no ring) Flare draws before the tab's end (left of the ring on a sidebar row),
 in the tone `ink` (default), `accent` or `muted` (`mic` never `accent`, Flare's dictation mark). A progress is a static
@@ -306,7 +347,9 @@ Sample: `../../sample-plugins/todo/`.
   own tab, or on every tab when a background page names none (the top bar's button reads that one). A field left out
   keeps its value; a tab's own state wins over the every-tab one field by field. `enabled: false` draws it faint and a
   click does nothing; `checked` draws it ticked; `title` (80 characters) replaces its words.
-- **Where actions show.** `tab-menu`: a flyout under the plugin's name in a shell tab's right-click menu. `tab-hover`: a
+- **Where actions show.** `tab-menu`: in a shell tab's right-click menu; a plugin with exactly one there shows it flat,
+  its title beside the plugin's logo (its action's own icon without a brand), and one with more has a flyout under its
+  name whose entry wears the logo (Flare's chip without a brand). A plugin titles its item by state with `actions.set`. `tab-hover`: a
   small button in Flare's outlined chip on a hovered tab (named tabs of 110 px or more, and sidebar rows), never over
   the agent's ring. `top-bar`: a button left of the window buttons. `session-bar`: a chip at the right end of the
   plugin's own bar (at most 4). An action without an icon shows its title's first letter.
@@ -393,10 +436,11 @@ Flare's own dialog, and the user name, password and code never reach the agent.
   `forbidden` with "this login is not for <host>". `login_name` is one clean line of at most 120 characters (the dialog
   shows it); `login_uris` 1 to 32 addresses; each value 1 to 1024 characters with no control character; at least one
   value; any other key is `bad_params`, and no error ever holds a value.
-- **The dialog.** "<Plugin> wants to fill a login", "Fill <login> into <host>? The page gets the login; the agent never
-  sees it.", with Deny for this session, Deny and Allow. Only your pointer presses Allow: no key does (Enter and Space
-  press the Deny button that has the focus, Escape and a press outside are Deny), and it has no accessible default
-  action. Allow takes no press for its first 0.7 s, so a click already on its way when the dialog appears never
+- **The dialog** (centred, in the plugin's look): its logo, "Fill <login>?", a card with the page's host and who asked in
+  which tab ("asked by the agent in <tab>", or "asked by <plugin> in <tab>"), wide Deny and Fill, "Deny for this
+  session" as a link, and Flare's line "<Plugin> fills it into the page; the agent never sees it.". Only your pointer
+  presses Fill: no key does (Enter and Space press the Deny button that has the focus, Escape and a press outside are
+  Deny), and it has no accessible default action. Fill takes no press for its first 0.7 s, so a click already on its way when the dialog appears never
   approves it. The web page hides under it. It waits a minute, then counts as Deny.
 - **On Allow** the page's address is checked again (it may have moved while you read: `interrupted`), then Flare types
   the values with one `ExecuteScript`. The script first checks the document's `location` (scheme, host and port) with
@@ -411,8 +455,10 @@ Flare's own dialog, and the user name, password and code never reach the agent.
   `{declined: true, timed_out: true}`, or an error. One dialog at a time across plugins (`busy`) and 6 asks a minute per
   plugin (`rate_limited`).
 - **`browser.fill.page {tab?}`** gives `{tab, url, host}`: the address a plugin picks the login for.
-- **`secret.ask {title, label}`** shows Flare's masked field, titled "<Plugin>: <title>", with `label` over it, OK and
-  Cancel. Answers `{text}` to that plugin only, `{cancelled: true}` or `{cancelled: true, timed_out: true}`. Flare keeps
+- **`secret.ask {title, label, sub?, button?}`** shows Flare's masked field, centred in the plugin's look: its logo,
+  `title` as the heading, `sub` under it (an account), one field with `label` as its placeholder and an eye that shows
+  what is typed, a full-width button with `button` (`OK` without it), Cancel as a link, and Flare's line "What you
+  type goes to <Plugin> only.". Enter submits. Answers `{text}` to that plugin only, `{cancelled: true}` or `{cancelled: true, timed_out: true}`. Flare keeps
   and logs none of it. It shares the 6 asks a minute.
 - **A tool answered by a helper.** Claude's call to a plugin with a helper and neither a background page nor a panel
   reaches the helper as the `tool` event; while it waits the helper may fill into the caller's tab. Claude has 30 s for
@@ -477,7 +523,8 @@ Flare's own dialog, and the user name, password and code never reach the agent.
   times, then stopped and shown, and never takes Flare down.
 - **Secrets stay in memory.** Tokens are never written, logged or shown; tab ids given to plugins are never the tab's
   secret. A login filled with `fill` and a secret typed for `secret.ask` are in no log, answer or store of Flare's.
-- **A fill is yours to approve.** Flare's own dialog, Allow by the pointer only, the login's site only, one at a time and
+- **A fill is yours to approve.** Flare's own dialog, Fill by the pointer only (or "Always allow", set by you on the
+  plugin's details sheet and never by the plugin), the login's site only, one at a time and
   6 a minute, and "Deny for this session" to stop a plugin that asks too often.
 
 ## Claude's own surfaces (no plugin)
