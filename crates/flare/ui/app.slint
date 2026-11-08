@@ -209,9 +209,11 @@ component PluginBar inherits Rectangle {
 // The window buttons (command help while it is on, settings, minimise, maximise, close),
 // `Px.snap`ped wide so the strip beside them starts and ends on whole device pixels. This width
 // is the one source of truth for the strip's reserved space: 154 with four buttons, 190 with the
-// Command help button before them (32 per button, 4 between, 8 and 6 at the ends).
+// Command help button before them (32 per button, 4 between, 8 and 6 at the ends). Without the
+// window's own three (macOS, where the traffic lights are) 108 less: 46, or 82 with Command help.
 component TitleButtons inherits Rectangle {
     in property <bool> on-secondary: false;
+    in property <bool> window-buttons: true;
     in property <bool> help-visible;
     in property <string> help-tip;
     in property <string> settings-tip;
@@ -221,7 +223,7 @@ component TitleButtons inherits Rectangle {
     callback maximize();
     callback close();
     callback tip(string, length, length, length, length);
-    width: Px.snap(root.help-visible ? 190px : 154px);
+    width: Px.snap((root.help-visible ? 190px : 154px) - (root.window-buttons ? 0px : 108px));
     HorizontalLayout {
         padding-left: 8px;
         padding-right: 6px;
@@ -253,7 +255,7 @@ component TitleButtons inherits Rectangle {
                 tip(a, b, c, d, e) => { root.tip(a, b, c, d, e); }
             }
         }
-        VerticalLayout {
+        if root.window-buttons: VerticalLayout {
             alignment: center;
             TitleButton {
                 on-secondary: root.on-secondary;
@@ -262,7 +264,7 @@ component TitleButtons inherits Rectangle {
                 clicked => { root.minimize(); }
             }
         }
-        VerticalLayout {
+        if root.window-buttons: VerticalLayout {
             alignment: center;
             TitleButton {
                 on-secondary: root.on-secondary;
@@ -271,7 +273,7 @@ component TitleButtons inherits Rectangle {
                 clicked => { root.maximize(); }
             }
         }
-        VerticalLayout {
+        if root.window-buttons: VerticalLayout {
             alignment: center;
             TitleButton {
                 on-secondary: root.on-secondary;
@@ -285,8 +287,13 @@ component TitleButtons inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
+    // macOS (port phase 3): the native titlebar, transparent and under Flare's own top row, with the
+    // traffic lights in it (flare_win::chrome). Flare's minimise, maximise and close buttons and the
+    // mark make way for them; `caption-gap` is what the lights take on the left.
+    in property <bool> native-caption: false;
+    in property <length> caption-gap: 0px;
     title: "Flare";
-    no-frame: true;
+    no-frame: !root.native-caption;
     background: Theme.window-clear;
     preferred-width: 1000px;
     preferred-height: 640px;
@@ -859,9 +866,17 @@ export component AppWindow inherits Window {
                     // TitleMark: pl-3.5 pr-3 around a 17px mark (43px), its full-height line INSIDE
                     // the box (PT's `after:right-0 after:w-px`): the line starts where css px 42 ends.
                     Rectangle {
-                        width: Px.snap(42px) + Px.hair();
-                        WindowMoveArea { }
+                        width: root.native-caption ? Px.snap(root.caption-gap) + Px.hair() : Px.snap(42px) + Px.hair();
+                        // macOS: the traffic lights' corner. AppKit passes every point of it but
+                        // the lights to Flare, so the double click (zoom, or what System Settings
+                        // says) is Flare's here as on the rest of the row.
+                        WindowMoveArea {
+                            if root.native-caption: TouchArea {
+                                double-clicked => { root.bar-double-clicked(); }
+                            }
+                        }
                         AppMark {
+                            visible: !root.native-caption;
                             x: Px.snap(14px);
                             y: (parent.height - self.height) / 2;
                             size: 17px;
@@ -960,6 +975,7 @@ export component AppWindow inherits Window {
                         }
                     }
                     top-buttons := TitleButtons {
+                        window-buttons: !root.native-caption;
                         help-visible: root.help-visible;
                         help-tip: "Command help (" + root.help-key + ")";
                         settings-tip: "Settings (" + root.settings-key + ")";
@@ -995,6 +1011,7 @@ export component AppWindow inherits Window {
                     }
                 }
                 AppMark {
+                    visible: !root.native-caption;
                     x: Px.snap(16px);
                     y: (parent.height - self.height) / 2;
                     size: 17px;
@@ -1037,6 +1054,7 @@ export component AppWindow inherits Window {
                 }
                 side-buttons := TitleButtons {
                     on-secondary: true;
+                    window-buttons: !root.native-caption;
                     x: parent.width - self.width;
                     help-visible: root.help-visible;
                     help-tip: "Command help (" + root.help-key + ")";

@@ -117,13 +117,17 @@ pub fn apply(hwnd: isize, ops: &[CaretOp]) {
     }
 }
 
-/// macOS: phase 3 of the port plan (the accessibility insertion point). No window has focus here yet.
+/// macOS: false, on purpose. The Mac has no system caret to make: Zoom's "follow keyboard focus"
+/// and VoiceOver read the insertion point from the accessibility tree (the focused element's
+/// `AXSelectedTextRange` and `AXBoundsForRange`), so the Mac counterpart is an accessibility element
+/// for the terminal, part of the accessibility work, not of this module. With no focus reported the
+/// plan never asks for a call.
 #[cfg(not(windows))]
 pub fn has_focus(_hwnd: isize) -> bool {
     false
 }
 
-/// macOS: phase 3 of the port plan. No system caret to drive; the plan's calls are dropped.
+/// macOS: nothing to drive (see `has_focus`); the plan's calls are dropped.
 #[cfg(not(windows))]
 pub fn apply(_hwnd: isize, _ops: &[CaretOp]) {}
 

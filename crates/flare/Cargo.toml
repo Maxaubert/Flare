@@ -39,6 +39,10 @@ velopack.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
 
+# The process memory and the installed RAM off Windows (macOS: proc_pid_rusage, sysctl).
+[target.'cfg(not(windows))'.dependencies]
+flare-proc = { path = "../flare-proc" }
+
 [features]
 default = []
 # Off in every default build; the release workflow turns it on only when the repository is public

@@ -1,5 +1,9 @@
-//! The window menu off Windows. macOS: phase 3 of the port plan (the Mac menu bar replaces the
-//! Alt+Space system menu, and there is no Alt key-up to swallow), so these are no-ops.
+//! The window menu on macOS (port phase 3): not applicable. The Alt+Space system menu (move, size,
+//! minimise, maximise, close) has no Mac counterpart on the window: those commands live in the
+//! Mac menu bar's Window menu (minimise, zoom, full screen) and on the traffic lights, and the
+//! window is moved and sized by AppKit itself. There is no Alt key-up that opens a menu either
+//! (Option never does), so there is nothing to swallow. These stay no-ops for the shared call
+//! sites.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -13,7 +17,7 @@ pub fn install_alt_guard(_hwnd: isize) -> bool {
     false
 }
 
-/// Kept for the same call sites; nothing reads it until phase 3.
+/// Kept for the same call sites; nothing on macOS reads it (no Alt menu to keep shut).
 pub fn swallow_next_alt_up() {
     ALT_UP_SWALLOWED.store(true, Ordering::SeqCst);
 }

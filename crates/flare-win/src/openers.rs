@@ -4,8 +4,13 @@
 //! functions here only refuse a path they cannot pass to Windows as one argument; they never decide
 //! what may open.
 //!
-//! Off Windows only the pure argument rules compile; the openers refuse (macOS: phase 3 of the port
-//! plan, which re-proves the folder hold against a swapped-in file before anything opens).
+//! macOS: the same checks, then `NSWorkspace` (`workspace.rs`). A file opens in its default app
+//! only after the canonical path is asked of the allowlist again; a folder (and anything Settings
+//! hands over) only ever opens in a Finder window, which shows and never runs. That is why the
+//! Mac needs no folder hold: the Windows hold stops a file swapped in under a folder's name from
+//! being what Explorer RUNS, and Finder's file viewer runs nothing (a bundle such as `.app` is a
+//! folder, and is shown, not launched). The Windows-only argument rules (quoting for a command
+//! line) are kept for their tests.
 #![cfg_attr(not(windows), allow(dead_code))]
 
 #[cfg(windows)]
@@ -299,30 +304,57 @@ pub fn explorer_reveal(abs: &str) -> Result<(), String> {
     spawn_explorer(&args)
 }
 
-/// macOS: phase 3 of the port plan (Finder openers with the folder hold re-proved).
-#[cfg(not(windows))]
-fn not_yet() -> Result<(), String> {
-    Err("opening paths is not built on this platform yet".to_string())
+/// macOS: opens an allowlisted file in its default app (`NSWorkspace openURL:`), after the same
+/// last checks as on Windows: canonical, not a folder, the allowlist asked again on that path.
+#[cfg(target_os = "macos")]
+pub fn shell_open_file(abs: &str, allow: &dyn Fn(&str) -> bool) -> Result<(), String> {
+    open_file_with(abs, allow, crate::workspace::open_file)
 }
 
-#[cfg(not(windows))]
-pub fn shell_open_file(_abs: &str, _allow: &dyn Fn(&str) -> bool) -> Result<(), String> {
-    not_yet()
+/// Checks that the canonical path is a folder now, then hands that path to `show`.
+#[cfg(target_os = "macos")]
+fn show_folder_with(
+    abs: &str,
+    show: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let canon = canonical(abs).ok_or_else(|| "path not found".to_string())?;
+    if is_dir(&canon) != Some(true) {
+        return Err("not a folder".to_string());
+    }
+    show(&canon)
 }
 
-#[cfg(not(windows))]
-pub fn explorer_open_folder(_abs: &str) -> Result<(), String> {
-    not_yet()
+/// macOS: opens a folder in a Finder window (shown, never run).
+#[cfg(target_os = "macos")]
+pub fn explorer_open_folder(abs: &str) -> Result<(), String> {
+    show_folder_with(abs, crate::workspace::show_folder)
 }
 
-#[cfg(not(windows))]
-pub fn explorer_open_path(_abs: &str) -> Result<(), String> {
-    not_yet()
+/// What Settings' "Open folder" does with a path on macOS: a folder opens in Finder, anything else
+/// is shown selected in its folder. Nothing is launched either way.
+#[cfg(target_os = "macos")]
+fn open_path_with(
+    abs: &str,
+    show: impl FnOnce(&str) -> Result<(), String>,
+    reveal: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    match canonical(abs) {
+        Some(canon) if is_dir(&canon) == Some(true) => show(&canon),
+        Some(canon) => reveal(&canon),
+        None => Err("path not found".to_string()),
+    }
 }
 
-#[cfg(not(windows))]
-pub fn explorer_reveal(_abs: &str) -> Result<(), String> {
-    not_yet()
+/// macOS: hands a path to Finder (the Settings page's "Open folder"). Call it from a worker.
+#[cfg(target_os = "macos")]
+pub fn explorer_open_path(abs: &str) -> Result<(), String> {
+    open_path_with(abs, crate::workspace::show_folder, crate::workspace::reveal)
+}
+
+/// macOS: shows a file selected in a Finder window.
+#[cfg(target_os = "macos")]
+pub fn explorer_reveal(abs: &str) -> Result<(), String> {
+    crate::workspace::reveal(abs)
 }
 
 #[cfg(test)]
@@ -519,5 +551,87 @@ mod tests {
         ensure_com();
         ensure_com();
         assert!(COM_READY.with(Cell::get));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_folder_open_refuses_a_file_and_a_missing_path_and_shows_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("evil.command");
+        std::fs::write(&f, "x").unwrap();
+        let mut shown = false;
+        assert!(
+            show_folder_with(f.to_str().unwrap(), |_| {
+                shown = true;
+                Ok(())
+            })
+            .is_err()
+        );
+        let gone = dir.path().join("gone");
+        assert!(
+            show_folder_with(gone.to_str().unwrap(), |_| {
+                shown = true;
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!shown);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_folder_open_shows_the_canonical_folder_and_a_bundle_is_only_shown() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("Tool.app");
+        std::fs::create_dir(&app).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&app, &link).unwrap();
+        let mut got = String::new();
+        show_folder_with(link.to_str().unwrap(), |p| {
+            got = p.to_string();
+            Ok(())
+        })
+        .unwrap();
+        let canon = std::fs::canonicalize(&app).unwrap();
+        assert_eq!(got, canon.to_str().unwrap());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_open_path_shows_a_folder_and_reveals_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a.log");
+        std::fs::write(&f, "x").unwrap();
+        let (mut shown, mut revealed) = (String::new(), String::new());
+        open_path_with(
+            dir.path().to_str().unwrap(),
+            |p| {
+                shown = p.to_string();
+                Ok(())
+            },
+            |_| panic!("a folder is not revealed"),
+        )
+        .unwrap();
+        open_path_with(
+            f.to_str().unwrap(),
+            |_| panic!("a file is not shown as a folder"),
+            |p| {
+                revealed = p.to_string();
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(
+            !shown.is_empty() && revealed.ends_with("/a.log"),
+            "{shown} {revealed}"
+        );
+        assert!(
+            open_path_with(
+                dir.path().join("gone").to_str().unwrap(),
+                |_| Ok(()),
+                |_| Ok(())
+            )
+            .is_err()
+        );
     }
 }

@@ -1052,6 +1052,22 @@ impl Emulator {
         self.term.selection = None;
     }
 
+    /// Selects the whole buffer, history and screen (macOS Cmd+A); nothing on an empty grid.
+    pub fn sel_all(&mut self) {
+        let total = self.history_size() + self.rows();
+        if total == 0 || self.cols() == 0 {
+            return;
+        }
+        self.sel_apply(SelOut::Set(SelSpec {
+            block: false,
+            start: Anchor { row: 0, b: 0 },
+            end: Anchor {
+                row: total - 1,
+                b: self.cols(),
+            },
+        }));
+    }
+
     /// Selects one match: a Simple selection over its cells. The end is the last cell's
     /// boundary plus one, so a match ending at a row's last cell stays on that row.
     fn select_match(&mut self, m: FindMatch) {
@@ -1807,6 +1823,18 @@ mod tests {
         let cell = size_of::<alacritty_terminal::term::cell::Cell>();
         assert_eq!(e.scrollback_bytes(), e.history_size() * 80 * cell);
         assert!(e.history_size() >= 70);
+    }
+    #[test]
+    fn select_all_takes_the_history_and_the_screen() {
+        let mut e = Emulator::new(20, 4);
+        for i in 0..10 {
+            e.feed(format!("row {i}\r\n").as_bytes());
+        }
+        e.sel_all();
+        let text = e.sel_text();
+        assert!(text.starts_with("row 0"), "{text:?}");
+        assert!(text.contains("row 9"), "{text:?}");
+        assert!(e.has_selection());
     }
     #[test]
     fn scrollback_is_ten_thousand_lines() {

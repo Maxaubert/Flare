@@ -29,6 +29,11 @@ pub enum PathShell {
     Bash,
     /// A WSL distro's bash: a Windows path is written as the Linux path it has inside (`/mnt/c/...`).
     Wsl,
+    /// fish (macOS): single quotes in which only `\` and `'` are special, each escaped with a `\`.
+    Fish,
+    /// tcsh and csh (macOS): the POSIX single quotes, plus `!` written as `\!`, because history
+    /// expansion still acts inside single quotes there.
+    Csh,
 }
 
 /// Removes every char in U+0000..=U+0008, U+000B, U+000C, U+000E..=U+001F, U+007F and U+009B.
@@ -102,6 +107,14 @@ pub fn quote_path(p: &str, shell: Option<PathShell>) -> Option<String> {
             Some(format!("'{}'", linux.replace('\'', "'\\''")))
         }
         Some(PathShell::PowerShell) => Some(ps_quote(p)),
+        Some(PathShell::Fish) => Some(format!(
+            "'{}'",
+            p.replace('\\', "\\\\").replace('\'', "\\'")
+        )),
+        Some(PathShell::Csh) => Some(format!(
+            "'{}'",
+            p.replace('\'', "'\\''").replace('!', "\\!")
+        )),
     }
 }
 
@@ -158,9 +171,13 @@ pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
 /// The quoting a tab's shell reads a path in, from its shell id (`pwsh`, `powershell`, `cmd`,
 /// `wsl-<distro>`): `cmd` -> Cmd; starts with `wsl` or contains `bash` (case-insensitive) -> Bash;
 /// anything else, including `None` and "", -> PowerShell.
+///
+/// macOS: the same for the ids Windows has (none of them is a Mac shell), then `fish` -> Fish,
+/// `pwsh` or `powershell` -> PowerShell, and anything else (zsh, sh, `None` and "") -> the POSIX
+/// single quotes (Bash): the login shell is a POSIX one.
 pub fn path_shell_of(shell_id: Option<&str>) -> PathShell {
     let Some(id) = shell_id else {
-        return PathShell::PowerShell;
+        return other_shell("");
     };
     let lower = id.to_ascii_lowercase();
     if lower == "cmd" {
@@ -170,7 +187,24 @@ pub fn path_shell_of(shell_id: Option<&str>) -> PathShell {
     } else if lower.contains("bash") {
         PathShell::Bash
     } else {
-        PathShell::PowerShell
+        other_shell(&lower)
+    }
+}
+
+/// Windows: every other id is PowerShell.
+#[cfg(windows)]
+fn other_shell(_lower: &str) -> PathShell {
+    PathShell::PowerShell
+}
+
+/// macOS: fish, PowerShell, tcsh and csh, or else the POSIX quotes.
+#[cfg(not(windows))]
+fn other_shell(lower: &str) -> PathShell {
+    match lower {
+        "fish" => PathShell::Fish,
+        "pwsh" | "powershell" => PathShell::PowerShell,
+        l if l.starts_with("tcsh") || l.starts_with("csh") => PathShell::Csh,
+        _ => PathShell::Bash,
     }
 }
 
@@ -547,8 +581,46 @@ mod paste_bytes_tests {
         assert_eq!(path_shell_of(Some("wsl-Ubuntu")), PathShell::Wsl);
         assert_eq!(path_shell_of(Some("wsl-Debian-12")), PathShell::Wsl);
         assert_eq!(path_shell_of(Some("git-bash")), PathShell::Bash);
-        assert_eq!(path_shell_of(Some("")), PathShell::PowerShell);
-        assert_eq!(path_shell_of(None), PathShell::PowerShell);
-        assert_eq!(path_shell_of(Some("fish")), PathShell::PowerShell);
+        #[cfg(windows)]
+        {
+            assert_eq!(path_shell_of(Some("")), PathShell::PowerShell);
+            assert_eq!(path_shell_of(None), PathShell::PowerShell);
+            assert_eq!(path_shell_of(Some("fish")), PathShell::PowerShell);
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn mac_shell_ids_read_as_the_language_they_speak() {
+        assert_eq!(path_shell_of(Some("zsh")), PathShell::Bash);
+        assert_eq!(path_shell_of(Some("bash")), PathShell::Bash);
+        assert_eq!(path_shell_of(Some("fish")), PathShell::Fish);
+        assert_eq!(path_shell_of(Some("pwsh")), PathShell::PowerShell);
+        assert_eq!(path_shell_of(None), PathShell::Bash);
+        assert_eq!(path_shell_of(Some("")), PathShell::Bash);
+        assert_eq!(path_shell_of(Some("tcsh")), PathShell::Csh);
+        assert_eq!(path_shell_of(Some("csh")), PathShell::Csh);
+    }
+
+    #[test]
+    fn csh_quotes_escape_the_history_bang_inside_the_single_quotes() {
+        assert_eq!(
+            quote_path("/tmp/a!ls b", Some(PathShell::Csh)).as_deref(),
+            Some("'/tmp/a\\!ls b'")
+        );
+        assert_eq!(
+            quote_path("/tmp/it's $(x) `y`", Some(PathShell::Csh)).as_deref(),
+            Some("'/tmp/it'\\''s $(x) `y`'")
+        );
+        assert_eq!(quote_path("/a\nb", Some(PathShell::Csh)), None);
+    }
+
+    #[test]
+    fn fish_quotes_escape_only_the_backslash_and_the_quote() {
+        assert_eq!(
+            quote_path("/tmp/it's \\ $x *", Some(PathShell::Fish)).as_deref(),
+            Some("'/tmp/it\\'s \\\\ $x *'")
+        );
+        assert_eq!(quote_path("/a\nb", Some(PathShell::Fish)), None);
     }
 }

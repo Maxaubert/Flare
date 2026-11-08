@@ -5,6 +5,9 @@
 
 pub mod agent_cursor;
 pub mod argv;
+#[cfg(target_os = "macos")]
+#[path = "macos/chrome.rs"]
+pub mod chrome;
 pub mod clipboard;
 pub mod clipboard_port;
 pub mod dblclick;
@@ -12,11 +15,21 @@ pub mod dwm;
 pub mod edge_watch;
 pub mod eyedrop;
 pub mod eyedrop_math;
+#[cfg(target_os = "macos")]
+#[path = "macos/glass.rs"]
+pub mod glass;
 pub mod material;
+#[cfg(target_os = "macos")]
+#[path = "macos/menu_bar.rs"]
+pub mod menu_bar;
+pub mod menu_spec;
 pub mod monitors;
 pub mod motion;
 pub mod openers;
 pub mod os_build;
+#[cfg(target_os = "macos")]
+#[path = "macos/pasteboard.rs"]
+pub mod pasteboard;
 pub mod paths;
 pub mod pick;
 pub mod procs;
@@ -44,6 +57,9 @@ pub mod window_park;
 #[path = "macos/window_park.rs"]
 pub mod window_park;
 pub mod window_state;
+#[cfg(target_os = "macos")]
+#[path = "macos/workspace.rs"]
+pub mod workspace;
 
 pub mod names;
 pub mod packaged;

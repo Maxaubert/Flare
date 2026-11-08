@@ -28,6 +28,7 @@ use flare_win::argv::{folders_from_argv, own_files};
 use flare_win::clipboard_port::CLIPBOARD_WRITE_MAX;
 use flare_win::dblclick::system_double_click;
 use flare_win::edge_watch::{EdgeNear, EdgeWatch, FAR, PointF, RectF, real_cursor_phys};
+#[cfg(not(target_os = "macos"))]
 use flare_win::monitors::work_areas;
 use flare_win::pick::{ParentWindow, PickOptions, pick_folder};
 use flare_win::session_end::SessionEndWatch;
@@ -63,6 +64,7 @@ use crate::memory::process_memory;
 use crate::startup::{Profile, RaiseStep, raise_plan};
 use crate::tab_host::TabHost;
 use crate::{AppWindow, HelpBridge};
+use flare_term::mac_keys::PtyKey;
 use flare_win::os_build::os_version;
 
 /// How long the state files wait before they are written (Prism Terminal's debounce).
@@ -346,6 +348,19 @@ pub(crate) fn hwnd_of(app: &AppWindow) -> Option<isize> {
         .flatten()
 }
 
+/// The window's native handle for the window-level calls (park, material, chrome): the HWND on
+/// Windows, the content `NSView` on macOS (`flare_win::glass`, `chrome` and `window_park` take
+/// that). Everything that needs a real HWND keeps `hwnd_of`.
+pub(crate) fn native_view_of(app: &AppWindow) -> Option<isize> {
+    app.window()
+        .with_winit_window(|w| match w.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+            RawWindowHandle::AppKit(h) => Some(h.ns_view.as_ptr() as isize),
+            _ => None,
+        })
+        .flatten()
+}
+
 /// Where the window is put before its first show: the parking spot under `--e2e`, else nowhere
 /// in particular (the saved or default place applies).
 pub fn e2e_first_position(e2e: bool) -> Option<(i32, i32)> {
@@ -426,7 +441,7 @@ fn park_e2e_window_when_ready(app: &AppWindow) -> Rc<slint::Timer> {
         Duration::from_millis(E2E_HANDLE_POLL_MS),
         move || {
             let Some(app) = weak.upgrade() else { return };
-            let decision = poll_handle(polls, E2E_HANDLE_POLLS, hwnd_of(&app));
+            let decision = poll_handle(polls, E2E_HANDLE_POLLS, native_view_of(&app));
             polls += 1;
             match decision {
                 HandlePoll::Wait => return,
@@ -460,9 +475,14 @@ fn attach_window_material(
         return false;
     };
     // The handle exists: the frameless window gets its resize edges and corners (winit gives it no
-    // non-client border, so Windows alone answers every point with the client).
-    if let Some(hwnd) = hwnd_of(app) {
-        flare_win::resize_edges::install(hwnd);
+    // non-client border, so Windows alone answers every point with the client). macOS: AppKit keeps
+    // its own edges; the traffic lights move into the top row instead.
+    if let Some(view) = native_view_of(app) {
+        flare_win::resize_edges::install(view);
+        #[cfg(target_os = "macos")]
+        if !flare_win::chrome::install(view) {
+            log::warn!("the traffic lights could not be placed in the top row");
+        }
     }
     // No polling: the material arms a one-shot wake only while the border is due.
     m.set_wake(Box::new(SlintWake::new(Rc::downgrade(material))), now);
@@ -496,7 +516,7 @@ fn attach_material_when_ready(
         Duration::from_millis(E2E_HANDLE_POLL_MS),
         move || {
             let Some(app) = weak.upgrade() else { return };
-            let decision = poll_handle(polls, E2E_HANDLE_POLLS, hwnd_of(&app));
+            let decision = poll_handle(polls, E2E_HANDLE_POLLS, native_view_of(&app));
             polls += 1;
             match decision {
                 HandlePoll::Wait => return,
@@ -885,11 +905,26 @@ pub fn run_window(
         log::info!("grid on the CPU: no rendering notifier ({e})");
     }
 
+    // ---- the native chrome (macOS): the traffic lights in the top row, applied BEFORE show() -----
+    #[cfg(target_os = "macos")]
+    {
+        app.set_native_caption(true);
+        app.set_caption_gap(flare_win::chrome::CAPTION_GAP);
+    }
+
     // ---- the saved position and size, applied BEFORE show() -----------------------------------
     let profile_window_file = instance.as_ref().map(|i| i.profile.window_file());
+    #[cfg(not(target_os = "macos"))]
     let initial = profile_window_file.as_ref().map(|file| {
         let areas = work_areas();
         initial_window(&WindowStateStore::read(file, &areas), &areas)
+    });
+    // macOS: the saved position is points times the saved window's scale, so the screens are asked
+    // for in that same space (regression rule 238).
+    #[cfg(target_os = "macos")]
+    let initial = profile_window_file.as_ref().map(|file| {
+        let (state, areas) = WindowStateStore::read_at(file, flare_win::monitors::work_areas_at);
+        initial_window(&state, &areas)
     });
     if let Some(init) = &initial {
         apply_initial(&app, init, args.e2e);
@@ -1517,6 +1552,11 @@ pub fn run_window(
             },
         )
     });
+    // macOS: the menu bar, once the event loop runs (winit sets its own default menu at launch).
+    #[cfg(target_os = "macos")]
+    if let Some(kp) = &key_path {
+        install_mac_menu(&app, kp.clone());
+    }
     app.on_toggle_grid_renderer({
         let host = host.clone();
         let render_now = render_now.clone();
@@ -1951,6 +1991,78 @@ impl KeyPath {
     }
 }
 
+/// Makes Flare's menu the Mac menu bar (`mac_menu`), after winit's launch has set its default one.
+/// Each item runs on the next turn of the loop, never inside AppKit's menu tracking.
+#[cfg(target_os = "macos")]
+fn install_mac_menu(app: &AppWindow, kp: Rc<KeyPath>) {
+    let weak = app.as_weak();
+    slint::Timer::single_shot(Duration::ZERO, move || {
+        let kp = kp.clone();
+        let weak = weak.clone();
+        let handler: flare_win::menu_bar::MenuHandler = Rc::new(move |tag| {
+            let Some(cmd) = crate::mac_menu::from_tag(tag) else {
+                return;
+            };
+            let kp = kp.clone();
+            let weak = weak.clone();
+            slint::Timer::single_shot(Duration::ZERO, move || run_menu_cmd(&kp, &weak, cmd));
+        });
+        if !flare_win::menu_bar::install(&crate::mac_menu::main_menu(), handler) {
+            log::warn!("the menu bar could not be installed");
+        }
+    });
+}
+
+/// A menu item: a key item is its key press, through the same path a typed key takes (a key a
+/// Slint field has goes on to Slint, as Cmd, which Slint calls Control on macOS); Quit is the
+/// window's close route; Command help is the title button's.
+#[cfg(target_os = "macos")]
+fn run_menu_cmd(kp: &KeyPath, app: &slint::Weak<AppWindow>, cmd: crate::mac_menu::MenuCmd) {
+    use crate::mac_menu::MenuCmd;
+    match cmd {
+        MenuCmd::Quit => {
+            if let Some(a) = app.upgrade() {
+                a.invoke_close_clicked();
+            }
+        }
+        MenuCmd::CommandHelp => kp.with_ctl(&mut |c| c.menu_command_help()),
+        _ => {
+            let Some(ev) = crate::mac_menu::key_event(cmd) else {
+                return;
+            };
+            let down = handle_key(kp, &ev);
+            let mut up = ev.clone();
+            up.pressed = false;
+            let _ = handle_key(kp, &up);
+            if matches!(down, EventResult::Propagate)
+                && let Some(a) = app.upgrade()
+            {
+                forward_to_slint(&a, &ev);
+            }
+        }
+    }
+}
+
+/// A Cmd key press for a Slint field (copy, paste, select all there).
+#[cfg(target_os = "macos")]
+fn forward_to_slint(app: &AppWindow, ev: &KeyEvent) {
+    use slint::platform::{Key, WindowEvent};
+    let w = app.window();
+    let mut mods: Vec<slint::SharedString> = vec![Key::Control.into()];
+    if ev.shift {
+        mods.push(Key::Shift.into());
+    }
+    let key: slint::SharedString = ev.key.to_lowercase().into();
+    for m in &mods {
+        w.dispatch_event(WindowEvent::KeyPressed { text: m.clone() });
+    }
+    w.dispatch_event(WindowEvent::KeyPressed { text: key.clone() });
+    w.dispatch_event(WindowEvent::KeyReleased { text: key });
+    for m in mods.iter().rev() {
+        w.dispatch_event(WindowEvent::KeyReleased { text: m.clone() });
+    }
+}
+
 /// One key event, from winit or from the test hook: the controller first, then the shell.
 /// Returns what the window should do with the event.
 pub(crate) fn handle_key(kp: &KeyPath, ev: &KeyEvent) -> EventResult {
@@ -1993,8 +2105,20 @@ pub(crate) fn handle_key(kp: &KeyPath, ev: &KeyEvent) -> EventResult {
         return EventResult::PreventDefault;
     };
     // AppCtl decided (copy, paste, delete over a selection and the agent's newline are
-    // its own); what is left for the shell is typed here.
-    handle.send_key(ev);
+    // its own); what is left for the shell is typed here, the Mac way on macOS (Cmd never types).
+    let mut os = crate::keymap::app_key_os();
+    let mut option_as_meta = false;
+    kp.with_ctl(&mut |c| {
+        os = c.key_os();
+        option_as_meta = c.option_as_meta();
+    });
+    match crate::keymap::pty_key(os, ev, option_as_meta) {
+        PtyKey::Event(e) => {
+            handle.send_key(&e);
+        }
+        PtyKey::Text(t) => handle.send_text(&t),
+        PtyKey::Nothing => {}
+    }
     EventResult::PreventDefault
 }
 
@@ -2425,7 +2549,10 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                     MouseScrollDelta::LineDelta(_, y) => WheelDelta::Lines(*y),
                     MouseScrollDelta::PixelDelta(p) => WheelDelta::Pixels(p.y),
                 };
-                kp.wheel(delta, cursor.get(), mods.get().control_key())
+                let mut os = crate::keymap::app_key_os();
+                kp.with_ctl(&mut |c| os = c.key_os());
+                let zoom = crate::keymap::zoom_wheel_held(os, mods.get());
+                kp.wheel(delta, cursor.get(), zoom)
             }
             _ => EventResult::Propagate,
         }

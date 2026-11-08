@@ -15,6 +15,7 @@ const AGENT_EVAL: &str = "flare.web.agentEval";
 const APP_NETWORK: &str = "flare.web.appNetwork";
 const DEV_PREVIEW: &str = "flare.window.devPreview";
 const WRAP_PREVIEWS: &str = "flare.window.wrapPreviews";
+const OPTION_AS_META: &str = "flare.term.optionAsMeta";
 
 /// The shell the user chose. None until chosen; an empty stored value reads as None too.
 pub fn saved_shell_id(s: &PrefStore) -> Option<String> {
@@ -47,6 +48,17 @@ pub fn open_previews(s: &PrefStore) -> bool {
 
 pub fn set_open_previews(s: &PrefStore, on: bool) {
     bool_pref_set(s, OPEN_PREVIEWS, on);
+}
+
+/// macOS: "Use Option as Meta" (port phase 3). Off by default, as in Terminal.app: Option types the
+/// layout's characters (a Norwegian Mac types @, | and the brackets with it). On, Option+key sends ESC
+/// and the key, as a shell's Meta. Flare has no left or right Option split. Windows never reads it.
+pub fn option_as_meta(s: &PrefStore) -> bool {
+    bool_pref_get(s, OPTION_AS_META, false)
+}
+
+pub fn set_option_as_meta(s: &PrefStore, on: bool) {
+    bool_pref_set(s, OPTION_AS_META, on);
 }
 
 /// Wrap long lines in previews (Surfaces, 2026-10-22): the text panel continues a long line on the next row
@@ -110,6 +122,17 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn option_as_meta_is_off_until_turned_on() {
+        let s = PrefStore::memory();
+        assert!(!option_as_meta(&s));
+        set_option_as_meta(&s, true);
+        assert!(option_as_meta(&s));
+        assert_eq!(s.get("flare.term.optionAsMeta").as_deref(), Some("1"));
+        set_option_as_meta(&s, false);
+        assert!(!option_as_meta(&s));
+    }
 
     #[test]
     fn scripts_for_agents_are_off_until_a_stored_one() {

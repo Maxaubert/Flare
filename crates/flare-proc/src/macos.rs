@@ -392,6 +392,57 @@ fn watch_exit(kq: libc::c_int, p: libc::pid_t, max: Duration) -> Option<bool> {
     }
 }
 
+/// A process's memory as the kernel counts it (`proc_pid_rusage`, `RUSAGE_INFO_V2`), in bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Memory {
+    /// The resident set: the pages in RAM now (Windows' working set).
+    pub resident: u64,
+    /// The physical footprint: what Activity Monitor shows as Memory, the process's own dirty and
+    /// compressed pages (the nearest to Windows' private bytes).
+    pub footprint: u64,
+}
+
+/// `pid`'s memory; None when it is gone or the kernel refuses (another user's process).
+pub fn memory(pid: u32) -> Option<Memory> {
+    let p = to_pid(pid)?;
+    // SAFETY: plain data; all-zero is a valid value before the kernel fills it.
+    let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is a live rusage_info_v2, the struct this flavor fills.
+    let r = unsafe { libc::proc_pid_rusage(p, libc::RUSAGE_INFO_V2, (&raw mut info).cast()) };
+    (r == 0).then_some(Memory {
+        resident: info.ri_resident_size,
+        footprint: info.ri_phys_footprint,
+    })
+}
+
+/// This process's memory.
+pub fn own_memory() -> Option<Memory> {
+    memory(std::process::id())
+}
+
+/// The installed RAM in bytes (`sysctl hw.memsize`); None when it cannot be read.
+pub fn installed_ram() -> Option<u64> {
+    let mut bytes: u64 = 0;
+    let mut len = std::mem::size_of::<u64>();
+    // SAFETY: a NUL-terminated name, an out-buffer of `len` bytes and its length; no new value.
+    let r = unsafe {
+        libc::sysctlbyname(
+            c"hw.memsize".as_ptr(),
+            (&raw mut bytes).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (r == 0 && len == std::mem::size_of::<u64>() && bytes > 0).then_some(bytes)
+}
+
+/// The real user id of this process.
+pub fn own_uid() -> u32 {
+    // SAFETY: no arguments, cannot fail.
+    unsafe { libc::getuid() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,5 +608,25 @@ mod tests {
         assert!(stat(0).is_none() && cwd(0).is_none() && argv(0).is_none());
         assert!(stat(u32::MAX).is_none() && exe(u32::MAX).is_none());
         assert!(children(0).is_empty());
+    }
+
+    #[test]
+    fn this_process_has_a_resident_set_and_a_footprint() {
+        let m = own_memory().expect("the kernel reports our own memory");
+        assert!(m.resident > 1024 * 1024, "{m:?}");
+        assert!(m.footprint > 0, "{m:?}");
+        assert!(memory(0).is_none());
+    }
+
+    #[test]
+    fn the_installed_ram_is_at_least_a_gigabyte() {
+        let ram = installed_ram().expect("hw.memsize");
+        assert!(ram >= 1 << 30, "{ram}");
+    }
+
+    #[test]
+    fn our_uid_is_the_uid_our_row_shows() {
+        let row = stat(std::process::id()).expect("our own row");
+        assert_eq!(row.uid, own_uid());
     }
 }

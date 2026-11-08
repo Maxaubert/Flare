@@ -14,7 +14,7 @@ pub fn register(r: &mut ProbeRegistry) {
 /// `window.edges` with `{"points": [[dx, dy], ...]}` (device px from the window's top-left): the
 /// rectangle, DPI, band, `WS_SIZEBOX`, minimum track size, and one `HT*` code per point.
 fn window_edges(ctx: &ProbeCtx, arg: &Value) -> Result<Value, String> {
-    let hwnd = crate::window::hwnd_of(ctx.app).ok_or("the window has no handle yet")?;
+    let hwnd = crate::window::native_view_of(ctx.app).ok_or("the window has no handle yet")?;
     let rep = report(hwnd);
     let codes: Vec<u32> = arg["points"]
         .as_array()

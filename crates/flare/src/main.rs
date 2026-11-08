@@ -30,6 +30,7 @@ mod ime;
 mod keymap;
 mod live;
 mod look_ctl;
+mod mac_menu;
 mod mark_colours;
 mod material_ctl;
 mod memory;
@@ -192,7 +193,7 @@ fn main() {
     let instance = if args.sample {
         None
     } else {
-        let appdata = std::env::var("APPDATA").ok();
+        let appdata = flare_win::paths::roaming_app_data();
         let profile = startup::Profile {
             dir: startup::profile_dir(args.user_data_dir.as_deref(), appdata.as_deref()),
         };

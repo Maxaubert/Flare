@@ -29,6 +29,30 @@ pub fn system_backdrop_ok(v: OsVersion) -> bool {
     v.build >= SYSTEM_BACKDROP_BUILD
 }
 
+/// Whether this machine has the window backdrop glass needs. Windows: `system_backdrop_ok` for the
+/// build. macOS: always (an `NSVisualEffectView`, on every release the port supports); `v` is not
+/// a Windows build there.
+pub fn backdrop_ok_here(v: OsVersion) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = v;
+        true
+    }
+    #[cfg(not(target_os = "macos"))]
+    system_backdrop_ok(v)
+}
+
+/// `support` for this machine: always `Ok` on macOS (see `backdrop_ok_here`).
+pub fn support_here(v: OsVersion) -> Support {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = v;
+        Support::Ok
+    }
+    #[cfg(not(target_os = "macos"))]
+    support(v)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Support {
     Ok,

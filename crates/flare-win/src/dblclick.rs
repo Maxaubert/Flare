@@ -41,15 +41,37 @@ pub fn system_double_click() -> DoubleClick {
     }
 }
 
-/// macOS: phase 3 of the port plan (NSEvent.doubleClickInterval); the fallback until then.
-#[cfg(not(windows))]
+/// macOS: the user's double-click speed (`NSEvent.doubleClickInterval`, System Settings, Mouse).
+/// The Mac has no drift setting; the fallback's distance is kept.
+#[cfg(target_os = "macos")]
 pub fn system_double_click() -> DoubleClick {
-    FALLBACK
+    mac_double_click(objc2_app_kit::NSEvent::doubleClickInterval())
+}
+
+/// Pure: the interval in seconds as the metrics, the fallback for an answer that makes no sense.
+#[cfg(any(target_os = "macos", test))]
+fn mac_double_click(secs: f64) -> DoubleClick {
+    if !secs.is_finite() || secs <= 0.0 || secs > 5.0 {
+        return FALLBACK;
+    }
+    DoubleClick {
+        time_ms: (secs * 1000.0).round() as u64,
+        ..FALLBACK
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mac_interval_is_in_ms_and_a_strange_one_falls_back() {
+        assert_eq!(mac_double_click(0.5).time_ms, 500);
+        assert_eq!(mac_double_click(0.25).time_ms, 250);
+        for bad in [0.0, -1.0, f64::NAN, 60.0] {
+            assert_eq!(mac_double_click(bad), FALLBACK, "{bad}");
+        }
+    }
 
     #[test]
     fn the_double_click_metrics_are_sane() {

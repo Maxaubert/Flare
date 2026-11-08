@@ -96,40 +96,11 @@ pub fn set_text(text: &str) -> Result<(), String> {
     result
 }
 
-/// Puts `text` on the clipboard through `/usr/bin/pbcopy` (macOS). The native pasteboard is
-/// phase 3 of the port plan.
-#[cfg(not(windows))]
+/// Puts `text` on the clipboard as text (`NSPasteboard`, macOS). The pasteboard keeps the
+/// `NSString`, so the text reads back as the same UTF-8 whatever the locale.
+#[cfg(target_os = "macos")]
 pub fn set_text(text: &str) -> Result<(), String> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-    // pbcopy reads its input in the locale's encoding; an app started from Finder or launchd
-    // usually has no LANG, and non-ASCII text would then be garbled, so UTF-8 is set here.
-    // sync-ok: pbcopy starts at once; callers already run the clipboard write off the UI thread
-    let mut child = Command::new("/usr/bin/pbcopy")
-        .env("LANG", "en_US.UTF-8")
-        .env("LC_CTYPE", "en_US.UTF-8")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("pbcopy failed: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take()
-        && let Err(e) = stdin.write_all(text.as_bytes())
-    {
-        // Close the pipe and reap the child before reporting, so no pbcopy is left behind.
-        drop(stdin);
-        let _ = child.kill();
-        let _ = child.wait(); // sync-ok: the child was just killed
-        return Err(format!("pbcopy failed: {e}"));
-    }
-    let status = child
-        .wait() // sync-ok: pbcopy exits as soon as its input closes
-        .map_err(|e| format!("pbcopy failed: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("pbcopy failed with {status}"))
-    }
+    crate::pasteboard::write_text(&crate::pasteboard::general(), text)
 }
 
 #[cfg(test)]

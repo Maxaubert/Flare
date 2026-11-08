@@ -88,9 +88,36 @@ fn known_folder(id: &GUID) -> Option<PathBuf> {
     Some(PathBuf::from(text))
 }
 
+/// The roaming application data folder Flare's default profile lives under: `%APPDATA%` on Windows
+/// (the variable, as before), `~/Library/Application Support` on macOS. None when unknown.
+#[cfg(windows)]
+pub fn roaming_app_data() -> Option<String> {
+    std::env::var("APPDATA").ok()
+}
+
+/// macOS: `~/Library/Application Support`, where the default profile (`.../Flare`) lives.
+#[cfg(not(windows))]
+pub fn roaming_app_data() -> Option<String> {
+    local_app_data().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// macOS: Flare's log folder, `~/Library/Logs/Flare` (Console.app lists it under Log Reports).
+#[cfg(not(windows))]
+pub fn app_logs_dir() -> Option<PathBuf> {
+    home().map(|h| h.join("Library").join("Logs").join("Flare"))
+}
+
+/// macOS: Flare's cache folder, `~/Library/Caches/Flare`: what may be thrown away and made again
+/// (the system may clear it when the disk is low). Nothing is cached on disk yet; the web panel's
+/// caches (port phase 5) go here.
+#[cfg(not(windows))]
+pub fn app_caches_dir() -> Option<PathBuf> {
+    home().map(|h| h.join("Library").join("Caches").join("Flare"))
+}
+
 /// The user's home folder off Windows: `$HOME`, None when unset or empty.
 #[cfg(not(windows))]
-fn home() -> Option<PathBuf> {
+pub fn home() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
         .map(PathBuf::from)
@@ -161,6 +188,18 @@ mod tests {
             got,
             Some(Path::new(r"C:\Users\me").join("AppData").join("Local"))
         );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_mac_folders_are_the_library_ones() {
+        let h = home().expect("a home folder");
+        assert_eq!(
+            roaming_app_data().map(PathBuf::from),
+            Some(h.join("Library/Application Support"))
+        );
+        assert_eq!(app_logs_dir(), Some(h.join("Library/Logs/Flare")));
+        assert_eq!(app_caches_dir(), Some(h.join("Library/Caches/Flare")));
     }
 
     #[test]

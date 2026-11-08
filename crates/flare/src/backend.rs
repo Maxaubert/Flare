@@ -3,7 +3,7 @@
 //! DirectComposition swapchain, so the See-through slider works without a restart (decision D8).
 
 use crate::config::RendererChoice;
-use flare_win::material::system_backdrop_ok;
+use flare_win::material::backdrop_ok_here;
 use flare_win::os_build::{OsVersion, os_version};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -30,8 +30,9 @@ impl GlassPlan {
 }
 
 /// Both true iff the GPU renderer is chosen, the build has the backdrop call and glass is not off.
+/// macOS always has the backdrop (an `NSVisualEffectView`, `flare_win::glass`).
 pub fn glass_plan(choice: RendererChoice, v: OsVersion, disabled: bool) -> GlassPlan {
-    let on = choice == RendererChoice::Gpu && system_backdrop_ok(v) && !disabled;
+    let on = choice == RendererChoice::Gpu && backdrop_ok_here(v) && !disabled;
     GlassPlan {
         transparent: on,
         visual_swapchain: on,
@@ -299,10 +300,14 @@ fn with_window_attributes(
     // and, while it is being made, gets its own attributes from this one hook.
     crate::dictation_widget::set_alpha_surface(plan.transparent);
     let transparent = plan.transparent;
+    #[cfg(target_os = "macos")]
+    let selector = with_mac_e2e_event_loop(selector, e2e);
     selector.with_winit_window_attributes_hook(move |attributes| {
         if crate::dictation_widget::creating() {
             return crate::dictation_widget::attributes(attributes);
         }
+        #[cfg(target_os = "macos")]
+        let attributes = mac_chrome_attributes(attributes);
         if !e2e && !transparent {
             return attributes;
         }
@@ -313,6 +318,58 @@ fn with_window_attributes(
             attributes
         }
     })
+}
+
+/// macOS (port phase 3): Flare's main window is a titled window with the native traffic lights, its
+/// titlebar transparent, its title hidden and its content view full size, so Flare's own top row
+/// is drawn under the lights (`flare_win::chrome` places them in it). AppKit keeps the resize
+/// edges, the shadow, full screen and zoom. `no-frame` is off on macOS (`native-caption`), so
+/// Slint keeps the decorations on and winit never swaps the style mask (which would drop the
+/// full-size content view).
+#[cfg(target_os = "macos")]
+pub fn mac_chrome_attributes(
+    attributes: slint::winit_030::winit::window::WindowAttributes,
+) -> slint::winit_030::winit::window::WindowAttributes {
+    use slint::winit_030::winit::platform::macos::WindowAttributesExtMacOS;
+    attributes
+        .with_decorations(true)
+        .with_titlebar_transparent(true)
+        .with_title_hidden(true)
+        .with_fullsize_content_view(true)
+        .with_movable_by_window_background(false)
+}
+
+/// macOS under `--e2e`: the activation policy and whether the app activates at launch, set on the
+/// event loop BEFORE it runs (`None` without `--e2e`: winit's Regular app that activates). An
+/// accessory app has no Dock icon and never comes forward on its own; `park` setting it later, after
+/// `show()`, would be too late (regression rule 237).
+#[cfg(target_os = "macos")]
+pub fn mac_e2e_loop_plan(
+    e2e: bool,
+) -> Option<(
+    slint::winit_030::winit::platform::macos::ActivationPolicy,
+    bool,
+)> {
+    e2e.then_some((
+        slint::winit_030::winit::platform::macos::ActivationPolicy::Accessory,
+        false,
+    ))
+}
+
+/// Hands Slint the winit event loop builder `mac_e2e_loop_plan` asks for; the selector unchanged
+/// without `--e2e`, so the normal app keeps Slint's own event loop.
+#[cfg(target_os = "macos")]
+fn with_mac_e2e_event_loop(selector: slint::BackendSelector, e2e: bool) -> slint::BackendSelector {
+    use slint::winit_030::winit::platform::macos::EventLoopBuilderExtMacOS;
+    let Some((policy, activate)) = mac_e2e_loop_plan(e2e) else {
+        return selector;
+    };
+    let mut builder: slint::winit_030::EventLoopBuilder =
+        slint::winit_030::winit::event_loop::EventLoop::with_user_event();
+    builder
+        .with_activation_policy(policy)
+        .with_activate_ignoring_other_apps(activate);
+    selector.with_winit_event_loop_builder(builder)
 }
 
 /// The --e2e window is BORN inactive, off the taskbar and parked off every monitor, so it never
@@ -341,6 +398,27 @@ fn select_software(e2e: bool, plan: GlassPlan) -> Result<(), slint::PlatformErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_e2e_run_is_an_accessory_that_never_activates_from_its_first_event() {
+        use slint::winit_030::winit::platform::macos::ActivationPolicy;
+        assert_eq!(
+            mac_e2e_loop_plan(true),
+            Some((ActivationPolicy::Accessory, false))
+        );
+        assert_eq!(mac_e2e_loop_plan(false), None);
+        // No selector is built here: a dropped `BackendSelector` selects, which makes the event loop.
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_window_keeps_its_native_frame() {
+        let a = mac_chrome_attributes(
+            slint::winit_030::winit::window::WindowAttributes::default().with_decorations(false),
+        );
+        assert!(a.decorations, "the traffic lights need the titled window");
+    }
 
     #[test]
     fn an_e2e_window_is_created_at_the_parking_spot() {
@@ -376,14 +454,14 @@ mod tests {
             visual_swapchain: true,
         };
         assert_eq!(glass_plan(RendererChoice::Gpu, v(22621), false), on);
-        assert_eq!(
-            glass_plan(RendererChoice::Gpu, v(22620), false),
+        // The Windows builds without the backdrop call; a Mac has the glass whatever `v` says.
+        let old_build = if cfg!(target_os = "macos") {
+            on
+        } else {
             GlassPlan::NONE
-        );
-        assert_eq!(
-            glass_plan(RendererChoice::Gpu, v(19045), false),
-            GlassPlan::NONE
-        );
+        };
+        assert_eq!(glass_plan(RendererChoice::Gpu, v(22620), false), old_build);
+        assert_eq!(glass_plan(RendererChoice::Gpu, v(19045), false), old_build);
         assert_eq!(
             glass_plan(RendererChoice::Software, v(26300), false),
             GlassPlan::NONE

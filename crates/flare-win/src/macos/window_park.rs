@@ -1,7 +1,16 @@
-//! Parking the --e2e window off Windows. macOS: the Mac E2E runs in CI only (the port plan's
-//! "Ongoing" row, accessory policy); until then nothing is parked and the report says so.
+//! Parking the --e2e window on macOS (port phase 3). The Mac meaning of the Windows park: the app
+//! becomes an accessory (no Dock icon, never the active app unless it asks, and it never asks), and
+//! the window is moved off every screen. AppKit may still pull a titled window back onto a screen
+//! when it is ordered front, so the report reads the real frame and says so; the Mac E2E itself
+//! runs in CI only (the port plan's "Ongoing" row).
+//!
+//! The handle is the window's `NSView` as an integer (raw-window-handle's `AppKit` handle).
 
-/// Where a parked window would sit: far outside every monitor's rectangle.
+use objc2::MainThreadMarker;
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+use objc2_foundation::NSPoint;
+
+/// Where a parked window sits: far outside every monitor's rectangle.
 const PARK_AT: i32 = -32000;
 
 /// The top-left corner of a parked window, in device pixels.
@@ -9,31 +18,141 @@ pub fn parked_origin() -> (i32, i32) {
     (PARK_AT, PARK_AT)
 }
 
-/// Not built yet: the window is left where it is.
-pub fn park(_hwnd: isize) {}
+/// Makes the app an accessory and moves the window to the parking spot. Never activates the app,
+/// never orders the window front, never resizes it. Nothing happens off the main thread.
+pub fn park(view: isize) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let Some(window) = crate::glass::window_of(view, mtm) else {
+        return;
+    };
+    NSApplication::sharedApplication(mtm)
+        .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    window.setFrameOrigin(NSPoint::new(f64::from(PARK_AT), f64::from(PARK_AT)));
+}
 
 /// What the harness checks of an `--e2e` window (the same shape as on Windows).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ParkReport {
+    /// Left, top, right, bottom in device pixels (top-left origin, as winit has them).
     pub rect: (i32, i32, i32, i32),
+    /// macOS: the app's activation policy (0 regular, 1 accessory, 2 prohibited), where Windows has
+    /// the extended window style.
     pub ex_style: u32,
+    /// The box round every screen: left, top, right, bottom.
     pub screen: (i32, i32, i32, i32),
+    /// Whether Flare is the active app and this its key window.
     pub foreground: bool,
 }
 
+/// The accessory activation policy, as `ex_style` holds it.
+pub const POLICY_ACCESSORY: u32 = 1;
+/// The prohibited activation policy (never active at all).
+pub const POLICY_PROHIBITED: u32 = 2;
+
+/// Pure: whether two rectangles (left, top, right, bottom) share any pixel.
+pub fn rects_overlap(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
+    a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3
+}
+
 impl ParkReport {
-    /// Unknown here: false.
+    /// Whether any part of the window lies on any screen.
     pub fn on_screen(&self) -> bool {
-        false
+        rects_overlap(self.rect, self.screen)
     }
 
-    /// Always one problem until the Mac E2E parks windows.
+    /// Everything wrong with the window as an `--e2e` window; empty when it is safe.
     pub fn problems(&self) -> Vec<String> {
-        vec!["the window cannot be parked on this platform yet".into()]
+        let mut out = Vec::new();
+        if self.on_screen() {
+            out.push(format!(
+                "the window is on a screen at {:?} (screens {:?}), it is not parked",
+                self.rect, self.screen
+            ));
+        }
+        if self.ex_style != POLICY_ACCESSORY && self.ex_style != POLICY_PROHIBITED {
+            out.push("the app is not an accessory, it would show in the Dock".into());
+        }
+        if self.foreground {
+            out.push("the window is the key window of the active app".into());
+        }
+        out
     }
 }
 
-/// An empty report.
-pub fn report(_hwnd: isize) -> ParkReport {
-    ParkReport::default()
+/// Reads the report of a live window. Empty off the main thread or without a window.
+pub fn report(view: isize) -> ParkReport {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return ParkReport::default();
+    };
+    let Some(window) = crate::glass::window_of(view, mtm) else {
+        return ParkReport::default();
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    let scale = window.backingScaleFactor();
+    let screens = crate::chrome::screen_frames_at(scale);
+    let primary_h = crate::chrome::primary_height();
+    let a = crate::chrome::area_of(window.frame(), primary_h, scale);
+    let screen = screens
+        .iter()
+        .fold(None, |acc: Option<(i32, i32, i32, i32)>, s| {
+            let r = (s.x, s.y, s.x + s.width, s.y + s.height);
+            Some(match acc {
+                None => r,
+                Some(b) => (b.0.min(r.0), b.1.min(r.1), b.2.max(r.2), b.3.max(r.3)),
+            })
+        });
+    ParkReport {
+        rect: (a.x, a.y, a.x + a.width, a.y + a.height),
+        ex_style: app.activationPolicy().0.max(0) as u32,
+        screen: screen.unwrap_or_default(),
+        foreground: app.isActive() && window.isKeyWindow(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SCREEN: (i32, i32, i32, i32) = (0, 0, 3024, 1964);
+
+    fn safe() -> ParkReport {
+        ParkReport {
+            rect: (-64000, -64000, -62000, -62720),
+            ex_style: POLICY_ACCESSORY,
+            screen: SCREEN,
+            foreground: false,
+        }
+    }
+
+    #[test]
+    fn a_parked_accessory_window_has_no_problems() {
+        assert!(safe().problems().is_empty());
+        let r = ParkReport {
+            ex_style: POLICY_PROHIBITED,
+            ..safe()
+        };
+        assert!(r.problems().is_empty());
+    }
+
+    #[test]
+    fn a_window_on_a_screen_in_the_dock_or_in_front_is_a_problem() {
+        let mut r = safe();
+        r.rect = (3000, 100, 4000, 700);
+        assert!(r.on_screen());
+        assert!(r.problems().iter().any(|p| p.contains("not parked")));
+        let r = ParkReport {
+            ex_style: 0,
+            foreground: true,
+            ..safe()
+        };
+        assert_eq!(r.problems().len(), 2);
+    }
+
+    #[test]
+    fn off_the_main_thread_nothing_is_touched() {
+        park(0);
+        assert_eq!(report(0), ParkReport::default());
+    }
 }

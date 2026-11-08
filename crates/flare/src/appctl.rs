@@ -47,7 +47,9 @@ use flare_settings::term_prefs::agent_keys;
 use flare_tabs::close_flow::{CloseFlow, CloseVerdict, Confirmed};
 use flare_tabs::decor::{Decors, Refused, Source as DecorSource};
 use flare_tabs::drag_flight::DragInFlight;
-use flare_tabs::keymap::{ChordId, KeyContext, app_owns_key, key_label};
+use flare_tabs::keymap::{
+    ChordId, KeyContext, KeyOs, app_owns_key, copy_paste_labels, key_label_on,
+};
 use flare_tabs::model::TabModel;
 use flare_tabs::places::place_rows;
 use flare_tabs::restore::{
@@ -62,7 +64,7 @@ use flare_tabs::tip_place::{BoxF, TipSide};
 use flare_term::click_caret::MouseTracking;
 use flare_term::emulator::TermEvent;
 use flare_term::handle::TermHandle;
-use flare_term::keys::{KeyEvent, KeyState, term_key_action};
+use flare_term::keys::{KeyEvent, KeyState, term_key_action_on};
 use flare_term::path_open::{PathOpeners, StatFn};
 use flare_theme::agent_colours::theme_agent_colours;
 use flare_theme::look::apply_look;
@@ -497,6 +499,9 @@ pub struct AppCtl {
     /// Agents that are mid-answer: tab id to the clock time they started (M6 fills this).
     working: HashMap<String, u64>,
     ended: bool,
+    /// Whose keys the chords and the terminal follow: macOS in a Mac build, Windows otherwise and in
+    /// the unit tests (`keymap::app_key_os`); a test may set it.
+    key_os: KeyOs,
     /// Stops the hand-off server (set by the window); run once at the start of the end of life.
     handoff_stop: Option<Rc<dyn Fn()>>,
     /// The grid's face and size (Task 27); set by the window after the controller is made.
@@ -937,6 +942,7 @@ impl AppCtl {
             last_saved: None,
             working: HashMap::new(),
             ended: false,
+            key_os: crate::keymap::app_key_os(),
             handoff_stop: None,
             font: None,
             term,
@@ -1174,6 +1180,11 @@ impl AppCtl {
         c._help_sub = Some(sub);
     }
 
+    /// The Mac menu bar's Help, Command Help: what F1 does.
+    pub fn menu_command_help(&mut self) {
+        self.help_toggle();
+    }
+
     /// F1, the title button and the terminal menu row.
     fn help_toggle(&mut self) {
         // A question is up: the popup waits for the answer.
@@ -1350,7 +1361,7 @@ impl AppCtl {
                 },
             );
         }
-        bind!(app, rc, on_bar_double_clicked, |c| c.toggle_maximise());
+        bind!(app, rc, on_bar_double_clicked, |c| c.bar_double_clicked());
         bind!(app, rc, on_title_pressed, |c| c.title_pressed());
         bind!(
             app,
@@ -1517,7 +1528,22 @@ impl AppCtl {
     }
 
     fn key_label_of(&self, id: ChordId) -> &'static str {
-        key_label(id, agent_keys(&self.prefs))
+        key_label_on(self.key_os, id, agent_keys(&self.prefs))
+    }
+
+    /// Whose keys apply (macOS or Windows).
+    pub fn key_os(&self) -> KeyOs {
+        self.key_os
+    }
+
+    /// Sets whose keys apply (tests of the Mac keys on any system).
+    pub fn set_key_os(&mut self, os: KeyOs) {
+        self.key_os = os;
+    }
+
+    /// "Use Option as Meta" (macOS; default off, like Terminal.app).
+    pub fn option_as_meta(&self) -> bool {
+        flare_settings::term_prefs::option_as_meta(&self.prefs)
     }
 
     // ---- the view -------------------------------------------------------------------------------
@@ -2622,6 +2648,23 @@ impl AppCtl {
         self.focus_terminal();
     }
 
+    /// A double click on the window's move area: maximise or restore. macOS: what the user chose in
+    /// System Settings for a titlebar double click (zoom, minimise or nothing).
+    fn bar_double_clicked(&mut self) {
+        #[cfg(target_os = "macos")]
+        match flare_win::chrome::title_double_click_now() {
+            flare_win::chrome::TitleDoubleClick::Zoom => {}
+            flare_win::chrome::TitleDoubleClick::Minimize => {
+                if let Some(app) = self.app() {
+                    app.window().set_minimized(true);
+                }
+                return;
+            }
+            flare_win::chrome::TitleDoubleClick::Nothing => return,
+        }
+        self.toggle_maximise();
+    }
+
     fn toggle_maximise(&mut self) {
         if let Some(app) = self.app() {
             let w = app.window();
@@ -3083,6 +3126,16 @@ impl AppCtl {
             .iter()
             .map(|r| (to_menu_row(r), String::new()))
             .collect();
+        // The copy and paste hints are this system's keys (Cmd on a Mac).
+        let (win_copy, win_paste) = copy_paste_labels(KeyOs::Windows);
+        let (copy, paste) = copy_paste_labels(self.key_os);
+        for (r, _) in &mut rows {
+            if r.hint == win_copy {
+                r.hint = copy.into();
+            } else if r.hint == win_paste {
+                r.hint = paste.into();
+            }
+        }
         if rows.is_empty() {
             return;
         }
@@ -3149,7 +3202,7 @@ impl AppCtl {
                 host_owns: &host,
                 agent_here,
             };
-            term_key_action(ev, &mut state)
+            term_key_action_on(self.key_os, ev, &mut state)
         };
         let done = self.term.on_key(&info, ev, action);
         self.push_term();
@@ -4179,6 +4232,7 @@ impl AppCtl {
     pub fn key_context(&self) -> KeyContext {
         let front = self.model.active_shell().map(|t| t.id.as_str());
         KeyContext {
+            os: self.key_os,
             help: flare_settings::help_prefs::help_enabled(&self.prefs),
             vertical: self.vertical(),
             // A full-screen program owns Ctrl+F: the alternate screen or the mouse (PT focusedTermFullScreen).
@@ -4540,6 +4594,29 @@ impl AppCtl {
         self.deps.host.set_font_override(&id, Some(next));
         // The front tab only: the others keep their size until they come to the front.
         if let Some((cols, rows)) = f.apply(Some(next))
+            && cols >= 2
+            && rows >= 1
+        {
+            self.on_grid_dims(cols, rows);
+        }
+        if let Some(app) = self.app() {
+            app.window().request_redraw();
+        }
+        true
+    }
+
+    /// macOS Cmd+plus, Cmd+minus (one size up or down, as a wheel notch with the modifier) and Cmd+0
+    /// (the tab in front back to the settings' size). False when there is no shell in front.
+    pub fn zoom_front_step(&mut self, step: i32) -> bool {
+        if step != 0 {
+            return self.zoom_front(f64::from(step));
+        }
+        let Some(id) = self.model.active_shell().map(|t| t.id.clone()) else {
+            return false;
+        };
+        self.deps.host.set_font_override(&id, None);
+        if let Some(f) = self.font.as_mut()
+            && let Some((cols, rows)) = f.apply(None)
             && cols >= 2
             && rows >= 1
         {
@@ -5154,6 +5231,10 @@ impl ChordTarget for Target<'_> {
 
     fn focus_panel(&mut self) {
         self.0.move_panel_focus();
+    }
+
+    fn zoom(&mut self, step: i32) {
+        self.0.zoom_front_step(step);
     }
 }
 
@@ -6397,6 +6478,92 @@ mod tests {
         std::thread::sleep(Duration::from_millis(60));
         f.pump();
         assert_eq!(fake.written(), b"\x1b[200~a\rb\x1b[201~");
+    }
+
+    #[test]
+    fn on_the_mac_cmd_t_opens_a_tab_and_ctrl_t_is_the_shells() {
+        let f = fx();
+        f.ctl.borrow_mut().set_key_os(KeyOs::Mac);
+        assert_eq!(f.ctl.borrow().key_context().os, KeyOs::Mac);
+        assert_eq!(
+            f.key(KeyEvent::new("t", "KeyT").meta()),
+            KeyOutcome::Consumed
+        );
+        f.wait_made("C:\\home");
+        assert_eq!(f.cwds(), ["C:\\home"]);
+        // Ctrl+T reaches the shell in front as ^T.
+        assert_eq!(f.key(ctrl("t", "KeyT")), KeyOutcome::Pty);
+        assert_eq!(f.cwds(), ["C:\\home"]);
+    }
+
+    #[test]
+    fn on_the_mac_cmd_c_copies_cmd_v_pastes_and_ctrl_c_is_the_interrupt() {
+        let (f, h, fake) = live(Opts::default());
+        f.ctl.borrow_mut().set_key_os(KeyOs::Mac);
+        feed(&h, "hello world");
+        f.drag_cols(0, 0, 5);
+        // Ctrl+C over a selection is still the shell's on a Mac.
+        assert_eq!(f.key(ctrl("c", "KeyC")), KeyOutcome::Pty);
+        assert_eq!(
+            f.key(KeyEvent::new("c", "KeyC").meta()),
+            KeyOutcome::Consumed
+        );
+        f.pump_until("the copy", |f| f.clip_text().as_deref() == Some("hello"));
+        f.clip.set_text("xy");
+        assert_eq!(
+            f.key(KeyEvent::new("v", "KeyV").meta()),
+            KeyOutcome::Consumed
+        );
+        f.pump_until("the paste", |_| fake.written().ends_with(b"xy"));
+    }
+
+    #[test]
+    fn on_the_mac_cmd_a_selects_the_whole_buffer() {
+        let (f, h, _fake) = live(Opts::default());
+        f.ctl.borrow_mut().set_key_os(KeyOs::Mac);
+        feed(&h, "one\r\ntwo");
+        assert_eq!(
+            f.key(KeyEvent::new("a", "KeyA").meta()),
+            KeyOutcome::Consumed
+        );
+        let text = h.with_emu(|e| e.sel_text());
+        assert!(text.contains("one") && text.contains("two"), "{text:?}");
+    }
+
+    #[test]
+    fn on_the_mac_cmd_zoom_keys_size_the_front_tab_and_cmd_0_resets_it() {
+        use crate::host::{GridHost, GridPainter};
+        use flare_render::glyph::FakeGlyphs;
+        use flare_settings::look::LookStore;
+        let (f, _h, _fake) = live(Opts::default());
+        let grid = Rc::new(RefCell::new(GridHost::new(
+            Box::new(FakeGlyphs::new(8, 16)),
+            GridPainter::Cpu,
+        )));
+        grid.borrow_mut().resize(648, 264, 1.0);
+        f.ctl
+            .borrow_mut()
+            .set_font_ctl(FontCtl::new(LookStore::new(f.prefs.clone()), grid.clone()));
+        f.ctl.borrow_mut().set_key_os(KeyOs::Mac);
+        let base = f.ctl.borrow().grid_dims;
+        assert_eq!(
+            f.key(KeyEvent::new("+", "Equal").meta()),
+            KeyOutcome::Consumed
+        );
+        assert_eq!(
+            f.key(KeyEvent::new("+", "Equal").meta()),
+            KeyOutcome::Consumed
+        );
+        let zoomed = f.ctl.borrow().grid_dims;
+        assert_ne!(zoomed, base, "the grid follows the zoom");
+        assert_eq!(
+            f.key(KeyEvent::new("0", "Digit0").meta()),
+            KeyOutcome::Consumed
+        );
+        assert_eq!(f.ctl.borrow().grid_dims, base);
+        // Windows has no zoom keys: Ctrl+0 is the shell's.
+        f.ctl.borrow_mut().set_key_os(KeyOs::Windows);
+        assert_eq!(f.key(ctrl("0", "Digit0")), KeyOutcome::Pty);
     }
 
     #[test]

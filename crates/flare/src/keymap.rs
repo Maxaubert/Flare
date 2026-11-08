@@ -4,7 +4,8 @@
 //! Prism Terminal W3C convention: `code` is the Debug name of the physical `KeyCode`
 //! ("KeyC", "Digit1", "NumpadEnter"), which is the W3C code name for that key.
 
-use flare_term::keys::KeyEvent;
+use flare_term::keys::{KeyEvent, KeyOs};
+use flare_term::mac_keys::{PtyKey, mac_pty_key};
 use slint::winit_030::winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
 /// The W3C code name of a physical key, or "Unidentified" when winit cannot name it.
@@ -51,6 +52,34 @@ pub fn key_event_from_parts(
         shift: mods.shift_key(),
         alt,
         meta: mods.super_key(),
+    }
+}
+
+/// Whose keys the app follows: macOS in a Mac build, Windows otherwise. The unit tests keep the
+/// Windows keys on every system (their chords are Ctrl chords); a test of the Mac keys sets them.
+pub fn app_key_os() -> KeyOs {
+    if cfg!(test) {
+        KeyOs::Windows
+    } else {
+        KeyOs::HOST
+    }
+}
+
+/// The wheel zooms the grid with the app's modifier held: Ctrl on Windows, Cmd on macOS.
+pub fn zoom_wheel_held(os: KeyOs, mods: ModifiersState) -> bool {
+    match os {
+        KeyOs::Windows => mods.control_key(),
+        KeyOs::Mac => mods.super_key(),
+    }
+}
+
+/// What the shell gets for a key the app did not take: on Windows the key itself; on macOS the Mac
+/// translation (Cmd never types, Cmd+arrows and Option+arrows move by line and word, Option types
+/// the layout's character unless Option is Meta).
+pub fn pty_key(os: KeyOs, ev: &KeyEvent, option_as_meta: bool) -> PtyKey {
+    match os {
+        KeyOs::Windows => PtyKey::Event(ev.clone()),
+        KeyOs::Mac => mac_pty_key(ev, option_as_meta),
     }
 }
 
@@ -201,5 +230,92 @@ mod tests {
             key_name(&Key::Unidentified(NativeKey::Unidentified)),
             "Unidentified"
         );
+    }
+
+    /// The bytes the shell gets for a winit key on `os`.
+    fn sent(os: KeyOs, ev: &KeyEvent, meta: bool) -> Option<Vec<u8>> {
+        match pty_key(os, ev, meta) {
+            PtyKey::Event(e) => encode_key(&e, false),
+            PtyKey::Text(t) => Some(t.into_bytes()),
+            PtyKey::Nothing => None,
+        }
+    }
+
+    #[test]
+    fn a_cmd_key_from_winit_never_types_on_the_mac_and_windows_is_unchanged() {
+        let cmd_k = key_event_from_parts(
+            true,
+            &code(KeyCode::KeyK),
+            &ch("k"),
+            Some("k"),
+            ModifiersState::SUPER,
+        );
+        assert_eq!(sent(KeyOs::Mac, &cmd_k, false), None);
+        // Windows: the encoder decides as ever (the Windows key adds the xterm meta bit nowhere
+        // for a plain letter, so the text goes).
+        assert_eq!(
+            sent(KeyOs::Windows, &cmd_k, false),
+            encode_key(&cmd_k, false)
+        );
+    }
+
+    #[test]
+    fn mac_line_and_word_keys_from_winit() {
+        let cmd_left = key_event_from_parts(
+            true,
+            &code(KeyCode::ArrowLeft),
+            &Key::Named(NamedKey::ArrowLeft),
+            None,
+            ModifiersState::SUPER,
+        );
+        assert_eq!(sent(KeyOs::Mac, &cmd_left, false), Some(vec![1]));
+        let opt_right = key_event_from_parts(
+            true,
+            &code(KeyCode::ArrowRight),
+            &Key::Named(NamedKey::ArrowRight),
+            None,
+            ModifiersState::ALT,
+        );
+        assert_eq!(sent(KeyOs::Mac, &opt_right, false), Some(b"\x1bf".to_vec()));
+        // Windows keeps the xterm Alt+Right.
+        assert_eq!(
+            sent(KeyOs::Windows, &opt_right, false),
+            Some(b"\x1b[1;3C".to_vec())
+        );
+    }
+
+    #[test]
+    fn mac_ctrl_c_is_the_interrupt_and_option_types_its_character() {
+        let ctrl_c = key_event_from_parts(
+            true,
+            &code(KeyCode::KeyC),
+            &ch("c"),
+            Some("\u{3}"),
+            ModifiersState::CONTROL,
+        );
+        assert_eq!(sent(KeyOs::Mac, &ctrl_c, false), Some(vec![3]));
+        // Norwegian Mac: Option+2 types @.
+        let opt_2 = key_event_from_parts(
+            true,
+            &code(KeyCode::Digit2),
+            &ch("@"),
+            Some("@"),
+            ModifiersState::ALT,
+        );
+        assert_eq!(sent(KeyOs::Mac, &opt_2, false), Some(b"@".to_vec()));
+        assert_eq!(sent(KeyOs::Mac, &opt_2, true), Some(b"\x1b2".to_vec()));
+    }
+
+    #[test]
+    fn the_wheel_zooms_with_ctrl_on_windows_and_cmd_on_the_mac() {
+        assert!(zoom_wheel_held(KeyOs::Windows, ModifiersState::CONTROL));
+        assert!(!zoom_wheel_held(KeyOs::Windows, ModifiersState::SUPER));
+        assert!(zoom_wheel_held(KeyOs::Mac, ModifiersState::SUPER));
+        assert!(!zoom_wheel_held(KeyOs::Mac, ModifiersState::CONTROL));
+    }
+
+    #[test]
+    fn the_unit_tests_keep_the_windows_keys() {
+        assert_eq!(app_key_os(), KeyOs::Windows);
     }
 }

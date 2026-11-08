@@ -2,8 +2,16 @@
 //! Port of Prism Terminal's keymap.ts: one table for the app's keys, read by the window filter
 //! and by the terminal's "owns this key" check, so a chord never reaches the pty while the app
 //! acts on it. Pure: what the chords depend on comes in through `KeyContext`.
+//!
+//! One table for both systems (macOS port phase 3): `KeyContext::os` says whose keys apply. On
+//! Windows the app's chords are Ctrl chords; on macOS Cmd takes Ctrl's place (Cmd+T, Cmd+W, Cmd+,),
+//! so every Ctrl+letter reaches the shell as a control character there. What stays Ctrl on both:
+//! Ctrl+Tab (Mac apps step tabs with it too) and the agent guard's Ctrl+C and Ctrl+D, which guard
+//! the shell's own keys. macOS adds Cmd+Shift+[ and ] for the tabs, Ctrl+Cmd+F for full screen and
+//! the zoom keys (`MAC_ONLY`); Alt+Space (the Windows system menu) is Windows only.
 
 use flare_term::keys::KeyEvent;
+pub use flare_term::keys::KeyOs;
 
 /// The app's chords, in the order the table is searched (PT's CHORDS order).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -25,6 +33,12 @@ pub enum ChordId {
     Panel,
     /// Ctrl+Shift+O: moves the keys between the terminal and the panel.
     PanelFocus,
+    /// macOS Cmd+plus: the tab in front one size up (Windows zooms with Ctrl+wheel only).
+    ZoomIn,
+    /// macOS Cmd+minus: one size down.
+    ZoomOut,
+    /// macOS Cmd+0: back to the size the settings give.
+    ZoomReset,
 }
 
 /// Every chord, in search order.
@@ -45,9 +59,14 @@ pub const ORDER: [ChordId; 14] = [
     ChordId::PanelFocus,
 ];
 
+/// The chords only macOS has, searched after `ORDER` there.
+pub const MAC_ONLY: [ChordId; 3] = [ChordId::ZoomIn, ChordId::ZoomOut, ChordId::ZoomReset];
+
 /// What the chords depend on, handed in by the window (never read here).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct KeyContext {
+    /// Whose keys: Windows (the default) or macOS.
+    pub os: KeyOs,
     /// Command help is switched on (Settings).
     pub help: bool,
     /// The tabs are a sidebar.
@@ -83,8 +102,12 @@ pub struct AgentChord {
 
 /// One chord's definition.
 pub struct ChordDef {
-    /// What the UI shows.
+    /// What the UI shows on Windows ("" for a chord Windows does not have).
     pub label: &'static str,
+    /// What the UI shows on macOS, in the Mac glyphs ("" for a chord the Mac does not have).
+    pub mac_label: &'static str,
+    /// The agent-hotkey variant's Mac label, when there is one.
+    pub mac_agent_label: &'static str,
     /// The shell still hears it.
     pub shell_too: bool,
     /// Behaviour under a question.
@@ -101,6 +124,30 @@ fn bare(e: &KeyEvent) -> bool {
 
 fn ctrl(e: &KeyEvent) -> bool {
     e.ctrl && !e.alt && !e.meta
+}
+
+/// The app's modifier for this system: Ctrl on Windows, Cmd on macOS (Shift allowed).
+fn primary(e: &KeyEvent, c: &KeyContext) -> bool {
+    c.os.primary(e)
+}
+
+/// Cmd alone on macOS (never true on Windows).
+fn mac_cmd(e: &KeyEvent, c: &KeyContext) -> bool {
+    c.os.is_mac() && e.meta && !e.ctrl && !e.alt
+}
+
+/// macOS Cmd+Shift+[ or ]: -1 for the tab before, 1 for the one after; None for any other key.
+/// The bracket by the typed key ("[" or "{" with Shift) or, for a layout that types something
+/// else there, the physical key.
+pub fn bracket_step(e: &KeyEvent, c: &KeyContext) -> Option<i32> {
+    if !mac_cmd(e, c) || !e.shift {
+        return None;
+    }
+    match (e.key.as_str(), e.code.as_str()) {
+        ("[" | "{", _) | (_, "BracketLeft") => Some(-1),
+        ("]" | "}", _) | (_, "BracketRight") => Some(1),
+        _ => None,
+    }
 }
 
 fn k(e: &KeyEvent) -> String {
@@ -127,48 +174,50 @@ fn help_matches(e: &KeyEvent, c: &KeyContext) -> bool {
     e.key == "F1" && bare(e) && c.help
 }
 
-fn fullscreen_matches(e: &KeyEvent, _c: &KeyContext) -> bool {
-    e.key == "F11"
+fn fullscreen_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    e.key == "F11" || (c.os.is_mac() && e.ctrl && e.meta && !e.alt && !e.shift && letter(e, 'f'))
 }
 
-fn next_tab_matches(e: &KeyEvent, _c: &KeyContext) -> bool {
-    ctrl(e) && e.key == "Tab"
+fn next_tab_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    (ctrl(e) && e.key == "Tab") || bracket_step(e, c).is_some()
 }
 
 fn next_tab_agent_matches(e: &KeyEvent, _c: &KeyContext) -> bool {
     ctrl(e) && !e.shift && (e.key == "PageDown" || e.key == "PageUp")
 }
 
-fn jump_tab_matches(e: &KeyEvent, _c: &KeyContext) -> bool {
-    ctrl(e) && !e.shift && is_digit_1_to_9(e)
+fn jump_tab_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    primary(e, c) && !e.shift && is_digit_1_to_9(e)
 }
 
-fn settings_matches(e: &KeyEvent, _c: &KeyContext) -> bool {
-    ctrl(e) && !e.shift && e.key == ","
+fn settings_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    primary(e, c) && !e.shift && e.key == ","
 }
 
-fn find_tab_matches(e: &KeyEvent, _c: &KeyContext) -> bool {
-    ctrl(e) && e.shift && k(e) == "k"
+fn find_tab_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    primary(e, c) && e.shift && k(e) == "k"
 }
 
 fn sidebar_matches(e: &KeyEvent, c: &KeyContext) -> bool {
-    ctrl(e) && e.shift && k(e) == "b" && c.vertical
+    primary(e, c) && e.shift && k(e) == "b" && c.vertical
 }
 
 fn sidebar_agent_matches(e: &KeyEvent, c: &KeyContext) -> bool {
-    ctrl(e) && !e.shift && k(e) == "s" && c.vertical
+    primary(e, c) && !e.shift && k(e) == "s" && c.vertical
 }
 
-fn new_tab_matches(e: &KeyEvent, _c: &KeyContext) -> bool {
-    ctrl(e) && k(e) == "t"
+fn new_tab_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    primary(e, c) && k(e) == "t"
 }
 
-fn close_tab_matches(e: &KeyEvent, _c: &KeyContext) -> bool {
-    ctrl(e) && k(e) == "w"
+fn close_tab_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    primary(e, c) && k(e) == "w"
 }
 
+/// Windows: a full-screen program keeps Ctrl+F (Ctrl+Shift+F still finds). macOS: a program never
+/// hears a Cmd key, so Cmd+F always finds.
 fn find_matches(e: &KeyEvent, c: &KeyContext) -> bool {
-    ctrl(e) && k(e) == "f" && (e.shift || !c.full_screen)
+    primary(e, c) && k(e) == "f" && (e.shift || !c.full_screen || c.os.is_mac())
 }
 
 fn agent_guard_matches(e: &KeyEvent, c: &KeyContext) -> bool {
@@ -179,24 +228,41 @@ fn agent_guard_matches(e: &KeyEvent, c: &KeyContext) -> bool {
         && (letter(e, 'd') || (letter(e, 'c') && !c.agent_working && !c.agent_selecting))
 }
 
-fn system_menu_matches(e: &KeyEvent, _c: &KeyContext) -> bool {
-    e.alt
+fn system_menu_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    !c.os.is_mac()
+        && e.alt
         && !e.ctrl
         && !e.shift
         && !e.meta
         && (e.key == " " || e.key == "Space" || e.code == "Space")
 }
 
-fn panel_matches(e: &KeyEvent, _c: &KeyContext) -> bool {
-    ctrl(e) && e.shift && letter(e, 'p')
+fn panel_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    primary(e, c) && e.shift && letter(e, 'p')
 }
 
-fn panel_focus_matches(e: &KeyEvent, _c: &KeyContext) -> bool {
-    ctrl(e) && e.shift && letter(e, 'o')
+fn panel_focus_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    primary(e, c) && e.shift && letter(e, 'o')
+}
+
+/// Cmd+= or Cmd+plus (the same key, with or without Shift).
+fn zoom_in_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    mac_cmd(e, c)
+        && (matches!(e.key.as_str(), "=" | "+") || e.code == "Equal" || e.code == "NumpadAdd")
+}
+
+fn zoom_out_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    mac_cmd(e, c) && !e.shift && (e.key == "-" || e.code == "Minus" || e.code == "NumpadSubtract")
+}
+
+fn zoom_reset_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    mac_cmd(e, c) && !e.shift && (e.key == "0" || e.code == "Digit0" || e.code == "Numpad0")
 }
 
 static HELP: ChordDef = ChordDef {
     label: "F1",
+    mac_label: "F1",
+    mac_agent_label: "",
     shell_too: false,
     under_modal: UnderModal::Act,
     matches: help_matches,
@@ -205,6 +271,8 @@ static HELP: ChordDef = ChordDef {
 
 static FULLSCREEN: ChordDef = ChordDef {
     label: "F11",
+    mac_label: "\u{2303}\u{2318}F",
+    mac_agent_label: "",
     shell_too: true,
     under_modal: UnderModal::Act,
     matches: fullscreen_matches,
@@ -213,6 +281,8 @@ static FULLSCREEN: ChordDef = ChordDef {
 
 static NEXT_TAB: ChordDef = ChordDef {
     label: "Ctrl+Tab",
+    mac_label: "\u{2303}Tab",
+    mac_agent_label: "\u{2303}PgDn",
     shell_too: false,
     under_modal: UnderModal::Swallow,
     matches: next_tab_matches,
@@ -224,6 +294,8 @@ static NEXT_TAB: ChordDef = ChordDef {
 
 static JUMP_TAB: ChordDef = ChordDef {
     label: "Ctrl+1..9",
+    mac_label: "\u{2318}1..9",
+    mac_agent_label: "",
     shell_too: false,
     under_modal: UnderModal::Swallow,
     matches: jump_tab_matches,
@@ -232,6 +304,8 @@ static JUMP_TAB: ChordDef = ChordDef {
 
 static SETTINGS: ChordDef = ChordDef {
     label: "Ctrl+,",
+    mac_label: "\u{2318},",
+    mac_agent_label: "",
     shell_too: false,
     under_modal: UnderModal::Swallow,
     matches: settings_matches,
@@ -240,6 +314,8 @@ static SETTINGS: ChordDef = ChordDef {
 
 static FIND_TAB: ChordDef = ChordDef {
     label: "Ctrl+Shift+K",
+    mac_label: "\u{21e7}\u{2318}K",
+    mac_agent_label: "",
     shell_too: false,
     under_modal: UnderModal::Swallow,
     matches: find_tab_matches,
@@ -248,6 +324,8 @@ static FIND_TAB: ChordDef = ChordDef {
 
 static SIDEBAR: ChordDef = ChordDef {
     label: "Ctrl+Shift+B",
+    mac_label: "\u{21e7}\u{2318}B",
+    mac_agent_label: "\u{2318}S",
     shell_too: false,
     under_modal: UnderModal::Swallow,
     matches: sidebar_matches,
@@ -259,6 +337,8 @@ static SIDEBAR: ChordDef = ChordDef {
 
 static NEW_TAB: ChordDef = ChordDef {
     label: "Ctrl+T",
+    mac_label: "\u{2318}T",
+    mac_agent_label: "",
     shell_too: false,
     under_modal: UnderModal::Swallow,
     matches: new_tab_matches,
@@ -267,6 +347,8 @@ static NEW_TAB: ChordDef = ChordDef {
 
 static CLOSE_TAB: ChordDef = ChordDef {
     label: "Ctrl+W",
+    mac_label: "\u{2318}W",
+    mac_agent_label: "",
     shell_too: false,
     under_modal: UnderModal::Act,
     matches: close_tab_matches,
@@ -275,6 +357,8 @@ static CLOSE_TAB: ChordDef = ChordDef {
 
 static FIND: ChordDef = ChordDef {
     label: "Ctrl+F",
+    mac_label: "\u{2318}F",
+    mac_agent_label: "",
     shell_too: false,
     under_modal: UnderModal::Swallow,
     matches: find_matches,
@@ -283,6 +367,8 @@ static FIND: ChordDef = ChordDef {
 
 static AGENT_GUARD: ChordDef = ChordDef {
     label: "Ctrl+D",
+    mac_label: "\u{2303}D",
+    mac_agent_label: "",
     shell_too: false,
     under_modal: UnderModal::Swallow,
     matches: agent_guard_matches,
@@ -291,6 +377,8 @@ static AGENT_GUARD: ChordDef = ChordDef {
 
 static SYSTEM_MENU: ChordDef = ChordDef {
     label: "Alt+Space",
+    mac_label: "",
+    mac_agent_label: "",
     shell_too: false,
     under_modal: UnderModal::Act,
     matches: system_menu_matches,
@@ -299,6 +387,8 @@ static SYSTEM_MENU: ChordDef = ChordDef {
 
 static PANEL: ChordDef = ChordDef {
     label: "Ctrl+Shift+P",
+    mac_label: "\u{21e7}\u{2318}P",
+    mac_agent_label: "",
     shell_too: false,
     under_modal: UnderModal::Swallow,
     matches: panel_matches,
@@ -307,9 +397,41 @@ static PANEL: ChordDef = ChordDef {
 
 static PANEL_FOCUS: ChordDef = ChordDef {
     label: "Ctrl+Shift+O",
+    mac_label: "\u{21e7}\u{2318}O",
+    mac_agent_label: "",
     shell_too: false,
     under_modal: UnderModal::Swallow,
     matches: panel_focus_matches,
+    agent: None,
+};
+
+static ZOOM_IN: ChordDef = ChordDef {
+    label: "",
+    mac_label: "\u{2318}+",
+    mac_agent_label: "",
+    shell_too: false,
+    under_modal: UnderModal::Swallow,
+    matches: zoom_in_matches,
+    agent: None,
+};
+
+static ZOOM_OUT: ChordDef = ChordDef {
+    label: "",
+    mac_label: "\u{2318}-",
+    mac_agent_label: "",
+    shell_too: false,
+    under_modal: UnderModal::Swallow,
+    matches: zoom_out_matches,
+    agent: None,
+};
+
+static ZOOM_RESET: ChordDef = ChordDef {
+    label: "",
+    mac_label: "\u{2318}0",
+    mac_agent_label: "",
+    shell_too: false,
+    under_modal: UnderModal::Swallow,
+    matches: zoom_reset_matches,
     agent: None,
 };
 
@@ -330,6 +452,9 @@ pub fn chord(id: ChordId) -> &'static ChordDef {
         ChordId::SystemMenu => &SYSTEM_MENU,
         ChordId::Panel => &PANEL,
         ChordId::PanelFocus => &PANEL_FOCUS,
+        ChordId::ZoomIn => &ZOOM_IN,
+        ChordId::ZoomOut => &ZOOM_OUT,
+        ChordId::ZoomReset => &ZOOM_RESET,
     }
 }
 
@@ -341,6 +466,11 @@ pub fn chord_of(e: &KeyEvent, c: &KeyContext) -> Option<ChordId> {
         return None;
     }
     if let Some(id) = ORDER.into_iter().find(|id| (chord(*id).matches)(e, c)) {
+        return Some(id);
+    }
+    if c.os.is_mac()
+        && let Some(id) = MAC_ONLY.into_iter().find(|id| (chord(*id).matches)(e, c))
+    {
         return Some(id);
     }
     if !c.agent_keys {
@@ -359,12 +489,27 @@ pub fn app_owns_key(e: &KeyEvent, c: &KeyContext) -> bool {
     }
 }
 
-/// What the UI calls a chord: its agent key where agent keys are on and it has one.
+/// What the UI calls a chord on Windows: its agent key where agent keys are on and it has one.
 pub fn key_label(id: ChordId, agent_keys: bool) -> &'static str {
+    key_label_on(KeyOs::Windows, id, agent_keys)
+}
+
+/// What the UI calls a chord on this system ("" for a chord the system does not have).
+pub fn key_label_on(os: KeyOs, id: ChordId, agent_keys: bool) -> &'static str {
     let def = chord(id);
-    match (&def.agent, agent_keys) {
-        (Some(a), true) => a.label,
-        _ => def.label,
+    match (os, &def.agent, agent_keys) {
+        (KeyOs::Windows, Some(a), true) => a.label,
+        (KeyOs::Windows, _, _) => def.label,
+        (KeyOs::Mac, Some(_), true) => def.mac_agent_label,
+        (KeyOs::Mac, _, _) => def.mac_label,
+    }
+}
+
+/// The copy and paste keys the terminal menu shows (they live in the terminal's rules, not here).
+pub fn copy_paste_labels(os: KeyOs) -> (&'static str, &'static str) {
+    match os {
+        KeyOs::Windows => ("Ctrl+C", "Ctrl+V"),
+        KeyOs::Mac => ("\u{2318}C", "\u{2318}V"),
     }
 }
 
@@ -382,6 +527,7 @@ mod tests {
 
     fn on() -> KeyContext {
         KeyContext {
+            os: KeyOs::Windows,
             help: true,
             vertical: true,
             full_screen: false,
@@ -777,5 +923,182 @@ mod tests {
     #[test]
     fn agent_chords_are_next_tab_and_sidebar() {
         assert_eq!(agent_chords(), vec![ChordId::NextTab, ChordId::Sidebar]);
+    }
+
+    // ---- macOS (port phase 3) ---------------------------------------------------------------------
+
+    fn mac() -> KeyContext {
+        KeyContext {
+            os: KeyOs::Mac,
+            ..on()
+        }
+    }
+
+    /// Parses a Mac label such as "\u{21e7}\u{2318}K" into the key press it stands for.
+    fn from_mac_label(label: &str) -> KeyEvent {
+        let mut e = KeyEvent::new("", "");
+        let mut rest = String::new();
+        for c in label.chars() {
+            match c {
+                '\u{2303}' => e.ctrl = true,
+                '\u{2325}' => e.alt = true,
+                '\u{21e7}' => e.shift = true,
+                '\u{2318}' => e.meta = true,
+                other => rest.push(other),
+            }
+        }
+        let key = rest.replace("1..9", "1").replace("PgDn", "PageDown");
+        let key = if e.shift || key.chars().count() != 1 {
+            key
+        } else {
+            key.to_lowercase()
+        };
+        e.key = key;
+        e
+    }
+
+    #[test]
+    fn every_mac_label_is_the_key_that_chord_answers_to() {
+        let c = mac();
+        for id in ORDER.into_iter().chain(MAC_ONLY) {
+            let label = key_label_on(KeyOs::Mac, id, false);
+            if id == ChordId::SystemMenu {
+                assert_eq!(label, "", "no system menu on a Mac");
+                continue;
+            }
+            assert_eq!(
+                chord_of(&from_mac_label(label), &c),
+                Some(id),
+                "label {label}"
+            );
+        }
+        let agent = KeyContext {
+            agent_keys: true,
+            ..c
+        };
+        for id in agent_chords() {
+            let label = key_label_on(KeyOs::Mac, id, true);
+            assert_eq!(
+                chord_of(&from_mac_label(label), &agent),
+                Some(id),
+                "agent label {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn on_the_mac_the_app_takes_exactly_the_chords_it_acts_on() {
+        let c = mac();
+        for id in ORDER.into_iter().chain(MAC_ONLY) {
+            if id == ChordId::SystemMenu {
+                continue;
+            }
+            let label = key_label_on(KeyOs::Mac, id, false);
+            assert_eq!(
+                app_owns_key(&from_mac_label(label), &c),
+                id != ChordId::Fullscreen,
+                "label {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn on_the_mac_ctrl_letters_and_digits_are_never_app_chords() {
+        let c = KeyContext {
+            agent_here: false,
+            ..mac()
+        };
+        for key in [
+            "t", "w", "f", "k", "b", "p", "o", "s", "1", "9", ",", "a", "e", "c", "v", "d", "u",
+        ] {
+            assert_eq!(chord_of(&ev(key).ctrl(), &c), None, "ctrl+{key}");
+            assert_eq!(
+                chord_of(&ev(&key.to_uppercase()).ctrl().shift(), &c),
+                None,
+                "ctrl+shift+{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn on_windows_cmd_keys_are_never_chords() {
+        let c = on();
+        for key in ["t", "w", "f", ",", "1", "=", "-", "0"] {
+            assert_eq!(chord_of(&ev(key).meta(), &c), None, "cmd+{key}");
+        }
+        assert_eq!(
+            chord_of(&KeyEvent::new("}", "BracketRight").meta().shift(), &c),
+            None
+        );
+        assert_eq!(chord_of(&ev("f").meta().ctrl(), &c), None);
+        for id in MAC_ONLY {
+            assert_eq!(key_label(id, false), "", "{id:?}");
+        }
+    }
+
+    #[test]
+    fn on_the_mac_cmd_f_finds_even_over_a_full_screen_program() {
+        let full = KeyContext {
+            full_screen: true,
+            ..mac()
+        };
+        assert_eq!(chord_of(&ev("f").meta(), &full), Some(ChordId::Find));
+        // Ctrl+F there is the program's (and the shell's on a Mac, always).
+        assert_eq!(chord_of(&ev("f").ctrl(), &full), None);
+    }
+
+    #[test]
+    fn on_the_mac_brackets_step_by_the_typed_or_the_physical_key() {
+        let c = mac();
+        assert_eq!(
+            bracket_step(&KeyEvent::new("{", "").meta().shift(), &c),
+            Some(-1)
+        );
+        assert_eq!(
+            bracket_step(&KeyEvent::new("}", "").meta().shift(), &c),
+            Some(1)
+        );
+        // A layout that types another character on the bracket keys.
+        assert_eq!(
+            bracket_step(&KeyEvent::new("\u{c5}", "BracketLeft").meta().shift(), &c),
+            Some(-1)
+        );
+        assert_eq!(
+            bracket_step(&KeyEvent::new("]", "BracketRight").meta(), &c),
+            None
+        );
+        assert_eq!(
+            bracket_step(&KeyEvent::new("}", "").ctrl().shift(), &on()),
+            None
+        );
+    }
+
+    #[test]
+    fn on_the_mac_the_zoom_keys_take_plus_equals_minus_and_zero() {
+        let c = mac();
+        assert_eq!(chord_of(&ev("=").meta(), &c), Some(ChordId::ZoomIn));
+        assert_eq!(chord_of(&ev("+").meta().shift(), &c), Some(ChordId::ZoomIn));
+        assert_eq!(chord_of(&ev("+").meta(), &c), Some(ChordId::ZoomIn));
+        assert_eq!(chord_of(&ev("-").meta(), &c), Some(ChordId::ZoomOut));
+        assert_eq!(chord_of(&ev("0").meta(), &c), Some(ChordId::ZoomReset));
+        assert_eq!(chord_of(&ev("0").ctrl(), &c), None);
+    }
+
+    #[test]
+    fn copy_and_paste_labels_follow_the_system() {
+        assert_eq!(copy_paste_labels(KeyOs::Windows), ("Ctrl+C", "Ctrl+V"));
+        assert_eq!(copy_paste_labels(KeyOs::Mac), ("\u{2318}C", "\u{2318}V"));
+        assert_eq!(
+            key_label_on(KeyOs::Mac, ChordId::NewTab, false),
+            "\u{2318}T"
+        );
+        assert_eq!(
+            key_label_on(KeyOs::Mac, ChordId::Sidebar, true),
+            "\u{2318}S"
+        );
+        assert_eq!(
+            key_label_on(KeyOs::Windows, ChordId::Sidebar, true),
+            "Ctrl+S"
+        );
     }
 }

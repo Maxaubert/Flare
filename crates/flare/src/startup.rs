@@ -18,7 +18,7 @@ use flare_settings::page::GlassSupport;
 use flare_settings::verb::DiagControlApi;
 use flare_tabs::close_flow::close_question_body;
 use flare_tabs::tabs_store::TabsStore;
-use flare_win::material::{Support, support};
+use flare_win::material::{Support, support_here};
 use flare_win::os_build::OsVersion;
 use flare_win::single_instance::{
     Acquired, Handoff, IdentitySource, InstanceGuard, InstanceNames, WindowsIdentity, acquire,
@@ -81,10 +81,33 @@ impl Profile {
         self.dir.join("mods.json")
     }
 
-    /// The diagnostics log folder (M9 Task 31): `<profile>\logs`, whichever way the profile was chosen.
+    /// The diagnostics log folder (M9 Task 31): `<profile>\logs`, whichever way the profile was chosen
+    /// (macOS: `~/Library/Logs/Flare` for the default profile, see [`logs_dir_of`]).
     pub fn logs_dir(&self) -> PathBuf {
-        self.dir.join("logs")
+        logs_dir_of(&self.dir)
     }
+}
+
+/// The diagnostics log folder of the profile folder `profile`: `<profile>\logs`. On macOS the
+/// default profile (`~/Library/Application Support/Flare`) logs to `~/Library/Logs/Flare`, where
+/// Console.app looks; a profile of its own (`--user-data-dir`, the e2e) keeps `<profile>/logs`.
+pub fn logs_dir_of(profile: &Path) -> PathBuf {
+    #[cfg(not(windows))]
+    if let Some(dir) = mac_logs_dir(profile, flare_win::paths::home().as_deref()) {
+        return dir;
+    }
+    profile.join("logs")
+}
+
+/// Pure: `<home>/Library/Logs/Flare` when `profile` is the default profile under `home`.
+#[cfg(not(windows))]
+fn mac_logs_dir(profile: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let home = home?;
+    let default = home
+        .join("Library")
+        .join("Application Support")
+        .join("Flare");
+    (profile == default).then(|| home.join("Library").join("Logs").join("Flare"))
 }
 
 /// Starts the diagnostics (M9 Task 31): the log, the session line, the panic hooks, the watchdog and the
@@ -657,7 +680,7 @@ pub fn glass_support(effective: RendererChoice, os: OsVersion) -> GlassSupport {
     if effective != RendererChoice::Gpu {
         return GlassSupport::NeedsGraphicsRenderer;
     }
-    match support(os) {
+    match support_here(os) {
         Support::Ok => GlassSupport::Ok,
         Support::NeedsWindows11 => GlassSupport::NeedsWindows11,
         Support::NeedsWindows11_22H2 => GlassSupport::NeedsWindows11Update,
@@ -748,10 +771,6 @@ mod tests {
         (dir, profile)
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "the single instance and hand-off are Windows-only; macOS phase 3 of the port plan"
-    )]
     #[test]
     fn a_second_launch_hands_over_and_a_first_runs() {
         let (_d, profile) = temp_profile();
@@ -786,10 +805,6 @@ mod tests {
     /// L41 (audit 2026-10-20): an answer that is not this user in this session used to start a
     /// normal instance on the SAME profile without the lock (two writers on tabs.json). Now the
     /// launch refuses, and nothing is written to the stranger.
-    #[cfg_attr(
-        not(windows),
-        ignore = "the single instance and hand-off are Windows-only; macOS phase 3 of the port plan"
-    )]
     #[test]
     fn a_hand_off_server_that_is_not_trusted_refuses_the_launch() {
         struct Stranger;
@@ -838,10 +853,6 @@ mod tests {
         assert!(matches!(two, Launch::First { .. }));
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "the single instance and hand-off are Windows-only; macOS phase 3 of the port plan"
-    )]
     #[test]
     fn a_handoff_to_a_quitting_instance_runs_as_first() {
         let (_d, profile) = temp_profile();
@@ -1176,13 +1187,23 @@ mod m7_start_tests {
             glass_support(RendererChoice::Software, os(26100)),
             GlassSupport::NeedsGraphicsRenderer
         );
+        // A Mac always has the glass; only Windows asks for a build.
+        let mac = cfg!(target_os = "macos");
         assert_eq!(
             glass_support(RendererChoice::Gpu, os(19045)),
-            GlassSupport::NeedsWindows11
+            if mac {
+                GlassSupport::Ok
+            } else {
+                GlassSupport::NeedsWindows11
+            }
         );
         assert_eq!(
             glass_support(RendererChoice::Gpu, os(22000)),
-            GlassSupport::NeedsWindows11Update
+            if mac {
+                GlassSupport::Ok
+            } else {
+                GlassSupport::NeedsWindows11Update
+            }
         );
         assert_eq!(
             glass_support(RendererChoice::Gpu, os(22621)),
@@ -1205,6 +1226,23 @@ mod m7_start_tests {
             dir: profile_dir(Some(Path::new("D:\\data")), appdata),
         };
         assert_eq!(custom.logs_dir(), PathBuf::from("D:\\data\\logs"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_default_mac_profile_logs_to_library_logs() {
+        let home = Path::new("/Users/x");
+        let default = profile_dir(None, Some("/Users/x/Library/Application Support"));
+        assert_eq!(
+            mac_logs_dir(&default, Some(home)),
+            Some(PathBuf::from("/Users/x/Library/Logs/Flare"))
+        );
+        assert_eq!(mac_logs_dir(Path::new("/data"), Some(home)), None);
+        assert_eq!(mac_logs_dir(&default, None), None);
+        let own = Profile {
+            dir: PathBuf::from("/data"),
+        };
+        assert_eq!(own.logs_dir(), PathBuf::from("/data/logs"));
     }
 
     #[cfg(not(windows))]

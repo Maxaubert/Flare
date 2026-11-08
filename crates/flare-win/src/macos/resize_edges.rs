@@ -1,5 +1,9 @@
-//! Resize edges off Windows. macOS: phase 3 of the port plan; a native window keeps its own edges,
-//! so there is nothing to install and the e2e probe reads an empty report.
+//! Resize edges on macOS (port phase 3): not applicable, on purpose. On Windows the frameless
+//! window has no non-client border, so Flare answers WM_NCHITTEST itself. The Mac window is a
+//! titled, resizable `NSWindow` (a transparent full-size titlebar, `flare::backend`), so AppKit
+//! keeps its own resize edges and corners, its own cursors, the double-click-an-edge fill and the
+//! minimum size winit hands it. Installing nothing here is what lets AppKit handle all of it; the
+//! e2e probe reads an empty report.
 
 /// What the window says about its resize edges (the same shape as on Windows).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -12,7 +16,7 @@ pub struct EdgeReport {
     pub min_track: (i32, i32),
 }
 
-/// Nothing to install: false.
+/// Nothing to install (AppKit owns the edges): false.
 pub fn install(_hwnd: isize) -> bool {
     false
 }

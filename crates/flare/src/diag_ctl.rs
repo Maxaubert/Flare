@@ -252,7 +252,7 @@ pub struct DiagCtl {
 /// watchdog and the memory watch run on their own threads. `backend` is the renderer's name, `e2e` marks
 /// the session as a test run. Also makes the free functions live.
 pub fn start(profile: &Path, facts: SystemFacts, backend: &str, e2e: bool) -> DiagCtl {
-    let dir = profile.join("logs");
+    let dir = crate::startup::logs_dir_of(profile);
     // sync-ok: startup, before any window; a folder that cannot be made gives the null log
     let log = if std::fs::create_dir_all(&dir).is_ok() {
         DiagLog::start(DiagLogOptions::new(dir))
@@ -370,16 +370,18 @@ fn is_hung(hwnd: isize) -> bool {
     unsafe { IsHungAppWindow(hwnd as _) != 0 }
 }
 
-/// macOS: phase 3 of the port plan (sysctl hw.memsize). 0 until then: unknown.
+/// macOS: physical memory in whole GB (rounded), from `sysctl hw.memsize`; 0 when it cannot be read.
 #[cfg(not(windows))]
 fn installed_ram_gb() -> u32 {
-    0
+    flare_proc::installed_ram().map_or(0, |b| {
+        u32::try_from((b + (1 << 29)) >> 30).unwrap_or(u32::MAX)
+    })
 }
 
-/// macOS: phase 2 of the port plan (libproc). None until then: the shell is not counted.
+/// macOS: the physical footprint of another process of ours (a shell), or None when it is gone.
 #[cfg(not(windows))]
-fn private_bytes_of(_pid: u32) -> Option<u64> {
-    None
+fn private_bytes_of(pid: u32) -> Option<u64> {
+    flare_proc::memory(pid).map(|m| m.footprint)
 }
 
 /// macOS: phase 3 of the port plan. The UI thread is not sampled until then.
@@ -627,10 +629,6 @@ mod tests {
         assert!(l.iter().all(|x| x["src"] == "app" || x["src"] == "main"));
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "process memory is read through Win32; macOS phase 3 of the port plan"
-    )]
     #[test]
     fn an_idle_start_writes_nothing_else_for_three_seconds() {
         let _g = lock(&ONE_AT_A_TIME);

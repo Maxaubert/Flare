@@ -593,10 +593,60 @@ fn cleanup() {
     }
 }
 
-/// macOS: phase 3 of the port plan (NSColorSampler). Until then a pick fails at once.
-#[cfg(not(windows))]
+/// macOS: the system colour sampler (`NSColorSampler`, the loupe Digital Color Meter and the colour
+/// panel use). It must be shown from the main thread, so this worker hands it to the main queue and
+/// waits for the answer: a click picks, Escape cancels. The colour comes back in sRGB, as `#rrggbb`.
+/// Not run by the tests (it takes the screen); the hex rule is.
+#[cfg(target_os = "macos")]
 fn run_window() -> PickResult {
-    PickResult::Failed("the eyedropper is not built on this platform yet".to_string())
+    let (tx, rx) = std::sync::mpsc::channel::<PickResult>();
+    dispatch2::DispatchQueue::main().exec_async(move || show_sampler(tx));
+    // sync-ok: the eyedrop worker waits for the user's pick; the main thread runs the sampler
+    rx.recv()
+        .unwrap_or_else(|_| PickResult::Failed("the colour sampler went away".to_string()))
+}
+
+/// Main thread: shows the sampler; its handler sends the one answer.
+#[cfg(target_os = "macos")]
+fn show_sampler(tx: std::sync::mpsc::Sender<PickResult>) {
+    use objc2_app_kit::{NSColor, NSColorSampler};
+    let sampler = NSColorSampler::new();
+    // The handler owns the sampler until it answers (AppKit's own hold is not documented).
+    let held = std::cell::RefCell::new(Some((tx, sampler.clone())));
+    let handler = block2::RcBlock::new(move |colour: *mut NSColor| {
+        let Some((tx, _sampler)) = held.borrow_mut().take() else {
+            return;
+        };
+        // SAFETY: AppKit hands a live colour or null (cancelled) for the length of the call.
+        let result = match unsafe { colour.as_ref() } {
+            None => PickResult::Cancelled,
+            Some(c) => srgb_hex(c).map_or_else(
+                || PickResult::Failed("the colour has no sRGB value".to_string()),
+                PickResult::Picked,
+            ),
+        };
+        let _ = tx.send(result);
+    });
+    // SAFETY: the handler is a live block of the type the method takes; AppKit copies it.
+    unsafe { sampler.showSamplerWithSelectionHandler(&handler) };
+}
+
+/// The colour as sRGB `#rrggbb`; None when it cannot be turned into sRGB (a pattern).
+#[cfg(target_os = "macos")]
+fn srgb_hex(c: &objc2_app_kit::NSColor) -> Option<String> {
+    let srgb = c.colorUsingColorSpace(&objc2_app_kit::NSColorSpace::sRGBColorSpace())?;
+    Some(hex_from_unit(
+        srgb.redComponent(),
+        srgb.greenComponent(),
+        srgb.blueComponent(),
+    ))
+}
+
+/// Pure: components in 0..=1 as `#rrggbb`, rounded, out-of-range values clamped.
+#[cfg(any(target_os = "macos", test))]
+fn hex_from_unit(r: f64, g: f64, b: f64) -> String {
+    let byte = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    crate::eyedrop_math::hex_of([byte(r), byte(g), byte(b)])
 }
 
 #[cfg(test)]
@@ -604,6 +654,12 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn unit_components_become_the_lower_case_hex() {
+        assert_eq!(hex_from_unit(1.0, 0.0, 0.5), "#ff0080");
+        assert_eq!(hex_from_unit(-0.2, 1.4, f64::from(0x33) / 255.0), "#00ff33");
+    }
 
     #[test]
     fn the_seam_answers_without_a_window() {
