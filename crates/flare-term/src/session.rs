@@ -397,6 +397,16 @@ fn pump_loop(s: Arc<Session>) {
     }
 }
 
+/// A copy of every write to a shell, for the e2e's evidence (the Mac E2E, rule 347): set once, under
+/// `--e2e` only; the app without it pays one atomic load per write.
+pub type WriteTap = fn(&str, &[u8]);
+static WRITE_TAP: std::sync::OnceLock<WriteTap> = std::sync::OnceLock::new();
+
+/// Sets the write tap (the first call wins).
+pub fn set_write_tap(tap: WriteTap) {
+    let _ = WRITE_TAP.set(tap);
+}
+
 fn writer_loop(
     rx: std::sync::mpsc::Receiver<Vec<u8>>,
     mut w: Box<dyn std::io::Write + Send>,
@@ -954,6 +964,9 @@ impl SessionManager {
     }
 
     pub fn write(&self, id: &str, data: &[u8]) {
+        if let Some(tap) = WRITE_TAP.get() {
+            tap(id, data);
+        }
         let s = lk(&self.sh.st).sessions.get(id).cloned();
         if let Some(s) = s
             && let Some(tx) = lk(&s.writer_tx).as_ref()

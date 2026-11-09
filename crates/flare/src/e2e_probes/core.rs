@@ -36,6 +36,12 @@ pub fn register(r: &mut ProbeRegistry) {
     r.add("memory.breakdown", memory_breakdown);
     r.add("frames.series", frames_series);
     r.add("sidebar.anim", sidebar_anim);
+    r.add("pty.written", pty_written);
+}
+
+/// `pty.written`: the last bytes Flare wrote to each shell (rule 347).
+fn pty_written(_ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
+    Ok(crate::e2e_glue::written_json())
 }
 
 /// `frames.series`: every presented frame since the last `Frames` reset, with the sidebar's slide

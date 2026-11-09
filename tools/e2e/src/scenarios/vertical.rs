@@ -1312,20 +1312,32 @@ fn vertical_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
                 format!("{tag}: one ring on each marked card, nothing else ({motions:?})"),
             );
             let k = scale(app);
-            let at_end = snap(ctx, app, "side-ring").is_some_and(|sn| {
-                [0usize, 2, 3, 4, 5].iter().all(|i| {
-                    let Some(r) = rows(&s).get(*i).and_then(|r| rect_of(&r["rect"])) else {
-                        return false;
-                    };
-                    let bg = sn.at(dv(r.0 + r.2 - 40.0, k), dv(r.1 + 3.0, k));
-                    let end = (r.0 + r.2 - 30.0, r.1 + 8.0, 24.0, r.3 - 16.0);
-                    ink_box(&sn, k, end, bg, 40).is_some()
-                })
-            });
+            // A question's ring breathes: a picture at its faintest shows too little ink, so each card is
+            // looked at over a breath (up to six pictures, 250 ms apart) and counts once it shows its ring
+            // (the Mac runner caught infra's at its low once; rule 346).
+            let marked = [0usize, 2, 3, 4, 5];
+            let mut seen = [false; 5];
+            for attempt in 0..6 {
+                if let Some(sn) = snap(ctx, app, "side-ring") {
+                    for (n, i) in marked.iter().enumerate() {
+                        let Some(r) = rows(&s).get(*i).and_then(|r| rect_of(&r["rect"])) else {
+                            continue;
+                        };
+                        let bg = sn.at(dv(r.0 + r.2 - 40.0, k), dv(r.1 + 3.0, k));
+                        let end = (r.0 + r.2 - 30.0, r.1 + 8.0, 24.0, r.3 - 16.0);
+                        seen[n] |= ink_box(&sn, k, end, bg, 40).is_some();
+                    }
+                }
+                if seen.iter().all(|b| *b) || attempt == 5 {
+                    break;
+                }
+                hold(ctx, 250);
+            }
+            let at_end = seen.iter().all(|b| *b);
             // PT: run.mjs:2434
             ctx.ok(
                 at_end,
-                format!("{tag}: each ring at the card's end, in the close's place"),
+                format!("{tag}: each ring at the card's end, in the close's place (cards 0, 2 to 5: {seen:?})"),
             );
         } else {
             let bar_ok = set

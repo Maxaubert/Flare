@@ -1471,15 +1471,21 @@ fn help_b(ctx: &mut Ctx, app: &mut App, started: Instant) -> Result<(), String> 
             points.join(" ")
         )
     };
-    if !landed {
+    let written = if landed {
+        String::new()
+    } else {
         let _ = ctx.shot(app, "help-new-shell");
-    }
+        format!(
+            "; Flare wrote to it: {}",
+            probe(app, "pty.written", Value::Null)
+        )
+    };
     check!(
         ctx,
         landed,
         format!(
             "the new shell has the keyboard (the panel's field held it: {field_had_it}, its prompt came: {prompt}, \
-             field now: {}, the shell shows: {shown})",
+             field now: {}, the shell shows: {shown}{written})",
             hs(app)["field_focused"]
         )
     );

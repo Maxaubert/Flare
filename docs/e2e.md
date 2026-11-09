@@ -141,6 +141,18 @@ TMPDIR=/tmp target/release/flare-e2e --exe target/release/flare --shots e2e-out/
 target/release/flare-e2e --list      # a gated scenario says so, with its reason
 ```
 
+**Iterating on GitHub** (2026-11-09): the job runs on every pull request and on a hand run. A hand run of the Mac E2E
+alone, on some scenarios only, skips the `check` and `macos` jobs:
+
+```bash
+gh workflow run ci --ref <branch> -f e2e_only=true -f e2e_filter='verticalTabs helpPanel'   # name words, as flare-e2e takes them
+gh workflow run ci --ref <branch>                                                          # every job, the full table
+```
+
+Every `rust-cache` step keeps its cache on a red run (`cache-on-failure`), so a failing run still warms the next: the
+release build went from about 9 minutes from scratch to about 5. Batch several fixes per run, and read the uploaded
+`e2e-macos` artifact (`gh run download <id> -n e2e-macos`) while the next run builds.
+
 - **The hook** is a Unix socket, `e2e-<16 hex>.sock` in the control channel's private folder
   (`<user temp>/flare-ctl`, 0700; the socket 0600; the peer's uid checked; the first-instance lock), with the
   pipe's protocol and lockstep (rule 330). `Session` connects to it by `flare_e2e_proto::pipe_name(profile)`.

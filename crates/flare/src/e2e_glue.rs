@@ -1640,6 +1640,55 @@ pub fn series_from_redraws() {
     });
 }
 
+/// The last bytes written to each shell under `--e2e` (rule 347's evidence): what Flare sent, beside
+/// what the shell then showed.
+static WRITTEN: std::sync::Mutex<Vec<(String, std::collections::VecDeque<u8>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// How many of the last bytes `pty.written` keeps per shell.
+const WRITTEN_KEEP: usize = 512;
+
+fn tap_write(id: &str, data: &[u8]) {
+    let mut all = WRITTEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let i = match all.iter().position(|(k, _)| k == id) {
+        Some(i) => i,
+        None => {
+            all.push((id.to_string(), std::collections::VecDeque::new()));
+            all.len() - 1
+        }
+    };
+    let ring = &mut all[i].1;
+    ring.extend(data.iter().copied());
+    while ring.len() > WRITTEN_KEEP {
+        ring.pop_front();
+    }
+}
+
+/// `pty.written`: each shell's last bytes from Flare, as text with every byte outside printable ASCII
+/// written `\xNN`.
+pub fn written_json() -> serde_json::Value {
+    let all = WRITTEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut out = serde_json::Map::new();
+    for (id, ring) in all.iter() {
+        let text: String = ring
+            .iter()
+            .map(|&b| {
+                if (0x20..0x7f).contains(&b) {
+                    char::from(b).to_string()
+                } else {
+                    format!("\\x{b:02x}")
+                }
+            })
+            .collect();
+        out.insert(id.clone(), serde_json::Value::String(text));
+    }
+    serde_json::Value::Object(out)
+}
+
 /// The OS frames (`RedrawRequested`) the window has had under `--e2e` (rule 345's evidence).
 static REDRAWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -1986,6 +2035,7 @@ pub fn install(
     // yet when this runs, so no look for its handle is made here.
     let appdata = flare_win::paths::roaming_app_data();
     let profile = crate::startup::profile_dir(args.user_data_dir.as_deref(), appdata.as_deref());
+    flare_term::session::set_write_tap(tap_write);
     match crate::e2e_hook::start(&profile) {
         Ok(server) => {
             log::info!("e2e: the test hook listens on {}", server.pipe);
