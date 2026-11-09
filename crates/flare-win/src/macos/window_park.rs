@@ -8,7 +8,7 @@
 
 use objc2::MainThreadMarker;
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
-use objc2::{Message, sel};
+use objc2::sel;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::{NSPoint, NSRect};
 
