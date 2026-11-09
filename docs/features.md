@@ -293,7 +293,10 @@ are added as milestones land.
   `an_osc8_label_showing_another_host_opens_what_it_shows` and `any_other_button_opens_nothing`.
 - **Paths.** A path is a link only when it exists; the backend resolves and checks it again; a click
   opens only allowlisted types and reveals everything else in Explorer (O22, rule 134). A folder opens
-  in Explorer. The user's chosen folder handler is M9. Held by `a_path_is_a_link_only_if_it_exists_and_opens_by_the_allowlist`
+  in Explorer; when an Explorer window already shows that folder, that window comes forward (restored if
+  minimized) and no second Explorer starts, because the foreground lock could stop Explorer raising it itself
+  (issue #55; `a_folder_already_showing_is_brought_forward_and_explorer_is_not_started`). A folder sitting in a
+  background Explorer tab brings its window forward without switching tab. The user's chosen folder handler is M9. Held by `a_path_is_a_link_only_if_it_exists_and_opens_by_the_allowlist`
   and `a_path_menu_open_and_show_go_through_the_allowlist`. A path a program breaks at the window's
   edge by hand (Claude Code writes each row on its own, so the next row is not marked wrapped) is
   read across the break and is ONE link on both rows, for the paint, the click and the menu; a web
@@ -922,6 +925,17 @@ panels land). Contract: `docs/surfaces/protocol.md`. Choices: `docs/surfaces/dec
   tests in `crates/flare-mcp/src/lib.rs` and the end-to-end `crates/flare-mcp/tests/stdio.rs`, which runs
   the built exe against a real in-process server (`a_tool_call_reaches_the_server_with_the_tab`,
   `outside_flare_every_tool_says_so_and_the_handshake_still_works`).
+- **A cancelled tool call stops (channel-9, 2026-11-09).** `flare-mcp` reads stdin on its own thread and acts on
+  `notifications/cancelled` while a call runs: the call gives up, its connection drops and Flare ends the job (a browser job at
+  the next timer turn, a mod's open call at once, whose late `tools.respond` gets `not_found`); a queued call never runs. Replies
+  keep their order and stdin closing ends the server. Held by `a_cancel_during_a_running_call_ends_it_and_it_gets_no_response`,
+  `a_cancel_for_an_unknown_or_finished_request_does_nothing`, `a_cancel_for_a_request_still_queued_means_it_never_runs`,
+  `stdin_closing_during_a_call_lets_it_finish_and_ends_the_server_cleanly`,
+  `stdin_closed_past_the_grace_cancels_the_call_so_no_thread_hangs` (`flare-mcp`),
+  `a_cancel_during_a_call_ends_the_job_on_flares_side_and_the_next_call_still_works` (the exe over a real pipe),
+  `a_client_that_goes_away_mid_call_raises_that_calls_cancel_flag` (`flare-ctl`),
+  `a_job_whose_caller_went_away_ends_and_the_page_is_free_for_the_next_call` and
+  `a_mod_tool_call_ends_when_the_caller_goes_away_and_the_late_answer_is_refused` (`flare`). Regression rule 229.
 - **Review hardening (2026-10-21).** The wire layer refuses a `ui` grant from the app and any `ui`
   method (`a_ui_token_is_refused_at_hello`, `a_ui_grant_for_the_agent_is_refused_at_hello`,
   `a_grant_that_turns_into_ui_mid_connection_reaches_nothing`); only timed-out calls count as stuck
@@ -1015,7 +1029,7 @@ one controller per tab with an open web panel, parented to Flare's window.
   `quitting_closes_every_web_view_before_the_window_goes` (`web_tests.rs`) and the e2e `webPanel`, which watches the browser's
   process end when the window quits.
 - **The page sits exactly on the slot.** The controller's rectangle is the box Slint lays out inside the panel body less the slot's
-  hairline, in physical pixels, after every layout change, splitter step, scale change and monitor move; at 100 and 225
+  hairline, in physical pixels, after every layout change, settled splitter drag, scale change and monitor move; at 100 and 225
   percent the controller's own bounds, the child window of Flare's window, Slint's box and `flare_surfaces::web::web_rect` agree.
   Held by `the_page_fills_the_body_less_the_slots_hairline_at_every_scale`,
   `the_page_rectangle_equals_the_layout_maths_at_every_scale_width_and_share`, `the_page_follows_the_splitter_while_it_moves`
@@ -1177,11 +1191,19 @@ MCP tools and how a look is written for the model).
   panel takes it away at once; while the person holds the panel's splitter it is off the page and comes back at the new
   size when they let go. Held by `a_light_orange_border_rings_the_page_while_the_agent_uses_it_and_fades_with_the_arrow`,
   `a_menu_over_the_page_takes_the_border_away_and_it_comes_back_after`,
-  `a_held_splitter_takes_the_glow_away_while_the_page_follows_every_step_and_it_comes_back_after`, the `glow` tests in
+  `a_held_splitter_takes_the_glow_away_while_the_page_holds_its_width_and_it_comes_back_after`, the `glow` tests in
   `flare-win` and the e2e `agentBrowser` (the page's own rectangle while the hold lasts, gone after).
-- **The panel drag follows the pointer.** Dragging the splitter of a web panel moves the page once per step (one callback
-  for its whole rectangle, not one per side), never rebuilds the agent's glow, and is not a takeover of a page the agent is
-  using (2026-10-27, Max: it was laggy and went in steps).
+- **The panel drag follows the pointer and the page does not reflow.** Dragging the splitter of a web panel moves the page's
+  left edge once per step (one callback for its whole rectangle, not one per side), never rebuilds the agent's glow, and is
+  not a takeover of a page the agent is using (2026-10-27, Max: it was laggy and went in steps). The page keeps its width while
+  the splitter is held, so it does not lay itself out again at each step and flicker: narrowing, its right part runs past the
+  window's edge; widening, the panel's ground shows at its right. It takes the slot's exact size after the width has held
+  still 120 ms and when the splitter is let go or the grab goes away (rule 230, 2026-11-09). A window resize still moves the
+  page at every step. Held by `a_held_splitter_moves_the_pages_edge_but_never_its_width_until_it_is_let_go`,
+  `a_pause_in_a_splitter_drag_fits_the_page_once_and_the_next_step_holds_again`,
+  `a_splitter_grab_that_goes_away_leaves_the_page_on_the_slot`,
+  `a_panel_closed_during_a_splitter_drag_comes_back_at_the_slots_size`,
+  `a_window_resize_moves_the_page_at_every_step_with_no_hold` (`web_tests.rs`) and the `DragHold` tests in `flare-surfaces`.
 - **The person keeps control.** A key of theirs in the page, or a mouse button pressed over it, ends the running call with
   `interrupted` and ends the hold (the glow and the cursor go at once); the agent's own key presses are never the app's chords. Held by
   `a_key_of_the_persons_posts_a_takeover_only_while_an_agent_works`, `the_agents_own_key_press_is_neither_the_persons_nor_a_chord`,
@@ -1290,6 +1312,12 @@ the MCP tools `show_html` and `show_diagram`); the rule: `docs/regression-rules.
 - **The agent can look at its own page.** The `browser_*` tools work on a mini-app as on any web panel of the tab (it sees its chart
   and clicks in it); `browser_navigate` with an address is `unavailable`. Held by `the_agents_browser_calls_work_on_a_mini_app`
   (`web_tests.rs`) and the e2e (`browser.look` finds the page's button, `browser.click` changes its text; through MCP the same).
+- **A click by ref does not press what is covered.** Right before the press the page is asked what is at the point; when something else
+  is on top nothing is pressed, and the agent is told what covers the element instead of "Clicked". The target's own child, a label of
+  it and what wraps it count as the target; a click by point has no target and is not asked about. Held by
+  `a_covered_click_presses_nothing_and_names_what_is_on_top`, `a_click_on_the_target_or_a_child_of_it_is_pressed`,
+  `a_page_that_cannot_answer_the_check_is_clicked_as_before` (`agent_job.rs`), `a_covered_click_is_refused_and_presses_nothing`
+  (`web_tests.rs`), `a_hostile_covering_element_cannot_end_the_block_or_pose_as_an_element` (`browser.rs`) and the e2e `agentCoveredClick`.
 - **MCP.** `flare-mcp` lists 15 tools (the seven that show things and the eight browser tools); `show_html` and `show_diagram` are
   described for an agent: what they are for, the 4 MB and 200 KB caps, no network by default and what `allow_network` needs, that
   Mermaid errors come back. Held by `tools_list_has_the_show_tools_then_the_browser_tools_with_object_schemas`,

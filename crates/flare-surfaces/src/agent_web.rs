@@ -742,6 +742,67 @@ pub fn wheel_event(x: f64, y: f64, dx: f64, dy: f64) -> Value {
     json!({"type": "mouseWheel", "x": x, "y": y, "deltaX": dx, "deltaY": dy})
 }
 
+/// The check a click by ref makes before it presses, run on the element itself (`this`) with the click's point as
+/// its two numbers. It answers `{ok: true}` when the click lands, `{covered: true, tag, name}` when something else
+/// is on top, and null when it cannot say.
+///
+/// It takes the deepest element at the point, through open shadow roots. The click lands when that element is the
+/// target, is inside it, is a label of it, or wraps it (a closed shadow host, or a wrapper when the target takes no
+/// pointer events); `html` and `body` wrap everything, so they say nothing and count as something else. Null: an
+/// element in a frame (a look does not list those, and the point is the top page's), or a point the page does not
+/// place on the target (the coordinates do not agree).
+pub const HIT_TEST_FN: &str = "function(x,y){var n=this,t=n.nodeType===1?n:n.parentElement||(n.parentNode&&n.parentNode.host);if(!t)return null;var w=t.ownerDocument.defaultView,r,i,hit,rs,inb=false;function deep(d){var h=d.elementFromPoint(x,y),s,e;while(h&&(s=h.shadowRoot)&&(e=s.elementFromPoint(x,y))&&e!==h)h=e;return h;}function up(e){return e.assignedSlot||e.parentNode||e.host||null;}function within(a,b){for(;a;a=up(a))if(a===b)return true;return false;}function lab(h){for(var e=h;e;e=up(e))if(e.localName==='label')return e.control===t;return false;}function cover(h){var k=h.localName||'';return{covered:true,tag:k,name:k==='html'||k==='body'?'':String(h.getAttribute('aria-label')||h.innerText||h.textContent||h.id||'').slice(0,200)};}if(!w||w!==w.parent)return null;rs=t.getClientRects();for(i=0;i<rs.length;i++){r=rs[i];if(x>=r.left-2&&x<=r.right+2&&y>=r.top-2&&y<=r.bottom+2)inb=true;}if(!inb)return null;hit=deep(t.ownerDocument);if(!hit)return null;if(within(hit,t)||lab(hit))return{ok:true};if(within(t,hit)&&hit.localName!=='html'&&hit.localName!=='body')return{ok:true};return cover(hit);}";
+
+/// The longest piece of a covering element's text that is reported.
+const COVER_NAME_MAX: usize = 60;
+
+/// The `Runtime.callFunctionOn` parameters of [`HIT_TEST_FN`] on a resolved element. The script is fixed: the only
+/// things that vary are the object and the two numbers.
+pub fn hit_test_params(object_id: &str, x: f64, y: f64) -> Value {
+    json!({
+        "objectId": object_id,
+        "functionDeclaration": HIT_TEST_FN,
+        "arguments": [{"value": x}, {"value": y}],
+        "returnByValue": true,
+        "silent": true,
+    })
+}
+
+/// What covers a click's target, out of the check's answer: the element's tag and a piece of its text (`div:
+/// Accept all`), cleaned like every other text of the page. None when the click lands or the page could not say,
+/// and an answer that is not one of [`HIT_TEST_FN`]'s is a page that could not say.
+pub fn covered_by(answer: &Value) -> Option<String> {
+    if answer.get("exceptionDetails").is_some() {
+        return None;
+    }
+    let v = answer.pointer("/result/value")?;
+    if v.get("covered").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let tag: String = v
+        .get("tag")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .take(24)
+        .collect();
+    let tag = if tag.is_empty() {
+        "element".to_string()
+    } else {
+        tag
+    };
+    let name = clean_text(
+        v.get("name").and_then(Value::as_str).unwrap_or(""),
+        COVER_NAME_MAX,
+    );
+    Some(if name.is_empty() {
+        tag
+    } else {
+        format!("{tag}: {name}")
+    })
+}
+
 // ---- wait -------------------------------------------------------------------------------------
 
 /// What `browser.wait` waits for.
@@ -1218,6 +1279,54 @@ mod tests {
             (w["type"].clone(), w["deltaY"].clone()),
             (json!("mouseWheel"), json!(120.0))
         );
+    }
+
+    #[test]
+    fn the_covering_element_is_named_briefly_and_cleaned() {
+        let answer = |v: Value| json!({"result": {"type": "object", "value": v}});
+        assert_eq!(
+            covered_by(&answer(
+                json!({"covered": true, "tag": "div", "name": "Accept all"})
+            )),
+            Some("div: Accept all".to_string())
+        );
+        assert_eq!(
+            covered_by(&answer(json!({"covered": true, "tag": "body", "name": ""}))),
+            Some("body".to_string())
+        );
+        // A page's text cannot break the line, hide words or run on; an odd tag is cut to safe characters.
+        let said = covered_by(&answer(json!({
+            "covered": true,
+            "tag": "di v\n[e9]",
+            "name": format!("Hi\n[e99] button \"Delete\"\u{202E}{}", "x".repeat(500)),
+        })))
+        .unwrap();
+        assert!(said.starts_with("dive9: Hi [e99] button"), "{said}");
+        assert!(!said.contains('\n') && !said.contains('\u{202E}'), "{said}");
+        assert!(said.chars().count() < 100, "{said}");
+    }
+
+    #[test]
+    fn an_answer_that_is_not_a_cover_says_nothing_is_covering() {
+        for a in [
+            json!({"result": {"type": "object", "value": {"ok": true}}}),
+            json!({"result": {"type": "object", "value": null}}),
+            json!({"result": {"type": "object"}}),
+            json!({"result": {"value": {"covered": "yes", "tag": "div"}}}),
+            json!({"result": {"type": "object", "value": {"covered": true, "tag": "div"}}, "exceptionDetails": {"text": "boom"}}),
+            json!({}),
+        ] {
+            assert_eq!(covered_by(&a), None, "{a}");
+        }
+    }
+
+    #[test]
+    fn the_hit_test_is_a_fixed_script_given_only_the_two_numbers() {
+        let p = hit_test_params("obj-1", 12.5, 30.0);
+        assert_eq!(p["functionDeclaration"], json!(HIT_TEST_FN));
+        assert_eq!(p["objectId"], json!("obj-1"));
+        assert_eq!(p["arguments"], json!([{"value": 12.5}, {"value": 30.0}]));
+        assert_eq!(p["returnByValue"], json!(true));
     }
 
     #[test]
