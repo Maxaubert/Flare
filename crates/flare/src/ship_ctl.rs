@@ -45,7 +45,7 @@ pub fn e2e_var(suffix: &str) -> Option<String> {
 /// The first statement of `main`: the e2e flag, Velopack's hooks (they may end the process), the
 /// taskbar identity.
 pub fn bootstrap() {
-    // macOS: a plugin helper's guard is this executable started again (port phase 6, rule 281). It becomes the guard
+    // macOS: a plugin helper's guard is this executable started again (port phase 6, rule 285). It becomes the guard
     // here, before anything else of Flare runs (Velopack's hooks included), and never returns; then guards are made of
     // this program.
     #[cfg(target_os = "macos")]
@@ -478,7 +478,7 @@ mod tests {
         assert_eq!(first, "ship_ctl::bootstrap();");
     }
 
-    /// Rule 281: on a Mac the bootstrap's first act is to become a helper's guard when started as one, before
+    /// Rule 285: on a Mac the bootstrap's first act is to become a helper's guard when started as one, before
     /// Velopack or anything else of Flare runs, and then to make guards of this program.
     #[test]
     fn the_bootstrap_first_becomes_a_guard_when_started_as_one() {

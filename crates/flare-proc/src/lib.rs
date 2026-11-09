@@ -4,7 +4,7 @@
 //!
 //! macOS only today (libproc, sysctl `KERN_PROCARGS2`, kqueue `NOTE_EXIT`, the TCP listeners through
 //! `PROC_PIDFDSOCKETINFO`; `guard`: a program in a session of its own whose whole tree ends with
-//! Flare, regression rule 280). On Windows the crate is
+//! Flare, regression rule 284). On Windows the crate is
 //! empty: the Win32 process code lives in `flare-term` and `flare-win` behind `cfg(windows)`
 //! (regression rule 227). The policy (which processes a tab owns, which a closing tab ends) stays
 //! with the callers; this crate only reads and signals.

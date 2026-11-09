@@ -342,7 +342,7 @@ pub fn mac_chrome_attributes(
 /// macOS under `--e2e`: the activation policy and whether the app activates at launch, set on the
 /// event loop BEFORE it runs (`None` without `--e2e`: winit's Regular app that activates). An
 /// accessory app has no Dock icon and never comes forward on its own; `park` setting it later, after
-/// `show()`, would be too late (regression rule 237).
+/// `show()`, would be too late (regression rule 241).
 #[cfg(target_os = "macos")]
 pub fn mac_e2e_loop_plan(
     e2e: bool,

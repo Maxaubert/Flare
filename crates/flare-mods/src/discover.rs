@@ -204,7 +204,7 @@ pub fn check_folder(folder: &Path) -> Result<Found, String> {
         let background = page(manifest.background.as_deref(), "background")?;
         let bar = page(manifest.bar.as_ref().map(|b| b.entry.as_str()), "bar.entry")?;
         // Every system's helper must be a file inside the folder, wherever the scan runs, so a plugin is valid or not
-        // the same way on each; the one of this system is the one kept (rule 284).
+        // the same way on each; the one of this system is the one kept (rule 288).
         let windows = manifest
             .helper
             .as_ref()
@@ -623,7 +623,7 @@ mod tests {
         assert!(f.entry.as_ref().unwrap().ends_with("panel.html"));
         assert!(f.background.as_ref().unwrap().ends_with("background.html"));
         assert!(f.bar.as_ref().unwrap().ends_with("bar.html"));
-        // The program of the system the scan runs on (rule 284).
+        // The program of the system the scan runs on (rule 288).
         let want = if cfg!(target_os = "macos") {
             "bin/helper"
         } else {

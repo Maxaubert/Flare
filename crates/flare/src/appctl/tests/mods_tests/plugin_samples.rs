@@ -1,4 +1,4 @@
-//! The sample plugins of `sample-plugins/` run (macOS port phase 6, regression rule 287): each one is copied as it
+//! The sample plugins of `sample-plugins/` run (macOS port phase 6, regression rule 291): each one is copied as it
 //! ships into the plugins folder, turned on, its background page brought up, and one round trip of its protocol driven
 //! with a call its own page makes (or, for the tour, the tool its page answers). The hub, the dispatcher and the grant
 //! are the real ones; the page is played by the fake browser, so nothing is shown. The same test runs on Windows and

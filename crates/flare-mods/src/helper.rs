@@ -1,8 +1,8 @@
 //! A plugin's helper program (plugins phase 7, design 4, 10 and 13): started while the plugin is on, stopped when it
 //! turns off, and never outliving Flare.
 //!
-//! - **Which program.** Only the manifest's `helper.command` (on a Mac `helpers.macos.command`, rule 284), an `.exe`
-//!   (on a Mac an executable that is not quarantined, rule 285) inside the plugin folder, checked again when it
+//! - **Which program.** Only the manifest's `helper.command` (on a Mac `helpers.macos.command`, rule 288), an `.exe`
+//!   (on a Mac an executable that is not quarantined, rule 289) inside the plugin folder, checked again when it
 //!   starts (`paths::program_inside`: no `..`, no absolute path, and it must resolve inside the folder, so a link
 //!   swapped in since the scan is refused). It is started by its canonical path, in the plugin folder, with the
 //!   manifest's arguments (at most 16 of 200 characters), no console window and stdin closed. Only a plugin that is on
@@ -20,7 +20,7 @@
 //! Everything that waits (the start, the reads of its output, the wait for its end) runs on threads of its own; the
 //! calls the window makes ([`Host::start`], [`Host::stop`]) return at once.
 //!
-//! **macOS** (port phase 6, regression rule 280): no job object, the same guarantees. The helper starts in a session
+//! **macOS** (port phase 6, regression rule 284): no job object, the same guarantees. The helper starts in a session
 //! and process group of its own (`setsid` between fork and exec), with a guard
 //! ([`flare_proc::guard`]): Flare's own executable run as an orphan in that session, in a group of its own, holding one
 //! end of a socket pair whose other end only Flare holds. The guard ends the whole tree (the group, the session and
@@ -245,7 +245,7 @@ impl Job {
     }
 
     /// The helper's end, on its thread, once `seen_unreaped` says whether its end was seen with its pid still held
-    /// (`waitid(WNOWAIT)`). In this order (rule 282): it is marked ended, before anything can reap it, so a stop that
+    /// (`waitid(WNOWAIT)`). In this order (rule 286): it is marked ended, before anything can reap it, so a stop that
     /// races never signals a recycled pid; its guard is let go and waited for (at most [`STOP_WAIT`]); Flare's own pass
     /// ends the session and the group (a guard the helper killed, or one too slow), while the unreaped helper still
     /// holds the ids, so the pass cannot reach a group or session that reuses them; only then is it reaped by `reap`.
@@ -760,7 +760,7 @@ impl Host {
                         // Stopped while it started.
                         drop(g);
                         self.end_job(id, seq, Arc::clone(&job));
-                        // macOS: the killed helper is reaped here, after its end is marked (rule 282), or it would
+                        // macOS: the killed helper is reaped here, after its end is marked (rule 286), or it would
                         // stay a zombie and every wait for the stop (an update's, a removal's) would run to its timeout.
                         #[cfg(target_os = "macos")]
                         {
@@ -1414,7 +1414,7 @@ mod tests {
 
     /// A stop that lands while the helper is being started (a plugin turned off, updated or removed straight after it
     /// was turned on) reaps what was spawned: no zombie is left in its group, so the wait an update or a removal makes
-    /// returns at once instead of running to its timeout (found by the app's update test on a Mac, rule 282).
+    /// returns at once instead of running to its timeout (found by the app's update test on a Mac, rule 286).
     #[cfg(target_os = "macos")]
     #[test]
     fn mac_a_helper_stopped_while_it_starts_is_reaped_and_the_wait_returns() {
@@ -1527,7 +1527,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = folder_with_sh();
         fs::write(dir.path().join("plain"), "#!/bin/sh\n").unwrap();
-        // A Windows program, executable or not, and a downloaded one (rule 285): refused before anything runs.
+        // A Windows program, executable or not, and a downloaded one (rule 289): refused before anything runs.
         for name in ["run.exe", "fetched"] {
             fs::copy(dir.path().join("helper"), dir.path().join(name)).unwrap();
             fs::set_permissions(dir.path().join(name), fs::Permissions::from_mode(0o755)).unwrap();
@@ -1598,7 +1598,7 @@ mod tests {
         all_gone(&pids);
     }
 
-    /// Rule 280: a helper that finds its guard and kills it by pid still has its session and its group ended when it
+    /// Rule 284: a helper that finds its guard and kills it by pid still has its session and its group ended when it
     /// stops, by Flare's own pass (`end_session`): a `killpg` of the group alone missed the `set -m` job.
     #[cfg(target_os = "macos")]
     #[test]
@@ -1636,7 +1636,7 @@ mod tests {
         });
     }
 
-    /// Rule 282: the helper is marked ended before anything reaps it, also when its end could not be seen unreaped
+    /// Rule 286: the helper is marked ended before anything reaps it, also when its end could not be seen unreaped
     /// (`waitid` failed, say `ECHILD` with SIGCHLD ignored), so a stop that races the reap never kills a recycled pid.
     /// When it was seen unreaped, Flare's pass over its session and group runs before the reap (the ids are still held).
     #[cfg(target_os = "macos")]
@@ -1662,7 +1662,7 @@ mod tests {
         }
     }
 
-    /// Rule 285: a helper is refused while any file of its plugin folder is quarantined, not only its program: a
+    /// Rule 289: a helper is refused while any file of its plugin folder is quarantined, not only its program: a
     /// script that runs a downloaded binary beside it would hand that one to Gatekeeper.
     #[cfg(target_os = "macos")]
     #[test]

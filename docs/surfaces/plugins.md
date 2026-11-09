@@ -498,7 +498,7 @@ Flare's own dialog, and the user name, password and code never reach the agent.
   (moved to `.log.1` past 1 MB). It hears `tabs`, `agent` and `session` events as a background page would, and the
   `tool` event when it answers its plugin's tools (a plugin with no background page and no panel).
 - A helper runs as you, with full access: it can leave things behind outside Flare, and Settings says so.
-- **On a Mac** (macOS port phase 6, regression rules 280 to 287): the program is `helpers.macos.command`. At start it
+- **On a Mac** (macOS port phase 6, regression rules 284 to 291): the program is `helpers.macos.command`. At start it
   must still resolve inside the folder, carry its owner's execute bit (`chmod +x`; an install from a zip keeps the bit
   the zip gives a file, as `0755`, and always makes the `helpers.macos.command` program `0755`, so a zip made on
   Windows works) and not be quarantined: while the program or any other file of the folder is marked as downloaded
