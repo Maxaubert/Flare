@@ -17,7 +17,7 @@
 //! The system part sits behind [`NotifyBackend`] (a test hands its own to [`show_async_with`]). macOS:
 //! `UNUserNotificationCenter` refuses an app that is not a signed bundle, and Flare has no Developer ID
 //! yet, so [`MacBackend`] shows nothing and answers [`MAC_UNAVAILABLE`]; the caller then bounces the Dock
-//! icon, as it flashes the taskbar when Windows refuses a toast (regression rule 242).
+//! icon, as it flashes the taskbar when Windows refuses a toast (regression rule 246).
 //! TODO(port phase 8): with the signed `Flare.app`, ask for authorisation once and post a
 //! `UNNotificationRequest` (identifier: the tab's tag, so a newer one replaces the older; a delegate
 //! hands the click back as `on_click(tab)`), then test it for real.
