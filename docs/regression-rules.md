@@ -1219,3 +1219,13 @@ through `dladdr` afterwards; an Intel Mac keeps no sampler. Held by
 `the_walk_follows_the_chain_inside_the_stack_and_stops_outside_it`,
 `a_busy_thread_is_sampled_200_times_named_and_keeps_running` and `a_finished_thread_is_not_sampled`. Source: Mac E2E
 in CI, run 42592969003 (2026-11-09).
+344. **macOS: a miniaturised window is minimised to Flare, and a hook scale change never outgrows its buffer.** A
+window miniaturised by Cmd+M, the yellow light or the hook gets no resize on a Mac, and Slint updates its minimised
+state on a resize only, so the marks kept moving behind the Dock (indicatorStyles' "minimising pauses the marks" on
+the runner, where the window server said occluded and Slint said not minimised). `window::is_minimised` reads winit's
+live `is_minimized` (`isMiniaturized`) on macOS, Slint's state elsewhere, for the marks' pause, the tick, the raise
+and the saved bounds. Under `--e2e`, the hook's `DpiChange` on a Mac sets the window item to the buffer's own size at
+the new scale at once (`e2e_glue::item_size_for`), because Slint's scale change kept the item's logical size and a
+frame drawn before the real window grew asked the software renderer for 2655 px of a 1180 px buffer: the app
+panicked (tabLooks, run 42598992162). Held by `the_systems_minimised_answer_wins_over_slints` and
+`the_item_fills_the_buffer_it_has_at_the_new_scale`. Source: Mac E2E in CI (2026-11-09).

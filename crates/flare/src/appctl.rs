@@ -2183,7 +2183,7 @@ impl AppCtl {
                 move || {
                     let Some(app) = weak.upgrade() else { return };
                     let now = clock();
-                    if app.window().is_minimized() {
+                    if crate::window::is_minimised(app.window()) {
                         pause.borrow_mut().set_minimized(true, now);
                         return;
                     }
@@ -4205,7 +4205,7 @@ impl AppCtl {
     pub fn tick(&mut self) {
         let now = self.now();
         if let Some(app) = self.app() {
-            self.on_minimised(app.window().is_minimized());
+            self.on_minimised(crate::window::is_minimised(app.window()));
         }
         let events = self.sidebar.tick(now);
         let mut changed = !events.is_empty();

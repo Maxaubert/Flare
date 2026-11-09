@@ -587,9 +587,30 @@ fn when_handle_ready(
     Rc::new(slint::Timer::default())
 }
 
+/// Pure (rule 344): whether the window is minimised, from Slint's state and, when there is one, the
+/// system's own answer. On macOS a window miniaturised by Cmd+M, the yellow light or the hook gets no
+/// resize, so Slint's state, which it updates on a resize, stayed "not minimised" and the marks kept
+/// moving behind the Dock (indicatorStyles on the runner). The system's answer wins when it gives one.
+pub fn minimised_from(slint_says: bool, system_says: Option<bool>) -> bool {
+    system_says.unwrap_or(slint_says)
+}
+
+/// Whether the window is minimised (see `minimised_from`): on macOS winit's `is_minimized`, read live
+/// from the native window (`isMiniaturized`), else Slint's own state.
+pub fn is_minimised(window: &slint::Window) -> bool {
+    use slint::winit_030::WinitWindowAccessor;
+    // Windows keeps Slint's state, which its minimise resize keeps right.
+    let system = if cfg!(target_os = "macos") {
+        window.with_winit_window(|w| w.is_minimized()).flatten()
+    } else {
+        None
+    };
+    minimised_from(window.is_minimized(), system)
+}
+
 /// Brings the window forward the way `raise_plan` says (under `--e2e` it only shows).
 fn raise_window(app: &AppWindow, e2e: bool) {
-    let minimised = app.window().is_minimized();
+    let minimised = is_minimised(app.window());
     for step in raise_plan(e2e, minimised) {
         app.window().with_winit_window(|w| match step {
             RaiseStep::ShowInactive | RaiseStep::Show => w.set_visible(true),
@@ -612,7 +633,7 @@ fn observe(window: &slint::Window) -> Observed {
         y: pos.y,
         scale: f64::from(window.scale_factor()),
         maximised: window.is_maximized(),
-        minimised: window.is_minimized(),
+        minimised: is_minimised(window),
         fullscreen: window.is_fullscreen(),
     }
 }
@@ -2600,6 +2621,15 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Rule 344: the system's answer wins; without one Slint's state stands.
+    #[test]
+    fn the_systems_minimised_answer_wins_over_slints() {
+        assert!(minimised_from(false, Some(true)));
+        assert!(!minimised_from(true, Some(false)));
+        assert!(minimised_from(true, None));
+        assert!(!minimised_from(false, None));
+    }
 
     // Rule 340: only a Mac --e2e run drops winit's focus events; the real app and Windows keep them.
     #[test]

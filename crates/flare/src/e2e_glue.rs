@@ -1747,11 +1747,32 @@ impl DpiSeam for WindowRef<'_> {
     fn scale_factor_changed(&mut self, scale_factor: f32) {
         self.0
             .dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor });
+        // macOS (rule 344): the window item keeps its logical size through Slint's scale change, so it
+        // asked for 2655 px of a 1180 px buffer until the real window's resize came back, and a frame
+        // drawn in between (an occlusion change at launch) panicked in the software renderer (tabLooks,
+        // run 42598992162). The item is set to the buffer's own size at the new scale at once; the
+        // resize below then grows both together.
+        #[cfg(target_os = "macos")]
+        {
+            let size = self.0.size();
+            if let Some(logical) = item_size_for(size.width, size.height, scale_factor) {
+                self.0
+                    .dispatch_event(WindowEvent::Resized { size: logical });
+            }
+        }
     }
 
     fn set_physical_size(&mut self, w: u32, h: u32) {
         self.0.set_size(slint::PhysicalSize::new(w, h));
     }
+}
+
+/// Pure (rule 344): the window item's logical size that fills a `w` by `h` px buffer at `scale`, or None
+/// for an empty buffer or a scale that is not one.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn item_size_for(w: u32, h: u32, scale: f32) -> Option<slint::LogicalSize> {
+    (w > 0 && h > 0 && scale > 0.0)
+        .then(|| slint::LogicalSize::new(w as f32 / scale, h as f32 / scale))
 }
 
 /// Pure (rule 341): the size a `Resize` to `w` by `h` css px asks the window for. Windows: the logical
@@ -2512,6 +2533,17 @@ mod tests {
         fn set_physical_size(&mut self, w: u32, h: u32) {
             self.calls.push(format!("size {w}x{h}"));
         }
+    }
+
+    // Rule 344: after a scale change the item fills the buffer it has, so no frame asks for more pixels.
+    #[test]
+    fn the_item_fills_the_buffer_it_has_at_the_new_scale() {
+        assert_eq!(
+            item_size_for(1180, 780, 2.25),
+            Some(slint::LogicalSize::new(1180.0 / 2.25, 780.0 / 2.25))
+        );
+        assert_eq!(item_size_for(0, 780, 2.25), None);
+        assert_eq!(item_size_for(1180, 780, 0.0), None);
     }
 
     // Rule 341: a Mac resize is asked in device px at the window's scale; Windows keeps the logical size.
