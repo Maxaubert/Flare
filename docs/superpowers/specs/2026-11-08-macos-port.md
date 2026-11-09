@@ -82,6 +82,11 @@ world's pwsh in Windows' edit mode, 72 scenarios run and 30 gated with a reason.
 run 42603904272 (7 failing); the scenarios found and fixed Mac bugs: a miniaturised window never paused the marks, a
 stall carried no UI-thread frames, the hook's scale change could panic the software renderer, the Windows `check`
 job's pin test failed on a CRLF Cargo.lock. What still fails is listed in `docs/parity.md`, "macOS E2E".
+Then (rules 345 to 348): CI keeps its Rust cache on a red run and has a hand run of the Mac E2E alone with a scenario
+filter (`docs/e2e.md`), so an iteration takes about 10 minutes, not 40. Found and fixed: the slide-out never moved in a
+window with no frames, a warm pwsh spare adopted late read its own cursor report as typing (a real Mac bug for any
+pwsh user), and an idle run's diagnostics lines came from the runner and the background task role. From run
+42612597989 (4 scenarios failing) to runs 42630201735 and 42637651220 (70 and 71 of 72 green).
 
 ## Known risks
 

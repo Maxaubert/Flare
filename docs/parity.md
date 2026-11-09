@@ -1616,9 +1616,12 @@ and which scenarios are gated: `docs/e2e.md`, "macOS E2E"; regression rules 330 
 - [x] A UI-thread stall names the UI thread's frames, as the Windows `.pdata` walk does (Apple silicon). (macOS: a_busy_thread_is_sampled_200_times_named_and_keeps_running, the_walk_follows_the_chain_inside_the_stack_and_stops_outside_it, crates/flare-win/src/macos/thread_stack.rs)
 - [x] A miniaturised window counts as minimised for the marks' pause, though a Mac sends it no resize. (the_systems_minimised_answer_wins_over_slints, crates/flare/src/window.rs)
 
-Still failing on the runner when this was written (not ratchet lines; the CI runs in the spec's progress line): the
-vertical sidebar's slide-out is not in the window's picture though the probes say it is out (verticalTabs, 10
-checks), the ? tip shows before its second is up (tooltips), the help panel's selection colour and the new shell's
-keyboard after the panel (helpPanel), two diagnostics lines (diagLog: idle main-lag lines on the runner and the
-returning beat), Cancel in the theme switch's question (themeSwitch), the colour picker's working stand-in
-(colourPicker) and minimising an accessory app's window (indicatorStyles).
+- [x] The sidebar's slide-out moves in a window that gets no frames: a timer steps it in a Mac `--e2e` run. (macOS: a_timer_steps_the_slide_without_frames_and_in_a_mac_e2e_run, verticalTabs)
+- [x] A new tab never takes a warm spare that asked the terminal something nobody answered (pwsh's late cursor report was read as typing). (macOS: a_spare_that_asked_the_terminal_is_let_go_outside_windows, a_spare_that_asked_nothing_is_adopted, helpPanel)
+- [x] An idle run writes no diagnostics line: the runner is quieted and the run holds the foreground task role. (macOS: diagLog)
+
+Where it stands (2026-11-09, the spec's progress line has the runs): the whole table ran green in parts on the runner
+(run 42630201735: 70 of 72; run 42637651220: 71 of 72, its one miss clickCaret's "a click on old output above the
+prompt moves nothing", which passed in the runs before it). Not yet: one full hand run with every job green; the
+`macos` job's two `flare-web::cef_macos` tests (the network observers, the panel's picture) fail on the base branch
+`feat/macos-5-web-panel` as well and belong to phase 5.
