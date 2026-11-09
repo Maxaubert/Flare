@@ -239,7 +239,7 @@ fn button_of(b: PointerButton) -> (Button, u32) {
     }
 }
 
-/// The key the filter sees for a forwarded key. On a Mac Cmd is the app's key (rule 233): it plays the part `ctrl`
+/// The key the filter sees for a forwarded key. On a Mac Cmd is the app's key (rule 237): it plays the part `ctrl`
 /// plays on Windows, and the real Ctrl is the page's.
 pub fn key_press_of(k: &KeyInput) -> KeyPress {
     KeyPress {
@@ -425,7 +425,7 @@ impl WebHost {
     fn context(&mut self, app: Option<&AppSpec>) -> Result<(Kind, String), String> {
         let kind = Kind::of(app);
         let (name, private) = walls::profile_of(app);
-        // One profile per mini-app, one per mod (rule 256).
+        // One profile per mini-app, one per mod (rule 260).
         let key = (kind, walls::context_name(app));
         if self.contexts.contains_key(&key) {
             return Ok(key);
@@ -1072,7 +1072,7 @@ impl WebBackend for WebHost {
         }
         let params: serde_json::Value =
             serde_json::from_str(params).unwrap_or_else(|_| serde_json::json!({}));
-        // The agent's editing chords carry the command a Mac's text system would have made of them (rule 254).
+        // The agent's editing chords carry the command a Mac's text system would have made of them (rule 258).
         let params = flare_cef::status::mac_devtools_params(method, &params);
         let cef_id = self.next_call(Call::Agent {
             slot: slot.clone(),

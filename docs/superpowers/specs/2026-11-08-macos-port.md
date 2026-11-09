@@ -63,27 +63,27 @@ Total: about 3 months to full parity at a steady pace.
 
 Phase 5 progress: step 1 (2026-11-08) is the engine, `crates/flare-cef`: CEF 156.0.14 pinned and cached in
 `~/Library/Caches/flare-cef`, the dev bundle with its five helpers (ad hoc), the CEF `NSApplication`, windowless
-pixels, headless; `agent_job`'s 11 DevTools methods and the runaway-eval timeout proved on a Mac (rules 247 to 249,
+pixels, headless; `agent_job`'s 11 DevTools methods and the runaway-eval timeout proved on a Mac (rules 251 to 253,
 `docs/parity.md` "macOS port, phase 5"). Step 2 (2026-11-08) is the web panel: `WebBackend` on CEF
 (`crates/flare-web/src/macos/host.rs`), the page as a picture in its box with the window's pointer, wheel, keys and
 input method handed over, the walls decided in `flare_web::walls` and re-proved with the spike's observers, the real
-app's `NSApplication` made CEF's kind before winit (rules 250 to 253). Step 3 (2026-11-08) re-proves the walls behind Flare's proxy against
+app's `NSApplication` made CEF's kind before winit (rules 254 to 257). Step 3 (2026-11-08) re-proves the walls behind Flare's proxy against
 the spike's proxy page (every spelling of this machine and its network, http, https, ws and wss: 0 hits, 0 accepts, 0
 mDNS queries; the web panel control leaks) and runs the real `agent_job` through `WebBackend::cdp` of the CEF host, with
-the agent's editing chords given the command a Mac's text system would make of them (rules 254 and 255).
-A review of the three steps (2026-11-08) proved six defects, fixed with checks that fail without the fix (rules 256 to
-261): a profile per mini-app (a shared worker read another app's files), Flare's switches only (the command line
+the agent's editing chords given the command a Mac's text system would make of them (rules 258 and 259).
+A review of the three steps (2026-11-08) proved six defects, fixed with checks that fail without the fix (rules 260 to
+265): a profile per mini-app (a shared worker read another app's files), Flare's switches only (the command line
 opened a DevTools port), held downloads staged outside `~/Downloads`, no call to Google from the engine with no page
 asking, the mock keychain written down as an accepted gap until phase 8, and no colour or print panel from a page.
 
 Phase 8 progress: step 1 (2026-11-08) is `Flare.app`: `tools/release/mac/make-app.sh` builds the release programs,
 `flare-mac-app` bundles them (the CEF framework, five helpers, `flare-mcp`, the icon, the plugin in `Resources`) and
 signs inside out with the Developer ID and per-program entitlements, then the script notarizes, staples and makes the
-DMG; `.github/workflows/macos-app.yml` does the same in CI from secrets (rules 263 to 266, `docs/parity.md` "macOS
+DMG; `.github/workflows/macos-app.yml` does the same in CI from secrets (rules 267 to 270, `docs/parity.md` "macOS
 port, phase 8"). On Max's Mac a Developer ID `codesign` asked the keychain for the key with a prompt on the screen, so
 the signed and notarized run waits for the key's access list to let `codesign` in.
 
-A review of step 1 (2026-11-08) led to rules 267 to 270: no `codesign` with the identity unless an in-process check
+A review of step 1 (2026-11-08) led to rules 271 to 274: no `codesign` with the identity unless an in-process check
 with the keychain UI off says the key cannot prompt (`flare-mac-app check-key`; Max's key lacks the `apple:`
 partition), the tests' own signing variables, the release check comparing each Mach-O's entitlements with its role's
 and requiring a Developer ID Application signer, Chromium 156's GPU `allow-jit`, a terminal's camera, microphone and
@@ -96,9 +96,9 @@ osx-arm64 and signs the bundle again by role after vpk adds `UpdateMac` (`flare-
 notarizes and staples it, and the bundle is checked inside the update package; `tools/release/mac/update-e2e.sh`
 proves a whole-bundle update headless on a Mac (0.0.1 to 0.0.2 into a temp folder, the real `VelopackFeed` and
 `UpdateMac`, no restart, no window, the swapped bundle still verifies); `.github/workflows/macos-app.yml` runs after
-each Windows release and adds the Mac build to it when the secrets are set, `docs/releasing-macos.md` (rules 273 to
-275). Proved ad hoc only: the signed, notarized run is one command for Max once the Developer ID key lets `codesign`
-in without a prompt. A review of step 3 (2026-11-09) led to rules 276 to 279: the Mac build is the commit the release
+each Windows release and adds the Mac build to it when the secrets are set, `docs/releasing-macos.md` (rules 277 to
+279). Proved ad hoc only: the signed, notarized run is one command for Max once the Developer ID key lets `codesign`
+in without a prompt. A review of step 3 (2026-11-09) led to rules 280 to 283: the Mac build is the commit the release
 was tagged at, one run per version, signed only from `main` through the `mac-release` environment; no key file,
 password or scratch folder outlives its use; a switch between the mock and the real profile key sets cookies aside;
 ad hoc signing carries each role's identifier, entitlements and (tools) the hardened runtime, so the ad-hoc pack

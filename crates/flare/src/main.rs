@@ -82,7 +82,7 @@ fn main() {
     let start = std::time::Instant::now();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     // macOS: the shared application is CEF's kind before winit makes it, so the web panel's engine can start
-    // later (port phase 5; rule 250). Windows has WebView2 and nothing to prepare.
+    // later (port phase 5; rule 254). Windows has WebView2 and nothing to prepare.
     #[cfg(target_os = "macos")]
     if let Err(e) = flare_web::host::prepare_app() {
         log::warn!("the web engine cannot run in this process: {e}");

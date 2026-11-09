@@ -1,4 +1,4 @@
-# The macOS release (port phase 8, rules 263 to 266, 270, 273, 275 to 277): Flare.app for Apple Silicon, macOS 15+,
+# The macOS release (port phase 8, rules 267 to 270, 274, 277, 279 to 281): Flare.app for Apple Silicon, macOS 15+,
 # signed with the Developer ID by role, packed by vpk for osx-arm64 (the bundle signed again after vpk adds its
 # updater), notarized and stapled, checked inside the packages, and the DMG. docs/releasing-macos.md has the how and
 # the secrets.
@@ -8,11 +8,11 @@
 #   triggered the run: a merge without a version bump also ends the release run with success) and its Mac packages
 #   and DMG are added to that same release (vpk upload github --merge; channel osx, so releases.osx.json beside the
 #   Windows releases.win.json). One run per version at a time, and the release is read again just before the upload
-#   (rule 276). Without the secrets, or when there is nothing to add, it says so and stops cleanly. It runs in its own
+#   (rule 280). Without the secrets, or when there is nothing to add, it says so and stops cleanly. It runs in its own
 #   workflow after the Windows one has finished, so it can never fail or hold up a Windows release; release.yml is not
 #   touched.
 # - By hand (workflow_dispatch): the same build kept as a workflow artifact, never published. Signed only from main:
-#   the signing secrets are in the environment `mac-release`, which only main may use (rule 276); from any other
+#   the signing secrets are in the environment `mac-release`, which only main may use (rule 280); from any other
 #   branch the job has no environment, so no secret, and the build is ad hoc.
 #
 # Secrets (environment mac-release; none are in the repository; tools/release/mac/ci-keychain.sh):
@@ -73,7 +73,7 @@ jobs:
               echo "::error::The release v$v has no tag commit to build."
               exit 1
             else
-              # The commit the release was tagged at, whatever commit ended the release run (rule 276).
+              # The commit the release was tagged at, whatever commit ended the release run (rule 280).
               build=true publish=true environment=mac-release
               echo "::notice::v$v was released from $sha; the Mac build is made from that commit."
             fi
@@ -151,7 +151,7 @@ jobs:
         if: steps.gate.outputs.go == 'true'
 
       # No actions/cache for CEF here: the framework this job signs with the Developer ID is downloaded fresh into
-      # the runner's temp folder, never restored from a cache another workflow could have written (rule 266).
+      # the runner's temp folder, never restored from a cache another workflow could have written (rule 270).
       - name: CEF build tools and folder
         if: steps.gate.outputs.go == 'true'
         shell: bash
@@ -254,7 +254,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           v="${{ needs.plan.outputs.version }}"
-          # Read again: nothing may have published a Mac build since the gate (one run per version, rule 276).
+          # Read again: nothing may have published a Mac build since the gate (one run per version, rule 280).
           if gh release view "v$v" --json assets --jq '.assets[].name' | grep -qx 'releases.osx.json'; then
             echo "::notice::v$v already has its Mac build: nothing uploaded."
             exit 0

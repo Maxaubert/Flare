@@ -21,7 +21,7 @@
 //! tab has one notification (its identifier is the tab's, so a newer one replaces the older); a click hands the tab
 //! back as `on_click(tab)`, only for a notification this run posted. When the system cannot take the request the
 //! answer says why ([`MAC_NOT_IN_APP`], [`MAC_UNSIGNED`], [`MAC_DENIED`]) and the caller bounces the Dock icon, as
-//! it flashes the taskbar when Windows refuses a toast (regression rules 242 and 271).
+//! it flashes the taskbar when Windows refuses a toast (regression rules 246 and 275).
 
 use std::sync::Arc;
 #[cfg(windows)]
@@ -140,7 +140,7 @@ pub fn system_unavailable() -> Option<&'static str> {
 static MAC_VERDICT: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
 
 /// [`system_unavailable`] if it is already known, never blocking: `Some(why)` when the system is known to refuse
-/// (the caller falls back at once, no worker per question, rule 242), None when it may take the request or the
+/// (the caller falls back at once, no worker per question, rule 246), None when it may take the request or the
 /// answer is not read yet (the worker then reads it and answers through `on_done`).
 pub fn known_unavailable() -> Option<&'static str> {
     #[cfg(windows)]

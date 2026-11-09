@@ -1,9 +1,9 @@
-# Sourced by make-app.sh and pack.sh (port phase 8, rules 266, 270, 273 and 277): notarization, the DMG, and the
+# Sourced by make-app.sh and pack.sh (port phase 8, rules 270, 274, 277 and 281): notarization, the DMG, and the
 # cleanup on exit. Needs OUT (where notary results go), TEAM, BIN (the folder with flare-mac-app). Prints no key and no
 # credential.
 
 # What to undo when the script ends, however it ends: each caller and make_dmg add to one list and the EXIT trap runs
-# it newest first, so no one's cleanup replaces another's (rule 277).
+# it newest first, so no one's cleanup replaces another's (rule 281).
 CLEANUP=()
 run_cleanup() {
   local i
@@ -45,7 +45,7 @@ notarize() {
 }
 
 # The DMG of a signed, notarized, stapled app: the app and a link to /Applications (drag to install), signed through
-# flare-mac-app (rule 267), notarized, stapled, then attached out of sight (-nobrowse: no Finder window, no Desktop
+# flare-mac-app (rule 271), notarized, stapled, then attached out of sight (-nobrowse: no Finder window, no Desktop
 # icon) and the app inside checked there.
 #   make_dmg <app> <dmg> <identity>
 make_dmg() {

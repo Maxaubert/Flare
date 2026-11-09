@@ -69,7 +69,7 @@ pub fn candidate_plugin_dirs(env_dir: Option<&str>, exe_dir: Option<&Path>) -> V
 }
 
 /// `<app>/Contents/Resources` when `exe_dir` is an app bundle's `Contents/MacOS` (where `Flare.app` keeps its
-/// resources: `Contents/MacOS` holds only code, or the signature's seal breaks; port phase 8, rule 264).
+/// resources: `Contents/MacOS` holds only code, or the signature's seal breaks; port phase 8, rule 268).
 pub fn bundle_resources(exe_dir: &Path) -> Option<PathBuf> {
     let contents = exe_dir.parent()?;
     let is_bundle = exe_dir.file_name().is_some_and(|n| n == "MacOS")

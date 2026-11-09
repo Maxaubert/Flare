@@ -1,7 +1,7 @@
 # Releasing Flare for macOS
 
 How the Mac app is built, signed, notarized, packed for Velopack updates and published (port phase 8, regression
-rules 263 to 275). Windows releases are in `docs/shipping.md` and do not change for any of this.
+rules 267 to 279). Windows releases are in `docs/shipping.md` and do not change for any of this.
 
 ## What a Mac release is
 
@@ -17,7 +17,7 @@ For Apple Silicon, macOS 15 or later, channel `osx` of the same GitHub release `
 
 An update swaps the whole bundle: Velopack's `UpdateMac` unpacks the new `Flare.app` beside the old one and exchanges
 the two in one call (`renamex_np`, as Sparkle does), so every signature in the app is the new release's own and
-nothing is patched in place (rules 273 and 274). The packages wait in `~/Library/Caches/velopack/Flare/packages`.
+nothing is patched in place (rules 277 and 278). The packages wait in `~/Library/Caches/velopack/Flare/packages`.
 The updater inside the app stays compiled out until the repository is public, exactly as on Windows
 (`docs/updater-flip.md`; `vars.FLARE_LIVE_UPDATES`).
 
@@ -26,18 +26,18 @@ The updater inside the app stays compiled out until the repository is public, ex
 All under `tools/release/mac/`, all writing under `target/` only:
 
 - `make-app.sh`: builds the release programs and `Flare.app` (`flare-mac-app`: the CEF framework, the five helpers,
-  `flare-mcp`, the icon, the plugin), signed inside out by role (rules 263 to 269). Alone, with notary credentials, it
+  `flare-mcp`, the icon, the plugin), signed inside out by role (rules 267 to 273). Alone, with notary credentials, it
   also notarizes the app and makes a DMG; a release runs it with `FLARE_NOTARIZE=0`, because the app it makes is not
   the one that ships.
 - `pack.sh <Flare.app> <version> <Releases dir> [notes.md]`: `vpk pack` for osx-arm64. vpk adds `UpdateMac` and
   `sq.version`, and its `codesign` is `flare-mac-app` (a link named `codesign` first on vpk's `PATH`), which signs the
   whole bundle again by role at that moment, so `UpdateMac` gets no entitlements instead of Velopack's broad ones
-  (rule 273). vpk then notarizes and staples that bundle and makes the packages. The script checks the bundle inside
+  (rule 277). vpk then notarizes and staples that bundle and makes the packages. The script checks the bundle inside
   the update package (unpacked the way Velopack's updater unpacks it) and inside the portable zip:
   `codesign --verify --deep --strict`, `flare-mac-app verify` (team, Developer ID Application signer, hardened runtime,
   timestamp, each program's keys), `stapler validate`, `spctl` "source=Notarized Developer ID". Then the DMG, from
   that same bundle.
-- `update-e2e.sh`: the update proved on this Mac, headless (rule 274). Packs the throwaway versions 0.0.1 and 0.0.2,
+- `update-e2e.sh`: the update proved on this Mac, headless (rule 278). Packs the throwaway versions 0.0.1 and 0.0.2,
   installs 0.0.1 from its portable zip into a temp folder (never `/Applications`), updates it with the real
   `VelopackFeed` and `UpdateMac` with no restart, and checks the swapped bundle; nothing is opened, no window
   appears (the window server is sampled the whole time).
@@ -69,7 +69,7 @@ Two things first, both once, both Max's own (a prompt or a password on the scree
 
 1. The Developer ID key must let `codesign` in without a prompt. Today its partition list is only `apple-tool:`, so
    every Developer ID `codesign` puts a keychain prompt on the screen, and `flare-mac-app check-key` refuses before
-   anything is signed (rule 267). Fix it with (asks for the login keychain's password in the terminal):
+   anything is signed (rule 271). Fix it with (asks for the login keychain's password in the terminal):
 
    ```sh
    security set-key-partition-list -S apple-tool:,apple: -s ~/Library/Keychains/login.keychain-db
@@ -101,13 +101,13 @@ tools/release/mac/pack.sh target/mac-release/Flare.app <version> Releases notes.
   at (never the newer commit that ended the release run: a merge without a version bump also ends it with success),
   signs, packs, notarizes, staples and checks, then adds the Mac files to that release (`vpk upload github --channel
   osx --merge`, and the DMG). One run per version at a time (`concurrency: macos-app-<version>`), and the release is
-  read again just before the upload, so two quick merges cannot both publish (rule 276). Without the secrets it
+  read again just before the upload, so two quick merges cannot both publish (rule 280). Without the secrets it
   writes a notice and stops; with nothing to add (no new release, or the Mac build already there) too. It is a
   workflow of its own that starts after the Windows one has finished, so it can never fail or hold up a Windows
-  release, and `release.yml` is unchanged (rule 275).
+  release, and `release.yml` is unchanged (rule 279).
 - **By hand** (Actions, macos-app, Run workflow): the same build kept as a workflow artifact for 30 days, never
   published. Signed and notarized only when run from `main`; from any other branch the job gets no environment and
-  so no secret, and the build is ad hoc (rule 276).
+  so no secret, and the build is ad hoc (rule 280).
 - The release notes are the Windows release's own text (`gh release view v<version>`), so both say the same.
 - The runner is `macos-26` (Xcode 26). Flare needs no newer SDK: the ci macos job builds and links the whole workspace
   there (run 42533159787, 2026-11-08, image macos-26-arm64), every Flare program is built for macOS 11 or later and
@@ -118,7 +118,7 @@ tools/release/mac/pack.sh target/mac-release/Flare.app <version> Releases notes.
 
 The secrets live in a GitHub **environment** named `mac-release` that only `main` may use, never as repository
 secrets: a repository secret reaches a run by hand from any branch, and a branch can change the workflow file it runs
-(rule 276). Once:
+(rule 280). Once:
 
 1. Settings > Environments > New environment, name `mac-release`.
 2. Deployment branches and tags: Selected branches and tags, add the rule `main` (no other).
@@ -127,7 +127,7 @@ secrets: a repository secret reaches a run by hand from any branch, and a branch
 4. If any of the five were set as repository secrets before, delete them there
    (`gh secret delete <NAME> --repo Maxaubert/Flare`).
 
-None of them is ever printed, written into the repository or kept on the runner (rules 266 and 277).
+None of them is ever printed, written into the repository or kept on the runner (rules 270 and 281).
 
 | Secret | What |
 | --- | --- |
@@ -163,11 +163,11 @@ random password that only `codesign` may use and store the API key as the notary
 keychain (vpk notarizes with a profile only). The `.p12` and the `.p8` are deleted when that script ends, however it
 ends; the keychain locks itself after the job's 150 minutes without use, and the step after the packing deletes it
 whatever happened before, so no later action (the artifact, the upload, the cache) runs while a key is on the runner
-(rule 277). Notarization never takes a password on the command line: a keychain profile or an API key only.
+(rule 281). Notarization never takes a password on the command line: a keychain profile or an API key only.
 
 ## When something fails
 
-- `flare-mac-app check-key` refuses: the key would prompt; run the partition-list command above (rule 267).
+- `flare-mac-app check-key` refuses: the key would prompt; run the partition-list command above (rule 271).
 - `flare-mac-app as vpk's codesign: ...`: vpk called `codesign` with arguments the shim does not know (a new vpk), or
   with another identity than the script set. Read `crates/flare-cef/src/macos/vpk.rs` before changing `VPK_VERSION`.
 - Notarization: `target/mac-release/notary-*.json` (the DMG) or vpk's output (the app) has the submission id;

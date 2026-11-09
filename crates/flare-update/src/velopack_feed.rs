@@ -51,7 +51,7 @@ pub fn bootstrap(hooks: Hooks, aumid: &str) {
         .on_before_uninstall_fast_callback(move |_v| before_uninstall())
         .on_after_install_fast_callback(|_v| {})
         .on_after_update_fast_callback(|_v| {});
-    // macOS (port phase 8): the app is a bundle the updater swaps whole (rule 273), and there is no uninstall hook to
+    // macOS (port phase 8): the app is a bundle the updater swaps whole (rule 277), and there is no uninstall hook to
     // run (a Mac app is removed by moving it to the Bin).
     #[cfg(not(windows))]
     let _ = (aumid, before_uninstall);
@@ -138,7 +138,7 @@ pub struct VelopackFeed {
     packages_dir: PathBuf,
     busy: Arc<AtomicBool>,
     /// Whether the updater starts the new version once it is in place: always in the app; off only for the Mac
-    /// update test, which may not put the app on the screen (rule 274).
+    /// update test, which may not put the app on the screen (rule 278).
     restart: bool,
 }
 
@@ -163,7 +163,7 @@ impl VelopackFeed {
         })
     }
 
-    /// The updater swaps the bundle in and starts nothing (the Mac update test only: it runs headless, rule 274).
+    /// The updater swaps the bundle in and starts nothing (the Mac update test only: it runs headless, rule 278).
     pub fn without_restart(mut self) -> Self {
         self.restart = false;
         self

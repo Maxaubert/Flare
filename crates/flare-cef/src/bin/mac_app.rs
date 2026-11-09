@@ -13,11 +13,11 @@
 //!
 //! Run as `codesign` (`tools/release/mac/pack.sh` puts such a link first on vpk's `PATH`), it is the shim of
 //! `flare_cef::macos::vpk`: vpk's call for its update program does nothing, its call for the bundle signs the whole
-//! bundle again inside out by role and checks it (rules 270 and 273).
+//! bundle again inside out by role and checks it (rules 274 and 277).
 //!
 //! The identity is `--identity`, else `FLARE_MAC_SIGN_IDENTITY`, else ad hoc (`-`); the keychain `--keychain`, else
 //! `FLARE_SIGNING_KEYCHAIN`, else the search list. A Developer ID signs with the hardened runtime and a secure
-//! timestamp, only when the key cannot raise a prompt (rule 267), and a built or re-signed bundle is then checked.
+//! timestamp, only when the key cannot raise a prompt (rule 271), and a built or re-signed bundle is then checked.
 //! Prints the app's (or file's) path.
 
 #[cfg(target_os = "macos")]
@@ -123,7 +123,7 @@ fn main() {
     }
 }
 
-/// `vpk pack`'s `codesign` (rule 273): its update program is left for the bundle's signing, the bundle is signed
+/// `vpk pack`'s `codesign` (rule 277): its update program is left for the bundle's signing, the bundle is signed
 /// again inside out by role and checked (a Developer ID: `verify_release`; ad hoc: `codesign --verify --deep
 /// --strict`). Never returns.
 #[cfg(target_os = "macos")]

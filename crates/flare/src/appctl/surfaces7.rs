@@ -508,7 +508,7 @@ pub fn install(rc: &Rc<RefCell<AppCtl>>, post: Post, e2e: bool) {
     c.set_toast_sink(Rc::new(move |t: &Toast| {
         // macOS outside the signed `Flare.app` (a cargo run): the system cannot take the request, so no worker is
         // started to fail; the fallback (the Dock bounce) runs at once and the reason is logged once a run. In the
-        // signed app the worker asks `UNUserNotificationCenter` (the permission once, lazily; rule 271). The answer
+        // signed app the worker asks `UNUserNotificationCenter` (the permission once, lazily; rule 275). The answer
         // is read on a worker at install (`warm_up`): until it is known, the worker reads it and answers itself.
         if let Some(why) = flare_win::toast::known_unavailable() {
             if UNAVAILABLE_LOGGED.take() {

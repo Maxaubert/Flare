@@ -1,5 +1,5 @@
 //! Whether `codesign` can use a signing identity's private key without a prompt on the screen (port phase 8,
-//! rule 267). Read here, in this process, with the keychain's user interface switched off
+//! rule 271). Read here, in this process, with the keychain's user interface switched off
 //! (`SecKeychainSetUserInteractionAllowed(false)`), so the check itself can never raise one: a call that would need
 //! one fails instead. Nothing secret is read: the identity's certificate, and the key's access list (who may use
 //! it), never the key.

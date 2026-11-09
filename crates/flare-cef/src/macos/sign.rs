@@ -4,8 +4,8 @@
 //! probe scenario under the hardened runtime).
 //!
 //! The entitlements are the ones Chromium's own Mac build gives the same processes (Chromium 156.0.8078.48,
-//! `chrome/app/*-entitlements.plist`, rule 263), minus the App Sandbox keys (Flare is not sandboxed), plus what a
-//! terminal needs for the programs it runs (rule 269). Each is written with why it is there:
+//! `chrome/app/*-entitlements.plist`, rule 267), minus the App Sandbox keys (Flare is not sandboxed), plus what a
+//! terminal needs for the programs it runs (rule 273). Each is written with why it is there:
 //!
 //! - `Flare` (the browser process, the window, the terminal): `device.audio-input`, `device.camera` and
 //!   `automation.apple-events`. macOS holds the app that started a program responsible for what the program asks
@@ -17,13 +17,13 @@
 //!
 //! Never `allow-unsigned-executable-memory`, `disable-library-validation` or the dyld environment key: every Mach-O
 //! in the bundle is signed by the same team; a library downloaded later (the dictation engines) must be signed by the
-//! team too, or run in a helper of its own (rule 269). `verify_release` refuses any key a program is not given here.
+//! team too, or run in a helper of its own (rule 273). `verify_release` refuses any key a program is not given here.
 //!
 //! `codesign` with a Developer ID reads the private key from the keychain, and when the key's access list does not
 //! let it in, the system puts a SecurityAgent prompt on the screen that stays there even when `codesign` is stopped.
 //! So [`sign`] first asks [`crate::macos::keychain::check`] (which cannot raise a prompt) and refuses unless the key
 //! can be used without one; only then does `codesign` run, one at a time across processes, stopped at once if a
-//! SecurityAgent window appears anyway, and stopped after a time that grows with what it hashes (rule 267).
+//! SecurityAgent window appears anyway, and stopped after a time that grows with what it hashes (rule 271).
 
 use std::fs;
 use std::io::Read;
@@ -126,7 +126,7 @@ pub struct Entitlement {
 const AUDIO_INPUT: Entitlement = Entitlement {
     key: "com.apple.security.device.audio-input",
     why: "the microphone: programs run in the terminal (sox, ffmpeg), web pages in the panel, and dictation once it \
-          is ported (provisional until a signed dictation run, rule 269); a hardened app is refused it without this",
+          is ported (provisional until a signed dictation run, rule 273); a hardened app is refused it without this",
     usage_key: Some("NSMicrophoneUsageDescription"),
 };
 
