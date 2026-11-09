@@ -2730,6 +2730,68 @@ mod tests {
         assert_eq!(item.height, f64::from(m.cell_h));
     }
 
+    /// A rig in `cwd` with thumbnails on whose tab has shown a file in `shown`, with `name` printed and lit through
+    /// that folder alone, and then the "no" from `cwd` run out. The line has a hit, so it is never scanned again.
+    fn lit_through_a_shown_folder_and_the_no_ran_out(cwd: &Path, shown: &Path, name: &str) -> Rig {
+        let mut r = Rig::with_cwd(1.0, cwd);
+        r.ui.set_thumbs(true);
+        let taught = shown.join("one.txt").to_string_lossy().to_string();
+        let inputs = r.ui.inputs();
+        {
+            let mut i = inputs.borrow_mut();
+            i.paths.link_ranges(&taught, r.cwd.as_deref(), "a", 0);
+            i.paths.advance(BATCH_MS);
+            let ask = i.paths.take_ask().expect("an ask");
+            let hit = PathHit {
+                kind: flare_term::path_open::PathKind::File,
+                abs: taught.clone(),
+            };
+            let hits = ask.paths.iter().map(|_| Some(hit.clone())).collect();
+            i.paths.answer(&ask, Some(hits), BATCH_MS);
+            i.paths
+                .link_ranges(&taught, r.cwd.as_deref(), "a", BATCH_MS);
+        }
+        light_up(&mut r, name);
+        // The "no" from `cwd` wakes nobody: another path's answer is what has the line looked at again.
+        r.handle.with_emu(|em| em.links_revisit());
+        r.frame();
+        r.tick(40);
+        r.pump();
+        let d = r.frame();
+        assert_eq!(d.links.len(), 1, "lit through the shown folder");
+        r.tick(flare_term::path_links::NO_TTL_MS + 1);
+        r
+    }
+
+    #[test]
+    fn resting_on_a_picture_found_through_a_shown_folder_shows_it_after_the_no_for_the_cwd_ran_out()
+    {
+        let cwd = tempfile::tempdir().unwrap();
+        let shown = tempfile::tempdir().unwrap();
+        png(&shown.path().join("two.png"), 6, 3);
+        let mut r =
+            lit_through_a_shown_folder_and_the_no_ran_out(cwd.path(), shown.path(), "two.png");
+        rest_on(&mut r, 2, 0);
+        let (caption, _) = last_thumb(&r).flatten().expect("the picture is up");
+        assert_eq!(caption, "two.png  6 x 3");
+    }
+
+    #[test]
+    fn a_click_on_a_path_found_through_a_shown_folder_opens_it_after_the_no_for_the_cwd_ran_out() {
+        let cwd = tempfile::tempdir().unwrap();
+        let shown = tempfile::tempdir().unwrap();
+        std::fs::write(shown.path().join("two.pdf"), "x").unwrap();
+        let mut r =
+            lit_through_a_shown_folder_and_the_no_ran_out(cwd.path(), shown.path(), "two.pdf");
+        r.click(2, 0);
+        until("the opener call", || !r.openers.records().is_empty());
+        let rec = r.openers.records();
+        assert!(
+            matches!(&rec[0], OpenedRecord::Open(p) if p.ends_with("two.pdf")),
+            "{rec:?}"
+        );
+    }
+
     #[test]
     fn a_path_that_is_not_a_picture_never_asks_for_a_thumbnail() {
         let dir = tempfile::tempdir().unwrap();
