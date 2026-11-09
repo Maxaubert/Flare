@@ -291,7 +291,6 @@ impl AppCtl {
                 }
                 self.settings_changed();
             }
-            ModsMsg::ShowPanel { id } => self.show_mod_in_recent_tab(&id),
             ModsMsg::SetChoice { id, key, value } => {
                 let applied = self
                     .mods
@@ -1024,44 +1023,6 @@ impl AppCtl {
         }
         self.web_moved();
         let _ = reply.send(Ok(json!({})));
-    }
-
-    /// The details sheet's "Open <panel>": the mod's panel in the shell tab used last, which comes to the front. Only
-    /// while the live grant holds `panel` (the person may have turned it off on the sheet).
-    fn show_mod_in_recent_tab(&mut self, id: &str) {
-        let holds_panel = self.mods.as_ref().is_some_and(|m| {
-            matches!(
-                m.hub().grant_of_mod(id),
-                Some(flare_ctl::Grant::Mod { permissions, .. })
-                    if permissions.contains(&flare_ctl::Permission::Panel)
-            )
-        });
-        if !holds_panel {
-            log::info!("the mod's panel was not shown: it is off or does not hold panel");
-            return;
-        }
-        let tab = self
-            .model
-            .mru()
-            .iter()
-            .find(|t| self.is_shell_tab(t))
-            .cloned()
-            .or_else(|| {
-                flare_tabs::tabs::shell_tabs(&self.model.state)
-                    .first()
-                    .map(|t| t.id.clone())
-            });
-        let Some(tab) = tab else { return };
-        match self.show_mod_panel(&tab, id) {
-            Ok(spec) => {
-                let url = spec.url.clone();
-                self.web.ensure_hidden(&tab, &url, Some(spec));
-                self.model.pick(&tab);
-                self.refresh();
-                self.focus_terminal();
-            }
-            Err(e) => log::info!("the mod's panel was not shown: {}", e.message),
-        }
     }
 
     /// The `mods.state` probe: what the window and the hub hold (no token).

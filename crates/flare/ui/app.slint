@@ -761,10 +761,6 @@ export component AppWindow inherits Window {
     out property <length> sheet-turn-on-y: sheet.turn-on-y;
     out property <length> sheet-turn-on-w: sheet.turn-on-w;
     out property <length> sheet-turn-on-h: sheet.turn-on-h;
-    out property <length> sheet-panel-x: sheet.panel-x;
-    out property <length> sheet-panel-y: sheet.panel-y;
-    out property <length> sheet-panel-w: sheet.panel-w;
-    out property <length> sheet-panel-h: sheet.panel-h;
     out property <bool> pask-field-focus: pask.field-has-focus;
     out property <bool> pask-allow-armed: pask.allow-armed;
     out property <bool> pask-revealed: pask.revealed;
@@ -1663,17 +1659,14 @@ export component AppWindow inherits Window {
             name: SettingsBridge.sheet-name;
             sub: SettingsBridge.sheet-sub;
             desc: SettingsBridge.sheet-desc;
-            warnings: SettingsBridge.sheet-warnings;
             tiles: SettingsBridge.sheet-tiles;
             tall: SettingsBridge.sheet-tall;
             look: SettingsBridge.sheet-look;
             can-turn-on: SettingsBridge.sheet-can-turn-on;
-            panel: SettingsBridge.sheet-panel;
             close => { SettingsBridge.sheet-close(); }
             toggled(k, v) => { SettingsBridge.sheet-toggle(k, v); }
             chosen(k, v) => { SettingsBridge.sheet-choose(k, v); }
             turn-on => { SettingsBridge.sheet-turn-on(); }
-            open-panel => { SettingsBridge.sheet-open-panel(); }
             tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
         }
         // A plugin's question sits under the close question: that one is answered first.

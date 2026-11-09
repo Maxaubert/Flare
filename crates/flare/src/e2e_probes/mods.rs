@@ -34,7 +34,6 @@ fn plugin_sheet(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         "open": b.get_sheet_open(),
         "name": b.get_sheet_name().to_string(),
         "sub": b.get_sheet_sub().to_string(),
-        "warnings": b.get_sheet_warnings().to_string(),
         "branded": b.get_sheet_look().branded,
         "plate": b.get_sheet_look().plate,
         "tiles": tiles,
@@ -46,9 +45,7 @@ fn plugin_sheet(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         "menu_drop": a.get_sheet_menu_drop(),
         "scroll": {"y": a.get_sheet_scroll_y(), "max": a.get_sheet_scroll_max()},
         "can_turn_on": b.get_sheet_can_turn_on(),
-        "panel": b.get_sheet_panel().to_string(),
         "turn_on": {"x": a.get_sheet_turn_on_x(), "y": a.get_sheet_turn_on_y(), "w": a.get_sheet_turn_on_w(), "h": a.get_sheet_turn_on_h()},
-        "open_panel": {"x": a.get_sheet_panel_x(), "y": a.get_sheet_panel_y(), "w": a.get_sheet_panel_w(), "h": a.get_sheet_panel_h()},
     }))
 }
 

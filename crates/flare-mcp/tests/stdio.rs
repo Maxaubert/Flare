@@ -2,7 +2,9 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use flare_ctl::{CallContext, CtlError, Dispatcher, Method, Server, ServerConfig, code};
 use serde_json::{Value, json};
@@ -334,6 +336,93 @@ fn a_mods_tools_are_listed_called_and_announced_when_they_change() {
         && p["name"] == "mod_notes_append_note"
         && p["input"]["text"] == "hi"));
     drop(calls);
+    server.stop();
+}
+
+/// A server whose `panel.close` waits until its caller goes away, as a click or a wait would.
+#[derive(Default)]
+struct WaitsForCaller {
+    started: AtomicU32,
+    ended_by_cancel: AtomicU32,
+}
+
+impl Dispatcher for WaitsForCaller {
+    fn resolve_token(&self, _: &str) -> Option<flare_ctl::Grant> {
+        None
+    }
+    fn resolve_tab_token(&self, token: &str) -> Option<String> {
+        (token == "secret-7").then(|| "tab-7".to_string())
+    }
+    fn call(&self, ctx: &CallContext, m: Method, _p: Value) -> Result<Value, CtlError> {
+        if m != Method::PanelClose {
+            return Ok(json!({"open": false}));
+        }
+        self.started.fetch_add(1, Ordering::SeqCst);
+        let until = Instant::now() + Duration::from_secs(15);
+        while !ctx.cancel.is_set() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if ctx.cancel.is_set() {
+            self.ended_by_cancel.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(json!({"closed": true}))
+    }
+}
+
+fn wait_until(what: &str, ok: impl Fn() -> bool) {
+    let until = Instant::now() + Duration::from_secs(10);
+    while !ok() {
+        assert!(Instant::now() < until, "gave up waiting for {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the control channel server is Windows-only until macOS phase 4"
+)]
+fn a_cancel_during_a_call_ends_the_job_on_flares_side_and_the_next_call_still_works() {
+    let pipe = format!(r"\\.\pipe\flare-mcp-test-cancel-{}", std::process::id());
+    let srv = Arc::new(WaitsForCaller::default());
+    let server = Server::start(&pipe, ServerConfig::default(), srv.clone()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_flare-mcp"))
+        .env("FLARE_TAB_TOKEN", "secret-7")
+        .env("FLARE_CTL_PIPE", &pipe)
+        .env("FLARE_CTL_PID", std::process::id().to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut next = move || -> Value {
+        let mut line = String::new();
+        out.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).expect("stdout is JSON lines only")
+    };
+    let mut send = |v: Value| writeln!(stdin, "{v}").unwrap();
+
+    send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+    assert_eq!(next()["id"], 1);
+    send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"close_panel"}}));
+    wait_until("the call to reach Flare", || {
+        srv.started.load(Ordering::SeqCst) == 1
+    });
+    send(
+        json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2,"reason":"user"}}),
+    );
+    wait_until("Flare to end the job", || {
+        srv.ended_by_cancel.load(Ordering::SeqCst) == 1
+    });
+    // The server goes on, on a new connection, and request 2 never got a response.
+    send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"browser_state"}}));
+    let r = next();
+    assert_eq!(r["id"], 3, "request 2 got no response: {r}");
+    drop(send);
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
     server.stop();
 }
 

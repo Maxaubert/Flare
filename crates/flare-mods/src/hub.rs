@@ -85,24 +85,6 @@ pub const WARN_NETWORK_FILL: &str = "It can send the passwords you type for it t
 pub const WARN_NETWORK: &str = "It can change what it does from the internet.";
 /// `fill`: the card says what it can do, and that Flare asks each time.
 pub const WARN_FILL: &str = "Can type passwords into pages, after you approve each one.";
-/// `fill` set to "Always allow" on the details sheet: the fill goes in with no question.
-pub const WARN_FILL_ALWAYS: &str = "Fills logins with no question: Flare types a login it has for the page without asking you first.";
-
-/// The warnings for what a plugin holds with the person's choices `c` applied: what is held back gives no warning,
-/// and a fill set to "Always allow" says so in place of [`WARN_FILL`].
-pub fn choice_warnings(perms: &[Permission], c: &crate::grants::Choices) -> Vec<&'static str> {
-    let held = c.grants(perms);
-    permission_warnings(&held)
-        .into_iter()
-        .map(|w| {
-            if w == WARN_FILL && c.fills_without_asking() {
-                WARN_FILL_ALWAYS
-            } else {
-                w
-            }
-        })
-        .collect()
-}
 
 /// The warnings Settings shows with a plugin's permissions, most serious first: the full-control ones for `process`
 /// and `input`, then the combinations that reach further than either permission alone, then `network`'s own, then
@@ -213,6 +195,8 @@ pub struct ModEntry {
     pub stopped: Option<String>,
     /// Where Settings installed it from (an `https` address or `a file`), when it did (plugins phase 7).
     pub source: Option<String>,
+    /// The folder of the zip Settings installed it from: Update opens its file picker there.
+    pub folder: Option<String>,
     /// Protocol 2: its colour and logo (the card, its details sheet, its questions and menu item).
     pub brand: Option<crate::manifest::Brand>,
 }
@@ -1101,6 +1085,10 @@ impl Hub {
                     .installed
                     .get(&f.manifest.id)
                     .and_then(|i| i.source.clone()),
+                folder: g
+                    .installed
+                    .get(&f.manifest.id)
+                    .and_then(|i| i.folder.clone()),
                 brand: f.manifest.brand.clone(),
             })
             .collect();
@@ -1499,23 +1487,6 @@ mod tests {
         for w in permission_warnings(&crate::manifest::ASKABLE_V2) {
             assert!(!w.contains('\u{2014}'), "{w}");
         }
-        assert!(!WARN_FILL_ALWAYS.contains('\u{2014}'));
-    }
-
-    #[test]
-    fn the_warnings_follow_the_persons_choices() {
-        use crate::grants::{Choices, choose};
-        use Permission as P;
-        let asked = [P::Process, P::Tools, P::Fill];
-        let mut c = Choices::default();
-        assert_eq!(choice_warnings(&asked, &c), [WARN_PROCESS, WARN_FILL]);
-        // Always allow says the fill asks nothing; Access off drops its full control warning.
-        choose(&mut c, P::Fill, "always").unwrap();
-        choose(&mut c, P::Process, "off").unwrap();
-        assert_eq!(choice_warnings(&asked, &c), [WARN_FILL_ALWAYS]);
-        // Fills off: no fill warning at all, whatever "Always allow" was.
-        choose(&mut c, P::Fill, "off").unwrap();
-        assert!(choice_warnings(&asked, &c).is_empty());
     }
 
     #[test]

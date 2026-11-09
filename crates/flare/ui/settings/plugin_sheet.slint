@@ -291,19 +291,14 @@ export component PluginSheet inherits Rectangle {
     // `version · author`
     in property <string> sub;
     in property <string> desc;
-    // The warnings, one paragraph (amber), or "".
-    in property <string> warnings;
     in property <[SheetTile]> tiles;
     in property <PluginLook> look;
     // The plugin is off: the foot offers "Turn on".
     in property <bool> can-turn-on;
-    // Its panel's title when the foot offers to open it, else "".
-    in property <string> panel;
     callback close();
     callback toggled(string, bool);
     callback chosen(string, string);
     callback turn-on();
-    callback open-panel();
     callback tip(string, length, length, length, length);
 
     // The tile whose dropdown is open (-1 none) and the highlighted level in it.
@@ -317,7 +312,7 @@ export component PluginSheet inherits Rectangle {
     // The open dropdown sits this far under its tile's top: at its foot, under the value and the detail line alike.
     out property <length> menu-drop: root.tile-h - 4px;
     // The foot: its buttons, or the round of the bottom corners alone.
-    property <bool> has-foot: root.can-turn-on || root.panel != "";
+    property <bool> has-foot: root.can-turn-on;
     property <length> foot-h: root.has-foot ? 56px : 6px;
     // The box is at most the window less 24 px above and below; what does not fit scrolls.
     property <length> max-h: root.height - 48px;
@@ -335,15 +330,11 @@ export component PluginSheet inherits Rectangle {
     // The scroll: how far it can go, and where it is now (0 at the top).
     out property <length> scroll-max: max(0px, body.preferred-height - root.body-h);
     out property <length> scroll-y: -scroller.content-y;
-    // The foot's buttons (absolute css px; 0 wide when not shown).
+    // The foot's button (absolute css px; 0 wide when not shown).
     out property <length> turn-on-x: turn-on-btn.absolute-position.x;
     out property <length> turn-on-y: turn-on-btn.absolute-position.y;
     out property <length> turn-on-w: root.can-turn-on ? turn-on-btn.width : 0px;
     out property <length> turn-on-h: turn-on-btn.height;
-    out property <length> panel-x: panel-btn.absolute-position.x;
-    out property <length> panel-y: panel-btn.absolute-position.y;
-    out property <length> panel-w: root.panel != "" ? panel-btn.width : 0px;
-    out property <length> panel-h: panel-btn.height;
 
     function escape() {
         if root.menu-tile >= 0 {
@@ -519,7 +510,7 @@ export component PluginSheet inherits Rectangle {
                 }
             }
         }
-        // The description, the grid and the warnings: they scroll when the window is too short for them (the wheel,
+        // The description and the grid: they scroll when the window is too short for them (the wheel,
         // the arrow and page keys). No drag: a press goes to the tile under it at once.
         scroller := Flickable {
             y: head.preferred-height;
@@ -585,29 +576,9 @@ export component PluginSheet inherits Rectangle {
                         background: PluginInk.bg(root.look);
                     }
                 }
-                Rectangle {
-                    visible: root.warnings != "";
-                    height: root.warnings == "" ? 0px : warn-text.preferred-height + 24px;
-                    Rectangle {
-                        y: 0px;
-                        height: 1px;
-                        background: PluginInk.line(root.look);
-                    }
-                    warn-text := Text {
-                        x: 16px;
-                        y: 12px;
-                        width: parent.width - 32px;
-                        text: root.warnings;
-                        wrap: word-wrap;
-                        font-family: Theme.font-ui;
-                        font-size: 12px;
-                        color: PluginInk.warn(root.look);
-                    }
-                }
             }
         }
-        // The foot: a hairline, then Open <panel> and Turn on at the right; without them the bottom corners stay round
-        // under the last tile.
+        // The foot: a hairline, then Turn on at the right; without it the bottom corners stay round under the last tile.
         foot := Rectangle {
             y: head.preferred-height + root.body-h;
             width: parent.width;
@@ -622,15 +593,7 @@ export component PluginSheet inherits Rectangle {
                 padding-right: 16px;
                 padding-top: 12px;
                 padding-bottom: 12px;
-                spacing: root.panel != "" && root.can-turn-on ? 8px : 0px;
                 alignment: end;
-                panel-btn := SheetButton {
-                    shown: root.panel != "";
-                    look: root.look;
-                    label: "Open " + root.panel;
-                    clicked => { root.open-panel(); }
-                    escape => { root.escape(); }
-                }
                 turn-on-btn := SheetButton {
                     shown: root.can-turn-on;
                     look: root.look;

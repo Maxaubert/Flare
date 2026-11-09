@@ -3,7 +3,6 @@
 
 use std::collections::VecDeque;
 use std::io;
-use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -13,6 +12,7 @@ use crate::method::Method;
 use crate::proto::{
     CtlError, Event, Incoming, MAX_LINE, PROTOCOL, Request, parse_incoming, to_line,
 };
+use crate::session::CancelFlag;
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -26,6 +26,8 @@ pub enum ClientError {
     Protocol(String),
     /// The server answered with an error.
     Remote(CtlError),
+    /// The stop flag ([`Client::with_stop`]) was raised while the call waited.
+    Cancelled,
 }
 
 impl std::fmt::Display for ClientError {
@@ -36,6 +38,7 @@ impl std::fmt::Display for ClientError {
             ClientError::Closed => f.write_str("Flare closed the connection"),
             ClientError::Protocol(m) => write!(f, "unexpected answer from Flare: {m}"),
             ClientError::Remote(e) => write!(f, "{e}"),
+            ClientError::Cancelled => f.write_str("the call was cancelled"),
         }
     }
 }
@@ -109,7 +112,7 @@ pub struct Client<W: Wire> {
     reader: LineReader,
     next_id: u64,
     events: VecDeque<Event>,
-    never: AtomicBool,
+    stop: CancelFlag,
 }
 
 impl<W: Wire> Client<W> {
@@ -119,8 +122,15 @@ impl<W: Wire> Client<W> {
             reader: LineReader::new(MAX_LINE),
             next_id: 1,
             events: VecDeque::new(),
-            never: AtomicBool::new(false),
+            stop: CancelFlag::default(),
         }
+    }
+
+    /// A flag another thread can raise to end a call in flight: the call answers [`ClientError::Cancelled`], and
+    /// the caller drops the client so the server ends the job too. A blocking client cannot do this any other way.
+    pub fn with_stop(mut self, stop: CancelFlag) -> Self {
+        self.stop = stop;
+        self
     }
 
     /// The wire, for tests that must send bytes the library never would.
@@ -171,7 +181,9 @@ impl<W: Wire> Client<W> {
             // The server hung up first. If it left a reason (a refusal sent just before it closed),
             // that is the answer; else the connection is simply closed.
             let deadline = Some(Instant::now() + Duration::from_millis(500));
-            if let Ok(line) = self.reader.read_line(&self.wire, deadline, &self.never)
+            if let Ok(line) = self
+                .reader
+                .read_line(&self.wire, deadline, self.stop.as_atomic())
                 && let Ok(Incoming::Response(r)) = parse_incoming(&line)
                 && let Some(err) = r.error
             {
@@ -183,7 +195,7 @@ impl<W: Wire> Client<W> {
         loop {
             let line = self
                 .reader
-                .read_line(&self.wire, Some(deadline), &self.never)
+                .read_line(&self.wire, Some(deadline), self.stop.as_atomic())
                 .map_err(read_error)?;
             match parse_incoming(&line).map_err(ClientError::Protocol)? {
                 Incoming::Event(e) => {
@@ -223,7 +235,7 @@ impl<W: Wire> Client<W> {
         loop {
             match self
                 .reader
-                .read_line(&self.wire, Some(deadline), &self.never)
+                .read_line(&self.wire, Some(deadline), self.stop.as_atomic())
             {
                 Err(ReadError::Timeout) => return Ok(None),
                 Err(e) => return Err(read_error(e)),
@@ -241,7 +253,7 @@ fn read_error(e: ReadError) -> ClientError {
         ReadError::Closed => ClientError::Closed,
         ReadError::Timeout => ClientError::Timeout,
         ReadError::TooLong => ClientError::Protocol("an answer passed the size limit".into()),
-        ReadError::Stopped => ClientError::Closed,
+        ReadError::Stopped => ClientError::Cancelled,
         ReadError::Io(e) => ClientError::Io(e),
     }
 }
@@ -254,7 +266,7 @@ mod tests {
     fn serve_script(server: crate::framing::testwire::MemWire, answers: Vec<String>) {
         std::thread::spawn(move || {
             let mut r = LineReader::new(MAX_LINE);
-            let stop = AtomicBool::new(false);
+            let stop = std::sync::atomic::AtomicBool::new(false);
             for a in answers {
                 if r.read_line(
                     &server,
@@ -386,6 +398,18 @@ mod tests {
         assert!(matches!(
             cl.call(Method::PanelState, json!({}), Duration::from_millis(50)),
             Err(ClientError::Timeout)
+        ));
+    }
+
+    #[test]
+    fn a_raised_stop_flag_ends_a_call_in_flight() {
+        let (_s, c) = pair();
+        let stop = CancelFlag::default();
+        let mut cl = Client::new(c).with_stop(stop.clone());
+        stop.set();
+        assert!(matches!(
+            cl.call(Method::PanelState, json!({}), Duration::from_secs(5)),
+            Err(ClientError::Cancelled)
         ));
     }
 
