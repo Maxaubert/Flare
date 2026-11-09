@@ -104,14 +104,12 @@ export global SettingsBridge {
     in-out property <string> sheet-name;
     in-out property <string> sheet-sub;
     in-out property <string> sheet-desc;
-    in-out property <string> sheet-warnings;
     in-out property <[SheetTile]> sheet-tiles;
     in-out property <bool> sheet-tall;
     in-out property <PluginLook> sheet-look;
     // The plugin is off: the sheet offers "Turn on" (what it lists is what that approves).
     in-out property <bool> sheet-can-turn-on;
     // The title of the plugin's panel when the sheet can open it, else "".
-    in-out property <string> sheet-panel;
     // events
     callback page-chosen(string);
     callback find-edited(string);
@@ -159,7 +157,6 @@ export global SettingsBridge {
     callback sheet-toggle(string, bool);
     callback sheet-choose(string, string);
     callback sheet-turn-on();
-    callback sheet-open-panel();
     callback frame-resized(length, length);
     // The window's scale changed (a move to a monitor with another DPI keeps the logical size, so
     // frame-resized never fires): the Rust-snapped layout is laid out again.
@@ -671,7 +668,6 @@ export component SettingsPreview inherits Window {
         name: SettingsBridge.sheet-name;
         sub: SettingsBridge.sheet-sub;
         desc: SettingsBridge.sheet-desc;
-        warnings: SettingsBridge.sheet-warnings;
         tiles: SettingsBridge.sheet-tiles;
         tall: SettingsBridge.sheet-tall;
         look: SettingsBridge.sheet-look;

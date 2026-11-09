@@ -18,11 +18,13 @@
 mod browser;
 pub mod hook;
 
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
-use std::sync::Arc;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use flare_ctl::{ClientError, Method};
+use flare_ctl::{CancelFlag, ClientError, Method};
 use serde_json::{Map, Value, json};
 
 /// Protocol versions this server can speak, newest first. The client's is echoed when listed.
@@ -135,6 +137,10 @@ pub trait Channel {
     /// Starts listening for the mods' tools to change; `notify` is called for each change. Asked once the
     /// first `tools/list` has been answered. The default listens to nothing.
     fn watch_mod_tools(&mut self, _notify: Notify) {}
+
+    /// The flag that says "the call in flight was cancelled". Given once, before the first call. A channel that
+    /// honours it stops waiting and drops its connection, so Flare ends the job too. The default ignores it.
+    fn set_cancel(&mut self, _cancel: CancelFlag) {}
 }
 
 /// A tool as `tools/list` shows it.
@@ -835,10 +841,155 @@ pub fn handle_message(msg: &Value, channel: &mut dyn Channel) -> Option<Value> {
     })
 }
 
+/// How long the work already read may still run once stdin has closed. A client that closes stdin and reads on
+/// gets its answers; one that has really gone does not leave a 60 s wait running on Flare.
+const STDIN_CLOSED_GRACE: Duration = Duration::from_secs(5);
+
+/// What the stdin thread hands the serving loop, in the order it was read.
+enum Line {
+    Message(Value),
+    /// A line that is not JSON: its parse error.
+    NotJson(String),
+    Failed(std::io::Error),
+}
+
+/// The requests read and not yet answered, for `notifications/cancelled`. Keyed by the id's JSON text, so `1` and
+/// `"1"` stay two requests. Shared by the stdin thread and the serving loop.
+#[derive(Default)]
+struct Requests {
+    /// Read and not yet answered; true once cancelled.
+    open: HashMap<String, bool>,
+    /// The one the serving loop is running.
+    running: Option<String>,
+}
+
+#[derive(Default)]
+struct Flights {
+    requests: Mutex<Requests>,
+    /// Raised for the request that is running; the channel gives up on its call when it is.
+    cancel: CancelFlag,
+}
+
+/// The key of a request that may be cancelled: anything with an id and a method except `initialize` (MCP says it is
+/// never cancelled).
+fn cancellable_key(msg: &Value) -> Option<String> {
+    let method = msg.get("method")?.as_str()?;
+    let id = msg.get("id").filter(|i| i.is_string() || i.is_number())?;
+    (method != "initialize").then(|| id.to_string())
+}
+
+/// The id a `notifications/cancelled` names, or None when `msg` is not one.
+fn cancelled_key(msg: &Value) -> Option<Option<String>> {
+    if msg.get("method").and_then(Value::as_str) != Some("notifications/cancelled")
+        || msg.get("id").is_some_and(|i| !i.is_null())
+    {
+        return None;
+    }
+    Some(
+        msg.pointer("/params/requestId")
+            .filter(|i| i.is_string() || i.is_number())
+            .map(Value::to_string),
+    )
+}
+
+impl Flights {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Requests> {
+        self.requests.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The stdin thread read a request.
+    fn read(&self, msg: &Value) {
+        if let Some(key) = cancellable_key(msg) {
+            self.lock().open.insert(key, false);
+        }
+    }
+
+    /// A cancel names `key`. Unknown or finished: nothing happens.
+    fn cancel(&self, key: &str) {
+        let mut g = self.lock();
+        if let Some(cancelled) = g.open.get_mut(key) {
+            *cancelled = true;
+            if g.running.as_deref() == Some(key) {
+                self.cancel.set();
+            }
+        }
+    }
+
+    /// Stdin closed and the grace ran out: everything still open is cancelled.
+    fn cancel_all(&self) {
+        let mut g = self.lock();
+        for cancelled in g.open.values_mut() {
+            *cancelled = true;
+        }
+        if g.running.is_some() {
+            self.cancel.set();
+        }
+    }
+
+    /// The serving loop takes up `key`. False when it was cancelled while it queued: it is not run at all.
+    fn begin(&self, key: &str) -> bool {
+        let mut g = self.lock();
+        if g.open.get(key).copied().unwrap_or(false) {
+            g.open.remove(key);
+            return false;
+        }
+        g.running = Some(key.to_string());
+        self.cancel.clear();
+        true
+    }
+
+    /// The serving loop is done with `key`. True when it was cancelled: nothing is sent for it.
+    fn finish(&self, key: &str) -> bool {
+        let mut g = self.lock();
+        g.running = None;
+        g.open.remove(key).unwrap_or(false)
+    }
+}
+
+/// The stdin thread: reads lines until stdin ends and hands them on; a cancel is acted on right here, because the
+/// serving loop may be busy with the very call it names. The thread is never joined: a blocking read cannot be
+/// interrupted, and the process's exit ends it.
+fn read_stdin(
+    input: impl BufRead,
+    to_loop: mpsc::Sender<Line>,
+    flights: Arc<Flights>,
+    grace: Duration,
+    loop_done: mpsc::Receiver<()>,
+) {
+    for line in input.lines() {
+        let item = match line {
+            Err(e) => Line::Failed(e),
+            Ok(l) if l.trim().is_empty() => continue,
+            Ok(l) => match serde_json::from_str::<Value>(&l) {
+                Ok(msg) => {
+                    if let Some(key) = cancelled_key(&msg) {
+                        if let Some(key) = key {
+                            flights.cancel(&key);
+                        }
+                        continue;
+                    }
+                    flights.read(&msg);
+                    Line::Message(msg)
+                }
+                Err(e) => Line::NotJson(e.to_string()),
+            },
+        };
+        let failed = matches!(item, Line::Failed(_));
+        if to_loop.send(item).is_err() || failed {
+            return;
+        }
+    }
+    drop(to_loop);
+    // Stdin closed. The serving loop finishes what was read; past the grace, what is still open is cancelled.
+    if let Err(RecvTimeoutError::Timeout) = loop_done.recv_timeout(grace) {
+        flights.cancel_all();
+    }
+}
+
 /// Reads JSON-RPC lines from `input` until it ends, answering on `output`. Blank lines are skipped;
 /// a line that is not JSON gets a parse error with a null id.
 pub fn run(
-    input: impl BufRead,
+    input: impl BufRead + Send + 'static,
     output: impl Write,
     channel: &mut dyn Channel,
 ) -> std::io::Result<()> {
@@ -848,19 +999,46 @@ pub fn run(
 /// [`run`] that also tells `notify` how to reach the client from another thread: after the first `tools/list`
 /// the channel listens for the mods' tools to change and calls it.
 pub fn run_notifying(
-    input: impl BufRead,
-    mut output: impl Write,
+    input: impl BufRead + Send + 'static,
+    output: impl Write,
     channel: &mut dyn Channel,
     notify: Option<Notify>,
 ) -> std::io::Result<()> {
+    serve(input, output, channel, notify, STDIN_CLOSED_GRACE)
+}
+
+/// The server's loop. stdin is read on its own thread so a `notifications/cancelled` is seen while a call runs;
+/// messages are still handled one at a time and answered in the order they were read.
+fn serve(
+    input: impl BufRead + Send + 'static,
+    mut output: impl Write,
+    channel: &mut dyn Channel,
+    notify: Option<Notify>,
+    grace: Duration,
+) -> std::io::Result<()> {
+    let flights = Arc::new(Flights::default());
+    channel.set_cancel(flights.cancel.clone());
+    let (to_loop, from_stdin) = mpsc::channel();
+    // Dropped when this function returns, which tells the stdin thread the grace is over.
+    let (_loop_done_tx, loop_done) = mpsc::channel::<()>();
+    let reader_flights = Arc::clone(&flights);
+    std::thread::Builder::new()
+        .name("flare-mcp-stdin".into())
+        .spawn(move || read_stdin(input, to_loop, reader_flights, grace, loop_done))?;
     let mut watching = false;
-    for line in input.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let reply = match serde_json::from_str::<Value>(&line) {
-            Ok(msg) => {
+    for item in from_stdin {
+        let reply = match item {
+            Line::Failed(e) => return Err(e),
+            Line::NotJson(e) => Some(rpc_error(
+                &Value::Null,
+                rpc::PARSE_ERROR,
+                format!("parse error: {e}"),
+            )),
+            Line::Message(msg) => {
+                let key = cancellable_key(&msg);
+                if key.as_deref().is_some_and(|k| !flights.begin(k)) {
+                    continue;
+                }
                 let reply = handle_message(&msg, channel);
                 if !watching
                     && msg.get("method").and_then(Value::as_str) == Some("tools/list")
@@ -869,13 +1047,13 @@ pub fn run_notifying(
                     watching = true;
                     channel.watch_mod_tools(Arc::clone(n));
                 }
-                reply
+                // A cancelled request gets no response.
+                if key.as_deref().is_some_and(|k| flights.finish(k)) {
+                    None
+                } else {
+                    reply
+                }
             }
-            Err(e) => Some(rpc_error(
-                &Value::Null,
-                rpc::PARSE_ERROR,
-                format!("parse error: {e}"),
-            )),
         };
         if let Some(r) = reply {
             // One line, no embedded newlines (serde_json escapes them).
@@ -898,6 +1076,8 @@ pub struct FlareChannel {
     watching: bool,
     /// A `mods.tools` call was answered: this Flare has a mods hub, so the watcher is worth a connection.
     mods_hub_seen: bool,
+    /// Raised by the stdin thread when the call in flight is cancelled.
+    cancel: CancelFlag,
 }
 
 impl FlareChannel {
@@ -920,6 +1100,7 @@ impl FlareChannel {
             client: None,
             watching: false,
             mods_hub_seen: false,
+            cancel: CancelFlag::default(),
         }
     }
 
@@ -945,6 +1126,7 @@ impl FlareChannel {
             self.server_pid,
             self.timeout.unwrap_or(CALL_TIMEOUT),
             false,
+            &self.cancel,
         )?);
         Ok(())
     }
@@ -957,6 +1139,7 @@ impl FlareChannel {
         server_pid: Option<u32>,
         timeout: Duration,
         events: bool,
+        cancel: &CancelFlag,
     ) -> Result<flare_ctl::Client<flare_ctl::PipeEnd>, ChannelError> {
         let Some(tab_token) = tab_token else {
             return Err(ChannelError::NotRunning(
@@ -972,7 +1155,8 @@ impl FlareChannel {
             return Err(ChannelError::NotRunning("FLARE_CTL_PID is not set".into()));
         };
         let mut client = flare_ctl::connect_to_server(pipe, timeout, pid)
-            .map_err(|e| ChannelError::NotRunning(format!("could not connect: {e}")))?;
+            .map_err(|e| ChannelError::NotRunning(format!("could not connect: {e}")))?
+            .with_stop(cancel.clone());
         client
             .hello(
                 &flare_ctl::HelloParams {
@@ -1016,6 +1200,7 @@ fn watch_loop(
             server_pid,
             Duration::from_secs(2),
             true,
+            &CancelFlag::default(),
         ) {
             failures = 0;
             loop {
@@ -1064,8 +1249,16 @@ impl Channel for FlareChannel {
             .spawn(move || watch_loop(t, p, s, notify));
     }
 
+    fn set_cancel(&mut self, cancel: CancelFlag) {
+        self.cancel = cancel;
+    }
+
     fn call(&mut self, method: Method, params: Value) -> Result<Value, ChannelError> {
         for attempt in 0..2 {
+            // A tool that makes several calls stops at the next one once it is cancelled.
+            if self.cancel.is_set() {
+                return Err(ChannelError::Failed("the call was cancelled".into()));
+            }
             self.connect()?;
             let client = self.client.as_mut().expect("connected above");
             let wait = self.timeout.unwrap_or_else(|| call_wait(method));
@@ -1081,6 +1274,11 @@ impl Channel for FlareChannel {
                         code: r.code,
                         message: r.message,
                     });
+                }
+                // Cancelled: the connection is dropped, which tells Flare to end the job. Never tried again.
+                Err(ClientError::Cancelled) => {
+                    self.client = None;
+                    return Err(ChannelError::Failed("the call was cancelled".into()));
                 }
                 // A closed or broken connection (Flare restarted): drop it and try once more.
                 Err(ClientError::Closed | ClientError::Io(_)) if attempt == 0 => {
@@ -1879,7 +2077,7 @@ app", "loaded": true}))),
         ]
         .join("\n");
         let mut out = Vec::new();
-        run(input.as_bytes(), &mut out, &mut Fake::default()).unwrap();
+        run(std::io::Cursor::new(input), &mut out, &mut Fake::default()).unwrap();
         let lines: Vec<Value> = String::from_utf8(out)
             .unwrap()
             .lines()
@@ -2123,11 +2321,272 @@ app", "loaded": true}))),
         let mut ch = Watching::default();
         let mut out = Vec::new();
         let n: Notify = Arc::new(|| {});
-        run_notifying(input.as_bytes(), &mut out, &mut ch, Some(n)).unwrap();
+        run_notifying(
+            std::io::Cursor::new(input.clone()),
+            &mut out,
+            &mut ch,
+            Some(n),
+        )
+        .unwrap();
         assert_eq!(ch.watched, 1);
         // Without a notifier (`run`) nothing is watched.
         let mut ch = Watching::default();
-        run(input.as_bytes(), &mut Vec::new(), &mut ch).unwrap();
+        run(std::io::Cursor::new(input), &mut Vec::new(), &mut ch).unwrap();
         assert_eq!(ch.watched, 0);
+    }
+
+    // ---- cancels (a stdin thread, and a call the client gave up on) ----
+
+    /// A stdin the test feeds line by line; dropping the sender closes it.
+    struct Stdin {
+        rx: mpsc::Receiver<String>,
+        left: std::io::Cursor<Vec<u8>>,
+    }
+
+    impl std::io::Read for Stdin {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.left.position() as usize >= self.left.get_ref().len() {
+                match self.rx.recv() {
+                    Ok(line) => self.left = std::io::Cursor::new(line.into_bytes()),
+                    Err(_) => return Ok(0),
+                }
+            }
+            std::io::Read::read(&mut self.left, buf)
+        }
+    }
+
+    /// Everything the server wrote, in a buffer the test can read while it runs.
+    #[derive(Clone, Default)]
+    struct Stdout(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Stdout {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Stdout {
+        fn lines(&self) -> Vec<Value> {
+            String::from_utf8(self.0.lock().unwrap().clone())
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect()
+        }
+
+        fn has_id(&self, id: u64) -> bool {
+            self.lines().iter().any(|l| l["id"] == id)
+        }
+
+        /// Waits for the answer to request `id`.
+        fn wait_for(&self, id: u64) -> Value {
+            let until = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(l) = self.lines().into_iter().find(|l| l["id"] == id) {
+                    return l;
+                }
+                assert!(std::time::Instant::now() < until, "no answer to {id}");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+    }
+
+    /// A channel whose call blocks until the test lets it finish, or until it is cancelled.
+    struct Blocking {
+        cancel: CancelFlag,
+        entered: mpsc::Sender<()>,
+        finish: mpsc::Receiver<()>,
+        calls: Arc<Mutex<u32>>,
+    }
+
+    impl Channel for Blocking {
+        fn set_cancel(&mut self, cancel: CancelFlag) {
+            self.cancel = cancel;
+        }
+
+        fn call(&mut self, _m: Method, _p: Value) -> Result<Value, ChannelError> {
+            *self.calls.lock().unwrap() += 1;
+            self.entered.send(()).unwrap();
+            let until = std::time::Instant::now() + Duration::from_secs(10);
+            while std::time::Instant::now() < until {
+                if self.cancel.is_set() {
+                    return Err(ChannelError::Failed("the call was cancelled".into()));
+                }
+                if self.finish.try_recv().is_ok() {
+                    return Ok(json!({"closed": true}));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            panic!("neither cancelled nor let finish");
+        }
+    }
+
+    struct Live {
+        stdin: mpsc::Sender<String>,
+        out: Stdout,
+        entered: mpsc::Receiver<()>,
+        finish: mpsc::Sender<()>,
+        calls: Arc<Mutex<u32>>,
+        server: std::thread::JoinHandle<std::io::Result<()>>,
+    }
+
+    impl Live {
+        fn start(grace: Duration) -> Live {
+            let (stdin, rx) = mpsc::channel();
+            let (entered_tx, entered) = mpsc::channel();
+            let (finish, finish_rx) = mpsc::channel();
+            let out = Stdout::default();
+            let calls = Arc::new(Mutex::new(0));
+            let mut ch = Blocking {
+                cancel: CancelFlag::default(),
+                entered: entered_tx,
+                finish: finish_rx,
+                calls: Arc::clone(&calls),
+            };
+            let writer = out.clone();
+            let input = Stdin {
+                rx,
+                left: std::io::Cursor::new(Vec::new()),
+            };
+            let server = std::thread::spawn(move || {
+                serve(std::io::BufReader::new(input), writer, &mut ch, None, grace)
+            });
+            Live {
+                stdin,
+                out,
+                entered,
+                finish,
+                calls,
+                server,
+            }
+        }
+
+        fn send(&self, v: Value) {
+            self.stdin.send(format!("{v}\n")).unwrap();
+        }
+
+        fn call(&self, id: u64) {
+            self.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"close_panel"}}));
+        }
+
+        fn cancel(&self, id: Value) {
+            self.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":id}}));
+        }
+
+        fn entered(&self) {
+            self.entered
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the call to start");
+        }
+
+        fn close_and_join(self) {
+            drop(self.stdin);
+            self.server.join().unwrap().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_cancel_during_a_running_call_ends_it_and_it_gets_no_response() {
+        let l = Live::start(Duration::from_secs(30));
+        l.call(5);
+        l.entered();
+        l.cancel(json!(5));
+        // The server goes on: the next request is answered, and request 5 never was.
+        l.send(json!({"jsonrpc":"2.0","id":6,"method":"ping"}));
+        l.out.wait_for(6);
+        assert!(!l.out.has_id(5), "a cancelled request gets no response");
+        assert_eq!(l.out.lines().len(), 1, "a notification gets no reply");
+        l.close_and_join();
+    }
+
+    #[test]
+    fn a_cancel_for_an_unknown_or_finished_request_does_nothing() {
+        let l = Live::start(Duration::from_secs(30));
+        l.call(7);
+        l.entered();
+        l.cancel(json!(99));
+        l.cancel(json!("7"));
+        l.finish.send(()).unwrap();
+        let r = l.out.wait_for(7);
+        assert_eq!(r["result"]["isError"], false, "the call was left alone");
+        // Finished: a cancel for it now changes nothing, and the server still answers in order.
+        l.cancel(json!(7));
+        l.send(json!({"jsonrpc":"2.0","id":8,"method":"ping"}));
+        l.out.wait_for(8);
+        let lines = l.out.lines();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["id"], 7);
+        assert_eq!(lines[1]["id"], 8);
+        l.close_and_join();
+    }
+
+    #[test]
+    fn a_cancel_for_a_request_still_queued_means_it_never_runs() {
+        let l = Live::start(Duration::from_secs(30));
+        l.call(1);
+        l.entered();
+        l.call(2);
+        l.cancel(json!(2));
+        l.send(json!({"jsonrpc":"2.0","id":3,"method":"ping"}));
+        l.finish.send(()).unwrap();
+        l.out.wait_for(1);
+        l.out.wait_for(3);
+        assert!(!l.out.has_id(2));
+        assert_eq!(
+            *l.calls.lock().unwrap(),
+            1,
+            "the cancelled request reached no channel call"
+        );
+        l.close_and_join();
+    }
+
+    #[test]
+    fn initialize_is_never_cancelled() {
+        let l = Live::start(Duration::from_secs(30));
+        l.cancel(json!(1));
+        l.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+        assert_eq!(
+            l.out.wait_for(1)["result"]["serverInfo"]["name"],
+            "flare-mcp"
+        );
+        l.close_and_join();
+    }
+
+    #[test]
+    fn stdin_closing_during_a_call_lets_it_finish_and_ends_the_server_cleanly() {
+        let l = Live::start(Duration::from_secs(30));
+        l.call(4);
+        l.entered();
+        drop(l.stdin);
+        l.finish.send(()).unwrap();
+        l.server.join().unwrap().unwrap();
+        assert!(l.out.has_id(4), "the work already read is answered");
+    }
+
+    #[test]
+    fn stdin_closed_past_the_grace_cancels_the_call_so_no_thread_hangs() {
+        let l = Live::start(Duration::from_millis(30));
+        l.call(9);
+        l.entered();
+        drop(l.stdin);
+        // The channel is let go by the grace, not by the test.
+        l.server.join().unwrap().unwrap();
+        assert!(!l.out.has_id(9));
+    }
+
+    #[test]
+    fn a_cancelled_flag_stops_the_real_channel_before_it_connects() {
+        let mut ch = FlareChannel::new(Some("t1".into()), Some("no-such-pipe".into()));
+        let flag = CancelFlag::default();
+        ch.set_cancel(flag.clone());
+        flag.set();
+        match ch.call(Method::PanelClose, json!({})) {
+            Err(ChannelError::Failed(m)) => assert!(m.contains("cancelled"), "{m}"),
+            other => panic!("{other:?}"),
+        }
     }
 }

@@ -101,6 +101,13 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
 4. The connection ends when either side closes, on an error marked "closes" in section 6, or when the
    server stops. Nothing survives a reconnect: a client says `hello` again.
 
+**A connection that drops.** The server keeps reading a connection while its call runs, so a client that goes
+away (it closed the pipe, or a tool call was cancelled and `flare-mcp` dropped the connection) ends the job it
+asked for: a browser job stops at the next turn of its timer (a press it was cut short in is let go of), a
+page load is no longer waited for, and a `mods.call` is closed, so the mod's late `tools.respond` answers
+`not_found`. Lines a client sends while its call runs are kept for after it. A call that is not waiting on anything simply
+finishes; its answer has no reader.
+
 ### Order of checks for every request
 
 1. Parse the line. Not JSON: `parse_error` (null id, closes). Not an object, bad id, no method,
@@ -607,6 +614,15 @@ document) or a takeover; a ref that is not among them answers `not_found` ("look
 page. A ref whose element is gone or has no box answers `not_found` as well. Click and scroll bring the element into
 view (`DOM.scrollIntoViewIfNeeded`) and act on the middle of the first of its boxes that shows.
 
+A **click by ref** first asks the page what is at its point, after the cursor's glide and right before the press
+(`DOM.resolveNode`, then one fixed script through `Runtime.callFunctionOn`: `document.elementFromPoint` through open
+shadow roots, given only the two numbers). It lands when the element there is the target, is
+inside it, is a label of it, or wraps it (`html` and `body` wrap everything and do not count). Otherwise nothing is
+pressed and the call answers `covered` with a message such as `covered by div: Accept all`; the part after `covered by`
+is page text, cut and cleaned, and `flare-mcp` writes it between the page-content markers. A page that cannot say (no
+object, a script that throws, a point it does not place on the target) is clicked as it always was. A click by point
+names no target and is not asked about, and a look lists nothing inside a frame, so a ref cannot name it.
+
 **Click** presses with `Input.dispatchMouseEvent` (move, press, release; twice with `clickCount` 1 and 2 for
 `double`) at the point in CSS pixels, so the display scale and the browser zoom are the browser's to apply; **type**
 focuses the ref (`DOM.focus`, `not_found` if it cannot take the keyboard) and inserts the text with
@@ -802,7 +818,11 @@ whenever Flare sends `mods.changed`) so a client that supports it lists again; o
 it. It starts with or without Flare. A tool call connects (once, reconnecting after a stale
 connection), says `hello` with `tab_token` from `FLARE_TAB_TOKEN` (the pipe from `FLARE_CTL_PIPE`, and
 only if `FLARE_CTL_PID` is the process that serves it), then
-calls:
+calls (the table below). **Cancelling:** stdin is read on its own thread, so `notifications/cancelled`
+(`params.requestId`, any id but `initialize`'s) is acted on while a call runs: for the request in flight the server stops waiting and drops the
+call connection, and Flare ends the job (section 3, "A connection that drops"); a request still queued never runs; an unknown or
+finished id does nothing. A notification never gets a reply and a cancelled request gets no response. When stdin closes, what was
+already read is still answered, and whatever is still running 5 s later is cancelled the same way.
 
 | Tool | Params | Channel method |
 |---|---|---|
