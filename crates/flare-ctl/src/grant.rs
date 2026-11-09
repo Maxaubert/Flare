@@ -287,6 +287,7 @@ mod tests {
             Method::TabsProgressSet,
             Method::TabsProgressClear,
             Method::ViewAudio,
+            Method::ViewModel,
         ] {
             assert!(g.may_call(m), "agent should call {}", m.name());
         }
@@ -457,6 +458,8 @@ mod tests {
         }
         assert!(mod_with(&[P::View]).may_call(Method::ViewAudio));
         assert!(!mod_with(&[P::Network, P::Panel]).may_call(Method::ViewAudio));
+        assert!(mod_with(&[P::View]).may_call(Method::ViewModel));
+        assert!(!mod_with(&[P::Network, P::Panel]).may_call(Method::ViewModel));
         assert!(!mod_with(&[P::Network, P::Panel, P::Sessions]).may_call(Method::BarShow));
     }
 

@@ -89,6 +89,13 @@ pub fn may_show_as_app(file: &str) -> bool {
     plain_extension(file).is_some_and(|e| e == "html" || e == "htm")
 }
 
+/// True for a file a viewer of Flare's own may show when it is one of `exts`, under the same name rules as [`may_open`].
+/// It is not on the click allowlist: a click never opens such a file (Windows opens a `.stl` as a certificate list), only
+/// the tool for it shows it, inside the mini-app sandbox.
+pub fn may_show_as(file: &str, exts: &[&str]) -> bool {
+    plain_extension(file).is_some_and(|e| exts.contains(&e.as_str()))
+}
+
 /// The path as the file system names it (links and 8.3 names resolved), or None when it cannot be.
 fn canonical(abs: &str) -> Option<String> {
     let c = std::fs::canonicalize(abs).ok()?; // sync-ok: runs on the click's own worker only
@@ -367,6 +374,26 @@ pub fn resolve_html_file(cwd: &str, text: &str, home: &str) -> Option<(String, S
     may_show_as_app(&real).then_some((hit.abs, real))
 }
 
+/// A file for one of Flare's own viewers (`view.model`): resolved again in the backend like
+/// [`resolve_openable_file`] (rule 13), with the same checks on the name as typed and as the file system names it (rule
+/// 14), but the extension must be one of `exts` ([`may_show_as`]).
+pub fn resolve_file_of(
+    cwd: &str,
+    text: &str,
+    home: &str,
+    exts: &[&str],
+) -> Option<(String, String)> {
+    let gate = StatGate::unmetered(Arc::new(FsStat));
+    let hit = path_kinds(cwd, &[text.to_string()], &gate, home)
+        .into_iter()
+        .next()??;
+    if hit.kind != PathKind::File || !may_show_as(&hit.abs, exts) {
+        return None;
+    }
+    let real = canonical(&hit.abs)?;
+    may_show_as(&real, exts).then_some((hit.abs, real))
+}
+
 pub trait PathOpeners {
     /// The app Windows gives it.
     fn open_path(&self, abs: &str);
@@ -494,6 +521,37 @@ mod tests {
         ] {
             assert!(!may_show_as_app(f), "{f}");
         }
+    }
+
+    #[test]
+    fn a_file_for_a_viewer_is_one_of_its_extensions_under_the_same_name_rules() {
+        let exts = ["glb", "stl"];
+        for f in ["a.glb", "C:\\x\\B.STL"] {
+            assert!(may_show_as(f, &exts), "{f}");
+        }
+        for f in [
+            "a.exe",
+            "a.glb.exe",
+            "a.glb.",
+            "a.glb ",
+            "a.glb:stream",
+            "glb",
+        ] {
+            assert!(!may_show_as(f, &exts), "{f}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.glb"), b"x").unwrap();
+        std::fs::write(dir.path().join("b.exe"), b"x").unwrap();
+        std::fs::create_dir(dir.path().join("d.glb")).unwrap();
+        let root = dir.path().to_str().unwrap().to_string();
+        assert!(resolve_file_of(&root, "a.glb", "", &exts).is_some());
+        assert!(resolve_file_of(&root, "b.exe", "", &exts).is_none());
+        assert!(
+            resolve_file_of(&root, "d.glb", "", &exts).is_none(),
+            "a folder"
+        );
+        assert!(resolve_file_of(&root, "c.glb", "", &exts).is_none());
+        assert!(resolve_file_of(&root, r"\\server\share\a.glb", "", &exts).is_none());
     }
 
     #[test]
