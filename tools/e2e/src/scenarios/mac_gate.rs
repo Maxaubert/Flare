@@ -41,6 +41,14 @@ pub const GATED: &[(&str, &str)] = &[
     ("imagePaste", FAKE_CLAUDE),
     ("closeAsk", FAKE_CLAUDE),
     (
+        "systemMenu",
+        "Windows only: the window's system menu (Alt+Space, the strip's right click); a Mac window has none, and Option+Space types (chords.rs holds the Mac side)",
+    ),
+    (
+        "resizeEdges",
+        "Windows only: the frameless window's WM_NCHITTEST codes through its window procedure; the Mac window is titled and AppKit owns its edges (flare-win macos resize_edges holds the Mac side)",
+    ),
+    (
         "visualTour",
         "Windows only: an opt-in tour that captures the reference terminal beside Flare with PrintWindow",
     ),

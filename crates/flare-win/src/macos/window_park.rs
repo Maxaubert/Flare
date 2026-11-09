@@ -83,6 +83,76 @@ pub fn allows_off_screen(class: &AnyClass) -> bool {
 pub fn keep_windows_off_screen() {
     if let Some(window) = AnyClass::get(c"NSWindow") {
         allow_off_screen(window);
+        keep_clear(window);
+    }
+}
+
+/// `NSWindow`'s own `setAlphaValue:` and `setIgnoresMouseEvents:`, kept by `keep_clear`.
+static ORIGINAL_ALPHA: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+static ORIGINAL_IGNORE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// `setAlphaValue:` under `--e2e`: whatever is asked, the window stays at alpha 0.
+extern "C-unwind" fn alpha_stays_clear(this: *mut AnyObject, cmd: Sel, _alpha: f64) {
+    if let Some(&imp) = ORIGINAL_ALPHA.get() {
+        // SAFETY: `imp` is NSWindow's own `setAlphaValue:` (a `void (id, SEL, CGFloat)`), saved when it
+        // was replaced; it is called with the receiver and selector it was called with.
+        let f: extern "C-unwind" fn(*mut AnyObject, Sel, f64) = unsafe { std::mem::transmute(imp) };
+        f(this, cmd, 0.0);
+    }
+}
+
+/// `setIgnoresMouseEvents:` under `--e2e`: every click goes through the window to what is below.
+extern "C-unwind" fn clicks_stay_through(
+    this: *mut AnyObject,
+    cmd: Sel,
+    _flag: objc2::runtime::Bool,
+) {
+    if let Some(&imp) = ORIGINAL_IGNORE.get() {
+        // SAFETY: `imp` is NSWindow's own `setIgnoresMouseEvents:` (a `void (id, SEL, BOOL)`), saved when
+        // it was replaced.
+        let f: extern "C-unwind" fn(*mut AnyObject, Sel, objc2::runtime::Bool) =
+            unsafe { std::mem::transmute(imp) };
+        f(this, cmd, objc2::runtime::Bool::YES);
+    }
+}
+
+/// macOS under `--e2e` only (rule 336): every window of the run stays clear and click-through, whoever
+/// asks otherwise. Slint reveals a GPU window by setting its alpha back to 1 once the first frame is
+/// drawn (its `RevealOnFirstFrame`), which put the parked window on the runner's display (the Mac
+/// E2E's fourth run: "not clear and click-through" at every GPU launch). The original methods are kept
+/// and called with 0 and YES. Once per process; the real app never calls this.
+pub fn keep_clear(class: &AnyClass) {
+    let cls: *const AnyClass = class;
+    // SAFETY: as in `panels::guard`: function pointers given as the runtime's untyped `Imp` with the type
+    // encodings that say how the runtime calls them.
+    unsafe {
+        let alpha: Imp = std::mem::transmute::<extern "C-unwind" fn(*mut AnyObject, Sel, f64), Imp>(
+            alpha_stays_clear,
+        );
+        let through: Imp = std::mem::transmute::<
+            extern "C-unwind" fn(*mut AnyObject, Sel, objc2::runtime::Bool),
+            Imp,
+        >(clicks_stay_through);
+        if ORIGINAL_ALPHA.get().is_none()
+            && let Some(old) = objc2::ffi::class_replaceMethod(
+                cls.cast_mut(),
+                sel!(setAlphaValue:),
+                alpha,
+                c"v@:d".as_ptr(),
+            )
+        {
+            let _ = ORIGINAL_ALPHA.set(old as usize);
+        }
+        if ORIGINAL_IGNORE.get().is_none()
+            && let Some(old) = objc2::ffi::class_replaceMethod(
+                cls.cast_mut(),
+                sel!(setIgnoresMouseEvents:),
+                through,
+                c"v@:B".as_ptr(),
+            )
+        {
+            let _ = ORIGINAL_IGNORE.set(old as usize);
+        }
     }
 }
 

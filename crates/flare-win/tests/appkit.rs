@@ -173,8 +173,15 @@ mod mac {
 
     fn the_e2e_window_parks_clear_and_click_through_as_an_accessory() {
         let mtm = mtm();
-        let (_w, view) = window(mtm);
+        // What an --e2e run does before its first window (rules 334 and 336).
+        flare_win::window_park::keep_windows_off_screen();
+        let (w, view) = window(mtm);
         flare_win::window_park::park(view);
+        // Slint reveals a GPU window with alpha 1 after its first frame; the run keeps it clear.
+        w.setAlphaValue(1.0);
+        w.setIgnoresMouseEvents(false);
+        assert_eq!(w.alphaValue(), 0.0, "the window stays clear");
+        assert!(w.ignoresMouseEvents(), "and lets every click through");
         let r = flare_win::window_park::report(view);
         // Accessory, or still prohibited: AppKit does not move a prohibited app to accessory, and
         // this test process starts prohibited. Either way it is never in the Dock.

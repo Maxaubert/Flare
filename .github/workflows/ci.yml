@@ -114,11 +114,14 @@ jobs:
           target/release/flare-e2e --exe target/release/flare --shots e2e-out/shots --keep $E2E_FILTER 2>&1 | tee e2e-out/e2e.log
         env:
           E2E_FILTER: ""
+          # The worlds under /tmp (/private/tmp/flare-e2e-*), not the long per-user /var/folders path, so a
+          # path a scenario prints fits a row as it does on Windows.
+          TMPDIR: /tmp
       - name: Collect the worlds' logs
         if: failure()
         shell: bash
         run: |
-          for w in "${TMPDIR:-/tmp}"/flare-e2e-*; do
+          for w in /tmp/flare-e2e-*; do
             [ -d "$w" ] || continue
             n=$(basename "$w")
             mkdir -p "e2e-out/worlds/$n"

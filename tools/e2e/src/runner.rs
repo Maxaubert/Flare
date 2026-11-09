@@ -170,6 +170,12 @@ pub fn run_one(name: &str, cli: &Cli) -> i32 {
     let mut ctx = Ctx::new(s.name);
     ctx.json = true;
     ctx.exe = exe_path(cli);
+    // macOS: an absolute path, since a child started in another folder resolves a relative program
+    // against that folder there (`flare-mcp` beside the exe, started in the agent's folder).
+    #[cfg(not(windows))]
+    if let Ok(abs) = std::fs::canonicalize(&ctx.exe) {
+        ctx.exe = abs;
+    }
     ctx.packaged = cli.packaged;
     if let Some(dir) = &cli.shots {
         ctx.shots = dir.clone();
