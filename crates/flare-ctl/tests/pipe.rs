@@ -231,9 +231,17 @@ fn an_oversize_line_closes_only_that_client() {
     let mut big = vec![b'x'; 10_000];
     big.push(b'\n');
     // The server may answer and hang up as soon as it has read past the limit, before the rest of the
-    // line is written: a broken pipe here is that, not a failure (the refusal is checked below).
+    // line is written: a broken pipe here is that, not a failure (the refusal is checked below). A Unix socket
+    // whose peer has already shut it says so as ENOTCONN on macOS when the write lands after the shutdown, rather
+    // than EPIPE (seen on the CI runner), which is the same hang-up.
     if let Err(e) = bad.wire().write_all(&big) {
-        assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe, "{e}");
+        assert!(
+            matches!(
+                e.kind(),
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::NotConnected
+            ),
+            "{e}"
+        );
     }
     match bad.call(Method::PanelState, json!({}), WAIT) {
         Err(ClientError::Remote(e)) => assert_eq!(e.code, code::TOO_LARGE),
