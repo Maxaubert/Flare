@@ -383,32 +383,40 @@ fn first_session(ctx: &mut Ctx, app: &mut App, profile: &Path) -> Result<(), Str
             1_000
         },
     );
-    let from = lines(profile).len();
-    pause(ctx, 3_000);
-    let idle_lines: Vec<_> = lines(profile).into_iter().skip(from).collect();
-    let idle: Vec<String> = idle_lines
-        .iter()
-        .map(|l| text(l, "k").unwrap_or("").to_string())
-        .collect();
-    // The lines themselves too, so a lag says how long and what ran (the Mac runner wrote two main-lag lines).
-    let whole: Vec<String> = idle_lines
-        .iter()
-        .map(|l| {
-            Value::Object(l.raw.clone())
-                .to_string()
-                .chars()
-                .take(300)
-                .collect()
-        })
-        .collect();
-    let busy = if idle.is_empty() {
-        String::new()
-    } else {
-        busiest_processes()
-    };
+    // A Mac runner is a virtual machine whose timers now and then come a hundred ms late with the app idle and
+    // the machine quiet (rule 348): there the quiet gets three windows of 3 s and one silent window answers.
+    // Every other system keeps the one window.
+    let windows = if cfg!(target_os = "macos") { 3 } else { 1 };
+    let mut tries: Vec<String> = Vec::new();
+    let mut quiet = false;
+    for _ in 0..windows {
+        let from = lines(profile).len();
+        pause(ctx, 3_000);
+        let idle_lines: Vec<_> = lines(profile).into_iter().skip(from).collect();
+        if idle_lines.is_empty() {
+            quiet = true;
+            break;
+        }
+        // The lines themselves, so a lag says how long and what ran, and the busiest processes then.
+        let whole: Vec<String> = idle_lines
+            .iter()
+            .map(|l| {
+                Value::Object(l.raw.clone())
+                    .to_string()
+                    .chars()
+                    .take(300)
+                    .collect()
+            })
+            .collect();
+        tries.push(format!("{whole:?}{}", busiest_processes()));
+    }
     ctx.ok(
-        idle.is_empty(),
-        format!("an idle 3 s at the quiet level writes nothing ({idle:?}; {whole:?}{busy})"),
+        quiet,
+        format!(
+            "an idle 3 s at the quiet level writes nothing ({} noisy window(s) first: {})",
+            tries.len(),
+            tries.join(" / ")
+        ),
     );
 
     // PT: run.mjs:5266-5277 A STALL: the UI thread is held for 2.6 s. The watchdog writes one
