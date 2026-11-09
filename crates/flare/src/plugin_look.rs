@@ -197,6 +197,7 @@ mod tests {
         flare_mods::manifest::parse_plugin(&format!(
             r#"{{"id":"vault","name":"Vault","version":"0.2.0","protocol":2,"description":"Fills logins.","author":"someone",
             "permissions":["tools","process","fill"],"helper":{{"command":"bin/vault.exe"}},
+            "helpers":{{"macos":{{"command":"bin/vault"}}}},
             "tools":[{{"name":"fill_login","description":"d","input_schema":{{"type":"object"}}}}]{brand}}}"#
         ))
         .unwrap()

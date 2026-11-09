@@ -1,7 +1,8 @@
 //! A plugin's helper program (plugins phase 7, design 4, 10 and 13): started while the plugin is on, stopped when it
 //! turns off, and never outliving Flare.
 //!
-//! - **Which program.** Only the manifest's `helper.command`, an `.exe` inside the plugin folder, checked again when it
+//! - **Which program.** Only the manifest's `helper.command` (on a Mac `helpers.macos.command`, rule 284), an `.exe`
+//!   (on a Mac an executable that is not quarantined, rule 285) inside the plugin folder, checked again when it
 //!   starts (`paths::program_inside`: no `..`, no absolute path, and it must resolve inside the folder, so a link
 //!   swapped in since the scan is refused). It is started by its canonical path, in the plugin folder, with the
 //!   manifest's arguments (at most 16 of 200 characters), no console window and stdin closed. Only a plugin that is on
@@ -18,8 +19,18 @@
 //!
 //! Everything that waits (the start, the reads of its output, the wait for its end) runs on threads of its own; the
 //! calls the window makes ([`Host::start`], [`Host::stop`]) return at once.
-// Off Windows the spawn is refused until phase 6, so the log, the pump and the policy fields are unused there.
-#![cfg_attr(not(windows), allow(dead_code))]
+//!
+//! **macOS** (port phase 6, regression rule 280): no job object, the same guarantees. The helper starts in a session
+//! and process group of its own (`setsid` between fork and exec), with a guard
+//! ([`flare_proc::guard`]): Flare's own executable run as an orphan in that session, in a group of its own, holding one
+//! end of a socket pair whose other end only Flare holds. The guard ends the whole tree (the group, the session and
+//! every descendant it has seen, so a process that left the group or the session is caught too) when Flare lets its
+//! end go (a stop), when the helper ends (a crash, as the end of a job's last handle does), or when Flare is gone (its
+//! exit or a crash: the kernel closes Flare's end and the guard also watches Flare's pid). The helper itself is reaped
+//! by its own thread, which first waits for its end without reaping it, so a stop never signals a recycled pid, and
+//! which ends the session and the group itself before the reap, should the helper have killed its guard.
+// Off Windows and macOS the spawn is refused, so the log, the pump and the policy fields are unused there.
+#![cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -30,7 +41,7 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Child;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -70,6 +81,7 @@ pub const STOPPED_HELPER: &str = "Stopped: its program ended again after 3 resta
 /// How long an update or a removal waits for a stopped helper's processes to end before it goes on anyway.
 pub const STOP_WAIT: Duration = Duration::from_secs(5);
 /// The most processes of one helper's job [`Host::wait_stopped`] waits on (the job's count covers the rest).
+#[cfg(windows)]
 const PIDS_MAX: usize = 64;
 
 /// Where a plugin's helper log is: `<logs>\<id>.log`.
@@ -83,7 +95,8 @@ pub struct Spec {
     pub id: String,
     /// The canonical plugin folder.
     pub folder: PathBuf,
-    /// `helper.command`, relative to the folder.
+    /// The command of this system's helper (`helper.command` on Windows, `helpers.macos.command` on a Mac), relative
+    /// to the folder.
     pub command: String,
     pub args: Vec<String>,
     /// The plugin's own grant token.
@@ -146,16 +159,15 @@ pub enum Note {
 /// A process of a stopped job, to wait on.
 #[cfg(windows)]
 type ProcHandle = OwnedHandle;
-/// None can exist off Windows until phase 6.
+/// None is kept off Windows: macOS waits on the job's own state ([`Job::active`]).
 #[cfg(not(windows))]
 type ProcHandle = std::convert::Infallible;
 
-/// macOS: phase 6 of the port plan (process groups plus a reaper). No job can be made until then, so
-/// no helper starts.
-#[cfg(not(windows))]
+/// Neither Windows nor macOS: no job can be made, so no helper starts.
+#[cfg(not(any(windows, target_os = "macos")))]
 struct Job(std::convert::Infallible);
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 impl Job {
     fn terminate(&self) {
         match self.0 {}
@@ -167,6 +179,102 @@ impl Job {
 
     fn active(&self) -> u32 {
         match self.0 {}
+    }
+}
+
+/// macOS: the helper's group (its pid is the group's and the session's id) and Flare's end of its guard. Dropping
+/// it, or [`Job::terminate`], lets the guard end the whole tree, as closing a kill-on-close job does.
+#[cfg(target_os = "macos")]
+struct Job {
+    leader: u32,
+    /// The guard process, to wait on (None when it was gone before its pid was read).
+    guard_id: Option<flare_proc::guard::GuardId>,
+    state: Mutex<MacJob>,
+}
+
+#[cfg(target_os = "macos")]
+struct MacJob {
+    guard: Option<flare_proc::guard::Guard>,
+    /// The helper has ended (seen, not yet reaped): its pid may no longer be signalled once it is reaped.
+    ended: bool,
+    /// Flare's own pass over the session and group ran ([`Job::finish`]).
+    swept: bool,
+    /// The helper is reaped and nothing of its tree is left: [`Job::active`] is 0.
+    done: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl Job {
+    fn new(leader: u32, guard: Option<flare_proc::guard::Guard>) -> Self {
+        Self {
+            leader,
+            guard_id: guard.as_ref().and_then(|g| g.id()),
+            state: Mutex::new(MacJob {
+                guard,
+                ended: false,
+                swept: false,
+                done: false,
+            }),
+        }
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, MacJob> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Ends every process of the tree (no wait): the guard is let go, and the helper itself is killed while its pid
+    /// is still its own (not reaped: its thread reaps only after it marks the end, under this lock).
+    fn terminate(&self) {
+        let mut s = self.state();
+        if let Some(mut g) = s.guard.take() {
+            g.release();
+        }
+        if !s.ended {
+            flare_proc::signal(self.leader, flare_proc::Signal::Kill);
+        }
+    }
+
+    /// Nothing to hold per process: [`Job::active`] reads the job's own state.
+    fn processes(&self) -> Vec<ProcHandle> {
+        Vec::new()
+    }
+
+    /// 1 until the helper's thread has reaped it and ended what was left of its tree ([`Job::finish`]), else 0.
+    fn active(&self) -> u32 {
+        u32::from(!self.state().done)
+    }
+
+    /// The helper's end, on its thread, once `seen_unreaped` says whether its end was seen with its pid still held
+    /// (`waitid(WNOWAIT)`). In this order (rule 282): it is marked ended, before anything can reap it, so a stop that
+    /// races never signals a recycled pid; its guard is let go and waited for (at most [`STOP_WAIT`]); Flare's own pass
+    /// ends the session and the group (a guard the helper killed, or one too slow), while the unreaped helper still
+    /// holds the ids, so the pass cannot reach a group or session that reuses them; only then is it reaped by `reap`.
+    /// When the end could not be seen unreaped (`waitid` failed, say `ECHILD`), it is reaped first and the pass runs
+    /// after, on ids an empty session no longer holds (a window of a moment).
+    fn finish<R>(&self, seen_unreaped: bool, reap: impl FnOnce() -> R) -> R {
+        self.state().ended = true;
+        let out = if seen_unreaped {
+            self.end_tree();
+            reap()
+        } else {
+            let out = reap();
+            self.end_tree();
+            out
+        };
+        self.state().done = true;
+        out
+    }
+
+    /// The guard let go and waited for, then Flare's pass over the session and the group.
+    fn end_tree(&self) {
+        self.terminate();
+        if let Some(id) = self.guard_id
+            && !id.wait_gone(STOP_WAIT)
+        {
+            log::warn!("the guard of a plugin helper did not end in time");
+        }
+        flare_proc::guard::end_session(self.leader);
+        self.state().swept = true;
     }
 }
 
@@ -651,7 +759,15 @@ impl Host {
                     None => {
                         // Stopped while it started.
                         drop(g);
-                        self.end_job(id, seq, job);
+                        self.end_job(id, seq, Arc::clone(&job));
+                        // macOS: the killed helper is reaped here, after its end is marked (rule 282), or it would
+                        // stay a zombie and every wait for the stop (an update's, a removal's) would run to its timeout.
+                        #[cfg(target_os = "macos")]
+                        {
+                            let mut child = child;
+                            let unreaped = flare_proc::guard::wait_ended_unreaped(child.id());
+                            let _ = job.finish(unreaped, || child.wait()); // sync-ok: the helper's own thread
+                        }
                         return;
                     }
                 }
@@ -678,8 +794,48 @@ impl Host {
         }
     }
 
-    /// macOS: phase 6 of the port plan. The folder check still runs; then the start is refused.
-    #[cfg(not(windows))]
+    /// macOS: an executable file inside the folder, started by its canonical path in a session and group of its own
+    /// with its guard ([`flare_proc::guard`]), in the plugin folder, stdin closed, its output to the log.
+    #[cfg(target_os = "macos")]
+    fn spawn(&self, spec: &Spec) -> Result<(Child, Job), String> {
+        let program = crate::paths::unix_program_inside(&spec.folder, &spec.command)
+            .map_err(|r| format!("helpers.macos.command {r}"))?;
+        let mut cmd = Command::new(&program);
+        cmd.args(&spec.args)
+            .current_dir(&spec.folder)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for var in ENV_REMOVED {
+            cmd.env_remove(var);
+        }
+        cmd.env(ENV_TOKEN, &spec.token)
+            .env(flare_ctl::ENV_PIPE, &self.shared.pipe);
+        let pending = flare_proc::guard::guard_command(&mut cmd)
+            .map_err(|e| format!("its guard could not be made: {e}"))?;
+        let mut child = cmd.spawn().map_err(|e| {
+            if e.raw_os_error() == Some(flare_proc::guard::NO_GUARD) {
+                "its guard could not start".to_string()
+            } else {
+                e.to_string()
+            }
+        })?; // sync-ok: the helper's own thread
+        let job = Job::new(child.id(), Some(pending.started()));
+        let log = Arc::new(Mutex::new(Log::open(
+            log_file(&self.shared.logs, &spec.id),
+            self.shared.log_max,
+        )));
+        if let Some(out) = child.stdout.take() {
+            pump(out, Arc::clone(&log));
+        }
+        if let Some(err) = child.stderr.take() {
+            pump(err, log);
+        }
+        Ok((child, job))
+    }
+
+    /// Neither Windows nor macOS. The folder check still runs; then the start is refused.
+    #[cfg(not(any(windows, target_os = "macos")))]
     fn spawn(&self, spec: &Spec) -> Result<(Child, Job), String> {
         crate::paths::program_inside(&spec.folder, &spec.command)
             .map_err(|r| format!("helper.command {r}"))?;
@@ -731,6 +887,14 @@ impl Host {
 
     /// Waits for the helper to end (its own thread), then starts it again or stops it, by the policy.
     fn wait_for_end(&self, id: &str, seq: u64, mut child: Child, job: Arc<Job>) {
+        // macOS: its end is seen before it is reaped, so a stop that races it never signals a recycled pid; the guard,
+        // then Flare's own pass, end what is left of the tree (a crash ends it all, as a job's last handle does).
+        #[cfg(target_os = "macos")]
+        let status = {
+            let unreaped = flare_proc::guard::wait_ended_unreaped(child.id());
+            job.finish(unreaped, || child.wait()) // sync-ok: the helper's own thread
+        };
+        #[cfg(not(target_os = "macos"))]
         let status = child.wait(); // sync-ok: the helper's own thread
         drop(job);
         let code = status.ok().and_then(|s| s.code());
@@ -782,7 +946,7 @@ fn pump(mut from: impl Read + Send + 'static, log: Arc<Mutex<Log>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     use std::sync::mpsc;
 
     /// A plugin folder whose `helper.exe` is a copy of the system's cmd.exe (a real console program).
@@ -1027,5 +1191,516 @@ mod tests {
             CloseHandle(h);
             ok != 0 && code == STILL_ACTIVE
         }
+    }
+
+    // ---- macOS (port phase 6): the group, the guard, and no survivor --------------------------------------------
+
+    /// A plugin folder whose `helper` is a shell script that runs `/bin/sh` with the helper's arguments.
+    #[cfg(target_os = "macos")]
+    fn folder_with_sh() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let h = dir.path().join("helper");
+        fs::write(&h, "#!/bin/sh\nexec /bin/sh \"$@\"\n").unwrap();
+        fs::set_permissions(&h, fs::Permissions::from_mode(0o755)).unwrap();
+        dir
+    }
+
+    /// Marks `path` as downloaded, as a browser does (the attribute only; nothing is asked of Gatekeeper).
+    #[cfg(target_os = "macos")]
+    fn quarantine(path: &Path) {
+        use std::os::unix::ffi::OsStrExt;
+        let p = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        let value = b"0083;6730f000;Safari;";
+        // SAFETY: NUL-terminated strings and a buffer of the length passed, all alive for the call.
+        let r = unsafe {
+            libc::setxattr(
+                p.as_ptr(),
+                c"com.apple.quarantine".as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+                0,
+            )
+        };
+        assert_eq!(r, 0, "setxattr: {}", std::io::Error::last_os_error());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn mac_spec(dir: &Path, args: &[&str]) -> Spec {
+        Spec {
+            command: "helper".into(),
+            ..spec(dir, args)
+        }
+    }
+
+    /// The helper's script for a tree that tries every way out: a child, a job in a group of its own (`set -m`), an
+    /// orphan grandchild (its subshell ends), and a process that leaves the session (`setsid`, made by this test binary,
+    /// [`escapee`]). It writes their pids to `pids` in the plugin folder, then `ready`, and waits.
+    #[cfg(target_os = "macos")]
+    fn tree_script() -> String {
+        let me = std::env::current_exe().unwrap();
+        format!(
+            "echo $$ >> pids; sleep 300 & echo $! >> pids; \
+             set -m; sleep 300 & echo $! >> pids; set +m; \
+             (sleep 300 & echo $! > orphan.tmp; mv orphan.tmp orphan) & \
+             while [ ! -f orphan ]; do sleep 0.05; done; cat orphan >> pids; \
+             FLARE_HELPER_ESCAPE=\"$PWD\" '{}' helper::tests::escapee --exact >/dev/null 2>&1 & \
+             while [ ! -f escaped ]; do sleep 0.05; done; cat escaped >> pids; touch ready; wait",
+            me.display()
+        )
+    }
+
+    /// The pids `tree_script` wrote, once it is ready: the helper, its child, the job, the orphan, the escapee.
+    #[cfg(target_os = "macos")]
+    fn tree_pids(folder: &Path) -> Vec<u32> {
+        wait_until("the helper's tree is up", || folder.join("ready").exists());
+        let pids: Vec<u32> = fs::read_to_string(folder.join("pids"))
+            .unwrap()
+            .lines()
+            .map(|l| l.trim().parse().unwrap())
+            .collect();
+        assert_eq!(pids.len(), 5, "{pids:?}");
+        let lead = pids[0];
+        assert_eq!(
+            flare_proc::session_of(lead),
+            Some(lead),
+            "the helper leads a session"
+        );
+        assert_ne!(
+            flare_proc::stat(pids[2]).unwrap().pgid,
+            lead,
+            "the job left the group"
+        );
+        assert_eq!(
+            flare_proc::session_of(pids[4]),
+            Some(pids[4]),
+            "the escapee left the session"
+        );
+        // Let the guard see the escapee (it notes descendants every tick; the escapee stays the shell's child, so any
+        // tick from here on sees it). Generous, for a loaded run: a stop notes descendants again before each pass, but
+        // a helper killed from outside orphans the escapee at once.
+        std::thread::sleep(flare_proc::guard::TICK * 8);
+        pids
+    }
+
+    /// Kills the listed pids when a test ends, so a failed one leaves no process behind.
+    #[cfg(target_os = "macos")]
+    struct Reap(Vec<u32>);
+
+    #[cfg(target_os = "macos")]
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            for p in &self.0 {
+                flare_proc::signal(*p, flare_proc::Signal::Kill);
+            }
+        }
+    }
+
+    /// Not a test on its own: a guard started by this binary's tests runs as this test.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn guard_entry() {
+        flare_proc::guard::run_if_guard();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn all_gone(pids: &[u32]) {
+        wait_until("every process of the tree has ended", || {
+            pids.iter().all(|p| !flare_proc::alive(*p))
+        });
+        assert!(
+            flare_proc::guard::wait_group_gone(pids[0], STOP_WAIT),
+            "the group is empty"
+        );
+    }
+
+    /// Not a test on its own: run by the tree script with `FLARE_HELPER_ESCAPE` set, it leaves its session, writes its
+    /// pid to `escaped`, and sleeps.
+    #[test]
+    fn escapee() {
+        let Some(dir) = std::env::var_os("FLARE_HELPER_ESCAPE") else {
+            return;
+        };
+        #[cfg(target_os = "macos")]
+        {
+            let dir = PathBuf::from(dir);
+            let pid = std::process::id();
+            assert!(become_session_leader(), "setsid");
+            fs::write(dir.join("escaped.tmp"), format!("{pid}\n")).unwrap();
+            fs::rename(dir.join("escaped.tmp"), dir.join("escaped")).unwrap();
+            std::thread::sleep(Duration::from_secs(300));
+        }
+        #[cfg(not(target_os = "macos"))]
+        drop(dir);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn become_session_leader() -> bool {
+        unsafe extern "C" {
+            fn setsid() -> i32;
+        }
+        // SAFETY: no arguments; -1 means failure.
+        unsafe { setsid() != -1 }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn mac_host(max_restarts: usize) -> (Host, tempfile::TempDir, mpsc::Receiver<Note>) {
+        flare_proc::guard::use_test_entry("helper::tests::guard_entry").unwrap();
+        let logs = tempfile::tempdir().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let host = Host::with_policy(
+            logs.path().to_path_buf(),
+            "/tmp/flare-test.sock".into(),
+            move |n| {
+                let _ = tx.send(n);
+            },
+            max_restarts,
+            RESTART_WINDOW,
+            LOG_MAX,
+        );
+        (host, logs, rx)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_the_helper_gets_its_token_and_channel_but_not_the_tab_secret_and_logs_its_output() {
+        let dir = folder_with_sh();
+        let (host, logs, rx) = mac_host(0);
+        host.start(mac_spec(dir.path(), &["-c", "env | grep FLARE_"]));
+        let started = rx.recv_timeout(Duration::from_secs(10)).expect("a note");
+        assert!(matches!(started, Note::Started { .. }), "{started:?}");
+        // It ends at once: with no restart allowed it stays stopped.
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(10)),
+            Ok(Note::Stopped { .. })
+        ));
+        let log = log_file(logs.path(), "demo");
+        wait_until("the log has the variables", || {
+            fs::read_to_string(&log).is_ok_and(|t| t.contains("FLARE_PLUGIN_TOKEN"))
+        });
+        let text = fs::read_to_string(&log).unwrap();
+        assert!(text.contains("FLARE_PLUGIN_TOKEN=tok-123"), "{text}");
+        assert!(
+            text.contains("FLARE_CTL_PIPE=/tmp/flare-test.sock"),
+            "{text}"
+        );
+        assert!(!text.contains("FLARE_TAB_TOKEN"), "{text}");
+        assert!(!text.contains("FLARE_RESUME_ID"), "{text}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_a_stopped_helper_leaves_no_process_and_is_not_restarted() {
+        let dir = folder_with_sh();
+        let (host, _logs, rx) = mac_host(MAX_RESTARTS);
+        host.start(mac_spec(dir.path(), &["-c", &tree_script()]));
+        let Note::Started { pid, .. } = rx.recv_timeout(Duration::from_secs(10)).unwrap() else {
+            panic!("not started");
+        };
+        let pids = tree_pids(dir.path());
+        let _reap = Reap(pids.clone());
+        assert_eq!(pids[0], pid);
+        assert!(pids.iter().all(|p| flare_proc::alive(*p)));
+        // The plugin is turned off (or unloaded, or updated): stop, then the wait an update makes.
+        assert!(host.stop_and_wait("demo", STOP_WAIT));
+        all_gone(&pids);
+        assert!(!host.is_running("demo"));
+        assert!(
+            rx.recv_timeout(Duration::from_millis(800)).is_err(),
+            "no restart after a stop"
+        );
+    }
+
+    /// A stop that lands while the helper is being started (a plugin turned off, updated or removed straight after it
+    /// was turned on) reaps what was spawned: no zombie is left in its group, so the wait an update or a removal makes
+    /// returns at once instead of running to its timeout (found by the app's update test on a Mac, rule 282).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_a_helper_stopped_while_it_starts_is_reaped_and_the_wait_returns() {
+        let dir = folder_with_sh();
+        let (host, _logs, _rx) = mac_host(0);
+        for i in 0..30 {
+            host.start(mac_spec(dir.path(), &["-c", "sleep 60"]));
+            if i % 3 == 1 {
+                std::thread::sleep(Duration::from_millis(i));
+            }
+            host.stop("demo");
+            // Without the reap the wait runs to its timeout and says false.
+            assert!(
+                host.wait_stopped("demo", STOP_WAIT),
+                "start {i}: the stopped helper was never reaped"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_a_killed_helper_takes_its_whole_tree_with_it() {
+        let dir = folder_with_sh();
+        let (host, _logs, rx) = mac_host(0);
+        host.start(mac_spec(dir.path(), &["-c", &tree_script()]));
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(10)),
+            Ok(Note::Started { .. })
+        ));
+        let pids = tree_pids(dir.path());
+        let _reap = Reap(pids.clone());
+        // Killed from outside: a crash of the helper, which a job's end would follow on Windows.
+        assert!(flare_proc::signal(pids[0], flare_proc::Signal::Kill));
+        all_gone(&pids);
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(10)),
+            Ok(Note::Stopped { .. })
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_stop_all_ends_every_helper_tree() {
+        let a = folder_with_sh();
+        let b = folder_with_sh();
+        let (host, _logs, rx) = mac_host(MAX_RESTARTS);
+        host.start(mac_spec(a.path(), &["-c", &tree_script()]));
+        host.start(Spec {
+            id: "other".into(),
+            ..mac_spec(b.path(), &["-c", &tree_script()])
+        });
+        for _ in 0..2 {
+            assert!(matches!(
+                rx.recv_timeout(Duration::from_secs(10)),
+                Ok(Note::Started { .. })
+            ));
+        }
+        let mut pids = tree_pids(a.path());
+        pids.extend(tree_pids(b.path()));
+        let _reap = Reap(pids.clone());
+        host.stop_all();
+        assert!(host.running().is_empty());
+        wait_until("every process of both trees has ended", || {
+            pids.iter().all(|p| !flare_proc::alive(*p))
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_a_helper_that_keeps_ending_is_started_three_times_more_then_stopped() {
+        let dir = folder_with_sh();
+        let (host, _logs, rx) = mac_host(MAX_RESTARTS);
+        host.start(mac_spec(
+            dir.path(),
+            &["-c", "sleep 300 & echo $! >> pids; exit 3"],
+        ));
+        let mut notes = Vec::new();
+        loop {
+            let n = rx.recv_timeout(Duration::from_secs(30)).expect("a note");
+            let end = matches!(n, Note::Stopped { .. });
+            notes.push(n);
+            if end {
+                break;
+            }
+        }
+        let starts = notes
+            .iter()
+            .filter(|n| matches!(n, Note::Started { .. }))
+            .count();
+        let restarts = notes
+            .iter()
+            .filter(|n| matches!(n, Note::Restarted { .. }))
+            .count();
+        assert_eq!((starts, restarts), (4, 3), "{notes:?}");
+        // Each start left a sleeping child; each end took it along.
+        let pids: Vec<u32> = fs::read_to_string(dir.path().join("pids"))
+            .unwrap()
+            .lines()
+            .map(|l| l.trim().parse().unwrap())
+            .collect();
+        assert_eq!(pids.len(), 4, "{pids:?}");
+        wait_until("no child of any start is left", || {
+            pids.iter().all(|p| !flare_proc::alive(*p))
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_only_an_executable_inside_the_folder_starts() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = folder_with_sh();
+        fs::write(dir.path().join("plain"), "#!/bin/sh\n").unwrap();
+        // A Windows program, executable or not, and a downloaded one (rule 285): refused before anything runs.
+        for name in ["run.exe", "fetched"] {
+            fs::copy(dir.path().join("helper"), dir.path().join(name)).unwrap();
+            fs::set_permissions(dir.path().join(name), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        quarantine(&dir.path().join("fetched"));
+        assert!(crate::paths::quarantined(&dir.path().join("fetched")));
+        assert!(!crate::paths::quarantined(&dir.path().join("helper")));
+        let (host, _logs, rx) = mac_host(0);
+        for (bad, why) in [
+            ("../helper", "'..'"),
+            ("/bin/sh", "absolute"),
+            ("missing", "does not exist"),
+            ("plain", "not executable"),
+            ("run.exe", "Windows program"),
+            ("bin\\helper", "'/'"),
+            ("fetched", "quarantined"),
+        ] {
+            let mut s = mac_spec(dir.path(), &[]);
+            s.command = bad.into();
+            host.start(s);
+            match rx.recv_timeout(Duration::from_secs(10)).expect("a note") {
+                Note::Stopped { why: w, .. } => {
+                    assert!(
+                        w.contains("helpers.macos.command") && w.contains(why),
+                        "{bad}: {w}"
+                    )
+                }
+                other => panic!("{bad} started: {other:?}"),
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_no_helper_process_outlives_a_crash_of_flare() {
+        // A stand-in for Flare (this test binary, [`fake_flare`]) starts the helper's tree and is then killed with
+        // SIGKILL: no exit code of its own runs, only the kernel's closing of its descriptors.
+        let dir = folder_with_sh();
+        let me = std::env::current_exe().unwrap();
+        // Killed on a failed assertion too, so a failing run leaves no stand-in (and so no tree) behind.
+        struct Standin(std::process::Child);
+        impl Drop for Standin {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut flare = Standin(
+            std::process::Command::new(me)
+                .args(["helper::tests::fake_flare", "--exact", "--nocapture"])
+                .env("FLARE_HELPER_FAKE", dir.path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let pids = tree_pids(dir.path());
+        let _reap = Reap(pids.clone());
+        assert!(pids.iter().all(|p| flare_proc::alive(*p)));
+        assert_eq!(
+            flare_proc::stat(pids[0]).unwrap().ppid,
+            flare.0.id(),
+            "the helper is the stand-in's child"
+        );
+        flare.0.kill().unwrap();
+        flare.0.wait().unwrap();
+        all_gone(&pids);
+    }
+
+    /// Rule 280: a helper that finds its guard and kills it by pid still has its session and its group ended when it
+    /// stops, by Flare's own pass (`end_session`): a `killpg` of the group alone missed the `set -m` job.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_a_helper_whose_guard_was_killed_still_has_its_session_and_group_ended() {
+        let dir = folder_with_sh();
+        let (host, _logs, rx) = mac_host(MAX_RESTARTS);
+        host.start(mac_spec(dir.path(), &["-c", &tree_script()]));
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(10)),
+            Ok(Note::Started { .. })
+        ));
+        let pids = tree_pids(dir.path());
+        let _reap = Reap(pids.clone());
+        let lead = pids[0];
+        // The guard: an orphan in the helper's session with a group of its own.
+        let guards: Vec<u32> = flare_proc::table()
+            .into_iter()
+            .filter(|r| {
+                r.ppid == 1
+                    && r.pgid == r.pid
+                    && r.pid != lead
+                    && flare_proc::session_of(r.pid) == Some(lead)
+            })
+            .map(|r| r.pid)
+            .collect();
+        assert_eq!(guards.len(), 1, "{guards:?}");
+        assert!(flare_proc::signal(guards[0], flare_proc::Signal::Kill));
+        wait_until("the guard is gone", || !flare_proc::alive(guards[0]));
+        assert!(pids[..4].iter().all(|p| flare_proc::alive(*p)));
+        assert!(host.stop_and_wait("demo", STOP_WAIT));
+        // The helper, its child, the `set -m` job and the orphan were all in its session. (The escapee left the
+        // session and only the guard knew it: a guard killed by pid cannot end it, the documented gap.)
+        wait_until("the session has ended", || {
+            pids[..4].iter().all(|p| !flare_proc::alive(*p))
+        });
+    }
+
+    /// Rule 282: the helper is marked ended before anything reaps it, also when its end could not be seen unreaped
+    /// (`waitid` failed, say `ECHILD` with SIGCHLD ignored), so a stop that races the reap never kills a recycled pid.
+    /// When it was seen unreaped, Flare's pass over its session and group runs before the reap (the ids are still held).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_the_end_is_marked_before_the_reap_and_the_pass_runs_while_the_ids_are_held() {
+        // No real helper: leader 0 is never signalled and no session is swept.
+        for unreaped in [false, true] {
+            let job = Job::new(0, None);
+            assert_eq!(job.active(), 1);
+            let at_reap = job.finish(unreaped, || {
+                let s = job.state();
+                (s.ended, s.swept, s.done)
+            });
+            assert_eq!(
+                at_reap,
+                (true, unreaped, false),
+                "seen unreaped: {unreaped}"
+            );
+            let s = job.state();
+            assert!(s.ended && s.swept && s.done);
+            drop(s);
+            assert_eq!(job.active(), 0);
+        }
+    }
+
+    /// Rule 285: a helper is refused while any file of its plugin folder is quarantined, not only its program: a
+    /// script that runs a downloaded binary beside it would hand that one to Gatekeeper.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_a_helper_is_refused_while_any_file_of_its_folder_is_quarantined() {
+        let dir = folder_with_sh();
+        fs::create_dir(dir.path().join("bin")).unwrap();
+        fs::write(dir.path().join("bin/tool"), "#!/bin/sh\n").unwrap();
+        quarantine(&dir.path().join("bin/tool"));
+        assert!(!crate::paths::quarantined(&dir.path().join("helper")));
+        let (host, _logs, rx) = mac_host(0);
+        host.start(mac_spec(dir.path(), &["-c", "exit 0"]));
+        match rx.recv_timeout(Duration::from_secs(10)).expect("a note") {
+            Note::Stopped { why, .. } => {
+                assert!(
+                    why.contains("quarantined") && why.contains("bin/tool"),
+                    "{why}"
+                );
+            }
+            other => panic!("it started: {other:?}"),
+        }
+    }
+
+    /// Not a test on its own: run by `mac_no_helper_process_outlives_a_crash_of_flare` with `FLARE_HELPER_FAKE` set
+    /// to a plugin folder, it is Flare: it starts the helper's tree there and runs until it is killed.
+    #[test]
+    fn fake_flare() {
+        let Some(dir) = std::env::var_os("FLARE_HELPER_FAKE") else {
+            return;
+        };
+        #[cfg(target_os = "macos")]
+        {
+            let dir = PathBuf::from(dir);
+            let (host, _logs, rx) = mac_host(0);
+            host.start(mac_spec(&dir, &["-c", &tree_script()]));
+            let _ = rx.recv_timeout(Duration::from_secs(10));
+            std::thread::sleep(Duration::from_secs(300));
+        }
+        #[cfg(not(target_os = "macos"))]
+        drop(dir);
     }
 }

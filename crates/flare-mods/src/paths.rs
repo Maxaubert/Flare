@@ -34,6 +34,28 @@ pub fn check_program(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Syntax of `helpers.macos.command` (macOS port phase 6, regression rule 284): the rules every path inside the
+/// folder keeps, `/` as the only separator (a `\\` is a letter of a Mac file name, so it would name another file than
+/// its author meant on Windows), and no Windows program (`.exe`, `.bat`, `.cmd`, `.com`, `.ps1`): a Mac helper is a
+/// Mach-O program or a script with a `#!` line, and has no extension to ask for.
+pub fn check_mac_program(path: &str) -> Result<(), String> {
+    check_inside_syntax(path)?;
+    if path.contains('\\') {
+        return Err("contains '\\'; a macOS path separates its folders with '/'".into());
+    }
+    let lower = path.to_ascii_lowercase();
+    if [".exe", ".bat", ".cmd", ".com", ".ps1"]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
+    {
+        return Err(
+            "names a Windows program; name the macOS program (no extension needed) and put the .exe in helper"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// The part of the syntax every path inside a mod folder shares, whatever it names.
 fn check_inside_syntax(path: &str) -> Result<(), String> {
     if path.is_empty() {
@@ -76,6 +98,133 @@ pub fn inside(folder: &Path, rel: &str) -> Result<PathBuf, String> {
 pub fn program_inside(folder: &Path, rel: &str) -> Result<PathBuf, String> {
     check_program(rel)?;
     resolve_inside(folder, rel)
+}
+
+/// [`inside`] for `helpers.macos.command`, on any system (the scan checks every system's helper is in the folder, so
+/// a plugin is valid or not the same way everywhere): `rel` must pass [`check_mac_program`].
+pub fn mac_program_inside(folder: &Path, rel: &str) -> Result<PathBuf, String> {
+    check_mac_program(rel)?;
+    resolve_inside(folder, rel)
+}
+
+/// macOS: the helper program `rel` names inside the canonical plugin folder, checked when it starts:
+/// the syntax of [`check_mac_program`] (no `..`, no absolute path, no `:`, no `\\`, no Windows program),
+/// resolved inside the folder (a link that points out is refused), a file, executable by its owner, and
+/// not quarantined ([`quarantined`], rule 285).
+#[cfg(not(windows))]
+pub fn unix_program_inside(folder: &Path, rel: &str) -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    check_mac_program(rel)?;
+    let real = resolve_inside(folder, rel)?;
+    let mode = std::fs::metadata(&real) // sync-ok: the helper's own thread
+        .map_err(|_| "does not exist in the mod folder".to_string())?
+        .permissions()
+        .mode();
+    if mode & 0o100 == 0 {
+        return Err("is not executable (chmod +x)".into());
+    }
+    if quarantined(&real) {
+        return Err(format!(
+            "is quarantined: macOS marked it as downloaded, and Flare does not start a quarantined program, since \
+             Gatekeeper would judge it with a dialog while you may not be there. If you trust this plugin, run \
+             xattr -dr {QUARANTINE} on its folder and turn it on again"
+        ));
+    }
+    // A script helper may run another program of the folder: one quarantined file is enough to refuse.
+    if let Some(rel) = quarantined_in(folder) {
+        return Err(format!(
+            "cannot start while {rel} in the plugin folder is quarantined: macOS marked it as downloaded, and the \
+             helper could hand it to Gatekeeper, which would judge it with a dialog while you may not be there. If \
+             you trust this plugin, run xattr -dr {QUARANTINE} on its folder and turn it on again"
+        ));
+    }
+    Ok(real)
+}
+
+/// The most entries [`quarantined_in`] reads (an install holds at most 2000 files).
+#[cfg(not(windows))]
+const QUARANTINE_SCAN_MAX: usize = 4096;
+
+/// The first file or folder inside `folder` (itself left out) that carries [`QUARANTINE`], as a `/`-separated path
+/// relative to it (rule 285). Links are not followed: each is read as itself. Past [`QUARANTINE_SCAN_MAX`] entries or
+/// 32 levels the rest is not read.
+#[cfg(not(windows))]
+pub fn quarantined_in(folder: &Path) -> Option<String> {
+    let mut todo = vec![(folder.to_path_buf(), 0usize)];
+    let mut seen = 0;
+    while let Some((dir, depth)) = todo.pop() {
+        let read = std::fs::read_dir(&dir); // sync-ok: the helper's own thread
+        let Ok(entries) = read else { continue };
+        for entry in entries.flatten() {
+            seen += 1;
+            if seen > QUARANTINE_SCAN_MAX {
+                return None;
+            }
+            let path = entry.path();
+            if quarantined_link(&path) {
+                let rel = path.strip_prefix(folder).unwrap_or(&path);
+                return Some(rel.to_string_lossy().into_owned());
+            }
+            if depth < 32 && entry.file_type().is_ok_and(|t| t.is_dir()) {
+                todo.push((path, depth + 1));
+            }
+        }
+    }
+    None
+}
+
+/// The extended attribute macOS puts on a file that came from the internet (a browser's download, a file
+/// unpacked from one by Archive Utility).
+pub const QUARANTINE: &str = "com.apple.quarantine";
+
+/// Whether `path` carries [`QUARANTINE`] (macOS port phase 6, regression rule 285). Starting such a program from
+/// Flare would hand it to Gatekeeper, which judges it with a dialog (or, for an unsigned program, a refusal the
+/// person sees only as a dialog): a helper starts in the background, when the plugin turns on or after a crash, so
+/// Flare refuses it with a sentence Settings shows instead. Flare's own install from a zip writes every file itself
+/// and adds no quarantine; the person approved that install in Settings.
+#[cfg(target_os = "macos")]
+pub fn quarantined(path: &Path) -> bool {
+    has_quarantine(path, 0)
+}
+
+/// [`quarantined`] of `path` itself: a link is read as the link.
+#[cfg(target_os = "macos")]
+fn quarantined_link(path: &Path) -> bool {
+    has_quarantine(path, libc::XATTR_NOFOLLOW)
+}
+
+#[cfg(target_os = "macos")]
+fn has_quarantine(path: &Path, options: libc::c_int) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    let name = c"com.apple.quarantine";
+    // SAFETY: both strings are NUL-terminated and live for the call; a null buffer of size 0 asks only for the
+    // attribute's size. Without XATTR_NOFOLLOW a link (already resolved inside the folder) is read through to its
+    // file; with it, the link itself.
+    let n = unsafe {
+        libc::getxattr(
+            c_path.as_ptr(),
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            0,
+            0,
+            options,
+        )
+    };
+    n >= 0
+}
+
+/// Off macOS there is no quarantine attribute to read.
+#[cfg(all(not(windows), not(target_os = "macos")))]
+pub fn quarantined(_path: &Path) -> bool {
+    false
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+fn quarantined_link(_path: &Path) -> bool {
+    false
 }
 
 fn resolve_inside(folder: &Path, rel: &str) -> Result<PathBuf, String> {

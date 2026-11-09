@@ -7,6 +7,10 @@
 //!   [`MAX_PATH_CHARS`] characters or more than [`MAX_DEPTH`] folders deep. The real decompressed bytes are counted
 //!   while they are written: [`MAX_ENTRY_BYTES`] an entry, [`MAX_TOTAL_BYTES`] in all, [`MAX_ZIP_BYTES`] for the zip
 //!   and [`MAX_ENTRIES`] entries.
+//! - **Modes.** Off Windows a file the zip marks executable (any `x` bit of its unix mode) is written `0755`, so a Mac
+//!   helper keeps the bit it needs (rule 286); no other mode bit of the zip is used (never set-id, never writable by
+//!   others), and every other file keeps the default mode. The program `helpers.macos.command` names is made `0755`
+//!   on the staged copy whatever the zip says, so a zip made on Windows (no unix modes) installs a helper that starts.
 //! - **Staging.** A zip is extracted to `plugins\.staging\<random>`, never straight into the plugins folder. Its layout
 //!   is `plugin.json` (or `mod.json`) at the top, or exactly one top folder holding it. The manifest and every file it
 //!   names are checked on the staged copy (`discover::check_folder`), and the copy's content hash is taken, before
@@ -162,7 +166,7 @@ pub fn extract(zip: &Path, out: &Path) -> Result<Extracted, String> {
     let mut done = Extracted::default();
     for i in 0..archive.len() {
         // The entry's facts are read without decompressing it first.
-        let (parts, is_dir, declared) = {
+        let (parts, is_dir, declared, exec) = {
             let raw = archive
                 .by_index_raw(i)
                 .map_err(|e| format!("the zip is damaged: {e}"))?;
@@ -177,7 +181,9 @@ pub fn extract(zip: &Path, out: &Path) -> Result<Extracted, String> {
             if raw.is_symlink() || raw.external_attributes() & REPARSE_ATTRIBUTE != 0 {
                 return Err(format!("the zip entry \"{name}\" is a link"));
             }
-            (parts, raw.is_dir(), raw.size())
+            // Only whether the author marked it executable is kept (rule 286); every other mode bit is Flare's.
+            let exec = raw.unix_mode().is_some_and(|m| m & 0o111 != 0);
+            (parts, raw.is_dir(), raw.size(), exec)
         };
         let key = parts.join("/").to_lowercase();
         if !seen.insert(key) {
@@ -230,6 +236,16 @@ pub fn extract(zip: &Path, out: &Path) -> Result<Extracted, String> {
             dest.write_all(&buf[..n])
                 .map_err(|e| format!("\"{}\" cannot be written: {e}", parts.join("/")))?;
         }
+        // A Mac helper must keep its execute bit through the zip (`helpers.macos`, rule 286): the file is made
+        // 0755, never set-id or writable by others, whatever the zip says. Windows has no such bit.
+        #[cfg(not(windows))]
+        if exec {
+            use std::os::unix::fs::PermissionsExt;
+            dest.set_permissions(fs::Permissions::from_mode(0o755))
+                .map_err(|e| format!("\"{}\" cannot be made executable: {e}", parts.join("/")))?;
+        }
+        #[cfg(windows)]
+        let _ = exec;
         done.files += 1;
     }
     Ok(done)
@@ -320,6 +336,16 @@ pub fn stage(zip: &Path, plugins: &Path) -> Result<Staged, String> {
     let canon = fs::canonicalize(&named) // sync-ok: install worker
         .map_err(|e| format!("the unpacked zip cannot be read: {e}"))?;
     let found = check_folder(&canon)?;
+    // The Mac helper starts even from a zip made on Windows (Explorer, Compress-Archive), which keeps no unix mode:
+    // the file `helpers.macos.command` names is made 0755 whatever the zip says (rule 286).
+    #[cfg(not(windows))]
+    if let Some(h) = found.manifest.helper_macos.as_ref() {
+        use std::os::unix::fs::PermissionsExt;
+        let program = crate::paths::mac_program_inside(&canon, &h.command)
+            .map_err(|r| format!("helpers.macos.command {r}"))?;
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)) // sync-ok: install worker
+            .map_err(|e| format!("\"{}\" cannot be made executable: {e}", h.command))?;
+    }
     let hash = crate::hash::folder_hash(&canon)?;
     guard.0 = None;
     Ok(Staged { root, found, hash })
@@ -615,6 +641,64 @@ mod tests {
         fs::create_dir(&out2).unwrap();
         let z = write_zip(dir.path(), &cur.into_inner());
         assert!(extract(&z, &out2).unwrap_err().contains("is a link"));
+    }
+
+    /// Rule 286: a file the zip marks executable keeps the bit (as 0755, never set-id or others-writable); the rest
+    /// keep the default mode (no execute bit), whatever the zip asks.
+    #[cfg(not(windows))]
+    #[test]
+    fn an_executable_in_the_zip_stays_executable_and_nothing_else_does() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mut cur = Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut cur);
+            let o = SimpleFileOptions::default();
+            w.start_file("bin/run", o.unix_permissions(0o4777)).unwrap();
+            w.write_all(b"#!/bin/sh\n").unwrap();
+            w.start_file("data.txt", o.unix_permissions(0o666)).unwrap();
+            w.write_all(b"1").unwrap();
+            w.finish().unwrap();
+        }
+        let z = write_zip(dir.path(), &cur.into_inner());
+        let out = dir.path().join("out");
+        fs::create_dir(&out).unwrap();
+        extract(&z, &out).unwrap();
+        let mode = |p: &str| fs::metadata(out.join(p)).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode("bin/run"), 0o755);
+        assert_eq!(mode("data.txt") & 0o111, 0, "not executable");
+    }
+
+    /// Rule 286: a zip made on Windows keeps no unix mode, yet the program `helpers.macos.command` names is
+    /// installed executable (0755); the other files of that zip are not.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_mac_helper_from_a_zip_without_modes_is_installed_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = dir.path().join("plugins");
+        let manifest = r#"{"id":"demo","name":"Demo","version":"1.0.0","protocol":2,"description":"A demo.",
+            "permissions":["process"],"helpers":{"macos":{"command":"bin/helper"}}}"#;
+        let mut cur = Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut cur);
+            let o = SimpleFileOptions::default().system(zip::System::Dos);
+            for (name, bytes) in [
+                ("plugin.json", manifest.as_bytes()),
+                ("bin/helper", b"#!/bin/sh\n".as_slice()),
+                ("bin/data.txt", b"1".as_slice()),
+            ] {
+                w.start_file(name, o).unwrap();
+                w.write_all(bytes).unwrap();
+            }
+            w.finish().unwrap();
+        }
+        let z = write_zip(dir.path(), &cur.into_inner());
+        let s = stage(&z, &plugins).expect("staged");
+        let folder = s.found.folder.clone();
+        let mode = |p: &str| fs::metadata(folder.join(p)).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode("bin/helper"), 0o755);
+        assert_eq!(mode("bin/data.txt") & 0o111, 0, "not executable");
     }
 
     #[test]

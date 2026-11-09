@@ -3,7 +3,8 @@
 //! argv of one process; signals to a process or a whole group; and a wait for a process to end.
 //!
 //! macOS only today (libproc, sysctl `KERN_PROCARGS2`, kqueue `NOTE_EXIT`, the TCP listeners through
-//! `PROC_PIDFDSOCKETINFO`). On Windows the crate is
+//! `PROC_PIDFDSOCKETINFO`; `guard`: a program in a session of its own whose whole tree ends with
+//! Flare, regression rule 280). On Windows the crate is
 //! empty: the Win32 process code lives in `flare-term` and `flare-win` behind `cfg(windows)`
 //! (regression rule 227). The policy (which processes a tab owns, which a closing tab ends) stays
 //! with the callers; this crate only reads and signals.
@@ -12,6 +13,8 @@
 mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::*;
+#[cfg(target_os = "macos")]
+pub mod guard;
 #[cfg(target_os = "macos")]
 mod sockets;
 #[cfg(target_os = "macos")]

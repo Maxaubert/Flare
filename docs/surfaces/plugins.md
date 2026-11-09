@@ -90,9 +90,10 @@ spaces, bidi overrides, the BOM).
 | `contributes.actions` | At most 8 `{key, title, icon?, where}`; `where` lists places from `tab-menu`, `tab-hover` (one action per plugin), `top-bar` (one per plugin) and `session-bar` (needs a `bar`). `icon` is a built-in badge or one of `contributes.icons`. Goes with `actions`, both ways. |
 | `contributes.icons` | At most 32 `name: path`. A name is a key that is not a built-in badge; the path is an SVG path on the 24-unit box, drawn as a stroke in the chip's one colour: it starts with `M` or `m`, is at most 2 KB and 256 commands, every number within -1000 to 1000, and holds path commands, numbers, signs, dots, commas and spaces only. |
 | `helper` | Optional. `{"command": "bin\\helper.exe", "args": []}`: an `.exe` in the folder, at most 16 arguments of 200 characters. Goes with `process`, both ways. |
+| `helpers` | Optional (macOS port phase 6). A program per system: `{"macos": {"command": "bin/helper", "args": []}, "windows": {...}}`, each with the rules of `helper`. `helpers.windows` is `helper` by another name (name it once); `helpers.macos` is an executable file in the folder with `/` separators and no Windows extension (`.exe`, `.bat`, `.cmd`, `.com`, `.ps1`): a Mach-O program or a `#!` script. Each system starts only its own program; a plugin with none for the system it runs on has no helper there (its pages run, and tools only its helper answers are left out with a sentence). `process` goes with a helper of any system, both ways. **Needs a Flare build with the macOS port (phase 6) or later:** older Windows builds check top-level keys strictly and refuse the whole manifest ("unknown key `helpers`"), so a plugin that must also load on those builds names its Windows program with `helper` and leaves `helpers` out. |
 | `tools` | Optional. At most 32 tools Claude can call (below). Needs `tools`, and a background page, a panel or a helper to answer them. |
 
-Every path (`background`, `panel.entry`, `bar.entry`, `helper.command`) is checked three times: its syntax when read
+Every path (`background`, `panel.entry`, `bar.entry`, `helper.command`, `helpers.macos.command`) is checked three times: its syntax when read
 (no `:`, no leading `/` or `\`, no `..`, `.` or empty part, at most 200 characters, `.html`/`.htm` or `.exe`), its
 canonical place on disk when the folder is scanned (a link or junction that points out is refused, and the file must
 exist), and again on every request a page makes or when the helper starts.
@@ -497,6 +498,19 @@ Flare's own dialog, and the user name, password and code never reach the agent.
   (moved to `.log.1` past 1 MB). It hears `tabs`, `agent` and `session` events as a background page would, and the
   `tool` event when it answers its plugin's tools (a plugin with no background page and no panel).
 - A helper runs as you, with full access: it can leave things behind outside Flare, and Settings says so.
+- **On a Mac** (macOS port phase 6, regression rules 280 to 287): the program is `helpers.macos.command`. At start it
+  must still resolve inside the folder, carry its owner's execute bit (`chmod +x`; an install from a zip keeps the bit
+  the zip gives a file, as `0755`, and always makes the `helpers.macos.command` program `0755`, so a zip made on
+  Windows works) and not be quarantined: while the program or any other file of the folder is marked as downloaded
+  (`com.apple.quarantine`, as Safari and Archive Utility leave it) the helper is refused with a sentence in Settings,
+  since Gatekeeper would judge it with a dialog at a moment the person may not be there; `xattr -dr
+  com.apple.quarantine <folder>` clears it for a plugin you trust. Flare's own install from a zip adds no quarantine
+  (as on Windows, where the zip's mark of the web is not passed on): the install you approved in Settings is the
+  check, and an unsigned program in it is not judged by Gatekeeper. Instead of the job object it runs in a session and process group of its
+  own with a guard (Flare's own program, in a group of its own, so `kill 0` in the helper does not reach it) that ends
+  the whole tree on a stop, on its own end and when Flare ends or crashes. Its log is
+  `<profile>/plugins-logs/<id>.log`; `FLARE_CTL_PIPE` names the channel's Unix socket. The messages it exchanges with
+  Flare are the same bytes on both systems.
 
 ## Install, update, remove
 

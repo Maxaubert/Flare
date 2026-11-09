@@ -40,7 +40,7 @@ pub struct Found {
     pub background: Option<PathBuf>,
     /// The canonical bar page, when a plugin has a bar.
     pub bar: Option<PathBuf>,
-    /// The canonical helper program, when a plugin has one.
+    /// The canonical helper program of the system Flare runs on, when the plugin names one for it.
     pub helper: Option<PathBuf>,
 }
 
@@ -203,7 +203,9 @@ pub fn check_folder(folder: &Path) -> Result<Found, String> {
         )?;
         let background = page(manifest.background.as_deref(), "background")?;
         let bar = page(manifest.bar.as_ref().map(|b| b.entry.as_str()), "bar.entry")?;
-        let helper = manifest
+        // Every system's helper must be a file inside the folder, wherever the scan runs, so a plugin is valid or not
+        // the same way on each; the one of this system is the one kept (rule 284).
+        let windows = manifest
             .helper
             .as_ref()
             .map(|h| {
@@ -211,6 +213,19 @@ pub fn check_folder(folder: &Path) -> Result<Found, String> {
                     .map_err(|reason| format!("helper.command {reason}"))
             })
             .transpose()?;
+        let macos = manifest
+            .helper_macos
+            .as_ref()
+            .map(|h| {
+                paths::mac_program_inside(&folder, &h.command)
+                    .map_err(|reason| format!("helpers.macos.command {reason}"))
+            })
+            .transpose()?;
+        let helper = if cfg!(target_os = "macos") {
+            macos
+        } else {
+            windows
+        };
         Ok::<_, String>((entry, background, bar, helper))
     })();
     let (entry, background, bar, helper) = files?;
@@ -579,7 +594,8 @@ mod tests {
         "background": "background.html",
         "panel": {"entry": "panel.html", "title": "To-dos"},
         "bar": {"entry": "ui/bar.html", "height": 40},
-        "helper": {"command": "bin/helper.exe"}
+        "helper": {"command": "bin/helper.exe"},
+        "helpers": {"macos": {"command": "bin/helper"}}
     }"#;
 
     /// A plugin folder `name` under `root` with the files PLUGIN names.
@@ -591,6 +607,7 @@ mod tests {
             fs::write(f.join(page), "<p>x</p>").unwrap(); // sync-ok: test code only
         }
         fs::write(f.join("bin").join("helper.exe"), "MZ").unwrap(); // sync-ok: test code only
+        fs::write(f.join("bin").join("helper"), "#!/bin/sh\n").unwrap(); // sync-ok: test code only
         fs::write(f.join("plugin.json"), manifest).unwrap(); // sync-ok: test code only
     }
 
@@ -606,7 +623,13 @@ mod tests {
         assert!(f.entry.as_ref().unwrap().ends_with("panel.html"));
         assert!(f.background.as_ref().unwrap().ends_with("background.html"));
         assert!(f.bar.as_ref().unwrap().ends_with("bar.html"));
-        assert!(f.helper.as_ref().unwrap().ends_with("helper.exe"));
+        // The program of the system the scan runs on (rule 284).
+        let want = if cfg!(target_os = "macos") {
+            "bin/helper"
+        } else {
+            "bin/helper.exe"
+        };
+        assert!(f.helper.as_ref().unwrap().ends_with(want));
     }
 
     /// One folder holds both protocols, sorted by id; a `mods` folder beside it is not read.
@@ -685,6 +708,7 @@ mod tests {
             ("background.html", "background does not exist"),
             ("ui/bar.html", "bar.entry does not exist"),
             ("bin/helper.exe", "helper.command does not exist"),
+            ("bin/helper", "helpers.macos.command does not exist"),
             ("panel.html", "panel.entry does not exist"),
         ] {
             let plugins = tempfile::tempdir().unwrap();

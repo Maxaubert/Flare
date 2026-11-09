@@ -309,7 +309,7 @@ impl Hub {
             .found
             .iter()
             .find(|f| f.manifest.id == id && f.manifest.is_plugin())?;
-        let h = f.manifest.helper.as_ref()?;
+        let h = f.manifest.helper_here()?;
         Some(crate::helper::Spec {
             id: id.to_string(),
             folder: f.folder.clone(),
@@ -325,7 +325,7 @@ impl Hub {
             let g = self.lock();
             g.found
                 .iter()
-                .filter(|f| f.manifest.is_plugin() && f.manifest.helper.is_some())
+                .filter(|f| f.manifest.is_plugin() && f.manifest.helper_here().is_some())
                 .map(|f| f.manifest.id.clone())
                 .collect()
         };
@@ -684,7 +684,7 @@ mod tests {
     #[test]
     fn only_a_plugin_that_is_on_and_holds_process_has_a_helper() {
         let w = world();
-        let with_helper = r#"{"id":"demo","name":"Demo","version":"1.0.0","protocol":2,"description":"d","permissions":["process"],"helper":{"command":"bg.html.exe"},"background":"bg.html"}"#;
+        let with_helper = r#"{"id":"demo","name":"Demo","version":"1.0.0","protocol":2,"description":"d","permissions":["process"],"helper":{"command":"bg.html.exe"},"helpers":{"macos":{"command":"bin/run"}},"background":"bg.html"}"#;
         // The helper must be a real file: write it beside the manifest by hand after the install fails on it.
         let z = zip_file(w.dir.path(), "a.zip", with_helper);
         assert!(
@@ -698,11 +698,19 @@ mod tests {
         std::fs::write(folder.join("plugin.json"), with_helper).unwrap(); // sync-ok: test code only
         std::fs::write(folder.join("bg.html"), "x").unwrap(); // sync-ok: test code only
         std::fs::write(folder.join("bg.html.exe"), "x").unwrap(); // sync-ok: test code only
+        std::fs::create_dir_all(folder.join("bin")).unwrap(); // sync-ok: test code only
+        std::fs::write(folder.join("bin").join("run"), "x").unwrap(); // sync-ok: test code only
         w.hub.scan();
         assert!(w.hub.helper_of("demo").is_none(), "off: no helper");
         turn_on(&w);
         let spec = w.hub.helper_of("demo").expect("on with process: a helper");
-        assert_eq!(spec.command, "bg.html.exe");
+        // Each system starts the program named for it (rule 284).
+        let want = if cfg!(target_os = "macos") {
+            "bin/run"
+        } else {
+            "bg.html.exe"
+        };
+        assert_eq!(spec.command, want);
         assert_eq!(
             w.hub
                 .grant_of_token(&spec.token)
@@ -718,6 +726,47 @@ mod tests {
         assert!(
             w.hub.helper_of("demo").is_none(),
             "paused for an update: no helper"
+        );
+    }
+
+    /// A manifest written for Windows only (`helper`, an `.exe`) loads on every system; on a Mac it has no helper to
+    /// start, and tools only its helper could answer are left out with a sentence that says why (rule 284).
+    #[test]
+    fn a_windows_only_helper_runs_only_on_windows_and_a_mac_only_one_only_on_a_mac() {
+        let w = world();
+        let folder = w.dir.path().join("plugins").join("demo");
+        std::fs::create_dir_all(folder.join("bin")).unwrap(); // sync-ok: test code only
+        let windows_only = r#"{"id":"demo","name":"Demo","version":"1.0.0","protocol":2,"description":"d","permissions":["process","tools"],"helper":{"command":"bin/h.exe"},"tools":[{"name":"ping","description":"Answers.","input_schema":{"type":"object"}}]}"#;
+        std::fs::write(folder.join("plugin.json"), windows_only).unwrap(); // sync-ok: test code only
+        std::fs::write(folder.join("bin").join("h.exe"), "MZ").unwrap(); // sync-ok: test code only
+        w.hub.scan();
+        assert!(w.hub.found("demo").is_some(), "it loads everywhere");
+        assert!(w.hub.snapshot().errors.is_empty());
+        turn_on(&w);
+        let here = w.hub.helper_of("demo");
+        let notes = w.hub.snapshot().notes;
+        if cfg!(target_os = "macos") {
+            assert!(here.is_none(), "a Mac starts no .exe");
+            assert!(!w.hub.answers_with_helper("demo"));
+            assert!(
+                notes
+                    .iter()
+                    .any(|n| n.contains("demo") && n.contains("another system")),
+                "{notes:?}"
+            );
+        } else {
+            assert_eq!(here.expect("Windows starts it").command, "bin/h.exe");
+            assert!(w.hub.answers_with_helper("demo"));
+        }
+        // The other way round: a Mac program only.
+        let mac_only = r#"{"id":"demo","name":"Demo","version":"1.0.1","protocol":2,"description":"d","permissions":["process"],"helpers":{"macos":{"command":"bin/h"}}}"#;
+        std::fs::write(folder.join("plugin.json"), mac_only).unwrap(); // sync-ok: test code only
+        std::fs::write(folder.join("bin").join("h"), "#!/bin/sh\n").unwrap(); // sync-ok: test code only
+        w.hub.scan();
+        turn_on(&w);
+        assert_eq!(
+            w.hub.helper_of("demo").map(|s| s.command),
+            cfg!(target_os = "macos").then(|| "bin/h".to_string())
         );
     }
 }

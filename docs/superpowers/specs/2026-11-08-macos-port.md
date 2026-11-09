@@ -76,6 +76,32 @@ A review of the three steps (2026-11-08) proved six defects, fixed with checks t
 opened a DevTools port), held downloads staged outside `~/Downloads`, no call to Google from the engine with no page
 asking, the mock keychain written down as an accepted gap until phase 8, and no colour or print panel from a page.
 
+Phase 6 progress: step 1 (2026-11-08) is the helper's lifetime: `flare_proc::guard` starts a helper in a session and
+group of its own (`setsid`) with an orphan guard in that group, which ends the group, the session and every
+descendant it saw (escapees from the group or the session included) when Flare lets its pipe go, when the helper ends,
+or when Flare ends or crashes; `flare_mods::helper::Host` runs helpers on the Mac with it (stop, update, removal,
+restarts, `stop_all`), proved with real `sh` trees and a stand-in Flare killed with SIGKILL (rules 280 to 283,
+`docs/parity.md` "macOS port, phase 6"). Step 2 (2026-11-08) is the per-OS helper entry: `plugin.json` keeps
+`helper` as the Windows `.exe` and adds `helpers` (`windows`, `macos`), each system starting only its own program
+(`Manifest::helper_here`), a Windows manifest loading unchanged everywhere and the channel's bytes unchanged; on a Mac
+the program must be an executable inside the folder that is not quarantined (refused with a sentence rather than left
+to a Gatekeeper dialog), and an install keeps a zip entry's execute bit; a stop while a helper starts no longer leaves
+a zombie that held the update's and the removal's wait to its timeout; every sample plugin and the app's helper tests
+run on the Mac (rules 284 to 287). Step 3 (2026-11-09) is "Open in Flare": an `NSServices` entry for folders and
+files (`flare_win::open_in::plist_keys`, for phase 8's `release::app_keys` to take) whose provider, and an
+`application:openURLs:` added to winit's app delegate before the loop runs, turn Finder's pasteboard or an `open -a
+Flare` request into the hand-off a second launch sends, so a folder opens as a new tab and a file as its folder; the
+command line's paths are kept out of open documents; checked with `plutil` and the handlers called as functions,
+nothing registered with the system (rules 288 to 290). No Dock-icon drop: it needs a document type, which phase 8
+leaves out. Left for the merge with phase 8: the one line that adds the keys to `Flare.app`, and a test on the built
+bundle that `NSPortName` equals `CFBundleExecutable`. A review of phase 6 (2026-11-09) fixed: the guard, a fork that
+never exec'd, kept a copy-on-write snapshot of Flare's memory per helper (+843 MB in an 800 MB probe), so it now execs
+Flare's own program (`guard::run_if_guard` first in `ship_ctl::bootstrap`, rule 281); a helper's `kill -9 0` killed the
+guard and left `set -m` jobs and `setsid` escapees running, so the guard leads a group of its own and Flare makes its
+own pass over the session and the group before the reap (rule 280); the end is marked before any reap, also when
+`waitid` fails (rule 282); a zip made on Windows installs the Mac helper executable (rule 286); any quarantined file
+in the folder refuses the helper (rule 285); off Windows a path ending in `"` is no longer rewritten (rule 291).
+
 ## Known risks
 
 - **Agent browsing on WKWebView** (phase 1 decides). No DevTools protocol and no http(s) request

@@ -24,15 +24,16 @@ fn fill_plugin(root: &Path, id: &str, perms: &[&str]) {
     std::fs::write(to.join("plugin.json"), text).unwrap(); // sync-ok: test code only, never the app
 }
 
-/// A plugin whose tools only its helper answers (no background page, no panel).
+/// A plugin whose tools only its helper answers (no background page, no panel), with a program for each system.
 fn helper_tool_plugin(root: &Path, id: &str) {
     let text = format!(
-        r#"{{"id":"{id}","name":"Vault {id}","version":"1.0.0","protocol":2,"description":"A test plugin.","author":"me","homepage":"https://example.com/{id}","permissions":["process","tools","fill"],"helper":{{"command":"helper.exe"}},"tools":[{{"name":"fill_login","description":"Fills.","input_schema":{{"type":"object"}}}}]}}"#
+        r#"{{"id":"{id}","name":"Vault {id}","version":"1.0.0","protocol":2,"description":"A test plugin.","author":"me","homepage":"https://example.com/{id}","permissions":["process","tools","fill"],"helper":{{"command":"helper.exe"}},"helpers":{{"macos":{{"command":"helper"}}}},"tools":[{{"name":"fill_login","description":"Fills.","input_schema":{{"type":"object"}}}}]}}"#
     );
     let to = root.join(id);
     std::fs::create_dir_all(&to).unwrap(); // sync-ok: test code only, never the app
     std::fs::write(to.join("plugin.json"), text).unwrap(); // sync-ok: test code only, never the app
     std::fs::write(to.join("helper.exe"), b"MZ").unwrap(); // sync-ok: test code only, never the app
+    std::fs::write(to.join("helper"), b"#!/bin/sh\n").unwrap(); // sync-ok: test code only, never the app
 }
 
 /// The plugin's helper on the channel: its live grant, no tab of its own.
