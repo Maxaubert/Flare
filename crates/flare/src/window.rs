@@ -1195,6 +1195,7 @@ pub fn run_window(
                     let cfg = crate::ctl_app::AppsCfg::new(
                         apps_root,
                         Arc::new(flare_term::path_open::resolve_html_file),
+                        crate::ctl_app::real_resolve_model(),
                         {
                             let prefs = prefs.clone();
                             Arc::new(move || flare_settings::term_prefs::app_network(&prefs))

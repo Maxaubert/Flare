@@ -367,6 +367,8 @@ pub type NetSwitch = Arc<dyn Fn() -> bool + Send + Sync>;
 pub struct AppsCfg {
     pub root: std::path::PathBuf,
     pub resolve_html: Resolve,
+    /// How a model named by path is resolved again (`view.model`): rules 13 and 14, and its own list of extensions.
+    pub resolve_model: Resolve,
     pub network: NetSwitch,
     pub mermaid: &'static [u8],
     /// False only for the e2e's seam `APP_NO_POLICY`: a page is written without its policy so the second
@@ -379,12 +381,14 @@ impl AppsCfg {
     pub fn new(
         root: std::path::PathBuf,
         resolve_html: Resolve,
+        resolve_model: Resolve,
         network: NetSwitch,
         mermaid: &'static [u8],
     ) -> Self {
         Self {
             root,
             resolve_html,
+            resolve_model,
             network,
             mermaid,
             policy: true,
@@ -401,6 +405,16 @@ impl AppsCfg {
 
 /// The Mermaid build every diagram is drawn with (assets/mermaid/README.md).
 pub static MERMAID: &[u8] = include_bytes!("../../../assets/mermaid/mermaid.min.js");
+
+/// The 3D model viewer, three.js built once (assets/three/README.md).
+pub static MODEL_VIEWER: &[u8] = include_bytes!("../../../assets/three/viewer.js");
+
+/// The production resolver of a model file: its extensions, not the click allowlist (rules 13 and 14).
+pub fn real_resolve_model() -> Resolve {
+    Arc::new(|cwd, text, home| {
+        flare_term::path_open::resolve_file_of(cwd, text, home, &flare_surfaces::model::MODEL_EXTS)
+    })
+}
 
 pub struct AppDispatcher {
     post: Post,
@@ -1449,7 +1463,7 @@ impl AppDispatcher {
         let kind = preview::classify_resolved(&abs, &real).ok_or_else(|| {
             CtlError::new(
                 code::BAD_PARAMS,
-                "Flare shows pictures (png, jpg, gif, webp, bmp, ico) and text or code files only; a PDF, sound or video plays in the browser panel (open_page) from a local web server",
+                "Flare shows pictures (png, jpg, gif, webp, bmp, ico) and text or code files only; show_model shows a 3D model (glb, gltf, stl); a PDF, sound or video plays in the browser panel (open_page) from a local web server",
             )
         })?;
         // A file on a mapped network drive (or a link to one): the panel reads local drives only. Said as the
@@ -1676,6 +1690,56 @@ impl AppDispatcher {
         }
     }
 
+    /// `view.model {path, title?}` (issue #36): Flare's 3D viewer in the caller's panel. The path is resolved again here
+    /// (rule 13), must be a model file as named and as the file system names it (rule 14) and on a local drive; it is
+    /// copied beside the page (at most 64 MB). The page is Flare's: no script of the caller's and no network.
+    fn view_model(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
+        use flare_surfaces::model;
+        let tab = Self::tab_of_call(ctx)?;
+        let apps = self.apps()?;
+        only_fields(params, &["path", "title"], "view.model")?;
+        let bad = |m: &str| CtlError::new(code::BAD_PARAMS, m.to_string());
+        let title = title_param(params)?.unwrap_or_else(|| model::DEFAULT_TITLE.to_string());
+        let p = str_param(params, "path")?.ok_or_else(|| bad("path is required"))?;
+        if p.trim().is_empty() || p.len() > 4096 || p.contains('\0') {
+            return Err(bad("that is not a usable path"));
+        }
+        let deadline = Instant::now() + BROWSER_WAIT;
+        let base = if std::path::Path::new(p).is_absolute() {
+            String::new()
+        } else {
+            let cwd = self.ask_by(CtlOp::TabCwd { tab: tab.clone() }, deadline)?;
+            cwd["cwd"].as_str().unwrap_or_default().to_string()
+        };
+        // A file nobody may open answers the same way as a missing one, so a probe learns nothing.
+        let not_found = || CtlError::new(code::NOT_FOUND, "no such file that Flare may show");
+        let (abs, real) = (apps.resolve_model)(&base, p, &self.home).ok_or_else(not_found)?;
+        let ext = model::model_ext(&abs, &real).ok_or_else(|| {
+            bad(&format!(
+                "Flare shows 3D models of these kinds only ({})",
+                model::MODEL_EXTS.join(", ")
+            ))
+        })?;
+        if !preview::on_local_drive(&real) {
+            return Err(not_found());
+        }
+        let bytes = read_model(&real)?;
+        let file = model::model_name(ext);
+        let page = model::page(ext, &title);
+        self.show_app(
+            tab,
+            &[
+                (app::PAGE, page.as_bytes()),
+                (model::VIEWER_FILE, MODEL_VIEWER),
+                (file.as_str(), &bytes),
+            ],
+            false,
+            title,
+            false,
+            (deadline, &ctx.cancel),
+        )
+    }
+
     /// `view.diagram`: Mermaid text drawn by the bundled build.
     fn view_diagram(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
         let tab = Self::tab_of_call(ctx)?;
@@ -1739,6 +1803,22 @@ fn read_audio(real: &str) -> Result<Vec<u8>, CtlError> {
             code::BAD_PARAMS,
             "that sound file is over 100 MB",
         ));
+    }
+    Ok(bytes)
+}
+
+/// Reads a model file the backend has resolved: at most [`flare_surfaces::model::MODEL_MAX`].
+fn read_model(real: &str) -> Result<Vec<u8>, CtlError> {
+    use std::io::Read;
+    let file = std::fs::File::open(real) // sync-ok: the channel call's own thread, never the UI thread
+        .map_err(|_| CtlError::new(code::NOT_FOUND, "no such file that Flare may show"))?;
+    let max = flare_surfaces::model::MODEL_MAX;
+    let mut bytes = Vec::new();
+    file.take(max + 1)
+        .read_to_end(&mut bytes) // sync-ok: the channel call's own thread, never the UI thread
+        .map_err(|_| CtlError::new(code::BAD_PARAMS, "that model could not be read"))?;
+    if bytes.len() as u64 > max {
+        return Err(CtlError::new(code::BAD_PARAMS, "that model is over 64 MB"));
     }
     Ok(bytes)
 }
@@ -2014,7 +2094,12 @@ impl Dispatcher for AppDispatcher {
         ];
         // Mini-apps, and the audio player that is one, are listed only when this run can write them.
         if self.apps.is_some() {
-            all.extend([Method::ViewHtml, Method::ViewDiagram, Method::ViewAudio]);
+            all.extend([
+                Method::ViewHtml,
+                Method::ViewDiagram,
+                Method::ViewAudio,
+                Method::ViewModel,
+            ]);
         }
         // Mods (stage 8) are listed only where there is a hub for them, and so are the plugins' own surfaces.
         if self.mods.is_some() {
@@ -2215,6 +2300,7 @@ impl Dispatcher for AppDispatcher {
                 self.motion_call(ctx, method, &params)
             }
             Method::ViewAudio => self.view_audio(ctx, &params),
+            Method::ViewModel => self.view_model(ctx, &params),
             Method::ModsTools => self.mods_tools(),
             Method::ModsCall => self.mods_call(ctx, &params),
             Method::ToolsRespond => self.tools_respond(ctx, &params),
@@ -3396,6 +3482,7 @@ mod tests {
             (Method::ViewText, json!({"text": "x"})),
             (Method::ViewHtml, json!({"html": "<p>x"})),
             (Method::ViewDiagram, json!({"mermaid": "graph TD\nA-->B"})),
+            (Method::ViewModel, json!({"path": "C:\\work\\a.glb"})),
             (Method::BrowserOpen, json!({"url": "https://a.example/"})),
             (Method::BrowserNavigate, json!({"action": "reload"})),
             (Method::PanelOpen, json!({"kind": "web"})),
@@ -3863,6 +3950,7 @@ mod tests {
         .with_apps(AppsCfg::new(
             root.to_path_buf(),
             resolve_html,
+            Arc::new(|_, _, _| None),
             Arc::new(move || network),
             FAKE_MERMAID,
         ));
@@ -4308,6 +4396,134 @@ mod tests {
         .unwrap();
     }
 
+    /// An `AppRig` whose model resolver knows `part.glb` (the file `real`), a link `link.glb` that names an exe, and a model on a share.
+    fn model_rig(root: &std::path::Path, real: &std::path::Path) -> AppRig {
+        let mut r = app_rig(root, false, &[]);
+        let real = real.to_string_lossy().into_owned();
+        r.d.apps.as_mut().unwrap().resolve_model = Arc::new(move |_base, text, _home| match text {
+            "part.glb" | "C:\\work\\part.glb" => Some((text.to_string(), real.clone())),
+            "link.glb" => Some((text.to_string(), "C:\\work\\run.exe".to_string())),
+            "share.glb" => Some((
+                text.to_string(),
+                "UNC\\server\\share\\share.glb".to_string(),
+            )),
+            _ => None,
+        });
+        r
+    }
+
+    #[test]
+    fn view_model_writes_the_viewer_and_the_model_beside_flares_own_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("part.glb");
+        std::fs::write(&real, b"glTF fake").unwrap();
+        let r = model_rig(dir.path(), &real);
+        let v =
+            r.d.call(
+                &agent_in_tab(),
+                Method::ViewModel,
+                json!({"path": "part.glb", "title": "Bracket"}),
+            )
+            .unwrap();
+        assert_eq!(v["panel"]["kind"], "app");
+        let (tab, spec, title, diagram) = last_app(&r);
+        assert_eq!(
+            (tab.as_str(), title.as_str(), diagram),
+            ("tab-1", "Bracket", false)
+        );
+        assert!(!spec.allow_network, "a model needs no network");
+        let page = std::fs::read_to_string(spec.folder.join(app::PAGE)).unwrap();
+        assert!(page.contains(&flare_surfaces::model::csp()));
+        assert!(page.find("Content-Security-Policy") < page.find("<canvas"));
+        assert_eq!(
+            std::fs::read(spec.folder.join(flare_surfaces::model::VIEWER_FILE)).unwrap(),
+            MODEL_VIEWER
+        );
+        assert_eq!(
+            std::fs::read(spec.folder.join("model.glb")).unwrap(),
+            b"glTF fake"
+        );
+        // An absolute path needs no folder from the UI thread, and no title gives the default one.
+        r.d.call(
+            &agent_in_tab(),
+            Method::ViewModel,
+            json!({"path": "C:\\work\\part.glb"}),
+        )
+        .unwrap();
+        assert_eq!(last_app(&r).2, flare_surfaces::model::DEFAULT_TITLE);
+    }
+
+    #[test]
+    fn view_model_refuses_what_is_not_a_model_a_link_a_share_and_a_file_over_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("part.glb");
+        std::fs::write(&real, b"x").unwrap();
+        let r = model_rig(dir.path(), &real);
+        let c = agent_in_tab();
+        for (params, want) in [
+            (json!({}), code::BAD_PARAMS),
+            (json!({"path": ""}), code::BAD_PARAMS),
+            (json!({"path": 3}), code::BAD_PARAMS),
+            (json!({"path": "part.glb", "title": 1}), code::BAD_PARAMS),
+            (json!({"path": "part.glb", "url": "x"}), code::BAD_PARAMS),
+            (json!({"path": "missing.glb"}), code::NOT_FOUND),
+            (json!({"path": "link.glb"}), code::BAD_PARAMS),
+            (json!({"path": "share.glb"}), code::NOT_FOUND),
+        ] {
+            let e = r.d.call(&c, Method::ViewModel, params.clone()).unwrap_err();
+            assert_eq!(e.code, want, "{params}: {}", e.message);
+        }
+        std::fs::File::create(&real)
+            .unwrap()
+            .set_len(flare_surfaces::model::MODEL_MAX + 1)
+            .unwrap();
+        let e =
+            r.d.call(&c, Method::ViewModel, json!({"path": "part.glb"}))
+                .unwrap_err();
+        assert_eq!(e.code, code::BAD_PARAMS, "{}", e.message);
+        assert!(e.message.contains("64 MB"), "{}", e.message);
+        assert!(
+            r.ops
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|o| !matches!(o, CtlOp::ShowApp { .. })),
+            "nothing was shown"
+        );
+        // Without a place to write apps the method is not there at all.
+        let plain = rig(ok_all, false, FILES);
+        assert_eq!(
+            code_of(
+                plain
+                    .d
+                    .call(&c, Method::ViewModel, json!({"path": "part.glb"}))
+            ),
+            code::UNAVAILABLE
+        );
+        assert!(!plain.d.capabilities().contains(&Method::ViewModel));
+        assert!(r.d.capabilities().contains(&Method::ViewModel));
+    }
+
+    #[test]
+    fn the_real_model_resolver_is_rules_13_and_14_with_the_viewers_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.glb", "b.GLTF", "c.stl", "d.exe", "e.obj"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let cwd = dir.path().to_str().unwrap().to_string();
+        let resolve = real_resolve_model();
+        for ok in ["a.glb", "b.GLTF", "c.stl"] {
+            assert!(resolve(&cwd, ok, "").is_some(), "{ok}");
+        }
+        for no in ["d.exe", "e.obj", "missing.glb", r"\\server\share\a.glb"] {
+            assert!(resolve(&cwd, no, "").is_none(), "{no}");
+        }
+        // A click still never opens one: `.stl` is a certificate list to Windows.
+        for f in ["a.glb", "b.gltf", "c.stl"] {
+            assert!(!flare_term::path_open::may_open(f), "{f}");
+        }
+    }
+
     #[test]
     fn view_diagram_checks_its_params() {
         let dir = tempfile::tempdir().unwrap();
@@ -4368,6 +4584,21 @@ mod tests {
             MERMAID.ends_with(b"default;\n"),
             "it sets globalThis.mermaid last"
         );
+    }
+
+    #[test]
+    fn the_bundled_model_viewer_is_the_pinned_build() {
+        use sha2::{Digest, Sha256};
+        // assets/three/README.md and the notices name this exact file (three 0.170.0, built from tools/model-viewer).
+        assert_eq!(MODEL_VIEWER.len(), 590_033);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(MODEL_VIEWER)),
+            "eaefe174aef43953fc8d16ad3012e154ebc21e48b3d63766e6f068e29e9c0064"
+        );
+        let text = std::str::from_utf8(MODEL_VIEWER).unwrap();
+        for banned in ["eval(", "new Function", "WebAssembly", "new Worker"] {
+            assert!(!text.contains(banned), "{banned}");
+        }
     }
 
     #[test]

@@ -67,12 +67,17 @@ pub fn classify_resolved(abs: &str, canonical: &str) -> Option<PanelKind> {
 /// controller asks this before it starts a read, for a target that came from a click and for one
 /// that came back from `panels.json`, a file anyone can edit.
 pub fn loadable(path: &str, kind: &PanelKind) -> bool {
+    on_local_drive(path) && classify(path).as_ref() == Some(kind)
+}
+
+/// True for a path on a local drive (`C:\\...`, never a network path, which would make Windows reach out), with no NUL.
+pub fn on_local_drive(path: &str) -> bool {
     let b = path.as_bytes();
-    let local = b.len() >= 3
+    b.len() >= 3
         && b[0].is_ascii_alphabetic()
         && b[1] == b':'
-        && (b[2] == b'\\' || b[2] == b'/');
-    local && !path.contains('\0') && classify(path).as_ref() == Some(kind)
+        && (b[2] == b'\\' || b[2] == b'/')
+        && !path.contains('\0')
 }
 
 /// Why a file could not be shown: plain words for the panel.
