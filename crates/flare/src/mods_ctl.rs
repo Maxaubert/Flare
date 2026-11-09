@@ -748,6 +748,7 @@ impl ModCtl {
                 grant,
                 // The tab the page sits in; a background page has none.
                 tab: page.tab().map(str::to_string),
+                cancel: flare_ctl::CancelFlag::default(),
             };
             let json = match d.call(&ctx, m, params) {
                 Ok(v) => bridge::reply_ok(id, &v),

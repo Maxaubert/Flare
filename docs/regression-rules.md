@@ -630,3 +630,13 @@ Native: `background.rs` (`looks_like_background_work`). Held by `a_dev_server_in
 `std::os::windows` imports, Windows paths and Windows tools live in Windows modules with a macOS counterpart or stub.
 Held by the `macos` CI job (cargo check, clippy and nextest on macos-latest). Source: macOS port plan
 (`docs/superpowers/specs/2026-11-08-macos-port.md`, owner, 2026-11-08).
+228. **A cancelled tool call stops, on both sides.** `flare-mcp` reads stdin on its own thread, so
+`notifications/cancelled` is seen while a call runs: the call gives up and drops its connection, a queued request never
+runs, and a cancelled request gets no response. The control channel keeps reading a connection while its call runs, so
+the drop raises `CallContext.cancel`, and a call that waits (a browser job, a page load, a mod's answer) ends on it.
+Replies stay in order, an unknown or finished id does nothing, stdin closing still ends the server. Held by
+`a_cancel_during_a_call_ends_the_job_on_flares_side_and_the_next_call_still_works` (the exe over a real pipe),
+`a_client_that_goes_away_mid_call_raises_that_calls_cancel_flag`,
+`a_job_whose_caller_went_away_ends_and_the_page_is_free_for_the_next_call` and
+`a_mod_tool_call_ends_when_the_caller_goes_away_and_the_late_answer_is_refused`. Source: channel-9
+(`docs/surfaces/lessons.md`, owner, 2026-11-09).

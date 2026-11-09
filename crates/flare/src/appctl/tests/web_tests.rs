@@ -1636,6 +1636,7 @@ fn agent_op(tab: &str, op: AgentOp) -> CtlOp {
     CtlOp::BrowserAgent {
         tab: tab.into(),
         op,
+        cancel: flare_ctl::CancelFlag::default(),
     }
 }
 
@@ -2755,6 +2756,61 @@ fn the_person_focusing_the_page_while_a_call_runs_takes_over() {
     });
     f.pump();
     assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::INTERRUPTED);
+}
+
+#[test]
+fn a_job_whose_caller_went_away_ends_and_the_page_is_free_for_the_next_call() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let cancel = flare_ctl::CancelFlag::default();
+    let rx = ask(
+        &f,
+        CtlOp::BrowserAgent {
+            tab: id.clone(),
+            op: AgentOp::Look { picture: true },
+            cancel: cancel.clone(),
+        },
+        Duration::from_secs(5),
+    );
+    f.pump();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    cancel.set();
+    agent_turn(&f, 20);
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::INTERRUPTED);
+    // The next call is not told another one still runs on the page.
+    let next = look(&f, &id);
+    f.pump();
+    assert!(
+        matches!(next.try_recv(), Err(TryRecvError::Empty)),
+        "the cancelled job left the page in use"
+    );
+}
+
+#[test]
+fn a_job_cancelled_before_the_window_took_it_up_never_starts() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let cancel = flare_ctl::CancelFlag::default();
+    cancel.set();
+    let before = cdp_calls(&slot).len();
+    let rx = ask(
+        &f,
+        CtlOp::BrowserAgent {
+            tab: id,
+            op: AgentOp::Look { picture: true },
+            cancel,
+        },
+        Duration::from_secs(5),
+    );
+    f.pump();
+    assert!(rx.try_recv().unwrap().is_err());
+    assert_eq!(
+        cdp_calls(&slot).len(),
+        before,
+        "nothing was sent to the page"
+    );
 }
 
 // ---- mini-apps and diagrams (stage 5) ---------------------------------------------------------------

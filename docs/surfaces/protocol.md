@@ -101,6 +101,13 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
 4. The connection ends when either side closes, on an error marked "closes" in section 6, or when the
    server stops. Nothing survives a reconnect: a client says `hello` again.
 
+**A connection that drops.** The server keeps reading a connection while its call runs, so a client that goes
+away (it closed the pipe, or a tool call was cancelled and `flare-mcp` dropped the connection) ends the job it
+asked for: a browser job stops at the next turn of its timer (a press it was cut short in is let go of), a
+page load is no longer waited for, and a `mods.call` is closed, so the mod's late `tools.respond` answers
+`not_found`. Lines a client sends while its call runs are kept for after it. A call that is not waiting on anything simply
+finishes; its answer has no reader.
+
 ### Order of checks for every request
 
 1. Parse the line. Not JSON: `parse_error` (null id, closes). Not an object, bad id, no method,
@@ -802,7 +809,11 @@ whenever Flare sends `mods.changed`) so a client that supports it lists again; o
 it. It starts with or without Flare. A tool call connects (once, reconnecting after a stale
 connection), says `hello` with `tab_token` from `FLARE_TAB_TOKEN` (the pipe from `FLARE_CTL_PIPE`, and
 only if `FLARE_CTL_PID` is the process that serves it), then
-calls:
+calls (the table below). **Cancelling:** stdin is read on its own thread, so `notifications/cancelled`
+(`params.requestId`, any id but `initialize`'s) is acted on while a call runs: for the request in flight the server stops waiting and drops the
+call connection, and Flare ends the job (section 3, "A connection that drops"); a request still queued never runs; an unknown or
+finished id does nothing. A notification never gets a reply and a cancelled request gets no response. When stdin closes, what was
+already read is still answered, and whatever is still running 5 s later is cancelled the same way.
 
 | Tool | Params | Channel method |
 |---|---|---|

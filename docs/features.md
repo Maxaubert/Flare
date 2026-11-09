@@ -922,6 +922,17 @@ panels land). Contract: `docs/surfaces/protocol.md`. Choices: `docs/surfaces/dec
   tests in `crates/flare-mcp/src/lib.rs` and the end-to-end `crates/flare-mcp/tests/stdio.rs`, which runs
   the built exe against a real in-process server (`a_tool_call_reaches_the_server_with_the_tab`,
   `outside_flare_every_tool_says_so_and_the_handshake_still_works`).
+- **A cancelled tool call stops (channel-9, 2026-11-09).** `flare-mcp` reads stdin on its own thread and acts on
+  `notifications/cancelled` while a call runs: the call gives up, its connection drops and Flare ends the job (a browser job at
+  the next timer turn, a mod's open call at once, whose late `tools.respond` gets `not_found`); a queued call never runs. Replies
+  keep their order and stdin closing ends the server. Held by `a_cancel_during_a_running_call_ends_it_and_it_gets_no_response`,
+  `a_cancel_for_an_unknown_or_finished_request_does_nothing`, `a_cancel_for_a_request_still_queued_means_it_never_runs`,
+  `stdin_closing_during_a_call_lets_it_finish_and_ends_the_server_cleanly`,
+  `stdin_closed_past_the_grace_cancels_the_call_so_no_thread_hangs` (`flare-mcp`),
+  `a_cancel_during_a_call_ends_the_job_on_flares_side_and_the_next_call_still_works` (the exe over a real pipe),
+  `a_client_that_goes_away_mid_call_raises_that_calls_cancel_flag` (`flare-ctl`),
+  `a_job_whose_caller_went_away_ends_and_the_page_is_free_for_the_next_call` and
+  `a_mod_tool_call_ends_when_the_caller_goes_away_and_the_late_answer_is_refused` (`flare`). Regression rule 228.
 - **Review hardening (2026-10-21).** The wire layer refuses a `ui` grant from the app and any `ui`
   method (`a_ui_token_is_refused_at_hello`, `a_ui_grant_for_the_agent_is_refused_at_hello`,
   `a_grant_that_turns_into_ui_mid_connection_reaches_nothing`); only timed-out calls count as stuck
