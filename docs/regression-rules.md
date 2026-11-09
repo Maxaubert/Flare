@@ -630,7 +630,7 @@ Native: `background.rs` (`looks_like_background_work`). Held by `a_dev_server_in
 `std::os::windows` imports, Windows paths and Windows tools live in Windows modules with a macOS counterpart or stub.
 Held by the `macos` CI job (cargo check, clippy and nextest on macos-latest). Source: macOS port plan
 (`docs/superpowers/specs/2026-11-08-macos-port.md`, owner, 2026-11-08).
-228. **macOS: closing a tab ends its whole session, and throws away the output nobody will read.** The shell leads
+232. **macOS: closing a tab ends its whole session, and throws away the output nobody will read.** The shell leads
 its own session (portable-pty `setsid`); a kill sends SIGHUP to the session's process groups and to the shell's
 descendants, then SIGTERM and SIGKILL after 250 ms and 500 ms more (`flare-term/src/macos/pty.rs`), sparing an
 `.app` bundle the shell launched. While it waits the reaper runs `tcflush(TCOFLUSH)` on a duplicate of the master:
@@ -646,7 +646,7 @@ tab, and a crash of Flare leaves a job that ignores SIGHUP running. Held by `qui
 (`ten_real_shells_with_jobs_killed_none_remain`,
 `quitting_ends_a_job_that_ignores_the_hangup_before_the_process_exits`) and `pty::macos::tests`. Source: macOS port
 phase 2, step 1 (measured 2026-11-08: 6 of 10 shells stuck in exit without the flush), and the phase 2 review.
-229. **macOS: every shell starts as a login shell and reports its folder with OSC 7, without touching the user's
+233. **macOS: every shell starts as a login shell and reports its folder with OSC 7, without touching the user's
 dotfiles.** zsh, bash, fish and pwsh are found by absolute path (the login shell from the user record first, then
 Homebrew, `/etc/shells`, `/bin`), never through PATH; the login shell is listed first and is the default
 (`shell_by_id` prefers no name on macOS). zsh starts with `ZDOTDIR` on Flare's shim, whose `.zshenv` hands the
@@ -659,7 +659,7 @@ a Mac named by its network can be renamed mid-session), decoded, absolute, with 
 OSC 7 is no folder report. The files live in `~/Library/Application Support/Flare/shell-integration/<version>`
 (`flare-shells/src/macos/`). Held by `flare-term/tests/real_shells_macos.rs` and `flare-shells` `macos::*` tests.
 Source: macOS port phase 2, step 2 (2026-11-08).
-230. **macOS: paths are read with the POSIX grammar behind one seam, and a path that would reach a server is never
+234. **macOS: paths are read with the POSIX grammar behind one seam, and a path that would reach a server is never
 statted, restored or adopted.** `flare-term/src/path_grammar.rs` picks the grammar: Windows
 (`path_grammar/windows.rs`, the drive and UNC rules moved there unchanged) or macOS (`macos/path_grammar.rs`): one
 root `/`, `~` and `~/` for home (`~user` is refused), `/` the only separator (a `\` is a name character), case kept,
@@ -674,7 +674,7 @@ refuses the same autofs and `//` paths, a `.` or `..` segment and the Windows UN
 menu read POSIX folders (`~/code`, `.../Claude/Github`). Held by the `posix` twins in `path_open`, `path_links`,
 `paths`, the `macos::*` tests of flare-term, flare-shells, flare-tabs and flare-surfaces, and
 `restore_never_spawns_in_a_remote_folder_on_macos`. Source: macOS port phase 2, step 3 (2026-11-08).
-231. **macOS: fonts come from the font folders, the stacks fall to SF Mono and Menlo, the UI is SF, and wgpu
+235. **macOS: fonts come from the font folders, the stacks fall to SF Mono and Menlo, the UI is SF, and wgpu
 draws on Metal.** `flare-render/src/macos/font_catalog.rs` reads `/System/Library/Fonts`, the downloadable
 `AssetsV2` fonts, `/Library/Fonts` and `~/Library/Fonts` once (never `/Network/Library/Fonts`, an autofs mount). Its
 start-up fallbacks are SF Mono, Menlo and every face cosmic-text's macOS fallback names (per-script, Han, common):
@@ -686,7 +686,7 @@ Segoe UI and Cascadia Mono on Windows; Helvetica, Slint's own fallback, has a on
 painter. Held by `font_catalog::macos::tests`, `glyph_images_are_identical_to_the_all_fonts_build_for_the_theme_sample`,
 `tests/metal_macos.rs`, `the_prewarm_instance_starts_metal_alone_unless_a_backend_is_named` and the `_on_macos`
 twins of the Windows pixel tests. Source: macOS port phase 2, step 4 (2026-11-08).
-232. **macOS: the window is a native titled window under Flare's top row, and its glass is an effect view behind
+236. **macOS: the window is a native titled window under Flare's top row, and its glass is an effect view behind
 the content.** `flare::backend::mac_chrome_attributes` makes the main window titled with a transparent titlebar, a
 hidden title and a full-size content view; `no-frame` is off on macOS (`native-caption`), so Slint keeps the
 decorations on and winit never swaps the style mask (that would drop the full-size content view). Flare's own
@@ -700,10 +700,10 @@ nothing). The glass: `dwm::set_system_backdrop` and `set_immersive_dark` land in
 casts `contentView` back to its own class), Acrylic as the under-window-background material, the window wearing
 dark or light Aqua by the ground. The handle for these calls is `window::native_view_of` (the `NSView`);
 `hwnd_of` stays Win32 only. The session end is `NSApplicationWillTerminateNotification` (Quit, log out, shut
-down), run once, and `NSWorkspaceWillPowerOffNotification`, which flushes every time (rule 235). Held by `crates/flare-win/tests/appkit.rs` (a
+down), run once, and `NSWorkspaceWillPowerOffNotification`, which flushes every time (rule 239). Held by `crates/flare-win/tests/appkit.rs` (a
 main-thread harness on a window that is never shown) and the `chrome`, `glass`, `session_end` and `window_park`
 tests. Source: macOS port phase 3, step 1 (2026-11-08).
-233. **macOS: Cmd is the app's key, Ctrl is the shell's, and the menu bar is the keymap.** One chord table serves
+237. **macOS: Cmd is the app's key, Ctrl is the shell's, and the menu bar is the keymap.** One chord table serves
 both systems: `KeyContext::os` (`flare_term::keys::KeyOs`, default Windows) picks the modifier, so on macOS every
 app chord is a Cmd chord and every Ctrl+letter reaches the shell as a control character; Ctrl+Tab and the agent
 guard's Ctrl+C and Ctrl+D stay Ctrl on both (Cmd going down on its own, `"Super"` in winit's names, leaves a
@@ -718,7 +718,7 @@ equivalent is made from that press, so the menu and the keyboard cannot drift ap
 on to Slint as Control, Slint's name for Cmd on macOS). Never add a Mac shortcut in the menu alone. Held by the
 `mac_menu`, `chords`, `keymap` and `mac_keys` tests and `crates/flare-win/tests/appkit.rs`. Source: macOS port
 phase 3, step 2 (2026-11-08).
-234. **macOS: the system glue is AppKit and the per-user Library, never a helper process.** The clipboard is
+238. **macOS: the system glue is AppKit and the per-user Library, never a helper process.** The clipboard is
 `NSPasteboard` (`flare_win::pasteboard`): text as an `NSString` (UTF-8 whatever the locale, no `pbcopy`), copied
 files as the items' file URLs read back as POSIX paths, an image only seen (PNG or TIFF), the change count as the
 sequence; tests use a private pasteboard and never the user's. The openers are `NSWorkspace`
@@ -738,14 +738,14 @@ dead one's socket is removed. The default profile is `~/Library/Application Supp
 `proc_pid_rusage` (resident set, physical footprint). Held by the `pasteboard`, `workspace`, `openers`,
 `single_instance`, `startup`, `paths`, `memory` and `flare-proc` tests. Source: macOS port phase 3, step 3
 (2026-11-08).
-235. **macOS: a power-off notice flushes but never uses up the final save.** `NSWorkspaceWillPowerOffNotification`
+239. **macOS: a power-off notice flushes but never uses up the final save.** `NSWorkspaceWillPowerOffNotification`
 comes before the apps are asked to quit, and another app can still cancel the log out or shut down, leaving Flare
 running. So `SessionEndWatch` flushes on it every time without arming anything, and only
 `NSApplicationWillTerminateNotification` (the app really ends) is run once. A shared "fired" flag across both
 would lose every change made after a cancelled log out. Held by
 `the_end_runs_once_a_power_off_never_disarms_it_and_the_power_events_arrive_until_the_watch_stops`
 (`crates/flare-win/src/macos/session_end.rs`). Source: macOS port phase 3 review (2026-11-08).
-236. **macOS: a file opens only in a handler that cannot run it.** The extension allowlist is not enough on a Mac: a
+240. **macOS: a file opens only in a handler that cannot run it.** The extension allowlist is not enough on a Mac: a
 single file can carry its own "Open with" app (a `notes.txt` set to open with Terminal runs). `workspace::open_file`
 refuses a file with any execute bit, looks the handler up (`URLForApplicationToOpenURL:`), refuses a terminal, a
 script runner, an installer or an app without a bundle id (`workspace::RUNNERS`), and opens the file WITH the
@@ -753,13 +753,13 @@ checked app (`openURLs:withApplicationAtURL:`), never with `openURL:`. Add a new
 Held by `terminals_script_runners_and_unknown_apps_never_open_a_file` and
 `the_handler_lookup_refuses_a_terminal_and_opens_nothing` (`crates/flare-win/src/macos/workspace.rs`). Source:
 macOS port phase 3 review (2026-11-08).
-237. **macOS: an `--e2e` run is an accessory app from its event loop's first turn.** `backend::with_window_attributes`
+241. **macOS: an `--e2e` run is an accessory app from its event loop's first turn.** `backend::with_window_attributes`
 hands Slint a winit event loop builder under `--e2e` with the Accessory activation policy and no activation at
 launch (`mac_e2e_loop_plan`), so the app never shows a Dock icon or comes forward before `window_park::park`, which
 runs only after `show()`. Without `--e2e` Slint keeps its own event loop. Held by
 `a_mac_e2e_run_is_an_accessory_that_never_activates_from_its_first_event` (`crates/flare/src/backend.rs`). Source:
 macOS port phase 3 review (2026-11-08).
-238. **macOS: every screen is measured in one space, the points times ONE scale.** winit reports a window's position
+242. **macOS: every screen is measured in one space, the points times ONE scale.** winit reports a window's position
 as points times that window's backing scale, so scaling each screen by its own factor makes a 2x screen's area
 overlap the screen beside it. `chrome::areas_in` scales every screen by the same factor; the saved window state is
 checked against the areas at its own saved scale (`monitors::work_areas_at`, `WindowStateStore::read_at`), and the
