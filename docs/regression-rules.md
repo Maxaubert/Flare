@@ -659,3 +659,15 @@ Native: `flare_term::spare_opening`, `Session::answer_opening`. Held by `the_que
 `anything_drawn_before_the_question_ends_the_opening`, `a_spare_answers_the_opening_cursor_question_once_and_the_tab_is_not_asked_again`,
 `a_spare_answers_only_the_opening_question`, `a_cursor_question_after_output_waits_for_the_tab_that_can_answer_it` and
 `a_shell_started_for_a_tab_leaves_the_question_to_the_tab`.
+240. **"Ask agent" types at the prompt and never submits, and a page cannot make it do more.** A person's gesture only (the panel's button, the
+terminal menu's row): no ctl, MCP or plugin way in (rule 188). The text passes one gate, `ask_agent::frame_selection`: invisible characters and controls
+gone (the C1 range too), at most 4 KB with a visible `> [cut]`, and framed `About this from <label>:` then `> ` on every line, Unicode line breaks
+included, so a page's line cannot pass for the frame. It goes with `TermHandle::paste_unsent`: bracketed when the program asked; when it did not, a CR
+inside the text would run that line, so the text goes as one line and no CR is written at all. Refused with a note when the tab has no live agent or a
+question box is up (the hooks, the watch or the screen itself: a paste must not answer it), checked at the click and again when the page answers. A
+page's answer from an earlier document, a closed panel, or a tab no longer in front is dropped. Native: `crates/flare/src/ask_agent.rs`,
+`AppCtl::deliver_ask`, `WebCtl::ask_selection`. Held by `a_page_selection_is_pasted_bracketed_and_nothing_follows_it`,
+`without_bracketed_paste_the_framing_goes_as_one_line_with_no_cr_at_all`, `a_hostile_selection_cannot_end_the_paste_or_press_enter`,
+`an_answer_from_before_a_navigation_is_dropped`, `a_question_box_on_screen_refuses_so_a_paste_cannot_answer_it`,
+`a_tab_with_no_agent_refuses_before_the_page_is_asked` and `a_line_of_the_page_cannot_pass_for_the_frame`. Source: issue #33 and
+`docs/superpowers/specs/2026-11-09-surfaces-later-design.md`.

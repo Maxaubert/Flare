@@ -404,6 +404,12 @@ impl AgentHub {
         }
     }
 
+    /// A question box is up in the tab: the agent's hooks say so, or the screen's watch has read one.
+    pub fn question_up(&self, tab: &str) -> bool {
+        self.ind.question_ids().contains(tab)
+            || self.watches.get(tab).is_some_and(|w| w.current().is_some())
+    }
+
     /// The tabs whose agent has an open question now (the mark), in the order the hub heard of them.
     pub fn question_tabs(&self) -> Vec<String> {
         self.order

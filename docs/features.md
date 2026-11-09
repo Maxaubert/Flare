@@ -2085,3 +2085,18 @@ only once no session is working. How to stage: `docs/shipping.md`, "Installing a
   start by hand of that exe may not run, and `<name>.old` is then the way back). Files removed from `claude-plugin\` in a
   new build stay in `current\` (the swap is per file, not a mirror). The restarted exe waits up to `HANDOFF_WAIT` (6 s)
   for the quitting one's pipe before it takes the lock, so the window comes back about 6 s after the old one goes.
+
+## Ask the agent about a selection (#33), 2026-11-09
+
+- **What it is.** A small "Ask agent" button in the panel's header (in a web page's address bar, which is its header) and a row "Ask agent about this
+  selection" in the terminal's right-click menu over a grid selection. Both only on a tab with an agent, whichever agent. What is sent lands at the
+  prompt and is never submitted: the person reads it and presses Enter, and the keys go to the terminal.
+- **What is sent.** Web page: `window.getSelection().toString()`, framed; no selection is a note and nothing typed. Text or image panel: the file's
+  path, quoted for the tab's shell. Handed-over text has no file and says so. Terminal grid: the selection, framed; the selection is then let go.
+- **The frame.** `About this from <label>:` then `> ` per line, at most 4 KB with `> [cut]`. The label is the host or file name, cleaned and capped at
+  64 characters; a page Flare made itself reads "this page".
+- **Refusals.** A short note over the terminal for 4 s: no agent, a question box up, no selection, a page that did not answer, a path that cannot be typed.
+- **Narrow panels.** Below 380 px the button is its glyph alone; below 200 px it is gone.
+- **Not in this version.** A row in the page's own right-click menu, selection inside the Text panel, any auto-submit, any ctl, MCP or plugin way in.
+- **Tests.** `ask_agent::tests` (hostile text), `appctl::tests::ask_tests` (fake shell and fake browser), `ui_tests::panel` (`ask_agent_*`).
+- **Not covered.** A real WebView2 selection and a real agent's prompt: no e2e scenario.

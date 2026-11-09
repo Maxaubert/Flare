@@ -3,6 +3,7 @@
 mod agent_hub;
 mod app_facts;
 mod appctl;
+mod ask_agent;
 mod backend;
 mod badge;
 mod chords;

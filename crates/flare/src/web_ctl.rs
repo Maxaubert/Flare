@@ -196,7 +196,25 @@ pub enum WebOut {
         id: u64,
         result: Result<String, String>,
     },
+    /// The page answered "Ask agent" with its selection (the script's JSON), or why not. A page that navigated since
+    /// the click says nothing at all.
+    AskSelection {
+        tab: String,
+        /// The source for the frame: the page's host, or a plain word for a page Flare itself made.
+        label: String,
+        result: Result<String, String>,
+    },
 }
+
+/// One "Ask agent" read of a page's selection, while it is out.
+struct SelectionAsk {
+    tab: String,
+    /// The document the click was made on ([`TabWeb::doc`]); an answer from any other is dropped.
+    doc: u64,
+}
+
+/// A view closed since the click: no document matches this, so its late answer is dropped.
+const NO_DOC: u64 = u64::MAX;
 
 /// A tab's bar as the window wants it (plugins phase 6): the plugin whose bar the tab shows, and its page.
 #[derive(Clone, Debug)]
@@ -501,6 +519,8 @@ pub struct WebCtl {
     /// The scripts that fill a plugin's login into a page (the `fill` permission): their answer goes to the window as
     /// [`WebOut::Filled`], never into `scripts` (which the e2e reads).
     fills: std::collections::HashSet<u64>,
+    /// The "Ask agent" reads still out, by script id.
+    selection_asks: HashMap<u64, SelectionAsk>,
     /// The last id given to a DevTools call (unique across the window).
     call_ids: u64,
     /// The still of the shown tab while an overlay hides its window.
@@ -688,6 +708,7 @@ impl WebCtl {
             has_focus: false,
             scripts: HashMap::new(),
             fills: std::collections::HashSet::new(),
+            selection_asks: HashMap::new(),
             script_seq: 0,
             call_ids: 0,
             still: None,
@@ -1290,6 +1311,12 @@ impl WebCtl {
         let Some(t) = self.tabs.remove(tab) else {
             return false;
         };
+        // Kept, not removed: the browser may still answer, and that answer has to be dropped here too.
+        for ask in self.selection_asks.values_mut() {
+            if ask.tab == tab {
+                ask.doc = NO_DOC;
+            }
+        }
         if self.full.as_deref() == Some(tab) {
             self.full = None;
         }
@@ -2493,6 +2520,57 @@ impl WebCtl {
         Some(id)
     }
 
+    /// "Ask agent": reads the selection of the tab's page; the answer comes back as [`WebOut::AskSelection`], or not
+    /// at all if the page navigates first. False when there is no page to ask. A second click while the first is out
+    /// starts nothing, so one selection is typed once.
+    pub fn ask_selection(&mut self, tab: &str) -> bool {
+        let Some(doc) = self.tabs.get(tab).map(|t| t.doc) else {
+            return false;
+        };
+        if self.backend().is_none() {
+            return false;
+        }
+        if self
+            .selection_asks
+            .values()
+            .any(|a| a.tab == tab && a.doc == doc)
+        {
+            return true;
+        }
+        self.script_seq += 1;
+        let id = self.script_seq;
+        self.selection_asks.insert(
+            id,
+            SelectionAsk {
+                tab: tab.to_string(),
+                doc,
+            },
+        );
+        if let Some(b) = self.backend() {
+            b.run_script(tab, id, crate::ask_agent::SELECTION_SCRIPT);
+        }
+        true
+    }
+
+    /// The page answered a selection read. Only the document the person clicked on is believed.
+    fn selection_answered(
+        &self,
+        ask: SelectionAsk,
+        result: Result<String, String>,
+    ) -> Option<WebOut> {
+        let t = self.tabs.get(&ask.tab).filter(|t| t.doc == ask.doc)?;
+        let label = if t.app_host.is_some() {
+            "this page".to_string()
+        } else {
+            flare_surfaces::web::host_label(&t.url)
+        };
+        Some(WebOut::AskSelection {
+            tab: ask.tab,
+            label,
+            result,
+        })
+    }
+
     /// The answer of the latest script started, None while it runs.
     pub fn script_latest(&self) -> Option<Result<String, String>> {
         self.scripts.get(&self.script_seq).cloned()
@@ -2907,6 +2985,8 @@ impl WebCtl {
             WebEvent::Script { id, result } => {
                 if self.fills.remove(&id) {
                     out.push(WebOut::Filled { id, result });
+                } else if let Some(ask) = self.selection_asks.remove(&id) {
+                    out.extend(self.selection_answered(ask, result));
                 } else {
                     self.scripts.insert(id, result);
                 }

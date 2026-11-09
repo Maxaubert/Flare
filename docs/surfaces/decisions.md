@@ -1123,3 +1123,13 @@ Spec: `docs/superpowers/specs/2026-10-28-dns-rebinding-proxy.md`.
   is common) reaches a service listening on all its interfaces through it, so the real rule
   (`netproxy::public_rule`) also drops any address a socket can be bound to (`netproxy::on_this_pc`). The old
   site-local IPv6 range (fec0::/10) joined the refused ranges.
+
+## Ask the agent about a selection (#33), 2026-11-09
+
+- **No bracketed paste means one line.** The spec's delivery ("unbracketed never ends in CR") still left a CR between the lines of the frame, and a
+  program that never asked for bracketed paste submits at each one. `paste_unsent` joins the lines with spaces there, so nothing is ever submitted.
+- **The note is a new small toast over the terminal.** The only toasts before it were Windows notifications (for a tab not in front) and the staged
+  build's. It reuses `StagedToast` without a button, over the grid because a page's browser window sits above anything drawn on the panel.
+- **The question gate also reads the screen.** The hub's mark and watch lag behind a box by the settle time; `looks_like_question` on the live rows
+  closes that gap at the moment of the paste.
+- **An answer for a tab no longer in front is dropped**, not typed where nobody is looking.

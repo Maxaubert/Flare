@@ -1201,6 +1201,27 @@ impl TermUi {
         rows
     }
 
+    /// Tests: a menu open on `tab` over `selection`, without a right click.
+    #[cfg(test)]
+    pub fn test_set_menu(&mut self, tab: &str, selection: String) {
+        self.menu = Some(MenuStore {
+            tab: tab.to_string(),
+            x: 0.0,
+            y: 0.0,
+            selection,
+            link: None,
+            path: None,
+        });
+    }
+
+    /// The grid selection the open menu was made over, if it was made over one.
+    pub fn menu_selection(&self) -> Option<&str> {
+        self.menu
+            .as_ref()
+            .map(|m| m.selection.as_str())
+            .filter(|s| !s.is_empty())
+    }
+
     /// The pick acts on the tab the menu was opened on; when that tab is gone or not in front the
     /// pick does nothing.
     pub fn on_menu_pick(&mut self, tab: Option<&TabInfo>, i: usize) {
