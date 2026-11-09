@@ -99,7 +99,6 @@ pub trait ModsPort {
     /// homepage (what turning it on approves); empty for a switch off, or a mod that asks for nothing.
     fn set_enabled(&self, id: &str, on: bool, shown: flare_mods::hub::Shown);
     /// The person asked for the mod's panel (its details sheet's "Open" button).
-    fn show_panel(&self, id: &str);
     /// The plugins folder, the one folder for every plugin (the scan worker makes it, at start and when the page
     /// opens).
     fn dir(&self) -> PathBuf;
@@ -884,7 +883,6 @@ impl SettingsCtl {
             |c, k: SharedString, v: SharedString| c.sheet_choice(&k, &v)
         );
         on!(app, rc, on_sheet_turn_on, |c| c.sheet_turn_on());
-        on!(app, rc, on_sheet_open_panel, |c| c.sheet_open_panel());
         on!(app, rc, on_frame_resized, |c, w: f32, h: f32| c
             .frame_resized(f64::from(w), f64::from(h)));
         on!(app, rc, on_scale_changed, |c| c.scale_changed());
@@ -1077,14 +1075,6 @@ impl SettingsCtl {
     fn sheet_turn_on(&mut self) {
         if let (Some(id), Some(shown), Some(m)) = (&self.sheet, &self.sheet_shown, &self.mods) {
             m.set_enabled(id, true, shown.clone());
-        }
-    }
-
-    /// The sheet's "Open <panel>": the plugin's panel in the shell tab used last. The sheet closes with Settings.
-    fn sheet_open_panel(&mut self) {
-        if let (Some(id), Some(m)) = (self.sheet.clone(), &self.mods) {
-            m.show_panel(&id);
-            self.close_sheet();
         }
     }
 
