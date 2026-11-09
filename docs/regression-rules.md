@@ -630,6 +630,35 @@ Native: `background.rs` (`looks_like_background_work`). Held by `a_dev_server_in
 `std::os::windows` imports, Windows paths and Windows tools live in Windows modules with a macOS counterpart or stub.
 Held by the `macos` CI job (cargo check, clippy and nextest on macos-latest). Source: macOS port plan
 (`docs/superpowers/specs/2026-11-08-macos-port.md`, owner, 2026-11-08).
+228. **A click by ref that would land on something else is not pressed, and does not say it was.** The agent's `browser_click` answered "Clicked" over a cookie wall, and the agent believed it. Native: after the glide and right before the mouse events, one fixed script asks the page what is at the point (`HIT_TEST_FN`, `document.elementFromPoint` through open shadow roots, no page or agent text in it); the element there must be the target, inside it, a label of it, or a wrapper of it other than `html` and `body`. Otherwise the call answers `covered` and the agent is told what is on top, as page text between the markers. A page that cannot say is clicked as before, so an old page never loses a click. Held by `a_covered_click_presses_nothing_and_names_what_is_on_top`, `a_covered_click_lets_go_of_the_element_it_held`, `a_click_on_the_target_or_a_child_of_it_is_pressed`, `a_page_that_cannot_answer_the_check_is_clicked_as_before` (`agent_job.rs`), `the_covering_element_is_named_briefly_and_cleaned` (`agent_web.rs`), `a_hostile_covering_element_cannot_end_the_block_or_pose_as_an_element` (`browser.rs`), `a_covered_click_is_refused_and_presses_nothing` (`web_tests.rs`) and the e2e `agentCoveredClick`.
+229. **A cancelled tool call stops, on both sides.** `flare-mcp` reads stdin on its own thread, so
+`notifications/cancelled` is seen while a call runs: the call gives up and drops its connection, a queued request never
+runs, and a cancelled request gets no response. The control channel keeps reading a connection while its call runs, so
+the drop raises `CallContext.cancel`, and a call that waits (a browser job, a page load, a mod's answer) ends on it.
+Replies stay in order, an unknown or finished id does nothing, stdin closing still ends the server. Held by
+`a_cancel_during_a_call_ends_the_job_on_flares_side_and_the_next_call_still_works` (the exe over a real pipe),
+`a_client_that_goes_away_mid_call_raises_that_calls_cancel_flag`,
+`a_job_whose_caller_went_away_ends_and_the_page_is_free_for_the_next_call` and
+`a_mod_tool_call_ends_when_the_caller_goes_away_and_the_late_answer_is_refused`. Source: channel-9
+(`docs/surfaces/lessons.md`, owner, 2026-11-09).
+230. **A web page keeps its width while the splitter beside it is held.** A new width makes the page lay itself out again,
+so a resize at every pointer step flickers. During the drag the left edge follows the slot and the width stands still; the
+page takes the slot's exact size after 120 ms without a change and when the grab ends for any reason (release, cancel, tab
+change, closed panel, full screen). A window resize is not held. Native: `flare_surfaces::web::DragHold`, `web_ctl.rs`
+(`drag_rect`). Held by `a_held_splitter_moves_the_pages_edge_but_never_its_width_until_it_is_let_go`,
+`a_pause_in_a_splitter_drag_fits_the_page_once_and_the_next_step_holds_again`,
+`a_splitter_grab_that_goes_away_leaves_the_page_on_the_slot`,
+`a_panel_closed_during_a_splitter_drag_comes_back_at_the_slots_size` and
+`a_window_resize_moves_the_page_at_every_step_with_no_hold`. Source: the note left in `docs/surfaces/lessons.md` Round 10.
+231. **A warm spare answers ConPTY's opening cursor question itself.** A spare has no tab, so the question used to wait in its banner and be
+answered when a tab adopted it. By then PowerShell 7 was at its prompt, and the late answer cost the next key: the first paste into a new plain tab
+lost its first letter with a beep, and the second was fine. The spare now answers `ESC[6n` with `ESC[1;1R` when it is the first thing asked, before
+anything is drawn, and removes it from the banner so the tab does not answer again. A question after output waits for the tab, which has a real grid.
+Measured with real shells on 2026-11-09: a late cursor answer alone loses the letter (`cho firstpaste`); a late device attributes answer does not.
+Native: `flare_term::spare_opening`, `Session::answer_opening`. Held by `the_question_is_found_behind_the_sequences_conpty_sends_first`,
+`anything_drawn_before_the_question_ends_the_opening`, `a_spare_answers_the_opening_cursor_question_once_and_the_tab_is_not_asked_again`,
+`a_spare_answers_only_the_opening_question`, `a_cursor_question_after_output_waits_for_the_tab_that_can_answer_it` and
+`a_shell_started_for_a_tab_leaves_the_question_to_the_tab`.
 232. **macOS: closing a tab ends its whole session, and throws away the output nobody will read.** The shell leads
 its own session (portable-pty `setsid`); a kill sends SIGHUP to the session's process groups and to the shell's
 descendants, then SIGTERM and SIGKILL after 250 ms and 500 ms more (`flare-term/src/macos/pty.rs`), sparing an
@@ -917,16 +946,17 @@ active, and no handler was asked for anything native. Source: macOS port phase 5
 `flare_cef::macos::view::View::cdp_send` hands `agent_job`'s calls to `SendDevToolsMessage` as
 `{"id","method","params"}` (ids within CEF's `int`); answers come back by id through the DevTools observer, a
 result's JSON as on Windows, an error as its message plus Chromium's error object. The real
-`flare_surfaces::agent_job::Job` drives look, click, type, press, scroll, wait and eval over it, and all 11 methods
+`flare_surfaces::agent_job::Job` drives look, click, type, press, scroll, wait and eval over it, and all 14 methods
 it sends (`DOM.enable`, `Page.getLayoutMetrics`, `Accessibility.getFullAXTree`, `Runtime.evaluate`,
 `Page.captureScreenshot`, `DOM.getContentQuads`, `DOM.scrollIntoViewIfNeeded`, `DOM.focus`,
-`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Input.insertText`) answer in Chromium's shapes. A
+`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Input.insertText`, and for the covered-click check of rule
+228 `DOM.resolveNode`, `Runtime.callFunctionOn`, `Runtime.releaseObject`) answer in Chromium's shapes. A
 `browser_eval` of `while(true){}`, of a page function that never returns, or one that runs into a page getter set as
 a trap is stopped by `Runtime.evaluate`'s timeout (10 s; Chromium answers error -32603, which the job reports as
 "the page did not run it"), and the same document answers again within milliseconds with its state and the agent's
 own marks kept, as on Windows: the gap that ruled WKWebView out. The look's fixed `devicePixelRatio` question on a
 trapped page costs its 2 s timeout, not the look. Held by
-`the_eleven_devtools_methods_agent_job_uses_answer_in_chromiums_shapes` and
+`the_devtools_methods_agent_job_uses_answer_in_chromiums_shapes` and
 `a_runaway_eval_is_stopped_by_its_timeout_and_the_page_answers_again_with_its_state`. Source: macOS port phase 5,
 step 1 (2026-11-08); the verdict's "If it is CEF: what phase 5 must prove on a Mac".
 254. **macOS: the web panel is CEF behind the same `WebBackend`, and nothing waits for it.** `flare_web::host` on macOS
@@ -1266,9 +1296,15 @@ capability requests), so the stale question is never answered; the rest stays by
 read at adoption, so a question split over two reads is taken out too, and a question cut off at the end stays for the
 live output to finish (the shell is still waiting for that one). Spares stay on for every shell, pwsh and fish
 included (a first fix that let such a spare go stopped prewarming pwsh for the session). Windows hands the kept output
-over as it was (ConPTY stands between the shell and Flare there). Held by
-`a_spare_that_asked_the_terminal_is_adopted_without_its_question`, `a_question_split_over_two_reads_is_taken_out_too`
-and the `term_query` tests. Source: Mac E2E in CI and review of the branch (2026-11-09).
+over as it was (ConPTY stands between the shell and Flare there). Rule 231 is the other half, on every system: a cursor
+question asked before anything is drawn (ConPTY's opening one) is answered by the spare itself at once and leaves the
+banner, so it never reaches this filter; what is left here is a question asked after output, which only a real grid
+could answer and which adoption would answer too late. Held by
+`a_spare_that_asked_the_terminal_is_adopted_without_its_question`, `a_question_split_over_two_reads_is_taken_out_too`,
+the `term_query` tests, and on the Mac by rule 231's `a_spare_answers_the_opening_cursor_question_once_and_the_tab_is_not_asked_again`,
+`a_spare_answers_only_the_opening_question` and `a_cursor_question_after_output_waits_for_the_tab_that_can_answer_it`
+(the question left after the opening one is taken out instead of handed over). Source: Mac E2E in CI and review of
+the branch (2026-11-09); main's rule 231 (2026-11-09).
 352. **macOS: the Mac E2E runs with the runner quiet and its timers on time.** diagLog's "an idle 3 s writes nothing"
 failed on the Mac runner only, with `main-lag` lines of 100 to 216 ms and nothing in flight. First the runner's own
 `trustd`, `softwareupdated` and Spotlight took about one and a half of its three cores; then, with the runner quiet

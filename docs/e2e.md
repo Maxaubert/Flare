@@ -297,6 +297,9 @@ line. Nothing is fetched, no real window gets input (the person's takeover is th
   hidden) and back in front; a connection with no tab; shell input still forbidden; closing the panel
   answering a running call. A second launch with `flare.web.agentEval` seeded in the profile holds `browser.eval` (a value, an object, a
   promise, an exception as `bad_params`).
+- `agentCoveredClick` runs a click by ref in a real page: a button under another element answers `covered`, names the cover and is not
+  pressed; a button with a child, a hidden checkbox under its drawn label and a button in a shadow root are pressed. A look lists
+  nothing inside a frame, so a ref cannot name it.
 - `mcpBrowser` runs `flare-mcp.exe` over stdio with the tab's environment and a session that reads each reply before the next call:
   `initialize`, `tools/list` (the eight browser tools, `browser_look` described with refs and "look again"), a look with no page
   (an error naming `open_page`), `browser_navigate` opening the page, a look whose result has an image content item that decodes as a

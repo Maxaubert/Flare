@@ -7,7 +7,9 @@
 //! on the Mac runner a pwsh adopted a minute after it started took every cursor report as input, echoed it as
 //! characters no key sends, asked again, and never stopped. The session manager therefore hands a tab the spare's
 //! kept output without its questions (outside Windows, where ConPTY stands between the shell and Flare and nothing
-//! changes): the stale question is never answered, and the spare is adopted as before.
+//! changes): the stale question is never answered, and the spare is adopted as before. The opening cursor question,
+//! asked before anything is drawn, never reaches this filter: the spare answers it itself (rule 231,
+//! `crate::spare_opening`).
 
 const ESC: u8 = 0x1b;
 const BEL: u8 = 0x07;

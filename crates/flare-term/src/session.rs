@@ -8,6 +8,7 @@
 use crate::batcher::{BATCH_MAX_BYTES, BATCH_WINDOW, OutputBatcher, READ_MIN, ReadSizer};
 use crate::exit_poll::{ExitPoller, PollStep};
 use crate::pty::{PtyProcess, PtySpawner, SpawnSpec};
+use crate::spare_opening::{OPENING_CURSOR_REPLY, Opening, scan_opening};
 use flare_shells::cwd::cd_command;
 use flare_shells::env::{CtlEnv, PluginEnv, plugin_key, pty_env};
 use flare_shells::list::{ShellDef, shell_by_id};
@@ -196,6 +197,8 @@ struct Session {
     pid: u32,
     warm_key: Option<String>,
     banner_cap: usize,
+    /// A warm spare that has not yet been asked where its cursor is (rule 231).
+    opening: AtomicBool,
     killed: AtomicBool,
     exited: AtomicBool,
     proc: Mutex<Option<Box<dyn PtyProcess>>>,
@@ -242,8 +245,35 @@ impl Session {
         if let Some(bytes) = chunk {
             trace_key("deliver");
             match &mut *dest {
-                Dest::Buffer(buf) => append_capped(buf, &bytes, self.banner_cap),
+                Dest::Buffer(buf) => {
+                    append_capped(buf, &bytes, self.banner_cap);
+                    self.answer_opening(buf);
+                }
                 Dest::Sink { id, sink } => sink.data(id, bytes),
+            }
+        }
+    }
+
+    /// A warm spare answers ConPTY's opening cursor question now, and takes it out of the banner so the tab that
+    /// adopts the spare does not answer it again (rule 231).
+    fn answer_opening(&self, banner: &mut Vec<u8>) {
+        if !self.opening.load(Ordering::SeqCst) {
+            return;
+        }
+        match scan_opening(banner) {
+            Opening::Wait => {}
+            Opening::Over => self.opening.store(false, Ordering::SeqCst),
+            Opening::Asked(question) => {
+                self.opening.store(false, Ordering::SeqCst);
+                banner.drain(question);
+                if let Some(tx) = lk(&self.writer_tx).as_ref() {
+                    self.queued
+                        .fetch_add(OPENING_CURSOR_REPLY.len(), Ordering::SeqCst);
+                    if tx.send(OPENING_CURSOR_REPLY.to_vec()).is_err() {
+                        self.queued
+                            .fetch_sub(OPENING_CURSOR_REPLY.len(), Ordering::SeqCst);
+                    }
+                }
             }
         }
     }
@@ -399,7 +429,9 @@ fn pump_loop(s: Arc<Session>) {
 
 /// Pure (rule 351): what a tab adopting a warm spare is handed of the spare's kept output. Outside Windows its
 /// questions to the terminal are taken out: the spare asked them with nobody to answer, and an answer given now
-/// would come late and be read as typing. Windows hands it over as it was (ConPTY stands between the shell and
+/// would come late and be read as typing. A cursor question asked before anything was drawn never gets here: the
+/// spare answered it itself and took it out (rule 231, `answer_opening`, on every system); what is left is a
+/// question asked after output, which only a real grid could answer. Windows hands it over as it was (ConPTY stands between the shell and
 /// Flare there, and the Windows E2E never showed it).
 pub(crate) fn banner_for_tab(banner: Vec<u8>) -> Vec<u8> {
     if cfg!(windows) {
@@ -464,6 +496,7 @@ fn launch(sh: &Arc<Shared>, f: Fresh<'_>) -> Result<Arc<Session>, String> {
         def_id: f.def_id.to_string(),
         plugin_key: f.plugin_key,
         pid,
+        opening: AtomicBool::new(f.warm_key.is_some()),
         warm_key: f.warm_key,
         banner_cap: sh.opts.warm_banner_cap,
         killed: AtomicBool::new(false),
@@ -1872,6 +1905,83 @@ mod tests {
         if !cfg!(windows) {
             assert_eq!(data, b"PS> ok");
         }
+    }
+
+    fn banner_of(rec: &RecSink) -> Vec<u8> {
+        match rec.events().into_iter().next().expect("a first data") {
+            Ev::Data(_, bytes) => bytes,
+            _ => panic!("first event is not data"),
+        }
+    }
+
+    #[test]
+    fn a_spare_answers_the_opening_cursor_question_once_and_the_tab_is_not_asked_again() {
+        let sp = FakeSpawner::new();
+        let m = mgr(&sp);
+        m.prewarm("C:\\home", Some("pwsh"), None);
+        sp.made()[0].feed(b"\x1b[1t\x1b[6n\x1b[c\x1b[?1004h");
+        assert!(wait_until(|| sp.made()[0].written() == b"\x1b[1;1R"));
+        let rec = Arc::new(RecSink::default());
+        assert!(m.spawn("tab", "C:\\home", Some("pwsh"), rec.clone(), None, None));
+        if cfg!(windows) {
+            assert_eq!(banner_of(&rec), b"\x1b[1t\x1b[c\x1b[?1004h");
+        } else {
+            // Outside Windows the questions left in the banner are taken out as well (rule 351).
+            assert_eq!(banner_of(&rec), b"\x1b[1t\x1b[?1004h");
+        }
+    }
+
+    #[test]
+    fn a_spare_answers_only_the_opening_question() {
+        let sp = FakeSpawner::new();
+        let m = mgr(&sp);
+        m.prewarm("C:\\home", Some("pwsh"), None);
+        sp.made()[0].feed(b"\x1b[6n");
+        assert!(wait_until(|| sp.made()[0].written() == b"\x1b[1;1R"));
+        sp.made()[0].feed(b"\x1b[6n");
+        assert!(wait_until(|| m.output_ticks() >= 2));
+        std::thread::sleep(Duration::from_millis(100)); // the second batch reaches the banner
+        let rec = Arc::new(RecSink::default());
+        assert!(m.spawn("tab", "C:\\home", Some("pwsh"), rec.clone(), None, None));
+        if cfg!(windows) {
+            assert_eq!(banner_of(&rec), b"\x1b[6n");
+        } else {
+            // The second question is taken out of the banner instead (rule 351), and the banner is then empty.
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(rec.events().iter().all(|e| !matches!(e, Ev::Data(..))));
+        }
+        assert_eq!(sp.made()[0].written(), b"\x1b[1;1R");
+    }
+
+    #[test]
+    fn a_cursor_question_after_output_waits_for_the_tab_that_can_answer_it() {
+        let sp = FakeSpawner::new();
+        let m = mgr(&sp);
+        m.prewarm("C:\\home", Some("pwsh"), None);
+        sp.made()[0].feed(b"PS>\x1b[6n");
+        assert!(wait_until(|| m.output_ticks() >= 1));
+        std::thread::sleep(Duration::from_millis(100)); // the batch reaches the banner, where a wrong answer would go out
+        let rec = Arc::new(RecSink::default());
+        assert!(m.spawn("tab", "C:\\home", Some("pwsh"), rec.clone(), None, None));
+        if cfg!(windows) {
+            assert_eq!(banner_of(&rec), b"PS>\x1b[6n");
+        } else {
+            // Outside Windows a late answer would be read as typing, so the question is taken out (rule 351).
+            assert_eq!(banner_of(&rec), b"PS>");
+        }
+        assert!(sp.made()[0].written().is_empty());
+    }
+
+    #[test]
+    fn a_shell_started_for_a_tab_leaves_the_question_to_the_tab() {
+        let sp = FakeSpawner::new();
+        let m = mgr(&sp);
+        let rec = Arc::new(RecSink::default());
+        assert!(m.spawn("tab", "C:\\home", Some("pwsh"), rec.clone(), None, None));
+        sp.made()[0].feed(b"\x1b[6n");
+        assert!(wait_until(|| !rec.events().is_empty()));
+        assert_eq!(banner_of(&rec), b"\x1b[6n");
+        assert!(sp.made()[0].written().is_empty());
     }
 
     #[test]
