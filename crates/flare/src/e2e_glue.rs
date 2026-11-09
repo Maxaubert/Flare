@@ -2005,10 +2005,12 @@ fn print_window_snapshot(_hwnd: isize) -> Result<Snap, String> {
     Err("the window snapshot is not built on this platform yet".into())
 }
 
-/// macOS: the Mac E2E (port plan "Ongoing"). Refused until then.
+/// macOS (rule 344): nothing to do first. The `set_minimized(false)` that follows is AppKit's
+/// `deminiaturize:`, which brings the window back without making the accessory app active; the screen
+/// guard holds that. The refusal here left the window in the Dock and the marks held (indicatorStyles).
 #[cfg(not(windows))]
 fn restore_without_activating(_app: &AppWindow) -> Result<(), String> {
-    Err("restoring without activation is not built on this platform yet".into())
+    Ok(())
 }
 
 #[cfg(test)]

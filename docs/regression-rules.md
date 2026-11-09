@@ -1224,7 +1224,8 @@ window miniaturised by Cmd+M, the yellow light or the hook gets no resize on a M
 state on a resize only, so the marks kept moving behind the Dock (indicatorStyles' "minimising pauses the marks" on
 the runner, where the window server said occluded and Slint said not minimised). `window::is_minimised` reads winit's
 live `is_minimized` (`isMiniaturized`) on macOS, Slint's state elsewhere, for the marks' pause, the tick, the raise
-and the saved bounds. Under `--e2e`, the hook's `DpiChange` on a Mac sets the window item to the buffer's own size at
+and the saved bounds, read again on each occlusion change (the one event a miniaturise sends); the hook's restore
+deminiaturises without the refusal it had. Under `--e2e`, the hook's `DpiChange` on a Mac sets the window item to the buffer's own size at
 the new scale at once (`e2e_glue::item_size_for`), because Slint's scale change kept the item's logical size and a
 frame drawn before the real window grew asked the software renderer for 2655 px of a 1180 px buffer: the app
 panicked (tabLooks, run 42598992162). Held by `the_systems_minimised_answer_wins_over_slints` and
