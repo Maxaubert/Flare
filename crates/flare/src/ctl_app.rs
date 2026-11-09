@@ -4590,10 +4590,10 @@ mod tests {
     fn the_bundled_model_viewer_is_the_pinned_build() {
         use sha2::{Digest, Sha256};
         // assets/three/README.md and the notices name this exact file (three 0.170.0, built from tools/model-viewer).
-        assert_eq!(MODEL_VIEWER.len(), 590_033);
+        assert_eq!(MODEL_VIEWER.len(), 590_286);
         assert_eq!(
             format!("{:x}", Sha256::digest(MODEL_VIEWER)),
-            "eaefe174aef43953fc8d16ad3012e154ebc21e48b3d63766e6f068e29e9c0064"
+            "f78d1b648e480cb0beb250741071c699945ae04d6494903ea78911868dd41227"
         );
         let text = std::str::from_utf8(MODEL_VIEWER).unwrap();
         for banned in ["eval(", "new Function", "WebAssembly", "new Worker"] {

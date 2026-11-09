@@ -2103,5 +2103,6 @@ tab's panel. It is a mini-app Flare writes itself, like the audio player, so the
 - **Tests.** `flare_surfaces::model` (3), `path_open` (`a_file_for_a_viewer_is_one_of_its_extensions_under_the_same_name_rules`), `ctl_app` (`view_model_*`,
   `the_real_model_resolver_is_rules_13_and_14_with_the_viewers_extensions`, `the_bundled_model_viewer_is_the_pinned_build`), `flare-mcp`
   (`show_model_routes_a_path_made_absolute_to_view_model`, the pinned tools list), the method and grant tables, and the e2e `model`.
+- **STL normals.** The viewer works out an STL's normals from its facets and ignores the ones in the file, which are commonly zero and would draw the part as one flat silhouette (rule 233).
 
 Not in this version: click a path to preview, a `.gltf` with separate `.bin` or texture files, Draco or other WASM decoders, OBJ, FBX, animation.

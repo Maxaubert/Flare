@@ -3,7 +3,8 @@
 //! Starts the built release exe in its own world and profile and calls `view.model` over the control channel on small
 //! models this file writes. The window is parked off the screen and never takes the foreground, like every scenario.
 //!
-//! It holds: a `.glb`, an `.stl` and a `.gltf` with its data inside all load through the page's policy and draw (pixels
+//! It holds: a `.glb`, a binary and an ASCII `.stl` with zero normals (shaded, not one flat silhouette) and a `.gltf`
+//! with its data inside all load through the page's policy and draw (pixels
 //! other than the background, with the grid off); the wireframe and grid buttons; the title; a damaged file, a `.gltf`
 //! that points at another file and a model over the triangle limit each show their message; the size cap and the
 //! refusals. Reading a file needs no graphics, so the failures are checked either way.
@@ -34,6 +35,20 @@ const FACES: [[u16; 3]; 4] = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
 
 /// The triangle limit the viewer holds (`TRIANGLES_MAX` in `tools/model-viewer/src/viewer.js`).
 const TRIANGLES_MAX: usize = 5_000_000;
+
+/// The STL pyramid: its point faces the viewer's opening camera, so several faces show. Lit faces then differ, and only
+/// lighting makes them differ: the `CORNERS` pyramid shows that camera one face, which is flat whatever its normals are.
+const STL_CORNERS: [[f32; 3]; 4] = [
+    [1.0, 1.0, 1.0],
+    [1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 0.0, 1.0],
+];
+const STL_FACES: [[u16; 3]; 4] = [[0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2]];
+
+/// The least a lit grey part measures on `window.__flareModelShade`: its mean brightness and the gap between its faces.
+const MEAN_LIT: u64 = 40;
+const SPREAD_LIT: u64 = 5;
 
 fn corners_bytes() -> Vec<u8> {
     CORNERS
@@ -181,14 +196,29 @@ fn external_gltf() -> String {
     gltf_json(12, json!({"byteLength": 60, "uri": "part.bin"})).to_string()
 }
 
-/// A binary STL of the pyramid.
+/// An ASCII STL of `STL_CORNERS`, every facet's normal left at zero as many exporters do.
+fn ascii_stl() -> String {
+    let mut out = String::from("solid pyramid\n");
+    for face in STL_FACES {
+        out.push_str(" facet normal 0 0 0\n  outer loop\n");
+        for i in face {
+            let [x, y, z] = STL_CORNERS[usize::from(i)];
+            out.push_str(&format!("   vertex {x:.1} {y:.1} {z:.1}\n"));
+        }
+        out.push_str("  endloop\n endfacet\n");
+    }
+    out.push_str("endsolid pyramid\n");
+    out
+}
+
+/// A binary STL of `STL_CORNERS`, every facet's normal left at zero as many exporters do.
 fn stl() -> Vec<u8> {
     let mut out = vec![0u8; 80];
-    out.extend_from_slice(&(FACES.len() as u32).to_le_bytes());
-    for face in FACES {
+    out.extend_from_slice(&(STL_FACES.len() as u32).to_le_bytes());
+    for face in STL_FACES {
         out.extend_from_slice(&[0u8; 12]);
         for i in face {
-            for v in CORNERS[usize::from(i)] {
+            for v in STL_CORNERS[usize::from(i)] {
                 out.extend_from_slice(&v.to_le_bytes());
             }
         }
@@ -269,6 +299,7 @@ fn model_on(ctx: &mut Ctx, app: &mut App, root: &Path) -> Result<(), String> {
     let good = [
         ("part.glb", glb(1)),
         ("part.stl", stl()),
+        ("ascii.stl", ascii_stl().into_bytes()),
         ("embedded.gltf", embedded_gltf().into_bytes()),
     ];
     let mut webgl = true;
@@ -284,6 +315,9 @@ fn model_on(ctx: &mut Ctx, app: &mut App, root: &Path) -> Result<(), String> {
             ctx.ok(bar == "true", format!("{at}: {name} leaves no message up"));
             if *name == "part.glb" {
                 pixels_and_toggles(ctx, app);
+            }
+            if name.ends_with(".stl") {
+                is_shaded(ctx, app, name);
             }
         } else if v["code"] == json!("webgl") {
             webgl = false;
@@ -369,6 +403,19 @@ fn model_on(ctx: &mut Ctx, app: &mut App, root: &Path) -> Result<(), String> {
         ctx.skip("model: the drawing, wireframe and grid checks did not run without WebGL");
     }
     Ok(())
+}
+
+/// An STL whose facets carry no normal is still lit: a bright part whose faces differ, not one flat silhouette (its colour
+/// depends on the GPU: zero normals measured a single grey here, and are black on others).
+fn is_shaded(ctx: &mut Ctx, app: &mut App, name: &str) {
+    say(ctx, app, "document.getElementById('grid').click(); 'x'");
+    let text = say(ctx, app, "JSON.stringify(window.__flareModelShade())");
+    let shade: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    let (mean, spread) = (shade["mean"].as_u64(), shade["spread"].as_u64());
+    ctx.ok(
+        mean.is_some_and(|m| m >= MEAN_LIT) && spread.is_some_and(|s| s >= SPREAD_LIT),
+        format!("model: {name} is shaded, not a flat silhouette ({text})"),
+    );
 }
 
 /// The model is on the canvas: with the grid off the only thing that is not background is the model.

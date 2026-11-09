@@ -8687,7 +8687,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-three.js 0.170.0 (three.js authors, released 2024-10-31): `viewer.js` in `assets/three/`, built with esbuild from the npm package `three@0.170.0` (the core and its `OrbitControls`, `GLTFLoader`, `STLLoader` and `RoomEnvironment`) and the code in `tools/model-viewer/` (sha256 eaefe174aef43953fc8d16ad3012e154ebc21e48b3d63766e6f068e29e9c0064), compiled into `flare.exe`; it draws the models `show_model` asks for and is never fetched. MIT licence, (c) three.js authors:
+three.js 0.170.0 (three.js authors, released 2024-10-31): `viewer.js` in `assets/three/`, built with esbuild from the npm package `three@0.170.0` (the core and its `OrbitControls`, `GLTFLoader`, `STLLoader` and `RoomEnvironment`) and the code in `tools/model-viewer/` (sha256 f78d1b648e480cb0beb250741071c699945ae04d6494903ea78911868dd41227), compiled into `flare.exe`; it draws the models `show_model` asks for and is never fetched. MIT licence, (c) three.js authors:
 
 ```text
 The MIT License

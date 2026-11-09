@@ -84,7 +84,10 @@ async function readGltf(bytes) {
 
 function readStl(bytes) {
   const geometry = new STLLoader().parse(bytes);
-  if (!geometry.hasAttribute('normal')) geometry.computeVertexNormals();
+  // The loader always sets normals, copied from the file, and STL files commonly leave them at zero, which the shader cannot
+  // light. The corners' order already decides which side is drawn, so the normals come from it. The geometry has no index,
+  // so each facet stays flat.
+  geometry.computeVertexNormals();
   const material = new MeshStandardMaterial({
     color: geometry.hasColors ? 0xffffff : 0xb4b8c0,
     metalness: 0.1,
@@ -246,8 +249,8 @@ function show(model, page) {
     return gridOn;
   });
 
-  // For the e2e: draws now and says how many pixels are not the background.
-  window.__flareModelPixels = () => {
+  // For the e2e: draws now and gives the brightness (0 to 255) of every pixel that is not the background.
+  function drawnBrightness() {
     resized();
     render();
     const gl = renderer.getContext();
@@ -255,11 +258,25 @@ function show(model, page) {
     const pixels = new Uint8Array(width * height * 4);
     gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
     const [r, g, b] = pixels;
-    let other = 0;
+    const drawn = [];
     for (let i = 0; i < pixels.length; i += 4) {
-      if (pixels[i] !== r || pixels[i + 1] !== g || pixels[i + 2] !== b) other++;
+      if (pixels[i] !== r || pixels[i + 1] !== g || pixels[i + 2] !== b) {
+        drawn.push((pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3);
+      }
     }
-    return other;
+    return drawn;
+  }
+
+  // How many pixels are not the background.
+  window.__flareModelPixels = () => drawnBrightness().length;
+
+  // How the model is lit: its mean brightness, and how far apart its lightest and darkest tenths are.
+  window.__flareModelShade = () => {
+    const drawn = drawnBrightness().sort((a, b) => a - b);
+    if (drawn.length === 0) return { mean: 0, spread: 0 };
+    const mean = drawn.reduce((sum, v) => sum + v, 0) / drawn.length;
+    const tenth = Math.floor(drawn.length / 10);
+    return { mean: Math.round(mean), spread: Math.round(drawn[drawn.length - 1 - tenth] - drawn[tenth]) };
   };
 }
 
