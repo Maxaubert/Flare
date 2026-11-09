@@ -1,9 +1,20 @@
 name: ci
 on:
   push:
-    # TEMPORARY (remove before merge): the Mac E2E branch runs CI on push while it has no PR.
-    branches: [main, feat/macos-e2e-ci]
+    branches: [main]
   pull_request:
+  # A hand run (gh workflow run ci --ref <branch> -f e2e_only=true -f e2e_filter='<words>'): e2e_only skips the check
+  # and macos jobs, e2e_filter passes scenario name words to flare-e2e (any word a name contains selects it).
+  workflow_dispatch:
+    inputs:
+      e2e_filter:
+        description: Scenario name words for flare-e2e (empty runs them all)
+        type: string
+        default: ""
+      e2e_only:
+        description: Run only the Mac E2E job
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -14,13 +25,17 @@ env:
 
 jobs:
   check:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.e2e_only }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       # rustup 1.28+ no longer installs on `rustup show`; this reads rust-toolchain.toml.
       - name: Toolchain
         run: rustup toolchain install
+      # Saved even when a later step fails, so a red run still warms the next one.
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,cargo-deny
@@ -41,13 +56,17 @@ jobs:
   # The macOS port (docs/superpowers/specs/2026-11-08-macos-port.md, rule 227): the same gates on macos-latest.
   # Tests that encode Windows-only behaviour are gated in the source (cfg(windows) or an ignore with the phase).
   macos:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.e2e_only }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       # rustup 1.28+ no longer installs on `rustup show`; this reads rust-toolchain.toml.
       - name: Toolchain
         run: rustup toolchain install
+      # Saved even when a later step fails, so a red run still warms the next one.
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,cargo-deny
@@ -89,6 +108,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: e2e-release
+          cache-on-failure: true
       - name: CEF build tools and cache folder
         shell: bash
         run: |
@@ -113,7 +133,7 @@ jobs:
           set -o pipefail
           target/release/flare-e2e --exe target/release/flare --shots e2e-out/shots --keep $E2E_FILTER 2>&1 | tee e2e-out/e2e.log
         env:
-          E2E_FILTER: ""
+          E2E_FILTER: ${{ inputs.e2e_filter }}
           # The worlds under /tmp (/private/tmp/flare-e2e-*), not the long per-user /var/folders path, so a
           # path a scenario prints fits a row as it does on Windows.
           TMPDIR: /tmp
