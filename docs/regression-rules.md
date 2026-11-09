@@ -641,3 +641,12 @@ Replies stay in order, an unknown or finished id does nothing, stdin closing sti
 `a_job_whose_caller_went_away_ends_and_the_page_is_free_for_the_next_call` and
 `a_mod_tool_call_ends_when_the_caller_goes_away_and_the_late_answer_is_refused`. Source: channel-9
 (`docs/surfaces/lessons.md`, owner, 2026-11-09).
+230. **A web page keeps its width while the splitter beside it is held.** A new width makes the page lay itself out again,
+so a resize at every pointer step flickers. During the drag the left edge follows the slot and the width stands still; the
+page takes the slot's exact size after 120 ms without a change and when the grab ends for any reason (release, cancel, tab
+change, closed panel, full screen). A window resize is not held. Native: `flare_surfaces::web::DragHold`, `web_ctl.rs`
+(`drag_rect`). Held by `a_held_splitter_moves_the_pages_edge_but_never_its_width_until_it_is_let_go`,
+`a_pause_in_a_splitter_drag_fits_the_page_once_and_the_next_step_holds_again`,
+`a_splitter_grab_that_goes_away_leaves_the_page_on_the_slot`,
+`a_panel_closed_during_a_splitter_drag_comes_back_at_the_slots_size` and
+`a_window_resize_moves_the_page_at_every_step_with_no_hold`. Source: the note left in `docs/surfaces/lessons.md` Round 10.

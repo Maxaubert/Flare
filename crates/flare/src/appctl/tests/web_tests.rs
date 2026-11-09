@@ -2481,8 +2481,191 @@ fn a_light_orange_border_rings_the_page_while_the_agent_uses_it_and_fades_with_t
     rx.try_recv().unwrap().unwrap();
 }
 
+/// Every rectangle sent to the page, oldest first.
+fn all_bounds(slot: &Slot, tab: &str) -> Vec<PhysRect> {
+    fake(slot)
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::Bounds(t, r) if t == tab => Some(r),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Takes the splitter of the open page; the slot's width and the page's width in pixels at that moment.
+fn take_splitter(f: &Fx) -> (f32, i32) {
+    let c = &f.h.comp;
+    let w = (c.get_panel_slot_w(), drawn(f).w);
+    c.set_panel_drag_w(w.0);
+    c.set_panel_splitting(true);
+    f.h.advance(0);
+    f.pump();
+    w
+}
+
+fn splitter_to(f: &Fx, w: f32) {
+    f.h.comp.set_panel_drag_w(w);
+    f.h.advance(0);
+    f.pump();
+}
+
 #[test]
-fn a_held_splitter_takes_the_glow_away_while_the_page_follows_every_step_and_it_comes_back_after() {
+fn a_held_splitter_moves_the_pages_edge_but_never_its_width_until_it_is_let_go() {
+    for scale in [1.0f32, 2.25] {
+        let (f, _h, _) = live(Opts {
+            scale,
+            ..Opts::default()
+        });
+        let slot = with_fake(&f);
+        let id = up(&f, &slot);
+        f.h.advance(0);
+        let (w0, page) = take_splitter(&f);
+        let before = all_bounds(&slot, &id).len();
+        // Narrower and then wider than where it began: the page is never resized, and never over the terminal.
+        for (step, css) in [-24.0f32, -48.0, -72.0, 24.0, 72.0].into_iter().enumerate() {
+            splitter_to(&f, w0 + css);
+            let want = PhysRect {
+                w: page,
+                ..drawn(&f)
+            };
+            assert_ne!(
+                drawn(&f).w,
+                page,
+                "scale {scale}, step {step}: the slot moved"
+            );
+            assert_eq!(
+                last_bounds(&slot, &id),
+                Some(want),
+                "scale {scale}, step {step}"
+            );
+        }
+        assert!(
+            all_bounds(&slot, &id)[before..].iter().all(|r| r.w == page),
+            "scale {scale}: no width but the one it had"
+        );
+        assert!(crate::timer_registry::running(crate::web_ctl::DRAG_TIMER));
+        // Let go: exactly the slot, at once, and the timer is off.
+        f.h.comp.invoke_end_splitter();
+        f.h.advance(0);
+        f.pump();
+        assert_eq!(last_bounds(&slot, &id), Some(drawn(&f)), "scale {scale}");
+        assert_ne!(drawn(&f).w, page, "scale {scale}");
+        assert!(!crate::timer_registry::running(crate::web_ctl::DRAG_TIMER));
+        // A settle that was already on its way changes nothing.
+        let sent = all_bounds(&slot, &id).len();
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Web(WebMsgBox(WebMsg::DragSettled)));
+        f.pump();
+        assert_eq!(all_bounds(&slot, &id).len(), sent, "scale {scale}");
+    }
+}
+
+#[test]
+fn a_pause_in_a_splitter_drag_fits_the_page_once_and_the_next_step_holds_again() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    let (w0, page) = take_splitter(&f);
+    splitter_to(&f, w0 + 40.0);
+    assert_eq!(last_bounds(&slot, &id).map(|r| r.w), Some(page));
+    let sent = all_bounds(&slot, &id).len();
+    // Not yet: the wait is not over.
+    f.h.advance(crate::web_ctl::DRAG_SETTLE_MS / 2);
+    f.pump();
+    assert_eq!(all_bounds(&slot, &id).len(), sent, "still waiting");
+    // A step starts the wait again.
+    splitter_to(&f, w0 + 80.0);
+    f.h.advance(crate::web_ctl::DRAG_SETTLE_MS / 2);
+    f.pump();
+    assert_eq!(
+        last_bounds(&slot, &id).map(|r| r.w),
+        Some(page),
+        "restarted"
+    );
+    let sent = all_bounds(&slot, &id).len();
+    f.h.advance(crate::web_ctl::DRAG_SETTLE_MS);
+    f.pump();
+    let fitted = drawn(&f);
+    assert_eq!(last_bounds(&slot, &id), Some(fitted), "the pause fits it");
+    assert_eq!(all_bounds(&slot, &id).len(), sent + 1, "once");
+    assert!(
+        f.h.comp.get_panel_splitting(),
+        "and the splitter is still held"
+    );
+    // The page holds its new width from here.
+    splitter_to(&f, w0 + 110.0);
+    assert_eq!(
+        last_bounds(&slot, &id),
+        Some(PhysRect {
+            w: fitted.w,
+            ..drawn(&f)
+        })
+    );
+}
+
+#[test]
+fn a_splitter_grab_that_goes_away_leaves_the_page_on_the_slot() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    let (w0, page) = take_splitter(&f);
+    let at_rest = drawn(&f);
+    splitter_to(&f, w0 + 60.0);
+    assert_eq!(last_bounds(&slot, &id).map(|r| r.w), Some(page));
+    // No release and no share: the slot is back where it was, and so is the page.
+    f.h.comp.set_panel_splitting(false);
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(drawn(&f), at_rest);
+    assert_eq!(last_bounds(&slot, &id), Some(at_rest));
+    assert!(!crate::timer_registry::running(crate::web_ctl::DRAG_TIMER));
+}
+
+#[test]
+fn a_panel_closed_during_a_splitter_drag_comes_back_at_the_slots_size() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    let (w0, _) = take_splitter(&f);
+    splitter_to(&f, w0 + 60.0);
+    f.h.comp.invoke_panel_close();
+    f.h.advance(0);
+    f.pump();
+    assert!(!f.h.comp.get_panel_splitting());
+    assert!(!crate::timer_registry::running(crate::web_ctl::DRAG_TIMER));
+    assert_eq!(up(&f, &slot), id);
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(last_bounds(&slot, &id), Some(drawn(&f)));
+}
+
+#[test]
+fn a_window_resize_moves_the_page_at_every_step_with_no_hold() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    let size = f.h.comp.window().size();
+    for step in 1..=3u32 {
+        f.h.comp.window().set_size(slint::PhysicalSize::new(
+            size.width - 30 * step,
+            size.height - 10 * step,
+        ));
+        f.h.advance(0);
+        f.pump();
+        assert_eq!(last_bounds(&slot, &id), Some(drawn(&f)), "step {step}");
+        assert!(!crate::timer_registry::running(crate::web_ctl::DRAG_TIMER));
+    }
+    f.h.comp.window().set_size(size);
+}
+
+#[test]
+fn a_held_splitter_takes_the_glow_away_while_the_page_holds_its_width_and_it_comes_back_after() {
     let (f, _h, _) = live(Opts::default());
     let slot = with_fake(&f);
     let id = up(&f, &slot);
@@ -2492,6 +2675,7 @@ fn a_held_splitter_takes_the_glow_away_while_the_page_follows_every_step_and_it_
     assert!(border(&f).0, "the glow is up while the agent works");
     let c = &f.h.comp;
     let w0 = c.get_panel_slot_w();
+    let page = drawn(&f).w;
     c.set_panel_drag_w(w0);
     c.set_panel_splitting(true);
     f.h.advance(0);
@@ -2503,8 +2687,12 @@ fn a_held_splitter_takes_the_glow_away_while_the_page_follows_every_step_and_it_
         c.set_panel_drag_w(w0 - 8.0 * step as f32);
         f.h.advance(0);
         f.pump();
-        // The page follows each step at once; the glow is not drawn again for it.
-        assert_eq!(last_bounds(&slot, &id), Some(drawn(&f)), "step {step}");
+        // The page's edge follows each step at once, at the width it had; the glow is not drawn again for it.
+        let held = PhysRect {
+            w: page,
+            ..drawn(&f)
+        };
+        assert_eq!(last_bounds(&slot, &id), Some(held), "step {step}");
         assert!(!border(&f).0);
         assert_eq!(recorded_border().draws, draws, "step {step}");
     }

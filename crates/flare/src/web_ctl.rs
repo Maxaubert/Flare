@@ -46,8 +46,8 @@ use flare_surfaces::agent_job::{
 };
 use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::web::{
-    self, Act, CAPTURE_TIMEOUT_MS, EscTwice, Phase, PhysRect, UrlError, WebShow, host_label,
-    phys_rect, step, url_matches, web_show,
+    self, Act, CAPTURE_TIMEOUT_MS, DragHold, DragSettle, EscTwice, Phase, PhysRect, UrlError,
+    WebShow, host_label, phys_rect, step, url_matches, web_show,
 };
 use flare_tabs::keymap::{ChordId, KeyContext, chord_of};
 use flare_term::keys::KeyEvent;
@@ -68,6 +68,10 @@ pub const RUNTIME_URL: &str = "https://go.microsoft.com/fwlink/p/?LinkId=2124703
 
 /// The timer that ends a capture the page never answers (`timer_registry` name).
 const CAPTURE_TIMER: &str = "web.capture";
+/// The timer that gives a page its new width when a splitter drag pauses (`timer_registry` name).
+pub(crate) const DRAG_TIMER: &str = "web.drag-settle";
+/// How long the slot's width holds still before the page takes it: the text panel's settle (`WRAP_SETTLE_MS`).
+pub(crate) const DRAG_SETTLE_MS: u64 = 120;
 /// The timer that runs while an agent call is on a page or its hold is still on.
 const AGENT_TIMER: &str = "web.agent";
 /// How often that timer looks (the person's mouse, a wait, a deadline, the hold). It runs only while
@@ -101,6 +105,8 @@ pub enum WebMsg {
     UserInput,
     /// The agent timer: waits, deadlines, the person's mouse and the hold.
     AgentTick,
+    /// A splitter drag paused: the page takes the slot's width.
+    DragSettled,
 }
 
 /// A `WebMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never an
@@ -114,6 +120,7 @@ impl std::fmt::Debug for WebMsgBox {
             WebMsg::Decoded { .. } => f.write_str("WebMsg::Decoded"),
             WebMsg::UserInput => f.write_str("WebMsg::UserInput"),
             WebMsg::AgentTick => f.write_str("WebMsg::AgentTick"),
+            WebMsg::DragSettled => f.write_str("WebMsg::DragSettled"),
         }
     }
 }
@@ -485,6 +492,8 @@ pub struct WebCtl {
     slot_rect: Option<PhysRect>,
     /// The splitter is held (read at each sync): the glow is off the screen, not rebuilt at every step.
     splitting: bool,
+    /// The page in front while the splitter is held: its width stands still (`DragHold`).
+    drag_hold: Option<(String, DragHold)>,
     keys: Rc<KeyState>,
     has_focus: bool,
     scripts: HashMap<u64, Result<String, String>>,
@@ -658,6 +667,7 @@ impl WebCtl {
             bounds: None,
             slot_rect: None,
             splitting: false,
+            drag_hold: None,
             full: None,
             covers: false,
             window_follows: false,
@@ -835,6 +845,7 @@ impl WebCtl {
         self.closed = true;
         crate::timer_registry::clear(CAPTURE_TIMER);
         crate::timer_registry::clear(AGENT_TIMER);
+        self.end_drag_hold();
         for (_, t) in self.tabs.drain() {
             if let Some(p) = t.probe {
                 let _ = p
@@ -1011,6 +1022,7 @@ impl WebCtl {
             _ => WebShow::Hidden,
         };
         if let Some(tab) = self.shown_tab.clone() {
+            let rect = self.drag_rect(&tab, rect);
             // The window follows the slot: only a change is sent.
             if !rect.is_empty() && self.bounds.as_ref() != Some(&(tab.clone(), rect)) {
                 self.bounds = Some((tab.clone(), rect));
@@ -1028,10 +1040,48 @@ impl WebCtl {
             }
         } else {
             self.bounds = None;
+            self.end_drag_hold();
         }
         self.update_parked();
         self.push(app, panels, front_web);
         self.update_cursor();
+    }
+
+    /// Where the page in front goes for the slot `slot`. Only a held splitter changes that: the page keeps its width
+    /// (rule 230) until the pointer pauses or the splitter is let go. Anything else ends the hold, so the very next
+    /// rectangle sent is the slot's: a release, a cancelled grab, a closed panel, a full-screen page.
+    fn drag_rect(&mut self, tab: &str, slot: PhysRect) -> PhysRect {
+        if !self.splitting || self.covers || self.hold.is_some() || slot.is_empty() {
+            self.end_drag_hold();
+            return slot;
+        }
+        let mut drag = match self.drag_hold.take() {
+            Some((t, d)) if t == tab => d,
+            _ => DragHold::new(match &self.bounds {
+                Some((t, r)) if t == tab && !r.is_empty() => r.w,
+                _ => slot.w,
+            }),
+        };
+        let (rect, settle) = drag.step(slot);
+        self.drag_hold = Some((tab.to_string(), drag));
+        match settle {
+            DragSettle::Keep => {}
+            DragSettle::Cancel => crate::timer_registry::clear(DRAG_TIMER),
+            DragSettle::Restart => {
+                let post = std::sync::Arc::clone(&self.post);
+                crate::timer_registry::set(DRAG_TIMER, DRAG_SETTLE_MS, false, move || {
+                    post(UiMsg::Web(WebMsgBox(WebMsg::DragSettled)));
+                });
+            }
+        }
+        rect
+    }
+
+    /// The splitter is no longer held, or the page it was held for has gone.
+    fn end_drag_hold(&mut self) {
+        if self.drag_hold.take().is_some() {
+            crate::timer_registry::clear(DRAG_TIMER);
+        }
     }
 
     /// Keeps the pages the agent is using while they are not on screen painting, off the window, and puts
@@ -1245,6 +1295,9 @@ impl WebCtl {
         }
         if self.hold.as_ref().is_some_and(|(t, _)| t == tab) {
             self.hold = None;
+        }
+        if self.drag_hold.as_ref().is_some_and(|(t, _)| t == tab) {
+            self.end_drag_hold();
         }
         if self.cursor_tab.as_deref() == Some(tab) {
             self.cursor.hide();
@@ -2501,6 +2554,13 @@ impl WebCtl {
             WebMsg::AgentTick => {
                 if !self.agent_tick() {
                     crate::timer_registry::clear(AGENT_TIMER);
+                }
+                vec![]
+            }
+            // The sync that follows every message sends the new width.
+            WebMsg::DragSettled => {
+                if let Some((_, d)) = self.drag_hold.as_mut() {
+                    d.settle();
                 }
                 vec![]
             }

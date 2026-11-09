@@ -1029,7 +1029,7 @@ one controller per tab with an open web panel, parented to Flare's window.
   `quitting_closes_every_web_view_before_the_window_goes` (`web_tests.rs`) and the e2e `webPanel`, which watches the browser's
   process end when the window quits.
 - **The page sits exactly on the slot.** The controller's rectangle is the box Slint lays out inside the panel body less the slot's
-  hairline, in physical pixels, after every layout change, splitter step, scale change and monitor move; at 100 and 225
+  hairline, in physical pixels, after every layout change, settled splitter drag, scale change and monitor move; at 100 and 225
   percent the controller's own bounds, the child window of Flare's window, Slint's box and `flare_surfaces::web::web_rect` agree.
   Held by `the_page_fills_the_body_less_the_slots_hairline_at_every_scale`,
   `the_page_rectangle_equals_the_layout_maths_at_every_scale_width_and_share`, `the_page_follows_the_splitter_while_it_moves`
@@ -1191,11 +1191,19 @@ MCP tools and how a look is written for the model).
   panel takes it away at once; while the person holds the panel's splitter it is off the page and comes back at the new
   size when they let go. Held by `a_light_orange_border_rings_the_page_while_the_agent_uses_it_and_fades_with_the_arrow`,
   `a_menu_over_the_page_takes_the_border_away_and_it_comes_back_after`,
-  `a_held_splitter_takes_the_glow_away_while_the_page_follows_every_step_and_it_comes_back_after`, the `glow` tests in
+  `a_held_splitter_takes_the_glow_away_while_the_page_holds_its_width_and_it_comes_back_after`, the `glow` tests in
   `flare-win` and the e2e `agentBrowser` (the page's own rectangle while the hold lasts, gone after).
-- **The panel drag follows the pointer.** Dragging the splitter of a web panel moves the page once per step (one callback
-  for its whole rectangle, not one per side), never rebuilds the agent's glow, and is not a takeover of a page the agent is
-  using (2026-10-27, Max: it was laggy and went in steps).
+- **The panel drag follows the pointer and the page does not reflow.** Dragging the splitter of a web panel moves the page's
+  left edge once per step (one callback for its whole rectangle, not one per side), never rebuilds the agent's glow, and is
+  not a takeover of a page the agent is using (2026-10-27, Max: it was laggy and went in steps). The page keeps its width while
+  the splitter is held, so it does not lay itself out again at each step and flicker: narrowing, its right part runs past the
+  window's edge; widening, the panel's ground shows at its right. It takes the slot's exact size after the width has held
+  still 120 ms and when the splitter is let go or the grab goes away (rule 230, 2026-11-09). A window resize still moves the
+  page at every step. Held by `a_held_splitter_moves_the_pages_edge_but_never_its_width_until_it_is_let_go`,
+  `a_pause_in_a_splitter_drag_fits_the_page_once_and_the_next_step_holds_again`,
+  `a_splitter_grab_that_goes_away_leaves_the_page_on_the_slot`,
+  `a_panel_closed_during_a_splitter_drag_comes_back_at_the_slots_size`,
+  `a_window_resize_moves_the_page_at_every_step_with_no_hold` (`web_tests.rs`) and the `DragHold` tests in `flare-surfaces`.
 - **The person keeps control.** A key of theirs in the page, or a mouse button pressed over it, ends the running call with
   `interrupted` and ends the hold (the glow and the cursor go at once); the agent's own key presses are never the app's chords. Held by
   `a_key_of_the_persons_posts_a_takeover_only_while_an_agent_works`, `the_agents_own_key_press_is_neither_the_persons_nor_a_chord`,
