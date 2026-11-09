@@ -2142,6 +2142,15 @@ pub(crate) fn handle_key(kp: &KeyPath, ev: &KeyEvent) -> EventResult {
     EventResult::PreventDefault
 }
 
+/// Pure (rule 340): whether winit's own `Focused` is dropped. macOS under `--e2e` only: the parked
+/// window is an accessory's that is never key, so AppKit reports it as having lost the focus when it is
+/// parked, and every "the person is looking" rule then read the run as away (a visited tab kept its
+/// Finished mark on the Mac runner). The Windows e2e window, no-activate, never gets either event; on
+/// both systems the scenarios move the focus with the hook's `Focus` alone.
+pub(crate) fn e2e_drops_native_focus(mac: bool, e2e: bool) -> bool {
+    mac && e2e
+}
+
 /// The window gained or lost the focus (winit's `Focused`, or the test hook's `Focus`).
 pub(crate) fn handle_focus(kp: &KeyPath, on: bool) {
     if let Some(app) = kp.app.upgrade() {
@@ -2489,7 +2498,9 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 EventResult::Propagate
             }
             WindowEvent::Focused(on) => {
-                handle_focus(&kp, *on);
+                if !e2e_drops_native_focus(cfg!(target_os = "macos"), crate::e2e::global().on()) {
+                    handle_focus(&kp, *on);
+                }
                 EventResult::Propagate
             }
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
@@ -2583,6 +2594,15 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Rule 340: only a Mac --e2e run drops winit's focus events; the real app and Windows keep them.
+    #[test]
+    fn only_a_mac_e2e_run_drops_the_native_focus() {
+        assert!(e2e_drops_native_focus(true, true));
+        assert!(!e2e_drops_native_focus(true, false));
+        assert!(!e2e_drops_native_focus(false, true));
+        assert!(!e2e_drops_native_focus(false, false));
+    }
 
     #[test]
     fn a_session_end_flushes_the_panels_file_too() {

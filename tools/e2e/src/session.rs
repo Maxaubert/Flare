@@ -177,6 +177,12 @@ impl Session {
         let mac = mac_keys(r);
         #[cfg(target_os = "macos")]
         let r = &mac;
+        self.call_as_is(r)
+    }
+
+    /// As `call`, with every chord sent as written: no Mac spelling (rule 339). For the keys a scenario
+    /// means as the program's own, which on a Mac are the Ctrl keys, while Cmd is the app's.
+    pub fn call_as_is(&mut self, r: &Request) -> Result<Reply, String> {
         let line = encode(r);
         self.writer
             .write_all(line.as_bytes())
@@ -219,6 +225,16 @@ impl Session {
         self.ok(&Request::KeyPress {
             chord: chord.to_string(),
         })
+    }
+
+    /// Presses `chord` exactly as written, on every system (see `call_as_is`).
+    pub fn key_as_is(&mut self, chord: &str) -> Result<(), String> {
+        match self.call_as_is(&Request::KeyPress {
+            chord: chord.to_string(),
+        })? {
+            Reply::Ok => Ok(()),
+            other => Err(format!("expected Ok, got {other:?}")),
+        }
     }
 
     pub fn type_text(&mut self, text: &str) -> Result<(), String> {

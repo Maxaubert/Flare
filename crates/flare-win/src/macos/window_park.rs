@@ -84,6 +84,145 @@ pub fn keep_windows_off_screen() {
     if let Some(window) = AnyClass::get(c"NSWindow") {
         allow_off_screen(window);
         keep_clear(window);
+        born_clear(window);
+    }
+}
+
+/// `NSWindow`'s own two content-rect initialisers, kept by `born_clear`.
+static ORIGINAL_INIT4: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+static ORIGINAL_INIT5: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// Makes a just-initialised window clear before anything can order it in: alpha 0, no shadow, every
+/// click through, no order-in animation (rule 338). A null window (a failed init) is left alone.
+fn make_clear(window: *mut AnyObject) {
+    if window.is_null() {
+        return;
+    }
+    // SAFETY: `window` is the NSWindow its initialiser just returned, alive and owned by the caller;
+    // each message is a plain NSWindow setter with the argument type it declares.
+    unsafe {
+        let w: &AnyObject = &*window;
+        let _: () = objc2::msg_send![w, setAlphaValue: 0.0f64];
+        let _: () = objc2::msg_send![w, setHasShadow: objc2::runtime::Bool::NO];
+        let _: () = objc2::msg_send![w, setIgnoresMouseEvents: objc2::runtime::Bool::YES];
+        // NSWindowAnimationBehaviorNone: AppKit draws no zoom-in of the window on its first order-in.
+        let _: () = objc2::msg_send![w, setAnimationBehavior: 2isize];
+    }
+}
+
+/// `initWithContentRect:styleMask:backing:defer:` under `--e2e`: NSWindow's own, then clear.
+extern "C-unwind" fn init4_clear(
+    this: *mut AnyObject,
+    cmd: Sel,
+    rect: NSRect,
+    style: usize,
+    backing: usize,
+    defer: objc2::runtime::Bool,
+) -> *mut AnyObject {
+    let Some(&imp) = ORIGINAL_INIT4.get() else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: `imp` is NSWindow's own initialiser of exactly this signature, saved when it was replaced.
+    let f: extern "C-unwind" fn(
+        *mut AnyObject,
+        Sel,
+        NSRect,
+        usize,
+        usize,
+        objc2::runtime::Bool,
+    ) -> *mut AnyObject = unsafe { std::mem::transmute(imp) };
+    let w = f(this, cmd, rect, style, backing, defer);
+    make_clear(w);
+    w
+}
+
+/// `initWithContentRect:styleMask:backing:defer:screen:` under `--e2e`: NSWindow's own, then clear.
+extern "C-unwind" fn init5_clear(
+    this: *mut AnyObject,
+    cmd: Sel,
+    rect: NSRect,
+    style: usize,
+    backing: usize,
+    defer: objc2::runtime::Bool,
+    screen: *mut AnyObject,
+) -> *mut AnyObject {
+    let Some(&imp) = ORIGINAL_INIT5.get() else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: as in `init4_clear`, with the screen argument passed on.
+    let f: extern "C-unwind" fn(
+        *mut AnyObject,
+        Sel,
+        NSRect,
+        usize,
+        usize,
+        objc2::runtime::Bool,
+        *mut AnyObject,
+    ) -> *mut AnyObject = unsafe { std::mem::transmute(imp) };
+    let w = f(this, cmd, rect, style, backing, defer, screen);
+    make_clear(w);
+    w
+}
+
+/// macOS under `--e2e` only (rule 338): every window of the run is BORN clear. The park makes the
+/// main window clear once it has a handle, but a window is ordered in before that (Slint shows it, the
+/// park's timer comes a tick later), and the Mac E2E's screen guard saw such windows on the runner's
+/// display at full alpha for a moment (18 scenarios of run 42569349881). Once per process; the real
+/// app never calls this.
+pub fn born_clear(class: &AnyClass) {
+    let cls: *const AnyClass = class;
+    // SAFETY: as in `keep_clear`: function pointers given as the runtime's untyped `Imp` with the type
+    // encodings that say how the runtime calls them.
+    unsafe {
+        let four: Imp = std::mem::transmute::<
+            extern "C-unwind" fn(
+                *mut AnyObject,
+                Sel,
+                NSRect,
+                usize,
+                usize,
+                objc2::runtime::Bool,
+            ) -> *mut AnyObject,
+            Imp,
+        >(init4_clear);
+        let five: Imp = std::mem::transmute::<
+            extern "C-unwind" fn(
+                *mut AnyObject,
+                Sel,
+                NSRect,
+                usize,
+                usize,
+                objc2::runtime::Bool,
+                *mut AnyObject,
+            ) -> *mut AnyObject,
+            Imp,
+        >(init5_clear);
+        // The original is saved before it is replaced, so the stand-in always has one to call.
+        if ORIGINAL_INIT4.get().is_none()
+            && let Some(m) =
+                class.instance_method(sel!(initWithContentRect:styleMask:backing:defer:))
+            && ORIGINAL_INIT4.set(m.implementation() as usize).is_ok()
+        {
+            let _ = objc2::ffi::class_replaceMethod(
+                cls.cast_mut(),
+                sel!(initWithContentRect:styleMask:backing:defer:),
+                four,
+                c"@@:{CGRect={CGPoint=dd}{CGSize=dd}}QQB".as_ptr(),
+            );
+        }
+        // The original is saved before it is replaced, so the stand-in always has one to call.
+        if ORIGINAL_INIT5.get().is_none()
+            && let Some(m) =
+                class.instance_method(sel!(initWithContentRect:styleMask:backing:defer:screen:))
+            && ORIGINAL_INIT5.set(m.implementation() as usize).is_ok()
+        {
+            let _ = objc2::ffi::class_replaceMethod(
+                cls.cast_mut(),
+                sel!(initWithContentRect:styleMask:backing:defer:screen:),
+                five,
+                c"@@:{CGRect={CGPoint=dd}{CGSize=dd}}QQB@".as_ptr(),
+            );
+        }
     }
 }
 
@@ -344,6 +483,33 @@ mod tests {
             std::ptr::null_mut(),
         );
         assert_eq!(kept, frame);
+    }
+
+    // Rule 338: a class made born-clear initialises through the stand-in, which calls NSWindow's own.
+    #[test]
+    fn a_born_clear_class_initialises_through_the_stand_in() {
+        use objc2::runtime::ClassBuilder;
+        let window = AnyClass::get(c"NSWindow").expect("AppKit is linked");
+        let class = ClassBuilder::new(c"FlareBornClearTestWindow", window)
+            .expect("a new class name")
+            .register();
+        let sel4 = sel!(initWithContentRect:styleMask:backing:defer:);
+        let own = window
+            .instance_method(sel4)
+            .expect("NSWindow has it")
+            .implementation();
+        born_clear(class);
+        let now = class
+            .instance_method(sel4)
+            .expect("inherited")
+            .implementation();
+        assert!(
+            !std::ptr::fn_addr_eq(now, own),
+            "the class now has the stand-in"
+        );
+        assert_eq!(ORIGINAL_INIT4.get().copied(), Some(own as usize));
+        assert!(ORIGINAL_INIT5.get().is_some());
+        make_clear(std::ptr::null_mut());
     }
 
     #[test]

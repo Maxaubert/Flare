@@ -38,7 +38,9 @@ mod tests {
             Some(CEF_VERSION)
         );
         let ws = include_str!("../../../Cargo.toml");
-        let lock = include_str!("../../../Cargo.lock");
+        // A Windows checkout may hold the lock file with CRLF line ends (git's autocrlf): the pair of
+        // lines is matched with LF alone, as the file reads on every system (the Windows `check` job).
+        let lock = include_str!("../../../Cargo.lock").replace("\r\n", "\n");
         let semver = CRATE_VERSION
             .split_once('+')
             .map_or(CRATE_VERSION, |(v, _)| v);

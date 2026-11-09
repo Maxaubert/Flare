@@ -534,13 +534,25 @@ pub mod mac {
                     let run = run_processes();
                     if !run.is_empty() {
                         let pids: Vec<u32> = run.iter().copied().collect();
-                        let shown: Vec<String> = crate::mac::shown_windows_of(&pids)
+                        let windows = crate::mac::shown_windows_of(&pids);
+                        // The owner's command line says which launch it was (rule 338's diagnosis).
+                        let rows = if windows.is_empty() {
+                            Vec::new()
+                        } else {
+                            crate::proc::process_rows()
+                        };
+                        let shown: Vec<String> = windows
                             .iter()
                             .map(|w| {
                                 let (x, y, ww, h) = w.bounds;
+                                let cmd: String = rows
+                                    .iter()
+                                    .find(|(p, _, _)| *p == w.pid)
+                                    .map(|(_, _, c)| c.chars().take(160).collect())
+                                    .unwrap_or_default();
                                 format!(
-                                    "{} (pid {}), level {}, at ({x}, {y}) size {ww} by {h}",
-                                    w.owner, w.pid, w.layer
+                                    "{} (pid {}), window {}, level {}, alpha {:.2}, at ({x}, {y}) size {ww} by {h}; {cmd}",
+                                    w.owner, w.pid, w.number, w.layer, w.alpha
                                 )
                             })
                             .collect();

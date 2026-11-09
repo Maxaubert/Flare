@@ -18,9 +18,9 @@ use serde_json::{json, Value};
 use crate::ctx::{App, Ctx, Launch};
 use crate::world::{prompt_timeout, wait_for_prompt, Shell};
 
-/// The log folder of a profile (`<profile>\logs`).
+/// The log folder of a profile (`<profile>\logs`; the Mac world's, `world::logs_dir`).
 fn log_dir(profile: &Path) -> PathBuf {
-    profile.join("logs")
+    crate::world::logs_dir(profile)
 }
 
 /// Every line the log holds now, in file order.

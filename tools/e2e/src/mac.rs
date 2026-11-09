@@ -23,6 +23,8 @@ pub struct Listed {
     pub layer: i64,
     /// The owner's name (needs no right, unlike the window's own title).
     pub owner: String,
+    /// The window server's number for the window (`kCGWindowNumber`).
+    pub number: i64,
 }
 
 /// Every window the window server lists as ordered in (`OnScreenOnly`: ordered in, wherever it is).
@@ -59,12 +61,14 @@ pub fn listed_windows() -> Vec<Listed> {
                 .and_then(|p| p.downcast::<NSString>().ok())
                 .map(|s| s.to_string())
                 .unwrap_or_default();
+            let number = num(&d, "kCGWindowNumber").unwrap_or(0.0) as i64;
             Some(Listed {
                 pid,
                 bounds,
                 alpha,
                 layer,
                 owner,
+                number,
             })
         })
         .collect()

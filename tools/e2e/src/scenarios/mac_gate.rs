@@ -11,6 +11,7 @@ pub fn reason(name: &str) -> Option<&'static str> {
 const WEB: &str = "Windows only: drives the WebView2 controller (its child window, virtual host and controller probes); the Mac web panel is CEF, which runs only from the Flare.app bundle (port phase 8)";
 const UPDATE: &str = "Windows only: Velopack's Windows install and swap (the Mac update is a whole-bundle swap, port phase 8)";
 const DICTATION: &str = "Windows only: the Windows speech host processes, the WASAPI seam and the Right Alt keyboard hook (Mac dictation is port phase 7)";
+const DPI: &str = "Windows only: drives cmd.exe tabs through WM_DPICHANGED at the eight Windows scale steps (100 to 300 percent) and per-monitor moves; a Mac has no cmd, its backing scale is 1 or 2 and changes only with the screen, and the runner has one 1x display (a Mac launch at another scale is Slint's override, rule 341)";
 const FAKE_CLAUDE: &str = "Mac port not written: the Claude stand-in is a claude.cmd running a PowerShell script (agent_cmd.rs)";
 
 /// Every gated scenario and its reason. A name here that is not a scenario fails a unit test.
@@ -36,6 +37,8 @@ pub const GATED: &[(&str, &str)] = &[
     ("dictationParakeet", DICTATION),
     ("dictateAnywhere", DICTATION),
     ("dictateTwoCopies", DICTATION),
+    ("dpiMatrix", DPI),
+    ("monitorMove", DPI),
     ("launchSkeleton", FAKE_CLAUDE),
     ("sonaraQuestion", FAKE_CLAUDE),
     ("imagePaste", FAKE_CLAUDE),

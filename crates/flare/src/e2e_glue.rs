@@ -1018,7 +1018,6 @@ pub fn slint_text_for(ev: &KeyEvent) -> Option<SharedString> {
 /// let go. A Ctrl or Alt chord on a character sends the character, so Ctrl+A is select-all there.
 /// Nothing when Slint has no text for the key.
 pub fn slint_key_events(ev: &KeyEvent) -> Vec<WindowEvent> {
-    use slint::platform::Key;
     let text = slint_text_for(ev).or_else(|| {
         let mut chars = ev.key.chars();
         match (chars.next(), chars.next()) {
@@ -1031,16 +1030,11 @@ pub fn slint_key_events(ev: &KeyEvent) -> Vec<WindowEvent> {
     let Some(text) = text else {
         return Vec::new();
     };
-    let held: Vec<SharedString> = [
-        (ev.shift, Key::Shift),
-        (ev.ctrl, Key::Control),
-        (ev.alt, Key::Alt),
-        (ev.meta, Key::Meta),
-    ]
-    .into_iter()
-    .filter(|(on, _)| *on)
-    .map(|(_, k)| SharedString::from(char::from(k)))
-    .collect();
+    let held: Vec<SharedString> = slint_modifiers(ev)
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, k)| SharedString::from(char::from(k)))
+        .collect();
     let down = |t: SharedString| WindowEvent::KeyPressed { text: t };
     let up = |t: SharedString| WindowEvent::KeyReleased { text: t };
     if ev.pressed {
@@ -1054,21 +1048,34 @@ pub fn slint_key_events(ev: &KeyEvent) -> Vec<WindowEvent> {
     }
 }
 
-/// The key-up of each modifier a chord holds, so Slint never keeps one pressed after the chord.
-pub fn slint_modifier_releases(ev: &KeyEvent) -> Vec<WindowEvent> {
+/// The Slint modifier key for each modifier a chord holds, in press order. On macOS Slint's winit
+/// backend reports Cmd as `Key::Control` and Ctrl as `Key::Meta` (it follows Qt), so a Mac text field
+/// takes Cmd+A, Cmd+Right and Cmd+C as `control`; the hook hands Slint the same keys a real Mac
+/// keyboard would (rule 337), or a chord's Cmd would reach a field as the Ctrl key.
+pub fn slint_modifiers(ev: &KeyEvent) -> [(bool, slint::platform::Key); 4] {
     use slint::platform::Key;
+    let (cmd_key, ctrl_key) = if cfg!(target_vendor = "apple") {
+        (Key::Control, Key::Meta)
+    } else {
+        (Key::Meta, Key::Control)
+    };
     [
         (ev.shift, Key::Shift),
-        (ev.ctrl, Key::Control),
+        (ev.ctrl, ctrl_key),
         (ev.alt, Key::Alt),
-        (ev.meta, Key::Meta),
+        (ev.meta, cmd_key),
     ]
-    .into_iter()
-    .filter(|(on, _)| *on)
-    .map(|(_, k)| WindowEvent::KeyReleased {
-        text: SharedString::from(char::from(k)),
-    })
-    .collect()
+}
+
+/// The key-up of each modifier a chord holds, so Slint never keeps one pressed after the chord.
+pub fn slint_modifier_releases(ev: &KeyEvent) -> Vec<WindowEvent> {
+    slint_modifiers(ev)
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, k)| WindowEvent::KeyReleased {
+            text: SharedString::from(char::from(k)),
+        })
+        .collect()
 }
 // ---- pointer events (pure) -----------------------------------------------------------------
 
@@ -2316,7 +2323,13 @@ mod tests {
             _ => "other".to_string(),
         };
         let shift = format!("{:?}", String::from(char::from(Key::Shift)));
-        let ctrl = format!("{:?}", String::from(char::from(Key::Control)));
+        // Rule 337: on a Mac Slint's Control is the Cmd key, and the Ctrl key is its Meta.
+        let ctrl_key = if cfg!(target_vendor = "apple") {
+            Key::Meta
+        } else {
+            Key::Control
+        };
+        let ctrl = format!("{:?}", String::from(char::from(ctrl_key)));
         let left = format!("{:?}", String::from(char::from(Key::LeftArrow)));
         let down: Vec<String> =
             slint_key_events(&event_from_chord("Shift+ArrowLeft", true).unwrap())
@@ -2336,6 +2349,20 @@ mod tests {
             .map(kind)
             .collect();
         assert_eq!(sel, vec![format!("down {ctrl}"), "down \"a\"".to_string()]);
+        // Rule 337: Cmd+A (Meta in a chord) is what a Mac field selects all with: Slint's Control there.
+        let cmd_key = if cfg!(target_vendor = "apple") {
+            Key::Control
+        } else {
+            Key::Meta
+        };
+        let cmd: Vec<String> = slint_key_events(&event_from_chord("Meta+KeyA", true).unwrap())
+            .iter()
+            .map(kind)
+            .collect();
+        assert_eq!(
+            cmd.first(),
+            Some(&format!("down {:?}", String::from(char::from(cmd_key))))
+        );
         // A plain key carries no modifier, and a key Slint has no text for sends nothing.
         assert_eq!(
             slint_key_events(&event_from_chord("ArrowLeft", true).unwrap()).len(),

@@ -634,7 +634,9 @@ fn find_key_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     app.session.click(gx, gy)?;
     run_line(app, r#"Write-Host -NoNewline "$([char]27)[?1049h""#)?;
     pause(800);
-    app.session.key("Ctrl+F")?;
+    // The program's Ctrl+F, as written on both systems: on a Mac Cmd+F is the app's find everywhere
+    // (the keymap's rule) and Ctrl+F is the program's, so the Mac spelling must not apply (rule 339).
+    app.session.key_as_is("Ctrl+F")?;
     pause(600);
     // PT: run.mjs:1607
     ctx.ok(

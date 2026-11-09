@@ -1148,3 +1148,51 @@ both failed it). Under `--e2e` only, before the first window, `window_park::keep
 a `constrainFrameRect:toScreen:` that keeps the frame it is given, and `park` puts it on the window's own class too;
 the real app never calls either. Held by `a_parked_class_keeps_its_frame_off_every_screen_and_nswindow_keeps_the_rule`
 and every Mac launch's `window.park` check. Source: Mac E2E in CI, run 42558418417 (2026-11-09).
+335. **macOS: the hook's title rects and scale change follow the Mac window.** With the native caption the window
+buttons are AppKit's traffic lights, so `ui.rect` answers `cog` and `help` counted from the right edge without the
+three Windows buttons, refuses `close`, `max` and `min` with a reason, and starts the strip after the traffic lights'
+corner (`Px.snap(caption-gap) + Px.hair()`), not after the 42 px mark; `DpiChange` takes the content view, since there
+is no HWND. Held by `the_title_rects_follow_the_mac_caption`. Source: Mac E2E in CI (2026-11-09).
+336. **macOS: an `--e2e` window is clear and click-through on the main screen, and the run is never napped.** A Mac
+draws nothing for a window on no screen (no display-link tick, no Metal drawable), so the parked window is put on the
+main screen at alpha 0, shadowless and ignoring every click; under `--e2e` `NSWindow`'s `setAlphaValue:` and
+`setIgnoresMouseEvents:` keep 0 and YES whoever asks (Slint reveals a GPU window at alpha 1 after its first frame),
+and the process holds a user-interactive activity so App Nap never stretches a scenario's waits. `window.park`'s
+report fails a window on a screen that is not clear. Held by `a_window_on_a_screen_in_the_dock_or_in_front_is_a_problem`
+and every Mac launch's `window.park` check. Source: Mac E2E in CI (2026-11-09).
+337. **macOS: a chord reaches a Slint field with the keys a Mac keyboard gives it, and a field's End is Cmd+Right.**
+Slint's winit backend reports Cmd as `Key::Control` and Ctrl as `Key::Meta` on Apple systems (it follows Qt), so
+`e2e_glue::slint_modifiers` hands a chord's Meta (Cmd) to Slint as Control and its Ctrl as Meta there; Windows is
+unchanged. A Mac text field scrolls on End and moves nothing (Slint's `TextCursorDirection` has no End on Apple), and
+Ctrl+A moves to the line's start, so the scenarios that fill a field press `chord::FIELD_END` (Cmd+Right on a Mac) and
+`chord::FIELD_SELECT_ALL` (Cmd+A). Before this the Mac runner typed every colour code after the field's first
+character and no picked colour ever applied (themeEditorLive, themeSwitch, accent, accentAsk, colourPicker and five
+more, run 42569349881). Held by `a_chord_with_modifiers_reaches_slint_as_modifier_presses_around_the_key`. Source: Mac
+E2E in CI (2026-11-09).
+338. **macOS: every `--e2e` window is born clear.** The park makes the main window clear once it has a handle, a tick
+after Slint has ordered it in; the screen guard saw windows of 18 scenarios on the runner's display at full alpha for
+that moment (run 42569349881). Under `--e2e` only, `window_park::born_clear` replaces `NSWindow`'s two content-rect
+initialisers with ones that call AppKit's own and then set alpha 0, no shadow, click-through and no order-in
+animation, so no window of the run is ever drawn on a screen; the guard's line names the window number, alpha and the
+owner's command line. Held by `a_born_clear_class_initialises_through_the_stand_in` and the screen guard. Source: Mac
+E2E in CI (2026-11-09).
+339. **macOS: the world's pwsh, logs and program keys are the Mac's.** The world's pwsh profile sets PSReadLine's
+Windows edit mode (pwsh on a Mac starts in Emacs mode, where Escape is a prefix: a scenario's Escape ate the next
+paste's escape sequence and left the line it meant to clear); the harness reads a profile's diagnostics log where the
+app writes it (`world::logs_dir`: `<home>/Library/Logs/Flare` for the default profile under the world's HOME, as
+`startup::logs_dir_of`); and a key a scenario means as the program's own is sent as written
+(`Session::key_as_is`), since on a Mac Ctrl+F is the program's and Cmd+F finds everywhere (the keymap's Mac rule).
+Held by `the_app_chords_take_cmd_on_a_mac_and_the_shell_keys_stay`. Source: Mac E2E in CI, run 42569349881
+(2026-11-09).
+340. **macOS: an `--e2e` window takes its focus from the hook alone.** The parked window is an accessory's that is
+never key, so AppKit reported it as having lost the focus and every "the person is looking" rule read the run as
+away: a visited tab kept its Finished mark and the badge counted it (indicator, attention, agentHooks on the runner).
+`window::e2e_drops_native_focus` drops winit's `Focused` on macOS under `--e2e`; the scenarios move the focus with the
+hook's `Focus`, as the no-activate Windows window, which never gets either event, always did. Held by
+`only_a_mac_e2e_run_drops_the_native_focus`. Source: Mac E2E in CI (2026-11-09).
+341. **macOS: a launch at another scale is Slint's scale override, and the Windows DPI matrix is gated.** A Mac has
+no WM_DPICHANGED: the hook's event path held on the software renderer, but the GPU window went back to the screen's 1x
+at its first resize. A Mac launch at a scale other than 100 percent sets `SLINT_SCALE_FACTOR` for the app
+(`ctx::mac_launch_scale`) and sends no `DpiChange`; `dpiMatrix` and `monitorMove`, which drive cmd.exe through the
+eight Windows scale steps and per-monitor moves, are gated (a Mac's backing scale is 1 or 2 and changes only with the
+screen). Held by `a_mac_launch_scale_is_slints_override_and_only_off_100_percent`. Source: Mac E2E in CI (2026-11-09).

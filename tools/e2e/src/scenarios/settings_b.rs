@@ -244,7 +244,7 @@ fn goto_row(ctx: &mut Ctx, app: &mut App, id: &str) -> bool {
 /// Clicks a text field at a css point, selects its text, types `text` and presses Enter.
 fn fill_at(app: &mut App, x: f64, y: f64, text: &str) {
     let _ = click_at(app, x, y);
-    let _ = app.session.key("End");
+    let _ = app.session.key(crate::chord::FIELD_END);
     for _ in 0..12 {
         let _ = app.session.key("Backspace");
     }

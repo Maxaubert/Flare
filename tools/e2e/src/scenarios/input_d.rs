@@ -369,7 +369,10 @@ fn link_paint_stall_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     pause(2_000);
     let back = pick_theme(ctx, app, "pt-default");
     pause(3_000);
-    let worst = worst_stall(&flare_diag::reader::read_lines(&profile.join("logs")), from);
+    let worst = worst_stall(
+        &flare_diag::reader::read_lines(&crate::world::logs_dir(&profile)),
+        from,
+    );
     ctx.ok(
         picked && back && worst < 200,
         format!("a theme switch with 10,000 lines in a tab holds the window under 200 ms (longest {worst} ms)"),

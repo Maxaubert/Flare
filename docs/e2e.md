@@ -129,6 +129,52 @@ Every `FLARE_E2E_*` read goes through `e2e::global().env(..)`, which returns not
 a stray variable in the owner's environment cannot change the real app. No source file reads such a
 variable directly (`no_source_file_reads_an_e2e_variable_directly`).
 
+## macOS E2E (CI only, rules 330 to 341)
+
+The same harness and scenario table drive the Mac build, on GitHub's macOS runners only (the `e2e-macos` job in
+`.github/workflows/ci.yml`). A Mac has no hidden desktop, so nothing here is run on a person's Mac: locally only the
+unit tests run (`cargo nextest run -p flare-e2e`).
+
+```bash
+cargo build --release -p flare -p flare-mcp -p flare-e2e
+TMPDIR=/tmp target/release/flare-e2e --exe target/release/flare --shots e2e-out/shots --keep   # what CI runs
+target/release/flare-e2e --list      # a gated scenario says so, with its reason
+```
+
+- **The hook** is a Unix socket, `e2e-<16 hex>.sock` in the control channel's private folder
+  (`<user temp>/flare-ctl`, 0700; the socket 0600; the peer's uid checked; the first-instance lock), with the
+  pipe's protocol and lockstep (rule 330). `Session` connects to it by `flare_e2e_proto::pipe_name(profile)`.
+- **The window** belongs to an accessory app that never activates and is never key. It is born off every screen,
+  then made clear (alpha 0, no shadow, every click passing through) and put on the main screen: a Mac draws nothing
+  for a window on no screen (no display-link tick, no Metal drawable), so an off-screen window never painted. Under
+  `--e2e` `NSWindow` keeps any frame it is given (AppKit pulled the parked window back until 40 px showed) and stays
+  clear whoever sets its alpha (Slint reveals a GPU window after its first frame), and the run holds off App Nap
+  (rules 334 and 336). Every window of the run is also born clear, so none shows for the tick before the park
+  (rule 338). The window takes its focus from the hook's `Focus` alone (rule 340). The launch's `window.park` check
+  fails a window that would show.
+- **Pictures** are the app's own render (`Snapshot`, Slint's snapshot); nothing reads the screen, which would need
+  Screen Recording.
+- **The guards** (rule 331): a scenario fails when a process of the run becomes the frontmost app or owns a window
+  that shows on a display (the window server's list: owner, bounds, alpha; no right needed), checked every 200 ms;
+  the pasteboard's change count is compared over the run; a launched app leads its own process group and its tree
+  is killed by parent pid; reaping is by the world's path only.
+- **The world** is a HOME of its own (`<root>/home`, the profile in its `Library/Application Support/Flare`), at
+  its canonical path. CI puts the worlds under `/tmp` so a printed path fits a row as on Windows.
+- **Keys and shell** (rule 333): the scenarios keep their Windows keys; `Session` sends the Mac app chord (Cmd in
+  Ctrl's place where the app's own table says so, paste as Cmd+V), and the copy key over a selection is
+  `chord::copy_chord` (Cmd+C). The tab's shell is pwsh (`FLARE_E2E_SHELL`, under `--e2e` only, when the profile
+  saves none), so the PowerShell prompt checks and programs run unchanged; the programs' runners are shell scripts
+  that start pwsh, and the agent stand-in is a `claude` script run by zsh with pwsh as its child (rule 336). The
+  world's pwsh profile puts PSReadLine in its Windows edit mode, a Slint field gets Cmd as Slint's Control, a
+  field's End is Cmd+Right (`chord::FIELD_END`), and a key meant for the program is sent as written
+  (`Session::key_as_is`) (rules 337 and 339).
+- **Scale** (rule 341): a Mac launch at another scale sets Slint's `SLINT_SCALE_FACTOR` instead of the hook's
+  `DpiChange`. **Logs** are read where the Mac app writes them (`world::logs_dir`, `<home>/Library/Logs/Flare`).
+- **Gates** (rule 332) live in `tools/e2e/src/scenarios/mac_gate.rs`, each with its reason; a gated scenario is never
+  started and never a pass. On failure the job uploads `e2e-macos`: the log, the shots and the worlds' logs.
+
+<!-- MAC-LISTS -->
+
 ## When a scenario fails
 
 1. Read its FAIL lines and the screenshot in `.e2e-shots/` (`--shots` moves it).

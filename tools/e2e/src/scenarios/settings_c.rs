@@ -306,7 +306,7 @@ fn click_format(app: &mut App) -> bool {
 fn type_code(app: &mut App, id: &str, text: &str) {
     let r = row(app, id);
     click_r(app, &r["code_box"]);
-    press(app, "Ctrl+KeyA");
+    press(app, crate::chord::FIELD_SELECT_ALL);
     let _ = app.session.type_text(text);
     press(app, "Enter");
 }

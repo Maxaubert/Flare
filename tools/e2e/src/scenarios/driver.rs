@@ -326,7 +326,7 @@ pub fn fill_row_colour(ctx: &mut Ctx, app: &mut App, id: &str, text: &str) -> bo
     };
     let (x, y) = centre(r);
     let _ = app.session.click(x, y);
-    let _ = app.session.key("End");
+    let _ = app.session.key(crate::chord::FIELD_END);
     for _ in 0..12 {
         let _ = app.session.key("Backspace");
     }

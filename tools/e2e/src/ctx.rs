@@ -295,6 +295,10 @@ impl Ctx {
         let packaged = opts.packaged || self.packaged;
         let mut env = w.env();
         env.extend(opts.env.iter().cloned());
+        let launch_scale = mac_launch_scale(opts.scale_dpi);
+        if let Some(factor) = &launch_scale {
+            env.push(("SLINT_SCALE_FACTOR".into(), factor.clone()));
+        }
         packaged_guard(packaged, &env)?;
         let profile = w.profile.clone();
         let exe = if packaged {
@@ -321,7 +325,7 @@ impl Ctx {
         let mut session = Session::connect(&profile, CONNECT_WAIT)?;
         session.hello()?;
         assert_parked(&mut session)?;
-        if let Some(dpi) = opts.scale_dpi {
+        if let Some(dpi) = opts.scale_dpi.filter(|_| launch_scale.is_none()) {
             session.call(&Request::DpiChange {
                 dpi,
                 x: None,
@@ -334,6 +338,16 @@ impl Ctx {
             profile,
         })
     }
+}
+
+/// macOS (rule 341): a launch at a scale other than 100 percent sets Slint's own scale override
+/// (`SLINT_SCALE_FACTOR`, read when the window is made) instead of the hook's `DpiChange` after `Hello`.
+/// A Mac has no WM_DPICHANGED to stand in for: the event path held on the software renderer, but the
+/// GPU window went back to the screen's 1x at its first resize (panelImage, panelSplitter and
+/// convoPanels at 225 percent on the runner). None on Windows and at 100 percent.
+pub fn mac_launch_scale(dpi: Option<u32>) -> Option<String> {
+    let dpi = dpi.filter(|d| *d != 96 && *d > 0)?;
+    cfg!(target_os = "macos").then(|| format!("{}", f64::from(dpi) / 96.0))
 }
 
 /// How long a launch waits for the window to be styled and parked (the app does it by timer, as
@@ -386,6 +400,19 @@ pub struct Scenario {
 #[cfg(test)]
 mod park_tests {
     use super::*;
+
+    // Rule 341: a Mac launch at 225 percent asks Slint for 2.25 at birth; 100 percent and Windows ask nothing.
+    #[test]
+    fn a_mac_launch_scale_is_slints_override_and_only_off_100_percent() {
+        assert_eq!(mac_launch_scale(Some(96)), None);
+        assert_eq!(mac_launch_scale(None), None);
+        if cfg!(target_os = "macos") {
+            assert_eq!(mac_launch_scale(Some(216)).as_deref(), Some("2.25"));
+            assert_eq!(mac_launch_scale(Some(144)).as_deref(), Some("1.5"));
+        } else {
+            assert_eq!(mac_launch_scale(Some(216)), None);
+        }
+    }
 
     #[test]
     fn a_clean_answer_has_no_problems_and_a_bad_shape_always_has() {

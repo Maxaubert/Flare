@@ -71,6 +71,7 @@ impl Sandbox {
         for d in [&home, &roaming, &profile] {
             fs::create_dir_all(d).expect("sandbox folder");
         }
+        write_pwsh_profile(&home);
         Sandbox {
             dir: Some(dir),
             root,
@@ -149,6 +150,21 @@ impl Drop for Sandbox {
         if let Some(d) = self.dir.take() {
             let _ = d.close();
         }
+    }
+}
+
+/// macOS (rule 339): the world's pwsh profile puts PSReadLine in its Windows edit mode. pwsh on a Mac
+/// starts in Emacs mode, where Escape is a prefix and not "clear the line", so a scenario's Escape
+/// swallowed the next paste's escape sequence and left the line it meant to clear. The scenarios are
+/// written against PowerShell as it is on Windows; this is the shell's setting, never the app's.
+#[cfg(not(windows))]
+pub const PWSH_PROFILE: &str = "try { Set-PSReadLineOption -EditMode Windows } catch { }\n";
+
+#[cfg(not(windows))]
+fn write_pwsh_profile(home: &Path) {
+    let dir = home.join(".config").join("powershell");
+    if fs::create_dir_all(&dir).is_ok() {
+        let _ = fs::write(dir.join("Microsoft.PowerShell_profile.ps1"), PWSH_PROFILE);
     }
 }
 

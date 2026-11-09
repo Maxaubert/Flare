@@ -210,7 +210,7 @@ fn set_query(app: &mut App, q: &str) {
         click_rect(app, r);
     }
     let have = v["query"].as_str().unwrap_or("").chars().count();
-    let _ = app.session.key("End");
+    let _ = app.session.key(crate::chord::FIELD_END);
     for _ in 0..have {
         let _ = app.session.key("Backspace");
     }

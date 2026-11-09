@@ -174,6 +174,22 @@ impl UpperIfLetter for String {
     }
 }
 
+/// The key that puts a text field's caret at its end: End on Windows; on macOS Cmd+Right, since a Mac
+/// field (Slint's, as AppKit's) scrolls on End and moves nothing (rule 337).
+pub const FIELD_END: &str = if cfg!(target_os = "macos") {
+    "Meta+ArrowRight"
+} else {
+    "End"
+};
+
+/// The key that selects all of a text field: Ctrl+A on Windows, Cmd+A on macOS, where Ctrl+A moves
+/// the caret to the line's start (rule 337).
+pub const FIELD_SELECT_ALL: &str = if cfg!(target_os = "macos") {
+    "Meta+KeyA"
+} else {
+    "Ctrl+KeyA"
+};
+
 /// The key event a chord stands for, as far as the app's chord table reads it (the logical key, the
 /// code and the modifiers). None for a chord that does not parse.
 fn table_event(mods: &[Mod], key: &str) -> flare_term::keys::KeyEvent {

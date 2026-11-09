@@ -426,7 +426,7 @@ impl StallReport {
 
     /// Reads a profile's `logs` folder (M9's reader) and adds what it holds.
     pub fn observe_profile(&mut self, profile: &Path) {
-        self.observe(&read_lines(&profile.join("logs")));
+        self.observe(&read_lines(&crate::world::logs_dir(profile)));
     }
 
     pub fn stalls(&self) -> &[Stall] {

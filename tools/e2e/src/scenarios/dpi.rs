@@ -749,7 +749,7 @@ fn move_one(ctx: &mut Ctx, renderer: &'static str) -> Result<(), String> {
     }
 
     let stall = worst_stall(
-        &flare_diag::reader::read_lines(&app.profile.join("logs")),
+        &flare_diag::reader::read_lines(&crate::world::logs_dir(&app.profile)),
         from,
     );
     ctx.ok(
