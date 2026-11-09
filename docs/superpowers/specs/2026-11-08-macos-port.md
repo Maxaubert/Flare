@@ -91,6 +91,19 @@ Apple Events keys with their usage strings, CI cleanup that runs on failure and 
 the Velopack order: sign and notarize the bundle `vpk pack` produced (`flare-mac-app resign`), check it inside the
 update package.
 
+Step 3 (2026-11-09) is updates and the release: `tools/release/mac/pack.sh` packs `Flare.app` with vpk 1.2.161 for
+osx-arm64 and signs the bundle again by role after vpk adds `UpdateMac` (`flare-mac-app` as vpk's `codesign`), vpk
+notarizes and staples it, and the bundle is checked inside the update package; `tools/release/mac/update-e2e.sh`
+proves a whole-bundle update headless on a Mac (0.0.1 to 0.0.2 into a temp folder, the real `VelopackFeed` and
+`UpdateMac`, no restart, no window, the swapped bundle still verifies); `.github/workflows/macos-app.yml` runs after
+each Windows release and adds the Mac build to it when the secrets are set, `docs/releasing-macos.md` (rules 273 to
+275). Proved ad hoc only: the signed, notarized run is one command for Max once the Developer ID key lets `codesign`
+in without a prompt. A review of step 3 (2026-11-09) led to rules 276 to 279: the Mac build is the commit the release
+was tagged at, one run per version, signed only from `main` through the `mac-release` environment; no key file,
+password or scratch folder outlives its use; a switch between the mock and the real profile key sets cookies aside;
+ad hoc signing carries each role's identifier, entitlements and (tools) the hardened runtime, so the ad-hoc pack
+proves `UpdateMac`'s signature.
+
 ## Known risks
 
 - **Agent browsing on WKWebView** (phase 1 decides). No DevTools protocol and no http(s) request

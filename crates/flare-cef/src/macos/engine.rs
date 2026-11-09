@@ -22,11 +22,13 @@ use crate::pin::FRAMEWORK;
 /// line (`--remote-debugging-port`, `--no-sandbox`, `--proxy-server`, `--disable-web-security`) never reaches
 /// Chromium. Added in [`FlareApp`]'s `on_before_command_line_processing`, which CEF still asks.
 pub const SWITCHES: [(&str, &str); 8] = [
-    // Chromium's cookie and password encryption asks the login keychain for "Chromium Safe Storage": on a Mac
-    // that is a system prompt on the person's screen, and an ad-hoc signed build would ask again after every
-    // rebuild. The mock keychain never asks, but its key is a fixed, public one: what a profile on disk keeps
-    // (the web panel's cookies, a mod's storage) is only as safe as the file's own permissions until phase 8 gives
-    // the signed app a real keychain item (rule 260, an accepted gap). The mini-apps' profiles are in memory.
+    // Chromium's cookie and password encryption asks the login keychain for its key: an ad-hoc signed build (a dev
+    // bundle, a test bundle) would be asked again after every rebuild, a system prompt on the person's screen. So
+    // such a build uses the mock keychain, which never asks but whose key is a fixed, public one: what a profile on
+    // disk keeps (the web panel's cookies, a mod's storage) is then only as safe as the file's permissions (rule
+    // 260). The real Flare window in a Flare.app signed by Flare's Developer ID team drops this switch and keeps its
+    // key in a keychain item of its own ([`keychain_for`], [`KEYCHAIN_SERVICE`], rule 272). The mini-apps'
+    // profiles are in memory.
     ("use-mock-keychain", ""),
     // No crash or error dialog of Chromium's own.
     ("noerrdialogs", ""),
@@ -57,6 +59,92 @@ NetworkTimeServiceQuerying,AimEnabled,AimServerEligibilityEnabled,AimServerReque
 AimUrlNavigationFetchEnabled,OptimizationHints,OptimizationTargetPrediction,OptimizationGuideModelExecution,\
 OnDeviceModelBackgroundDownload,MediaRouter,DialMediaRouteProvider";
 
+/// The keychain item (service and account) that holds the key of the profiles on disk, in the signed app: Flare's
+/// own, never CEF's default "Chromium Safe Storage", which Chromium itself and every unbranded CEF app share (an
+/// item another app made would be a keychain prompt naming that app's item).
+pub const KEYCHAIN_SERVICE: &str = "Flare Safe Storage";
+pub const KEYCHAIN_ACCOUNT: &str = "Flare";
+
+/// What the running code must satisfy before the engine uses a real keychain item: Flare's identifier, signed by a
+/// Developer ID Application certificate Apple issued to Flare's team. The two OIDs are Apple's: the Developer ID
+/// intermediate ([`DEVELOPER_ID_CA_OID`]) and the Developer ID Application leaf ([`DEVELOPER_ID_LEAF_OID`]); without
+/// them an Apple Development or Mac App Distribution signature of the same team would pass too, and make the item
+/// with an access list the Developer ID app would be asked about. An ad-hoc signature has no such leaf, so a dev or
+/// test bundle is never asked to touch the keychain.
+pub const DEVELOPER_ID_REQUIREMENT: &str = "identifier \"com.flare.terminal\" and anchor apple generic and \
+certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and \
+certificate leaf[subject.OU] = \"WV7BY8CUM8\"";
+
+/// The extension Apple puts on the Developer ID Certification Authority (the intermediate).
+pub const DEVELOPER_ID_CA_OID: &str = "1.2.840.113635.100.6.2.6";
+/// The extension Apple puts on a Developer ID Application certificate (the leaf).
+pub const DEVELOPER_ID_LEAF_OID: &str = "1.2.840.113635.100.6.1.13";
+
+/// Where Chromium's key for the profiles on disk lives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Keychain {
+    /// `use-mock-keychain`: never asks, a fixed public key (rule 260).
+    Mock,
+    /// Flare's own item ([`KEYCHAIN_SERVICE`]), made by the signed app on its first run; its access is tied to the
+    /// Developer ID signature, so an update keeps it without asking.
+    Own,
+}
+
+/// The keychain the engine uses: its own item only for the real Flare window (`adopt_app`) in a bundle signed by
+/// Flare's Developer ID team; the mock everywhere else (tests, dev bundles, ad-hoc builds).
+pub fn keychain_for(adopt_app: bool, developer_id_signed: bool) -> Keychain {
+    if adopt_app && developer_id_signed {
+        Keychain::Own
+    } else {
+        Keychain::Mock
+    }
+}
+
+#[link(name = "Security", kind = "framework")]
+unsafe extern "C" {
+    fn SecCodeCopySelf(flags: u32, code: *mut *mut std::ffi::c_void) -> i32;
+    fn SecCodeCheckValidity(
+        code: *mut std::ffi::c_void,
+        flags: u32,
+        requirement: *mut std::ffi::c_void,
+    ) -> i32;
+    fn SecRequirementCreateWithString(
+        text: *const std::ffi::c_void,
+        flags: u32,
+        req: *mut *mut std::ffi::c_void,
+    ) -> i32;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFRelease(cf: *const std::ffi::c_void);
+}
+
+/// Whether this process is Flare signed by its Developer ID team ([`DEVELOPER_ID_REQUIREMENT`]). Reads the running
+/// code's signature only: no keychain, no prompt.
+pub fn signed_by_flares_team() -> bool {
+    let text = objc2_foundation::NSString::from_str(DEVELOPER_ID_REQUIREMENT);
+    let mut req = std::ptr::null_mut();
+    let mut code = std::ptr::null_mut();
+    // SAFETY: an NSString is a CFString (toll-free bridged); both out pointers are valid, and what they get is
+    // released below.
+    unsafe {
+        if SecRequirementCreateWithString(Retained::as_ptr(&text).cast(), 0, &mut req) != 0
+            || req.is_null()
+        {
+            return false;
+        }
+        let ok = SecCodeCopySelf(0, &mut code) == 0
+            && !code.is_null()
+            && SecCodeCheckValidity(code, 0, req) == 0;
+        if !code.is_null() {
+            CFRelease(code);
+        }
+        CFRelease(req);
+        ok
+    }
+}
+
 /// Told when CEF wants its work done: in this many milliseconds (0: now). Called from any thread; the owner queues a
 /// pump (the window's `WebEvent::Pump`) and calls [`Engine::work`] on the main thread when it comes.
 pub type Schedule = Arc<dyn Fn(i64) + Send + Sync>;
@@ -83,6 +171,7 @@ pub struct EngineConfig {
 pub struct Engine {
     loader: Option<LibraryLoader>,
     pub app: Retained<NSApplication>,
+    profile_key_note: Option<String>,
 }
 
 wrap_browser_process_handler! {
@@ -103,6 +192,7 @@ wrap_app! {
     struct FlareApp {
         schedule: Option<Schedule>,
         net_log: Option<String>,
+        keychain: Keychain,
     }
 
     impl App {
@@ -116,7 +206,7 @@ wrap_app! {
             command_line: Option<&mut CommandLine>,
         ) {
             let Some(cl) = command_line else { return };
-            for (name, value) in switches(self.net_log.as_deref()) {
+            for (name, value) in switches_for(self.net_log.as_deref(), self.keychain) {
                 if value.is_empty() {
                     cl.append_switch(Some(&name.as_str().into()));
                 } else {
@@ -127,10 +217,16 @@ wrap_app! {
     }
 }
 
-/// [`SWITCHES`], with the network log when there is one.
+/// [`SWITCHES`], with the network log when there is one (the mock keychain).
 pub fn switches(net_log: Option<&str>) -> Vec<(String, String)> {
+    switches_for(net_log, Keychain::Mock)
+}
+
+/// [`SWITCHES`] for `keychain`: [`Keychain::Own`] leaves out `use-mock-keychain`, nothing else.
+pub fn switches_for(net_log: Option<&str>, keychain: Keychain) -> Vec<(String, String)> {
     let mut v: Vec<(String, String)> = SWITCHES
         .iter()
+        .filter(|(n, _)| keychain == Keychain::Mock || *n != "use-mock-keychain")
         .map(|(n, val)| ((*n).to_string(), (*val).to_string()))
         .collect();
     if let Some(p) = net_log {
@@ -180,7 +276,9 @@ impl Engine {
             .net_log
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned());
-        let mut cef_app = FlareApp::new(cfg.schedule.clone(), net_log);
+        // The signature is read only for the real window: a test or a probe never looks at the keychain.
+        let keychain = keychain_for(cfg.adopt_app, cfg.adopt_app && signed_by_flares_team());
+        let mut cef_app = FlareApp::new(cfg.schedule.clone(), net_log, keychain);
         // A browser process: CEF answers -1 (a child process type would run and exit here).
         let code = execute_process(
             Some(args.as_main_args()),
@@ -192,6 +290,9 @@ impl Engine {
                 "this executable was started as a CEF child process (exit {code}); helpers run flare-cef-helper"
             ));
         }
+        // The profiles on disk were written with one key; a switch between the mock and Flare's own item sets the
+        // old key's cookies aside instead of letting Chromium drop them (rule 278).
+        let profile_key_note = crate::macos::profile_key::settle(&cfg.root_cache, keychain);
         let root = cfg.root_cache.to_string_lossy().into_owned();
         let log = cfg
             .log_file
@@ -217,6 +318,9 @@ impl Engine {
             } else {
                 LogSeverity::WARNING
             },
+            // Flare's own keychain item, never Chromium's shared one (read only without the mock keychain).
+            keychain_service_name: KEYCHAIN_SERVICE.into(),
+            keychain_account_name: KEYCHAIN_ACCOUNT.into(),
             ..Default::default()
         };
         if initialize(
@@ -231,10 +335,17 @@ impl Engine {
                 get_exit_code()
             ));
         }
+        crate::macos::profile_key::mark(&cfg.root_cache, keychain);
         Ok(Engine {
             loader: Some(loader),
             app,
+            profile_key_note,
         })
+    }
+
+    /// What [`crate::macos::profile_key::settle`] did when the profiles' key changed at this start (for the log).
+    pub fn profile_key_note(&self) -> Option<&str> {
+        self.profile_key_note.as_deref()
     }
 
     /// One turn of the main thread's work, never blocking: AppKit's queued events (through `sendEvent:`, where
@@ -326,5 +437,38 @@ mod tests {
         let with_log = switches(Some("/tmp/n.json"));
         assert!(with_log.contains(&("log-net-log".to_string(), "/tmp/n.json".to_string())));
         assert_eq!(switches(None).len(), SWITCHES.len());
+    }
+
+    #[test]
+    fn only_the_real_window_of_the_developer_id_app_uses_a_keychain_item_of_its_own() {
+        assert_eq!(keychain_for(true, true), Keychain::Own);
+        for (adopt, signed) in [(true, false), (false, true), (false, false)] {
+            assert_eq!(
+                keychain_for(adopt, signed),
+                Keychain::Mock,
+                "{adopt} {signed}"
+            );
+        }
+        let mock = switches_for(None, Keychain::Mock);
+        let own = switches_for(None, Keychain::Own);
+        assert!(mock.iter().any(|(n, _)| n == "use-mock-keychain"));
+        assert!(!own.iter().any(|(n, _)| n == "use-mock-keychain"));
+        assert_eq!(own.len() + 1, mock.len(), "nothing else changes");
+        // Flare's own item, never the one Chromium and other CEF apps share.
+        assert_eq!(KEYCHAIN_SERVICE, "Flare Safe Storage");
+        assert_ne!(KEYCHAIN_SERVICE, "Chromium Safe Storage");
+        assert!(DEVELOPER_ID_REQUIREMENT.contains(crate::macos::sign::TEAM));
+        assert!(DEVELOPER_ID_REQUIREMENT.contains(crate::macos::release::BUNDLE_ID));
+        // A Developer ID Application certificate only: the intermediate and the leaf, by Apple's OIDs (an Apple
+        // Development or Mac App Distribution signature of the same team must not pass).
+        assert!(DEVELOPER_ID_REQUIREMENT.contains(&format!(
+            "certificate 1[field.{DEVELOPER_ID_CA_OID}] exists"
+        )));
+        assert!(DEVELOPER_ID_REQUIREMENT.contains(&format!(
+            "certificate leaf[field.{DEVELOPER_ID_LEAF_OID}] exists"
+        )));
+        // A test binary carries the linker's ad-hoc signature: it is never Flare's Developer ID, so a test run never
+        // reaches the keychain.
+        assert!(!signed_by_flares_team());
     }
 }

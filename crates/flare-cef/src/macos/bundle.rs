@@ -197,7 +197,12 @@ fn app_skeleton(app: &Path, exe_name: &str, exe: &Path, plist: &str) -> Result<(
 /// Signs `path` ad hoc (no identity: `-s -`), replacing any signature it had.
 pub fn sign_adhoc(path: &Path) -> Result<(), String> {
     run(Command::new("/usr/bin/codesign")
-        .args(sign::codesign_args(&Signing::AdHoc, None, None))
+        .args(sign::codesign_args(
+            &Signing::AdHoc,
+            Role::Library,
+            None,
+            None,
+        ))
         .arg(path))
 }
 

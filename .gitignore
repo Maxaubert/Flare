@@ -9,3 +9,8 @@ tools/e2e/.e2e-cache/
 
 # The visual tour's picture sequences (the sheets and numbers beside them are committed)
 docs/screenshots/visual/**/frames/
+
+# Signing keys never enter the repository (rule 277): the Developer ID .p12 and App Store Connect API keys.
+*.p12
+*.p8
+AuthKey_*

@@ -51,7 +51,8 @@ pub fn bootstrap(hooks: Hooks, aumid: &str) {
         .on_before_uninstall_fast_callback(move |_v| before_uninstall())
         .on_after_install_fast_callback(|_v| {})
         .on_after_update_fast_callback(|_v| {});
-    // macOS: phase 8 of the port plan (the bundle updater has no uninstall hook to run).
+    // macOS (port phase 8): the app is a bundle the updater swaps whole (rule 273), and there is no uninstall hook to
+    // run (a Mac app is removed by moving it to the Bin).
     #[cfg(not(windows))]
     let _ = (aumid, before_uninstall);
     app.on_first_run(move |v| first_run(v.to_string())).run();
@@ -136,6 +137,9 @@ pub struct VelopackFeed {
     info: Mutex<Option<UpdateInfo>>,
     packages_dir: PathBuf,
     busy: Arc<AtomicBool>,
+    /// Whether the updater starts the new version once it is in place: always in the app; off only for the Mac
+    /// update test, which may not put the app on the screen (rule 274).
+    restart: bool,
 }
 
 impl VelopackFeed {
@@ -155,7 +159,14 @@ impl VelopackFeed {
             info: Mutex::new(None),
             packages_dir,
             busy: Arc::new(AtomicBool::new(false)),
+            restart: true,
         })
+    }
+
+    /// The updater swaps the bundle in and starts nothing (the Mac update test only: it runs headless, rule 274).
+    pub fn without_restart(mut self) -> Self {
+        self.restart = false;
+        self
     }
 
     /// The only constructor of a remote network source in the workspace.
@@ -273,7 +284,7 @@ impl Feed for VelopackFeed {
     fn apply(&self, version: &str, restart_args: &[String]) -> Result<(), FeedError> {
         let info = self.offered(version)?;
         self.um
-            .wait_exit_then_apply_updates(&info.TargetFullRelease, true, true, restart_args)
+            .wait_exit_then_apply_updates(&info.TargetFullRelease, true, self.restart, restart_args)
             .map_err(map_err)
     }
 
@@ -471,6 +482,16 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_app_restarts_after_an_update_and_only_the_mac_test_turns_it_off() {
+        let p = production();
+        assert!(p.contains("restart: true,"));
+        assert!(
+            p.contains("wait_exit_then_apply_updates(&info.TargetFullRelease, true, self.restart,")
+        );
+        assert_eq!(p.matches("self.restart = false").count(), 1);
     }
 
     #[test]

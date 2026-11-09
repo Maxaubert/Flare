@@ -1,43 +1,207 @@
-# The macOS app (port phase 8, rules 263 to 266): Flare.app and its DMG for Apple Silicon, macOS 15+, signed with the
-# Developer ID, notarized and stapled, built by tools/release/mac/make-app.sh and kept as a workflow artifact. Run by
-# hand for now; the Windows release (release.yml) is not touched. Publishing the Mac build with the release, and its
-# Velopack osx-arm64 feed, come with the next phase 8 step.
+# The macOS release (port phase 8, rules 263 to 266, 270, 273, 275 to 277): Flare.app for Apple Silicon, macOS 15+,
+# signed with the Developer ID by role, packed by vpk for osx-arm64 (the bundle signed again after vpk adds its
+# updater), notarized and stapled, checked inside the packages, and the DMG. docs/releasing-macos.md has the how and
+# the secrets.
 #
-# Secrets it needs (none are in the repository; see tools/release/mac/ci-keychain.sh): MACOS_CERT_P12_BASE64,
-# MACOS_CERT_PASSWORD, APPLE_API_KEY_P8_BASE64, APPLE_API_KEY_ID, APPLE_API_ISSUER_ID. Without them the job builds
-# the ad hoc app only, and says so.
+# - After a release run (workflow_run of `release`, success, on main): when the release v<version> exists without a
+#   Mac build and the secrets are set, the commit v<version> is tagged at is built (never the newer commit that
+#   triggered the run: a merge without a version bump also ends the release run with success) and its Mac packages
+#   and DMG are added to that same release (vpk upload github --merge; channel osx, so releases.osx.json beside the
+#   Windows releases.win.json). One run per version at a time, and the release is read again just before the upload
+#   (rule 276). Without the secrets, or when there is nothing to add, it says so and stops cleanly. It runs in its own
+#   workflow after the Windows one has finished, so it can never fail or hold up a Windows release; release.yml is not
+#   touched.
+# - By hand (workflow_dispatch): the same build kept as a workflow artifact, never published. Signed only from main:
+#   the signing secrets are in the environment `mac-release`, which only main may use (rule 276); from any other
+#   branch the job has no environment, so no secret, and the build is ad hoc.
+#
+# Secrets (environment mac-release; none are in the repository; tools/release/mac/ci-keychain.sh):
+# MACOS_CERT_P12_BASE64, MACOS_CERT_PASSWORD, APPLE_API_KEY_P8_BASE64, APPLE_API_KEY_ID, APPLE_API_ISSUER_ID.
+# The runner: macos-26 (Xcode 26, the macOS 26 SDK). Flare needs no newer SDK: the ci macos job builds, links and
+# tests the workspace on macos-26-arm64 (run 42533159787, 2026-11-08), and every program is built for macOS 11 or later
+# (CEF's framework: 13), under the app's LSMinimumSystemVersion 15.0.
 name: macos-app
 
 on:
   workflow_dispatch:
-
-concurrency:
-  group: macos-app-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
+  VPK_VERSION: 1.2.161
 
 jobs:
-  app:
-    runs-on: macos-latest
-    timeout-minutes: 120
+  # What to build (the version and the commit it was released from) and whether to publish it. No secret here.
+  plan:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      sha: ${{ steps.plan.outputs.sha }}
+      build: ${{ steps.plan.outputs.build }}
+      publish: ${{ steps.plan.outputs.publish }}
+      environment: ${{ steps.plan.outputs.environment }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: What to build, and whether to publish it
+        id: plan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          v="$(awk '/^\[workspace\.package\]/{w=1;next} /^\[/{w=0} w && /^version *=/{gsub(/.*= *"|".*/,"");print;exit}' Cargo.toml)"
+          [ -n "$v" ] || { echo "no workspace version in Cargo.toml"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          build=false publish=false sha="" environment=""
+          if [ "$EVENT" = workflow_run ]; then
+            if ! assets="$(gh release view "v$v" --repo "$REPO" --json assets --jq '.assets[].name' 2>/dev/null)"; then
+              echo "::notice::There is no release v$v (the release run published nothing): no Mac build."
+            elif printf '%s\n' "$assets" | grep -qx 'releases.osx.json'; then
+              echo "::notice::v$v already has its Mac build."
+            elif ! sha="$(gh api "repos/$REPO/commits/v$v" --jq .sha 2>/dev/null)" || [ -z "$sha" ]; then
+              echo "::error::The release v$v has no tag commit to build."
+              exit 1
+            else
+              # The commit the release was tagged at, whatever commit ended the release run (rule 276).
+              build=true publish=true environment=mac-release
+              echo "::notice::v$v was released from $sha; the Mac build is made from that commit."
+            fi
+          else
+            build=true sha="$GITHUB_SHA"
+            # Signing secrets only from main (the environment's branch rule holds this even if a branch edits it).
+            [ "$REF" = refs/heads/main ] && environment=mac-release
+          fi
+          {
+            echo "sha=$sha"
+            echo "build=$build"
+            echo "publish=$publish"
+            echo "environment=$environment"
+          } >> "$GITHUB_OUTPUT"
+
+  app:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: macos-26
+    timeout-minutes: 150
+    # The secrets live in this environment, which only main may deploy to (Settings > Environments > mac-release >
+    # Deployment branches: main). No environment: no secret, an ad hoc build.
+    environment: ${{ needs.plan.outputs.environment }}
+    # One run per version at a time: a second run for the same version waits, then finds the Mac build published.
+    concurrency:
+      group: macos-app-${{ needs.plan.outputs.version }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+
+      - name: Signing, and whether the release still lacks its Mac build
+        id: gate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          PUBLISH: ${{ needs.plan.outputs.publish }}
+          HAS_CERT: ${{ secrets.MACOS_CERT_P12_BASE64 != '' && secrets.APPLE_API_KEY_P8_BASE64 != '' }}
+        run: |
+          signed="$HAS_CERT"
+          if [ "$EVENT" != workflow_run ] && [ "$REF" != refs/heads/main ]; then signed=false; fi
+          go=true
+          v="$(awk '/^\[workspace\.package\]/{w=1;next} /^\[/{w=0} w && /^version *=/{gsub(/.*= *"|".*/,"");print;exit}' Cargo.toml)"
+          if [ "$v" != "$VERSION" ]; then
+            echo "::error::The commit checked out is version $v, not $VERSION."
+            exit 1
+          fi
+          if [ "$PUBLISH" = true ]; then
+            if [ "$HAS_CERT" != true ]; then
+              echo "::notice::No Mac signing secrets: v$v has no Mac build (docs/releasing-macos.md)."
+              go=false
+            elif [ ! -f tools/release/mac/pack.sh ]; then
+              echo "::notice::v$v was released before the Mac build existed: no Mac build."
+              go=false
+            elif gh release view "v$v" --repo "$REPO" --json assets --jq '.assets[].name' | grep -qx 'releases.osx.json'; then
+              echo "::notice::v$v got its Mac build while this run waited."
+              go=false
+            fi
+          fi
+          echo "signed=$signed" >> "$GITHUB_OUTPUT"
+          echo "go=$go" >> "$GITHUB_OUTPUT"
+
       - name: Toolchain
+        if: steps.gate.outputs.go == 'true'
         run: rustup toolchain install
+
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        if: steps.gate.outputs.go == 'true'
+
       # No actions/cache for CEF here: the framework this job signs with the Developer ID is downloaded fresh into
       # the runner's temp folder, never restored from a cache another workflow could have written (rule 266).
       - name: CEF build tools and folder
+        if: steps.gate.outputs.go == 'true'
         shell: bash
         run: |
-          brew install ninja cmake || true
+          brew install ninja cmake zstd || true
           echo "CEF_PATH=$RUNNER_TEMP/flare-cef" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        if: steps.gate.outputs.go == 'true'
+        with:
+          dotnet-version: 8.0.x
+
+      - name: vpk
+        if: steps.gate.outputs.go == 'true'
+        shell: bash
+        run: |
+          dotnet tool install -g vpk --version "$VPK_VERSION"
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
+      - name: Build the programs (before any key is on the runner)
+        if: steps.gate.outputs.go == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LIVE: ${{ vars.FLARE_LIVE_UPDATES }}
+        run: |
+          # The updater stays off while the repository is private, as in release.yml (docs/updater-flip.md).
+          vis="$(gh repo view "${{ github.repository }}" --json visibility --jq .visibility)"
+          [ -n "$vis" ] || { echo "could not read the repository visibility"; exit 1; }
+          if [ "$LIVE" = on ]; then
+            [ "$vis" = PUBLIC ] || { echo "the updater is switched on but the repository is $vis"; exit 1; }
+            # The zip 8.6 advisory ignores in deny.toml may not survive into a build with live updates.
+            pwsh -NoProfile -File tools/release/check-advisory-gate.ps1 -Deny deny.toml -Live
+            echo "FLARE_FEATURES=live-updates" >> "$GITHUB_ENV"
+            export FLARE_FEATURES=live-updates
+          fi
+          FLARE_BUILD_ONLY=1 bash tools/release/mac/make-app.sh
+
+      - name: Release notes and the previous Mac release (for the delta)
+        if: steps.gate.outputs.go == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ needs.plan.outputs.version }}"
+          gh release view "v$v" --json body --jq .body > "$RUNNER_TEMP/notes.md" 2>/dev/null || printf -- '- Flare %s\n' "$v" > "$RUNNER_TEMP/notes.md"
+          vpk download github --channel osx --repoUrl "https://github.com/${{ github.repository }}" --token "$GH_TOKEN" --outputDir Releases || echo "no previous Mac release: no delta"
+
       - name: Signing keychain (only when the secrets are set)
-        id: keys
+        if: steps.gate.outputs.go == 'true' && steps.gate.outputs.signed == 'true'
         shell: bash
         env:
           MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
@@ -45,38 +209,60 @@ jobs:
           APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
-        run: |
-          if [ -z "$MACOS_CERT_P12_BASE64" ] || [ -z "$APPLE_API_KEY_P8_BASE64" ]; then
-            echo "::notice::No signing secrets: Flare.app is built ad hoc and not notarized."
-            echo "signed=false" >> "$GITHUB_OUTPUT"
-          else
-            bash tools/release/mac/ci-keychain.sh
-            echo "signed=true" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Build, sign, notarize, staple, DMG
+        run: bash tools/release/mac/ci-keychain.sh
+
+      - name: Sign Flare.app (notarized after vpk, in the next step)
+        if: steps.gate.outputs.go == 'true'
         shell: bash
-        run: bash tools/release/mac/make-app.sh
-      - name: Keep the app and the DMG
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: flare-macos-arm64
-          path: |
-            target/mac-release/*.dmg
-            target/mac-release/*.zip
-            target/mac-release/SHA256SUMS
-            target/mac-release/notary-*.json
-          if-no-files-found: warn
-          retention-days: 30
-      # Always, even when the keychain step failed halfway: whatever of the key material exists goes. Only the two
-      # named files are removed, and only when the runner's temp folder is set.
+        run: FLARE_SKIP_BUILD=1 FLARE_NOTARIZE=0 bash tools/release/mac/make-app.sh
+
+      - name: Pack for Velopack, sign by role, notarize, staple, check, DMG
+        if: steps.gate.outputs.go == 'true'
+        shell: bash
+        run: bash tools/release/mac/pack.sh target/mac-release/Flare.app "${{ needs.plan.outputs.version }}" Releases "$RUNNER_TEMP/notes.md"
+
+      # The key leaves the runner before any later action runs: nothing after this signs.
       - name: Remove the signing keychain
         if: always()
         shell: bash
         run: |
           if [ -n "${FLARE_SIGNING_KEYCHAIN:-}" ]; then security delete-keychain "$FLARE_SIGNING_KEYCHAIN" || true; fi
-          if [ -n "${FLARE_NOTARY_KEY:-}" ]; then rm -f -- "$FLARE_NOTARY_KEY"; fi
-          if [ -n "${RUNNER_TEMP:-}" ] && [ -n "${APPLE_API_KEY_ID:-}" ]; then
-            rm -f -- "$RUNNER_TEMP/flare-cert.p12" "$RUNNER_TEMP/AuthKey_$APPLE_API_KEY_ID.p8"
+          if [ -n "${RUNNER_TEMP:-}" ]; then
+            rm -f -- "$RUNNER_TEMP/flare-cert.p12"
+            if [ -n "${APPLE_API_KEY_ID:-}" ]; then rm -f -- "$RUNNER_TEMP/AuthKey_$APPLE_API_KEY_ID.p8"; fi
           fi
         env:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+
+      - name: Keep the packages and the DMG
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: flare-macos-arm64-${{ needs.plan.outputs.version }}
+          path: |
+            Releases/*osx*
+            target/mac-release/*.dmg
+            target/mac-release/SHA256SUMS
+            target/mac-release/notary-*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Add the Mac build to the release
+        if: steps.gate.outputs.go == 'true' && needs.plan.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ needs.plan.outputs.version }}"
+          # Read again: nothing may have published a Mac build since the gate (one run per version, rule 276).
+          if gh release view "v$v" --json assets --jq '.assets[].name' | grep -qx 'releases.osx.json'; then
+            echo "::notice::v$v already has its Mac build: nothing uploaded."
+            exit 0
+          fi
+          vpk upload github --channel osx --merge --publish --tag "v$v" --releaseName "Flare $v" \
+            --repoUrl "https://github.com/${{ github.repository }}" --token "$GH_TOKEN" --outputDir Releases
+          gh release upload "v$v" "target/mac-release/Flare-$v-arm64.dmg" --clobber
+          assets="$(gh release view "v$v" --json assets --jq '.assets[].name')"
+          for want in releases.osx.json "Flare-$v-osx-full.nupkg" Flare-osx-Portable.zip "Flare-$v-arm64.dmg" releases.win.json; do
+            printf '%s\n' "$assets" | grep -qx "$want" || { echo "v$v has no $want"; exit 1; }
+          done

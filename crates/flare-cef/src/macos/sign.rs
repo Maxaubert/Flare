@@ -49,7 +49,9 @@ pub const TEST_KEYCHAIN_VAR: &str = "FLARE_TEST_SIGN_KEYCHAIN";
 /// How a bundle is signed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Signing {
-    /// Ad hoc (`--sign -`): runs on this Mac only. No hardened runtime: library validation needs a team.
+    /// Ad hoc (`--sign -`): runs on this Mac only. Each program still gets its role's identifier and entitlements,
+    /// so a static check of an ad-hoc bundle sees the same roles a release has; the hardened runtime only for
+    /// [`Role::Tool`] ([`adhoc_runtime`]): library validation refuses the ad-hoc framework (no team) to the rest.
     AdHoc,
     /// A Developer ID identity (its name or SHA-1, from the keychain), the hardened runtime and the entitlements.
     Identity {
@@ -184,9 +186,17 @@ pub fn entitlements_plist(role: Role) -> Option<String> {
     Some(crate::macos::bundle::plist_doc(&body))
 }
 
+/// Whether an ad-hoc signature of `role` carries the hardened runtime: only a tool (`flare-mcp`, Velopack's
+/// `UpdateMac`), which loads nothing but the system's libraries. The app, the helpers and the framework load the CEF
+/// framework, and library validation refuses an ad-hoc library ("no Team ID"), so they run without it ad hoc.
+pub fn adhoc_runtime(role: Role) -> bool {
+    role == Role::Tool
+}
+
 /// `codesign`'s arguments for one path (without the path).
 pub fn codesign_args(
     signing: &Signing,
+    role: Role,
     identifier: Option<&str>,
     entitlements: Option<&Path>,
 ) -> Vec<String> {
@@ -194,7 +204,19 @@ pub fn codesign_args(
     match signing {
         Signing::AdHoc => {
             a.push("-".into());
+            if adhoc_runtime(role) {
+                a.push("--options".into());
+                a.push("runtime".into());
+            }
             a.push("--timestamp=none".into());
+            if let Some(id) = identifier {
+                a.push("--identifier".into());
+                a.push(id.to_string());
+            }
+            if let Some(e) = entitlements {
+                a.push("--entitlements".into());
+                a.push(e.to_string_lossy().into_owned());
+            }
         }
         Signing::Identity {
             identity,
@@ -338,7 +360,7 @@ fn run_guarded(cmd: &mut Command, limit: Duration) -> Result<String, String> {
 }
 
 /// Signs one path for a role. The entitlements file, when the role has one, is written into `scratch` (never into
-/// the bundle). Ad hoc signs carry no entitlements. A Developer ID sign runs only when the key can be used without a
+/// the bundle); ad hoc signs carry them too. A Developer ID sign runs only when the key can be used without a
 /// prompt ([`crate::macos::keychain::check`]), and one at a time across processes (a lock file in the temp dir).
 pub fn sign(
     path: &Path,
@@ -347,8 +369,8 @@ pub fn sign(
     identifier: Option<&str>,
     scratch: &Path,
 ) -> Result<(), String> {
-    let ent = match (signing, entitlements_plist(role)) {
-        (Signing::Identity { .. }, Some(text)) => {
+    let ent = match entitlements_plist(role) {
+        Some(text) => {
             fs::create_dir_all(scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
             let name = match role {
                 Role::App => "app".to_string(),
@@ -364,10 +386,10 @@ pub fn sign(
             fs::write(&p, text).map_err(|e| format!("{}: {e}", p.display()))?;
             Some(p)
         }
-        _ => None,
+        None => None,
     };
     let mut cmd = Command::new("/usr/bin/codesign");
-    cmd.args(codesign_args(signing, identifier, ent.as_deref()))
+    cmd.args(codesign_args(signing, role, identifier, ent.as_deref()))
         .arg(path);
     match signing {
         Signing::AdHoc => run(&mut cmd),
@@ -632,7 +654,12 @@ mod tests {
             Some(" Developer ID Application: X (T) "),
             Some("/k/ci.keychain-db"),
         );
-        let a = codesign_args(&id, Some("com.flare.terminal"), Some(Path::new("/e")));
+        let a = codesign_args(
+            &id,
+            Role::App,
+            Some("com.flare.terminal"),
+            Some(Path::new("/e")),
+        );
         assert_eq!(
             a,
             [
@@ -653,11 +680,61 @@ mod tests {
         assert_eq!(Signing::release(Some("-"), None), Signing::AdHoc);
         assert_eq!(Signing::release(None, Some("/k")), Signing::AdHoc);
         let no_kc = Signing::release(Some("X"), Some(" "));
-        assert!(!codesign_args(&no_kc, None, None).contains(&"--keychain".to_string()));
+        assert!(
+            !codesign_args(&no_kc, Role::Library, None, None).contains(&"--keychain".to_string())
+        );
         let local = Signing::for_tests_from(Some("X"), Some("/k/test.keychain-db"));
-        assert!(codesign_args(&local, None, None).contains(&"--timestamp=none".to_string()));
-        let adhoc = codesign_args(&Signing::AdHoc, Some("x"), Some(Path::new("/e")));
-        assert_eq!(adhoc, ["--force", "--sign", "-", "--timestamp=none"]);
+        assert!(
+            codesign_args(&local, Role::Library, None, None)
+                .contains(&"--timestamp=none".to_string())
+        );
+        // Ad hoc: the role's identifier and entitlements, no timestamp, the hardened runtime for a tool only (the
+        // rest load the ad-hoc CEF framework, which library validation would refuse).
+        let adhoc = codesign_args(&Signing::AdHoc, Role::App, Some("x"), Some(Path::new("/e")));
+        assert_eq!(
+            adhoc,
+            [
+                "--force",
+                "--sign",
+                "-",
+                "--timestamp=none",
+                "--identifier",
+                "x",
+                "--entitlements",
+                "/e"
+            ]
+        );
+        let tool = codesign_args(
+            &Signing::AdHoc,
+            Role::Tool,
+            Some("com.flare.terminal.UpdateMac"),
+            None,
+        );
+        assert_eq!(
+            tool,
+            [
+                "--force",
+                "--sign",
+                "-",
+                "--options",
+                "runtime",
+                "--timestamp=none",
+                "--identifier",
+                "com.flare.terminal.UpdateMac"
+            ]
+        );
+        for r in [
+            Role::App,
+            Role::Library,
+            Role::Helper("Helper (Renderer)"),
+            Role::Helper("Helper"),
+        ] {
+            assert!(!adhoc_runtime(r), "{r:?}");
+        }
+        assert_eq!(
+            codesign_args(&Signing::AdHoc, Role::Library, None, None),
+            ["--force", "--sign", "-", "--timestamp=none"]
+        );
     }
 
     #[test]

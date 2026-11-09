@@ -16,6 +16,8 @@ Task 29 of the M9 plan). Anything not seen with the eyes says so.
    the side-by-side run (Flare installed for real beside Prism Terminal on the clean runner), and the publish
    (`vpk upload github --publish`, tag `v<version>`).
 4. The updater inside the app is compiled out until the repository is public: `docs/updater-flip.md`.
+5. The Mac build is added to the same release afterwards by `.github/workflows/macos-app.yml`, when its signing
+   secrets are set: `docs/releasing-macos.md`.
 
 ## Packing locally (installs nothing)
 

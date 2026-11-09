@@ -1033,6 +1033,9 @@ impl WebBackend for WebHost {
             };
             let engine = Engine::start(&cfg)?;
             log::info!("the web engine started: {version}");
+            if let Some(note) = engine.profile_key_note() {
+                log::warn!("{note}");
+            }
             self.scheduler = Some(scheduler);
             Ok(engine)
         });

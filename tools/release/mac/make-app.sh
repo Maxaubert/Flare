@@ -7,19 +7,18 @@
 #   FLARE_NOTARY_PROFILE=flare-notary tools/release/mac/make-app.sh
 #                                                 signed, notarized, stapled Flare.app and Flare-<version>-arm64.dmg
 #
-# Notary credentials, the first that is set:
-#   FLARE_NOTARY_PROFILE                          a notarytool keychain profile (this Mac: flare-notary)
-#   FLARE_NOTARY_KEY, FLARE_NOTARY_KEY_ID, FLARE_NOTARY_ISSUER
-#                                                 an App Store Connect API key (.p8 path, its id, the issuer id; CI)
-#   FLARE_NOTARY_APPLE_ID, FLARE_NOTARY_PASSWORD  an Apple ID and an app-specific password (with the team below)
+# Notary credentials: see lib.sh (a notarytool keychain profile or an App Store Connect API key).
 # FLARE_SIGNING_KEYCHAIN: the keychain that holds the identity (CI: the throwaway one); unset: the search list.
 # A Developer ID run first asks `flare-mac-app check-key`, which cannot raise a prompt, whether codesign can use the
 # key without one, and stops before building when it cannot (rule 267). Every codesign with the identity goes
 # through flare-mac-app (the DMG too, `sign-file`), never straight from this script.
-# Velopack (rule 270): the app notarized here is the step-1 artifact. The update package's bundle is signed again
-# (`flare-mac-app resign`), notarized and checked after Velopack has added its own files to it, never before.
+# Velopack (rules 270 and 273): a release does not ship this app. pack.sh packs it with vpk, which adds its updater;
+# the bundle is signed again by role after that (flare-mac-app as vpk's codesign), notarized and checked inside the
+# packages. A release runs this script with FLARE_NOTARIZE=0, then pack.sh (docs/releasing-macos.md).
 # Other settings: FLARE_MAC_TEAM (WV7BY8CUM8), FLARE_MAC_OUT (target/mac-release), FLARE_FEATURES (cargo features of
-# the flare crate, e.g. live-updates), FLARE_NOTARIZE=0 (sign only), FLARE_SKIP_BUILD=1 (use target/release as it is).
+# the flare crate, e.g. live-updates), FLARE_NOTARIZE=0 (sign only), FLARE_SKIP_BUILD=1 (use target/release as it is),
+# FLARE_BUILD_ONLY=1 (build the programs and stop: CI, before the signing keychain exists),
+# FLARE_BUNDLE_VERSION (the bundle's version instead of the workspace's: the throwaway test packs only).
 # Nothing here prints, exports or moves a key or a credential.
 set -euo pipefail
 
@@ -51,8 +50,16 @@ if [ "${FLARE_SKIP_BUILD:-0}" != 1 ]; then
   (cd "$ROOT" && cargo build --release --locked -p flare-cef --bin flare-cef-helper --bin flare-mac-app)
 fi
 
+# CI builds first and makes the signing keychain only after (rule 277): the key is in reach for the signing only.
+if [ "${FLARE_BUILD_ONLY:-0}" = 1 ]; then
+  echo "built the programs (FLARE_BUILD_ONLY=1): no bundle"
+  exit 0
+fi
+
 mkdir -p "$OUT"
-APP="$("$BIN/flare-mac-app" "$OUT" "$BIN" --identity "$IDENTITY" --team "$TEAM")"
+version_arg=()
+[ -n "${FLARE_BUNDLE_VERSION:-}" ] && version_arg=(--version "$FLARE_BUNDLE_VERSION")
+APP="$("$BIN/flare-mac-app" "$OUT" "$BIN" --identity "$IDENTITY" --team "$TEAM" ${version_arg[@]+"${version_arg[@]}"})"
 echo "built: $APP"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
@@ -62,29 +69,8 @@ if [ "$IDENTITY" = - ]; then
   exit 0
 fi
 
-notary_auth=()
-if [ -n "${FLARE_NOTARY_PROFILE:-}" ]; then
-  notary_auth=(--keychain-profile "$FLARE_NOTARY_PROFILE")
-elif [ -n "${FLARE_NOTARY_KEY:-}" ]; then
-  notary_auth=(--key "$FLARE_NOTARY_KEY" --key-id "${FLARE_NOTARY_KEY_ID:?}" --issuer "${FLARE_NOTARY_ISSUER:?}")
-elif [ -n "${FLARE_NOTARY_APPLE_ID:-}" ]; then
-  notary_auth=(--apple-id "$FLARE_NOTARY_APPLE_ID" --team-id "$TEAM" --password "${FLARE_NOTARY_PASSWORD:?}")
-fi
-
-# Submits one file, waits, fails with Apple's log unless it is Accepted. Prints the submission id.
-notarize() {
-  local file="$1" json="$OUT/notary-$(basename "$1").json"
-  xcrun notarytool submit "$file" "${notary_auth[@]}" --wait --timeout 2h --output-format json >"$json" || true
-  local id status
-  id="$(plutil -extract id raw -o - "$json" 2>/dev/null || true)"
-  status="$(plutil -extract status raw -o - "$json" 2>/dev/null || true)"
-  echo "notarization of $(basename "$file"): ${id:-no id}, ${status:-no status}" >&2
-  if [ "$status" != Accepted ]; then
-    [ -n "$id" ] && xcrun notarytool log "$id" "${notary_auth[@]}" >&2 || true
-    return 1
-  fi
-  echo "$id"
-}
+# shellcheck source=lib.sh
+source "$ROOT/tools/release/mac/lib.sh"
 
 if [ "$NOTARIZE" != 1 ] || [ ${#notary_auth[@]} -eq 0 ]; then
   echo "signed, not notarized (no notary credentials or FLARE_NOTARIZE=0)."
@@ -104,32 +90,9 @@ grep -q "source=Notarized Developer ID" "$OUT/spctl-app.txt"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
-# The DMG: the stapled app and a link to /Applications (drag to install), signed, notarized and stapled too.
+# The DMG: the stapled app and a link to /Applications, signed, notarized, stapled, checked attached (lib.sh).
 DMG="$OUT/Flare-$VERSION-arm64.dmg"
-STAGE="$OUT/dmg-stage"
-rm -rf "$STAGE" "$DMG"
-mkdir -p "$STAGE"
-ditto "$APP" "$STAGE/Flare.app"
-ln -s /Applications "$STAGE/Applications"
-hdiutil create -quiet -volname "Flare" -srcfolder "$STAGE" -fs HFS+ -format UDZO -imagekey zlib-level=9 -ov "$DMG"
-rm -rf "$STAGE"
-"$BIN/flare-mac-app" sign-file "$DMG" --identity "$IDENTITY" >/dev/null
-notarize "$DMG" >"$OUT/notary-dmg.id"
-xcrun stapler staple "$DMG"
-xcrun stapler validate "$DMG"
-spctl -a -t open --context context:primary-signature -vvv "$DMG" 2>&1 | tee "$OUT/spctl-dmg.txt"
-grep -q "source=Notarized Developer ID" "$OUT/spctl-dmg.txt"
-
-# The app inside the DMG, attached out of sight (no Finder window, no Desktop icon) and checked there.
-MNT="$(mktemp -d "$OUT/mnt.XXXXXX")"
-hdiutil attach -quiet -nobrowse -readonly -noautoopen -mountpoint "$MNT" "$DMG"
-trap 'hdiutil detach -quiet "$MNT" 2>/dev/null || true; rmdir "$MNT" 2>/dev/null || true' EXIT
-codesign --verify --deep --strict "$MNT/Flare.app"
-spctl -a -t exec -vvv "$MNT/Flare.app" 2>&1 | grep -q "source=Notarized Developer ID"
-[ "$(readlink "$MNT/Applications")" = /Applications ]
-hdiutil detach -quiet "$MNT"
-rmdir "$MNT"
-trap - EXIT
+make_dmg "$APP" "$DMG" "$IDENTITY"
 
 shasum -a 256 "$DMG" "$ZIP" | tee "$OUT/SHA256SUMS"
 echo "done: $DMG"

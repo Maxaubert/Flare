@@ -8,10 +8,12 @@ pub mod helper;
 pub mod keychain;
 pub mod panels;
 pub mod probe;
+pub mod profile_key;
 pub mod release;
 pub mod screen;
 pub mod sign;
 pub mod view;
+pub mod vpk;
 
 /// The CEF folder cef-dll-sys built against (its `links` metadata, through `build.rs`): the framework the dev
 /// bundle copies.
