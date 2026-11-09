@@ -1237,7 +1237,7 @@ was out (nine checks, runs 42612597989 and 42622873207). `appctl::timer_steps_sl
 there is no OS window and on a Mac under `--e2e`; the app with a real window keeps its frames. `sidebar.state` now
 carries `slide_now`, `slot_now` and the OS frame count, so a slid-out picture with no sidebar names its cause. Held by
 `a_timer_steps_the_slide_without_frames_and_in_a_mac_e2e_run`. Source: Mac E2E in CI, run 42624800535 (2026-11-09).
-346. **A scenario's picture or store check waits out what moves, on every system.** Six checks held a moving thing
+346. **A scenario's picture or store check waits out what moves, on every system.** Seven checks held a moving thing
 to one instant and failed on the Mac runner only by its timing: helpPanel's picture before a selection now waits out
 the row's 120 ms hover fade (the lit row was the "changed colour"), themeSwitch reads the agent colour once
 `settings.json` has it (the store is written after a debounce; Cancel was held to a store that had not caught up),
@@ -1245,7 +1245,8 @@ clickCaret finds the old output once "echo zz" is on the screen (read earlier, t
 PSReadLine's grey guess from history, "echo ab1Xcdef", the last row with the needle, and the click moved the caret),
 verticalTabs' slid-out no-shadow check compares with the terminal's ground token (a sampled pixel landed on the Mac
 world's longer prompt) and its ring check looks over a breath (a question's ring was caught at its faintest), as
-attention's question line does (caught at 0 px once). The
+attention's question line does (caught at 0 px once). exitClosesTab types "exit" once the tab it brought to the
+front shows its prompt again (typed at once, pwsh read it inside the redraw's cursor reports and never ran it). The
 program-copy unit test ticks once before its press, so the press no longer races the window's real timer (the
 Windows check job, run 42612597989). Source: Mac E2E in CI, runs 42624800535 and 42626884993 (2026-11-09).
 347. **macOS: a warm spare that asked the terminal something is never adopted.** A spare shell

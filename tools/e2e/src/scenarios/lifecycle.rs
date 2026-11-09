@@ -718,6 +718,25 @@ pub fn exit_closes_tab(ctx: &mut Ctx) -> Result<(), String> {
     if let Some((x, y)) = centre_of(&mut app, "tab:1") {
         app.session.click(x, y)?;
     }
+    // The tab that comes to the front takes its size and its shell draws its prompt again: "exit" goes once
+    // that prompt is back, as a hand would type it. Typed at once, pwsh on the Mac runner read it inside the
+    // redraw's cursor reports and never ran it (rule 346).
+    ctx.until("the second tab in front", 5_000, &mut || {
+        tabs_of(&mut app).get(1).is_some_and(|t| t.front)
+    });
+    let second = front_id(&mut app);
+    let _ = wait_for_prompt(
+        &mut app,
+        &second,
+        Shell::PowerShell,
+        prompt_timeout(Shell::PowerShell),
+    );
+    ctx.settle(50);
+    ctx.settle(50);
+    ctx.settle(50);
+    ctx.settle(50);
+    ctx.settle(50);
+    ctx.settle(50);
     type_line(&mut app, "exit")?;
     let ended = ctx.until("the shell ending takes its tab", 15_000, &mut || {
         tabs_of(&mut app).len() == 1
