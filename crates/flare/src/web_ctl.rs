@@ -272,6 +272,7 @@ fn ctl_error(e: JobError) -> CtlError {
         Fail::Timeout => code::TIMEOUT,
         Fail::Interrupted => code::INTERRUPTED,
         Fail::Internal => code::INTERNAL,
+        Fail::Covered => code::COVERED,
     };
     CtlError::new(c, e.message)
 }
@@ -2268,7 +2269,8 @@ impl WebCtl {
         {
             t.refs = refs;
         }
-        // A press the call was cut short in is let go of, so the page does not think a button is held.
+        // A press the call was cut short in is let go of, so the page does not think a button is held (and the
+        // element a refused click held for its hit test goes too).
         if result.is_err() {
             for c in a.job.release_calls(&mut Ids(&mut self.call_ids)) {
                 if let Some(b) = self.backend.as_mut() {

@@ -1824,6 +1824,57 @@ fn a_click_by_ref_uses_the_numbers_of_the_last_look() {
     assert!(presses[1].contains("mousePressed") && presses[1].contains("\"x\":140.0"));
 }
 
+/// `shop`, but the page says the point is under something else.
+fn shop_covered(method: &str, params: &str) -> Result<String, String> {
+    match method {
+        "DOM.resolveNode" => Ok(json!({"object": {"objectId": "el-1"}}).to_string()),
+        "Runtime.callFunctionOn" => Ok(json!({"result": {"type": "object", "value":
+            {"covered": true, "tag": "div", "name": "Cookie\nwall"}}})
+        .to_string()),
+        _ => shop(method, params),
+    }
+}
+
+#[test]
+fn a_covered_click_is_refused_and_presses_nothing() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    with_shop(&slot);
+    let rx = look(&f, &id);
+    f.pump();
+    rx.try_recv().unwrap().unwrap();
+    fake(&slot).state.borrow_mut().cdp = Some(Box::new(shop_covered));
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    agent_turn(&f, GLIDE_MAX_MS);
+    let e = rx.try_recv().unwrap().unwrap_err();
+    assert_eq!(e.code, code::COVERED);
+    assert_eq!(e.message, "covered by div: Cookie wall");
+    assert!(
+        cdp_calls(&slot)
+            .iter()
+            .all(|(m, _)| m != "Input.dispatchMouseEvent"),
+        "nothing was clicked"
+    );
+    assert!(
+        cdp_calls(&slot)
+            .iter()
+            .any(|(m, p)| m == "Runtime.releaseObject" && p.contains("el-1")),
+        "the element held for the check is let go"
+    );
+    assert!(
+        f.ctl.borrow().web.agent_op(&id).is_none(),
+        "the call is over"
+    );
+    assert_eq!(f.ctl.borrow().web.agent_refs(&id), 2, "the refs still hold");
+    assert_eq!(
+        f.ctl.borrow().web.cursor_probe()["presses"],
+        json!(0),
+        "no ripple: nothing was pressed"
+    );
+}
+
 #[test]
 fn a_ref_is_forgotten_when_the_page_loads_something_new() {
     let (f, _h, _) = live(Opts::default());
