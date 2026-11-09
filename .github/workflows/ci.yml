@@ -50,7 +50,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,cargo-deny
-      # The CEF engine (crates/flare-cef, port phase 5, rule 247): cef-dll-sys builds CEF's C++ wrapper with CMake and
+      # The CEF engine (crates/flare-cef, port phase 5, rule 251): cef-dll-sys builds CEF's C++ wrapper with CMake and
       # Ninja and downloads the pinned CEF build into CEF_PATH, cached between runs (outside the checkout).
       - name: CEF build tools and cache folder
         shell: bash
@@ -72,7 +72,7 @@ jobs:
         run: cargo clippy -p flare-update -p flare --all-targets --features flare/live-updates,flare-update/live-updates -- -D warnings
       - name: Tests
         run: cargo nextest run --workspace --no-tests=pass --no-fail-fast
-      # The Mac's speech engine (port phase 7, rule 311): whisper.cpp built with Metal from its pinned commit and
+      # The Mac's speech engine (port phase 7, rule 315): whisper.cpp built with Metal from its pinned commit and
       # tree, then one real pass with the pinned tiny model and the Parakeet host loading the built libraries.
       - uses: actions/cache@v4
         with:

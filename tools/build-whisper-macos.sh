@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the speech engine Flare bundles on macOS (port phase 7, rule 311): whisper-server and parakeet-cli with
+# Builds the speech engine Flare bundles on macOS (port phase 7, rule 315): whisper-server and parakeet-cli with
 # Metal, from whisper.cpp's SOURCE at one pinned commit. The release Windows takes its zip from (b5130) carries no
 # macOS program, only an xcframework library, so the Mac engine is built, never downloaded as a binary.
 #
@@ -43,7 +43,7 @@ OUT="$(cd "$OUT_ARG" && pwd)"
 STAMP="$OUT/.source"
 
 # Every file of the folder must hash to what the stamp says, and the folder may hold nothing the stamp does not
-# list (a library planted beside an @loader_path rpath would load): the stamp alone proves nothing (rule 321).
+# list (a library planted beside an @loader_path rpath would load): the stamp alone proves nothing (rule 325).
 engine_ok() {
   [ -f "$STAMP" ] && [ "$(head -n 1 "$STAMP")" = "$COMMIT" ] || return 1
   (cd "$OUT" && tail -n +2 .source | shasum -a 256 -c --status) || return 1

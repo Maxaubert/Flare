@@ -1839,7 +1839,7 @@ const MIC_DENIED: &str = "Microphone access was refused.";
 const MIC_DENIED: &str = mic::ACCESS_OFF;
 
 /// What the row says when a Test was refused, for the access read now. Windows: `MIC_DENIED`. A Mac names the real
-/// state: restricted by a profile, else off (`MIC_DENIED`, which names the pane) (rule 318).
+/// state: restricted by a profile, else off (`MIC_DENIED`, which names the pane) (rule 322).
 fn denied_text(a: mic::MicAccess) -> &'static str {
     if cfg!(windows) {
         return MIC_DENIED;

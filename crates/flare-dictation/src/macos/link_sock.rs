@@ -333,7 +333,7 @@ fn ensure_private_dir(dir: &Path, me: u32) -> Result<(), String> {
     // sync-ok: the link's start, a local stat
     let meta = std::fs::symlink_metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     if meta.is_dir() && meta.uid() == me && meta.mode() & 0o077 != 0 {
-        // This user's own folder, opened up (copied, restored, chmodded): made private again (rule 319). Through a
+        // This user's own folder, opened up (copied, restored, chmodded): made private again (rule 323). Through a
         // descriptor opened without following a link, so a folder swapped for a symlink meanwhile is never touched.
         tighten_own_dir(dir, me);
     }

@@ -73,7 +73,7 @@ pub const ENGINE: EnginePin = EnginePin {
     ],
 };
 
-/// The engine a Mac bundles (port phase 7, rule 311): built from whisper.cpp's source at one commit, because the
+/// The engine a Mac bundles (port phase 7, rule 315): built from whisper.cpp's source at one commit, because the
 /// release Windows takes its zip from carries no macOS program. Pinned by the commit and its tree hash
 /// (`tools/build-whisper-macos.sh` refuses any other source); Metal is built in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +96,7 @@ pub const ENGINE_MACOS: SourcePin = SourcePin {
     programs: &["whisper-server", "parakeet-cli"],
 };
 
-/// Whether the GPU pack is offered at all: on Windows only. A Mac's bundled engine is built with Metal (rule 309).
+/// Whether the GPU pack is offered at all: on Windows only. A Mac's bundled engine is built with Metal (rule 313).
 pub const PACK_OFFERED: bool = cfg!(windows);
 
 /// The GPU pack for every NVIDIA card (one pack, from the same release as the engine).
@@ -244,7 +244,7 @@ pub fn visible_models() -> Vec<&'static ModelEntry> {
 
 /// The model id to offer and to mark Recommended: `base` on a CPU, `large-v3-turbo` once a GPU engine is
 /// there: the pack INSTALLED on Windows (not merely an NVIDIA card present), Metal on a Mac
-/// (`gpu::gpu_ready`, rule 309).
+/// (`gpu::gpu_ready`, rule 313).
 pub fn recommended_model(gpu_ready: bool) -> &'static str {
     if gpu_ready {
         "large-v3-turbo"

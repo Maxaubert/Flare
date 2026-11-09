@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn audio_reaches_the_engine_only_over_loopback_and_pipes_on_both_systems() {
-        // Rule 312 (macOS port phase 7): the same engine code runs on both systems, so the same lines hold the audio
+        // Rule 316 (macOS port phase 7): the same engine code runs on both systems, so the same lines hold the audio
         // on this machine. The one socket dialled is 127.0.0.1; the server is told to listen there and nowhere else;
         // Parakeet takes the clip on stdin (`-f -`); and the Mac's engine is built with no network code of its own.
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -291,7 +291,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{f}"));
             assert!(isolate < spawn && spawn < assign, "{f}");
             // After the assign the child is waited only through its member, which withdraws the pid from the
-            // reaper before the reap (rule 314).
+            // reaper before the reap (rule 318).
             let after = &code[assign..];
             assert!(after.contains("job.member()"), "{f}");
             for bare in [

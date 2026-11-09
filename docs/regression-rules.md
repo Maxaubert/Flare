@@ -630,7 +630,7 @@ Native: `background.rs` (`looks_like_background_work`). Held by `a_dev_server_in
 `std::os::windows` imports, Windows paths and Windows tools live in Windows modules with a macOS counterpart or stub.
 Held by the `macos` CI job (cargo check, clippy and nextest on macos-latest). Source: macOS port plan
 (`docs/superpowers/specs/2026-11-08-macos-port.md`, owner, 2026-11-08).
-228. **macOS: closing a tab ends its whole session, and throws away the output nobody will read.** The shell leads
+232. **macOS: closing a tab ends its whole session, and throws away the output nobody will read.** The shell leads
 its own session (portable-pty `setsid`); a kill sends SIGHUP to the session's process groups and to the shell's
 descendants, then SIGTERM and SIGKILL after 250 ms and 500 ms more (`flare-term/src/macos/pty.rs`), sparing an
 `.app` bundle the shell launched. While it waits the reaper runs `tcflush(TCOFLUSH)` on a duplicate of the master:
@@ -646,7 +646,7 @@ tab, and a crash of Flare leaves a job that ignores SIGHUP running. Held by `qui
 (`ten_real_shells_with_jobs_killed_none_remain`,
 `quitting_ends_a_job_that_ignores_the_hangup_before_the_process_exits`) and `pty::macos::tests`. Source: macOS port
 phase 2, step 1 (measured 2026-11-08: 6 of 10 shells stuck in exit without the flush), and the phase 2 review.
-229. **macOS: every shell starts as a login shell and reports its folder with OSC 7, without touching the user's
+233. **macOS: every shell starts as a login shell and reports its folder with OSC 7, without touching the user's
 dotfiles.** zsh, bash, fish and pwsh are found by absolute path (the login shell from the user record first, then
 Homebrew, `/etc/shells`, `/bin`), never through PATH; the login shell is listed first and is the default
 (`shell_by_id` prefers no name on macOS). zsh starts with `ZDOTDIR` on Flare's shim, whose `.zshenv` hands the
@@ -659,7 +659,7 @@ a Mac named by its network can be renamed mid-session), decoded, absolute, with 
 OSC 7 is no folder report. The files live in `~/Library/Application Support/Flare/shell-integration/<version>`
 (`flare-shells/src/macos/`). Held by `flare-term/tests/real_shells_macos.rs` and `flare-shells` `macos::*` tests.
 Source: macOS port phase 2, step 2 (2026-11-08).
-230. **macOS: paths are read with the POSIX grammar behind one seam, and a path that would reach a server is never
+234. **macOS: paths are read with the POSIX grammar behind one seam, and a path that would reach a server is never
 statted, restored or adopted.** `flare-term/src/path_grammar.rs` picks the grammar: Windows
 (`path_grammar/windows.rs`, the drive and UNC rules moved there unchanged) or macOS (`macos/path_grammar.rs`): one
 root `/`, `~` and `~/` for home (`~user` is refused), `/` the only separator (a `\` is a name character), case kept,
@@ -674,7 +674,7 @@ refuses the same autofs and `//` paths, a `.` or `..` segment and the Windows UN
 menu read POSIX folders (`~/code`, `.../Claude/Github`). Held by the `posix` twins in `path_open`, `path_links`,
 `paths`, the `macos::*` tests of flare-term, flare-shells, flare-tabs and flare-surfaces, and
 `restore_never_spawns_in_a_remote_folder_on_macos`. Source: macOS port phase 2, step 3 (2026-11-08).
-231. **macOS: fonts come from the font folders, the stacks fall to SF Mono and Menlo, the UI is SF, and wgpu
+235. **macOS: fonts come from the font folders, the stacks fall to SF Mono and Menlo, the UI is SF, and wgpu
 draws on Metal.** `flare-render/src/macos/font_catalog.rs` reads `/System/Library/Fonts`, the downloadable
 `AssetsV2` fonts, `/Library/Fonts` and `~/Library/Fonts` once (never `/Network/Library/Fonts`, an autofs mount). Its
 start-up fallbacks are SF Mono, Menlo and every face cosmic-text's macOS fallback names (per-script, Han, common):
@@ -686,7 +686,7 @@ Segoe UI and Cascadia Mono on Windows; Helvetica, Slint's own fallback, has a on
 painter. Held by `font_catalog::macos::tests`, `glyph_images_are_identical_to_the_all_fonts_build_for_the_theme_sample`,
 `tests/metal_macos.rs`, `the_prewarm_instance_starts_metal_alone_unless_a_backend_is_named` and the `_on_macos`
 twins of the Windows pixel tests. Source: macOS port phase 2, step 4 (2026-11-08).
-232. **macOS: the window is a native titled window under Flare's top row, and its glass is an effect view behind
+236. **macOS: the window is a native titled window under Flare's top row, and its glass is an effect view behind
 the content.** `flare::backend::mac_chrome_attributes` makes the main window titled with a transparent titlebar, a
 hidden title and a full-size content view; `no-frame` is off on macOS (`native-caption`), so Slint keeps the
 decorations on and winit never swaps the style mask (that would drop the full-size content view). Flare's own
@@ -700,10 +700,10 @@ nothing). The glass: `dwm::set_system_backdrop` and `set_immersive_dark` land in
 casts `contentView` back to its own class), Acrylic as the under-window-background material, the window wearing
 dark or light Aqua by the ground. The handle for these calls is `window::native_view_of` (the `NSView`);
 `hwnd_of` stays Win32 only. The session end is `NSApplicationWillTerminateNotification` (Quit, log out, shut
-down), run once, and `NSWorkspaceWillPowerOffNotification`, which flushes every time (rule 235). Held by `crates/flare-win/tests/appkit.rs` (a
+down), run once, and `NSWorkspaceWillPowerOffNotification`, which flushes every time (rule 239). Held by `crates/flare-win/tests/appkit.rs` (a
 main-thread harness on a window that is never shown) and the `chrome`, `glass`, `session_end` and `window_park`
 tests. Source: macOS port phase 3, step 1 (2026-11-08).
-233. **macOS: Cmd is the app's key, Ctrl is the shell's, and the menu bar is the keymap.** One chord table serves
+237. **macOS: Cmd is the app's key, Ctrl is the shell's, and the menu bar is the keymap.** One chord table serves
 both systems: `KeyContext::os` (`flare_term::keys::KeyOs`, default Windows) picks the modifier, so on macOS every
 app chord is a Cmd chord and every Ctrl+letter reaches the shell as a control character; Ctrl+Tab and the agent
 guard's Ctrl+C and Ctrl+D stay Ctrl on both (Cmd going down on its own, `"Super"` in winit's names, leaves a
@@ -718,7 +718,7 @@ equivalent is made from that press, so the menu and the keyboard cannot drift ap
 on to Slint as Control, Slint's name for Cmd on macOS). Never add a Mac shortcut in the menu alone. Held by the
 `mac_menu`, `chords`, `keymap` and `mac_keys` tests and `crates/flare-win/tests/appkit.rs`. Source: macOS port
 phase 3, step 2 (2026-11-08).
-234. **macOS: the system glue is AppKit and the per-user Library, never a helper process.** The clipboard is
+238. **macOS: the system glue is AppKit and the per-user Library, never a helper process.** The clipboard is
 `NSPasteboard` (`flare_win::pasteboard`): text as an `NSString` (UTF-8 whatever the locale, no `pbcopy`), copied
 files as the items' file URLs read back as POSIX paths, an image only seen (PNG or TIFF), the change count as the
 sequence; tests use a private pasteboard and never the user's. The openers are `NSWorkspace`
@@ -738,14 +738,14 @@ dead one's socket is removed. The default profile is `~/Library/Application Supp
 `proc_pid_rusage` (resident set, physical footprint). Held by the `pasteboard`, `workspace`, `openers`,
 `single_instance`, `startup`, `paths`, `memory` and `flare-proc` tests. Source: macOS port phase 3, step 3
 (2026-11-08).
-235. **macOS: a power-off notice flushes but never uses up the final save.** `NSWorkspaceWillPowerOffNotification`
+239. **macOS: a power-off notice flushes but never uses up the final save.** `NSWorkspaceWillPowerOffNotification`
 comes before the apps are asked to quit, and another app can still cancel the log out or shut down, leaving Flare
 running. So `SessionEndWatch` flushes on it every time without arming anything, and only
 `NSApplicationWillTerminateNotification` (the app really ends) is run once. A shared "fired" flag across both
 would lose every change made after a cancelled log out. Held by
 `the_end_runs_once_a_power_off_never_disarms_it_and_the_power_events_arrive_until_the_watch_stops`
 (`crates/flare-win/src/macos/session_end.rs`). Source: macOS port phase 3 review (2026-11-08).
-236. **macOS: a file opens only in a handler that cannot run it.** The extension allowlist is not enough on a Mac: a
+240. **macOS: a file opens only in a handler that cannot run it.** The extension allowlist is not enough on a Mac: a
 single file can carry its own "Open with" app (a `notes.txt` set to open with Terminal runs). `workspace::open_file`
 refuses a file with any execute bit, looks the handler up (`URLForApplicationToOpenURL:`), refuses a terminal, a
 script runner, an installer or an app without a bundle id (`workspace::RUNNERS`), and opens the file WITH the
@@ -758,13 +758,13 @@ the lists. Held by `terminals_script_runners_and_unknown_apps_never_open_a_file`
 `a_file_with_its_own_open_with_choice_is_refused_and_a_plain_one_is_not` and
 `runnable_and_redirecting_types_are_refused_before_any_handler` (`crates/flare-win/src/macos/workspace.rs`). Source:
 macOS port phase 3 review and the security review (2026-11-08).
-237. **macOS: an `--e2e` run is an accessory app from its event loop's first turn.** `backend::with_window_attributes`
+241. **macOS: an `--e2e` run is an accessory app from its event loop's first turn.** `backend::with_window_attributes`
 hands Slint a winit event loop builder under `--e2e` with the Accessory activation policy and no activation at
 launch (`mac_e2e_loop_plan`), so the app never shows a Dock icon or comes forward before `window_park::park`, which
 runs only after `show()`. Without `--e2e` Slint keeps its own event loop. Held by
 `a_mac_e2e_run_is_an_accessory_that_never_activates_from_its_first_event` (`crates/flare/src/backend.rs`). Source:
 macOS port phase 3 review (2026-11-08).
-238. **macOS: every screen is measured in one space, the points times ONE scale.** winit reports a window's position
+242. **macOS: every screen is measured in one space, the points times ONE scale.** winit reports a window's position
 as points times that window's backing scale, so scaling each screen by its own factor makes a 2x screen's area
 overlap the screen beside it. `chrome::areas_in` scales every screen by the same factor; the saved window state is
 checked against the areas at its own saved scale (`monitors::work_areas_at`, `WindowStateStore::read_at`), and the
@@ -772,13 +772,13 @@ park report measures the screens at the window's scale. On Windows `work_areas_a
 pixel space already). Held by `screens_of_different_scales_never_overlap` (`crates/flare-win/src/macos/chrome.rs`)
 and `the_areas_are_asked_for_in_the_saved_scale` (`crates/flare-win/src/window_state.rs`). Source: macOS port
 phase 3 review (2026-11-08).
-239. **macOS: the control channel is a Unix socket that only its user can reach, checked on both ends.**
+243. **macOS: the control channel is a Unix socket that only its user can reach, checked on both ends.**
 `flare-ctl/src/uds.rs` exports the named pipe's API (`pipe_name`, `Server`, `connect`, `connect_to_server`,
 `PipeEnd`) with the same framing and hashes: the socket is `<per-user temp folder>/flare-ctl/<h>[-<s>].sock`, the
 folder mode 0700 and the user's own with no group or other bits (else no server), the socket mode 0600. The server
 drops a client whose `getpeereid` uid is not its own before reading a byte; the client refuses a server of another
 uid, or (with `FLARE_CTL_PID`) any process but the one named, by `LOCAL_PEERPID`, before writing a byte. A live
-server on the path fails the start (rule 245), a dead socket is removed, stop removes only the socket it bound. Reads are
+server on the path fails the start (rule 249), a dead socket is removed, stop removes only the socket it bound. Reads are
 `recv(MSG_DONTWAIT)` probes, a stop shuts each socket down to free a write stuck on a client that never reads.
 Tests cannot switch users, so the refusals are proven with `Server::start_as` and `connect_as`, each end believing
 it is another uid. Held by `crates/flare-ctl/tests/pipe.rs` (the Windows tests run on both, `macos::*` twins of
@@ -786,14 +786,14 @@ the naming and access tests), `crates/flare-mcp/tests/stdio.rs` and
 `appctl::tests::ctl_socket_tests` (every `show_*`, `set_tab_*`, `clear_tab_*`, `open_page`, `close_panel` and
 `convo.state` from `flare_mcp` over the socket to the headless window). Source: macOS port phase 4, step 1
 (2026-11-08).
-240. **macOS: the port owner table is libproc's, read without a connection, and it sees this user's processes
+244. **macOS: the port owner table is libproc's, read without a connection, and it sees this user's processes
 only.** `flare_proc::tcp_listeners` lists every listening TCP socket of the processes whose descriptors this user
 may read (`PROC_PIDLISTFDS`, then `PROC_PIDFDSOCKETINFO`, the `socket_fdinfo` offsets measured with `offsetof` on
 the macOS 27.2 SDK and proven by a real listener), never `lsof` and never a connect; `flare_win::tcp_owner` builds
 `listener_pids`, `listener_pids_v6` and `tree_look` on it with the Windows rules (one table read for both families,
 the tree from `flare_proc::table` with start times, a root's start unknown is no parent). Known gap: a listener of
 another account (a root daemon) is not seen, so a port only it holds reads as nobody, never as in the tree, and a
-port the tree holds on one loopback family while another account holds the other is caught by rule 246. A
+port the tree holds on one loopback family while another account holds the other is caught by rule 250. A
 descriptor list that fills its buffer may have been cut, so it is grown and read again (at most five times, then not
 trusted): a listener past the cut would make a port look held by fewer processes than hold it. The
 Sonara and chip tests run on macOS; their stand-in servers accept with a 10 s deadline, so a post that never comes
@@ -801,7 +801,7 @@ fails the test instead of hanging it (the old blocking `accept` hung on macOS wh
 `flare-proc` `sockets::tests`, `a_listening_tcp_socket_is_read_with_its_port_and_family`, the `tcp_owner` tests
 (now on both systems) and `a_childs_listener_is_in_this_processs_tree_on_macos`, the `sonara` tests and
 `sonara_is_never_called_on_the_ui_thread`. Source: macOS port phase 4, step 2 (2026-11-08).
-241. **macOS: the taskbar button is the Dock tile.** The badge is the tile's badge label with the disc's own text
+245. **macOS: the taskbar button is the Dock tile.** The badge is the tile's badge label with the disc's own text
 ("3", "9+"; `OverlayShell::set_badge`, `flare_win::dock::DockShell`), set without a window handle; a bell asks for a
 CRITICAL attention request (the icon bounces until Flare is activated, Windows' `FLASHW_TRAY | FLASHW_TIMERNOFG`)
 and nothing while Flare is the active app, never an informational one; "the window is in front" is `NSApp isActive`
@@ -810,7 +810,7 @@ does nothing off it. Tests never make an attention request (an unbundled test ap
 no Dock tile). Held by `dock::tests`, `a_text_badge_gets_the_count_as_the_disc_shows_it_and_a_clear_takes_it` and
 `dock_badge_reads_back_and_attention_is_asked_only_while_flare_is_not_active` (`crates/flare-win/tests/appkit.rs`).
 Source: macOS port phase 4, step 2 (2026-11-08).
-242. **macOS: notifications wait for the signed app, and say so.** The toast path goes through
+246. **macOS: notifications wait for the signed app, and say so.** The toast path goes through
 `flare_win::toast::NotifyBackend`; on macOS the backend (`MacBackend`) shows nothing and answers
 `MAC_UNAVAILABLE` ("unavailable until the app is signed"), because `UNUserNotificationCenter` refuses an unsigned,
 unbundled app and Flare has no Developer ID yet. The caller treats it as Windows treats a refused toast (the
@@ -821,7 +821,7 @@ starts no worker per question and logs the reason once a run (`toast::FirstTime`
 `macos_says_notifications_wait_for_the_signed_app_and_shows_nothing` and
 `the_system_says_up_front_whether_it_can_take_a_notification`. Source: macOS port phase 4, step 2
 (2026-11-08), Max has no Developer ID yet.
-243. **macOS: an agent is found by its macOS command line too.** Off Windows `flare_agent::detect::classify` also
+247. **macOS: an agent is found by its macOS command line too.** Off Windows `flare_agent::detect::classify` also
 counts the launcher script an interpreter runs (`node /opt/homebrew/bin/claude`, `bash ~/.claude/local/claude`,
 `python3.12 ~/.local/bin/aider`): the interpreter's first argument that is not an option, by its exact lower-case
 file name (never `~/Documents/Claude`, never a later argument). The value of an interpreter option that takes one
@@ -837,7 +837,7 @@ exactly as before. Held by `a_launcher_script_under_its_interpreter_is_the_agent
 `a_shell_that_became_the_agent_is_the_agent`, `the_foreground_job_of_a_tab_is_adopted_only_when_it_is_outside_the_tree`
 and `a_real_child_command_line_is_read_and_filtered`. Source: macOS port phase 4, step 2 (2026-11-08; the argv
 forms read off this Mac's own `claude` and Homebrew `codex`).
-244. **macOS: the Claude plugin's hooks run `/bin/sh hook.sh`, the plugin list is `:`-separated, and the home is
+248. **macOS: the Claude plugin's hooks run `/bin/sh hook.sh`, the plugin list is `:`-separated, and the home is
 `HOME`.** The install turns every state hook's `cmd.exe /d /c call ${CLAUDE_PLUGIN_ROOT}/hook.cmd` into
 `/bin/sh ${CLAUDE_PLUGIN_ROOT}/hook.sh` with the same state words (a hook of any other shape fails the render), the
 system folder is `/bin` (any absolute folder named `bin`, as any `System32`), every program written is an absolute
@@ -852,7 +852,7 @@ macOS. Held by the seven install tests (no longer ignored), `the_posix_render_ke
 `hook_sh_is_lf_and_static`, `a_platform_installs_its_own_hook_script_and_never_the_other`,
 `the_folder_list_is_split_the_way_claude_code_splits_it` and `claude_home_is_the_platforms_home`. Source: macOS
 port phase 4, step 2 (2026-11-08).
-245. **macOS: the first control server on a name holds `<socket>.lock`, and a busy one is waited for, never
+249. **macOS: the first control server on a name holds `<socket>.lock`, and a busy one is waited for, never
 replaced.** A connect cannot tell a live server with a full backlog from a dead one (macOS answers both with
 `ECONNREFUSED` at once), so `Server::start` first takes an exclusive `flock` (non-blocking, retried for 250 ms) on
 `<socket>.lock` beside the socket (mode 0600, `O_NOFOLLOW`, the user's own file) and holds it for the server's life;
@@ -867,7 +867,7 @@ thread past a stop. Held by `a_live_server_with_a_full_backlog_is_never_replaced
 `a_client_of_a_busy_server_waits_and_then_gets_in`, `a_client_of_a_dead_socket_fails_at_once` and
 `the_lock_file_sits_beside_the_socket`. Source: macOS port phase 4 review (2026-11-08; the reviewer's full-backlog
 probe started a second server over a live one).
-246. **macOS: a port is in the tab's tree only when the loopback family the tree does not hold is shown free.**
+250. **macOS: a port is in the tab's tree only when the loopback family the tree does not hold is shown free.**
 The listener table shows this user's processes only, and binding 127.0.0.1:P and [::1]:P is never refused across
 accounts (two addresses), so a tree on 127.0.0.1:P says nothing of another account on [::1]:P, and the chip's
 `http://localhost:P` may reach either. So `tcp_owner::tree_look` keeps an `InTree` answer only when each family with
@@ -880,7 +880,7 @@ account is root. Windows sees every account's listeners and is unchanged. Held b
 `an_in_tree_answer_stands_only_when_the_unseen_family_is_shown_free` and
 `the_loopback_probe_tells_a_held_address_from_a_free_one` (a second account cannot be staged in a test; the
 same-user and wildcard answers were measured on this Mac). Source: macOS port phase 4 review (2026-11-08).
-247. **macOS: the web engine is CEF, pinned to one build, cached outside the repo, and run from a bundle CEF can
+251. **macOS: the web engine is CEF, pinned to one build, cached outside the repo, and run from a bundle CEF can
 use.** `cef` and `cef-dll-sys` (tauri-apps/cef-rs) are pinned with `=156.2.0` (Cargo.lock: 156.2.0+156.0.14, CEF
 156.0.14, Chromium 156.0.8078.48; the newest release two weeks old on 2026-11-08) under
 `[target.'cfg(target_os = "macos")'.dependencies]` of `crates/flare-cef` only, so Windows builds nothing of it and
@@ -898,7 +898,7 @@ signature, the hardened runtime, entitlements and notarization wait for the sign
 `a_helper_plist_hides_the_helper_and_the_probe_plist_is_background_only` and
 `the_dev_bundle_holds_the_framework_and_five_signed_helpers`. Source: macOS port phase 5, step 1 (2026-11-08), the
 phase 1 verdict (CEF).
-248. **macOS: a CEF browser process never takes the screen.** `FlareCefApplication` (an `NSApplication` with
+252. **macOS: a CEF browser process never takes the screen.** `FlareCefApplication` (an `NSApplication` with
 `CrAppProtocol`, `CrAppControlProtocol` and `CefAppProtocol`, `isHandlingSendEvent` set around every `sendEvent:`)
 is made the shared application before CEF loads, with activation policy Prohibited; a bundle that shows no window of
 its own (the probe) is `LSBackgroundOnly`. Every browser is windowless (Alloy style, `on_paint` into a BGRA buffer
@@ -906,14 +906,14 @@ in device pixels), in an in-memory request context of its own. Nothing native ma
 `target=_blank`) is refused, the context menu is emptied and its run cancelled, JavaScript dialogs are suppressed, the
 leave-page question is answered "leave", a file picker is cancelled, media and permission prompts are denied, and the
 keychain is the mock one (`use-mock-keychain`: the login keychain's "Chromium Safe Storage" prompt is a system
-dialog; its key is public, rule 260), no colour or print panel can be ordered in (rule 261); a `<select>` popup is a
+dialog; its key is public, rule 264), no colour or print panel can be ordered in (rule 265); a `<select>` popup is a
 painted `PET_POPUP` layer, not a menu. The main thread's pump is AppKit's queued
 events, one non-blocking turn of the CFRunLoop and `do_message_loop_work`: without the run loop turn, or with a CEF
 log file, a windowless view never paints (measured on macOS 27.2; the log file is for diagnosis only). Held by the
 engine tests (`tests/engine_macos.rs`): the window server lists no on-screen window of the bundle's app or helpers
 before, during (every 50 ms) and after each run, the process owns 0 windows at its start and end, it is never
 active, and no handler was asked for anything native. Source: macOS port phase 5, step 1 (2026-11-08).
-249. **macOS: the agent's DevTools calls go to CEF unchanged, and a runaway script is stopped with the page kept.**
+253. **macOS: the agent's DevTools calls go to CEF unchanged, and a runaway script is stopped with the page kept.**
 `flare_cef::macos::view::View::cdp_send` hands `agent_job`'s calls to `SendDevToolsMessage` as
 `{"id","method","params"}` (ids within CEF's `int`); answers come back by id through the DevTools observer, a
 result's JSON as on Windows, an error as its message plus Chromium's error object. The real
@@ -929,7 +929,7 @@ trapped page costs its 2 s timeout, not the look. Held by
 `the_eleven_devtools_methods_agent_job_uses_answer_in_chromiums_shapes` and
 `a_runaway_eval_is_stopped_by_its_timeout_and_the_page_answers_again_with_its_state`. Source: macOS port phase 5,
 step 1 (2026-11-08); the verdict's "If it is CEF: what phase 5 must prove on a Mac".
-250. **macOS: the web panel is CEF behind the same `WebBackend`, and nothing waits for it.** `flare_web::host` on macOS
+254. **macOS: the web panel is CEF behind the same `WebBackend`, and nothing waits for it.** `flare_web::host` on macOS
 (`crates/flare-web/src/macos/host.rs`) keeps the Windows host's shape: the first view asks the runtime question
 (`WebEvent::Runtime`: is `Chromium Embedded Framework.framework` in this app's `Contents/Frameworks`; a plain `cargo
 run` has none and its panel says so in a sentence, never with the Edge download link), the engine starts when it is
@@ -951,7 +951,7 @@ navigation the wall cancelled is `Refused` and its own aborted end is not report
 cef_macos.rs`: the real host through the trait in a headless dev bundle), the `flare_cef::status` and
 `flare_cef::macos::view` unit tests and `without_the_framework_beside_it_the_runtime_check_says_why`. Source: macOS
 port phase 5, step 2 (2026-11-08).
-251. **macOS: the page is a picture in its box, and the window's input goes to it.** The browser is windowless: its
+255. **macOS: the page is a picture in its box, and the window's input goes to it.** The browser is windowless: its
 picture (`on_paint`, BGRA in device pixels, a `<select>` list's popup layer laid over it) is `WebBackend::frame`, which
 the window shows in the panel's page box (`panel-web-frame`, `panel-web-live`) after every pump and sync; Windows'
 backend has no picture, so the box stays empty and takes no input there. The pointer and the wheel over the box go to
@@ -960,7 +960,7 @@ scrolls down; a press within 500 ms and 5 px is a double click), the keys to `We
 key, the macOS key code and the text (Slint's key names, `web_live::key_of`; a modifier alone goes nowhere), and every
 key carries AppKit's own character, because CEF makes an `NSEvent` of it (without it a Backspace's key up deletes a
 second time, measured on CEF 156). The input method's text is `WebBackend::ime`. The key filter decides first, as the
-accelerator hook does on Windows; the backend's `KeyPress::ctrl` carries Cmd on a Mac (rule 233), read as the event's
+accelerator hook does on Windows; the backend's `KeyPress::ctrl` carries Cmd on a Mac (rule 237), read as the event's
 `meta` by `web_ctl::key_event_for` in a Mac key context, so Cmd+T opens a tab and never reaches the page. A press or a
 typed key forwarded while an agent works in the page is the person taking it over (the stop-on-input monitor: the
 agent's own input is DevTools events and never comes through the box). A still is the picture as a PNG. Held by
@@ -968,7 +968,7 @@ agent's own input is DevTools events and never comes through the box). A still i
 `on_a_mac_the_backends_ctrl_is_cmd_and_the_app_takes_its_cmd_chords`, `slints_keys_become_the_keys_chromium_knows`,
 `a_key_that_types_nothing_carries_appkits_character` and the panel scenario's frame, still, pointer, keys-and-ime,
 key-filter, wheel and select-list checks. Source: macOS port phase 5, step 2 (2026-11-08).
-252. **macOS: the walls are the Windows walls, decided in one place and re-proved against the network observers.**
+256. **macOS: the walls are the Windows walls, decided in one place and re-proved against the network observers.**
 `flare_web::walls` decides for both hosts which address a frame may go to, what a request gets and which profile a view
 runs in. On CEF every request of a walled view is answered by the view's request wall
 (`ResourceRequestHandler::GetResourceHandler`, and the profile's own for requests of no browser): a mini-app's folder
@@ -986,18 +986,18 @@ loads in the same view, a mini-app or mod opens none; `mailto:` and other scheme
 19 channels reach the loopback server from a web panel control, none, no TCP accept and no mDNS query from a sealed
 mini-app; the observers prove they listen first) and the `walls` unit tests. Source: macOS port phase 5, step 2
 (2026-11-08); the verdict's request-interception item.
-253. **macOS: nothing native opens from a page, and nothing waits for the person in CEF.** Script dialogs are answered
+257. **macOS: nothing native opens from a page, and nothing waits for the person in CEF.** Script dialogs are answered
 at once (`alert` returns, `confirm` is false, `prompt` is null) and never shown; camera, microphone, location,
 notifications and clipboard read are denied with no prompt; a file picker is cancelled; the context menu is emptied and
 its run cancelled; a popup is no window (same view or nothing). A download waits for the person's yes: CEF holds its
 before-download callback, nothing is written where the person keeps files while it is held or after a no (its bytes wait
-in Flare's staging folder, rule 258), a yes saves it in Downloads under its last name part, never over a file (` (2)` and so on); a bar or a background page refuses it
+in Flare's staging folder, rule 262), a yes saves it in Downloads under its last name part, never over a file (` (2)` and so on); a bar or a background page refuses it
 before it starts. CEF is never called, and no CEF object is let go, while a view's state is locked: releasing a
 callback can run CEF's work and its handlers at once (a held download's no deadlocked that way). Held by the panel
 scenario's dialogs, permissions, downloads, external-schemes and new-window checks, the walls scenario's plugin-bar
 check, and `a_download_is_named_by_its_last_part_and_never_overwrites`. Source: macOS port phase 5, step 2
 (2026-11-08).
-254. **macOS: the agent drives the web panel through the same `WebBackend::cdp`, and its editing chords edit.**
+258. **macOS: the agent drives the web panel through the same `WebBackend::cdp`, and its editing chords edit.**
 `agent_job` is unchanged: `web_ctl` sends its DevTools calls through `WebBackend::cdp`, the macOS host hands them to
 CEF's `SendDevToolsMessage`, and the answers come back as `WebEvent::Cdp`. One difference is closed in the host: on a
 Mac a chord becomes an editing command in the text system before the renderer sees it, and a DevTools key event skips
@@ -1016,7 +1016,7 @@ input-is-not-the-persons), `an_agents_editing_chord_is_chromiums_command_on_a_ma
 `an_off_screen_page_is_drawn_in_its_box_takes_the_input_there_and_a_press_stops_the_agent` (a press or a typed key ends
 the call, a Cmd shortcut does not). Copy, cut and paste are mapped but not run in the tests: they would use the
 person's clipboard. Source: macOS port phase 5, step 3 (2026-11-08).
-255. **macOS: nothing behind Flare's proxy reaches this machine or its network, in any spelling.** A networked
+259. **macOS: nothing behind Flare's proxy reaches this machine or its network, in any spelling.** A networked
 mini-app, a plugin with the network and a mod are re-proved against the spike's proxy page: loopback in five IPv4
 spellings, `0.0.0.0`, `localhost`, `localhost.` and `a.localhost`, `[::1]`, `[::ffff:127.0.0.1]`, the LAN address,
 `.local` names and names that resolve to loopback, each over http, https, ws and wss, reach the observers' dual-stack
@@ -1028,7 +1028,7 @@ filtering proxy refuses every address of this PC and every local name (`netproxy
 system resolver retries an earlier view's query for seconds after that view closed. Held by the walls scenario's
 netproxy-literals check in `mini_apps_mods_and_plugin_views_on_cef_keep_their_walls_against_the_network_observers`.
 Source: macOS port phase 5, step 3 (2026-11-08); the verdict's E.proxy-only finding.
-256. **macOS: every mini-app has a private profile of its own.** A CEF profile's request wall for the requests no browser
+260. **macOS: every mini-app has a private profile of its own.** A CEF profile's request wall for the requests no browser
 makes (a shared worker's, a service worker's) is built once, from the view the profile was made for. When every sealed
 mini-app shared one in-memory profile, the second app's shared worker was judged by the first app's wall: it read the
 first app's `secret.txt` (no-cors fetch, 200) and ran its script (`importScripts`), and got a 403 for its own file
@@ -1040,7 +1040,7 @@ on its own view, so it needs no such key. Held by the walls scenario's mini-app-
 open at once; a shared and a dedicated worker of the second get its own file and a 403 for the first app's file and
 script; the check fails with the old shared key) and `every_kind_of_view_has_the_browser_windows_gives_it`. Source:
 macOS port phase 5 review (2026-11-08).
-257. **macOS: CEF takes Flare's switches, never the process's command line.** `Settings::command_line_args_disabled`
+261. **macOS: CEF takes Flare's switches, never the process's command line.** `Settings::command_line_args_disabled`
 is 1 and the switches are added in `FlareApp::on_before_command_line_processing` (`engine::SWITCHES`), which CEF still
 asks. With it at 0, `Flare --remote-debugging-port=N` (or `open -a Flare --args ...`) opened a DevTools port anyone on
 the machine could drive, and `--no-sandbox`, `--proxy-server` and `--disable-web-security` reached the helpers (the
@@ -1049,7 +1049,7 @@ reason. Held by the quiet scenario's own-switches-only check in
 `the_engine_takes_only_flares_switches_and_calls_no_one_on_its_own` (the probe is started with all four switches: the
 port does not answer, there is no `DevToolsActivePort`, no helper has any of them; the check fails with the setting
 at 0). Source: macOS port phase 5 review (2026-11-08).
-258. **macOS: a held download's bytes wait in Flare's staging folder, never in `~/Downloads`.** Chromium writes a
+262. **macOS: a held download's bytes wait in Flare's staging folder, never in `~/Downloads`.** Chromium writes a
 download's first part while CEF holds the before-download callback, into the profile's default download folder,
 which is `~/Downloads`: a held download left `.<bundle id>.XXXXXX` there before the person's answer (and the tests
 wrote into the real Downloads folder). Every profile's `download.default_directory` and `savefile.default_directory`
@@ -1059,7 +1059,7 @@ Downloads (with `com.apple.quarantine`, Chromium's own, held by the panel scenar
 download-staging check (a slow download held: its part is in the staging folder, nothing new in `~/Downloads`, nothing
 left after the no; the profile's preference read back) and `every_kind_of_view_has_the_browser_windows_gives_it`.
 Source: macOS port phase 5 review (2026-11-08).
-259. **macOS: the engine calls no one on its own.** With only a sealed mini-app open, CEF 156 connected to Google
+263. **macOS: the engine calls no one on its own.** With only a sealed mini-app open, CEF 156 connected to Google
 within 3 s: the component updater (`update.googleapis.com`, then the on-device model manifest from `gvt1.com`), the
 network time tracker (`clients2.google.com/time`) and the AI mode eligibility check (`www.google.com/async/folae`, with
 the country), none from a page and none through a profile's proxy. `engine::SWITCHES` turns off component updates
@@ -1072,7 +1072,7 @@ mini-app: no listener, no UDP socket, no connection past loopback in any process
 log holds no address but the app's own and the dead address) and
 `the_engine_is_started_with_its_quiet_switches_and_keeps_cefs_own_disabled_features`. A new CEF pin re-runs the quiet
 scenario first: a new service is a new feature to turn off. Source: macOS port phase 5 review (2026-11-08).
-260. **macOS: a profile on disk is protected by its file's permissions only, until the signed app (accepted gap).**
+264. **macOS: a profile on disk is protected by its file's permissions only, until the signed app (accepted gap).**
 CEF runs with `use-mock-keychain` so Chromium never asks the login keychain for "Chromium Safe Storage" (a system
 prompt on the screen, asked again after every ad-hoc rebuild). The mock keychain's key is fixed and public
 (`mock_password` is in the framework), so what the web panel's profile (`<data_dir>/Default`) and each mod's and
@@ -1081,7 +1081,7 @@ encrypts it with DPAPI. The mini-apps' profiles are in memory and keep nothing. 
 a keychain item of its own (its access tied to the Developer ID signature) and drops the switch; until then this gap
 is written here, in `engine.rs` and in `docs/parity.md`, and no one may describe the macOS profile as encrypted.
 Source: macOS port phase 5 review (2026-11-08).
-261. **macOS: no colour or print panel can come on screen from a page.** A windowless browser has no window for a
+265. **macOS: no colour or print panel can come on screen from a page.** A windowless browser has no window for a
 sheet, so on a Mac Chromium would show AppKit's shared panels as windows of their own (`<input type=color>`, a print
 from `window.print()` or Cmd+P). Every profile has `printing.enabled` false, so a print is never asked for;
 `flare_cef::macos::panels::guard` (run by `app::install` and `app::install_for_app`, before CEF starts) replaces the
@@ -1092,14 +1092,14 @@ panel at all (measured: 0 kept off, 0 windows); the guard stays for the build th
 no-native-pickers check (a trusted click on a colour input and `window.print()`: no window, the print returns at once,
 printing read back false) and `the_panels_are_replaced_on_their_own_classes_and_nothing_else`. Source: macOS port phase
 5 review (2026-11-08).
-262. **macOS: a popup or new-tab request loads only a web address the navigation rule allows.** CEF's `on_before_popup`
+266. **macOS: a popup or new-tab request loads only a web address the navigation rule allows.** CEF's `on_before_popup`
 and `on_open_urlfrom_tab` load the target into the view's own main frame (`NewWindows::SameView`). `load_url` of a
 `javascript:` address runs it in the top frame without a navigation, so the browse wall never sees it: a cross-origin
 frame could run script in the page above it. `popup_target_allowed` lets only `http`/`https` through, and only what the
 view's `NavRule` allows for the main frame; `data:`, `file:`, `chrome:`, `devtools:`, `blob:` and every other scheme
 are dropped. Held by `a_popup_loads_only_a_web_address_the_navigation_rule_allows`. Source: commit security review of
 phase 5 (2026-11-08).
-300. **macOS: the dictation link is a Unix socket only this user can reach, with the pipe's handshake on top.**
+304. **macOS: the dictation link is a Unix socket only this user can reach, with the pipe's handshake on top.**
 `link_pipe` is `<per-user temp folder>/flare-dictation/<24 hex of the key's hash>.sock` (the temp folder from
 `confstr(_CS_DARWIN_USER_TEMP_DIR)`); the folder is made 0700 and a service refuses to start in one that is not a real
 folder of this user's with no group or other bits; the socket is mode 0600; one service per name (an exclusive `flock`
@@ -1111,7 +1111,7 @@ leave it 0644). The protocol (`link.rs`: key, nonces, proofs, 64 KiB lines, the 
 is the same code on both systems, only `Event`, `Conn`, `connect` and the acceptor are per system
 (`macos/link_sock.rs`). Held by every test of `crates/flare-dictation/tests/link.rs` (no longer Windows-only), its
 `unix_socket` module and `link::sock::tests`. Source: macOS port phase 7 (2026-11-09).
-301. **macOS: microphone access is read, never asked for, and access that is off opens nothing.** Flare reads the
+305. **macOS: microphone access is read, never asked for, and access that is off opens nothing.** Flare reads the
 authorization with `+[AVCaptureDevice authorizationStatusForMediaType:]` only (no `requestAccess`, held by a scan in
 `privacy.rs`); off or restricted is `OpenError::Denied` before any CoreAudio call (macOS would hand a denied app
 silence, which would read as "Heard nothing"); never asked lets the open go ahead, and the system's own question then
@@ -1121,7 +1121,7 @@ microphones and when a Test is refused; the pill keeps Prism Terminal's words. H
 `access_that_is_off_refuses_before_any_device_is_touched`, `the_authorization_status_means_what_apple_says`,
 `reading_the_access_asks_nothing_and_answers`, `access_that_is_off_names_the_settings_pane_and_nothing_else_is_a_problem`
 and `the_mac_microphone_records_from_input_only_and_never_asks_by_itself`. Source: macOS port phase 7 (2026-11-09).
-302. **macOS: the microphone is an input queue on an input device, 16 kHz mono by the shared resampler.** `macos/mic.rs`
+306. **macOS: the microphone is an input queue on an input device, 16 kHz mono by the shared resampler.** `macos/mic.rs`
 lists the HAL's devices with input streams by UID (opening none), opens an `AudioQueue` input on the chosen UID or on
 the default input read at that open (so a new default is followed at the next press, as on Windows), mono `f32` at the
 device's nominal rate in 50 ms buffers (800 samples at 16 kHz from 48 or 44.1 kHz, nothing lost between buffers), and
@@ -1130,12 +1130,12 @@ gone, the file seam and the async open are the Windows code. Held by `the_c_layo
 `os_statuses_map_to_the_open_outcomes`, `a_device_rate_the_resampler_cannot_take_becomes_48_khz`, the shared
 `mic::tests`, and by hand `the_real_default_microphone_lists_and_records_a_second` (ignored). Source: macOS port phase 7
 (2026-11-09).
-303. **Dictation runs end to end with only the device faked, on both systems.** A 48 kHz WAV played through
+307. **Dictation runs end to end with only the device faked, on both systems.** A 48 kHz WAV played through
 `MicSource::File` in real time reaches the controller, the final pass is that clip at 16 kHz (its pitch kept), and the
 paste is the fake engine's words cleaned plus one space, into the tab in front at the start, never a newline. Held by
 `a_wav_played_as_the_microphone_is_heard_resampled_and_pasted_into_the_tab_in_front`
 (`crates/flare-dictation/tests/pipeline.rs`). Source: macOS port phase 7 (2026-11-09).
-304. **macOS: the dictation key from any app asks for no permission, and a chord needs none.** A binding that ends in
+308. **macOS: the dictation key from any app asks for no permission, and a chord needs none.** A binding that ends in
 a key (F9, Ctrl+Shift+D) is a Carbon `RegisterEventHotKey` on the main thread (it swallows the key system-wide and
 reports press and release with no permission). A modifier binding (the default Ctrl+Cmd, Right Option) needs the
 key-up and "another key", so it is a LISTEN-ONLY `CGEventTap` on the hook thread, made only after
@@ -1149,7 +1149,7 @@ from any app" row's sub names System Settings > Privacy & Security > Input Monit
 `the_settings_problem_names_input_monitoring_only_for_a_modifier_key_without_it`,
 `what_stops_dictating_from_any_app_replaces_the_rows_sub_only_while_it_is_on` and
 `the_mac_key_hook_listens_only_posts_nothing_and_never_asks_by_itself`. Source: macOS port phase 7 (2026-11-09).
-305. **macOS: the hook's lines are the Windows hook's lines.** Carbon's press is the binding's modifiers down, then its
+309. **macOS: the hook's lines are the Windows hook's lines.** Carbon's press is the binding's modifiers down, then its
 key down (a press while held is the key's repeat); its release is the key up, then the modifiers up, so the shared
 `KeyFeed` and reducer decide as on Windows. The tap reports a binding modifier by its side's device bit (Right Option is
 not Left Option), says only `Other` (never which key) for any other key, Caps Lock or Fn going down while a binding key
@@ -1167,7 +1167,7 @@ lets the keys and the lock go, and an earlier owner's let-go never removes a lat
 `a_binding_this_way_cannot_serve_says_failed_once_and_lets_everything_go` and
 `a_chord_another_app_holds_or_a_tap_that_cannot_be_made_is_failed` (`crates/flare-dictation/src/macos/keyhook.rs`).
 Source: macOS port phase 7 (2026-11-09).
-306. **macOS: a binding is named and checked as a Mac key.** The stored binding is the same on both systems (W3C codes
+310. **macOS: a binding is named and checked as a Mac key.** The stored binding is the same on both systems (W3C codes
 by position): Meta is Command and Alt is Option, so AltGr's key, Right Alt, is Right Option. Settings names it the Mac
 way ("Right Option", Control+Command as the symbols of the phase 3 key table); the capture and the stored-key reading
 refuse Option with a key (it types a character on a Mac), the Command chords the Mac or Flare own (Cmd+C V W T F Q H M
@@ -1177,7 +1177,7 @@ with such a key says so on the row. Windows names and checks are unchanged. Held
 `on_a_mac_a_key_that_types_or_a_command_chord_the_mac_owns_is_refused` (`crates/flare-dictation/src/hotkey.rs`),
 `every_binding_key_maps_to_the_mac_key_in_its_place_and_back` and `a_key_captured_from_the_page_is_stored_and_drawn`.
 Source: macOS port phase 7 (2026-11-09).
-307. **macOS: media pause is off, with the reason, because no public API can do it.** What another app is playing is
+311. **macOS: media pause is off, with the reason, because no public API can do it.** What another app is playing is
 known only to MediaRemote, private and closed to third-party apps since macOS 15.4; `MPRemoteCommandCenter` and
 `MPNowPlayingInfoCenter` are an app's own player; the media key only toggles (with nothing playing it would start
 music); scripting each player asks for Automation. So the Mac has no media port (nothing is ever paused), and the
@@ -1185,7 +1185,7 @@ music); scripting each player asks for Automation. So the Mac has no media port 
 player and resume only that.", even when an import stored it on. Held by
 `where_media_cannot_be_paused_the_switch_is_off_and_says_why` (`crates/flare-settings/src/page/dictation.rs`) and the
 media tests. Source: macOS port phase 7 (2026-11-09).
-308. **macOS: no engine child runs outside the reaper.** The Windows kill-on-close job is, on a Mac, a process group
+312. **macOS: no engine child runs outside the reaper.** The Windows kill-on-close job is, on a Mac, a process group
 per child plus one reaper (`crates/flare-dictation/src/macos/job.rs`): every engine spawn calls `job::isolate`
 (`process_group(0)`, a no-op on Windows) before `spawn` and `job.assign` after it; `Job::new` starts `/bin/sh` with the
 fixed `REAPER` program, a clean environment and a pipe on stdin; `assign` writes `+ <pid>` (and `- <pid>` for each
@@ -1196,7 +1196,7 @@ own. Held by `job::tests` (a child, a grandchild, an owner killed with `SIGKILL`
 garbage on the pipe), `audio_reaches_the_engine_only_over_loopback_and_pipes_on_both_systems` (isolate, then spawn,
 then assign in each spawner) and `crates/flare-dictation/tests/engine.rs` and `host.rs`, which now run on both
 systems. Source: macOS port phase 7 (2026-11-09).
-309. **macOS: the bundled engine is the Metal engine, and there is no pack.** Every Mac Flare targets is Apple Silicon,
+313. **macOS: the bundled engine is the Metal engine, and there is no pack.** Every Mac Flare targets is Apple Silicon,
 whose GPU always has Metal, so `gpu::BUILT_IN_GPU` is true on a Mac (nothing is probed) and `EngineConfig::bundled_gpu`
 follows it: the bundled folder is first started as the GPU engine (no `-ng`), and the once-and-for-good fall back of
 Windows runs the same folder on the CPU (`-ng` to whisper-server and parakeet-cli, `0` to the host). The NVIDIA pack is
@@ -1205,12 +1205,12 @@ the Recommended pick is Large v3 Turbo (`gpu::gpu_ready`), and no model row says
 (`DictationData::gpu_built_in`). Windows is unchanged: `bundled_gpu` is false there. Held by the Metal tests of
 `tests/engine.rs`, `a_large_model_never_warns_where_the_engine_has_a_gpu_of_its_own`, the gpu and catalog tests and
 `the_shipped_catalogue_opens_and_the_failure_texts_are_the_parity_line`. Source: macOS port phase 7 (2026-11-09).
-310. **macOS: models live in `~/Library/Application Support/FlareDictation`, never in the temp folder.** With no
+314. **macOS: models live in `~/Library/Application Support/FlareDictation`, never in the temp folder.** With no
 `LOCALAPPDATA` the store used to fall back to the temp folder, which the system empties. On a Mac `default_root` is
 `flare_win::paths::local_app_data()` (`~/Library/Application Support`) plus the same folder name as on Windows, apart
 from the profile so a profile reset never deletes gigabytes of models. The neighbour app's models folder is a Windows
 folder and is not looked for on a Mac. Source: macOS port phase 7 (2026-11-09).
-311. **macOS: the engine is built from one pinned source, never fetched as a binary.** whisper.cpp's b5130 release has
+315. **macOS: the engine is built from one pinned source, never fetched as a binary.** whisper.cpp's b5130 release has
 no macOS program, so `tools/build-whisper-macos.sh` fetches commit `927cfce3...` by its hash, refuses to build unless
 the commit AND its tree hash are the pinned ones (`catalog::ENGINE_MACOS`), builds whisper-server and parakeet-cli with
 Metal embedded, OpenMP, KleidiAI and curl off, keeps only the libraries the programs link to under their versioned
@@ -1221,66 +1221,66 @@ fetches the catalogue's tiny model by size and SHA-256 and runs `tests/metal_rea
 `the_macos_build_pins_match_the_catalogue`, `the_macos_build_checks_the_commit_and_tree_before_it_builds_and_fetches_nothing_unpinned`,
 `the_macos_ci_builds_the_pinned_engine_and_fetches_the_catalogues_tiny_model` and
 `the_mac_host_picks_each_library_by_its_own_stem_and_version`. Source: macOS port phase 7 (2026-11-09).
-312. **macOS: what Flare fetches carries no quarantine, and audio stays on this machine.** A model is written by Flare
+316. **macOS: what Flare fetches carries no quarantine, and audio stays on this machine.** A model is written by Flare
 itself through ureq and `std::fs`, so it has no `com.apple.quarantine` flag and Gatekeeper never judges it; it is data,
-never made executable, and runs only after its size and SHA-256 match. The engine is built (rule 311) and ships inside
+never made executable, and runs only after its size and SHA-256 match. The engine is built (rule 315) and ships inside
 the signed bundle (phase 8), never downloaded on a Mac. The clip reaches the engine only over 127.0.0.1 (the one
 address dialled and the one the server is told to listen on) and stdin (`-f -`), the Mac engine is built without curl,
 and no engine file writes audio to disk. Held by `a_fetched_model_carries_no_quarantine_flag_and_is_not_executable`,
 `audio_reaches_the_engine_only_over_loopback_and_pipes_on_both_systems` and `no_audio_is_written_to_disk` (now also
 over `macos/job.rs` and the host). Source: macOS port phase 7 (2026-11-09).
-313. **macOS: a tap whose Input Monitoring is revoked ends and lets the key go.** While the listen-only tap runs, `tick`
+317. **macOS: a tap whose Input Monitoring is revoked ends and lets the key go.** While the listen-only tap runs, `tick`
 reads `CGPreflightListenEventAccess` (never asks) every 10 ticks (500 ms). When it reads false the tap ends with
 `Failed`, the hook lets go of its hot keys and the `flock`, and the owner re-arms a hook that waits for the permission
 without the lock, so the window reads the key again instead of a deaf tap holding it for good. Held by
 `input_monitoring_revoked_while_the_tap_runs_ends_it_lets_the_lock_go_and_waits_again`. Source: phase 7 review
 (2026-11-09).
-314. **macOS: a pid leaves the reaper before its child is reaped.** Every engine child (whisper-server, parakeet-cli,
+318. **macOS: a pid leaves the reaper before its child is reaped.** Every engine child (whisper-server, parakeet-cli,
 the Parakeet host) is waited only through `job.member()`, whose `try_wait` and `wait` read the exit with `waitid(...,
 WNOWAIT)`, write `- <pid>` while the child is still a zombie, and only then reap it. The reaper therefore never holds a
 pid the kernel may hand to another process, so its `kill -9` at Flare's end can never hit an unrelated process. A
 source scan holds that no assigned child is waited with a bare `child.try_wait()` or `child.wait()`. Windows' `Member`
 is the plain wait. Held by `a_child_waited_through_its_member_is_withdrawn_before_it_is_reaped` and
 `audio_reaches_the_engine_only_over_loopback_and_pipes_on_both_systems`. Source: phase 7 review (2026-11-09).
-315. **macOS: the reaper reaps even when its pipe leaked.** std creates the reaper's pipe and then sets close-on-exec,
+319. **macOS: the reaper reaps even when its pipe leaked.** std creates the reaper's pipe and then sets close-on-exec,
 not atomically, so a process another thread spawns at that moment can inherit the write end and keep the pipe open
 after Flare dies. The reaper therefore also watches its parent (`kill -0 $PPID` every 2 s) and reaps when Flare is
 gone. It answers `ok` to every `+` and `-` line and Flare waits for the answer, so a pid is held before `assign`
 returns and a reap the watcher starts never misses a line still in the pipe. SIGPIPE is ignored so an answer to a dead
 Flare cannot end the reaper first. Held by `the_children_die_with_their_killed_owner_even_when_another_process_holds_the_pipe`
 (it fails without the watcher) and the other `macos/job.rs` tests. Source: phase 7 review (2026-11-09).
-316. **macOS: a hot key register never stalls a quit.** Quit and switch-off run on the main thread and join the hook,
+320. **macOS: a hot key register never stalls a quit.** Quit and switch-off run on the main thread and join the hook,
 while a register waits for the main queue. `await_main` reads the answer in 20 ms slices and gives up as soon as the
 hook is no longer wanted (the queued `unregister` undoes a late register), instead of waiting the full 2 s. Held by
 `a_register_the_main_thread_cannot_answer_gives_up_as_soon_as_the_hook_is_stopped`. Source: phase 7 review
 (2026-11-09).
-317. **macOS: the system's Control chords are never a binding.** Without Shift and Option, Control+Command+Q (Lock
+321. **macOS: the system's Control chords are never a binding.** Without Shift and Option, Control+Command+Q (Lock
 Screen), Control+Command+F (full screen), Control+Command+Space (emoji picker) and Control with an arrow key (Spaces,
 Mission Control, App Expose) are refused by `usable_hotkey_on(KeyOs::Mac, ..)`: the system wins over a Carbon hot
 key, so such a binding would show as working and never fire or lock the screen. Windows is unchanged. Held by
 `on_a_mac_a_key_that_types_or_a_command_chord_the_mac_owns_is_refused`. Source: phase 7 review (2026-11-09).
-318. **The microphone row says the access as it is now.** A refused Test says `denied_text(mic::access())`: on a Mac
+322. **The microphone row says the access as it is now.** A refused Test says `denied_text(mic::access())`: on a Mac
 "restricted" for a profile's restriction, else the "off" line with the pane; Windows keeps "Microphone access was
 refused.". Each listing replaces a line that was only the access (off or restricted) with the new reading, so it goes
 once access is allowed, and leaves a Test's own failure. Held by
 `a_refused_test_names_the_access_as_it_is_and_a_listing_clears_access_that_came_back`. Source: phase 7 review
 (2026-11-09).
-319. **macOS: this user's opened-up link folder is made private again.** When the link's folder is a real folder of
+323. **macOS: this user's opened-up link folder is made private again.** When the link's folder is a real folder of
 this user with group or other bits set, it is opened with `O_NOFOLLOW | O_DIRECTORY`, checked again on the
-descriptor and `fchmod`ed to 0700, then the folder rule (rule 300) is checked as before. A symlink or another user's
+descriptor and `fchmod`ed to 0700, then the folder rule (rule 304) is checked as before. A symlink or another user's
 folder is still refused and never changed. Held by
 `this_users_own_folder_left_open_is_made_private_and_a_symlink_is_still_refused`. Source: phase 7 review (2026-11-09).
-320. **The child's PATH is changed only on Windows.** `runtime_path` puts the CPU engine's folder in front of PATH
+324. **The child's PATH is changed only on Windows.** `runtime_path` puts the CPU engine's folder in front of PATH
 with `;` for a GPU folder on Windows (DLLs are found on PATH). A Mac finds libraries by `@loader_path` and joins PATH
 with `:`, so nothing is added there. Held by `the_runtime_goes_on_path_only_on_windows_and_only_for_another_folder`.
 Source: phase 7 review (2026-11-09).
-321. **macOS: the engine folder is reused only with exactly its stamped files.** `engine_ok` in
+325. **macOS: the engine folder is reused only with exactly its stamped files.** `engine_ok` in
 `tools/build-whisper-macos.sh` requires the stamp's commit, every listed file's SHA-256 AND that the folder holds no
 file the stamp does not list (a library planted beside an `@loader_path` rpath would load), so anything else means a
 rebuild. The stamp lists neither `.source` nor its own `.source.tmp` (which used to be listed and then missing, so the
 check never passed). Held by `the_macos_engine_folder_is_reused_only_when_it_holds_exactly_the_stamped_files`, which
 runs the script's own `engine_ok` and stamp block in bash. Source: phase 7 review (2026-11-09).
-322. **A media worker that dies mid-call closes its queue before its reply.** `run_worker` owns the request queue and
+326. **A media worker that dies mid-call closes its queue before its reply.** `run_worker` owns the request queue and
 runs each port call under `catch_unwind`; when a call panics it drops the queue first and the reply second. The caller
 learns of the death from the reply, so the next request finds the queue closed and starts a fresh worker. Before,
 a request sent while the dead worker was still unwinding went into its queue and was answered empty as well

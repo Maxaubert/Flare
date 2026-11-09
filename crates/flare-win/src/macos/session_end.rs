@@ -14,7 +14,7 @@
 //!
 //! The end handler runs once for the app's end, and again for every power-off notice before it
 //! (flushing twice is harmless; a cancelled log out must leave the final save armed, regression rule
-//! 235). Every observer is a block on a
+//! 239). Every observer is a block on a
 //! notification centre with no queue, so it runs on the thread that posts (AppKit posts these on
 //! the main thread). There is no hidden window as on Windows: `hwnd` is 0.
 

@@ -3,7 +3,7 @@
 //! "the resident Parakeet host", 3 tests), plus the rules N6 and N7 that its three host tests do not
 //! pin. The stand-ins are `fake-parakeet-cli` and `fake-parakeet-host`, started through the engine's
 //! `command` seam (the exe's file name says which one is wanted).
-//! Both systems since macOS port phase 7 (rule 308): the reaping job is the Job Object on Windows and a process
+//! Both systems since macOS port phase 7 (rule 312): the reaping job is the Job Object on Windows and a process
 //! group per child plus a reaper on macOS; the engine's file names carry `.exe` on Windows only.
 
 use std::path::{Path, PathBuf};

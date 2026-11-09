@@ -63,16 +63,16 @@ Total: about 3 months to full parity at a steady pace.
 
 Phase 5 progress: step 1 (2026-11-08) is the engine, `crates/flare-cef`: CEF 156.0.14 pinned and cached in
 `~/Library/Caches/flare-cef`, the dev bundle with its five helpers (ad hoc), the CEF `NSApplication`, windowless
-pixels, headless; `agent_job`'s 11 DevTools methods and the runaway-eval timeout proved on a Mac (rules 247 to 249,
+pixels, headless; `agent_job`'s 11 DevTools methods and the runaway-eval timeout proved on a Mac (rules 251 to 253,
 `docs/parity.md` "macOS port, phase 5"). Step 2 (2026-11-08) is the web panel: `WebBackend` on CEF
 (`crates/flare-web/src/macos/host.rs`), the page as a picture in its box with the window's pointer, wheel, keys and
 input method handed over, the walls decided in `flare_web::walls` and re-proved with the spike's observers, the real
-app's `NSApplication` made CEF's kind before winit (rules 250 to 253). Step 3 (2026-11-08) re-proves the walls behind Flare's proxy against
+app's `NSApplication` made CEF's kind before winit (rules 254 to 257). Step 3 (2026-11-08) re-proves the walls behind Flare's proxy against
 the spike's proxy page (every spelling of this machine and its network, http, https, ws and wss: 0 hits, 0 accepts, 0
 mDNS queries; the web panel control leaks) and runs the real `agent_job` through `WebBackend::cdp` of the CEF host, with
-the agent's editing chords given the command a Mac's text system would make of them (rules 254 and 255).
-A review of the three steps (2026-11-08) proved six defects, fixed with checks that fail without the fix (rules 256 to
-261): a profile per mini-app (a shared worker read another app's files), Flare's switches only (the command line
+the agent's editing chords given the command a Mac's text system would make of them (rules 258 and 259).
+A review of the three steps (2026-11-08) proved six defects, fixed with checks that fail without the fix (rules 260 to
+265): a profile per mini-app (a shared worker read another app's files), Flare's switches only (the command line
 opened a DevTools port), held downloads staged outside `~/Downloads`, no call to Google from the engine with no page
 asking, the mock keychain written down as an accepted gap until phase 8, and no colour or print panel from a page.
 
@@ -82,27 +82,27 @@ by the shared resampler, a lost device reported once), with the access read and 
 refuses before any device is touched and Settings names the System Settings pane (`NSMicrophoneUsageDescription` is
 phase 8's Info.plist). The link between copies is a Unix socket in a 0700 folder under the per-user temp folder with
 the named pipe's handshake, a lock per name and `getpeereid` on both ends (`macos/link_sock.rs`), and every link test
-now runs on both systems; a WAV through the file seam drives the controller end to end with a fake engine (rules 300
-to 303, `docs/parity.md` "macOS port, phase 7"). Step 2 (2026-11-09) is the key from any app (`macos/keyhook.rs`): a
+now runs on both systems; a WAV through the file seam drives the controller end to end with a fake engine (rules 304
+to 307, `docs/parity.md` "macOS port, phase 7"). Step 2 (2026-11-09) is the key from any app (`macos/keyhook.rs`): a
 chord that ends in a key is a Carbon hot key (no permission), a modifier binding (the default Ctrl+Cmd, Right Option)
 a listen-only event tap made only once Input Monitoring reads as granted, never asked for, with Settings naming the
 pane meanwhile and the window reading the key; the picker's digits and Esc are Carbon hot keys while switched on; one
 copy holds the key by `flock`. Bindings are named and checked as Mac keys (Right Alt is Right Option). Nothing is typed
 into other apps (Windows does not either), so no Accessibility; media pause is off on the Mac with its reason, as no
-public API can pause another app's player (rules 304 to 307). Step 3 (2026-11-09) is the reaping job and the engines
+public API can pause another app's player (rules 308 to 311). Step 3 (2026-11-09) is the reaping job and the engines
 with Metal: each engine child in a process group of its own, handed to one `/bin/sh` reaper that kills every group it
 holds when its pipe closes, so also when Flare is killed with `SIGKILL` (`macos/job.rs`), and every engine and host
 test now runs on both systems; the bundled engine is whisper.cpp built from the commit and tree tag b5130 names (the
 release has no macOS program) with Metal embedded and only system links (`tools/build-whisper-macos.sh`, built and
 given a real pass in CI), run first on Metal and once for good on the CPU (`-ng`), with no NVIDIA pack, Turbo as the
 Recommended pick, the Parakeet host loading the built `libggml` and `libparakeet`, and models in
-`~/Library/Application Support/FlareDictation` with no quarantine flag (rules 308 to 312). The engine goes into the
+`~/Library/Application Support/FlareDictation` with no quarantine flag (rules 312 to 316). The engine goes into the
 bundle in phase 8. A review of steps 1 to 3 (2026-11-09) tightened them: a tap whose Input Monitoring is revoked
 ends and lets the lock go, a register gives up as soon as the hook stops (no 2 s stall at quit), the reaper withdraws a
 pid before it is reaped, answers every line and watches Flare's pid, the system's Control chords are refused as a
 binding, the microphone row says the access as it is now, an opened-up link folder of this user is made private
 again, and the engine folder is reused only with exactly its stamped files, and a media worker that crashes closes its queue before
-its reply (a test flake, shared with Windows) (rules 313 to 322). Next: cues and the
+its reply (a test flake, shared with Windows) (rules 317 to 326). Next: cues and the
 widget.
 
 ## Known risks

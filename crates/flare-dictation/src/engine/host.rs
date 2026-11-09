@@ -118,7 +118,7 @@ impl Host {
             .stderr(Stdio::piped());
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
-        // macOS: a process group of its own, so the reaper ends the child and all it starts (rule 308).
+        // macOS: a process group of its own, so the reaper ends the child and all it starts (rule 312).
         crate::job::isolate(&mut cmd);
         for (k, v) in env {
             cmd.env(k, v);

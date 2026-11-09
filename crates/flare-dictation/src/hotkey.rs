@@ -818,7 +818,7 @@ pub fn usable_hotkey_on(os: KeyOs, h: &Hotkey, app_keys: &[Hotkey]) -> bool {
         return false;
     }
     // The system's own Control chords win over a Carbon hot key: Ctrl+Cmd+Q locks the screen, Ctrl+Cmd+F is full
-    // screen, Ctrl+Cmd+Space the emoji picker, Ctrl+arrows are Spaces, Mission Control and App Expose (rule 317).
+    // screen, Ctrl+Cmd+Space the emoji picker, Ctrl+arrows are Spaces, Mission Control and App Expose (rule 321).
     if h.ctrl && !h.alt && !h.shift {
         if h.meta && matches!(h.code.as_str(), "KeyQ" | "KeyF" | "Space") {
             return false;

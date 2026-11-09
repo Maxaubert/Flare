@@ -10,7 +10,7 @@ use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
 #[cfg(windows)]
 const NVIDIA_VENDOR: u32 = 0x10DE;
 
-/// The bundled engine has a GPU of its own: Metal, on a Mac (rule 309). Every Mac Flare runs on is Apple
+/// The bundled engine has a GPU of its own: Metal, on a Mac (rule 313). Every Mac Flare runs on is Apple
 /// Silicon (aarch64-apple-darwin, macOS 15 or later), and every Apple Silicon GPU has Metal, so nothing is
 /// probed; the engine itself falls back to the CPU once and for good if Metal will not start. No pack exists
 /// on a Mac, so the models the pack is for are fast without one and the Recommended pick follows.

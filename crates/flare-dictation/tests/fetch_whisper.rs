@@ -4,7 +4,7 @@
 use flare_dictation::catalog::{ENGINE, ENGINE_MACOS};
 
 const SCRIPT: &str = include_str!("../../../tools/fetch-whisper.ps1");
-/// The macOS engine's build (port phase 7, rule 311).
+/// The macOS engine's build (port phase 7, rule 315).
 const MAC_SCRIPT: &str = include_str!("../../../tools/build-whisper-macos.sh");
 
 /// The single-quoted value of `NAME='...'` in the macOS script (the whole line, so a changed shape fails here).
