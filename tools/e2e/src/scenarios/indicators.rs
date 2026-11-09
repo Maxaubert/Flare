@@ -538,10 +538,24 @@ pub fn attention(ctx: &mut Ctx) -> Result<(), String> {
             covered(&foot_row(&s, k, r), ground, 12),
         )
     };
-    let (thick, share) = line(ctx, &mut app, "question", 0);
+    // A question's line breathes: a picture at its faintest shows no line, so it is looked at over a breath (up
+    // to six pictures, 250 ms apart) and the clearest counts (the Mac runner caught it at 0 px once; rule 346).
+    let want = thick_rows(3.0, k);
+    let mut best = (0usize, 0.0f32);
+    for attempt in 0..6 {
+        let got = line(ctx, &mut app, "question", 0);
+        if (got.0 == want && got.1 > best.1) || (best.0 != want && got.0 > best.0) {
+            best = got;
+        }
+        if (best.0 == want && best.1 > 0.9) || attempt == 5 {
+            break;
+        }
+        hold(ctx, 250);
+    }
+    let (thick, share) = best;
     let m0 = mark(&mut app, 0);
     ctx.ok(
-        m0["kind"] == json!("line") && thick == thick_rows(3.0, k) && share > 0.9,
+        m0["kind"] == json!("line") && thick == want && share > 0.9,
         format!(
             "as a line along the bottom (kind {}, {thick} px thick, {:.0}% of the foot)",
             m0["kind"],
