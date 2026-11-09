@@ -24,6 +24,24 @@ fn log_dir(profile: &Path) -> PathBuf {
 }
 
 /// Every line the log holds now, in file order.
+/// macOS: the five busiest processes now (`ps`), for a quiet check that was not quiet. Elsewhere nothing.
+fn busiest_processes() -> String {
+    if !cfg!(target_os = "macos") {
+        return String::new();
+    }
+    let out = std::process::Command::new("ps")
+        .args(["-A", "-r", "-o", "%cpu=,comm="])
+        .output();
+    match out {
+        Ok(o) => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            let top: Vec<&str> = text.lines().take(5).map(str::trim).collect();
+            format!("; busiest: {}", top.join(" | "))
+        }
+        Err(_) => String::new(),
+    }
+}
+
 fn lines(profile: &Path) -> Vec<Line> {
     read_lines(&log_dir(profile))
 }
@@ -354,7 +372,17 @@ fn first_session(ctx: &mut Ctx, app: &mut App, profile: &Path) -> Result<(), Str
             prompt_timeout(Shell::PowerShell),
         );
     }
-    pause(ctx, 1_000);
+    // A Mac runner has three cores, and a pwsh that has drawn its prompt still loads modules for a few seconds:
+    // the UI thread then waits for a core with nothing of its own to do (main-lag lines with nothing in flight,
+    // rule 348). The quiet is measured once the shells are quiet too.
+    pause(
+        ctx,
+        if cfg!(target_os = "macos") {
+            8_000
+        } else {
+            1_000
+        },
+    );
     let from = lines(profile).len();
     pause(ctx, 3_000);
     let idle_lines: Vec<_> = lines(profile).into_iter().skip(from).collect();
@@ -373,9 +401,14 @@ fn first_session(ctx: &mut Ctx, app: &mut App, profile: &Path) -> Result<(), Str
                 .collect()
         })
         .collect();
+    let busy = if idle.is_empty() {
+        String::new()
+    } else {
+        busiest_processes()
+    };
     ctx.ok(
         idle.is_empty(),
-        format!("an idle 3 s at the quiet level writes nothing ({idle:?}; {whole:?})"),
+        format!("an idle 3 s at the quiet level writes nothing ({idle:?}; {whole:?}{busy})"),
     );
 
     // PT: run.mjs:5266-5277 A STALL: the UI thread is held for 2.6 s. The watchdog writes one
