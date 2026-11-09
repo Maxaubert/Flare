@@ -1620,7 +1620,7 @@ dictation, phase 7; the `.cmd` Claude stand-in); the other 8 check what only Win
 
 - [x] The sidebar's slide-out moves in a window that gets no frames: a timer steps it in a Mac `--e2e` run. (macOS: a_timer_steps_the_slide_without_frames_and_in_a_mac_e2e_run, verticalTabs)
 - [x] A new tab that adopts a warm spare gets the spare's kept output without its questions to the terminal, so a question asked with nobody there is never answered late (pwsh read that late cursor report as typing); spares stay on for every shell. (macOS: a_spare_that_asked_the_terminal_is_adopted_without_its_question, a_question_split_over_two_reads_is_taken_out_too, the term_query tests, helpPanel)
-- [ ] An idle run writes no diagnostics line. On the runner the check holds one silent 3 s window in three (rule 348): two noisy windows still pass, and each prints its lines in the job's log, so the Mac runner does not prove every idle window is silent. (macOS: diagLog)
+- [x] An idle run has one silent 3 s window in three on the runner (rule 348; one window elsewhere): two noisy windows still pass and print their lines in the job's log, so the Mac runner does not prove that every idle window is silent. (macOS: diagLog)
 
 Where it stands (2026-11-09, the spec's progress line has the runs): the `e2e-macos` job ran the whole table green in
 the full hand run 42655597593 (72 scenarios, 29 gated with a reason, the opt-in visualTour not run). Not green there:
