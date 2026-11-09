@@ -126,14 +126,12 @@ quotes, as the tab's own words (what runs in a tab can set its title). Rust:
 ## The details sheet
 
 The card's info button opens the plugin's details sheet: its logo, name, `version · author`, description, a
-two-column grid of tiles, one per permission its manifest asks for, then its facts (its program, its homepage) and the
-warnings. The card itself lists no permission, so its switch turned ON opens this sheet for a mod that asks for
+two-column grid of tiles, one per permission its manifest asks for, then its facts (its program, its homepage). The card itself lists no permission, so its switch turned ON opens this sheet for a mod that asks for
 anything or names a maker; the sheet's **Turn on** then approves exactly what the sheet lists (the hub refuses a sheet
 drawn before the manifest changed). Only a mod with nothing to approve goes on from the card; off always goes at once.
-A plugin that is on with a panel, and holds `panel`, has **Open <panel title>** in the sheet's foot: its panel in the
-shell tab used last. The warnings follow the person's choices: a permission turned off gives none, and a fill set to
-"Always allow" says it fills with no question. The box is never taller than the window less 24 px above and below: the
-description, the grid and the warnings scroll (the wheel, the arrow and page keys) between the header and the foot. Each
+The sheet has no warning text and no button that opens the panel (2026-11-08): the Access tile says Full control in
+amber, and a plugin that wants its panel opened offers its own item. The box is never taller than the window less 24 px above and below: the
+description and the grid scroll (the wheel, the arrow and page keys) between the header and the foot. Each
 tile's tooltip gives its words and the whole of what it covers (the line on the tile is cut). The tiles come from the
 manifest and Flare's catalog (`flare_mods::grants`), the same for every plugin:
 
@@ -186,7 +184,7 @@ else, and nothing after it is turned off.
 | `agent-looks` | How each agent's tab icon moves while it works (`agents.motion.*`), a motion from Flare's list. | Change how agent icons move while they work | |
 | `fill` | Fill a saved login into a tab's web page after you approve each fill (`browser.fill`, `browser.fill.page`), and ask you for a secret in Flare's own masked field (`secret.ask`). | Fill logins into your web panel | Can type passwords into pages, after you approve each one; with `network`: can send the passwords you type for it to the internet |
 
-The words are `flare_mods::hub::permission_words`, the warnings `permission_warnings`.
+The words are `flare_mods::hub::permission_words`, the warnings `permission_warnings` (the details sheet does not show them).
 
 Rules:
 - Each method family has its own namespace opened by exactly its permission; nothing rides on the open `tabs.list`.
@@ -497,7 +495,7 @@ Flare's own dialog, and the user name, password and code never reach the agent.
   end when the plugin is turned off and when Flare ends. Its stdout and stderr go to `<profile>\plugins-logs\<id>.log`
   (moved to `.log.1` past 1 MB). It hears `tabs`, `agent` and `session` events as a background page would, and the
   `tool` event when it answers its plugin's tools (a plugin with no background page and no panel).
-- A helper runs as you, with full access: it can leave things behind outside Flare, and Settings says so.
+- A helper runs as you, with full access: it can leave things behind outside Flare, and its Access tile says Full control.
 - **On a Mac** (macOS port phase 6, regression rules 284 to 291): the program is `helpers.macos.command`. At start it
   must still resolve inside the folder, carry its owner's execute bit (`chmod +x`; an install from a zip keeps the bit
   the zip gives a file, as `0755`, and always makes the `helpers.macos.command` program `0755`, so a zip made on
@@ -526,7 +524,8 @@ Flare's own dialog, and the user name, password and code never reach the agent.
   reaches `plugins\<id>`.
 - **Installed off.** Where it came from and the hash are recorded in `mods.json` (`installed`); the source goes into
   the approval when you turn it on.
-- **Update** (the card's button): downloads again from the recorded address, or opens the file picker; the zip must
+- **Update** (the card's button): downloads again from the recorded address, or opens the file picker in the folder of
+  the zip it was last installed from (`installed.folder` in `mods.json`, never part of the approval); the zip must
   hold the same id, and an older version is refused ("Remove it first"). A plugin that is on is paused, its views closed
   and its helper stopped and waited for, then the folders are swapped by rename and the old copy goes to the Recycle
   Bin. The same permissions and maker keep it on, as a new generation; more permissions, or another author, homepage,

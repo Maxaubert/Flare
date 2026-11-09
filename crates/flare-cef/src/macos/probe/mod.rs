@@ -5,7 +5,7 @@
 //!
 //! - `paint`: a page with a known colour comes out of `on_paint` as pixels.
 //! - `cdp`: the real `flare_surfaces::agent_job::Job` (the state machine Windows runs) drives look, click, type,
-//!   press, scroll, wait and eval over `SendDevToolsMessage`; every one of the 11 DevTools methods it uses answers
+//!   press, scroll, wait and eval over `SendDevToolsMessage`; every one of the 14 DevTools methods it uses answers
 //!   in Chromium's shapes.
 //! - `runaway`: `Runtime.evaluate`'s timeout stops `while(true){}`, a page function that never returns and a page
 //!   getter set as a trap, and the page answers again afterwards with its state kept (the gap that ruled out
@@ -29,8 +29,9 @@ use crate::macos::engine::{Engine, EngineConfig};
 use crate::macos::view::{View, ViewSize};
 use crate::macos::{app, screen};
 
-/// The 11 DevTools methods `agent_job` sends (the spike's shim answered exactly these).
-pub const AGENT_METHODS: [&str; 11] = [
+/// The 14 DevTools methods `agent_job` sends: the 11 the spike's shim answered, and the three of the covered-click
+/// check (rule 228: the target resolved, the hit test called on it, the object let go).
+pub const AGENT_METHODS: [&str; 14] = [
     "DOM.enable",
     "Page.getLayoutMetrics",
     "Accessibility.getFullAXTree",
@@ -42,6 +43,9 @@ pub const AGENT_METHODS: [&str; 11] = [
     "Input.dispatchMouseEvent",
     "Input.dispatchKeyEvent",
     "Input.insertText",
+    "DOM.resolveNode",
+    "Runtime.callFunctionOn",
+    "Runtime.releaseObject",
 ];
 
 /// The view every scenario uses: the spike's 983x700 at device scale 2.
@@ -382,7 +386,11 @@ fn shape(raw: &BTreeMap<String, Result<Value, String>>, m: &str) -> (bool, Value
                     .any(|n| n.pointer("/name/value").is_some_and(Value::is_string));
             (ok, json!({"nodes": nodes.len(), "first": nodes.first()}))
         }
-        "Runtime.evaluate" => (
+        "DOM.resolveNode" => (
+            v.pointer("/object/objectId").is_some_and(Value::is_string),
+            v.clone(),
+        ),
+        "Runtime.evaluate" | "Runtime.callFunctionOn" => (
             v.pointer("/result/type").is_some_and(Value::is_string),
             v.clone(),
         ),
@@ -567,7 +575,7 @@ fn cdp(engine: &Engine, srv: &server::Server, rep: &mut Report) -> Result<(), St
         json!({"value": job_text(&e1), "promise": job_text(&e2), "throw": job_text(&e3)}),
     );
 
-    // The 11 methods, each sent, each answered, each in Chromium's shape.
+    // The 14 methods, each sent, each answered, each in Chromium's shape.
     let mut shapes = serde_json::Map::new();
     let mut all_ok = true;
     for m in AGENT_METHODS {
@@ -585,9 +593,9 @@ fn cdp(engine: &Engine, srv: &server::Server, rep: &mut Report) -> Result<(), St
         .filter(|m| !AGENT_METHODS.contains(&m.as_str()))
         .collect();
     rep.check(
-        "cdp.eleven-methods",
+        "cdp.agent-methods",
         all_ok && extra.is_empty(),
-        "agent_job's 11 DevTools methods all went through SendDevToolsMessage and answered in Chromium's shapes",
+        "agent_job's 14 DevTools methods all went through SendDevToolsMessage and answered in Chromium's shapes",
         json!({"methods": shapes, "failed": d.failed, "other_methods": extra}),
     );
     let s = view.state();

@@ -50,6 +50,9 @@ pub mod code {
     /// The user took over the page (a click or a key of their own in it) while the call ran. The
     /// page was left as it is; look again before going on.
     pub const INTERRUPTED: &str = "interrupted";
+    /// A click named an element something else is on top of. Nothing was pressed; the message names what covers
+    /// it, and that text comes from the page.
+    pub const COVERED: &str = "covered";
     /// What the call would replace is someone else's: a plugin opens its panel only on a tab whose panel is closed
     /// or shows the plugin already (plugins phase 3).
     pub const BUSY: &str = "busy";

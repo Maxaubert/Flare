@@ -39,6 +39,8 @@ pub struct StagedInstall {
     pub staged: Staged,
     /// The `https` address it was downloaded from; None for a file.
     pub source: Option<String>,
+    /// The folder of the file it came from; None for a download.
+    pub folder: Option<String>,
     /// A plugin of the same id is installed.
     pub replaces: bool,
     /// That plugin is on (its views and helper are stopped before the commit).
@@ -124,6 +126,11 @@ impl Hub {
         Ok(StagedInstall {
             staged,
             source: source.map(str::to_string),
+            folder: source
+                .is_none()
+                .then(|| zip.parent().and_then(Path::to_str).map(str::to_string))
+                .flatten()
+                .filter(|f| !f.is_empty()),
             replaces,
             was_on,
         })
@@ -183,12 +190,13 @@ impl Hub {
         };
         let record = Identity {
             source: s.source.clone(),
+            folder: s.folder.clone(),
             hash: Some(hash.clone()),
             ..Identity::default()
         };
-        if let Err(why) =
-            self.with_store(|st| st.set_installed(&id, s.source.as_deref(), Some(&hash)))
-        {
+        if let Err(why) = self.with_store(|st| {
+            st.set_installed(&id, s.source.as_deref(), s.folder.as_deref(), Some(&hash))
+        }) {
             log::warn!("where plugin {id} came from was not saved: {why}");
         }
         {

@@ -214,7 +214,7 @@ fn install_from_file_opens_the_picker_and_a_cancel_changes_nothing() {
     let answers: Rc<RefCell<Vec<Option<PathBuf>>>> = Rc::new(RefCell::new(vec![None, Some(zip)]));
     {
         let answers = answers.clone();
-        f.ctl.borrow_mut().set_pick_zip(Rc::new(move |answer| {
+        f.ctl.borrow_mut().set_pick_zip(Rc::new(move |_, answer| {
             answer(answers.borrow_mut().remove(0))
         }));
     }
@@ -237,6 +237,38 @@ fn install_from_file_opens_the_picker_and_a_cancel_changes_nothing() {
     mods_msg(&f, ModsMsg::InstallUrl { url: "  ".into() });
     assert!(!installing(&f));
     assert!(note(&f).unwrap().1.contains("Paste the https address"));
+}
+
+#[test]
+fn update_opens_the_picker_in_the_folder_the_zip_came_from_and_a_restart_keeps_it() {
+    let f = fx();
+    let w = world(&f, |_| {});
+    recycle_by_deleting(&w);
+    let from = f.dir.path().join("downloads");
+    std::fs::create_dir_all(&from).unwrap(); // sync-ok: test code only, never the app
+    let z = zip_at(&from, "a.zip", &plugin_json("1.0.0", "[]", ""));
+    install_file(&f, z, None);
+    let asked: Rc<RefCell<Vec<Option<PathBuf>>>> = Rc::default();
+    {
+        let asked = asked.clone();
+        f.ctl
+            .borrow_mut()
+            .set_pick_zip(Rc::new(move |folder, answer| {
+                asked.borrow_mut().push(folder);
+                answer(None);
+            }));
+    }
+    mods_msg(&f, ModsMsg::Update { id: "demo".into() });
+    f.pump();
+    assert_eq!(asked.borrow().as_slice(), [Some(from.clone())]);
+    assert!(!installing(&f), "a cancel starts nothing");
+    // A fresh install has no plugin to remember a folder for.
+    mods_msg(&f, ModsMsg::InstallFile);
+    f.pump();
+    assert_eq!(asked.borrow().last().cloned(), Some(None));
+    let saved = flare_mods::enabled::EnabledStore::load(&w.state_file).installed("demo");
+    assert_eq!(saved.folder.as_deref(), from.to_str());
+    assert_eq!(saved.source, None, "a folder is not a source");
 }
 
 /// A plugin folder with its helper, which runs `line` in the system's shell. Windows: `helper.exe` (a copy of cmd.exe)

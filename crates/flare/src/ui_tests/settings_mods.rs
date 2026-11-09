@@ -32,8 +32,6 @@ struct FakePort {
     switched: RefCell<Vec<(String, bool)>>,
     /// What each switch carried (what the details sheet listed).
     switched_with: RefCell<Vec<flare_mods::hub::Shown>>,
-    /// The panels asked for.
-    panels: RefCell<Vec<String>>,
     /// The install, update and remove asks, as `what:argument`.
     installs: RefCell<Vec<String>>,
     /// The details sheet the port shows (None: the plugin is gone), and the choices made on it.
@@ -51,9 +49,6 @@ impl ModsPort for FakePort {
     fn set_enabled(&self, id: &str, on: bool, shown: flare_mods::hub::Shown) {
         self.switched_with.borrow_mut().push(shown);
         self.switched.borrow_mut().push((id.to_string(), on));
-    }
-    fn show_panel(&self, id: &str) {
-        self.panels.borrow_mut().push(id.to_string());
     }
     fn dir(&self) -> PathBuf {
         PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\plugins")
@@ -289,13 +284,7 @@ fn turning_a_plugin_on_from_its_card_opens_its_sheet_and_turn_on_there_approves_
         );
         assert!(!f.row("mod:notes").unwrap().on, "the switch stays off");
         // Turn on carries what the sheet lists (a tile per permission, the maker, the homepage), so only that is
-        // approved; Full control was on the sheet in amber.
-        assert!(
-            f.b()
-                .get_sheet_warnings()
-                .as_str()
-                .starts_with("Full control:")
-        );
+        // approved; Full control was on the sheet in amber, on its Access tile.
         f.b().invoke_sheet_turn_on();
         let listed = vault_sheet_on(&Default::default(), false).shown;
         assert_eq!(listed.author, "someone");
@@ -349,34 +338,6 @@ fn a_mod_with_nothing_to_approve_goes_on_from_its_card() {
         f.port.switched_with.borrow().as_slice(),
         [flare_mods::hub::Shown::default()]
     );
-}
-
-#[test]
-fn the_sheet_opens_the_panel_of_a_plugin_that_is_on_and_holds_it() {
-    for s in SCALES2 {
-        let f = fx_at(s, info(vec![notes(true)]));
-        *f.port.sheet.borrow_mut() = Some(vault_sheet_on(&Default::default(), true));
-        f.page("mods");
-        f.b().invoke_row_button("mod:notes".into(), "info".into());
-        assert_eq!(f.b().get_sheet_panel().as_str(), "Notes", "{s}");
-        f.h.advance(0);
-        assert!(
-            f.h.comp.get_sheet_panel_w() > 0.0,
-            "the Open button is drawn"
-        );
-        assert!(f.h.comp.get_sheet_turn_on_w() == 0.0, "on: no Turn on");
-        f.b().invoke_sheet_open_panel();
-        assert_eq!(f.port.panels.borrow().as_slice(), ["notes".to_string()]);
-        assert!(!f.b().get_sheet_open(), "the panel opens in its tab");
-        // The panel held back on the sheet: no Open button.
-        let mut c = flare_mods::grants::Choices::default();
-        flare_mods::grants::choose(&mut c, flare_ctl::Permission::Panel, "off").unwrap();
-        *f.port.sheet.borrow_mut() = Some(vault_sheet_on(&c, true));
-        f.b().invoke_row_button("mod:notes".into(), "info".into());
-        f.h.advance(0);
-        assert_eq!(f.b().get_sheet_panel().as_str(), "");
-        assert!(f.h.comp.get_sheet_panel_w() == 0.0);
-    }
 }
 
 #[test]
@@ -472,12 +433,6 @@ fn the_info_button_opens_the_details_sheet_whose_tiles_reach_the_port_and_escape
         assert_eq!(tiles[0].tone, 2, "full control is amber");
         assert_eq!(tiles[1].value_name.as_str(), "Ask each time");
         assert_eq!(tiles[1].tone, 1, "the usual level is the brand's");
-        assert!(
-            f.b()
-                .get_sheet_warnings()
-                .as_str()
-                .starts_with("Full control:")
-        );
         // A toggle and a level reach the port; the sheet is drawn again from what the port says.
         f.b().invoke_sheet_toggle("tools".into(), false);
         f.b().invoke_sheet_choose("fill".into(), "always".into());

@@ -9,7 +9,8 @@ fn main() {
         return;
     }
     let mut channel = flare_mcp::FlareChannel::from_env();
-    let stdin = BufReader::new(io::stdin().lock());
+    // Not locked: stdin is read on a thread of its own, so a cancel is seen while a call runs.
+    let stdin = BufReader::new(io::stdin());
     // Not locked for the whole run: the watcher thread writes its notification through the same handle, and
     // each `writeln!` takes the lock for one whole line.
     let stdout = io::stdout();

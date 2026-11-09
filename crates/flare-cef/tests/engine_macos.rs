@@ -146,7 +146,7 @@ fn a_windowless_page_paints_into_a_pixel_buffer_with_no_window_on_screen() {
 }
 
 #[test]
-fn the_eleven_devtools_methods_agent_job_uses_answer_in_chromiums_shapes() {
+fn the_devtools_methods_agent_job_uses_answer_in_chromiums_shapes() {
     let run = run_probe("cdp", "cdp");
     assert_clean(&run);
     let got = ids(&run.report);
@@ -158,7 +158,7 @@ fn the_eleven_devtools_methods_agent_job_uses_answer_in_chromiums_shapes() {
         "cdp.scroll",
         "cdp.wait",
         "cdp.eval",
-        "cdp.eleven-methods",
+        "cdp.agent-methods",
         "cdp.nothing-native",
     ] {
         assert!(got.iter().any(|g| g == id), "{id} ran: {got:?}");

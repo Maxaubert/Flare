@@ -44,6 +44,7 @@ fn helper_ctx(w: &World, id: &str) -> CallContext {
         client_version: String::new(),
         grant: w.hub.grant_of_mod(id).expect("the plugin is on"),
         tab: None,
+        cancel: Default::default(),
     }
 }
 

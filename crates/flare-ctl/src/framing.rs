@@ -76,6 +76,22 @@ impl LineReader {
         !self.buf.is_empty()
     }
 
+    /// Takes what is ready without waiting and keeps it for the next read: the server calls this while a call
+    /// runs, so it can notice the client going away. False once the peer has closed (or the pipe broke). A line
+    /// over the cap is left for `read_line` to refuse, so this never grows past it.
+    pub fn pump(&mut self, wire: &impl Wire) -> bool {
+        if self.buf.len() > self.cap {
+            return true;
+        }
+        match wire.poll_read(&mut self.scratch) {
+            Ok(Some(got)) => {
+                self.buf.extend_from_slice(&self.scratch[..got]);
+                true
+            }
+            Ok(None) | Err(_) => false,
+        }
+    }
+
     /// The next non-empty line (newline and a trailing `\r` stripped).
     pub fn read_line(
         &mut self,
