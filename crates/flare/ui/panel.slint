@@ -301,6 +301,47 @@ component WebButton inherits Rectangle {
     }
 }
 
+// "Ask agent": sends what the panel shows to the agent in this tab. Flare's own chrome, drawn outside the page, so a
+// page cannot fake it. A glyph alone when the panel is narrow.
+component AskAgentButton inherits Rectangle {
+    in property <bool> compact;
+    callback activated();
+    width: root.compact ? Px.snap(24px) : Px.snap(6px + 12px + 5px + caption.preferred-width + 8px);
+    height: Px.snap(24px);
+    border-radius: Theme.radius-button;
+    background: ta.has-hover ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: "Ask agent";
+    accessible-action-default => { root.activated(); }
+    Path {
+        x: (root.compact ? (parent.width - 12px) / 2 : Px.snap(6px)) - self.stroke-width / 2;
+        y: (parent.height - 12px) / 2 - self.stroke-width / 2;
+        width: 12px + self.stroke-width;
+        height: 12px + self.stroke-width;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: Glyphs.prompt;
+        fill: transparent;
+        stroke: ta.has-hover ? Theme.text : Theme.icon;
+        stroke-width: 2.2 * 12px / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+    caption := Text {
+        x: Px.snap(6px + 12px + 5px);
+        height: parent.height;
+        visible: !root.compact;
+        vertical-alignment: center;
+        text: "Ask agent";
+        font-family: Theme.font-ui;
+        font-size: 11.5px;
+        color: ta.has-hover ? Theme.text : Theme.dim;
+    }
+    ta := TouchArea {
+        clicked => { root.activated(); }
+    }
+}
+
 // The browser bar of a web panel: back, forward, reload (stop while a page loads), the address and the
 // panel's close. It is the top of the panel (a web page has no header, Max 2026-10-27). Enter opens what
 // is typed, Escape puts the address of the page back and hands the keys to the terminal.
@@ -325,6 +366,13 @@ component WebBar inherits Rectangle {
     callback submit(string);
     callback escape();
     callback close();
+    // "Ask agent", left of the close button: the address field gives up the room.
+    in property <bool> ask-shown;
+    in property <bool> ask-compact;
+    callback ask-agent();
+    out property <length> ask-x: ask-btn.absolute-position.x;
+    out property <length> ask-y: ask-btn.absolute-position.y;
+    out property <length> ask-w: ask-btn.width;
     out property <length> close-x: close-btn.absolute-position.x;
     out property <length> close-w: close-btn.width;
     public function focus-address() { input.focus(); input.select-all(); }
@@ -364,7 +412,7 @@ component WebBar inherits Rectangle {
     field := Rectangle {
         x: Px.snap(8px + 3 * (24px + 2px) + 4px);
         y: (parent.height - self.height) / 2;
-        width: close-btn.x - self.x - Px.snap(4px);
+        width: (root.ask-shown ? ask-btn.x : close-btn.x) - self.x - Px.snap(4px);
         height: Px.snap(24px);
         background: Theme.ground;
         border-radius: Theme.radius-sm;
@@ -429,6 +477,13 @@ component WebBar inherits Rectangle {
                 overflow: elide;
             }
         }
+    }
+    ask-btn := AskAgentButton {
+        x: close-btn.x - Px.snap(4px) - self.width;
+        y: (parent.height - self.height) / 2;
+        visible: root.ask-shown;
+        compact: root.ask-compact;
+        activated => { root.ask-agent(); }
     }
     close-btn := WebButton {
         x: parent.width - self.width - Px.snap(8px);
@@ -559,8 +614,19 @@ export component PanelSlot inherits Rectangle {
     in property <int> wrapped-cols;
     in property <[int]> line-nums;
     in property <int> number-count;
-    // The room the wrap button takes in the header (a text file only).
-    property <length> head-extra: root.kind == 2 ? Px.snap(28px) : 0px;
+    // "Ask agent": the tab has an agent. Shown over what can be sent (a picture, a file, a page), a glyph alone
+    // when the panel is narrow and gone when there is no room for even that.
+    in property <bool> ask-on;
+    property <bool> ask-shown: root.ask-on && (root.kind == 1 || root.kind == 2 || root.kind == 3) && root.width >= 200px;
+    property <bool> ask-compact: root.width < 380px;
+    out property <bool> ask-visible: root.open && root.ask-shown;
+    out property <length> ask-x: root.bar-only ? web-bar.ask-x : ask-btn.absolute-position.x;
+    out property <length> ask-y: root.bar-only ? web-bar.ask-y : ask-btn.absolute-position.y;
+    out property <length> ask-w: root.bar-only ? web-bar.ask-w : ask-btn.width;
+    callback ask-agent();
+    // The room the wrap button takes in the header (a text file only), and with "Ask agent" beside it.
+    property <length> head-wrap: root.kind == 2 ? Px.snap(28px) : 0px;
+    property <length> head-extra: root.head-wrap + (root.ask-shown ? ask-btn.width + Px.snap(4px) : 0px);
     callback wrap-toggled();
     callback close();
     callback escape();
@@ -669,6 +735,13 @@ export component PanelSlot inherits Rectangle {
                 on: root.wrap-on;
                 activated => { root.wrap-toggled(); }
             }
+            ask-btn := AskAgentButton {
+                x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(4px) - root.head-wrap - self.width;
+                y: (parent.height - self.height) / 2;
+                visible: root.ask-shown;
+                compact: root.ask-compact;
+                activated => { root.ask-agent(); }
+            }
             close-btn := PanelClose {
                 x: parent.width - self.width - Px.snap(8px);
                 y: (parent.height - self.height) / 2;
@@ -689,6 +762,9 @@ export component PanelSlot inherits Rectangle {
             visible: root.bar-only;
             url: root.web-url;
             notice: root.sub;
+            ask-shown: root.ask-shown;
+            ask-compact: root.ask-compact;
+            ask-agent => { root.ask-agent(); }
             loading: root.web-loading;
             can-back: root.web-can-back;
             can-forward: root.web-can-forward;

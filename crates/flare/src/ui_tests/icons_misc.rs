@@ -340,6 +340,39 @@ fn web_bar_glyphs_draw_at_full_size_at_every_scale() {
     }
 }
 
+// --- "Ask agent" (panel.slint): a 12 px glyph, the same in the bar and the header. ---
+
+const ASK_AGENT_PROMPT: &str = "M5 7l5 5-5 5M12 17h7";
+
+fn draw_ask_agent(s: f32, kind: i32) -> Drawn {
+    let h = Harness::new(s, 1000, 640, || {
+        AppWindow::new().expect("the window builds")
+    });
+    crate::appctl::AppCtl::push_panel_limits(&h.comp);
+    h.comp.set_panel_open(true);
+    h.comp.set_panel_kind(kind);
+    h.comp.set_panel_ask_on(true);
+    h.advance(0);
+    let f = h.render();
+    // The button's glyph box starts 6 px in (wide panel: the caption is beside it, so this region holds the glyph only).
+    let cx = h.comp.get_panel_ask_x() + 6.0 + 6.0;
+    let cy = h.comp.get_panel_ask_y() + 12.0;
+    let r = region_around(&f, cx * s, cy * s, 8.0 * s);
+    let got = drawn(&f, r, ICON);
+    (
+        got,
+        expected_extent_px(ASK_AGENT_PROMPT, 12.0, 24.0, 2.2 * 12.0 / 24.0, s),
+    )
+}
+
+#[test]
+fn ask_agent_glyph_draws_at_full_size_at_every_scale() {
+    for s in SCALES {
+        assert_size("ask agent in the bar", s, draw_ask_agent(s, 3));
+        assert_size("ask agent in the header", s, draw_ask_agent(s, 1));
+    }
+}
+
 // --- The conversation panel (convo.slint): the way back in a diff (10 px). ---
 
 fn convo_window(s: f32) -> Harness<AppWindow> {
@@ -452,7 +485,8 @@ const SIZED: [(&str, usize); 15] = [
     ("update.slint", 1),
     ("dictation_pill.slint", 1),
     ("dictation_widget.slint", 1),
-    ("panel.slint", 2),
+    // The third is "Ask agent": `ask_agent_glyph_draws_at_full_size_at_every_scale`.
+    ("panel.slint", 3),
     // The badge glyph (plugins phase 1): `ui_tests::decor::every_badge_glyph_draws_at_full_size_at_every_scale`.
     ("decor.slint", 1),
 ];

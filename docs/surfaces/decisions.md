@@ -1137,3 +1137,12 @@ Spec: `docs/superpowers/specs/2026-10-28-dns-rebinding-proxy.md`.
 - 2026-11-09, builder: **`view.model` answers when the page has loaded, not when the model has drawn.** The spec has `__flareModel` for tests only, so a bad
   model is a message in the panel, not a tool error; the tool text tells the agent to use `browser_look`.
 - 2026-11-09, builder: **the grid starts on**, the spec did not say. A plain `Grid` button turns it off.
+## Ask the agent about a selection (#33), 2026-11-09
+
+- **No bracketed paste means one line.** The spec's delivery ("unbracketed never ends in CR") still left a CR between the lines of the frame, and a
+  program that never asked for bracketed paste submits at each one. `paste_unsent` joins the lines with spaces there, so nothing is ever submitted.
+- **The note is a new small toast over the terminal.** The only toasts before it were Windows notifications (for a tab not in front) and the staged
+  build's. It reuses `StagedToast` without a button, over the grid because a page's browser window sits above anything drawn on the panel.
+- **The question gate also reads the screen.** The hub's mark and watch lag behind a box by the settle time; `looks_like_question` on the live rows
+  closes that gap at the moment of the paste.
+- **An answer for a tab no longer in front is dropped**, not typed where nobody is looking.
