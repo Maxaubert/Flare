@@ -273,6 +273,9 @@ impl AppCtl {
                     }
                 }
                 WebOut::Filled { id, result } => self.fill_done(id, result),
+                WebOut::AskSelection { tab, label, result } => {
+                    self.ask_selection_done(&tab, &label, result);
+                }
             }
         }
     }

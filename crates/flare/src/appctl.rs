@@ -627,6 +627,30 @@ pub struct AppCtl {
 /// is open.
 const CONVO_SHOW_CHANGES: &str = "Show files Claude changed";
 const CONVO_HIDE_CHANGES: &str = "Hide files Claude changed";
+/// The terminal menu's row that sends the grid selection to the tab's agent (#33).
+const ASK_AGENT_ROW: &str = "Ask agent about this selection";
+
+/// A row about the tab's agent in the terminal's menu: its own group, after a rule, and nothing to resolve when picked.
+fn agent_menu_row(label: &str, icon: &'static str) -> (MenuRowData, String) {
+    (
+        MenuRowData {
+            label: label.to_string(),
+            hint: String::new(),
+            icon,
+            filled_icon: false,
+            disabled: false,
+            trailing_icon: None,
+            trailing_filled: false,
+            trailing_tip: String::new(),
+            group: true,
+            flyout: false,
+            parent: -1,
+            icon_cmd: String::new(),
+            logo: None,
+        },
+        String::new(),
+    )
+}
 
 /// How long the skeleton fades after the agent has painted (PT `ResumeSkeleton`).
 const SKELETON_FADE_MS: u64 = 180;
@@ -1441,6 +1465,7 @@ impl AppCtl {
         bind!(app, rc, on_panel_convo_open, |c, path: SharedString| c
             .convo_open(path.as_str()));
         bind!(app, rc, on_panel_wrap_toggled, |c| c.panel_wrap_toggled());
+        bind!(app, rc, on_panel_ask_agent, |c| c.panel_ask_agent());
         bind!(app, rc, on_panel_wrap_cols_changed, |c| c
             .panel_wrap_cols_changed());
         bind!(app, rc, on_preview_chip_clicked, |c| c
@@ -2860,6 +2885,11 @@ impl AppCtl {
                 "Copy folder path" => (self.deps.clipboard)(cwd),
                 _ => {}
             },
+            MenuKind::Term { tab } if row.label == ASK_AGENT_ROW => {
+                let selection = self.term.menu_selection().map(str::to_string);
+                self.term.on_menu_pick(None, usize::MAX);
+                self.ask_about_grid(tab, selection.as_deref().unwrap_or(""));
+            }
             MenuKind::Term { tab } if self.convo_menu_picked(tab, &row.label) => {
                 // One of the conversation rows: the terminal's own menu state is let go, nothing else happens.
                 self.term.on_menu_pick(None, usize::MAX);
@@ -3174,6 +3204,7 @@ impl AppCtl {
         if rows.is_empty() {
             return;
         }
+        rows.extend(self.ask_menu_rows(&at.tab));
         rows.extend(self.convo_menu_rows(&at.tab));
         let (gx, gy) = self
             .app()
@@ -3304,6 +3335,7 @@ impl AppCtl {
         self.panels
             .set_wrap(flare_settings::term_prefs::wrap_previews(&self.prefs));
         self.panels.sync(app, front.as_deref());
+        app.set_panel_ask_on(front.as_deref().is_some_and(|t| self.hub.agent_here(t)));
         // The bar's height first: the terminal is laid out shorter before the browser is placed.
         self.push_bar(app);
         let ctx = self.key_context();
@@ -3449,26 +3481,6 @@ impl AppCtl {
             return Vec::new();
         }
         let open = self.panels.open_convo_kind(tab);
-        let row = |label: &str, icon: &'static str, group: bool| {
-            (
-                MenuRowData {
-                    label: label.to_string(),
-                    hint: String::new(),
-                    icon,
-                    filled_icon: false,
-                    disabled: false,
-                    trailing_icon: None,
-                    trailing_filled: false,
-                    trailing_tip: String::new(),
-                    group,
-                    flyout: false,
-                    parent: -1,
-                    icon_cmd: String::new(),
-                    logo: None,
-                },
-                String::new(),
-            )
-        };
         let changes_open = open == Some(flare_surfaces::PanelKind::Changes);
         // The gate above proves it is Claude (a session, or the detection), so the row always names Claude.
         let changes = if changes_open {
@@ -3477,7 +3489,16 @@ impl AppCtl {
             CONVO_SHOW_CHANGES
         };
         // Its own group, after a rule: it is about the agent, not the terminal.
-        vec![row(changes, crate::menus_ui::GLYPH_CHANGES, true)]
+        vec![agent_menu_row(changes, crate::menus_ui::GLYPH_CHANGES)]
+    }
+
+    /// The row the terminal's menu gains over a grid selection on a tab with an agent, whichever agent it is.
+    pub(crate) fn ask_menu_rows(&self, tab: &str) -> Vec<(MenuRowData, String)> {
+        if self.hub.agent_here(tab) && self.term.menu_selection().is_some() {
+            vec![agent_menu_row(ASK_AGENT_ROW, "menu-paste")]
+        } else {
+            Vec::new()
+        }
     }
 
     /// A row of the convo part of the terminal's menu was picked. False for any other row.
@@ -5287,6 +5308,7 @@ impl AppCtl {
 
 #[cfg(test)]
 mod tests {
+    mod ask_tests;
     mod mods_tests;
     mod splitter_tests;
     mod web_tests;

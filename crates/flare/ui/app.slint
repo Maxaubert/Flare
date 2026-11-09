@@ -420,6 +420,16 @@ export component AppWindow inherits Window {
     out property <length> panel-wrap-button-y: panel-slot.wrap-button-y;
     out property <length> panel-wrap-button-w: panel-slot.wrap-button-w;
     callback panel-wrap-toggled();
+    // "Ask agent": the header's button, and the note that says why nothing was sent.
+    in property <bool> panel-ask-on;
+    callback panel-ask-agent();
+    out property <bool> panel-ask-visible: panel-slot.ask-visible;
+    out property <length> panel-ask-x: panel-slot.ask-x;
+    out property <length> panel-ask-y: panel-slot.ask-y;
+    out property <length> panel-ask-w: panel-slot.ask-w;
+    in property <string> ask-note;
+    out property <length> ask-note-x: ask-note-box.x;
+    out property <length> ask-note-w: ask-note-box.width;
     callback panel-wrap-cols-changed();
     changed panel-wrap-cols => { root.panel-wrap-cols-changed(); }
     // The slot went away while the splitter was held (a tab switched by key, the window too small, a page in front): the
@@ -1236,6 +1246,8 @@ export component AppWindow inherits Window {
                         wrap-on: root.panel-wrap-on;
                         number-count: root.panel-number-count;
                         wrap-toggled => { root.panel-wrap-toggled(); }
+                        ask-on: root.panel-ask-on;
+                        ask-agent => { root.panel-ask-agent(); }
                         convo-files: root.panel-convo-files;
                         convo-rows: root.panel-convo-rows;
                         convo-max-cols: root.panel-convo-max-cols;
@@ -1484,6 +1496,14 @@ export component AppWindow inherits Window {
             x: root.staged-chip-shown ? root.staged-chip-x + root.staged-chip-w - self.width : root.width - self.width - Px.snap(10px);
             y: Px.snap((root.staged-chip-shown ? root.staged-chip-y + root.staged-chip-h : Theme.bar-height) + 8px);
             clicked => { root.staged-toast-clicked(); }
+        }
+        // Why "Ask agent" sent nothing. Over the terminal, never the panel: a page's browser window sits above
+        // anything drawn there.
+        ask-note-box := StagedToast {
+            text: root.ask-note;
+            button: "";
+            x: root.grid-left + Px.snap((root.grid-w - self.width) / 2);
+            y: root.grid-top + Px.snap(10px);
         }
         SelectMenu {
             x: 0px;

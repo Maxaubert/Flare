@@ -2106,6 +2106,22 @@ tab's panel. It is a mini-app Flare writes itself, like the audio player, so the
 - **STL normals.** The viewer works out an STL's normals from its facets and ignores the ones in the file, which are commonly zero and would draw the part as one flat silhouette (rule 233).
 
 Not in this version: click a path to preview, a `.gltf` with separate `.bin` or texture files, Draco or other WASM decoders, OBJ, FBX, animation.
+## Ask the agent about a selection (#33), 2026-11-09
+
+- **What it is.** A small "Ask agent" button in the panel's header (in a web page's address bar, which is its header) and a row "Ask agent about this
+  selection" in the terminal's right-click menu over a grid selection. Both only on a tab with an agent, whichever agent. What is sent lands at the
+  prompt and is never submitted: the person reads it and presses Enter, and the keys go to the terminal.
+- **What is sent.** Web page: `window.getSelection().toString()`, framed; no selection is a note and nothing typed. Text or image panel: the file's
+  path, quoted for the tab's shell. Handed-over text has no file and says so. Terminal grid: the selection, framed; the selection is then let go.
+- **The frame.** `About this from <label>:` then `> ` per line, at most 4 KB with `> [cut]`. The label is the host or file name, cleaned and capped at
+  64 characters; a page Flare made itself reads "this page". A web page's host is the one its document gave with the text (`location.href`), so a click
+  while the next page loads still names the page that is showing.
+- **Refusals.** A short note over the terminal for 4 s: no agent, a question box up, no selection, a page that did not answer or answered with more
+  than the script can give (about 400 KB, checked natively), a path that cannot be typed.
+- **Narrow panels.** Below 380 px the button is its glyph alone; below 200 px it is gone.
+- **Not in this version.** A row in the page's own right-click menu, selection inside the Text panel, any auto-submit, any ctl, MCP or plugin way in.
+- **Tests.** `ask_agent::tests` (hostile text), `appctl::tests::ask_tests` (fake shell and fake browser), `ui_tests::panel` (`ask_agent_*`).
+- **Not covered.** A real WebView2 selection and a real agent's prompt: no e2e scenario.
 
 ## Image thumbnails on hover (#17), 2026-11-09
 
