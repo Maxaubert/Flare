@@ -76,6 +76,13 @@ A review of the three steps (2026-11-08) proved six defects, fixed with checks t
 opened a DevTools port), held downloads staged outside `~/Downloads`, no call to Google from the engine with no page
 asking, the mock keychain written down as an accepted gap until phase 8, and no colour or print panel from a page.
 
+Ongoing progress (2026-11-09): the Mac E2E runs in CI (`e2e-macos` job, `docs/e2e.md` "macOS E2E", rules 330 to
+344): the harness over the Unix socket hook, an accessory app whose every window is born clear, the Mac keys, the
+world's pwsh in Windows' edit mode, 72 scenarios run and 30 gated with a reason. From run 42569349881 (42 failing) to
+run 42603904272 (7 failing); the scenarios found and fixed Mac bugs: a miniaturised window never paused the marks, a
+stall carried no UI-thread frames, the hook's scale change could panic the software renderer, the Windows `check`
+job's pin test failed on a CRLF Cargo.lock. What still fails is listed in `docs/parity.md`, "macOS E2E".
+
 ## Known risks
 
 - **Agent browsing on WKWebView** (phase 1 decides). No DevTools protocol and no http(s) request

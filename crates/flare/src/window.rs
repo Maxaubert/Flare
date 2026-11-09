@@ -2436,6 +2436,12 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 // Said once per change: a window the system holds as hidden gets no frames (the Mac E2E's
                 // clear window, rule 342).
                 log::info!("window occluded: {hidden}");
+                // macOS (rule 344): a miniaturise or its undo sends no resize, only this, so the marks'
+                // pause is read again here (Windows has its resize to zero for it).
+                if cfg!(target_os = "macos") {
+                    let minimised = is_minimised(window);
+                    with_ctl(&mut |c| c.on_minimised(minimised));
+                }
                 EventResult::Propagate
             }
             WindowEvent::ModifiersChanged(m) => {

@@ -1602,3 +1602,23 @@ A frame's contents are not in the numbered list (the agent uses a frame by point
 call gives the root frame's tree, but a Windows look of the agent page has not been diffed with the Mac one yet. Waits for the Developer ID (phase 8): the signed
 bundle, the hardened runtime and its entitlements, notarization, camera and microphone prompts, a real keychain item
 for the profiles kept on disk (the mock keychain is used until then, rule 260).
+
+## macOS E2E: the scenarios on GitHub's macOS runner (2026-11-09)
+
+The visual E2E on macOS, the port plan's Ongoing row (`docs/superpowers/specs/2026-11-08-macos-port.md`; how it runs
+and which scenarios are gated: `docs/e2e.md`, "macOS E2E"; regression rules 330 to 344). It runs in CI only, in the
+`e2e-macos` job; nothing of it runs on a person's Mac. 72 scenarios run on the runner, 30 are gated with a reason.
+
+- [x] The harness builds and runs on macOS and drives the app over the `--e2e` Unix socket hook in the control channel's private folder (0600, peer uid checked, first-instance lock). Stands in for the named pipe. (macOS: the_mac_socket_is_this_users_alone_and_goes_with_the_server, the_mac_hook_is_a_short_socket_in_the_private_folder, crates/flare/src/e2e_hook.rs)
+- [x] An `--e2e` window never shows and never takes the keyboard: an accessory app, every window born clear and click-through, kept clear whoever sets its alpha, parked on the main screen so it paints, its focus from the hook alone; the screen guard fails a scenario whose process shows a window or becomes frontmost. Stands in for the hidden desktop. (macOS: a_born_clear_class_initialises_through_the_stand_in, a_parked_class_keeps_its_frame_off_every_screen_and_nswindow_keeps_the_rule, only_a_mac_e2e_run_drops_the_native_focus, the_guard_flags_a_window_or_the_keyboard_of_the_run_and_only_those)
+- [x] A scenario's Windows keys reach the Mac app as a Mac keyboard gives them: app chords with Cmd, a Slint field's Cmd as Slint's Control, a field's End as Cmd+Right, the program's keys as written. (macOS: the_app_chords_take_cmd_on_a_mac_and_the_shell_keys_stay, a_chord_with_modifiers_reaches_slint_as_modifier_presses_around_the_key)
+- [x] A hook resize at a scale other than 100 percent gives the window the css size asked for, and a scale change never outgrows the software renderer's buffer. (macOS: a_mac_resize_is_asked_in_device_px_at_the_windows_own_scale, the_item_fills_the_buffer_it_has_at_the_new_scale)
+- [x] A UI-thread stall names the UI thread's frames, as the Windows `.pdata` walk does (Apple silicon). (macOS: a_busy_thread_is_sampled_200_times_named_and_keeps_running, the_walk_follows_the_chain_inside_the_stack_and_stops_outside_it, crates/flare-win/src/macos/thread_stack.rs)
+- [x] A miniaturised window counts as minimised for the marks' pause, though a Mac sends it no resize. (the_systems_minimised_answer_wins_over_slints, crates/flare/src/window.rs)
+
+Still failing on the runner when this was written (not ratchet lines; the CI runs in the spec's progress line): the
+vertical sidebar's slide-out is not in the window's picture though the probes say it is out (verticalTabs, 10
+checks), the ? tip shows before its second is up (tooltips), the help panel's selection colour and the new shell's
+keyboard after the panel (helpPanel), two diagnostics lines (diagLog: idle main-lag lines on the runner and the
+returning beat), Cancel in the theme switch's question (themeSwitch), the colour picker's working stand-in
+(colourPicker) and minimising an accessory app's window (indicatorStyles).
