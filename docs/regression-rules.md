@@ -1182,7 +1182,9 @@ paste's escape sequence and left the line it meant to clear); the harness reads 
 app writes it (`world::logs_dir`: `<home>/Library/Logs/Flare` for the default profile under the world's HOME, as
 `startup::logs_dir_of`); and a key a scenario means as the program's own is sent as written
 (`Session::key_as_is`), since on a Mac Ctrl+F is the program's and Cmd+F finds everywhere (the keymap's Mac rule).
-The profile's Clear-Host also clears the scrollback, as Windows' does, with `cls` its alias (pwsh on a Mac sends the
+The profile's Clear-Host also clears the scrollback, as Windows' does, with `cls` its alias, and the scenarios that
+clear a question box type `world::CLEAR_HOST` (the same, spelled out) and read a file with `world::GET_CONTENT` (pwsh
+on a Mac has no `cat` alias) (pwsh on a Mac sends the
 terminfo `clear` alone; the screen went into the scrollback and a "cleared" question box was still the last thing
 written, agentHooks in run 42587853627); a dropped path is quoted as a POSIX path; the bell burst has no sleep
 between its ten bells (pwsh on the runner stretched it past the one-second gate).
@@ -1208,3 +1210,12 @@ traffic lights, which have no hook rect, and no app mark is drawn (`AppMark` is 
 cog in the bar and the traffic lights' corner before the tabs and skips the mark with its reason; the ? is the second
 button from the right edge, so its tip is held 6 px inside the window (`tip_place`'s margin) rather than centred, and
 tooltips accepts that on a Mac only. Source: Mac E2E in CI, runs 42569349881 and 42587853627 (2026-11-09).
+343. **macOS: a UI-thread stall names the UI thread's frames, as on Windows.** The stall watchdog's `ui-stack` line
+carried no frames on a Mac (`NoSampler`; diagLog's "with the frames of the UI thread named (0 lines)" on the runner).
+On Apple silicon `flare_win::thread_stack` (macos/thread_stack.rs) suspends the UI thread, reads its registers
+(`ARM_THREAD_STATE64`), walks the frame-pointer chain inside the thread's own stack bounds into a fixed buffer with
+nothing allocated or locked while it is stopped, resumes it through a guard and names each address `image+0xoffset`
+through `dladdr` afterwards; an Intel Mac keeps no sampler. Held by
+`the_walk_follows_the_chain_inside_the_stack_and_stops_outside_it`,
+`a_busy_thread_is_sampled_200_times_named_and_keeps_running` and `a_finished_thread_is_not_sampled`. Source: Mac E2E
+in CI, run 42592969003 (2026-11-09).

@@ -602,7 +602,11 @@ pub fn attention(ctx: &mut Ctx) -> Result<(), String> {
         "leaving it unanswered keeps the line",
     );
     // Answering is work again: the line goes, and the badge with it.
-    at(&mut app, 0, &format!("Clear-Host; {WORK}"));
+    at(
+        &mut app,
+        0,
+        &format!("{}; {WORK}", crate::world::CLEAR_HOST),
+    );
     let answered = until_state(ctx, &mut app, 0, "working", 8000);
     ctx.ok(answered, "answering it takes the question down");
     let unbadged = until_badge(ctx, &mut app, "", 4000);

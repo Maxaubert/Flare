@@ -23,6 +23,23 @@ const REMOVE_WAIT: Duration = Duration::from_millis(200);
 pub const PSREADLINE_MUTE: &str =
     "Set-PSReadLineKeyHandler -Chord 'Ctrl+v','Ctrl+V','Shift+Insert' -ScriptBlock {}; Clear-Host";
 
+/// Clear-Host as Windows has it, screen and scrollback: on macOS pwsh sends the terminfo `clear` alone, the
+/// screen goes into the scrollback, and a question box "cleared" that way is still the last text of the
+/// buffer, so the Mac line adds the scrollback clear (rule 339; agentHooks and attention on the runner).
+pub const CLEAR_HOST: &str = if cfg!(target_os = "macos") {
+    "Clear-Host; [Console]::Write([string][char]27 + '[3J')"
+} else {
+    "Clear-Host"
+};
+
+/// `cat` as a scenario means it (PowerShell's Get-Content): on macOS pwsh has no `cat` alias and the
+/// name is /bin/cat (rule 339).
+pub const GET_CONTENT: &str = if cfg!(target_os = "macos") {
+    "Get-Content"
+} else {
+    "cat"
+};
+
 /// The world of one scenario.
 pub struct World {
     sandbox: Sandbox,
