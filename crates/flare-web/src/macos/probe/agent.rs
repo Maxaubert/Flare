@@ -376,7 +376,7 @@ pub fn run(rep: &mut Report, data: &Path) -> Result<(), String> {
             && redo == "one Xthree",
         "browser_press edits as on Windows: Backspace, the arrows, Home, End, Enter, Delete; Control+a selects all \
          (and Meta+a, the Mac's own), Control+z undoes and Control+y redoes, Control+Backspace takes a word and \
-         Control+ArrowLeft moves by one (rule 254)",
+         Control+ArrowLeft moves by one (rule 258)",
         json!({"steps": steps, "keydowns": keylog}),
     );
 

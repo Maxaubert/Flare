@@ -1,5 +1,5 @@
 //! The control channel on macOS: a Unix domain socket with the named pipe's protocol and guarantees
-//! (rules 239 and 245). Same framing, same naming (FNV-1a of the user and the scope), same exported names, so
+//! (rules 243 and 249). Same framing, same naming (FNV-1a of the user and the scope), same exported names, so
 //! the app, `flare-mcp` and mods use one API on both systems.
 //!
 //! - **Where**: `<per-user temp folder>/flare-ctl/<16 hex>[-<8 hex>].sock`. The temp folder is the

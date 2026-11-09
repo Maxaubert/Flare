@@ -75,7 +75,7 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
   request and a big event write can never block each other on full pipe buffers.
 - Byte mode, duplex, up to 255 instances; the app keeps one waiting and makes the next before it
   serves the one that just connected.
-- **macOS** (port phase 4, regression rule 239, `crates/flare-ctl/src/uds.rs`): a **Unix domain socket**
+- **macOS** (port phase 4, regression rule 243, `crates/flare-ctl/src/uds.rs`): a **Unix domain socket**
   with the same framing, grants and names. Node: `net.createServer().listen(path)`.
   - **Path**: `<per-user temp folder>/flare-ctl/<h>[-<s>].sock`, the per-user temp folder being
     `confstr(_CS_DARWIN_USER_TEMP_DIR)` (`/var/folders/.../T/`, mode 0700), `h` and `s` the same hashes as
