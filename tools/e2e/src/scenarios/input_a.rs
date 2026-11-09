@@ -590,9 +590,20 @@ fn click_caret_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     let stayed = wait_for("the Q lands at the end", 8_000, &mut || {
         text(app).contains("zzQ")
     });
+    let seen = if stayed {
+        String::new()
+    } else {
+        let t = text(app);
+        let tail: Vec<&str> = t.lines().filter(|l| !l.trim().is_empty()).collect();
+        format!(
+            " (clicked at {old:?}; the screen ends: {}; Flare wrote: {})",
+            tail[tail.len().saturating_sub(5)..].join(" | "),
+            app.session.probe_str("pty.written").unwrap_or_default()
+        )
+    };
     ctx.ok(
         stayed,
-        "a click on old output above the prompt moves nothing",
+        format!("a click on old output above the prompt moves nothing{seen}"),
     );
     Ok(())
 }
