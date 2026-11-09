@@ -307,34 +307,6 @@ pub fn hold_off_app_nap() {
     );
     // The activity lasts as long as the token; the run's whole life.
     std::mem::forget(token);
-    // Rule 348: the kernel also gives a process whose app is not in front the background role, whose timers
-    // it coalesces (an idle run's 50 ms beat came 100 to 220 ms late on the runner, each a main-lag line). The
-    // run asks for the foreground role, as an app in front has; refused, nothing changes.
-    let role: libc::c_int = TASK_FOREGROUND_APPLICATION;
-    // SAFETY: the task's own port, one `task_category_policy` (a single int) and its count in ints.
-    let r = unsafe { task_policy_set(mach_task_self_, TASK_CATEGORY_POLICY, &raw const role, 1) };
-    if r == 0 {
-        log::info!("e2e: the run holds the foreground task role");
-    } else {
-        log::info!("e2e: the foreground task role was refused ({r})");
-    }
-}
-
-/// `task_policy_set`'s flavor for the task's role (`<mach/task_policy.h>`).
-const TASK_CATEGORY_POLICY: u32 = 1;
-/// The role of the app in front (`TASK_FOREGROUND_APPLICATION`).
-const TASK_FOREGROUND_APPLICATION: libc::c_int = 1;
-
-unsafe extern "C" {
-    /// The task's own port (`mach_task_self()` reads this).
-    static mach_task_self_: libc::mach_port_t;
-    /// `<mach/task_policy.h>`: sets a policy of `task`.
-    fn task_policy_set(
-        task: libc::mach_port_t,
-        flavor: u32,
-        policy_info: *const libc::c_int,
-        count: u32,
-    ) -> libc::c_int;
 }
 
 /// Makes the app an accessory and the window clear (alpha 0, no shadow, click-through), then puts it on

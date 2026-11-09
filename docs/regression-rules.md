@@ -1260,15 +1260,17 @@ such a spare is let go, the tab starts a fresh shell, and that shell is not prew
 Windows keeps its spares as they were (ConPTY stands between the shell and Flare there). Held by
 `a_spare_that_asked_the_terminal_is_let_go_outside_windows`, `a_spare_that_asked_nothing_is_adopted` and the
 `term_query` tests. Source: Mac E2E in CI (2026-11-09).
-348. **macOS: diagLog's quiet is measured on a quiet runner, by a run in the foreground role.** "An idle 3 s writes
-nothing" failed on the Mac runner only, with `main-lag` lines of 100 to 216 ms and nothing in flight: the UI thread
-had no work of its own. First the runner's own `trustd`, `softwareupdated` and Spotlight took about one and a half of
-its three cores; the `e2e-macos` job now turns Spotlight and the update schedule off, and diagLog waits 8 s on a Mac
-before it measures (1 s elsewhere, unchanged). With the runner quiet and Flare under 1 percent of a core the 50 ms
-beat still came late: the kernel gives a process whose app is not in front the background role and coalesces its
-timers, so beside the App Nap hold a Mac `--e2e` run asks `task_policy_set` for the foreground role
-(`window_park::hold_off_app_nap`, logged). A beat posted from a thread lagged as much and was not kept. What is left
-is the virtual machine's own jitter, a lag of about 100 ms now and then: on a Mac the quiet gets three windows of 3 s
-and one silent window answers, and every noisy window prints its lines and the five busiest processes. The 100 ms
-lag threshold and the app outside `--e2e` are unchanged; Windows keeps its one window. Source: Mac E2E in CI, runs
-42633987601, 42635727345, 42639363621 and 42640936487 (2026-11-09).
+348. **macOS: the Mac E2E runs with the runner quiet and its timers on time.** diagLog's "an idle 3 s writes nothing"
+failed on the Mac runner only, with `main-lag` lines of 100 to 216 ms and nothing in flight. First the runner's own
+`trustd`, `softwareupdated` and Spotlight took about one and a half of its three cores; then, with the runner quiet
+and Flare under 1 percent of a core, the 50 ms beat still came late: the kernel coalesces the timers of an app that
+is not in front by up to `kern.timer_coalesce_bg_ns_max`, 100 ms, so the beat gap reached 150 ms and more. The same
+slack let termReplies' stand-in, which polls its width every 30 ms, miss the 80 ms redraw nudge. A beat posted from a
+thread lagged as much, and asking `task_policy_set` for the foreground role was granted and changed nothing; neither
+was kept. The `e2e-macos` job turns Spotlight, the update schedule and timer coalescing
+(`kern.timer.coalescing_enabled=0`) off before the scenarios, diagLog waits 8 s on a Mac before it measures (1 s
+elsewhere), gets three windows of 3 s there with one silent window answering, and every noisy window prints its lines
+and the five busiest processes. The app, its 100 ms lag threshold and Windows are unchanged. Open for the owner: a
+person's Flare in the background gets the same timer slack, so its diagnostics can hold `main-lag` lines of about
+100 ms with nothing in flight. Source: Mac E2E in CI, runs 42633987601, 42635727345, 42639363621, 42640936487 and
+42648599333 (2026-11-09).

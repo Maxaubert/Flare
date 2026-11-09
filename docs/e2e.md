@@ -183,8 +183,8 @@ release build went from about 9 minutes from scratch to about 5. Batch several f
 - **Scale** (rule 341): `DpiChange` takes the event path, and a `Resize` is asked in device px at the window's scale
   (winit would convert a logical size with the screen's 1x). **Logs** are read where the Mac app writes them (`world::logs_dir`, `<home>/Library/Logs/Flare`).
 - **Frames and timers** (rules 345 and 348): the clear window gets almost no OS frames, so the sidebar's slide is
-  stepped by a timer there; the run asks for the foreground task role beside the App Nap hold, and the job turns the
-  runner's Spotlight and update schedule off. `sidebar.state` reports the OS frame count, `pty.written` what Flare
+  stepped by a timer there; the job turns the runner's Spotlight, update schedule and timer coalescing off (a
+  background app's timers ran up to 100 ms late). `sidebar.state` reports the OS frame count, `pty.written` what Flare
   last wrote to each shell (rule 347).
 - **Gates** (rule 332) live in `tools/e2e/src/scenarios/mac_gate.rs`, each with its reason; a gated scenario is never
   started and never a pass. On failure the job uploads `e2e-macos`: the log, the shots and the worlds' logs.
