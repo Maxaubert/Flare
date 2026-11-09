@@ -32,6 +32,7 @@ pub mod sel_machine;
 pub mod sel_text;
 pub mod selection_edit;
 pub mod session;
+pub mod spare_opening;
 pub mod term_buf;
 pub mod version;
 pub mod web_url;

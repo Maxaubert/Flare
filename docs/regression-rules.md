@@ -650,3 +650,12 @@ change, closed panel, full screen). A window resize is not held. Native: `flare_
 `a_splitter_grab_that_goes_away_leaves_the_page_on_the_slot`,
 `a_panel_closed_during_a_splitter_drag_comes_back_at_the_slots_size` and
 `a_window_resize_moves_the_page_at_every_step_with_no_hold`. Source: the note left in `docs/surfaces/lessons.md` Round 10.
+231. **A warm spare answers ConPTY's opening cursor question itself.** A spare has no tab, so the question used to wait in its banner and be
+answered when a tab adopted it. By then PowerShell 7 was at its prompt, and the late answer cost the next key: the first paste into a new plain tab
+lost its first letter with a beep, and the second was fine. The spare now answers `ESC[6n` with `ESC[1;1R` when it is the first thing asked, before
+anything is drawn, and removes it from the banner so the tab does not answer again. A question after output waits for the tab, which has a real grid.
+Measured with real shells on 2026-11-09: a late cursor answer alone loses the letter (`cho firstpaste`); a late device attributes answer does not.
+Native: `flare_term::spare_opening`, `Session::answer_opening`. Held by `the_question_is_found_behind_the_sequences_conpty_sends_first`,
+`anything_drawn_before_the_question_ends_the_opening`, `a_spare_answers_the_opening_cursor_question_once_and_the_tab_is_not_asked_again`,
+`a_spare_answers_only_the_opening_question`, `a_cursor_question_after_output_waits_for_the_tab_that_can_answer_it` and
+`a_shell_started_for_a_tab_leaves_the_question_to_the_tab`.
