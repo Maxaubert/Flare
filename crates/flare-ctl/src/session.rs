@@ -54,6 +54,37 @@ pub trait Dispatcher: Send + Sync + 'static {
     fn client_gone(&self, _ctx: &CallContext) {}
 }
 
+/// Raised when a call's client has gone (it closed its connection while the call ran), so a dispatcher that
+/// waits can stop and end the job it started. Also the client library's way to give up on a call from another
+/// thread ([`crate::Client::with_stop`]).
+#[derive(Clone, Debug, Default)]
+pub struct CancelFlag(Arc<AtomicBool>);
+
+impl CancelFlag {
+    pub fn set(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    pub fn clear(&self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    /// The flag as the framing's stop flag.
+    pub fn as_atomic(&self) -> &AtomicBool {
+        &self.0
+    }
+}
+
+impl PartialEq for CancelFlag {
+    fn eq(&self, other: &Self) -> bool {
+        self.is_set() == other.is_set()
+    }
+}
+
 /// Who is calling.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CallContext {
@@ -64,6 +95,9 @@ pub struct CallContext {
     pub grant: Grant,
     /// The tab whose token `hello` presented, while that tab exists.
     pub tab: Option<String>,
+    /// Raised for this one call when its connection drops while it runs. A call that waits (a browser job, a
+    /// mod's answer) looks at it and stops; one that answers at once may ignore it.
+    pub cancel: CancelFlag,
 }
 
 /// Server limits. The defaults are the protocol's.
@@ -326,11 +360,16 @@ const STOP_SLICE: Duration = Duration::from_millis(50);
 /// Runs the dispatcher on its own thread so a hung call cannot hold the connection past its timeout.
 /// The thread is left to finish by itself; only calls past their timeout count as `stuck`, and that
 /// count caps the damage. Slow calls still inside their timeout (a 60 s `browser.wait`) never do.
+///
+/// `alive` is asked at every wake: when it says the client has gone, the call's [`CancelFlag`] is raised. The
+/// wait goes on (a dispatcher that honours the flag ends at once, and one that does not is still bounded by the
+/// timeout and the `stuck` count, so dropped connections cannot pile up unlimited threads).
 fn call_with_timeout(
     shared: &Shared,
     ctx: &CallContext,
     method: Method,
     params: Value,
+    alive: &mut dyn FnMut() -> bool,
 ) -> Result<Value, CtlError> {
     if shared.stuck.load(Ordering::SeqCst) >= shared.config.max_stuck_calls {
         return Err(CtlError::new(
@@ -351,7 +390,9 @@ fn call_with_timeout(
         in_flight: shared.in_flight.clone(),
     };
     let d = shared.dispatcher.clone();
-    let ctx = ctx.clone();
+    let cancel = CancelFlag::default();
+    let mut ctx = ctx.clone();
+    ctx.cancel = cancel.clone();
     let spawned = std::thread::Builder::new()
         .name("flare-ctl-call".into())
         .spawn(move || {
@@ -364,6 +405,7 @@ fn call_with_timeout(
         return Err(CtlError::new(code::INTERNAL, "could not start the call"));
     }
     let deadline = Instant::now() + timeout;
+    let mut gone = false;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         match rx.recv_timeout(left.min(STOP_SLICE)) {
@@ -375,6 +417,10 @@ fn call_with_timeout(
                 ));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                if !gone && !alive() {
+                    gone = true;
+                    cancel.set();
+                }
                 let stopping = shared.stop.load(Ordering::SeqCst);
                 if !stopping && !left.is_zero() && Instant::now() < deadline {
                     continue;
@@ -526,6 +572,7 @@ fn handle_hello(shared: &Shared, conn: u64, req: &Request) -> Result<Hello, CtlE
             client_version: version.into(),
             grant,
             tab,
+            cancel: CancelFlag::default(),
         },
         token,
         tab_token,
@@ -571,7 +618,10 @@ pub fn serve_connection<W: Wire>(wire: &W, shared: &Shared, handle: &Arc<ConnHan
                 break 'conn;
             }
         };
-        let (resp, close) = answer(shared, handle, &mut hello, &mut bucket, &req);
+        // While the call runs the wire is still read, so a client that went away ends the job it asked for.
+        let (resp, close) = answer(shared, handle, &mut hello, &mut bucket, &req, &mut || {
+            reader.pump(wire)
+        });
         if reply(wire, &resp).is_err() || close {
             break 'conn;
         }
@@ -594,6 +644,7 @@ fn answer(
     hello: &mut Option<Hello>,
     bucket: &mut Bucket,
     req: &Request,
+    alive: &mut dyn FnMut() -> bool,
 ) -> (Response, bool) {
     let id = req.id.clone();
     let fail = |e: CtlError| {
@@ -674,7 +725,7 @@ fn answer(
     if let Err(e) = h.ctx.grant.check(method) {
         return fail(e);
     }
-    match call_with_timeout(shared, &h.ctx, method, req.params.clone()) {
+    match call_with_timeout(shared, &h.ctx, method, req.params.clone(), alive) {
         Ok(v) => (Response::ok(id, v), false),
         Err(e) => fail(e),
     }
@@ -702,6 +753,8 @@ mod tests {
         pub promote: AtomicBool,
         /// Tab `t1` was closed: its token no longer resolves.
         pub t1_closed: AtomicBool,
+        /// Calls with `wait_cancel` whose flag was raised.
+        pub cancelled: AtomicU32,
     }
 
     impl Dispatcher for Fake {
@@ -731,6 +784,16 @@ mod tests {
             }
         }
         fn call(&self, ctx: &CallContext, m: Method, p: Value) -> Result<Value, CtlError> {
+            if p.get("wait_cancel").is_some() {
+                // A call that waits on something only its caller going away can end.
+                let until = Instant::now() + Duration::from_secs(5);
+                while !ctx.cancel.is_set() && Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                if ctx.cancel.is_set() {
+                    self.cancelled.fetch_add(1, Ordering::SeqCst);
+                }
+            }
             if self.hang.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_millis(400));
             }
@@ -1358,5 +1421,33 @@ mod tests {
         r.hello("");
         r.finish();
         assert_eq!(fake.gone.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_client_that_goes_away_mid_call_raises_that_calls_cancel_flag() {
+        let mut r = rig();
+        let fake = r.fake.clone();
+        r.hello("");
+        r.send(r#"{"id":1,"method":"panel.close","params":{"wait_cancel":true}}"#);
+        r.finish();
+        assert_eq!(
+            fake.cancelled.load(Ordering::SeqCst),
+            1,
+            "the call stopped when its connection went"
+        );
+        assert_eq!(fake.gone.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_client_that_stays_keeps_its_flag_down_and_a_line_sent_during_a_call_is_kept() {
+        let mut r = rig();
+        let fake = r.fake.clone();
+        r.hello("");
+        r.send(r#"{"id":1,"method":"panel.close","params":{"slow":true}}"#);
+        r.send(r#"{"id":2,"method":"panel.state"}"#);
+        assert_eq!(r.recv()["id"], 1);
+        assert_eq!(r.recv()["id"], 2, "the line read during the call came next");
+        assert_eq!(fake.cancelled.load(Ordering::SeqCst), 0);
+        r.finish();
     }
 }
