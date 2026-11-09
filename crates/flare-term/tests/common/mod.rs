@@ -28,6 +28,7 @@ pub struct Rig {
     last_data: Arc<AtomicU64>,
     started: Instant,
     pid: u32,
+    tap: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
 /// Milliseconds since the rig started, saturating.
@@ -59,6 +60,38 @@ impl Rig {
         cols: u16,
         rows: u16,
     ) -> Rig {
+        Self::spawn_inner(exe, args, cwd, env, cols, rows, None)
+    }
+
+    /// `spawn`, keeping every byte ConPTY delivers, before the emulator sees it. See `raw`.
+    pub fn spawn_tapped(
+        exe: &str,
+        args: &[&str],
+        cwd: &Path,
+        env: Option<Vec<(String, String)>>,
+        cols: u16,
+        rows: u16,
+    ) -> Rig {
+        let tap = Arc::new(Mutex::new(Vec::new()));
+        Self::spawn_inner(exe, args, cwd, env, cols, rows, Some(tap))
+    }
+
+    /// Everything ConPTY has delivered so far; empty unless the rig came from `spawn_tapped`.
+    pub fn raw(&self) -> Vec<u8> {
+        self.tap.as_ref().map_or_else(Vec::new, |t| {
+            t.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        })
+    }
+
+    fn spawn_inner(
+        exe: &str,
+        args: &[&str],
+        cwd: &Path,
+        env: Option<Vec<(String, String)>>,
+        cols: u16,
+        rows: u16,
+        tap: Option<Arc<Mutex<Vec<u8>>>>,
+    ) -> Rig {
         let spec = SpawnSpec {
             exe: exe.to_string(),
             args: args.iter().map(|a| a.to_string()).collect(),
@@ -81,11 +114,12 @@ impl Rig {
         let last_data = Arc::new(AtomicU64::new(0));
         let started = Instant::now();
 
-        let (t_emu, t_writer, t_events, t_last) = (
+        let (t_emu, t_writer, t_events, t_last, t_tap) = (
             Arc::clone(&emu),
             Arc::clone(&writer),
             Arc::clone(&events),
             Arc::clone(&last_data),
+            tap.clone(),
         );
         let reader_thread = std::thread::Builder::new()
             .name("rig-reader".into())
@@ -97,6 +131,11 @@ impl Rig {
                         Ok(n) => n,
                     };
                     t_last.store(ms_since(started), Ordering::SeqCst);
+                    if let Some(t) = &t_tap {
+                        t.lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .extend_from_slice(&buf[..n]);
+                    }
                     let evs = {
                         let mut e = t_emu.lock();
                         let mut evs = e.feed(&buf[..n]);
@@ -117,6 +156,7 @@ impl Rig {
             last_data,
             started,
             pid,
+            tap,
         }
     }
 
