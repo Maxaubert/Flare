@@ -1,5 +1,6 @@
 //! The pipe client the harness talks to the app with.
 
+#[cfg(windows)]
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -42,6 +43,22 @@ fn read_reply_line<R: BufRead>(r: &mut R) -> Result<String, String> {
         ));
     }
     Ok(reply)
+}
+
+/// macOS (rule 333): the request with every chord in the Mac app's spelling (`chord::mac_app_chord`),
+/// so a scenario written with the Windows keys presses the same command on a Mac.
+#[cfg(target_os = "macos")]
+fn mac_keys(r: &Request) -> Request {
+    use crate::chord::mac_app_chord;
+    let mut r = r.clone();
+    match &mut r {
+        Request::Key { chord, .. }
+        | Request::KeyPress { chord }
+        | Request::Latency { chord, .. }
+        | Request::KeyAtPrompt { chord, .. } => *chord = mac_app_chord(chord),
+        _ => {}
+    }
+    r
 }
 
 /// The app's `Hello` reply.
@@ -101,11 +118,28 @@ pub struct AppState {
     pub quitting: bool,
 }
 
+/// The hook's connection: the named pipe opened as a file on Windows, the Unix socket on macOS (rule 330).
+#[cfg(windows)]
+type Conn = File;
+#[cfg(not(windows))]
+type Conn = std::os::unix::net::UnixStream;
+
+/// Opens the hook's endpoint once (no wait).
+#[cfg(windows)]
+fn open_conn(name: &str) -> std::io::Result<Conn> {
+    OpenOptions::new().read(true).write(true).open(name)
+}
+
+#[cfg(not(windows))]
+fn open_conn(name: &str) -> std::io::Result<Conn> {
+    Conn::connect(name)
+}
+
 /// The connection to one app's test hook.
 #[derive(Debug)]
 pub struct Session {
-    writer: File,
-    reader: BufReader<File>,
+    writer: Conn,
+    reader: BufReader<Conn>,
     pub profile: PathBuf,
 }
 
@@ -115,7 +149,7 @@ impl Session {
         let name = pipe_name(profile);
         let start = Instant::now();
         loop {
-            match OpenOptions::new().read(true).write(true).open(&name) {
+            match open_conn(&name) {
                 Ok(file) => {
                     let reader = file.try_clone().map_err(|e| format!("pipe clone: {e}"))?;
                     return Ok(Session {
@@ -139,6 +173,10 @@ impl Session {
 
     /// Write one request line, read one reply line. An `Err` reply becomes `Err(message)`.
     pub fn call(&mut self, r: &Request) -> Result<Reply, String> {
+        #[cfg(target_os = "macos")]
+        let mac = mac_keys(r);
+        #[cfg(target_os = "macos")]
+        let r = &mac;
         let line = encode(r);
         self.writer
             .write_all(line.as_bytes())

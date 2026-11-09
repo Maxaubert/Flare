@@ -1879,6 +1879,7 @@ dependencies = [
  "flare-render",
  "flare-settings",
  "flare-tabs",
+ "flare-term",
  "flare-update",
  "flare-win",
  "libc",

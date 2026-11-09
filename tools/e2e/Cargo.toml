@@ -26,6 +26,7 @@ flare-update = { path = "../../crates/flare-update" }
 flare-diag = { path = "../../crates/flare-diag" }
 flare-render = { path = "../../crates/flare-render" }
 flare-tabs = { path = "../../crates/flare-tabs" }
+flare-term = { path = "../../crates/flare-term" }
 flare-settings = { path = "../../crates/flare-settings" }
 flare-dictation = { path = "../../crates/flare-dictation" }
 flare-ctl = { path = "../../crates/flare-ctl" }
