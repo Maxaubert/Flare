@@ -1081,7 +1081,11 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
             && kept_theme == "pitch"
             && kept_agent == dirty_agent
             && save_dirty(&mut app),
-        format!("Cancel changes nothing (theme {kept_theme}, agent {kept_agent})"),
+        format!(
+            "Cancel changes nothing (theme {kept_theme}, agent {kept_agent}; it asked: {asks_again}, \
+             the colour held before: {dirty_agent:?}, still unsaved: {})",
+            save_dirty(&mut app)
+        ),
     );
 
     // PT: Discard switches, and the change is gone.

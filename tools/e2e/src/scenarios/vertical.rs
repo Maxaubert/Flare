@@ -1073,7 +1073,11 @@ fn vertical_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     // PT: run.mjs:2299
     ctx.ok(
         reference.is_some() && opening <= 1.0,
-        format!("sliding out, the corner keeps to the sidebar's edge, no band beside the line (worst {opening:.1}px)"),
+        format!(
+            "sliding out, the corner keeps to the sidebar's edge, no band beside the line (worst {opening:.1}px; \
+             slid out: panel at {}, slot {}, {} OS frames)",
+            shown["slide_now"], shown["slot_now"], shown["redraws"]
+        ),
     );
     let samples = slide_samples(ctx, app, "closing", false, secondary, k);
     let closing = worst(&samples);

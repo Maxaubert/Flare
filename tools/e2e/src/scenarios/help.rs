@@ -1182,6 +1182,12 @@ fn help_b(ctx: &mut Ctx, app: &mut App, started: Instant) -> Result<(), String> 
     // DROPPED: "the text cursor over a command" because the cursor shape cannot be read from a window
     // that never shows; the same file pins `mouse-cursor: MouseCursor.text` on the well.
     park(app);
+    // The row's hover fades out over 120 ms: the picture before waits it out, or a row still lit by
+    // the clicks above is the "changed colour" (the Mac runner, rule 346).
+    ctx.settle(50);
+    ctx.settle(50);
+    ctx.settle(50);
+    ctx.settle(50);
     let plain_shot = ctx
         .shot(app, "help-select-before")
         .and_then(|p| Img::load(&p));
@@ -1445,10 +1451,19 @@ fn help_b(ctx: &mut Ctx, app: &mut App, started: Instant) -> Result<(), String> 
         && ctx.until("kb-2 in the new shell", 15_000, &mut || {
             term_text(app).contains("kb-2")
         });
+    let shown: String = {
+        let t = term_text(app);
+        let tail: Vec<&str> = t.lines().filter(|l| !l.trim().is_empty()).collect();
+        tail[tail.len().saturating_sub(4)..].join(" | ")
+    };
     check!(
         ctx,
         landed,
-        format!("the new shell has the keyboard (the panel's field held it: {field_had_it})")
+        format!(
+            "the new shell has the keyboard (the panel's field held it: {field_had_it}, its prompt came: {prompt}, \
+             field now: {}, the shell shows: {shown})",
+            hs(app)["field_focused"]
+        )
     );
     let _ = app.session.key("Ctrl+W");
     // PT: run.mjs:4987

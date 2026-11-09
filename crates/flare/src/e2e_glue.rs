@@ -1640,11 +1640,20 @@ pub fn series_from_redraws() {
     });
 }
 
+/// The OS frames (`RedrawRequested`) the window has had under `--e2e` (rule 345's evidence).
+static REDRAWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many OS frames the window has had under `--e2e`.
+pub fn redraw_count() -> u64 {
+    REDRAWS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Called for every redraw request of the window (software renderer only; a no-op otherwise).
 pub fn on_redraw() {
     if !crate::e2e::global().on() {
         return;
     }
+    REDRAWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let now = Instant::now();
     let age = crate::startup_trace::since_process_start().as_secs_f64() * 1000.0;
     let env = FRAMES.with(|f| f.try_borrow().ok().and_then(|st| st.env.clone()));

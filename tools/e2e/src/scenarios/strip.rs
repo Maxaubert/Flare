@@ -1049,10 +1049,28 @@ pub fn tooltips(ctx: &mut Ctx) -> Result<(), String> {
     // PT: run.mjs:2886-2892. Not at once: over half a second on the ? shows no tip yet.
     if let Some(help) = ui_rect(&mut app, "help") {
         let (cx, cy) = centre(help);
+        let t0 = std::time::Instant::now();
         move_to(&mut app, cx, cy);
-        hold(ctx, 600);
-        let early = tip_state(&mut app)["visible"] == json!(true);
-        ctx.ok(!early, "over half a second on the ? shows no tip yet");
+        // Read every 50 ms, so a tip that came too soon says when it came and what it was.
+        let mut early: Option<(u128, Value)> = None;
+        while t0.elapsed() < std::time::Duration::from_millis(600) {
+            let t = tip_state(&mut app);
+            if t["visible"] == json!(true) {
+                early = Some((t0.elapsed().as_millis(), t));
+                break;
+            }
+            ctx.settle(50);
+        }
+        ctx.ok(
+            early.is_none(),
+            match &early {
+                None => "over half a second on the ? shows no tip yet".to_string(),
+                Some((ms, t)) => format!(
+                    "over half a second on the ? shows no tip yet (one showed after {ms} ms: {})",
+                    t["text"]
+                ),
+            },
+        );
         move_to(&mut app, rest.0, rest.1);
         ctx.until("the tip to go", 2_000, &mut || {
             tip_state(&mut app)["visible"] != json!(true)
