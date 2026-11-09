@@ -461,7 +461,7 @@ fn handle_line(raw: usize, text: &str, dispatch: &Dispatch) -> bool {
 #[cfg(target_os = "macos")]
 struct MacHook {
     listener: std::os::unix::net::UnixListener,
-    _lock: std::fs::File,
+    _lock: std::fs::File, // sync-ok: a type, held open for the lock; no call
     path: std::path::PathBuf,
 }
 

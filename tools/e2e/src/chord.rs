@@ -249,7 +249,18 @@ fn table_context(os: flare_term::keys::KeyOs) -> flare_tabs::keymap::KeyContext 
         help: true,
         vertical: true,
         agent_guard: true,
+        agent_keys: true,
         ..Default::default()
+    }
+}
+
+/// The copy key over a selection: `chord` (Ctrl+C, or Ctrl+KeyC with a logical key) on Windows; on
+/// macOS the same with Cmd, since a Mac copies with Cmd+C and sends Ctrl+C to the shell (rule 333).
+pub fn copy_chord(chord: &str) -> String {
+    if cfg!(target_os = "macos") {
+        ctrl_as_meta(chord)
+    } else {
+        chord.to_string()
     }
 }
 
@@ -321,6 +332,10 @@ mod mac_chord_tests {
         assert_eq!(mac_app_chord("Ctrl+Shift+V"), "Meta+Shift+V");
         // The same on both systems, or the shell's.
         assert_eq!(mac_app_chord("Ctrl+Tab"), "Ctrl+Tab");
+        // The agent hotkeys: Ctrl+S is Cmd+S on a Mac, Ctrl+PageDown stays.
+        assert_eq!(mac_app_chord("Ctrl+S"), "Meta+S");
+        assert_eq!(mac_app_chord("Ctrl+PageDown"), "Ctrl+PageDown");
+        assert_eq!(ctrl_as_meta("Ctrl+KeyC=с"), "Meta+KeyC=с");
         assert_eq!(mac_app_chord("Ctrl+C"), "Ctrl+C");
         assert_eq!(mac_app_chord("Ctrl+A"), "Ctrl+A");
         assert_eq!(mac_app_chord("Enter"), "Enter");

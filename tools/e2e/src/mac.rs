@@ -19,6 +19,10 @@ pub struct Listed {
     pub pid: u32,
     pub bounds: (f64, f64, f64, f64),
     pub alpha: f64,
+    /// The window level (0 normal, 3 floating, 101 a menu, 25 the status bar ...).
+    pub layer: i64,
+    /// The owner's name (needs no right, unlike the window's own title).
+    pub owner: String,
 }
 
 /// Every window the window server lists as ordered in (`OnScreenOnly`: ordered in, wherever it is).
@@ -49,7 +53,19 @@ pub fn listed_windows() -> Vec<Listed> {
                 num(&b, "Height")?,
             );
             let alpha = num(&d, "kCGWindowAlpha").unwrap_or(1.0);
-            Some(Listed { pid, bounds, alpha })
+            let layer = num(&d, "kCGWindowLayer").unwrap_or(0.0) as i64;
+            let owner = d
+                .objectForKey(&key("kCGWindowOwnerName"))
+                .and_then(|p| p.downcast::<NSString>().ok())
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            Some(Listed {
+                pid,
+                bounds,
+                alpha,
+                layer,
+                owner,
+            })
         })
         .collect()
 }
@@ -87,14 +103,19 @@ pub fn shows_on(
             .any(|&(dx, dy, dw, dh)| x < dx + dw && dx < x + w && y < dy + dh && dy < y + h)
 }
 
-/// How many windows of the processes `pids` show on a display (ordered in, not transparent, and
+/// The windows of the processes `pids` that show on a display (ordered in, not transparent, and
 /// overlapping a display: a parked window at (-32000, -32000) is ordered in but shows nowhere).
-pub fn on_screen_windows_of(pids: &[u32]) -> usize {
+pub fn shown_windows_of(pids: &[u32]) -> Vec<Listed> {
     let displays = display_bounds();
     listed_windows()
-        .iter()
+        .into_iter()
         .filter(|w| pids.contains(&w.pid) && shows_on(w.bounds, w.alpha, &displays))
-        .count()
+        .collect()
+}
+
+/// How many windows of the processes `pids` show on a display.
+pub fn on_screen_windows_of(pids: &[u32]) -> usize {
+    shown_windows_of(pids).len()
 }
 
 /// The pid of the frontmost app (the one that has the keyboard), None when the workspace cannot say.

@@ -61,7 +61,7 @@ fn main() {
     #[cfg(target_os = "macos")]
     if cli.perf {
         // The bar compares against the installed Prism Terminal on the owner's Windows PC (docs/performance.md).
-        println!("perf runs on Windows only (it measures against Prism Terminal there)");
+        println!("perf runs on Windows only (it measures against the owner's baseline there)");
         std::process::exit(2);
     }
     let code = match &cli.run_one {

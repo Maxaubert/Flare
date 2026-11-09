@@ -94,12 +94,7 @@ fn write_prog(dir: &Path, name: &str, body: &str) -> Result<PathBuf, String> {
     let script = format!("$e = [char]27\r\n$bel = [char]7\r\n{body}\r\n");
     fs::write(dir.join(format!("{name}.ps1")), script)
         .map_err(|e| format!("the program script: {e}"))?;
-    let cmd = dir.join(format!("{name}.cmd"));
-    let runner = format!(
-        "@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{name}.ps1\"\r\n"
-    );
-    fs::write(&cmd, runner).map_err(|e| format!("the program runner: {e}"))?;
-    Ok(cmd)
+    crate::standins::ps_runner(dir, name).map_err(|e| format!("the program runner: {e}"))
 }
 
 /// The program that sends its queries and logs every byte it is sent (PT's replies probe). It

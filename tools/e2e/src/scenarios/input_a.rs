@@ -357,6 +357,13 @@ fn write_agent(dir: &Path) -> Result<PathBuf, String> {
 }
 
 /// Whether `pwsh` is on this machine (PT's clickCaret runs in pwsh).
+#[cfg(not(windows))]
+fn pwsh_present() -> bool {
+    std::path::Path::new(&crate::standins::powershell()).is_absolute()
+}
+
+/// Whether `pwsh` is on this machine (PT's clickCaret runs in pwsh).
+#[cfg(windows)]
 fn pwsh_present() -> bool {
     std::process::Command::new("where.exe")
         .arg("pwsh")
@@ -382,13 +389,7 @@ fn caret_hold_run(ctx: &mut Ctx, app: &mut App, agent: &Path) -> Result<(), Stri
     if !wait_prompt(app) {
         return Err("the shell showed no prompt".into());
     }
-    run_line(
-        app,
-        &format!(
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
-            agent.display()
-        ),
-    )?;
+    run_line(app, &crate::standins::ps_file_line(agent))?;
     // PT: run.mjs:1234
     let streaming = wait_for("the stand-in agent streaming", 15_000, &mut || {
         text(app).contains("stream 3")
@@ -479,13 +480,7 @@ fn mouse_report_run(ctx: &mut Ctx, app: &mut App, stand_in: &Path) -> Result<(),
     if !wait_prompt(app) {
         return Err("the shell showed no prompt".into());
     }
-    run_line(
-        app,
-        &format!(
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
-            stand_in.display()
-        ),
-    )?;
+    run_line(app, &crate::standins::ps_file_line(stand_in))?;
     // PT: run.mjs:1306 (node). The program has enabled mouse reporting.
     let up = wait_for("the program has asked for the mouse", 15_000, &mut || {
         mouse_on(app)

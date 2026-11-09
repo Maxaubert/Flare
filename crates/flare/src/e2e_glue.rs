@@ -1407,6 +1407,11 @@ impl GlueCtx {
             return Err("dpi must be above zero".into());
         }
         let app = self.app.upgrade().ok_or("the window is gone")?;
+        // macOS: the content view (there is no HWND; the event path ignores it). A launch that asked
+        // for a scale failed on "no handle" before this (rule 335).
+        #[cfg(not(windows))]
+        let hwnd = crate::window::native_view_of(&app).ok_or("the window has no handle")?;
+        #[cfg(windows)]
         let hwnd = crate::window::hwnd_of(&app).ok_or("the window has no handle")?;
         apply_dpi(hwnd, app.window(), dpi, origin, DpiMode::from_env());
         Ok(())

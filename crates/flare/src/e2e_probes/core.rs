@@ -131,8 +131,37 @@ fn snap(l: f32, k: f32) -> f32 {
 }
 
 /// The title mark before the strip (`Px.snap(42px) + Px.hair()` wide); the strip starts after it.
-fn mark_w(k: f32) -> f32 {
-    snap(42.0, k) + hair(k)
+/// macOS (`native-caption`): the traffic lights' corner, `Px.snap(caption-gap) + Px.hair()` (rule 335).
+fn mark_w_of(native: bool, gap: f32, k: f32) -> f32 {
+    if native {
+        snap(gap, k) + hair(k)
+    } else {
+        snap(42.0, k) + hair(k)
+    }
+}
+
+/// The mark's width as this window lays it out.
+fn mark_w_in(a: &crate::AppWindow, k: f32) -> f32 {
+    mark_w_of(a.get_native_caption(), a.get_caption_gap(), k)
+}
+
+/// Pure: which title button `name` is, counted from the right edge (close 0 ... help 4), or why
+/// there is none. With the native caption (macOS) the window buttons are AppKit's traffic lights, so
+/// the row ends with Settings and then Command help (rule 335).
+fn title_button(name: &str, native: bool, help: bool) -> Result<usize, String> {
+    let base = if native { 0 } else { 3 };
+    match name {
+        "close" | "max" | "min" if native => Err(format!(
+            "ui.rect {name}: the window buttons are the native traffic lights here"
+        )),
+        "close" => Ok(0),
+        "max" => Ok(1),
+        "min" => Ok(2),
+        "cog" => Ok(base),
+        "help" if help => Ok(base + 1),
+        "help" => Err("ui.rect help: the command help button is not showing".into()),
+        _ => Err(format!("ui.rect {name}: not a title button")),
+    }
 }
 
 /// Where a tab is in the strip (css px). Only the horizontal strip exports it.
@@ -142,7 +171,7 @@ fn tab_rect(ctx: &ProbeCtx, row: &crate::TabRow) -> Value {
     }
     let k = scale_of(ctx);
     rect_json(
-        mark_w(k) + row.x as f32 / k,
+        mark_w_in(ctx.app, k) + row.x as f32 / k,
         0.0,
         row.w as f32 / k,
         BAR_H - hair(k),
@@ -417,15 +446,14 @@ fn ui_rect(ctx: &ProbeCtx, arg: &Value) -> Result<Value, String> {
         };
     }
     match name {
-        "close" => Ok(button(0)),
-        "max" => Ok(button(1)),
-        "min" => Ok(button(2)),
-        "cog" => Ok(button(3)),
-        "help" if a.get_help_visible() => Ok(button(4)),
-        "help" => Err("ui.rect help: the command help button is not showing".into()),
-        "mark" if !a.get_layout_vertical() => Ok(rect_json(0.0, 0.0, mark_w(k), BAR_H, k)),
+        "close" | "max" | "min" | "cog" | "help" => {
+            title_button(name, a.get_native_caption(), a.get_help_visible()).map(button)
+        }
+        "mark" if !a.get_layout_vertical() => {
+            Ok(rect_json(0.0, 0.0, mark_w_in(ctx.app, k), BAR_H, k))
+        }
         "strip" if !a.get_layout_vertical() => Ok(rect_json(
-            mark_w(k),
+            mark_w_in(ctx.app, k),
             0.0,
             a.get_strip_phys_width() as f32 / k,
             BAR_H - hair(k),
@@ -435,7 +463,7 @@ fn ui_rect(ctx: &ProbeCtx, arg: &Value) -> Result<Value, String> {
         "plus" if !a.get_layout_vertical() => {
             let g = a.get_strip_geom();
             Ok(rect_json(
-                mark_w(k) + g.plus_x as f32 / k,
+                mark_w_in(ctx.app, k) + g.plus_x as f32 / k,
                 4.0,
                 g.plus_w as f32 / k,
                 BAR_H - hair(k) - 8.0,
@@ -608,6 +636,22 @@ fn probe_names(_ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Rule 335: on a Mac the row ends with Settings (no window buttons) and the strip starts after the
+    // traffic lights' corner; Windows keeps its five buttons and its 42 px mark.
+    #[test]
+    fn the_title_rects_follow_the_mac_caption() {
+        assert_eq!(title_button("cog", false, false), Ok(3));
+        assert_eq!(title_button("help", false, true), Ok(4));
+        assert_eq!(title_button("close", false, false), Ok(0));
+        assert_eq!(title_button("cog", true, false), Ok(0));
+        assert_eq!(title_button("help", true, true), Ok(1));
+        assert!(title_button("close", true, true).is_err());
+        assert!(title_button("help", true, false).is_err());
+        assert_eq!(mark_w_of(false, 78.0, 1.0), 43.0);
+        assert_eq!(mark_w_of(true, 78.0, 1.0), 79.0);
+        assert_eq!(mark_w_of(true, 78.0, 2.0), 79.0);
+    }
     use std::cell::{Cell, RefCell};
     use std::collections::BTreeSet;
     use std::collections::VecDeque;

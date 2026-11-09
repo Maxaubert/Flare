@@ -485,15 +485,13 @@ pub mod mac {
 
     /// Pure: what one look found wrong, given the run's processes, the frontmost app and how many
     /// windows of the run show on a display.
-    pub fn look(run: &HashSet<u32>, front: Option<u32>, shown: usize) -> Vec<String> {
+    pub fn look(run: &HashSet<u32>, front: Option<u32>, shown: &[String]) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(pid) = front.filter(|p| run.contains(p)) {
             out.push(format!("the scenario became the frontmost app (pid {pid})"));
         }
-        if shown > 0 {
-            out.push(format!(
-                "the scenario showed {shown} window(s) on a display"
-            ));
+        for w in shown {
+            out.push(format!("the scenario showed a window on a display: {w}"));
         }
         out
     }
@@ -530,8 +528,17 @@ pub mod mac {
                     let run = run_processes();
                     if !run.is_empty() {
                         let pids: Vec<u32> = run.iter().copied().collect();
-                        let shown = crate::mac::on_screen_windows_of(&pids);
-                        let problems = look(&run, crate::mac::frontmost_pid(), shown);
+                        let shown: Vec<String> = crate::mac::shown_windows_of(&pids)
+                            .iter()
+                            .map(|w| {
+                                let (x, y, ww, h) = w.bounds;
+                                format!(
+                                    "{} (pid {}), level {}, at ({x}, {y}) size {ww} by {h}",
+                                    w.owner, w.pid, w.layer
+                                )
+                            })
+                            .collect();
+                        let problems = look(&run, crate::mac::frontmost_pid(), &shown);
                         if let Ok(mut f) = f.lock() {
                             f.extend(problems);
                         }
@@ -566,14 +573,15 @@ pub mod mac {
         #[test]
         fn the_guard_flags_a_window_or_the_keyboard_of_the_run_and_only_those() {
             let run: HashSet<u32> = [10, 11].into_iter().collect();
+            let two = ["a".to_string(), "b".to_string()];
             assert!(
-                look(&run, Some(99), 0).is_empty(),
+                look(&run, Some(99), &[]).is_empty(),
                 "another app in front is not a failure"
             );
-            assert!(look(&run, None, 0).is_empty());
-            assert_eq!(look(&run, Some(11), 0).len(), 1);
-            assert_eq!(look(&run, Some(99), 2).len(), 1);
-            assert_eq!(look(&run, Some(10), 1).len(), 2);
+            assert!(look(&run, None, &[]).is_empty());
+            assert_eq!(look(&run, Some(11), &[]).len(), 1);
+            assert_eq!(look(&run, Some(99), &two).len(), 2);
+            assert_eq!(look(&run, Some(10), &two[..1]).len(), 2);
         }
 
         #[test]

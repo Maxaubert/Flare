@@ -23,13 +23,7 @@ fn write_prog(dir: &Path, name: &str, body: &str) -> PathBuf {
     std::fs::create_dir_all(dir).expect("the program folder");
     let ps1 = dir.join(format!("{name}.ps1"));
     std::fs::write(&ps1, format!("$e = [string][char]27\r\n{body}\r\n")).expect("write the .ps1");
-    let cmd = dir.join(format!("{name}.cmd"));
-    std::fs::write(
-        &cmd,
-        format!("@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{name}.ps1\"\r\n"),
-    )
-    .expect("write the .cmd");
-    cmd
+    super::ps_runner(dir, name).expect("write the runner")
 }
 
 /// Reads the console replies for two seconds, then writes them back as hex-free text after `label`.

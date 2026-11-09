@@ -1099,3 +1099,52 @@ frame could run script in the page above it. `popup_target_allowed` lets only `h
 view's `NavRule` allows for the main frame; `data:`, `file:`, `chrome:`, `devtools:`, `blob:` and every other scheme
 are dropped. Held by `a_popup_loads_only_a_web_address_the_navigation_rule_allows`. Source: commit security review of
 phase 5 (2026-11-08).
+330. **macOS: the `--e2e` test hook is a Unix socket with the named pipe's guarantees.** The hook serves
+`flare_e2e_proto::pipe_name(profile)`, `e2e-<16 hex of the profile hash>.sock` in the control channel's private
+folder (`<user temp>/flare-ctl`, 0700, this user's), bound 0600 through `flare_ctl::pipe::bind_private_socket` under
+the control channel's first-instance lock, so a second `--e2e` launch on the same profile cannot take it over; a
+client of another uid is dropped before a byte is read; every wait is a 50 ms `poll` that looks at the stop flag, so
+dropping the server never hangs on a connected client (the Windows `CancelSynchronousIo`), and the socket is removed
+when the server stops. Without `--e2e` there is no socket. Held by the e2e_hook tests that now run on macOS
+(`a_hello_round_trips_without_the_ui_thread`, `a_second_server_on_the_same_profile_cannot_take_the_pipe`,
+`dropping_the_server_returns_even_with_a_client_connected` and the rest) and
+`the_mac_socket_is_this_users_alone_and_goes_with_the_server`, `the_mac_hook_is_a_short_socket_in_the_private_folder`.
+Source: Mac E2E in CI, the port plan's Ongoing row (2026-11-09).
+331. **macOS: the harness never takes the screen, the keyboard or the owner's processes.** `tools/e2e` runs on macOS
+with the Windows guarantees in Mac terms: a launched app leads its own process group and dropping it kills the group
+and every descendant by parent pid (the job object's kill-on-close; a tab's shell sits in its own session); reaping
+is by the world's path in a command line only (`ps`), so the owner's Flare is never touched; the world is a HOME of
+its own (`<root>/home`, its `Library/Application Support/Flare` the profile) at its canonical path (`/private/var/...`),
+so the app, the hook's socket name and the reaper read one spelling; pixels come only from the app's own render
+(`Snapshot`, Slint's snapshot), never a screen capture, which would need Screen Recording. Around every scenario a
+guard looks every 200 ms and fails the scenario when a process of the run is the frontmost app or owns a window that
+overlaps a display (the window server's list: owner pid, bounds and alpha need no right); the pasteboard's change count
+is compared before the first and after the last scenario. Held by `a_launched_tree_is_killed_when_the_child_drops`,
+`the_reaper_spares_a_process_without_the_world_path` (proc_mac.rs),
+`the_guard_flags_a_window_or_the_keyboard_of_the_run_and_only_those`, `a_parked_or_clear_window_shows_nowhere`,
+`the_harness_itself_owns_no_on_screen_window`, and the CI job's first run, where the guard caught the clamped window
+of rule 334. Source: Mac E2E in CI (2026-11-09).
+332. **macOS: a scenario is gated only in `mac_gate::GATED`, with its reason, and a gated one is never a pass.** The
+scenario table is the same on both systems. A Mac run does not start a gated scenario, prints it as `gated` with its
+reason after the table and counts it apart; a module that needs Windows-only harness parts (the speech host's process
+list, the tour's capture) is a stub on macOS that answers only that it is gated. Gate only what is Windows' own
+(WebView2, Velopack's Windows swap, the Windows speech host and key hook, PrintWindow) or a Mac port not written yet,
+and say which in the reason; a Mac bug a scenario finds is fixed, not gated. `docs/e2e.md` ("macOS E2E") lists both
+sets. Held by `every_gated_name_is_a_scenario_once_with_a_reason` and `a_gated_scenario_is_never_started`. Source: Mac
+E2E in CI (2026-11-09).
+333. **macOS: the scenarios keep their Windows keys and shell; the harness and one seam translate them.** A chord a
+scenario presses goes through `chord::mac_app_chord` in `Session::call`: an app chord of the Windows table whose Mac
+key is the same chord with Cmd in Ctrl's place is sent with Cmd (`Ctrl+T` is `Meta+T`, `Ctrl+Shift+P` is
+`Meta+Shift+P`), paste is Cmd+V, and Ctrl+Tab and the shell's Ctrl keys (Ctrl+C, Ctrl+A) are unchanged, decided by
+the app's own `flare_tabs::keymap::chord_of` for both systems, never a hand list. The tab's shell is pwsh when the
+runner has it: `FLARE_E2E_SHELL` (read through `e2e::global().env`, macOS only, only when the profile saves no shell)
+names the shell a new tab starts, so the PowerShell prompt checks run unchanged. Held by
+`the_app_chords_take_cmd_on_a_mac_and_the_shell_keys_stay` and `the_e2e_seams_are_the_listed_ones`. Source: Mac E2E in
+CI (2026-11-09).
+334. **macOS: an `--e2e` window is never pulled onto a screen.** AppKit keeps a titled window on a screen when it is
+ordered in or moved, so the parking spot (-32000, -32000) became a 40 px strip at the display's edge on the macOS
+runner ((-984, 673) to (40, 1347) on a 1024 by 768 display; the launch's `window.park` check and the screen guard
+both failed it). Under `--e2e` only, before the first window, `window_park::keep_windows_off_screen` gives `NSWindow`
+a `constrainFrameRect:toScreen:` that keeps the frame it is given, and `park` puts it on the window's own class too;
+the real app never calls either. Held by `a_parked_class_keeps_its_frame_off_every_screen_and_nswindow_keeps_the_rule`
+and every Mac launch's `window.park` check. Source: Mac E2E in CI, run 42558418417 (2026-11-09).

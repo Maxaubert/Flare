@@ -481,7 +481,7 @@ fn review_keys_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         steps: 6,
         button: Button::Left,
     })?;
-    app.session.key("Ctrl+KeyC=с")?;
+    app.session.key(&crate::chord::copy_chord("Ctrl+KeyC=с"))?;
     // PT: run.mjs:4497
     let copied = wait(3_000, &mut || clip_text(app) != "SENTINEL-6");
     let got = clip_text(app);

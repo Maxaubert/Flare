@@ -42,7 +42,7 @@ pub const GATED: &[(&str, &str)] = &[
     ("closeAsk", FAKE_CLAUDE),
     (
         "visualTour",
-        "Windows only: an opt-in tour that captures Prism Terminal beside Flare with PrintWindow",
+        "Windows only: an opt-in tour that captures the reference terminal beside Flare with PrintWindow",
     ),
 ];
 
