@@ -357,14 +357,25 @@ fn first_session(ctx: &mut Ctx, app: &mut App, profile: &Path) -> Result<(), Str
     pause(ctx, 1_000);
     let from = lines(profile).len();
     pause(ctx, 3_000);
-    let idle: Vec<String> = lines(profile)
+    let idle_lines: Vec<_> = lines(profile).into_iter().skip(from).collect();
+    let idle: Vec<String> = idle_lines
         .iter()
-        .skip(from)
         .map(|l| text(l, "k").unwrap_or("").to_string())
+        .collect();
+    // The lines themselves too, so a lag says how long and what ran (the Mac runner wrote two main-lag lines).
+    let whole: Vec<String> = idle_lines
+        .iter()
+        .map(|l| {
+            Value::Object(l.raw.clone())
+                .to_string()
+                .chars()
+                .take(300)
+                .collect()
+        })
         .collect();
     ctx.ok(
         idle.is_empty(),
-        format!("an idle 3 s at the quiet level writes nothing ({idle:?})"),
+        format!("an idle 3 s at the quiet level writes nothing ({idle:?}; {whole:?})"),
     );
 
     // PT: run.mjs:5266-5277 A STALL: the UI thread is held for 2.6 s. The watchdog writes one
