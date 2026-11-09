@@ -7,7 +7,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// The TCP accept logger, the CONNECT proxy and the dual-stack server of `tests/cef/observers.py`.
+/// The TCP accept logger, the CONNECT proxy and the dual-stack server of `observers`.
 pub const OBS_TCP: u16 = 47201;
 pub const OBS_PROXY: u16 = 47202;
 pub const OBS_HTTP: u16 = 47203;

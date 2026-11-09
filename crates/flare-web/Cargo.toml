@@ -17,6 +17,7 @@ windows-sys.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 flare-cef = { path = "../flare-cef" }
+libc.workspace = true
 serde_json.workspace = true
 objc2.workspace = true
 

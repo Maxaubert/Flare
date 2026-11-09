@@ -7,7 +7,7 @@
 //!   new windows into the same view, failed loads, script dialogs, permissions, downloads with the held yes or
 //!   no, zoom, the picture, pointer, wheel, keys, the key filter, the input method, focus, a still, DevTools calls,
 //!   a `<select>` list, a crashed page.
-//! - `walls`: a sealed mini-app (the spike's exfiltration page, watched by `tests/cef/observers.py`, against a
+//! - `walls`: a sealed mini-app (the spike's exfiltration page, watched by the in-process `observers`, against a
 //!   web panel control), a networked one, a mod's page and its bridge, a plugin's bar, the profiles.
 //! - `agent`: the real `agent_job` drives a web panel through `WebBackend::cdp` (`agent.rs`): look, click, type,
 //!   press, scroll, the frames, wait, navigate and state, eval and its runaway, a download, whose keys the window's
@@ -17,11 +17,12 @@
 //! the activation policy and whether the app ever became active.
 
 mod agent;
+mod observers;
 mod pages;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::Command;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -34,7 +35,8 @@ use objc2::MainThreadMarker;
 use serde_json::{Value, json};
 
 use crate::backend::{
-    ImeInput, KeyInput, Mods, Nav, Pointer, PointerAct, PointerButton, Slot, WebBackend, WebEvent,
+    ImeInput, KeyInput, Mods, Nav, Pointer, PointerAct, PointerButton, Slot, ViewFrame, WebBackend,
+    WebEvent,
 };
 use crate::host::{HostConfig, WebHost, installed_runtime};
 
@@ -329,13 +331,26 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
         json!({"events": ev}),
     );
 
-    // ---- the picture
-    h.wait(300);
-    let frame = h.host.frame(&slot);
-    let px = frame.as_ref().and_then(|f| {
+    // ---- the picture: CEF's first paint comes some time after Loaded (on a CI runner's software compositor well
+    // past the 300 ms a Mac with a GPU needs), so the check waits for a frame of the panel's size, as the engine's own
+    // paint probe does, and says how long it took.
+    let px_of = |f: &ViewFrame| {
         let i = ((100 * f.width + 240) * 4) as usize;
         f.bgra.get(i..i + 4).map(|p| (p[2], p[1], p[0], p[3]))
-    });
+    };
+    let t = Instant::now();
+    let mut frame = None;
+    while t.elapsed() < Duration::from_secs(10) {
+        h.wait(50);
+        frame = h.host.frame(&slot);
+        if frame.as_ref().is_some_and(|f| {
+            f.width == 1966 && f.height == 1400 && px_of(f) == Some((0x33, 0x66, 0xcc, 0xff))
+        }) {
+            break;
+        }
+    }
+    let frame_ms = t.elapsed().as_millis();
+    let px = frame.as_ref().and_then(px_of);
     rep.check(
         "panel.frame",
         frame
@@ -344,7 +359,7 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
             && px == Some((0x33, 0x66, 0xcc, 0xff)),
         "the page is a picture of the panel's device pixels, its colours where the page put them",
         json!({"size": frame.as_ref().map(|f| (f.width, f.height)), "pixel": format!("{px:?}"),
-               "serial": frame.as_ref().map(|f| f.serial)}),
+               "serial": frame.as_ref().map(|f| f.serial), "ms": frame_ms}),
     );
     let from = h.mark();
     h.host.capture_still(tab, 7);
@@ -892,30 +907,15 @@ fn hit_summary(lines: &[String]) -> Vec<String> {
 }
 
 struct Observers {
-    child: Child,
     dir: PathBuf,
 }
 
 impl Observers {
-    fn start(dir: &Path) -> Option<Observers> {
+    fn start(dir: &Path) -> Result<Observers, String> {
         let _ = std::fs::remove_dir_all(dir);
-        std::fs::create_dir_all(dir).ok()?;
-        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/cef/observers.py");
-        let child = Command::new("/usr/bin/python3")
-            .arg("-I")
-            .arg(script)
-            .arg(dir)
-            .args([pages::OBS_TCP, pages::OBS_PROXY, pages::OBS_HTTP].map(|p| p.to_string()))
-            .arg("300")
-            .spawn()
-            .ok()?;
-        let up = dir.join("start.log");
-        let t = Instant::now();
-        while !up.exists() && t.elapsed() < Duration::from_secs(5) {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        up.exists().then(|| Observers {
-            child,
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        observers::start(dir).map_err(|e| format!("the network observers did not start: {e}"))?;
+        Ok(Observers {
             dir: dir.to_path_buf(),
         })
     }
@@ -929,17 +929,9 @@ impl Observers {
     }
 }
 
-impl Drop for Observers {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
 fn walls(rep: &mut Report, data: &Path) -> Result<(), String> {
     let srv = pages::start()?;
-    let obs =
-        Observers::start(&data.join("netlogs")).ok_or("the network observers did not start")?;
+    let obs = Observers::start(&data.join("netlogs"))?;
     // The observers must be listening, or an empty log proves nothing: a connection of the probe's own is seen.
     let seen_before = obs.lines("tcp").len();
     let _ = std::net::TcpStream::connect(("127.0.0.1", pages::OBS_TCP))
