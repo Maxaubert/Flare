@@ -1620,8 +1620,7 @@ and which scenarios are gated: `docs/e2e.md`, "macOS E2E"; regression rules 330 
 - [x] A new tab never takes a warm spare that asked the terminal something nobody answered (pwsh's late cursor report was read as typing). (macOS: a_spare_that_asked_the_terminal_is_let_go_outside_windows, a_spare_that_asked_nothing_is_adopted, helpPanel)
 - [x] An idle run writes no diagnostics line once the runner is quiet and its timers are not coalesced. (macOS: diagLog)
 
-Where it stands (2026-11-09, the spec's progress line has the runs): the whole table ran green in parts on the runner
-(run 42630201735: 70 of 72; run 42637651220: 71 of 72, its one miss clickCaret's "a click on old output above the
-prompt moves nothing", which passed in the runs before it). Not yet: one full hand run with every job green; the
-`macos` job's two `flare-web::cef_macos` tests (the network observers, the panel's picture) fail on the base branch
-`feat/macos-5-web-panel` as well and belong to phase 5.
+Where it stands (2026-11-09, the spec's progress line has the runs): the `e2e-macos` job ran the whole table green in
+the full hand run 42655597593 (72 scenarios, 29 gated with a reason, the opt-in visualTour not run). Not green there:
+the `macos` job's `flare-web::cef_macos` tests (the network observers, the panel's picture, the engine's switches),
+which fail on the base branch `feat/macos-5-web-panel` too and belong to phase 5.

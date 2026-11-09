@@ -86,7 +86,11 @@ Then (rules 345 to 348): CI keeps its Rust cache on a red run and has a hand run
 filter (`docs/e2e.md`), so an iteration takes about 10 minutes, not 40. Found and fixed: the slide-out never moved in a
 window with no frames, a warm pwsh spare adopted late read its own cursor report as typing (a real Mac bug for any
 pwsh user), and an idle run's diagnostics lines came from the runner and the background task role. From run
-42612597989 (4 scenarios failing) to runs 42630201735 and 42637651220 (70 and 71 of 72 green).
+42612597989 (4 scenarios failing) to run 42655597593, where the `e2e-macos` job ran all 72 scenarios green. The
+runner's timer coalescing is off for the run (a background app's timers ran up to 100 ms late). Left: the `macos`
+job's `flare-web::cef_macos` tests, failing on the phase 5 branch as well, and timing tests that miss now and then on
+both runners (Windows `keyhook` "the thread ended", Mac `flood` and `oracle_notes`; Windows `check` passed in run
+42645829398).
 
 ## Known risks
 
