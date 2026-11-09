@@ -1,7 +1,8 @@
 name: ci
 on:
   push:
-    branches: [main]
+    # TEMPORARY (remove before merge): the Mac E2E branch runs CI on push while it has no PR.
+    branches: [main, feat/macos-e2e-ci]
   pull_request:
 
 concurrency:
