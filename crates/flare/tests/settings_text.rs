@@ -346,6 +346,10 @@ fn files_under(dir: &std::path::Path, exts: &[&str], out: &mut Vec<PathBuf>) {
     for entry in read {
         let path = entry.expect("a directory entry").path();
         if path.is_dir() {
+            // A package folder is someone else's text (`tools/model-viewer` after `npm install`).
+            if path.file_name().is_some_and(|n| n == "node_modules") {
+                continue;
+            }
             files_under(&path, exts, out);
         } else if path
             .extension()

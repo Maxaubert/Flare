@@ -2086,6 +2086,26 @@ only once no session is working. How to stage: `docs/shipping.md`, "Installing a
   new build stay in `current\` (the swap is per file, not a mirror). The restarted exe waits up to `HANDOFF_WAIT` (6 s)
   for the quitting one's pipe before it takes the lock, so the window comes back about 6 s after the old one goes.
 
+## 3D model viewer (issue #36), 2026-11-09
+
+The agent's `show_model {path, title?}` and a plugin's `view.model` (namespace `View`) open a `.glb`, `.gltf` or `.stl` file in the
+tab's panel. It is a mini-app Flare writes itself, like the audio player, so there is no new panel kind.
+
+- **Flow.** The path is resolved again (rules 13 and 14) through `path_open::resolve_file_of` with the viewer's extensions; the
+  extension must agree on both names and the file must be on a local drive. A bounded read (64 MB), then `index.html`, `viewer.js` and
+  `model.<ext>` go into the app's folder. No network.
+- **Page.** `flare_surfaces::model::page`, policy first: `default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data: blob:;
+  connect-src 'self'; worker-src 'none'`, with frames, objects and forms none. The viewer fetches the model itself.
+- **Viewer.** `tools/model-viewer/src/viewer.js`, three.js 0.170.0 built once to `assets/three/viewer.js`: orbit, zoom, pan, double-click reset,
+  Wireframe and Grid buttons, a neutral studio light, the camera fitted to the model, the background following light or dark, drawn only
+  when something changes. A message instead of a blank panel for no WebGL, over 5 million triangles, no geometry, a damaged file, or a
+  `.gltf` that points at other files. `window.__flareModel` settles to `{ok, triangles, textures}` or `{ok: false, code, error}`.
+- **Tests.** `flare_surfaces::model` (3), `path_open` (`a_file_for_a_viewer_is_one_of_its_extensions_under_the_same_name_rules`), `ctl_app` (`view_model_*`,
+  `the_real_model_resolver_is_rules_13_and_14_with_the_viewers_extensions`, `the_bundled_model_viewer_is_the_pinned_build`), `flare-mcp`
+  (`show_model_routes_a_path_made_absolute_to_view_model`, the pinned tools list), the method and grant tables, and the e2e `model`.
+- **STL normals.** The viewer works out an STL's normals from its facets and ignores the ones in the file, which are commonly zero and would draw the part as one flat silhouette (rule 233).
+
+Not in this version: click a path to preview, a `.gltf` with separate `.bin` or texture files, Draco or other WASM decoders, OBJ, FBX, animation.
 ## Ask the agent about a selection (#33), 2026-11-09
 
 - **What it is.** A small "Ask agent" button in the panel's header (in a web page's address bar, which is its header) and a row "Ask agent about this

@@ -167,7 +167,7 @@ else, and nothing after it is turned off.
 | Permission | What it opens | Words in Settings | Warning on the card |
 |---|---|---|---|
 | `panel` | Its panel in a tab (`panel.open` of its own `mod:<id>`, `panel.close`, `panel.state`). | Show its panel in a tab | |
-| `view` | `view.image`, `view.file`, `view.text`, `view.html`, `view.diagram`, `view.audio` in its own panel. | Show images, files and text | |
+| `view` | `view.image`, `view.file`, `view.text`, `view.html`, `view.diagram`, `view.audio`, `view.model` in its own panel. | Show images, files and text | |
 | `browser` | `browser.*` on its own browser panel (not built: answered `unavailable`). | Open and use its own web page | |
 | `convo` | `convo.state`: the changes of its tab's Claude session. | Read the agent's changes | |
 | `tools` | Answer Claude's calls to its tools (`tools.respond`). | Answer the agent's tool calls | |
@@ -282,7 +282,7 @@ worker, and every limit spent there, before the window hears of it.
 | Input (`input`) | `tabs.input {tab?, text, enter?}` | 2 a second per tab; 4096 bytes |
 | Storage (none, plugins only) | `storage.get {key?}`, `storage.set {key?, value}` | 1 MB as written; written to disk at most twice a second |
 | Panel (`panel`) | `panel.open {kind: "mod:<own id>", tab?}`, `panel.close`, `panel.state` | on another tab, a panel showing something else answers `busy` |
-| View (`view`) | `view.image`, `view.file`, `view.text`, `view.html`, `view.diagram`, `view.audio` (a `url` needs `network` too) | as for the agent |
+| View (`view`) | `view.image`, `view.file`, `view.text`, `view.html`, `view.diagram`, `view.audio` (a `url` needs `network` too), `view.model` | as for the agent |
 | Convo (`convo`) | `convo.state` | |
 | Tools (`tools`) | `tools.respond` (the bridge's `respond`) | 8 calls waiting per plugin |
 | Browser (`browser`) | `browser.*` | answered `unavailable` (not built) |
@@ -404,6 +404,8 @@ Sample: `../../sample-plugins/todo/`.
 - **`view.audio {path | url, title?, autoplay?}` (`view`).** Flare's own audio player in the plugin's panel: a sound
   file (mp3, wav, ogg, oga, opus, m4a, aac, flac, webm, weba; at most 100 MB) or a public https address (which needs
   `network` too). It never loops and plays by itself only with `autoplay: true`, once.
+- **`view.model {path, title?}` (`view`).** Flare's own 3D viewer in the plugin's panel: a `.glb`, `.gltf` or `.stl` file (at most
+  64 MB). No network and no script of the plugin's.
 
 ## Agent icon motions
 
