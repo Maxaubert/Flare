@@ -39,7 +39,7 @@ use std::rc::Rc;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
-use flare_ctl::{CtlError, code};
+use flare_ctl::{CancelFlag, CtlError, code};
 use flare_surfaces::agent_cursor::{AgentBorder, AgentCursor};
 use flare_surfaces::agent_job::{
     Fail, GLIDE_MAX_MS, Ids, Job, JobError, Op as AgentOp, Out as JobOut, Page, RefMap,
@@ -267,6 +267,8 @@ struct AgentCall {
     label: String,
     /// Which document the page was showing when the call began (`TabWeb::doc`).
     doc: u64,
+    /// Raised when the call's client has gone: the agent timer ends the job.
+    cancel: CancelFlag,
 }
 
 fn ctl_error(e: JobError) -> CtlError {
@@ -277,6 +279,7 @@ fn ctl_error(e: JobError) -> CtlError {
         Fail::Timeout => code::TIMEOUT,
         Fail::Interrupted => code::INTERRUPTED,
         Fail::Internal => code::INTERNAL,
+        Fail::Covered => code::COVERED,
     };
     CtlError::new(c, e.message)
 }
@@ -1045,7 +1048,7 @@ impl WebCtl {
     }
 
     /// Where the page in front goes for the slot `slot`. Only a held splitter changes that: the page keeps its width
-    /// (rule 228) until the pointer pauses or the splitter is let go. Anything else ends the hold, so the very next
+    /// (rule 230) until the pointer pauses or the splitter is let go. Anything else ends the hold, so the very next
     /// rectangle sent is the slot's: a release, a cancelled grab, a closed panel, a full-screen page.
     fn drag_rect(&mut self, tab: &str, slot: PhysRect) -> PhysRect {
         if !self.splitting || self.covers || self.hold.is_some() || slot.is_empty() {
@@ -1991,6 +1994,7 @@ impl WebCtl {
         op: AgentOp,
         label: &str,
         reply: Sender<Result<Value, CtlError>>,
+        cancel: CancelFlag,
     ) {
         let say = |m: &str| {
             let _ = reply.send(Err(CtlError::new(code::UNAVAILABLE, m.to_string())));
@@ -2050,6 +2054,7 @@ impl WebCtl {
             reply,
             label: label.to_string(),
             doc: t.doc,
+            cancel,
         });
         t.hold = None;
         flush_button_edges();
@@ -2317,7 +2322,8 @@ impl WebCtl {
         {
             t.refs = refs;
         }
-        // A press the call was cut short in is let go of, so the page does not think a button is held.
+        // A press the call was cut short in is let go of, so the page does not think a button is held (and the
+        // element a refused click held for its hit test goes too).
         if result.is_err() {
             for c in a.job.release_calls(&mut Ids(&mut self.call_ids)) {
                 if let Some(b) = self.backend.as_mut() {
@@ -2388,6 +2394,17 @@ impl WebCtl {
             && real_key_pressed()
         {
             self.user_input();
+        }
+        // A call whose client has gone (a cancel, a dropped connection) ends here: a press it was cut short in is
+        // let go of, and later calls on this page do not wait behind it.
+        let abandoned: Vec<String> = self
+            .tabs
+            .iter()
+            .filter(|(_, t)| t.agent.as_ref().is_some_and(|a| a.cancel.is_set()))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for tab in abandoned {
+            self.finish_agent(&tab, Err(Job::cancelled()));
         }
         let busy: Vec<String> = self
             .tabs

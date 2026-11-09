@@ -1636,6 +1636,7 @@ fn agent_op(tab: &str, op: AgentOp) -> CtlOp {
     CtlOp::BrowserAgent {
         tab: tab.into(),
         op,
+        cancel: flare_ctl::CancelFlag::default(),
     }
 }
 
@@ -1821,6 +1822,57 @@ fn a_click_by_ref_uses_the_numbers_of_the_last_look() {
         .collect();
     assert_eq!(presses.len(), 3);
     assert!(presses[1].contains("mousePressed") && presses[1].contains("\"x\":140.0"));
+}
+
+/// `shop`, but the page says the point is under something else.
+fn shop_covered(method: &str, params: &str) -> Result<String, String> {
+    match method {
+        "DOM.resolveNode" => Ok(json!({"object": {"objectId": "el-1"}}).to_string()),
+        "Runtime.callFunctionOn" => Ok(json!({"result": {"type": "object", "value":
+            {"covered": true, "tag": "div", "name": "Cookie\nwall"}}})
+        .to_string()),
+        _ => shop(method, params),
+    }
+}
+
+#[test]
+fn a_covered_click_is_refused_and_presses_nothing() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    with_shop(&slot);
+    let rx = look(&f, &id);
+    f.pump();
+    rx.try_recv().unwrap().unwrap();
+    fake(&slot).state.borrow_mut().cdp = Some(Box::new(shop_covered));
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    agent_turn(&f, GLIDE_MAX_MS);
+    let e = rx.try_recv().unwrap().unwrap_err();
+    assert_eq!(e.code, code::COVERED);
+    assert_eq!(e.message, "covered by div: Cookie wall");
+    assert!(
+        cdp_calls(&slot)
+            .iter()
+            .all(|(m, _)| m != "Input.dispatchMouseEvent"),
+        "nothing was clicked"
+    );
+    assert!(
+        cdp_calls(&slot)
+            .iter()
+            .any(|(m, p)| m == "Runtime.releaseObject" && p.contains("el-1")),
+        "the element held for the check is let go"
+    );
+    assert!(
+        f.ctl.borrow().web.agent_op(&id).is_none(),
+        "the call is over"
+    );
+    assert_eq!(f.ctl.borrow().web.agent_refs(&id), 2, "the refs still hold");
+    assert_eq!(
+        f.ctl.borrow().web.cursor_probe()["presses"],
+        json!(0),
+        "no ripple: nothing was pressed"
+    );
 }
 
 #[test]
@@ -2943,6 +2995,61 @@ fn the_person_focusing_the_page_while_a_call_runs_takes_over() {
     });
     f.pump();
     assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::INTERRUPTED);
+}
+
+#[test]
+fn a_job_whose_caller_went_away_ends_and_the_page_is_free_for_the_next_call() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let cancel = flare_ctl::CancelFlag::default();
+    let rx = ask(
+        &f,
+        CtlOp::BrowserAgent {
+            tab: id.clone(),
+            op: AgentOp::Look { picture: true },
+            cancel: cancel.clone(),
+        },
+        Duration::from_secs(5),
+    );
+    f.pump();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    cancel.set();
+    agent_turn(&f, 20);
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::INTERRUPTED);
+    // The next call is not told another one still runs on the page.
+    let next = look(&f, &id);
+    f.pump();
+    assert!(
+        matches!(next.try_recv(), Err(TryRecvError::Empty)),
+        "the cancelled job left the page in use"
+    );
+}
+
+#[test]
+fn a_job_cancelled_before_the_window_took_it_up_never_starts() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let cancel = flare_ctl::CancelFlag::default();
+    cancel.set();
+    let before = cdp_calls(&slot).len();
+    let rx = ask(
+        &f,
+        CtlOp::BrowserAgent {
+            tab: id,
+            op: AgentOp::Look { picture: true },
+            cancel,
+        },
+        Duration::from_secs(5),
+    );
+    f.pump();
+    assert!(rx.try_recv().unwrap().is_err());
+    assert_eq!(
+        cdp_calls(&slot).len(),
+        before,
+        "nothing was sent to the page"
+    );
 }
 
 // ---- mini-apps and diagrams (stage 5) ---------------------------------------------------------------

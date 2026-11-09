@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use flare_agent::icon_motion::IconMotion;
 use flare_agent::kinds::{AgentKind, RESUMABLE_AGENTS};
-use flare_ctl::{CallContext, CtlError, Dispatcher, Grant, Method, code};
+use flare_ctl::{CallContext, CancelFlag, CtlError, Dispatcher, Grant, Method, code};
 use flare_mods::Hub;
 use flare_surfaces::PanelKind;
 use flare_surfaces::agent_job::{Op as AgentOp, Target};
@@ -136,6 +136,8 @@ pub enum CtlOp {
     BrowserAgent {
         tab: String,
         op: AgentOp,
+        /// Raised when the call's client has gone: the job ends at the next turn of the agent timer.
+        cancel: CancelFlag,
     },
     /// `panel.open` with kind `mod:<id>` (stage 8): that mod's panel on the tab. The mod is on and has a panel
     /// (checked by the call's thread); answered once the panel is shown.
@@ -1151,14 +1153,18 @@ impl AppDispatcher {
             tool: call.tool.clone(),
             input: call.input.clone(),
         };
-        if let Err(e) = self.ask_by(op, started + MOD_UI_WAIT) {
+        if let Err(e) = self.ask_until(op, started + MOD_UI_WAIT, &ctx.cancel) {
             hub.cancel(&call.id);
             return Err(e);
         }
         let left = mod_wait_left(started.elapsed());
         let stopping = Arc::clone(&self.stopping);
+        // The agent going away (a cancel, a dropped connection) ends the call like Flare stopping does: the call
+        // is closed in the hub, so the mod's late `tools.respond` gets `not_found`.
         // sync-ok: a worker thread of the control channel waits for the mod's page, never the UI thread
-        let result = hub.wait(call, left, &|| stopping.load(Ordering::SeqCst))?;
+        let result = hub.wait(call, left, &|| {
+            stopping.load(Ordering::SeqCst) || ctx.cancel.is_set()
+        })?;
         Ok(json!({"result": result}))
     }
 
@@ -1345,6 +1351,17 @@ impl AppDispatcher {
     /// [`AppDispatcher::ask`] with a deadline the whole call shares, so two asks and a disk read in
     /// between still answer inside it.
     fn ask_by(&self, op: CtlOp, deadline: Instant) -> Result<Value, CtlError> {
+        self.ask_until(op, deadline, &CancelFlag::default())
+    }
+
+    /// [`AppDispatcher::ask_by`] that stops waiting as soon as the call's client has gone. Only for the asks
+    /// that can wait long (a page load, a browser job, a mod); the UI thread answers the others at once.
+    fn ask_until(
+        &self,
+        op: CtlOp,
+        deadline: Instant,
+        cancel: &CancelFlag,
+    ) -> Result<Value, CtlError> {
         let shutting = || CtlError::new(code::UNAVAILABLE, "Flare is shutting down");
         if self.stopping.load(Ordering::SeqCst) {
             return Err(shutting());
@@ -1365,6 +1382,9 @@ impl AppDispatcher {
                 Err(RecvTimeoutError::Timeout) => {
                     if self.stopping.load(Ordering::SeqCst) {
                         return Err(shutting());
+                    }
+                    if cancel.is_set() {
+                        return Err(CtlError::new(code::UNAVAILABLE, "the caller went away"));
                     }
                     if left.is_zero() {
                         return Err(CtlError::new(
@@ -1489,7 +1509,7 @@ impl AppDispatcher {
         allow_network: bool,
         title: String,
         diagram: bool,
-        deadline: Instant,
+        (deadline, cancel): (Instant, &CancelFlag),
     ) -> Result<Value, CtlError> {
         let apps = self.apps()?;
         let seq = apps.seq.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1499,7 +1519,7 @@ impl AppDispatcher {
                 format!("the page could not be written: {e}"),
             )
         })?;
-        self.ask_by(
+        self.ask_until(
             CtlOp::ShowApp {
                 tab,
                 spec,
@@ -1507,6 +1527,7 @@ impl AppDispatcher {
                 diagram,
             },
             deadline,
+            cancel,
         )
     }
 
@@ -1570,7 +1591,7 @@ impl AppDispatcher {
             allow,
             title,
             false,
-            deadline,
+            (deadline, &ctx.cancel),
         )
     }
 
@@ -1618,7 +1639,7 @@ impl AppDispatcher {
                     false,
                     title,
                     false,
-                    deadline,
+                    (deadline, &ctx.cancel),
                 )
             }
             (None, Some(u)) => {
@@ -1648,7 +1669,7 @@ impl AppDispatcher {
                     true,
                     title,
                     false,
-                    deadline,
+                    (deadline, &ctx.cancel),
                 )
             }
             _ => Err(bad("give either path or url, not both and not neither")),
@@ -1678,7 +1699,7 @@ impl AppDispatcher {
             false,
             title,
             true,
-            Instant::now() + BROWSER_WAIT,
+            (Instant::now() + BROWSER_WAIT, &ctx.cancel),
         )
     }
 }
@@ -2094,9 +2115,10 @@ impl Dispatcher for AppDispatcher {
                             Some(u) => web_url(u)?,
                             None => "about:blank".to_string(),
                         };
-                        self.ask_by(
+                        self.ask_until(
                             CtlOp::BrowserOpen { tab, url },
                             Instant::now() + BROWSER_WAIT,
+                            &ctx.cancel,
                         )
                     }
                     Some(k) if k.starts_with("mod:") => {
@@ -2126,9 +2148,10 @@ impl Dispatcher for AppDispatcher {
                 let url = str_param(&params, "url")?
                     .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "url is required"))?;
                 let url = web_url(url)?;
-                self.ask_by(
+                self.ask_until(
                     CtlOp::BrowserOpen { tab, url },
                     Instant::now() + BROWSER_WAIT,
+                    &ctx.cancel,
                 )
             }
             Method::BrowserNavigate => {
@@ -2153,9 +2176,10 @@ impl Dispatcher for AppDispatcher {
                         ));
                     }
                 };
-                self.ask_by(
+                self.ask_until(
                     CtlOp::BrowserNavigate { tab, to },
                     Instant::now() + BROWSER_WAIT,
+                    &ctx.cancel,
                 )
             }
             Method::BrowserLook
@@ -2167,7 +2191,12 @@ impl Dispatcher for AppDispatcher {
             | Method::BrowserEval => {
                 let tab = Self::tab_of_call(ctx)?;
                 let (op, wait) = agent_op(method, &params)?;
-                self.ask_by(CtlOp::BrowserAgent { tab, op }, Instant::now() + wait)
+                let cancel = ctx.cancel.clone();
+                self.ask_until(
+                    CtlOp::BrowserAgent { tab, op, cancel },
+                    Instant::now() + wait,
+                    &ctx.cancel,
+                )
             }
             Method::ConvoState => self.ask(CtlOp::ConvoState {
                 tab: Self::tab_of_call(ctx)?,
@@ -2380,6 +2409,7 @@ mod tests {
             client_version: "1".into(),
             grant,
             tab: tab.map(str::to_string),
+            cancel: CancelFlag::default(),
         }
     }
 

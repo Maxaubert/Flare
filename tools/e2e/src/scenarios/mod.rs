@@ -585,6 +585,12 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 420,
     },
     Scenario {
+        name: "agentCoveredClick",
+        group: "web",
+        run: agent_web::agent_covered_click,
+        limit_secs: 120,
+    },
+    Scenario {
         name: "mcpBrowser",
         group: "web",
         run: agent_web::mcp_browser,
