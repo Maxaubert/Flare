@@ -20,6 +20,7 @@ pub const GATED: &[(&str, &str)] = &[
     ("webVideo", WEB),
     ("webNoRuntime", WEB),
     ("agentBrowser", WEB),
+    ("agentCoveredClick", WEB),
     ("mcpBrowser", WEB),
     ("miniApp", WEB),
     ("diagram", WEB),
