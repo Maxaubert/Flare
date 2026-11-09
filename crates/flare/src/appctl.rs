@@ -314,7 +314,7 @@ const WRAP_SETTLE_MS: u64 = 120;
 
 const SLIDE_STEP_MS: u64 = 16;
 
-/// Pure (rule 345): whether a timer steps the sidebar's slide. Where there is no OS window (the tests,
+/// Pure (rule 349): whether a timer steps the sidebar's slide. Where there is no OS window (the tests,
 /// the scenes), and on a Mac under `--e2e`: the parked clear window gets no `RedrawRequested` from AppKit,
 /// so a reveal (the one slide that never ends in a jump) never started and every slid-out picture of
 /// verticalTabs showed no sidebar (run 42612597989). The app with a real window keeps the frames.
@@ -4067,7 +4067,7 @@ impl AppCtl {
         app.set_sidebar_slot_now(slot);
         app.set_sidebar_slide_now(panel);
         // A window with no OS window behind it (the tests, the scenes) has no frames to step the slide:
-        // a timer does. So does the clear --e2e window on a Mac (rule 345), which gets no frames either.
+        // a timer does. So does the clear --e2e window on a Mac (rule 349), which gets no frames either.
         if owed {
             let os = Self::ask_frame(app);
             if timer_steps_slide(os, cfg!(target_os = "macos"), crate::e2e::global().on()) {
@@ -5316,7 +5316,7 @@ impl AppCtl {
 
 #[cfg(test)]
 mod tests {
-    // Rule 345: a timer steps the slide without an OS window and on a Mac under --e2e only.
+    // Rule 349: a timer steps the slide without an OS window and on a Mac under --e2e only.
     #[test]
     fn a_timer_steps_the_slide_without_frames_and_in_a_mac_e2e_run() {
         assert!(timer_steps_slide(false, false, false));

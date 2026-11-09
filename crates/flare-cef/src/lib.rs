@@ -2,7 +2,7 @@
 //! (`docs/superpowers/specs/2026-11-08-macos-web-verdict.md`, on the phase 1 branch `feat/macos-1-web-spike`; plan in
 //! `docs/superpowers/specs/2026-11-08-macos-port.md`) ruled WKWebView out: it cannot stop a runaway script. CEF can,
 //! through the same DevTools Protocol WebView2 speaks on Windows, so `flare_surfaces::agent_job` runs unchanged
-//! (regression rules 247 to 249).
+//! (regression rules 251 to 253).
 //!
 //! macOS only (rule 227's mirror image): on Windows WebView2 stays the engine, this crate is empty and its binaries
 //! only say so.

@@ -82,7 +82,7 @@ fn main() {
     let start = std::time::Instant::now();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     // macOS: the shared application is CEF's kind before winit makes it, so the web panel's engine can start
-    // later (port phase 5; rule 250). Windows has WebView2 and nothing to prepare.
+    // later (port phase 5; rule 254). Windows has WebView2 and nothing to prepare.
     #[cfg(target_os = "macos")]
     if let Err(e) = flare_web::host::prepare_app() {
         log::warn!("the web engine cannot run in this process: {e}");
@@ -194,7 +194,7 @@ fn main() {
     }
 
     e2e::init(args.e2e);
-    // macOS: an --e2e window is never pulled onto a screen, from its first order-in (rule 334).
+    // macOS: an --e2e window is never pulled onto a screen, from its first order-in (rule 338).
     #[cfg(target_os = "macos")]
     if args.e2e {
         flare_win::window_park::keep_windows_off_screen();

@@ -1121,7 +1121,7 @@ pub fn tooltips(ctx: &mut Ctx) -> Result<(), String> {
                     format!("hovering the ? shows the app's own tip (\"{text}\")"),
                 );
                 let dx = (tip.0 + tip.2 / 2.0 - (help.0 + help.2 / 2.0)).abs();
-                // macOS (rule 342): the ? is the row's second button from the right edge (the traffic
+                // macOS (rule 346): the ? is the row's second button from the right edge (the traffic
                 // lights are on the left), so a centred tip would cross the window's edge: it is held
                 // 6 px inside it (tip_place's TIP_MARGIN), as the cog's tip below is.
                 let k = scale(&mut app);

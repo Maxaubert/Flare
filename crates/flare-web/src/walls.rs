@@ -63,7 +63,7 @@ pub fn profile_of(app: Option<&AppSpec>) -> (String, bool) {
 
 /// The name the macOS host keys a view's CEF profile by. A mod's or plugin's is its profile (one per mod, on
 /// disk). A mini-app's is the apps' private profile and its own host: every mini-app has an in-memory profile of
-/// its own (rule 256), because a profile's request wall for the requests no browser makes (a shared worker's) is
+/// its own (rule 260), because a profile's request wall for the requests no browser makes (a shared worker's) is
 /// the wall of the app it was made for, and one profile shared by two apps would judge the second app's worker
 /// by the first app's folder. WebView2 maps each app's folder on its own view, so Windows needs no such key.
 pub fn context_name(app: Option<&AppSpec>) -> String {
@@ -74,7 +74,7 @@ pub fn context_name(app: Option<&AppSpec>) -> String {
 }
 
 /// Where a held download's bytes wait for the person's yes (Chromium's default download folder in every profile):
-/// under the engine's root folder `root`, never `~/Downloads` (rule 258).
+/// under the engine's root folder `root`, never `~/Downloads` (rule 262).
 pub fn download_staging(root: &Path) -> PathBuf {
     root.join("download-staging")
 }

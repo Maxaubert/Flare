@@ -63,26 +63,26 @@ Total: about 3 months to full parity at a steady pace.
 
 Phase 5 progress: step 1 (2026-11-08) is the engine, `crates/flare-cef`: CEF 156.0.14 pinned and cached in
 `~/Library/Caches/flare-cef`, the dev bundle with its five helpers (ad hoc), the CEF `NSApplication`, windowless
-pixels, headless; `agent_job`'s 11 DevTools methods and the runaway-eval timeout proved on a Mac (rules 247 to 249,
+pixels, headless; `agent_job`'s 11 DevTools methods and the runaway-eval timeout proved on a Mac (rules 251 to 253,
 `docs/parity.md` "macOS port, phase 5"). Step 2 (2026-11-08) is the web panel: `WebBackend` on CEF
 (`crates/flare-web/src/macos/host.rs`), the page as a picture in its box with the window's pointer, wheel, keys and
 input method handed over, the walls decided in `flare_web::walls` and re-proved with the spike's observers, the real
-app's `NSApplication` made CEF's kind before winit (rules 250 to 253). Step 3 (2026-11-08) re-proves the walls behind Flare's proxy against
+app's `NSApplication` made CEF's kind before winit (rules 254 to 257). Step 3 (2026-11-08) re-proves the walls behind Flare's proxy against
 the spike's proxy page (every spelling of this machine and its network, http, https, ws and wss: 0 hits, 0 accepts, 0
 mDNS queries; the web panel control leaks) and runs the real `agent_job` through `WebBackend::cdp` of the CEF host, with
-the agent's editing chords given the command a Mac's text system would make of them (rules 254 and 255).
-A review of the three steps (2026-11-08) proved six defects, fixed with checks that fail without the fix (rules 256 to
-261): a profile per mini-app (a shared worker read another app's files), Flare's switches only (the command line
+the agent's editing chords given the command a Mac's text system would make of them (rules 258 and 259).
+A review of the three steps (2026-11-08) proved six defects, fixed with checks that fail without the fix (rules 260 to
+265): a profile per mini-app (a shared worker read another app's files), Flare's switches only (the command line
 opened a DevTools port), held downloads staged outside `~/Downloads`, no call to Google from the engine with no page
 asking, the mock keychain written down as an accepted gap until phase 8, and no colour or print panel from a page.
 
-Ongoing progress (2026-11-09): the Mac E2E runs in CI (`e2e-macos` job, `docs/e2e.md` "macOS E2E", rules 330 to
-344): the harness over the Unix socket hook, an accessory app whose every window is born clear, the Mac keys, the
+Ongoing progress (2026-11-09): the Mac E2E runs in CI (`e2e-macos` job, `docs/e2e.md` "macOS E2E", rules 334 to
+348): the harness over the Unix socket hook, an accessory app whose every window is born clear, the Mac keys, the
 world's pwsh in Windows' edit mode, 72 scenarios run and 29 gated with a reason (plus the opt-in visualTour). From run 42569349881 (42 failing) to
 run 42603904272 (7 failing); the scenarios found and fixed Mac bugs: a miniaturised window never paused the marks, a
 stall carried no UI-thread frames, the hook's scale change could panic the software renderer, the Windows `check`
 job's pin test failed on a CRLF Cargo.lock. What still fails is listed in `docs/parity.md`, "macOS E2E".
-Then (rules 345 to 348): CI keeps its Rust cache on a red run and has a hand run of the Mac E2E alone with a scenario
+Then (rules 349 to 352): CI keeps its Rust cache on a red run and has a hand run of the Mac E2E alone with a scenario
 filter (`docs/e2e.md`), so an iteration takes about 10 minutes, not 40. Found and fixed: the slide-out never moved in a
 window with no frames, a warm pwsh spare adopted late read its own cursor report as typing (a real Mac bug for any
 pwsh user), and an idle run's diagnostics lines came from the runner's background load and the kernel's timer
@@ -92,7 +92,7 @@ runner's timer coalescing is off for the run (a background app's timers ran up t
 job's `flare-web::cef_macos` tests, failing on the phase 5 branch as well, and timing tests that miss now and then on
 both runners (Windows `keyhook` "the thread ended", Mac `flood` and `oracle_notes`; Windows `check` passed in run
 42645829398).
-Then a review of the branch (rules 346, 347 and 349): a warm spare's kept output reaches its tab without its
+Then a review of the branch (rules 350, 351 and 353): a warm spare's kept output reaches its tab without its
 questions to the terminal, so spares stay on for pwsh (the first fix had stopped prewarming it); a Mac filter that
 matches only gated scenarios fails instead of passing on nothing; the Mac-only waits are conditions under
 `cfg!(target_os = "macos")`, so the Windows path of every scenario is as it was (the owner's Windows suite still has
@@ -100,7 +100,7 @@ to run the branch). Left, gated on the Mac with "Mac port not written": the 12 w
 scenarios (phase 8), the 5 dictation scenarios (phase 7) and the 4 that use the `.cmd` Claude stand-in. Run 42669066383: `e2e-macos` green (72 run, 29
 gated), Windows `check` green, `macos` red only on the two `flare-web::cef_macos` tests that fail on the phase 5
 branch too; `flood` and `oracle_notes` passed in that run and in 42663511664. Run 42669105200 (filter `dictation`,
-all gated) failed as rule 349 wants.
+all gated) failed as rule 353 wants.
 
 ## Known risks
 

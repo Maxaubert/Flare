@@ -720,7 +720,7 @@ pub fn exit_closes_tab(ctx: &mut Ctx) -> Result<(), String> {
     }
     // The tab that comes to the front takes its size and its shell draws its prompt again: "exit" goes once
     // that prompt is back, as a hand would type it. Typed at once, pwsh on the Mac runner read it inside the
-    // redraw's cursor reports and never ran it (rule 346). Windows types it at once, as before.
+    // redraw's cursor reports and never ran it (rule 350). Windows types it at once, as before.
     if cfg!(target_os = "macos") {
         ctx.until("the second tab in front", 5_000, &mut || {
             tabs_of(&mut app).get(1).is_some_and(|t| t.front)
@@ -743,7 +743,7 @@ pub fn exit_closes_tab(ctx: &mut Ctx) -> Result<(), String> {
     Ok(())
 }
 
-/// macOS (rule 346): true once the tab shows its prompt and its screen and what Flare wrote to its shell (the
+/// macOS (rule 350): true once the tab shows its prompt and its screen and what Flare wrote to its shell (the
 /// answers to the redraw's cursor reports) have both held still for `REDRAW_QUIET`: the shell's redraw is over.
 /// A miss is a pending timeout, which the next check records.
 fn wait_redraw_over(ctx: &mut Ctx, app: &mut App, tab: &str) -> bool {

@@ -45,7 +45,7 @@ fn read_reply_line<R: BufRead>(r: &mut R) -> Result<String, String> {
     Ok(reply)
 }
 
-/// macOS (rule 333): the request with every chord in the Mac app's spelling (`chord::mac_app_chord`),
+/// macOS (rule 337): the request with every chord in the Mac app's spelling (`chord::mac_app_chord`),
 /// so a scenario written with the Windows keys presses the same command on a Mac.
 #[cfg(target_os = "macos")]
 fn mac_keys(r: &Request) -> Request {
@@ -118,7 +118,7 @@ pub struct AppState {
     pub quitting: bool,
 }
 
-/// The hook's connection: the named pipe opened as a file on Windows, the Unix socket on macOS (rule 330).
+/// The hook's connection: the named pipe opened as a file on Windows, the Unix socket on macOS (rule 334).
 #[cfg(windows)]
 type Conn = File;
 #[cfg(not(windows))]
@@ -180,7 +180,7 @@ impl Session {
         self.call_as_is(r)
     }
 
-    /// As `call`, with every chord sent as written: no Mac spelling (rule 339). For the keys a scenario
+    /// As `call`, with every chord sent as written: no Mac spelling (rule 343). For the keys a scenario
     /// means as the program's own, which on a Mac are the Ctrl keys, while Cmd is the app's.
     pub fn call_as_is(&mut self, r: &Request) -> Result<Reply, String> {
         let line = encode(r);

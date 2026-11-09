@@ -539,7 +539,7 @@ pub fn attention(ctx: &mut Ctx) -> Result<(), String> {
         )
     };
     // A question's line breathes: a picture at its faintest shows no line, so it is looked at over a breath (up
-    // to six pictures, 250 ms apart) and the clearest counts (the Mac runner caught it at 0 px once; rule 346).
+    // to six pictures, 250 ms apart) and the clearest counts (the Mac runner caught it at 0 px once; rule 350).
     // Windows looks once, as before.
     let want = thick_rows(3.0, k);
     let tries = if cfg!(target_os = "macos") { 6 } else { 1 };

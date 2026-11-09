@@ -71,7 +71,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,cargo-deny
-      # The CEF engine (crates/flare-cef, port phase 5, rule 247): cef-dll-sys builds CEF's C++ wrapper with CMake and
+      # The CEF engine (crates/flare-cef, port phase 5, rule 251): cef-dll-sys builds CEF's C++ wrapper with CMake and
       # Ninja and downloads the pinned CEF build into CEF_PATH, cached between runs (outside the checkout).
       - name: CEF build tools and cache folder
         shell: bash
@@ -96,7 +96,7 @@ jobs:
       - name: Deny
         run: cargo deny check
 
-  # The Mac E2E (rules 330 to 349, docs/e2e.md "macOS E2E"): the release app driven through its --e2e hook (a Unix
+  # The Mac E2E (rules 334 to 353, docs/e2e.md "macOS E2E"): the release app driven through its --e2e hook (a Unix
   # socket), an accessory app parked off every display; the harness fails a scenario that takes the keyboard or shows a
   # window. Its own job so the gates above stay as fast as they were. A Mac has no hidden desktop, so this runs only here.
   e2e-macos:
@@ -123,7 +123,7 @@ jobs:
         run: cargo build --release -p flare -p flare-mcp -p flare-e2e
       # The runner's own indexing and update checks took a core and a half of three while diagLog measured an idle
       # app, and the kernel let a background app's timers run up to 100 ms late (kern.timer_coalesce_bg_ns_max):
-      # an idle beat became a main-lag line and a program's 30 ms poll missed the 80 ms redraw nudge (rule 348).
+      # an idle beat became a main-lag line and a program's 30 ms poll missed the 80 ms redraw nudge (rule 352).
       # Spotlight, the update schedule and timer coalescing are off for the run.
       - name: Quiet the runner
         shell: bash
@@ -143,7 +143,7 @@ jobs:
           mkdir -p e2e-out
           target/release/flare-e2e --list > e2e-out/list.txt
           set -o pipefail
-          # The filter's words as words: no globbing, and none may be a harness flag (rule 349).
+          # The filter's words as words: no globbing, and none may be a harness flag (rule 353).
           read -ra words <<<"$E2E_FILTER"
           for w in "${words[@]}"; do
             case "$w" in -*) echo "the filter word '$w' starts with '-': only scenario names"; exit 1 ;; esac

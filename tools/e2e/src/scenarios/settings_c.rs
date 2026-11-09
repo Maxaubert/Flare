@@ -578,7 +578,7 @@ pub fn colour_picker(ctx: &mut Ctx) -> Result<(), String> {
     const ID: &str = "agent-color";
     const KEY: &str = "flare.term.agentColor";
 
-    // A shell stands in for Claude, mid-answer, as in `indicator`. macOS (rule 339): pwsh on the runner
+    // A shell stands in for Claude, mid-answer, as in `indicator`. macOS (rule 343): pwsh on the runner
     // gives its prompt long after the process poll's first "no agent" for the tab, which takes a bare
     // hook claim back at once, so the Mac run starts the agent stand-in in the tab first, as agentHooks
     // and backgroundWork do (the hook then belongs to a real agent process).

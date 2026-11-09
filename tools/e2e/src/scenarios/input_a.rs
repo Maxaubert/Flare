@@ -580,7 +580,7 @@ fn click_caret_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     app.session.type_text("echo zz")?;
     // macOS: the old output is found once the prompt line shows the line typed and no longer PSReadLine's grey
     // guess from history ("echo ab1Xcdef" after "echo "): read earlier, the last row held the needle, so the
-    // click landed on the line being edited and moved the caret (the Mac runner; rule 346). Windows as before.
+    // click landed on the line being edited and moved the caret (the Mac runner; rule 350). Windows as before.
     if cfg!(target_os = "macos") {
         let typed = wait_for("the typed echo zz without the guess", 8_000, &mut || {
             let t = text(app);
@@ -661,7 +661,7 @@ fn find_key_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     run_line(app, r#"Write-Host -NoNewline "$([char]27)[?1049h""#)?;
     pause(800);
     // The program's Ctrl+F, as written on both systems: on a Mac Cmd+F is the app's find everywhere
-    // (the keymap's rule) and Ctrl+F is the program's, so the Mac spelling must not apply (rule 339).
+    // (the keymap's rule) and Ctrl+F is the program's, so the Mac spelling must not apply (rule 343).
     app.session.key_as_is("Ctrl+F")?;
     pause(600);
     // PT: run.mjs:1607

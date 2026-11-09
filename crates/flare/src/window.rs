@@ -577,7 +577,7 @@ fn when_handle_ready(
 }
 /// macOS: what waits for an HWND (the hung-window watchdog, the exe's icon, the taskbar overlay) has no
 /// Mac meaning, and `hwnd_of` never answers there: polling it only ended in a false "never got a handle"
-/// warning 10 s into every run (seen in the Mac E2E, rule 335). The Dock badge is set up without a handle.
+/// warning 10 s into every run (seen in the Mac E2E, rule 339). The Dock badge is set up without a handle.
 #[cfg(not(windows))]
 fn when_handle_ready(
     _app: &AppWindow,
@@ -587,7 +587,7 @@ fn when_handle_ready(
     Rc::new(slint::Timer::default())
 }
 
-/// Pure (rule 344): whether the window is minimised, from Slint's state and, when there is one, the
+/// Pure (rule 348): whether the window is minimised, from Slint's state and, when there is one, the
 /// system's own answer. On macOS a window miniaturised by Cmd+M, the yellow light or the hook gets no
 /// resize, so Slint's state, which it updates on a resize, stayed "not minimised" and the marks kept
 /// moving behind the Dock (indicatorStyles on the runner). The system's answer wins when it gives one.
@@ -954,7 +954,7 @@ pub fn run_window(
         initial_window(&WindowStateStore::read(file, &areas), &areas)
     });
     // macOS: the saved position is points times the saved window's scale, so the screens are asked
-    // for in that same space (regression rule 238).
+    // for in that same space (regression rule 242).
     #[cfg(target_os = "macos")]
     let initial = profile_window_file.as_ref().map(|file| {
         let (state, areas) = WindowStateStore::read_at(file, flare_win::monitors::work_areas_at);
@@ -2163,7 +2163,7 @@ pub(crate) fn handle_key(kp: &KeyPath, ev: &KeyEvent) -> EventResult {
     EventResult::PreventDefault
 }
 
-/// Pure (rule 340): whether winit's own `Focused` is dropped. macOS under `--e2e` only: the parked
+/// Pure (rule 344): whether winit's own `Focused` is dropped. macOS under `--e2e` only: the parked
 /// window is an accessory's that is never key, so AppKit reports it as having lost the focus when it is
 /// parked, and every "the person is looking" rule then read the run as away (a visited tab kept its
 /// Finished mark on the Mac runner). The Windows e2e window, no-activate, never gets either event; on
@@ -2433,11 +2433,11 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 EventResult::Propagate
             }
             WindowEvent::Occluded(hidden) => {
-                // macOS (rule 344): a miniaturise or its undo sends no resize, only this, so the marks'
+                // macOS (rule 348): a miniaturise or its undo sends no resize, only this, so the marks'
                 // pause is read again here (Windows has its resize to zero for it, and logs nothing new).
                 if cfg!(target_os = "macos") {
                     // Said once per change: a window the system holds as hidden gets no frames (the Mac
-                    // E2E's clear window, rule 342).
+                    // E2E's clear window, rule 346).
                     log::info!("window occluded: {hidden}");
                     let minimised = is_minimised(window);
                     with_ctl(&mut |c| c.on_minimised(minimised));
@@ -2628,7 +2628,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
 mod tests {
     use super::*;
 
-    // Rule 344: the system's answer wins; without one Slint's state stands.
+    // Rule 348: the system's answer wins; without one Slint's state stands.
     #[test]
     fn the_systems_minimised_answer_wins_over_slints() {
         assert!(minimised_from(false, Some(true)));
@@ -2637,7 +2637,7 @@ mod tests {
         assert!(!minimised_from(false, None));
     }
 
-    // Rule 340: only a Mac --e2e run drops winit's focus events; the real app and Windows keep them.
+    // Rule 344: only a Mac --e2e run drops winit's focus events; the real app and Windows keep them.
     #[test]
     fn only_a_mac_e2e_run_drops_the_native_focus() {
         assert!(e2e_drops_native_focus(true, true));

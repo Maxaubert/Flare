@@ -1,4 +1,4 @@
-//! What the harness reads of a Mac desktop (rule 331): the window server's on-screen list, the
+//! What the harness reads of a Mac desktop (rule 335): the window server's on-screen list, the
 //! frontmost app and the pasteboard's change count. None of these needs Screen Recording or
 //! Accessibility rights, so a CI runner can read them. Pixels never come from here: a scenario's
 //! pictures are the app's own render (`Snapshot`, Slint's snapshot of the window).

@@ -1342,7 +1342,7 @@ fn powerline_measure(app: &mut App, row: usize, col: usize) -> (bool, String) {
     (ok, note)
 }
 
-/// The line that runs the alternate-screen script: Windows PowerShell on Windows, pwsh on macOS (rule 336).
+/// The line that runs the alternate-screen script: Windows PowerShell on Windows, pwsh on macOS (rule 340).
 #[cfg(windows)]
 fn alt_screen_line(script: &Path) -> String {
     format!(

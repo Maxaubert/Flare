@@ -450,7 +450,7 @@ fn handle_line(raw: usize, text: &str, dispatch: &Dispatch) -> bool {
     }
 }
 
-// ---- macOS: the hook is a Unix socket (rule 330), with the named pipe's guarantees ----
+// ---- macOS: the hook is a Unix socket (rule 334), with the named pipe's guarantees ----
 //
 // The socket is `flare_e2e_proto::pipe_name(profile)`, in the control channel's private folder (0700,
 // this user's), bound 0600 under the control channel's first-instance lock, so a second `--e2e` launch on
@@ -842,7 +842,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
-    // Rule 330: the Mac hook is a 0600 socket in a 0700 folder of this user's, and it is gone when the
+    // Rule 334: the Mac hook is a 0600 socket in a 0700 folder of this user's, and it is gone when the
     // server stops (the next launch on the profile binds it again).
     #[cfg(target_os = "macos")]
     #[test]

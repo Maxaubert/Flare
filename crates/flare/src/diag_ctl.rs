@@ -169,7 +169,7 @@ fn private_bytes_of(pid: u32) -> Option<u64> {
     }
 }
 
-/// The UI thread's stack through `flare-win`'s sampler (the Mac one on Apple silicon, rule 343).
+/// The UI thread's stack through `flare-win`'s sampler (the Mac one on Apple silicon, rule 347).
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 struct UiFrames(flare_win::thread_stack::ThreadSampler);
 
@@ -384,7 +384,7 @@ fn private_bytes_of(pid: u32) -> Option<u64> {
     flare_proc::memory(pid).map(|m| m.footprint)
 }
 
-/// macOS on Apple silicon (rule 343): the UI thread's frame-pointer walk, as on Windows.
+/// macOS on Apple silicon (rule 347): the UI thread's frame-pointer walk, as on Windows.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn ui_sampler() -> Arc<dyn StackSampler> {
     match flare_win::thread_stack::ThreadSampler::for_current_thread() {

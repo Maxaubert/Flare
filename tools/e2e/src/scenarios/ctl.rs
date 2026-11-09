@@ -526,7 +526,7 @@ pub(super) struct Mcp<'a> {
 }
 
 /// Whether the channel's name is the profile-scoped one: `\\.\pipe\flare-ctl-<user>-<scope>` on
-/// Windows; on macOS `<user temp>/flare-ctl/<16 hex>-<8 hex>.sock` (the same hashes, rule 239).
+/// Windows; on macOS `<user temp>/flare-ctl/<16 hex>-<8 hex>.sock` (the same hashes, rule 243).
 fn pipe_is_scoped(pipe: &str) -> bool {
     if cfg!(windows) {
         return pipe.starts_with("\\\\.\\pipe\\flare-ctl-") && pipe.matches('-').count() >= 3;

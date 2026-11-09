@@ -1,4 +1,4 @@
-//! Process control on macOS (rule 331): the Mac meaning of `proc.rs`. A launched app gets its own
+//! Process control on macOS (rule 335): the Mac meaning of `proc.rs`. A launched app gets its own
 //! process group, and dropping it kills that group and every descendant (the Windows job object's
 //! kill-on-close; a shell the app starts sits in its own session, so the tree is walked by parent pid).
 //! Reaping is by profile path only, as on Windows: a process whose command line does not hold the world's

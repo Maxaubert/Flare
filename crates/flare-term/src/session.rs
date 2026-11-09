@@ -397,7 +397,7 @@ fn pump_loop(s: Arc<Session>) {
     }
 }
 
-/// Pure (rule 347): what a tab adopting a warm spare is handed of the spare's kept output. Outside Windows its
+/// Pure (rule 351): what a tab adopting a warm spare is handed of the spare's kept output. Outside Windows its
 /// questions to the terminal are taken out: the spare asked them with nobody to answer, and an answer given now
 /// would come late and be read as typing. Windows hands it over as it was (ConPTY stands between the shell and
 /// Flare there, and the Windows E2E never showed it).
@@ -409,7 +409,7 @@ pub(crate) fn banner_for_tab(banner: Vec<u8>) -> Vec<u8> {
     }
 }
 
-/// A copy of every write to a shell, for the e2e's evidence (the Mac E2E, rule 347): set once, under
+/// A copy of every write to a shell, for the e2e's evidence (the Mac E2E, rule 351): set once, under
 /// `--e2e` only; the app without it pays one atomic load per write.
 pub type WriteTap = fn(&str, &[u8]);
 static WRITE_TAP: std::sync::OnceLock<WriteTap> = std::sync::OnceLock::new();
@@ -1821,7 +1821,7 @@ mod tests {
         assert_eq!(bytes[0], b'F');
     }
 
-    // Rule 347: a spare whose kept output asked the terminal something is adopted as before, and the tab gets
+    // Rule 351: a spare whose kept output asked the terminal something is adopted as before, and the tab gets
     // that output without the question outside Windows (an answer now would be read as typing); Windows hands it
     // over unchanged.
     #[test]
@@ -1847,7 +1847,7 @@ mod tests {
         assert_eq!(sp.made().len(), 2, "and its shell is prewarmed again");
     }
 
-    // Rule 347: a question split over two reads is still taken out, since the whole kept output is read at
+    // Rule 351: a question split over two reads is still taken out, since the whole kept output is read at
     // adoption.
     #[test]
     fn a_question_split_over_two_reads_is_taken_out_too() {

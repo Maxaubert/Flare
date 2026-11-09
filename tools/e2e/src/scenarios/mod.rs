@@ -1,7 +1,7 @@
 //! The scenario table: one row per scenario of Appendix B, in the order the parent runs them. Task 1
 //! writes the rows and one stub per scenario; each port task replaces its own stub body.
 //!
-//! macOS (rule 332): the table is the same; `mac_gate` names the scenarios a Mac run does not start and
+//! macOS (rule 336): the table is the same; `mac_gate` names the scenarios a Mac run does not start and
 //! why. The modules that need Windows-only harness parts (the speech host's process list, the tour's
 //! window capture) are stubs there, and every one of their scenarios is gated.
 

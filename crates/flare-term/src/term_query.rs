@@ -1,5 +1,5 @@
 //! Pure: whether a program's output asks the terminal something that wants an answer, and that output without its
-//! questions (rule 347).
+//! questions (rule 351).
 //!
 //! A warm spare (a shell started ahead of its tab, `SessionManager::prewarm`) has no emulator: what it prints is
 //! kept for the tab that adopts it, and nobody answers its questions until then. A program that gave up waiting

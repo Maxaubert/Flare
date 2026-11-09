@@ -1051,7 +1051,7 @@ pub fn slint_key_events(ev: &KeyEvent) -> Vec<WindowEvent> {
 /// The Slint modifier key for each modifier a chord holds, in press order. On macOS Slint's winit
 /// backend reports Cmd as `Key::Control` and Ctrl as `Key::Meta` (it follows Qt), so a Mac text field
 /// takes Cmd+A, Cmd+Right and Cmd+C as `control`; the hook hands Slint the same keys a real Mac
-/// keyboard would (rule 337), or a chord's Cmd would reach a field as the Ctrl key.
+/// keyboard would (rule 341), or a chord's Cmd would reach a field as the Ctrl key.
 pub fn slint_modifiers(ev: &KeyEvent) -> [(bool, slint::platform::Key); 4] {
     use slint::platform::Key;
     let (cmd_key, ctrl_key) = if cfg!(target_vendor = "apple") {
@@ -1396,7 +1396,7 @@ impl GlueCtx {
             }
             "maximise" | "maximize" => w.set_maximized(true),
             // The window's own close (the title bar's X, macOS's red traffic light): the close request
-            // the system sends, through the same route (rule 335; the Mac E2E cannot click AppKit's light).
+            // the system sends, through the same route (rule 339; the Mac E2E cannot click AppKit's light).
             "close" => w.dispatch_event(slint::platform::WindowEvent::CloseRequested),
             "fullscreen" => {
                 // The same chord the user presses.
@@ -1418,7 +1418,7 @@ impl GlueCtx {
         }
         let app = self.app.upgrade().ok_or("the window is gone")?;
         // macOS: the content view (there is no HWND; the event path ignores it). A launch that asked
-        // for a scale failed on "no handle" before this (rule 335).
+        // for a scale failed on "no handle" before this (rule 339).
         #[cfg(not(windows))]
         let hwnd = crate::window::native_view_of(&app).ok_or("the window has no handle")?;
         #[cfg(windows)]
@@ -1640,7 +1640,7 @@ pub fn series_from_redraws() {
     });
 }
 
-/// The last bytes written to each shell under `--e2e` (rule 347's evidence): what Flare sent, beside
+/// The last bytes written to each shell under `--e2e` (rule 351's evidence): what Flare sent, beside
 /// what the shell then showed. It holds typed keys, so the tap is set only by `install` (under `--e2e`,
 /// never in a person's app), and the scenarios print `pty.written` only in a failing check's message.
 static WRITTEN: std::sync::Mutex<Vec<(String, std::collections::VecDeque<u8>)>> =
@@ -1690,7 +1690,7 @@ pub fn written_json() -> serde_json::Value {
     serde_json::Value::Object(out)
 }
 
-/// The OS frames (`RedrawRequested`) the window has had under `--e2e` (rule 345's evidence).
+/// The OS frames (`RedrawRequested`) the window has had under `--e2e` (rule 349's evidence).
 static REDRAWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// How many OS frames the window has had under `--e2e`.
@@ -1806,7 +1806,7 @@ impl DpiSeam for WindowRef<'_> {
     fn scale_factor_changed(&mut self, scale_factor: f32) {
         self.0
             .dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor });
-        // macOS (rule 344): the window item keeps its logical size through Slint's scale change, so it
+        // macOS (rule 348): the window item keeps its logical size through Slint's scale change, so it
         // asked for 2655 px of a 1180 px buffer until the real window's resize came back, and a frame
         // drawn in between (an occlusion change at launch) panicked in the software renderer (tabLooks,
         // run 42598992162). The item is set to the buffer's own size at the new scale at once; the
@@ -1826,7 +1826,7 @@ impl DpiSeam for WindowRef<'_> {
     }
 }
 
-/// Pure (rule 344): the window item's logical size that fills a `w` by `h` px buffer at `scale`, or None
+/// Pure (rule 348): the window item's logical size that fills a `w` by `h` px buffer at `scale`, or None
 /// for an empty buffer or a scale that is not one.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn item_size_for(w: u32, h: u32, scale: f32) -> Option<slint::LogicalSize> {
@@ -1834,7 +1834,7 @@ pub fn item_size_for(w: u32, h: u32, scale: f32) -> Option<slint::LogicalSize> {
         .then(|| slint::LogicalSize::new(w as f32 / scale, h as f32 / scale))
 }
 
-/// Pure (rule 341): the size a `Resize` to `w` by `h` css px asks the window for. Windows: the logical
+/// Pure (rule 345): the size a `Resize` to `w` by `h` css px asks the window for. Windows: the logical
 /// size, as before. macOS: device px at the window's own scale, because Slint hands a logical size to
 /// winit, which converts it with the screen's backing scale (1 on the runner), not the scale the hook's
 /// `DpiChange` gave the window: at 225 percent a 1000 css window came out 1000 px wide (444 css).
@@ -2065,7 +2065,7 @@ fn print_window_snapshot(_hwnd: isize) -> Result<Snap, String> {
     Err("the window snapshot is not built on this platform yet".into())
 }
 
-/// macOS (rule 344): nothing to do first. The `set_minimized(false)` that follows is AppKit's
+/// macOS (rule 348): nothing to do first. The `set_minimized(false)` that follows is AppKit's
 /// `deminiaturize:`, which brings the window back without making the accessory app active; the screen
 /// guard holds that. The refusal here left the window in the Dock and the marks held (indicatorStyles).
 #[cfg(not(windows))]
@@ -2430,7 +2430,7 @@ mod tests {
             _ => "other".to_string(),
         };
         let shift = format!("{:?}", String::from(char::from(Key::Shift)));
-        // Rule 337: on a Mac Slint's Control is the Cmd key, and the Ctrl key is its Meta.
+        // Rule 341: on a Mac Slint's Control is the Cmd key, and the Ctrl key is its Meta.
         let ctrl_key = if cfg!(target_vendor = "apple") {
             Key::Meta
         } else {
@@ -2456,7 +2456,7 @@ mod tests {
             .map(kind)
             .collect();
         assert_eq!(sel, vec![format!("down {ctrl}"), "down \"a\"".to_string()]);
-        // Rule 337: Cmd+A (Meta in a chord) is what a Mac field selects all with: Slint's Control there.
+        // Rule 341: Cmd+A (Meta in a chord) is what a Mac field selects all with: Slint's Control there.
         let cmd_key = if cfg!(target_vendor = "apple") {
             Key::Control
         } else {
@@ -2597,7 +2597,7 @@ mod tests {
         }
     }
 
-    // Rule 344: after a scale change the item fills the buffer it has, so no frame asks for more pixels.
+    // Rule 348: after a scale change the item fills the buffer it has, so no frame asks for more pixels.
     #[test]
     fn the_item_fills_the_buffer_it_has_at_the_new_scale() {
         assert_eq!(
@@ -2608,7 +2608,7 @@ mod tests {
         assert_eq!(item_size_for(1180, 780, 0.0), None);
     }
 
-    // Rule 341: a Mac resize is asked in device px at the window's scale; Windows keeps the logical size.
+    // Rule 345: a Mac resize is asked in device px at the window's scale; Windows keeps the logical size.
     #[test]
     fn a_mac_resize_is_asked_in_device_px_at_the_windows_own_scale() {
         assert_eq!(

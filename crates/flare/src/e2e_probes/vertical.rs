@@ -163,7 +163,7 @@ fn sidebar_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         "shown": shown,
         "sliding": a.get_sidebar_sliding(),
         // Where the slide has the panel and the slot now (the values drawn), and how many OS frames came:
-        // a slid-out picture with no sidebar names its cause (rule 345).
+        // a slid-out picture with no sidebar names its cause (rule 349).
         "slide_now": a.get_sidebar_slide_now(),
         "slot_now": a.get_sidebar_slot_now(),
         "redraws": crate::e2e_glue::redraw_count(),

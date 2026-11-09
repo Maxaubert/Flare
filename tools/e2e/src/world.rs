@@ -25,7 +25,7 @@ pub const PSREADLINE_MUTE: &str =
 
 /// Clear-Host as Windows has it, screen and scrollback: on macOS pwsh sends the terminfo `clear` alone, the
 /// screen goes into the scrollback, and a question box "cleared" that way is still the last text of the
-/// buffer, so the Mac line adds the scrollback clear (rule 339; agentHooks and attention on the runner).
+/// buffer, so the Mac line adds the scrollback clear (rule 343; agentHooks and attention on the runner).
 pub const CLEAR_HOST: &str = if cfg!(target_os = "macos") {
     "Clear-Host; [Console]::Write([string][char]27 + '[3J')"
 } else {
@@ -33,7 +33,7 @@ pub const CLEAR_HOST: &str = if cfg!(target_os = "macos") {
 };
 
 /// `cat` as a scenario means it (PowerShell's Get-Content): on macOS pwsh has no `cat` alias and the
-/// name is /bin/cat (rule 339).
+/// name is /bin/cat (rule 343).
 pub const GET_CONTENT: &str = if cfg!(target_os = "macos") {
     "Get-Content"
 } else {
@@ -153,7 +153,7 @@ pub fn prompt_showing(text: &str, shell: Shell) -> bool {
 
 /// The diagnostics log folder of a launched app's profile, where the app writes it: `<profile>/logs`,
 /// or on macOS `<home>/Library/Logs/<name>` when the profile is the default one under a HOME (the Mac
-/// world's, rule 339), as the app's `logs_dir_of` has it (Console.app looks there).
+/// world's, rule 343), as the app's `logs_dir_of` has it (Console.app looks there).
 pub fn logs_dir(profile: &std::path::Path) -> std::path::PathBuf {
     let mac_default = || {
         let name = profile.file_name()?;
@@ -169,7 +169,7 @@ pub fn logs_dir(profile: &std::path::Path) -> std::path::PathBuf {
 }
 
 /// The home folder the launched app sees: the owner's own on Windows (`USERPROFILE`, the app inherits
-/// it), the world's `home/` on macOS (the sandbox sets HOME, rule 331).
+/// it), the world's `home/` on macOS (the sandbox sets HOME, rule 335).
 pub fn user_home(ctx: &mut crate::ctx::Ctx) -> String {
     #[cfg(windows)]
     {

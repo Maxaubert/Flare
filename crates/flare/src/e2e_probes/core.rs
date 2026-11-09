@@ -39,7 +39,7 @@ pub fn register(r: &mut ProbeRegistry) {
     r.add("pty.written", pty_written);
 }
 
-/// `pty.written`: the last bytes Flare wrote to each shell (rule 347).
+/// `pty.written`: the last bytes Flare wrote to each shell (rule 351).
 fn pty_written(_ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     Ok(crate::e2e_glue::written_json())
 }
@@ -137,7 +137,7 @@ fn snap(l: f32, k: f32) -> f32 {
 }
 
 /// The title mark before the strip (`Px.snap(42px) + Px.hair()` wide); the strip starts after it.
-/// macOS (`native-caption`): the traffic lights' corner, `Px.snap(caption-gap) + Px.hair()` (rule 335).
+/// macOS (`native-caption`): the traffic lights' corner, `Px.snap(caption-gap) + Px.hair()` (rule 339).
 fn mark_w_of(native: bool, gap: f32, k: f32) -> f32 {
     if native {
         snap(gap, k) + hair(k)
@@ -153,7 +153,7 @@ fn mark_w_in(a: &crate::AppWindow, k: f32) -> f32 {
 
 /// Pure: which title button `name` is, counted from the right edge (close 0 ... help 4), or why
 /// there is none. With the native caption (macOS) the window buttons are AppKit's traffic lights, so
-/// the row ends with Settings and then Command help (rule 335).
+/// the row ends with Settings and then Command help (rule 339).
 fn title_button(name: &str, native: bool, help: bool) -> Result<usize, String> {
     let base = if native { 0 } else { 3 };
     match name {
@@ -643,7 +643,7 @@ fn probe_names(_ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
 mod tests {
     use super::*;
 
-    // Rule 335: on a Mac the row ends with Settings (no window buttons) and the strip starts after the
+    // Rule 339: on a Mac the row ends with Settings (no window buttons) and the strip starts after the
     // traffic lights' corner; Windows keeps its five buttons and its 42 px mark.
     #[test]
     fn the_title_rects_follow_the_mac_caption() {

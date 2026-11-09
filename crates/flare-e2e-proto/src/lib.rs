@@ -266,7 +266,7 @@ pub fn pipe_name(profile: &Path) -> String {
     format!(r"\\.\pipe\flare-e2e-{:016x}", profile_hash(profile))
 }
 
-/// macOS (rule 330): the hook is a Unix socket, `e2e-<16 hex>.sock`, in the control channel's
+/// macOS (rule 334): the hook is a Unix socket, `e2e-<16 hex>.sock`, in the control channel's
 /// private per-user folder (`<user temp>/flare-ctl`, 0700, the socket 0600, the peer's uid checked).
 /// Short enough for `sun_path` (104 bytes) under `/var/folders/.../T/`.
 #[cfg(target_os = "macos")]
@@ -555,7 +555,7 @@ mod tests {
         );
     }
 
-    // Rule 330: on a Mac the hook is a socket in the control channel's private folder, the same hash.
+    // Rule 334: on a Mac the hook is a socket in the control channel's private folder, the same hash.
     #[cfg(target_os = "macos")]
     #[test]
     fn the_mac_hook_is_a_short_socket_in_the_private_folder() {
