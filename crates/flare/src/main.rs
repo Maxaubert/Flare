@@ -60,6 +60,7 @@ mod tabs_ui;
 mod term_menu;
 mod term_ui;
 mod theme_scene;
+mod thumbs;
 mod timer_registry;
 mod ui_clock;
 mod update_ctl;

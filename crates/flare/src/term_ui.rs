@@ -21,6 +21,7 @@ use flare_render::decor::{Decor, DecorInk};
 use flare_render::hit::{Hit, hit_cell, past_edge_px};
 use flare_render::metrics::CellMetrics;
 use flare_shells::paste::{ClipboardState, path_shell_of};
+use flare_tabs::tip_place::BoxF;
 use flare_term::alt_click::ALT_CLICK_MS;
 use flare_term::app_copy::AppCopyWatch;
 use flare_term::click_caret::MouseTracking;
@@ -51,6 +52,7 @@ use crate::clip_flow::{
 };
 use crate::drop_flow::{DROP_QUIET_MS, DropBatcher, type_dropped};
 use crate::term_menu::{TermMenuAct, TermMenuAt, TermMenuRow, term_menu_rows};
+use crate::thumbs::{Thumb, ThumbHover, ThumbJob, ThumbView, ThumbWorker, item_box};
 
 /// Which mouse cursor the grid shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,7 +84,15 @@ pub enum TermMsg {
     PreviewRefused {
         tab: String,
     },
+    /// A hover thumbnail's answer: the job's number and the picture, None for a refused, abandoned or broken one.
+    Thumb {
+        seq: u64,
+        thumb: Option<Arc<Thumb>>,
+    },
 }
+
+/// Puts the hover thumbnail on the window (Some), or takes it down (None).
+pub type SetThumb = Rc<dyn Fn(Option<&ThumbView>)>;
 
 /// Everything TermUi needs from the outside, injected.
 pub struct TermDeps {
@@ -96,6 +106,8 @@ pub struct TermDeps {
     /// Marks the grid dirty and requests a frame.
     pub redraw: Rc<dyn Fn()>,
     pub set_cursor: Rc<dyn Fn(CursorKind)>,
+    /// Puts the hover thumbnail on the window, or takes it down.
+    pub set_thumb: SetThumb,
     pub agent: Rc<dyn AgentView>,
     pub home: String,
     pub dbl: DoubleClick,
@@ -121,6 +133,8 @@ pub struct GridGeom {
     pub scale: f32,
     pub cols: usize,
     pub rows: usize,
+    /// The window's size in device pixels (0, 0 with no window). Only a hover thumbnail reads it: any change takes it down.
+    pub window: (u32, u32),
 }
 
 /// A pointer event over the grid. `kind`: 0 down, 1 up, 2 move, 3 cancel; `button`: 0 left,
@@ -323,10 +337,72 @@ pub struct TermUi {
     /// "Open previews in Flare" (Surfaces stage 1): a click on a path to a picture or a text file
     /// asks the app to show it in the tab's panel. Set from the setting on every refresh.
     previews: bool,
+    /// "Show thumbnails when hovering image paths": Some only while the setting is on.
+    thumbs: Option<ThumbState>,
 }
 
 /// The longest a big copy may keep Ctrl+C a copy.
 const COPY_PENDING_MAX_MS: u64 = 30_000;
+
+/// How often a hover thumbnail looks again at the link under its cell (the app's timer).
+const THUMB_RECHECK_MS: u64 = 50;
+
+/// "The same link in the same place": the tab, the first row on the screen and the mark. A scroll is a change even
+/// when a long wrapped link is still under the cell, because the picture was placed for the old rows.
+#[derive(Clone, PartialEq)]
+struct ThumbAt {
+    tab: String,
+    top: usize,
+    mark: LinkMark,
+}
+
+/// What a thumbnail was placed for; any change takes it down (a resize, a DPI change, a font change).
+type ThumbGeom = (u32, u32, u32, u32, usize, usize, (u32, u32));
+
+fn thumb_geom(g: &GridGeom) -> ThumbGeom {
+    (
+        g.scale.to_bits(),
+        g.metrics.cell_w,
+        g.metrics.cell_h,
+        g.metrics.padding,
+        g.cols,
+        g.rows,
+        g.window,
+    )
+}
+
+/// The hover thumbnails' state. There is none at all while the setting is off.
+struct ThumbState {
+    hover: ThumbHover<ThumbAt>,
+    worker: ThumbWorker,
+    /// The cell the pointer was last on: (row on the screen, column).
+    cell: (usize, usize),
+    geom: ThumbGeom,
+    /// Where the path was when the rest ended, in css px from the grid's corner.
+    item: Option<BoxF>,
+}
+
+/// The image link at a cell now, from the marks of the last frame.
+fn thumb_at(tab: &TabInfo, cell: (usize, usize)) -> Option<ThumbAt> {
+    let (mark, top) = tab
+        .handle
+        .with_emu_quiet(|em| (em.link_at_view(cell.0, cell.1), em.viewport_top()));
+    thumb_of(tab, mark?, top)
+}
+
+/// Only a path whose name is a picture's. A web address never is: hovering must not reach the network.
+fn thumb_of(tab: &TabInfo, mark: LinkMark, top: usize) -> Option<ThumbAt> {
+    let LinkTarget::Path { text } = &mark.target else {
+        return None;
+    };
+    (flare_surfaces::preview::classify(text) == Some(flare_surfaces::PanelKind::Image)).then(|| {
+        ThumbAt {
+            tab: tab.id.to_string(),
+            top,
+            mark,
+        }
+    })
+}
 
 fn mods(e: &PointerIn) -> MouseMods {
     MouseMods {
@@ -396,6 +472,7 @@ impl TermUi {
             copy_pending: Arc::new(Mutex::new(HashMap::new())),
             osc_copier,
             previews: true,
+            thumbs: None,
         }
     }
 
@@ -573,6 +650,160 @@ impl TermUi {
         self.previews = on;
     }
 
+    /// "Show thumbnails when hovering image paths". Off drops the state, the memory and any worker's claim on them.
+    pub fn set_thumbs(&mut self, on: bool) {
+        if on == self.thumbs.is_some() {
+            return;
+        }
+        if !on {
+            if let Some(mut st) = self.thumbs.take() {
+                st.worker.want(None);
+                if st.hover.shown() {
+                    (self.deps.set_thumb)(None);
+                }
+            }
+            return;
+        }
+        let post = Arc::clone(&self.deps.post);
+        self.thumbs = Some(ThumbState {
+            hover: ThumbHover::new(),
+            worker: ThumbWorker::new(
+                self.deps.home.clone(),
+                Arc::new(move |seq, thumb| post(TermMsg::Thumb { seq, thumb })),
+            ),
+            cell: (0, 0),
+            geom: (0, 0, 0, 0, 0, 0, (0, 0)),
+            item: None,
+        });
+    }
+
+    /// The pointer stands on `cell` of the grid, over `mark` if any (`None`: over no link or off the grid).
+    fn thumb_point(
+        &mut self,
+        tab: &TabInfo,
+        g: &GridGeom,
+        cell: (usize, usize),
+        mark: Option<LinkMark>,
+    ) {
+        let now = self.now();
+        let Some(st) = self.thumbs.as_mut() else {
+            return;
+        };
+        let at = mark.and_then(|m| {
+            let top = tab.handle.with_emu_quiet(|em| em.viewport_top());
+            thumb_of(tab, m, top)
+        });
+        if at.is_some() {
+            st.cell = cell;
+        }
+        let p = st.hover.point(at, now);
+        if p.started {
+            st.geom = thumb_geom(g);
+        }
+        st.worker.want(st.hover.loading_seq());
+        if p.came_down {
+            (self.deps.set_thumb)(None);
+        }
+    }
+
+    /// The pointer left the grid.
+    pub fn pointer_left(&mut self) {
+        let now = self.now();
+        let Some(st) = self.thumbs.as_mut() else {
+            return;
+        };
+        let came_down = st.hover.point(None, now).came_down;
+        st.worker.want(st.hover.loading_seq());
+        if came_down {
+            (self.deps.set_thumb)(None);
+        }
+    }
+
+    /// A key, a press, a menu or Find: the thumbnail goes, and this link stays quiet until the pointer has left it.
+    pub fn hide_thumb(&mut self) {
+        let Some(st) = self.thumbs.as_mut() else {
+            return;
+        };
+        let came_down = st.hover.dismiss();
+        st.worker.want(st.hover.loading_seq());
+        if came_down {
+            (self.deps.set_thumb)(None);
+        }
+    }
+
+    /// Every tick while a thumbnail is waiting, loading or up: asks what is under the cell NOW. A stored key cannot say
+    /// that the screen scrolled under a pointer that never moved.
+    fn thumb_tick(&mut self, tab: Option<&TabInfo>, g: &GridGeom, now: u64, due: &mut Vec<u64>) {
+        let Some(st) = self.thumbs.as_mut() else {
+            return;
+        };
+        if !st.hover.active() {
+            return;
+        }
+        let mut came_down = false;
+        if st.geom != thumb_geom(g) {
+            came_down |= st.hover.dismiss();
+        }
+        let here = tab.and_then(|t| thumb_at(t, st.cell));
+        came_down |= st.hover.recheck(here.as_ref());
+        if let Some(seq) = st.hover.fire(now) {
+            let job = here.as_ref().zip(tab).and_then(|(at, t)| {
+                let LinkTarget::Path { text } = &at.mark.target else {
+                    return None;
+                };
+                let found = self
+                    .inputs
+                    .borrow()
+                    .paths
+                    .find_path(t.id, t.cwd?, text, now);
+                let Found::Hit(f) = found else { return None };
+                let item = item_box(&at.mark.pieces, at.top, g.rows, &g.metrics, g.scale)?;
+                Some((
+                    ThumbJob {
+                        seq,
+                        base: f.base,
+                        text: text.clone(),
+                    },
+                    item,
+                ))
+            });
+            match job {
+                Some((job, item)) => {
+                    st.item = Some(item);
+                    st.worker.submit(job);
+                }
+                None => {
+                    st.hover.arrived(seq, false);
+                }
+            }
+        }
+        st.worker.want(st.hover.loading_seq());
+        if came_down {
+            (self.deps.set_thumb)(None);
+        }
+        if st.hover.active() {
+            due.push(now + THUMB_RECHECK_MS);
+        }
+    }
+
+    /// A job answered. The next one may start; this one goes up only if its link is still under the cell.
+    fn thumb_arrived(&mut self, tab: Option<&TabInfo>, seq: u64, thumb: Option<Arc<Thumb>>) {
+        let Some(st) = self.thumbs.as_mut() else {
+            return;
+        };
+        st.worker.finished(seq);
+        let here = tab.and_then(|t| thumb_at(t, st.cell));
+        let came_down = st.hover.recheck(here.as_ref());
+        let up = st.hover.arrived(seq, thumb.is_some());
+        st.worker.want(st.hover.loading_seq());
+        if came_down {
+            (self.deps.set_thumb)(None);
+        }
+        if up && let (Some(thumb), Some(item)) = (thumb, st.item) {
+            (self.deps.set_thumb)(Some(&ThumbView { thumb, item }));
+        }
+    }
+
     /// The only way a path is opened: a worker re-resolves it and applies the allowlist.
     fn open_path_async(&self, base: String, text: String, mode: OpenMode) {
         let openers = Arc::clone(&self.deps.openers);
@@ -611,6 +842,7 @@ impl TermUi {
                 out.focus_terminal = true;
                 self.menu = None;
                 self.last_rows.borrow_mut().clear();
+                self.hide_thumb();
                 self.on_down(tab, &e, &hit, row_c, dev, mouse_owned, now);
             }
             1 => out.open_menu = self.on_up(tab, g, &e, &hit, row_c, dev, now),
@@ -620,6 +852,7 @@ impl TermUi {
                 self.last_drag_scroll = None;
                 self.held = None;
                 self.reporting = false;
+                self.pointer_left();
             }
         }
         out
@@ -765,6 +998,7 @@ impl TermUi {
             None
         };
         let changed = self.set_hover(mark.as_ref().map(|_| (row_c, col)));
+        self.thumb_point(tab, g, (row_c, col), mark.clone());
         let kind = if mark.is_some() {
             CursorKind::Pointer
         } else if mouse_owned {
@@ -1022,6 +1256,7 @@ impl TermUi {
 
     /// Opens the bar for this tab, or closes it when it is already open here (D17).
     pub fn toggle_find(&mut self, tab: &TabInfo) {
+        self.hide_thumb();
         if self.find.open && self.find.tab.as_deref() == Some(tab.id) {
             self.find_close();
             return;
@@ -1165,6 +1400,7 @@ impl TermUi {
             }
             // The app shows it (AppCtl::on_msg takes this before it gets here).
             TermMsg::Preview { .. } | TermMsg::PreviewRefused { .. } => {}
+            TermMsg::Thumb { seq, thumb } => self.thumb_arrived(tab, seq, thumb),
             TermMsg::PathAnswer(ask, hits) => {
                 let woken = self.inputs.borrow_mut().paths.answer(&ask, hits, now);
                 self.recheck = true;
@@ -1271,6 +1507,7 @@ impl TermUi {
         self.reporting = false;
         self.press = None;
         self.set_hover(None);
+        self.pointer_left();
         if let Some(id) = front {
             self.inputs.borrow_mut().paths.subscribe(id);
         }
@@ -1300,7 +1537,7 @@ impl TermUi {
 
     /// Everything that runs on the timer: the drag scroll, the badge, the program-copy looks, the
     /// find count and refresh, the path questions and the drop batch.
-    pub fn tick(&mut self, tab: Option<&TabInfo>, _g: &GridGeom) -> TickOut {
+    pub fn tick(&mut self, tab: Option<&TabInfo>, g: &GridGeom) -> TickOut {
         let now = self.now();
         let mut out = TickOut::default();
         let mut due: Vec<u64> = Vec::new();
@@ -1387,6 +1624,7 @@ impl TermUi {
             due.push(now + BATCH_MS);
             self.recheck = false;
         }
+        self.thumb_tick(tab, g, now, &mut due);
 
         if let Some(paths) = self.drops.take_ready(now) {
             if let Some(t) = tab.filter(|t| t.alive) {
@@ -1569,6 +1807,9 @@ mod tests {
         }
     }
 
+    /// Every `set_thumb` call in order.
+    type ThumbCalls = Rc<RefCell<Vec<Option<(String, BoxF)>>>>;
+
     struct Rig {
         ui: TermUi,
         handle: Arc<TermHandle>,
@@ -1579,6 +1820,8 @@ mod tests {
         msgs: Arc<Mutex<VecDeque<TermMsg>>>,
         clock: Rc<Cell<u64>>,
         cursors: Rc<RefCell<Vec<CursorKind>>>,
+        /// Every `set_thumb` call: the caption and box of a picture going up, None for one coming down.
+        thumbs: ThumbCalls,
         agent: Rc<TestAgent>,
         rcr: Rc<Cell<bool>>,
         g: GridGeom,
@@ -1631,6 +1874,7 @@ mod tests {
             let msgs: Arc<Mutex<VecDeque<TermMsg>>> = Arc::default();
             let clock = Rc::new(Cell::new(0u64));
             let cursors = Rc::new(RefCell::new(Vec::new()));
+            let thumbs = Rc::new(RefCell::new(Vec::new()));
             let agent = Rc::new(TestAgent(Cell::new(None)));
             let rcr = Rc::new(Cell::new(false));
             let deps = TermDeps {
@@ -1653,6 +1897,12 @@ mod tests {
                     let c = Rc::clone(&cursors);
                     Rc::new(move |k| c.borrow_mut().push(k))
                 },
+                set_thumb: {
+                    let t = Rc::clone(&thumbs);
+                    Rc::new(move |v: Option<&ThumbView>| {
+                        t.borrow_mut().push(v.map(|v| (v.thumb.caption(), v.item)));
+                    })
+                },
                 agent: agent.clone(),
                 home: std::env::temp_dir().to_string_lossy().to_string(),
                 dbl: FALLBACK,
@@ -1673,6 +1923,7 @@ mod tests {
                 msgs,
                 clock,
                 cursors,
+                thumbs,
                 agent,
                 rcr,
                 g: GridGeom {
@@ -1680,6 +1931,7 @@ mod tests {
                     scale,
                     cols: COLS,
                     rows: ROWS,
+                    window: (800, 600),
                 },
                 cwd,
                 _sp: sp,
@@ -2420,6 +2672,364 @@ mod tests {
         r.click(2, 0);
         until("the open", || !r.openers.records().is_empty());
         assert!(previews(&r).is_empty());
+    }
+
+    // ---- hover thumbnails ----
+
+    fn png(path: &Path, w: u32, h: u32) {
+        image::RgbaImage::from_pixel(w, h, image::Rgba([9, 8, 7, 255]))
+            .save(path)
+            .unwrap();
+    }
+
+    /// A rig with thumbnails on and these words printed and lit up, in a folder holding the pictures named.
+    fn thumb_rig(dir: &Path, text: &str) -> Rig {
+        let mut r = Rig::with_cwd(1.0, dir);
+        r.ui.set_thumbs(true);
+        light_up(&mut r, text);
+        r.frame();
+        r
+    }
+
+    /// Hands every worker answer that has come in to the UI side.
+    fn pump_thumbs(r: &mut Rig) {
+        let h = r.handle.clone();
+        let tab = TabInfo {
+            id: "a",
+            handle: &h,
+            cwd: r.cwd.as_deref(),
+            alive: true,
+        };
+        let all: Vec<TermMsg> = r.msgs.lock().unwrap().drain(..).collect();
+        for m in all {
+            r.ui.on_msg(Some(&tab), m);
+        }
+    }
+
+    fn has_thumb_msg(r: &Rig) -> bool {
+        r.msgs
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|m| matches!(m, TermMsg::Thumb { .. }))
+    }
+
+    /// Rests on the cell, waits out the rest and hands the answer over.
+    fn rest_on(r: &mut Rig, col: usize, row: usize) {
+        r.hover(col, row);
+        r.tick(0);
+        r.tick(crate::thumbs::DWELL_MS);
+        until("the thumbnail's answer", || has_thumb_msg(r));
+        pump_thumbs(r);
+    }
+
+    fn last_thumb(r: &Rig) -> Option<Option<(String, BoxF)>> {
+        r.thumbs.borrow().last().cloned()
+    }
+
+    fn is_up(r: &Rig) -> bool {
+        matches!(last_thumb(r), Some(Some(_)))
+    }
+
+    #[test]
+    fn resting_on_an_image_path_shows_its_thumbnail_after_the_rest_and_not_before() {
+        let dir = tempfile::tempdir().unwrap();
+        png(&dir.path().join("p.png"), 600, 300);
+        let mut r = thumb_rig(dir.path(), "p.png");
+        r.hover(2, 0);
+        r.tick(0);
+        r.tick(crate::thumbs::DWELL_MS - 1);
+        assert!(!has_thumb_msg(&r), "no read before the rest is over");
+        assert!(r.thumbs.borrow().is_empty());
+        r.tick(1);
+        until("the answer", || has_thumb_msg(&r));
+        pump_thumbs(&mut r);
+        let (caption, item) = last_thumb(&r).flatten().expect("the picture is up");
+        assert_eq!(caption, "p.png  600 x 300");
+        let m = &r.g.metrics;
+        assert_eq!(item.top, f64::from(m.padding));
+        assert_eq!(item.height, f64::from(m.cell_h));
+    }
+
+    /// A rig in `cwd` with thumbnails on whose tab has shown a file in `shown`, with `name` printed and lit through
+    /// that folder alone, and then the "no" from `cwd` run out. The line has a hit, so it is never scanned again.
+    fn lit_through_a_shown_folder_and_the_no_ran_out(cwd: &Path, shown: &Path, name: &str) -> Rig {
+        let mut r = Rig::with_cwd(1.0, cwd);
+        r.ui.set_thumbs(true);
+        let taught = shown.join("one.txt").to_string_lossy().to_string();
+        let inputs = r.ui.inputs();
+        {
+            let mut i = inputs.borrow_mut();
+            i.paths.link_ranges(&taught, r.cwd.as_deref(), "a", 0);
+            i.paths.advance(BATCH_MS);
+            let ask = i.paths.take_ask().expect("an ask");
+            let hit = PathHit {
+                kind: flare_term::path_open::PathKind::File,
+                abs: taught.clone(),
+            };
+            let hits = ask.paths.iter().map(|_| Some(hit.clone())).collect();
+            i.paths.answer(&ask, Some(hits), BATCH_MS);
+            i.paths
+                .link_ranges(&taught, r.cwd.as_deref(), "a", BATCH_MS);
+        }
+        light_up(&mut r, name);
+        // The "no" from `cwd` wakes nobody: another path's answer is what has the line looked at again.
+        r.handle.with_emu(|em| em.links_revisit());
+        r.frame();
+        r.tick(40);
+        r.pump();
+        let d = r.frame();
+        assert_eq!(d.links.len(), 1, "lit through the shown folder");
+        r.tick(flare_term::path_links::NO_TTL_MS + 1);
+        r
+    }
+
+    #[test]
+    fn resting_on_a_picture_found_through_a_shown_folder_shows_it_after_the_no_for_the_cwd_ran_out()
+    {
+        let cwd = tempfile::tempdir().unwrap();
+        let shown = tempfile::tempdir().unwrap();
+        png(&shown.path().join("two.png"), 6, 3);
+        let mut r =
+            lit_through_a_shown_folder_and_the_no_ran_out(cwd.path(), shown.path(), "two.png");
+        rest_on(&mut r, 2, 0);
+        let (caption, _) = last_thumb(&r).flatten().expect("the picture is up");
+        assert_eq!(caption, "two.png  6 x 3");
+    }
+
+    #[test]
+    fn a_click_on_a_path_found_through_a_shown_folder_opens_it_after_the_no_for_the_cwd_ran_out() {
+        let cwd = tempfile::tempdir().unwrap();
+        let shown = tempfile::tempdir().unwrap();
+        std::fs::write(shown.path().join("two.pdf"), "x").unwrap();
+        let mut r =
+            lit_through_a_shown_folder_and_the_no_ran_out(cwd.path(), shown.path(), "two.pdf");
+        r.click(2, 0);
+        until("the opener call", || !r.openers.records().is_empty());
+        let rec = r.openers.records();
+        assert!(
+            matches!(&rec[0], OpenedRecord::Open(p) if p.ends_with("two.pdf")),
+            "{rec:?}"
+        );
+    }
+
+    #[test]
+    fn a_path_that_is_not_a_picture_never_asks_for_a_thumbnail() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let mut r = thumb_rig(dir.path(), "a.txt");
+        r.hover(2, 0);
+        r.tick(0);
+        r.tick(1000);
+        thread::sleep(Duration::from_millis(30));
+        assert!(!has_thumb_msg(&r));
+        assert!(r.thumbs.borrow().is_empty());
+    }
+
+    #[test]
+    fn with_the_setting_off_a_rest_starts_no_state_and_no_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        png(&dir.path().join("p.png"), 4, 4);
+        let mut r = thumb_rig(dir.path(), "p.png");
+        r.ui.set_thumbs(false);
+        assert!(r.ui.thumbs.is_none());
+        r.hover(2, 0);
+        r.tick(0);
+        let out = r.tick(1000);
+        assert!(r.ui.thumbs.is_none());
+        assert!(out.next_due_ms.is_none_or(|d| d > r.clock.get() + 50));
+        thread::sleep(Duration::from_millis(30));
+        assert!(!has_thumb_msg(&r));
+    }
+
+    #[test]
+    fn turning_the_setting_off_takes_the_picture_down() {
+        let dir = tempfile::tempdir().unwrap();
+        png(&dir.path().join("p.png"), 4, 4);
+        let mut r = thumb_rig(dir.path(), "p.png");
+        rest_on(&mut r, 2, 0);
+        assert!(is_up(&r));
+        r.ui.set_thumbs(false);
+        assert_eq!(last_thumb(&r), Some(None));
+    }
+
+    #[test]
+    fn scrolling_under_a_still_pointer_takes_the_picture_down_on_the_next_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        png(&dir.path().join("p.png"), 4, 4);
+        let mut r = thumb_rig(dir.path(), "p.png");
+        rest_on(&mut r, 2, 0);
+        assert!(is_up(&r));
+        // Output pushes the line off the screen, and the pointer never moves.
+        r.feed("\r\n\r\n\r\n\r\n\r\n\r\n\r\n");
+        r.frame();
+        r.tick(50);
+        assert_eq!(last_thumb(&r), Some(None));
+    }
+
+    /// The bug the per-tick look exists for: a still pointer, another picture's path scrolled under it.
+    #[test]
+    fn another_picture_scrolled_under_the_cell_is_not_shown_as_the_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        png(&dir.path().join("a.png"), 4, 4);
+        png(&dir.path().join("b.png"), 4, 4);
+        let mut r = thumb_rig(dir.path(), "a.png\r\nb.png\r\n\r\n\r\n\r\n");
+        rest_on(&mut r, 2, 0);
+        assert_eq!(last_thumb(&r).flatten().expect("up").0, "a.png  4 x 4");
+        // One more line: b.png is now on the row the pointer rests on, and the pointer never moved.
+        r.feed("\r\n");
+        r.frame();
+        r.tick(50);
+        assert_eq!(last_thumb(&r), Some(None));
+        r.tick(5000);
+        assert_eq!(
+            r.thumbs.borrow().iter().flatten().count(),
+            1,
+            "and b.png does not come up until the pointer moves"
+        );
+    }
+
+    #[test]
+    fn an_answer_for_a_link_that_scrolled_away_while_it_loaded_never_goes_up() {
+        let dir = tempfile::tempdir().unwrap();
+        png(&dir.path().join("p.png"), 4, 4);
+        let mut r = thumb_rig(dir.path(), "p.png");
+        r.hover(2, 0);
+        r.tick(0);
+        r.tick(crate::thumbs::DWELL_MS);
+        until("the answer", || has_thumb_msg(&r));
+        r.feed("\r\n\r\n\r\n\r\n\r\n\r\n\r\n");
+        r.frame();
+        pump_thumbs(&mut r);
+        assert!(r.thumbs.borrow().is_empty());
+    }
+
+    #[test]
+    fn moving_off_the_link_takes_the_picture_down() {
+        let dir = tempfile::tempdir().unwrap();
+        png(&dir.path().join("p.png"), 4, 4);
+        let mut r = thumb_rig(dir.path(), "p.png ok");
+        rest_on(&mut r, 2, 0);
+        r.hover(7, 0);
+        assert_eq!(last_thumb(&r), Some(None));
+    }
+
+    #[test]
+    fn the_pointer_leaving_the_grid_takes_the_picture_down() {
+        let dir = tempfile::tempdir().unwrap();
+        png(&dir.path().join("p.png"), 4, 4);
+        let mut r = thumb_rig(dir.path(), "p.png");
+        rest_on(&mut r, 2, 0);
+        r.ui.pointer_left();
+        assert_eq!(last_thumb(&r), Some(None));
+    }
+
+    #[test]
+    fn a_key_a_press_and_find_each_take_it_down_and_a_nudge_does_not_bring_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        png(&dir.path().join("p.png"), 4, 4);
+        let mut r = thumb_rig(dir.path(), "p.png ok");
+        rest_on(&mut r, 2, 0);
+        r.ui.hide_thumb();
+        assert_eq!(last_thumb(&r), Some(None));
+        r.hover(3, 0);
+        r.tick(0);
+        r.tick(2000);
+        thread::sleep(Duration::from_millis(30));
+        assert!(!has_thumb_msg(&r), "a nudge on the same link reads nothing");
+
+        r.hover(7, 0);
+        rest_on(&mut r, 2, 0);
+        assert!(is_up(&r), "back after leaving and resting again");
+        r.down(2, 0, false);
+        assert_eq!(last_thumb(&r), Some(None), "a press");
+        r.up(2, 0, false);
+        pump_thumbs(&mut r);
+
+        r.hover(7, 0);
+        rest_on(&mut r, 2, 0);
+        assert!(is_up(&r));
+        let h = r.handle.clone();
+        let tab = TabInfo {
+            id: "a",
+            handle: &h,
+            cwd: r.cwd.as_deref(),
+            alive: true,
+        };
+        r.ui.toggle_find(&tab);
+        assert_eq!(last_thumb(&r), Some(None), "Find");
+    }
+
+    #[test]
+    fn a_tab_switch_takes_it_down() {
+        let dir = tempfile::tempdir().unwrap();
+        png(&dir.path().join("p.png"), 4, 4);
+        let mut r = thumb_rig(dir.path(), "p.png");
+        rest_on(&mut r, 2, 0);
+        r.ui.tab_changed(None);
+        assert_eq!(last_thumb(&r), Some(None));
+    }
+
+    #[test]
+    fn a_resize_and_a_dpi_change_each_take_it_down() {
+        let dir = tempfile::tempdir().unwrap();
+        png(&dir.path().join("p.png"), 4, 4);
+        let mut r = thumb_rig(dir.path(), "p.png ok");
+        rest_on(&mut r, 2, 0);
+        r.g.window = (801, 600);
+        r.tick(50);
+        assert_eq!(last_thumb(&r), Some(None), "the window's size");
+
+        r.hover(7, 0);
+        rest_on(&mut r, 2, 0);
+        assert!(is_up(&r));
+        r.g.scale = 1.5;
+        r.tick(50);
+        assert_eq!(last_thumb(&r), Some(None), "the DPI");
+    }
+
+    #[test]
+    fn a_tick_keeps_checking_while_a_picture_is_up_and_stops_when_it_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        png(&dir.path().join("p.png"), 4, 4);
+        let mut r = thumb_rig(dir.path(), "p.png ok");
+        rest_on(&mut r, 2, 0);
+        let now = r.clock.get();
+        assert!(r.tick(0).next_due_ms.is_some_and(|d| d <= now + 50));
+        r.hover(7, 0);
+        let now = r.clock.get();
+        assert!(r.tick(0).next_due_ms.is_none_or(|d| d > now + 50));
+    }
+
+    #[test]
+    fn a_folder_with_a_pictures_name_and_a_broken_picture_show_nothing_and_open_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("x.png")).unwrap();
+        std::fs::write(dir.path().join("bad.png"), "not a picture").unwrap();
+        let mut r = thumb_rig(dir.path(), "x.png bad.png");
+        rest_on(&mut r, 2, 0);
+        r.hover(9, 0);
+        r.tick(0);
+        r.tick(crate::thumbs::DWELL_MS);
+        until("the answer", || has_thumb_msg(&r));
+        pump_thumbs(&mut r);
+        assert!(r.thumbs.borrow().is_empty());
+        assert!(r.openers.records().is_empty());
+        assert!(r.urls.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_web_address_of_a_picture_is_never_fetched_on_hover() {
+        let mut r = Rig::new(1.0);
+        r.ui.set_thumbs(true);
+        r.feed("https://a.io/p.png");
+        r.frame();
+        r.hover(4, 0);
+        r.tick(0);
+        r.tick(1000);
+        thread::sleep(Duration::from_millis(30));
+        assert!(!has_thumb_msg(&r));
+        assert!(r.thumbs.borrow().is_empty());
     }
 
     #[test]
