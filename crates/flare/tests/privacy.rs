@@ -78,6 +78,7 @@ pub const INVENTORY: &[(&str, &str)] = &[
     ("flare-web/src/macos/host.rs", "Web panel"),
     ("flare-web/src/walls.rs", "Web panel"),
     ("flare-web/src/macos/probe/mod.rs", "Web panel"),
+    ("flare-web/src/macos/probe/observers.rs", "Web panel"),
     ("flare-web/src/macos/probe/pages.rs", "Web panel"),
     // The plugin fill API and brand (2026-10-28, 2026-11-08): string work on addresses, no request. The fill's site
     // check builds an `https://` address from a login's host to compare it with the page's; the details sheet and a
