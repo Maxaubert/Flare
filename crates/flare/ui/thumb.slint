@@ -1,0 +1,101 @@
+// The hover thumbnail: a picture and its caption over the grid, anchored to the path. The look follows the
+// tooltip bubble (tip.slint): a hairline border, the same shadow, a 120 ms fade.
+import { Theme, Px, Motion } from "theme.slint";
+
+export component ThumbBubble inherits Rectangle {
+    in property <image> picture;
+    in property <string> caption;
+    in property <length> pic-w;
+    in property <length> pic-h;
+    in property <length> at-x;
+    in property <length> at-y;
+    in property <bool> visible-thumb;
+    out property <length> bubble-w: bubble.width;
+    out property <length> bubble-h: bubble.height;
+
+    // Pointer-transparent: no touch handler anywhere in here, so the grid keeps getting the moves.
+    property <bool> shown: root.visible-thumb && root.caption != "";
+
+    bubble := Rectangle {
+        x: root.at-x;
+        y: root.at-y;
+        width: max(root.pic-w, 120px) + 16px;
+        height: root.pic-h + 34px;
+        opacity: root.shown ? 1 : 0;
+        // Faded out: nothing is drawn, the frame's cost goes with it.
+        visible: root.shown || self.opacity > 0;
+        background: Theme.side-flat;
+        border-radius: 6px;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-blur: 18px;
+        drop-shadow-color: #0000008c;
+        animate opacity { duration: Motion.d(120ms); easing: cubic-bezier(0.16, 1, 0.3, 1); }
+
+        Image {
+            x: (parent.width - self.width) / 2;
+            y: 8px;
+            width: root.pic-w;
+            height: root.pic-h;
+            source: root.picture;
+            image-fit: fill;
+        }
+
+        Text {
+            x: 8px;
+            y: root.pic-h + 12px;
+            width: parent.width - 16px;
+            height: 16px;
+            text: root.caption;
+            overflow: elide;
+            vertical-alignment: center;
+            font-family: Theme.font-ui;
+            font-size: 12px;
+            color: Theme.text;
+        }
+    }
+}
+
+export component ThumbBubblePreview inherits Window {
+    preferred-width: 600px;
+    preferred-height: 400px;
+    background: Theme.ground;
+
+    in-out property <image> picture;
+    in-out property <string> caption;
+    in-out property <length> pic-w;
+    in-out property <length> pic-h;
+    in-out property <length> at-x;
+    in-out property <length> at-y;
+    in-out property <bool> visible-thumb;
+    out property <length> bubble-w: bubble.bubble-w;
+    out property <length> bubble-h: bubble.bubble-h;
+    out property <int> pointer-moves: root.moves;
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+
+    property <int> moves;
+
+    // What stands for the grid under the bubble.
+    TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.move { root.moves += 1; }
+        }
+    }
+
+    bubble := ThumbBubble {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        picture: root.picture;
+        caption: root.caption;
+        pic-w: root.pic-w;
+        pic-h: root.pic-h;
+        at-x: root.at-x;
+        at-y: root.at-y;
+        visible-thumb: root.visible-thumb;
+    }
+}

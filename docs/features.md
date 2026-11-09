@@ -2106,3 +2106,15 @@ tab's panel. It is a mini-app Flare writes itself, like the audio player, so the
 - **STL normals.** The viewer works out an STL's normals from its facets and ignores the ones in the file, which are commonly zero and would draw the part as one flat silhouette (rule 233).
 
 Not in this version: click a path to preview, a `.gltf` with separate `.bin` or texture files, Draco or other WASM decoders, OBJ, FBX, animation.
+
+## Image thumbnails on hover (#17), 2026-11-09
+
+Point at a picture's path in the terminal for 350 ms and a small picture appears over the grid, above or below the line so it never covers it. Rows cannot be added under a line without changing the agent's text, so it is a floating bubble.
+
+- **Look.** The tooltip's bubble: hairline border, shadow, 120 ms fade, picture up to 256 px on its longest side, caption with the file name and the picture's own size. It ignores the pointer. In a small window the picture shrinks to the side with more room; with no useful room it is not shown. It stays inside the grid, so a web panel (a native window) cannot cover it.
+- **Hides** when the pointer leaves, the link under the cell changes (a scroll or output under a still pointer included, looked at again every tick), or on a key, press, tab switch, resize, DPI change, Find or a menu. After a key or a press that link stays quiet until the pointer has left it.
+- **Loading.** A worker, one job at a time with only the newest waiting, sharing the panel's decode lock. Vetted like a click (rules 13, 14, 236). Limits 16 MB and 25 MP, below the panel's. Memory only, 32 pictures and about 8 MB, keyed by path, length and time, so an edited picture refreshes.
+- **Setting.** "Show thumbnails when hovering image paths" (Settings > Terminal > Links, `flare.window.hoverThumbs`, default on). Off means no state and no worker.
+- **Tests.** `thumbs` (the clock, the cache, the worker, placement), the `term_ui` rig (`resting_on_an_image_path_*`, every hide reason, the refusals), `preview` (`a_thumbnail_*`), `ui_tests::thumb` at several scales and the `appctl` wiring.
+
+Not in this version: always-on thumbnails, web image URLs (network on hover), SVG (scripts), video, PDF, animation (first frame only), a disk cache.
