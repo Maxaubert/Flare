@@ -1475,8 +1475,12 @@ fn help_b(ctx: &mut Ctx, app: &mut App, started: Instant) -> Result<(), String> 
         String::new()
     } else {
         let _ = ctx.shot(app, "help-new-shell");
+        let g = probe(app, "grid.text", Value::Null);
         format!(
-            "; Flare wrote to it: {}",
+            "; its grid {} cols in a box {:?} css px wide, {} OS frames; Flare wrote to it: {}",
+            g["cols"],
+            rect_of(&probe(app, "ui.rect", json!({ "name": "grid" }))).map(|r| r.2),
+            probe(app, "sidebar.state", Value::Null)["redraws"],
             probe(app, "pty.written", Value::Null)
         )
     };

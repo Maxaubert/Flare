@@ -1230,3 +1230,18 @@ the new scale at once (`e2e_glue::item_size_for`), because Slint's scale change 
 frame drawn before the real window grew asked the software renderer for 2655 px of a 1180 px buffer: the app
 panicked (tabLooks, run 42598992162). Held by `the_systems_minimised_answer_wins_over_slints` and
 `the_item_fills_the_buffer_it_has_at_the_new_scale`. Source: Mac E2E in CI (2026-11-09).
+345. **macOS: a timer steps the sidebar's slide in a Mac `--e2e` run.** The parked clear window gets no
+`RedrawRequested` from AppKit, and the slide (audit V3) starts at its first frame, so a reveal, the one slide that
+never ends in a jump, never moved: every slid-out picture of verticalTabs showed no sidebar while the probes said it
+was out (nine checks, runs 42612597989 and 42622873207). `appctl::timer_steps_slide` starts the slide timer where
+there is no OS window and on a Mac under `--e2e`; the app with a real window keeps its frames. `sidebar.state` now
+carries `slide_now`, `slot_now` and the OS frame count, so a slid-out picture with no sidebar names its cause. Held by
+`a_timer_steps_the_slide_without_frames_and_in_a_mac_e2e_run`. Source: Mac E2E in CI, run 42624800535 (2026-11-09).
+346. **A scenario's picture or store check waits out what moves, on every system.** Four checks held a moving thing
+to one instant and failed on the Mac runner only by its timing: helpPanel's picture before a selection now waits out
+the row's 120 ms hover fade (the lit row was the "changed colour"), themeSwitch reads the agent colour once
+`settings.json` has it (the store is written after a debounce; Cancel was held to a store that had not caught up),
+verticalTabs' slid-out no-shadow check compares with the terminal's ground token (a sampled pixel landed on the Mac
+world's longer prompt) and its ring check looks over a breath (a question's ring was caught at its faintest). The
+program-copy unit test ticks once before its press, so the press no longer races the window's real timer (the
+Windows check job, run 42612597989). Source: Mac E2E in CI, runs 42624800535 and 42626884993 (2026-11-09).

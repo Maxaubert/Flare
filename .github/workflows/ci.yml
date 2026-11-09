@@ -17,7 +17,8 @@ on:
         default: false
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # A hand run with another filter is its own group, so a full run and a run of a few scenarios go side by side.
+  group: ci-${{ github.ref }}-${{ inputs.e2e_only }}-${{ inputs.e2e_filter }}
   cancel-in-progress: true
 
 env:
