@@ -1,15 +1,18 @@
-//! Parking the --e2e window on macOS (port phase 3). The Mac meaning of the Windows park: the app
-//! becomes an accessory (no Dock icon, never the active app unless it asks, and it never asks), and
-//! the window is moved off every screen. AppKit may still pull a titled window back onto a screen
-//! when it is ordered front, so the report reads the real frame and says so; the Mac E2E itself
-//! runs in CI only (the port plan's "Ongoing" row).
+//! Parking the --e2e window on macOS (port phase 3, rules 334 and 336). The Mac meaning of the Windows
+//! park: the app becomes an accessory (no Dock icon, never the active app unless it asks, and it never
+//! asks), and the window is clear: alpha 0, no shadow, every click passing through it to what is below.
+//! It is born off every screen (and kept there by `keep_windows_off_screen` until it is clear), then put
+//! on the main screen, because a Mac draws nothing for a window that is on no screen: the display link
+//! that paces Slint's frames does not tick for it, and Metal hands out no drawable, so an off-screen
+//! window never paints (the Mac E2E's first runs: one software frame, no GPU frame, no link colour). The
+//! report reads the real frame and alpha; the Mac E2E itself runs in CI only (the port plan's "Ongoing" row).
 //!
 //! The handle is the window's `NSView` as an integer (raw-window-handle's `AppKit` handle).
 
 use objc2::MainThreadMarker;
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
 use objc2::sel;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSScreen};
 use objc2_foundation::{NSPoint, NSRect};
 
 /// Where a parked window sits: far outside every monitor's rectangle.
@@ -83,9 +86,24 @@ pub fn keep_windows_off_screen() {
     }
 }
 
-/// Makes the app an accessory and moves the window to the parking spot, its class first told to keep
-/// the frame off every screen (rule 334). Never activates the app, never orders the window front, never
-/// resizes it. Nothing happens off the main thread.
+/// macOS under `--e2e` (rule 336): no App Nap for the run. An accessory app whose only window is clear
+/// would be napped by the system (timers coalesced to seconds, I/O at background priority), and a
+/// scenario's 8 s waits would time out on a Mac only. Held for the whole process; the real app never
+/// calls this.
+pub fn hold_off_app_nap() {
+    use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
+    let token = NSProcessInfo::processInfo().beginActivityWithOptions_reason(
+        NSActivityOptions::UserInteractive,
+        &NSString::from_str("Flare --e2e run"),
+    );
+    // The activity lasts as long as the token; the run's whole life.
+    std::mem::forget(token);
+}
+
+/// Makes the app an accessory and the window clear (alpha 0, no shadow, click-through), then puts it on
+/// the main screen's visible area so it paints (rule 336). Its class keeps the frame it is given (rule
+/// 334). Never activates the app, never orders the window front, never resizes it. Nothing happens off
+/// the main thread.
 pub fn park(view: isize) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
@@ -97,7 +115,14 @@ pub fn park(view: isize) {
         .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     let obj: &AnyObject = window.as_ref();
     allow_off_screen(obj.class());
-    window.setFrameOrigin(NSPoint::new(f64::from(PARK_AT), f64::from(PARK_AT)));
+    // Clear before it moves: it is never seen on the way.
+    window.setAlphaValue(0.0);
+    window.setHasShadow(false);
+    window.setIgnoresMouseEvents(true);
+    let at = NSScreen::mainScreen(mtm)
+        .map(|s| s.visibleFrame().origin)
+        .unwrap_or(NSPoint::new(0.0, 0.0));
+    window.setFrameOrigin(at);
 }
 
 /// What the harness checks of an `--e2e` window (the same shape as on Windows).
@@ -112,6 +137,9 @@ pub struct ParkReport {
     pub screen: (i32, i32, i32, i32),
     /// Whether Flare is the active app and this its key window.
     pub foreground: bool,
+    /// macOS: the window is clear (alpha 0) and lets every click through, so on a screen it shows
+    /// nothing and takes nothing (rule 336).
+    pub clear: bool,
 }
 
 /// The accessory activation policy, as `ex_style` holds it.
@@ -133,9 +161,9 @@ impl ParkReport {
     /// Everything wrong with the window as an `--e2e` window; empty when it is safe.
     pub fn problems(&self) -> Vec<String> {
         let mut out = Vec::new();
-        if self.on_screen() {
+        if self.on_screen() && !self.clear {
             out.push(format!(
-                "the window is on a screen at {:?} (screens {:?}), it is not parked",
+                "the window shows on a screen at {:?} (screens {:?}): it is not clear and click-through",
                 self.rect, self.screen
             ));
         }
@@ -176,6 +204,7 @@ pub fn report(view: isize) -> ParkReport {
         ex_style: app.activationPolicy().0.max(0) as u32,
         screen: screen.unwrap_or_default(),
         foreground: app.isActive() && window.isKeyWindow(),
+        clear: window.alphaValue() == 0.0 && window.ignoresMouseEvents(),
     }
 }
 
@@ -191,6 +220,7 @@ mod tests {
             ex_style: POLICY_ACCESSORY,
             screen: SCREEN,
             foreground: false,
+            clear: false,
         }
     }
 
@@ -209,7 +239,10 @@ mod tests {
         let mut r = safe();
         r.rect = (3000, 100, 4000, 700);
         assert!(r.on_screen());
-        assert!(r.problems().iter().any(|p| p.contains("not parked")));
+        assert!(r.problems().iter().any(|p| p.contains("not clear")));
+        // Rule 336: on a screen, clear and click-through, it is safe.
+        r.clear = true;
+        assert!(r.problems().is_empty());
         let r = ParkReport {
             ex_style: 0,
             foreground: true,

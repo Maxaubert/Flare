@@ -1388,6 +1388,9 @@ impl GlueCtx {
                 w.set_maximized(false);
             }
             "maximise" | "maximize" => w.set_maximized(true),
+            // The window's own close (the title bar's X, macOS's red traffic light): the close request
+            // the system sends, through the same route (rule 335; the Mac E2E cannot click AppKit's light).
+            "close" => w.dispatch_event(slint::platform::WindowEvent::CloseRequested),
             "fullscreen" => {
                 // The same chord the user presses.
                 let ev = event_from_chord("F11", true)?;

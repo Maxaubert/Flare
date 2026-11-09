@@ -539,6 +539,7 @@ fn attach_material_when_ready(
 /// timer does). Right after `show()` there is none: the winit backend makes the native window only
 /// once the event loop runs, so a step that asked then got nothing and was skipped for good (the
 /// taskbar badge never showed, 2026-10-26). Keep the returned timer alive for the run.
+#[cfg(windows)]
 fn when_handle_ready(
     app: &AppWindow,
     what: &'static str,
@@ -574,6 +575,18 @@ fn when_handle_ready(
     );
     timer
 }
+/// macOS: what waits for an HWND (the hung-window watchdog, the exe's icon, the taskbar overlay) has no
+/// Mac meaning, and `hwnd_of` never answers there: polling it only ended in a false "never got a handle"
+/// warning 10 s into every run (seen in the Mac E2E, rule 335). The Dock badge is set up without a handle.
+#[cfg(not(windows))]
+fn when_handle_ready(
+    _app: &AppWindow,
+    _what: &'static str,
+    _f: impl FnOnce(&AppWindow, isize) + 'static,
+) -> Rc<slint::Timer> {
+    Rc::new(slint::Timer::default())
+}
+
 /// Brings the window forward the way `raise_plan` says (under `--e2e` it only shows).
 fn raise_window(app: &AppWindow, e2e: bool) {
     let minimised = app.window().is_minimized();

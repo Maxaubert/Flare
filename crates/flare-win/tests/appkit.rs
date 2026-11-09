@@ -171,7 +171,7 @@ mod mac {
         }
     }
 
-    fn the_e2e_window_parks_off_every_screen_as_an_accessory() {
+    fn the_e2e_window_parks_clear_and_click_through_as_an_accessory() {
         let mtm = mtm();
         let (_w, view) = window(mtm);
         flare_win::window_park::park(view);
@@ -187,7 +187,8 @@ mod mac {
             "policy {}",
             r.ex_style
         );
-        assert!(r.rect.0 < -1000, "{:?}", r.rect);
+        // Rule 336: clear and click-through (a window on no screen never paints on a Mac).
+        assert!(r.clear, "{r:?}");
         assert!(!r.foreground);
         if r.screen != (0, 0, 0, 0) {
             assert!(r.problems().is_empty(), "{:?}: {:?}", r, r.problems());
@@ -451,8 +452,8 @@ mod mac {
             the_screens_are_device_pixel_areas,
         ),
         (
-            "e2e_window_parks_off_every_screen_as_an_accessory",
-            the_e2e_window_parks_off_every_screen_as_an_accessory,
+            "e2e_window_parks_clear_and_click_through_as_an_accessory",
+            the_e2e_window_parks_clear_and_click_through_as_an_accessory,
         ),
     ];
 }

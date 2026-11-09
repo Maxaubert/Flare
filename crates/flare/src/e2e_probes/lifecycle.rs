@@ -34,10 +34,7 @@ fn window_park(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
 mod tests {
     use super::*;
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "the --e2e window park is Windows-only; the Mac E2E is the port plan's Ongoing row"
-    )]
+    #[cfg(windows)]
     #[test]
     fn the_probe_lists_every_problem_and_none_for_a_safe_window() {
         let safe = ParkReport {
@@ -58,6 +55,31 @@ mod tests {
         let v = park_json(&bad);
         assert_eq!(v["on_screen"], true);
         assert_eq!(v["problems"].as_array().map(Vec::len), Some(3));
+    }
+
+    // Rule 336: a Mac window on a screen is safe only clear and click-through, in an accessory app.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_mac_probe_takes_a_clear_window_on_a_screen_and_nothing_else() {
+        let safe = ParkReport {
+            rect: (0, 25, 1000, 665),
+            ex_style: flare_win::window_park::POLICY_ACCESSORY,
+            screen: (0, 0, 1024, 768),
+            foreground: false,
+            clear: true,
+        };
+        let v = park_json(&safe);
+        assert_eq!(v["problems"].as_array().map(Vec::len), Some(0));
+        let bad = ParkReport {
+            clear: false,
+            ex_style: 0,
+            foreground: true,
+            ..safe
+        };
+        assert_eq!(
+            park_json(&bad)["problems"].as_array().map(Vec::len),
+            Some(3)
+        );
     }
 
     #[test]

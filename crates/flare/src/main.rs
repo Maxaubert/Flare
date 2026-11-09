@@ -198,6 +198,7 @@ fn main() {
     #[cfg(target_os = "macos")]
     if args.e2e {
         flare_win::window_park::keep_windows_off_screen();
+        flare_win::window_park::hold_off_app_nap();
     }
     // Single instance: a second launch hands its folders to the first and exits 0. The lock and
     // the pipe are keyed by the profile folder, so an e2e run (its own profile) never reaches the

@@ -659,6 +659,11 @@ pub fn last_tab(ctx: &mut Ctx) -> Result<(), String> {
     });
 
     // The X really quits: no resident process is left holding the lock.
+    // macOS: the X is AppKit's red light, outside what the app draws; its close request goes through
+    // the hook instead (the same route the light takes).
+    #[cfg(target_os = "macos")]
+    let _ = app.session.call(&Request::Window { op: "close".into() });
+    #[cfg(windows)]
     if let Some((x, y)) = centre_of(&mut app, "close") {
         app.session.click(x, y)?;
     }
