@@ -533,6 +533,7 @@ pub fn set_shell_pids(pids: ShellPids) {
 }
 
 /// The 50 ms timer on the UI thread that tells the watchdog the thread is alive. Keep the timer alive.
+#[cfg(not(target_os = "macos"))]
 pub fn beat_timer() -> Option<slint::Timer> {
     let g = globals()?;
     let watch = g.watch.clone();
@@ -543,6 +544,32 @@ pub fn beat_timer() -> Option<slint::Timer> {
         move || watch.beat(),
     );
     Some(timer)
+}
+
+/// macOS (rule 349): the beat is posted to the UI thread every 50 ms from a thread of its own, not fired by a
+/// Slint timer. A Mac fires an app's timers late when its window is not in front (one to two hundred ms on the
+/// runner, with Flare idle at under 1 percent of a core), and each late timer was a `main-lag` line though the
+/// UI thread had nothing to do (diagLog's quiet check). A posted call wakes the run loop at once, so the gap it
+/// measures is the UI thread's own. The thread ends with the event loop. The returned timer is never started.
+#[cfg(target_os = "macos")]
+pub fn beat_timer() -> Option<slint::Timer> {
+    let g = globals()?;
+    let watch = g.watch.clone();
+    let spawned = std::thread::Builder::new()
+        .name("flare-beat".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_millis(50)); // sync-ok: the beat thread's own pace
+                let w = watch.clone();
+                if slint::invoke_from_event_loop(move || w.beat()).is_err() {
+                    break;
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        log::warn!("could not start the beat thread: {e}");
+    }
+    Some(slint::Timer::default())
 }
 
 /// What the machine's sleep and its screen tell the watchdog (a sleep or a screen that is off is not a stall).

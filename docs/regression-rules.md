@@ -1257,3 +1257,11 @@ such a spare is let go, the tab starts a fresh shell, and that shell is not prew
 Windows keeps its spares as they were (ConPTY stands between the shell and Flare there). Held by
 `a_spare_that_asked_the_terminal_is_let_go_outside_windows`, `a_spare_that_asked_nothing_is_adopted` and the
 `term_query` tests. Source: Mac E2E in CI (2026-11-09).
+348. **macOS: diagLog's quiet is measured on a quiet runner.** "An idle 3 s writes nothing" failed on the Mac runner
+only, with `main-lag` lines of 100 to 216 ms and nothing in flight: the UI thread had no work of its own and waited
+for a core. The busiest processes then were the runner's own (`trustd`, `softwareupdated`, Spotlight's `mds_stores`,
+about one and a half of its three cores) while the new tab's pwsh still loaded its modules after its prompt. The
+`e2e-macos` job turns Spotlight and the update schedule off before the scenarios, diagLog waits 8 s on a Mac before it
+measures (1 s elsewhere, unchanged), and a quiet that is not quiet prints the lines and the five busiest processes.
+The 100 ms lag threshold and the app are unchanged. Source: Mac E2E in CI, runs 42633987601 and 42635727345
+(2026-11-09).

@@ -1606,7 +1606,7 @@ for the profiles kept on disk (the mock keychain is used until then, rule 260).
 ## macOS E2E: the scenarios on GitHub's macOS runner (2026-11-09)
 
 The visual E2E on macOS, the port plan's Ongoing row (`docs/superpowers/specs/2026-11-08-macos-port.md`; how it runs
-and which scenarios are gated: `docs/e2e.md`, "macOS E2E"; regression rules 330 to 347). It runs in CI only, in the
+and which scenarios are gated: `docs/e2e.md`, "macOS E2E"; regression rules 330 to 348). It runs in CI only, in the
 `e2e-macos` job; nothing of it runs on a person's Mac. 72 scenarios run on the runner, 30 are gated with a reason.
 
 - [x] The harness builds and runs on macOS and drives the app over the `--e2e` Unix socket hook in the control channel's private folder (0600, peer uid checked, first-instance lock). Stands in for the named pipe. (macOS: the_mac_socket_is_this_users_alone_and_goes_with_the_server, the_mac_hook_is_a_short_socket_in_the_private_folder, crates/flare/src/e2e_hook.rs)

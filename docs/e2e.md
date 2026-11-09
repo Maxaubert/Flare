@@ -129,7 +129,7 @@ Every `FLARE_E2E_*` read goes through `e2e::global().env(..)`, which returns not
 a stray variable in the owner's environment cannot change the real app. No source file reads such a
 variable directly (`no_source_file_reads_an_e2e_variable_directly`).
 
-## macOS E2E (CI only, rules 330 to 347)
+## macOS E2E (CI only, rules 330 to 348)
 
 The same harness and scenario table drive the Mac build, on GitHub's macOS runners only (the `e2e-macos` job in
 `.github/workflows/ci.yml`). A Mac has no hidden desktop, so nothing here is run on a person's Mac: locally only the
