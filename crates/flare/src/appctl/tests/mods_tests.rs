@@ -163,6 +163,7 @@ fn agent_in(tab: &str) -> CallContext {
         client_version: String::new(),
         grant: Grant::agent(),
         tab: Some(tab.into()),
+        cancel: Default::default(),
     }
 }
 
@@ -902,6 +903,72 @@ fn a_navigation_the_host_cancelled_does_not_make_a_ready_page_unready() {
         &json!({"t":"respond","call_id":id,"result":{"ok":true}}).to_string(),
     );
     assert!(answer_of(&f, &rx).is_ok());
+}
+
+/// The agent cancelled, or its connection dropped: the call ends and the mod's late answer fails cleanly.
+#[test]
+fn a_mod_tool_call_ends_when_the_caller_goes_away_and_the_late_answer_is_refused() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let w = world(&f, sample_notes);
+    turn(&f, "notes", true);
+    let tab = page_up(&f, &w, &slot, "notes");
+    let cancel = flare_ctl::CancelFlag::default();
+    let ctx = CallContext {
+        cancel: cancel.clone(),
+        ..agent_in(&tab)
+    };
+    let rx = call_on_thread(
+        &w.dispatcher,
+        ctx,
+        Method::ModsCall,
+        json!({"name": "mod_notes_append_note", "input": {"text": "x"}}),
+    );
+    f.pump_until("the call to be waiting", |f| {
+        f.ctl
+            .borrow()
+            .mods
+            .as_ref()
+            .unwrap()
+            .hub()
+            .pending_of("notes")
+            == 1
+    });
+    let id = f
+        .ctl
+        .borrow()
+        .mods
+        .as_ref()
+        .unwrap()
+        .hub()
+        .pending_ids("notes")
+        .remove(0);
+    cancel.set();
+    assert!(answer_of(&f, &rx).is_err(), "the call ended");
+    assert_eq!(
+        f.ctl
+            .borrow()
+            .mods
+            .as_ref()
+            .unwrap()
+            .hub()
+            .pending_of("notes"),
+        0,
+        "nothing is left open"
+    );
+    let mod_ctx = CallContext {
+        grant: w.hub.grant_of_mod("notes").unwrap(),
+        ..agent_in(&tab)
+    };
+    let e = w
+        .dispatcher
+        .call(
+            &mod_ctx,
+            Method::ToolsRespond,
+            json!({"call_id": id, "result": 1}),
+        )
+        .unwrap_err();
+    assert_eq!(e.code, code::NOT_FOUND);
 }
 
 #[test]
@@ -2116,6 +2183,7 @@ fn a_plugins_pages_share_one_budget_and_a_message_over_it_is_dropped_unread() {
         client_version: String::new(),
         grant: w.hub.grant_of_mod("chatty").unwrap(),
         tab: None,
+        cancel: Default::default(),
     };
     let codes: Vec<String> = (0..101)
         .map(|_| {

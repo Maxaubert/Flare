@@ -458,6 +458,64 @@ pub fn phys_rect(x: f32, y: f32, w: f32, h: f32, scale: f32) -> PhysRect {
     }
 }
 
+/// What one step of a splitter drag asks of the settle timer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DragSettle {
+    /// The slot did not change: the timer runs on as it was.
+    Keep,
+    /// The slot moved and the page is not at its width: the wait starts again.
+    Restart,
+    /// The slot moved back to the page's width: nothing is owed.
+    Cancel,
+}
+
+/// A web page while the splitter beside it is held. A new width makes the page lay itself out again, which
+/// flickers when it happens at every pointer step, so the page keeps its width and only its left edge follows
+/// the splitter: narrowing, the page's right part goes past the window's edge (a child window is clipped there);
+/// widening, the panel's ground shows at its right. The page is never over the terminal. It takes the slot's
+/// width after a short pause ([`DragHold::settle`]) and when the splitter is let go (the hold ends).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DragHold {
+    width: i32,
+    slot: Option<PhysRect>,
+}
+
+impl DragHold {
+    /// Starts holding at the width the page has now.
+    pub fn new(width: i32) -> Self {
+        Self { width, slot: None }
+    }
+
+    /// The slot is at `slot` now: where the page goes, and what that asks of the settle timer.
+    pub fn step(&mut self, slot: PhysRect) -> (PhysRect, DragSettle) {
+        let moved = self.slot != Some(slot);
+        self.slot = Some(slot);
+        let settle = match (moved, slot.w == self.width) {
+            (false, _) => DragSettle::Keep,
+            (true, true) => DragSettle::Cancel,
+            (true, false) => DragSettle::Restart,
+        };
+        (
+            PhysRect {
+                w: self.width,
+                ..slot
+            },
+            settle,
+        )
+    }
+
+    /// The pointer paused: the page may take the slot's width. True when that is a change.
+    pub fn settle(&mut self) -> bool {
+        match self.slot {
+            Some(slot) if slot.w != self.width => {
+                self.width = slot.w;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
 /// How far the web view starts inside the slot's left edge, in physical pixels: past the splitter's whole
 /// grab zone (half of `SPLITTER_HIT`, which is centred on the edge). A browser window is a child window and
 /// takes the mouse above anything the window draws, so any part of the grab zone under it would click into
@@ -1063,6 +1121,52 @@ mod tests {
 #[cfg(test)]
 mod inset_tests {
     use super::*;
+
+    fn slot(x: i32, w: i32) -> PhysRect {
+        PhysRect {
+            x,
+            y: 40,
+            w,
+            h: 600,
+        }
+    }
+
+    #[test]
+    fn a_held_page_keeps_its_width_while_its_left_edge_follows_the_slot() {
+        let mut d = DragHold::new(500);
+        for (x, w) in [(1000, 480), (1040, 440), (900, 580)] {
+            let (r, settle) = d.step(slot(x, w));
+            assert_eq!(r, slot(x, 500), "the width is held, the edge is the slot's");
+            assert_eq!(settle, DragSettle::Restart);
+        }
+    }
+
+    #[test]
+    fn a_held_page_takes_the_slots_width_at_a_pause_and_holds_that_one_next() {
+        let mut d = DragHold::new(500);
+        d.step(slot(1000, 480));
+        assert!(d.settle());
+        let (r, settle) = d.step(slot(1000, 480));
+        assert_eq!(r, slot(1000, 480), "the page is at the slot now");
+        assert_eq!(settle, DragSettle::Keep, "the same place is no new step");
+        assert!(!d.settle(), "a second pause changes nothing");
+        assert_eq!(d.step(slot(960, 520)).0, slot(960, 480));
+    }
+
+    #[test]
+    fn a_slot_back_at_the_pages_width_owes_no_settle() {
+        let mut d = DragHold::new(500);
+        d.step(slot(1000, 480));
+        let (r, settle) = d.step(slot(980, 500));
+        assert_eq!(r, slot(980, 500));
+        assert_eq!(settle, DragSettle::Cancel);
+        assert!(!d.settle());
+    }
+
+    #[test]
+    fn a_hold_with_no_step_has_nothing_to_settle() {
+        assert!(!DragHold::new(500).settle());
+    }
 
     #[test]
     fn the_inset_is_half_the_grab_zone_at_every_scale() {
