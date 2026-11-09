@@ -1,16 +1,16 @@
 //! Which scenarios a macOS run does not start, and why (rule 332). A scenario is gated only when what it
 //! checks is Windows' own (WebView2, Velopack's Windows swap, the Windows speech host and keyboard hook,
-//! `.cmd` stand-ins, PrintWindow captures) or when its Mac port is not written yet; the reason says
-//! which. Everything else runs on the macOS runner. `docs/e2e.md` ("macOS E2E") lists both.
+//! PrintWindow captures, the system menu, WM_NCHITTEST, the Windows DPI steps) or when its Mac port is not
+//! written yet (the web panel, the update, dictation, the `.cmd` Claude stand-in); the reason says which. Everything else runs on the macOS runner. `docs/e2e.md` ("macOS E2E") lists both.
 
 /// Why `name` is not run on macOS, None when it runs there.
 pub fn reason(name: &str) -> Option<&'static str> {
     GATED.iter().find(|(n, _)| *n == name).map(|(_, why)| *why)
 }
 
-const WEB: &str = "Windows only: drives the WebView2 controller (its child window, virtual host and controller probes); the Mac web panel is CEF, which runs only from the Flare.app bundle (port phase 8)";
-const UPDATE: &str = "Windows only: Velopack's Windows install and swap (the Mac update is a whole-bundle swap, port phase 8)";
-const DICTATION: &str = "Windows only: the Windows speech host processes, the WASAPI seam and the Right Alt keyboard hook (Mac dictation is port phase 7)";
+const WEB: &str = "Mac port not written (phase 8): these drive the WebView2 controller (its child window, virtual host and controller probes); the Mac web panel is CEF, which runs only from the Flare.app bundle, and its scenarios are still to write";
+const UPDATE: &str = "Mac port not written (phase 8): these drive Velopack's Windows install and swap; the Mac update is a whole-bundle swap, and its scenarios are still to write";
+const DICTATION: &str = "Mac port not written (phase 7): these drive the Windows speech host processes, the WASAPI seam and the Right Alt keyboard hook; Mac dictation and its scenarios are still to write";
 const DPI: &str = "Windows only: drives cmd.exe tabs through WM_DPICHANGED at the eight Windows scale steps (100 to 300 percent) and per-monitor moves; a Mac has no cmd, its backing scale is 1 or 2 and changes only with the screen, and the runner has one 1x display (a Mac launch at another scale is Slint's override, rule 341)";
 const FAKE_CLAUDE: &str = "Mac port not written: the Claude stand-in is a claude.cmd running a PowerShell script (agent_cmd.rs)";
 

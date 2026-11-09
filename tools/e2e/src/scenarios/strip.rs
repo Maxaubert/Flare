@@ -1051,9 +1051,17 @@ pub fn tooltips(ctx: &mut Ctx) -> Result<(), String> {
         let (cx, cy) = centre(help);
         let t0 = std::time::Instant::now();
         move_to(&mut app, cx, cy);
-        // Read every 50 ms, so a tip that came too soon says when it came and what it was.
+        // macOS: read every 50 ms, so a tip that came too soon says when it came and what it was. Windows
+        // reads once after 600 ms, as before.
         let mut early: Option<(u128, Value)> = None;
-        while t0.elapsed() < std::time::Duration::from_millis(600) {
+        if !cfg!(target_os = "macos") {
+            hold(ctx, 600);
+            let t = tip_state(&mut app);
+            if t["visible"] == json!(true) {
+                early = Some((t0.elapsed().as_millis(), t));
+            }
+        }
+        while cfg!(target_os = "macos") && t0.elapsed() < std::time::Duration::from_millis(600) {
             let t = tip_state(&mut app);
             if t["visible"] == json!(true) {
                 early = Some((t0.elapsed().as_millis(), t));

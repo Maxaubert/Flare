@@ -253,9 +253,29 @@ fn rgb_of_hex(hex: &str) -> Rgb {
     [ch(0), ch(2), ch(4)]
 }
 
+/// The snapshot `name` once two taken in a row agree (a fade has run its course): waits with `until`, so a
+/// picture that never holds still is a timeout on the next check, never a silent pass.
+fn still_shot(ctx: &mut Ctx, app: &mut App, name: &str) -> Option<Img> {
+    let (dir, scenario) = (ctx.shots.clone(), ctx.name);
+    let mut last: Option<Img> = None;
+    ctx.until(
+        &format!("{name}: the picture holds still"),
+        3_000,
+        &mut || {
+            let now = crate::ctx::shot_file(&dir, scenario, name, |p| app.session.snapshot(p))
+                .and_then(|p| Img::load(&p));
+            let same = now.is_some() && now == last;
+            last = now;
+            same
+        },
+    );
+    last
+}
+
 // ---- snapshots read off the disk ---------------------------------------------------------------------
 
 /// A decoded snapshot: device pixels, three bytes each.
+#[derive(PartialEq)]
 pub struct Img {
     pub w: usize,
     pub h: usize,
@@ -1182,15 +1202,15 @@ fn help_b(ctx: &mut Ctx, app: &mut App, started: Instant) -> Result<(), String> 
     // DROPPED: "the text cursor over a command" because the cursor shape cannot be read from a window
     // that never shows; the same file pins `mouse-cursor: MouseCursor.text` on the well.
     park(app);
-    // The row's hover fades out over 120 ms: the picture before waits it out, or a row still lit by
-    // the clicks above is the "changed colour" (the Mac runner, rule 346).
-    ctx.settle(50);
-    ctx.settle(50);
-    ctx.settle(50);
-    ctx.settle(50);
-    let plain_shot = ctx
-        .shot(app, "help-select-before")
-        .and_then(|p| Img::load(&p));
+    // macOS: the row's hover fades out over 120 ms, so the picture before is taken once two shots in a row
+    // agree, or a row still lit by the clicks above is the "changed colour" (the Mac runner, rule 346).
+    // Windows takes it at once, as before.
+    let plain_shot = if cfg!(target_os = "macos") {
+        still_shot(ctx, app, "help-select-before")
+    } else {
+        ctx.shot(app, "help-select-before")
+            .and_then(|p| Img::load(&p))
+    };
     let k = l.k;
     let dev = |css: f64| (css * k).round() as usize;
     let row0 = l.rows[0];

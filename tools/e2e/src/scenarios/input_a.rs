@@ -578,13 +578,21 @@ fn click_caret_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         return Err("the shell showed no prompt after the edit".into());
     }
     app.session.type_text("echo zz")?;
-    // The old output is found once the line typed is on the screen. Read earlier, the prompt line could still
-    // show PSReadLine's grey guess from history ("echo ab1Xcdef" after "echo "), the last row holding the
-    // needle, so the click landed on the line being edited and moved the caret (the Mac runner; rule 346).
-    wait_for("the typed echo zz", 8_000, &mut || {
-        text(app).contains("echo zz")
-    });
-    pause(300);
+    // macOS: the old output is found once the prompt line shows the line typed and no longer PSReadLine's grey
+    // guess from history ("echo ab1Xcdef" after "echo "): read earlier, the last row held the needle, so the
+    // click landed on the line being edited and moved the caret (the Mac runner; rule 346). Windows as before.
+    if cfg!(target_os = "macos") {
+        let typed = wait_for("the typed echo zz without the guess", 8_000, &mut || {
+            let t = text(app);
+            t.lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .is_some_and(|l| l.contains("echo zz") && !l.contains("ab1X"))
+        });
+        if !typed {
+            return Err("the prompt line never showed the typed \"echo zz\" alone".into());
+        }
+    }
     // PT: run.mjs:1378-1381
     let old = caret_point(app, "ab1Xcdef", 1);
     if let Some((x, y)) = old {

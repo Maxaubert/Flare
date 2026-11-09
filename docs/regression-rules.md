@@ -1237,30 +1237,38 @@ was out (nine checks, runs 42612597989 and 42622873207). `appctl::timer_steps_sl
 there is no OS window and on a Mac under `--e2e`; the app with a real window keeps its frames. `sidebar.state` now
 carries `slide_now`, `slot_now` and the OS frame count, so a slid-out picture with no sidebar names its cause. Held by
 `a_timer_steps_the_slide_without_frames_and_in_a_mac_e2e_run`. Source: Mac E2E in CI, run 42624800535 (2026-11-09).
-346. **A scenario's picture or store check waits out what moves, on every system.** Seven checks held a moving thing
-to one instant and failed on the Mac runner only by its timing: helpPanel's picture before a selection now waits out
-the row's 120 ms hover fade (the lit row was the "changed colour"), themeSwitch reads the agent colour once
-`settings.json` has it (the store is written after a debounce; Cancel was held to a store that had not caught up),
-clickCaret finds the old output once "echo zz" is on the screen (read earlier, the prompt line still showed
-PSReadLine's grey guess from history, "echo ab1Xcdef", the last row with the needle, and the click moved the caret),
-verticalTabs' slid-out no-shadow check compares with the terminal's ground token (a sampled pixel landed on the Mac
-world's longer prompt) and its ring check looks over a breath (a question's ring was caught at its faintest), as
-attention's question line does (caught at 0 px once). exitClosesTab types "exit" once the tab it brought to the
-front shows its prompt again (typed at once, pwsh read it inside the redraw's cursor reports and never ran it). The
-program-copy unit test ticks once before its press, so the press no longer races the window's real timer (the
-Windows check job, run 42612597989). Source: Mac E2E in CI, runs 42624800535 and 42626884993 (2026-11-09).
-347. **macOS: a warm spare that asked the terminal something is never adopted.** A spare shell
-(`SessionManager::prewarm`) has no emulator, so nobody answers its questions until a tab adopts it. pwsh asks for the
-cursor (`CSI 6n`) at its first prompt and gives up waiting; adopted a minute later, its banner's question was answered
-at last, .NET read the late report as typed keys, echoed characters no key sends, asked again and never stopped:
-helpPanel's new shell (Ctrl+T beside the help panel) showed only junk on the Mac runner (runs 42612597989 to
-42630197431). The proof was the e2e write tap (`flare_term::session::set_write_tap`, the `pty.written` probe): Flare
-had written only clean keys and cursor reports. `term_query::asks_terminal` spots a question in a spare's kept output
-(device status and attributes, mode, window and keyboard reports, colour queries, capability requests); outside Windows
-such a spare is let go, the tab starts a fresh shell, and that shell is not prewarmed again (`spare_asked_stale`).
-Windows keeps its spares as they were (ConPTY stands between the shell and Flare there). Held by
-`a_spare_that_asked_the_terminal_is_let_go_outside_windows`, `a_spare_that_asked_nothing_is_adopted` and the
-`term_query` tests. Source: Mac E2E in CI (2026-11-09).
+346. **A scenario's picture or store check waits out what moves, on a Mac; Windows is as it was.** Seven checks held
+a moving thing to one instant and failed on the Mac runner only by its timing: helpPanel's picture before a selection
+is taken once two shots in a row agree (the row's 120 ms hover fade lit the "changed colour"), themeSwitch reads the
+agent colour once `settings.json` has it (the store is written after a debounce; Cancel was held to a store that had
+not caught up), clickCaret finds the old output once the prompt line shows "echo zz" and no longer PSReadLine's grey
+guess from history, "echo ab1Xcdef" (the last row held the needle, and the click moved the caret), verticalTabs'
+slid-out no-shadow check compares with the terminal's ground token (a sampled pixel landed on the Mac world's longer
+prompt) and its ring check looks over a breath (a question's ring was caught at its faintest), as attention's question
+line does (caught at 0 px once). exitClosesTab types "exit" once the tab it brought to the front shows its prompt and
+its screen and Flare's answers to it have held still 300 ms (typed at once, pwsh read it inside the redraw's cursor
+reports and never ran it); colourPicker types its first hook line once the process poll sees the stand-in agent, not
+after a fixed 1.5 s. Every such wait is a condition (`ctx.until`, never chained `settle` calls) under
+`cfg!(target_os = "macos")`: CI has no Windows E2E job, so the Windows path keeps its old checks until the owner's PC
+has run them. The program-copy unit test ticks once before its press, so the press no longer races the window's real
+timer (the Windows check job, run 42612597989). Source: Mac E2E in CI, runs 42624800535 and 42626884993; review of the
+branch (2026-11-09).
+347. **macOS: a tab adopting a warm spare gets its kept output without its questions to the terminal.** A spare
+shell (`SessionManager::prewarm`) has no emulator, so nobody answers its questions until a tab adopts it. pwsh asks for
+the cursor (`CSI 6n`) at its first prompt and gives up waiting; adopted a minute later, its kept output was replayed
+into the tab's emulator, the stale question was answered at last, .NET read the late report as typed keys, echoed
+characters no key sends, asked again and never stopped: helpPanel's new shell (Ctrl+T beside the help panel) showed
+only junk on the Mac runner (runs 42612597989 to 42630197431). The proof was the e2e write tap
+(`flare_term::session::set_write_tap`, the `pty.written` probe): Flare had written only clean keys and cursor reports.
+`SessionManager::adopt` hands the tab `banner_for_tab(kept output)`: outside Windows, `term_query::without_questions`
+takes out every whole question (device status and attributes, mode, window and keyboard reports, colour queries,
+capability requests), so the stale question is never answered; the rest stays byte for byte. The whole kept output is
+read at adoption, so a question split over two reads is taken out too, and a question cut off at the end stays for the
+live output to finish (the shell is still waiting for that one). Spares stay on for every shell, pwsh and fish
+included (a first fix that let such a spare go stopped prewarming pwsh for the session). Windows hands the kept output
+over as it was (ConPTY stands between the shell and Flare there). Held by
+`a_spare_that_asked_the_terminal_is_adopted_without_its_question`, `a_question_split_over_two_reads_is_taken_out_too`
+and the `term_query` tests. Source: Mac E2E in CI and review of the branch (2026-11-09).
 348. **macOS: the Mac E2E runs with the runner quiet and its timers on time.** diagLog's "an idle 3 s writes nothing"
 failed on the Mac runner only, with `main-lag` lines of 100 to 216 ms and nothing in flight. First the runner's own
 `trustd`, `softwareupdated` and Spotlight took about one and a half of its three cores; then, with the runner quiet
@@ -1271,7 +1279,13 @@ thread lagged as much, and asking `task_policy_set` for the foreground role was 
 was kept. The `e2e-macos` job turns Spotlight, the update schedule and timer coalescing
 (`kern.timer.coalescing_enabled=0`) off before the scenarios, diagLog waits 8 s on a Mac before it measures (1 s
 elsewhere), gets three windows of 3 s there with one silent window answering, and every noisy window prints its lines
-and the five busiest processes. The app, its 100 ms lag threshold and Windows are unchanged. Open for the owner: a
+and the five busiest processes. So on a Mac the check proves one silent window in three, not that every idle window is silent; `docs/parity.md` says so. The app, its 100 ms lag threshold and Windows are unchanged. Open for the owner: a
 person's Flare in the background gets the same timer slack, so its diagnostics can hold `main-lag` lines of about
 100 ms with nothing in flight. Source: Mac E2E in CI, runs 42633987601, 42635727345, 42639363621, 42640936487 and
 42648599333 (2026-11-09).
+349. **A Mac E2E run that runs nothing never passes.** A scenario filter that matches only gated scenarios (`web`,
+`dictation`, a typo that hits one gated name) left nothing to run after the macOS gate, and the runner printed "all
+scenarios passed" and exited 0. `run_all` now prints "only gated scenarios match" with the reasons and returns 1.
+The `e2e-macos` job's hand-run filter (`e2e_filter`) is read into words with `read -ra` and passed quoted, so `*` and
+`?` are never globbed against the repo's files, and a word that starts with `-` fails the step (a filter is scenario
+names, never a harness flag such as `--exe`). Source: review of the branch (2026-11-09).

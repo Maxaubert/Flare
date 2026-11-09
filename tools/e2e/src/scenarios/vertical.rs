@@ -1094,9 +1094,9 @@ fn vertical_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     // PT: run.mjs:2318. Slid out, a line from the bar down (not up into the bar), the page's own line
     // along the top, and no shadow beside it.
     let slid = snap(ctx, app, "slid-line");
-    // The terminal's own ground, not a pixel sampled inside it: a sample can land on a prompt's text
-    // (the Mac world's longer path reached it, rule 346).
-    let term_ground = token(&side(app), "ground");
+    // macOS: the terminal's own ground, not a pixel sampled inside it: a sample can land on a prompt's text
+    // (the Mac world's longer path reached it, rule 346). Windows samples as before.
+    let term_ground = MAC_CAPTION.then(|| token(&side(app), "ground"));
     let (x0, y0) = (dv(nav_w, k), dv(BAR_H, k));
     let slid_line = slid.as_ref().is_some_and(|sn| {
         let down = differs(
@@ -1108,7 +1108,8 @@ fn vertical_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
             sn.at(x0 + dv(100.0, k), y0),
             sn.at(x0 + dv(100.0, k), y0 + dv(3.0, k)),
         );
-        let no_shadow = near(sn.at(x0 + dv(5.0, k), y0 + dv(300.0, k)), term_ground, 12);
+        let inside = term_ground.unwrap_or_else(|| sn.at(x0 + dv(60.0, k), y0 + dv(60.0, k)));
+        let no_shadow = near(sn.at(x0 + dv(5.0, k), y0 + dv(300.0, k)), inside, 12);
         down && not_up && top && no_shadow
     });
     ctx.ok(
@@ -1314,10 +1315,11 @@ fn vertical_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
             let k = scale(app);
             // A question's ring breathes: a picture at its faintest shows too little ink, so each card is
             // looked at over a breath (up to six pictures, 250 ms apart) and counts once it shows its ring
-            // (the Mac runner caught infra's at its low once; rule 346).
+            // (the Mac runner caught infra's at its low once; rule 346). Windows looks once, as before.
             let marked = [0usize, 2, 3, 4, 5];
             let mut seen = [false; 5];
-            for attempt in 0..6 {
+            let tries = if MAC_CAPTION { 6 } else { 1 };
+            for attempt in 0..tries {
                 if let Some(sn) = snap(ctx, app, "side-ring") {
                     for (n, i) in marked.iter().enumerate() {
                         let Some(r) = rows(&s).get(*i).and_then(|r| rect_of(&r["rect"])) else {
@@ -1328,7 +1330,7 @@ fn vertical_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
                         seen[n] |= ink_box(&sn, k, end, bg, 40).is_some();
                     }
                 }
-                if seen.iter().all(|b| *b) || attempt == 5 {
+                if seen.iter().all(|b| *b) || attempt + 1 == tries {
                     break;
                 }
                 hold(ctx, 250);

@@ -96,7 +96,7 @@ jobs:
       - name: Deny
         run: cargo deny check
 
-  # The Mac E2E (rules 330 to 333, docs/e2e.md "macOS E2E"): the release app driven through its --e2e hook (a Unix
+  # The Mac E2E (rules 330 to 349, docs/e2e.md "macOS E2E"): the release app driven through its --e2e hook (a Unix
   # socket), an accessory app parked off every display; the harness fails a scenario that takes the keyboard or shows a
   # window. Its own job so the gates above stay as fast as they were. A Mac has no hidden desktop, so this runs only here.
   e2e-macos:
@@ -143,7 +143,12 @@ jobs:
           mkdir -p e2e-out
           target/release/flare-e2e --list > e2e-out/list.txt
           set -o pipefail
-          target/release/flare-e2e --exe target/release/flare --shots e2e-out/shots --keep $E2E_FILTER 2>&1 | tee e2e-out/e2e.log
+          # The filter's words as words: no globbing, and none may be a harness flag (rule 349).
+          read -ra words <<<"$E2E_FILTER"
+          for w in "${words[@]}"; do
+            case "$w" in -*) echo "the filter word '$w' starts with '-': only scenario names"; exit 1 ;; esac
+          done
+          target/release/flare-e2e --exe target/release/flare --shots e2e-out/shots --keep "${words[@]}" 2>&1 | tee e2e-out/e2e.log
         env:
           E2E_FILTER: ${{ inputs.e2e_filter }}
           # The worlds under /tmp (/private/tmp/flare-e2e-*), not the long per-user /var/folders path, so a

@@ -1606,8 +1606,10 @@ for the profiles kept on disk (the mock keychain is used until then, rule 260).
 ## macOS E2E: the scenarios on GitHub's macOS runner (2026-11-09)
 
 The visual E2E on macOS, the port plan's Ongoing row (`docs/superpowers/specs/2026-11-08-macos-port.md`; how it runs
-and which scenarios are gated: `docs/e2e.md`, "macOS E2E"; regression rules 330 to 348). It runs in CI only, in the
-`e2e-macos` job; nothing of it runs on a person's Mac. 72 scenarios run on the runner, 30 are gated with a reason.
+and which scenarios are gated: `docs/e2e.md`, "macOS E2E"; regression rules 330 to 349). It runs in CI only, in the
+`e2e-macos` job; nothing of it runs on a person's Mac. 72 scenarios run on the runner, 29 are gated with a reason,
+plus the opt-in visualTour. 21 of the gated ones wait for a Mac port (the web panel and the update, phase 8;
+dictation, phase 7; the `.cmd` Claude stand-in); the other 8 check what only Windows has.
 
 - [x] The harness builds and runs on macOS and drives the app over the `--e2e` Unix socket hook in the control channel's private folder (0600, peer uid checked, first-instance lock). Stands in for the named pipe. (macOS: the_mac_socket_is_this_users_alone_and_goes_with_the_server, the_mac_hook_is_a_short_socket_in_the_private_folder, crates/flare/src/e2e_hook.rs)
 - [x] An `--e2e` window never shows and never takes the keyboard: an accessory app, every window born clear and click-through, kept clear whoever sets its alpha, parked on the main screen so it paints, its focus from the hook alone; the screen guard fails a scenario whose process shows a window or becomes frontmost. Stands in for the hidden desktop. (macOS: a_born_clear_class_initialises_through_the_stand_in, a_parked_class_keeps_its_frame_off_every_screen_and_nswindow_keeps_the_rule, only_a_mac_e2e_run_drops_the_native_focus, the_guard_flags_a_window_or_the_keyboard_of_the_run_and_only_those)
@@ -1617,8 +1619,8 @@ and which scenarios are gated: `docs/e2e.md`, "macOS E2E"; regression rules 330 
 - [x] A miniaturised window counts as minimised for the marks' pause, though a Mac sends it no resize. (the_systems_minimised_answer_wins_over_slints, crates/flare/src/window.rs)
 
 - [x] The sidebar's slide-out moves in a window that gets no frames: a timer steps it in a Mac `--e2e` run. (macOS: a_timer_steps_the_slide_without_frames_and_in_a_mac_e2e_run, verticalTabs)
-- [x] A new tab never takes a warm spare that asked the terminal something nobody answered (pwsh's late cursor report was read as typing). (macOS: a_spare_that_asked_the_terminal_is_let_go_outside_windows, a_spare_that_asked_nothing_is_adopted, helpPanel)
-- [x] An idle run writes no diagnostics line once the runner is quiet and its timers are not coalesced. (macOS: diagLog)
+- [x] A new tab that adopts a warm spare gets the spare's kept output without its questions to the terminal, so a question asked with nobody there is never answered late (pwsh read that late cursor report as typing); spares stay on for every shell. (macOS: a_spare_that_asked_the_terminal_is_adopted_without_its_question, a_question_split_over_two_reads_is_taken_out_too, the term_query tests, helpPanel)
+- [ ] An idle run writes no diagnostics line. On the runner the check holds one silent 3 s window in three (rule 348): two noisy windows still pass, and each prints its lines in the job's log, so the Mac runner does not prove every idle window is silent. (macOS: diagLog)
 
 Where it stands (2026-11-09, the spec's progress line has the runs): the `e2e-macos` job ran the whole table green in
 the full hand run 42655597593 (72 scenarios, 29 gated with a reason, the opt-in visualTour not run). Not green there:

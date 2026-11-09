@@ -720,23 +720,15 @@ pub fn exit_closes_tab(ctx: &mut Ctx) -> Result<(), String> {
     }
     // The tab that comes to the front takes its size and its shell draws its prompt again: "exit" goes once
     // that prompt is back, as a hand would type it. Typed at once, pwsh on the Mac runner read it inside the
-    // redraw's cursor reports and never ran it (rule 346).
-    ctx.until("the second tab in front", 5_000, &mut || {
-        tabs_of(&mut app).get(1).is_some_and(|t| t.front)
-    });
-    let second = front_id(&mut app);
-    let _ = wait_for_prompt(
-        &mut app,
-        &second,
-        Shell::PowerShell,
-        prompt_timeout(Shell::PowerShell),
-    );
-    ctx.settle(50);
-    ctx.settle(50);
-    ctx.settle(50);
-    ctx.settle(50);
-    ctx.settle(50);
-    ctx.settle(50);
+    // redraw's cursor reports and never ran it (rule 346). Windows types it at once, as before.
+    if cfg!(target_os = "macos") {
+        ctx.until("the second tab in front", 5_000, &mut || {
+            tabs_of(&mut app).get(1).is_some_and(|t| t.front)
+        });
+        // A timeout here is recorded as a failure by the next check (`Ctx::ok`).
+        let second = front_id(&mut app);
+        wait_redraw_over(ctx, &mut app, &second);
+    }
     type_line(&mut app, "exit")?;
     let ended = ctx.until("the shell ending takes its tab", 15_000, &mut || {
         tabs_of(&mut app).len() == 1
@@ -749,6 +741,35 @@ pub fn exit_closes_tab(ctx: &mut Ctx) -> Result<(), String> {
     );
     app.close();
     Ok(())
+}
+
+/// macOS (rule 346): true once the tab shows its prompt and its screen and what Flare wrote to its shell (the
+/// answers to the redraw's cursor reports) have both held still for `REDRAW_QUIET`: the shell's redraw is over.
+/// A miss is a pending timeout, which the next check records.
+fn wait_redraw_over(ctx: &mut Ctx, app: &mut App, tab: &str) -> bool {
+    const REDRAW_QUIET: Duration = Duration::from_millis(300);
+    let mut seen = (String::new(), String::new());
+    let mut since = Instant::now();
+    let timeout = prompt_timeout(Shell::PowerShell).as_millis() as u64 + 5_000;
+    ctx.until(
+        "the tab's prompt and the end of its redraw",
+        timeout,
+        &mut || {
+            let screen = rows_text(app, tab);
+            let written = app
+                .session
+                .probe("pty.written", json!(null))
+                .map(|v| v[tab].to_string())
+                .unwrap_or_default();
+            let now = (screen, written);
+            if now != seen {
+                seen = now;
+                since = Instant::now();
+                return false;
+            }
+            prompt_showing(&seen.0, Shell::PowerShell) && since.elapsed() >= REDRAW_QUIET
+        },
+    )
 }
 
 /// A prompt survives the window getting narrower and wider again (ConPTY sends nothing on a

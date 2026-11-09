@@ -540,14 +540,16 @@ pub fn attention(ctx: &mut Ctx) -> Result<(), String> {
     };
     // A question's line breathes: a picture at its faintest shows no line, so it is looked at over a breath (up
     // to six pictures, 250 ms apart) and the clearest counts (the Mac runner caught it at 0 px once; rule 346).
+    // Windows looks once, as before.
     let want = thick_rows(3.0, k);
+    let tries = if cfg!(target_os = "macos") { 6 } else { 1 };
     let mut best = (0usize, 0.0f32);
-    for attempt in 0..6 {
+    for attempt in 0..tries {
         let got = line(ctx, &mut app, "question", 0);
         if (got.0 == want && got.1 > best.1) || (best.0 != want && got.0 > best.0) {
             best = got;
         }
-        if (best.0 == want && best.1 > 0.9) || attempt == 5 {
+        if (best.0 == want && best.1 > 0.9) || attempt + 1 == tries {
             break;
         }
         hold(ctx, 250);

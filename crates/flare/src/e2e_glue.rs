@@ -1641,7 +1641,8 @@ pub fn series_from_redraws() {
 }
 
 /// The last bytes written to each shell under `--e2e` (rule 347's evidence): what Flare sent, beside
-/// what the shell then showed.
+/// what the shell then showed. It holds typed keys, so the tap is set only by `install` (under `--e2e`,
+/// never in a person's app), and the scenarios print `pty.written` only in a failing check's message.
 static WRITTEN: std::sync::Mutex<Vec<(String, std::collections::VecDeque<u8>)>> =
     std::sync::Mutex::new(Vec::new());
 

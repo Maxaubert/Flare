@@ -129,7 +129,7 @@ Every `FLARE_E2E_*` read goes through `e2e::global().env(..)`, which returns not
 a stray variable in the owner's environment cannot change the real app. No source file reads such a
 variable directly (`no_source_file_reads_an_e2e_variable_directly`).
 
-## macOS E2E (CI only, rules 330 to 348)
+## macOS E2E (CI only, rules 330 to 349)
 
 The same harness and scenario table drive the Mac build, on GitHub's macOS runners only (the `e2e-macos` job in
 `.github/workflows/ci.yml`). A Mac has no hidden desktop, so nothing here is run on a person's Mac: locally only the
@@ -187,7 +187,11 @@ release build went from about 9 minutes from scratch to about 5. Batch several f
   background app's timers ran up to 100 ms late). `sidebar.state` reports the OS frame count, `pty.written` what Flare
   last wrote to each shell (rule 347).
 - **Gates** (rule 332) live in `tools/e2e/src/scenarios/mac_gate.rs`, each with its reason; a gated scenario is never
-  started and never a pass. On failure the job uploads `e2e-macos`: the log, the shots and the worlds' logs.
+  started and never a pass. A filter that matches only gated scenarios runs nothing and fails (rule 349), and the hand
+  run's filter is split into words, never globbed, and may not hold a flag.
+- **Mac-only waits**: where the Mac runner needed a scenario to wait for something (a hover fade, a prompt redraw, the
+  process poll, a breathing mark), the wait is a condition under `cfg!(target_os = "macos")`; the Windows path of every
+  scenario is as it was, and the Windows suite still runs on the owner's PC. On failure the job uploads `e2e-macos`: the log, the shots and the worlds' logs.
 
 ### Which scenarios run on a Mac
 
@@ -205,9 +209,9 @@ Gated, each with its reason in `mac_gate.rs` (`flare-e2e --list` prints it):
 
 | Scenarios | Why |
 |---|---|
-| webPanel, webVideo, webNoRuntime, agentBrowser, mcpBrowser, miniApp, diagram, mcpDiagram, pluginBrand, modsSample, pluginFill, devPreview | Windows only: they drive the WebView2 controller; the Mac web panel is CEF, which runs only from the `Flare.app` bundle (port phase 8) |
-| updateWindow, updateGuard, updateNotes, idleInstall | Windows only: Velopack's Windows install and swap (the Mac update is a whole-bundle swap, phase 8) |
-| dictation, dictationPage, dictationParakeet, dictateAnywhere, dictateTwoCopies | Windows only: the speech host processes, WASAPI and the Right Alt hook (Mac dictation is phase 7) |
+| webPanel, webVideo, webNoRuntime, agentBrowser, mcpBrowser, miniApp, diagram, mcpDiagram, pluginBrand, modsSample, pluginFill, devPreview | Mac port not written (phase 8): they drive the WebView2 controller; the Mac web panel is CEF, which runs only from the `Flare.app` bundle, and its scenarios are still to write |
+| updateWindow, updateGuard, updateNotes, idleInstall | Mac port not written (phase 8): they drive Velopack's Windows install and swap; the Mac update is a whole-bundle swap |
+| dictation, dictationPage, dictationParakeet, dictateAnywhere, dictateTwoCopies | Mac port not written (phase 7): they drive the speech host processes, WASAPI and the Right Alt hook; Mac dictation is still to write |
 | dpiMatrix, monitorMove | Windows only: cmd.exe tabs through WM_DPICHANGED at the eight Windows scale steps and per-monitor moves; a Mac's backing scale is 1 or 2, per screen, and the runner has one 1x display |
 | systemMenu | Windows only: the window's system menu (Alt+Space); a Mac window has none |
 | resizeEdges | Windows only: the frameless window's WM_NCHITTEST; the Mac window is titled and AppKit owns its edges |

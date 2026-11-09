@@ -1063,10 +1063,12 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
     });
     // settings.json is written after a debounce: the colour is read once it is on the disk, or the
     // Cancel below is held to a store that had not caught up yet (the Mac runner read "" here, then
-    // "#c0ffee" after Cancel, though nothing changed; rule 346).
-    ctx.poll(3_000, &mut || {
-        hex6(&stored_str(&app, "flare.term.agentColor")) == "#c0ffee"
-    });
+    // "#c0ffee" after Cancel, though nothing changed; rule 346). Windows reads it at once, as before.
+    if cfg!(target_os = "macos") {
+        ctx.poll(3_000, &mut || {
+            hex6(&stored_str(&app, "flare.term.agentColor")) == "#c0ffee"
+        });
+    }
     let dirty_agent = stored_str(&app, "flare.term.agentColor");
     let _ = goto_page(ctx, &mut app, "appearance");
     let _ = scroll_pick_card(ctx, &mut app, "nord");

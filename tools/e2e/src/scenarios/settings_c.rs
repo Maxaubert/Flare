@@ -586,9 +586,18 @@ pub fn colour_picker(ctx: &mut Ctx) -> Result<(), String> {
     {
         let cmd = crate::standins::agent_proc::command(&app.profile)?;
         type_line(&mut app, &cmd);
-        std::thread::sleep(std::time::Duration::from_millis(
-            crate::standins::agent_proc::SETTLE_MS,
-        )); // sync-ok: test harness, off the app
+        // A timeout here is recorded as a failure by the next check (`Ctx::ok`).
+        ctx.until(
+            "the process poll sees the stand-in agent",
+            15_000,
+            &mut || {
+                app.session
+                    .probe("agent.state", Value::Null)
+                    .ok()
+                    .and_then(|v| v["tabs"].as_array().cloned())
+                    .is_some_and(|tabs| tabs.iter().any(|t| t["present"] == true))
+            },
+        );
     }
     type_line(&mut app, &say("working"));
     let working = ctx.until("the stand-in agent to work", 12_000, &mut || {

@@ -404,6 +404,18 @@ pub fn run_all(cli: &Cli) -> i32 {
     }
     #[cfg(target_os = "macos")]
     let (picked, gated) = mac::split_gated(picked);
+    // Rule 349: a filter that only hits gated scenarios runs nothing, and nothing run is no pass.
+    #[cfg(target_os = "macos")]
+    if picked.is_empty() {
+        println!(
+            "only gated scenarios match {}: nothing runs on macOS",
+            cli.filters.join(" ")
+        );
+        for (name, why) in &gated {
+            println!("  gated  {name}: {why}");
+        }
+        return 1;
+    }
     #[cfg(target_os = "macos")]
     let mut clip = crate::guards::ClipboardGuard::new(crate::guards::MacPasteboard);
     #[cfg(target_os = "macos")]
