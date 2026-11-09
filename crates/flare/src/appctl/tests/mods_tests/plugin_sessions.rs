@@ -515,6 +515,7 @@ fn storage_is_each_plugins_own_and_never_a_protocol_1_mods_or_the_agents() {
         client_version: String::new(),
         grant: w.hub.grant_of_mod("keeper").unwrap(),
         tab: None,
+        cancel: Default::default(),
     };
     let big = "x".repeat(flare_mods::storage::MAX_BYTES);
     let e = w
@@ -546,6 +547,7 @@ fn storage_is_each_plugins_own_and_never_a_protocol_1_mods_or_the_agents() {
         client_version: String::new(),
         grant: w.hub.grant_of_mod("old").unwrap(),
         tab: Some(a.clone()),
+        cancel: Default::default(),
     };
     let e = w
         .dispatcher

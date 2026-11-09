@@ -34,4 +34,4 @@ pub use pipe::{
     pipe_name,
 };
 pub use proto::{CtlError, Event, MAX_LINE, PROTOCOL, code};
-pub use session::{CallContext, Dispatcher, ServerConfig};
+pub use session::{CallContext, CancelFlag, Dispatcher, ServerConfig};

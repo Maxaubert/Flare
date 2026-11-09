@@ -39,7 +39,7 @@ use std::rc::Rc;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
-use flare_ctl::{CtlError, code};
+use flare_ctl::{CancelFlag, CtlError, code};
 use flare_surfaces::agent_cursor::{AgentBorder, AgentCursor};
 use flare_surfaces::agent_job::{
     Fail, GLIDE_MAX_MS, Ids, Job, JobError, Op as AgentOp, Out as JobOut, Page, RefMap,
@@ -260,6 +260,8 @@ struct AgentCall {
     label: String,
     /// Which document the page was showing when the call began (`TabWeb::doc`).
     doc: u64,
+    /// Raised when the call's client has gone: the agent timer ends the job.
+    cancel: CancelFlag,
 }
 
 fn ctl_error(e: JobError) -> CtlError {
@@ -1939,6 +1941,7 @@ impl WebCtl {
         op: AgentOp,
         label: &str,
         reply: Sender<Result<Value, CtlError>>,
+        cancel: CancelFlag,
     ) {
         let say = |m: &str| {
             let _ = reply.send(Err(CtlError::new(code::UNAVAILABLE, m.to_string())));
@@ -1998,6 +2001,7 @@ impl WebCtl {
             reply,
             label: label.to_string(),
             doc: t.doc,
+            cancel,
         });
         t.hold = None;
         flush_button_edges();
@@ -2337,6 +2341,17 @@ impl WebCtl {
             && real_key_pressed()
         {
             self.user_input();
+        }
+        // A call whose client has gone (a cancel, a dropped connection) ends here: a press it was cut short in is
+        // let go of, and later calls on this page do not wait behind it.
+        let abandoned: Vec<String> = self
+            .tabs
+            .iter()
+            .filter(|(_, t)| t.agent.as_ref().is_some_and(|a| a.cancel.is_set()))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for tab in abandoned {
+            self.finish_agent(&tab, Err(Job::cancelled()));
         }
         let busy: Vec<String> = self
             .tabs

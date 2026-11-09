@@ -382,6 +382,15 @@ impl Job {
         }
     }
 
+    /// The caller went away (it cancelled the tool call, or its connection dropped): the call ends. Treated like a
+    /// takeover: what the agent last saw may no longer be there.
+    pub fn cancelled() -> JobError {
+        JobError {
+            fail: Fail::Interrupted,
+            message: "the call was cancelled".to_string(),
+        }
+    }
+
     /// Starts a job. `refs` are the numbers of the last look; a ref that is not among them fails here.
     pub fn start(op: Op, refs: &RefMap, now_ms: u64, ids: &mut Ids<'_>) -> (Option<Job>, Out) {
         let name = op.name();

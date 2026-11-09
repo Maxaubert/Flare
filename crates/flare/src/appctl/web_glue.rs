@@ -344,13 +344,21 @@ impl AppCtl {
     /// names it from the token); the answer is sent by the browser's messages, or by the person taking
     /// over. The glow and the cursor go up with the call.
     pub(super) fn ctl_browser_agent(&mut self, op: crate::ctl_app::CtlOp, reply: Reply) {
-        let crate::ctl_app::CtlOp::BrowserAgent { tab, op } = op else {
+        let crate::ctl_app::CtlOp::BrowserAgent { tab, op, cancel } = op else {
             let _ = reply.send(Err(CtlError::new(
                 code::INTERNAL,
                 "not an agent browser call",
             )));
             return;
         };
+        // The caller went away while this waited for the UI thread: nothing is started on the page.
+        if cancel.is_set() {
+            let _ = reply.send(Err(CtlError::new(
+                code::UNAVAILABLE,
+                "the caller went away",
+            )));
+            return;
+        }
         if !self.is_shell_tab(&tab) {
             let _ = reply.send(Err(CtlError::new(code::NO_TAB, "that tab is closed")));
             return;
@@ -374,7 +382,7 @@ impl AppCtl {
         let app = self.panels.app_spec(&tab).cloned();
         self.web.ensure_hidden(&tab, &url, app);
         let label = crate::web_ctl::agent_label(self.agent_named(&tab));
-        self.web.start_agent(&tab, op, &label, reply);
+        self.web.start_agent(&tab, op, &label, reply, cancel);
         self.web_moved();
     }
 

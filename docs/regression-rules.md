@@ -631,3 +631,13 @@ Native: `background.rs` (`looks_like_background_work`). Held by `a_dev_server_in
 Held by the `macos` CI job (cargo check, clippy and nextest on macos-latest). Source: macOS port plan
 (`docs/superpowers/specs/2026-11-08-macos-port.md`, owner, 2026-11-08).
 228. **A click by ref that would land on something else is not pressed, and does not say it was.** The agent's `browser_click` answered "Clicked" over a cookie wall, and the agent believed it. Native: after the glide and right before the mouse events, one fixed script asks the page what is at the point (`HIT_TEST_FN`, `document.elementFromPoint` through open shadow roots, no page or agent text in it); the element there must be the target, inside it, a label of it, or a wrapper of it other than `html` and `body`. Otherwise the call answers `covered` and the agent is told what is on top, as page text between the markers. A page that cannot say is clicked as before, so an old page never loses a click. Held by `a_covered_click_presses_nothing_and_names_what_is_on_top`, `a_covered_click_lets_go_of_the_element_it_held`, `a_click_on_the_target_or_a_child_of_it_is_pressed`, `a_page_that_cannot_answer_the_check_is_clicked_as_before` (`agent_job.rs`), `the_covering_element_is_named_briefly_and_cleaned` (`agent_web.rs`), `a_hostile_covering_element_cannot_end_the_block_or_pose_as_an_element` (`browser.rs`), `a_covered_click_is_refused_and_presses_nothing` (`web_tests.rs`) and the e2e `agentCoveredClick`.
+229. **A cancelled tool call stops, on both sides.** `flare-mcp` reads stdin on its own thread, so
+`notifications/cancelled` is seen while a call runs: the call gives up and drops its connection, a queued request never
+runs, and a cancelled request gets no response. The control channel keeps reading a connection while its call runs, so
+the drop raises `CallContext.cancel`, and a call that waits (a browser job, a page load, a mod's answer) ends on it.
+Replies stay in order, an unknown or finished id does nothing, stdin closing still ends the server. Held by
+`a_cancel_during_a_call_ends_the_job_on_flares_side_and_the_next_call_still_works` (the exe over a real pipe),
+`a_client_that_goes_away_mid_call_raises_that_calls_cancel_flag`,
+`a_job_whose_caller_went_away_ends_and_the_page_is_free_for_the_next_call` and
+`a_mod_tool_call_ends_when_the_caller_goes_away_and_the_late_answer_is_refused`. Source: channel-9
+(`docs/surfaces/lessons.md`, owner, 2026-11-09).
