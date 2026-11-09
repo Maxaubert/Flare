@@ -1245,3 +1245,15 @@ verticalTabs' slid-out no-shadow check compares with the terminal's ground token
 world's longer prompt) and its ring check looks over a breath (a question's ring was caught at its faintest). The
 program-copy unit test ticks once before its press, so the press no longer races the window's real timer (the
 Windows check job, run 42612597989). Source: Mac E2E in CI, runs 42624800535 and 42626884993 (2026-11-09).
+347. **macOS: a warm spare that asked the terminal something is never adopted.** A spare shell
+(`SessionManager::prewarm`) has no emulator, so nobody answers its questions until a tab adopts it. pwsh asks for the
+cursor (`CSI 6n`) at its first prompt and gives up waiting; adopted a minute later, its banner's question was answered
+at last, .NET read the late report as typed keys, echoed characters no key sends, asked again and never stopped:
+helpPanel's new shell (Ctrl+T beside the help panel) showed only junk on the Mac runner (runs 42612597989 to
+42630197431). The proof was the e2e write tap (`flare_term::session::set_write_tap`, the `pty.written` probe): Flare
+had written only clean keys and cursor reports. `term_query::asks_terminal` spots a question in a spare's kept output
+(device status and attributes, mode, window and keyboard reports, colour queries, capability requests); outside Windows
+such a spare is let go, the tab starts a fresh shell, and that shell is not prewarmed again (`spare_asked_stale`).
+Windows keeps its spares as they were (ConPTY stands between the shell and Flare there). Held by
+`a_spare_that_asked_the_terminal_is_let_go_outside_windows`, `a_spare_that_asked_nothing_is_adopted` and the
+`term_query` tests. Source: Mac E2E in CI (2026-11-09).

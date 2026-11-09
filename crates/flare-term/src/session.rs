@@ -207,6 +207,8 @@ struct Session {
     /// Set (under the manager's `st` lock) once the finisher reported the exit to a sink, so a
     /// spawn that loses the race with a shell dying at birth never registers it.
     reported: AtomicBool,
+    /// A warm spare's kept output asked the terminal something nobody answered (rule 347).
+    asked: AtomicBool,
     /// Set (under `dest`) when the session ended while it was still a warm spare.
     finished: Mutex<Option<Option<u32>>>,
     writer_tx: Mutex<Option<Sender<Vec<u8>>>>,
@@ -242,7 +244,12 @@ impl Session {
         if let Some(bytes) = chunk {
             trace_key("deliver");
             match &mut *dest {
-                Dest::Buffer(buf) => append_capped(buf, &bytes, self.banner_cap),
+                Dest::Buffer(buf) => {
+                    if crate::term_query::asks_terminal(&bytes) {
+                        self.asked.store(true, Ordering::SeqCst);
+                    }
+                    append_capped(buf, &bytes, self.banner_cap);
+                }
                 Dest::Sink { id, sink } => sink.data(id, bytes),
             }
         }
@@ -269,6 +276,8 @@ struct State {
     desired: HashMap<String, (usize, usize)>,
     /// Oldest first; the key is the lower-cased root.
     warm: Vec<(String, Arc<Session>)>,
+    /// The shells (definition ids) whose spare asked the terminal something: never prewarmed again (rule 347).
+    asking_shells: HashSet<String>,
 }
 
 struct Shared {
@@ -397,6 +406,13 @@ fn pump_loop(s: Arc<Session>) {
     }
 }
 
+/// Pure (rule 347): whether a spare whose kept output asked the terminal something (`asked`) is let go rather
+/// than adopted. Outside Windows only: there ConPTY stands between the shell and Flare, the Windows E2E never
+/// showed it, and the Windows spares stay as they were.
+pub(crate) fn spare_asked_stale(asked: bool) -> bool {
+    asked && !cfg!(windows)
+}
+
 /// A copy of every write to a shell, for the e2e's evidence (the Mac E2E, rule 347): set once, under
 /// `--e2e` only; the app without it pays one atomic load per write.
 pub type WriteTap = fn(&str, &[u8]);
@@ -456,6 +472,7 @@ fn launch(sh: &Arc<Shared>, f: Fresh<'_>) -> Result<Arc<Session>, String> {
         killed: AtomicBool::new(false),
         exited: AtomicBool::new(false),
         reported: AtomicBool::new(false),
+        asked: AtomicBool::new(false),
         proc: Mutex::new(Some(proc)),
         state: Mutex::new(IoState {
             batcher: OutputBatcher::new(sh.opts.batch_window, BATCH_MAX_BYTES),
@@ -655,6 +672,7 @@ impl SessionManager {
                     killed_pending: HashSet::new(),
                     desired: HashMap::new(),
                     warm: Vec::new(),
+                    asking_shells: HashSet::new(),
                 }),
                 dying: Mutex::new(Counts::default()),
                 dying_cv: Condvar::new(),
@@ -794,10 +812,24 @@ impl SessionManager {
         let pk = plugin_key(plugin);
         // Adopt a warm spare, or launch.
         let size;
+        let mut stale: Option<Arc<Session>> = None;
         {
             let mut st = lk(&self.sh.st);
             if st.killed_pending.contains(id) {
                 return false;
+            }
+            // A spare that asked the terminal something is never adopted: the answer would come late and be
+            // read as typing (rule 347). It is let go, and its shell is not prewarmed again.
+            if resume.is_none()
+                && let Some(i) = st.warm.iter().position(|(k, w)| {
+                    *k == key
+                        && w.def_id == def.id
+                        && spare_asked_stale(w.asked.load(Ordering::SeqCst))
+                })
+            {
+                let (_, w) = st.warm.remove(i);
+                st.asking_shells.insert(w.def_id.clone());
+                stale = Some(w);
             }
             if resume.is_none()
                 && let Some(i) = st.warm.iter().position(|(k, w)| {
@@ -818,6 +850,9 @@ impl SessionManager {
                 return true;
             }
             size = Self::size_for(&st, id);
+        }
+        if let Some(w) = stale {
+            self.dispose(w);
         }
         let tokens = ShellTokens::fresh();
         let spec = self.spec_for(&def, root, size, resume, plugin, &tokens);
@@ -903,6 +938,9 @@ impl SessionManager {
         let size;
         {
             let mut st = lk(&self.sh.st);
+            if st.asking_shells.contains(&def.id) {
+                return;
+            }
             if let Some(i) = st.warm.iter().position(|(k, _)| *k == key) {
                 let w = &st.warm[i].1;
                 if w.plugin_key == pk && w.def_id == def.id && !w.exited.load(Ordering::SeqCst) {
@@ -1180,6 +1218,15 @@ impl SessionManager {
         #[cfg(not(windows))]
         let gone = gone && crate::pty::finish_reapers(timeout.saturating_sub(t0.elapsed()));
         gone
+    }
+
+    /// Whether any warm spare's kept output asked the terminal something (the tests' wait, rule 347).
+    #[cfg(test)]
+    fn a_spare_asked(&self) -> bool {
+        lk(&self.sh.st)
+            .warm
+            .iter()
+            .any(|(_, w)| w.asked.load(Ordering::SeqCst))
     }
 
     /// Bumped once per chunk read from any shell; only goes up.
@@ -1805,6 +1852,41 @@ mod tests {
         };
         assert!(bytes.len() <= 65_536);
         assert_eq!(bytes[0], b'F');
+    }
+
+    // Rule 347: a spare whose kept output asked the terminal something is let go (outside Windows), the tab gets a
+    // fresh shell, and that shell is not prewarmed again; a spare that asked nothing is adopted as before.
+    #[test]
+    fn a_spare_that_asked_the_terminal_is_let_go_outside_windows() {
+        let sp = FakeSpawner::new();
+        let m = mgr(&sp);
+        m.prewarm("C:\\home", Some("pwsh"), None);
+        sp.made()[0].feed(b"PS C:\\home> \x1b[6n");
+        assert!(wait_until(|| m.a_spare_asked()));
+        let rec = Arc::new(RecSink::default());
+        assert!(m.spawn("tab", "C:\\home", Some("pwsh"), rec.clone(), None, None));
+        if cfg!(windows) {
+            assert_eq!(sp.made().len(), 1, "Windows adopts the spare as before");
+        } else {
+            assert_eq!(sp.made().len(), 2, "a fresh shell for the tab");
+            assert!(wait_until(|| sp.made()[0].killed()), "the spare is let go");
+            m.prewarm("C:\\home", Some("pwsh"), None);
+            assert_eq!(sp.made().len(), 2, "and its shell is not prewarmed again");
+        }
+    }
+
+    #[test]
+    fn a_spare_that_asked_nothing_is_adopted() {
+        let sp = FakeSpawner::new();
+        let m = mgr(&sp);
+        m.prewarm("C:\\home", Some("pwsh"), None);
+        sp.made()[0].feed(b"PS C:\\home> \x1b[?2004h");
+        assert!(wait_until(|| m.output_ticks() >= 1));
+        let rec = Arc::new(RecSink::default());
+        assert!(m.spawn("tab", "C:\\home", Some("pwsh"), rec.clone(), None, None));
+        assert_eq!(sp.made().len(), 1);
+        assert!(!spare_asked_stale(false));
+        assert_eq!(spare_asked_stale(true), !cfg!(windows));
     }
 
     #[test]
