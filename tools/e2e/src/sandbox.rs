@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use flare_win::names::PROFILE_FOLDER;
 use sha2::{Digest, Sha256};
 
+#[cfg(windows)]
 use crate::regsandbox::SandboxRoot;
 
 pub struct Sandbox {
@@ -16,11 +17,17 @@ pub struct Sandbox {
     /// `roaming\Flare`
     pub profile: PathBuf,
     /// `Software\FlareE2E\<uuid>`
+    #[cfg(windows)]
     pub reg_root: String,
+    #[cfg(windows)]
     reg: SandboxRoot,
+    /// macOS (rule 331): the app's HOME, so `~/Library/...` and the shells' rc files are the world's.
+    #[cfg(not(windows))]
+    pub home: PathBuf,
 }
 
 impl Sandbox {
+    #[cfg(windows)]
     pub fn new() -> Sandbox {
         let dir = tempfile::Builder::new()
             .prefix("flare-e2e-")
@@ -46,7 +53,48 @@ impl Sandbox {
         }
     }
 
+    /// macOS (rule 331): the world is a HOME of its own (`home/`), its `Library/Application Support`
+    /// both the roaming and the local folder (the Mac app keeps both there) and the profile `Flare` in it.
+    /// The root is the canonical path (`/private/var/...`, not the `/var` link), so the app, the hook's
+    /// socket name and the reaper all see one spelling of it.
+    #[cfg(not(windows))]
+    pub fn new() -> Sandbox {
+        let dir = tempfile::Builder::new()
+            .prefix("flare-e2e-")
+            .tempdir()
+            .expect("temp dir");
+        let root = fs::canonicalize(dir.path()).unwrap_or_else(|_| dir.path().to_path_buf());
+        let home = root.join("home");
+        let roaming = home.join("Library").join("Application Support");
+        let local = roaming.clone();
+        let profile = roaming.join(PROFILE_FOLDER);
+        for d in [&home, &roaming, &profile] {
+            fs::create_dir_all(d).expect("sandbox folder");
+        }
+        Sandbox {
+            dir: Some(dir),
+            root,
+            roaming,
+            local,
+            profile,
+            home,
+        }
+    }
+
+    /// macOS: the world's HOME for a launched child (there is no registry to sandbox), and pwsh as
+    /// the tab's shell when it is installed (`FLARE_E2E_SHELL`, read only under `--e2e`, rule 333): the
+    /// scenarios read PowerShell's prompt, as on Windows. A profile that saves a shell still wins.
+    #[cfg(not(windows))]
+    pub fn env(&self) -> Vec<(String, String)> {
+        let mut env = vec![("HOME".into(), self.home.to_string_lossy().into_owned())];
+        if mac_pwsh().is_some() {
+            env.push(("FLARE_E2E_SHELL".into(), "pwsh".into()));
+        }
+        env
+    }
+
     /// APPDATA, LOCALAPPDATA and the verb registry root, for a launched child.
+    #[cfg(windows)]
     pub fn env(&self) -> Vec<(String, String)> {
         vec![
             (
@@ -62,6 +110,7 @@ impl Sandbox {
     }
 
     /// The sandbox registry subtree (for scenarios that read or seed it).
+    #[cfg(windows)]
     pub fn registry(&self) -> &SandboxRoot {
         &self.reg
     }
@@ -101,6 +150,19 @@ impl Drop for Sandbox {
             let _ = d.close();
         }
     }
+}
+
+/// macOS: where pwsh is, the places the app's shell detection looks (Homebrew, the package).
+#[cfg(not(windows))]
+pub fn mac_pwsh() -> Option<PathBuf> {
+    [
+        "/opt/homebrew/bin/pwsh",
+        "/usr/local/bin/pwsh",
+        "/usr/local/microsoft/powershell/7/pwsh",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .find(|p| p.is_file())
 }
 
 fn hex(b: &[u8]) -> String {

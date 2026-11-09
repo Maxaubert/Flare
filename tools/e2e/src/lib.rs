@@ -2,28 +2,35 @@
 //! M10 driver. Task 1 creates the M10 modules as stubs; Tasks 12 to 15 and the port tasks fill them.
 
 pub mod chord;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub mod ctx;
 #[cfg(windows)]
 pub mod dictproc;
 pub mod fake_fill_helper;
 pub mod fixtures;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub mod guards;
 #[cfg(windows)]
 pub mod perf;
 pub mod pixels;
 #[cfg(windows)]
 pub mod proc;
+// macOS (rule 331): the same API over process groups, `ps` and signals.
+#[cfg(target_os = "macos")]
+#[path = "proc_mac.rs"]
+pub mod proc;
+// macOS: the window server list, the frontmost app and the pasteboard count (rule 331).
+#[cfg(target_os = "macos")]
+pub mod mac;
 #[cfg(windows)]
 pub mod regsandbox;
 pub mod report;
 pub mod rowpage;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub mod runner;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub mod sandbox;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub mod scenarios;
 pub mod session;
 pub mod slide;
@@ -33,5 +40,5 @@ pub mod tour;
 pub mod until;
 #[cfg(windows)]
 pub mod winshot;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub mod world;

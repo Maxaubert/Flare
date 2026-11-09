@@ -13,8 +13,11 @@
 //! Nothing here touches the user's windows, pipes or Claude settings: the only pipe connected to is
 //! the one the app under test reported about itself.
 
+#[cfg(target_os = "macos")]
+use crate::proc::CommandExt;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};

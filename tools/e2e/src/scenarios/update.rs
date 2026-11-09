@@ -426,6 +426,9 @@ fn names_with(dir: &Path, prefix: &str) -> String {
 /// How many other processes have `needle` on their command line. The query's own PowerShell names it
 /// too, so it leaves itself out (PT does the same). `None` when the query fails.
 fn processes_naming(needle: &str) -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    use crate::proc::CommandExt;
+    #[cfg(windows)]
     use std::os::windows::process::CommandExt;
     let script = format!(
         "@(Get-CimInstance Win32_Process | Where-Object {{ $_.ProcessId -ne $PID -and $_.CommandLine -like '*{needle}*' }}).Count"

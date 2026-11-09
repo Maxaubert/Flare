@@ -84,7 +84,7 @@ pub fn spawn(ctx: &mut Ctx) -> Result<(), String> {
         )],
         ..Launch::default()
     })?;
-    let home = std::env::var("USERPROFILE").unwrap_or_default();
+    let home = crate::world::user_home(ctx);
 
     // PT: run.mjs:478
     let start = app.session.probe_str("start.state")?;
@@ -470,7 +470,12 @@ pub fn restore(ctx: &mut Ctx) -> Result<(), String> {
             saved
                 .tabs
                 .iter()
-                .map(|t| t.cwd.rsplit('\\').next().unwrap_or_default().to_string())
+                .map(|t| t
+                    .cwd
+                    .rsplit(['\\', '/'])
+                    .next()
+                    .unwrap_or_default()
+                    .to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
         ),

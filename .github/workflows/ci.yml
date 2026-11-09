@@ -74,3 +74,59 @@ jobs:
         run: cargo nextest run --workspace --no-tests=pass --no-fail-fast
       - name: Deny
         run: cargo deny check
+
+  # The Mac E2E (rules 330 to 333, docs/e2e.md "macOS E2E"): the release app driven through its --e2e hook (a Unix
+  # socket), an accessory app parked off every display; the harness fails a scenario that takes the keyboard or shows a
+  # window. Its own job so the gates above stay as fast as they were. A Mac has no hidden desktop, so this runs only here.
+  e2e-macos:
+    runs-on: macos-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e-release
+      - name: CEF build tools and cache folder
+        shell: bash
+        run: |
+          brew install ninja cmake || true
+          echo "CEF_PATH=$HOME/Library/Caches/flare-cef" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/flare-cef
+          key: cef-macos-arm64-156.0.14
+      - name: Build the app, the MCP server and the harness (release)
+        run: cargo build --release -p flare -p flare-mcp -p flare-e2e
+      - name: The shells the scenarios use
+        shell: bash
+        run: |
+          ls -l /usr/local/bin/pwsh /opt/homebrew/bin/pwsh 2>/dev/null || true
+          pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' || echo "no pwsh: the PowerShell scenarios fail"
+      - name: E2E
+        shell: bash
+        run: |
+          mkdir -p e2e-out
+          target/release/flare-e2e --list > e2e-out/list.txt
+          set -o pipefail
+          target/release/flare-e2e --exe target/release/flare --shots e2e-out/shots --keep $E2E_FILTER 2>&1 | tee e2e-out/e2e.log
+        env:
+          E2E_FILTER: spawn hookSmoke cwdLabel theme findKey panelImage ctlChannel
+      - name: Collect the worlds' logs
+        if: failure()
+        shell: bash
+        run: |
+          for w in "${TMPDIR:-/tmp}"/flare-e2e-*; do
+            [ -d "$w" ] || continue
+            n=$(basename "$w")
+            mkdir -p "e2e-out/worlds/$n"
+            find "$w" -type f \( -name '*.log' -o -name '*.jsonl' -o -name '*.json' -o -name '*.txt' \) -size -5M \
+              -exec cp {} "e2e-out/worlds/$n/" \; 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-macos
+          path: e2e-out
+          retention-days: 7

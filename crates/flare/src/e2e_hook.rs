@@ -450,24 +450,154 @@ fn handle_line(raw: usize, text: &str, dispatch: &Dispatch) -> bool {
     }
 }
 
-// ---- off Windows: the Mac E2E hook is a Unix socket (port plan, "Ongoing"); refused until then ----
+// ---- macOS: the hook is a Unix socket (rule 330), with the named pipe's guarantees ----
+//
+// The socket is `flare_e2e_proto::pipe_name(profile)`, in the control channel's private folder (0700,
+// this user's), bound 0600 under the control channel's first-instance lock, so a second `--e2e` launch on
+// the same profile cannot take it over (`FILE_FLAG_FIRST_PIPE_INSTANCE`). A client of another uid is
+// dropped before a byte is read (the pipe's DACL). Every wait is a short `poll` that looks at the stop
+// flag, so dropping the server never hangs on a client that is still connected (`CancelSynchronousIo`).
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+struct MacHook {
+    listener: std::os::unix::net::UnixListener,
+    _lock: std::fs::File,
+    path: std::path::PathBuf,
+}
+
+#[cfg(target_os = "macos")]
+thread_local! {
+    /// The client this thread talks to now (one at a time, as the pipe has one instance).
+    static MAC_CLIENT: RefCell<Option<std::os::unix::net::UnixStream>> = const { RefCell::new(None) };
+    /// The server's stop flag (its address) while `serve` runs on this thread, so a read gives up
+    /// when it is raised. `serve` borrows the flag for its whole run, so the address stays valid.
+    static MAC_STOP: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How long one wait of the Mac hook lasts before it looks at the stop flag again, in milliseconds.
+#[cfg(target_os = "macos")]
+const MAC_POLL_MS: i32 = 50;
+
+/// Waits up to `MAC_POLL_MS` for `fd` to be readable. True when it is (or is closed: the read says).
+#[cfg(target_os = "macos")]
+fn mac_readable(fd: std::os::fd::RawFd) -> bool {
+    let mut p = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one valid pollfd for the stated count; the fd stays open for the call.
+    let n = unsafe { libc::poll(&mut p, 1, MAC_POLL_MS) }; // sync-ok: the hook thread waits for a client
+    n > 0
+}
+
+/// Whether the server this thread serves was told to stop.
+#[cfg(target_os = "macos")]
+fn mac_stopped() -> bool {
+    let addr = MAC_STOP.with(std::cell::Cell::get);
+    // SAFETY: a non-zero address is the `stop` flag `serve` borrows for as long as it runs.
+    addr != 0 && unsafe { &*(addr as *const AtomicBool) }.load(Ordering::SeqCst)
+}
+
+#[cfg(target_os = "macos")]
+fn create_pipe(name: &str) -> Result<usize, HookError> {
+    let path = std::path::PathBuf::from(name);
+    let (listener, lock) = flare_ctl::pipe::bind_private_socket(&path)
+        .map_err(|e| HookError::Pipe(format!("could not serve the hook socket: {e}")))?;
+    let hook = Box::new(MacHook {
+        listener,
+        _lock: lock,
+        path,
+    });
+    Ok(Box::into_raw(hook) as usize)
+}
+
+#[cfg(target_os = "macos")]
+fn serve(raw: usize, stop: &AtomicBool, dispatch: &Dispatch) {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::FileTypeExt;
+    // SAFETY: `raw` came from `Box::into_raw` in `create_pipe` and is taken back exactly once, here.
+    let hook = unsafe { Box::from_raw(raw as *mut MacHook) };
+    MAC_STOP.with(|s| s.set(std::ptr::from_ref(stop) as usize));
+    let me = flare_ctl::pipe::own_uid();
+    while !stop.load(Ordering::SeqCst) {
+        if !mac_readable(hook.listener.as_raw_fd()) {
+            continue;
+        }
+        let Ok((stream, _)) = hook.listener.accept() else {
+            continue;
+        };
+        if !flare_ctl::pipe::peer_allowed(me, flare_ctl::pipe::peer_uid(stream.as_raw_fd())) {
+            log::warn!("e2e hook: a client of another user was refused");
+            continue;
+        }
+        if stream.set_nonblocking(false).is_err() {
+            continue;
+        }
+        MAC_CLIENT.with(|c| *c.borrow_mut() = Some(stream));
+        talk(0, stop, dispatch);
+        MAC_CLIENT.with(|c| *c.borrow_mut() = None);
+    }
+    MAC_STOP.with(|s| s.set(0));
+    // Removed only while it is still a socket, under the lock `hook` holds.
+    // sync-ok: test hook teardown, only under --e2e
+    if std::fs::symlink_metadata(&hook.path).is_ok_and(|m| m.file_type().is_socket()) {
+        let _ = std::fs::remove_file(&hook.path); // sync-ok: test hook teardown, only under --e2e
+    }
+    drop(hook);
+}
+
+#[cfg(target_os = "macos")]
+fn read_chunk(_raw: usize, buf: &mut [u8]) -> usize {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    loop {
+        if mac_stopped() {
+            return 0;
+        }
+        let Some(fd) = MAC_CLIENT.with(|c| c.borrow().as_ref().map(AsRawFd::as_raw_fd)) else {
+            return 0;
+        };
+        if !mac_readable(fd) {
+            continue;
+        }
+        return MAC_CLIENT.with(|c| match c.borrow_mut().as_mut() {
+            Some(stream) => stream.read(buf).unwrap_or(0), // sync-ok: the hook thread reads a request poll said is there
+            None => 0,
+        });
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn write_all(_raw: usize, bytes: &[u8]) -> bool {
+    use std::io::Write;
+    MAC_CLIENT.with(|c| match c.borrow_mut().as_mut() {
+        Some(stream) => stream
+            .write_all(bytes)
+            .and_then(|()| stream.flush())
+            .is_ok(), // sync-ok: the hook thread answers the client
+        None => false,
+    })
+}
+
+// ---- any other system: no hook ----
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn create_pipe(_name: &str) -> Result<usize, HookError> {
     Err(HookError::Pipe(
-        "the test hook is not built on this platform yet".into(),
+        "the test hook is not built on this platform".into(),
     ))
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn serve(_raw: usize, _stop: &AtomicBool, _dispatch: &Dispatch) {}
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn read_chunk(_raw: usize, _buf: &mut [u8]) -> usize {
     0
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn write_all(_raw: usize, _bytes: &[u8]) -> bool {
     false
 }
@@ -475,8 +605,12 @@ fn write_all(_raw: usize, _bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::File;
     use std::io::{BufRead, BufReader, Write};
+
+    #[cfg(windows)]
+    type Conn = std::fs::File;
+    #[cfg(target_os = "macos")]
+    type Conn = std::os::unix::net::UnixStream;
 
     fn profile() -> tempfile::TempDir {
         tempfile::tempdir().unwrap() // sync-ok: test code only
@@ -489,17 +623,27 @@ mod tests {
         })
     }
 
-    fn connect(pipe: &str) -> (File, BufReader<File>) {
-        let f = std::fs::OpenOptions::new() // sync-ok: test code only
+    #[cfg(windows)]
+    fn open(pipe: &str) -> Conn {
+        std::fs::OpenOptions::new() // sync-ok: test code only
             .read(true)
             .write(true)
             .open(pipe)
-            .expect("the pipe opens");
+            .expect("the pipe opens")
+    }
+
+    #[cfg(target_os = "macos")]
+    fn open(pipe: &str) -> Conn {
+        Conn::connect(pipe).expect("the socket opens") // sync-ok: test code only
+    }
+
+    fn connect(pipe: &str) -> (Conn, BufReader<Conn>) {
+        let f = open(pipe);
         let r = BufReader::new(f.try_clone().unwrap());
         (f, r)
     }
 
-    fn ask(w: &mut File, r: &mut BufReader<File>, req: &Request) -> Reply {
+    fn ask(w: &mut Conn, r: &mut BufReader<Conn>, req: &Request) -> Reply {
         w.write_all(flare_e2e_proto::encode(req).as_bytes())
             .unwrap();
         let mut line = String::new();
@@ -552,7 +696,7 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn a_hello_round_trips_without_the_ui_thread() {
         let dir = profile();
@@ -568,7 +712,7 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn a_request_reaches_the_dispatch_and_its_answer_comes_back() {
         let dir = profile();
@@ -595,7 +739,7 @@ mod tests {
         ));
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn a_second_server_on_the_same_profile_cannot_take_the_pipe() {
         let dir = profile();
@@ -619,7 +763,7 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn an_unanswered_request_times_out_with_an_error() {
         let dir = profile();
@@ -650,7 +794,7 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn a_latency_request_may_wait_as_long_as_its_own_timeout() {
         let base = Duration::from_secs(10);
@@ -668,7 +812,7 @@ mod tests {
         assert_eq!(reply_limit(&probe, base), base);
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn a_slow_latency_answer_is_delivered_not_cut_off() {
         let dir = profile();
@@ -687,7 +831,7 @@ mod tests {
         assert_eq!(reply, Reply::Latency { ms: 400.0 });
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn dropping_the_server_returns_even_with_a_client_connected() {
         let dir = profile();
@@ -696,5 +840,31 @@ mod tests {
         let started = std::time::Instant::now();
         drop(server);
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    // Rule 330: the Mac hook is a 0600 socket in a 0700 folder of this user's, and it is gone when the
+    // server stops (the next launch on the profile binds it again).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_mac_socket_is_this_users_alone_and_goes_with_the_server() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = profile();
+        let server = start_with(true, dir.path()).unwrap();
+        let path = std::path::PathBuf::from(&server.pipe);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode(); // sync-ok: test code only
+        assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+        let folder = std::fs::metadata(path.parent().unwrap()).unwrap(); // sync-ok: test code only
+        assert_eq!(
+            folder.permissions().mode() & 0o077,
+            0,
+            "the folder is private"
+        );
+        drop(server);
+        assert!(
+            !path.exists(),
+            "the socket is removed when the server stops"
+        );
+        let again = start_with(true, dir.path()).unwrap();
+        assert_eq!(again.pipe, path.to_string_lossy());
     }
 }

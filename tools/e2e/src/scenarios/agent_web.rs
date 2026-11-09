@@ -15,8 +15,11 @@
 //! `mcpBrowser` drives the same page through `flare-mcp.exe` over stdio, as Claude Code would: a look
 //! answers with an image content item and the element list, and the tools act on its refs.
 
+#[cfg(target_os = "macos")]
+use crate::proc::CommandExt;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};

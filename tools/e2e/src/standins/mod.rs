@@ -1,6 +1,5 @@
 //! Everything a scenario needs that Prism Terminal's run.mjs builds inline, written once (Task 15).
 
-#[cfg(windows)]
 pub mod agent_cmd;
 pub mod agent_proc;
 pub mod flood;

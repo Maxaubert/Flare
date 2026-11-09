@@ -248,17 +248,43 @@ pub enum Reply {
     },
 }
 
-/// The named pipe for a profile: `\\.\pipe\flare-e2e-` plus 16 lower-case hex digits of a 64-bit
-/// FNV-1a hash of the lower-cased, slash-normalised profile path. A name, not a secret: the
-/// pipe's DACL is the security.
-pub fn pipe_name(profile: &Path) -> String {
+/// The 64-bit FNV-1a hash of the lower-cased, slash-normalised profile path the hook's name carries.
+pub fn profile_hash(profile: &Path) -> u64 {
     let text = profile.to_string_lossy().replace('\\', "/").to_lowercase();
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in text.as_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    format!(r"\\.\pipe\flare-e2e-{hash:016x}")
+    hash
+}
+
+/// The named pipe for a profile: `\\.\pipe\flare-e2e-` plus 16 lower-case hex digits of
+/// [`profile_hash`]. A name, not a secret: the pipe's DACL is the security.
+#[cfg(windows)]
+pub fn pipe_name(profile: &Path) -> String {
+    format!(r"\\.\pipe\flare-e2e-{:016x}", profile_hash(profile))
+}
+
+/// macOS (rule 330): the hook is a Unix socket, `e2e-<16 hex>.sock`, in the control channel's
+/// private per-user folder (`<user temp>/flare-ctl`, 0700, the socket 0600, the peer's uid checked).
+/// Short enough for `sun_path` (104 bytes) under `/var/folders/.../T/`.
+#[cfg(target_os = "macos")]
+pub fn pipe_name(profile: &Path) -> String {
+    flare_ctl::pipe::user_temp_dir()
+        .join("flare-ctl")
+        .join(format!("e2e-{:016x}.sock", profile_hash(profile)))
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Any other system: a name only (no hook is served there).
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn pipe_name(profile: &Path) -> String {
+    std::env::temp_dir()
+        .join(format!("flare-e2e-{:016x}.sock", profile_hash(profile)))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// One request as a wire line, `\n`-terminated.
@@ -502,6 +528,7 @@ mod tests {
         assert!(decode_request(&fits).is_ok());
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_pipe_name_is_stable_and_case_and_slash_insensitive() {
         let a = pipe_name(&PathBuf::from(
@@ -525,6 +552,20 @@ mod tests {
             hex.chars()
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "{a}"
+        );
+    }
+
+    // Rule 330: on a Mac the hook is a socket in the control channel's private folder, the same hash.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_mac_hook_is_a_short_socket_in_the_private_folder() {
+        let a = pipe_name(&PathBuf::from("/Users/a/tmp/Flare-E2E/p1"));
+        assert_eq!(a, pipe_name(&PathBuf::from("/users/a/tmp/flare-e2e/P1")));
+        assert!(a.ends_with(".sock") && a.contains("/flare-ctl/e2e-"), "{a}");
+        assert!(a.len() <= 103, "sun_path holds 103 bytes and a NUL: {a}");
+        assert_eq!(
+            profile_hash(&PathBuf::from(r"C:\tmp\p")),
+            profile_hash(&PathBuf::from("c:/tmp/P"))
         );
     }
 

@@ -62,7 +62,8 @@ fn fnv1a(text: &str) -> u64 {
 }
 
 /// The per-user temp folder as the system names it (`/var/folders/.../T/`, mode 0700), else `$TMPDIR`.
-fn user_temp_dir() -> PathBuf {
+/// Public for the e2e test hook's socket, which lives in the same private folder (rule 330).
+pub fn user_temp_dir() -> PathBuf {
     let mut buf = vec![0u8; 1024];
     // SAFETY: the buffer is writable for its stated length; confstr writes a NUL-terminated string of
     // at most that many bytes and returns the length it needed.
@@ -389,6 +390,14 @@ fn bind_socket(path: &Path, me: u32) -> io::Result<(UnixListener, (u64, u64), st
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     let meta = std::fs::symlink_metadata(path)?; // sync-ok: startup, a local stat
     Ok((listener, (meta.dev(), meta.ino()), lock))
+}
+
+/// Binds `path` as [`Server::start`] does (a 0700 folder of this user's, the socket 0600, the
+/// first-instance lock) for another line protocol: the `--e2e` test hook (rule 330). The listener
+/// does not block; the lock file must be kept open for as long as the socket serves.
+pub fn bind_private_socket(path: &Path) -> io::Result<(UnixListener, std::fs::File)> {
+    let (listener, _id, lock) = bind_socket(path, own_uid())?;
+    Ok((listener, lock))
 }
 
 /// The running server. Dropping it stops it.

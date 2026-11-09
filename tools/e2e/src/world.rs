@@ -134,6 +134,24 @@ pub fn prompt_showing(text: &str, shell: Shell) -> bool {
     }
 }
 
+/// The home folder the launched app sees: the owner's own on Windows (`USERPROFILE`, the app inherits
+/// it), the world's `home/` on macOS (the sandbox sets HOME, rule 331).
+pub fn user_home(ctx: &mut crate::ctx::Ctx) -> String {
+    #[cfg(windows)]
+    {
+        let _ = ctx;
+        std::env::var("USERPROFILE").unwrap_or_default()
+    }
+    #[cfg(not(windows))]
+    {
+        ctx.ensure_world()
+            .sandbox()
+            .home
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
 /// The text of a tab's grid, one row per line. Empty when the probe is not answered.
 pub fn rows_of_value(value: &Value) -> String {
     value

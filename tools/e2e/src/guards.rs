@@ -10,11 +10,15 @@ use std::path::{Path, PathBuf};
 
 use flare_diag::reader::{read_lines, Line};
 use serde_json::Value;
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+#[cfg(windows)]
 use windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber;
+#[cfg(windows)]
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
 use crate::proc::reap_by_profile;
@@ -43,9 +47,11 @@ pub trait ClipSeq {
     fn sequence(&self) -> Option<u32>;
 }
 
+#[cfg(windows)]
 /// The real clipboard (`GetClipboardSequenceNumber`; it reads a number and changes nothing).
 pub struct WinClipboard;
 
+#[cfg(windows)]
 impl ClipSeq for WinClipboard {
     fn sequence(&self) -> Option<u32> {
         // SAFETY: no arguments; the call only reads the sequence counter.
@@ -91,9 +97,11 @@ pub trait Foreground {
     fn foreground_pid(&self) -> Option<u32>;
 }
 
+#[cfg(windows)]
 /// The real foreground window (`GetForegroundWindow` and its owner's process id).
 pub struct WinForeground;
 
+#[cfg(windows)]
 impl Foreground for WinForeground {
     fn foreground_pid(&self) -> Option<u32> {
         // SAFETY: no arguments; the handle is only compared and passed on.
@@ -111,6 +119,37 @@ impl Foreground for WinForeground {
 }
 
 /// The processes of this run: the launched children and everything they started.
+/// macOS (rule 331): the general pasteboard's change count, which moves on any app's write.
+#[cfg(target_os = "macos")]
+pub struct MacPasteboard;
+
+#[cfg(target_os = "macos")]
+impl ClipSeq for MacPasteboard {
+    fn sequence(&self) -> Option<u32> {
+        crate::mac::pasteboard_change_count()
+    }
+}
+
+/// macOS (rule 331): the frontmost app's pid (the app that has the keyboard).
+#[cfg(target_os = "macos")]
+pub struct MacForeground;
+
+#[cfg(target_os = "macos")]
+impl Foreground for MacForeground {
+    fn foreground_pid(&self) -> Option<u32> {
+        crate::mac::frontmost_pid()
+    }
+}
+
+/// macOS: every process as (pid, parent pid), from `ps`.
+#[cfg(target_os = "macos")]
+pub fn process_table() -> Vec<(u32, u32)> {
+    crate::proc::process_rows()
+        .into_iter()
+        .map(|(pid, ppid, _)| (pid, ppid))
+        .collect()
+}
+
 pub fn run_set(roots: &[u32], table: &[(u32, u32)]) -> HashSet<u32> {
     let mut set: HashSet<u32> = roots.iter().copied().collect();
     loop {
@@ -126,6 +165,7 @@ pub fn run_set(roots: &[u32], table: &[(u32, u32)]) -> HashSet<u32> {
     }
 }
 
+#[cfg(windows)]
 /// Every running process as `(pid, parent pid)` (a Toolhelp snapshot). Empty when it cannot be taken.
 pub fn process_table() -> Vec<(u32, u32)> {
     let mut out = Vec::new();

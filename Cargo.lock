@@ -1765,6 +1765,7 @@ dependencies = [
  "flare-web",
  "flare-win",
  "image",
+ "libc",
  "log",
  "png",
  "pollster",
@@ -1880,6 +1881,12 @@ dependencies = [
  "flare-tabs",
  "flare-update",
  "flare-win",
+ "libc",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
  "png",
  "serde",
  "serde_json",
@@ -1893,6 +1900,7 @@ dependencies = [
 name = "flare-e2e-proto"
 version = "0.1.0"
 dependencies = [
+ "flare-ctl",
  "serde",
  "serde_json",
 ]
