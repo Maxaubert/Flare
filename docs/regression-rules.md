@@ -630,7 +630,7 @@ Native: `background.rs` (`looks_like_background_work`). Held by `a_dev_server_in
 `std::os::windows` imports, Windows paths and Windows tools live in Windows modules with a macOS counterpart or stub.
 Held by the `macos` CI job (cargo check, clippy and nextest on macos-latest). Source: macOS port plan
 (`docs/superpowers/specs/2026-11-08-macos-port.md`, owner, 2026-11-08).
-228. **macOS: closing a tab ends its whole session, and throws away the output nobody will read.** The shell leads
+232. **macOS: closing a tab ends its whole session, and throws away the output nobody will read.** The shell leads
 its own session (portable-pty `setsid`); a kill sends SIGHUP to the session's process groups and to the shell's
 descendants, then SIGTERM and SIGKILL after 250 ms and 500 ms more (`flare-term/src/macos/pty.rs`), sparing an
 `.app` bundle the shell launched. While it waits the reaper runs `tcflush(TCOFLUSH)` on a duplicate of the master:
@@ -646,7 +646,7 @@ tab, and a crash of Flare leaves a job that ignores SIGHUP running. Held by `qui
 (`ten_real_shells_with_jobs_killed_none_remain`,
 `quitting_ends_a_job_that_ignores_the_hangup_before_the_process_exits`) and `pty::macos::tests`. Source: macOS port
 phase 2, step 1 (measured 2026-11-08: 6 of 10 shells stuck in exit without the flush), and the phase 2 review.
-229. **macOS: every shell starts as a login shell and reports its folder with OSC 7, without touching the user's
+233. **macOS: every shell starts as a login shell and reports its folder with OSC 7, without touching the user's
 dotfiles.** zsh, bash, fish and pwsh are found by absolute path (the login shell from the user record first, then
 Homebrew, `/etc/shells`, `/bin`), never through PATH; the login shell is listed first and is the default
 (`shell_by_id` prefers no name on macOS). zsh starts with `ZDOTDIR` on Flare's shim, whose `.zshenv` hands the
@@ -659,7 +659,7 @@ a Mac named by its network can be renamed mid-session), decoded, absolute, with 
 OSC 7 is no folder report. The files live in `~/Library/Application Support/Flare/shell-integration/<version>`
 (`flare-shells/src/macos/`). Held by `flare-term/tests/real_shells_macos.rs` and `flare-shells` `macos::*` tests.
 Source: macOS port phase 2, step 2 (2026-11-08).
-230. **macOS: paths are read with the POSIX grammar behind one seam, and a path that would reach a server is never
+234. **macOS: paths are read with the POSIX grammar behind one seam, and a path that would reach a server is never
 statted, restored or adopted.** `flare-term/src/path_grammar.rs` picks the grammar: Windows
 (`path_grammar/windows.rs`, the drive and UNC rules moved there unchanged) or macOS (`macos/path_grammar.rs`): one
 root `/`, `~` and `~/` for home (`~user` is refused), `/` the only separator (a `\` is a name character), case kept,
@@ -674,7 +674,7 @@ refuses the same autofs and `//` paths, a `.` or `..` segment and the Windows UN
 menu read POSIX folders (`~/code`, `.../Claude/Github`). Held by the `posix` twins in `path_open`, `path_links`,
 `paths`, the `macos::*` tests of flare-term, flare-shells, flare-tabs and flare-surfaces, and
 `restore_never_spawns_in_a_remote_folder_on_macos`. Source: macOS port phase 2, step 3 (2026-11-08).
-231. **macOS: fonts come from the font folders, the stacks fall to SF Mono and Menlo, the UI is SF, and wgpu
+235. **macOS: fonts come from the font folders, the stacks fall to SF Mono and Menlo, the UI is SF, and wgpu
 draws on Metal.** `flare-render/src/macos/font_catalog.rs` reads `/System/Library/Fonts`, the downloadable
 `AssetsV2` fonts, `/Library/Fonts` and `~/Library/Fonts` once (never `/Network/Library/Fonts`, an autofs mount). Its
 start-up fallbacks are SF Mono, Menlo and every face cosmic-text's macOS fallback names (per-script, Han, common):
