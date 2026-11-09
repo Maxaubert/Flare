@@ -22,10 +22,30 @@ pub const NOTE_NO_FILE: &str = "This panel has no file to send";
 pub const NOTE_PATH_REFUSED: &str = "This file's path cannot be typed safely";
 pub const NOTE_PAGE_FAILED: &str = "The page's selection could not be read";
 
-/// Reads the page's selection. Bounded so a page cannot hand the window a huge string; well past [`ASK_MAX`], so a
-/// longer selection still reaches [`frame_selection`] long enough to be marked as cut.
+/// Reads the page's selection, after the address of the document that holds it and one line break. The address is what
+/// the frame names: the tab's own address moves when a navigation starts, while the old page is still the one showing
+/// and answering. `location` cannot be replaced by a page and its `href` has no line break, so the first line is always
+/// the truth, whatever the text says. The cut is well past [`ASK_MAX`], so a longer selection still reaches
+/// [`frame_selection`] long enough to be marked as cut, but it runs in the page's world: [`ANSWER_MAX`] is the bound.
 pub const SELECTION_SCRIPT: &str = "(function(){var s=window.getSelection();\
-return s?s.toString().slice(0,65536):'';})()";
+var t=s?s.toString().slice(0,65536):'';\
+return location.href+'\\n'+(typeof t==='string'?t:'');})()";
+
+/// The longest answer to [`SELECTION_SCRIPT`] that is read (bytes of JSON): its 65536 UTF-16 units at six bytes each,
+/// the longest JSON escape, and room for the address. A page can replace what the script calls, so only this holds.
+pub const ANSWER_MAX: usize = 6 * 65536 + 16 * 1024;
+
+/// The address and the text in a page's answer to [`SELECTION_SCRIPT`]; both empty for anything but the script's own
+/// shape (a page that made it throw), which counts as no selection. `None` when the answer is over [`ANSWER_MAX`],
+/// refused before anything copies it.
+pub fn page_answer(json: &str) -> Option<(String, String)> {
+    if json.len() > ANSWER_MAX {
+        return None;
+    }
+    let answer = serde_json::from_str::<String>(json).unwrap_or_default();
+    let (address, text) = answer.split_once('\n').unwrap_or_default();
+    Some((address.to_string(), text.to_string()))
+}
 
 /// `text` without what prints nothing (`handed_text`), without controls (`sanitize_paste`) and without the C1 range,
 /// which `sanitize_paste` leaves but for U+009B.
@@ -100,6 +120,41 @@ pub fn frame_selection(label: &str, text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_address_comes_first_and_is_read_with_nothing_a_page_can_replace() {
+        assert!(SELECTION_SCRIPT.contains("return location.href+'\\n'+"));
+    }
+
+    #[test]
+    fn only_the_first_line_of_an_answer_is_the_address() {
+        let json =
+            serde_json::to_string("https://evil.example/\nfirst\nhttps://bank.example/").unwrap();
+        assert_eq!(
+            page_answer(&json).unwrap(),
+            (
+                "https://evil.example/".to_string(),
+                "first\nhttps://bank.example/".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn an_answer_not_in_the_scripts_shape_holds_nothing() {
+        let nothing = (String::new(), String::new());
+        assert_eq!(page_answer("null").unwrap(), nothing);
+        assert_eq!(page_answer("{\"a\":1}").unwrap(), nothing);
+        assert_eq!(page_answer("\"no line break\"").unwrap(), nothing);
+    }
+
+    #[test]
+    fn the_longest_answer_the_script_can_give_is_read_and_a_longer_one_is_not() {
+        let text = "\u{1}".repeat(65536);
+        let longest = serde_json::to_string(&format!("https://a.example/\n{text}")).unwrap();
+        assert!(longest.len() <= ANSWER_MAX);
+        assert_eq!(page_answer(&longest).unwrap().1, text);
+        assert_eq!(page_answer(&"\"".repeat(ANSWER_MAX + 1)), None);
+    }
 
     #[test]
     fn a_selection_is_framed_as_a_quote_with_its_source() {

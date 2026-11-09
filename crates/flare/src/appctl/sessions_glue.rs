@@ -126,12 +126,10 @@ impl AppCtl {
         if self.front_id().as_deref() != Some(tab) {
             return;
         }
-        let Ok(json) = result else {
+        let Ok(text) = result else {
             self.ask_note(NOTE_PAGE_FAILED);
             return;
         };
-        // Anything but a string (a page that replaced `toString`) counts as no selection.
-        let text = serde_json::from_str::<String>(&json).unwrap_or_default();
         match frame_selection(label, &text) {
             Some(framed) => {
                 self.deliver_ask(tab, &framed);

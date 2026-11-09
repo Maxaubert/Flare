@@ -671,3 +671,11 @@ page's answer from an earlier document, a closed panel, or a tab no longer in fr
 `an_answer_from_before_a_navigation_is_dropped`, `a_question_box_on_screen_refuses_so_a_paste_cannot_answer_it`,
 `a_tab_with_no_agent_refuses_before_the_page_is_asked` and `a_line_of_the_page_cannot_pass_for_the_frame`. Source: issue #33 and
 `docs/superpowers/specs/2026-11-09-surfaces-later-design.md`.
+
+241. **"Ask agent" names the document its text came from, and a page's answer is bounded natively.** `t.url` and `t.doc` move at `NavigationStarting`,
+while the old page still shows and is what `ExecuteScript` runs in, so the frame's label must never come from the tab's address: `SELECTION_SCRIPT` returns
+`location.href`, one line break, then the text, and `WebCtl::selection_answered` labels with that first line (`location` is unforgeable and a URL has no
+line break, so the text cannot pass for the address). The script's own 65536 cut runs in the page's world, where a page can replace `slice` or
+`getSelection`, so `ask_agent::page_answer` refuses anything over `ANSWER_MAX` before it is parsed or copied, and the person sees the page-failed note. Held
+by `a_click_while_the_next_page_loads_names_the_page_the_text_came_from`, `an_answer_longer_than_the_script_could_give_is_refused_and_types_nothing`,
+`only_the_first_line_of_an_answer_is_the_address` and `the_address_comes_first_and_is_read_with_nothing_a_page_can_replace`. Source: review of issue #33, 2026-11-09.

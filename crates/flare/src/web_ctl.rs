@@ -196,7 +196,7 @@ pub enum WebOut {
         id: u64,
         result: Result<String, String>,
     },
-    /// The page answered "Ask agent" with its selection (the script's JSON), or why not. A page that navigated since
+    /// The page answered "Ask agent" with its selection (the text, already decoded), or why not. A page that navigated since
     /// the click says nothing at all.
     AskSelection {
         tab: String,
@@ -2552,17 +2552,24 @@ impl WebCtl {
         true
     }
 
-    /// The page answered a selection read. Only the document the person clicked on is believed.
+    /// The page answered a selection read. Only the document the person clicked on is believed, and the source is the
+    /// address that document gave with its text: `t.url` is already the next page's from the moment a navigation
+    /// starts, while the old page still shows and answers.
     fn selection_answered(
         &self,
         ask: SelectionAsk,
         result: Result<String, String>,
     ) -> Option<WebOut> {
         let t = self.tabs.get(&ask.tab).filter(|t| t.doc == ask.doc)?;
+        let (address, result) = match result.map(|json| crate::ask_agent::page_answer(&json)) {
+            Ok(Some((address, text))) => (address, Ok(text)),
+            Ok(None) => (String::new(), Err("the answer is too long".to_string())),
+            Err(why) => (String::new(), Err(why)),
+        };
         let label = if t.app_host.is_some() {
             "this page".to_string()
         } else {
-            flare_surfaces::web::host_label(&t.url)
+            flare_surfaces::web::host_label(&address)
         };
         Some(WebOut::AskSelection {
             tab: ask.tab,

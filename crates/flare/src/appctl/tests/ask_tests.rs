@@ -92,11 +92,11 @@ fn ask(f: &Fx) {
     f.pump();
 }
 
-/// The page answers the script `id` with `selection`.
+/// The loaded page answers the script `id` with `selection`, in the script's own shape.
 fn answer(f: &Fx, slot: &Slot, id: u64, selection: &str) {
     fake(slot).say(WebEvent::Script {
         id,
-        result: Ok(serde_json::to_string(selection).unwrap()),
+        result: Ok(serde_json::to_string(&format!("{PAGE}\n{selection}")).unwrap()),
     });
     f.pump();
 }
@@ -232,6 +232,43 @@ fn an_answer_from_before_a_navigation_is_dropped() {
 }
 
 #[test]
+fn a_click_while_the_next_page_loads_names_the_page_the_text_came_from() {
+    let (f, _h, shell) = live(Opts::default());
+    let slot = with_fake(&f);
+    let tab = claude(&f);
+    page(&f, &slot, &tab);
+    // The navigation has started and not committed: the old page is what shows, and what the script runs in.
+    fake(&slot).say(WebEvent::Loading {
+        tab: tab.clone(),
+        url: "https://bank.example/".into(),
+        nav: 2,
+    });
+    f.pump();
+    ask(&f);
+    let (id, _) = last_script(&slot).unwrap();
+    answer(&f, &slot, id, "the old page's words");
+    until_written(&shell, |w| !w.is_empty());
+    assert_eq!(
+        shell.written(),
+        b"About this from example.com: > the old page's words"
+    );
+}
+
+#[test]
+fn an_answer_longer_than_the_script_could_give_is_refused_and_types_nothing() {
+    let (f, _h, shell) = live(Opts::default());
+    let slot = with_fake(&f);
+    let tab = claude(&f);
+    page(&f, &slot, &tab);
+    ask(&f);
+    let (id, _) = last_script(&slot).unwrap();
+    // A page that replaced `String.prototype.slice` is not held by the script's own cut.
+    answer(&f, &slot, id, &"x".repeat(crate::ask_agent::ANSWER_MAX + 1));
+    assert_eq!(note(&f), NOTE_PAGE_FAILED);
+    assert!(shell.written().is_empty());
+}
+
+#[test]
 fn an_answer_for_a_panel_closed_since_the_click_is_dropped() {
     let (f, _h, shell) = live(Opts::default());
     let slot = with_fake(&f);
@@ -289,7 +326,7 @@ fn an_agent_gone_by_the_time_the_page_answers_is_refused() {
     // behind that for a panel the person opened.
     f.ctl
         .borrow_mut()
-        .ask_selection_done(&tab, "example.com", Ok("\"too late\"".to_string()));
+        .ask_selection_done(&tab, "example.com", Ok("too late".to_string()));
     assert_eq!(note(&f), NOTE_NO_AGENT);
     assert!(shell.written().is_empty());
 }

@@ -2094,8 +2094,10 @@ only once no session is working. How to stage: `docs/shipping.md`, "Installing a
 - **What is sent.** Web page: `window.getSelection().toString()`, framed; no selection is a note and nothing typed. Text or image panel: the file's
   path, quoted for the tab's shell. Handed-over text has no file and says so. Terminal grid: the selection, framed; the selection is then let go.
 - **The frame.** `About this from <label>:` then `> ` per line, at most 4 KB with `> [cut]`. The label is the host or file name, cleaned and capped at
-  64 characters; a page Flare made itself reads "this page".
-- **Refusals.** A short note over the terminal for 4 s: no agent, a question box up, no selection, a page that did not answer, a path that cannot be typed.
+  64 characters; a page Flare made itself reads "this page". A web page's host is the one its document gave with the text (`location.href`), so a click
+  while the next page loads still names the page that is showing.
+- **Refusals.** A short note over the terminal for 4 s: no agent, a question box up, no selection, a page that did not answer or answered with more
+  than the script can give (about 400 KB, checked natively), a path that cannot be typed.
 - **Narrow panels.** Below 380 px the button is its glyph alone; below 200 px it is gone.
 - **Not in this version.** A row in the page's own right-click menu, selection inside the Text panel, any auto-submit, any ctl, MCP or plugin way in.
 - **Tests.** `ask_agent::tests` (hostile text), `appctl::tests::ask_tests` (fake shell and fake browser), `ui_tests::panel` (`ask_agent_*`).
