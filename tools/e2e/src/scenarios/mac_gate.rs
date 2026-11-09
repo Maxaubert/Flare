@@ -25,6 +25,7 @@ pub const GATED: &[(&str, &str)] = &[
     ("mcpDiagram", WEB),
     ("pluginBrand", WEB),
     ("modsSample", WEB),
+    ("pluginFill", WEB),
     ("devPreview", WEB),
     ("updateWindow", UPDATE),
     ("updateGuard", UPDATE),

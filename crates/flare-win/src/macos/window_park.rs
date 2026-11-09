@@ -7,8 +7,10 @@
 //! The handle is the window's `NSView` as an integer (raw-window-handle's `AppKit` handle).
 
 use objc2::MainThreadMarker;
+use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
+use objc2::{Message, sel};
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
-use objc2_foundation::NSPoint;
+use objc2_foundation::{NSPoint, NSRect};
 
 /// Where a parked window sits: far outside every monitor's rectangle.
 const PARK_AT: i32 = -32000;
@@ -18,8 +20,72 @@ pub fn parked_origin() -> (i32, i32) {
     (PARK_AT, PARK_AT)
 }
 
-/// Makes the app an accessory and moves the window to the parking spot. Never activates the app,
-/// never orders the window front, never resizes it. Nothing happens off the main thread.
+/// `constrainFrameRect:toScreen:` that keeps the frame it is given: a parked window stays where it was
+/// put instead of being pulled back until a strip of it is on a screen (rule 334).
+extern "C-unwind" fn keep_frame(
+    _this: *mut AnyObject,
+    _cmd: Sel,
+    frame: NSRect,
+    _screen: *mut AnyObject,
+) -> NSRect {
+    frame
+}
+
+/// The implementation `allow_off_screen` puts in.
+fn keep_frame_imp() -> Imp {
+    // SAFETY: an `extern "C-unwind"` function pointer as the runtime's untyped implementation pointer; the
+    // type encoding given with it (`CONSTRAIN_TYPES`) says how the runtime calls it.
+    unsafe {
+        std::mem::transmute::<
+            extern "C-unwind" fn(*mut AnyObject, Sel, NSRect, *mut AnyObject) -> NSRect,
+            Imp,
+        >(keep_frame)
+    }
+}
+
+/// The type encoding of `- (NSRect)constrainFrameRect:(NSRect)frame toScreen:(NSScreen *)screen`.
+const CONSTRAIN_TYPES: &std::ffi::CStr =
+    c"{CGRect={CGPoint=dd}{CGSize=dd}}@:{CGRect={CGPoint=dd}{CGSize=dd}}@";
+
+/// macOS under `--e2e` only (rule 334): `class` (the parked window's own class, winit's window
+/// subclass) stops constraining its frame to a screen. AppKit keeps a titled window on a screen when it
+/// is ordered in or moved, so without this the parking spot became a 40 px strip at a screen's edge
+/// (seen on the macOS runner: (-984, 673) to (40, 1347) on a 1024 by 768 display). Only this class
+/// changes; NSWindow and every other window keep AppKit's rule.
+pub fn allow_off_screen(class: &AnyClass) {
+    let cls: *const AnyClass = class;
+    // SAFETY: replacing (or adding, on this class only) an instance method with a function of the
+    // signature its type encoding states; AppKit calls it on the main thread only.
+    unsafe {
+        objc2::ffi::class_replaceMethod(
+            cls.cast_mut(),
+            sel!(constrainFrameRect:toScreen:),
+            keep_frame_imp(),
+            CONSTRAIN_TYPES.as_ptr(),
+        );
+    }
+}
+
+/// Whether `class` keeps a frame off every screen (its `constrainFrameRect:toScreen:` is ours).
+pub fn allows_off_screen(class: &AnyClass) -> bool {
+    class
+        .instance_method(sel!(constrainFrameRect:toScreen:))
+        .is_some_and(|m| std::ptr::fn_addr_eq(m.implementation(), keep_frame_imp()))
+}
+
+/// macOS under `--e2e`, before the first window is made (rule 334): no window of the run is ever pulled
+/// onto a screen, so the main window is born at the parking spot and stays there from its first order-in
+/// (the park after `show()` would come after AppKit had already moved it). Every window of the process
+/// inherits it from `NSWindow`; the real app never calls this.
+pub fn keep_windows_off_screen() {
+    if let Some(window) = AnyClass::get(c"NSWindow") {
+        allow_off_screen(window);
+    }
+}
+
+/// Makes the app an accessory and moves the window to the parking spot, its class first told to keep
+/// the frame off every screen (rule 334). Never activates the app, never orders the window front, never
+/// resizes it. Nothing happens off the main thread.
 pub fn park(view: isize) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
@@ -29,6 +95,8 @@ pub fn park(view: isize) {
     };
     NSApplication::sharedApplication(mtm)
         .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    let obj: &AnyObject = window.as_ref();
+    allow_off_screen(obj.class());
     window.setFrameOrigin(NSPoint::new(f64::from(PARK_AT), f64::from(PARK_AT)));
 }
 
@@ -148,6 +216,31 @@ mod tests {
             ..safe()
         };
         assert_eq!(r.problems().len(), 2);
+    }
+
+    // Rule 334: the parked window's class keeps the frame it is given, and only that class changes.
+    #[test]
+    fn a_parked_class_keeps_its_frame_off_every_screen_and_nswindow_keeps_the_rule() {
+        use objc2::runtime::ClassBuilder;
+        let window = AnyClass::get(c"NSWindow").expect("AppKit is linked");
+        let class = ClassBuilder::new(c"FlareParkTestWindow", window)
+            .expect("a new class name")
+            .register();
+        assert!(!allows_off_screen(class));
+        allow_off_screen(class);
+        assert!(allows_off_screen(class));
+        assert!(!allows_off_screen(window), "NSWindow itself is untouched");
+        let frame = NSRect::new(
+            NSPoint::new(-32000.0, -32000.0),
+            objc2_foundation::NSSize::new(1000.0, 640.0),
+        );
+        let kept = keep_frame(
+            std::ptr::null_mut(),
+            sel!(constrainFrameRect:toScreen:),
+            frame,
+            std::ptr::null_mut(),
+        );
+        assert_eq!(kept, frame);
     }
 
     #[test]

@@ -113,7 +113,7 @@ jobs:
           set -o pipefail
           target/release/flare-e2e --exe target/release/flare --shots e2e-out/shots --keep $E2E_FILTER 2>&1 | tee e2e-out/e2e.log
         env:
-          E2E_FILTER: spawn hookSmoke cwdLabel theme findKey panelImage ctlChannel
+          E2E_FILTER: ""
       - name: Collect the worlds' logs
         if: failure()
         shell: bash
