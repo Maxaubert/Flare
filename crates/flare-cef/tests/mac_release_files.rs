@@ -3,11 +3,15 @@
 
 use std::path::PathBuf;
 
+/// The file with LF line ends: a Windows checkout (core.autocrlf) holds the workflow and scripts with CRLF, and the
+/// checks below look for whole lines.
 fn read(rel: &str) -> String {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(rel);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+    std::fs::read_to_string(&p)
+        .unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+        .replace("\r\n", "\n")
 }
 
 const WF: &str = ".github/workflows/macos-app.yml";
