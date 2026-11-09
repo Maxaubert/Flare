@@ -630,3 +630,12 @@ Native: `background.rs` (`looks_like_background_work`). Held by `a_dev_server_in
 `std::os::windows` imports, Windows paths and Windows tools live in Windows modules with a macOS counterpart or stub.
 Held by the `macos` CI job (cargo check, clippy and nextest on macos-latest). Source: macOS port plan
 (`docs/superpowers/specs/2026-11-08-macos-port.md`, owner, 2026-11-08).
+228. **A web page keeps its width while the splitter beside it is held.** A new width makes the page lay itself out again,
+so a resize at every pointer step flickers. During the drag the left edge follows the slot and the width stands still; the
+page takes the slot's exact size after 120 ms without a change and when the grab ends for any reason (release, cancel, tab
+change, closed panel, full screen). A window resize is not held. Native: `flare_surfaces::web::DragHold`, `web_ctl.rs`
+(`drag_rect`). Held by `a_held_splitter_moves_the_pages_edge_but_never_its_width_until_it_is_let_go`,
+`a_pause_in_a_splitter_drag_fits_the_page_once_and_the_next_step_holds_again`,
+`a_splitter_grab_that_goes_away_leaves_the_page_on_the_slot`,
+`a_panel_closed_during_a_splitter_drag_comes_back_at_the_slots_size` and
+`a_window_resize_moves_the_page_at_every_step_with_no_hold`. Source: the note left in `docs/surfaces/lessons.md` Round 10.
