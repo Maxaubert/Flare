@@ -1094,6 +1094,9 @@ fn vertical_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     // PT: run.mjs:2318. Slid out, a line from the bar down (not up into the bar), the page's own line
     // along the top, and no shadow beside it.
     let slid = snap(ctx, app, "slid-line");
+    // The terminal's own ground, not a pixel sampled inside it: a sample can land on a prompt's text
+    // (the Mac world's longer path reached it, rule 346).
+    let term_ground = token(&side(app), "ground");
     let (x0, y0) = (dv(nav_w, k), dv(BAR_H, k));
     let slid_line = slid.as_ref().is_some_and(|sn| {
         let down = differs(
@@ -1105,8 +1108,7 @@ fn vertical_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
             sn.at(x0 + dv(100.0, k), y0),
             sn.at(x0 + dv(100.0, k), y0 + dv(3.0, k)),
         );
-        let inside = sn.at(x0 + dv(60.0, k), y0 + dv(60.0, k));
-        let no_shadow = near(sn.at(x0 + dv(5.0, k), y0 + dv(300.0, k)), inside, 12);
+        let no_shadow = near(sn.at(x0 + dv(5.0, k), y0 + dv(300.0, k)), term_ground, 12);
         down && not_up && top && no_shadow
     });
     ctx.ok(

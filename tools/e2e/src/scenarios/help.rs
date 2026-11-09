@@ -1454,8 +1454,26 @@ fn help_b(ctx: &mut Ctx, app: &mut App, started: Instant) -> Result<(), String> 
     let shown: String = {
         let t = term_text(app);
         let tail: Vec<&str> = t.lines().filter(|l| !l.trim().is_empty()).collect();
-        tail[tail.len().saturating_sub(4)..].join(" | ")
+        let last = tail.last().copied().unwrap_or("");
+        // The code points too: the Mac runner showed bytes no key sends (^E, ^O, invalid UTF-8).
+        let points: Vec<String> = last
+            .chars()
+            .rev()
+            .take(48)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|c| format!("{:x}", u32::from(c)))
+            .collect();
+        format!(
+            "{} [last line's code points: {}]",
+            tail[tail.len().saturating_sub(4)..].join(" | "),
+            points.join(" ")
+        )
     };
+    if !landed {
+        let _ = ctx.shot(app, "help-new-shell");
+    }
     check!(
         ctx,
         landed,
