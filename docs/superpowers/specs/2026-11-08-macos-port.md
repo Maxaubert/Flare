@@ -97,7 +97,10 @@ questions to the terminal, so spares stay on for pwsh (the first fix had stopped
 matches only gated scenarios fails instead of passing on nothing; the Mac-only waits are conditions under
 `cfg!(target_os = "macos")`, so the Windows path of every scenario is as it was (the owner's Windows suite still has
 to run the branch). Left, gated on the Mac with "Mac port not written": the 12 web scenarios and the 4 update
-scenarios (phase 8), the 5 dictation scenarios (phase 7) and the 4 that use the `.cmd` Claude stand-in.
+scenarios (phase 8), the 5 dictation scenarios (phase 7) and the 4 that use the `.cmd` Claude stand-in. Run 42669066383: `e2e-macos` green (72 run, 29
+gated), Windows `check` green, `macos` red only on the two `flare-web::cef_macos` tests that fail on the phase 5
+branch too; `flood` and `oracle_notes` passed in that run and in 42663511664. Run 42669105200 (filter `dictation`,
+all gated) failed as rule 349 wants.
 
 ## Known risks
 
