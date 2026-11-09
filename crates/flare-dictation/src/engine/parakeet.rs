@@ -89,6 +89,8 @@ pub fn run(spec: &Spec<'_>, job: &Job, register: &dyn Fn(&Arc<Pass>)) -> Answer 
         .stderr(Stdio::piped());
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
+    // macOS: a process group of its own, so the reaper ends the child and all it starts (rule 308).
+    crate::job::isolate(&mut cmd);
     for (k, v) in spec.env {
         cmd.env(k, v);
     }
@@ -115,6 +117,7 @@ pub fn run(spec: &Spec<'_>, job: &Job, register: &dyn Fn(&Arc<Pass>)) -> Answer 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let pid = child.id();
+    let member = job.member();
     let pass = Arc::new(Pass {
         child: Mutex::new(child),
         pid,
@@ -134,7 +137,7 @@ pub fn run(spec: &Spec<'_>, job: &Job, register: &dyn Fn(&Arc<Pass>)) -> Answer 
 
     let deadline = Instant::now() + spec.timeout;
     let status = loop {
-        let polled = lock(&pass.child).try_wait();
+        let polled = member.try_wait(&mut lock(&pass.child));
         match polled {
             Ok(Some(status)) => break status.code(),
             Ok(None) => {}
@@ -142,7 +145,7 @@ pub fn run(spec: &Spec<'_>, job: &Job, register: &dyn Fn(&Arc<Pass>)) -> Answer 
         }
         if Instant::now() >= deadline {
             pass.kill();
-            let _ = lock(&pass.child).wait();
+            let _ = member.wait(&mut lock(&pass.child));
             return Answer::Failed {
                 detail: format!("no answer after {} ms", spec.timeout.as_millis()),
                 died: false,

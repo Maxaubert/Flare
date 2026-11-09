@@ -658,6 +658,71 @@ pub fn format_hotkey(h: &Hotkey) -> String {
     parts.join("+")
 }
 
+/// The system a binding is named and checked for. The stored binding is the same on both (W3C codes by position):
+/// Meta is the Windows key on a PC and Command on a Mac, Alt is Option (AltGr's key, Right Alt, is Right Option).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyOs {
+    Windows,
+    Mac,
+}
+
+impl KeyOs {
+    /// The system this build runs on.
+    pub const HOST: KeyOs = if cfg!(target_os = "macos") {
+        KeyOs::Mac
+    } else {
+        KeyOs::Windows
+    };
+}
+
+/// A modifier's side by its Mac name.
+fn mac_side_name(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "ControlLeft" => "Left Control",
+        "ControlRight" => "Right Control",
+        "AltLeft" => "Left Option",
+        "AltRight" => "Right Option",
+        "ShiftLeft" => "Left Shift",
+        "ShiftRight" => "Right Shift",
+        "MetaLeft" => "Left Command",
+        "MetaRight" => "Right Command",
+        _ => return None,
+    })
+}
+
+/// What Settings shows for a binding on `os`. Windows: `format_hotkey`. Mac: a bare modifier by its side's name
+/// ("Right Option"), a chord in the Mac's symbols and order, Control Option Shift Command (Control+Command for the
+/// default, Control+Shift+D), as the phase 3 key table writes its labels.
+pub fn format_hotkey_on(os: KeyOs, h: &Hotkey) -> String {
+    if os == KeyOs::Windows {
+        return format_hotkey(h);
+    }
+    if is_bare_modifier(h) {
+        return mac_side_name(&h.code).unwrap_or(&h.code).to_string();
+    }
+    // Ctrl, Alt, Shift, Win in `chord_set`'s order; the Mac writes Control, Option, Shift, Command.
+    let set = if is_solo(h) {
+        chord_set(h)
+    } else {
+        FLAGS.map(|f| hotkey_flag(h, f))
+    };
+    let mut out: String = ["\u{2303}", "\u{2325}", "\u{21e7}", "\u{2318}"]
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| set[*i])
+        .map(|(_, s)| *s)
+        .collect();
+    if !is_solo(h) {
+        out.push_str(&key_name(&h.code));
+    }
+    out
+}
+
+/// `format_hotkey_on` for the system this build runs on.
+pub fn format_hotkey_here(h: &Hotkey) -> String {
+    format_hotkey_on(KeyOs::HOST, h)
+}
+
 /// What this key event would be as a binding, for the rebind control.
 ///
 /// A modifier's own event is that modifier BARE, its flags dropped: its own flag is the key itself,
@@ -720,6 +785,81 @@ pub fn usable_hotkey(h: &Hotkey, app_keys: &[Hotkey]) -> bool {
         return false;
     }
     true
+}
+
+/// `usable_hotkey` for `os`. Windows: `usable_hotkey`. Mac (the phase 3 Cmd keymap): Option with a key types a
+/// character there (Option+2 is @ on a Norwegian Mac), so a key with neither Control nor Command must be a function
+/// key; Command takes Ctrl's place for the app's chords and the system's own (Cmd+C V W T F, Cmd+Q H M A N, Cmd+Tab,
+/// Cmd+Space, Cmd+` and Cmd+, and the digits, with or without Shift, so Cmd+Shift+3 stays the screenshot); Control
+/// with a key still reaches the shell, as on Windows; and Pause, Scroll Lock and F21 to F24 are no key a Mac has.
+pub fn usable_hotkey_on(os: KeyOs, h: &Hotkey, app_keys: &[Hotkey]) -> bool {
+    if os == KeyOs::Windows {
+        return usable_hotkey(h, app_keys);
+    }
+    if is_solo(h) {
+        return true;
+    }
+    if app_keys.iter().any(|k| k == h) {
+        return false;
+    }
+    if matches!(h.code.as_str(), "Pause" | "ScrollLock") {
+        return false;
+    }
+    if is_function_key(&h.code) {
+        return h.code[1..].parse::<u32>().is_ok_and(|n| n <= 20);
+    }
+    if !h.ctrl && !h.meta {
+        return false;
+    }
+    if h.meta && !h.ctrl && !h.alt && is_mac_command_key(&h.code) {
+        return false;
+    }
+    if h.ctrl && !h.alt && !h.meta && is_terminal_chord_key(&h.code) {
+        return false;
+    }
+    // The system's own Control chords win over a Carbon hot key: Ctrl+Cmd+Q locks the screen, Ctrl+Cmd+F is full
+    // screen, Ctrl+Cmd+Space the emoji picker, Ctrl+arrows are Spaces, Mission Control and App Expose (rule 317).
+    if h.ctrl && !h.alt && !h.shift {
+        if h.meta && matches!(h.code.as_str(), "KeyQ" | "KeyF" | "Space") {
+            return false;
+        }
+        if !h.meta
+            && matches!(
+                h.code.as_str(),
+                "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown"
+            )
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// `usable_hotkey_on` for the system this build runs on.
+pub fn usable_hotkey_here(h: &Hotkey, app_keys: &[Hotkey]) -> bool {
+    usable_hotkey_on(KeyOs::HOST, h, app_keys)
+}
+
+/// The keys whose Command chord a Mac, or Flare on a Mac, already uses.
+fn is_mac_command_key(code: &str) -> bool {
+    is_terminal_chord_key(code)
+        || matches!(
+            code,
+            "KeyQ"
+                | "KeyH"
+                | "KeyM"
+                | "KeyA"
+                | "KeyN"
+                | "KeyK"
+                | "KeyB"
+                | "Space"
+                | "Backquote"
+                | "BracketLeft"
+                | "BracketRight"
+                | "Equal"
+                | "Minus"
+                | "Digit0"
+        )
 }
 
 /// `F1` to `F24`.
@@ -1466,6 +1606,82 @@ mod tests {
         assert_eq!(format_hotkey(&chord_kd()), "Ctrl+Shift+D");
         assert_eq!(format_hotkey(&hk("Digit2", "ca")), "Ctrl+Alt+2");
         assert_eq!(format_hotkey(&hk("F9", "m")), "Win+F9");
+    }
+
+    #[test]
+    fn on_a_mac_a_binding_is_named_with_the_macs_keys_and_symbols() {
+        let mac = |h: &Hotkey| format_hotkey_on(KeyOs::Mac, h);
+        assert_eq!(
+            mac(&right_alt()),
+            "Right Option",
+            "AltGr's key is Right Option"
+        );
+        assert_eq!(mac(&hk("MetaLeft", "")), "Left Command");
+        assert_eq!(mac(&hk("ControlRight", "")), "Right Control");
+        assert_eq!(
+            mac(&default_hotkey()),
+            "\u{2303}\u{2318}",
+            "Ctrl+Win is Control+Command"
+        );
+        assert_eq!(mac(&chord_kd()), "\u{2303}\u{21e7}D");
+        assert_eq!(mac(&hk("Digit2", "ca")), "\u{2303}\u{2325}2");
+        assert_eq!(mac(&hk("F9", "m")), "\u{2318}F9");
+        assert_eq!(mac(&f9()), "F9");
+        // Windows keeps its words.
+        assert_eq!(
+            format_hotkey_on(KeyOs::Windows, &default_hotkey()),
+            "Ctrl+Win"
+        );
+        assert_eq!(format_hotkey_on(KeyOs::Windows, &right_alt()), "Right Alt");
+    }
+
+    #[test]
+    fn on_a_mac_a_key_that_types_or_a_command_chord_the_mac_owns_is_refused() {
+        let ok = |h: &Hotkey| usable_hotkey_on(KeyOs::Mac, h, &[]);
+        assert!(ok(&default_hotkey()));
+        assert!(ok(&right_alt()));
+        assert!(ok(&f9()));
+        assert!(ok(&chord_kd()), "Control+Shift+D");
+        assert!(ok(&hk("KeyD", "m")), "Command+D");
+        assert!(ok(&hk("KeyD", "ma")), "Option+Command+D");
+        assert!(
+            !ok(&hk("Digit2", "a")),
+            "Option+2 types @ on a Norwegian Mac"
+        );
+        assert!(!ok(&hk("KeyD", "a")), "Option+D types a character");
+        for code in [
+            "KeyC", "KeyV", "KeyT", "KeyW", "KeyQ", "KeyH", "Space", "Tab", "Comma", "Digit3",
+        ] {
+            assert!(!ok(&hk(code, "m")), "Command+{code}");
+        }
+        assert!(
+            !ok(&hk("Digit3", "ms")),
+            "Command+Shift+3 is the screenshot"
+        );
+        assert!(
+            !ok(&hk("KeyC", "c")),
+            "Control+C stays the shell's interrupt"
+        );
+        // The system's Control chords: Lock Screen, full screen, the emoji picker, Spaces and Mission Control.
+        for code in ["KeyQ", "KeyF", "Space"] {
+            assert!(!ok(&hk(code, "cm")), "Control+Command+{code}");
+        }
+        for code in ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"] {
+            assert!(!ok(&hk(code, "c")), "Control+{code}");
+        }
+        assert!(
+            ok(&hk("KeyQ", "cms")),
+            "Control+Shift+Command+Q is not the system's"
+        );
+        assert!(ok(&hk("ArrowUp", "cs")), "Control+Shift+Up neither");
+        assert!(ok(&hk("KeyK", "cm")), "Control+Command+K is free");
+        assert!(!ok(&hk("Pause", "")), "a Mac has no Pause key");
+        assert!(!ok(&hk("ScrollLock", "c")));
+        assert!(!ok(&hk("F21", "")));
+        assert!(ok(&hk("F20", "")));
+        // Windows is unchanged: Alt+Space and Pause are fine there.
+        assert!(usable_hotkey_on(KeyOs::Windows, &hk("Space", "a"), &[]));
+        assert!(usable_hotkey_on(KeyOs::Windows, &hk("Pause", ""), &[]));
     }
 
     #[test]

@@ -13,8 +13,6 @@
 //! stdout: `ready` once the model is loaded; per pass `ok <base64 of the UTF-8 text>` or `err <why>`.
 //!         Nothing else is ever written there by this program.
 
-// Off Windows the library glue waits for phase 7 of the port plan.
-#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -362,11 +360,108 @@ fn load(dir: &Path, model: &str, gpu: bool, threads: i32) -> Result<Loaded, Load
     ))
 }
 
-/// macOS: phase 7 of the port plan (the Parakeet library built for Metal). Nothing loads until then.
+/// macOS: the one library in `names` that is `<stem>.dylib` or `<stem>.<version>.dylib` (the build keeps the
+/// versioned name the binaries link to, `tools/build-whisper-macos.sh`). `libggml` never matches
+/// `libggml-base`. The shortest such name wins, so a stray second copy cannot be picked by accident of order.
 #[cfg(not(windows))]
-fn load(_dir: &Path, _model: &str, _gpu: bool, _threads: i32) -> Result<Loaded, LoadError> {
-    Err(LoadError::Other(
-        "the Parakeet host is not built on this platform yet".into(),
+fn pick_lib<'a>(names: &'a [String], stem: &str) -> Option<&'a str> {
+    names
+        .iter()
+        .filter(|n| {
+            n.strip_prefix(stem).is_some_and(|rest| {
+                rest == ".dylib"
+                    || rest.strip_prefix('.').is_some_and(|v| {
+                        v.strip_suffix(".dylib").is_some_and(|v| {
+                            !v.is_empty()
+                                && v.split('.').all(|p| p.bytes().all(|b| b.is_ascii_digit()))
+                        })
+                    })
+            })
+        })
+        .min_by_key(|n| (n.len(), n.as_str()))
+        .map(String::as_str)
+}
+
+/// macOS: loads `libggml` then `libparakeet` from `dir` by full path (each finds the other by its
+/// `@loader_path` rpath), then the backends (Metal is linked into the build) and the model. The model path is
+/// UTF-8, which is what the C runtime opens on a Mac.
+#[cfg(not(windows))]
+fn load(dir: &Path, model: &str, gpu: bool, threads: i32) -> Result<Loaded, LoadError> {
+    let other = |s: String| LoadError::Other(s);
+    let names: Vec<String> = std::fs::read_dir(dir)
+        .map_err(|e| other(format!("the engine folder cannot be read: {e}")))?
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    let ggml_name =
+        pick_lib(&names, "libggml").ok_or_else(|| other("libggml is missing".to_string()))?;
+    let lib_name = pick_lib(&names, "libparakeet")
+        .ok_or_else(|| other("libparakeet is missing".to_string()))?;
+    // SAFETY: loading the engine's own libraries by full path; their initialisers are the engine's.
+    let ggml = unsafe { libloading::Library::new(dir.join(ggml_name)) }
+        .map_err(|e| other(format!("{ggml_name} did not load: {e}")))?;
+    // SAFETY: as above.
+    let lib = unsafe { libloading::Library::new(dir.join(lib_name)) }
+        .map_err(|e| other(format!("{lib_name} did not load: {e}")))?;
+    macro_rules! sym {
+        ($lib:expr, $name:literal, $ty:ty) => {
+            // SAFETY: the symbol is looked up by the name the engine exports with the signature of
+            // parakeet.h / ggml-backend.h; the copied function pointer is used only while the library
+            // handles, returned alongside, are alive.
+            *unsafe { $lib.get::<$ty>(concat!($name, "\0").as_bytes()) }
+                .map_err(|e| other(format!("{} is missing: {e}", $name)))?
+        };
+    }
+    let log_set = sym!(lib, "parakeet_log_set", LogSetFn);
+    let load_all = sym!(ggml, "ggml_backend_load_all", LoadAllFn);
+    let init = sym!(lib, "parakeet_init_from_file_with_params", InitFn);
+    let default_params = sym!(lib, "parakeet_full_default_params_by_ref", DefaultParamsFn);
+    let free_params = sym!(lib, "parakeet_free_params", FreeParamsFn);
+    let full = sym!(lib, "parakeet_full", FullFn);
+    let n_segments = sym!(lib, "parakeet_full_n_segments", NSegmentsFn);
+    let segment_text = sym!(lib, "parakeet_full_get_segment_text", SegmentTextFn);
+
+    // SAFETY: the log callback is an `extern "C"` function that does nothing; load_all takes nothing.
+    unsafe {
+        log_set(Some(quiet), std::ptr::null_mut());
+        load_all();
+    }
+    let path = CString::new(model.as_bytes().to_vec())
+        .map_err(|_| other("the model path cannot be used".to_string()))?;
+    // SAFETY: `path` is a live NUL-terminated string; the params are passed by value.
+    let ctx = unsafe {
+        init(
+            path.as_ptr(),
+            CtxParams {
+                use_gpu: u8::from(gpu),
+                gpu_device: 0,
+            },
+        )
+    };
+    if ctx.is_null() {
+        return Err(LoadError::Model);
+    }
+    // SAFETY: strategy 0 (greedy) is valid; the returned pointer is the library's default set, read once
+    // by value and then freed with the library's own free.
+    let mut params = unsafe {
+        let p = default_params(0);
+        if p.is_null() {
+            return Err(other("the engine has no default parameters".to_string()));
+        }
+        let copy = std::ptr::read(p);
+        free_params(p);
+        copy
+    };
+    params.n_threads = threads;
+    Ok((
+        Parakeet {
+            ctx,
+            params,
+            full,
+            n_segments,
+            segment_text,
+        },
+        [ggml, lib],
     ))
 }
 
@@ -433,6 +528,40 @@ mod tests {
 
     use super::*;
     use std::mem::{align_of, offset_of, size_of};
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_mac_host_picks_each_library_by_its_own_stem_and_version() {
+        let names: Vec<String> = [
+            "libggml-base.0.dylib",
+            "libggml-metal.0.dylib",
+            "libggml.0.dylib",
+            "libparakeet.1.dylib",
+            "libwhisper.1.dylib",
+            "parakeet-cli",
+            "libggml.0.dylib.bak",
+            "libggmlx.dylib",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        assert_eq!(pick_lib(&names, "libggml"), Some("libggml.0.dylib"));
+        assert_eq!(pick_lib(&names, "libparakeet"), Some("libparakeet.1.dylib"));
+        let plain = vec!["libggml.dylib".to_string(), "libggml.0.dylib".to_string()];
+        assert_eq!(pick_lib(&plain, "libggml"), Some("libggml.dylib"));
+        assert_eq!(pick_lib(&[], "libggml"), None);
+        assert_eq!(pick_lib(&["libggml..dylib".to_string()], "libggml"), None);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_mac_host_says_what_is_missing_from_an_empty_engine_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        match load(dir.path(), "/no/model.bin", true, 2) {
+            Err(LoadError::Other(why)) => assert!(why.contains("libggml is missing"), "{why}"),
+            _ => panic!("an empty folder loaded"),
+        }
+    }
 
     /// The layout the script's C# declares for `parakeet_full_params` on x64, worked out: four ints at 0, 4,
     /// 8, 12; `no_context` is a one-byte bool (`UnmanagedType.I1`) at 16; `audio_ctx` is an int, so the

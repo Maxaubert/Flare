@@ -11,7 +11,7 @@
 //! The first copy started owns the key, a later one reports `Waiting` and takes over within the 500 ms poll
 //! when the first lets go.
 
-// Off Windows the hook thread waits for phase 7 of the port plan (a CGEventTap); its imports go unused there.
+// Off Windows the hook is `macos/keyhook.rs` (port phase 7); some of the Windows half's imports go unused there.
 #![cfg_attr(not(windows), allow(unused_imports))]
 use crate::keyfeed::{code_of_vk, HookEvent};
 use std::collections::HashSet;
@@ -735,32 +735,29 @@ fn send_key(vk: u16, up: bool) {
         SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
     }
 }
-/// The keyboard hook off Windows. macOS: phase 7 of the port plan (a CGEventTap). Until then the
-/// thread is never started: `alive` is false from the start, which the owner reads as a failed hook.
+/// The dictation key from any app on macOS (port phase 7): Carbon hot keys for a chord, a listen-only event tap
+/// for a modifier key behind Input Monitoring. See `macos/keyhook.rs`.
 #[cfg(not(windows))]
-pub struct KeyHook {
-    _private: (),
-}
-
+#[path = "macos/keyhook.rs"]
+pub mod mac;
 #[cfg(not(windows))]
-impl KeyHook {
-    pub fn start(_lock_dir: PathBuf, _tx: Sender<HookEvent>) -> Self {
-        KeyHook { _private: () }
+pub use mac::{is_busy, take_lock, KeyHook};
+
+/// What stops "Dictate from any app" for this binding on this system, in Settings' words, or None. Windows: always
+/// None (the hook needs no permission). macOS: a modifier key without Input Monitoring, or a key a Mac lacks.
+/// Reads the permission without asking.
+pub fn anywhere_problem(h: &crate::hotkey::Hotkey) -> Option<&'static str> {
+    #[cfg(windows)]
+    {
+        let _ = h;
+        None
     }
-
-    pub fn keys(&self, _vks: Vec<u16>) {}
-
-    pub fn mask(&self, _on: bool) {}
-
-    pub fn pick(&self, _on: bool) {}
-
-    pub fn rec(&self, _on: bool) {}
-
-    pub fn alive(&self) -> bool {
-        false
+    #[cfg(not(windows))]
+    {
+        let keys = crate::keyfeed::keys_for(h);
+        let listen = keys.is_some() && mac::listen_allowed();
+        mac::problem_for(keys.as_deref(), listen)
     }
-
-    pub fn stop(self) {}
 }
 
 #[cfg(test)]

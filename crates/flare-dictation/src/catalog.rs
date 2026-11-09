@@ -73,6 +73,32 @@ pub const ENGINE: EnginePin = EnginePin {
     ],
 };
 
+/// The engine a Mac bundles (port phase 7, rule 311): built from whisper.cpp's source at one commit, because the
+/// release Windows takes its zip from carries no macOS program. Pinned by the commit and its tree hash
+/// (`tools/build-whisper-macos.sh` refuses any other source); Metal is built in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourcePin {
+    pub repo: &'static str,
+    /// The release tag the Windows engine is from: the same sources on both systems.
+    pub tag: &'static str,
+    pub commit: &'static str,
+    pub tree: &'static str,
+    /// The programs the engine folder holds (the libraries they link to come beside them).
+    pub programs: &'static [&'static str],
+}
+
+/// The macOS engine: the commit tag b5130 names, the tag the Windows zip is from.
+pub const ENGINE_MACOS: SourcePin = SourcePin {
+    repo: "https://github.com/ggml-org/whisper.cpp.git",
+    tag: "b5130",
+    commit: "927cfce34f31707e17f2bff35c349632fb9e2c3a",
+    tree: "db312954f67ca741569ac3a889a9ff329e51d952",
+    programs: &["whisper-server", "parakeet-cli"],
+};
+
+/// Whether the GPU pack is offered at all: on Windows only. A Mac's bundled engine is built with Metal (rule 309).
+pub const PACK_OFFERED: bool = cfg!(windows);
+
 /// The GPU pack for every NVIDIA card (one pack, from the same release as the engine).
 pub const GPU_PACK: PackEntry = PackEntry {
     id: "gpu-pack",
@@ -216,10 +242,11 @@ pub fn visible_models() -> Vec<&'static ModelEntry> {
     MODELS.iter().filter(|m| !m.test_only).collect()
 }
 
-/// The model id to offer and to mark Recommended: `base` on a CPU, `large-v3-turbo` once the pack is
-/// INSTALLED (not merely an NVIDIA card present).
-pub fn recommended_model(pack_installed: bool) -> &'static str {
-    if pack_installed {
+/// The model id to offer and to mark Recommended: `base` on a CPU, `large-v3-turbo` once a GPU engine is
+/// there: the pack INSTALLED on Windows (not merely an NVIDIA card present), Metal on a Mac
+/// (`gpu::gpu_ready`, rule 309).
+pub fn recommended_model(gpu_ready: bool) -> &'static str {
+    if gpu_ready {
         "large-v3-turbo"
     } else {
         "base"
@@ -597,6 +624,20 @@ mod tests {
         for f in ENGINE.files {
             assert!(!f.contains('\\') && !f.contains('/'), "{f}");
         }
+    }
+
+    #[test]
+    fn the_mac_engine_is_the_same_tag_built_from_a_pinned_commit_and_tree() {
+        assert_eq!(ENGINE_MACOS.tag, ENGINE.tag);
+        assert!(is_hex(ENGINE_MACOS.commit, 40));
+        assert!(is_hex(ENGINE_MACOS.tree, 40));
+        assert_ne!(ENGINE_MACOS.commit, ENGINE_MACOS.tree);
+        assert!(ENGINE_MACOS
+            .repo
+            .starts_with("https://github.com/ggml-org/whisper.cpp"));
+        // The programs the engine runs by name (engine::WHISPER_SERVER and PARAKEET_CLI on a Mac).
+        assert_eq!(ENGINE_MACOS.programs, &["whisper-server", "parakeet-cli"]);
+        assert_eq!(PACK_OFFERED, cfg!(windows));
     }
 
     #[test]

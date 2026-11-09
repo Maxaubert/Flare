@@ -8,7 +8,7 @@
 use serde_json::Value;
 
 use crate::catalog::valid_language;
-use crate::hotkey::{default_hotkey, usable_hotkey, DictMode, Hotkey};
+use crate::hotkey::{default_hotkey, usable_hotkey_here, DictMode, Hotkey};
 
 /// Flare's stored dictation keys, in the order of the Dictation page (the import writes them too).
 pub const KEYS: [&str; 9] = [
@@ -87,7 +87,7 @@ fn read_hotkey(raw: Option<&str>, app_keys: &[Hotkey]) -> Hotkey {
         shift: flag("shift"),
         meta: flag("meta"),
     };
-    if usable_hotkey(&hk, app_keys) {
+    if usable_hotkey_here(&hk, app_keys) {
         hk
     } else {
         default_hotkey()

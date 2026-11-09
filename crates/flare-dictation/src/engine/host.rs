@@ -118,6 +118,8 @@ impl Host {
             .stderr(Stdio::piped());
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
+        // macOS: a process group of its own, so the reaper ends the child and all it starts (rule 308).
+        crate::job::isolate(&mut cmd);
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -135,6 +137,7 @@ impl Host {
         let (stdin, stdout, stderr) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take());
         let pid = child.id();
+        let member = job.member();
         let host = Arc::new(Host {
             kind: meta.0,
             dir: meta.1,
@@ -189,7 +192,7 @@ impl Host {
         let monitor = Arc::clone(&host);
         thread::spawn(move || {
             loop {
-                let polled = lock(&monitor.child).try_wait();
+                let polled = member.try_wait(&mut lock(&monitor.child));
                 match polled {
                     Ok(None) => thread::sleep(MONITOR_POLL),
                     Ok(Some(_)) | Err(_) => break,

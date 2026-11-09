@@ -29,7 +29,11 @@ pub const COPY_NAME: &str = "Flare";
 /// The copy name on the dictation link for any other build.
 pub const COPY_NAME_DEV: &str = "Flare (Dev)";
 /// The resident Parakeet host executable.
+#[cfg(windows)]
 pub const PARAKEET_HOST_EXE: &str = "flare-parakeet-host.exe";
+/// The resident Parakeet host executable (macOS: no extension).
+#[cfg(not(windows))]
+pub const PARAKEET_HOST_EXE: &str = "flare-parakeet-host";
 /// The engine folder beside the executable.
 pub const ENGINE_FOLDER: &str = "whisper";
 /// Env seam (read only through `e2e::global().env`): a WAV played as the microphone.

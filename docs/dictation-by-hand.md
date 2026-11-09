@@ -65,3 +65,109 @@ cargo test -p flare-dictation --target-dir <TARGET> -j 6 -- --ignored <name>
 | `the_real_host_answers_like_parakeet_cli` | `crates/flare-dictation/tests/host.rs` | needs `vendor/whisper` and the Parakeet q4 model in the fixture cache (`cargo e2e -- --fetch-fixtures`) |
 
 None of these runs in CI or in the e2e gate. A passing run of each is recorded in the PR description.
+
+## macOS (port phase 7)
+
+The suite on a Mac never opens the real microphone, never asks for a permission and never shows a window: the
+microphone is a WAV through the file seam, the access is only read. These checks are the rest, on a Mac, with a
+model downloaded. Until phase 8 ships a signed `Flare.app` with `NSMicrophoneUsageDescription`, run them from a dev
+build in a terminal: macOS then asks for the microphone for the terminal app (Terminal, Ghostty, Flare's own), and
+that is the switch the checks below turn.
+
+M1. **The access row.** Turn the terminal's switch off in System Settings > Privacy & Security > Microphone, start
+    Flare and open Settings > Dictation. **Pass when:** the microphone row says "Microphone access is off. Turn it on
+    in System Settings > Privacy & Security > Microphone." before you press anything, the Test button says the same,
+    and no system prompt appears. Turn it back on, reopen Settings: the line is gone (each listing reads the
+    access again, so the old "off" line never stays after the grant).
+
+M2. **The first ask.** On a Mac (or a user) where the terminal was never asked about the microphone, press Test.
+    **Pass when:** macOS asks once; after Allow the meter moves; after Don't Allow the row says the access is off and a
+    second Test does not ask again.
+
+M3. **The real microphone by hand.** Run the ignored test:
+
+    ```sh
+    cargo test -p flare-dictation --lib -- --ignored the_real_default_microphone_lists_and_records_a_second --nocapture
+    ```
+
+    **Pass when:** it lists every input you have (built-in, a USB microphone, AirPods) by name, records a second,
+    prints a level above 0 while you speak, and passes.
+
+M4 and M5 need the engine on the Mac to hear anything: build it first (M10). M6 to M9 check the key from any app
+(step 2) and need no engine: the widget's "Listening" and the crumbs in `flare --diag` show the key working.
+
+M4. **Following the default, and a device that goes away.** With a USB microphone plugged in, choose "System default"
+    in Settings, dictate a sentence, switch the default input in System Settings > Sound, dictate again. Then choose
+    the USB microphone by name, start a recording and unplug it. **Pass when:** each sentence comes from the default
+    of that moment; the unplugged recording ends with what was heard and the pill says no microphone was found; a
+    press after that with the USB one still chosen records from the default.
+
+M5. **Two copies.** A Mac copy serves the link only once its key hook is Ready, so first set the key to a chord
+    (Control+Shift+D, which needs no permission) or grant Input Monitoring (M7): with the default Control+Command and
+    no Input Monitoring neither copy takes the key and neither serves. Start two dev builds of Flare (two profiles).
+    **Pass when:** dictating from the one that holds the
+    key lists the other's tabs and sends into them, and
+    `ls -l "$(getconf DARWIN_USER_TEMP_DIR)flare-dictation"` shows one socket, mode `srw-------`, in a folder of mode
+    `drwx------`; quitting the serving copy removes its socket and the other takes over.
+
+M6. **A chord needs no permission.** In Settings > Dictation set the key to Control+Shift+D (or F9, with Fn held or
+    "Use F1, F2, etc. keys as standard function keys" on), "Dictate from any app" on. Put Safari or Finder in front.
+    **Pass when:** holding the chord starts listening and letting go stops, no system prompt appears, the D never
+    reaches the app in front, and the row names no permission. Then try to capture Control+Command+Q, Control+Command+F,
+    Control+Command+Space and Control+Left in Settings. **Pass when:** each is refused (the screen never locks, no
+    emoji picker or Space switch is taken over), and Control+Command+K is taken.
+
+M7. **A modifier key and Input Monitoring.** Set the key back to the default (Control+Command, the row shows it as
+    the Mac's symbols) with the terminal NOT in System Settings > Privacy & Security > Input Monitoring. **Pass
+    when:** the "Dictate from any app" row says it needs Input Monitoring and names that pane, no system prompt
+    appears, and the key still dictates in Flare's own window. Add the terminal to Input Monitoring (macOS may want
+    the terminal restarted). **Pass when:** within a second of Flare seeing the grant the key works with another app
+    in front, and the row's line is gone at the next Settings build. Then remove the terminal from Input Monitoring
+    again while Flare runs. **Pass when:** within about a second the key stops working with another app in front and
+    works again in Flare's own window (the tap ended and let the lock go), and the row names the pane again.
+
+M8. **Right Option on a Norwegian layout.** Set the key to Right Option and the input source to Norwegian. In TextEdit
+    type Option+2 (@) and Option+Shift+7 (\) with the right Option key. **Pass when:** the characters type and nothing
+    starts listening; holding Right Option alone starts listening and its release stops it; the left Option alone does
+    nothing.
+
+M9. **The picker from another app, and Esc.** With a Claude tab open, dictate with another app in front. **Pass
+    when:** the list shows, pressing 1 sends to the first row, Esc closes it ("Not sent"), and while it is open Cmd+2
+    in a browser still switches tabs; after it closes, 1 to 9 type in the app in front again. Esc during a recording
+    cancels it. In Settings, "Pause media while dictating" is off and dimmed, saying a Mac lets no app do it.
+
+M10 to M12 check the engines (step 3). The engine is built from whisper.cpp's pinned source (no macOS binary is
+released); until phase 8 puts it in the bundle, the app finds it in a `whisper` folder beside its executable. Build
+it once (a few minutes; CMake and the Xcode command line tools are needed) and the app with it:
+
+```sh
+bash tools/build-whisper-macos.sh target/debug/whisper vendor/macos/clips
+cargo build -p flare -p flare-dictation
+```
+
+M10. **A real pass on Metal.** Fetch the pinned tiny model (78 MB) and run the ignored test that drives the engine:
+
+    ```sh
+    mkdir -p vendor/macos/models
+    curl -fL -o vendor/macos/models/ggml-tiny.bin \
+      https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.bin
+    FLARE_WHISPER_DIR=target/debug/whisper FLARE_EXPECT_METAL=1 \
+      cargo nextest run -p flare-dictation --test metal_real --run-ignored only --no-capture
+    ```
+
+    **Pass when:** both tests pass, the first prints "the pass ran on Some(Gpu) (fell back: false)" and hears
+    "ask not what your country can do for you"; the second says the Parakeet host loaded the built libraries.
+    `xattr target/debug/whisper/* vendor/macos/models/ggml-tiny.bin` prints nothing Flare put there (curl adds no
+    quarantine either; a model Flare downloads itself never has one).
+
+M11. **Dictating with a real model.** In Settings > Dictation download Whisper Base (148 MB) and use it, then
+    Parakeet v3 (669 MB). **Pass when:** Large v3 Turbo is the one marked Recommended, no row says "Slow without GPU
+    acceleration" and there is no GPU acceleration card; each model types what you say into the tab in front; the
+    second Parakeet pass answers well under a second (the resident host, `ps -ax | grep flare-parakeet-host` shows
+    one); `ls ~/Library/Application\ Support/FlareDictation/models` lists the models and nothing of a clip is
+    anywhere on disk.
+
+M12. **Nothing outlives Flare.** While dictating with Whisper (a `whisper-server` runs), force quit Flare (Activity
+    Monitor > Force Quit, or `kill -9 <pid>`). **Pass when:** within a second `pgrep -fl 'whisper-server|parakeet'`
+    prints nothing, and no `/bin/sh` reaper is left either (allow 3 s: a reaper whose pipe another process still
+    holds notices Flare is gone within 2 s by itself).

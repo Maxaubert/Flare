@@ -22,6 +22,12 @@ log.workspace = true
 windows.workspace = true
 windows-sys.workspace = true
 
+# macOS (port phase 7): the link's Unix socket and CoreAudio's C calls (libc), the microphone's
+# authorization status (AVFoundation through objc2). The versions the workspace already pins.
+[target.'cfg(not(windows))'.dependencies]
+libc.workspace = true
+objc2.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 

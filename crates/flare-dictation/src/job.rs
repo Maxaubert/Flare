@@ -101,6 +101,39 @@ impl Drop for Job {
     }
 }
 
+/// What a child of the job is waited through. Windows: the plain `Child` waits (a job holds handles, never pids,
+/// so there is nothing to withdraw). macOS withdraws the pid from its reaper here before the child is reaped.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Member;
+
+impl Member {
+    /// `Child::try_wait`.
+    pub fn try_wait(
+        &self,
+        child: &mut std::process::Child,
+    ) -> io::Result<Option<std::process::ExitStatus>> {
+        child.try_wait()
+    }
+
+    /// `Child::wait`.
+    pub fn wait(&self, child: &mut std::process::Child) -> io::Result<std::process::ExitStatus> {
+        child.wait()
+    }
+}
+
+impl Job {
+    /// What every child handed to this job is waited through (see [`Member`]).
+    pub fn member(&self) -> Member {
+        Member
+    }
+}
+
+/// Windows: nothing to do before the spawn (the job takes the child and everything it starts later).
+/// macOS starts each child in a process group of its own here, so its reaper can end the whole group.
+pub fn isolate(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    cmd
+}
+
 /// The one job every dictation child joins for the life of the process (never closed).
 pub fn shared() -> Option<&'static Job> {
     static SHARED: OnceLock<Option<Job>> = OnceLock::new();

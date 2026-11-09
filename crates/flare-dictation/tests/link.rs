@@ -1,7 +1,7 @@
 //! The link between copies (Task 20, N26). Ported from Prism Terminal's `dictationLink.test.ts` at e5848cb, plus
 //! the caps and the drops its prose promises. Every test uses a pipe named for the test, with its own key.
-//! Windows-only until macOS phase 7 of the port plan (the reaping job, the named-pipe link, the pid checks).
-#![cfg(windows)]
+//! On Windows the link is a named pipe; on macOS (port phase 7) a Unix socket in a folder of this user's own. The
+//! same tests run on both: only the raw ends (`raw`, `raw_service`) and the names differ.
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -37,6 +37,7 @@ fn key() -> [u8; 32] {
     k
 }
 
+#[cfg(windows)]
 fn pipe_name() -> String {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     format!(
@@ -45,6 +46,30 @@ fn pipe_name() -> String {
         COUNTER.fetch_add(1, Ordering::SeqCst)
     )
 }
+
+/// A socket of its own for each test, in one 0700 test folder beside the real one (never the real name).
+#[cfg(not(windows))]
+fn pipe_name() -> String {
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let dir = socket_dir().with_file_name("flare-dict-test");
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    format!(
+        "{}/{}-{}.sock",
+        dir.display(),
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::SeqCst)
+    )
+}
+
+/// A raw end of the link: the pipe as a file on Windows, the socket's stream on macOS.
+#[cfg(windows)]
+type RawEnd = std::fs::File;
+#[cfg(not(windows))]
+type RawEnd = std::os::unix::net::UnixStream;
 
 fn until(mut f: impl FnMut() -> bool) -> bool {
     let end = Instant::now() + Duration::from_secs(5);
@@ -252,9 +277,24 @@ fn the_key_is_made_once_and_the_pipe_is_named_by_its_hash() {
         .bytes()
         .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
     let pipe = link_pipe(&a);
+    #[cfg(windows)]
     let tail = pipe
         .strip_prefix("\\\\.\\pipe\\flare-dictation-")
         .expect("Flare's own prefix");
+    #[cfg(not(windows))]
+    let tail = {
+        let p = std::path::Path::new(&pipe);
+        assert_eq!(
+            p.parent(),
+            Some(socket_dir().as_path()),
+            "Flare's own folder"
+        );
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".sock"))
+            .expect("a .sock name")
+            .to_string()
+    };
     assert_eq!(tail.len(), 24);
     assert!(tail.bytes().all(|b| b.is_ascii_hexdigit()));
     assert!(!pipe.contains(&to_hex(&a)[..24]));
@@ -532,7 +572,8 @@ fn a_client_finds_the_service_when_it_starts_later() {
 // ---- the drops ----
 
 /// A bare pipe client with synchronous I/O, standing in for a peer that speaks the wire by hand.
-fn raw(pipe: &str) -> std::fs::File {
+#[cfg(windows)]
+fn raw(pipe: &str) -> RawEnd {
     std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -540,8 +581,14 @@ fn raw(pipe: &str) -> std::fs::File {
         .expect("the pipe")
 }
 
+/// A bare socket client with blocking I/O, standing in for a peer that speaks the wire by hand.
+#[cfg(not(windows))]
+fn raw(pipe: &str) -> RawEnd {
+    std::os::unix::net::UnixStream::connect(pipe).expect("the socket")
+}
+
 /// Reads until the peer hangs up; the bytes it sent first. On its own thread so a hang fails the test.
-fn read_to_end_within(mut f: std::fs::File, ms: u64) -> Option<Vec<u8>> {
+fn read_to_end_within(mut f: RawEnd, ms: u64) -> Option<Vec<u8>> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut all = Vec::new();
@@ -566,7 +613,7 @@ fn nonce_of(bytes: &[u8]) -> String {
     }
 }
 
-fn read_nonce_line(f: &mut std::fs::File) -> Vec<u8> {
+fn read_nonce_line(f: &mut RawEnd) -> Vec<u8> {
     let mut line = Vec::new();
     let mut b = [0u8; 1];
     while f.read(&mut b).unwrap_or(0) == 1 {
@@ -761,11 +808,23 @@ fn close_does_not_wait_for_a_copy_that_connects_while_it_runs() {
 /// What the raw service saw of its client.
 struct RawServer {
     hello: Option<ToService>,
-    file: std::fs::File,
+    file: RawEnd,
+}
+
+/// A service by hand: a socket bound at the name (no lock, no checks), connected to the first client.
+#[cfg(not(windows))]
+fn raw_service(pipe: &str) -> RawEnd {
+    let path = std::path::Path::new(pipe);
+    let _ = std::fs::remove_file(path);
+    let l = std::os::unix::net::UnixListener::bind(path).expect("the raw service's socket");
+    let (s, _) = l.accept().expect("a client");
+    let _ = std::fs::remove_file(path);
+    s
 }
 
 /// A service by hand: one instance of the pipe, byte mode, synchronous, connected to the first client.
-fn raw_service(pipe: &str) -> std::fs::File {
+#[cfg(windows)]
+fn raw_service(pipe: &str) -> RawEnd {
     use std::os::windows::io::FromRawHandle;
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
@@ -916,4 +975,138 @@ fn a_client_hangs_up_on_a_service_that_never_proves_itself() {
     );
     assert!(!*trusted.lock().unwrap());
     client.close();
+}
+
+// ---- macOS: the socket's own walls (port phase 7) ----
+
+#[cfg(not(windows))]
+mod unix_socket {
+    use super::*;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::path::Path;
+
+    fn mode(p: &Path) -> u32 {
+        std::fs::symlink_metadata(p).unwrap().mode() & 0o777
+    }
+
+    #[test]
+    fn the_socket_is_this_users_alone_and_close_leaves_nothing_behind() {
+        let pipe = pipe_name();
+        let svc = LinkService::start(&pipe, key(), |e| panic!("link error: {e}"));
+        let p = Path::new(&pipe);
+        assert_eq!(mode(p), 0o600, "the socket");
+        assert_eq!(mode(p.parent().unwrap()), 0o700, "its folder");
+        svc.close();
+        assert!(!p.exists(), "the socket outlived its service");
+        assert!(
+            !Path::new(&format!("{pipe}.lock")).exists(),
+            "the lock file outlived its service"
+        );
+    }
+
+    #[test]
+    fn the_key_file_is_readable_by_this_user_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("link.key");
+        link_key(&file).expect("a key");
+        assert_eq!(mode(&file), 0o600);
+    }
+
+    #[test]
+    fn the_dead_socket_of_a_copy_that_crashed_is_replaced() {
+        let pipe = pipe_name();
+        // A listener that goes away without removing its socket, as a crash leaves it.
+        drop(std::os::unix::net::UnixListener::bind(&pipe).unwrap());
+        assert!(Path::new(&pipe).exists());
+        let k = key();
+        let svc = LinkService::start(&pipe, k, |e| panic!("link error: {e}"));
+        let (client, trusted) =
+            client_with_state(&pipe, k, copy(8, "Flare"), Handlers::new(Duration::ZERO));
+        assert!(until(|| svc.copies().len() == 1 && *trusted.lock().unwrap()));
+        client.close();
+        svc.close();
+    }
+
+    #[test]
+    fn a_live_socket_without_the_lock_is_never_replaced_and_nor_is_a_file() {
+        // Something that is not a Flare serves the name: it is left alone and the service is inert.
+        let pipe = pipe_name();
+        let squatter = std::os::unix::net::UnixListener::bind(&pipe).unwrap();
+        let errors = Arc::new(Mutex::new(Vec::<String>::new()));
+        let e = Arc::clone(&errors);
+        let svc = LinkService::start(&pipe, key(), move |m| e.lock().unwrap().push(m));
+        assert_eq!(
+            errors.lock().unwrap().len(),
+            1,
+            "{:?}",
+            errors.lock().unwrap()
+        );
+        assert!(svc.copies().is_empty());
+        svc.close();
+        assert!(
+            Path::new(&pipe).exists(),
+            "the squatter's socket was removed"
+        );
+        drop(squatter);
+        let _ = std::fs::remove_file(&pipe);
+
+        // A plain file in the way.
+        let pipe = pipe_name();
+        std::fs::write(&pipe, b"not a socket").unwrap();
+        let errors = Arc::new(Mutex::new(0usize));
+        let e = Arc::clone(&errors);
+        let svc = LinkService::start(&pipe, key(), move |_| *e.lock().unwrap() += 1);
+        assert_eq!(*errors.lock().unwrap(), 1);
+        svc.close();
+        assert_eq!(std::fs::read(&pipe).unwrap(), b"not a socket");
+        let _ = std::fs::remove_file(&pipe);
+    }
+
+    #[test]
+    fn a_folder_of_this_user_open_to_others_is_made_private_then_served() {
+        // Copied, restored or chmodded: this user's own folder is closed again (rule 319); another user's folder and
+        // a symlink stay refused (link_sock's unit tests).
+        let dir = tempfile::tempdir().unwrap();
+        let open = dir.path().join("open");
+        std::fs::create_dir(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let pipe = open.join("x.sock").to_string_lossy().into_owned();
+        let errors = Arc::new(Mutex::new(Vec::<String>::new()));
+        let e = Arc::clone(&errors);
+        let svc = LinkService::start(&pipe, key(), move |m| e.lock().unwrap().push(m));
+        let said = errors.lock().unwrap().clone();
+        assert!(said.is_empty(), "{said:?}");
+        let mode = std::fs::symlink_metadata(&open)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+        assert!(Path::new(&pipe).exists(), "the link is served");
+        svc.close();
+    }
+
+    #[test]
+    fn a_name_too_long_for_a_socket_is_an_error_not_a_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let pipe = dir
+            .path()
+            .join(format!("{}.sock", "a".repeat(120)))
+            .to_string_lossy()
+            .into_owned();
+        let errors = Arc::new(Mutex::new(0usize));
+        let e = Arc::clone(&errors);
+        let svc = LinkService::start(&pipe, key(), move |_| *e.lock().unwrap() += 1);
+        assert_eq!(*errors.lock().unwrap(), 1);
+        svc.close();
+    }
+
+    #[test]
+    fn the_name_is_free_again_at_once_after_close_for_a_second_service() {
+        let pipe = pipe_name();
+        let k = key();
+        for _ in 0..3 {
+            let svc = LinkService::start(&pipe, k, |e| panic!("link error: {e}"));
+            svc.close();
+        }
+    }
 }

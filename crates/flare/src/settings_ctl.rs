@@ -369,7 +369,7 @@ pub fn to_slint_row(r: &RowModel, y: f64, h: f64, ctx: &RowCtx<'_>) -> SetRow {
             out.reset = r.reset
                 || (!*capturing
                     && *text
-                        != flare_dictation::hotkey::format_hotkey(
+                        != flare_dictation::hotkey::format_hotkey_here(
                             &flare_dictation::hotkey::default_hotkey(),
                         ));
         }
@@ -3359,7 +3359,13 @@ mod tests {
             }
             let key = f.row("dictation-hotkey").expect("the key row");
             assert_eq!(key.kind, SetKind::Key);
-            assert_eq!(key.value, "Ctrl+Win");
+            // The system's own words: "Ctrl+Win" on Windows, Control+Command in the Mac's symbols.
+            let default_text = if cfg!(target_os = "macos") {
+                "\u{2303}\u{2318}"
+            } else {
+                "Ctrl+Win"
+            };
+            assert_eq!(key.value, default_text);
             assert!(!key.reset && !key.capturing);
             let mic = f.row("dictation-mic").expect("the microphone row");
             assert_eq!(mic.kind, SetKind::Mic);
@@ -3395,7 +3401,12 @@ mod tests {
         assert!(keys.feed_key(&ev(true), false, &|| None));
         assert!(keys.feed_key(&ev(false), true, &|| None));
         let row = f.row("dictation-hotkey").unwrap();
-        assert_eq!(row.value, "Right Alt", "the page shows the new key");
+        let right_alt = if cfg!(target_os = "macos") {
+            "Right Option"
+        } else {
+            "Right Alt"
+        };
+        assert_eq!(row.value, right_alt, "the page shows the new key");
         assert!(!row.capturing);
         assert!(row.reset, "a key that is not the default offers Reset");
         assert!(
@@ -3409,7 +3420,12 @@ mod tests {
         f.b()
             .invoke_row_button("dictation-hotkey".into(), "reset".into());
         let row = f.row("dictation-hotkey").unwrap();
-        assert_eq!((row.value.as_str(), row.reset), ("Ctrl+Win", false));
+        let default_text = if cfg!(target_os = "macos") {
+            "\u{2303}\u{2318}"
+        } else {
+            "Ctrl+Win"
+        };
+        assert_eq!((row.value.as_str(), row.reset), (default_text, false));
     }
 
     #[test]

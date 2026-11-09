@@ -140,6 +140,14 @@ pub struct DictationData {
     pub ask: Option<Ask>,
     /// Whether the stored model picks its own language, as the catalogue says (e2e-only models included).
     pub stored_limited: bool,
+    /// Why the media pause cannot work on this system (macOS: no public API); the switch is then off and dimmed.
+    pub pause_media_unavailable: Option<String>,
+    /// What stops dictating from any app with this key (macOS: Input Monitoring for a modifier key); it replaces
+    /// the row's sub. None on Windows.
+    pub anywhere_problem: Option<String>,
+    /// The bundled engine has a GPU of its own (Metal on a Mac, rule 309): no model is slow for want of the pack,
+    /// which is not offered there. False on Windows.
+    pub gpu_built_in: bool,
 }
 
 impl DictationData {
@@ -340,10 +348,7 @@ fn listening_rows(d: &DictationData) -> Vec<BlockModel> {
 fn while_rows(d: &DictationData) -> Vec<BlockModel> {
     let on = d.prefs.enabled;
     vec![
-        BlockModel::Row(dimmed(
-            switch_row(def("dictation-pause-media"), d.prefs.pause_media),
-            on,
-        )),
+        BlockModel::Row(pause_media_row(d)),
         BlockModel::Row(dimmed(
             switch_row(def("dictation-sounds"), d.prefs.sounds),
             on,
@@ -351,11 +356,28 @@ fn while_rows(d: &DictationData) -> Vec<BlockModel> {
     ]
 }
 
+/// The media pause switch: off and dimmed, with the reason as its sub, where the system cannot pause (macOS).
+fn pause_media_row(d: &DictationData) -> RowModel {
+    let on = d.prefs.enabled;
+    match &d.pause_media_unavailable {
+        None => dimmed(
+            switch_row(def("dictation-pause-media"), d.prefs.pause_media),
+            on,
+        ),
+        Some(why) => {
+            let mut row = dimmed(switch_row(def("dictation-pause-media"), false), on);
+            row.off = true;
+            row.sub = why.clone();
+            row
+        }
+    }
+}
+
 /// One speech model's row: its state, its buttons, and the note that replaces its sub on a failure.
 pub fn model_row(m: &ModelInfo, d: &DictationData) -> ModelRow {
     let item = d.item(m.id);
     let pack = d.installed(GPU_PACK_ID);
-    let warn = m.needs_gpu && !pack && item.failure.is_none();
+    let warn = m.needs_gpu && !pack && !d.gpu_built_in && item.failure.is_none();
     let (state, buttons) = match &item.state {
         ItemState::Downloading { pct } => (
             ModelState::Downloading { pct: *pct },
@@ -426,10 +448,17 @@ pub fn gpu_row(d: &DictationData) -> GpuRow {
 
 fn anywhere_row(d: &DictationData) -> RowModel {
     let on = d.prefs.enabled;
-    let row = RowModel {
+    let mut row = RowModel {
         row_tip: "Press the dictation key with any app in front. A widget shows what you say, then lets you pick a Claude session with a click or its number. Not in windows run as administrator.".to_string(),
         ..switch_row(def("dictation-anywhere"), d.prefs.anywhere && on)
     };
+    if let Some(problem) = d
+        .anywhere_problem
+        .as_ref()
+        .filter(|_| on && d.prefs.anywhere)
+    {
+        row.sub = problem.clone();
+    }
     dimmed(row, on)
 }
 
@@ -549,6 +578,9 @@ mod tests {
             gpu_fell_back: false,
             ask: None,
             stored_limited: false,
+            pause_media_unavailable: None,
+            anywhere_problem: None,
+            gpu_built_in: false,
         }
     }
 
@@ -851,6 +883,54 @@ mod tests {
     }
 
     #[test]
+    fn where_media_cannot_be_paused_the_switch_is_off_and_says_why() {
+        with_env(false, |env| {
+            let row = |d: &DictationData| {
+                rows(&sections(env, d))
+                    .into_iter()
+                    .find(|r| r.id == "dictation-pause-media")
+                    .expect("pause row")
+                    .clone()
+            };
+            let mut d = data(true);
+            d.prefs.pause_media = true;
+            let win = row(&d);
+            assert!(!win.off);
+            assert_eq!(win.control, Control::Switch { on: true });
+            assert_eq!(win.sub, "Resumes when you stop.");
+            // macOS: no public API; a stored "on" (an import from Windows) shows off, with the reason.
+            d.pause_media_unavailable = Some("Not on a Mac.".to_string());
+            let mac = row(&d);
+            assert!(mac.off);
+            assert_eq!(mac.control, Control::Switch { on: false });
+            assert_eq!(mac.sub, "Not on a Mac.");
+        });
+    }
+
+    #[test]
+    fn what_stops_dictating_from_any_app_replaces_the_rows_sub_only_while_it_is_on() {
+        with_env(false, |env| {
+            let row = |d: &DictationData| {
+                rows(&sections(env, d))
+                    .into_iter()
+                    .find(|r| r.id == "dictation-anywhere")
+                    .expect("anywhere row")
+                    .clone()
+            };
+            let mut d = data(true);
+            assert_eq!(row(&d).sub, "The key works with another app in front.");
+            d.anywhere_problem = Some("Needs Input Monitoring.".to_string());
+            assert_eq!(row(&d).sub, "Needs Input Monitoring.");
+            assert!(
+                !row(&d).off,
+                "the switch still works: the window reads the key meanwhile"
+            );
+            d.prefs.anywhere = false;
+            assert_eq!(row(&d).sub, "The key works with another app in front.");
+        });
+    }
+
+    #[test]
     fn the_toggle_mode_names_its_own_sub() {
         with_env(false, |env| {
             let mut d = data(true);
@@ -885,6 +965,35 @@ mod tests {
             assert_eq!(turbo.badge, Some("Active"));
             assert_eq!(turbo.buttons.len(), 1);
             assert_eq!(turbo.buttons[0].id, "uninstall");
+        });
+    }
+
+    #[test]
+    fn a_large_model_never_warns_where_the_engine_has_a_gpu_of_its_own() {
+        // macOS (rule 309): Metal is in the bundled engine, there is no pack, and Turbo is not slow.
+        with_env(false, |env| {
+            let mut d = data(true);
+            d.gpu_built_in = true;
+            d.recommended = "large-v3-turbo";
+            let s = sections(env, &d);
+            let rows: Vec<&ModelRow> = s
+                .iter()
+                .flat_map(|sec| sec.blocks.iter())
+                .filter_map(|b| match b {
+                    BlockModel::Model(m) => Some(m),
+                    _ => None,
+                })
+                .collect();
+            let turbo = rows
+                .iter()
+                .find(|m| m.id == "large-v3-turbo")
+                .expect("turbo");
+            assert!(!turbo.warn);
+            assert_ne!(turbo.sub, SLOW_NO_GPU);
+            assert!(turbo.recommended);
+            assert!(rows.iter().all(|m| !m.warn), "no row warns");
+            // No NVIDIA card, so no GPU card.
+            assert!(s.iter().all(|sec| sec.id != "gpu"));
         });
     }
 }

@@ -54,7 +54,7 @@ const PROGRESS_EVERY_MS: u64 = 100;
 /// How long an uninstall waits for a stopping engine to let go of its files.
 const REMOVE_WAIT_MS: u64 = 5_000;
 
-const SERVER_EXE: &str = "whisper-server.exe";
+const SERVER_EXE: &str = crate::engine::WHISPER_SERVER;
 
 /// Why a download or install did not finish. `text()` is what the model row says (parity line 901).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +130,7 @@ pub struct Item {
     pub kind: Kind,
 }
 
-/// The shipped catalogue: every model (the test-only ones too) and the GPU pack.
+/// The shipped catalogue: every model (the test-only ones too) and, on Windows, the GPU pack.
 pub fn shipped_catalog() -> Vec<Item> {
     let mut v: Vec<Item> = catalog::MODELS
         .iter()
@@ -142,6 +142,11 @@ pub fn shipped_catalog() -> Vec<Item> {
             kind: Kind::Model,
         })
         .collect();
+    // The pack is NVIDIA's CUDA build for Windows: a Mac's engine has Metal in it, so the pack is never offered
+    // or fetched there (rule 309).
+    if !catalog::PACK_OFFERED {
+        return v;
+    }
     let p = catalog::GPU_PACK;
     v.push(Item {
         id: p.id.to_string(),
@@ -153,15 +158,26 @@ pub fn shipped_catalog() -> Vec<Item> {
     v
 }
 
-/// The models folder: `FLARE_DICTATION_ROOT`, else `%LOCALAPPDATA%\FlareDictation`.
+/// The models folder: `FLARE_DICTATION_ROOT`, else `%LOCALAPPDATA%\FlareDictation` on Windows and
+/// `~/Library/Application Support/FlareDictation` on macOS (rule 310: never the temp folder the system empties).
 pub fn default_root() -> PathBuf {
     if let Some(v) = flare_win::seam::var_os(flare_win::names::SEAM_DICTATION_ROOT) {
         if !v.is_empty() {
             return PathBuf::from(v);
         }
     }
-    let base = std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, PathBuf::from);
-    base.join(flare_win::names::DICTATION_FOLDER)
+    platform_base().join(flare_win::names::DICTATION_FOLDER)
+}
+
+#[cfg(windows)]
+fn platform_base() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, PathBuf::from)
+}
+
+/// macOS: `~/Library/Application Support`; with no home (never on a real login) the temp folder, as Windows does.
+#[cfg(not(windows))]
+fn platform_base() -> PathBuf {
+    flare_win::paths::local_app_data().unwrap_or_else(std::env::temp_dir)
 }
 
 /// The neighbour apps' models folder, `%LOCALAPPDATA%\` plus Prism Terminal's dictation folder (O14, Q9). Flare only reads it, to
