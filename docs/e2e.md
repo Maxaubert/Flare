@@ -129,7 +129,7 @@ Every `FLARE_E2E_*` read goes through `e2e::global().env(..)`, which returns not
 a stray variable in the owner's environment cannot change the real app. No source file reads such a
 variable directly (`no_source_file_reads_an_e2e_variable_directly`).
 
-## macOS E2E (CI only, rules 330 to 341)
+## macOS E2E (CI only, rules 330 to 342)
 
 The same harness and scenario table drive the Mac build, on GitHub's macOS runners only (the `e2e-macos` job in
 `.github/workflows/ci.yml`). A Mac has no hidden desktop, so nothing here is run on a person's Mac: locally only the
@@ -168,8 +168,8 @@ target/release/flare-e2e --list      # a gated scenario says so, with its reason
   world's pwsh profile puts PSReadLine in its Windows edit mode, a Slint field gets Cmd as Slint's Control, a
   field's End is Cmd+Right (`chord::FIELD_END`), and a key meant for the program is sent as written
   (`Session::key_as_is`) (rules 337 and 339).
-- **Scale** (rule 341): a Mac launch at another scale sets Slint's `SLINT_SCALE_FACTOR` instead of the hook's
-  `DpiChange`. **Logs** are read where the Mac app writes them (`world::logs_dir`, `<home>/Library/Logs/Flare`).
+- **Scale** (rule 341): `DpiChange` takes the event path, and a `Resize` is asked in device px at the window's scale
+  (winit would convert a logical size with the screen's 1x). **Logs** are read where the Mac app writes them (`world::logs_dir`, `<home>/Library/Logs/Flare`).
 - **Gates** (rule 332) live in `tools/e2e/src/scenarios/mac_gate.rs`, each with its reason; a gated scenario is never
   started and never a pass. On failure the job uploads `e2e-macos`: the log, the shots and the worlds' logs.
 

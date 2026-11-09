@@ -156,9 +156,14 @@ impl Drop for Sandbox {
 /// macOS (rule 339): the world's pwsh profile puts PSReadLine in its Windows edit mode. pwsh on a Mac
 /// starts in Emacs mode, where Escape is a prefix and not "clear the line", so a scenario's Escape
 /// swallowed the next paste's escape sequence and left the line it meant to clear. The scenarios are
-/// written against PowerShell as it is on Windows; this is the shell's setting, never the app's.
+/// written against PowerShell as it is on Windows; this is the shell's setting, never the app's. Clear-Host
+/// clears the scrollback too, as it does on Windows: pwsh on a Mac sends the terminfo `clear` alone, the
+/// screen went into the scrollback, and a question box "cleared" that way was still the last thing
+/// written (agentHooks, run 42587853627). `cls` is its alias, as on Windows.
 #[cfg(not(windows))]
-pub const PWSH_PROFILE: &str = "try { Set-PSReadLineOption -EditMode Windows } catch { }\n";
+pub const PWSH_PROFILE: &str = "try { Set-PSReadLineOption -EditMode Windows } catch { }\n\
+function Clear-Host { [Console]::Write([string][char]27 + '[H' + [char]27 + '[2J' + [char]27 + '[3J') }\n\
+Set-Alias -Name cls -Value Clear-Host -Force\n";
 
 #[cfg(not(windows))]
 fn write_pwsh_profile(home: &Path) {

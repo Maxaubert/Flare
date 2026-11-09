@@ -2411,6 +2411,12 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 crate::e2e_glue::on_redraw();
                 EventResult::Propagate
             }
+            WindowEvent::Occluded(hidden) => {
+                // Said once per change: a window the system holds as hidden gets no frames (the Mac E2E's
+                // clear window, rule 342).
+                log::info!("window occluded: {hidden}");
+                EventResult::Propagate
+            }
             WindowEvent::ModifiersChanged(m) => {
                 mods.set(m.state());
                 EventResult::Propagate

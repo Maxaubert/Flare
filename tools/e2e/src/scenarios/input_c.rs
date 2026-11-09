@@ -542,10 +542,15 @@ pub fn bell(ctx: &mut Ctx) -> Result<(), String> {
         format!("one bell, one flash ({})", flash_count(&mut app)),
     );
     hold(ctx, 1_300); // past the one-second gate
-    type_line(
-        &mut app,
-        "1..10 | % { [Console]::Write([char]7); Start-Sleep -Milliseconds 20 }",
-    )?;
+                      // macOS: pwsh's Start-Sleep and pipeline on the runner stretched the ten 20 ms steps past the
+                      // one-second gate (two flashes, run 42587853627), so the Mac burst has no sleep; it is still ten
+                      // writes of one bell each (rule 339).
+    let burst_line = if cfg!(target_os = "macos") {
+        "1..10 | % { [Console]::Write([char]7) }"
+    } else {
+        "1..10 | % { [Console]::Write([char]7); Start-Sleep -Milliseconds 20 }"
+    };
+    type_line(&mut app, burst_line)?;
     hold(ctx, 1_500);
     let burst = flash_count(&mut app);
     ctx.ok(

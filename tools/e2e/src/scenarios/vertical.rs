@@ -23,6 +23,12 @@ use crate::world::{prompt_timeout, wait_for_prompt, Shell};
 
 /// 225 percent (96 is 100 percent).
 const DPI_225: u32 = 216;
+
+/// macOS: the title row is the native caption, the traffic lights where Windows has its buttons (rule 342).
+const MAC_CAPTION: bool = cfg!(target_os = "macos");
+
+/// Why a Mac run has no mark to look at (rule 342).
+const NO_MARK_ON_A_MAC: &str = "the app's mark: a Mac's title row has the traffic lights in its corner and draws no mark (AppMark is hidden with the native caption, app.slint)";
 /// 125 percent.
 const DPI_125: u32 = 120;
 /// The reason every glass check is skipped on the software renderer.
@@ -1565,8 +1571,14 @@ fn vertical_b(ctx: &mut Ctx, app: &mut App, gpu: bool) -> Result<(), String> {
         |r: Option<(f64, f64, f64, f64)>| r.is_some_and(|r| r.1 >= 0.0 && r.1 + r.3 <= BAR_H);
     let cog = ui_rect(app, "cog");
     let close = ui_rect(app, "close");
+    // macOS (rule 342): the window's buttons are AppKit's traffic lights, which the hook has no rect for.
+    let buttons = if MAC_CAPTION {
+        close.is_none()
+    } else {
+        in_bar(close) && in_bar(ui_rect(app, "min")) && in_bar(ui_rect(app, "max"))
+    };
     ctx.ok(
-        in_bar(cog) && in_bar(close) && in_bar(ui_rect(app, "min")) && in_bar(ui_rect(app, "max")),
+        in_bar(cog) && buttons,
         "with Settings and the window's buttons",
     );
     let grid = ui_rect(app, "grid").unwrap_or((0.0, 0.0, 0.0, 0.0));
@@ -1651,10 +1663,14 @@ fn vertical_b(ctx: &mut Ctx, app: &mut App, gpu: bool) -> Result<(), String> {
         }
         Some((ink, best))
     });
-    ctx.ok(
-        mark.is_some_and(|(b, c)| (8.0..=20.0).contains(&b.2) && near(c, icon, 60)),
-        format!("the bar shows the app's mark alone, in the buttons' ink ({mark:?})"),
-    );
+    if MAC_CAPTION {
+        ctx.skip(NO_MARK_ON_A_MAC);
+    } else {
+        ctx.ok(
+            mark.is_some_and(|(b, c)| (8.0..=20.0).contains(&b.2) && near(c, icon, 60)),
+            format!("the bar shows the app's mark alone, in the buttons' ink ({mark:?})"),
+        );
+    }
     // PT: run.mjs:2640-2642. PT sends WM_NCHITTEST at four points and reads HTCAPTION (2) or HTCLIENT (1).
     // Flare has no hit test to ask: its bar moves the window through Slint's WindowMoveArea, which asks
     // winit to start Windows' move loop, and a synthetic Drag cannot start it (this window sits at
@@ -1924,10 +1940,19 @@ fn vertical_b(ctx: &mut Ctx, app: &mut App, gpu: bool) -> Result<(), String> {
         ink_box(sn, k, (m.0 + 4.0, m.1 + 4.0, m.2 - 8.0, m.3 - 8.0), bg, 40)
     });
     // PT: run.mjs:2810
-    ctx.ok(
-        paths.is_some_and(|b| (8.0..=20.0).contains(&b.2)) && mark_rect.is_some_and(|m| m.0 < first_tab),
-        format!("with the strip, the same quiet mark sits before the tabs ({mark_rect:?}, first tab at {first_tab})"),
-    );
+    if MAC_CAPTION {
+        // The traffic lights' corner still comes before the tabs; it holds no mark.
+        ctx.ok(
+            mark_rect.is_some_and(|m| m.0 + m.2 <= first_tab + 0.5),
+            format!("with the strip, the traffic lights' corner sits before the tabs ({mark_rect:?}, first tab at {first_tab})"),
+        );
+        ctx.skip(NO_MARK_ON_A_MAC);
+    } else {
+        ctx.ok(
+            paths.is_some_and(|b| (8.0..=20.0).contains(&b.2)) && mark_rect.is_some_and(|m| m.0 < first_tab),
+            format!("with the strip, the same quiet mark sits before the tabs ({mark_rect:?}, first tab at {first_tab})"),
+        );
+    }
     // With the strip, Ctrl+Shift+B is the shell's again.
     // The settings file is written a moment after a change, so wait for the pin from above to land
     // before taking the "before" reading; a stale "collapsed" would blame the chord for that write.

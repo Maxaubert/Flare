@@ -1754,6 +1754,22 @@ impl DpiSeam for WindowRef<'_> {
     }
 }
 
+/// Pure (rule 341): the size a `Resize` to `w` by `h` css px asks the window for. Windows: the logical
+/// size, as before. macOS: device px at the window's own scale, because Slint hands a logical size to
+/// winit, which converts it with the screen's backing scale (1 on the runner), not the scale the hook's
+/// `DpiChange` gave the window: at 225 percent a 1000 css window came out 1000 px wide (444 css).
+pub fn resize_size(mac: bool, scale: f32, w: f32, h: f32) -> slint::WindowSize {
+    if mac {
+        let s = scale.max(0.01);
+        slint::WindowSize::Physical(slint::PhysicalSize::new(
+            (w * s).round().max(1.0) as u32,
+            (h * s).round().max(1.0) as u32,
+        ))
+    } else {
+        slint::WindowSize::Logical(slint::LogicalSize::new(w, h))
+    }
+}
+
 /// The event fallback: the same pair winit would send (the scale, then the resize to the suggested
 /// size).
 pub fn apply_dpi_event(seam: &mut dyn DpiSeam, logical: (f32, f32), dpi: u32) {
@@ -1847,7 +1863,15 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
             .app
             .upgrade()
             .ok_or_else(|| "the window is gone".to_string())
-            .map(|a| a.window().set_size(slint::LogicalSize::new(w, h))),
+            .map(|a| {
+                let window = a.window();
+                window.set_size(resize_size(
+                    cfg!(target_os = "macos"),
+                    window.scale_factor(),
+                    w,
+                    h,
+                ))
+            }),
         Request::Focus { on } => {
             crate::window::handle_focus(&ctx.kp, on);
             ctx.dispatch(vec![WindowEvent::WindowActiveChanged(on)])
@@ -2488,6 +2512,23 @@ mod tests {
         fn set_physical_size(&mut self, w: u32, h: u32) {
             self.calls.push(format!("size {w}x{h}"));
         }
+    }
+
+    // Rule 341: a Mac resize is asked in device px at the window's scale; Windows keeps the logical size.
+    #[test]
+    fn a_mac_resize_is_asked_in_device_px_at_the_windows_own_scale() {
+        assert_eq!(
+            resize_size(true, 2.25, 1000.0, 640.0),
+            slint::WindowSize::Physical(slint::PhysicalSize::new(2250, 1440))
+        );
+        assert_eq!(
+            resize_size(true, 1.0, 1100.0, 700.0),
+            slint::WindowSize::Physical(slint::PhysicalSize::new(1100, 700))
+        );
+        assert_eq!(
+            resize_size(false, 2.25, 1000.0, 640.0),
+            slint::WindowSize::Logical(slint::LogicalSize::new(1000.0, 640.0))
+        );
     }
 
     #[test]

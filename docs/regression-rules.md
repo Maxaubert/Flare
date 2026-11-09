@@ -1182,6 +1182,10 @@ paste's escape sequence and left the line it meant to clear); the harness reads 
 app writes it (`world::logs_dir`: `<home>/Library/Logs/Flare` for the default profile under the world's HOME, as
 `startup::logs_dir_of`); and a key a scenario means as the program's own is sent as written
 (`Session::key_as_is`), since on a Mac Ctrl+F is the program's and Cmd+F finds everywhere (the keymap's Mac rule).
+The profile's Clear-Host also clears the scrollback, as Windows' does, with `cls` its alias (pwsh on a Mac sends the
+terminfo `clear` alone; the screen went into the scrollback and a "cleared" question box was still the last thing
+written, agentHooks in run 42587853627); a dropped path is quoted as a POSIX path; the bell burst has no sleep
+between its ten bells (pwsh on the runner stretched it past the one-second gate).
 Held by `the_app_chords_take_cmd_on_a_mac_and_the_shell_keys_stay`. Source: Mac E2E in CI, run 42569349881
 (2026-11-09).
 340. **macOS: an `--e2e` window takes its focus from the hook alone.** The parked window is an accessory's that is
@@ -1190,9 +1194,17 @@ away: a visited tab kept its Finished mark and the badge counted it (indicator, 
 `window::e2e_drops_native_focus` drops winit's `Focused` on macOS under `--e2e`; the scenarios move the focus with the
 hook's `Focus`, as the no-activate Windows window, which never gets either event, always did. Held by
 `only_a_mac_e2e_run_drops_the_native_focus`. Source: Mac E2E in CI (2026-11-09).
-341. **macOS: a launch at another scale is Slint's scale override, and the Windows DPI matrix is gated.** A Mac has
-no WM_DPICHANGED: the hook's event path held on the software renderer, but the GPU window went back to the screen's 1x
-at its first resize. A Mac launch at a scale other than 100 percent sets `SLINT_SCALE_FACTOR` for the app
-(`ctx::mac_launch_scale`) and sends no `DpiChange`; `dpiMatrix` and `monitorMove`, which drive cmd.exe through the
-eight Windows scale steps and per-monitor moves, are gated (a Mac's backing scale is 1 or 2 and changes only with the
-screen). Held by `a_mac_launch_scale_is_slints_override_and_only_off_100_percent`. Source: Mac E2E in CI (2026-11-09).
+341. **macOS: a resize to css px is asked in device px at the window's own scale, and the Windows DPI matrix is
+gated.** Slint hands a logical size to winit, which converts it with the screen's backing scale (1 on the runner),
+not the scale the hook's `DpiChange` gave the window, so at 225 percent a `Resize` to 1000 css came out 1000 px
+(444 css) and every panel check of panelImage, panelSplitter and convoPanels at 225 percent failed (run
+42569349881). On macOS `e2e_glue::resize_size` asks for `w` and `h` times the window's scale in device px; Windows
+keeps the logical size. Slint's own `SLINT_SCALE_FACTOR` was tried and is no stand-in: the app's logical sizes then
+missed the scale too (run 42587853627). `dpiMatrix` and `monitorMove`, which drive cmd.exe through the eight Windows
+scale steps and per-monitor moves, are gated (a Mac's backing scale is 1 or 2 and changes only with the screen). Held
+by `a_mac_resize_is_asked_in_device_px_at_the_windows_own_scale`. Source: Mac E2E in CI (2026-11-09).
+342. **macOS: the scenarios read the Mac title row as it is.** With the native caption the window's buttons are the
+traffic lights, which have no hook rect, and no app mark is drawn (`AppMark` is hidden), so verticalTabs checks the
+cog in the bar and the traffic lights' corner before the tabs and skips the mark with its reason; the ? is the second
+button from the right edge, so its tip is held 6 px inside the window (`tip_place`'s margin) rather than centred, and
+tooltips accepts that on a Mac only. Source: Mac E2E in CI, runs 42569349881 and 42587853627 (2026-11-09).
