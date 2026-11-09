@@ -56,6 +56,8 @@ pub enum Fail {
     /// The person took over the page.
     Interrupted,
     Internal,
+    /// Something else is on top of what a click named: nothing was pressed.
+    Covered,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -179,6 +181,14 @@ enum Then {
     Wheel { dx: f64, dy: f64 },
 }
 
+/// A click by ref on its way: where, and how, once the page has said it lands.
+struct HeldClick {
+    button: Button,
+    double: bool,
+    x: f64,
+    y: f64,
+}
+
 enum Stage {
     /// Layout metrics, the accessibility tree and the device pixel ratio (and DOM.enable, whose
     /// answer does not matter).
@@ -210,6 +220,7 @@ enum Stage {
     },
     /// Where it is now.
     PrepB {
+        backend: i64,
         then: Then,
         layout: Slot,
         quads: Slot,
@@ -226,6 +237,17 @@ enum Stage {
         until_ms: u64,
         next: Box<Stage>,
         first: Call,
+    },
+    /// A click by ref, the glide over: the element as the page's scripts know it, for the hit test.
+    HitNode {
+        id: u64,
+        click: HeldClick,
+    },
+    /// What is at the click's point, asked right before the press.
+    HitCheck {
+        id: u64,
+        object: String,
+        click: HeldClick,
     },
     /// Input events, one at a time.
     Seq {
@@ -357,6 +379,15 @@ impl Job {
             fail: Fail::Interrupted,
             message: "the user took over the page; look again before doing anything more"
                 .to_string(),
+        }
+    }
+
+    /// The caller went away (it cancelled the tool call, or its connection dropped): the call ends. Treated like a
+    /// takeover: what the agent last saw may no longer be there.
+    pub fn cancelled() -> JobError {
+        JobError {
+            fail: Fail::Interrupted,
+            message: "the call was cancelled".to_string(),
         }
     }
 
@@ -856,6 +887,7 @@ impl Job {
                 );
                 (
                     Some(Stage::PrepB {
+                        backend,
                         then,
                         layout: slot(&layout),
                         quads: slot(&quads),
@@ -864,6 +896,7 @@ impl Job {
                 )
             }
             Stage::PrepB {
+                backend,
                 then,
                 mut layout,
                 mut quads,
@@ -876,6 +909,7 @@ impl Job {
                 let (Some(l), Some(q)) = (layout.1.clone(), quads.1.clone()) else {
                     return (
                         Some(Stage::PrepB {
+                            backend,
                             then,
                             layout,
                             quads,
@@ -896,7 +930,74 @@ impl Job {
                     return done(gone());
                 };
                 let at = point_of(x, y, &vp);
-                self.pointer_then(then, x, y, Some(at), now_ms, ids)
+                match then {
+                    // A click by ref says what it means to hit, so the page is asked first.
+                    Then::Click { button, double } => {
+                        let resolve =
+                            call(ids, "DOM.resolveNode", json!({"backendNodeId": backend}));
+                        self.point = Some(at);
+                        let next = Stage::HitNode {
+                            id: resolve.id,
+                            click: HeldClick {
+                                button,
+                                double,
+                                x,
+                                y,
+                            },
+                        };
+                        self.glide_then(next, resolve, now_ms)
+                    }
+                    then => self.pointer_then(then, x, y, Some(at), now_ms, ids),
+                }
+            }
+            Stage::HitNode { id: want, click } => {
+                if id != want {
+                    return (Some(Stage::HitNode { id: want, click }), Out::Idle);
+                }
+                let object = r.ok().and_then(|v| {
+                    v.pointer("/object/objectId")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                });
+                // A page that cannot say is clicked as it always was.
+                let Some(object) = object else {
+                    return self.press(click, None, now_ms, ids);
+                };
+                let c = call(
+                    ids,
+                    "Runtime.callFunctionOn",
+                    web::hit_test_params(&object, click.x, click.y),
+                );
+                (
+                    Some(Stage::HitCheck {
+                        id: c.id,
+                        object,
+                        click,
+                    }),
+                    Out::Calls(vec![c]),
+                )
+            }
+            Stage::HitCheck {
+                id: want,
+                object,
+                click,
+            } => {
+                if id != want {
+                    return (
+                        Some(Stage::HitCheck {
+                            id: want,
+                            object,
+                            click,
+                        }),
+                        Out::Idle,
+                    );
+                }
+                let release = call(ids, "Runtime.releaseObject", json!({"objectId": object}));
+                if let Some(what) = r.ok().as_ref().and_then(web::covered_by) {
+                    self.release.push(release);
+                    return done(err(Fail::Covered, format!("covered by {what}")));
+                }
+                self.press(click, Some(release), now_ms, ids)
             }
             Stage::Metrics {
                 then,
@@ -1175,6 +1276,30 @@ impl Job {
                 self.glide_then(seq, first, now_ms)
             }
             None => (Some(seq), Out::Calls(vec![first])),
+        }
+    }
+
+    /// The events of a click by ref the page has let through; the glide is over and the point was said.
+    /// `release` lets go of the element the hit test held, and goes out with the first event.
+    fn press(
+        &mut self,
+        click: HeldClick,
+        release: Option<Call>,
+        now_ms: u64,
+        ids: &mut Ids<'_>,
+    ) -> (Option<Stage>, Out) {
+        let then = Then::Click {
+            button: click.button,
+            double: click.double,
+        };
+        let (stage, out) = self.pointer_then(then, click.x, click.y, None, now_ms, ids);
+        match (out, release) {
+            (Out::Calls(calls), Some(r)) => {
+                let mut all = vec![r];
+                all.extend(calls);
+                (stage, Out::Calls(all))
+            }
+            (out, _) => (stage, out),
         }
     }
 
@@ -1546,6 +1671,11 @@ mod tests {
                 Some(13) => Ok(quad(100.0, 900.0, 80.0, 20.0)),
                 _ => Err("Could not compute content quads.".into()),
             },
+            "DOM.resolveNode" => Ok(json!({"object": {"objectId": "el-1"}}).to_string()),
+            // The target itself, or a child of it: the page's check says the click lands.
+            "Runtime.callFunctionOn" => {
+                Ok(json!({"result": {"type": "object", "value": {"ok": true}}}).to_string())
+            }
             _ => Ok("{}".into()),
         }
     }
@@ -1875,18 +2005,177 @@ mod tests {
                 "DOM.scrollIntoViewIfNeeded",
                 "Page.getLayoutMetrics",
                 "DOM.getContentQuads",
+                "DOM.resolveNode",
+                "Runtime.callFunctionOn",
+                "Runtime.releaseObject",
                 "Input.dispatchMouseEvent",
                 "Input.dispatchMouseEvent",
                 "Input.dispatchMouseEvent",
             ]
         );
-        let kinds: Vec<&str> = rig.log[4..]
+        let kinds: Vec<&str> = rig.log[7..]
             .iter()
             .map(|(_, p)| p["type"].as_str().unwrap())
             .collect();
         assert_eq!(kinds, ["mouseMoved", "mousePressed", "mouseReleased"]);
         assert_eq!(rig.log[1].1["backendNodeId"], json!(11));
-        assert_eq!(rig.log[5].1["x"], json!(140.0));
+        assert_eq!(rig.log[4].1["backendNodeId"], json!(11));
+        assert_eq!(rig.log[5].1["objectId"], json!("el-1"));
+        assert_eq!(rig.log[5].1["functionDeclaration"], json!(web::HIT_TEST_FN));
+        assert_eq!(
+            rig.log[5].1["arguments"],
+            json!([{"value": 140.0}, {"value": 212.0}]),
+            "the point the mouse will press"
+        );
+        assert_eq!(rig.log[6].1["objectId"], json!("el-1"));
+        assert_eq!(rig.log[8].1["x"], json!(140.0));
+    }
+
+    /// A click on e2 of the test page with `value` as the answer of the page's check.
+    fn click_with_check(value: Value) -> (Result<Value, JobError>, Rig) {
+        let mut rig = Rig::new();
+        let (_, refs) = look(&mut rig);
+        rig.log.clear();
+        let (r, _) = rig.run(
+            Op::Click {
+                target: Target::Ref("e2".into()),
+                button: Button::Left,
+                double: false,
+            },
+            &refs,
+            |m, p| match m {
+                "Runtime.callFunctionOn" => {
+                    Ok(json!({"result": {"type": "object", "value": value}}).to_string())
+                }
+                _ => browser(m, p),
+            },
+        );
+        (r, rig)
+    }
+
+    #[test]
+    fn a_covered_click_presses_nothing_and_names_what_is_on_top() {
+        let (r, rig) =
+            click_with_check(json!({"covered": true, "tag": "div", "name": "Accept all"}));
+        let e = r.unwrap_err();
+        assert_eq!(e.fail, Fail::Covered);
+        assert_eq!(e.message, "covered by div: Accept all");
+        assert!(
+            !rig.methods().contains(&"Input.dispatchMouseEvent"),
+            "{:?}",
+            rig.methods()
+        );
+    }
+
+    #[test]
+    fn a_covered_click_lets_go_of_the_element_it_held() {
+        let mut rig = Rig::new();
+        let (_, refs) = look(&mut rig);
+        let mut ids = rig.ids;
+        let (job, out) = Job::start(
+            Op::Click {
+                target: Target::Ref("e2".into()),
+                button: Button::Left,
+                double: false,
+            },
+            &refs,
+            0,
+            &mut Ids(&mut ids),
+        );
+        let mut job = job.unwrap();
+        job.set_glide_ms(0);
+        let page = Page { url: "", title: "" };
+        let mut out = out;
+        while let Out::Calls(calls) = out {
+            let mut next = Out::Idle;
+            for c in calls {
+                let reply = match c.method.as_str() {
+                    "Runtime.callFunctionOn" => Ok(
+                        json!({"result": {"value": {"covered": true, "tag": "div", "name": ""}}})
+                            .to_string(),
+                    ),
+                    m => browser(m, &c.params),
+                };
+                let o = job.on_reply(c.id, reply, page, 1, &mut Ids(&mut ids));
+                if o != Out::Idle {
+                    next = o;
+                }
+            }
+            out = next;
+        }
+        assert!(matches!(out, Out::Done(Err(_))), "{out:?}");
+        let rel = job.release_calls(&mut Ids(&mut ids));
+        assert_eq!(rel.len(), 1, "{rel:?}");
+        assert_eq!(rel[0].method, "Runtime.releaseObject");
+        assert_eq!(rel[0].params["objectId"], "el-1");
+        assert!(job.release_calls(&mut Ids(&mut ids)).is_empty(), "once");
+    }
+
+    #[test]
+    fn a_click_on_the_target_or_a_child_of_it_is_pressed() {
+        // The page's check treats the target, what is inside it and a label of it alike.
+        let (r, rig) = click_with_check(json!({"ok": true}));
+        assert_eq!(r.unwrap()["clicked"], json!({"x": 140.0, "y": 212.0}));
+        assert_eq!(
+            rig.methods()
+                .iter()
+                .filter(|m| **m == "Input.dispatchMouseEvent")
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn a_page_that_cannot_answer_the_check_is_clicked_as_before() {
+        // No element object, a check that threw, a null: the same three events as ever.
+        let cases: [(&str, Result<String, String>); 4] = [
+            ("DOM.resolveNode", Err("Node not found".into())),
+            ("DOM.resolveNode", Ok("{}".into())),
+            ("Runtime.callFunctionOn", Err("Context destroyed".into())),
+            (
+                "Runtime.callFunctionOn",
+                Ok(
+                    json!({"result": {"type": "object"}, "exceptionDetails": {"text": "boom"}})
+                        .to_string(),
+                ),
+            ),
+        ];
+        for (method, answer) in cases {
+            let mut rig = Rig::new();
+            let (_, refs) = look(&mut rig);
+            rig.log.clear();
+            let (r, _) = rig.run(
+                Op::Click {
+                    target: Target::Ref("e2".into()),
+                    button: Button::Left,
+                    double: false,
+                },
+                &refs,
+                |m, p| {
+                    if m == method {
+                        answer.clone()
+                    } else {
+                        browser(m, p)
+                    }
+                },
+            );
+            assert_eq!(
+                r.unwrap()["clicked"],
+                json!({"x": 140.0, "y": 212.0}),
+                "{method}"
+            );
+            assert_eq!(
+                rig.methods()
+                    .iter()
+                    .filter(|m| **m == "Input.dispatchMouseEvent")
+                    .count(),
+                3,
+                "{method}"
+            );
+        }
+        // The check says null: it could not tell.
+        let (r, _) = click_with_check(Value::Null);
+        assert!(r.is_ok());
     }
 
     #[test]
@@ -2444,7 +2733,18 @@ mod tests {
         );
         let out = job.on_tick(5_010 + GLIDE_MAX_MS, &mut Ids(&mut ids));
         let (sent, out) = step_all(&mut job, out, &mut ids, 5_300);
-        assert_eq!(sent, ["Input.dispatchMouseEvent"; 3]);
+        assert_eq!(
+            sent,
+            [
+                "DOM.resolveNode",
+                "Runtime.callFunctionOn",
+                "Runtime.releaseObject",
+                "Input.dispatchMouseEvent",
+                "Input.dispatchMouseEvent",
+                "Input.dispatchMouseEvent"
+            ],
+            "the page is asked after the glide, right before the press"
+        );
         assert_eq!(
             out,
             Out::Done(Ok(json!({"clicked": {"x": 140.0, "y": 212.0}})))
@@ -2657,7 +2957,7 @@ mod tests {
         let mut job = job.unwrap();
         job.set_glide_ms(0);
         let (sent, out) = step_all(&mut job, out, &mut ids, 1);
-        assert_eq!(sent.len(), 7, "{sent:?}");
+        assert_eq!(sent.len(), 10, "{sent:?}");
         assert!(matches!(out, Out::Done(Ok(_))));
         assert!(job.take_point().is_some());
     }
@@ -2692,7 +2992,7 @@ mod tests {
         let Out::Calls(c) = job.on_tick(10 + 420, &mut Ids(&mut ids)) else {
             panic!("the glide has landed")
         };
-        assert_eq!(c[0].params["type"], "mouseMoved");
+        assert_eq!(c[0].method, "DOM.resolveNode");
         assert!(!job.glide_for(0, 500), "no glide under way any more");
         // No glide (the arrow is not drawn, does not move, or motion is off): due at once.
         let mut job = start(&mut ids);

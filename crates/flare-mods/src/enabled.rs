@@ -58,6 +58,9 @@ pub struct Identity {
     pub author: Option<String>,
     pub homepage: Option<String>,
     pub source: Option<String>,
+    /// Only in an install record: the folder of the zip it was installed from, where Update opens its file picker.
+    /// Never part of what is approved, so another folder does not ask for approval again.
+    pub folder: Option<String>,
     /// `sha256:` and 64 lower-case hex digits (`crate::hash`).
     pub hash: Option<String>,
 }
@@ -151,8 +154,8 @@ impl EnabledStore {
         self.read_only
     }
 
-    /// Where Settings installed the plugin from, and the hash of what it installed (only `source` and `hash` are
-    /// set), on or off. Empty when it was never installed by Settings.
+    /// Where Settings installed the plugin from, and the hash of what it installed (only `source`, `folder` and `hash`
+    /// are set), on or off. Empty when it was never installed by Settings.
     pub fn installed(&self, id: &str) -> Identity {
         self.mods
             .get(id)
@@ -184,11 +187,13 @@ impl EnabledStore {
         &mut self,
         id: &str,
         source: Option<&str>,
+        folder: Option<&str>,
         hash: Option<&str>,
     ) -> Result<(), String> {
         let mut entry = self.mods.get(id).cloned().unwrap_or_default();
         entry.installed = Identity {
             source: source.map(str::to_string),
+            folder: folder.map(str::to_string),
             hash: hash.map(str::to_string),
             ..Identity::default()
         };
@@ -332,9 +337,13 @@ impl EnabledStore {
                     v["fill"] = json!("always");
                 }
                 let i = &e.installed;
-                if i.source.is_some() || i.hash.is_some() {
+                if i.source.is_some() || i.folder.is_some() || i.hash.is_some() {
                     let mut o = Map::new();
-                    for (key, val) in [("source", &i.source), ("hash", &i.hash)] {
+                    for (key, val) in [
+                        ("source", &i.source),
+                        ("folder", &i.folder),
+                        ("hash", &i.hash),
+                    ] {
                         if let Some(s) = val {
                             o.insert(key.into(), Value::String(s.clone()));
                         }
@@ -406,6 +415,7 @@ fn entry_of(v: &Value) -> Option<Entry> {
         .map(identity_of)
         .map(|i| Identity {
             source: i.source,
+            folder: i.folder,
             hash: i.hash,
             ..Identity::default()
         })
@@ -460,6 +470,7 @@ fn identity_of(o: &Map<String, Value>) -> Identity {
         author: text("author"),
         homepage: text("homepage"),
         source: text("source"),
+        folder: text("folder"),
         hash: text("hash").filter(|h| crate::hash::is_hash(h)),
     }
 }
@@ -687,6 +698,7 @@ mod tests {
             author: Some("someone".into()),
             homepage: Some("https://example.com/todo".into()),
             source: None,
+            folder: None,
             hash: Some(format!("sha256:{}", "ab".repeat(32))),
         }
     }
@@ -727,7 +739,7 @@ mod tests {
         let file = dir.path().join("mods.json");
         let mut s = EnabledStore::load(&file);
         let hash = format!("sha256:{}", "cd".repeat(32));
-        s.set_installed("todo", Some("https://example.com/t.zip"), Some(&hash))
+        s.set_installed("todo", Some("https://example.com/t.zip"), None, Some(&hash))
             .unwrap();
         let text = std::fs::read_to_string(&file).unwrap(); // sync-ok: test code only
         assert_eq!(

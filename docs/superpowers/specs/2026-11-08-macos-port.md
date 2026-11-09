@@ -63,7 +63,7 @@ Total: about 3 months to full parity at a steady pace.
 
 Phase 5 progress: step 1 (2026-11-08) is the engine, `crates/flare-cef`: CEF 156.0.14 pinned and cached in
 `~/Library/Caches/flare-cef`, the dev bundle with its five helpers (ad hoc), the CEF `NSApplication`, windowless
-pixels, headless; `agent_job`'s 11 DevTools methods and the runaway-eval timeout proved on a Mac (rules 251 to 253,
+pixels, headless; `agent_job`'s DevTools methods (11 then, 14 with main's covered-click check) and the runaway-eval timeout proved on a Mac (rules 251 to 253,
 `docs/parity.md` "macOS port, phase 5"). Step 2 (2026-11-08) is the web panel: `WebBackend` on CEF
 (`crates/flare-web/src/macos/host.rs`), the page as a picture in its box with the window's pointer, wheel, keys and
 input method handed over, the walls decided in `flare_web::walls` and re-proved with the spike's observers, the real

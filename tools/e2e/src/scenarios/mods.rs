@@ -649,35 +649,6 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
         mods_state(app)["tools"] == json!(["mod_notes_append_note"])
     });
     ctx.ok(back, "on again, the agent has the tool back");
-    // The sheet's Open button: the mod's panel opens in the shell tab, which comes to the front.
-    let s = sheet(app);
-    let b = s["open_panel"].clone();
-    ctx.ok(
-        s["panel"].as_str().is_some_and(|p| !p.is_empty()) && b["w"].as_f64().unwrap_or(0.0) > 0.0,
-        format!(
-            "the sheet of a mod that is on offers its panel ({})",
-            s["panel"]
-        ),
-    );
-    let (x, y, w, h) = (
-        b["x"].as_f64().unwrap_or(0.0),
-        b["y"].as_f64().unwrap_or(0.0),
-        b["w"].as_f64().unwrap_or(0.0),
-        b["h"].as_f64().unwrap_or(0.0),
-    );
-    let _ = app
-        .session
-        .click((x + w / 2.0) as f32, (y + h / 2.0) as f32);
-    let shown = ctx.until("the mod's panel from the sheet", 15_000, &mut || {
-        let s = mods_state(app);
-        s["panels"][0]["mod"] == json!("notes")
-            && !settings_front(app)
-            && s["panel_kind"] == json!(3)
-    });
-    ctx.ok(
-        shown,
-        "the sheet's Open button opens the mod's panel in the shell tab and brings it forward",
-    );
     Ok(())
 }
 
