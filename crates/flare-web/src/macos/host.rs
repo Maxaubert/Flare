@@ -985,6 +985,8 @@ impl WebBackend for WebHost {
         lock(&self.inbox).clear();
     }
 
+    fn close_popup(&mut self, _tab: &str) {}
+
     fn answer_download(&mut self, id: u64, save: bool) {
         let Some(d) = self.downloads.remove(&id) else {
             return;
@@ -1141,6 +1143,7 @@ impl WebBackend for WebHost {
             private,
             // CEF's Alloy browser has no password manager or form autofill: nothing is offered or filled in.
             autofill: false,
+            popups: Vec::new(),
         })
     }
 

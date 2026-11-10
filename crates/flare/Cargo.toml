@@ -56,6 +56,10 @@ tempfile.workspace = true
 zip.workspace = true
 sha2.workspace = true
 
+# The UI thread's own CPU time for the hold tests (ui_tests/term.rs).
+[target.'cfg(unix)'.dev-dependencies]
+libc.workspace = true
+
 [build-dependencies]
 slint-build.workspace = true
 
