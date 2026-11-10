@@ -125,6 +125,10 @@ fn the_web_panel_on_cef_navigates_draws_takes_input_and_holds_its_walls_with_no_
             "panel.same-document",
             "panel.external-schemes",
             "panel.new-window-same-view",
+            "panel.popup",
+            "panel.popup-closes-itself",
+            "panel.popup-strip-close",
+            "panel.popup-blocked",
             "panel.failed-load",
             "panel.dialogs",
             "panel.permissions",
@@ -140,6 +144,7 @@ fn the_web_panel_on_cef_navigates_draws_takes_input_and_holds_its_walls_with_no_
             "panel.focus",
             "panel.cdp",
             "panel.gone",
+            "panel.notes",
             "panel.closed",
         ],
     );

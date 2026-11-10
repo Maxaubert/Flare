@@ -2030,6 +2030,7 @@ dependencies = [
  "flare-render",
  "flare-shells",
  "flare-theme",
+ "libc",
  "log",
  "memchr",
  "portable-pty",

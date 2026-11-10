@@ -245,7 +245,11 @@ the scenario waits for.
   has loaded; the controller's bounds (asked of the browser), the child window of Flare's window, the box Slint drew and the
   layout maths are the same rectangle; a script reads the page; a terminal menu hides the window and a still takes its place and
   both undo when it closes; `browser.navigate` to a url, back, forward and reload; refused addresses (`file:`, `javascript:`,
-  `data:`, a login) and wrong parameters; `target=_blank` stays in the panel and `window.open` makes no window of its own; a
+  `data:`, a login) and wrong parameters; a page's `window.open` as it loads (no click at all) opens nothing and the bar says
+  "Pop-up blocked"; a trusted click (the browser tools' `browser.click`, DevTools input events) on a `target=_blank`
+  link opens it in the panel, and on a `window.open` with a size opens exactly one pop-up over the page under the strip (its
+  bounds are the box Slint drew, the page behind is hidden, no top-level window appears), the agent's click is refused while it
+  is open, and the pop-up's `window.close()` closes it and shows the page again (rule 249); a
   geolocation request is denied; the splitter moves the page with it; a change of display scale (to 150 percent from 100, to 100 from 225) puts the page where the new layout says; a second tab hides the page and coming back shows it; closing
   the panel frees the controller, the browser object and the browser process; Ctrl+Shift+P brings the page back at its address.
   The test hook has one request for a page, `WebScript` (runs a script in the front page), and two probes: `web.state` and `web.script.result`.

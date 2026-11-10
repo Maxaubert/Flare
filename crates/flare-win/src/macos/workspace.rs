@@ -209,6 +209,57 @@ pub fn open_web_url(escaped: &str) -> Result<(), String> {
     })
 }
 
+/// An app link (`bankid:`, `mailto:`) as `NSURL` reads it: `escaped` is the percent-encoded link
+/// (`shell_open::escape_app_uri`), and anything `NSURL` reads as a web address, a file or with no
+/// scheme is refused.
+pub fn app_url(escaped: &str) -> Result<Retained<NSURL>, String> {
+    let url = NSURL::URLWithString(&NSString::from_str(escaped))
+        .ok_or_else(|| "not a link the system can read".to_string())?;
+    let scheme = url.scheme().map(|s| s.to_string().to_ascii_lowercase());
+    match scheme.as_deref() {
+        None | Some("" | "http" | "https" | "file") => Err("not an app link".to_string()),
+        Some(_) => Ok(url),
+    }
+}
+
+/// The app this Mac opens links of `url`'s scheme with, when it is one that may (`handler_ok`): a
+/// terminal or a script runner (Terminal takes `ssh:`, `telnet:` and `x-man-page:`) never opens a
+/// page's link (regression rule 1123).
+fn safe_link_handler(url: &NSURL) -> Result<Retained<NSURL>, String> {
+    safe_handler(url).map_err(|e| {
+        if e.starts_with("no app") {
+            "no app opens this link".to_string()
+        } else {
+            e.replace("this file", "this link")
+        }
+    })
+}
+
+/// Is there an app that may open links of `scheme` (`URLForApplicationToOpenURL:` on `<scheme>:`)?
+/// Asks LaunchServices only: nothing opens.
+pub fn link_handler_ok(scheme: &str) -> bool {
+    autoreleasepool(|_| {
+        NSURL::URLWithString(&NSString::from_str(&format!("{scheme}:")))
+            .is_some_and(|u| safe_link_handler(&u).is_ok())
+    })
+}
+
+/// Opens a checked app link with the very app that was checked (`openURLs:withApplicationAtURL:`),
+/// so nothing can swap the handler in between. The link alone: no arguments, no shell.
+pub fn open_app_url(escaped: &str) -> Result<(), String> {
+    autoreleasepool(|_| {
+        let url = app_url(escaped)?;
+        let app = safe_link_handler(&url)?;
+        let list = NSArray::from_retained_slice(&[url]);
+        let config = NSWorkspaceOpenConfiguration::configuration();
+        NSWorkspace::sharedWorkspace()
+            .openURLs_withApplicationAtURL_configuration_completionHandler(
+                &list, &app, &config, None,
+            );
+        Ok(())
+    })
+}
+
 /// Pure: whether `abs` may be handed to Finder as a path: absolute, and no control character
 /// (0x00 to 0x1F, 0x7F, 0x80 to 0x9F). A quote is an ordinary file name character on the Mac and
 /// no command line is built, so it is allowed.

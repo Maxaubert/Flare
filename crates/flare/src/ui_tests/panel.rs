@@ -1166,6 +1166,42 @@ fn the_download_button_shows_only_for_a_missing_runtime() {
     assert_eq!(hits.get(), 1);
 }
 
+#[test]
+fn the_popup_strip_takes_the_pages_top_and_its_close_calls_back() {
+    let h = window(1.0);
+    open_web(&h);
+    let page_y = h.comp.get_panel_web_y();
+    let page_h = h.comp.get_panel_web_h();
+    assert_eq!(
+        h.comp.get_panel_popup_h(),
+        0.0,
+        "no strip while no pop-up is open"
+    );
+    let closed = Rc::new(Cell::new(0u32));
+    {
+        let c = closed.clone();
+        h.comp.on_panel_web_popup_close(move || c.set(c.get() + 1));
+    }
+    h.comp
+        .set_panel_web_popup("Pop-up from bank.example".into());
+    h.advance(0);
+    let strip = h.comp.get_panel_popup_h();
+    assert!(strip >= 24.0, "{strip}");
+    assert_eq!(
+        h.comp.get_panel_web_y(),
+        page_y + strip,
+        "the pop-up sits under the strip"
+    );
+    assert_eq!(h.comp.get_panel_web_h(), page_h - strip);
+    // Close sits at the strip's right end, in Flare's chrome above the page.
+    let right = h.comp.get_page_left() + h.comp.get_panel_slot_x() + h.comp.get_panel_slot_w();
+    h.click(right - 8.0 - 12.0, page_y + strip / 2.0);
+    assert_eq!(closed.get(), 1);
+    h.comp.set_panel_web_popup("".into());
+    h.advance(0);
+    assert_eq!(h.comp.get_panel_web_y(), page_y);
+    assert_eq!(h.comp.get_panel_popup_h(), 0.0);
+}
 // ---- "Ask agent" (#33) ----
 
 #[test]

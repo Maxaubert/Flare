@@ -23,22 +23,35 @@ fn spew_chunk() -> String {
     s
 }
 
-/// Starts the sampler: times `snapshot()` every 5 ms until `stop`, returns the worst in ms.
-fn start_sampler(rig: &Rig, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<(f64, usize)> {
+/// Starts the sampler: times `snapshot()` every 5 ms until `stop`. Returns the worst on the wall
+/// clock (the wait for the lock and the copy), the worst copy on the sampler's CPU clock (off
+/// Windows; zero there) and the number of samples.
+fn start_sampler(rig: &Rig, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<(f64, f64, usize)> {
     let emu = Arc::clone(&rig.emu);
     std::thread::spawn(move || {
         let mut worst = 0.0f64;
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut worst_copy = 0.0f64;
         let mut n = 0usize;
         while !stop.load(Ordering::SeqCst) {
             let t = Instant::now();
-            let grid = emu.lock().snapshot();
+            let e = emu.lock();
+            #[cfg(unix)]
+            let c = common::thread_cpu();
+            let grid = e.snapshot();
+            #[cfg(unix)]
+            {
+                let copy = common::thread_cpu().saturating_sub(c);
+                worst_copy = worst_copy.max(copy.as_secs_f64() * 1000.0);
+            }
+            drop(e);
             let ms = t.elapsed().as_secs_f64() * 1000.0;
             drop(grid);
             worst = worst.max(ms);
             n += 1;
             std::thread::sleep(Duration::from_millis(5)); // sync-ok: test sampler thread
         }
-        (worst, n)
+        (worst, worst_copy, n)
     })
 }
 
@@ -49,7 +62,13 @@ fn done_visible(e: &Emulator) -> bool {
     })
 }
 
-/// Runs a flood of `mb` MB at 120x40; returns (seconds, worst snapshot ms, samples).
+/// Runs a flood of `mb` MB at 120x40; returns (seconds, worst snapshot ms, samples). The worst
+/// snapshot is what one waited and took on the wall clock on Windows. Off Windows it is the work that
+/// bounds that wait: the reader's longest hold of the lock plus the longest copy, each on its own
+/// thread's CPU clock. The lock is fair, so a snapshot waits for one hold at most; the wall clock adds
+/// whatever time a shared runner hands the cores to other tests (257 to 430 ms on macOS CI where the
+/// dev Mac reads 3 ms idle and 52 ms with every core busy twice over, while the work stays the same,
+/// 2026-11-10).
 fn run_flood(mb: u32, wait_ms: u64) -> (f64, f64, usize) {
     let dir = temp_dir_named("flare-m2-flood");
     let rig = Rig::spawn(SPEW, &[&mb.to_string()], dir.path(), None, 120, 40);
@@ -59,7 +78,20 @@ fn run_flood(mb: u32, wait_ms: u64) -> (f64, f64, usize) {
     let done = rig.wait_for(wait_ms, done_visible);
     let secs = t0.elapsed().as_secs_f64();
     stop.store(true, Ordering::SeqCst);
-    let (worst, samples) = sampler.join().expect("the sampler ends");
+    let (wall, worst_copy, samples) = sampler.join().expect("the sampler ends");
+    #[cfg(windows)]
+    let worst = {
+        let _ = worst_copy;
+        wall
+    };
+    #[cfg(not(windows))]
+    let worst = {
+        let hold = rig.longest_hold().as_secs_f64() * 1000.0;
+        println!(
+            "flood: longest hold {hold:.1} ms + longest copy {worst_copy:.1} ms (CPU); worst wall {wall:.1} ms"
+        );
+        hold + worst_copy
+    };
     assert!(
         done,
         "no SPEW-DONE in {wait_ms} ms; screen {:?}",

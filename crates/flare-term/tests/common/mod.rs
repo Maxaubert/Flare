@@ -26,8 +26,28 @@ pub struct Rig {
     writer: Writer,
     reader: Option<JoinHandle<()>>,
     last_data: Arc<AtomicU64>,
+    /// The longest hold of the emulator lock by the reader, on its CPU clock, in nanoseconds (off Windows).
+    longest_hold_ns: Arc<AtomicU64>,
     started: Instant,
     pid: u32,
+}
+
+/// The calling thread's own CPU time (macOS, Linux: to the microsecond): the work a thread did, without the
+/// time a shared runner gave its core to another test. The flood test bounds the parser's hold of the lock
+/// and the snapshot's copy with it off Windows.
+#[cfg(unix)]
+pub fn thread_cpu() -> Duration {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a live timespec the call fills in; the clock id is one every unix has.
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+    assert_eq!(rc, 0, "the thread's CPU clock");
+    Duration::new(
+        u64::try_from(ts.tv_sec).unwrap_or(0),
+        u32::try_from(ts.tv_nsec).unwrap_or(0),
+    )
 }
 
 /// Milliseconds since the rig started, saturating.
@@ -79,18 +99,22 @@ impl Rig {
         )));
         let events: Events = Arc::new(Mutex::new(Vec::new()));
         let last_data = Arc::new(AtomicU64::new(0));
+        let longest_hold_ns = Arc::new(AtomicU64::new(0));
         let started = Instant::now();
 
-        let (t_emu, t_writer, t_events, t_last) = (
+        let (t_emu, t_writer, t_events, t_last, t_hold) = (
             Arc::clone(&emu),
             Arc::clone(&writer),
             Arc::clone(&events),
             Arc::clone(&last_data),
+            Arc::clone(&longest_hold_ns),
         );
         let reader_thread = std::thread::Builder::new()
             .name("rig-reader".into())
             .spawn(move || {
                 let mut buf = vec![0u8; 64 * 1024];
+                #[cfg(not(unix))]
+                let _ = &t_hold;
                 loop {
                     let n = match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
@@ -99,8 +123,16 @@ impl Rig {
                     t_last.store(ms_since(started), Ordering::SeqCst);
                     let evs = {
                         let mut e = t_emu.lock();
+                        #[cfg(unix)]
+                        let held = thread_cpu();
                         let mut evs = e.feed(&buf[..n]);
                         evs.extend(e.release_sync_if_due(Instant::now()));
+                        #[cfg(unix)]
+                        {
+                            let ns = thread_cpu().saturating_sub(held).as_nanos();
+                            t_hold
+                                .fetch_max(u64::try_from(ns).unwrap_or(u64::MAX), Ordering::SeqCst);
+                        }
                         evs
                     };
                     route(evs, &t_writer, &t_events);
@@ -115,9 +147,15 @@ impl Rig {
             writer,
             reader: Some(reader_thread),
             last_data,
+            longest_hold_ns,
             started,
             pid,
         }
+    }
+
+    /// The longest the reader has held the emulator lock, on its CPU clock (off Windows; zero there).
+    pub fn longest_hold(&self) -> Duration {
+        Duration::from_nanos(self.longest_hold_ns.load(Ordering::SeqCst))
     }
 
     /// The shell's process id (0 once the rig has been killed).
