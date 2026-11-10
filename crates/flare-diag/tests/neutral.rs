@@ -18,7 +18,8 @@ use serde_json::Map;
 const MARKER: &str = "MARKER-4f2b";
 
 /// The field keys that would carry typed text, a clipboard, a transcript, audio, a title, a note, a
-/// prompt or a terminal line. None may name a field of a diagnostics line.
+/// prompt, a terminal line, or a page's address, query, path or cookie (rule 247: the web lines keep the site
+/// only). None may name a field of a diagnostics line.
 const TEXT_KEYS: &[&str] = &[
     "text",
     "input",
@@ -30,6 +31,11 @@ const TEXT_KEYS: &[&str] = &[
     "note",
     "prompt",
     "line",
+    "url",
+    "uri",
+    "query",
+    "cookie",
+    "path",
 ];
 
 /// The honest exceptions: a committed line that uses one of `TEXT_KEYS` for a value that is not text

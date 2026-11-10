@@ -40,6 +40,8 @@ use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use flare_ctl::{CancelFlag, CtlError, code};
+use flare_diag::agent_diag::DiagValue;
+use flare_diag::web_diag::{WebDiag, WebLine};
 use flare_surfaces::agent_cursor::{AgentBorder, AgentCursor};
 use flare_surfaces::agent_job::{
     Fail, GLIDE_MAX_MS, Ids, Job, JobError, Op as AgentOp, Out as JobOut, Page, RefMap,
@@ -51,7 +53,7 @@ use flare_surfaces::web::{
 };
 use flare_tabs::keymap::{ChordId, KeyContext, chord_of};
 use flare_term::keys::KeyEvent;
-use flare_web::{KeyFilter, KeyPress, Nav, Sink, WebBackend, WebEvent};
+use flare_web::{KeyFilter, KeyPress, Nav, NoteKind, Sink, WebBackend, WebEvent, WebNote};
 use flare_win::agent_cursor::{
     CursorArt, CursorBitmap, CursorShell, EdgeGlow, GlowShell, RecordBorder, RecordCursor,
     edge_glow,
@@ -76,6 +78,8 @@ const CAPTURE_TIMER: &str = "web.capture";
 pub(crate) const DRAG_TIMER: &str = "web.drag-settle";
 /// How long the slot's width holds still before the page takes it: the text panel's settle (`WRAP_SETTLE_MS`).
 pub(crate) const DRAG_SETTLE_MS: u64 = 120;
+/// The timer that writes the web lines' held copies once their window has passed (`timer_registry` name).
+const DIAG_TIMER: &str = "web.diag";
 /// The timer that runs while an agent call is on a page or its hold is still on.
 const AGENT_TIMER: &str = "web.agent";
 /// How often that timer looks (the person's mouse, a wait, a deadline, the hold). It runs only while
@@ -111,6 +115,8 @@ pub enum WebMsg {
     AgentTick,
     /// A splitter drag paused: the page takes the slot's width.
     DragSettled,
+    /// The web lines' gate has held copies whose window has passed.
+    DiagTick,
 }
 
 /// A `WebMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never an
@@ -125,6 +131,7 @@ impl std::fmt::Debug for WebMsgBox {
             WebMsg::UserInput => f.write_str("WebMsg::UserInput"),
             WebMsg::AgentTick => f.write_str("WebMsg::AgentTick"),
             WebMsg::DragSettled => f.write_str("WebMsg::DragSettled"),
+            WebMsg::DiagTick => f.write_str("WebMsg::DiagTick"),
         }
     }
 }
@@ -634,6 +641,8 @@ pub struct WebCtl {
     scale: f32,
     /// Added to the agent's clock: a test moves time on without waiting.
     clock_skew: u64,
+    /// The web kinds of the diagnostics log and their gate (rule 247).
+    web_diag: WebDiag,
 }
 
 /// The keys WebView2 reports in Win32 virtual-key codes, as the chord table knows them.
@@ -727,6 +736,125 @@ pub fn focus_loss(
     }
 }
 
+/// One row of [`WEB_LINES`]: a note of this kind (with this word, when `when` is set) is written as `line`, its word
+/// under `field` (none when empty), or `word` in its place.
+struct WebLineRow {
+    note: NoteKind,
+    when: Option<&'static str>,
+    line: &'static str,
+    field: &'static str,
+    word: Option<&'static str>,
+}
+
+/// How a view's note becomes a diagnostics line (rule 247). The first row that fits wins.
+const WEB_LINES: &[WebLineRow] = &[
+    WebLineRow {
+        note: NoteKind::Popup,
+        when: Some("refused"),
+        line: "web-refused",
+        field: "why",
+        word: Some("popup"),
+    },
+    WebLineRow {
+        note: NoteKind::Popup,
+        when: None,
+        line: "web-popup",
+        field: "to",
+        word: None,
+    },
+    WebLineRow {
+        note: NoteKind::NavRefused,
+        when: None,
+        line: "web-refused",
+        field: "why",
+        word: None,
+    },
+    WebLineRow {
+        note: NoteKind::LoadFailed,
+        when: None,
+        line: "web-load-failed",
+        field: "error",
+        word: None,
+    },
+    WebLineRow {
+        note: NoteKind::Process,
+        when: None,
+        line: "web-process",
+        field: "process",
+        word: None,
+    },
+    WebLineRow {
+        note: NoteKind::CloseIgnored,
+        when: None,
+        line: "web-close-ignored",
+        field: "",
+        word: None,
+    },
+    WebLineRow {
+        note: NoteKind::Permission,
+        when: None,
+        line: "web-permission",
+        field: "permission",
+        word: None,
+    },
+    WebLineRow {
+        note: NoteKind::Cert,
+        when: None,
+        line: "web-cert",
+        field: "error",
+        word: None,
+    },
+    WebLineRow {
+        note: NoteKind::Nav,
+        when: None,
+        line: "web-nav",
+        field: "",
+        word: None,
+    },
+];
+
+/// The diagnostics line of a note of `tab`'s view (`web`, `app` or `mod`): the tab, the view, the site, the site it
+/// came from, and the note's fixed words. Sites and words only: a note carries nothing else (rule 110).
+pub fn web_line(tab: &str, view: &'static str, note: &WebNote) -> Option<WebLine> {
+    let row = WEB_LINES
+        .iter()
+        .find(|r| r.note == note.kind() && r.when.is_none_or(|w| w == note.word()))?;
+    let word = row.word.unwrap_or(note.word());
+    let mut fields = vec![
+        ("id", DiagValue::Str(tab.to_string())),
+        ("view", DiagValue::Str(view.to_string())),
+        ("site", DiagValue::Str(note.site().to_string())),
+    ];
+    if !note.from().is_empty() {
+        fields.push(("from", DiagValue::Str(note.from().to_string())));
+    }
+    if !row.field.is_empty() && !word.is_empty() {
+        fields.push((row.field, DiagValue::Str(word.to_string())));
+    }
+    if let Some(user) = note.by_user() {
+        fields.push(("user", DiagValue::Bool(user)));
+    }
+    if let Some(reason) = note.reason() {
+        fields.push(("reason", DiagValue::Str(reason.to_string())));
+    }
+    if let Some(exit) = note.exit() {
+        // A Windows exit code is a DWORD: an NTSTATUS such as 0xC0000005 reads as itself, not as a negative number.
+        fields.push(("exit", DiagValue::Num(u64::from(exit as u32))));
+    }
+    Some(WebLine {
+        kind: row.line,
+        site: note.site().to_string(),
+        detail: word,
+        fields,
+    })
+}
+
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
 fn runtime_missing_note() -> String {
     format!(
         "Flare shows web pages with the Microsoft Edge WebView2 Runtime, and this PC does not have it. Install it from {RUNTIME_URL}, then open the page again."
@@ -793,6 +921,7 @@ impl WebCtl {
             motion: Rc::new(crate::e2e::animations_enabled),
             scale: 1.0,
             clock_skew: 0,
+            web_diag: WebDiag::new(crate::diag_ctl::agent_sink()),
         }
     }
 
@@ -2741,7 +2870,48 @@ impl WebCtl {
                 }
                 vec![]
             }
+            WebMsg::DiagTick => {
+                self.web_diag.tick(epoch_ms());
+                self.arm_diag_timer();
+                vec![]
+            }
         }
+    }
+
+    /// Writes a view's note to the diagnostics log through the gate (rule 247). A tab's panel is the web panel, or a
+    /// mini-app (`app`) or a mod's page (`mod`) shown in it; a plugin's bar or background page is a `mod`.
+    fn log_note(&mut self, e: &WebEvent) {
+        let (tab, note, view) = match e {
+            WebEvent::Note { tab, note } => {
+                let view = match self.tabs.get(tab).and_then(|t| t.app_host.as_deref()) {
+                    Some(h) if flare_surfaces::modview::mod_of_host(h).is_some() => "mod",
+                    Some(_) => "app",
+                    None => "web",
+                };
+                (tab, note, view)
+            }
+            WebEvent::View { event, .. } => match &**event {
+                WebEvent::Note { tab, note } => (tab, note, "mod"),
+                _ => return,
+            },
+            _ => return,
+        };
+        if let Some(line) = web_line(tab, view, note) {
+            self.web_diag.log(line, epoch_ms());
+            self.arm_diag_timer();
+        }
+    }
+
+    /// Starts the gate's timer for its next held line, if it holds one.
+    fn arm_diag_timer(&self) {
+        let Some(due) = self.web_diag.next_due() else {
+            return;
+        };
+        let post = std::sync::Arc::clone(&self.post);
+        let wait = due.saturating_sub(epoch_ms()).max(1);
+        crate::timer_registry::set(DIAG_TIMER, wait, false, move || {
+            post(UiMsg::Web(WebMsgBox(WebMsg::DiagTick)));
+        });
     }
 
     /// The tab's view shows a mod's page (stage 8).
@@ -2789,6 +2959,7 @@ impl WebCtl {
 
     fn on_event(&mut self, app: &AppWindow, e: WebEvent) -> Vec<WebOut> {
         let mut out = Vec::new();
+        self.log_note(&e);
         let mod_note = self.mod_note(&e);
         // Set when a diagram page has loaded: the question to put to it once the borrow of the tab ends.
         let mut diagram_ask: Option<DiagramAsk> = None;
@@ -3131,6 +3302,9 @@ impl WebCtl {
                     });
                 }
             }
+            // Logged above; a note changes nothing on screen, whichever view said it.
+            WebEvent::Note { .. } => {}
+            WebEvent::View { event, .. } if matches!(*event, WebEvent::Note { .. }) => {}
             WebEvent::View { slot, event } => {
                 // A plugin's background page is routed to the window; a bar (made by no one yet) is not a tab's panel,
                 // so nothing here acts on it.
@@ -3601,6 +3775,10 @@ mod tests {
             "WebMsg::AgentTick"
         );
         assert_eq!(
+            format!("{:?}", WebMsgBox(WebMsg::DiagTick)),
+            "WebMsg::DiagTick"
+        );
+        assert_eq!(
             format!(
                 "{:?}",
                 WebMsgBox(WebMsg::Decoded {
@@ -3635,5 +3813,129 @@ mod typing_tests {
         ] {
             assert!(!is_typing_key(vk), "{vk:#x}");
         }
+    }
+}
+
+#[cfg(test)]
+mod web_line_tests {
+    use super::*;
+    use flare_diag::agent_diag::MemorySink;
+    use std::sync::Arc;
+
+    fn note(kind: NoteKind, url: &str, from: &str) -> WebNote {
+        WebNote::new(kind, url, from)
+    }
+
+    #[test]
+    fn a_popup_that_went_to_the_panel_is_a_popup_line_with_the_tab_view_site_and_opener() {
+        let n = note(
+            NoteKind::Popup,
+            "https://bank.example/3ds?session=s3cret",
+            "https://shop.example/checkout",
+        )
+        .detail("panel")
+        .user(true);
+        let l = web_line("t2", "web", &n).expect("a line");
+        assert_eq!(l.kind, "web-popup");
+        assert_eq!(
+            l.fields,
+            vec![
+                ("id", DiagValue::Str("t2".into())),
+                ("view", DiagValue::Str("web".into())),
+                ("site", DiagValue::Str("bank.example".into())),
+                ("from", DiagValue::Str("shop.example".into())),
+                ("to", DiagValue::Str("panel".into())),
+                ("user", DiagValue::Bool(true)),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_note_kind_has_its_line_and_a_refused_popup_is_a_refusal() {
+        let refused = note(NoteKind::Popup, "https://a.example/", "").detail("refused");
+        let l = web_line("t1", "app", &refused).expect("a line");
+        assert_eq!(l.kind, "web-refused");
+        assert!(l.fields.contains(&("why", DiagValue::Str("popup".into()))));
+        assert!(!l.fields.iter().any(|(k, _)| *k == "from"));
+        let cases = [
+            (NoteKind::NavRefused, "scheme", "web-refused", "why"),
+            (
+                NoteKind::LoadFailed,
+                "name-not-resolved",
+                "web-load-failed",
+                "error",
+            ),
+            (NoteKind::Process, "render", "web-process", "process"),
+            (NoteKind::CloseIgnored, "", "web-close-ignored", ""),
+            (
+                NoteKind::Permission,
+                "camera",
+                "web-permission",
+                "permission",
+            ),
+            (NoteKind::Cert, "cert-expired", "web-cert", "error"),
+            (NoteKind::Nav, "", "web-nav", ""),
+        ];
+        for (kind, word, line, field) in cases {
+            let n = note(kind, "https://x.example/p?q=1", "https://y.example/").detail(word);
+            let l = web_line("t1", "web", &n).expect("a line");
+            assert_eq!(l.kind, line, "{kind:?}");
+            assert_eq!(l.detail, word, "{kind:?}");
+            if !field.is_empty() {
+                assert!(
+                    l.fields.contains(&(field, DiagValue::Str(word.into()))),
+                    "{kind:?}"
+                );
+            }
+            assert!(
+                flare_diag::web_diag::WEB_KINDS.contains(&l.kind),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_process_line_says_its_reason_and_a_windows_exit_code() {
+        let n = note(NoteKind::Process, "https://x.example/", "")
+            .detail("render")
+            .failure("crashed", 0xC000_0005_u32 as i32);
+        let l = web_line("t1", "mod", &n).expect("a line");
+        assert!(
+            l.fields
+                .contains(&("reason", DiagValue::Str("crashed".into())))
+        );
+        assert!(l.fields.contains(&("exit", DiagValue::Num(0xC000_0005))));
+        assert!(l.fields.contains(&("view", DiagValue::Str("mod".into()))));
+    }
+
+    /// Rule 110 and 247: whatever the address held, the line the log gets has the site and fixed words only.
+    #[test]
+    fn no_line_holds_an_address_a_path_a_query_or_a_login() {
+        let sink = Arc::new(MemorySink::default());
+        let mut d = WebDiag::new(sink.clone());
+        let url = "https://alice:pw@Bank.Example:8443/acct/12345?token=SECRET#frag";
+        let kinds = [
+            NoteKind::Popup,
+            NoteKind::NavRefused,
+            NoteKind::LoadFailed,
+            NoteKind::Process,
+            NoteKind::CloseIgnored,
+            NoteKind::Permission,
+            NoteKind::Cert,
+            NoteKind::Nav,
+        ];
+        for (i, kind) in kinds.into_iter().enumerate() {
+            let n = note(kind, url, url).detail("word").user(false);
+            d.log(web_line("t1", "web", &n).expect("a line"), i as u64);
+        }
+        let lines = sink.lines();
+        assert_eq!(lines.len(), kinds.len());
+        let text = format!("{lines:?}");
+        for secret in [
+            "alice", "pw", "8443", "acct", "12345", "token", "SECRET", "frag", "Bank.",
+        ] {
+            assert!(!text.contains(secret), "{secret} in {text}");
+        }
+        assert!(lines.iter().all(|l| l.text("site") == Some("bank.example")));
     }
 }

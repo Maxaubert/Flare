@@ -12,7 +12,9 @@ use std::sync::Arc;
 
 use flare_surfaces::app::AppSpec;
 pub use flare_surfaces::slot::{Slot, ViewKind};
-use flare_surfaces::web::PhysRect;
+use flare_surfaces::web::{PhysRect, site_of};
+#[cfg(doc)]
+use flare_surfaces::web::{permission_word, process_reason_word, process_word, web_error_name};
 
 /// Where events go: the window's `UiMsg` queue. Called on the UI thread, from inside the message
 /// loop's dispatch of a WebView2 callback, so it must only queue.
@@ -159,6 +161,12 @@ pub enum WebEvent {
         host: String,
         json: String,
     },
+    /// Something the diagnostics log keeps about a page or the browser (rule 247): sites and fixed words only,
+    /// sanitised here in `flare-web`, so no address leaves it for the log.
+    Note {
+        tab: String,
+        note: WebNote,
+    },
     /// An event of a view that is not a tab's panel (a plugin's bar or background page): the event as a panel
     /// would say it (its `tab` is the slot's owner), with the slot it came from. A panel's events are never
     /// wrapped, so everything that knew only panels reads them as before. See [`addressed`].
@@ -201,6 +209,112 @@ impl ViewSink {
     }
 }
 
+/// What a [`WebNote`] is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoteKind {
+    /// A page asked for a window of its own; the detail says where it went (`panel` or `refused`).
+    Popup,
+    /// A navigation the view's rules cancelled before it began.
+    NavRefused,
+    /// A navigation ended with no page; the detail is the error's name ([`web_error_name`]).
+    LoadFailed,
+    /// A browser process failed; the detail is the process ([`process_word`]), with its reason and exit code when
+    /// the browser says them.
+    Process,
+    /// The page called `window.close()`, which does nothing here.
+    CloseIgnored,
+    /// The page asked for a permission and it was denied; the detail is the permission ([`permission_word`]).
+    Permission,
+    /// The server's certificate was refused (logged only; the browser's own handling is unchanged); the detail is
+    /// the error's name.
+    Cert,
+    /// A navigation began: one step of the chain of sites a page went through (verbose only).
+    Nav,
+}
+
+/// One diagnostics note of a view. Its sites are made by [`site_of`] inside [`WebNote::new`], so a note can never
+/// carry an address, a path, a query or a page's text, and every other field is a fixed word, a bool or a number.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebNote {
+    kind: NoteKind,
+    site: String,
+    from: String,
+    detail: &'static str,
+    user: Option<bool>,
+    reason: Option<&'static str>,
+    exit: Option<i32>,
+}
+
+impl WebNote {
+    /// A note about the address `url`, reached from the page at `from`. Only the two sites are kept; an empty
+    /// address (no page yet, or the browser did not say) keeps an empty site.
+    pub fn new(kind: NoteKind, url: &str, from: &str) -> Self {
+        let site = |u: &str| {
+            if u.is_empty() {
+                String::new()
+            } else {
+                site_of(u)
+            }
+        };
+        Self {
+            kind,
+            site: site(url),
+            from: site(from),
+            detail: "",
+            user: None,
+            reason: None,
+            exit: None,
+        }
+    }
+
+    /// The note's fixed word (an error's or a permission's name, where a pop-up went).
+    pub fn detail(mut self, word: &'static str) -> Self {
+        self.detail = word;
+        self
+    }
+
+    /// Whether the person's own click or key started it.
+    pub fn user(mut self, user: bool) -> Self {
+        self.user = Some(user);
+        self
+    }
+
+    /// A failed process's reason ([`process_reason_word`]) and exit code.
+    pub fn failure(mut self, reason: &'static str, exit: i32) -> Self {
+        self.reason = Some(reason);
+        self.exit = Some(exit);
+        self
+    }
+
+    pub fn kind(&self) -> NoteKind {
+        self.kind
+    }
+
+    pub fn site(&self) -> &str {
+        &self.site
+    }
+
+    pub fn from(&self) -> &str {
+        &self.from
+    }
+
+    pub fn word(&self) -> &'static str {
+        self.detail
+    }
+
+    pub fn by_user(&self) -> Option<bool> {
+        self.user
+    }
+
+    pub fn reason(&self) -> Option<&'static str> {
+        self.reason
+    }
+
+    pub fn exit(&self) -> Option<i32> {
+        self.exit
+    }
+}
+
 impl WebEvent {
     /// The variant's name: what a log or a `Debug` prints (never an address or a title).
     pub fn kind(&self) -> &'static str {
@@ -225,6 +339,7 @@ impl WebEvent {
             WebEvent::Script { .. } => "Script",
             WebEvent::Cdp { .. } => "Cdp",
             WebEvent::ModMessage { .. } => "ModMessage",
+            WebEvent::Note { .. } => "Note",
             WebEvent::View { .. } => "View",
         }
     }
@@ -467,6 +582,41 @@ mod tests {
         assert_eq!(format!("{s:?}"), "WebEvent::Still");
         let r = WebEvent::Runtime(Err("no".into()));
         assert_eq!(format!("{r:?}"), "WebEvent::Runtime");
+        let n = WebEvent::Note {
+            tab: "t1".into(),
+            note: WebNote::new(
+                NoteKind::Popup,
+                "https://bank.example/login?token=abc",
+                "https://shop.example/pay",
+            ),
+        };
+        assert_eq!(format!("{n:?}"), "WebEvent::Note");
+        assert_eq!(n.kind(), "Note");
+    }
+
+    #[test]
+    fn a_note_keeps_the_sites_and_never_the_addresses() {
+        let n = WebNote::new(
+            NoteKind::LoadFailed,
+            "https://alice:pw@Bank.Example:444/acct/42?token=abc#x",
+            "https://shop.example/cart?item=7",
+        )
+        .detail("cert-expired")
+        .user(true);
+        assert_eq!(n.site(), "bank.example");
+        assert_eq!(n.from(), "shop.example");
+        assert_eq!(n.word(), "cert-expired");
+        assert_eq!(n.by_user(), Some(true));
+        let all = format!("{n:?}");
+        for secret in ["token", "abc", "acct", "alice", "pw", "cart", "item", "444"] {
+            assert!(!all.contains(secret), "{secret} in {all}");
+        }
+        // No page before it: no `from`. Text that is not an address is never kept as it was.
+        let first = WebNote::new(NoteKind::Nav, "my secret words", "");
+        assert_eq!(first.site(), "unparsed");
+        assert_eq!(first.from(), "");
+        let p = WebNote::new(NoteKind::Process, "about:blank", "").failure("crashed", -1);
+        assert_eq!((p.reason(), p.exit()), (Some("crashed"), Some(-1)));
     }
 
     #[test]
