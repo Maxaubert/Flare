@@ -1146,3 +1146,20 @@ Spec: `docs/superpowers/specs/2026-10-28-dns-rebinding-proxy.md`.
 - **The question gate also reads the screen.** The hub's mark and watch lag behind a box by the settle time; `looks_like_question` on the live rows
   closes that gap at the moment of the paste.
 - **An answer for a tab no longer in front is dropped**, not typed where nobody is looking.
+
+## Markdown views, 2026-11-10
+
+- **The page is a mini-app of its own, not a new panel kind.** The panel stays `text` with the file as its target (what `panel.state` and
+  `panels.json` say), plus a `view`. The Compiled and Markdown pages are written into the apps folder on a worker and served like any mini-app, in
+  the sealed browser with the network off. `PanelCtl::page_target` is what the web controller shows; `web_target` stays the web panel's only, so the
+  browser tools, fill and the address bar never treat a markdown page as a web page.
+- **One numbering for every app folder.** `app::next_seq` is shared by `view.html` and the markdown pages (it was `AppsCfg`'s own counter), so the
+  two writers can never pick the same folder or origin.
+- **A new look makes the page again.** The page carries the panel's light or dark look and its solid ground and ink; a theme change while it shows
+  renders it once more rather than adding script to the page.
+- **The fallback lasts for that file in that tab.** After a failed render or a browser that failed, the file shows in Code until the person picks a
+  view (which tries again) or another file shows. It is never written to `panels.json`, so the next start tries the page again.
+- **Ask agent with nothing selected sends the file's path.** The spec named the label only; an empty selection on the page now does what Code does
+  instead of the "no selection" note, since the panel shows a file.
+- **No pictures, no outside links, no script**, as the spec says. A footnote and a heading are the only targets an `href` may have, and their
+  anchors are the ones Flare made.

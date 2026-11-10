@@ -13,6 +13,7 @@ image = { workspace = true }
 log.workspace = true
 url.workspace = true
 unicode-width.workspace = true
+pulldown-cmark.workspace = true
 
 # macOS: the one automount refusal shared with the tab folder and terminal link checks.
 [target.'cfg(not(windows))'.dependencies]

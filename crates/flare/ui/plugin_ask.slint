@@ -1,10 +1,10 @@
 // A plugin's question in Flare's own dialog (the `fill` permission, 2026-10-28), centred and in the plugin's own look
 // (2026-11-08, spec: unlock B and fill approval B; plugin_look.slint): a fill to approve ("Fill <login>?", a card with
-// the site and who asked in which tab, wide Deny and Fill, "Deny for this session" as a link), or a secret the plugin
+// the site and who asked in which tab, wide Deny and Fill, nothing under them since 2026-11-10), or a secret the plugin
 // asks for (`secret.ask`: its logo, the title as the heading, the optional sub under it, one masked field with the
 // label as its placeholder and an eye to show it, a full-width button with the plugin's word, Cancel as a link).
-// The words under each say whose question it is: the plugin's name comes from Flare, never from the plugin.
-// Fill is pressed by the pointer only: no key presses it (Enter and Space press the Deny button that has the focus),
+// The words under a secret say whose question it is: the plugin's name comes from Flare, never from the plugin.
+// Fill is pressed by the pointer only: no key presses it (Enter and Space press Deny, which holds the keys),
 // so a key sent at the window cannot approve a fill. Escape and a press outside the box are Deny (or Cancel).
 // Fill takes no press for its first moment (ARM-DELAY): a question that pops up under a click already on its way
 // (an agent can time its fill to the person's clicks) is never approved by that click.
@@ -80,16 +80,15 @@ export component PluginAsk inherits Rectangle {
     in property <string> site;
     in property <string> asker;
     in property <string> letter;
-    // Whose question it is, from Flare.
+    // A secret's line saying whose question it is, from Flare (a fill shows none).
     in property <string> foot;
     in property <PluginLook> look;
-    // A fill's answer: 0 Deny, 1 Fill, 2 Deny for this session.
+    // A fill's answer: 0 Deny, 1 Fill.
     callback fill-answer(int);
     // A secret's answer: the button with the text, or Cancel.
     callback secret-answer(bool, string);
 
-    // The Deny button that holds the keys in a fill (0 Deny, 1 Deny for this session); never Fill.
-    property <int> focus-idx: 0;
+    // A key was pressed in a fill: Deny, which holds the keys (never Fill), shows its ring.
     property <bool> by-key;
     // Fill takes presses (ARM-DELAY after the question went up).
     property <bool> armed;
@@ -107,10 +106,6 @@ export component PluginAsk inherits Rectangle {
     out property <length> deny-y: root.kind == 1 ? cancel-btn.absolute-position.y : deny-btn.absolute-position.y;
     out property <length> deny-w: root.kind == 1 ? cancel-btn.width : deny-btn.width;
     out property <length> deny-h: root.kind == 1 ? cancel-btn.height : deny-btn.height;
-    out property <length> session-x: session-btn.absolute-position.x;
-    out property <length> session-y: session-btn.absolute-position.y;
-    out property <length> session-w: session-btn.width;
-    out property <length> session-h: session-btn.height;
     out property <length> ok-x: ok-btn.absolute-position.x;
     out property <length> ok-y: ok-btn.absolute-position.y;
     out property <length> ok-w: ok-btn.width;
@@ -143,7 +138,6 @@ export component PluginAsk inherits Rectangle {
         field.text = "";
         root.reveal = false;
         if root.open {
-            root.focus-idx = 0;
             root.by-key = false;
             root.armed = false;
             if root.kind == 1 {
@@ -186,12 +180,12 @@ export component PluginAsk inherits Rectangle {
             }
             if root.kind == 0 && (e.text == Key.Return || e.text == " ") {
                 root.by-key = true;
-                root.fill-answer(root.focus-idx == 1 ? 2 : 0);
+                root.fill-answer(0);
                 return accept;
             }
+            // Tab stays on Deny, the one button the keys reach, and shows its ring.
             if root.kind == 0 && (e.text == Key.Tab || e.text == Key.Backtab) && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta {
                 root.by-key = true;
-                root.focus-idx = 1 - root.focus-idx;
                 return accept;
             }
             return reject;
@@ -219,7 +213,8 @@ export component PluginAsk inherits Rectangle {
             padding-left: 20px;
             padding-right: 20px;
             padding-top: 22px;
-            padding-bottom: 16px;
+            // A fill ends at Deny and Fill: the same room under them as at the sides.
+            padding-bottom: root.kind == 0 ? 20px : 16px;
             HorizontalLayout {
                 alignment: center;
                 PluginLogo {
@@ -394,7 +389,7 @@ export component PluginAsk inherits Rectangle {
                     horizontal-stretch: 1;
                     look: root.look;
                     label: "Deny";
-                    ringed: root.by-key && root.focus-idx == 0;
+                    ringed: root.by-key;
                     clicked => { root.cancel(); }
                 }
                 allow-btn := AskButton {
@@ -408,29 +403,22 @@ export component PluginAsk inherits Rectangle {
                     clicked => { root.fill-answer(1); }
                 }
             }
-            Rectangle { height: 6px; }
+            // A secret: Cancel as a link and Flare's line. A fill ends at its buttons.
+            Rectangle { height: root.kind == 1 ? 6px : 0px; }
             HorizontalLayout {
+                visible: root.kind == 1;
+                height: root.kind == 1 ? 36px : 0px;
                 alignment: center;
                 cancel-btn := AskButton {
-                    visible: root.kind == 1;
-                    width: root.kind == 1 ? self.min-width : 0px;
+                    width: self.min-width;
                     look: root.look;
                     label: "Cancel";
                     link: true;
                     clicked => { root.cancel(); }
                 }
-                session-btn := AskButton {
-                    visible: root.kind == 0;
-                    width: root.kind == 0 ? self.min-width : 0px;
-                    look: root.look;
-                    label: "Deny for this session";
-                    link: true;
-                    ringed: root.by-key && root.focus-idx == 1;
-                    clicked => { root.fill-answer(2); }
-                }
             }
-            Rectangle { height: 4px; }
-            Text {
+            if root.kind == 1: Rectangle { height: 4px; }
+            if root.kind == 1: Text {
                 text: root.foot;
                 wrap: word-wrap;
                 horizontal-alignment: center;

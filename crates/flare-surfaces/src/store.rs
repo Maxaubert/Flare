@@ -8,6 +8,7 @@
 //! opens a panel starts no thread and writes no file.
 
 use crate::kind::PanelKind;
+use crate::mdview::MdView;
 use crate::state::{TabPanel, clean_target};
 use flare_settings::atomic::{Opened, open_text};
 use flare_settings::debounce::Debounced;
@@ -63,12 +64,18 @@ fn parse_panel(p: &Value) -> Option<TabPanel> {
         .filter(|w| w.is_finite() && *w > 0.0 && *w < 1.0)
         .map(|w| w as f32);
     let by_agent = p.get("agent").and_then(Value::as_bool).unwrap_or(false);
+    // A view this build does not know reads as the default and is never written back (rule 40).
+    let view = p
+        .get("view")
+        .and_then(Value::as_str)
+        .and_then(MdView::parse);
     Some(TabPanel {
         kind,
         target,
         open,
         width,
         by_agent,
+        view,
     })
 }
 
@@ -88,6 +95,10 @@ pub fn panels_json(tabs: &[SavedTabPanel]) -> String {
                 // Only the agent's panel says so: a file the user opened is written as before.
                 if p.by_agent {
                     panel["agent"] = json!(true);
+                }
+                // Only a view the person picked is written: a file never switched is written as before.
+                if let Some(v) = p.view {
+                    panel["view"] = json!(v.name());
                 }
                 json!({ "cwd": t.cwd, "panel": panel })
             }
@@ -214,6 +225,7 @@ mod tests {
             open,
             width,
             by_agent: false,
+            view: None,
         }
     }
 
@@ -254,6 +266,46 @@ mod tests {
         let raw = panels_json(&tabs);
         assert_eq!(raw.matches(r#""agent":true"#).count(), 1);
         assert_eq!(parse_panels(&raw), tabs);
+    }
+
+    #[test]
+    fn a_markdown_panel_keeps_its_view_and_only_a_picked_one_is_written() {
+        let mut picked = panel(PanelKind::Text, r"C:\w\r.md", true, None);
+        picked.view = Some(MdView::Code);
+        let tabs = vec![
+            entry(r"C:\w", Some(picked)),
+            entry(
+                r"C:\v",
+                Some(panel(PanelKind::Text, r"C:\v\n.md", true, None)),
+            ),
+        ];
+        let raw = panels_json(&tabs);
+        assert_eq!(raw.matches(r#""view":"code""#).count(), 1);
+        assert_eq!(
+            raw.matches(r#""view""#).count(),
+            1,
+            "the default is not written"
+        );
+        assert_eq!(parse_panels(&raw), tabs);
+    }
+
+    #[test]
+    fn an_unknown_view_reads_as_the_default_and_is_never_written_back() {
+        let raw = r#"{"version":1,"tabs":[
+            {"cwd":"C:\\a","panel":{"kind":"text","target":"C:\\a\\r.md","view":"hologram"}},
+            {"cwd":"C:\\b","panel":{"kind":"text","target":"C:\\b\\r.md","view":7}},
+            {"cwd":"C:\\c","panel":{"kind":"text","target":"C:\\c\\r.md","view":"markdown"}}]}"#;
+        let got = parse_panels(raw);
+        assert_eq!(got.len(), 3, "the panels stay");
+        assert_eq!(got[0].panel.as_ref().unwrap().view, None);
+        assert_eq!(got[1].panel.as_ref().unwrap().view, None);
+        assert_eq!(got[2].panel.as_ref().unwrap().view, Some(MdView::Markdown));
+        let written = panels_json(&got);
+        assert!(
+            !written.contains("hologram") && !written.contains(r#""view":7"#),
+            "{written}"
+        );
+        assert_eq!(parse_panels(&written), got);
     }
 
     #[test]
