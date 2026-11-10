@@ -5,7 +5,7 @@
 //! its bearer token only to the process runtime.json names.
 //!
 //! Windows reads the IP Helper table (`GetExtendedTcpTable`); macOS reads libproc's socket table
-//! (`flare_proc::tcp_listeners`), which sees this user's processes only (regression rule 244).
+//! (`flare_proc::tcp_listeners`), which sees this user's processes only (regression rule 1013).
 
 use std::collections::HashSet;
 
@@ -289,7 +289,7 @@ pub fn listening_in_tree(port: u16, root: u32) -> bool {
 
 /// macOS: the listeners on `port` of one family, from libproc's socket table
 /// (`flare_proc::tcp_listeners`, never `lsof`, never a connection). None when the table cannot be read.
-/// Only this user's processes are seen (regression rule 244).
+/// Only this user's processes are seen (regression rule 1013).
 #[cfg(not(windows))]
 fn read_listeners(v6: bool, port: u16) -> Option<Vec<u32>> {
     let table = flare_proc::tcp_listeners()?;
@@ -361,7 +361,7 @@ pub fn tree_look(port: u16, root: u32) -> TreeLook {
     )
 }
 
-/// The pure part of the macOS family check (regression rules 244 and 250). The listener table shows this user's
+/// The pure part of the macOS family check (regression rules 1013 and 1019). The listener table shows this user's
 /// processes only, so a tree that holds 127.0.0.1:P says nothing of [::1]:P, which another account may
 /// hold, and `http://localhost:P` may reach either. So an `InTree` answer stands only when every family
 /// with no listener in the table is shown free: `refused(v6)` is whether binding that family's loopback

@@ -8,7 +8,7 @@
 //!   Terminal, which runs it. The handler is looked up (`URLForApplicationToOpenURL:`), refused when
 //!   it is a terminal, a script runner or unknown, and the file is then opened WITH that app
 //!   (`openURLs:withApplicationAtURL:`), so nothing can swap it in between. A file with an execute
-//!   bit never opens: a plain document does not need one (regression rule 240).
+//!   bit never opens: a plain document does not need one (regression rule 1009).
 //! - A folder opens in a Finder window (`selectFile:inFileViewerRootedAtPath:` with no file):
 //!   Finder only ever SHOWS what it is handed there. `openURL:` is never used for a folder, since
 //!   a bundle (`.app`) is a folder and `openURL:` would launch it.

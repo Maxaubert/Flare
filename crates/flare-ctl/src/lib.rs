@@ -12,7 +12,7 @@
 //! - `text`: words from outside made safe for a model (one copy for both sides).
 //! - `pipe`: the endpoint, one API on both systems. Windows (`pipe.rs`): the named pipe, its
 //!   owner-only descriptor, the accept loop, `connect`. macOS (`uds.rs`): a Unix socket in a 0700
-//!   per-user folder, mode 0600, the peer's uid and pid checked on both ends (rule 243). Any other
+//!   per-user folder, mode 0600, the peer's uid and pid checked on both ends (rule 1012). Any other
 //!   system: `pipe_stub.rs`, no channel.
 //!
 //! The contract is `docs/surfaces/protocol.md`; this crate must stay app-neutral so the same rules
