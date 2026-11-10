@@ -4045,3 +4045,292 @@ fn a_popup_no_click_asked_for_is_said_in_the_bar() {
         "the page stays where it is"
     );
 }
+
+// ---- app links (rule 252) ----
+
+/// The recording launcher the window opens app links with; nothing real is ever opened.
+fn launcher(f: &Fx) -> Rc<crate::app_ask::RecordingLauncher> {
+    let l = Rc::new(crate::app_ask::RecordingLauncher::default());
+    f.ctl.borrow_mut().set_app_launcher(l.clone());
+    l
+}
+
+fn app_link(fake: &FakeWeb, tab: &str, uri: &str, site: &str) {
+    let scheme = uri.split(':').next().unwrap_or_default().to_string();
+    fake.say(WebEvent::AppLink {
+        tab: tab.into(),
+        uri: uri.into(),
+        scheme,
+        site: site.into(),
+    });
+}
+
+const BANKID: &str = "bankid:///?autostarttoken=abc&redirect=null";
+
+#[test]
+fn an_app_link_is_asked_about_with_cancel_the_default_and_opened_only_on_open() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let apps = launcher(&f);
+    f.clock.set(10_000);
+    app_link(&fake(&slot), &id, BANKID, "bank.example");
+    f.pump();
+    assert!(f.h.comp.get_dialog_open());
+    assert_eq!(f.h.comp.get_dialog_title().as_str(), "Open an app?");
+    assert_eq!(f.h.comp.get_dialog_primary().as_str(), "Open");
+    assert!(
+        f.h.comp.get_dialog_default_cancel(),
+        "Cancel is the default"
+    );
+    assert!(apps.opened().is_empty(), "nothing opens before the answer");
+    // A click on Open in the first 0.3 s does nothing; the question stays.
+    f.clock.set(10_299);
+    f.h.comp.invoke_dialog_confirm();
+    assert!(apps.opened().is_empty());
+    assert!(f.h.comp.get_dialog_open());
+    f.clock.set(10_300);
+    f.h.comp.invoke_dialog_confirm();
+    assert_eq!(apps.opened(), vec![BANKID.to_string()]);
+    assert!(!f.h.comp.get_dialog_open());
+    assert!(
+        !f.h.comp.get_dialog_default_cancel(),
+        "the next question has its own default"
+    );
+}
+
+#[test]
+fn a_cancelled_app_link_is_not_asked_again_until_the_page_changes_site() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let apps = launcher(&f);
+    app_link(&fake(&slot), &id, BANKID, "flare-test.local");
+    f.pump();
+    f.h.comp.invoke_dialog_cancel();
+    assert!(!f.h.comp.get_dialog_open());
+    // Another page of the same site keeps the Cancel.
+    fake(&slot).say(WebEvent::Url {
+        tab: id.clone(),
+        url: TWO.into(),
+    });
+    f.pump();
+    f.clock.set(60_000);
+    app_link(&fake(&slot), &id, BANKID, "flare-test.local");
+    f.pump();
+    f.h.advance(0);
+    assert!(!f.h.comp.get_dialog_open(), "muted");
+    assert_eq!(
+        f.h.comp.get_panel_sub().as_str(),
+        crate::app_ask::APP_LINK_HELD
+    );
+    // The page goes to another site and back: the person is asked again.
+    fake(&slot).say(WebEvent::Url {
+        tab: id.clone(),
+        url: "https://other.example/".into(),
+    });
+    f.pump();
+    app_link(&fake(&slot), &id, BANKID, "flare-test.local");
+    f.pump();
+    assert!(f.h.comp.get_dialog_open());
+    assert!(apps.opened().is_empty());
+}
+
+#[test]
+fn an_app_nothing_on_the_pc_opens_is_said_in_the_bar_and_not_asked_about() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let apps = launcher(&f);
+    apps.missing.lock().unwrap().push("swish".into());
+    app_link(
+        &fake(&slot),
+        &id,
+        "swish://paymentrequest?token=x",
+        "shop.example",
+    );
+    f.pump();
+    f.h.advance(0);
+    assert!(!f.h.comp.get_dialog_open());
+    assert_eq!(
+        f.h.comp.get_panel_sub().as_str(),
+        "Nothing on this PC opens swish:"
+    );
+    assert!(apps.opened().is_empty());
+}
+
+#[test]
+fn an_app_link_of_a_closed_page_is_not_asked_about() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let apps = launcher(&f);
+    app_link(&fake(&slot), &id, BANKID, "bank.example");
+    f.pump();
+    assert!(f.h.comp.get_dialog_open());
+    assert_eq!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
+    f.h.advance(0);
+    f.pump();
+    assert!(
+        !f.h.comp.get_dialog_open(),
+        "the question went with the page"
+    );
+    f.clock.set(1_000);
+    f.h.comp.invoke_dialog_confirm();
+    assert!(apps.opened().is_empty());
+}
+
+#[test]
+fn a_download_goes_first_and_the_app_link_is_asked_after_it() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let apps = launcher(&f);
+    download(&fake(&slot), &id, 1, "a.zip");
+    app_link(&fake(&slot), &id, BANKID, "bank.example");
+    f.pump();
+    assert_eq!(f.h.comp.get_dialog_title().as_str(), "Save this file?");
+    assert!(!f.h.comp.get_dialog_default_cancel());
+    f.clock.set(5_000);
+    f.h.comp.invoke_dialog_cancel();
+    assert_eq!(answers(&slot), vec![(1, false)]);
+    assert_eq!(f.h.comp.get_dialog_title().as_str(), "Open an app?");
+    assert!(f.h.comp.get_dialog_default_cancel());
+    // Its guard starts when it shows, not when it arrived.
+    f.clock.set(5_100);
+    f.h.comp.invoke_dialog_confirm();
+    assert!(apps.opened().is_empty());
+    f.clock.set(5_300);
+    f.h.comp.invoke_dialog_confirm();
+    assert_eq!(apps.opened(), vec![BANKID.to_string()]);
+}
+
+/// Two tabs' app links: the second question takes the open dialog with the same title and default, and still starts on
+/// Cancel, so the Tab the person gave the first never opens the second with a plain Enter (review of 2026-11-10).
+#[test]
+fn the_next_app_link_question_starts_on_cancel_after_a_tab_to_open_the_first() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let first = up(&f, &slot);
+    assert_eq!(f.key(ctrl("t", "KeyT")), KeyOutcome::Consumed);
+    f.h.advance(0);
+    f.pump();
+    let second = up(&f, &slot);
+    assert_ne!(first, second);
+    let apps = launcher(&f);
+    f.clock.set(10_000);
+    app_link(&fake(&slot), &first, BANKID, "bank.example");
+    app_link(&fake(&slot), &second, BANKID, "other.example");
+    f.pump();
+    f.h.advance(0);
+    assert!(f.h.comp.get_dialog_open());
+    assert_eq!(f.h.comp.get_dialog_focus(), 0, "Cancel has the focus");
+    f.clock.set(10_400);
+    f.h.key_text("\t\n");
+    assert_eq!(
+        apps.opened(),
+        vec![BANKID.to_string()],
+        "Tab then Enter opens"
+    );
+    f.h.advance(0);
+    assert!(f.h.comp.get_dialog_open(), "the second question is up");
+    assert_eq!(f.h.comp.get_dialog_title().as_str(), "Open an app?");
+    assert_eq!(
+        f.h.comp.get_dialog_focus(),
+        0,
+        "the second question starts on Cancel"
+    );
+    f.clock.set(11_000);
+    f.h.key_text("\n");
+    assert_eq!(apps.opened().len(), 1, "a plain Enter cancels it");
+    assert!(!f.h.comp.get_dialog_open());
+}
+
+/// The shell answers from its worker (rule 34): a failure reaches the bar once that answer is handled on the UI thread.
+#[test]
+fn an_app_that_could_not_be_opened_is_said_in_the_bar_when_its_worker_answers() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let apps = launcher(&f);
+    *apps.fails.lock().unwrap() = true;
+    f.clock.set(10_000);
+    app_link(&fake(&slot), &id, BANKID, "bank.example");
+    f.pump();
+    f.clock.set(10_300);
+    f.h.comp.invoke_dialog_confirm();
+    assert_eq!(apps.opened(), vec![BANKID.to_string()]);
+    assert!(!f.h.comp.get_dialog_open());
+    f.pump();
+    f.h.advance(0);
+    assert_eq!(
+        f.h.comp.get_panel_sub().as_str(),
+        crate::app_ask::APP_NOT_OPENED
+    );
+}
+
+#[test]
+fn while_an_agent_waits_on_the_page_an_app_link_is_never_asked_and_its_call_answered_once() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let apps = launcher(&f);
+    // The agent sent the page somewhere and waits for it to load.
+    let rx = ask(&f, open_op(&id, TWO), Duration::from_secs(5));
+    f.pump();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    app_link(&fake(&slot), &id, BANKID, "bank.example");
+    f.pump();
+    f.h.advance(0);
+    assert!(
+        !f.h.comp.get_dialog_open(),
+        "no question while an agent drives"
+    );
+    let e = rx.try_recv().unwrap().unwrap_err();
+    assert_eq!(e.code, code::UNAVAILABLE);
+    assert_eq!(e.message, crate::app_ask::APP_LINK_AGENT_ANSWER);
+    assert_eq!(
+        f.h.comp.get_panel_sub().as_str(),
+        crate::app_ask::APP_LINK_AGENT
+    );
+    // The call is over: a link after it is the person's to answer, and the call hears nothing more.
+    app_link(&fake(&slot), &id, BANKID, "bank.example");
+    f.pump();
+    assert!(rx.try_recv().is_err(), "answered exactly once");
+    assert!(f.h.comp.get_dialog_open());
+    assert!(apps.opened().is_empty());
+}
+
+#[test]
+fn an_agent_call_running_on_the_page_is_answered_that_only_the_person_can_open_an_app() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let apps = launcher(&f);
+    // A wait whose page never answers: the call is running.
+    let rx = ask(
+        &f,
+        agent_op(
+            &id,
+            AgentOp::Wait {
+                what: WaitFor::Text("Paid".into()),
+                timeout_ms: 30_000,
+            },
+        ),
+        Duration::from_secs(5),
+    );
+    f.pump();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    app_link(&fake(&slot), &id, BANKID, "bank.example");
+    f.pump();
+    assert!(!f.h.comp.get_dialog_open());
+    let e = rx.try_recv().unwrap().unwrap_err();
+    assert_eq!(e.code, code::UNAVAILABLE);
+    assert_eq!(e.message, crate::app_ask::APP_LINK_AGENT_ANSWER);
+    // The hold after the call still counts as the agent's: a second link is not asked about, and nothing answers twice.
+    app_link(&fake(&slot), &id, BANKID, "bank.example");
+    f.pump();
+    assert!(!f.h.comp.get_dialog_open());
+    assert!(rx.try_recv().is_err());
+    assert!(apps.opened().is_empty());
+}

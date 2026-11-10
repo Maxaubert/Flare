@@ -133,7 +133,7 @@ plugin's page), `site` and, when there was a page before it, `from` (that page's
 
 | Kind | Fields besides those | A problem |
 |---|---|---|
-| `web-refused` | `why`: `scheme` (the browser panel opens http, https and about:blank only), `not-its-page` (a mini-app), `not-its-host` (a plugin), `frame` (a mini-app's or plugin's frame to another site), `app-link` (a mini-app's or plugin's `mailto:` or app link), `popup` (a window of an address that may not open, or any window of a mini-app or plugin), `popup-blocked` (no click of the person's asked for it), `popup-limit` (2 pop-ups a tab or 4 in all are open) | no |
+| `web-refused` | `why`: `scheme` (the browser panel opens http, https and about:blank only), `not-its-page` (a mini-app), `not-its-host` (a plugin), `frame` (a mini-app's or plugin's frame to another site), `app-link` (a mini-app's or plugin's `mailto:` or app link, refused; or the browser panel's, which the browser never opens and Flare asks the person about, site and scheme only, never the link), `popup` (a window of an address that may not open, or any window of a mini-app or plugin), `popup-blocked` (no click of the person's asked for it), `popup-limit` (2 pop-ups a tab or 4 in all are open) | no |
 | `web-popup` | `to: panel` (a plain new-tab link opened in the panel) or `to: popup` (a pop-up opened over the page, rule 249), `user` (the person's click opened it) | no |
 | `web-close-ignored` | none: the page called `window.close()` | no |
 | `web-load-failed` | `error`: the WebView2 error's name (`cert-expired`, `name-not-resolved`, `timeout` ...). A navigation Flare cancelled and a stream handed to the player are not failures | yes |

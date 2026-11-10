@@ -166,6 +166,14 @@ pub enum WebOut {
         file: String,
         host: String,
     },
+    /// The person's page went to a link to an app: the window asks whether to open it (rule 252). Never sent while an
+    /// agent uses the page.
+    AppLink {
+        tab: String,
+        uri: String,
+        scheme: String,
+        site: String,
+    },
     /// A mod's page sent a message over its bridge (stage 8).
     ModMessage {
         tab: String,
@@ -3215,6 +3223,12 @@ impl WebCtl {
                     }
                 }
             }
+            WebEvent::AppLink {
+                tab,
+                uri,
+                scheme,
+                site,
+            } => out.extend(self.app_link(&tab, uri, scheme, site)),
             WebEvent::Still { tab, token, png } => {
                 if self.shown_tab.as_deref() == Some(tab.as_str())
                     && let Some((phase, acts)) = web::captured(self.phase, token)
@@ -3420,6 +3434,46 @@ impl WebCtl {
                 .reply
                 .send(Err(CtlError::new(code::UNAVAILABLE, why.to_string())));
         }
+    }
+
+    /// The page of `tab` went to an app link (rule 252). While an agent drives the page (a call on it, the hold after
+    /// one, or a navigation call waiting) nothing is asked: the browser already stopped it, the bar says so, and each
+    /// call that is waiting is answered once, `unavailable`. Otherwise the window asks the person.
+    fn app_link(&mut self, tab: &str, uri: String, scheme: String, site: String) -> Vec<WebOut> {
+        let now = self.now_ms();
+        let driving = self.agent_active(tab, now);
+        let Some(t) = self.tabs.get_mut(tab) else {
+            return vec![];
+        };
+        if !driving && t.pending.is_none() {
+            return vec![WebOut::AppLink {
+                tab: tab.to_string(),
+                uri,
+                scheme,
+                site,
+            }];
+        }
+        let mut out = vec![WebOut::Changed];
+        t.notice = crate::app_ask::APP_LINK_AGENT.to_string();
+        if let Some(p) = t.pending.take() {
+            t.loading = false;
+            out.push(WebOut::Settle {
+                reply: p.reply,
+                tab: tab.to_string(),
+                result: Err(CtlError::new(
+                    code::UNAVAILABLE,
+                    crate::app_ask::APP_LINK_AGENT_ANSWER,
+                )),
+            });
+        }
+        self.finish_agent(
+            tab,
+            Err(JobError {
+                fail: Fail::Unavailable,
+                message: crate::app_ask::APP_LINK_AGENT_ANSWER.to_string(),
+            }),
+        );
+        out
     }
 
     /// The tab's page is gone under an agent call: it is answered `unavailable`.

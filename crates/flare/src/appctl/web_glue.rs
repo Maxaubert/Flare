@@ -5,6 +5,7 @@
 //! The browser itself is `WebCtl`; this file is the part that needs `AppCtl`'s private state (the
 //! panels, the front tab, the chords, the channel's events).
 
+use std::rc::Rc;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
@@ -70,10 +71,18 @@ impl AppCtl {
                 app.set_dialog_body(body);
                 app.set_dialog_primary(v.primary.into());
                 app.set_dialog_danger(false);
+                app.set_dialog_default_cancel(false);
+                // An app link's question waiting under it shows again later, with its guard from then.
+                self.app_asks.unshown();
                 // The question has the keys: the page that may hold them (a click in it started the download)
                 // gives them back, or Enter and Escape would go to the page.
                 self.web.release_focus(crate::window::hwnd_of(&app));
                 app.set_dialog_open(true);
+            }
+            // An app link waiting behind the downloads is asked now.
+            None if self.app_asks.current().is_some() => {
+                self.show_app_ask();
+                return;
             }
             None => app.set_dialog_open(false),
         }
@@ -86,7 +95,7 @@ impl AppCtl {
             return;
         };
         self.web.answer_download(a.id, save);
-        if self.downloads.current().is_some() {
+        if self.downloads.current().is_some() || self.app_asks.current().is_some() {
             self.show_download_ask();
         } else {
             if let Some(app) = self.app() {
@@ -109,6 +118,144 @@ impl AppCtl {
         }
     }
 
+    /// What opens an app link after the person's Open (startup hands in the shell; the tests keep the recorder).
+    pub fn set_app_launcher(&mut self, l: Rc<dyn crate::app_ask::AppLauncher>) {
+        self.app_launcher = l;
+    }
+
+    /// A page of `tab` on `site` went to the app link `uri` (rule 252). The agent's case was settled in `WebCtl`, so
+    /// this is the person's page: an app nothing on the PC opens is said in the bar, a held one too, and the rest is
+    /// asked about (now, or after the question on the screen).
+    fn offer_app_link(&mut self, tab: &str, uri: &str, scheme: &str, site: &str) {
+        if !self.app_launcher.has_handler(scheme) {
+            self.web
+                .notice(tab, &crate::app_ask::no_handler_notice(scheme));
+            self.refresh();
+            return;
+        }
+        let now = self.now();
+        match self.app_asks.offer(tab, uri, scheme, site, now) {
+            crate::app_ask::Offered::Held => {
+                self.web.notice(tab, crate::app_ask::APP_LINK_HELD);
+                self.refresh();
+            }
+            crate::app_ask::Offered::Now | crate::app_ask::Offered::Waits => self.sync_app_ask(),
+        }
+    }
+
+    /// The app-link question is put on the dialog when nothing else has it (the close question and the downloads go
+    /// first) and it is not on the screen already.
+    pub(super) fn sync_app_ask(&mut self) {
+        if self.ask.is_none()
+            && self.downloads.current().is_none()
+            && self.app_asks.current().is_some()
+            && !self.app_asks.is_shown()
+        {
+            self.show_app_ask();
+        }
+    }
+
+    /// Shows the first waiting app link: "Open an app?", Cancel the default, Open unarmed for 0.3 s.
+    pub(super) fn show_app_ask(&mut self) {
+        if self.ask.is_some() || self.downloads.current().is_some() {
+            return;
+        }
+        let Some(app) = self.app() else { return };
+        match self.app_asks.current() {
+            Some(a) => {
+                let v = crate::app_ask::app_view(a, &crate::chrome_apply::text_ink());
+                let body = slint::StyledText::from_markdown(&v.body)
+                    .unwrap_or_else(|_| slint::StyledText::from_plain_text(&v.body));
+                self.clear_tip();
+                self.close_menu_quietly();
+                app.set_dialog_title(v.title.into());
+                app.set_dialog_body(body);
+                app.set_dialog_primary(v.primary.into());
+                app.set_dialog_danger(false);
+                app.set_dialog_default_cancel(true);
+                // A new question each time: one shown after another in the open dialog starts on Cancel again.
+                app.set_dialog_question(app.get_dialog_question().wrapping_add(1));
+                self.web.release_focus(crate::window::hwnd_of(&app));
+                app.set_dialog_open(true);
+                let now = self.now();
+                self.app_asks.shown(now);
+            }
+            None => app.set_dialog_open(false),
+        }
+        self.refresh();
+    }
+
+    /// The person answered the app-link question. An Open inside the guard does nothing. On Open the link is checked
+    /// again and handed to the launcher (the shell on the bare link, rule 188); a Cancel mutes it on that site.
+    pub(super) fn answer_app(&mut self, open: bool) {
+        let a = if open {
+            let now = self.now();
+            match self.app_asks.open(now) {
+                Some(a) => a,
+                None => return,
+            }
+        } else {
+            match self.app_asks.cancel() {
+                Some(a) => a,
+                None => return,
+            }
+        };
+        if open {
+            let still = flare_surfaces::web::external_scheme(&a.uri)
+                == flare_surfaces::web::ExternalScheme::Offer(a.scheme.clone());
+            if !still {
+                self.web.notice(&a.tab, "App link not opened");
+            } else if !self.app_launcher.has_handler(&a.scheme) {
+                self.web
+                    .notice(&a.tab, &crate::app_ask::no_handler_notice(&a.scheme));
+            } else {
+                // The shell runs on the launcher's worker (rule 34); a failure comes back as a message.
+                let post = std::sync::Arc::clone(&self.deps.post);
+                let (tab, scheme) = (a.tab.clone(), a.scheme.clone());
+                self.app_launcher.open(
+                    &a.uri,
+                    Box::new(move |r| {
+                        if let Err(error) = r {
+                            post(crate::appctl::UiMsg::AppLinkFailed { tab, scheme, error });
+                        }
+                    }),
+                );
+            }
+        }
+        if self.app_asks.current().is_some() {
+            self.show_app_ask();
+        } else {
+            if let Some(app) = self.app() {
+                app.set_dialog_open(false);
+                app.set_dialog_default_cancel(false);
+            }
+            self.refresh();
+            self.focus_terminal();
+        }
+    }
+
+    /// The launcher's worker could not open the link the person allowed: said in that tab's bar.
+    pub(super) fn app_link_failed(&mut self, tab: &str, scheme: &str, error: &str) {
+        log::warn!("an app link ({scheme}) did not open: {error}");
+        self.web.notice(tab, crate::app_ask::APP_NOT_OPENED);
+        self.refresh();
+    }
+
+    /// An app link whose tab is gone is not asked about, and a tab's page on another site forgets its Cancels.
+    pub(super) fn prune_app_asks(&mut self) {
+        let changed = self.app_asks.prune(|t| self.web.has_tab(t));
+        if changed && self.ask.is_none() && self.downloads.current().is_none() {
+            if self.app_asks.current().is_some() {
+                self.show_app_ask();
+            } else if let Some(app) = self.app() {
+                app.set_dialog_open(false);
+                app.set_dialog_default_cancel(false);
+            }
+        } else {
+            self.sync_app_ask();
+        }
+    }
+
     /// The page moved or resized in the window, or an overlay opened or closed: the browser window
     /// follows (the same sync a refresh runs).
     pub(super) fn web_moved(&mut self) {
@@ -120,6 +267,7 @@ impl AppCtl {
         self.sync_bar_views(&app);
         self.sync_web_full();
         self.prune_downloads();
+        self.prune_app_asks();
     }
 
     /// The window follows a page in full screen (a video's full-screen button): full screen while the page covers
@@ -228,6 +376,9 @@ impl AppCtl {
                     let _ = reply.send(answer);
                 }
                 WebOut::Address { tab, url } => {
+                    // A Cancel of an app link holds until the page is on another site (rule 252).
+                    self.app_asks
+                        .page_at(&tab, &flare_surfaces::web::site_of(&url));
                     if self.panels.set_web_url(&tab, &url) {
                         self.panel_changed(&tab);
                     }
@@ -292,6 +443,12 @@ impl AppCtl {
                         self.show_download_ask();
                     }
                 }
+                WebOut::AppLink {
+                    tab,
+                    uri,
+                    scheme,
+                    site,
+                } => self.offer_app_link(&tab, &uri, &scheme, &site),
                 WebOut::Filled { id, result } => self.fill_done(id, result),
                 WebOut::AskSelection {
                     tab,

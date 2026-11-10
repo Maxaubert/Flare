@@ -26,7 +26,10 @@
 //! name, a blank page to write into): a second controller on the same browser, shown over the page in the panel while
 //! the page waits hidden behind it, so the pop-up keeps its link back (`window.opener`). A plain `target=_blank`
 //! goes to the same panel, and a request no click started opens nothing (`popup_plan`, rules 249 and 250). A mini-app's
-//! or plugin's page opens no window at all. A navigation to anything but http, https and about:blank is cancelled. A download is held back until the window
+//! or plugin's page opens no window at all. A navigation to anything but http, https and about:blank is cancelled; on the
+//! web panel and its pop-ups a link to an app (`bankid:`, `mailto:`) is told to the window to ask the person
+//! (`WebEvent::AppLink`, `AppLinks`, rule 252) and the browser's own launch is always cancelled, and a page may open a
+//! `blob:` it made itself (`own_blob`, rule 253). A download is held back until the window
 //! has asked the person (`WebEvent::Download`, `answer_download`); no answer, a no, a closed panel or
 //! a failed registration all mean no file is saved (S6). A process failure that the browser mends
 //! itself (GPU, utility, a frame) is only logged; a lost renderer ends that panel's page and a lost
@@ -48,9 +51,9 @@ use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::modview::{self, Route};
 use flare_surfaces::netproxy;
 use flare_surfaces::web::{
-    Failure, PhysRect, PopupPlan, PopupRefusal, failure_of_kind, host_label, load_failure_logged,
-    navigation_allowed, pdf_view, permission_word, popup_plan, process_reason_word, process_word,
-    site_of, web_error_name,
+    AppLinkDedupe, ExternalScheme, Failure, PhysRect, PopupPlan, PopupRefusal, external_scheme,
+    failure_of_kind, host_label, load_failure_logged, navigation_allowed, own_blob, pdf_view,
+    permission_word, popup_plan, process_reason_word, process_word, site_of, web_error_name,
 };
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
@@ -790,6 +793,11 @@ impl WebHost {
         // The navigation that began last (its number, its address and the page it left): a failed load names
         // where it was going and where it came from.
         let started: Rc<RefCell<Option<(u64, String, String)>>> = Rc::default();
+        // The web panel's app links (rule 252): its navigations, its new-window requests and the browser's launch share
+        // one memory, so a link the browser tells twice is asked about once. A mini-app's and a plugin's open nothing.
+        let app_links = app
+            .is_none()
+            .then(|| AppLinks::new(ViewSink::new(&self.sink, slot)));
 
         // ---- navigation ----
         {
@@ -799,6 +807,7 @@ impl WebHost {
             // A mod's view may only go to its own host (any path of it).
             let mod_host = app.filter(|a| a.module.is_some()).map(|a| a.host.clone());
             let started = Rc::clone(&started);
+            let links = app_links.clone();
             let h = NavigationStartingEventHandler::create(Box::new(move |w, args| {
                 let Some(args) = args else { return Ok(()) };
                 // SAFETY: `args` is the live event argument of this callback.
@@ -811,8 +820,16 @@ impl WebHost {
                 let (allowed, why) = match (&mod_host, &app_url) {
                     (Some(h), _) => (modview::nav_allowed(&uri, h), "not-its-host"),
                     (None, Some(u)) => (app::nav_allowed(&uri, u), "not-its-page"),
-                    (None, None) => (navigation_allowed(&uri), "scheme"),
+                    // The web panel: a web address, or a blob the page made itself (rule 253).
+                    (None, None) => (navigation_allowed(&uri) || own_blob(&uri, &from), "scheme"),
                 };
+                // A link to an app is stopped here and the window asks the person (rule 252); the browser never
+                // launches it.
+                if !allowed && links.as_ref().is_some_and(|l| l.offer(&uri, &from)) {
+                    // SAFETY: as above.
+                    let _ = unsafe { args.SetCancel(true) };
+                    return Ok(());
+                }
                 if allowed {
                     let mut nav = 0u64;
                     // SAFETY: as above.
@@ -940,8 +957,13 @@ impl WebHost {
         if !plugin {
             if app.is_none() {
                 // The web panel: a pop-up after the person's click, a plain new-tab link in this panel, the rest
-                // nothing (rule 249).
-                take_new_windows(&webview, self.popup_ctx(slot));
+                // nothing (rule 249). An app link is asked about, and the browser's own launch is the backstop that
+                // asks too and never opens anything itself (rule 252).
+                let links = app_links
+                    .clone()
+                    .unwrap_or_else(|| AppLinks::new(ViewSink::new(&self.sink, slot)));
+                take_new_windows(&webview, self.popup_ctx(slot), links.clone());
+                ask_external_uris(&webview, links, true);
             } else {
                 // A mini-app's links open nowhere: it is one page, and the browser panel is the person's to
                 // point somewhere.
@@ -1153,8 +1175,12 @@ impl WebHost {
         }
         cancel_downloads_at_once(&webview)?;
         let mut token = 0i64;
+        // A pop-up's app links are asked about as the panel's are (a bank's page opens its app from the pop-up), with a
+        // memory of its own (rule 252).
+        let links = AppLinks::new(ViewSink::new(&self.sink, slot));
         {
             let sink = ViewSink::new(&self.sink, slot);
+            let links = links.clone();
             let h = NavigationStartingEventHandler::create(Box::new(move |w, args| {
                 let Some(args) = args else { return Ok(()) };
                 // SAFETY: `args` and `w` are the live arguments of this callback.
@@ -1164,9 +1190,12 @@ impl WebHost {
                         w.map(|w| get_string(|p| w.Source(p))).unwrap_or_default(),
                     )
                 };
-                if !navigation_allowed(&uri) {
+                if !navigation_allowed(&uri) && !own_blob(&uri, &from) {
                     // SAFETY: as above.
                     let _ = unsafe { args.SetCancel(true) };
+                    if links.offer(&uri, &from) {
+                        return Ok(());
+                    }
                     sink.send(|tab| WebEvent::Note {
                         tab,
                         note: WebNote::new(NoteKind::NavRefused, &uri, &from).detail("scheme"),
@@ -1238,7 +1267,8 @@ impl WebHost {
             // SAFETY: as above.
             let _ = unsafe { webview.add_ProcessFailed(&h, &mut token) };
         }
-        take_new_windows(&webview, self.popup_ctx(slot));
+        take_new_windows(&webview, self.popup_ctx(slot), links.clone());
+        ask_external_uris(&webview, links, false);
         deny_permissions(&webview, ViewSink::new(&self.sink, slot));
         log_cert_errors(&webview, ViewSink::new(&self.sink, slot));
         self.hear_keys(controller, slot);
@@ -1844,11 +1874,21 @@ struct PopupCtx {
 /// held with the browser's deferral and made in `pump`; a plain new-tab link opens in the view that asked; anything
 /// else opens nothing. Every request is noted for the log by site (`web-popup`, `web-refused`). The name of the window
 /// is a newer interface's: an older Runtime decides by the size, the position and the address alone.
-fn take_new_windows(webview: &ICoreWebView2, cx: PopupCtx) {
+fn take_new_windows(webview: &ICoreWebView2, cx: PopupCtx, links: AppLinks) {
     let h = NewWindowRequestedEventHandler::create(Box::new(move |w, args| {
         let (Some(w), Some(args)) = (w, args) else {
             return Ok(());
         };
+        // A link to an app in a new window (`target=_blank` to `bankid:`) opens no window: it is asked about (rule 252).
+        {
+            // SAFETY: both are the live arguments of this callback.
+            let (uri, from) = unsafe { (get_string(|p| args.Uri(p)), get_string(|p| w.Source(p))) };
+            if !navigation_allowed(&uri) && links.offer(&uri, &from) {
+                // SAFETY: `args` is live.
+                let _ = unsafe { args.SetHandled(true) };
+                return Ok(());
+            }
+        }
         // SAFETY: both are the live arguments of this callback.
         let (uri, from, user, features, name) = unsafe {
             let features = args
@@ -1872,6 +1912,15 @@ fn take_new_windows(webview: &ICoreWebView2, cx: PopupCtx) {
             .try_borrow()
             .map_or((usize::MAX, usize::MAX), |b| b.counts(&cx.slot));
         let mut plan = popup_plan(&uri, name.as_deref(), features, user, counts);
+        // A blob the page made itself (a receipt) opens in the view that asked after the person's click; another site's
+        // stays refused (rule 253).
+        if plan == PopupPlan::Refuse(PopupRefusal::Scheme) && own_blob(&uri, &from) {
+            plan = if user {
+                PopupPlan::InPlace
+            } else {
+                PopupPlan::Refuse(PopupRefusal::Blocked)
+            };
+        }
         if plan == PopupPlan::Popup {
             // SAFETY: `args` is live for the whole callback.
             let held = unsafe { args.GetDeferral() }.ok().map(|deferral| PopupAsk {
@@ -2046,6 +2095,95 @@ fn refuse_external_uris(webview: &ICoreWebView2, sink: ViewSink) -> Result<(), S
     // SAFETY: the view and the handler are live COM objects; `t` is a valid out value.
     unsafe { w18.add_LaunchingExternalUriScheme(&h, &mut t) }
         .map_err(|e| format!("the mini-app's launch wall: {}", e.message()))
+}
+
+/// One web panel's (or pop-up's) app links (rule 252): where they are told and the last one told, so a link the browser
+/// says twice within a second (its navigation, then its launch) is asked about once.
+#[derive(Clone)]
+struct AppLinks {
+    sink: ViewSink,
+    seen: Rc<RefCell<AppLinkDedupe>>,
+    start: std::time::Instant,
+}
+
+impl AppLinks {
+    fn new(sink: ViewSink) -> Self {
+        Self {
+            sink,
+            seen: Rc::default(),
+            start: std::time::Instant::now(),
+        }
+    }
+
+    /// The page at `from` went to `uri`, which the browser was stopped from opening. True when it is a link to an app
+    /// (`external_scheme` offers it): the window is told once (`WebEvent::AppLink`) and the log notes `why: app-link`;
+    /// the caller says nothing more. False for anything else, which the caller refuses as before.
+    fn offer(&self, uri: &str, from: &str) -> bool {
+        let ExternalScheme::Offer(scheme) = external_scheme(uri) else {
+            return false;
+        };
+        let now = u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let fresh = self
+            .seen
+            .try_borrow_mut()
+            .is_ok_and(|mut d| d.fresh(uri, now));
+        if fresh {
+            let note = app_link_refused(uri, from);
+            self.sink.send(|tab| WebEvent::Note { tab, note });
+            let site = if from.is_empty() {
+                String::new()
+            } else {
+                site_of(from)
+            };
+            self.sink.send(|tab| WebEvent::AppLink {
+                tab,
+                uri: uri.to_string(),
+                scheme,
+                site,
+            });
+        }
+        true
+    }
+}
+
+/// The web panel's and its pop-ups' backstop for app links (rule 252): the browser never launches a program itself.
+/// `LaunchingExternalUriScheme` fires for a scheme Windows has a handler for after the person's click, when no
+/// navigation was there to stop first (a link in a frame); it is always cancelled, and an app link is asked about as
+/// the navigation's is (the same memory, so one link is one question). Anything else is refused and noted, and on the
+/// panel (`panel`) said in the bar. A Runtime without `ICoreWebView2_18` has no launch event: the navigation handler
+/// is then the only path, as it is the first one anyway.
+fn ask_external_uris(webview: &ICoreWebView2, links: AppLinks, panel: bool) {
+    let Ok(w18) = webview.cast::<ICoreWebView2_18>() else {
+        log::info!(
+            "this WebView2 Runtime has no launch event; app links are asked about from navigations only"
+        );
+        return;
+    };
+    let h = LaunchingExternalUriSchemeEventHandler::create(Box::new(move |w, args| {
+        if let Some(args) = args {
+            // SAFETY: `args` and `w` are the live arguments of this callback.
+            let (uri, from) = unsafe {
+                let _ = args.SetCancel(true);
+                (
+                    get_string(|p| args.Uri(p)),
+                    w.map(|w| get_string(|p| w.Source(p))).unwrap_or_default(),
+                )
+            };
+            if !links.offer(&uri, &from) {
+                let note = WebNote::new(NoteKind::NavRefused, &uri, &from).detail("scheme");
+                links.sink.send(|tab| WebEvent::Note { tab, note });
+                if panel {
+                    links.sink.send(|tab| WebEvent::Refused { tab, url: uri });
+                }
+            }
+        }
+        Ok(())
+    }));
+    let mut t = 0i64;
+    // SAFETY: the view and the handler are live COM objects; `t` is a valid out value.
+    if let Err(e) = unsafe { w18.add_LaunchingExternalUriScheme(&h, &mut t) } {
+        log::warn!("the web panel's launch backstop: {}", e.message());
+    }
 }
 
 /// No frame navigates anywhere but a blank or srcdoc frame or the page's own: the app's page, or any page of

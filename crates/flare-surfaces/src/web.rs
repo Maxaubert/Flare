@@ -4,7 +4,9 @@
 //!
 //! Rules it holds: S4 (a web panel never uses the user's own browser profile), 13 and 14 in spirit
 //! (an address from a caller, a link in a page or a stored panel is vetted the same way: http,
-//! https and `about:blank` only; `file:`, `javascript:`, `data:` and custom schemes are refused).
+//! https and `about:blank` only; `file:`, `javascript:`, `data:` and custom schemes are refused). A page's own link to an
+//! app is the one exception: `external_scheme` says whether the person may be asked about it (rule 252), and `own_blob`
+//! lets a page open a `blob:` it made itself (rule 253).
 
 use std::path::{Path, PathBuf};
 
@@ -270,6 +272,157 @@ pub fn failed_load_notice(url: &str, status: &str) -> Option<String> {
 pub fn navigation_allowed(uri: &str) -> bool {
     let lower = uri.trim().to_ascii_lowercase();
     lower == "about:blank" || lower.starts_with("https://") || lower.starts_with("http://")
+}
+
+/// The longest app link the person is asked about (rule 252); a longer one is refused.
+pub const APP_LINK_MAX: usize = 2048;
+
+/// Schemes a page's link never opens, whatever is installed (rule 252): the browser's own (a script, inline data, a file,
+/// a browser page) and Windows handlers that have run code or fetched files from a page. A scheme here is refused in
+/// every form, so an Office scheme's `ofe|u|` and remote `|u|https://` commands go with it. Kept as data so a review
+/// can read it and a test holds it.
+pub const NEVER_SCHEMES: &[&str] = &[
+    "javascript",
+    "data",
+    "file",
+    "vbscript",
+    "about",
+    "blob",
+    "filesystem",
+    "view-source",
+    "chrome",
+    "chrome-extension",
+    "edge",
+    "devtools",
+    "ftp",
+    "ws",
+    "wss",
+    "ms-msdt",
+    "ms-officecmd",
+    "ms-appinstaller",
+    "search-ms",
+    "search",
+    "ms-search",
+    "ms-cxh",
+    "ms-cxh-full",
+    "shell",
+    "mhtml",
+    "ie.http",
+    "res",
+    "hcp",
+    "its",
+    "ms-its",
+    "mk",
+    "ms-excel",
+    "ms-word",
+    "ms-powerpoint",
+    "ms-visio",
+    "ms-access",
+    "ms-project",
+    "ms-publisher",
+    "ms-infopath",
+    "ms-spd",
+];
+
+/// What a page's navigation to an address the panel does not open is (rule 252).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExternalScheme {
+    /// A link to an app (`bankid:`, `swish:`, `mailto:`): the person may be asked whether to open it. The scheme, in
+    /// lower case.
+    Offer(String),
+    /// Never opened and never asked about: a scheme of [`NEVER_SCHEMES`], or text that is too long, holds a control
+    /// character or a space, looks like a path, or has no proper scheme.
+    Never,
+    /// A web address (http, https, about:blank): the panel's own navigation, not an app's.
+    NotApp,
+}
+
+/// Decides a page's navigation to `uri` for an app (rule 252). [`navigation_allowed`] is unchanged and still the only
+/// rule for the address field and an agent's navigate: this is the page's own links only. Whether anything on the PC
+/// opens the scheme is the caller's question (the registry), asked after this.
+pub fn external_scheme(uri: &str) -> ExternalScheme {
+    if navigation_allowed(uri) {
+        return ExternalScheme::NotApp;
+    }
+    if uri.is_empty()
+        || uri.chars().count() > APP_LINK_MAX
+        || uri.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return ExternalScheme::Never;
+    }
+    let Some((scheme, rest)) = uri.split_once(':') else {
+        return ExternalScheme::Never;
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    let proper = scheme.len() >= 2
+        && scheme.len() <= 32
+        && scheme.starts_with(|c: char| c.is_ascii_lowercase())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '.' | '-'));
+    // A path: a drive (`C:\x`, `C:/x`, one letter before the colon), a share (`\\host`), a slash or dot first, or a
+    // backslash anywhere in what follows the scheme.
+    let path_like = uri.starts_with(['\\', '/', '.', '~'])
+        || scheme.len() == 1
+        || rest.starts_with('\\')
+        || rest.contains('\\');
+    if !proper || path_like {
+        return ExternalScheme::Never;
+    }
+    if NEVER_SCHEMES.contains(&scheme.as_str()) {
+        return ExternalScheme::Never;
+    }
+    ExternalScheme::Offer(scheme)
+}
+
+/// The origin (scheme, host, port) of an http or https address, None for anything else.
+fn web_origin(url: &str) -> Option<url::Origin> {
+    let u = url::Url::parse(url.trim()).ok()?;
+    matches!(u.scheme(), "http" | "https").then(|| u.origin())
+}
+
+/// True when `uri` is a `blob:` the page at `from` made itself (`blob:https://shop.example/<id>` on a page of
+/// `https://shop.example`): a receipt or a file it built, which a page may open in its panel or pop-up (rule 253). A
+/// blob of another origin, or one of a page that is not http or https, is false.
+pub fn own_blob(uri: &str, from: &str) -> bool {
+    let Some(inner) = uri
+        .get(..5)
+        .filter(|p| p.eq_ignore_ascii_case("blob:"))
+        .map(|_| &uri[5..])
+    else {
+        return false;
+    };
+    if uri.chars().count() > APP_LINK_MAX || uri.chars().any(char::is_control) {
+        return false;
+    }
+    match (web_origin(inner), web_origin(from)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// The browser can tell one app link twice (its navigation, then its launch): the same address within this long is
+/// the same link (rule 252).
+pub const APP_LINK_DEDUPE_MS: u64 = 1_000;
+
+/// Remembers the last app link a view told, so the same link said twice within [`APP_LINK_DEDUPE_MS`] is told once.
+#[derive(Clone, Debug, Default)]
+pub struct AppLinkDedupe {
+    last: Option<(String, u64)>,
+}
+
+impl AppLinkDedupe {
+    /// True when `uri` at `now_ms` is new (and it is remembered); false for the same address inside the window.
+    pub fn fresh(&mut self, uri: &str, now_ms: u64) -> bool {
+        if let Some((u, at)) = &self.last
+            && u == uri
+            && now_ms.saturating_sub(*at) < APP_LINK_DEDUPE_MS
+        {
+            return false;
+        }
+        self.last = Some((uri.to_string(), now_ms));
+        true
+    }
 }
 
 /// The address the browser is sent to: a PDF opens without the viewer's toolbar and side pane, so the
@@ -1483,6 +1636,179 @@ mod tests {
         assert_eq!(ask((2, 2)), PopupPlan::Refuse(PopupRefusal::Limit));
         assert_eq!(ask((0, 4)), PopupPlan::Refuse(PopupRefusal::Limit));
         assert_eq!(PopupRefusal::Limit.word(), "limit");
+    }
+}
+
+#[cfg(test)]
+mod app_link_tests {
+    use super::*;
+
+    fn offer(s: &str) -> ExternalScheme {
+        ExternalScheme::Offer(s.to_string())
+    }
+
+    #[test]
+    fn a_link_to_an_app_is_offered_by_its_scheme_in_lower_case() {
+        assert_eq!(
+            external_scheme("bankid:///?autostarttoken=abc&redirect=null"),
+            offer("bankid")
+        );
+        assert_eq!(
+            external_scheme("swish://paymentrequest?token=x"),
+            offer("swish")
+        );
+        assert_eq!(external_scheme("mailto:a@b.example"), offer("mailto"));
+        assert_eq!(external_scheme("tel:+4612345"), offer("tel"));
+        assert_eq!(external_scheme("BankID:///x"), offer("bankid"));
+        assert_eq!(external_scheme("ms-teams:/l/x"), offer("ms-teams"));
+        assert_eq!(external_scheme("web+app:x"), offer("web+app"));
+    }
+
+    #[test]
+    fn a_web_address_is_not_an_apps() {
+        for u in ["https://a.example/", "http://a.example/x", "about:blank"] {
+            assert_eq!(external_scheme(u), ExternalScheme::NotApp, "{u}");
+        }
+        // The panel's own rule is unchanged: none of these is a page the address bar or an agent may open.
+        for u in [
+            "bankid:///x",
+            "mailto:a@b.example",
+            "blob:https://a.example/1",
+        ] {
+            assert!(!navigation_allowed(u), "{u}");
+        }
+    }
+
+    #[test]
+    fn every_scheme_on_the_never_list_is_never_offered() {
+        for s in NEVER_SCHEMES {
+            assert_eq!(
+                external_scheme(&format!("{s}:x")),
+                ExternalScheme::Never,
+                "{s}"
+            );
+            let upper = s.to_ascii_uppercase();
+            assert_eq!(
+                external_scheme(&format!("{upper}:x")),
+                ExternalScheme::Never,
+                "{upper}"
+            );
+        }
+        for must in [
+            "javascript",
+            "data",
+            "file",
+            "vbscript",
+            "about",
+            "blob",
+            "ms-msdt",
+            "ms-officecmd",
+            "ms-appinstaller",
+            "search-ms",
+            "search",
+            "ms-search",
+            "ms-cxh",
+            "ms-cxh-full",
+            "shell",
+            "mhtml",
+            "ie.http",
+            "res",
+            "ms-excel",
+            "ms-word",
+            "ms-powerpoint",
+        ] {
+            assert!(NEVER_SCHEMES.contains(&must), "{must} is on the list");
+        }
+        // An Office scheme's command forms go with the scheme.
+        assert_eq!(
+            external_scheme("ms-word:ofe|u|https://evil.example/a.docx"),
+            ExternalScheme::Never
+        );
+        assert_eq!(
+            external_scheme("ms-excel:ofv|u|\\\\evil\\share\\a.xlsx"),
+            ExternalScheme::Never
+        );
+        assert_eq!(external_scheme("about:srcdoc"), ExternalScheme::Never);
+    }
+
+    #[test]
+    fn long_odd_and_path_like_text_is_never_offered() {
+        let long = format!("bankid:///?t={}", "a".repeat(APP_LINK_MAX));
+        assert_eq!(external_scheme(&long), ExternalScheme::Never);
+        let just = format!("bankid:{}", "a".repeat(APP_LINK_MAX - 7));
+        assert_eq!(just.chars().count(), APP_LINK_MAX);
+        assert_eq!(external_scheme(&just), offer("bankid"));
+        for bad in [
+            "",
+            "bankid:x\u{0}y",
+            "bankid:x\ny",
+            "bankid:a b",
+            "mailto:\"a\"\t@b",
+            "C:\\Windows\\system32\\calc.exe",
+            "c:/Windows/x.exe",
+            "\\\\host\\share\\x.exe",
+            "/etc/x",
+            "./x:y",
+            "nocolon",
+            "1abc:x",
+            "-abc:x",
+            "bad_scheme:x",
+            "b\u{e5}nk:x",
+            ":x",
+            "foo:\\\\host\\x",
+            &format!("{}:x", "a".repeat(33)),
+        ] {
+            assert_eq!(external_scheme(bad), ExternalScheme::Never, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_page_may_open_its_own_blob_and_no_one_elses() {
+        let page = "https://shop.example/order/7";
+        assert!(own_blob("blob:https://shop.example/1b2c-3d", page));
+        assert!(own_blob("BLOB:https://shop.example/1b2c-3d", page));
+        assert!(
+            !own_blob("blob:https://evil.example/1b2c", page),
+            "another site's"
+        );
+        assert!(
+            !own_blob("blob:http://shop.example/1b2c", page),
+            "another scheme is another origin"
+        );
+        assert!(
+            !own_blob("blob:https://shop.example:444/1b2c", page),
+            "another port"
+        );
+        assert!(!own_blob("blob:null/1b2c", page));
+        assert!(!own_blob("blob:https://shop.example/1", "about:blank"));
+        assert!(!own_blob("blob:https://shop.example/1", "data:text/html,x"));
+        assert!(!own_blob("https://shop.example/1", page), "not a blob");
+        assert!(!own_blob("blob:file:///C:/x", "file:///C:/y"));
+        // Still refused for the address bar and an agent's navigate.
+        assert_eq!(
+            address_or_search("blob:https://shop.example/1"),
+            Err(UrlError::Scheme)
+        );
+        assert_eq!(
+            normalize_url("blob:https://shop.example/1"),
+            Err(UrlError::Scheme)
+        );
+    }
+
+    #[test]
+    fn the_same_app_link_told_twice_within_a_second_is_told_once() {
+        let mut d = AppLinkDedupe::default();
+        assert!(d.fresh("bankid:///x", 0));
+        assert!(
+            !d.fresh("bankid:///x", 999),
+            "the launch after the navigation"
+        );
+        assert!(d.fresh("swish://y", 1_000), "another link is new");
+        assert!(d.fresh("bankid:///x", 1_100));
+        assert!(
+            d.fresh("bankid:///x", 2_100),
+            "a second later it is a new click"
+        );
     }
 }
 

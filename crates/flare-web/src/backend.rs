@@ -114,6 +114,15 @@ pub enum WebEvent {
         tab: String,
         url: String,
     },
+    /// The page (or a pop-up over it) went to a link to an app (`bankid:`, `mailto:`): the browser was stopped, and the
+    /// window may ask the person whether Flare opens it (rule 252). `uri` is the link as the page gave it, `scheme` its
+    /// scheme in lower case (`flare_surfaces::web::external_scheme`), `site` the asking page's site ([`site_of`]).
+    AppLink {
+        tab: String,
+        uri: String,
+        scheme: String,
+        site: String,
+    },
     /// A still of the page (PNG), or None when it could not be taken. `token` is the caller's.
     Still {
         tab: String,
@@ -338,6 +347,7 @@ impl WebEvent {
             WebEvent::Title { .. } => "Title",
             WebEvent::History { .. } => "History",
             WebEvent::Refused { .. } => "Refused",
+            WebEvent::AppLink { .. } => "AppLink",
             WebEvent::Still { .. } => "Still",
             WebEvent::Key { .. } => "Key",
             WebEvent::Focus { .. } => "Focus",
@@ -518,6 +528,13 @@ mod tests {
         };
         assert_eq!(format!("{n:?}"), "WebEvent::Note");
         assert_eq!(n.kind(), "Note");
+        let a = WebEvent::AppLink {
+            tab: "t1".into(),
+            uri: "bankid:///?autostarttoken=secret".into(),
+            scheme: "bankid".into(),
+            site: "bank.example".into(),
+        };
+        assert_eq!(format!("{a:?}"), "WebEvent::AppLink");
     }
 
     #[test]
