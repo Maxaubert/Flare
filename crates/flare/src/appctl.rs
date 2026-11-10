@@ -1373,12 +1373,7 @@ impl AppCtl {
         bind!(app, rc, on_start_settings, |c| c.toggle_settings());
         bind!(app, rc, on_start_github, |c| c.open_github());
         bind!(app, rc, on_menu_picked, |c, i: i32| c.menu_picked(i));
-        bind!(
-            app,
-            rc,
-            on_staged_chip_clicked,
-            |c, r: f32, t: f32, f: f32| c.staged_chip_clicked(r, t, f)
-        );
+        bind!(app, rc, on_staged_chip_clicked, |c| c.staged_chip_clicked());
         bind!(app, rc, on_staged_toast_clicked, |c| c
             .staged_toast_clicked());
         bind!(app, rc, on_menu_trailing, |c, i: i32| c.menu_trailing(i));
@@ -1655,7 +1650,6 @@ impl AppCtl {
     /// build_view, then push every property; a changed tab report goes to `tabs_store`.
     pub fn refresh(&mut self) {
         let Some(app) = self.app() else { return };
-        self.staged_note_busy();
         let now = self.now();
         let front = self.model.state.active_id.clone();
         if front != self.crumbed_front {
@@ -2914,7 +2908,6 @@ impl AppCtl {
             }
             MenuKind::Tab { id, .. } if self.plugin_menu_picked(&id.clone(), &path.clone()) => {}
             MenuKind::Section { sid } => self.section_menu_picked(&sid.clone(), &row.label.clone()),
-            MenuKind::Staged => self.staged_menu_picked(&row.label.clone()),
             MenuKind::Tab { id, cwd } => match row.label.as_str() {
                 "Close tab" => self.request_close(id),
                 "Copy folder path" => (self.deps.clipboard)(cwd),

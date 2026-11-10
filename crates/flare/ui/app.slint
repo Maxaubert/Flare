@@ -662,15 +662,15 @@ export component AppWindow inherits Window {
     callback update-cancel();
     callback update-abort();
     callback update-notice-dismissed();
-    // The "Build ready" chip and its toast (install when idle, 2026-10-29). The staged-build glue pushes them.
+    // The "Build ready" chip and its toast (2026-10-29; one click since 2026-11-10). The staged-build glue pushes them.
     in property <bool> staged-chip-shown;
     in property <string> staged-chip-label;
     in property <string> staged-chip-aria;
     in property <string> staged-chip-tip;
     in property <string> staged-toast;
     in property <string> staged-toast-button;
-    // The chip's right edge, top and foot: its menu drops from it.
-    callback staged-chip-clicked(length, length, length);
+    // A click installs the staged build (no menu since 2026-11-10).
+    callback staged-chip-clicked();
     callback staged-toast-clicked();
     out property <length> staged-chip-x: root.side-mode ? side-staged.absolute-position.x : top-staged.absolute-position.x;
     out property <length> staged-chip-y: root.side-mode ? side-staged.absolute-position.y : top-staged.absolute-position.y;
@@ -1017,7 +1017,7 @@ export component AppWindow inherits Window {
                         clicked(i) => { root.plugin-top-clicked(i); }
                         tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                     }
-                    // The "Build ready" chip (install when idle): left of the update chip, 8 px from it.
+                    // The "Build ready" chip (a click installs): left of the update chip, 8 px from it.
                     Rectangle {
                         width: (root.staged-chip-shown && !root.side-mode) ? top-staged.chip-width + (root.update-chip-shown ? Px.snap(8px) : Px.snap(10px - 8px)) : 0px;
                         top-staged := UpdateChip {
@@ -1029,7 +1029,7 @@ export component AppWindow inherits Window {
                             label: root.staged-chip-label;
                             aria: root.staged-chip-aria;
                             tip: root.staged-chip-tip;
-                            clicked => { root.staged-chip-clicked(self.absolute-position.x + self.width, self.absolute-position.y, self.absolute-position.y + self.height); }
+                            clicked => { root.staged-chip-clicked(); }
                             tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                         }
                     }
@@ -1113,7 +1113,7 @@ export component AppWindow inherits Window {
                     label: root.staged-chip-label;
                     aria: root.staged-chip-aria;
                     tip: root.staged-chip-tip;
-                    clicked => { root.staged-chip-clicked(self.absolute-position.x + self.width, self.absolute-position.y, self.absolute-position.y + self.height); }
+                    clicked => { root.staged-chip-clicked(); }
                     tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                 }
                 side-chip := UpdateChip {
