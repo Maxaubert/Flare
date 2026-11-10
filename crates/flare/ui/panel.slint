@@ -305,7 +305,11 @@ component WebButton inherits Rectangle {
 // page cannot fake it. A glyph alone when the panel is narrow.
 component AskAgentButton inherits Rectangle {
     in property <bool> compact;
+    // What a click sends, said on hover. Fixed per panel kind: whether a page has a selection is not known until it is
+    // asked, and it is not polled.
+    in property <string> tip-text;
     callback activated();
+    callback tip(string, length, length, length, length);
     width: root.compact ? Px.snap(24px) : Px.snap(6px + 12px + 5px + caption.preferred-width + 8px);
     height: Px.snap(24px);
     border-radius: Theme.radius-button;
@@ -339,6 +343,13 @@ component AskAgentButton inherits Rectangle {
     }
     ta := TouchArea {
         clicked => { root.activated(); }
+        changed has-hover => {
+            if (self.has-hover && root.tip-text != "") {
+                root.tip(root.tip-text, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+            } else {
+                root.tip("", 0px, 0px, 0px, 0px);
+            }
+        }
     }
 }
 
@@ -412,6 +423,7 @@ component WebBar inherits Rectangle {
     in property <bool> ask-shown;
     in property <bool> ask-compact;
     callback ask-agent();
+    callback ask-tip(string, length, length, length, length);
     out property <length> ask-x: ask-btn.absolute-position.x;
     out property <length> ask-y: ask-btn.absolute-position.y;
     out property <length> ask-w: ask-btn.width;
@@ -525,7 +537,10 @@ component WebBar inherits Rectangle {
         y: (parent.height - self.height) / 2;
         visible: root.ask-shown;
         compact: root.ask-compact;
+        // A plain web page: with nothing selected the page itself is sent (a reference, for the agent to look at).
+        tip-text: "Ask agent about the selection or this page";
         activated => { root.ask-agent(); }
+        tip(t, x, y, w, h) => { root.ask-tip(t, x, y, w, h); }
     }
     close-btn := WebButton {
         x: parent.width - self.width - Px.snap(8px);
@@ -666,6 +681,8 @@ export component PanelSlot inherits Rectangle {
     out property <length> ask-y: root.bar-only ? web-bar.ask-y : ask-btn.absolute-position.y;
     out property <length> ask-w: root.bar-only ? web-bar.ask-w : ask-btn.width;
     callback ask-agent();
+    // The button's tooltip, placed beside it by the window: below it would be under a page's native window.
+    callback ask-tip(string, length, length, length, length);
     // The view control (a markdown file, in any of its views): Compiled 0, Markdown 1, Code 2, and a pick.
     in property <bool> md-file;
     in property <int> md-view;
@@ -792,7 +809,10 @@ export component PanelSlot inherits Rectangle {
                 y: (parent.height - self.height) / 2;
                 visible: root.ask-shown;
                 compact: root.ask-compact;
+                // The header's page is a mini-app or a plugin's: only a selection is sent from it.
+                tip-text: root.kind == 3 ? "Ask agent about the selection" : "Ask agent about this file";
                 activated => { root.ask-agent(); }
+                tip(t, x, y, w, h) => { root.ask-tip(t, x, y, w, h); }
             }
             md-switch := MdViewSwitch {
                 x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(4px) - root.head-wrap - root.head-ask - Px.snap(2px) - self.width;
@@ -825,6 +845,7 @@ export component PanelSlot inherits Rectangle {
             ask-shown: root.ask-shown;
             ask-compact: root.ask-compact;
             ask-agent => { root.ask-agent(); }
+            ask-tip(t, x, y, w, h) => { root.ask-tip(t, x, y, w, h); }
             loading: root.web-loading;
             can-back: root.web-can-back;
             can-forward: root.web-can-forward;

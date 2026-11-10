@@ -4,7 +4,7 @@
 //! one property that says an overlay is open. No OS window, no controller: the properties are set
 //! directly, as the window's glue sets them.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use flare_surfaces::layout;
@@ -1095,6 +1095,47 @@ fn ask_agent_calls_back_from_the_header_and_from_the_browser_bar() {
             assert!(w > 0.0, "{kind}, scale {s}");
             h.click(x + w / 2.0, y + 12.0);
             assert_eq!(pressed.get(), n, "{kind}, scale {s}");
+        }
+    }
+}
+
+#[test]
+fn ask_agent_says_on_hover_what_a_click_sends_with_one_fixed_wording_per_kind() {
+    for s in SCALES {
+        let h = window(s);
+        let tips = Rc::new(RefCell::new(Vec::<String>::new()));
+        let t = tips.clone();
+        h.comp
+            .on_panel_ask_tip(move |text, _, _, _, _| t.borrow_mut().push(text.to_string()));
+        h.comp.set_panel_ask_on(true);
+        h.advance(0);
+        for (kind, want) in [
+            ("web", "Ask agent about the selection or this page"),
+            ("app", "Ask agent about the selection"),
+            ("text", "Ask agent about this file"),
+        ] {
+            match kind {
+                "text" => open_text(&h, 3),
+                _ => {
+                    open_web(&h);
+                    h.comp.set_panel_web_app(kind == "app");
+                    h.advance(0);
+                }
+            }
+            tips.borrow_mut().clear();
+            let (x, y, w) = (
+                h.comp.get_panel_ask_x(),
+                h.comp.get_panel_ask_y(),
+                h.comp.get_panel_ask_w(),
+            );
+            h.move_to(x + w / 2.0, y + 12.0);
+            assert_eq!(tips.borrow().as_slice(), [want], "{kind}, scale {s}");
+            h.move_to(1.0, 1.0);
+            assert_eq!(
+                tips.borrow().last().map(String::as_str),
+                Some(""),
+                "leaving takes it down, {kind}, scale {s}"
+            );
         }
     }
 }

@@ -432,6 +432,8 @@ export component AppWindow inherits Window {
     // "Ask agent": the header's button, and the note that says why nothing was sent.
     in property <bool> panel-ask-on;
     callback panel-ask-agent();
+    // The button's tooltip: placed beside the button, never under it, where a page's native window would hide it.
+    callback panel-ask-tip(string, length, length, length, length);
     out property <bool> panel-ask-visible: panel-slot.ask-visible;
     out property <length> panel-ask-x: panel-slot.ask-x;
     out property <length> panel-ask-y: panel-slot.ask-y;
@@ -1260,6 +1262,7 @@ export component AppWindow inherits Window {
                         md-view-picked(i) => { root.panel-md-view-picked(i); }
                         ask-on: root.panel-ask-on;
                         ask-agent => { root.panel-ask-agent(); }
+                        ask-tip(a, b, c, d, e) => { root.panel-ask-tip(a, b, c, d, e); }
                         convo-files: root.panel-convo-files;
                         convo-rows: root.panel-convo-rows;
                         convo-max-cols: root.panel-convo-max-cols;

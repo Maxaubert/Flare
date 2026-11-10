@@ -202,6 +202,9 @@ pub enum WebOut {
         tab: String,
         /// The source for the frame: the page's host, or a plain word for a page Flare itself made.
         label: String,
+        /// On a plain web page, the address and title the answering document gave, for a click with no selection;
+        /// None on a mini-app or plugin page, whose address means nothing to an agent.
+        page: Option<crate::ask_agent::PageRef>,
         result: Result<String, String>,
     },
 }
@@ -2557,29 +2560,44 @@ impl WebCtl {
 
     /// The page answered a selection read. Only the document the person clicked on is believed, and the source is the
     /// address that document gave with its text: `t.url` is already the next page's from the moment a navigation
-    /// starts, while the old page still shows and answers.
+    /// starts, while the old page still shows and answers. The page reference for a click with no selection comes from
+    /// that same answer, never from the tab's address or title, and only on a plain web page. A plain page whose answer
+    /// is not in the script's shape names no page, so it is a failed read rather than "select some text".
     fn selection_answered(
         &self,
         ask: SelectionAsk,
         result: Result<String, String>,
     ) -> Option<WebOut> {
         let t = self.tabs.get(&ask.tab).filter(|t| t.doc == ask.doc)?;
-        let (address, result) = match result.map(|json| crate::ask_agent::page_answer(&json)) {
-            Ok(Some((address, text))) => (address, Ok(text)),
-            Ok(None) => (String::new(), Err("the answer is too long".to_string())),
-            Err(why) => (String::new(), Err(why)),
+        let plain = t.app_host.is_none();
+        let (answer, result) = match result.map(|json| crate::ask_agent::page_answer(&json)) {
+            Ok(Some(a)) if plain && a.address.is_empty() => {
+                (None, Err("the page gave no address".to_string()))
+            }
+            Ok(Some(a)) => {
+                let text = a.text.clone();
+                (Some(a), Ok(text))
+            }
+            Ok(None) => (None, Err("the answer is too long".to_string())),
+            Err(why) => (None, Err(why)),
         };
+        let address = answer.as_ref().map_or("", |a| a.address.as_str());
         let label = if let Some(file) = &t.source {
             // A markdown view: the file the page was made from, by its name.
             file.rsplit(['\\', '/']).next().unwrap_or(file).to_string()
-        } else if t.app_host.is_some() {
-            "this page".to_string()
+        } else if plain {
+            flare_surfaces::web::host_label(address)
         } else {
-            flare_surfaces::web::host_label(&address)
+            "this page".to_string()
         };
+        let page = answer.filter(|_| plain).map(|a| crate::ask_agent::PageRef {
+            address: a.address,
+            title: a.title,
+        });
         Some(WebOut::AskSelection {
             tab: ask.tab,
             label,
+            page,
             result,
         })
     }

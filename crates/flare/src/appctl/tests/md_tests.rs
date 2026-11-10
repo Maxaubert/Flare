@@ -303,7 +303,7 @@ fn ask_agent_on_a_markdown_page_names_the_file_and_sends_its_path_with_nothing_s
     let sid = script(&slot).expect("the page was asked for its selection");
     fake(&slot).say(WebEvent::Script {
         id: sid,
-        result: Ok(serde_json::to_string(&format!("{url}\nSome text")).unwrap()),
+        result: Ok(serde_json::to_string(&format!("{url}\nr.md\nSome text")).unwrap()),
     });
     f.pump();
     let typed = String::from_utf8_lossy(&shell.written()).into_owned();
@@ -319,7 +319,7 @@ fn ask_agent_on_a_markdown_page_names_the_file_and_sends_its_path_with_nothing_s
     let sid = script(&slot).unwrap();
     fake(&slot).say(WebEvent::Script {
         id: sid,
-        result: Ok(serde_json::to_string(&format!("{url}\n")).unwrap()),
+        result: Ok(serde_json::to_string(&format!("{url}\nr.md\n")).unwrap()),
     });
     f.pump();
     let typed = String::from_utf8_lossy(&shell.written()).into_owned();
