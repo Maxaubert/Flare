@@ -340,10 +340,7 @@ fn the_pipe_is_closed_to_other_users() {
 fn the_live_pipe_carries_the_owner_only_descriptor() {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
-        SE_KERNEL_OBJECT,
-    };
+    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_KERNEL_OBJECT};
     use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 
     let (server, name) = start(ServerConfig::default());
@@ -367,9 +364,28 @@ fn the_live_pipe_carries_the_owner_only_descriptor() {
         )
     };
     assert_eq!(rc, 0, "GetSecurityInfo failed");
+    let sddl = dacl_text(sd);
+    // SAFETY: `sd` came from GetSecurityInfo above and is freed once.
+    unsafe { LocalFree(sd) };
+    let sid = flare_ctl::pipe::user_sid().unwrap();
+    // Generic-all reads back as file-all; there is exactly one ACE and the DACL is protected. The
+    // expected text goes through the same conversion, because Windows writes some SIDs as an alias:
+    // the built-in Administrator (the CI runner's account) reads back as "LA", not its S-1-5-21 SID.
+    assert_eq!(sddl, canonical_dacl(&format!("D:P(A;;FA;;;{sid})")));
+    drop(file);
+    server.stop();
+}
+
+/// The DACL of `sd` as SDDL text, the way Windows writes it.
+fn dacl_text(sd: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR) -> String {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
     let mut text: *mut u16 = std::ptr::null_mut();
     let mut len = 0u32;
-    // SAFETY: `sd` is the descriptor just read; `text` receives a LocalAlloc'd string.
+    // SAFETY: `sd` is a valid descriptor; `text` receives a LocalAlloc'd string.
     let ok = unsafe {
         ConvertSecurityDescriptorToStringSecurityDescriptorW(
             sd,
@@ -379,21 +395,58 @@ fn the_live_pipe_carries_the_owner_only_descriptor() {
             &mut len,
         )
     };
-    assert_ne!(ok, 0);
+    assert_ne!(ok, 0, "the descriptor did not convert to SDDL");
     // SAFETY: `text` is `len` UTF-16 units including the NUL.
     let sddl = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len as usize) })
         .trim_end_matches('\0')
         .to_string();
-    // SAFETY: both came from the calls above and are freed once.
-    unsafe {
-        LocalFree(text as _);
-        LocalFree(sd);
-    }
+    // SAFETY: `text` came from the call above and is freed once.
+    unsafe { LocalFree(text as _) };
+    sddl
+}
+
+/// `sddl` parsed and written back by Windows, so a SID it writes as an alias compares equal.
+fn canonical_dacl(sddl: &str) -> String {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    let wide: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
+    let mut sd = std::ptr::null_mut();
+    // SAFETY: `wide` is NUL-terminated; `sd` receives a LocalAlloc'd descriptor freed below.
+    let ok = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(ok, 0, "not valid SDDL: {sddl}");
+    let text = dacl_text(sd);
+    // SAFETY: `sd` came from the call above and is freed once.
+    unsafe { LocalFree(sd) };
+    text
+}
+
+/// The CI runner's account is the built-in Administrator (RID 500), whose SID Windows writes as
+/// "LA". The canonical form gives that alias for the same machine's RID 500 and keeps any other SID
+/// as itself, so the live-pipe check above holds on every account.
+#[test]
+fn the_built_in_administrator_reads_back_as_its_alias() {
     let sid = flare_ctl::pipe::user_sid().unwrap();
-    // Generic-all reads back as file-all; there is exactly one ACE and the DACL is protected.
-    assert_eq!(sddl, format!("D:P(A;;FA;;;{sid})"));
-    drop(file);
-    server.stop();
+    let (machine, rid) = sid.rsplit_once('-').expect("a SID has a RID");
+    assert!(machine.starts_with("S-1-5-21-"), "a local account: {sid}");
+    assert_eq!(
+        canonical_dacl(&format!("D:P(A;;FA;;;{machine}-500)")),
+        "D:P(A;;FA;;;LA)"
+    );
+    let own = canonical_dacl(&format!("D:P(A;;FA;;;{sid})"));
+    if rid == "500" {
+        assert_eq!(own, "D:P(A;;FA;;;LA)");
+    } else {
+        assert_eq!(own, format!("D:P(A;;FA;;;{sid})"));
+    }
 }
 
 /// A client that never reads, with more queued events than the pipe holds: the worker is parked in
