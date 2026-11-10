@@ -647,7 +647,7 @@ pub fn key_event_of(k: &KeyPress) -> Option<KeyEvent> {
 }
 
 /// The key the chord table reads for a key the page was about to get, in the keymap's own words: on a Mac the
-/// backend's `ctrl` carries Cmd, the app's key (rule 237), so it is the event's `meta` there. Windows' keys are
+/// backend's `ctrl` carries Cmd, the app's key (rule 1006), so it is the event's `meta` there. Windows' keys are
 /// [`key_event_of`]'s.
 pub fn key_event_for(k: &KeyPress, ctx: &KeyContext) -> Option<KeyEvent> {
     let mut ev = key_event_of(k)?;
