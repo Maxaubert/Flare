@@ -35,8 +35,8 @@ use objc2::MainThreadMarker;
 use serde_json::{Value, json};
 
 use crate::backend::{
-    ImeInput, KeyInput, Mods, Nav, Pointer, PointerAct, PointerButton, Slot, ViewFrame, WebBackend,
-    WebEvent,
+    ImeInput, KeyInput, Mods, Nav, NoteKind, Pointer, PointerAct, PointerButton, Slot, ViewFrame,
+    WebBackend, WebEvent,
 };
 use crate::host::{HostConfig, WebHost, installed_runtime};
 
@@ -109,6 +109,17 @@ fn ev_text(e: &WebEvent) -> String {
         WebEvent::Focus { tab, has } => format!("Focus {tab} {has}"),
         WebEvent::ModMessage { tab, host, json } => format!("ModMessage {tab} {host} {json}"),
         WebEvent::View { slot, event } => format!("View {:?} {}", slot.kind, ev_text(event)),
+        WebEvent::AppLink {
+            tab, scheme, site, ..
+        } => format!("AppLink {tab} {scheme} {site}"),
+        WebEvent::Popups { tab, sites } => format!("Popups {tab} {}", sites.join(",")),
+        WebEvent::Note { tab, note } => format!(
+            "Note {tab} {:?} {} {} {}",
+            note.kind(),
+            note.site(),
+            note.from(),
+            note.word()
+        ),
         other => other.kind().to_string(),
     }
 }
@@ -469,16 +480,22 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
         json!({"events": ev}),
     );
 
-    // ---- refusals, a new window into the same view, a failed load
+    // ---- refusals and app links, a new window into the same view, pop-ups, a failed load
     let from = h.mark();
     let _ = h.script(tab, "location.href = 'mailto:someone@example.com'; 1");
+    // A link to an app is asked about (rule 252): told once as an AppLink by its scheme and the page's site, never
+    // opened by the browser and never a refusal in the bar.
     let mailto = h
         .until(
             from,
             5_000,
-            |e| matches!(e, WebEvent::Refused { url, .. } if url.starts_with("mailto:")),
+            |e| matches!(e, WebEvent::AppLink { scheme, site, .. } if scheme == "mailto" && site == "127.0.0.1"),
         )
-        .is_some();
+        .is_some()
+        && !h
+            .since(from)
+            .iter()
+            .any(|e| e.starts_with("Refused t1 mailto:"));
     let _ = h.script(tab, "location.href = 'file:///etc/hosts'; 1");
     let file = h
         .until(
@@ -495,7 +512,7 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
     rep.check(
         "panel.external-schemes",
         mailto && file_kept_out && no_end_for_refused,
-        "mailto: is refused (WebEvent::Refused, with no load end of its own) and file: never loads; no program is started",
+        "mailto: is an AppLink to ask about (no refusal, no load end of its own) and file: never loads; no program is started",
         json!({"events": h.since(from), "os_launch_requests": os}),
     );
     let from = h.mark();
@@ -507,6 +524,121 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
         same && h.host.controllers() == 1 && screen::windows_of_self() == 0,
         "window.open loads in the same view: no second view, no window",
         json!({"events": h.since(from), "controllers": h.host.controllers()}),
+    );
+    // A pop-up after the person's click: a second browser over the page under Flare's strip, with the page's
+    // `window.opener`; the agent's calls still reach the page; its own window.close() and the strip's Close close it.
+    let green = |f: &ViewFrame| px_of(f) == Some((0x22, 0xaa, 0x44, 0xff));
+    let blue = |f: &ViewFrame| px_of(f) == Some((0x33, 0x66, 0xcc, 0xff));
+    let wait_frame = |h: &mut H, want: &dyn Fn(&ViewFrame) -> bool| {
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(10) {
+            h.wait(50);
+            if h.host.frame(&slot).as_ref().is_some_and(want) {
+                return true;
+            }
+        }
+        false
+    };
+    let from = h.mark();
+    h.host.navigate(tab, &main);
+    h.opened(from, tab, "Main");
+    wait_frame(&mut h, &blue);
+    let from = h.mark();
+    h.click(&slot, 240.0, 570.0);
+    let shown = h
+        .until(
+            from,
+            10_000,
+            |e| matches!(e, WebEvent::Popups { tab: t, sites } if t == tab && sites == &["127.0.0.1".to_string()]),
+        )
+        .is_some();
+    let drawn = wait_frame(&mut h, &green);
+    let probe = h.host.probe_view(&slot);
+    let opener = h
+        .until(
+            from,
+            5_000,
+            |e| matches!(e, WebEvent::Title { tab: t, title } if t == tab && title == "Opener seen"),
+        )
+        .is_some();
+    let agent_page = h.script(tab, "document.title");
+    let noted = h
+        .since(from)
+        .iter()
+        .any(|e| e.starts_with("Note t1 Popup 127.0.0.1 127.0.0.1 popup"));
+    rep.check(
+        "panel.popup",
+        shown
+            && drawn
+            && opener
+            && noted
+            && agent_page.as_deref() == Ok("\"Opener seen\"")
+            && h.host.controllers() == 1
+            && probe.as_ref().is_some_and(|p| p.popups.len() == 1 && p.popups[0].visible)
+            && screen::windows_of_self() == 0,
+        "a window.open with a size after a click is a pop-up over the page (Popups names its site, the panel draws it), \
+         window.opener reaches the page, a script still runs in the page, no second view and no window",
+        json!({"events": h.since(from), "drawn": drawn, "agent": format!("{agent_page:?}"),
+               "popups": probe.map(|p| p.popups.len())}),
+    );
+    let from = h.mark();
+    h.click(&slot, 240.0, 100.0);
+    let closed_itself = h
+        .until(
+            from,
+            10_000,
+            |e| matches!(e, WebEvent::Popups { tab: t, sites } if t == tab && sites.is_empty()),
+        )
+        .is_some();
+    let page_back = wait_frame(&mut h, &blue);
+    rep.check(
+        "panel.popup-closes-itself",
+        closed_itself && page_back,
+        "the pop-up's own window.close() closes it and the page shows again",
+        json!({"events": h.since(from), "page_back": page_back}),
+    );
+    let from = h.mark();
+    h.click(&slot, 240.0, 570.0);
+    let again = h
+        .until(
+            from,
+            10_000,
+            |e| matches!(e, WebEvent::Popups { sites, .. } if sites.len() == 1),
+        )
+        .is_some();
+    h.host.close_popup(tab);
+    let strip_closed = h
+        .until(
+            from,
+            5_000,
+            |e| matches!(e, WebEvent::Popups { sites, .. } if sites.is_empty()),
+        )
+        .is_some();
+    let page_back = wait_frame(&mut h, &blue);
+    rep.check(
+        "panel.popup-strip-close",
+        again && strip_closed && page_back,
+        "the strip's Close (close_popup) closes the pop-up on top and the page shows again",
+        json!({"events": h.since(from)}),
+    );
+    // No click of the person's: Chromium's own blocker stops it before CEF asks (no `on_before_popup`, so no note
+    // as on Windows, rule 1123); nothing opens and the page's window.open answers null.
+    let from = h.mark();
+    let blocked = h.script(
+        tab,
+        "window.open('/popup', 'pay', 'width=400,height=300') === null",
+    );
+    h.wait(1_500);
+    let ev = h.since(from);
+    rep.check(
+        "panel.popup-blocked",
+        blocked.as_deref() == Ok("true")
+            && !ev.iter().any(|e| e.starts_with("Popups"))
+            && h.host
+                .probe_view(&slot)
+                .is_some_and(|p| p.popups.is_empty()),
+        "a pop-up no click of the person's asked for opens nothing (window.open is null)",
+        json!({"events": ev, "result": format!("{blocked:?}")}),
     );
     let closed_port = std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
@@ -883,6 +1015,30 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
         gone.is_some(),
         "a page whose process ends is reported Gone",
         json!({"event": gone.as_ref().map(ev_text)}),
+    );
+    let notes: Vec<String> = h
+        .since(0)
+        .into_iter()
+        .filter(|e| e.starts_with("Note "))
+        .collect();
+    let has_note = |kind: NoteKind, word: &str| {
+        let k = format!("Note t1 {kind:?} ");
+        notes
+            .iter()
+            .any(|n| n.starts_with(&k) && (word.is_empty() || n.ends_with(&format!(" {word}"))))
+    };
+    rep.check(
+        "panel.notes",
+        has_note(NoteKind::Nav, "")
+            && has_note(NoteKind::NavRefused, "app-link")
+            && has_note(NoteKind::LoadFailed, "cannot-connect")
+            && has_note(NoteKind::Permission, "")
+            && has_note(NoteKind::Popup, "panel")
+            && has_note(NoteKind::Process, "render")
+            && !notes.iter().any(|n| n.contains("http://") || n.contains("/main")),
+        "the diagnostics notes come as on Windows (web-nav, an app link, a failed load, a denied permission, a pop-up, \
+         a page process) and carry sites, never an address",
+        json!({"notes": notes}),
     );
     h.host.close(tab);
     h.wait(300);

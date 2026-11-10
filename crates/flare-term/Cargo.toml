@@ -29,5 +29,9 @@ flare-proc = { path = "../flare-proc" }
 [dev-dependencies]
 tempfile.workspace = true
 
+# A thread's own CPU time for the flood test's bounds (tests/common/mod.rs).
+[target.'cfg(unix)'.dev-dependencies]
+libc.workspace = true
+
 [lints]
 workspace = true

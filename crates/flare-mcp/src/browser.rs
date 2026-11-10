@@ -161,6 +161,16 @@ pub(crate) fn render_state(v: &Value) -> ToolResult {
     }
     let panel = v.get("panel").cloned().unwrap_or(Value::Null);
     match panel.get("kind").and_then(Value::as_str).unwrap_or("") {
+        // A pop-up over the page (a card's check, a sign-in) is the person's: the browser tools cannot reach it.
+        "web" if v.get("popup").and_then(Value::as_bool) == Some(true) => {
+            ToolResult::text(format!(
+                "Flare's browser panel beside this terminal tab shows a pop-up the page opened, over the page below. The browser tools cannot see or use the pop-up, and clicking, typing, pressing, scrolling, navigating and eval wait until the person has finished it and it has closed; browser_look still reads the page behind it.\n{}",
+                page_block(
+                    panel.get("title").and_then(Value::as_str).unwrap_or(""),
+                    panel.get("url").and_then(Value::as_str).unwrap_or(""),
+                )
+            ))
+        }
         "web" => ToolResult::text(format!(
             "Flare's browser panel beside this terminal tab shows a web page. Call browser_look to see it.\n{}",
             page_block(
@@ -753,6 +763,13 @@ mod tests {
             json!({"open": true, "panel": {"kind": "app", "title": "Chart"}}),
         ));
         assert!(text(&run("browser_state", json!({}), &mut ch)).contains("mini-app"));
+        // A pop-up over the page is said, and the page behind it is still quoted data.
+        let mut ch = Fake::default();
+        ch.answers.push_back(Ok(json!({"open": true, "popup": true, "panel": {"kind": "web", "title": "Shop", "url": "https://shop.example/pay"}})));
+        let t = text(&run("browser_state", json!({}), &mut ch));
+        assert!(t.contains("shows a pop-up"), "{t}");
+        assert!(t.contains("wait until the person has finished it"), "{t}");
+        assert!(t.contains(&format!("{BEGIN}\nTitle: \"Shop\"")), "{t}");
         let mut ch = Fake::default();
         ch.answers.push_back(Ok(
             json!({"open": true, "panel": {"kind": "text", "title": "Notes"}}),
