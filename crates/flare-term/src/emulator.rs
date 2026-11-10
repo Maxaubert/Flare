@@ -3166,13 +3166,18 @@ mod tests {
             );
         }
         e.feed(b"Local: http://localhost:3000/\r\n");
-        let t = Instant::now();
-        let s = dev(&mut e);
-        let took = t.elapsed();
-        assert_eq!(s.server.map(|s| s.port), Some(3000));
+        // The best of five full readings (`dev` drops the cache each time): a shared CI runner can stall any one of
+        // them past the budget, while a reading that is really slow is slow every time.
+        let mut took = std::time::Duration::MAX;
+        for _ in 0..5 {
+            let t = Instant::now();
+            let s = dev(&mut e);
+            took = took.min(t.elapsed());
+            assert_eq!(s.server.map(|s| s.port), Some(3000));
+        }
         assert!(
             took < std::time::Duration::from_millis(30),
-            "one reading took {took:?}"
+            "the quickest of five readings took {took:?}"
         );
     }
 
