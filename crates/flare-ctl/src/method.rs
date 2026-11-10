@@ -57,6 +57,8 @@ pub enum Method {
     ViewDiagram,
     /// A sound file or a public https address in Flare's audio player (plugins phase 6).
     ViewAudio,
+    /// A .glb, .gltf or .stl file in Flare's 3D viewer (issue #36).
+    ViewModel,
     BrowserOpen,
     BrowserNavigate,
     BrowserLook,
@@ -181,7 +183,7 @@ impl Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 44] = [
+    pub const ALL: [Method; 45] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -207,6 +209,7 @@ impl Method {
         Method::ViewHtml,
         Method::ViewDiagram,
         Method::ViewAudio,
+        Method::ViewModel,
         Method::BrowserOpen,
         Method::BrowserNavigate,
         Method::BrowserLook,
@@ -256,6 +259,7 @@ impl Method {
             Method::ViewHtml => "view.html",
             Method::ViewDiagram => "view.diagram",
             Method::ViewAudio => "view.audio",
+            Method::ViewModel => "view.model",
             Method::BrowserOpen => "browser.open",
             Method::BrowserNavigate => "browser.navigate",
             Method::BrowserLook => "browser.look",
@@ -304,7 +308,8 @@ impl Method {
             | Method::ViewText
             | Method::ViewHtml
             | Method::ViewDiagram
-            | Method::ViewAudio => Namespace::View,
+            | Method::ViewAudio
+            | Method::ViewModel => Namespace::View,
             Method::BrowserOpen
             | Method::BrowserNavigate
             | Method::BrowserLook
@@ -329,7 +334,12 @@ impl Method {
             Namespace::Browser => BROWSER_TIMEOUT,
             // The person answers Flare's dialog, then the page is filled; the page's address is answered at once.
             Namespace::Fill if self != Method::BrowserFillPage => FILL_TIMEOUT,
-            Namespace::View if matches!(self, Method::ViewHtml | Method::ViewDiagram) => {
+            Namespace::View
+                if matches!(
+                    self,
+                    Method::ViewHtml | Method::ViewDiagram | Method::ViewModel
+                ) =>
+            {
                 BROWSER_TIMEOUT
             }
             // The mod's page has 30 s to answer (`flare_mods::hub::CALL_TIMEOUT`); the channel lets the
@@ -407,6 +417,7 @@ mod tests {
         // A mini-app is answered when its page has loaded, a diagram when it has drawn.
         assert_eq!(Method::ViewHtml.timeout(), BROWSER_TIMEOUT);
         assert_eq!(Method::ViewDiagram.timeout(), BROWSER_TIMEOUT);
+        assert_eq!(Method::ViewModel.timeout(), BROWSER_TIMEOUT);
         assert!(BROWSER_TIMEOUT > DEFAULT_TIMEOUT);
     }
 

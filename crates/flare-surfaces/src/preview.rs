@@ -34,6 +34,12 @@ pub const IMAGE_FILE_MAX: u64 = 64 * 1024 * 1024;
 pub const IMAGE_PIXELS_MAX: u64 = 100_000_000;
 /// A decoded image longer than this on a side is scaled down to it (a GPU texture limit).
 pub const IMAGE_SIDE_MAX: u32 = 8192;
+/// The longest side of a hover thumbnail.
+pub const THUMB_SIDE: u32 = 256;
+/// The largest image file a hover reads (16 MB).
+pub const THUMB_FILE_MAX: u64 = 16 * 1024 * 1024;
+/// The most pixels a picture may have for a hover thumbnail (25 megapixels).
+pub const THUMB_PIXELS_MAX: u64 = 25_000_000;
 
 /// The extension in lower case, when the name has one.
 fn ext_of(path: &str) -> Option<String> {
@@ -67,7 +73,13 @@ pub fn classify_resolved(abs: &str, canonical: &str) -> Option<PanelKind> {
 /// of that kind. The controller asks this before it starts a read, for a target that came from a
 /// click and for one that came back from `panels.json`, a file anyone can edit.
 pub fn loadable(path: &str, kind: &PanelKind) -> bool {
-    is_local_path(path) && !path.contains('\0') && classify(path).as_ref() == Some(kind)
+    on_local_drive(path) && classify(path).as_ref() == Some(kind)
+}
+
+/// True for a local path (`C:\\...` on Windows, `/...` on macOS; never a network path, which would make the
+/// system reach out), with no NUL.
+pub fn on_local_drive(path: &str) -> bool {
+    is_local_path(path) && !path.contains('\0')
 }
 
 /// A path on a local drive (`C:\\...` or `C:/...`).
@@ -257,40 +269,45 @@ pub struct Decoded {
     pub scaled: bool,
 }
 
-/// Reads and decodes an image file. `stale` is asked between the stages (size, decode, resize): a
-/// true answer abandons the work, so a picture the user has left costs no more memory.
-pub fn decode_image(path: &Path, stale: &dyn Fn() -> bool) -> Result<Decoded, Reason> {
-    // sync-ok: runs on a worker thread only
-    let meta = std::fs::metadata(path).map_err(|e| io_reason(&e))?;
-    if !meta.is_file() {
-        return Err(Reason::Missing);
-    }
-    if meta.len() > IMAGE_FILE_MAX {
-        return Err(Reason::TooBig);
-    }
-    let open = || {
-        image::ImageReader::open(path)
-            .and_then(image::ImageReader::with_guessed_format)
-            .map_err(|e| io_reason(&e))
-    };
-    let (w, h) = open()?.into_dimensions().map_err(|_| Reason::NotAnImage)?;
-    if u64::from(w) * u64::from(h) > IMAGE_PIXELS_MAX {
-        return Err(Reason::TooManyPixels);
-    }
+/// A hover thumbnail: straight RGBA, longest side at most `THUMB_SIDE`, and the size of the picture it came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecodedThumb {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+    /// The picture's own width, as its camera held it.
+    pub source_width: u32,
+    /// The picture's own height, as its camera held it.
+    pub source_height: u32,
+}
+
+/// Reads an image file for a hover thumbnail, with limits below the panel's: pointing at a path is not asking for
+/// the file. Same stages and same `stale` as [`decode_image`]; an animation gives its first frame.
+pub fn decode_thumb(path: &Path, stale: &dyn Fn() -> bool) -> Result<DecodedThumb, Reason> {
+    let img = read_oriented(path, THUMB_FILE_MAX, THUMB_PIXELS_MAX, stale)?;
+    let (source_width, source_height) = (img.width(), img.height());
     if stale() {
         return Err(Reason::Superseded);
     }
-    // A picture too big for the decoder's memory limit (a large 16-bit one) is too large, not unreadable.
-    let not_read = |e: image::ImageError| match e {
-        image::ImageError::Limits(_) => Reason::TooManyPixels,
-        _ => Reason::NotAnImage,
+    let img = if source_width > THUMB_SIDE || source_height > THUMB_SIDE {
+        img.thumbnail(THUMB_SIDE, THUMB_SIDE)
+    } else {
+        img
     };
-    // A photo is drawn the way its camera held it (its EXIF orientation), not as the sensor stored it.
-    let mut decoder = open()?.into_decoder().map_err(not_read)?;
-    let orientation = image::ImageDecoder::orientation(&mut decoder)
-        .unwrap_or(image::metadata::Orientation::NoTransforms);
-    let mut img = image::DynamicImage::from_decoder(decoder).map_err(not_read)?;
-    img.apply_orientation(orientation);
+    let rgba = img.into_rgba8();
+    Ok(DecodedThumb {
+        width: rgba.width(),
+        height: rgba.height(),
+        rgba: rgba.into_raw(),
+        source_width,
+        source_height,
+    })
+}
+
+/// Reads and decodes an image file. `stale` is asked between the stages (size, decode, resize): a
+/// true answer abandons the work, so a picture the user has left costs no more memory.
+pub fn decode_image(path: &Path, stale: &dyn Fn() -> bool) -> Result<Decoded, Reason> {
+    let img = read_oriented(path, IMAGE_FILE_MAX, IMAGE_PIXELS_MAX, stale)?;
     let (w, h) = (img.width(), img.height());
     if stale() {
         return Err(Reason::Superseded);
@@ -315,6 +332,48 @@ pub fn decode_image(path: &Path, stale: &dyn Fn() -> bool) -> Result<Decoded, Re
         has_alpha,
         scaled,
     })
+}
+
+/// The checks and the decode both readers share: the file's size, the picture's pixels from its header (nothing is
+/// decoded over the limit), then the pixels the way the camera held them.
+fn read_oriented(
+    path: &Path,
+    file_max: u64,
+    pixels_max: u64,
+    stale: &dyn Fn() -> bool,
+) -> Result<image::DynamicImage, Reason> {
+    // sync-ok: runs on a worker thread only
+    let meta = std::fs::metadata(path).map_err(|e| io_reason(&e))?;
+    if !meta.is_file() {
+        return Err(Reason::Missing);
+    }
+    if meta.len() > file_max {
+        return Err(Reason::TooBig);
+    }
+    let open = || {
+        image::ImageReader::open(path)
+            .and_then(image::ImageReader::with_guessed_format)
+            .map_err(|e| io_reason(&e))
+    };
+    let (w, h) = open()?.into_dimensions().map_err(|_| Reason::NotAnImage)?;
+    if u64::from(w) * u64::from(h) > pixels_max {
+        return Err(Reason::TooManyPixels);
+    }
+    if stale() {
+        return Err(Reason::Superseded);
+    }
+    // A picture too big for the decoder's memory limit (a large 16-bit one) is too large, not unreadable.
+    let not_read = |e: image::ImageError| match e {
+        image::ImageError::Limits(_) => Reason::TooManyPixels,
+        _ => Reason::NotAnImage,
+    };
+    // A photo is drawn the way its camera held it (its EXIF orientation), not as the sensor stored it.
+    let mut decoder = open()?.into_decoder().map_err(not_read)?;
+    let orientation = image::ImageDecoder::orientation(&mut decoder)
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder).map_err(not_read)?;
+    img.apply_orientation(orientation);
+    Ok(img)
 }
 
 #[cfg(test)]
@@ -708,6 +767,70 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = write(d.path(), "huge.bmp", &bmp);
         assert_eq!(decode_image(&p, &|| false), Err(Reason::TooManyPixels));
+    }
+
+    #[test]
+    fn a_thumbnail_keeps_the_shape_and_says_the_pictures_own_size() {
+        let d = tempfile::tempdir().unwrap();
+        let p = write(d.path(), "w.png", &png_bytes(1000, 500, 255));
+        let got = decode_thumb(&p, &|| false).unwrap();
+        assert_eq!((got.width, got.height), (256, 128));
+        assert_eq!((got.source_width, got.source_height), (1000, 500));
+        assert_eq!(got.rgba.len(), 256 * 128 * 4);
+    }
+
+    #[test]
+    fn a_small_picture_is_not_blown_up_for_its_thumbnail() {
+        let d = tempfile::tempdir().unwrap();
+        let p = write(d.path(), "s.png", &png_bytes(3, 2, 128));
+        let got = decode_thumb(&p, &|| false).unwrap();
+        assert_eq!((got.width, got.height), (3, 2));
+        assert_eq!(&got.rgba[..4], &[200, 30, 40, 128], "straight alpha");
+    }
+
+    #[test]
+    fn a_thumbnail_is_drawn_the_way_the_camera_held_it() {
+        let d = tempfile::tempdir().unwrap();
+        let p = write(d.path(), "turned.jpg", &turned_jpeg(8, 4));
+        let got = decode_thumb(&p, &|| false).unwrap();
+        assert_eq!((got.width, got.height), (4, 8));
+        assert_eq!((got.source_width, got.source_height), (4, 8));
+    }
+
+    /// The panel would open this one (36 MP, under its 100 MP), but a hover does not.
+    #[test]
+    fn a_thumbnail_has_its_own_lower_pixel_limit() {
+        let mut bmp = Vec::new();
+        bmp.extend_from_slice(b"BM");
+        bmp.extend_from_slice(&54u32.to_le_bytes());
+        bmp.extend_from_slice(&0u32.to_le_bytes());
+        bmp.extend_from_slice(&54u32.to_le_bytes());
+        bmp.extend_from_slice(&40u32.to_le_bytes());
+        bmp.extend_from_slice(&6_000i32.to_le_bytes());
+        bmp.extend_from_slice(&6_000i32.to_le_bytes());
+        bmp.extend_from_slice(&1u16.to_le_bytes());
+        bmp.extend_from_slice(&24u16.to_le_bytes());
+        bmp.extend_from_slice(&[0u8; 24]);
+        let d = tempfile::tempdir().unwrap();
+        let p = write(d.path(), "big.bmp", &bmp);
+        assert_eq!(decode_thumb(&p, &|| false), Err(Reason::TooManyPixels));
+    }
+
+    #[test]
+    fn a_thumbnail_refuses_a_file_over_its_own_size_limit_without_reading_it() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("big.png");
+        let f = std::fs::File::create(&p).unwrap();
+        f.set_len(THUMB_FILE_MAX + 1).unwrap();
+        drop(f);
+        assert_eq!(decode_thumb(&p, &|| false), Err(Reason::TooBig));
+    }
+
+    #[test]
+    fn a_thumbnail_nobody_wants_any_more_is_abandoned() {
+        let d = tempfile::tempdir().unwrap();
+        let p = write(d.path(), "a.png", &png_bytes(3, 2, 255));
+        assert_eq!(decode_thumb(&p, &|| true), Err(Reason::Superseded));
     }
 
     #[test]

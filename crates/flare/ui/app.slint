@@ -6,6 +6,7 @@ import { TabSidebar, TabSidebarPreview } from "sidebar.slint";
 import { StartScreen, StartScreenPreview } from "start.slint";
 import { ContextMenu, OverflowList, MenusPreview } from "menus.slint";
 import { Tip } from "tip.slint";
+import { ThumbBubble } from "thumb.slint";
 import { Dialog, DialogPreview } from "dialog.slint";
 import { PluginAsk } from "plugin_ask.slint";
 import { PluginLook } from "plugin_look.slint";
@@ -38,6 +39,7 @@ export { DictationPageControls } from "settings/dictation.slint";
 export { SkeletonPreview } from "skeleton.slint";
 export { FindBarPreview } from "find.slint";
 export { BadgePreview } from "badge.slint";
+export { ThumbBubblePreview } from "thumb.slint";
 export { ScrollbarPreview } from "scrollbar.slint";
 export { TabStripPreview } from "tabs.slint";
 export { TabSidebarPreview } from "sidebar.slint";
@@ -425,6 +427,18 @@ export component AppWindow inherits Window {
     out property <length> panel-wrap-button-y: panel-slot.wrap-button-y;
     out property <length> panel-wrap-button-w: panel-slot.wrap-button-w;
     callback panel-wrap-toggled();
+    // "Ask agent": the header's button, and the note that says why nothing was sent.
+    in property <bool> panel-ask-on;
+    callback panel-ask-agent();
+    // The button's tooltip: placed beside the button, never under it, where a page's native window would hide it.
+    callback panel-ask-tip(string, length, length, length, length);
+    out property <bool> panel-ask-visible: panel-slot.ask-visible;
+    out property <length> panel-ask-x: panel-slot.ask-x;
+    out property <length> panel-ask-y: panel-slot.ask-y;
+    out property <length> panel-ask-w: panel-slot.ask-w;
+    in property <string> ask-note;
+    out property <length> ask-note-x: ask-note-box.x;
+    out property <length> ask-note-w: ask-note-box.width;
     callback panel-wrap-cols-changed();
     changed panel-wrap-cols => { root.panel-wrap-cols-changed(); }
     // The slot went away while the splitter was held (a tab switched by key, the window too small, a page in front): the
@@ -698,6 +712,16 @@ export component AppWindow inherits Window {
     in property <int> tip-side;
     out property <length> tip-w: tipbox.tip-w;
     out property <length> tip-h: tipbox.tip-h;
+    // The hover thumbnail: placed like a tip, from the controller.
+    in property <bool> thumb-visible;
+    in property <image> thumb-picture;
+    in property <string> thumb-caption;
+    in property <length> thumb-pic-w;
+    in property <length> thumb-pic-h;
+    in property <length> thumb-x;
+    in property <length> thumb-y;
+    out property <length> thumb-w: thumbbox.bubble-w;
+    out property <length> thumb-h: thumbbox.bubble-h;
     // ---- focus ----
     // The overflow list focuses its field when it opens, so "open" stands for "its field has the keys".
     out property <bool> chrome-has-focus: sb.find-has-focus || root.overflow-open || root.dialog-open || root.pask-open || root.update-open;
@@ -712,6 +736,8 @@ export component AppWindow inherits Window {
     // kind: 0 down, 1 up, 2 move, 3 cancel; button: 0 left, 1 middle, 2 right, 3 other.
     // x and y are relative to the grid area, in logical pixels.
     callback grid-pointer(kind: int, button: int, x: length, y: length, ctrl: bool, shift: bool, alt: bool);
+    // The pointer is no longer over the grid (a plain leave sends no pointer-event).
+    callback grid-pointer-left();
     in property <bool> find-open;
     in-out property <string> find-query;
     in property <string> find-readout;
@@ -817,6 +843,8 @@ export component AppWindow inherits Window {
         ask.save-x, ask.save-y, ask.save-w, ask.save-h,
     ];
     out property <length> grid-top: grid-box.absolute-position.y;
+    // The grid area's right edge in the window: a web panel past it is a native window that would cover a bubble.
+    out property <length> grid-right: grid-box.absolute-position.x + grid-box.width;
 
     // ---- callbacks (UI -> Rust) ----
     callback strip-press(string, int, length, length);
@@ -1139,6 +1167,9 @@ export component AppWindow inherits Window {
                         }
                         grid-touch := TouchArea {
                             mouse-cursor: root.grid-cursor;
+                            changed has-hover => {
+                                if !self.has-hover { root.grid-pointer-left(); }
+                            }
                             pointer-event(e) => {
                                 root.grid-pointer(
                                     e.kind == PointerEventKind.down ? 0 : (e.kind == PointerEventKind.up ? 1 : (e.kind == PointerEventKind.move ? 2 : 3)),
@@ -1235,6 +1266,9 @@ export component AppWindow inherits Window {
                         wrap-on: root.panel-wrap-on;
                         number-count: root.panel-number-count;
                         wrap-toggled => { root.panel-wrap-toggled(); }
+                        ask-on: root.panel-ask-on;
+                        ask-agent => { root.panel-ask-agent(); }
+                        ask-tip(a, b, c, d, e) => { root.panel-ask-tip(a, b, c, d, e); }
                         convo-files: root.panel-convo-files;
                         convo-rows: root.panel-convo-rows;
                         convo-max-cols: root.panel-convo-max-cols;
@@ -1454,6 +1488,20 @@ export component AppWindow inherits Window {
         }
 
         // (4) OVERLAYS, last so they are on top. Each is pointer-transparent while closed.
+        // The hover thumbnail: over the grid, under everything else, and gone when anything else opens.
+        thumbbox := ThumbBubble {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            picture: root.thumb-picture;
+            caption: root.thumb-caption;
+            pic-w: root.thumb-pic-w;
+            pic-h: root.thumb-pic-h;
+            at-x: root.thumb-x;
+            at-y: root.thumb-y;
+            visible-thumb: root.thumb-visible;
+        }
         // The pop layer (PT LAYER.pop): the update notice and the Settings dropdown, under every menu.
         unote := UpdateNotice {
             text: root.update-notice;
@@ -1469,6 +1517,14 @@ export component AppWindow inherits Window {
             x: root.staged-chip-shown ? root.staged-chip-x + root.staged-chip-w - self.width : root.width - self.width - Px.snap(10px);
             y: Px.snap((root.staged-chip-shown ? root.staged-chip-y + root.staged-chip-h : Theme.bar-height) + 8px);
             clicked => { root.staged-toast-clicked(); }
+        }
+        // Why "Ask agent" sent nothing. Over the terminal, never the panel: a page's browser window sits above
+        // anything drawn there.
+        ask-note-box := StagedToast {
+            text: root.ask-note;
+            button: "";
+            x: root.grid-left + Px.snap((root.grid-w - self.width) / 2);
+            y: root.grid-top + Px.snap(10px);
         }
         SelectMenu {
             x: 0px;

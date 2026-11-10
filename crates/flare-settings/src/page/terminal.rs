@@ -13,8 +13,8 @@ use crate::help_prefs::help_enabled;
 use crate::new_tab::new_tab_folder;
 use crate::rows::{RowDef, row};
 use crate::term_prefs::{
-    agent_eval, agent_keys, app_network, dev_preview, open_previews, right_click_reports,
-    saved_shell_id, wrap_previews,
+    agent_eval, agent_keys, app_network, dev_preview, hover_thumbs, open_previews,
+    right_click_reports, saved_shell_id, wrap_previews,
 };
 use crate::verb::VerbState;
 use flare_theme::fonts::{FONT_PCTS, TERM_FONTS};
@@ -143,6 +143,7 @@ fn links_section(env: &PageEnv<'_>) -> SectionModel {
         vec![
             BlockModel::Row(switch_row(def("open-previews"), open_previews(env.prefs))),
             BlockModel::Row(switch_row(def("wrap-previews"), wrap_previews(env.prefs))),
+            BlockModel::Row(switch_row(def("hover-thumbs"), hover_thumbs(env.prefs))),
             BlockModel::Row(switch_row(def("agent-eval"), agent_eval(env.prefs))),
             BlockModel::Row(switch_row(def("app-network"), app_network(env.prefs))),
             BlockModel::Row(switch_row(def("dev-preview"), dev_preview(env.prefs))),
@@ -346,6 +347,7 @@ mod tests {
                 "right-click-reports",
                 "open-previews",
                 "wrap-previews",
+                "hover-thumbs",
                 "agent-eval",
                 "app-network",
                 "dev-preview",
@@ -371,6 +373,24 @@ mod tests {
         let page = build_terminal(&env(&prefs, &look, face));
         assert_eq!(
             the_row(&page, "open-previews").control,
+            Control::Switch { on: false }
+        );
+    }
+
+    #[test]
+    fn the_hover_thumbnails_row_is_a_switch_that_is_on_until_turned_off() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(prefs.clone());
+        let face: &dyn Fn(&str) -> String = &face_of_test;
+        let page = build_terminal(&env(&prefs, &look, face));
+        assert_eq!(
+            the_row(&page, "hover-thumbs").control,
+            Control::Switch { on: true }
+        );
+        crate::term_prefs::set_hover_thumbs(&prefs, false);
+        let page = build_terminal(&env(&prefs, &look, face));
+        assert_eq!(
+            the_row(&page, "hover-thumbs").control,
             Control::Switch { on: false }
         );
     }

@@ -497,10 +497,26 @@ impl TermHandle {
 
     /// A paste the caller already sanitised; bracketed only when the program asked.
     pub fn paste(&self, text: &str) {
+        self.write_paste(text, self.mode().bracketed_paste);
+    }
+
+    /// A sanitised paste that must wait at the prompt for the person to send ("Ask agent", #33). Bracketed when the
+    /// program asked; when it did not, a CR inside the text would submit that line, so the text goes as one line and
+    /// no CR is written at all.
+    pub fn paste_unsent(&self, text: &str) {
+        let bracketed = self.mode().bracketed_paste;
+        if bracketed {
+            self.write_paste(text, true);
+        } else {
+            self.write_paste(&flare_shells::paste::one_line(text), false);
+        }
+    }
+
+    fn write_paste(&self, text: &str, bracketed: bool) {
         if text.is_empty() {
             return;
         }
-        let bytes = flare_shells::paste::paste_bytes(text, self.mode().bracketed_paste);
+        let bytes = flare_shells::paste::paste_bytes(text, bracketed);
         self.sh.finish_reveal();
         self.sh.snap_to_bottom();
         self.sh.mgr.write(&self.sh.id, &bytes);
