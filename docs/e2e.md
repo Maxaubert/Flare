@@ -257,6 +257,9 @@ the scenario waits for.
   decoded at 24 or more a second.
 - `webNoRuntime` pretends the runtime is missing: `browser.open` answers `unavailable` with the link, the panel shows the note and
   the button, no controller exists, the terminal answers and a text panel still opens.
+- `webLogins` (`web_logins.rs`, rule 261) serves a site of its own on `127.0.0.1` that sets a cookie for a year, a session cookie
+  and `localStorage`, then closes and opens the panel, quits and starts again, and installs a staged build from a temp install (as
+  `clickInstall` does). The page reads `document.cookie` itself each time; the persistent cookies and the storage must be back.
 
 What it cannot see: the pixels of the page (the snapshot probe sees what Slint drew, not the browser's child window) and real
 input. The hand list is at the end of `docs/surfaces/lessons.md`.
