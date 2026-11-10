@@ -1,13 +1,12 @@
 //! A saved login filled into a web page, and a secret asked of the person (the `fill` permission, 2026-10-28), the
 //! part with no window: the params of `browser.fill` and `secret.ask`, the rule that says whether a login is for the
-//! page's site, the asks a plugin may make (six a minute, none once the person said "Deny for this session"), and the
-//! script that types the values into the page with the values as JSON data.
+//! page's site, the asks a plugin may make (six a minute), and the script that types the values into the page with the values as JSON data.
 //!
 //! The values are secrets. They live in [`Secret`], whose `Debug` prints nothing of them; no error, log line or
 //! answer made here carries one, and the script's own answer names the kinds of field it filled, never a value.
 //! Design: `docs/superpowers/specs/2026-10-28-plugin-fill.md`.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use flare_ctl::{CtlError, code};
@@ -319,16 +318,14 @@ pub fn check_login_for(page_url: &str, login_uris: &[String]) -> Result<Site, Ct
     }
 }
 
-/// The asks each plugin made in the last minute, and the plugins the person told "Deny for this session" (until
-/// Flare quits). Held by the hub, so the call threads and the window share it.
+/// The asks each plugin made in the last minute. Held by the hub, so the call threads and the window share it.
 #[derive(Debug, Default)]
 pub struct Asks {
     times: HashMap<String, VecDeque<Instant>>,
-    denied: HashSet<String>,
 }
 
 impl Asks {
-    /// One more ask of `plugin` at `now`, or why not (`rate_limited`, or the session's Deny).
+    /// One more ask of `plugin` at `now`, or why not (`rate_limited`).
     pub fn admit(&mut self, plugin: &str, now: Instant) -> Result<(), CtlError> {
         let q = self.times.entry(plugin.to_string()).or_default();
         while q
@@ -345,16 +342,6 @@ impl Asks {
         }
         q.push_back(now);
         Ok(())
-    }
-
-    /// The person chose "Deny for this session" on one of the plugin's fills.
-    pub fn deny_for_session(&mut self, plugin: &str) {
-        self.denied.insert(plugin.to_string());
-    }
-
-    /// Whether the plugin's fills are denied until Flare quits.
-    pub fn denied(&self, plugin: &str) -> bool {
-        self.denied.contains(plugin)
     }
 }
 
@@ -631,14 +618,6 @@ mod tests {
         a.admit("bw", t0 + Duration::from_secs(60)).unwrap();
         assert!(a.admit("bw", t0 + Duration::from_secs(60)).is_err());
         a.admit("bw", t0 + Duration::from_secs(62)).unwrap();
-    }
-
-    #[test]
-    fn deny_for_this_session_holds_for_that_plugin_only() {
-        let mut a = Asks::default();
-        assert!(!a.denied("bw"));
-        a.deny_for_session("bw");
-        assert!(a.denied("bw") && !a.denied("other"));
     }
 
     fn fill_params(extra: Value) -> Value {

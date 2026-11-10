@@ -274,6 +274,7 @@ mod tests {
             folder: PathBuf::from("/apps/3"),
             allow_network: net,
             module: None,
+            source: None,
         }
     }
 
