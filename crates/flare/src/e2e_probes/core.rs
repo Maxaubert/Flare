@@ -545,6 +545,15 @@ fn ui_rect(ctx: &ProbeCtx, arg: &Value) -> Result<Value, String> {
         n if n.starts_with("convo-file-") => super::panel::rects(ctx, n),
         // The Preview chip (stage 7).
         "preview-chip" => super::surf7::rects(ctx, name),
+        // The "Build ready" chip: a click installs the staged build (2026-11-10).
+        "staged-chip" if a.get_staged_chip_shown() => Ok(rect_json(
+            a.get_staged_chip_x(),
+            a.get_staged_chip_y(),
+            a.get_staged_chip_w(),
+            a.get_staged_chip_h(),
+            k,
+        )),
+        "staged-chip" => Err("ui.rect staged-chip: no staged build is on offer".into()),
         "strip" | "mark" => Err(not_exported(name)),
         _ => Err(format!("ui.rect: no such rectangle: {name}")),
     }

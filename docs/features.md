@@ -2071,10 +2071,11 @@ Part A of the Bitwarden design (`Maxaubert/flare-plugins`, `docs/2026-10-28-bitw
   early press and the agent's own key and click that do not allow, a
   login of another site refused, and the profile's logs, the plugins' logs and the helper's record scanned for the values.
 
-## Install when idle, 2026-10-29
+## Build ready (staged builds), 2026-10-29, one click since 2026-11-10
 
-Spec: `docs/superpowers/specs/2026-10-29-idle-install.md`. The agent builds; Flare only installs what was staged, and
-only once no session is working. How to stage: `docs/shipping.md`, "Installing a local build when idle".
+Specs: `docs/superpowers/specs/2026-10-29-idle-install.md`, then `docs/superpowers/specs/2026-11-10-build-ready-one-click.md`
+(the menu, the idle install, Not today and Discard are gone). The agent builds; Flare only installs what was staged, and
+only when the person clicks "Build ready". How to stage: `docs/shipping.md`, "Installing a local build with Build ready".
 
 - **Staging.** `tools/stage-install.ps1 [-Stable]` copies the release files into `<install>\staged\` under their names in
   `current\` (`FlareStable.exe` or `Flare.exe`, `flare-mcp.exe`, `flare-parakeet-host.exe`, `LICENSE`,
@@ -2087,29 +2088,26 @@ only once no session is working. How to stage: `docs/shipping.md`, "Installing a
   from `target\release` never looks. The install root is watched (`FindFirstChangeNotificationW`) and every change is one
   check of `staged\` on a worker: every name a plain relative path, the copy's own exe among them, every hash right.
   Anything else shows no chip.
-- **The chip.** "Build ready" in the title bar, left of the update chip (both tab layouts). Tooltip "Build <commit>
-  installs once no agent has worked for a minute" (after Cancel: "Build <commit> is ready to install"). A click drops its
-  menu: Install now, Install when idle (the default, greyed while chosen), Not today (hides it until the next start; a new
-  stage shows it again), Discard (removes `staged\`).
-- **The idle rule** (`flare_update::idle`). No agent working (`AgentHub::working_count` and the close question's own
-  list), no agent showing a question, no dictation, no close or install question open, for 60 s without a break. Any busy
-  moment, seen at a tick (250 ms) or at any refresh of the window, starts the minute again.
-- **The install.** A toast under the chip, "Installing the new build and restarting", with Cancel, for 10 s. Work that
-  starts during an idle countdown stops it. Install now asks the close question first when an agent is working ("Stop the
-  agent and install the update?", "Install and restart"); after a yes its countdown goes on regardless. Install now picked
-  with no agent at work asks that question as soon as one starts (in the countdown or during the swap). Then a worker
+- **The chip.** "Build ready" in the title bar, left of the update chip (both tab layouts). Tooltip "Build <commit>:
+  click to install and restart". It has no menu: a click is install now (rule 258). Nothing installs on its own, however long the
+  app is idle. A build stays on offer until it is installed or a new stage replaces it (there is no Not today or Discard).
+- **The install.** A click asks the close question first when an agent is working ("Stop the agent and install the
+  update?", "Install and restart"); Cancel there keeps the build on offer. With no agent working it goes on at once. Then
+  a toast under the chip, "Installing the new build and restarting", with Cancel, for 10 s (Cancel leaves the build for
+  the next click). After a yes the countdown goes on regardless. A click with no agent at work asks that question as soon
+  as one starts (in the countdown or during the swap). Then a worker
   swaps, holding `<install>\install.lock` (two profiles on one install never swap at once): each file in `current\` that
   is not already the staged one is first journaled in `<install>\install.json` (state `swapping`), then renamed to
   `<name>.old` (a running exe can be renamed), the staged file copied in and its hash checked; any failure puts every file
   back and says "The build could not be installed; nothing changed". A swap cut off by a crash or power cut is put back by
   the next start (`Start::Interrupted`; the old exe is started when this one was among the files). A swap is refused while
   the last one is not confirmed (its `.old` files are the last good build); a run that is itself unconfirmed confirms
-  itself first. A good swap leaves `install.json` pending and `staged.json` in place. If an agent started working (or,
-  for an idle install, anything got busy) while the swap ran, the swap is taken back and the build stays on offer;
+  itself first. A good swap leaves `install.json` pending and `staged.json` in place. If an agent started working while the swap ran
+  (and the close question was not answered yes), the swap is taken back, the build stays on offer and the question asks;
   otherwise the app ends through the normal end of life (tabs.json with the
   agents, so the sessions resume) and starts the new exe with `handoff::restart_args_keeping` (the same
   `--user-data-dir`, and `--e2e` / `--renderer` / `--no-plugins` / `--no-import` when given).
-  If the new exe will not start, the old files go back and the stage is dropped (so it is not retried every idle minute).
+  If the new exe will not start, the old files go back and the stage is dropped (so it is not offered again).
 - **After the restart.** The first start says "Installed <commit>" once (8 s) and removes `staged.json`, then `staged\`;
   after 20 s up, or a clean quit, the build is good and the `.old` files go (one still in use is retried at the next
   start; a stage made since is kept). The last-good
@@ -2117,11 +2115,12 @@ only once no session is working. How to stage: `docs/shipping.md`, "Installing a
   the third start puts the `.old` files back, starts the old exe on the same profile and exits; the old build then says
   "Build <commit> did not start, so the last build is back".
 - **Tests.** `flare_update::staged` (temp install: swap, a failed copy, a bad hash, a file held open, rollback after two
-  early deaths, confirm, leftovers), `staged_flow` and `idle` (pure), `ui_tests::staged_flows` (the real `AppCtl`: chip,
-  menu, idle hold, working agent, Cancel, Install now with the question, a failed swap, Not today, Discard, the start
-  notices, confirm at 20 s and at a clean quit, the chip and toast boxes), and the offscreen e2e `idleInstall` (a temp
-  install in the world, a stand-in Claude holds it, idle installs, the new process answers on the same pipe, parked, its
-  tab back, confirmed after 20 s).
+  early deaths, confirm, leftovers), `staged_flow` (pure), `ui_tests::staged_flows` (the real `AppCtl`: chip, a
+  click that installs with no menu, nothing installed after minutes idle, a click under a working agent that asks and
+  whose Cancel keeps the build, the toast's Cancel, a failed swap, the swap taken back, the start notices, confirm at
+  20 s and at a clean quit, the chip and toast boxes), and the offscreen e2e `clickInstall` (a temp install in the world;
+  a click under a stand-in Claude asks and Escape keeps the build; idle, nothing installs; a click installs; the new
+  process answers on the same pipe, parked, its tab back, confirmed after 20 s). The chip's box is `ui.rect staged-chip`.
 - **Not covered.** A new exe that crashes before `main` reaches the guard is still counted only when started again by
   hand; nothing restarts it on its own (the same holds for a swap cut off while the exe itself was half copied: the next
   start by hand of that exe may not run, and `<name>.old` is then the way back). Files removed from `claude-plugin\` in a
@@ -2264,3 +2263,42 @@ read afterwards. Spec: `docs/superpowers/specs/2026-11-10-web-popups-design.md`,
   (`a_note_keeps_the_sites_and_never_the_addresses`), `web_diag::tests` (the gate), `reader::tests`
   (`the_web_panels_failures_are_problems_and_its_steps_show_under_web`), `web_ctl::web_line_tests` and the text-key scan in `neutral.rs`.
 - **Not covered.** A real WebView2 raising these events: no e2e scenario yet.
+
+## Arrows over the page, 2026-11-10
+
+Spec `docs/superpowers/specs/2026-11-10-ask-agent-additions-design.md`, section 2; rules 254 to 256; the probe and the choices in
+`docs/surfaces/decisions.md` ("Arrows over the page").
+
+- **The agent points (`browser_point`).** `browser.point` `{ref | x, y, label?, clear?}` in the Browser namespace, under the same grant
+  as the other browser tools. One orange arrow per tab, with an optional label on an orange pill (gated like Ask agent's text, one line,
+  at most 48 characters). It never clicks and cannot type, and it is not a job: it scrolls its element into view and answers
+  `{pointed, offscreen}` once it has measured it, then measures again about every 100 ms (`Page.getLayoutMetrics`,
+  `DOM.getContentQuads`) so it follows a scroll or a resize, a moment late. It goes on `clear`, a new arrow, the person clicking or
+  typing in the page, a navigation, the panel or tab closing, or after 60 s. It is drawn only where the agent's cursor may be (the page
+  in front and live: not under a Flare menu, the still, another tab or a minimised window) and never over a pop-up; with a pop-up open
+  the call answers "a pop-up is open, the person must finish it". The tool text says it is for steps the person must do themselves.
+- **The person points ("Draw arrow").** A button beside Ask agent in the web bar (and in a mini-app's header), only on a tab with an
+  agent, on a web page or a mini-app (never a plugin's page), and not while a pop-up is open. It puts a pad over the page: a layered
+  window, every pixel at alpha 1, that catches the mouse and never takes the keyboard from the page. Press, drag and release are read on
+  the 16 ms agent tick; a blue arrow follows live. On release Flare asks the browser, with no page script, what is under the head
+  (`DOM.getNodeForLocation`, then `Accessibility.getPartialAXTree` for its role and name, the nearest element a look would list) and types
+  this at the prompt, unsent: `About this arrow on <site>:`, `> points at: <role> "<name>"`, `> at: x, y in a W x H page`,
+  `> (use browser_look to see it)`. A click with no drag points at the target from up and left. Cancel: the button again, a right click,
+  Escape (in the page or in Flare's window), a menu, a tab switch, a pop-up or a navigation.
+- **The agent sees the person's arrow.** It is kept for 5 minutes or until the page moves on. The next `browser_look` gets
+  `user_arrow` `{from, to, ref, role, name}` (a ref is made for the element when the look did not list it) and its screenshot has the
+  arrow drawn on it at the look's scale; after that look it is gone. The arrow is kept on the document, not the screen: while its page is
+  in front the scroll is measured again, so the blue mark moves with what it points at and hides while part of it is scrolled out of
+  sight, and the look gives its ends where they are in the look's viewport, `offscreen` and undrawn when the head is outside it
+  (rule 257). `browser_look`'s text says where the person pointed, with the
+  element's words inside the page-content markers.
+- **Windows.** `flare_win::agent_cursor`: `compose_arrow` (only the pixels near the shape are worked out), `point_tail` (the agent's
+  tail turns to stay on the page), `blend_onto_rgba`, `ArrowWindow`, `PadWindow`, and the stand-ins `RecordArrow`, `RecordMark`,
+  `RecordPad` that the tests and `--e2e` keep. `web_ctl/arrows.rs` holds the rest.
+- **Tests.** `agent_cursor::tests` (the arrow's pixels, labels, the tail, the screenshot blend, the stand-ins, the ignored `pad_probe`),
+  `agent_web::tests` (`pointed_at`), `agent_job::tests` (`ref_for`), `ask_agent::tests` (`frame_arrow`, `point_label`), `ctl_app::tests`
+  (`point_req`, the post), `web_ctl::arrows::tests`, `appctl::tests::arrow_tests` (fake browser, recording windows, a stand-in mouse:
+  the arrow follows, every clear, hidden under a menu, a tab and a pop-up, the draw mode and every cancel, the frame, `user_arrow` once),
+  `flare-mcp` `browser.rs` (the tool, the look's arrow lines).
+- **Not covered.** A real mouse on the real pad over a real WebView2 (the probe used a plain child window and posted messages on a
+  hidden desktop), a real agent's prompt, the arrow's look at every theme: no e2e scenario yet.

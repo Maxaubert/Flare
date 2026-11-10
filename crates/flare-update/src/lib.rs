@@ -8,7 +8,6 @@ pub mod gate;
 pub mod geom;
 pub mod groups;
 pub mod handoff;
-pub mod idle;
 pub mod notes;
 pub mod preview;
 pub mod staged;
