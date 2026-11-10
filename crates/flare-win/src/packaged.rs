@@ -4,7 +4,7 @@
 //! portable copy carries `<root>\.portable` and is not packaged for our purposes (no verbs, no
 //! updater). The check only looks at file names, so it works on any path and never starts anything.
 //!
-//! macOS (port phase 8, rule 278): the installed app is the bundle `vpk pack` made,
+//! macOS (port phase 8, rule 1047): the installed app is the bundle `vpk pack` made,
 //! `<X>.app/Contents/MacOS/<exe>` with Velopack's `UpdateMac` beside it and its `sq.version` in
 //! `Contents/Resources`; the root is the `.app`, and there are no Explorer verbs.
 

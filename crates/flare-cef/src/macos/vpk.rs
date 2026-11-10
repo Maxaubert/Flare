@@ -1,16 +1,16 @@
-//! The `codesign` that `vpk pack` runs (port phase 8, rules 274 and 277).
+//! The `codesign` that `vpk pack` runs (port phase 8, rules 1043 and 1046).
 //!
 //! `vpk pack` for osx copies its update program (`UpdateMac`) into `Contents/MacOS`, writes `sq.version` into
 //! `Contents/Resources` (with a link to it in `Contents/MacOS`), then signs, notarizes and staples, and only then zips
 //! the bundle into the update package and the portable zip. Its own signing gives `UpdateMac` Velopack's broad
-//! entitlements (`allow-unsigned-executable-memory`, `disable-library-validation`, the dyld key), which rule 267
+//! entitlements (`allow-unsigned-executable-memory`, `disable-library-validation`, the dyld key), which rule 1036
 //! forbids, and signs the app with one entitlements file for every program. So `tools/release/mac/pack.sh` puts a
 //! link named `codesign` to `flare-mac-app` first on vpk's `PATH`, and vpk's two calls land here, at exactly the
 //! moment between "vpk added its files" and "vpk zips":
 //!
 //! 1. `codesign ... <tmp>/Flare.app/Contents/MacOS/UpdateMac`: nothing yet; the bundle's own signing signs it next.
 //! 2. `codesign ... <tmp>/Flare.app`: the whole bundle signed again inside out by role (`bundle::sign_bundle`, rule
-//!    269: `UpdateMac` is a tool with no entitlements), then checked.
+//!    1038: `UpdateMac` is a tool with no entitlements), then checked.
 //!
 //! Only the arguments vpk 1.2.161 passes with `--signDisableDeep` are accepted (`-s`, `-f`, `-v`, `--timestamp`,
 //! `--options runtime`, `--entitlements`, `--keychain`, one path last); `--deep` or anything else is refused, and

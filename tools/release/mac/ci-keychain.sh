@@ -1,6 +1,6 @@
 #!/bin/bash
 # CI only (a GitHub macOS runner): puts the Developer ID certificate and the notary API key where make-app.sh finds
-# them, from the repository's secrets, in a throwaway keychain that is deleted when the job ends (rule 270).
+# them, from the repository's secrets, in a throwaway keychain that is deleted when the job ends (rule 1039).
 # Secrets (Settings > Secrets and variables > Actions):
 #   MACOS_CERT_P12_BASE64     the "Developer ID Application" certificate with its private key, as a .p12, base64
 #   MACOS_CERT_PASSWORD       the .p12's password
@@ -9,8 +9,8 @@
 #   APPLE_API_ISSUER_ID       the issuer id
 # Writes FLARE_SIGNING_KEYCHAIN (first), then FLARE_MAC_SIGN_IDENTITY and FLARE_NOTARY_PROFILE to $GITHUB_ENV. The
 # profile (flare-ci) is the API key stored by notarytool in the throwaway keychain: vpk pack notarizes with a keychain
-# profile only (pack.sh, rule 279). The .p12 and the .p8 exist on disk only while this script runs: they are removed
-# on any exit of it, so no later step (vpk, the cache and artifact actions) can read them (rule 281).
+# profile only (pack.sh, rule 1048). The .p12 and the .p8 exist on disk only while this script runs: they are removed
+# on any exit of it, so no later step (vpk, the cache and artifact actions) can read them (rule 1050).
 # Never echoes a secret; the keychain's password is random and lives only in this job.
 set -euo pipefail
 : "${RUNNER_TEMP:?ci-keychain.sh runs on a GitHub runner}"

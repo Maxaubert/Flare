@@ -1,4 +1,4 @@
-//! The Mac release's workflow and scripts, read as text (port phase 8, rules 277, 279 to 281 and 283). A pure file
+//! The Mac release's workflow and scripts, read as text (port phase 8, rules 1046, 1048 to 1050 and 1052). A pure file
 //! reader that runs on every OS: it starts nothing.
 
 use std::path::PathBuf;
@@ -135,7 +135,7 @@ fn the_pack_signs_by_role_through_flare_mac_app_and_checks_inside_the_packages()
     ] {
         assert!(pack.contains(needed), "{needed}");
     }
-    // No script signs with an identity itself (rule 271): every Developer ID codesign goes through flare-mac-app.
+    // No script signs with an identity itself (rule 1040): every Developer ID codesign goes through flare-mac-app.
     for script in [
         "pack.sh",
         "make-app.sh",

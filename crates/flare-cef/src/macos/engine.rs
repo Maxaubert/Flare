@@ -18,7 +18,7 @@ use crate::macos::app;
 use crate::pin::FRAMEWORK;
 
 /// The switches every Flare browser process starts with, and why. They are the only switches CEF takes:
-/// `command_line_args_disabled` keeps the process's own command line out (rule 261), so a switch on Flare's command
+/// `command_line_args_disabled` keeps the process's own command line out (rule 1030), so a switch on Flare's command
 /// line (`--remote-debugging-port`, `--no-sandbox`, `--proxy-server`, `--disable-web-security`) never reaches
 /// Chromium. Added in [`FlareApp`]'s `on_before_command_line_processing`, which CEF still asks.
 pub const SWITCHES: [(&str, &str); 8] = [
@@ -26,15 +26,15 @@ pub const SWITCHES: [(&str, &str); 8] = [
     // bundle, a test bundle) would be asked again after every rebuild, a system prompt on the person's screen. So
     // such a build uses the mock keychain, which never asks but whose key is a fixed, public one: what a profile on
     // disk keeps (the web panel's cookies, a mod's storage) is then only as safe as the file's permissions (rule
-    // 264). The real Flare window in a Flare.app signed by Flare's Developer ID team drops this switch and keeps its
-    // key in a keychain item of its own ([`keychain_for`], [`KEYCHAIN_SERVICE`], rule 276). The mini-apps'
+    // 1033). The real Flare window in a Flare.app signed by Flare's Developer ID team drops this switch and keeps its
+    // key in a keychain item of its own ([`keychain_for`], [`KEYCHAIN_SERVICE`], rule 1045). The mini-apps'
     // profiles are in memory.
     ("use-mock-keychain", ""),
     // No crash or error dialog of Chromium's own.
     ("noerrdialogs", ""),
     // No "restore pages?" bubble after a crash.
     ("hide-crash-restore-bubble", ""),
-    // The engine calls no one on its own (rule 263). The component updater still registers the on-device model
+    // The engine calls no one on its own (rule 1032). The component updater still registers the on-device model
     // manifest with this switch (measured on CEF 156.0.14: update.googleapis.com, then a download from gvt1.com),
     // so its server is also Flare's dead address: a check is refused on loopback and nothing is fetched.
     ("disable-component-update", ""),
@@ -83,7 +83,7 @@ pub const DEVELOPER_ID_LEAF_OID: &str = "1.2.840.113635.100.6.1.13";
 /// Where Chromium's key for the profiles on disk lives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Keychain {
-    /// `use-mock-keychain`: never asks, a fixed public key (rule 264).
+    /// `use-mock-keychain`: never asks, a fixed public key (rule 1033).
     Mock,
     /// Flare's own item ([`KEYCHAIN_SERVICE`]), made by the signed app on its first run; its access is tied to the
     /// Developer ID signature, so an update keeps it without asking.
@@ -291,7 +291,7 @@ impl Engine {
             ));
         }
         // The profiles on disk were written with one key; a switch between the mock and Flare's own item sets the
-        // old key's cookies aside instead of letting Chromium drop them (rule 282).
+        // old key's cookies aside instead of letting Chromium drop them (rule 1051).
         let profile_key_note = crate::macos::profile_key::settle(&cfg.root_cache, keychain);
         let root = cfg.root_cache.to_string_lossy().into_owned();
         let log = cfg
@@ -303,7 +303,7 @@ impl Engine {
             // The sandbox stays on: every helper enters it (`cef::sandbox::Sandbox`) before CEF runs there.
             no_sandbox: 0,
             windowless_rendering_enabled: 1,
-            // Only Flare's own switches ([`SWITCHES`]): the process's command line is not CEF's to read (rule 261).
+            // Only Flare's own switches ([`SWITCHES`]): the process's command line is not CEF's to read (rule 1030).
             command_line_args_disabled: 1,
             // The caller's loop calls `do_message_loop_work`: on its own clock, or when CEF asks (`schedule`).
             external_message_pump: i32::from(cfg.schedule.is_some()),

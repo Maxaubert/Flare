@@ -294,7 +294,7 @@ fn under(p: &Path, dir: &Path) -> bool {
 }
 
 /// Signs a bundle of this layout inside out, whoever made its parts (a Velopack package adds its update program
-/// to `Contents/MacOS`, rule 274): any Mach-O outside the frameworks, the helpers and `Contents/MacOS`; each
+/// to `Contents/MacOS`, rule 1043): any Mach-O outside the frameworks, the helpers and `Contents/MacOS`; each
 /// framework's own Mach-O files, then the framework; the five helpers; the other programs in `Contents/MacOS`
 /// (identifier `<identifier>.<file>`); the app. A helper app CEF does not know is refused.
 pub fn sign_bundle(

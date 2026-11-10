@@ -1,5 +1,5 @@
 #!/bin/bash
-# The Mac update end to end, headless (port phase 8, rule 278): Flare.app packed as the throwaway versions 0.0.1 and
+# The Mac update end to end, headless (port phase 8, rule 1047): Flare.app packed as the throwaway versions 0.0.1 and
 # 0.0.2 (never a real release number), 0.0.1 installed from its portable zip into a temp folder (never
 # /Applications), updated to 0.0.2 by the real VelopackFeed and Velopack's UpdateMac with no restart, and the swapped
 # bundle checked (crates/flare-update/tests/mac_update.rs). Nothing is launched with `open`, nothing shows a window.
@@ -26,7 +26,7 @@ for b in flare flare-mcp flare-cef-helper flare-mac-app; do
   [ -x "$BIN/$b" ] || { echo "no $BIN/$b (FLARE_E2E_BUILD=1 builds it)" >&2; exit 1; }
 done
 
-# The work folder is emptied, so it must be one this script may own (rule 281): an absolute path with no `.` or `..`
+# The work folder is emptied, so it must be one this script may own (rule 1050): an absolute path with no `.` or `..`
 # part, resolved through every link, and then a folder target/mac-update-e2e* of this repository or a named folder
 # below the temp folder, never target/ or the temp folder itself.
 refuse() { echo "$WORK: the work folder must be target/mac-update-e2e* or a folder below the temp folder ($1)" >&2; exit 1; }

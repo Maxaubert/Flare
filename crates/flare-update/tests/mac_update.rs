@@ -1,4 +1,4 @@
-//! Port phase 8, step 3 (rules 277 and 278): a Velopack update applied for real on a Mac, headless.
+//! Port phase 8, step 3 (rules 1046 and 1047): a Velopack update applied for real on a Mac, headless.
 //!
 //! Version A of `Flare.app` (from its portable zip, as a person unzips it) is installed into a temp folder, never
 //! `/Applications`; a child process (this test binary again) runs the real [`VelopackFeed`] over a folder feed that

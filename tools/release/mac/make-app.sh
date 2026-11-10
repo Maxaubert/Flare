@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds, signs, notarizes and staples Flare.app and its DMG for aarch64-apple-darwin, macOS 15+ (port phase 8,
-# regression rules 267 to 270). Everything is written under target/mac-release, never into the repo.
+# regression rules 1036 to 1039). Everything is written under target/mac-release, never into the repo.
 #
 #   tools/release/mac/make-app.sh                 ad hoc: Flare.app only (runs on this Mac, cannot be notarized)
 #   FLARE_MAC_SIGN_IDENTITY="Developer ID Application: MAX AUBERT (WV7BY8CUM8)" \
@@ -10,9 +10,9 @@
 # Notary credentials: see lib.sh (a notarytool keychain profile or an App Store Connect API key).
 # FLARE_SIGNING_KEYCHAIN: the keychain that holds the identity (CI: the throwaway one); unset: the search list.
 # A Developer ID run first asks `flare-mac-app check-key`, which cannot raise a prompt, whether codesign can use the
-# key without one, and stops before building when it cannot (rule 271). Every codesign with the identity goes
+# key without one, and stops before building when it cannot (rule 1040). Every codesign with the identity goes
 # through flare-mac-app (the DMG too, `sign-file`), never straight from this script.
-# Velopack (rules 274 and 277): a release does not ship this app. pack.sh packs it with vpk, which adds its updater;
+# Velopack (rules 1043 and 1046): a release does not ship this app. pack.sh packs it with vpk, which adds its updater;
 # the bundle is signed again by role after that (flare-mac-app as vpk's codesign), notarized and checked inside the
 # packages. A release runs this script with FLARE_NOTARIZE=0, then pack.sh (docs/releasing-macos.md).
 # Other settings: FLARE_MAC_TEAM (WV7BY8CUM8), FLARE_MAC_OUT (target/mac-release), FLARE_FEATURES (cargo features of
@@ -50,7 +50,7 @@ if [ "${FLARE_SKIP_BUILD:-0}" != 1 ]; then
   (cd "$ROOT" && cargo build --release --locked -p flare-cef --bin flare-cef-helper --bin flare-mac-app)
 fi
 
-# CI builds first and makes the signing keychain only after (rule 281): the key is in reach for the signing only.
+# CI builds first and makes the signing keychain only after (rule 1050): the key is in reach for the signing only.
 if [ "${FLARE_BUILD_ONLY:-0}" = 1 ]; then
   echo "built the programs (FLARE_BUILD_ONLY=1): no bundle"
   exit 0

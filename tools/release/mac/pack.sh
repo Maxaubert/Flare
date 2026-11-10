@@ -1,5 +1,5 @@
 #!/bin/bash
-# Packs a built Flare.app as a Velopack osx-arm64 release (port phase 8, rules 274, 277 and 279): the update package
+# Packs a built Flare.app as a Velopack osx-arm64 release (port phase 8, rules 1043, 1046 and 1048): the update package
 # (Flare-<version>-osx-full.nupkg, and a delta when the Releases folder holds the previous full one), the portable zip,
 # releases.osx.json; with a Developer ID and notary credentials also the DMG, made from the bundle the packages carry.
 #
@@ -65,14 +65,14 @@ PORTABLE="$REL/Flare-osx-Portable.zip"
 [ -f "$FULL" ] && [ -f "$PORTABLE" ] && [ -f "$REL/releases.osx.json" ] || { echo "vpk made no $FULL or $PORTABLE" >&2; exit 1; }
 grep -q "\"Version\":\"$VERSION\"" "$REL/releases.osx.json" || { echo "releases.osx.json has no $VERSION" >&2; exit 1; }
 
-# The release checks, on a bundle as it comes out of a package (rule 274).
+# The release checks, on a bundle as it comes out of a package (rule 1043).
 check_bundle() {
   local app="$1" what="$2"
   codesign --verify --deep --strict "$app"
   [ -x "$app/Contents/MacOS/UpdateMac" ] || { echo "$what: no UpdateMac" >&2; exit 1; }
   grep -q "<version>$VERSION</version>" "$app/Contents/Resources/sq.version" || { echo "$what: sq.version is not $VERSION" >&2; exit 1; }
   [ "$(readlink "$app/Contents/MacOS/sq.version")" = ../Resources/sq.version ] || { echo "$what: no sq.version link" >&2; exit 1; }
-  # Each program's role, ad hoc too (rule 283): the app's identifier and its three keys; the tools (Velopack's
+  # Each program's role, ad hoc too (rule 1052): the app's identifier and its three keys; the tools (Velopack's
   # UpdateMac, flare-mcp) by their own identifier, under the hardened runtime, with no entitlements.
   local info ents t
   info="$(codesign -d --verbose=2 "$app/Contents/MacOS/Flare" 2>&1)"

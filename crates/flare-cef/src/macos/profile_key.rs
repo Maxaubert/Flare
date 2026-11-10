@@ -1,4 +1,4 @@
-//! Which key the profiles on disk were encrypted with (rule 282). Chromium encrypts a profile's cookie values and
+//! Which key the profiles on disk were encrypted with (rule 1051). Chromium encrypts a profile's cookie values and
 //! saved passwords with the key [`crate::macos::engine::Keychain`] names: the mock keychain's fixed key in a dev or
 //! ad-hoc build, Flare's own keychain item in the Developer ID app. Both use the same default profile folder, so a
 //! switch between them would leave every cookie unreadable and Chromium would drop them, silently. Nothing in a
