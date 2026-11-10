@@ -1200,7 +1200,8 @@ pub fn run_window(
             mods_hub.set_safe_mode(why);
         }
         let run_record = (!args.e2e).then(|| crate::plugin_safe::path_in(&inst.profile.dir));
-        let old_web_dir = flare_surfaces::web::old_webview_folder(
+        // None on macOS: its panel's folder was always under the profile (rule 1125).
+        let old_web_dir = flare_surfaces::web::old_webview_folder_here(
             args.user_data_dir.as_deref(),
             flare_win::paths::local_app_data()
                 .map(|p| p.to_string_lossy().into_owned())

@@ -1230,3 +1230,15 @@ pointer; neither exists on macOS (`real_pointer` is a stand-in that reads nothin
 (`draw_possible`), and turning it off ends a mode that was on. Windows keeps it. Held by
 `with_the_draw_mode_not_offered_the_button_hides_and_starts_nothing_but_the_agent_still_points`. Source: main's #154
 carried to the macOS port (2026-11-10).
+1125. **macOS: the web panel's profile is `<profile>/WebView2`, so a login lasts as long as the profile, and nothing
+moves.** Main's rule 261 moved Windows's default run out of the install folder; on macOS the panel's CEF root
+(`webview_folder(profile_dir)`, the mini-apps' and plugins' `-<kind>` siblings beside it) has always been under the
+profile in `~/Library/Application Support/Flare`, which replacing `Flare.app` never touches, so a persistent cookie and
+`localStorage` already outlive a quit and an update. `old_webview_folder_here` is None on macOS: the start moves nothing,
+`settle_webview_folder` gives the profile's folder, and rule 262's held-folder case cannot arise. Different from
+Windows: a disk profile's CEF context keeps session cookies too (`persist_session_cookies` in
+`flare-cef/src/macos/context.rs`), and CEF lives until the quit, so a sign-in without "stay signed in" survives closing
+the last panel and a restart, where WebView2's ends with its browser; the hidden e2e `webLogins` is Windows only. Native:
+`crates/flare-surfaces/src/web.rs`, `crates/flare/src/window.rs`. Held by
+`a_mac_run_moves_nothing_and_keeps_the_panel_under_its_profile` and the POSIX twins of main's folder tests. Source:
+main's #158 carried to the macOS port (2026-11-10).
