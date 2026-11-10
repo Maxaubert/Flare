@@ -17,7 +17,7 @@ list them in `capabilities`. Plugins phase 1 (2026-10-25) adds `tabs.badge.set|c
 for the agent's own tab; plugins phase 3 lets a plugin that holds `tabs` name any tab and see every tab in
 `tabs.list`; plugins phase 4 adds `sidebar.set` and `actions.set` (a plugin's sections and actions) and click scope;
 plugins phase 5 adds `session.read`, `tabs.input`, `storage.get` and `storage.set`; plugins phase 6 adds `bar.show`,
-`bar.hide` and `view.audio`; the agent motions (2026-10-26) add `agents.motion.set` and `agents.motion.clear`; the `fill` permission (2026-10-28) adds
+`bar.hide` and `view.audio`; the 3D viewer (issue #36) adds `view.model`; the agent motions (2026-10-26) add `agents.motion.set` and `agents.motion.clear`; the `fill` permission (2026-10-28) adds
 `browser.fill`, `browser.fill.page` and `secret.ask`, and the `tool` event to a plugin's helper. Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
@@ -130,7 +130,7 @@ finishes; its answer has no reader.
    library, not only the app, keeps the `ui` namespace off the pipe.
 6. Grant allows the method? No: `forbidden` (stays). The reason text names the rule. A method in the
    `ui` namespace is refused here whatever the grant says.
-7. Run the method with its **timeout**: 15 s, 60 s for every `browser.*` method (and for `view.html` and `view.diagram`), and 40 s for `mods.call`. The app's own
+7. Run the method with its **timeout**: 15 s, 60 s for every `browser.*` method (and for `view.html`, `view.diagram` and `view.model`), and 40 s for `mods.call`. The app's own
    waits on the UI thread end earlier (10 s, one deadline shared by every step of a call, `view.*` included),
    and the request carries that deadline: a request the window picks up after it changes nothing, so a
    call that was answered `timeout` never acts later. The app's
@@ -203,7 +203,7 @@ so without `tabs` it can name none (`forbidden`) and with it, it must name one (
 |---|---|---|---|
 | `hello`, `tabs.list` | yes | (always) | yes |
 | `panel.open`, `panel.close`, `panel.state` | yes | `panel` | yes |
-| `view.image`, `view.file`, `view.text`, `view.html`, `view.diagram`, `view.audio` | yes | `view` (`view.audio` with a `url` also `network`) | yes |
+| `view.image`, `view.file`, `view.text`, `view.html`, `view.diagram`, `view.audio`, `view.model` | yes | `view` (`view.audio` with a `url` also `network`) | yes |
 | `browser.open` ... `browser.wait` | yes (its own tab's panel only) | `browser` | yes |
 | `browser.eval` | only if the user switched "Let agents run scripts in pages" on (read at every request) | `browser` and `eval` | yes |
 | `convo.state` | yes (its own tab) | `convo` | yes |
@@ -565,6 +565,16 @@ frame, no form). Play, pause and seek; it never loops and plays by itself only w
 `view.html`, plus `not_found` (no such file Flare may play, S2) and `bad_params` (not a sound file, a refused address,
 both or neither of `path` and `url`, a field that is not one).
 
+### view.model (issue #36)
+
+Params: `path` (a `.glb`, `.gltf` or `.stl` file, as typed and as the file system names it, on a local drive; resolved again in the backend,
+rules 13 and 14, with the viewer's own extensions and not the click allowlist; at most 64 MB), `title` (default "3D model"). Shows Flare's own viewer, a
+mini-app in the caller's panel: the model and the bundled `viewer.js` are copied beside the page, whose policy is `default-src 'none'; script-src 'self';
+style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'none'` with frames, objects and forms none. Answers as `view.html`
+once the page has loaded; the page's `window.__flareModel` settles to `{ok: true, triangles, textures}` or `{ok: false, code, error}` (`code`: `webgl`, `big`,
+`empty`, `external`, `corrupt`), and every failure is a message in the panel. Errors as `view.html`, plus `not_found` (no such file Flare may show) and
+`bad_params` (not a model file by both names, over 64 MB, no path, a field that is not one).
+
 ### browser.* (stage 3 for opening and navigating, stage 4 for the agent using the page)
 
 All act on the tab's web panel and take up to 60 s. They answer `unavailable` when no web panel is open
@@ -832,6 +842,7 @@ already read is still answered, and whatever is still running 5 s later is cance
 | `show_html` | exactly one of `html` and `path` (relative paths are made absolute like the other file tools), `title`, `allow_network` | `view.html` (answers with what the page can do: no network, the network it got, or that it asked for the network and the setting is off) |
 | `show_diagram` | `mermaid` (non-empty), `title` | `view.diagram` (a diagram that does not parse is a tool error: `The diagram did not draw. Mermaid said:` and the parser's words, up to 900 characters and a few lines, then `Fix the Mermaid text and call show_diagram again.`) |
 | `show_audio` | exactly one of `path` (made absolute) and `url`, `title`, `autoplay` | `view.audio` |
+| `show_model` | `path` (made absolute), `title` | `view.model` |
 | `open_page` | `url` (non-empty) | `browser.open` |
 | `close_panel` | none | `panel.close` |
 | `browser_look` | none | `browser.look` (answers with MCP image content and the list as text) |

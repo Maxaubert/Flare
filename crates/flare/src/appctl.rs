@@ -98,8 +98,9 @@ use crate::tabs_ui::{
 };
 use crate::term_menu::to_menu_row;
 use crate::term_ui::{
-    CursorKind, GridGeom, KeyDone, PointerIn, TabInfo, TermDeps, TermMsg, TermUi,
+    CursorKind, GridGeom, KeyDone, PointerIn, SetThumb, TabInfo, TermDeps, TermMsg, TermUi,
 };
+use crate::thumbs::{ThumbView, fit_pic, thumb_spot};
 use crate::update_ctl::{AskInstall, Spawn, UpdateCtl, UpdateDeps, UpdateMsg};
 use crate::web_ctl::{WebCtl, WebMsgBox};
 use crate::{
@@ -209,6 +210,7 @@ impl std::fmt::Debug for TermMsgBox {
             TermMsg::PathAnswer(..) => "TermMsg::PathAnswer",
             TermMsg::Preview { .. } => "TermMsg::Preview",
             TermMsg::PreviewRefused { .. } => "TermMsg::PreviewRefused",
+            TermMsg::Thumb { .. } => "TermMsg::Thumb",
         })
     }
 }
@@ -625,6 +627,30 @@ pub struct AppCtl {
 /// is open.
 const CONVO_SHOW_CHANGES: &str = "Show files Claude changed";
 const CONVO_HIDE_CHANGES: &str = "Hide files Claude changed";
+/// The terminal menu's row that sends the grid selection to the tab's agent (#33).
+const ASK_AGENT_ROW: &str = "Ask agent about this selection";
+
+/// A row about the tab's agent in the terminal's menu: its own group, after a rule, and nothing to resolve when picked.
+fn agent_menu_row(label: &str, icon: &'static str) -> (MenuRowData, String) {
+    (
+        MenuRowData {
+            label: label.to_string(),
+            hint: String::new(),
+            icon,
+            filled_icon: false,
+            disabled: false,
+            trailing_icon: None,
+            trailing_filled: false,
+            trailing_tip: String::new(),
+            group: true,
+            flyout: false,
+            parent: -1,
+            icon_cmd: String::new(),
+            logo: None,
+        },
+        String::new(),
+    )
+}
 
 /// How long the skeleton fades after the agent has painted (PT `ResumeSkeleton`).
 const SKELETON_FADE_MS: u64 = 180;
@@ -731,6 +757,58 @@ impl Backends {
             }),
         }
     }
+}
+
+/// Puts the hover thumbnail on the window, or takes it down. Measured with its picture in place, then placed above or
+/// below the path; in a window too small for that it is not shown at all, because it must never cover the path.
+fn show_thumb(app: &AppWindow, view: Option<&ThumbView>) {
+    let Some(v) = view else {
+        app.set_thumb_visible(false);
+        return;
+    };
+    let t = &v.thumb;
+    let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(t.width, t.height);
+    buf.make_mut_bytes().copy_from_slice(&t.rgba);
+    let pic = (f64::from(t.width), f64::from(t.height));
+    app.set_thumb_picture(slint::Image::from_rgba8(buf));
+    app.set_thumb_caption(t.caption().into());
+    app.set_thumb_pic_w(pic.0 as f32);
+    app.set_thumb_pic_h(pic.1 as f32);
+    let scale = f64::from(app.get_scale());
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let win = app.window().size();
+    // Kept left of the grid's right edge: a web panel is a native window and would cover the bubble.
+    let window = (
+        (f64::from(win.width) / scale).min(f64::from(app.get_grid_right())),
+        f64::from(win.height) / scale,
+    );
+    let item = BoxF {
+        left: v.item.left + f64::from(app.get_grid_left()),
+        top: v.item.top + f64::from(app.get_grid_top()),
+        ..v.item
+    };
+    let chrome = (
+        f64::from(app.get_thumb_w()) - pic.0,
+        f64::from(app.get_thumb_h()) - pic.1,
+    );
+    let Some((w, h)) = fit_pic(pic, chrome, item, window) else {
+        app.set_thumb_visible(false);
+        return;
+    };
+    app.set_thumb_pic_w(w as f32);
+    app.set_thumb_pic_h(h as f32);
+    let size = (f64::from(app.get_thumb_w()), f64::from(app.get_thumb_h()));
+    let Some(spot) = thumb_spot(item, size, window) else {
+        app.set_thumb_visible(false);
+        return;
+    };
+    app.set_thumb_x(spot.x as f32);
+    app.set_thumb_y(spot.y as f32);
+    app.set_thumb_visible(true);
 }
 
 fn cursor_of(k: CursorKind) -> slint::private_unstable_api::re_exports::MouseCursorInner {
@@ -1323,6 +1401,14 @@ impl AppCtl {
             on_tip_request,
             |c, t: SharedString, x: f32, y: f32, w: f32, h: f32| c.tip_request(&t, x, y, w, h)
         );
+        bind!(
+            app,
+            rc,
+            on_panel_ask_tip,
+            |c, t: SharedString, x: f32, y: f32, w: f32, h: f32| {
+                c.tip_request_toward(&t, x, y, w, h, Some(TipSide::Left));
+            }
+        );
         // The Settings view's tooltips go the same way as every other surface's.
         {
             let weak = Rc::downgrade(rc);
@@ -1374,6 +1460,7 @@ impl AppCtl {
                 })
             }
         );
+        bind!(app, rc, on_grid_pointer_left, |c| c.grid_pointer_left());
         bind!(app, rc, on_find_edited, |c, q: SharedString| c
             .term_find_edited(&q));
         bind!(app, rc, on_find_next, |c| c.term_find_step(true));
@@ -1386,6 +1473,7 @@ impl AppCtl {
         bind!(app, rc, on_panel_convo_open, |c, path: SharedString| c
             .convo_open(path.as_str()));
         bind!(app, rc, on_panel_wrap_toggled, |c| c.panel_wrap_toggled());
+        bind!(app, rc, on_panel_ask_agent, |c| c.panel_ask_agent());
         bind!(app, rc, on_panel_wrap_cols_changed, |c| c
             .panel_wrap_cols_changed());
         bind!(app, rc, on_preview_chip_clicked, |c| c
@@ -1430,6 +1518,14 @@ impl AppCtl {
                 }
             })
         };
+        let set_thumb: SetThumb = {
+            let weak = weak.clone();
+            Rc::new(move |v| {
+                if let Some(app) = weak.upgrade() {
+                    show_thumb(&app, v);
+                }
+            })
+        };
         let post = Arc::clone(&deps.post);
         TermUi::new(TermDeps {
             clipboard: Arc::clone(&deps.term.clip_port),
@@ -1439,6 +1535,7 @@ impl AppCtl {
             clock_ms: Rc::clone(&deps.clock),
             redraw,
             set_cursor,
+            set_thumb,
             agent,
             home: deps.home.clone(),
             dbl: deps.term.dbl,
@@ -1741,6 +1838,12 @@ impl AppCtl {
         self.notify_update();
         self.term
             .set_previews(flare_settings::term_prefs::open_previews(&self.prefs));
+        let thumbs_on = flare_settings::term_prefs::hover_thumbs(&self.prefs);
+        self.term.set_thumbs(thumbs_on);
+        if !thumbs_on && !app.get_thumb_caption().is_empty() {
+            app.set_thumb_caption("".into());
+            app.set_thumb_picture(slint::Image::default());
+        }
 
         // Rule 37: nothing is written before the restore answered. Nor after the end of life: `finish` wrote
         // the tabs as they stood, then killed the shells, and a refresh after that sees every agent gone and
@@ -2706,6 +2809,7 @@ impl AppCtl {
         drop: Option<f32>,
     ) {
         self.clear_tip();
+        self.term.hide_thumb();
         self.menu = Some(MenuState { kind, rows });
         if let Some(app) = self.app() {
             app.set_menu_x(x);
@@ -2789,6 +2893,11 @@ impl AppCtl {
                 "Copy folder path" => (self.deps.clipboard)(cwd),
                 _ => {}
             },
+            MenuKind::Term { tab } if row.label == ASK_AGENT_ROW => {
+                let selection = self.term.menu_selection().map(str::to_string);
+                self.term.on_menu_pick(None, usize::MAX);
+                self.ask_about_grid(tab, selection.as_deref().unwrap_or(""));
+            }
             MenuKind::Term { tab } if self.convo_menu_picked(tab, &row.label) => {
                 // One of the conversation rows: the terminal's own menu state is let go, nothing else happens.
                 self.term.on_menu_pick(None, usize::MAX);
@@ -2825,6 +2934,7 @@ impl AppCtl {
     fn open_overflow(&mut self, all: bool, right: f32, bottom: f32) {
         self.close_menu_quietly();
         self.clear_tip();
+        self.term.hide_thumb();
         self.overflow = Some(OverflowState {
             all,
             query: String::new(),
@@ -2909,13 +3019,28 @@ impl AppCtl {
     // ---- tooltips ---------------------------------------------------------------------------------------
 
     fn tip_request(&mut self, text: &str, x: f32, y: f32, w: f32, h: f32) {
+        self.tip_request_toward(text, x, y, w, h, None);
+    }
+
+    /// A tooltip on the side `side` asks for (still flipped when there is no room), or where tips usually go.
+    fn tip_request_toward(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        side: Option<TipSide>,
+    ) {
         if text.is_empty() {
             self.clear_tip();
             return;
         }
         let now = self.now();
         let side_width = self.sidebar.view(self.scale, now).width_css as f32;
-        let prefer = if self.vertical() && x < side_width {
+        let prefer = if let Some(side) = side {
+            side
+        } else if self.vertical() && x < side_width {
             TipSide::Right
         } else {
             TipSide::Below
@@ -2996,11 +3121,16 @@ impl AppCtl {
         let (cols, rows) = front.map_or(self.grid_dims, |f| {
             f.handle.with_emu_quiet(|e| (e.cols(), e.view_rows()))
         });
+        let window = self.app().map_or((0, 0), |a| {
+            let s = a.window().size();
+            (s.width, s.height)
+        });
         GridGeom {
             metrics: (self.deps.term.metrics)(),
             scale: scale as f32,
             cols,
             rows,
+            window,
         }
     }
 
@@ -3077,6 +3207,11 @@ impl AppCtl {
         self.wake_term();
     }
 
+    /// The pointer left the grid: a hover thumbnail goes, and the tick has one less reason to run.
+    fn grid_pointer_left(&mut self) {
+        self.term.pointer_left();
+    }
+
     /// The terminal's right-click menu, hung where the pointer is (the grid's corner is added).
     fn open_term_menu(&mut self, at: crate::term_menu::TermMenuAt) {
         self.close_overflow_quietly();
@@ -3092,6 +3227,7 @@ impl AppCtl {
         if rows.is_empty() {
             return;
         }
+        rows.extend(self.ask_menu_rows(&at.tab));
         rows.extend(self.convo_menu_rows(&at.tab));
         let (gx, gy) = self
             .app()
@@ -3222,6 +3358,7 @@ impl AppCtl {
         self.panels
             .set_wrap(flare_settings::term_prefs::wrap_previews(&self.prefs));
         self.panels.sync(app, front.as_deref());
+        app.set_panel_ask_on(front.as_deref().is_some_and(|t| self.hub.agent_here(t)));
         // The bar's height first: the terminal is laid out shorter before the browser is placed.
         self.push_bar(app);
         let ctx = self.key_context();
@@ -3367,26 +3504,6 @@ impl AppCtl {
             return Vec::new();
         }
         let open = self.panels.open_convo_kind(tab);
-        let row = |label: &str, icon: &'static str, group: bool| {
-            (
-                MenuRowData {
-                    label: label.to_string(),
-                    hint: String::new(),
-                    icon,
-                    filled_icon: false,
-                    disabled: false,
-                    trailing_icon: None,
-                    trailing_filled: false,
-                    trailing_tip: String::new(),
-                    group,
-                    flyout: false,
-                    parent: -1,
-                    icon_cmd: String::new(),
-                    logo: None,
-                },
-                String::new(),
-            )
-        };
         let changes_open = open == Some(flare_surfaces::PanelKind::Changes);
         // The gate above proves it is Claude (a session, or the detection), so the row always names Claude.
         let changes = if changes_open {
@@ -3395,7 +3512,16 @@ impl AppCtl {
             CONVO_SHOW_CHANGES
         };
         // Its own group, after a rule: it is about the agent, not the terminal.
-        vec![row(changes, crate::menus_ui::GLYPH_CHANGES, true)]
+        vec![agent_menu_row(changes, crate::menus_ui::GLYPH_CHANGES)]
+    }
+
+    /// The row the terminal's menu gains over a grid selection on a tab with an agent, whichever agent it is.
+    pub(crate) fn ask_menu_rows(&self, tab: &str) -> Vec<(MenuRowData, String)> {
+        if self.hub.agent_here(tab) && self.term.menu_selection().is_some() {
+            vec![agent_menu_row(ASK_AGENT_ROW, "menu-paste")]
+        } else {
+            Vec::new()
+        }
     }
 
     /// A row of the convo part of the terminal's menu was picked. False for any other row.
@@ -4217,6 +4343,7 @@ impl AppCtl {
         }
         if ev.pressed {
             flare_term::session::trace_key("key");
+            self.term.hide_thumb();
         }
         // A right-click menu takes no keyboard (PT ContextMenu.tsx): Escape closes it and never
         // reaches the shell; every other key goes where it would without the menu.
@@ -4310,6 +4437,7 @@ impl AppCtl {
         crate::dictation_ctl::on_blur();
         self.model.commit_walk();
         self.clear_tip();
+        self.term.hide_thumb();
         self.close_menu();
         self.on_focus(false);
     }
@@ -4364,6 +4492,7 @@ impl AppCtl {
             self.web.release_focus(hwnd);
         }
         self.clear_tip();
+        self.term.hide_thumb();
         if self.flight.on() {
             self.flight.pointer_down();
             self.refresh();
@@ -4702,6 +4831,7 @@ impl AppCtl {
 
     fn show_ask(&mut self) {
         self.clear_tip();
+        self.term.hide_thumb();
         self.close_menu_quietly();
         self.close_overflow_quietly();
         // A question is asked over nothing: the Command help popup is put away first, so it is never
@@ -5201,6 +5331,7 @@ impl AppCtl {
 
 #[cfg(test)]
 mod tests {
+    mod ask_tests;
     mod mods_tests;
     mod splitter_tests;
     mod web_tests;
@@ -6928,6 +7059,95 @@ two",
             .into_owned();
         assert_eq!(f.openers.records(), [OpenedRecord::Reveal(want)]);
         assert!(!f.h.comp.get_panel_open());
+    }
+
+    /// Prints a word, lights it up as a link and leaves the pointer on it.
+    fn rest_on_word(f: &Fx, h: &TermHandle, dir: &str, word: &str) {
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl.borrow_mut().model_mut().set_cwd(&id, dir);
+        feed(h, &format!("{word}\r\n"));
+        for _ in 0..8 {
+            f.ctl.borrow().decor_inputs().borrow_mut().decor(h);
+            f.clock.set(f.clock.get() + 60);
+            f.ctl.borrow_mut().tick();
+            std::thread::sleep(Duration::from_millis(30));
+            f.pump();
+        }
+        f.ctl.borrow().decor_inputs().borrow_mut().decor(h);
+        f.ptr(2, 0, cell_css(1, 0, false));
+    }
+
+    fn thumb_png(f: &Fx, name: &str) {
+        image::RgbaImage::from_pixel(64, 32, image::Rgba([9, 200, 30, 255]))
+            .save(f.dir.path().join(name))
+            .unwrap();
+    }
+
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
+    #[test]
+    fn resting_on_a_picture_path_shows_the_bubble_under_the_line_and_leaving_the_grid_ends_it() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        thumb_png(&f, "p.png");
+        f.pump();
+        rest_on_word(&f, &h, &dir, "p.png");
+        f.clock.set(f.clock.get() + 400);
+        f.pump_until("the thumbnail", |f| {
+            f.ctl.borrow_mut().tick();
+            f.h.comp.get_thumb_visible()
+        });
+        assert_eq!(f.h.comp.get_thumb_caption().as_str(), "p.png  64 x 32");
+        assert_eq!(f.h.comp.get_thumb_pic_w(), 64.0);
+        assert!(
+            f.h.comp.get_thumb_y() >= f.h.comp.get_grid_top() + 16.0,
+            "under the line"
+        );
+        assert!(
+            f.h.comp.get_thumb_x() + f.h.comp.get_thumb_w() <= f.h.comp.get_grid_right(),
+            "inside the grid"
+        );
+        f.h.comp.invoke_grid_pointer_left();
+        assert!(!f.h.comp.get_thumb_visible());
+    }
+
+    #[test]
+    fn with_hover_thumbnails_off_resting_on_a_picture_path_shows_nothing() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        thumb_png(&f, "p.png");
+        f.prefs.set("flare.window.hoverThumbs", "0");
+        f.pump();
+        rest_on_word(&f, &h, &dir, "p.png");
+        f.clock.set(f.clock.get() + 400);
+        for _ in 0..10 {
+            f.ctl.borrow_mut().tick();
+            std::thread::sleep(Duration::from_millis(20));
+            f.pump();
+        }
+        assert!(!f.h.comp.get_thumb_visible());
+    }
+
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
+    #[test]
+    fn a_key_takes_the_thumbnail_down() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        thumb_png(&f, "p.png");
+        f.pump();
+        rest_on_word(&f, &h, &dir, "p.png");
+        f.clock.set(f.clock.get() + 400);
+        f.pump_until("the thumbnail", |f| {
+            f.ctl.borrow_mut().tick();
+            f.h.comp.get_thumb_visible()
+        });
+        f.ctl.borrow_mut().term.hide_thumb();
+        assert!(!f.h.comp.get_thumb_visible());
     }
 
     #[cfg_attr(

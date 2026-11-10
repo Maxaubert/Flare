@@ -3,6 +3,7 @@
 mod agent_hub;
 mod app_facts;
 mod appctl;
+mod ask_agent;
 mod backend;
 mod badge;
 mod chords;
@@ -59,6 +60,7 @@ mod tabs_ui;
 mod term_menu;
 mod term_ui;
 mod theme_scene;
+mod thumbs;
 mod timer_registry;
 mod ui_clock;
 mod update_ctl;

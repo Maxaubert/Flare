@@ -433,7 +433,7 @@ pub const DIAGNOSTICS_OPTIONS: [RowDef; 3] = [
 ];
 
 /// This app's own rows, in draw order (section by section, as the pages draw them).
-pub const APP_OPTIONS: [RowDef; 19] = [
+pub const APP_OPTIONS: [RowDef; 20] = [
     RowDef {
         id: "tab-layout",
         label: "Tab position",
@@ -608,6 +608,19 @@ pub const APP_OPTIONS: [RowDef; 19] = [
         only_nvidia: false,
     },
     RowDef {
+        id: "hover-thumbs",
+        label: "Show thumbnails when hovering image paths",
+        sub: "A small picture appears over the path.",
+        section: "links",
+        page: "terminal",
+        icon: "viewer",
+        keywords: "thumbnail hover image picture path preview point mouse popover photo",
+        keys: &["flare.window.hoverThumbs"],
+        kind: RowKind::Switch,
+        source: Source::App,
+        only_nvidia: false,
+    },
+    RowDef {
         id: "agent-eval",
         label: "Let agents run scripts in pages",
         sub: "Agents may run code in their web panel.",
@@ -688,7 +701,7 @@ pub const APP_OPTIONS: [RowDef; 19] = [
 ];
 
 /// The 47 row ids in draw order (Appendix C, the `#` column).
-pub const ROW_ORDER: [&str; 47] = [
+pub const ROW_ORDER: [&str; 48] = [
     "tab-layout",
     "tab-switch",
     "window-edges",
@@ -705,6 +718,7 @@ pub const ROW_ORDER: [&str; 47] = [
     "right-click-reports",
     "open-previews",
     "wrap-previews",
+    "hover-thumbs",
     "agent-eval",
     "app-network",
     "dev-preview",
@@ -800,14 +814,14 @@ mod tests {
     #[test]
     fn the_tables_name_the_46_rows_in_row_order() {
         let ids: Vec<&str> = table_order().iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 47);
+        assert_eq!(ids.len(), 48);
         let mut sorted_tables = ids.clone();
         sorted_tables.sort_unstable();
         let mut sorted_order: Vec<&str> = ROW_ORDER.to_vec();
         sorted_order.sort_unstable();
         assert_eq!(sorted_tables, sorted_order);
         let distinct: BTreeSet<&str> = ROW_ORDER.iter().copied().collect();
-        assert_eq!(distinct.len(), 47);
+        assert_eq!(distinct.len(), 48);
         let drawn: Vec<&str> = all_rows().map(|r| r.id).collect();
         assert_eq!(drawn, ROW_ORDER.to_vec());
     }
@@ -930,6 +944,7 @@ mod tests {
                 "right-click-reports=flare.window.rightClickReports",
                 "open-previews=flare.window.openPreviews",
                 "wrap-previews=flare.window.wrapPreviews",
+                "hover-thumbs=flare.window.hoverThumbs",
                 "agent-eval=flare.web.agentEval",
                 "app-network=flare.web.appNetwork",
                 "dev-preview=flare.window.devPreview",
@@ -938,7 +953,7 @@ mod tests {
                 "app-version=",
             ]
         );
-        assert_eq!(app.len(), 19);
+        assert_eq!(app.len(), 20);
     }
 
     #[test]
