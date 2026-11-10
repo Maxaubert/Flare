@@ -1256,7 +1256,7 @@ impl AppDispatcher {
     }
 
     /// `browser.fill {tab?, login_name, login_uris, username?, password?, totp?}`: checked here (the params, the tab,
-    /// the session's Deny, six asks a minute), then the window checks the page's site, asks the person and fills.
+    /// six asks a minute), then the window checks the page's site, asks the person and fills.
     /// The values are never in an error, a log line or the answer.
     fn fill_call(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
         let (plugin, plugin_name, generation) = self.fill_caller(ctx, "filling a login")?;
@@ -1264,10 +1264,6 @@ impl AppDispatcher {
         let via_call = !self.may_see_tab(ctx, &tab);
         let req = flare_mods::fill::parse_fill(params)?;
         let hub = self.hub()?;
-        if hub.asks().denied(&plugin) {
-            log::info!("fill: plugin {plugin}: declined (denied for this session)");
-            return Ok(json!({"declined": true, "for_session": true}));
-        }
         hub.asks().admit(&plugin, Instant::now())?;
         let op = CtlOp::Fill {
             plugin,
