@@ -340,10 +340,7 @@ fn the_pipe_is_closed_to_other_users() {
 fn the_live_pipe_carries_the_owner_only_descriptor() {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
-        SE_KERNEL_OBJECT,
-    };
+    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_KERNEL_OBJECT};
     use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 
     let (server, name) = start(ServerConfig::default());
@@ -367,9 +364,28 @@ fn the_live_pipe_carries_the_owner_only_descriptor() {
         )
     };
     assert_eq!(rc, 0, "GetSecurityInfo failed");
+    let sddl = dacl_text(sd);
+    // SAFETY: `sd` came from GetSecurityInfo above and is freed once.
+    unsafe { LocalFree(sd) };
+    let sid = flare_ctl::pipe::user_sid().unwrap();
+    // Generic-all reads back as file-all; there is exactly one ACE and the DACL is protected. The
+    // expected text goes through the same conversion, because Windows writes some SIDs as an alias:
+    // the built-in Administrator (the CI runner's account) reads back as "LA", not its S-1-5-21 SID.
+    assert_eq!(sddl, canonical_dacl(&format!("D:P(A;;FA;;;{sid})")));
+    drop(file);
+    server.stop();
+}
+
+/// The DACL of `sd` as SDDL text, the way Windows writes it.
+fn dacl_text(sd: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR) -> String {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
     let mut text: *mut u16 = std::ptr::null_mut();
     let mut len = 0u32;
-    // SAFETY: `sd` is the descriptor just read; `text` receives a LocalAlloc'd string.
+    // SAFETY: `sd` is a valid descriptor; `text` receives a LocalAlloc'd string.
     let ok = unsafe {
         ConvertSecurityDescriptorToStringSecurityDescriptorW(
             sd,
@@ -379,23 +395,132 @@ fn the_live_pipe_carries_the_owner_only_descriptor() {
             &mut len,
         )
     };
-    assert_ne!(ok, 0);
+    assert_ne!(ok, 0, "the descriptor did not convert to SDDL");
     // SAFETY: `text` is `len` UTF-16 units including the NUL.
     let sddl = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len as usize) })
         .trim_end_matches('\0')
         .to_string();
-    // SAFETY: both came from the calls above and are freed once.
-    unsafe {
-        LocalFree(text as _);
-        LocalFree(sd);
-    }
-    let sid = flare_ctl::pipe::user_sid().unwrap();
-    // Generic-all reads back as file-all; there is exactly one ACE and the DACL is protected.
-    assert_eq!(sddl, format!("D:P(A;;FA;;;{sid})"));
-    drop(file);
-    server.stop();
+    // SAFETY: `text` came from the call above and is freed once.
+    unsafe { LocalFree(text as _) };
+    sddl
 }
 
+/// `sddl` parsed and written back by Windows, so a SID it writes as an alias compares equal.
+fn canonical_dacl(sddl: &str) -> String {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    let wide: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
+    let mut sd = std::ptr::null_mut();
+    // SAFETY: `wide` is NUL-terminated; `sd` receives a LocalAlloc'd descriptor freed below.
+    let ok = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(ok, 0, "not valid SDDL: {sddl}");
+    let text = dacl_text(sd);
+    // SAFETY: `sd` came from the call above and is freed once.
+    unsafe { LocalFree(sd) };
+    text
+}
+
+/// The account domain of this machine (its local users' SID without the RID), looked up from the
+/// computer name. A domain or Entra ID account has a different prefix, so the user's SID cannot
+/// stand in for it.
+fn machine_account_domain() -> String {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{LookupAccountNameW, SID_NAME_USE, SidTypeDomain};
+    use windows_sys::Win32::System::SystemInformation::{ComputerNameNetBIOS, GetComputerNameExW};
+    let mut name = [0u16; 64];
+    let mut name_len = name.len() as u32;
+    // SAFETY: `name` holds `name_len` units; the call writes the NetBIOS name and its length.
+    let ok = unsafe { GetComputerNameExW(ComputerNameNetBIOS, name.as_mut_ptr(), &mut name_len) };
+    assert_ne!(ok, 0, "GetComputerNameExW failed");
+    let name: Vec<u16> = name[..name_len as usize]
+        .iter()
+        .copied()
+        .chain(Some(0))
+        .collect();
+    let mut sid = [0u8; 128];
+    let mut sid_len = sid.len() as u32;
+    let mut domain = [0u16; 256];
+    let mut domain_len = domain.len() as u32;
+    let mut kind: SID_NAME_USE = 0;
+    // SAFETY: every buffer is passed with its size; `name` is NUL-terminated.
+    let ok = unsafe {
+        LookupAccountNameW(
+            std::ptr::null(),
+            name.as_ptr(),
+            sid.as_mut_ptr() as _,
+            &mut sid_len,
+            domain.as_mut_ptr(),
+            &mut domain_len,
+            &mut kind,
+        )
+    };
+    assert_ne!(ok, 0, "LookupAccountNameW failed for the computer name");
+    assert_eq!(
+        kind, SidTypeDomain,
+        "the computer name is the account domain"
+    );
+    let mut text: *mut u16 = std::ptr::null_mut();
+    // SAFETY: `sid` holds a valid SID; `text` receives a LocalAlloc'd string freed below.
+    let ok = unsafe { ConvertSidToStringSidW(sid.as_mut_ptr() as _, &mut text) };
+    assert_ne!(ok, 0, "ConvertSidToStringSidW failed");
+    // SAFETY: `text` is NUL-terminated.
+    let len = (0..).take_while(|&i| unsafe { *text.add(i) } != 0).count();
+    // SAFETY: `text` holds `len` units before the NUL.
+    let out = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len) });
+    // SAFETY: `text` came from the call above and is freed once.
+    unsafe { LocalFree(text as _) };
+    out
+}
+
+/// The DACL text Windows writes for one file-all ACE for `sid`: "LA" for RID 500 of this machine's
+/// account domain `machine`, the SID itself for anything else (a domain or Entra ID account too).
+fn expected_owner_dacl(sid: &str, machine: &str) -> String {
+    if sid == format!("{machine}-500") {
+        "D:P(A;;FA;;;LA)".to_string()
+    } else {
+        format!("D:P(A;;FA;;;{sid})")
+    }
+}
+
+/// The CI runner's account is the built-in Administrator (RID 500), whose SID Windows writes as
+/// "LA". Only the local machine's RID 500 gets that alias; another domain's RID 500 and an Entra ID
+/// SID keep their own text. So the live-pipe check above holds on a local, domain or Entra account.
+#[test]
+fn the_built_in_administrator_reads_back_as_its_alias() {
+    let machine = machine_account_domain();
+    assert!(
+        machine.starts_with("S-1-5-21-"),
+        "an account domain: {machine}"
+    );
+    assert_eq!(
+        canonical_dacl(&format!("D:P(A;;FA;;;{machine}-500)")),
+        "D:P(A;;FA;;;LA)"
+    );
+    // RID 500 of some other domain, and an Entra ID user: neither is this machine's Administrator.
+    for other in ["S-1-5-21-1-2-3-500", "S-1-12-1-1111-2222-3333-4444"] {
+        assert_ne!(other, format!("{machine}-500"));
+        assert_eq!(
+            canonical_dacl(&format!("D:P(A;;FA;;;{other})")),
+            expected_owner_dacl(other, &machine),
+            "{other}"
+        );
+    }
+    let sid = flare_ctl::pipe::user_sid().unwrap();
+    assert_eq!(
+        canonical_dacl(&format!("D:P(A;;FA;;;{sid})")),
+        expected_owner_dacl(&sid, &machine)
+    );
+}
 /// A client that never reads, with more queued events than the pipe holds: the worker is parked in
 /// a write. Stopping must still finish well inside its wait, with nothing left running.
 #[test]

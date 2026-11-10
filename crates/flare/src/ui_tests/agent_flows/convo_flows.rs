@@ -554,8 +554,12 @@ fn a_stored_conversation_panel_reopens_empty_until_the_transcript_loads() {
         "empty at first"
     );
     assert!((f.h.comp.get_panel_share() - 0.35).abs() < 1e-6);
-    // The agent speaks, the session is known, and the changes load.
+    // The agent speaks, the session is known, and the changes load. The restored tab's shell is
+    // spawned off the UI thread, so it may still be on its way when the panel is up: wait for it.
     claude.append(TAB, SESSION_A, &[edit_line("e1", "C:\\a\\x.rs", "a", "b")]);
+    f.pump_until("the restored shell", |f| {
+        f.sp.made().iter().any(|m| m.spec().cwd == TAB)
+    });
     f.say(TAB, &hook(SESSION_A));
     f.pump_until("the changes", |f| files(f).len() == 1);
     assert_eq!(trackers(&f), 1);

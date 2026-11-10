@@ -1088,19 +1088,24 @@ fn the_slide_holds_the_terminals_size_and_fits_once() {
     f.h.advance(300);
     f.pump();
     let fake = f.made_with(&front).remove(0);
-    // The shell's own start-up resizes land on a worker thread: wait until they have settled.
-    let mut seen = fake.resize_calls();
-    let mut calm = 0;
-    let t = Instant::now();
-    while calm < 10 && t.elapsed() < Duration::from_secs(5) {
-        std::thread::sleep(Duration::from_millis(20));
-        f.pump();
-        let now = fake.resize_calls();
-        calm = if now == seen { calm + 1 } else { 0 };
-        seen = now;
-    }
-    assert!(calm >= 10, "the start-up resizes never settled");
-    let base = fake.resize_calls();
+    // Every pty resize lands on a helper thread (it first flushes the output already read), so the
+    // count is read only once the helpers have gone quiet: `calm` quiet 20 ms polls in a row.
+    let settled = |calm_needed: usize| {
+        let mut seen = fake.resize_calls();
+        let mut calm = 0;
+        let t = Instant::now();
+        while calm < calm_needed && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+            f.pump();
+            let now = fake.resize_calls();
+            calm = if now == seen { calm + 1 } else { 0 };
+            seen = now;
+        }
+        assert!(calm >= calm_needed, "the resizes never settled");
+        seen
+    };
+    // The shell's own start-up resizes: wait until they have settled.
+    let base = settled(10);
     assert_eq!(
         f.key(KeyEvent::new("B", "KeyB").ctrl().shift()),
         KeyOutcome::Consumed
@@ -1110,7 +1115,7 @@ fn the_slide_holds_the_terminals_size_and_fits_once() {
         f.step(16);
         elapsed += 16;
         assert_eq!(
-            fake.resize_calls(),
+            settled(3),
             base,
             "no resize during the slide ({elapsed} ms)"
         );
@@ -1119,13 +1124,15 @@ fn the_slide_holds_the_terminals_size_and_fits_once() {
         f.step(16);
     }
     f.step(40);
-    assert_eq!(
-        fake.resize_calls(),
-        base + 1,
-        "exactly one fit after the slide"
-    );
+    // The fit was asked for on this step; its helper lands when it lands, so wait for it.
+    let t = Instant::now();
+    while fake.resize_calls() == base && t.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(5));
+        f.pump();
+    }
+    assert_eq!(settled(10), base + 1, "exactly one fit after the slide");
     f.step(100);
-    assert_eq!(fake.resize_calls(), base + 1);
+    assert_eq!(settled(10), base + 1);
 }
 
 #[test]
