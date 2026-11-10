@@ -1,6 +1,7 @@
 //! The per-tab panel state: what each tab shows beside its terminal and how wide.
 
 use crate::kind::PanelKind;
+use crate::mdview::MdView;
 use std::collections::HashMap;
 
 /// The longest target kept (a path or an address).
@@ -19,6 +20,9 @@ pub struct TabPanel {
     /// The agent in the tab opened it (a control channel call), so it closes when that agent leaves. Anything the
     /// user shows in the panel makes it theirs.
     pub by_agent: bool,
+    /// The view a markdown file shows in, once the person picked one (None: the default, Compiled). A new file
+    /// shown in the panel starts at the default again; the pick is kept across a restart (`panels.json`).
+    pub view: Option<MdView>,
 }
 
 impl TabPanel {
@@ -30,6 +34,7 @@ impl TabPanel {
             open: true,
             width: None,
             by_agent: false,
+            view: None,
         })
     }
 }
@@ -70,6 +75,7 @@ impl TabPanels {
                 open: true,
                 width,
                 by_agent: false,
+                view: None,
             },
         );
         true
@@ -107,6 +113,17 @@ impl TabPanels {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// The view the tab's markdown file shows in from now on. False when the tab has no panel.
+    pub fn set_view(&mut self, tab: &str, view: MdView) -> bool {
+        match self.by_tab.get_mut(tab) {
+            Some(p) => {
+                p.view = Some(view);
+                true
+            }
+            None => false,
         }
     }
 
@@ -245,6 +262,24 @@ mod tests {
         p.show("t1", PanelKind::Text, "b.txt");
         assert_eq!(p.get("t1").and_then(|x| x.width), Some(0.3));
         assert_eq!(p.get("t1").map(|x| x.kind.clone()), Some(PanelKind::Text));
+    }
+
+    #[test]
+    fn a_picked_view_stays_with_the_file_and_a_new_file_opens_at_the_default() {
+        let mut p = TabPanels::default();
+        assert!(!p.set_view("t1", MdView::Code), "no panel");
+        p.show("t1", PanelKind::Text, r"C:\a\r.md");
+        assert_eq!(p.get("t1").unwrap().view, None, "compiled by default");
+        assert!(p.set_view("t1", MdView::Markdown));
+        p.close("t1");
+        p.reopen("t1");
+        assert_eq!(p.get("t1").unwrap().view, Some(MdView::Markdown));
+        p.show("t1", PanelKind::Text, r"C:\a\r.md");
+        assert_eq!(
+            p.get("t1").unwrap().view,
+            None,
+            "a file shown again opens compiled, every time"
+        );
     }
 
     #[test]

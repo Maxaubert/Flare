@@ -83,7 +83,6 @@ fn plugin_ask(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     v["buttons"] = json!({
         "allow": rect(a.get_pask_allow_x(), a.get_pask_allow_y(), a.get_pask_allow_w(), a.get_pask_allow_h()),
         "deny": rect(a.get_pask_deny_x(), a.get_pask_deny_y(), a.get_pask_deny_w(), a.get_pask_deny_h()),
-        "session": rect(a.get_pask_session_x(), a.get_pask_session_y(), a.get_pask_session_w(), a.get_pask_session_h()),
         "ok": rect(a.get_pask_ok_x(), a.get_pask_ok_y(), a.get_pask_ok_w(), a.get_pask_ok_h()),
         "eye": rect(a.get_pask_eye_x(), a.get_pask_eye_y(), 32.0, 42.0),
     });

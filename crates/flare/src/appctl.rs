@@ -1473,6 +1473,8 @@ impl AppCtl {
         bind!(app, rc, on_panel_convo_open, |c, path: SharedString| c
             .convo_open(path.as_str()));
         bind!(app, rc, on_panel_wrap_toggled, |c| c.panel_wrap_toggled());
+        bind!(app, rc, on_panel_md_view_picked, |c, i: i32| c
+            .panel_md_view_picked(i));
         bind!(app, rc, on_panel_ask_agent, |c| c.panel_ask_agent());
         bind!(app, rc, on_panel_wrap_cols_changed, |c| c
             .panel_wrap_cols_changed());
@@ -3339,6 +3341,20 @@ impl AppCtl {
         self.panels.restore(&tabs);
     }
 
+    /// The front tab's markdown page could not be shown (its browser failed: no WebView2 runtime, a renderer that
+    /// died): the file shows in Code instead, at once (rule 240).
+    fn md_page_fallback(&mut self, app: &AppWindow) {
+        let Some(front) = self.model.active_shell().map(|t| t.id.clone()) else {
+            return;
+        };
+        if self.web.failure(&front).is_none() || !self.panels.page_failed(&front) {
+            return;
+        }
+        self.panels.sync(app, Some(&front));
+        let ctx = self.key_context();
+        self.web.sync(app, &self.panels, Some(&front), ctx);
+    }
+
     /// The window shows the front tab's panel; the keys go back to the terminal when the panel that
     /// had them goes away.
     fn sync_panels(&mut self, app: &AppWindow) {
@@ -3363,6 +3379,7 @@ impl AppCtl {
         self.push_bar(app);
         let ctx = self.key_context();
         self.web.sync(app, &self.panels, front.as_deref(), ctx);
+        self.md_page_fallback(app);
         self.sync_bar_views(app);
         self.sync_web_full();
         self.sync_convo();
@@ -4002,9 +4019,9 @@ impl AppCtl {
         if !app.get_panel_shown() {
             return false;
         }
-        // A web page: the keys go to the page, or back to the terminal when it has them.
+        // A web page (or a markdown view's page): the keys go to the page, or back to the terminal when it has them.
         if let Some(id) = self.front_id()
-            && self.panels.web_target(&id).is_some()
+            && self.panels.page_target(&id).is_some()
         {
             if self.web.has_focus() {
                 self.panel_focus_seen = false;
@@ -4039,6 +4056,20 @@ impl AppCtl {
         let on = flare_settings::term_prefs::wrap_previews(&self.prefs);
         flare_settings::term_prefs::set_wrap_previews(&self.prefs, !on);
         self.panels.set_wrap_moving(false);
+        self.refresh();
+    }
+
+    /// The header's view control over a markdown file: Compiled, Markdown or Code (0, 1, 2) for the front tab's panel.
+    /// The pick stays with the panel (and across a restart); the keys stay where they are.
+    fn panel_md_view_picked(&mut self, index: i32) {
+        let Some(view) = flare_surfaces::mdview::MdView::from_index(index) else {
+            return;
+        };
+        let Some(tab) = self.front_id() else { return };
+        if self.panels.set_md_view(&tab, view) {
+            self.panels.set_wrap_moving(false);
+        }
+        // The pick is stored even when it shows what was on show already (the first pick of the default).
         self.refresh();
     }
 
@@ -4991,8 +5022,11 @@ impl AppCtl {
                 }
             }
             UiMsg::Panel(PanelMsgBox(m)) => {
-                if let Some(app) = self.app() {
-                    self.panels.on_msg(&app, m);
+                // A markdown page that arrived (or failed) changes what the browser shows: the whole window follows.
+                if let Some(app) = self.app()
+                    && self.panels.on_msg(&app, m)
+                {
+                    self.refresh();
                 }
             }
             UiMsg::FocusLostCheck => {
@@ -5087,7 +5121,10 @@ impl AppCtl {
                 }
                 if self.panels.is_open(&tab) {
                     if let Some(app) = self.app() {
-                        if self.panels.web_target(&tab).is_some() && !self.panels.is_app(&tab) {
+                        let page = (self.panels.web_target(&tab).is_some()
+                            && !self.panels.is_app(&tab))
+                            || self.panels.is_md_page(&tab);
+                        if page {
                             self.web.notice(&tab, SHORT);
                         } else {
                             self.panels.refuse(&app, &tab, SHORT);
@@ -5332,6 +5369,7 @@ impl AppCtl {
 #[cfg(test)]
 mod tests {
     mod ask_tests;
+    mod md_tests;
     mod mods_tests;
     mod splitter_tests;
     mod web_tests;
@@ -8169,6 +8207,7 @@ two",
             open,
             width,
             by_agent: false,
+            view: None,
         };
         let file = f.dir.path().join("panels.json");
         let saved = [

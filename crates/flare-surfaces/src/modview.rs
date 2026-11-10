@@ -157,6 +157,7 @@ pub fn plugin_spec(id: &str, folder: &std::path::Path, entry: &str, network: boo
             id: id.to_string(),
             entry: entry.to_string(),
         }),
+        source: None,
     }
 }
 
