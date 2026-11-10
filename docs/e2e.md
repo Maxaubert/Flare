@@ -23,6 +23,9 @@ cargo run -p flare-e2e --release --target-dir <TARGET> -- --exe <TARGET>\release
 - A missing exe exits 1 with the hint to build first. `--packaged` drives the installed layout instead.
 - `perf` runs the performance bar (`docs/performance.md`, `docs/perf/README.md`).
 - Gentle mode on a shared PC: one scenario at a time, never two `flare.exe` at once.
+- Opt-in scenarios run only when a filter word is their whole name (any case): `visualTour`, and `webBotChecks`, which
+  opens public bot-check pages on the network (`docs/web-bot-checks.md`). A part of the name never picks one, so `web`
+  runs the web panel group without `webBotChecks`.
 
 Every run prints one line per assertion (`pass` or `FAIL`), then a table of scenario, checks, failures and
 seconds. The exit code is 1 when any assertion failed.
@@ -141,6 +144,40 @@ variable directly (`no_source_file_reads_an_e2e_variable_directly`).
 ## The visual tour (audit 2026-10-20)
 
 `visualTour` is an opt-in scenario (`OPT_IN`; a plain run never picks it, a filter that names it does) that captures Flare's start-up, session resume, sidebar slide and a general pass at 100, 150 and 225 percent on both renderers into `docs/screenshots/visual/`, with per-frame numbers from the `frames.series` and `sidebar.anim` probes. `tools/pt-shot/pt-visual.mjs` captures Prism Terminal from a copy of its folder, `tools/visual/summarize.py` makes the sheets and tables. How to run it and what it found: `docs/screenshots/visual/README.md`.
+
+## The quit stress (#63, 2026-11-10)
+
+`quitStress` (`tools/e2e/src/scenarios/quit_stress.rs`) is opt-in like `visualTour`. It chases Prism Terminal's #63: in
+one full e2e run, rounds 2 and 3 of `quitManyShells` (ten shells, quit, three rounds) ended in 0xC0000005, an access
+violation, and reruns passed. Each round restores a strip of shell tabs from a `tabs.json` it writes, visits every tab
+with Ctrl+Tab, and starts a busy command in the first ones. The commands are written in full in the scenario: a
+PowerShell flood, a flood from a child `cmd`, a pipeline flood and `ping -t`. Every second, third or fourth round (the knob
+below) it also opens the local test page in a web panel. Rounds switch between the software and the GPU renderer. Then it
+sends `Quit { force: true }`, the hook's normal close, and records the exit code. The window stays parked off screen, as in
+every scenario.
+
+```powershell
+$env:FLARE_QUIT_STRESS_ROUNDS='150'; $env:FLARE_QUIT_STRESS_TABS='32'; $env:FLARE_QUIT_STRESS_BUSY='12'
+$env:FLARE_QUIT_STRESS_WEB_EVERY='3'; $env:FLARE_QUIT_STRESS_OUT="$env:TEMP\quit-stress.csv"
+cargo run -p flare-e2e --release --target-dir <TARGET> -- --exe <TARGET>\release\flare.exe quitStress
+```
+
+The defaults are 50 rounds, 24 tabs, 8 busy and a web page every 4th round. A round passes when the app exits by
+itself within 20 s with code 0 and leaves no stray process. The last check fails only on an access violation.
+
+What was run on 2026-11-10 (release build of `12b335aa`, the owner's PC shared with other sessions' builds):
+
+| Run | Rounds | Tabs (busy) | Web page | Extra load | Exit codes |
+|---|---|---|---|---|---|
+| A | 150 | 32 (12) | 50 rounds | none | 0 in all 150; quit 0.18 to 0.67 s |
+| B | 100 | 40 (20) | 31 rounds | a BelowNormal spin thread per logical core, plus two `cargo clippy` builds | 0 in 73; 4 did not exit within 20 s and were killed; 23 launches did not open the hook within 20 s (the app was still running, exit code none) |
+| C | 12 | 40 (20) | 1 round | as B | 0 in 8; 4 launches did not open the hook within 20 s |
+
+No round of the 262 ended in 0xC0000005 or any other crash code, so #63 did not reproduce in Flare. Prism Terminal's
+crash came from node-pty and Electron, which Flare does not use. No dump was taken: LocalDumps lives under HKLM and the
+session was not elevated. Under the load of B and C, two things were slow, and both are worth a look of their own. The
+GPU start took 11 s or more (`backend 11348 ms` in the startup line), which caused the failed launches. The quit hit
+the 3 s shell cap (`the quit gave up waiting for the shells after 3 s`) and many quits took 5 to 18 s in all; four took longer than 20 s.
 
 ## Web panel scenarios (Surfaces stage 3)
 

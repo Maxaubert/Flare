@@ -388,7 +388,7 @@ fn grid_width(app: &mut App) -> Option<f32> {
 
 /// Writes `tabs.json` into `profile` with the app's own store: one saved tab per folder, the
 /// first one active. Flushed at once, so the file is there before the app starts.
-fn write_tabs(profile: &Path, folders: &[PathBuf]) -> Result<(), String> {
+pub(super) fn write_tabs(profile: &Path, folders: &[PathBuf]) -> Result<(), String> {
     fs::create_dir_all(profile).map_err(|e| format!("the profile folder: {e}"))?;
     let store = TabsStore::new(profile.join("tabs.json"), SAVE_DEBOUNCE);
     let saved = SavedTabs {
