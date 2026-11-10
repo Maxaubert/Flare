@@ -495,6 +495,10 @@ export component AppWindow inherits Window {
     in property <image> panel-web-still;
     in property <bool> panel-web-has-still;
     in property <bool> panel-web-missing-runtime;
+    // A pop-up over the page (rule 249): the strip's words, empty while none is open; its Close.
+    in property <string> panel-web-popup;
+    out property <length> panel-popup-h: panel-slot.popup-h;
+    callback panel-web-popup-close();
     // The close at the address row's right end (a web page has no header, Max 2026-10-27).
     out property <length> panel-web-close-x: panel-slot.web-close-x;
     out property <length> panel-web-close-w: panel-slot.web-close-w;
@@ -715,6 +719,10 @@ export component AppWindow inherits Window {
     in property <string> dialog-primary;
     in property <bool> dialog-danger;
     in property <bool> dialog-by-key;
+    // Cancel is the question's default (the app-link question, rule 252).
+    in property <bool> dialog-default-cancel;
+    // Raised for each app-link question, so the next one starts on Cancel again in the same open dialog (rule 252).
+    in property <int> dialog-question;
     // A plugin's question (the `fill` permission): a fill to approve (kind 0) or a secret to type (kind 1).
     in property <bool> pask-open;
     in property <int> pask-kind;
@@ -1319,6 +1327,8 @@ export component AppWindow inherits Window {
                         web-stop => { root.panel-web-stop(); }
                         web-submit(text) => { root.panel-web-submit(text); }
                         web-download => { root.panel-web-download(); }
+                        web-popup: root.panel-web-popup;
+                        web-popup-close => { root.panel-web-popup-close(); }
                         close => { root.panel-close(); }
                         escape => { root.panel-escape(); }
                         pressed => { root.focus-panel(); root.panel-pressed(); }
@@ -1786,6 +1796,8 @@ export component AppWindow inherits Window {
             primary-label: root.dialog-primary;
             danger: root.dialog-danger;
             opened-by-key: root.dialog-by-key;
+            default-cancel: root.dialog-default-cancel;
+            question: root.dialog-question;
             cancel => { root.dialog-cancel(); }
             confirm => { root.dialog-confirm(); }
         }
