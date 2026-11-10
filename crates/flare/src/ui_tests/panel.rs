@@ -457,6 +457,128 @@ fn a_big_file_draws_only_the_rows_in_view() {
     assert!(ink > 100, "the first rows are drawn ({ink} inked pixels)");
 }
 
+#[test]
+fn a_drag_over_the_text_selects_and_never_scrolls_it_and_the_wheel_still_does() {
+    for s in [1.0f32, 2.25] {
+        let h = window(s);
+        open_text(&h, 1000);
+        let downs = Rc::new(RefCell::new(Vec::<(f32, f32, bool)>::new()));
+        let moves = Rc::new(Cell::new(0));
+        let ups = Rc::new(Cell::new(0));
+        {
+            let (d, m, u) = (downs.clone(), moves.clone(), ups.clone());
+            h.comp
+                .on_panel_text_down(move |x, y, shift| d.borrow_mut().push((x, y, shift)));
+            h.comp.on_panel_text_move(move |_, _| m.set(m.get() + 1));
+            h.comp.on_panel_text_up(move || u.set(u.get() + 1));
+        }
+        let x = h.comp.get_panel_body_x() + h.comp.get_panel_gutter_w() + 20.0;
+        let y = h.comp.get_panel_body_y() + 40.0;
+        h.drag((x, y), (x + 30.0, y + 250.0), 6);
+        h.advance(0);
+        assert_eq!(
+            h.comp.get_panel_text_scroll_y(),
+            0.0,
+            "scale {s}: a drag does not pan"
+        );
+        assert_eq!(h.comp.get_panel_first_line(), 0, "scale {s}");
+        let downs = downs.borrow().clone();
+        assert_eq!(downs.len(), 1, "scale {s}");
+        // The press is reported in the content's coordinates.
+        let (dx, dy, shift) = downs[0];
+        assert!(
+            (dx - (x - h.comp.get_panel_body_x())).abs() < 1.0,
+            "scale {s}: {dx}"
+        );
+        assert!((dy - 40.0).abs() < 1.0, "scale {s}: {dy}");
+        assert!(!shift);
+        assert!(moves.get() >= 6, "scale {s}: {}", moves.get());
+        assert_eq!(ups.get(), 1, "scale {s}");
+        // The wheel scrolls whatever the drag does.
+        h.wheel(x, y, 0.0, -120.0);
+        h.advance(0);
+        assert!(
+            h.comp.get_panel_text_scroll_y() < 0.0,
+            "scale {s}: the wheel scrolls"
+        );
+        assert!(h.comp.get_panel_first_line() > 0, "scale {s}");
+    }
+}
+
+#[test]
+fn shift_on_a_press_is_reported_for_a_shift_click() {
+    let h = window(1.0);
+    open_text(&h, 20);
+    let shifts = Rc::new(RefCell::new(Vec::<bool>::new()));
+    {
+        let s = shifts.clone();
+        h.comp
+            .on_panel_text_down(move |_, _, shift| s.borrow_mut().push(shift));
+    }
+    let x = h.comp.get_panel_body_x() + h.comp.get_panel_gutter_w() + 10.0;
+    let y = h.comp.get_panel_body_y() + 30.0;
+    h.click(x, y);
+    h.comp
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+            text: key(Key::Shift).into(),
+        });
+    h.click(x + 30.0, y);
+    h.comp
+        .window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+            text: key(Key::Shift).into(),
+        });
+    assert_eq!(shifts.borrow().as_slice(), [false, true]);
+}
+
+#[test]
+fn the_selection_is_drawn_on_its_rows_and_only_there() {
+    for s in [1.0f32, 2.25] {
+        let h = window(s);
+        open_text(&h, 50);
+        let row_h = h.comp.get_panel_text_row_h();
+        let char_w = h.comp.get_panel_text_char_w();
+        let left = h.comp.get_panel_body_x() + h.comp.get_panel_gutter_w();
+        let top = h.comp.get_panel_body_y();
+        // The ink in the first six columns of row `n`, against the ground beside it.
+        let ink = |n: usize| {
+            let f = h.render();
+            let ground = f.px(
+                h.phys(h.comp.get_panel_body_x() + h.comp.get_panel_body_w() - 40.0),
+                h.phys(top + (n as f32 + 0.5) * row_h),
+            );
+            f.count_where(
+                h.phys(left),
+                h.phys(top + n as f32 * row_h + 2.0),
+                h.phys(left + 6.0 * char_w),
+                h.phys(top + (n as f32 + 1.0) * row_h - 2.0),
+                |p| !Frame::near(p, ground, 6),
+            )
+        };
+        let plain = ink(2);
+        let past = ink(6);
+        h.comp.set_panel_sel_a_row(1);
+        h.comp.set_panel_sel_a_col(2);
+        h.comp.set_panel_sel_b_row(3);
+        h.comp.set_panel_sel_b_col(4);
+        h.comp.set_panel_sel_on(true);
+        h.advance(0);
+        let whole = ink(2);
+        assert!(
+            whole > plain * 3,
+            "scale {s}: a row inside the selection is filled ({plain} then {whole})"
+        );
+        assert!(ink(6) <= past + 2, "scale {s}: a row past it is not");
+        h.comp.set_panel_sel_on(false);
+        h.advance(0);
+        assert!(
+            ink(2) <= plain + 2,
+            "scale {s}: switched off, nothing is drawn"
+        );
+    }
+}
+
 // ---- the picture viewer ----
 
 fn image_centre(h: &Harness<AppWindow>) -> (f32, f32) {
@@ -1148,10 +1270,12 @@ fn ask_agent_says_on_hover_what_a_click_sends_with_one_fixed_wording_per_kind() 
         for (kind, want) in [
             ("web", "Ask agent about the selection or this page"),
             ("app", "Ask agent about the selection"),
-            ("text", "Ask agent about this file"),
+            ("text", "Ask agent about the selection or this file"),
+            ("image", "Ask agent about this file"),
         ] {
             match kind {
                 "text" => open_text(&h, 3),
+                "image" => open_picture(&h, 40, 30, [200, 40, 40, 255], false),
                 _ => {
                     open_web(&h);
                     h.comp.set_panel_web_app(kind == "app");

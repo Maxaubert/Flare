@@ -414,6 +414,20 @@ export component AppWindow inherits Window {
     out property <length> panel-text-scroll-y: panel-slot.text-scroll-y;
     public function panel-scroll-to-row(row: int) { panel-slot.text-scroll-to-row(row); }
     public function panel-scroll-by(dx: length, dy: length) { panel-slot.text-scroll-by(dx, dy); }
+    // Selecting text in a text file (2026-11-10): the pointer over the text in the content's coordinates, what turns it
+    // into a row and a character, the selection to draw as rows and columns, and a scroll that shows its moving end.
+    callback panel-text-down(length, length, bool);
+    callback panel-text-move(length, length);
+    callback panel-text-up();
+    out property <length> panel-text-char-w: panel-slot.text-char-w;
+    out property <length> panel-text-row-h: panel-slot.text-row-h;
+    out property <length> panel-text-view-h: panel-slot.text-view-h;
+    in property <bool> panel-sel-on;
+    in property <int> panel-sel-a-row;
+    in property <int> panel-sel-a-col;
+    in property <int> panel-sel-b-row;
+    in property <int> panel-sel-b-col;
+    public function panel-text-reveal(row: int, col: int) { panel-slot.text-reveal(row, col); }
     in property <bool> panel-wrap-on: true;
     in property <int> panel-number-count;
     out property <length> panel-wrap-button-x: panel-slot.wrap-button-x;
@@ -1266,6 +1280,14 @@ export component AppWindow inherits Window {
                         wrapped-cols: root.panel-wrapped-cols;
                         wrap-on: root.panel-wrap-on;
                         number-count: root.panel-number-count;
+                        sel-on: root.panel-sel-on;
+                        sel-a-row: root.panel-sel-a-row;
+                        sel-a-col: root.panel-sel-a-col;
+                        sel-b-row: root.panel-sel-b-row;
+                        sel-b-col: root.panel-sel-b-col;
+                        text-down(x, y, shift) => { root.panel-text-down(x, y, shift); }
+                        text-move(x, y) => { root.panel-text-move(x, y); }
+                        text-up => { root.panel-text-up(); }
                         wrap-toggled => { root.panel-wrap-toggled(); }
                         md-file: root.panel-md;
                         md-view: root.panel-md-view;

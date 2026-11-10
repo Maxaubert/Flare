@@ -189,6 +189,7 @@ mod plugins_glue;
 mod sessions_glue;
 pub mod staged_glue;
 mod surfaces7;
+mod text_sel_glue;
 mod web_glue;
 
 pub use surfaces7::install as install_surfaces7;
@@ -965,7 +966,8 @@ impl AppCtl {
         };
         let prefs_dirty = Arc::new(AtomicBool::new(false));
         let prefs_subs = Self::listen_to_rows(&prefs, &deps.post, &prefs_dirty);
-        let panels = PanelCtl::new(Arc::clone(&deps.post));
+        let mut panels = PanelCtl::new(Arc::clone(&deps.post));
+        panels.set_double_click(deps.term.dbl);
         let convo = ConvoCtl::new(Arc::clone(&deps.post));
         let web = WebCtl::new(Arc::clone(&deps.post));
         Self::push_rainbow(app, &marks);
@@ -1494,6 +1496,15 @@ impl AppCtl {
         bind!(app, rc, on_preview_chip_clicked, |c| c
             .preview_chip_clicked());
         bind!(app, rc, on_panel_pressed, |c| c.panel_focus_seen = true);
+        bind!(
+            app,
+            rc,
+            on_panel_text_down,
+            |c, x: f32, y: f32, shift: bool| c.panel_text_down(x, y, shift)
+        );
+        bind!(app, rc, on_panel_text_move, |c, x: f32, y: f32| c
+            .panel_text_move(x, y));
+        bind!(app, rc, on_panel_text_up, |c| c.panel_text_up());
         bind!(app, rc, on_panel_splitter_released, |c, share: f32| c
             .panel_splitter_released(share));
         bind!(app, rc, on_panel_web_back, |c| c
@@ -4125,12 +4136,6 @@ impl AppCtl {
         });
     }
 
-    /// Esc in the panel: the keys go back to the terminal.
-    fn panel_escape(&mut self) {
-        self.panel_focus_seen = false;
-        self.focus_terminal();
-    }
-
     /// The splitter was let go: the slot's share of the page is the tab's from now on, and the grid
     /// fits once at its new width.
     fn panel_splitter_released(&mut self, share: f32) {
@@ -4417,12 +4422,11 @@ impl AppCtl {
             return KeyOutcome::Consumed;
         }
         let mut ctx = self.key_context();
-        // A text field of the window (the find bar, the sidebar find box, the help search) has the
-        // keys: Ctrl+C and Ctrl+D there are the field's, never the agent guard's.
-        if self
-            .app()
-            .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused())
-        {
+        // A text field of the window (the find bar, the sidebar find box, the help search) or the panel has the
+        // keys: Ctrl+C and Ctrl+D there are the field's or the panel's (a copy), never the agent guard's.
+        if self.app().is_some_and(|a| {
+            a.get_chrome_has_focus() || a.get_find_input_focused() || a.get_panel_has_focus()
+        }) {
             ctx.agent_guard = false;
         }
         let d = chords::dispatch(ev, &ctx, &mut Target(self));
@@ -4447,6 +4451,10 @@ impl AppCtl {
                 }
             }
             Dispatch::NotAChord => {
+                // The panel has the keys over a text file: its selection's keys are its own.
+                if self.app().is_some_and(|a| a.get_panel_has_focus()) && self.panel_text_key(ev) {
+                    return KeyOutcome::Consumed;
+                }
                 // The Settings page has no shell, and its own fields (the find field, a colour code,
                 // the popover's Escape) are Slint's: a key that is no chord goes to Slint there.
                 if self.view.front_kind == 1
@@ -5422,6 +5430,7 @@ mod tests {
     mod md_tests;
     mod mods_tests;
     mod splitter_tests;
+    mod text_sel_tests;
     mod web_tests;
     use super::*;
     use crate::menus_ui::CHOOSE_FOLDER;
