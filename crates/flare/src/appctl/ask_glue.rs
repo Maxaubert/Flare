@@ -1,5 +1,5 @@
 //! A plugin's question in Flare's own dialog (the `fill` permission, 2026-10-28), centred in the plugin's own look
-//! (2026-11-08): a login to fill into a tab's web page, approved with Fill, Deny or "Deny for this session", and a
+//! (2026-11-08): a login to fill into a tab's web page, approved with Fill or Deny, and a
 //! secret the plugin asks for, typed into a masked field. One question at a time; it waits at most [`fill::ASK_WAIT`]
 //! and then counts as a no. A plugin the person set to "Always allow" on its details sheet has its fill typed with
 //! no question; every other check (the site, the tab, a waiting call, the page that moved) is made just the same.
@@ -175,14 +175,8 @@ impl AppCtl {
                     .find(|f| f.id == tab)
                     .map(|f| f.title)
                     .unwrap_or_default();
-                let source = self
-                    .mods
-                    .as_ref()
-                    .and_then(|m| m.hub().source_of(&plugin))
-                    .unwrap_or_default();
                 let view = crate::plugin_ask::fill_view(
                     &plugin_name,
-                    &source,
                     &login_name,
                     &site.host,
                     &tab_title,
@@ -309,8 +303,8 @@ impl AppCtl {
         self.focus_terminal();
     }
 
-    /// The person answered a fill: 0 Deny, 1 Allow, 2 Deny for this session. Only a press in Flare's own dialog
-    /// calls this (Allow takes the pointer only).
+    /// The person answered a fill: 1 Allow, anything else Deny. Only a press in Flare's own dialog calls this (Allow
+    /// takes the pointer only).
     pub(super) fn answer_fill(&mut self, choice: i32) {
         let is_fill = self
             .plugin_ask
@@ -323,24 +317,11 @@ impl AppCtl {
             return;
         };
         self.close_plugin_ask_view();
-        match choice {
-            1 => self.run_fill(ask),
-            2 => {
-                if let Some(m) = self.mods.as_ref() {
-                    m.hub().asks().deny_for_session(&ask.plugin);
-                }
-                log::info!(
-                    "{}",
-                    fill::log_line(&ask.plugin, ask.host(), "denied for this session")
-                );
-                let _ = ask
-                    .reply
-                    .send(Ok(json!({"declined": true, "for_session": true})));
-            }
-            _ => {
-                log::info!("{}", fill::log_line(&ask.plugin, ask.host(), "denied"));
-                let _ = ask.reply.send(Ok(json!({"declined": true})));
-            }
+        if choice == 1 {
+            self.run_fill(ask);
+        } else {
+            log::info!("{}", fill::log_line(&ask.plugin, ask.host(), "denied"));
+            let _ = ask.reply.send(Ok(json!({"declined": true})));
         }
     }
 
