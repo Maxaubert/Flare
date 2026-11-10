@@ -2013,12 +2013,14 @@ Part A of the Bitwarden design (`Maxaubert/flare-plugins`, `docs/2026-10-28-bitw
   tests.
 - **`browser.fill`.** Only into the tab's web page, only when its site is the login's (host or subdomain, `https` unless
   the login says `http`; no public suffix list), and only after Allow in Flare's own dialog ("Fill <login> into <host>?",
-  Deny for this session, Deny, Allow; Allow by the pointer only and not in its first 0.7 s, Enter presses Deny). The
+  Deny and Fill and nothing under them; Fill by the pointer only and not in its first 0.7 s, Enter presses Deny). The
   values reach the page as JSON data through `ExecuteScript`, read only after the script checked the document's
   `location` (a tab that moved to another site gets nothing), the fields are found by `autocomplete` first, and `input`
   and `change` fire. One dialog at a time, 6 asks a minute per plugin, a minute to answer. Held by `flare_mods::fill`
   (14 tests) and
-  `appctl::tests::mods_tests::plugin_fill` (8 tests, the fake browser), and the e2e `pluginFill`.
+  `appctl::tests::mods_tests::plugin_fill` (the fake browser), and the e2e `pluginFill`. "Deny for this session" and
+  the line "<Plugin> fills it into the page; the agent never sees it." were taken out at the owner's ask (2026-11-10):
+  each Deny answers one fill.
 - **`secret.ask`.** Flare's masked field; the text goes to the plugin that asked, and no log or store of Flare's has it.
 - **Tool scope and helpers.** While Claude's call to a plugin waits, the plugin may fill into the tab it came from. A
   plugin with a helper and neither a background page nor a panel has its tools listed, sent to the helper as the `tool`

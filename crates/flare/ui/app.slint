@@ -797,10 +797,6 @@ export component AppWindow inherits Window {
     out property <length> pask-deny-y: pask.deny-y;
     out property <length> pask-deny-w: pask.deny-w;
     out property <length> pask-deny-h: pask.deny-h;
-    out property <length> pask-session-x: pask.session-x;
-    out property <length> pask-session-y: pask.session-y;
-    out property <length> pask-session-w: pask.session-w;
-    out property <length> pask-session-h: pask.session-h;
     out property <length> pask-ok-x: pask.ok-x;
     out property <length> pask-ok-y: pask.ok-y;
     out property <length> pask-ok-w: pask.ok-w;
@@ -875,7 +871,7 @@ export component AppWindow inherits Window {
     callback overflow-query-edited(string);
     callback dialog-cancel();
     callback dialog-confirm();
-    // A plugin fill's answer (0 Deny, 1 Allow, 2 Deny for this session) and a secret's (OK with the text, or Cancel).
+    // A plugin fill's answer (0 Deny, 1 Allow) and a secret's (OK with the text, or Cancel).
     callback pask-fill(int);
     callback pask-secret(bool, string);
     callback tip-request(string, length, length, length, length);
