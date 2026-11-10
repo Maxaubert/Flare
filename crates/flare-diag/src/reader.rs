@@ -24,6 +24,8 @@ pub struct Opts {
     pub n: usize,
     /// The agent indicator's timeline.
     pub agent: bool,
+    /// The web panel's lines (`web-*`): refusals, pop-ups, failed loads, the browser's failures.
+    pub web: bool,
     /// One tab's lines (`--agent --tab t3`).
     pub tab: Option<String>,
     /// Print the usage.
@@ -42,6 +44,7 @@ impl Default for Opts {
             kinds: None,
             n: 20,
             agent: false,
+            web: false,
             tab: None,
             help: false,
             utc: false,
@@ -83,6 +86,7 @@ pub fn parse_args(argv: &[String]) -> Result<Opts, String> {
                     .unwrap_or(20);
             }
             "--agent" => o.agent = true,
+            "--web" => o.web = true,
             "--tab" => o.tab = Some(take(&mut it, a)?),
             "--help" | "-h" => o.help = true,
             "--utc" => o.utc = true,
@@ -373,6 +377,7 @@ cargo diag: the newest problems in Flare's diagnostics log (diag.jsonl), each wi
   cargo diag -- --kinds ui-stack,main-lag
   cargo diag -- --agent             the agent indicator's timeline (hooks, titles, marks, why)
   cargo diag -- --agent --tab t3    one tab's
+  cargo diag -- --web               the web panel's lines (refused, pop-ups, failed loads, the browser's failures)
   cargo diag -- --dir <folder>      any folder holding a diag.jsonl
   cargo diag -- --profile <folder>  a profile folder (its logs folder is read)
   cargo diag -- --n 50              how many problems (default 20)
@@ -404,6 +409,9 @@ const PROBLEMS: &[&str] = &[
     "panic",
     "render-error",
     "agent-poll-failing",
+    "web-process",
+    "web-load-failed",
+    "web-cert",
 ];
 /// The agent indicator's records (not problems, the context for one).
 const AGENT: &[&str] = &[
@@ -537,6 +545,14 @@ fn is_context(l: &Line) -> bool {
         kind_of(l).as_str(),
         "crumb" | "agent-mark" | "agent-restore"
     )
+}
+
+fn is_web(l: &Line) -> bool {
+    kind_of(l).starts_with("web-")
+}
+
+fn in_web_timeline(l: &Line) -> bool {
+    is_web(l) || matches!(kind_of(l).as_str(), "session" | "quit" | "mark")
 }
 
 fn in_agent_timeline(l: &Line) -> bool {
@@ -751,6 +767,7 @@ fn summary(raw: &Map<String, Value>) -> String {
             g("id"),
             or(raw.get("cwd"), "?")
         ),
+        k if k.starts_with("web-") => web_summary(raw),
         "agent-poll-failing" => format!(
             "the agent poll's process query failed {} times in a row: tabs show no agent marks",
             or(raw.get("fails"), "3")
@@ -764,6 +781,37 @@ fn summary(raw: &Map<String, Value>) -> String {
             json(&Value::Object(rest))
         }
     }
+}
+
+/// A web panel line, said briefly: the tab, the view, the site and where it came from, then its words.
+fn web_summary(raw: &Map<String, Value>) -> String {
+    let mut s = format!(
+        "{} {} {}",
+        or(raw.get("id"), "?"),
+        or(raw.get("view"), "web"),
+        or(raw.get("site"), "?")
+    );
+    if truthy(raw.get("from")) && raw.get("from") != raw.get("site") {
+        s.push_str(&format!(" from {}", show(raw.get("from"))));
+    }
+    let mut words: Vec<String> = ["why", "to", "error", "process", "permission", "reason"]
+        .iter()
+        .filter(|k| truthy(raw.get(**k)))
+        .map(|k| show(raw.get(*k)))
+        .collect();
+    if raw.contains_key("exit") {
+        words.push(format!("exit {}", show(raw.get("exit"))));
+    }
+    if truthy(raw.get("user")) {
+        words.push("by the person".to_owned());
+    }
+    if !words.is_empty() {
+        s.push_str(&format!(": {}", words.join(", ")));
+    }
+    if truthy(raw.get("repeats")) {
+        s.push_str(&format!(" (and {} more like it)", show(raw.get("repeats"))));
+    }
+    s
 }
 
 /// The report, as the same text `diag.mjs` prints.
@@ -812,7 +860,7 @@ pub fn render(o: &Opts, dir_label: &str, lines: &[Line], now_ms: i64, tz: &dyn T
         (Some(tab), Some(id)) => show(Some(id)) == *tab,
     };
 
-    if o.all || o.agent {
+    if o.all || o.agent || o.web {
         // A tab's capped flood: how many lines before this one were not written.
         let shown: Vec<&Line> = kept
             .iter()
@@ -820,6 +868,7 @@ pub fn render(o: &Opts, dir_label: &str, lines: &[Line], now_ms: i64, tz: &dyn T
             .filter(|x| {
                 let kind_ok = match &o.kinds {
                     Some(kinds) => kinds.contains(&kind_of(x)),
+                    None if o.web => in_web_timeline(x),
                     None => !o.agent || in_agent_timeline(x),
                 };
                 kind_ok && of_tab(x)
@@ -827,6 +876,9 @@ pub fn render(o: &Opts, dir_label: &str, lines: &[Line], now_ms: i64, tz: &dyn T
             .collect();
         if o.agent && !shown.iter().any(|x| is_agent(x)) {
             out.push_str("No agent indicator lines here (an app older than #152 writes none).\n\n");
+        }
+        if o.web && !shown.iter().any(|x| is_web(x)) {
+            out.push_str("No web panel lines here.\n\n");
         }
         for l in shown {
             let dropped = match l.raw.get("dropped") {
@@ -1171,6 +1223,56 @@ mod tests {
         assert!(!out.contains("No stalls, errors or slow calls."), "{out}");
         let agent = render(&opts(&["--agent"]), "d", &lines, 0, &Utc);
         assert!(agent.contains("agent-poll-failing"), "{agent}");
+    }
+
+    /// Rule 247: a failed load, a failed browser process and a certificate error are problems; the rest of the web
+    /// panel's lines show under `--web` and `--all`.
+    #[test]
+    fn the_web_panels_failures_are_problems_and_its_steps_show_under_web() {
+        let lines = vec![
+            line(
+                "2026-10-17T09:00:01.000Z",
+                r#"{"src":"app","k":"web-popup","id":"t2","view":"web","site":"bank.example","from":"shop.example","to":"panel","user":true}"#,
+            ),
+            line(
+                "2026-10-17T09:00:02.000Z",
+                r#"{"src":"app","k":"web-load-failed","id":"t2","view":"web","site":"bank.example","from":"shop.example","error":"cert-expired","repeats":2}"#,
+            ),
+            line(
+                "2026-10-17T09:00:03.000Z",
+                r#"{"src":"app","k":"web-process","id":"t2","view":"app","site":"flare-app-1.local","process":"render","reason":"crashed","exit":-1}"#,
+            ),
+            line(
+                "2026-10-17T09:00:04.000Z",
+                r#"{"src":"main","k":"main-lag","ms":300}"#,
+            ),
+        ];
+        let out = render(&opts(&[]), "d", &lines, 0, &Utc);
+        assert!(
+            out.contains(
+                "t2 web bank.example from shop.example: cert-expired (and 2 more like it)"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("t2 app flare-app-1.local: render, crashed, exit -1"),
+            "{out}"
+        );
+        assert!(!out.contains("web-popup"), "{out}");
+        let web = render(&opts(&["--web"]), "d", &lines, 0, &Utc);
+        assert!(
+            web.contains("t2 web bank.example from shop.example: panel, by the person"),
+            "{web}"
+        );
+        assert!(web.contains("web-process"), "{web}");
+        assert!(!web.contains("main-lag"), "{web}");
+        let one = render(&opts(&["--web", "--tab", "t9"]), "d", &lines, 0, &Utc);
+        assert!(one.contains("No web panel lines here."), "{one}");
+        let all = render(&opts(&["--all"]), "d", &lines, 0, &Utc);
+        assert!(
+            all.contains("web-popup") && all.contains("main-lag"),
+            "{all}"
+        );
     }
 
     #[test]

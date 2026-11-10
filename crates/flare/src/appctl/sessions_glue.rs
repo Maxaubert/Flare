@@ -90,6 +90,16 @@ impl AppCtl {
         let Some(snap) = self.panels.snap(&tab).filter(|s| s.open) else {
             return;
         };
+        // Text selected in a text file (the Code view of a markdown file included): the quote, named by the file and its
+        // lines. A selection of blanks only frames nothing, and the path goes as with none.
+        if let Some(framed) = self
+            .panels
+            .selection_ask(&tab)
+            .and_then(|(label, text)| crate::ask_agent::frame_selection(&label, &text))
+        {
+            self.deliver_ask(&tab, &framed);
+            return;
+        }
         // A markdown view's page: its selection, named by the file (with nothing selected, the file's path goes).
         if self.panels.is_md_page(&tab) {
             if !self.web.ask_selection(&tab) {
