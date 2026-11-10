@@ -2310,6 +2310,9 @@ Spec `docs/superpowers/specs/2026-11-10-ask-agent-additions-design.md`, section 
   the plain copy kept them in `%LOCALAPPDATA%\Flare\WebView2`, inside its install folder, which a reinstall with Setup or an uninstall deletes;
   the first start of this build moves that folder and its `WebView2-<kind>` siblings (mini-apps, plugins) under the profile, once, and never
   over a folder already there. Rule 259.
+- **A folder still in use waits, logins and all.** When that move cannot happen (the Flare that just quit still has a browser
+  holding the folder), the folders stay together in the old place and the panel keeps using them there, never an empty new folder; the move
+  is tried again when the first browser starts and at each start. Rule 261.
 - **Dev and Stable have separate logins.** They are two profiles, each with its own panel profile, so a site signed in in Stable is not signed in
   in the plain copy, and the other way round. This is on purpose and is not merged.
 - **What lasts.** A site's cookie with an expiry and its `localStorage` survive closing the panel, quitting Flare and installing a staged build

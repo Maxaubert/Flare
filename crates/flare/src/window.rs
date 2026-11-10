@@ -1158,27 +1158,28 @@ pub fn run_window(
             mods_hub.set_safe_mode(why);
         }
         let run_record = (!args.e2e).then(|| crate::plugin_safe::path_in(&inst.profile.dir));
+        let old_web_dir = flare_surfaces::web::old_webview_folder(
+            args.user_data_dir.as_deref(),
+            flare_win::paths::local_app_data()
+                .map(|p| p.to_string_lossy().into_owned())
+                .as_deref(),
+        );
         // A removal (or a change of maker) deletes the plugin's browser profile in both of the plugins' browsers.
         {
-            let web_dir = flare_surfaces::web::webview_folder(&inst.profile.dir);
+            let new_dir = flare_surfaces::web::webview_folder(&inst.profile.dir);
             // The default run kept its browsers in the install folder until 2026-11-10, where a reinstall deleted
-            // every login (rule 259): they move under the profile once, before any browser starts.
-            let local =
-                flare_win::paths::local_app_data().map(|p| p.to_string_lossy().into_owned());
-            if let Some(old) = flare_surfaces::web::old_webview_folder(
-                args.user_data_dir.as_deref(),
-                local.as_deref(),
-            ) {
-                match flare_surfaces::web::move_old_webview_folders(&old, &web_dir) {
-                    (0, None) => {}
-                    (n, None) => log::info!("moved {n} browser folders under the profile"),
-                    (n, Some(e)) => {
-                        log::warn!("moved {n} browser folders under the profile; one stays: {e}")
-                    }
-                }
+            // every login (rule 259): they move under the profile, all or none, before any browser starts. A set the
+            // run before still holds stays in use where it is and is tried again when the first browser is made
+            // (rule 261).
+            if let Some(old) = &old_web_dir {
+                crate::web_ctl::log_web_move(flare_surfaces::web::move_old_webview_folders(
+                    old, &new_dir,
+                ));
             }
+            let old_dir = old_web_dir.clone();
             mods_hub.set_profile_dirs(Arc::new(move |id: &str| {
                 let name = flare_surfaces::modview::profile_name(id);
+                let web_dir = flare_surfaces::web::webview_place(old_dir.as_deref(), &new_dir);
                 [
                     flare_surfaces::modview::env_folder(&web_dir),
                     flare_surfaces::modview::net_env_folder(&web_dir),
@@ -1279,6 +1280,7 @@ pub fn run_window(
             .set_web_factory(crate::web_ctl::production_factory(
                 app.as_weak(),
                 inst.profile.dir.clone(),
+                old_web_dir.clone(),
                 Some(plugin_limits),
             ));
         // An app link the person allowed opens through the Windows shell; under --e2e the recorder stays and nothing

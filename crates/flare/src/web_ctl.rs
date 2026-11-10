@@ -3559,12 +3559,25 @@ impl WebCtl {
     }
 }
 
+/// Logs what a move of the old browser folders did (rules 259 and 261).
+pub fn log_web_move((moved, error): (usize, Option<String>)) {
+    match error {
+        None if moved == 0 => {}
+        None => log::info!("moved {moved} browser folders under the profile"),
+        Some(e) => {
+            log::warn!("the browser folders stay in the old place for now ({moved} moved): {e}")
+        }
+    }
+}
+
 /// The production browser: WebView2 in Flare's own window, its profile always `<profile>\WebView2` (rule 259), so a
 /// site's login lasts as long as the profile. Made when the first web panel needs it, so a run that never opens one
-/// never loads the browser's runtime.
+/// never loads the browser's runtime. `old_dir`: the default run's folder from before 2026-11-10; the move is tried
+/// again here, and while it still cannot move the browser runs in it, never in an empty new one (rule 261).
 pub fn production_factory(
     window: slint::Weak<AppWindow>,
     profile_dir: std::path::PathBuf,
+    old_dir: Option<std::path::PathBuf>,
     limits: Option<std::sync::Arc<flare_mods::limit::Limits>>,
 ) -> WebFactory {
     Box::new(move |sink| {
@@ -3572,7 +3585,9 @@ pub fn production_factory(
             .upgrade()
             .and_then(|a| crate::window::hwnd_of(&a))
             .unwrap_or(0);
-        let data_dir = web::webview_folder(&profile_dir);
+        let (data_dir, moved, error) =
+            web::settle_webview_folder(old_dir.as_deref(), &web::webview_folder(&profile_dir));
+        log_web_move((moved, error));
         // The e2e's seams (read only under --e2e): a pretend missing runtime, and a folder of local
         // pages served as https://flare-test.local/.
         let missing = crate::ship_ctl::e2e_var("WEBVIEW_RUNTIME").as_deref() == Some("missing");
