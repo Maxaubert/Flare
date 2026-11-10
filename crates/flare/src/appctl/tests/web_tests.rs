@@ -3768,3 +3768,280 @@ fn a_window_already_full_screen_stays_so_when_the_page_leaves_full_screen() {
         "the person's own full screen is kept"
     );
 }
+
+// ---- pop-ups (rules 249, 250) ----
+
+/// The page of the tab opens a pop-up from `site` and the window takes the news in.
+fn popup(f: &Fx, slot: &Slot, tab: &str, site: &str) {
+    fake(slot).open_popup(tab, site);
+    f.pump();
+    f.h.advance(0);
+    f.pump();
+}
+
+/// How many times the page was sent somewhere or stepped through its history.
+fn moves(slot: &Slot) -> usize {
+    fake(slot)
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, Call::Navigate(..) | Call::Go(..)))
+        .count()
+}
+
+#[test]
+fn the_bar_leaves_the_page_behind_a_popup_alone() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    fake(&slot).say(WebEvent::History {
+        tab: id.clone(),
+        can_back: true,
+        can_forward: true,
+    });
+    f.pump();
+    f.h.advance(0);
+    popup(&f, &slot, &id, "bank.example");
+    let moved = moves(&slot);
+    f.h.comp.invoke_panel_web_back();
+    f.h.comp.invoke_panel_web_forward();
+    f.h.comp.invoke_panel_web_reload();
+    f.h.comp.invoke_panel_web_stop();
+    f.h.comp
+        .invoke_panel_web_submit("example.com/elsewhere".into());
+    f.pump();
+    f.h.advance(0);
+    assert_eq!(
+        moves(&slot),
+        moved,
+        "the page the pop-up links back to stays as it is"
+    );
+    assert_eq!(f.ctl.borrow().panels.web_target(&id).as_deref(), Some(PAGE));
+    assert_eq!(
+        f.h.comp.get_panel_sub().as_str(),
+        crate::web_ctl::POPUP_FIRST
+    );
+    // Once the person closes it, the note goes and the bar drives the page again.
+    f.h.comp.invoke_panel_web_popup_close();
+    f.pump();
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(f.h.comp.get_panel_sub().as_str(), "");
+    f.h.comp.invoke_panel_web_reload();
+    assert!(
+        fake(&slot)
+            .calls()
+            .contains(&Call::Go(id.clone(), Nav::Reload))
+    );
+}
+
+#[test]
+fn a_popup_shows_under_flares_strip_and_closing_it_brings_the_page_back() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    f.pump();
+    let page = drawn(&f);
+    assert_eq!(f.h.comp.get_panel_web_popup().as_str(), "");
+    assert_eq!(f.h.comp.get_panel_popup_h(), 0.0);
+    popup(&f, &slot, &id, "bank.example");
+    assert_eq!(
+        f.h.comp.get_panel_web_popup().as_str(),
+        "Pop-up from bank.example",
+        "the strip names the site, never the page's title"
+    );
+    let strip = f.h.comp.get_panel_popup_h();
+    assert!(strip > 0.0, "the strip takes room");
+    let under = drawn(&f);
+    assert!(under.y > page.y && under.h < page.h, "{page:?} {under:?}");
+    assert_eq!(
+        last_bounds(&slot, &id),
+        Some(under),
+        "what shows in the panel sits under the strip"
+    );
+    // A second pop-up from the pop-up stacks on top: the strip names the top one.
+    popup(&f, &slot, &id, "acs.example");
+    assert_eq!(
+        f.h.comp.get_panel_web_popup().as_str(),
+        "Pop-up from acs.example"
+    );
+    // Close takes the top one away; the one below shows again, then the page.
+    f.h.comp.invoke_panel_web_popup_close();
+    f.pump();
+    f.h.advance(0);
+    assert_eq!(
+        f.h.comp.get_panel_web_popup().as_str(),
+        "Pop-up from bank.example"
+    );
+    f.h.comp.invoke_panel_web_popup_close();
+    f.pump();
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(f.h.comp.get_panel_web_popup().as_str(), "");
+    assert_eq!(f.h.comp.get_panel_popup_h(), 0.0);
+    assert_eq!(drawn(&f), page, "the page has its whole box again");
+    assert_eq!(last_bounds(&slot, &id), Some(page));
+    let closes = fake(&slot)
+        .calls()
+        .iter()
+        .filter(|c| **c == Call::ClosePopup(id.clone()))
+        .count();
+    assert_eq!(closes, 2);
+    assert!(fake(&slot).popups(&id).is_empty());
+}
+
+#[test]
+fn the_agents_input_calls_wait_for_the_person_while_a_popup_is_open() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    with_shop(&slot);
+    popup(&f, &slot, &id, "bank.example");
+    let refused = |rx: Receiver<Result<Value, flare_ctl::CtlError>>, what: &str| {
+        f.pump();
+        let e = rx.try_recv().expect("answered at once").expect_err(what);
+        assert_eq!(e.code, code::UNAVAILABLE, "{what}");
+        assert_eq!(e.message, crate::web_ctl::POPUP_OPEN, "{what}");
+    };
+    let before = cdp_calls(&slot).len();
+    let moved = moves(&slot);
+    refused(click_ref(&f, &id, "e1"), "a click");
+    for (op, what) in [
+        (
+            AgentOp::Type {
+                text: "4242".into(),
+                target: None,
+            },
+            "typing",
+        ),
+        (
+            AgentOp::Scroll {
+                dx: 0.0,
+                dy: 100.0,
+                target: None,
+            },
+            "a scroll",
+        ),
+        (
+            AgentOp::Eval {
+                expression: "1".into(),
+            },
+            "eval",
+        ),
+    ] {
+        refused(ask(&f, agent_op(&id, op), Duration::from_secs(5)), what);
+    }
+    refused(
+        ask(
+            &f,
+            CtlOp::BrowserNavigate {
+                tab: id.clone(),
+                to: NavTo::Url(TWO.into()),
+            },
+            Duration::from_secs(5),
+        ),
+        "a navigation",
+    );
+    // open_page on the tab would send the page behind the pop-up away and break its link back.
+    refused(
+        ask(&f, open_op(&id, TWO), Duration::from_secs(5)),
+        "open_page",
+    );
+    assert_eq!(
+        cdp_calls(&slot).len(),
+        before,
+        "nothing reached the page behind the pop-up"
+    );
+    assert_eq!(
+        moves(&slot),
+        moved,
+        "the page behind the pop-up was not sent anywhere"
+    );
+    assert_eq!(f.ctl.borrow().panels.web_target(&id).as_deref(), Some(PAGE));
+    // Reading the page behind it still works, and the panel's state says a pop-up is open.
+    let rx = look(&f, &id);
+    f.pump();
+    assert!(
+        rx.try_recv().unwrap().is_ok(),
+        "a look still reads the page"
+    );
+    let v = ask(
+        &f,
+        CtlOp::PanelState { tab: id.clone() },
+        Duration::from_secs(5),
+    )
+    .try_recv()
+    .unwrap()
+    .unwrap();
+    assert_eq!(v["popup"], json!(true));
+    // The person finishes it: the agent may act again.
+    f.h.comp.invoke_panel_web_popup_close();
+    f.pump();
+    let v = ask(
+        &f,
+        CtlOp::PanelState { tab: id.clone() },
+        Duration::from_secs(5),
+    )
+    .try_recv()
+    .unwrap()
+    .unwrap();
+    assert!(v.get("popup").is_none(), "{v}");
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    agent_turn(&f, GLIDE_MAX_MS);
+    assert!(
+        rx.try_recv().unwrap().is_ok(),
+        "the click goes through again"
+    );
+}
+
+#[test]
+fn closing_the_tab_takes_its_popups_with_it() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let a = up(&f, &slot);
+    popup(&f, &slot, &a, "bank.example");
+    assert!(f.ctl.borrow().web.popup_open(&a));
+    let _b = f.ctl.borrow_mut().open_folder("C:\\b");
+    f.ctl.borrow_mut().request_close(&a);
+    f.pump();
+    f.h.advance(0);
+    assert!(fake(&slot).calls().contains(&Call::Close(a.clone())));
+    assert!(
+        fake(&slot).popups(&a).is_empty(),
+        "the pop-ups went with the page"
+    );
+    assert!(!f.ctl.borrow().web.popup_open(&a));
+    assert_eq!(
+        f.h.comp.get_panel_web_popup().as_str(),
+        "",
+        "no strip is left for the next tab"
+    );
+}
+
+#[test]
+fn a_popup_no_click_asked_for_is_said_in_the_bar() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    fake(&slot).say(WebEvent::Note {
+        tab: id.clone(),
+        note: flare_web::WebNote::new(flare_web::NoteKind::Popup, "https://ads.example/pop", PAGE)
+            .detail("blocked")
+            .user(false),
+    });
+    f.pump();
+    f.h.advance(0);
+    assert_eq!(f.h.comp.get_panel_sub().as_str(), "Pop-up blocked");
+    assert_eq!(
+        f.h.comp.get_panel_web_popup().as_str(),
+        "",
+        "nothing opened"
+    );
+    assert_eq!(
+        f.ctl.borrow().web.tab_url(&id),
+        Some(PAGE),
+        "the page stays where it is"
+    );
+}

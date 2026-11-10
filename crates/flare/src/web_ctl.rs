@@ -491,6 +491,32 @@ struct TabWeb {
     /// [`PARK_AT`]. A hidden page paints no frames, so what a page does in its next frame never happens,
     /// and a click there looks like it did nothing (issue #120).
     parked: bool,
+    /// The sites of the pop-ups over the page, the one on top last (rule 249): the strip names the top one, and the
+    /// agent's input calls wait for the person while any is open (rule 250).
+    popups: Vec<String>,
+}
+
+/// What the agent's input calls answer while a pop-up is open over the page (rule 250).
+pub const POPUP_OPEN: &str = "a pop-up is open, the person must finish it";
+
+/// What the bar says when its buttons or address are used while a pop-up is open over the page (rule 251).
+pub const POPUP_FIRST: &str = "Close the pop-up first";
+
+/// The bar's words for a pop-up that opened nothing because no click of the person's asked for it.
+pub const POPUP_BLOCKED: &str = "Pop-up blocked";
+
+/// The bar's words for a pop-up past the limits (`flare_surfaces::web::POPUPS_PER_TAB`, `POPUPS_IN_ALL`).
+pub const POPUP_LIMIT: &str = "Pop-up blocked: too many open";
+
+/// The words of the strip over a pop-up: Flare's own, naming the site and never the page's title.
+pub fn popup_strip(site: &str) -> String {
+    format!("Pop-up from {site}")
+}
+
+/// Is this agent call one that acts on the page (a click, typing, a key, a scroll, a script)? Those wait for the
+/// person while a pop-up is open; a look and a wait only read (rule 250).
+pub fn agent_acts(op: &AgentOp) -> bool {
+    !matches!(op, AgentOp::Look { .. } | AgentOp::Wait { .. })
 }
 
 /// The state the key hook reads (it runs inside a WebView2 callback and may not borrow the window).
@@ -700,6 +726,20 @@ const WEB_LINES: &[WebLineRow] = &[
         line: "web-refused",
         field: "why",
         word: Some("popup"),
+    },
+    WebLineRow {
+        note: NoteKind::Popup,
+        when: Some("blocked"),
+        line: "web-refused",
+        field: "why",
+        word: Some("popup-blocked"),
+    },
+    WebLineRow {
+        note: NoteKind::Popup,
+        when: Some("limit"),
+        line: "web-refused",
+        field: "why",
+        word: Some("popup-limit"),
     },
     WebLineRow {
         note: NoteKind::Popup,
@@ -1404,6 +1444,7 @@ impl WebCtl {
             app.set_panel_web_can_back(false);
             app.set_panel_web_can_forward(false);
             app.set_panel_web_missing_runtime(false);
+            app.set_panel_web_popup("".into());
             return;
         };
         let target = panels.page_target(tab).unwrap_or_default();
@@ -1438,6 +1479,12 @@ impl WebCtl {
         app.set_panel_web_loading(t.is_some_and(|t| t.loading));
         app.set_panel_web_can_back(t.is_some_and(|t| t.can_back));
         app.set_panel_web_can_forward(t.is_some_and(|t| t.can_forward));
+        // The strip over a pop-up: its height is taken from the page's box, so the pop-up sits below it (rule 249).
+        let strip = t
+            .and_then(|t| t.popups.last())
+            .map(|site| popup_strip(site))
+            .unwrap_or_default();
+        app.set_panel_web_popup(strip.into());
     }
 
     /// Forgets what is known of the tab's page and answers every call that waited on it. True when the
@@ -1907,8 +1954,12 @@ impl WebCtl {
         Ok(url)
     }
 
-    /// Sends the tab's page to `url` (already normalised).
+    /// Sends the tab's page to `url` (already normalised). Never while a pop-up is open over it (rule 251): the
+    /// pop-up's link back is to the page as it is.
     pub fn go_to(&mut self, tab: &str, url: &str) {
+        if self.popup_open(tab) {
+            return;
+        }
         if let Some(t) = self.tabs.get_mut(tab) {
             t.notice.clear();
             t.url = url.to_string();
@@ -1937,7 +1988,11 @@ impl WebCtl {
         self.update_cursor();
     }
 
+    /// A step through the page's history, a reload or a stop. Never while a pop-up is open over it (rule 251).
     pub fn nav(&mut self, tab: &str, nav: Nav) {
+        if self.popup_open(tab) {
+            return;
+        }
         if let Some(b) = self.backend.as_mut() {
             b.go(tab, nav);
         }
@@ -2028,6 +2083,20 @@ impl WebCtl {
 
     pub fn has_tab(&self, tab: &str) -> bool {
         self.tabs.contains_key(tab)
+    }
+
+    /// A pop-up is open over the tab's page (rule 250: the agent's input calls wait for the person).
+    pub fn popup_open(&self, tab: &str) -> bool {
+        self.tabs.get(tab).is_some_and(|t| !t.popups.is_empty())
+    }
+
+    /// The strip's Close: the pop-up on top of the tab's page closes and the next one down, or the page, shows again.
+    pub fn close_popup(&mut self, tab: &str) {
+        if self.popup_open(tab)
+            && let Some(b) = self.backend.as_mut()
+        {
+            b.close_popup(tab);
+        }
     }
 
     /// Makes the browser of a tab that is behind, hidden, because an agent call needs its page (only the
@@ -2189,15 +2258,23 @@ impl WebCtl {
             say("another browser call is still running on this page; wait for it");
             return;
         }
+        // A pop-up (a card's check, a sign-in) is the person's: the agent cannot reach it, and acting on the page
+        // behind it would act unseen (rule 250). Reading still works.
+        if !t.popups.is_empty() && agent_acts(&op) {
+            say(POPUP_OPEN);
+            return;
+        }
         // A page that is not on screen (its tab is behind, a Flare menu covers it) paints nothing, so no
         // picture of it can be taken; its list can.
         let op = match op {
             AgentOp::Look { .. } => AgentOp::Look {
                 // Only a page that is painting has a picture: not one collapsed, covered by a menu or
                 // in a minimized window (each would wait out the whole picture budget).
+                // A page behind a pop-up is hidden too: its list is read, never the pop-up (rule 250).
                 picture: self.shown_tab.as_deref() == Some(tab)
                     && matches!(self.phase, Phase::Live | Phase::Capturing(_))
-                    && !self.hwnd.is_some_and(window_minimized),
+                    && !self.hwnd.is_some_and(window_minimized)
+                    && t.popups.is_empty(),
             },
             other => other,
         };
@@ -3232,7 +3309,32 @@ impl WebCtl {
                     });
                 }
             }
-            // Logged above; a note changes nothing on screen, whichever view said it.
+            WebEvent::Popups { tab, sites } => {
+                if let Some(t) = self.tabs.get_mut(&tab)
+                    && t.popups != sites
+                {
+                    t.popups = sites;
+                    // The bar's "close the pop-up first" is old news once none is open (rule 251).
+                    if t.popups.is_empty() && t.notice == POPUP_FIRST {
+                        t.notice.clear();
+                    }
+                    // The strip comes or goes: the page's box changes and the next sync moves what shows.
+                    out.push(WebOut::Changed);
+                }
+            }
+            // A pop-up no click asked for, or one too many, is said in the bar (rule 249).
+            WebEvent::Note { tab, note } if note.kind() == NoteKind::Popup => {
+                let said = match note.word() {
+                    "blocked" => Some(POPUP_BLOCKED),
+                    "limit" => Some(POPUP_LIMIT),
+                    _ => None,
+                };
+                if let (Some(words), Some(t)) = (said, self.tabs.get_mut(&tab)) {
+                    t.notice = words.to_string();
+                    out.push(WebOut::Changed);
+                }
+            }
+            // Logged above; any other note changes nothing on screen, whichever view said it.
             WebEvent::Note { .. } => {}
             WebEvent::View { event, .. } if matches!(*event, WebEvent::Note { .. }) => {}
             WebEvent::View { slot, event } => {
@@ -3756,6 +3858,57 @@ mod web_line_tests {
                 ("user", DiagValue::Bool(true)),
             ]
         );
+    }
+
+    #[test]
+    fn a_popup_is_a_popup_line_and_a_blocked_one_a_refusal_that_says_why() {
+        let opened = note(
+            NoteKind::Popup,
+            "https://bank.example/3ds?s=1",
+            "https://shop.example/",
+        )
+        .detail("popup")
+        .user(true);
+        let l = web_line("t1", "web", &opened).expect("a line");
+        assert_eq!(l.kind, "web-popup");
+        assert!(l.fields.contains(&("to", DiagValue::Str("popup".into()))));
+        for (word, why) in [("blocked", "popup-blocked"), ("limit", "popup-limit")] {
+            let n = note(
+                NoteKind::Popup,
+                "https://ads.example/x?id=9",
+                "https://shop.example/",
+            )
+            .detail(word)
+            .user(false);
+            let l = web_line("t1", "web", &n).expect("a line");
+            assert_eq!(l.kind, "web-refused", "{word}");
+            assert!(
+                l.fields.contains(&("why", DiagValue::Str(why.into()))),
+                "{word}"
+            );
+            assert!(
+                l.fields.contains(&("user", DiagValue::Bool(false))),
+                "{word}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_strip_names_the_site_and_only_reading_calls_pass_a_popup() {
+        assert_eq!(popup_strip("bank.example"), "Pop-up from bank.example");
+        assert!(!agent_acts(&AgentOp::Look { picture: true }));
+        assert!(!agent_acts(&AgentOp::Wait {
+            what: flare_surfaces::agent_web::WaitFor::Ms(10),
+            timeout_ms: 1_000,
+        }));
+        assert!(agent_acts(&AgentOp::Eval {
+            expression: "1".into()
+        }));
+        assert!(agent_acts(&AgentOp::Scroll {
+            dx: 0.0,
+            dy: 1.0,
+            target: None,
+        }));
     }
 
     #[test]

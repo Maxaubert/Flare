@@ -21,9 +21,12 @@
 //! their views is sealed by one function (`seal_plugin_view`, the walls of `crate::seal`).
 //!
 //! The profile is the folder the caller gives, never the user's own Edge profile (S4). Permissions
-//! (camera, microphone, location, notifications and the rest) are denied. A page cannot open a
-//! window of its own: `window.open` and `target=_blank` go to the same panel. A navigation to
-//! anything but http, https and about:blank is cancelled. A download is held back until the window
+//! (camera, microphone, location, notifications and the rest) are denied. A web panel's page that asks for a
+//! window of its own after the person's click gets a pop-up when the request looks like one (a size or position, a
+//! name, a blank page to write into): a second controller on the same browser, shown over the page in the panel while
+//! the page waits hidden behind it, so the pop-up keeps its link back (`window.opener`). A plain `target=_blank`
+//! goes to the same panel, and a request no click started opens nothing (`popup_plan`, rules 249 and 250). A mini-app's
+//! or plugin's page opens no window at all. A navigation to anything but http, https and about:blank is cancelled. A download is held back until the window
 //! has asked the person (`WebEvent::Download`, `answer_download`); no answer, a no, a closed panel or
 //! a failed registration all mean no file is saved (S6). A process failure that the browser mends
 //! itself (GPU, utility, a frame) is only logged; a lost renderer ends that panel's page and a lost
@@ -45,8 +48,9 @@ use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::modview::{self, Route};
 use flare_surfaces::netproxy;
 use flare_surfaces::web::{
-    Failure, PhysRect, failure_of_kind, host_label, load_failure_logged, navigation_allowed,
-    pdf_view, permission_word, process_reason_word, process_word, web_error_name,
+    Failure, PhysRect, PopupPlan, PopupRefusal, failure_of_kind, host_label, load_failure_logged,
+    navigation_allowed, pdf_view, permission_word, popup_plan, process_reason_word, process_word,
+    site_of, web_error_name,
 };
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
@@ -74,9 +78,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, Interface, PCWSTR, PWSTR};
 
 use crate::backend::{
-    ControllerProbe, KeyFilter, KeyPress, Nav, NoteKind, Sink, Slot, ViewSink, WebBackend,
-    WebEvent, WebNote,
+    ControllerProbe, KeyFilter, KeyPress, Nav, NoteKind, PopupProbe, Sink, Slot, ViewSink,
+    WebBackend, WebEvent, WebNote,
 };
+use crate::popups::PopupBook;
 use crate::seal::{DownloadWall, Seal, plugin_seal};
 
 /// The longest still kept (a PNG of a very large panel).
@@ -173,6 +178,17 @@ enum Inbound {
         generation: u64,
         result: Result<ICoreWebView2Controller, String>,
     },
+    /// A page asked for a pop-up and the browser holds the request (`PopupBook`): its view is to be made.
+    PopupAsked(u64),
+    /// The controller of a pop-up arrived, or could not be made.
+    PopupController {
+        id: u64,
+        result: Result<ICoreWebView2Controller, String>,
+    },
+    /// A pop-up's page called `window.close()`, or its process ended: it closes.
+    PopupClosed(u64),
+    /// A pop-up's page moved: the strip names its new site.
+    PopupMoved { id: u64, url: String },
 }
 
 enum Env {
@@ -182,10 +198,50 @@ enum Env {
     Ready(ICoreWebView2Environment),
 }
 
+#[derive(Clone)]
 struct Live {
     controller: ICoreWebView2Controller,
     webview: ICoreWebView2,
 }
+
+impl Live {
+    /// Closes the controller; the page and its window go with it.
+    fn shut(self) {
+        // SAFETY: closing a controller we own.
+        let _ = unsafe { self.controller.Close() };
+    }
+
+    /// Puts the view at `bounds`, shown or not.
+    fn place(&self, bounds: PhysRect, visible: bool) {
+        // SAFETY: `controller` is a live COM object.
+        unsafe {
+            let _ = self.controller.SetBounds(to_rect(bounds));
+            let _ = self.controller.SetIsVisible(visible);
+        }
+    }
+}
+
+/// A page's request for a pop-up, held by the browser (its deferral) while the pop-up's view is made (rule 250).
+/// Letting it go completes the deferral whatever happened: with the new view set (`SetNewWindow`), the pop-up opens
+/// in it; without, nothing opens. So every way out (made, failed, the panel or tab closed, Flare quitting) completes it.
+struct PopupAsk {
+    args: ICoreWebView2NewWindowRequestedEventArgs,
+    deferral: ICoreWebView2Deferral,
+    /// The site the strip names first: the address's, or the opener's for a blank pop-up the page writes into.
+    site: String,
+}
+
+impl Drop for PopupAsk {
+    fn drop(&mut self) {
+        // SAFETY: the event argument and its deferral are live COM objects kept since the callback.
+        unsafe {
+            let _ = self.args.SetHandled(true);
+            let _ = self.deferral.Complete();
+        }
+    }
+}
+
+type Popups = Rc<RefCell<PopupBook<PopupAsk, Live>>>;
 
 struct View {
     /// Which of the slot's views this is (`State::generations`): a callback carries it, and one for an
@@ -210,8 +266,7 @@ impl View {
     /// Closes every controller of the view (live or waiting for its script wall).
     fn shut(self) {
         for l in [self.live, self.pending].into_iter().flatten() {
-            // SAFETY: closing a controller we own; the page and its window go with it.
-            let _ = unsafe { l.controller.Close() };
+            l.shut();
         }
     }
 }
@@ -269,6 +324,8 @@ pub struct WebHost {
     serve_seq: Rc<Cell<u64>>,
     served: Served,
     serve_live: Arc<AtomicUsize>,
+    /// The web panels' pop-ups: requests waiting for their view and, per panel, the open ones (rules 249, 250).
+    popups: Popups,
 }
 
 /// Makes a controller on the apps' own private profile (nothing shared with the web panel: no
@@ -391,6 +448,7 @@ impl WebHost {
             serve_seq: Rc::new(Cell::new(0)),
             served: Arc::new(Mutex::new(VecDeque::new())),
             serve_live: Arc::new(AtomicUsize::new(0)),
+            popups: Rc::default(),
         }
     }
 
@@ -880,10 +938,15 @@ impl WebHost {
             let _ = unsafe { webview.add_DocumentTitleChanged(&h, &mut token) };
         }
         if !plugin {
-            // A page cannot open a window: the address goes to this panel (if it may open at all).
-            // A mini-app's links open nowhere: it is one page, and the browser panel is the person's to
-            // point somewhere.
-            refuse_new_windows(&webview, ViewSink::new(&self.sink, slot), app.is_none());
+            if app.is_none() {
+                // The web panel: a pop-up after the person's click, a plain new-tab link in this panel, the rest
+                // nothing (rule 249).
+                take_new_windows(&webview, self.popup_ctx(slot));
+            } else {
+                // A mini-app's links open nowhere: it is one page, and the browser panel is the person's to
+                // point somewhere.
+                refuse_new_windows(&webview, ViewSink::new(&self.sink, slot));
+            }
             deny_permissions(&webview, ViewSink::new(&self.sink, slot));
         }
         if page_log {
@@ -973,8 +1036,14 @@ impl WebHost {
         if !plugin {
             self.hold_downloads(&webview, slot)?;
         }
+        self.hear_keys(controller, slot);
+        Ok(webview)
+    }
 
-        // ---- keys and focus, on the controller ----
+    /// The keys the app takes from the page (a chord, the second Escape) and the page taking or losing the keyboard,
+    /// told as the panel's: a pop-up over the page says them as the page does.
+    fn hear_keys(&self, controller: &ICoreWebView2Controller, slot: &Slot) {
+        let mut token = 0i64;
         {
             let (sink, filter) = (ViewSink::new(&self.sink, slot), Rc::clone(&self.filter));
             let h = AcceleratorKeyPressedEventHandler::create(Box::new(move |_c, args| {
@@ -1030,6 +1099,149 @@ impl WebHost {
                 }
             };
         }
+    }
+
+    /// What a web panel's request for a new window needs: where to note it, where to hold a pop-up's request and
+    /// how to have its view made.
+    fn popup_ctx(&self, slot: &Slot) -> PopupCtx {
+        PopupCtx {
+            events: ViewSink::new(&self.sink, slot),
+            slot: slot.clone(),
+            book: Rc::clone(&self.popups),
+            inbox: Rc::clone(&self.inbox),
+            sink: Arc::clone(&self.sink),
+        }
+    }
+
+    /// Settings and every handler of a pop-up's view, before the browser is handed it (`SetNewWindow`; it never
+    /// navigates on its own). It is the web panel's kind of view: the same profile, saved passwords and autofill, the
+    /// permission denial and the address rule. Its downloads are cancelled at once, its own requests for a window
+    /// stack on the same tab, and `window.close()` or a lost process closes it. Its page events are not the panel's:
+    /// the agent's calls and the bar never hear of them (rule 250).
+    fn configure_popup(
+        &self,
+        slot: &Slot,
+        id: u64,
+        controller: &ICoreWebView2Controller,
+    ) -> Result<ICoreWebView2, String> {
+        // SAFETY: `controller` is a live COM object.
+        let webview = unsafe { controller.CoreWebView2() }
+            .map_err(|x| format!("the pop-up: {}", x.message()))?;
+        // SAFETY: `webview` is live; settings are plain flags.
+        unsafe {
+            if let Ok(s) = webview.Settings() {
+                let _ = s.SetIsWebMessageEnabled(false);
+                let _ = s.SetAreHostObjectsAllowed(false);
+                if let Ok(s4) = s.cast::<ICoreWebView2Settings4>() {
+                    let _ = s4.SetIsPasswordAutosaveEnabled(true);
+                    let _ = s4.SetIsGeneralAutofillEnabled(true);
+                }
+            }
+        }
+        for (host, folder) in &self.virtual_hosts {
+            if let Ok(w3) = webview.cast::<ICoreWebView2_3>() {
+                let (h, f) = (wide(host), wide(&folder.to_string_lossy()));
+                // SAFETY: both strings are NUL-terminated and outlive the call.
+                let _ = unsafe {
+                    w3.SetVirtualHostNameToFolderMapping(
+                        PCWSTR(h.as_ptr()),
+                        PCWSTR(f.as_ptr()),
+                        COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW,
+                    )
+                };
+            }
+        }
+        cancel_downloads_at_once(&webview)?;
+        let mut token = 0i64;
+        {
+            let sink = ViewSink::new(&self.sink, slot);
+            let h = NavigationStartingEventHandler::create(Box::new(move |w, args| {
+                let Some(args) = args else { return Ok(()) };
+                // SAFETY: `args` and `w` are the live arguments of this callback.
+                let (uri, from) = unsafe {
+                    (
+                        get_string(|p| args.Uri(p)),
+                        w.map(|w| get_string(|p| w.Source(p))).unwrap_or_default(),
+                    )
+                };
+                if !navigation_allowed(&uri) {
+                    // SAFETY: as above.
+                    let _ = unsafe { args.SetCancel(true) };
+                    sink.send(|tab| WebEvent::Note {
+                        tab,
+                        note: WebNote::new(NoteKind::NavRefused, &uri, &from).detail("scheme"),
+                    });
+                }
+                Ok(())
+            }));
+            // SAFETY: `webview` and the handler are live COM objects; `token` is a valid out value.
+            let _ = unsafe { webview.add_NavigationStarting(&h, &mut token) };
+        }
+        {
+            let (inbox, sink) = (Rc::clone(&self.inbox), Arc::clone(&self.sink));
+            let h = SourceChangedEventHandler::create(Box::new(move |w, _args| {
+                let Some(w) = w else { return Ok(()) };
+                // SAFETY: `w` is the live sender of this callback.
+                let url = get_string(|p| unsafe { w.Source(p) });
+                inbox
+                    .borrow_mut()
+                    .push_back(Inbound::PopupMoved { id, url });
+                sink(WebEvent::Pump);
+                Ok(())
+            }));
+            // SAFETY: as above.
+            let _ = unsafe { webview.add_SourceChanged(&h, &mut token) };
+        }
+        {
+            let (inbox, sink) = (Rc::clone(&self.inbox), Arc::clone(&self.sink));
+            let h = WindowCloseRequestedEventHandler::create(Box::new(move |_w, _a| {
+                inbox.borrow_mut().push_back(Inbound::PopupClosed(id));
+                sink(WebEvent::Pump);
+                Ok(())
+            }));
+            // SAFETY: as above.
+            let _ = unsafe { webview.add_WindowCloseRequested(&h, &mut token) };
+        }
+        {
+            let (inbox, sink) = (Rc::clone(&self.inbox), Arc::clone(&self.sink));
+            let events = ViewSink::new(&self.sink, slot);
+            let h = ProcessFailedEventHandler::create(Box::new(move |w, args| {
+                let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND(-1);
+                if let Some(args) = &args {
+                    // SAFETY: `args` is the live argument of this callback.
+                    let _ = unsafe { args.ProcessFailedKind(&mut kind) };
+                }
+                // SAFETY: `w` is the live sender of this callback.
+                let site = w
+                    .map(|w| get_string(|p| unsafe { w.Source(p) }))
+                    .unwrap_or_default();
+                events.send(|tab| WebEvent::Note {
+                    tab,
+                    note: WebNote::new(NoteKind::Process, &site, "").detail(process_word(kind.0)),
+                });
+                match failure_of_kind(kind.0) {
+                    Failure::Recovers => {}
+                    Failure::Page => {
+                        inbox.borrow_mut().push_back(Inbound::PopupClosed(id));
+                        sink(WebEvent::Pump);
+                    }
+                    Failure::Browser => {
+                        let mut inbox = inbox.borrow_mut();
+                        inbox.push_back(Inbound::PopupClosed(id));
+                        inbox.push_back(Inbound::BrowserExited(EnvKind::Web));
+                        drop(inbox);
+                        sink(WebEvent::Pump);
+                    }
+                }
+                Ok(())
+            }));
+            // SAFETY: as above.
+            let _ = unsafe { webview.add_ProcessFailed(&h, &mut token) };
+        }
+        take_new_windows(&webview, self.popup_ctx(slot));
+        deny_permissions(&webview, ViewSink::new(&self.sink, slot));
+        log_cert_errors(&webview, ViewSink::new(&self.sink, slot));
+        self.hear_keys(controller, slot);
         Ok(webview)
     }
 
@@ -1128,7 +1340,7 @@ impl WebHost {
                 .map_err(|_| refused("dialogs"))?;
         }
         if !seal.new_windows {
-            refuse_new_windows(webview, ViewSink::new(&self.sink, slot), false);
+            refuse_new_windows(webview, ViewSink::new(&self.sink, slot));
         }
         if !seal.permissions {
             deny_permissions(webview, ViewSink::new(&self.sink, slot));
@@ -1592,9 +1804,9 @@ fn answer_request(
 
 // ---- the walls a view's set-up and the plugins' seal share ----
 
-/// A page cannot open a window of its own. With `in_place` (the web panel) an address that may open
-/// is sent to the same view; otherwise (a mini-app, a mod or plugin) it opens nowhere and the window is told.
-fn refuse_new_windows(webview: &ICoreWebView2, sink: ViewSink, in_place: bool) {
+/// A page cannot open a window of its own (a mini-app, a mod or plugin): the address opens nowhere and the window is
+/// told.
+fn refuse_new_windows(webview: &ICoreWebView2, sink: ViewSink) {
     let h = NewWindowRequestedEventHandler::create(Box::new(move |w, args| {
         let (Some(w), Some(args)) = (w, args) else {
             return Ok(());
@@ -1605,16 +1817,113 @@ fn refuse_new_windows(webview: &ICoreWebView2, sink: ViewSink, in_place: bool) {
             let from = get_string(|p| w.Source(p));
             let user = get_bool(|b| args.IsUserInitiated(b));
             let _ = args.SetHandled(true);
-            let in_panel = in_place && navigation_allowed(&uri);
             let note = WebNote::new(NoteKind::Popup, &uri, &from)
-                .detail(if in_panel { "panel" } else { "refused" })
+                .detail("refused")
                 .user(user);
             sink.send(|tab| WebEvent::Note { tab, note });
-            if in_panel {
+            sink.send(|tab| WebEvent::Refused { tab, url: uri });
+        }
+        Ok(())
+    }));
+    let mut token = 0i64;
+    // SAFETY: `webview` and the handler are live COM objects; `token` is a valid out value.
+    let _ = unsafe { webview.add_NewWindowRequested(&h, &mut token) };
+}
+
+/// What the web panel's new-window handler holds: the panel's events, the book of its tab's pop-ups and the host's
+/// inbox (the pop-up's view is made in `pump`, never in the callback).
+struct PopupCtx {
+    events: ViewSink,
+    slot: Slot,
+    book: Popups,
+    inbox: Rc<RefCell<VecDeque<Inbound>>>,
+    sink: Sink,
+}
+
+/// The web panel's (and its pop-ups') answer to a page that asks for a window (rule 249, `popup_plan`): a pop-up is
+/// held with the browser's deferral and made in `pump`; a plain new-tab link opens in the view that asked; anything
+/// else opens nothing. Every request is noted for the log by site (`web-popup`, `web-refused`). The name of the window
+/// is a newer interface's: an older Runtime decides by the size, the position and the address alone.
+fn take_new_windows(webview: &ICoreWebView2, cx: PopupCtx) {
+    let h = NewWindowRequestedEventHandler::create(Box::new(move |w, args| {
+        let (Some(w), Some(args)) = (w, args) else {
+            return Ok(());
+        };
+        // SAFETY: both are the live arguments of this callback.
+        let (uri, from, user, features, name) = unsafe {
+            let features = args
+                .WindowFeatures()
+                .is_ok_and(|f| get_bool(|b| f.HasSize(b)) || get_bool(|b| f.HasPosition(b)));
+            let name = args
+                .cast::<ICoreWebView2NewWindowRequestedEventArgs2>()
+                .ok()
+                .map(|a2| get_string(|p| a2.Name(p)));
+            (
+                get_string(|p| args.Uri(p)),
+                get_string(|p| w.Source(p)),
+                get_bool(|b| args.IsUserInitiated(b)),
+                features,
+                name,
+            )
+        };
+        // A book that is busy (it never is from the message loop) counts as full: nothing opens.
+        let counts = cx
+            .book
+            .try_borrow()
+            .map_or((usize::MAX, usize::MAX), |b| b.counts(&cx.slot));
+        let mut plan = popup_plan(&uri, name.as_deref(), features, user, counts);
+        if plan == PopupPlan::Popup {
+            // SAFETY: `args` is live for the whole callback.
+            let held = unsafe { args.GetDeferral() }.ok().map(|deferral| PopupAsk {
+                args: args.clone(),
+                deferral,
+                site: if uri.trim().is_empty() || uri.eq_ignore_ascii_case("about:blank") {
+                    site_of(&from)
+                } else {
+                    site_of(&uri)
+                },
+            });
+            let id = held.and_then(|ask| {
+                cx.book
+                    .try_borrow_mut()
+                    .ok()
+                    .map(|mut b| b.ask(&cx.slot, ask))
+            });
+            match id {
+                Some(id) => {
+                    cx.inbox.borrow_mut().push_back(Inbound::PopupAsked(id));
+                    (cx.sink)(WebEvent::Pump);
+                }
+                // No way to hold the request: nothing opens (a request not held was let go and completed).
+                None => plan = PopupPlan::Refuse(PopupRefusal::Blocked),
+            }
+        }
+        let word = match plan {
+            PopupPlan::InPlace => "panel",
+            PopupPlan::Popup => "popup",
+            PopupPlan::Refuse(r) => r.word(),
+        };
+        let note = WebNote::new(NoteKind::Popup, &uri, &from)
+            .detail(word)
+            .user(user);
+        cx.events.send(|tab| WebEvent::Note { tab, note });
+        match plan {
+            PopupPlan::Popup => {}
+            PopupPlan::InPlace => {
                 let u = wide(&pdf_view(&uri));
-                let _ = w.Navigate(PCWSTR(u.as_ptr()));
-            } else {
-                sink.send(|tab| WebEvent::Refused { tab, url: uri });
+                // SAFETY: both are live; `u` is NUL-terminated and outlives the call.
+                unsafe {
+                    let _ = args.SetHandled(true);
+                    let _ = w.Navigate(PCWSTR(u.as_ptr()));
+                }
+            }
+            PopupPlan::Refuse(why) => {
+                // SAFETY: `args` is live.
+                let _ = unsafe { args.SetHandled(true) };
+                // An address that may not open is said in the bar as before; a blocked pop-up is said from its note.
+                if why == PopupRefusal::Scheme {
+                    cx.events.send(|tab| WebEvent::Refused { tab, url: uri });
+                }
             }
         }
         Ok(())
@@ -1768,19 +2077,186 @@ fn own_frames_only(webview: &ICoreWebView2, app: &AppSpec, sink: ViewSink) -> Re
 
 impl Drop for WebHost {
     fn drop(&mut self) {
-        // A download still waiting for a yes is never saved by the host going away.
+        // A download still waiting for a yes is never saved by the host going away, and a pop-up's request the
+        // browser holds is let go.
         self.cancel_downloads(None);
         self.cancel_serves(None);
+        self.close_popups(None);
     }
 }
 
 impl WebHost {
-    /// Closes the slot's view and frees its controller; the browser environment stays.
+    /// Closes the slot's view and frees its controller; the browser environment stays. Its pop-ups go with it.
     fn drop_view(&mut self, slot: &Slot) {
         self.cancel_downloads(Some(slot));
         self.cancel_serves(Some(slot));
+        if self.close_popups(Some(slot)) {
+            self.tell_popups(slot);
+        }
         if let Some(view) = self.state.views.remove(slot) {
             view.shut();
+        }
+    }
+
+    // ---- the web panel's pop-ups (rules 249, 250) ----
+
+    /// Lets go of the pop-ups of one panel, or of all: every request the browser holds is completed (nothing opens)
+    /// and every open pop-up is closed. True when one was open.
+    fn close_popups(&mut self, slot: Option<&Slot>) -> bool {
+        let (asks, views) = self.popups.borrow_mut().drain(slot);
+        drop(asks);
+        let had = !views.is_empty();
+        for v in views {
+            v.shut();
+        }
+        had
+    }
+
+    /// What shows in the panel of `slot`: the pop-up on top, else the page.
+    fn front(&self, slot: &Slot) -> Option<Live> {
+        let top = self.popups.borrow().top(slot).cloned();
+        top.or_else(|| self.live(slot).cloned())
+    }
+
+    /// Puts what shows in the panel where the panel is and as shown as the panel (a pop-up opened or closed).
+    fn show_front(&self, slot: &Slot) {
+        let Some(view) = self.state.views.get(slot) else {
+            return;
+        };
+        let (bounds, visible) = (view.bounds, view.visible);
+        if let Some(front) = self.front(slot) {
+            front.place(bounds, visible);
+        }
+    }
+
+    /// Tells the window the sites of the panel's pop-ups (its strip).
+    fn tell_popups(&self, slot: &Slot) {
+        if !slot.is_panel() {
+            return;
+        }
+        let sites = self.popups.borrow().sites(slot);
+        ViewSink::new(&self.sink, slot).send(|tab| WebEvent::Popups { tab, sites });
+    }
+
+    /// Lets a waiting pop-up's request go: nothing opens.
+    fn let_go_popup(&self, id: u64) {
+        let ask = self.popups.borrow_mut().take(id);
+        drop(ask);
+    }
+
+    /// A page's request for a pop-up is held: its view is made on the web panel's browser, in Flare's window.
+    fn start_popup(&mut self, id: u64) {
+        let Some(slot) = self.popups.borrow().waiting_slot(id).cloned() else {
+            return;
+        };
+        let env = match self.state.envs.get(&EnvKind::Web) {
+            Some(Env::Ready(env)) => Some(env.clone()),
+            _ => None,
+        };
+        let Some(env) = env.filter(|_| self.live(&slot).is_some()) else {
+            // The panel closed, or its browser went, while the request waited.
+            self.let_go_popup(id);
+            return;
+        };
+        let (inbox, sink) = (Rc::clone(&self.inbox), Arc::clone(&self.sink));
+        let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
+            move |err, controller| {
+                let result = match err {
+                    Ok(()) => controller.ok_or_else(|| "the browser gave no view".to_string()),
+                    Err(e) => Err(e.message()),
+                };
+                inbox
+                    .borrow_mut()
+                    .push_back(Inbound::PopupController { id, result });
+                sink(WebEvent::Pump);
+                Ok(())
+            },
+        ));
+        // SAFETY: `parent` is Flare's own live window on this thread; the handler is a live COM object.
+        // sync-ok: WebView2 objects are thread-affine to the UI STA; one call per pop-up
+        if unsafe { env.CreateCoreWebView2Controller(self.parent, &handler) }.is_err() {
+            self.let_go_popup(id);
+        }
+    }
+
+    /// A pop-up's controller arrived: it is set up, handed to the browser for the page's window, and shown over the
+    /// page in the panel, which waits hidden behind it. The request is completed whatever happens here.
+    fn adopt_popup(&mut self, id: u64, result: Result<ICoreWebView2Controller, String>) {
+        let taken = self.popups.borrow_mut().take(id);
+        let Some((slot, ask)) = taken else {
+            // Let go meanwhile (the panel closed): the view is not wanted.
+            if let Ok(c) = result {
+                // SAFETY: closing a controller we own.
+                let _ = unsafe { c.Close() };
+            }
+            return;
+        };
+        let controller = match result {
+            Ok(c) if self.live(&slot).is_some() => c,
+            Ok(c) => {
+                // SAFETY: closing a controller we own.
+                let _ = unsafe { c.Close() };
+                return;
+            }
+            Err(why) => {
+                log::info!("a pop-up's view could not be made: {why}");
+                return;
+            }
+        };
+        let webview = match self.configure_popup(&slot, id, &controller) {
+            Ok(w) => w,
+            Err(why) => {
+                log::info!("a pop-up's view could not be set up: {why}");
+                // SAFETY: closing a controller we own.
+                let _ = unsafe { controller.Close() };
+                return;
+            }
+        };
+        // SAFETY: the event argument is live until its deferral completes (when `ask` is let go).
+        if unsafe { ask.args.SetNewWindow(&webview) }.is_err() {
+            // SAFETY: closing a controller we own.
+            let _ = unsafe { controller.Close() };
+            return;
+        }
+        let site = ask.site.clone();
+        // Completed: the pop-up's page opens in its view.
+        drop(ask);
+        let live = Live {
+            controller,
+            webview,
+        };
+        // What showed until now (the page, or the pop-up below) waits hidden behind the new one.
+        if let Some(below) = self.front(&slot) {
+            // SAFETY: `controller` is a live COM object.
+            let _ = unsafe { below.controller.SetIsVisible(false) };
+        }
+        self.popups.borrow_mut().push(&slot, id, site, live);
+        self.show_front(&slot);
+        self.tell_popups(&slot);
+    }
+
+    /// A pop-up closes (its page's `window.close()`, its process, the strip's Close): the next one down, or the page,
+    /// shows again.
+    fn remove_popup(&mut self, id: u64) {
+        let closed = self.popups.borrow_mut().close(id);
+        let Some((slot, live, top)) = closed else {
+            return;
+        };
+        live.shut();
+        if top {
+            self.show_front(&slot);
+        }
+        self.tell_popups(&slot);
+    }
+
+    /// A pop-up's page moved: the strip names the new site (not a blank page the opener is still writing into).
+    fn popup_moved(&mut self, id: u64, url: &str) {
+        if url.is_empty() || url.eq_ignore_ascii_case("about:blank") {
+            return;
+        }
+        let changed = self.popups.borrow_mut().set_site(id, site_of(url));
+        if changed && let Some(slot) = self.popups.borrow().slot_of(id).cloned() {
+            self.tell_popups(&slot);
         }
     }
 
@@ -1881,22 +2357,28 @@ impl WebBackend for WebHost {
         }
     }
 
+    /// What shows in the slot follows: the page, or the pop-up on top of it (the page waits hidden behind).
     fn set_view_bounds(&mut self, slot: &Slot, bounds: PhysRect) {
         if let Some(v) = self.state.views.get_mut(slot) {
             v.bounds = bounds;
         }
-        if let Some(l) = self.live(slot) {
+        if let Some(l) = self.front(slot) {
             // SAFETY: `controller` is a live COM object.
             let _ = unsafe { l.controller.SetBounds(to_rect(bounds)) };
         }
     }
 
     fn parent_moved(&mut self) {
-        for v in self.state.views.values() {
-            if let Some(l) = &v.live {
-                // SAFETY: `controller` is a live COM object.
-                let _ = unsafe { l.controller.NotifyParentWindowPositionChanged() };
-            }
+        let mut all: Vec<Live> = self
+            .state
+            .views
+            .values()
+            .filter_map(|v| v.live.clone())
+            .collect();
+        all.extend(self.popups.borrow().views().cloned());
+        for l in all {
+            // SAFETY: `controller` is a live COM object.
+            let _ = unsafe { l.controller.NotifyParentWindowPositionChanged() };
         }
     }
 
@@ -1904,7 +2386,7 @@ impl WebBackend for WebHost {
         if let Some(v) = self.state.views.get_mut(slot) {
             v.visible = visible;
         }
-        if let Some(l) = self.live(slot) {
+        if let Some(l) = self.front(slot) {
             // SAFETY: `controller` is a live COM object.
             let _ = unsafe { l.controller.SetIsVisible(visible) };
         }
@@ -1918,7 +2400,8 @@ impl WebBackend for WebHost {
                 png: None,
             });
         };
-        let Some(l) = self.panel(tab) else {
+        // The still is of what shows: the pop-up on top, else the page.
+        let Some(l) = self.front(&Slot::panel(tab)) else {
             none(&self.sink);
             return;
         };
@@ -1947,9 +2430,10 @@ impl WebBackend for WebHost {
         }
     }
 
-    /// Only a tab's panel takes the keyboard: a bar or a background page never does.
+    /// Only a tab's panel takes the keyboard (the pop-up on top, when one is open): a bar or a background page
+    /// never does.
     fn focus(&mut self, tab: &str) {
-        if let Some(l) = self.panel(tab) {
+        if let Some(l) = self.front(&Slot::panel(tab)) {
             // SAFETY: `controller` is a live COM object.
             let _ = unsafe {
                 l.controller
@@ -1964,9 +2448,17 @@ impl WebBackend for WebHost {
         self.drop_idle_envs();
     }
 
+    fn close_popup(&mut self, tab: &str) {
+        let top = self.popups.borrow().top_id(&Slot::panel(tab));
+        if let Some(id) = top {
+            self.remove_popup(id);
+        }
+    }
+
     fn close_all(&mut self) {
         self.cancel_downloads(None);
         self.cancel_serves(None);
+        self.close_popups(None);
         for (_, view) in self.state.views.drain() {
             view.shut();
         }
@@ -2076,6 +2568,10 @@ impl WebBackend for WebHost {
                     generation,
                     result,
                 } => self.script_armed(&slot, generation, result),
+                Inbound::PopupAsked(id) => self.start_popup(id),
+                Inbound::PopupController { id, result } => self.adopt_popup(id, result),
+                Inbound::PopupClosed(id) => self.remove_popup(id),
+                Inbound::PopupMoved { id, url } => self.popup_moved(id, &url),
                 Inbound::Controller {
                     slot,
                     generation,
@@ -2220,15 +2716,32 @@ impl WebBackend for WebHost {
                 get_string(|p| l.webview.DocumentTitle(p)),
                 profile.0,
                 profile.1,
-                l.webview
-                    .Settings()
-                    .and_then(|s| s.cast::<ICoreWebView2Settings4>())
-                    .is_ok_and(|s4| {
-                        get_bool(|b| s4.IsPasswordAutosaveEnabled(b))
-                            && get_bool(|b| s4.IsGeneralAutofillEnabled(b))
-                    }),
+                autofill_on(&l.webview),
             )
         };
+        let open: Vec<Live> = self
+            .popups
+            .borrow()
+            .open_of(slot)
+            .iter()
+            .map(|o| o.view.clone())
+            .collect();
+        let popups = open
+            .iter()
+            .map(|p| {
+                let mut b = RECT::default();
+                // SAFETY: the pop-up's controller and page are live COM objects; `b` is a valid out value.
+                unsafe {
+                    let _ = p.controller.Bounds(&mut b);
+                    PopupProbe {
+                        bounds: from_rect(b),
+                        visible: get_bool(|v| p.controller.IsVisible(v)),
+                        url: get_string(|s| p.webview.Source(s)),
+                        autofill: autofill_on(&p.webview),
+                    }
+                }
+            })
+            .collect();
         Some(ControllerProbe {
             bounds: from_rect(r),
             visible,
@@ -2239,7 +2752,22 @@ impl WebBackend for WebHost {
             profile,
             private,
             autofill,
+            popups,
         })
+    }
+}
+
+/// The page offers to save passwords and fills them in, and fills in forms.
+fn autofill_on(webview: &ICoreWebView2) -> bool {
+    // SAFETY: `webview` is a live COM object; the getters take valid out values.
+    unsafe {
+        webview
+            .Settings()
+            .and_then(|s| s.cast::<ICoreWebView2Settings4>())
+            .is_ok_and(|s4| {
+                get_bool(|b| s4.IsPasswordAutosaveEnabled(b))
+                    && get_bool(|b| s4.IsGeneralAutofillEnabled(b))
+            })
     }
 }
 

@@ -10,7 +10,9 @@ use std::rc::Rc;
 use flare_surfaces::app::AppSpec;
 use flare_surfaces::web::PhysRect;
 
-use crate::backend::{ControllerProbe, KeyFilter, Nav, Sink, Slot, ViewSink, WebBackend, WebEvent};
+use crate::backend::{
+    ControllerProbe, KeyFilter, Nav, PopupProbe, Sink, Slot, ViewSink, WebBackend, WebEvent,
+};
 use crate::seal::{Seal, plugin_seal};
 
 /// One call the window made.
@@ -60,6 +62,8 @@ pub enum Call {
     CloseView(Slot),
     /// A message posted to the page in a slot that is not a tab's panel.
     PostView(Slot, String),
+    /// The strip's Close: the pop-up on top of the tab's page.
+    ClosePopup(String),
 }
 
 /// How a test plays the page's DevTools: method and params in, the answer out.
@@ -90,6 +94,8 @@ pub struct FakeState {
     pub filter: Option<KeyFilter>,
     /// Answers a DevTools call at once with this (else the call stays unanswered, like a hung page).
     pub cdp: Option<CdpResponder>,
+    /// The pop-ups over each tab's page, by site, the one on top last ([`FakeWeb::open_popup`]).
+    pub popups: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Clone)]
@@ -113,6 +119,31 @@ impl FakeWeb {
 
     pub fn calls(&self) -> Vec<Call> {
         self.state.borrow().calls.clone()
+    }
+
+    /// Plays a page of the tab opening a pop-up from `site`: it goes on top of the tab's stack and the window is
+    /// told, as the host does once the pop-up's view exists.
+    pub fn open_popup(&self, tab: &str, site: &str) {
+        let sites = {
+            let mut s = self.state.borrow_mut();
+            let stack = s.popups.entry(tab.to_string()).or_default();
+            stack.push(site.to_string());
+            stack.clone()
+        };
+        self.say(WebEvent::Popups {
+            tab: tab.into(),
+            sites,
+        });
+    }
+
+    /// The sites of the pop-ups over the tab's page, the one on top last.
+    pub fn popups(&self, tab: &str) -> Vec<String> {
+        self.state
+            .borrow()
+            .popups
+            .get(tab)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The view of `slot`, as the fake holds it.
@@ -287,6 +318,30 @@ impl WebBackend for FakeWeb {
         let mut s = self.state.borrow_mut();
         s.calls.push(close_call(slot));
         s.views.remove(slot);
+        // A panel's pop-ups go with it, as the host closes them.
+        if slot.is_panel() {
+            s.popups.remove(&slot.owner);
+        }
+    }
+
+    fn close_popup(&mut self, tab: &str) {
+        let sites = {
+            let mut s = self.state.borrow_mut();
+            s.calls.push(Call::ClosePopup(tab.into()));
+            let Some(stack) = s.popups.get_mut(tab) else {
+                return;
+            };
+            stack.pop();
+            let left = stack.clone();
+            if left.is_empty() {
+                s.popups.remove(tab);
+            }
+            left
+        };
+        self.say(WebEvent::Popups {
+            tab: tab.into(),
+            sites,
+        });
     }
 
     fn close_all(&mut self) {
@@ -297,6 +352,7 @@ impl WebBackend for FakeWeb {
         }
         s.calls.push(Call::CloseAll);
         s.views.clear();
+        s.popups.clear();
     }
 
     fn answer_download(&mut self, id: u64, save: bool) {
@@ -366,7 +422,21 @@ impl WebBackend for FakeWeb {
 
     fn probe_view(&self, slot: &Slot) -> Option<ControllerProbe> {
         let s = self.state.borrow();
+        let popups = s
+            .popups
+            .get(&slot.owner)
+            .filter(|_| slot.is_panel())
+            .map_or(0, Vec::len);
         s.views.get(slot).map(|v| ControllerProbe {
+            popups: vec![
+                PopupProbe {
+                    bounds: v.bounds,
+                    visible: v.visible,
+                    url: String::new(),
+                    autofill: true,
+                };
+                popups
+            ],
             bounds: v.bounds,
             visible: v.visible,
             url: v.url.clone(),

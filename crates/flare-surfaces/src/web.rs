@@ -722,6 +722,84 @@ pub fn load_failure_logged(ok: bool, status: i32) -> bool {
     !ok && !matches!(status, 9 | 14)
 }
 
+/// The most pop-ups one tab's web panel holds at once (waiting ones included).
+pub const POPUPS_PER_TAB: usize = 2;
+/// The most pop-ups the whole window holds at once.
+pub const POPUPS_IN_ALL: usize = 4;
+
+/// Why a page's request for a window of its own opened nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PopupRefusal {
+    /// The address is not one the web panel opens (only http, https and about:blank).
+    Scheme,
+    /// No click or key of the person's started it: Chrome's blocker would stop it too ("Pop-up blocked").
+    Blocked,
+    /// The tab or the window holds as many pop-ups as it may ([`POPUPS_PER_TAB`], [`POPUPS_IN_ALL`]).
+    Limit,
+}
+
+impl PopupRefusal {
+    /// The word of the diagnostics note (`refused`, `blocked`, `limit`).
+    pub fn word(self) -> &'static str {
+        match self {
+            PopupRefusal::Scheme => "refused",
+            PopupRefusal::Blocked => "blocked",
+            PopupRefusal::Limit => "limit",
+        }
+    }
+}
+
+/// What the web panel does with a page's request for a window of its own (`NewWindowRequested`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PopupPlan {
+    /// The address opens in the view that asked, as a plain link does (`target=_blank`).
+    InPlace,
+    /// A real second view, shown over the page in the panel, that keeps its link to the page (`window.opener`).
+    Popup,
+    /// Nothing opens.
+    Refuse(PopupRefusal),
+}
+
+/// Decides a request for a new window from the plain web panel (rule 249). `name` is the window's name, None when
+/// the Runtime cannot say it (`ICoreWebView2NewWindowRequestedEventArgs2` missing: the size, position and address
+/// decide alone). `features`: the request gave a size or a position. `user`: the person's click or key started it
+/// (`IsUserInitiated`). `counts`: the pop-ups the tab holds and the window holds, waiting ones included.
+///
+/// Refused: an address the panel may not open, any request no click or key started (as Chrome's blocker does), and a
+/// pop-up past the limits. A pop-up: a request with a size or a position, a named window (not `_blank`, `_self`,
+/// `_parent` or `_top`), or one for `about:blank` or no address (a page that writes into the window it opened).
+/// Anything else opens in place, as it always did.
+pub fn popup_plan(
+    uri: &str,
+    name: Option<&str>,
+    features: bool,
+    user: bool,
+    counts: (usize, usize),
+) -> PopupPlan {
+    let blank = uri.trim().is_empty() || uri.trim().eq_ignore_ascii_case("about:blank");
+    if !blank && !navigation_allowed(uri) {
+        return PopupPlan::Refuse(PopupRefusal::Scheme);
+    }
+    if !user {
+        return PopupPlan::Refuse(PopupRefusal::Blocked);
+    }
+    let named = name.is_some_and(|n| {
+        let n = n.trim();
+        !n.is_empty()
+            && !["_blank", "_self", "_parent", "_top"]
+                .iter()
+                .any(|t| n.eq_ignore_ascii_case(t))
+    });
+    if !(features || named || blank) {
+        return PopupPlan::InPlace;
+    }
+    let (tab, all) = counts;
+    if tab >= POPUPS_PER_TAB || all >= POPUPS_IN_ALL {
+        return PopupPlan::Refuse(PopupRefusal::Limit);
+    }
+    PopupPlan::Popup
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1304,6 +1382,107 @@ mod tests {
         assert!(!load_failure_logged(false, 14));
         assert!(!load_failure_logged(false, 9));
         assert!(!load_failure_logged(true, 13));
+    }
+
+    const BANK: &str = "https://bank.example/3ds?session=1";
+
+    #[test]
+    fn a_request_that_looks_like_a_popup_opens_one_after_the_persons_click() {
+        let none = (0, 0);
+        // A size or position, a named window, a blank page to write into.
+        assert_eq!(
+            popup_plan(BANK, Some(""), true, true, none),
+            PopupPlan::Popup
+        );
+        assert_eq!(
+            popup_plan(BANK, Some("threeDS"), false, true, none),
+            PopupPlan::Popup
+        );
+        for blank in ["about:blank", "ABOUT:BLANK", "", "  "] {
+            assert_eq!(
+                popup_plan(blank, Some(""), false, true, none),
+                PopupPlan::Popup,
+                "{blank:?}"
+            );
+        }
+        // A runtime that cannot say the name: the size and the address decide alone.
+        assert_eq!(popup_plan(BANK, None, true, true, none), PopupPlan::Popup);
+        assert_eq!(
+            popup_plan(BANK, None, false, true, none),
+            PopupPlan::InPlace
+        );
+    }
+
+    #[test]
+    fn a_plain_new_tab_link_still_opens_in_the_panel() {
+        for name in [
+            Some(""),
+            Some("_blank"),
+            Some("_BLANK"),
+            Some("_self"),
+            Some("_parent"),
+            Some("_top"),
+            None,
+        ] {
+            assert_eq!(
+                popup_plan(BANK, name, false, true, (0, 0)),
+                PopupPlan::InPlace,
+                "{name:?}"
+            );
+        }
+        // The limits are the pop-ups': a plain link opens in place whatever is open.
+        assert_eq!(
+            popup_plan(
+                BANK,
+                Some("_blank"),
+                false,
+                true,
+                (POPUPS_PER_TAB, POPUPS_IN_ALL)
+            ),
+            PopupPlan::InPlace
+        );
+    }
+
+    #[test]
+    fn a_window_no_click_of_the_persons_asked_for_is_blocked() {
+        for (name, features) in [(Some("threeDS"), true), (Some(""), false), (None, true)] {
+            assert_eq!(
+                popup_plan(BANK, name, features, false, (0, 0)),
+                PopupPlan::Refuse(PopupRefusal::Blocked)
+            );
+        }
+        assert_eq!(PopupRefusal::Blocked.word(), "blocked");
+    }
+
+    #[test]
+    fn an_address_the_panel_may_not_open_is_refused_before_anything_else() {
+        for bad in [
+            "file:///C:/Windows/win.ini",
+            "javascript:alert(1)",
+            "data:text/html,x",
+            "zoommtg://zoom.us/join",
+        ] {
+            assert_eq!(
+                popup_plan(bad, Some("w"), true, true, (0, 0)),
+                PopupPlan::Refuse(PopupRefusal::Scheme),
+                "{bad}"
+            );
+            assert_eq!(
+                popup_plan(bad, None, false, false, (9, 9)),
+                PopupPlan::Refuse(PopupRefusal::Scheme)
+            );
+        }
+        assert_eq!(PopupRefusal::Scheme.word(), "refused");
+    }
+
+    #[test]
+    fn past_two_popups_a_tab_or_four_in_all_the_next_is_refused() {
+        let ask = |counts| popup_plan(BANK, Some("w"), true, true, counts);
+        assert_eq!(ask((0, 0)), PopupPlan::Popup);
+        assert_eq!(ask((1, 3)), PopupPlan::Popup);
+        assert_eq!(ask((2, 2)), PopupPlan::Refuse(PopupRefusal::Limit));
+        assert_eq!(ask((0, 4)), PopupPlan::Refuse(PopupRefusal::Limit));
+        assert_eq!(PopupRefusal::Limit.word(), "limit");
     }
 }
 

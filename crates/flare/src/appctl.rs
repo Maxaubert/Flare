@@ -1505,6 +1505,7 @@ impl AppCtl {
         bind!(app, rc, on_panel_web_submit, |c, text: SharedString| c
             .web_submit(&text));
         bind!(app, rc, on_panel_web_download, |c| c.web_download());
+        bind!(app, rc, on_panel_web_popup_close, |c| c.web_popup_close());
         bind!(app, rc, on_panel_web_moved, |c| c.web_moved());
         bind!(app, rc, on_overlay_changed, |c| c.web_moved());
     }
@@ -3783,11 +3784,18 @@ impl AppCtl {
                     return Err(no_tab());
                 }
                 Ok(match self.panels.snap(&tab).filter(|s| s.open) {
-                    Some(s) => json!({
-                        "open": true,
-                        "panel": Self::panel_info(&s),
-                        "width": s.width.unwrap_or(flare_surfaces::layout::DEFAULT_SHARE),
-                    }),
+                    Some(s) => {
+                        let mut v = json!({
+                            "open": true,
+                            "panel": Self::panel_info(&s),
+                            "width": s.width.unwrap_or(flare_surfaces::layout::DEFAULT_SHARE),
+                        });
+                        // A pop-up over the page is the person's to finish (rule 250): `browser_state` says so.
+                        if self.web.popup_open(&tab) {
+                            v["popup"] = json!(true);
+                        }
+                        v
+                    }
                     None => json!({"open": false}),
                 })
             }

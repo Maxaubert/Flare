@@ -10,7 +10,8 @@
 //! `webPanel` holds where the browser window sits (the controller's own bounds, the child windows of
 //! Flare's window, what Slint drew and the layout maths, all four equal) at 100 and 225 percent, that
 //! an overlay hides it with a still in its place, that the channel opens, navigates and refuses
-//! addresses, that a page cannot open a window or get a permission, and that closing the panel
+//! addresses, what a page may open (a pop-up over the page after a trusted click, nothing after a scripted one,
+//! rule 249), that it gets no permission, and that closing the panel
 //! frees the browser and its process. `webVideo` plays a local clip and reads its clock and frame
 //! counter. `webNoRuntime` pretends the runtime is missing.
 //!
@@ -46,6 +47,20 @@ const NOTE: &str = "a note the e2e offers to download\n";
 const TWO: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Page two</title></head><body><h1>two</h1></body></html>"#;
 const THREE: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Page three</title></head><body><h1>three</h1></body></html>"#;
 const FOUR: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Page four</title></head><body><h1>four</h1></body></html>"#;
+/// A page with two targets at fixed places for the browser tools' trusted clicks (rule 249): a plain new-tab link and a
+/// `window.open` with a size and a name, the way a shop opens its bank's 3-D Secure check.
+const POP: &str = r##"<!doctype html><html><head><meta charset="utf-8"><title>Pop page</title></head>
+<body style="margin:0;background:#246;color:#fff;font:16px sans-serif">
+<a id="plain" href="three.html" target="_blank" style="position:absolute;left:0;top:0;width:240px;height:60px;display:block;background:#444">plain</a>
+<a id="win" href="#" onclick="window.w=window.open('popup.html','threeDS','width=400,height=500'); document.title='opened:'+(window.w?'yes':'no'); return false;" style="position:absolute;left:0;top:100px;width:240px;height:60px;display:block;background:#464">win</a>
+</body></html>"##;
+/// A page that opens a sized window as it loads, with no click of anyone's: the blocker's case.
+const AUTO: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Auto page</title></head>
+<body><h1>auto</h1><script>window.open('four.html','auto','width=300,height=300');</script></body></html>"#;
+/// The pop-up: it reaches back to the page that opened it (`window.opener`), and closes itself when that page asks.
+const POPUP: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Pop-up page</title></head>
+<body><h1>pop-up</h1><script>if(window.opener){window.opener.document.title='opener:'+window.name;}
+window.addEventListener('message',function(e){if(e.data==='close'){window.close();}});</script></body></html>"#;
 const VIDEO: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Video page</title></head>
 <body style="margin:0;background:#000"><video id="v" muted autoplay loop playsinline style="width:100%"></video>
 <script>var v=document.getElementById('v');v.src=new URLSearchParams(location.search).get('clip')||'clip.webm';setInterval(function(){var q=v.getVideoPlaybackQuality();document.title=JSON.stringify({t:v.currentTime,paused:v.paused,frames:q.totalVideoFrames,dropped:q.droppedVideoFrames,rs:v.readyState});},100);</script></body></html>"#;
@@ -59,6 +74,9 @@ fn web_root(ctx: &mut Ctx) -> Result<PathBuf, String> {
         ("two.html", TWO),
         ("three.html", THREE),
         ("four.html", FOUR),
+        ("pop.html", POP),
+        ("popup.html", POPUP),
+        ("auto.html", AUTO),
         ("video.html", VIDEO),
         ("note.txt", NOTE),
     ] {
@@ -452,7 +470,7 @@ fn panel_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<u32, Str
         format!("{at}: the refusals changed nothing in the page"),
     );
 
-    // ---- a page cannot open a window, and gets no permission ----
+    // ---- what a page may open (rule 249), and it gets no permission ----
     script(ctx, app, &format!("location.href = '{HOST}/index.html'; 1"));
     let on_index = ctx.until("the index page", 15_000, &mut || {
         state(app)["url"]
@@ -461,28 +479,6 @@ fn panel_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<u32, Str
             && state(app)["controller"]["title"] == json!("Flare test page")
     });
     ctx.ok(on_index, format!("{at}: back on the first page"));
-    script(ctx, app, "document.getElementById('blank').click(); 1");
-    let blank = ctx.until(
-        "target=_blank to open in the same panel",
-        15_000,
-        &mut || {
-            state(app)["url"]
-                .as_str()
-                .is_some_and(|u| u.ends_with("/three.html"))
-        },
-    );
-    ctx.ok(
-        blank && state(app)["controllers"] == json!(1),
-        format!("{at}: a target=_blank link opens in the same panel (one controller)"),
-    );
-    let again = c.call(Method::BrowserNavigate, json!({ "url": url }), LOAD);
-    ctx.ok(
-        again.is_ok(),
-        format!("{at}: to the first page again ({})", code_of(&again)),
-    );
-    // window.open from a script: the run turns the browser's popup blocker off, so the browser asks
-    // Flare for the window and the handler path is the one that runs. The address must open in this
-    // panel, and no top-level window may appear in Flare's process or the browser's.
     let browser_pid = u32::try_from(
         state(app)["controller"]["browser_pid"]
             .as_u64()
@@ -495,27 +491,183 @@ fn panel_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<u32, Str
     );
     let owners = [app.child.pid(), browser_pid];
     let windows_before = crate::proc::visible_top_windows_of(&owners);
-    script(ctx, app, "document.getElementById('pop').click(); 1");
-    let popped = ctx.until("window.open to open in this panel", 15_000, &mut || {
-        state(app)["url"]
-            .as_str()
-            .is_some_and(|u| u.ends_with("/four.html"))
-    });
+    // A page that opens a window as it loads, with no click at all: the run turns the browser's own popup blocker
+    // off, so the browser asks Flare, and Flare opens nothing, neither in the panel nor as a pop-up, and says so in
+    // the bar. (A click the test hook's script makes is not this case: WebView2 counts a script it runs as the
+    // person's gesture, lessons.md.)
+    let auto = c.call(
+        Method::BrowserNavigate,
+        json!({ "url": format!("{HOST}/auto.html") }),
+        LOAD,
+    );
+    let said = auto.is_ok()
+        && ctx.until("the bar to say the pop-up was blocked", 15_000, &mut || {
+            state(app)["sub"] == json!("Pop-up blocked")
+        });
     let s = state(app);
     ctx.ok(
-        popped && s["controllers"] == json!(1),
+        said
+            && s["url"].as_str().is_some_and(|u| u.ends_with("/auto.html"))
+            && s["controllers"] == json!(1)
+            && s["controller"]["popups"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+            && crate::proc::visible_top_windows_of(&owners) <= windows_before,
         format!(
-            "{at}: window.open goes to this panel as the fourth page, with one controller ({})",
-            s["url"]
+            "{at}: a window.open no click asked for opens nothing and the bar says \"Pop-up blocked\" ({} / {})",
+            s["sub"], s["url"]
+        ),
+    ); // The browser tools' click is a trusted one (DevTools input events): it counts as the person's.
+    let pop = c.call(
+        Method::BrowserNavigate,
+        json!({ "url": format!("{HOST}/pop.html") }),
+        LOAD,
+    );
+    ctx.ok(
+        pop.as_ref().is_ok_and(|v| v["title"] == json!("Pop page")),
+        format!("{at}: to the pop-up page ({})", code_of(&pop)),
+    );
+    let r = c.call(Method::BrowserClick, json!({ "x": 120, "y": 130 }), LOAD);
+    ctx.ok(
+        r.is_ok(),
+        format!("{at}: a trusted click on the window.open ({r:?})"),
+    );
+    let opened = ctx.until("the pop-up to open over the page", 15_000, &mut || {
+        let s = state(app);
+        s["controller"]["popups"].as_array().is_some_and(|p| {
+            p.len() == 1
+                && p[0]["url"]
+                    .as_str()
+                    .is_some_and(|u| u.ends_with("/popup.html"))
+        }) && s["strip"]["h"].as_f64().is_some_and(|h| h > 0.0)
+    });
+    let s = state(app);
+    let p = s["controller"]["popups"][0].clone();
+    ctx.ok(
+        opened
+            && s["strip"]["text"] == json!("Pop-up from flare-test.local")
+            && s["popup_open"] == json!(true),
+        format!(
+            "{at}: a trusted click on a sized, named window.open opens one pop-up under Flare's strip ({})",
+            s["strip"]
         ),
     );
     ctx.ok(
-        s["controller"]["children"]
-            .as_array()
-            .is_some_and(|c| c.len() == 1)
-            && crate::proc::visible_top_windows_of(&owners) <= windows_before,
+        p["visible"] == json!(true)
+            && s["controller"]["visible"] == json!(false)
+            && same_rect(&p["bounds"], &s["drawn"], 1)
+            && p["autofill"] == json!(true),
         format!(
-            "{at}: and no window of its own appears (one child window; {windows_before} top-level windows before)"
+            "{at}: the pop-up fills the page's box under the strip and the page waits hidden ({} vs {}, page visible {})",
+            p["bounds"], s["drawn"], s["controller"]["visible"]
+        ),
+    );
+    ctx.ok(
+        same_rect(&s["drawn"], &s["maths"], 2),
+        format!(
+            "{at}: and the layout maths with the strip say the same ({} vs {})",
+            s["drawn"], s["maths"]
+        ),
+    );
+    ctx.ok(
+        crate::proc::visible_top_windows_of(&owners) <= windows_before,
+        format!(
+            "{at}: and no window of its own appears ({windows_before} top-level windows before)"
+        ),
+    );
+    // The pop-up reached back to its opener: `window.opener` and the window's name are the page's own.
+    let linked = ctx.until("the opener to hear from its pop-up", 15_000, &mut || {
+        state(app)["title"] == json!("opener:threeDS")
+    });
+    let read = script(ctx, app, "document.title");
+    ctx.ok(
+        linked && read.as_deref() == Some("\"opener:threeDS\""),
+        format!(
+            "{at}: the pop-up keeps its link to the page that opened it, and its name ({read:?})"
+        ),
+    );
+    let refused = c.call(Method::BrowserClick, json!({ "x": 120, "y": 30 }), LOAD);
+    ctx.ok(
+        code_of(&refused) == "unavailable" && format!("{refused:?}").contains("a pop-up is open"),
+        format!(
+            "{at}: the agent's click waits for the person while the pop-up is open ({refused:?})"
+        ),
+    );
+    // The pop-up's own window.close() closes it and the page shows again.
+    script(ctx, app, "window.w.postMessage('close', '*'); 1");
+    let closed = ctx.until("the pop-up to close itself", 15_000, &mut || {
+        let s = state(app);
+        s["controller"]["popups"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+            && s["controller"]["visible"] == json!(true)
+    });
+    let s = state(app);
+    ctx.ok(
+        closed && s["strip"]["h"] == json!(0.0) && s["popup_open"] == json!(false),
+        format!(
+            "{at}: window.close() in the pop-up closes it and the page shows again ({})",
+            s["strip"]
+        ),
+    );
+    ctx.ok(
+        same_rect(&s["controller"]["bounds"], &s["drawn"], 1),
+        format!(
+            "{at}: and the page has its whole box back ({} vs {})",
+            s["controller"]["bounds"], s["drawn"]
+        ),
+    );
+    // Again, and the strip's Close (Flare's own chrome) closes it.
+    let r = c.call(Method::BrowserClick, json!({ "x": 120, "y": 130 }), LOAD);
+    let again = r.is_ok()
+        && ctx.until("the pop-up to open again", 15_000, &mut || {
+            state(app)["controller"]["popups"]
+                .as_array()
+                .is_some_and(|p| p.len() == 1)
+                && state(app)["strip"]["h"].as_f64().is_some_and(|h| h > 0.0)
+        });
+    ctx.ok(again, format!("{at}: a second click opens it again"));
+    if again {
+        let s = state(app);
+        let strip_h = s["strip"]["h"].as_f64().unwrap_or(0.0);
+        let right = int(&s["drawn"]["right"]) as f64 / scale;
+        let top = int(&s["drawn"]["y"]) as f64 / scale;
+        app.session
+            .click((right - 8.0 - 12.0) as f32, (top - strip_h / 2.0) as f32)?;
+        let shut = ctx.until("the strip's Close to close the pop-up", 15_000, &mut || {
+            let s = state(app);
+            s["controller"]["popups"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+                && s["controller"]["visible"] == json!(true)
+        });
+        ctx.ok(
+            shut,
+            format!("{at}: the strip's Close closes the pop-up and shows the page"),
+        );
+    }
+    // A plain new-tab link from a trusted click opens in the panel, as it always did.
+    let r = c.call(Method::BrowserClick, json!({ "x": 120, "y": 30 }), LOAD);
+    let plain = r.is_ok()
+        && ctx.until(
+            "target=_blank to open in the same panel",
+            15_000,
+            &mut || {
+                state(app)["url"]
+                    .as_str()
+                    .is_some_and(|u| u.ends_with("/three.html"))
+            },
+        );
+    let s = state(app);
+    ctx.ok(
+        plain
+            && s["controllers"] == json!(1)
+            && s["controller"]["popups"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+        format!(
+            "{at}: a trusted click on a target=_blank link opens it in the same panel ({})",
+            s["url"]
         ),
     );
     // Whatever it did, the next step starts from the first page.
