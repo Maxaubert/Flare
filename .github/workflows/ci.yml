@@ -70,6 +70,14 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Clippy with the updater built in (the flip must keep compiling)
         run: cargo clippy -p flare-update -p flare --all-targets --features flare/live-updates,flare-update/live-updates -- -D warnings
+      # The kernel lets a background process's timers run up to 100 ms late (kern.timer_coalesce_bg_ns_max), and the
+      # runner's test processes are background ones: a 100 ms sleep in a debounce test came back after the 200 ms
+      # wait it was measured against, run after run. Coalescing is off for the tests, as for the E2E run.
+      - name: Timer coalescing off
+        shell: bash
+        run: |
+          sudo sysctl -w kern.timer.coalescing_enabled=0 || true
+          sysctl kern.timer.coalescing_enabled kern.timer_coalesce_bg_ns_max || true
       - name: Tests
         run: cargo nextest run --workspace --no-tests=pass --no-fail-fast
       - name: Deny
