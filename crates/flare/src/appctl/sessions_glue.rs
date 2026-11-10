@@ -115,14 +115,17 @@ impl AppCtl {
     }
 
     /// The page answered with its selection. Dropped when the person has since moved to another tab: what they
-    /// asked about is no longer in front of them, and nothing may be typed where they are not looking.
+    /// asked about is no longer in front of them, and nothing may be typed where they are not looking. With nothing
+    /// selected, a plain web page (`page`) is sent as a reference for the agent to look at; a mini-app or plugin page
+    /// has none and keeps the note.
     pub(super) fn ask_selection_done(
         &mut self,
         tab: &str,
         label: &str,
+        page: Option<&crate::ask_agent::PageRef>,
         result: Result<String, String>,
     ) {
-        use crate::ask_agent::{NOTE_NO_SELECTION, NOTE_PAGE_FAILED, frame_selection};
+        use crate::ask_agent::{NOTE_NO_SELECTION, NOTE_PAGE_FAILED, frame_page, frame_selection};
         if self.front_id().as_deref() != Some(tab) {
             return;
         }
@@ -130,7 +133,7 @@ impl AppCtl {
             self.ask_note(NOTE_PAGE_FAILED);
             return;
         };
-        match frame_selection(label, &text) {
+        match frame_selection(label, &text).or_else(|| page.and_then(frame_page)) {
             Some(framed) => {
                 self.deliver_ask(tab, &framed);
             }
