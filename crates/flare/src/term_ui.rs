@@ -1187,6 +1187,11 @@ impl TermUi {
                 self.read_clipboard(tab.id, PasteMode::Plain);
                 KeyDone::Handled
             }
+            TermKeyAction::SelectAll => {
+                // macOS Cmd+A: the whole buffer, history and screen.
+                tab.handle.with_emu(|em| em.sel_all());
+                KeyDone::Handled
+            }
             TermKeyAction::Newline => {
                 let agent = self.deps.agent.armed(tab.id);
                 tab.handle.send_text(newline_key(agent));

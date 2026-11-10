@@ -873,28 +873,49 @@ fn epoch_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// BLOCKING (a worker). The process rows the agent detection reads for the tabs whose shells are
+/// `shells`: the native snapshot, command lines read under those shells only. On macOS each tab's
+/// terminal foreground job (`tcgetpgrp`) is read too, and adopted under its shell when its parent is
+/// gone (`flare_agent::detect::adopt_foreground`); Windows has no foreground job to ask (ConPTY), so
+/// there it is the snapshot alone. None when the snapshot cannot be taken.
+pub(crate) fn tab_process_rows(mgr: &SessionManager, shells: &[u32]) -> Option<Vec<ProcRow>> {
+    // (shell, foreground leader) of every tab whose shell is asked about and whose foreground is another
+    // process. Always empty on Windows (`foreground_pid` is None there).
+    let fg: Vec<(u32, u32)> = mgr
+        .live_pids()
+        .into_iter()
+        .filter(|(_, pid)| shells.contains(pid))
+        .filter_map(|(id, pid)| mgr.foreground_pid(&id).map(|f| (pid, f)))
+        .filter(|(pid, f)| *f != 0 && f != pid)
+        .collect();
+    let mut roots = shells.to_vec();
+    roots.extend(fg.iter().map(|(_, f)| *f).filter(|f| !shells.contains(f)));
+    let mut rows: Vec<ProcRow> =
+        flare_win::procs::snapshot_processes(&roots, &flare_agent::detect::prefilter)?
+            .into_iter()
+            .map(|e| ProcRow {
+                pid: e.pid,
+                ppid: e.ppid,
+                cmd: e.cmd,
+            })
+            .collect();
+    for (shell, f) in fg {
+        flare_agent::detect::adopt_foreground(&mut rows, shell, f);
+    }
+    Some(rows)
+}
+
 /// The poll's world over the real session manager and the native process snapshot. Built on the
 /// worker thread.
 fn real_poll_deps(mgr: Arc<SessionManager>, diag: Arc<dyn DiagSink>) -> PollDeps {
     let started = Instant::now();
     let for_pids = Arc::clone(&mgr);
+    let for_query = Arc::clone(&mgr);
     let for_ticks = mgr;
     PollDeps {
         pids: Box::new(move || for_pids.live_pids()),
         ticks: Box::new(move || for_ticks.output_ticks()),
-        query: Box::new(|roots| {
-            flare_win::procs::snapshot_processes(roots, &flare_agent::detect::prefilter).map(
-                |rows| {
-                    rows.into_iter()
-                        .map(|e| ProcRow {
-                            pid: e.pid,
-                            ppid: e.ppid,
-                            cmd: e.cmd,
-                        })
-                        .collect()
-                },
-            )
-        }),
+        query: Box::new(move |roots| tab_process_rows(&for_query, roots)),
         now: Box::new(move || started.elapsed().as_millis() as u64),
         failing: Some(Box::new(move || {
             log::warn!("the agent poll's process query failed three times");
@@ -1739,10 +1760,6 @@ mod tests {
         assert_eq!(flare_agent::sonara::sonara_home(&read), None);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "the port owner check reads the Windows TCP table; macOS phase 4 of the port plan"
-    )]
     #[test]
     fn sonara_is_never_called_on_the_ui_thread() {
         use std::io::{Read, Write};
@@ -1760,8 +1777,23 @@ mod tests {
         .unwrap();
         let (release_tx, release_rx) = mpsc::channel::<()>();
         let (body_tx, body_rx) = mpsc::channel::<String>();
+        listener.set_nonblocking(true).unwrap();
         let server = std::thread::spawn(move || {
-            let (mut s, _) = listener.accept().unwrap();
+            // Bounded: a post that never comes fails the test instead of hanging it.
+            let end = Instant::now() + Duration::from_secs(10);
+            let mut s = loop {
+                match listener.accept() {
+                    Ok((s, _)) => break s,
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < end =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(e) => panic!("no post came: {e}"),
+                }
+            };
+            s.set_nonblocking(false).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
             let mut data = Vec::new();
             let mut buf = [0u8; 1024];
             while !String::from_utf8_lossy(&data).contains("\"text\"") {

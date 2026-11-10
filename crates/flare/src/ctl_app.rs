@@ -2384,7 +2384,8 @@ impl Dispatcher for AppDispatcher {
     }
 }
 
-/// The pipe of this run. The default profile (`%APPDATA%\Flare`) uses the user's plain name, so any
+/// The pipe (macOS: the socket) of this run. The default profile (`%APPDATA%\Flare`, macOS
+/// `~/Library/Application Support/Flare`) uses the user's plain name, so any
 /// client of the same user finds it with no environment; any other profile (an e2e run, a second
 /// profile of the owner) adds its folder to the name, so it never meets the owner's Flare.
 pub fn pipe_for(
@@ -2395,9 +2396,12 @@ pub fn pipe_for(
     flare_ctl::pipe::user_pipe_name(scope.as_deref())
 }
 
-/// `flare-mcp.exe` beside the running exe, when it is there.
+/// The MCP server beside the running exe, when it is there: `flare-mcp.exe` on Windows, `flare-mcp` on macOS
+/// (`Flare.app/Contents/MacOS`).
 pub fn mcp_exe_beside(exe: &std::path::Path) -> Option<String> {
-    let path = exe.parent()?.join("flare-mcp.exe");
+    let path = exe
+        .parent()?
+        .join(format!("flare-mcp{}", std::env::consts::EXE_SUFFIX));
     path.is_file() // sync-ok: startup, one stat
         .then(|| path.to_string_lossy().into_owned())
 }
@@ -2554,6 +2558,23 @@ mod tests {
             CtlOp::TabCwd { .. } => json!({"cwd": "C:\\work"}),
             _ => json!({"panel": {"kind": "image"}}),
         })
+    }
+
+    #[test]
+    fn the_mcp_server_is_found_beside_the_exe_by_this_systems_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("flare");
+        assert_eq!(mcp_exe_beside(&exe), None);
+        let name = if cfg!(windows) {
+            "flare-mcp.exe"
+        } else {
+            "flare-mcp"
+        };
+        std::fs::write(dir.path().join(name), b"").unwrap();
+        assert_eq!(
+            mcp_exe_beside(&exe).as_deref(),
+            Some(dir.path().join(name).to_string_lossy().as_ref())
+        );
     }
 
     const FILES: &[(&str, &str)] = &[

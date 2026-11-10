@@ -70,23 +70,28 @@ impl AppCtl {
     /// goes on to the panel (it scrolls). True when taken.
     pub(super) fn panel_text_key(&mut self, ev: &KeyEvent) -> bool {
         let Some(app) = self.app() else { return false };
-        if !ev.pressed || ev.alt || ev.meta || app.get_panel_kind() != 2 {
+        // The app's modifier is Ctrl on Windows and Cmd on a Mac (regression rule 1006): the other one, and Alt, are
+        // never the selection's.
+        let os = self.key_os();
+        let other = if os.is_mac() { ev.ctrl } else { ev.meta };
+        if !ev.pressed || ev.alt || other || app.get_panel_kind() != 2 {
             return false;
         }
+        let primary = os.primary(ev);
         let letter = |l: &str| {
             ev.key.eq_ignore_ascii_case(l) || ev.code == format!("Key{}", l.to_ascii_uppercase())
         };
-        if ev.ctrl && !ev.shift && letter("c") {
+        if primary && !ev.shift && letter("c") {
             self.copy_panel_selection();
             return true;
         }
-        if ev.ctrl && !ev.shift && letter("a") {
+        if primary && !ev.shift && letter("a") {
             return self.panels.select_all(&app);
         }
         if !ev.shift {
             return false;
         }
-        let step = match (ev.key.as_str(), ev.ctrl) {
+        let step = match (ev.key.as_str(), primary) {
             ("ArrowLeft", false) => Step::Left,
             ("ArrowRight", false) => Step::Right,
             ("ArrowUp", false) => Step::Up,
@@ -95,12 +100,17 @@ impl AppCtl {
             ("End", false) => Step::End,
             ("Home", true) => Step::DocStart,
             ("End", true) => Step::DocEnd,
+            // A Mac keyboard has no Home or End: Cmd with an arrow is the line's or the file's end.
+            ("ArrowLeft", true) if os.is_mac() => Step::Home,
+            ("ArrowRight", true) if os.is_mac() => Step::End,
+            ("ArrowUp", true) if os.is_mac() => Step::DocStart,
+            ("ArrowDown", true) if os.is_mac() => Step::DocEnd,
             _ => return false,
         };
         self.panels.extend_selection(&app, step)
     }
 
-    /// Ctrl+C in the panel: the selection goes to the clipboard on a worker, as the terminal's copy does, and the
+    /// Ctrl+C (Cmd+C on a Mac) in the panel: the selection goes to the clipboard on a worker, as the terminal's copy does, and the
     /// "Copied" badge says so. The selection stays. Nothing selected copies nothing.
     fn copy_panel_selection(&self) {
         let Some(text) = self.panels.selection_text().filter(|t| !t.is_empty()) else {

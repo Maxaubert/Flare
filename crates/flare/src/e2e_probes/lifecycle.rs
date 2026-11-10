@@ -26,7 +26,7 @@ pub fn park_json(r: &ParkReport) -> Value {
 }
 
 fn window_park(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
-    let hwnd = crate::window::hwnd_of(ctx.app).ok_or("the window has no handle yet")?;
+    let hwnd = crate::window::native_view_of(ctx.app).ok_or("the window has no handle yet")?;
     Ok(park_json(&report(hwnd)))
 }
 

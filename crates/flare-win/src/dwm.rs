@@ -96,9 +96,11 @@ mod native {
     }
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 const DWMWA_USE_IMMERSIVE_DARK_MODE: i32 = 20;
 const DWMWA_WINDOW_CORNER_PREFERENCE: i32 = 33;
 const DWMWA_BORDER_COLOR: i32 = 34;
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 const DWMWA_SYSTEMBACKDROP_TYPE: i32 = 38;
 const DWMWA_COLOR_NONE: u32 = 4294967294;
 const DWMWA_COLOR_DEFAULT: u32 = 4294967295;
@@ -112,11 +114,20 @@ pub fn set_border(hwnd: Hwnd, b: &Border) -> bool {
     native::set_attr(hwnd, DWMWA_BORDER_COLOR, &c)
 }
 
+/// macOS: the same backdrop as an `NSVisualEffectView` behind the window's content (`glass.rs`;
+/// `hwnd` is the window's `NSView` there).
 pub fn set_system_backdrop(hwnd: Hwnd, b: Backdrop) -> bool {
+    #[cfg(target_os = "macos")]
+    return crate::glass::set_backdrop(hwnd, b);
+    #[cfg(not(target_os = "macos"))]
     native::set_attr(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &(b as i32))
 }
 
+/// macOS: the window wears the dark or the light Aqua appearance (`glass.rs`).
 pub fn set_immersive_dark(hwnd: Hwnd, dark: bool) -> bool {
+    #[cfg(target_os = "macos")]
+    return crate::glass::set_dark(hwnd, dark);
+    #[cfg(not(target_os = "macos"))]
     native::set_attr(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &i32::from(dark))
 }
 

@@ -1,6 +1,7 @@
 //! Flashes the taskbar button when a bell rings in a window nobody is looking at (regression rule 20):
 //! no sound, only the button, and only while the window is not the foreground one. The OS stops the
-//! flash by itself when the window comes to the front.
+//! flash by itself when the window comes to the front. macOS: the Dock icon bounces instead, until
+//! Flare is activated (`crate::dock`, regression rule 1014).
 
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::HWND;
@@ -44,14 +45,31 @@ pub fn flash_unless_foreground(hwnd: isize) -> bool {
     true
 }
 
-/// macOS: phase 4 of the port plan (dock attention); no window is known to be in front until then.
-#[cfg(not(windows))]
+/// macOS: Flare is the active app (`NSApp isActive`; the Mac has one menu bar and one front app, so
+/// "this window is in front" is "Flare is active"). The handle is not needed. False off the main thread.
+#[cfg(target_os = "macos")]
+pub fn is_foreground(_hwnd: isize) -> bool {
+    crate::dock::is_active()
+}
+
+/// macOS: bounces the Dock icon until Flare is activated (a critical attention request), unless Flare
+/// is already the active app: Windows' flash-until-in-front (`crate::dock::attention_for`). True when
+/// it asked.
+#[cfg(target_os = "macos")]
+pub fn flash_unless_foreground(_hwnd: isize) -> bool {
+    match crate::dock::attention_for(crate::dock::is_active()) {
+        Some(kind) => crate::dock::request_attention(kind).is_some(),
+        None => false,
+    }
+}
+
+/// Neither Windows nor macOS: no taskbar, nothing in front.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn is_foreground(_hwnd: isize) -> bool {
     false
 }
 
-/// macOS: phase 4 of the port plan (dock attention); nothing flashes until then.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn flash_unless_foreground(_hwnd: isize) -> bool {
     false
 }

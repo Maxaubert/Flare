@@ -100,16 +100,37 @@ pub fn scale_at(x: i32, y: i32) -> f64 {
     }
 }
 
-/// macOS: phase 3 of the port plan (NSScreen visibleFrame); no monitor is known until then.
-#[cfg(not(windows))]
+/// macOS: every screen's visible frame (no menu bar, no Dock), flipped to the top-left origin, in
+/// the primary screen's scale (`work_areas_at`). Empty off the main thread.
+#[cfg(target_os = "macos")]
 pub fn work_areas() -> Vec<Area> {
-    Vec::new()
+    work_areas_at(crate::chrome::primary_scale())
 }
 
-/// macOS: phase 3 of the port plan (NSScreen backingScaleFactor); 1.0 until then.
-#[cfg(not(windows))]
-pub fn scale_at(_x: i32, _y: i32) -> f64 {
-    1.0
+/// The work areas in the space a window of scale `scale` reports its position in. Windows has one
+/// device-pixel space for every monitor, so `scale` changes nothing there. macOS: winit gives a
+/// window's position as points times THAT window's scale, so every screen is the global points times
+/// `scale` (one factor for all, so screens of different scales never overlap; `chrome::areas_in`).
+pub fn work_areas_at(scale: f64) -> Vec<Area> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::chrome::screens_at(scale)
+            .into_iter()
+            .map(|(a, _)| a)
+            .collect()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = scale;
+        work_areas()
+    }
+}
+
+/// macOS: the backing scale of the screen under the point (in the primary screen's scale, as
+/// `work_areas`); 1.0 when none is known.
+#[cfg(target_os = "macos")]
+pub fn scale_at(x: i32, y: i32) -> f64 {
+    crate::chrome::scale_in(&crate::chrome::screens(), x, y)
 }
 
 #[cfg(test)]

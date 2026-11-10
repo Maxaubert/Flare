@@ -722,33 +722,65 @@ fn send_one(
     }
 }
 
-// ---- off Windows: macOS phase 3 of the port plan (a lock file and a Unix socket hand-off) ----------
+// ---- off Windows: a lock file and a Unix socket hand-off (macOS) ----------------------------------
 
-/// The identity source off Windows. macOS: phase 3 of the port plan (the uid); nobody is known until
-/// then, so no peer is ever trusted.
+/// The identity source off Windows: a process's real user id (libproc), as the `sid`. The session is
+/// always 0: a Mac user has one login session, and the hand-off socket sits in that user's own
+/// temp folder (mode 0700), so the uid is the boundary that matters.
 #[cfg(not(windows))]
 pub struct WindowsIdentity;
 
 #[cfg(not(windows))]
 impl IdentitySource for WindowsIdentity {
-    fn of_pid(&self, _pid: u32) -> Option<Identity> {
-        None
+    fn of_pid(&self, pid: u32) -> Option<Identity> {
+        flare_proc::stat(pid).map(|row| Identity {
+            sid: row.uid.to_string(),
+            session: 0,
+        })
     }
 }
 
-/// Who this process is. macOS: phase 3 of the port plan; None until then.
+/// Who this process is: its real uid, session 0.
 #[cfg(not(windows))]
 pub fn current_identity() -> Option<Identity> {
-    None
+    Some(Identity {
+        sid: flare_proc::own_uid().to_string(),
+        session: 0,
+    })
 }
 
-/// Where the lock file lives off Windows: the per-user temp folder (`$TMPDIR` on macOS), named after
-/// the mutex (`Flare.Single.<who>.<hash>.lock`), so it is per user and per profile like the mutex.
+/// The per-user runtime folder: the user's own temp folder as the system names it
+/// (`confstr(_CS_DARWIN_USER_TEMP_DIR)`, `/var/folders/.../T/`, mode 0700), else `$TMPDIR`.
 #[cfg(not(windows))]
-fn lock_path(names: &InstanceNames) -> std::path::PathBuf {
-    let base = names.mutex.rsplit('\\').next().unwrap_or(&names.mutex);
-    let file: String = base
-        .chars()
+fn runtime_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let mut buf = vec![0u8; 1024];
+        // SAFETY: the buffer is writable for its stated length; confstr writes a NUL-terminated
+        // string of at most that many bytes and returns the length it needed.
+        let need = unsafe {
+            libc::confstr(
+                libc::_CS_DARWIN_USER_TEMP_DIR,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+            )
+        };
+        if need > 1 && need <= buf.len() {
+            buf.truncate(need - 1);
+            if let Ok(s) = String::from_utf8(buf) {
+                return std::path::PathBuf::from(s);
+            }
+        }
+    }
+    std::env::temp_dir()
+}
+
+/// The last part of a Windows-form name (`Local\Flare.Single.<who>.<hash>`), kept to the letters,
+/// digits, dots and dashes a file name may safely carry.
+#[cfg(not(windows))]
+fn file_stem(name: &str) -> String {
+    let base = name.rsplit('\\').next().unwrap_or(name);
+    base.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
                 c
@@ -756,13 +788,27 @@ fn lock_path(names: &InstanceNames) -> std::path::PathBuf {
                 '_'
             }
         })
-        .collect();
-    std::env::temp_dir().join(format!("{file}.lock"))
+        .collect()
+}
+
+/// Where the lock file lives off Windows: the per-user runtime folder, named after the mutex
+/// (`Flare.Single.<uid>.0.<hash>.lock`), so it is per user and per profile like the mutex.
+#[cfg(not(windows))]
+fn lock_path(names: &InstanceNames) -> std::path::PathBuf {
+    runtime_dir().join(format!("{}.lock", file_stem(&names.mutex)))
+}
+
+/// Where the hand-off socket lives: next to the lock, named after the pipe
+/// (`Flare.Handoff.<uid>.0.<hash>.sock`). A Unix socket path holds at most 103 bytes; the
+/// per-user temp folder plus this name stay well under it.
+#[cfg(not(windows))]
+pub fn socket_path(names: &InstanceNames) -> std::path::PathBuf {
+    runtime_dir().join(format!("{}.sock", file_stem(&names.pipe)))
 }
 
 /// Off Windows: an advisory lock (`flock`) on a lock file named from `names`. First when this call
 /// took it, Second when another process (or another guard in this one) holds it. The lock goes with
-/// the guard, and with the process if it dies. The Unix socket hand-off is phase 3 of the port plan.
+/// the guard, and with the process if it dies.
 #[cfg(not(windows))]
 pub fn acquire(names: &InstanceNames) -> Result<Acquired, String> {
     use std::fs::{OpenOptions, TryLockError}; // sync-ok: names only; the open below is marked
@@ -781,23 +827,195 @@ pub fn acquire(names: &InstanceNames) -> Result<Acquired, String> {
     }
 }
 
-/// The hand-off server. None can exist until phase 3: `serve` always fails.
+/// How long a client that connected may take to write its message (as on Windows): past this the
+/// read gives up and the client is dropped, so a stalled client never jams the server.
 #[cfg(not(windows))]
-pub struct PipeServer(std::convert::Infallible);
+const READ_DEADLINE: Duration = Duration::from_secs(2);
+
+/// The hand-off server off Windows: a Unix socket in the per-user runtime folder (mode 0600), read by
+/// one worker thread, one client at a time, like the one Windows pipe instance.
+#[cfg(not(windows))]
+pub struct PipeServer {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    path: std::path::PathBuf,
+}
 
 #[cfg(not(windows))]
 impl PipeServer {
-    pub fn stop(self) {
-        match self.0 {}
+    pub fn stop(mut self) {
+        self.shutdown();
+    }
+
+    fn shutdown(&mut self) {
+        use std::sync::atomic::Ordering;
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        self.stop.store(true, Ordering::SeqCst);
+        // One connect wakes the blocked accept. The socket's backlog takes it at once even while the
+        // worker reads another client (that read is bounded by READ_DEADLINE).
+        // sync-ok: quit, a local connect that never waits on the peer
+        let woke = std::os::unix::net::UnixStream::connect(&self.path).is_ok();
+        if woke || thread.is_finished() {
+            let _ = thread.join(); // sync-ok: stopping the worker at quit; it was woken
+        } else {
+            log::warn!("the hand-off server could not be woken; leaving its thread behind");
+        }
     }
 }
 
 #[cfg(not(windows))]
+impl Drop for PipeServer {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+/// The peer's uid as the kernel says (`getpeereid`); None when it cannot be read.
+#[cfg(not(windows))]
+fn peer_uid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let (mut uid, mut gid) = (0, 0);
+    // SAFETY: a live socket fd and two out-values that outlive the call.
+    let r = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
+    (r == 0).then_some(uid)
+}
+
+/// The pid of the process at the other end of a connected Unix socket (`LOCAL_PEERPID`).
+#[cfg(target_os = "macos")]
+fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let mut pid: libc::pid_t = 0;
+    let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::pid_t>()).ok()?;
+    // SAFETY: a live socket fd; the out-buffer is a pid_t of `len` bytes.
+    let r = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&raw mut pid).cast(),
+            &mut len,
+        )
+    };
+    if r != 0 {
+        return None;
+    }
+    u32::try_from(pid).ok().filter(|p| *p > 0)
+}
+
+/// One client's message: at most `MAX_HANDOFF` bytes, read until the client closes or the deadline
+/// passes. None when it is too big, or the client stalled.
+#[cfg(not(windows))]
+fn read_client(stream: &mut std::os::unix::net::UnixStream) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let started = std::time::Instant::now();
+    let mut data = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let left = READ_DEADLINE.checked_sub(started.elapsed())?;
+        // macOS answers EINVAL once the client has closed its end; a read then never blocks, so a
+        // failed timeout is no reason to drop what the client already wrote.
+        let _ = stream.set_read_timeout(Some(left.max(Duration::from_millis(1))));
+        match stream.read(&mut buf) {
+            // sync-ok: the hand-off worker thread, bounded by READ_DEADLINE
+            Ok(0) => return Some(data),
+            Ok(n) => {
+                if data.len() + n > MAX_HANDOFF {
+                    return None;
+                }
+                data.extend_from_slice(&buf[..n]);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Binds the socket at `path` for this user only. A live server already there is an error (as the
+/// Windows first pipe instance is); a socket left by a Flare that died is removed first.
+#[cfg(not(windows))]
+fn bind_socket(path: &std::path::Path) -> Result<std::os::unix::net::UnixListener, String> {
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    if path.as_os_str().len() > 103 {
+        return Err(format!(
+            "the hand-off socket path is too long: {}",
+            path.display()
+        ));
+    }
+    // sync-ok: startup, a local metadata read
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if !meta.file_type().is_socket() {
+            return Err(format!(
+                "{} is in the way of the hand-off socket",
+                path.display()
+            ));
+        }
+        // sync-ok: startup, a local connect that never waits on the peer
+        if UnixStream::connect(path).is_ok() {
+            return Err("another hand-off server already listens on this profile".into());
+        }
+        // sync-ok: startup, removes the dead socket of a Flare that did not quit cleanly
+        std::fs::remove_file(path).map_err(|e| format!("cannot remove the old socket: {e}"))?;
+    }
+    let listener =
+        UnixListener::bind(path).map_err(|e| format!("cannot bind the hand-off socket: {e}"))?;
+    // The folder is the user's own already; the socket is too.
+    // sync-ok: startup, a local chmod
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("cannot restrict the hand-off socket: {e}"))?;
+    Ok(listener)
+}
+
+#[cfg(not(windows))]
 pub fn serve(
-    _names: &InstanceNames,
-    _on_handoff: impl Fn(Handoff) + Send + 'static,
+    names: &InstanceNames,
+    on_handoff: impl Fn(Handoff) + Send + 'static,
 ) -> Result<PipeServer, String> {
-    Err("the hand-off server is not built on this platform yet".into())
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let path = socket_path(names);
+    let me = current_identity().ok_or("could not read the current user for the hand-off socket")?;
+    let listener = bind_socket(&path)?;
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let flag = std::sync::Arc::clone(&stop);
+    let own = path.clone();
+    let thread = std::thread::Builder::new()
+        .name("flare-handoff".into())
+        .spawn(move || {
+            #[cfg(test)]
+            {
+                let ms = tests::FIRST_CONNECT_DELAY_MS.load(Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(ms)); // sync-ok: test seam, the server thread
+            }
+            for conn in listener.incoming() {
+                // sync-ok: the hand-off worker thread waits for a client
+                if flag.load(Ordering::SeqCst) {
+                    break;
+                }
+                let Ok(mut stream) = conn else {
+                    continue;
+                };
+                // Only this user may hand over (the 0600 socket already says so; checked again).
+                if peer_uid(&stream).map(|u| u.to_string()) != Some(me.sid.clone()) {
+                    log::warn!("a hand-off from another user was refused");
+                    continue;
+                }
+                match read_client(&mut stream).as_deref().and_then(decode_handoff) {
+                    Some(h) => on_handoff(h),
+                    None => log::warn!("a hand-off was refused: unreadable, too big or too long"),
+                }
+            }
+            // The socket goes with the server, so a later launch finds no stale name.
+            // sync-ok: the worker's exit, a local unlink
+            let _ = std::fs::remove_file(&own);
+        })
+        .map_err(|e| format!("could not start the hand-off thread: {e}"))?;
+    Ok(PipeServer {
+        stop,
+        thread: Some(thread),
+        path,
+    })
 }
 
 #[cfg(not(windows))]
@@ -809,29 +1027,88 @@ pub fn send_handoff(
     send_handoff_with(names, h, total_wait, &WindowsIdentity)
 }
 
+/// `send_handoff` with the identity source made explicit, so a test can stand in another user.
 #[cfg(not(windows))]
 pub fn send_handoff_with(
-    _names: &InstanceNames,
-    _h: &Handoff,
-    _total_wait: Duration,
-    _source: &dyn IdentitySource,
+    names: &InstanceNames,
+    h: &Handoff,
+    total_wait: Duration,
+    source: &dyn IdentitySource,
 ) -> Result<(), HandoffError> {
-    Err(HandoffError::Failed(
-        "the hand-off is not built on this platform yet".into(),
-    ))
+    for part in split_handoff(h) {
+        send_one(names, &part, total_wait, source)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn send_one(
+    names: &InstanceNames,
+    h: &Handoff,
+    total_wait: Duration,
+    source: &dyn IdentitySource,
+) -> Result<(), HandoffError> {
+    use std::io::Write;
+    let me = current_identity()
+        .ok_or_else(|| HandoffError::Failed("could not read the current user".into()))?;
+    let path = socket_path(names);
+    let started = std::time::Instant::now();
+    let bytes = encode_handoff(h);
+    loop {
+        // sync-ok: hand-off to the first instance, bounded by its deadline
+        match std::os::unix::net::UnixStream::connect(&path) {
+            Ok(mut stream) => {
+                let pid = peer_pid(&stream).ok_or_else(|| {
+                    HandoffError::Untrusted(
+                        "could not tell which process serves the hand-off socket".into(),
+                    )
+                })?;
+                verify_peer(&me, source.of_pid(pid).as_ref()).map_err(HandoffError::Untrusted)?;
+                if peer_uid(&stream).map(|u| u.to_string()) != Some(me.sid.clone()) {
+                    return Err(HandoffError::Untrusted(
+                        "the hand-off server runs as another user".into(),
+                    ));
+                }
+                stream
+                    .write_all(&bytes)
+                    .map_err(|e| HandoffError::Failed(format!("hand-off write failed: {e}")))?;
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                return Ok(());
+            }
+            Err(e) => {
+                let retry = matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                );
+                if !retry {
+                    // Permission denied is what a socket made by another user answers with.
+                    return Err(HandoffError::Untrusted(format!(
+                        "hand-off connect refused: {e}"
+                    )));
+                }
+                if started.elapsed() >= total_wait {
+                    return Err(HandoffError::Failed(format!(
+                        "no running Flare answered: {e}"
+                    )));
+                }
+                std::thread::sleep(Duration::from_millis(50)); // sync-ok: second instance, nothing else runs
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(windows)]
+    #[cfg(not(windows))]
+    use std::io::Write;
     use std::sync::atomic::AtomicU64;
-    #[cfg(windows)]
+    #[cfg(not(windows))]
+    use std::sync::atomic::Ordering;
     use std::sync::mpsc;
 
     /// How long the server thread waits before its first `ConnectNamedPipe` (tests only; each
     /// nextest test is its own process, so one test setting it touches no other).
-    #[cfg(windows)]
     pub(super) static FIRST_CONNECT_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 
     #[test]
@@ -857,7 +1134,6 @@ mod tests {
         assert_eq!(got, args[1..]);
     }
 
-    #[cfg(windows)]
     /// A client that connects and never writes must not jam the one pipe instance for good.
     #[test]
     fn a_stalled_client_does_not_jam_the_server() {
@@ -868,7 +1144,7 @@ mod tests {
         })
         .unwrap();
         let _stalled = loop {
-            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&n.pipe) {
+            if let Some(f) = raw_connect(&n) {
                 break f;
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -881,7 +1157,6 @@ mod tests {
         assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), h);
     }
 
-    #[cfg(windows)]
     /// A server that has stopped listening takes nothing: the client is told so (and retries the
     /// lock), never handed an Ok for a message nobody will read.
     #[test]
@@ -902,7 +1177,6 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
-    #[cfg(windows)]
     /// Review fix: a client that connects, writes and closes before the server thread first
     /// reaches `ConnectNamedPipe` makes it answer ERROR_NO_DATA. The message is still in the pipe
     /// and must be read, not dropped (a second launch right after the first lost its folder).
@@ -932,16 +1206,30 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
+    /// A bare client of the server, with no identity check: the pipe on Windows, the socket on macOS.
+    fn raw_connect(names: &InstanceNames) -> Option<Box<dyn std::io::Write>> {
+        #[cfg(windows)]
+        let got = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&names.pipe)
+            .ok()
+            .map(|f| Box::new(f) as Box<dyn std::io::Write>);
+        #[cfg(not(windows))]
+        let got = std::os::unix::net::UnixStream::connect(socket_path(names))
+            .ok()
+            .map(|f| Box::new(f) as Box<dyn std::io::Write>);
+        got
+    }
+
     fn raw_write(names: &InstanceNames, bytes: &[u8]) {
         let started = Instant::now();
         while started.elapsed() < Duration::from_secs(3) {
-            match std::fs::OpenOptions::new().write(true).open(&names.pipe) {
-                Ok(mut f) => {
+            match raw_connect(names) {
+                Some(mut f) => {
                     let _ = f.write_all(bytes);
                     return;
                 }
-                Err(_) => std::thread::sleep(Duration::from_millis(20)),
+                None => std::thread::sleep(Duration::from_millis(20)),
             }
         }
     }
@@ -1001,7 +1289,6 @@ mod tests {
         assert!(matches!(acquire(&n).unwrap(), Acquired::First(_)));
     }
 
-    #[cfg(windows)]
     #[test]
     fn a_handoff_reaches_the_running_instance() {
         let n = names_for_test();
@@ -1023,7 +1310,6 @@ mod tests {
         assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), h2);
     }
 
-    #[cfg(windows)]
     #[test]
     fn a_handoff_waits_for_a_server_that_starts_late() {
         let n = names_for_test();
@@ -1053,7 +1339,6 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
-    #[cfg(windows)]
     #[test]
     fn an_oversized_or_junk_write_is_dropped_and_the_server_keeps_serving() {
         let n = names_for_test();
@@ -1073,7 +1358,6 @@ mod tests {
         assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
     }
 
-    #[cfg(windows)]
     #[test]
     fn a_second_server_on_the_same_name_fails_loudly() {
         let n = names_for_test();
@@ -1081,7 +1365,6 @@ mod tests {
         assert!(serve(&n, |_| {}).is_err());
     }
 
-    #[cfg(windows)]
     #[test]
     fn stop_ends_the_server_thread() {
         let n = names_for_test();
@@ -1093,7 +1376,6 @@ mod tests {
         again.stop();
     }
 
-    #[cfg(windows)]
     #[test]
     fn stop_never_hangs_on_a_client_that_holds_the_pipe() {
         let n = names_for_test();
@@ -1101,12 +1383,12 @@ mod tests {
         // A client connects and never writes or closes: the one instance stays busy.
         let started = Instant::now();
         let held = loop {
-            match std::fs::OpenOptions::new().write(true).open(&n.pipe) {
-                Ok(f) => break f,
-                Err(_) if started.elapsed() < Duration::from_secs(3) => {
+            match raw_connect(&n) {
+                Some(f) => break f,
+                None if started.elapsed() < Duration::from_secs(3) => {
                     std::thread::sleep(Duration::from_millis(20));
                 }
-                Err(e) => panic!("could not connect: {e}"),
+                None => panic!("could not connect"),
             }
         };
         let started = Instant::now();
@@ -1122,16 +1404,13 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
     struct Fake(Option<Identity>);
-    #[cfg(windows)]
     impl IdentitySource for Fake {
         fn of_pid(&self, _pid: u32) -> Option<Identity> {
             self.0.clone()
         }
     }
 
-    #[cfg(windows)]
     #[test]
     fn names_carry_the_user_sid_and_the_session() {
         let p = Path::new("C:\\a\\Flare");
@@ -1158,7 +1437,6 @@ mod tests {
         assert!(verify_peer(&me, None).is_err());
     }
 
-    #[cfg(windows)]
     #[test]
     fn nothing_is_written_to_a_server_that_is_another_user() {
         let n = names_for_test();

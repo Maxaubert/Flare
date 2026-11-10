@@ -18,6 +18,7 @@ pub mod keys;
 pub mod link_scan;
 pub mod link_target;
 pub mod links;
+pub mod mac_keys;
 pub mod mouse_report;
 pub mod osc52;
 pub mod osc8;

@@ -2881,7 +2881,7 @@ impl DictHost for AppHost {
     }
 }
 
-/// Windows' process tree under a tab's shell.
+/// The process tree under a tab's shell (and on macOS its foreground job).
 struct MgrProbe(Arc<flare_term::session::SessionManager>);
 
 impl AgentProbe for MgrProbe {
@@ -2892,17 +2892,9 @@ impl AgentProbe for MgrProbe {
             .into_iter()
             .find(|(id, _)| id == tab)
             .map(|(_, pid)| pid)?;
-        let rows = flare_win::procs::snapshot_processes(&[pid], &flare_agent::detect::prefilter)?;
-        let rows: Vec<flare_agent::detect::ProcRow> = rows
-            .into_iter()
-            .map(|e| flare_agent::detect::ProcRow {
-                pid: e.pid,
-                ppid: e.ppid,
-                cmd: e.cmd,
-            })
-            .collect();
+        let rows = crate::agent_hub::tab_process_rows(&self.0, &[pid])?;
         use flare_agent::kinds::DetectedAgent;
-        flare_agent::detect::tree_agent_kind(&rows, pid).map(|k| {
+        flare_agent::detect::tab_agent_kind(&rows, pid).map(|k| {
             match k {
                 DetectedAgent::Claude => "claude",
                 DetectedAgent::Codex => "codex",

@@ -443,6 +443,14 @@ pub trait OverlayShell {
     /// The overlay may be gone (Explorer restarted, or the button did not exist yet): forget the COM
     /// object made before.
     fn reset(&mut self) {}
+
+    /// What [`TaskbarBadge`] calls: the count's text (`"3"`, `"9+"`; None to clear) beside the disc and
+    /// the description. A shell that draws the disc (Windows) takes `set_overlay`; the Dock tile takes
+    /// the text (`crate::dock::DockShell`).
+    fn set_badge(&mut self, label: Option<&str>, icon: Option<&Disc>, text: &str) -> bool {
+        let _ = label;
+        self.set_overlay(icon, text)
+    }
 }
 
 /// A shell that takes every overlay and shows it nowhere: an `--e2e` run has a badge to read
@@ -455,10 +463,10 @@ impl OverlayShell for RecordShell {
     }
 }
 
-/// The shell used where there is no taskbar.
-#[cfg(not(windows))]
+/// The shell used where there is no taskbar and no Dock.
+#[cfg(not(any(windows, target_os = "macos")))]
 struct NoShell;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 impl OverlayShell for NoShell {
     fn set_overlay(&mut self, _icon: Option<&Disc>, _text: &str) -> bool {
         false
@@ -518,7 +526,13 @@ impl TaskbarBadge {
     pub fn new(hwnd: isize) -> Self {
         #[cfg(windows)]
         let shell: Box<dyn OverlayShell> = Box::new(win::WinShell::new(hwnd));
-        #[cfg(not(windows))]
+        // macOS: the Dock tile's badge; the app has one tile, so the handle is not needed.
+        #[cfg(target_os = "macos")]
+        let shell: Box<dyn OverlayShell> = {
+            let _ = hwnd;
+            Box::new(crate::dock::DockShell)
+        };
+        #[cfg(not(any(windows, target_os = "macos")))]
         let shell: Box<dyn OverlayShell> = {
             let _ = hwnd;
             Box::new(NoShell)
@@ -544,9 +558,10 @@ impl TaskbarBadge {
         if self.last == Some((count, size)) {
             return true;
         }
-        let disc = compose_disc(size, &text_mask(size, &count_text(count)));
+        let label = count_text(count);
+        let disc = compose_disc(size, &text_mask(size, &label));
         let text = description(count);
-        let ok = self.shell.set_overlay(Some(&disc), &text);
+        let ok = self.shell.set_badge(Some(&label), Some(&disc), &text);
         if ok {
             remember_description(&text);
             LAST_OVERLAY_PX.with(|p| p.set(size));
@@ -569,7 +584,7 @@ impl TaskbarBadge {
         if self.cleared && self.last.is_none() {
             return true;
         }
-        let ok = self.shell.set_overlay(None, "");
+        let ok = self.shell.set_badge(None, None, "");
         if ok {
             remember_description("");
             LAST_OVERLAY_PX.with(|p| p.set(0));
@@ -743,6 +758,45 @@ mod tests {
                 .push((icon.map(|d| d.size), text.to_string()));
             true
         }
+    }
+
+    /// A shell that takes the count's text, as the Dock tile does.
+    type Labels = Rc<RefCell<Vec<Option<String>>>>;
+    struct LabelShell(Labels);
+    impl OverlayShell for LabelShell {
+        fn set_overlay(&mut self, _icon: Option<&Disc>, _text: &str) -> bool {
+            panic!("a badge shell is handed the text, not the bare overlay");
+        }
+        fn set_badge(&mut self, label: Option<&str>, _icon: Option<&Disc>, _text: &str) -> bool {
+            self.0.borrow_mut().push(label.map(str::to_string));
+            true
+        }
+    }
+
+    #[test]
+    fn a_text_badge_gets_the_count_as_the_disc_shows_it_and_a_clear_takes_it() {
+        let log: Labels = Rc::new(RefCell::new(Vec::new()));
+        let mut b = TaskbarBadge::with_shell(Box::new(LabelShell(log.clone())));
+        assert!(b.set(3, 2.0));
+        assert!(b.set(3, 2.0), "a repeat asks nothing");
+        assert!(b.set(12, 2.0));
+        assert!(b.set(0, 2.0));
+        assert_eq!(
+            *log.borrow(),
+            vec![Some("3".to_string()), Some("9+".to_string()), None]
+        );
+        assert_eq!(last_description(), "");
+        // A disc shell is still handed the disc and the description, as before.
+        let discs: Log = Rc::new(RefCell::new(Vec::new()));
+        let mut w = TaskbarBadge::with_shell(Box::new(Fake(discs.clone())));
+        assert!(w.set(2, 1.0) && w.clear());
+        assert_eq!(
+            *discs.borrow(),
+            vec![
+                (Some(16), "2 tabs need a look".to_string()),
+                (None, String::new())
+            ]
+        );
     }
 
     #[test]

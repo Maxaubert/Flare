@@ -22,9 +22,9 @@ type Reply = Sender<Result<Value, CtlError>>;
 
 impl AppCtl {
     /// Flare's own window is the foreground window of Windows (the keyboard may be in the page's child
-    /// window, which is still this window being in use).
+    /// window, which is still this window being in use). macOS: Flare is the active app.
     pub(super) fn window_is_foreground(&self) -> bool {
-        let Some(hwnd) = self.app().and_then(|a| crate::window::hwnd_of(&a)) else {
+        let Some(hwnd) = self.app().and_then(|a| crate::window::native_view_of(&a)) else {
             return false;
         };
         flare_win::taskbar_flash::is_foreground(hwnd)

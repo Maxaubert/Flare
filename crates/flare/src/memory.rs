@@ -316,19 +316,26 @@ pub fn breakdown() -> Option<Breakdown> {
     Some(b)
 }
 
-/// macOS: phase 3 of the port plan (mach task_info). None until then: the query fails.
+/// macOS: the resident set as the working set and the physical footprint (Activity Monitor's
+/// Memory column) as the private bytes, from `proc_pid_rusage`. None when the query fails.
 #[cfg(not(windows))]
 pub fn process_memory() -> Option<ProcessMemory> {
-    None
+    let m = flare_proc::own_memory()?;
+    Some(ProcessMemory {
+        working_set: usize::try_from(m.resident).unwrap_or(usize::MAX),
+        private: usize::try_from(m.footprint).unwrap_or(usize::MAX),
+    })
 }
 
-/// macOS: phase 3 of the port plan. None until then.
+/// macOS: the physical footprint, the Mac's count of what is this process's own in RAM (the
+/// Windows private working set's nearest match). None when the query fails.
 #[cfg(not(windows))]
 pub fn private_working_set() -> Option<usize> {
-    None
+    flare_proc::own_memory().map(|m| usize::try_from(m.footprint).unwrap_or(usize::MAX))
 }
 
-/// macOS: phase 3 of the port plan. None until then.
+/// macOS: None. The Windows split by region (images, mapped, private, heaps) has no cheap Mac
+/// match (`mach_vm_region` walks every region); the breakdown falls back to the footprint.
 #[cfg(not(windows))]
 pub fn regions() -> Option<Regions> {
     None
@@ -455,10 +462,6 @@ mod tests {
         }
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "process memory is read through Win32; macOS phase 3 of the port plan"
-    )]
     #[test]
     fn no_source_means_no_breakdown_until_the_window_sets_one() {
         // A fresh test thread has no source.

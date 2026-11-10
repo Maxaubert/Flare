@@ -1915,7 +1915,7 @@ pub fn install(
 ) {
     // Parking is window.rs's job (`park_e2e_window_when_ready`): the native window does not exist
     // yet when this runs, so no look for its handle is made here.
-    let appdata = std::env::var("APPDATA").ok();
+    let appdata = flare_win::paths::roaming_app_data();
     let profile = crate::startup::profile_dir(args.user_data_dir.as_deref(), appdata.as_deref());
     match crate::e2e_hook::start(&profile) {
         Ok(server) => {

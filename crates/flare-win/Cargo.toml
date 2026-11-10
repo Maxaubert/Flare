@@ -22,9 +22,24 @@ windows.workspace = true
 
 [target.'cfg(not(windows))'.dependencies]
 flare-proc = { path = "../flare-proc" }
+libc.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-app-kit.workspace = true
+block2.workspace = true
+dispatch2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+# AppKit checks that need the main thread (a window that is never shown): a small harness of its own
+# speaks the libtest list protocol nextest uses. Empty off macOS.
+[[test]]
+name = "appkit"
+path = "tests/appkit.rs"
+harness = false
 
 [lints]
 workspace = true

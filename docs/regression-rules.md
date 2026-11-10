@@ -776,3 +776,199 @@ Segoe UI and Cascadia Mono on Windows; Helvetica, Slint's own fallback, has a on
 painter. Held by `font_catalog::macos::tests`, `glyph_images_are_identical_to_the_all_fonts_build_for_the_theme_sample`,
 `tests/metal_macos.rs`, `the_prewarm_instance_starts_metal_alone_unless_a_backend_is_named` and the `_on_macos`
 twins of the Windows pixel tests. Source: macOS port phase 2, step 4 (2026-11-08).
+1005. **macOS: the window is a native titled window under Flare's top row, and its glass is an effect view behind
+the content.** `flare::backend::mac_chrome_attributes` makes the main window titled with a transparent titlebar, a
+hidden title and a full-size content view; `no-frame` is off on macOS (`native-caption`), so Slint keeps the
+decorations on and winit never swaps the style mask (that would drop the full-size content view). Flare's own
+minimise, maximise and close buttons and the mark make way for the traffic lights, which `flare_win::chrome`
+places in the 36 pt top row (container `CAPTION_GAP` wide, re-placed on every resize and on leaving full screen;
+AppKit puts them back at its own 28 pt row otherwise). AppKit passes every point of the row but the lights to
+Flare, which moves the window only by its `WindowMoveArea`s; a double click there does what System Settings says
+(`AppleActionOnDoubleClick`). Resize edges, the shadow, full screen and zoom are AppKit's (`resize_edges` installs
+nothing). The glass: `dwm::set_system_backdrop` and `set_immersive_dark` land in `flare_win::glass` on macOS, an
+`NSVisualEffectView` (`flare.glass`) put BELOW winit's content view in the frame view (never replacing it: winit
+casts `contentView` back to its own class), Acrylic as the under-window-background material, the window wearing
+dark or light Aqua by the ground. The handle for these calls is `window::native_view_of` (the `NSView`);
+`hwnd_of` stays Win32 only. The session end is `NSApplicationWillTerminateNotification` (Quit, log out, shut
+down), run once, and `NSWorkspaceWillPowerOffNotification`, which flushes every time (rule 1008). Held by `crates/flare-win/tests/appkit.rs` (a
+main-thread harness on a window that is never shown) and the `chrome`, `glass`, `session_end` and `window_park`
+tests. Source: macOS port phase 3, step 1 (2026-11-08).
+1006. **macOS: Cmd is the app's key, Ctrl is the shell's, and the menu bar is the keymap.** One chord table serves
+both systems: `KeyContext::os` (`flare_term::keys::KeyOs`, default Windows) picks the modifier, so on macOS every
+app chord is a Cmd chord and every Ctrl+letter reaches the shell as a control character; Ctrl+Tab and the agent
+guard's Ctrl+C and Ctrl+D stay Ctrl on both (Cmd going down on its own, `"Super"` in winit's names, leaves a
+Ctrl+Tab walk open on the Mac; Windows keeps its old list), Alt+Space is Windows only, the zoom keys and Cmd+Shift+[ and ] are
+`MAC_ONLY`. `AppCtl::key_os` is `keymap::app_key_os()`: the Mac in a Mac build, Windows in every unit test, so the
+Ctrl tests hold on both systems and the Mac tests set the Mac keys. The terminal's copy, paste and select all
+follow `term_key_action_on(os)` (Cmd+C, Cmd+V, Cmd+A on a Mac), so do the Text panel's selection keys
+(`AppCtl::panel_text_key`: Cmd+C, Cmd+A, Shift+Cmd with an arrow for a line's or the file's end), and a key left for the shell goes through
+`keymap::pty_key`, which on macOS sends nothing for a Cmd key (except the line keys) and gives Option to the
+layout unless `flare.term.optionAsMeta` is on. The menu bar (`mac_menu`, built by `flare_win::menu_bar`) never has
+an action of its own for a key item: the item IS its key press, sent through `window::handle_key`, and its key
+equivalent is made from that press, so the menu and the keyboard cannot drift apart (a key a Slint field has goes
+on to Slint as Control, Slint's name for Cmd on macOS). Never add a Mac shortcut in the menu alone. Held by the
+`mac_menu`, `chords`, `keymap` and `mac_keys` tests,
+`on_the_mac_cmd_c_cmd_a_and_cmd_with_the_arrows_are_the_selections_and_ctrl_is_not` and `crates/flare-win/tests/appkit.rs`. Source: macOS port
+phase 3, step 2 (2026-11-08).
+1007. **macOS: the system glue is AppKit and the per-user Library, never a helper process.** The clipboard is
+`NSPasteboard` (`flare_win::pasteboard`): text as an `NSString` (UTF-8 whatever the locale, no `pbcopy`), copied
+files as the items' file URLs read back as POSIX paths, an image only seen (PNG or TIFF), the change count as the
+sequence; tests use a private pasteboard and never the user's. The openers are `NSWorkspace`
+(`flare_win::workspace`): a web link opens only when `NSURL` itself reads http or https with a host; a file opens in
+its default app only after the canonical path is asked of the allowlist again; a folder, and whatever Settings
+hands over, only ever opens in a Finder window (`selectFile:inFileViewerRootedAtPath:` or a reveal), never by
+`openURL:`, which would launch a bundle such as `.app` (that is why the Mac needs no folder hold). A dropped or
+pasted path is quoted for the tab's shell: zsh, bash and sh in POSIX single quotes, fish in its own, tcsh and csh in POSIX
+single quotes with every `!` written `\!` (history expansion still acts inside their single quotes), pwsh as on
+Windows (`path_shell_of`; the Windows ids keep their Windows meaning). The single instance is an `flock` lock
+plus a Unix socket (`Flare.Handoff.<uid>.0.<hash>.sock`, mode 0600) in the per-user temp folder
+(`_CS_DARWIN_USER_TEMP_DIR`); the second launch checks the server's uid (libproc, by `LOCAL_PEERPID`, and
+`getpeereid`) before it writes a byte, the server checks the client's, a live server on the name is an error and a
+dead one's socket is removed. The default profile is `~/Library/Application Support/Flare`
+(`paths::roaming_app_data`), its log `~/Library/Logs/Flare` (`startup::logs_dir_of`), caches
+`~/Library/Caches/Flare`; a `--user-data-dir` profile keeps everything inside it. Process memory is
+`proc_pid_rusage` (resident set, physical footprint). Held by the `pasteboard`, `workspace`, `openers`,
+`single_instance`, `startup`, `paths`, `memory` and `flare-proc` tests. Source: macOS port phase 3, step 3
+(2026-11-08).
+1008. **macOS: a power-off notice flushes but never uses up the final save.** `NSWorkspaceWillPowerOffNotification`
+comes before the apps are asked to quit, and another app can still cancel the log out or shut down, leaving Flare
+running. So `SessionEndWatch` flushes on it every time without arming anything, and only
+`NSApplicationWillTerminateNotification` (the app really ends) is run once. A shared "fired" flag across both
+would lose every change made after a cancelled log out. Held by
+`the_end_runs_once_a_power_off_never_disarms_it_and_the_power_events_arrive_until_the_watch_stops`
+(`crates/flare-win/src/macos/session_end.rs`). Source: macOS port phase 3 review (2026-11-08).
+1009. **macOS: a file opens only in a handler that cannot run it.** The extension allowlist is not enough on a Mac: a
+single file can carry its own "Open with" app (a `notes.txt` set to open with Terminal runs). `workspace::open_file`
+refuses a file with any execute bit, looks the handler up (`URLForApplicationToOpenURL:`), refuses a terminal, a
+script runner, an installer or an app without a bundle id (`workspace::RUNNERS`), and opens the file WITH the
+checked app (`openURLs:withApplicationAtURL:`), never with `openURL:`. The denylist is the last wall, not the
+only one: before it, a file with its own "Open with" choice (`com.apple.LaunchServices.OpenWith`) is refused, and so
+is any type that runs, installs or redirects whatever opens it (`RUNNABLE_TYPES`: `.fileloc`, `.webloc`, `.terminal`,
+`.command`, `.jar`, `.scpt`, `.workflow`, `.pkg`, `.app` and the like). Add a new terminal, runner or runnable type to
+the lists. Held by `terminals_script_runners_and_unknown_apps_never_open_a_file`,
+`the_handler_lookup_refuses_a_terminal_and_opens_nothing`,
+`a_file_with_its_own_open_with_choice_is_refused_and_a_plain_one_is_not` and
+`runnable_and_redirecting_types_are_refused_before_any_handler` (`crates/flare-win/src/macos/workspace.rs`). Source:
+macOS port phase 3 review and the security review (2026-11-08).
+1010. **macOS: an `--e2e` run is an accessory app from its event loop's first turn.** `backend::with_window_attributes`
+hands Slint a winit event loop builder under `--e2e` with the Accessory activation policy and no activation at
+launch (`mac_e2e_loop_plan`), so the app never shows a Dock icon or comes forward before `window_park::park`, which
+runs only after `show()`. Without `--e2e` Slint keeps its own event loop. Held by
+`a_mac_e2e_run_is_an_accessory_that_never_activates_from_its_first_event` (`crates/flare/src/backend.rs`). Source:
+macOS port phase 3 review (2026-11-08).
+1011. **macOS: every screen is measured in one space, the points times ONE scale.** winit reports a window's position
+as points times that window's backing scale, so scaling each screen by its own factor makes a 2x screen's area
+overlap the screen beside it. `chrome::areas_in` scales every screen by the same factor; the saved window state is
+checked against the areas at its own saved scale (`monitors::work_areas_at`, `WindowStateStore::read_at`), and the
+park report measures the screens at the window's scale. On Windows `work_areas_at` is `work_areas` (one device
+pixel space already). Held by `screens_of_different_scales_never_overlap` (`crates/flare-win/src/macos/chrome.rs`)
+and `the_areas_are_asked_for_in_the_saved_scale` (`crates/flare-win/src/window_state.rs`). Source: macOS port
+phase 3 review (2026-11-08).
+1012. **macOS: the control channel is a Unix socket that only its user can reach, checked on both ends.**
+`flare-ctl/src/uds.rs` exports the named pipe's API (`pipe_name`, `Server`, `connect`, `connect_to_server`,
+`PipeEnd`) with the same framing and hashes: the socket is `<per-user temp folder>/flare-ctl/<h>[-<s>].sock`, the
+folder mode 0700 and the user's own with no group or other bits (else no server), the socket mode 0600. The server
+drops a client whose `getpeereid` uid is not its own before reading a byte; the client refuses a server of another
+uid, or (with `FLARE_CTL_PID`) any process but the one named, by `LOCAL_PEERPID`, before writing a byte. A live
+server on the path fails the start (rule 1018), a dead socket is removed, stop removes only the socket it bound. Reads are
+`recv(MSG_DONTWAIT)` probes, a stop shuts each socket down to free a write stuck on a client that never reads.
+Tests cannot switch users, so the refusals are proven with `Server::start_as` and `connect_as`, each end believing
+it is another uid. Held by `crates/flare-ctl/tests/pipe.rs` (the Windows tests run on both, `macos::*` twins of
+the naming and access tests), `crates/flare-mcp/tests/stdio.rs` and
+`appctl::tests::ctl_socket_tests` (every `show_*`, `set_tab_*`, `clear_tab_*`, `open_page`, `close_panel` and
+`convo.state` from `flare_mcp` over the socket to the headless window). Source: macOS port phase 4, step 1
+(2026-11-08).
+1013. **macOS: the port owner table is libproc's, read without a connection, and it sees this user's processes
+only.** `flare_proc::tcp_listeners` lists every listening TCP socket of the processes whose descriptors this user
+may read (`PROC_PIDLISTFDS`, then `PROC_PIDFDSOCKETINFO`, the `socket_fdinfo` offsets measured with `offsetof` on
+the macOS 27.2 SDK and proven by a real listener), never `lsof` and never a connect; `flare_win::tcp_owner` builds
+`listener_pids`, `listener_pids_v6` and `tree_look` on it with the Windows rules (one table read for both families,
+the tree from `flare_proc::table` with start times, a root's start unknown is no parent). Known gap: a listener of
+another account (a root daemon) is not seen, so a port only it holds reads as nobody, never as in the tree, and a
+port the tree holds on one loopback family while another account holds the other is caught by rule 1019. A
+descriptor list that fills its buffer may have been cut, so it is grown and read again (at most five times, then not
+trusted): a listener past the cut would make a port look held by fewer processes than hold it. The
+Sonara and chip tests run on macOS; their stand-in servers accept with a 10 s deadline, so a post that never comes
+fails the test instead of hanging it (the old blocking `accept` hung on macOS while the table was a stub). Held by
+`flare-proc` `sockets::tests`, `a_listening_tcp_socket_is_read_with_its_port_and_family`, the `tcp_owner` tests
+(now on both systems) and `a_childs_listener_is_in_this_processs_tree_on_macos`, the `sonara` tests and
+`sonara_is_never_called_on_the_ui_thread`. Source: macOS port phase 4, step 2 (2026-11-08).
+1014. **macOS: the taskbar button is the Dock tile.** The badge is the tile's badge label with the disc's own text
+("3", "9+"; `OverlayShell::set_badge`, `flare_win::dock::DockShell`), set without a window handle; a bell asks for a
+CRITICAL attention request (the icon bounces until Flare is activated, Windows' `FLASHW_TRAY | FLASHW_TIMERNOFG`)
+and nothing while Flare is the active app, never an informational one; "the window is in front" is `NSApp isActive`
+(`taskbar_flash::is_foreground`, also the web panel's `window_is_foreground`). Every call is main-thread only and
+does nothing off it. Tests never make an attention request (an unbundled test app gets a real request id even with
+no Dock tile). Held by `dock::tests`, `a_text_badge_gets_the_count_as_the_disc_shows_it_and_a_clear_takes_it` and
+`dock_badge_reads_back_and_attention_is_asked_only_while_flare_is_not_active` (`crates/flare-win/tests/appkit.rs`).
+Source: macOS port phase 4, step 2 (2026-11-08).
+1015. **macOS: notifications wait for the signed app, and say so.** The toast path goes through
+`flare_win::toast::NotifyBackend`; on macOS the backend (`MacBackend`) shows nothing and answers
+`MAC_UNAVAILABLE` ("unavailable until the app is signed"), because `UNUserNotificationCenter` refuses an unsigned,
+unbundled app and Flare has no Developer ID yet. The caller treats it as Windows treats a refused toast (the
+fallback bounce, `UiMsg::ToastFailed`); nothing ever reports a notification it did not post. Because the answer is
+known before any worker starts (`toast::system_unavailable`), the window's sink posts `ToastFailed` at once on macOS,
+starts no worker per question and logs the reason once a run (`toast::FirstTime`), never once a question. TODO in
+`toast.rs` for port phase 8. Held by `the_backend_gets_the_request_and_its_answer_and_click_come_back`,
+`macos_says_notifications_wait_for_the_signed_app_and_shows_nothing` and
+`the_system_says_up_front_whether_it_can_take_a_notification`. Source: macOS port phase 4, step 2
+(2026-11-08), Max has no Developer ID yet.
+1016. **macOS: an agent is found by its macOS command line too.** Off Windows `flare_agent::detect::classify` also
+counts the launcher script an interpreter runs (`node /opt/homebrew/bin/claude`, `bash ~/.claude/local/claude`,
+`python3.12 ~/.local/bin/aider`): the interpreter's first argument that is not an option, by its exact lower-case
+file name (never `~/Documents/Claude`, never a later argument). The value of an interpreter option that takes one
+(`node -r ts-node/register`, `--require`, `--import`, `--loader`; bun's `--preload`, `--cwd`; deno's `--config`;
+Python's `-W`, `-X`) is not the script, and neither is the `run` of `deno` and `bun`; a `deno install` wrapper
+(`deno run -A npm:@anthropic-ai/claude-code`) is read by its package signature; an app bundle's own executable with a capital in
+its name (`Claude.app/Contents/MacOS/Claude`, the desktop app) is never the CLI. The poll reads the shell's own
+argv too (`tab_agent_kind`: a shell that ran `exec claude` is the agent; Windows never reads it, so nothing
+changes there) and adopts the tab's terminal foreground job under its shell when its parent is gone
+(`adopt_foreground`; only the tab's own session can be its foreground job). Windows reads its command lines
+exactly as before. Held by `a_launcher_script_under_its_interpreter_is_the_agent_it_is_named_for`,
+`macos_command_lines_are_read_for_the_agent_they_run`, `an_app_bundles_own_executable_is_not_the_cli_of_its_name`,
+`a_shell_that_became_the_agent_is_the_agent`, `the_foreground_job_of_a_tab_is_adopted_only_when_it_is_outside_the_tree`
+and `a_real_child_command_line_is_read_and_filtered`. Source: macOS port phase 4, step 2 (2026-11-08; the argv
+forms read off this Mac's own `claude` and Homebrew `codex`).
+1017. **macOS: the Claude plugin's hooks run `/bin/sh hook.sh`, the plugin list is `:`-separated, and the home is
+`HOME`.** The install turns every state hook's `cmd.exe /d /c call ${CLAUDE_PLUGIN_ROOT}/hook.cmd` into
+`/bin/sh ${CLAUDE_PLUGIN_ROOT}/hook.sh` with the same state words (a hook of any other shape fails the render), the
+system folder is `/bin` (any absolute folder named `bin`, as any `System32`), every program written is an absolute
+POSIX path, and each platform installs only its own script. `hook.sh` prints the same JSON with `printf`, never
+expands a value as its format, and carries the session id only when it is 36 characters of `0-9 a-f -`. The
+installed copy lives in `~/Library/Application Support/Flare/claude-plugin-<tag>` with `flare-mcp` (no `.exe`).
+`CLAUDE_CODE_PLUGIN_DIRS` is split and joined on `flare_shells::env::PLUGIN_DIRS_SEP` (`;` on Windows, `:` on
+macOS: Claude Code splits it on Node's `path.delimiter`, read in 2.1.319). Claude's home
+(`flare_agent::resume::claude_home`, the Changes panel's transcripts and resume) and `app_facts::home` are `HOME` on
+macOS. Held by the seven install tests (no longer ignored), `the_posix_render_keeps_every_state_word_and_refuses_what_it_cannot_convert`,
+`every_hook_prints_what_the_parser_reads_on_macos`, `prints_the_state_as_valid_json_whatever_the_session_id_holds_on_macos`,
+`hook_sh_is_lf_and_static`, `a_platform_installs_its_own_hook_script_and_never_the_other`,
+`the_folder_list_is_split_the_way_claude_code_splits_it` and `claude_home_is_the_platforms_home`. Source: macOS
+port phase 4, step 2 (2026-11-08).
+1018. **macOS: the first control server on a name holds `<socket>.lock`, and a busy one is waited for, never
+replaced.** A connect cannot tell a live server with a full backlog from a dead one (macOS answers both with
+`ECONNREFUSED` at once), so `Server::start` first takes an exclusive `flock` (non-blocking, retried for 250 ms) on
+`<socket>.lock` beside the socket (mode 0600, `O_NOFOLLOW`, the user's own file) and holds it for the server's life;
+a start that cannot take it fails with `AddrInUse`, and only under the lock is a socket already there removed as a
+dead Flare's (the kernel drops the lock with the process; a socket that still accepts a connect is still never
+replaced). A lock taken on a file unlinked meanwhile is let go and taken again on the file at the path. Stop removes
+the socket and then the lock file, both while holding the lock and only while the socket is still its own. A client
+whose connect is refused while the socket is there and a server holds its lock (`server_alive`, a shared lock let go
+at once) waits and retries within its timeout, as for a busy pipe; a socket with no lock or a free one fails at
+once. The listener is non-blocking, so a client that leaves between `poll` and `accept` never parks the accept
+thread past a stop. Held by `a_live_server_with_a_full_backlog_is_never_replaced`,
+`a_client_of_a_busy_server_waits_and_then_gets_in`, `a_client_of_a_dead_socket_fails_at_once` and
+`the_lock_file_sits_beside_the_socket`. Source: macOS port phase 4 review (2026-11-08; the reviewer's full-backlog
+probe started a second server over a live one).
+1019. **macOS: a port is in the tab's tree only when the loopback family the tree does not hold is shown free.**
+The listener table shows this user's processes only, and binding 127.0.0.1:P and [::1]:P is never refused across
+accounts (two addresses), so a tree on 127.0.0.1:P says nothing of another account on [::1]:P, and the chip's
+`http://localhost:P` may reach either. So `tcp_owner::tree_look` keeps an `InTree` answer only when each family with
+no listener in the table is shown free by `loopback_bind_refused`: a bind of that family's loopback address with
+`SO_REUSEADDR` and no `listen` (no client can ever reach it). A wildcard listener of this user does not refuse it;
+another account's listener on that address or that family's wildcard does (the kernel's per-uid bind check), and a
+refusal or an unknown answer makes the look `Unreadable` (never trusted, one miss). A family the tree holds needs no
+probe: the kernel refuses another account's bind on the same or an overlapping address within a family, unless that
+account is root. Windows sees every account's listeners and is unchanged. Held by
+`an_in_tree_answer_stands_only_when_the_unseen_family_is_shown_free` and
+`the_loopback_probe_tells_a_held_address_from_a_free_one` (a second account cannot be staged in a test; the
+same-user and wildcard answers were measured on this Mac). Source: macOS port phase 4 review (2026-11-08).

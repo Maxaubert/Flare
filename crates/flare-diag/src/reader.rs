@@ -958,10 +958,20 @@ fn now_ms() -> i64 {
 }
 
 /// The default logs folder: `%APPDATA%\Flare\logs`, else `<temp>\Flare\logs` (the profile rule).
+#[cfg(windows)]
 fn default_logs_dir() -> PathBuf {
     match std::env::var("APPDATA") {
         Ok(a) if !a.is_empty() => PathBuf::from(a).join("Flare").join("logs"),
         _ => std::env::temp_dir().join("Flare").join("logs"),
+    }
+}
+
+/// macOS: the default profile logs to `~/Library/Logs/Flare`, else `<temp>/Flare/logs`.
+#[cfg(not(windows))]
+fn default_logs_dir() -> PathBuf {
+    match std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        Some(h) => PathBuf::from(h).join("Library").join("Logs").join("Flare"),
+        None => std::env::temp_dir().join("Flare").join("logs"),
     }
 }
 

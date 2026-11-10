@@ -232,6 +232,22 @@ impl WindowStateStore {
         let raw = std::fs::read_to_string(file).unwrap_or_default(); // sync-ok: the startup read
         parse_window_state(&raw, areas)
     }
+    /// The startup read where the work areas depend on the saved scale (`monitors::work_areas_at`:
+    /// macOS gives positions as points times the window's scale). Gives the state and the areas it
+    /// was checked against.
+    pub fn read_at(file: &Path, areas_at: impl Fn(f64) -> Vec<Area>) -> (WindowState, Vec<Area>) {
+        let raw = std::fs::read_to_string(file).unwrap_or_default(); // sync-ok: the startup read
+        parse_window_state_at(&raw, areas_at)
+    }
+}
+
+/// `parse_window_state` against the areas of the saved scale (the scale never depends on the areas).
+pub fn parse_window_state_at(
+    raw: &str,
+    areas_at: impl Fn(f64) -> Vec<Area>,
+) -> (WindowState, Vec<Area>) {
+    let areas = areas_at(parse_window_state(raw, &[]).scale);
+    (parse_window_state(raw, &areas), areas)
 }
 
 #[cfg(test)]
@@ -267,6 +283,36 @@ mod tests {
             minimised: false,
             fullscreen: false,
         }
+    }
+
+    #[test]
+    fn the_areas_are_asked_for_in_the_saved_scale() {
+        // Two screens in points: a 2x one at 0..1512 and a 1x one at 1512..3432 (macOS).
+        let at = |s: f64| {
+            vec![
+                Area {
+                    x: 0,
+                    y: 0,
+                    width: (1512.0 * s) as i32,
+                    height: (982.0 * s) as i32,
+                },
+                Area {
+                    x: (1512.0 * s) as i32,
+                    y: 0,
+                    width: (1920.0 * s) as i32,
+                    height: (1080.0 * s) as i32,
+                },
+            ]
+        };
+        // Saved at 2x, 2000 pt in: on the second screen, 4000 in that space.
+        let raw = r#"{"width":800,"height":600,"x":4000,"y":100,"scale":2}"#;
+        let (s, areas) = parse_window_state_at(raw, at);
+        assert_eq!(areas, at(2.0));
+        assert_eq!((s.x, s.y), (Some(4000), Some(100)));
+        // The same file checked against 1x areas would lose the position.
+        assert_eq!(parse_window_state(raw, &at(1.0)).x, None);
+        let (s, areas) = parse_window_state_at("", at);
+        assert_eq!((s.x, areas), (None, at(1.0)));
     }
 
     #[test]

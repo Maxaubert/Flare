@@ -70,22 +70,11 @@ fn open_escaped(escaped: &str) -> Result<(), String> {
     }
 }
 
-/// macOS: `/usr/bin/open` hands the (already escaped) web link to the default browser.
-#[cfg(not(windows))]
+/// macOS: `NSWorkspace openURL:` hands the (already escaped) web link to the default browser, once
+/// `NSURL` itself has read it as http or https with a host.
+#[cfg(target_os = "macos")]
 fn open_escaped(escaped: &str) -> Result<(), String> {
-    // sync-ok: `open` hands the link over and returns, like ShellExecuteW
-    let status = std::process::Command::new("/usr/bin/open")
-        .arg(escaped)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status() // sync-ok: `open` returns as soon as the browser has the link
-        .map_err(|e| format!("open failed: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("open failed with {status}"))
-    }
+    crate::workspace::open_web_url(escaped)
 }
 
 /// An app link as Windows may safely be handed it: the scheme as it is and every byte that could end a quoted argument

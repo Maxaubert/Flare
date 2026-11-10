@@ -212,6 +212,30 @@ mod tests {
         assert_eq!(drop_text(&[], PathShell::PowerShell), None);
     }
 
+    /// macOS: a Finder drop is POSIX paths, quoted for the tab's shell (zsh and bash alike, fish
+    /// its own way), joined by one space, never followed by Enter.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_mac_drop_is_quoted_for_zsh_bash_and_fish() {
+        use flare_shells::paste::path_shell_of;
+        let files = [p("/Users/me/My Files/it's.txt"), p("/tmp/$HOME `x`")];
+        for id in ["zsh", "bash"] {
+            assert_eq!(
+                drop_text(&files, path_shell_of(Some(id))).as_deref(),
+                Some(r"'/Users/me/My Files/it'\''s.txt' '/tmp/$HOME `x`'"),
+                "{id}"
+            );
+        }
+        assert_eq!(
+            drop_text(&files, path_shell_of(Some("fish"))).as_deref(),
+            Some(r"'/Users/me/My Files/it\'s.txt' '/tmp/$HOME `x`'")
+        );
+        assert_eq!(
+            drop_text(&[p("/tmp/a\u{1b}b")], path_shell_of(Some("zsh"))),
+            None
+        );
+    }
+
     fn wait_for_shell(handle: &TermHandle) {
         let t = Instant::now();
         while handle.shell_id().is_none() && t.elapsed() < Duration::from_secs(5) {

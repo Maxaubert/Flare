@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use flare_theme::edges::WindowEdges;
 use flare_theme::ground::DEFAULT_GROUND;
 use flare_win::dwm::{self, Border, DwmSurface, Hwnd};
-use flare_win::material::{Material, Surface, system_backdrop_ok};
+use flare_win::material::{Material, Surface, backdrop_ok_here};
 use flare_win::os_build::OsVersion;
 use flare_win::window_edge::{EdgeApplier, EdgeTarget};
 
@@ -185,7 +185,7 @@ impl WindowMaterial<DwmSurface> {
         e2e: bool,
         on_edge: impl Fn(Option<[u8; 4]>) + 'static,
     ) -> Self {
-        let supported = system_backdrop_ok(os);
+        let supported = backdrop_ok_here(os);
         let surface = DwmSurface::new(hwnd);
         Self::from_parts(
             surface,
@@ -305,15 +305,10 @@ impl<S: FsSurface> WindowMaterial<S> {
     }
 }
 
+/// The handle the material calls take: the HWND on Windows, the window's `NSView` on macOS (where
+/// `flare_win::dwm` hands the backdrop and the dark frost to `flare_win::glass`).
 fn hwnd_of(app: &crate::AppWindow) -> Option<Hwnd> {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use slint::winit_030::WinitWindowAccessor;
-    slint::ComponentHandle::window(app)
-        .with_winit_window(|w| match w.window_handle().ok()?.as_raw() {
-            RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
-            _ => None,
-        })
-        .flatten()
+    crate::window::native_view_of(app)
 }
 
 #[cfg(test)]

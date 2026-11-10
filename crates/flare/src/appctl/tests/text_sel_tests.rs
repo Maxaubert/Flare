@@ -421,3 +421,34 @@ fn the_code_view_of_a_markdown_file_selects_and_asks_like_any_text_file() {
     f.pump();
     assert_eq!(selected(&f), None);
 }
+
+#[test]
+fn on_the_mac_cmd_c_cmd_a_and_cmd_with_the_arrows_are_the_selections_and_ctrl_is_not() {
+    let (f, _h, _) = live(Opts::default());
+    f.ctl.borrow_mut().set_key_os(KeyOs::Mac);
+    open(&f, "a.txt", "abc\ndefgh\nij");
+    focus(&f);
+    down(&f, 0, 1.0, false);
+    up(&f);
+    let cmd_shift = |k: &str| KeyEvent::new(k, k).shift().meta();
+    assert_eq!(f.key(cmd_shift("ArrowRight")), KeyOutcome::Consumed);
+    assert_eq!(selected(&f).as_deref(), Some("bc"));
+    assert_eq!(f.key(cmd_shift("ArrowDown")), KeyOutcome::Consumed);
+    assert_eq!(selected(&f).as_deref(), Some("bc\ndefgh\nij"));
+    // Ctrl is the shell's on a Mac, never the panel's selection.
+    assert_ne!(
+        f.key(KeyEvent::new("a", "KeyA").ctrl()),
+        KeyOutcome::Consumed
+    );
+    assert_eq!(
+        f.key(KeyEvent::new("a", "KeyA").meta()),
+        KeyOutcome::Consumed
+    );
+    assert_eq!(selected(&f).as_deref(), Some("abc\ndefgh\nij"));
+    assert_eq!(
+        f.key(KeyEvent::new("c", "KeyC").meta()),
+        KeyOutcome::Consumed
+    );
+    f.pump_until("the copy", |f| f.clip.read_text().is_some());
+    assert_eq!(f.clip.read_text().as_deref(), Some("abc\ndefgh\nij"));
+}

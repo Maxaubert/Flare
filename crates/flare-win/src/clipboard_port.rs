@@ -215,9 +215,9 @@ impl ClipboardPort for WinClipboard {
     }
 }
 
-/// macOS: text through `pbcopy` and `pbpaste`. Files, images and the change count (NSPasteboard)
-/// are phase 3 of the port plan.
-#[cfg(not(windows))]
+/// macOS: `NSPasteboard` (see `pasteboard.rs`): text, copied files as POSIX paths, an image seen,
+/// and the change count as the sequence.
+#[cfg(target_os = "macos")]
 impl ClipboardPort for WinClipboard {
     fn write_text(&self, text: &str, max: usize) -> Result<(), String> {
         check_write(text, max)?;
@@ -225,28 +225,20 @@ impl ClipboardPort for WinClipboard {
     }
 
     fn read_text(&self) -> Option<String> {
-        // pbpaste writes in the locale's encoding; force UTF-8 (a Finder launch has no LANG).
-        // sync-ok: the port is called from worker threads only
-        let out = std::process::Command::new("/usr/bin/pbpaste")
-            .env("LANG", "en_US.UTF-8")
-            .env("LC_CTYPE", "en_US.UTF-8")
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output() // sync-ok: the port is called from worker threads only
-            .ok()?;
-        let text = String::from_utf8(out.stdout).ok()?;
-        (out.status.success() && !text.is_empty()).then_some(text)
+        crate::pasteboard::read_text(&crate::pasteboard::general())
     }
 
     fn read_state(&self) -> ClipboardState {
+        let pb = crate::pasteboard::general();
         ClipboardState {
-            text: self.read_text().unwrap_or_default(),
-            ..ClipboardState::default()
+            files: crate::pasteboard::read_files(&pb),
+            text: crate::pasteboard::read_text(&pb).unwrap_or_default(),
+            image: crate::pasteboard::has_image(&pb),
         }
     }
 
     fn sequence(&self) -> u32 {
-        0
+        crate::pasteboard::change_count(&crate::pasteboard::general())
     }
 }
 

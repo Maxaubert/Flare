@@ -66,6 +66,39 @@ pub enum TermKeyAction {
     Paste,
     PastePlain,
     Pty,
+    /// macOS Cmd+A: the whole buffer is selected (Windows has no such key: Ctrl+A is the shell's).
+    SelectAll,
+}
+
+/// Whose key conventions apply: Windows (Ctrl is the app's key) or macOS (Cmd is the app's key, and
+/// Ctrl+letter always reaches the terminal as a control character). The default is Windows, so
+/// every caller and test that names no system keeps the Windows behaviour; the app passes `HOST`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum KeyOs {
+    #[default]
+    Windows,
+    Mac,
+}
+
+impl KeyOs {
+    /// The system this build runs on.
+    pub const HOST: KeyOs = if cfg!(target_os = "macos") {
+        KeyOs::Mac
+    } else {
+        KeyOs::Windows
+    };
+
+    pub fn is_mac(self) -> bool {
+        self == KeyOs::Mac
+    }
+
+    /// The app's primary modifier alone (Ctrl on Windows, Cmd on macOS), Shift allowed.
+    pub fn primary(self, e: &KeyEvent) -> bool {
+        match self {
+            KeyOs::Windows => e.ctrl && !e.alt && !e.meta,
+            KeyOs::Mac => e.meta && !e.ctrl && !e.alt,
+        }
+    }
 }
 
 /// True when the key is `letter`, by its ASCII key name, else by its physical code (regression rule 11, O2).
@@ -95,8 +128,17 @@ pub struct KeyState<'a> {
 /// Deleted (the closure runs only then); host_owns -> Host; Shift+Enter where an agent runs ->
 /// Newline; Ctrl+V (no Alt) -> Paste, or PastePlain with Shift; else Pty.
 pub fn term_key_action(e: &KeyEvent, s: &mut KeyState) -> TermKeyAction {
+    term_key_action_on(KeyOs::Windows, e, s)
+}
+
+/// `term_key_action` for one system. macOS: Cmd+C copies a selection, Cmd+V pastes (Cmd+Shift+V
+/// plain), Cmd+A selects all; Ctrl+C and Ctrl+V are the shell's control characters there.
+pub fn term_key_action_on(os: KeyOs, e: &KeyEvent, s: &mut KeyState) -> TermKeyAction {
     if !e.pressed {
         return TermKeyAction::Pty;
+    }
+    if os.is_mac() {
+        return mac_key_action(e, s);
     }
     if is_key(e, 'c') && e.ctrl && !e.shift && !e.alt && s.has_selection {
         return TermKeyAction::Copy;
@@ -121,6 +163,39 @@ pub fn term_key_action(e: &KeyEvent, s: &mut KeyState) -> TermKeyAction {
         } else {
             TermKeyAction::Paste
         };
+    }
+    TermKeyAction::Pty
+}
+
+/// The macOS order: the same as Windows with Cmd in Ctrl's place for copy and paste.
+fn mac_key_action(e: &KeyEvent, s: &mut KeyState) -> TermKeyAction {
+    let cmd_only = e.meta && !e.ctrl && !e.alt;
+    if cmd_only && !e.shift && is_key(e, 'c') && s.has_selection {
+        return TermKeyAction::Copy;
+    }
+    let plain = !e.ctrl && !e.shift && !e.alt && !e.meta;
+    if (e.key == "Backspace" || e.key == "Delete")
+        && plain
+        && s.has_selection
+        && (s.delete_selection)()
+    {
+        return TermKeyAction::Deleted;
+    }
+    if (s.host_owns)(e) {
+        return TermKeyAction::Host;
+    }
+    if e.key == "Enter" && e.shift && s.agent_here {
+        return TermKeyAction::Newline;
+    }
+    if cmd_only && is_key(e, 'v') {
+        return if e.shift {
+            TermKeyAction::PastePlain
+        } else {
+            TermKeyAction::Paste
+        };
+    }
+    if cmd_only && !e.shift && is_key(e, 'a') {
+        return TermKeyAction::SelectAll;
     }
     TermKeyAction::Pty
 }
@@ -281,5 +356,71 @@ mod tests {
         assert!(is_key(&KeyEvent::new("c", "KeyI"), 'c'));
         // Russian: a Cyrillic name falls back to the physical key.
         assert!(is_key(&KeyEvent::new("\u{441}", "KeyC"), 'c'));
+    }
+
+    fn run_mac(e: &KeyEvent, sel: bool) -> TermKeyAction {
+        let mut d = || false;
+        let h = |_: &KeyEvent| false;
+        let mut s = KeyState {
+            has_selection: sel,
+            delete_selection: &mut d,
+            host_owns: &h,
+            agent_here: false,
+        };
+        term_key_action_on(KeyOs::Mac, e, &mut s)
+    }
+
+    #[test]
+    fn mac_cmd_c_copies_and_ctrl_c_stays_the_shells_interrupt() {
+        assert_eq!(run_mac(&key("c").meta(), true), TermKeyAction::Copy);
+        // No selection: not a copy; the Mac key translation then sends nothing for a Cmd key.
+        assert_eq!(run_mac(&key("c").meta(), false), TermKeyAction::Pty);
+        assert_eq!(run_mac(&key("c").ctrl(), true), TermKeyAction::Pty);
+        assert_eq!(run_mac(&key("c").ctrl(), false), TermKeyAction::Pty);
+        assert_eq!(run_mac(&key("c").meta().shift(), true), TermKeyAction::Pty);
+    }
+
+    #[test]
+    fn mac_cmd_v_pastes_and_ctrl_v_reaches_the_shell() {
+        assert_eq!(run_mac(&key("v").meta(), false), TermKeyAction::Paste);
+        assert_eq!(
+            run_mac(&key("V").meta().shift(), false),
+            TermKeyAction::PastePlain
+        );
+        assert_eq!(run_mac(&key("v").ctrl(), false), TermKeyAction::Pty);
+        assert_eq!(run_mac(&key("v").meta().alt(), false), TermKeyAction::Pty);
+    }
+
+    #[test]
+    fn mac_cmd_a_selects_all_and_ctrl_a_is_line_start() {
+        assert_eq!(run_mac(&key("a").meta(), false), TermKeyAction::SelectAll);
+        assert_eq!(run_mac(&key("a").ctrl(), false), TermKeyAction::Pty);
+        // Windows: Ctrl+A is the shell's, and Cmd+A means nothing to the decision.
+        assert_eq!(
+            run(&key("a").ctrl(), false, false, false, false),
+            TermKeyAction::Pty
+        );
+        assert_eq!(
+            run(&key("a").meta(), false, false, false, false),
+            TermKeyAction::Pty
+        );
+    }
+
+    #[test]
+    fn mac_cmd_reads_the_physical_key_like_ctrl_does() {
+        let cyr_c = KeyEvent::new("\u{441}", "KeyC").meta();
+        assert_eq!(run_mac(&cyr_c, true), TermKeyAction::Copy);
+    }
+
+    #[test]
+    fn the_primary_modifier_is_ctrl_on_windows_and_cmd_on_the_mac() {
+        assert!(KeyOs::Windows.primary(&key("t").ctrl()));
+        assert!(!KeyOs::Windows.primary(&key("t").meta()));
+        assert!(KeyOs::Mac.primary(&key("t").meta()));
+        assert!(KeyOs::Mac.primary(&key("T").meta().shift()));
+        assert!(!KeyOs::Mac.primary(&key("t").ctrl()));
+        assert!(!KeyOs::Mac.primary(&key("t").meta().ctrl()));
+        assert_eq!(KeyOs::default(), KeyOs::Windows);
+        assert_eq!(KeyOs::HOST.is_mac(), cfg!(target_os = "macos"));
     }
 }

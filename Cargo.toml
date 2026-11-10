@@ -74,6 +74,13 @@ unicode-normalization = "=0.1.25"
 fancy-regex = "=0.19.2"
 rfd = { version = "=0.17.2", default-features = false }
 raw-window-handle = "=0.6.2"
+# The macOS window chrome (port phase 3): AppKit through objc2, the versions winit and wgpu already pull in.
+objc2 = "=0.6.5"
+objc2-foundation = "=0.3.2"
+objc2-app-kit = "=0.3.2"
+block2 = "=0.6.2"
+# The main queue on macOS (the eyedropper hands its sampler to the main thread): the version objc2 already pulls in.
+dispatch2 = "=0.3.1"
 velopack = "=1.2.161"
 embed-resource = "=3.0.11"
 ureq = "=3.4.2"
