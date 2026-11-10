@@ -57,6 +57,11 @@ impl AppCtl {
         self.web.set_arrow_shells(agent, mark, pad);
     }
 
+    /// Whether "Draw arrow" is offered at all (off on macOS, rule 1124).
+    pub fn set_draw_offered(&mut self, on: bool) {
+        self.web.set_draw_offered(on);
+    }
+
     /// The browser's controllers now (0 while no web panel is open).
     pub fn web_controllers(&self) -> usize {
         self.web.controllers()

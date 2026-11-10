@@ -183,6 +183,8 @@ pub(super) struct Arrows {
     pad_last: Option<(i32, i32, u32, u32)>,
     draw: Option<Draw>,
     lookup: Option<Lookup>,
+    /// The person's draw mode is offered at all (off on macOS until the pad and the pointer are ported, rule 1124).
+    draw_offered: bool,
 }
 
 impl Default for Arrows {
@@ -198,6 +200,7 @@ impl Default for Arrows {
             pad_last: None,
             draw: None,
             lookup: None,
+            draw_offered: true,
         }
     }
 }
@@ -376,6 +379,20 @@ impl WebCtl {
     #[cfg(test)]
     pub fn set_pointer(&mut self, f: PointerFn) {
         self.arrows.pointer = f;
+    }
+
+    /// Whether "Draw arrow" is offered at all. The window turns it off on macOS, where no pad catches the mouse over
+    /// the page and the pointer is not read yet (rule 1124); the agent's arrow is not affected.
+    pub fn set_draw_offered(&mut self, on: bool) {
+        self.arrows.draw_offered = on;
+        if !on && self.arrows.draw.is_some() {
+            self.cancel_draw();
+        }
+    }
+
+    /// "Draw arrow" is offered at all (rule 1124).
+    pub fn draw_offered(&self) -> bool {
+        self.arrows.draw_offered
     }
 
     fn next_id(&mut self) -> u64 {
@@ -637,7 +654,8 @@ impl WebCtl {
 
     /// Whether the person may draw on the tab's page now: in front and live, no pop-up over it, loaded.
     fn draw_possible(&self, tab: &str) -> bool {
-        self.cursor_on(tab)
+        self.arrows.draw_offered
+            && self.cursor_on(tab)
             && self
                 .tabs
                 .get(tab)

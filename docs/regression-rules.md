@@ -1217,3 +1217,12 @@ Native: `crates/flare-cef/src/macos/view.rs`, `crates/flare-web/src/macos/host.r
 `open_app_uri_refuses_a_web_address_a_file_and_a_path_before_the_system_sees_it`,
 `a_scheme_no_app_takes_or_only_a_terminal_takes_has_no_handler` and `a_scheme_that_is_not_one_is_never_looked_up`.
 Source: main's #150, #151 and #153 carried to the macOS port (2026-11-10).
+1124. **macOS: the agent's arrow points, and "Draw arrow" is not offered yet.** `browser.point` is the Windows one
+(rule 254) on CEF: it measures, answers and follows its element, and the look's screenshot carries it, but over the
+page it is drawn by the recording stand-in, as the agent's cursor and border are, until the overlay windows are
+ported. The person's draw mode (rules 255 to 257) needs a pad that takes the mouse from the page and a read of the
+pointer; neither exists on macOS (`real_pointer` is a stand-in that reads nothing), so the window turns the mode off
+(`set_draw_offered(false)` in `window.rs`): "Draw arrow" never shows (`push_draw_arrow`), its callback starts nothing
+(`draw_possible`), and turning it off ends a mode that was on. Windows keeps it. Held by
+`with_the_draw_mode_not_offered_the_button_hides_and_starts_nothing_but_the_agent_still_points`. Source: main's #154
+carried to the macOS port (2026-11-10).
