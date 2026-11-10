@@ -6,6 +6,7 @@
 pub mod backend;
 pub mod fake;
 pub mod host;
+mod popups;
 pub mod seal;
 
 pub use backend::*;

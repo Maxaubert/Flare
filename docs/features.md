@@ -1078,11 +1078,26 @@ one controller per tab with an open web panel, parented to Flare's window.
   before closing it (`closing_the_tab_whose_page_has_the_keys_hands_them_back_first`). Losing the keyboard to another app
   while the window is still foreground is judged one message later, not at the instant of the kill-focus. By hand: real keys
   in a real page and a real switch to another app (below).
-- **What a page may not do.** Permissions are denied (the e2e's geolocation request is answered with the denied code), new
-  windows go to the same panel (`target=_blank` and `window.open` navigate the panel; the e2e counts top-level windows of both
-  processes before and after), only http, https and about:blank open whoever asks, the profile is the run's own folder and never
+- **What a page may not do.** Permissions are denied (the e2e's geolocation request is answered with the denied code), a plain
+  `target=_blank` link opens in the same panel, a pop-up after the person's click opens over the page in the panel (below), one no
+  click asked for opens nothing (the e2e counts top-level windows of both processes before and after), only http, https and about:blank open whoever asks, the profile is the run's own folder and never
   Edge's (`the_profile_lives_under_the_named_profile_or_local_appdata`, `the_profile_is_never_an_edge_folder`). Held by the e2e
   `webPanel` for the page behaviours and the unit tests above for the rest.
+- **Pop-ups (2026-11-10).** A page's pop-up (a card's 3-D Secure check, a sign-in window) opens as a real second browser view
+  inside the side panel, so it keeps its link back to the page (`window.opener`), its window name and a form's POST. Only after
+  the person's own click or key, and only when the request looks like a pop-up: a size or position, a named window, or a blank
+  page to write into. A plain `target=_blank` link still opens in the panel; a pop-up no click asked for opens nothing and the
+  address row says "Pop-up blocked"; past 2 a tab or 4 in all the next one is refused. The pop-up covers the page in the panel
+  under a strip in Flare's own look, "Pop-up from <site>" (the site, never the page's title) with a Close button; the page waits
+  hidden behind it. It closes on `window.close()`, Close, a lost process, closing the panel or tab, and quitting, and the page
+  shows again; a pop-up from the pop-up stacks on top. It has the panel's profile, saved passwords and autofill, the permission
+  denial and the address rule; its downloads are cancelled. The browser tools never reach it: while one is open, click, type,
+  press, scroll, navigate and eval answer "a pop-up is open, the person must finish it", a look still reads the page behind, and
+  `browser_state` says a pop-up is open. Mini-apps and plugin pages still open nothing. Held by regression rules 249 and 250
+  (`popup_plan`'s tests in `web.rs`, the `popups.rs` tests, `a_popup_shows_under_flares_strip_and_closing_it_brings_the_page_back`,
+  `the_agents_input_calls_wait_for_the_person_while_a_popup_is_open`, `closing_the_tab_takes_its_popups_with_it`,
+  `a_popup_no_click_asked_for_is_said_in_the_bar`, `the_popup_strip_takes_the_pages_top_and_its_close_calls_back`) and the e2e
+  `webPanel`. Spec: `docs/superpowers/specs/2026-11-10-web-popups-design.md`, section 1.
 - **A download is asked about (S6).** WebView2 saves straight into Downloads, so Flare holds every download (`DownloadStarting`
   deferral) behind its own question: "Save this file?", the file name and the host, Save or Cancel. A no, a closed panel, a
   closing window or no answer saves nothing; a second download waits behind the first. Held by
@@ -2187,8 +2202,8 @@ read afterwards. Spec: `docs/superpowers/specs/2026-11-10-web-popups-design.md`,
 
 | Kind | When | A problem in `cargo diag` |
 |---|---|---|
-| `web-refused` | A navigation (`why`: `scheme`, `not-its-page`, `not-its-host`), a mini-app's or plugin's frame (`why: frame`) or app link (`why: app-link`), or a pop-up (`why: popup`) was refused | no |
-| `web-popup` | A pop-up went to the panel (`to: panel`), and whether the person's click opened it (`user`) | no |
+| `web-refused` | A navigation (`why`: `scheme`, `not-its-page`, `not-its-host`), a mini-app's or plugin's frame (`why: frame`) or app link (`why: app-link`), or a pop-up (`why: popup`, `popup-blocked` when no click asked for it, `popup-limit` past the limits) was refused | no |
+| `web-popup` | A pop-up opened over the page (`to: popup`) or a new-tab link went to the panel (`to: panel`), and whether the person's click opened it (`user`) | no |
 | `web-close-ignored` | The page called `window.close()`, which does nothing here | no |
 | `web-load-failed` | A page failed to load, with the error's name (`cert-expired`, `name-not-resolved` and so on) | yes |
 | `web-process` | A browser process failed: which one, and the reason and exit code when the Runtime says them | yes |

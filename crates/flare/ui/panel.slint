@@ -557,6 +557,57 @@ component WebBar inherits Rectangle {
     }
 }
 
+// The strip over a pop-up (rule 249): Flare's own chrome, drawn outside the page so a page cannot fake it, naming the
+// site the pop-up came from (never the page's title), with a Close button. The pop-up sits under it.
+component PopupStrip inherits Rectangle {
+    in property <string> text;
+    callback close();
+    background: Theme.tabs;
+    Text {
+        x: Px.snap(12px);
+        width: close-btn.x - self.x - Px.snap(8px);
+        height: parent.height;
+        vertical-alignment: center;
+        text: root.text;
+        font-family: Theme.font-ui;
+        font-size: 12px;
+        color: Theme.text;
+        overflow: elide;
+    }
+    close-btn := Rectangle {
+        x: parent.width - self.width - Px.snap(8px);
+        y: (parent.height - self.height) / 2;
+        width: Px.snap(close-text.preferred-width + 20px);
+        height: Px.snap(22px);
+        border-radius: Theme.radius-button;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        background: close-ta.has-hover ? Theme.hover : transparent;
+        accessible-role: button;
+        accessible-label: "Close pop-up";
+        accessible-action-default => { root.close(); }
+        close-text := Text {
+            width: parent.width;
+            height: parent.height;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            text: "Close";
+            font-family: Theme.font-ui;
+            font-size: 12px;
+            color: Theme.text;
+        }
+        close-ta := TouchArea {
+            clicked => { root.close(); }
+        }
+    }
+    Rectangle {
+        y: parent.height - Px.hair();
+        width: parent.width;
+        height: Px.hair();
+        background: Theme.divider;
+    }
+}
+
 // What the slot shows while there is no picture or text: a note in the middle (reading, or why not).
 component PanelNote inherits Rectangle {
     in property <string> text;
@@ -621,6 +672,11 @@ export component PanelSlot inherits Rectangle {
     // cursor; the page title stays the tab's and `web.state`'s.
     property <bool> bar-only: root.kind == 3 && !root.web-app;
     out property <length> bar-h: root.bar-only ? Px.snap(32px) : 0px;
+    // A pop-up over the page (rule 249): the strip's words ("Pop-up from <site>"), empty while none is open. The
+    // strip takes its height from the page's box, so the pop-up's view sits under it.
+    in property <string> web-popup;
+    out property <length> popup-h: root.bar-only && root.web-popup != "" ? Px.snap(30px) : 0px;
+    callback web-popup-close();
     out property <length> web-x: web-box.absolute-position.x;
     out property <length> web-y: web-box.absolute-position.y;
     out property <length> web-w: web-box.width;
@@ -857,11 +913,19 @@ export component PanelSlot inherits Rectangle {
             escape => { root.escape(); }
             close => { root.close(); }
         }
-        body := Rectangle {
+        if root.popup-h > 0px: PopupStrip {
             x: 0px;
             y: root.header-h + root.bar-h;
             width: parent.width;
-            height: parent.height - root.header-h - root.bar-h;
+            height: root.popup-h;
+            text: root.web-popup;
+            close => { root.web-popup-close(); }
+        }
+        body := Rectangle {
+            x: 0px;
+            y: root.header-h + root.bar-h + root.popup-h;
+            width: parent.width;
+            height: parent.height - root.header-h - root.bar-h - root.popup-h;
             clip: true;
             // Where the browser window sits: the body less half the splitter's grab zone (the zone is centred
             // on the slot's edge, and a child window takes the mouse above anything drawn, so none of it may

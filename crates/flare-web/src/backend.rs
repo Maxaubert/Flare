@@ -161,6 +161,12 @@ pub enum WebEvent {
         host: String,
         json: String,
     },
+    /// The pop-ups over the tab's page changed (rule 249): the site of each, the one on top last (empty: none is
+    /// open). Sites only ([`site_of`]), never an address or a title: the panel's strip names the top one.
+    Popups {
+        tab: String,
+        sites: Vec<String>,
+    },
     /// Something the diagnostics log keeps about a page or the browser (rule 247): sites and fixed words only,
     /// sanitised here in `flare-web`, so no address leaves it for the log.
     Note {
@@ -212,7 +218,8 @@ impl ViewSink {
 /// What a [`WebNote`] is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoteKind {
-    /// A page asked for a window of its own; the detail says where it went (`panel` or `refused`).
+    /// A page asked for a window of its own; the detail says where it went (`panel`, `popup`) or why it opened
+    /// nothing (`refused`, `blocked`, `limit`: [`flare_surfaces::web::PopupRefusal::word`]).
     Popup,
     /// A navigation the view's rules cancelled before it began.
     NavRefused,
@@ -339,6 +346,7 @@ impl WebEvent {
             WebEvent::Script { .. } => "Script",
             WebEvent::Cdp { .. } => "Cdp",
             WebEvent::ModMessage { .. } => "ModMessage",
+            WebEvent::Popups { .. } => "Popups",
             WebEvent::Note { .. } => "Note",
             WebEvent::View { .. } => "View",
         }
@@ -368,6 +376,18 @@ pub struct ControllerProbe {
     /// The profile keeps nothing on disk (a mini-app's).
     pub private: bool,
     /// The browser offers to save passwords and fills them in, and fills in forms (the web panel only).
+    pub autofill: bool,
+    /// The pop-ups over the page (a tab's web panel only), the one on top last.
+    pub popups: Vec<PopupProbe>,
+}
+
+/// What the e2e reads back of a pop-up's controller.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PopupProbe {
+    pub bounds: PhysRect,
+    pub visible: bool,
+    pub url: String,
+    /// The pop-up offers to save passwords and fills in forms, as the panel does.
     pub autofill: bool,
 }
 
@@ -411,8 +431,11 @@ pub trait WebBackend {
     fn close(&mut self, tab: &str) {
         self.close_view(&Slot::panel(tab));
     }
-    /// Closes and frees the view of `slot`, as `close` does a tab's.
+    /// Closes and frees the view of `slot`, as `close` does a tab's (its pop-ups go with it).
     fn close_view(&mut self, slot: &Slot);
+    /// Closes the pop-up on top of the tab's page (the strip's Close button): the next one down, or the page that
+    /// opened it, shows again. Answered by `WebEvent::Popups`. Nothing happens when none is open.
+    fn close_popup(&mut self, tab: &str);
     /// Closes every view and lets the browser environment go, now (the window is ending). Nothing is
     /// reported after it. Downloads still waiting for a yes are cancelled.
     fn close_all(&mut self);

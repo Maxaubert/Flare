@@ -173,6 +173,13 @@ impl AppCtl {
         }
     }
 
+    /// The Close button of the strip over a pop-up (rule 249): the pop-up on top of the front page closes.
+    pub(super) fn web_popup_close(&mut self) {
+        let Some(id) = self.front_id() else { return };
+        self.web.close_popup(&id);
+        self.refresh();
+    }
+
     /// Enter in the address field.
     pub(super) fn web_submit(&mut self, text: &SharedString) {
         let Some(id) = self.front_id() else { return };
@@ -514,6 +521,10 @@ impl AppCtl {
                 "no web page is open in this tab; browser.open opens one",
             ));
         }
+        // A pop-up over the page is the person's to finish (rule 250).
+        if self.web.popup_open(tab) {
+            return Err(CtlError::new(code::UNAVAILABLE, crate::web_ctl::POPUP_OPEN));
+        }
         // A page whose renderer died: an address starts it again, a step through its history cannot.
         if !matches!(to, NavTo::Url(_))
             && let Some((why, _)) = self.web.failure(tab)
@@ -634,6 +645,7 @@ impl AppCtl {
             "shown_tab": self.web.shown_tab(),
             "has_still": self.web.has_still(),
             "page_focus": self.web.has_focus(),
+            "popup_open": tab.is_some_and(|t| self.web.popup_open(t)),
             "agent": front.as_deref().map(|t| json!({
                 "op": self.web.agent_op(t),
                 "refs": self.web.agent_refs(t),
@@ -651,6 +663,12 @@ impl AppCtl {
                 "profile": p.profile,
                 "private": p.private,
                 "autofill": p.autofill,
+                "popups": p.popups.iter().map(|q| json!({
+                    "bounds": {"x": q.bounds.x, "y": q.bounds.y, "w": q.bounds.w, "h": q.bounds.h},
+                    "visible": q.visible,
+                    "url": q.url,
+                    "autofill": q.autofill,
+                })).collect::<Vec<_>>(),
                 "children": p.child_windows.iter().map(|(c, r)| json!({
                     "class": c,
                     "x": r.x, "y": r.y, "w": r.w, "h": r.h,
