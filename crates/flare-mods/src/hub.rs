@@ -308,7 +308,7 @@ pub struct Hub {
     recycle: Mutex<Recycle>,
     /// The browser profile folders of a plugin, for a removal to delete (set by the app; none in the tests).
     profiles: Mutex<Option<ProfileDirs>>,
-    /// The asks of the `fill` permission, in memory only (a restart forgets a "Deny for this session").
+    /// The asks of the `fill` permission, in memory only.
     asks: Mutex<crate::fill::Asks>,
 }
 
@@ -1265,8 +1265,8 @@ impl Hub {
             .any(|p| p.mod_id == mod_id && p.tab.as_deref() == Some(tab))
     }
 
-    /// The asks of the `fill` permission (`browser.fill`, `secret.ask`): how many each plugin made in the last minute
-    /// and the plugins the person told "Deny for this session". Shared by the call threads and the window.
+    /// The asks of the `fill` permission (`browser.fill`, `secret.ask`): how many each plugin made in the last minute.
+    /// Shared by the call threads and the window.
     pub fn asks(&self) -> std::sync::MutexGuard<'_, crate::fill::Asks> {
         self.asks.lock().unwrap_or_else(|e| e.into_inner())
     }
