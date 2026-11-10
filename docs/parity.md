@@ -1540,7 +1540,7 @@ phase 4; regression rule 1012).
 - [x] The Claude plugin on the Mac: hooks run `/bin/sh hook.sh` with the same state words and print what the parser reads, the copy lives in `~/Library/Application Support/Flare/claude-plugin-<tag>`, the plugin folder list is `:`-separated as Claude Code reads it, Claude's home (the Changes panel's transcripts, resume) is `HOME` (rule 1017). (macOS: the seven install tests of crates/flare-agent/src/plugin.rs, no longer ignored; the_posix_render_keeps_every_state_word_and_refuses_what_it_cannot_convert, every_hook_prints_what_the_parser_reads_on_macos, prints_the_state_as_valid_json_whatever_the_session_id_holds_on_macos, hook_sh_is_lf_and_static, a_platform_installs_its_own_hook_script_and_never_the_other; the_folder_list_is_split_the_way_claude_code_splits_it, crates/flare-shells/src/env.rs; claude_home_is_the_platforms_home, crates/flare-agent/src/resume.rs)
 - [x] Questions as notifications go through one backend seam; on the Mac it answers "unavailable until the app is signed" up front, so the Dock bounce stands in at once with no worker and one log line a run, as when Windows refuses a toast (rule 1015). (the_backend_gets_the_request_and_its_answer_and_click_come_back, the_system_says_up_front_whether_it_can_take_a_notification; macOS: macos_says_notifications_wait_for_the_signed_app_and_shows_nothing, crates/flare-win/src/toast.rs)
 
-Waits for the Developer ID (port phase 8, not a ratchet line): real Mac notifications through `UNUserNotificationCenter` (authorisation, a request per tab that replaces the older one, the click back to the tab), tested on a signed `Flare.app`. Still to see in CI or on a Mac by hand (not a ratchet line): the Dock icon bouncing on a bell in a background tab and stopping when Flare comes forward, the badge count on the Dock tile.
+Real Mac notifications through `UNUserNotificationCenter` came with port phase 8 step 2 (rule 1044, the lines under phase 8); a banner on a signed run is still to be seen by hand. Still to see in CI or on a Mac by hand (not a ratchet line): the Dock icon bouncing on a bell in a background tab and stopping when Flare comes forward, the badge count on the Dock tile.
 
 ## macOS port, phase 5: the web engine (2026-11-08)
 
@@ -1587,7 +1587,8 @@ and held by checks that fail without the fix.
 
 Accepted gap (rule 1033, not a ratchet line): the web panel's profile and each mod's and plugin's are kept on disk with
 Chromium's mock keychain, whose key is public, so their cookies and storage are protected only by the files'
-permissions (Windows uses DPAPI); a real keychain item waits for the signed app (phase 8).
+permissions (Windows uses DPAPI). Since phase 8 step 2 this is true of every build but the Developer ID app's real
+window, which keeps the key in a keychain item of its own (rule 1045).
 
 Not yet on the Mac (the next steps of phase 5, not ratchet lines): running the real Flare window with CEF needs Flare
 itself inside an app bundle with the framework and helpers (`Flare.app`, phase 8; a `cargo run` says the engine is not
@@ -1600,5 +1601,122 @@ live preview are mini-apps and ride on the mini-app path; a diagram's Mermaid ru
 WebView2 password autosave and form autofill have no CEF Alloy counterpart (`ControllerProbe::autofill` is false).
 A frame's contents are not in the numbered list (the agent uses a frame by point); on Windows the same Chromium
 call gives the root frame's tree, but a Windows look of the agent page has not been diffed with the Mac one yet. Waits for the Developer ID (phase 8): the signed
-bundle, the hardened runtime and its entitlements, notarization, camera and microphone prompts, a real keychain item
-for the profiles kept on disk (the mock keychain is used until then, rule 1033).
+bundle, the hardened runtime and its entitlements, notarization, camera and microphone prompts for programs run in
+the terminal (a page's camera and microphone are refused on both platforms: WebView2's handler and CEF's deny them).
+The keychain item for the profiles on disk is phase 8 step 2 (rule 1045).
+
+## macOS port, phase 8: shipping the Mac app (2026-11-08)
+
+Step 1, `Flare.app` (regression rules 1036 to 1039). Windows ships through Velopack (`tools/release/pack.ps1`); the Mac
+ships an app bundle built by `tools/release/mac/make-app.sh` (`flare-mac-app`, `flare_cef::macos::{release, bundle,
+sign}`), under `target/mac-release`.
+
+- [x] The app bundle: `Flare.app` for Apple Silicon, macOS 15+, id `com.flare.terminal` (Windows' AppUserModelID), the
+  workspace version, the developer-tools category, the microphone's reason; `Contents/MacOS/Flare` and `flare-mcp`, the
+  CEF framework and its five helpers, `Flare.icns` from `build/icon-source.png`, the Claude plugin, the licenses and
+  CEF's credits in `Resources`. Stands in for the Velopack staging folder. (macOS:
+  the_app_plist_names_the_app_its_version_its_mac_its_category_and_why_it_wants_the_mic,
+  a_mac_app_bundle_finds_the_plugin_in_its_resources_first, crates/flare-cef/src/macos/release.rs,
+  crates/flare-agent/src/plugin.rs)
+- [x] Signing inside out with the Developer ID, hardened runtime, secure timestamp, each program's entitlements
+  (Chromium 156's, plus a terminal's camera, microphone and Apple Events keys with their usage strings), and every
+  Mach-O checked for the team, a Developer ID Application signer and exactly its role's keys; no `codesign` with the
+  identity unless the key cannot raise a prompt (rules 1036, 1038, 1040 to 1042). Stands in for Authenticode (not done on
+  Windows yet). (macOS: each_program_carries_chromiums_keys_for_it_plus_the_terminals_and_never_the_broad_ones,
+  a_release_mach_o_has_exactly_its_roles_keys_and_a_developer_id_application_signer,
+  a_key_codesign_would_have_to_ask_for_is_refused_before_codesign_runs, crates/flare-cef/src/macos/sign.rs,
+  crates/flare-cef/src/macos/keychain.rs)
+
+Not yet (the next steps of phase 8, not ratchet lines): the notarized and stapled app and DMG with `spctl` saying
+"source=Notarized Developer ID". The script does it (`make-app.sh`, `macos-app.yml`), but on Max's Mac
+`flare-mac-app check-key` refuses: the Developer ID key's partition list is only `apple-tool:`, so `codesign` would
+put a keychain prompt on the screen (rule 1040). It runs once Max has run `security set-key-partition-list -S
+apple-tool:,apple: -s ~/Library/Keychains/login.keychain-db` himself. Then: the entitlements proved by the engine
+probes under the hardened runtime (`FLARE_TEST_SIGN_IDENTITY` and `FLARE_TEST_SIGN_KEYCHAIN`, `cargo nextest run -p
+flare-cef -p flare-web`), with WebGL on SwiftShader (`--use-angle=swiftshader`) for the GPU helper's JIT key;
+Velopack osx-arm64 updates with a whole-bundle swap, signed and notarized after `vpk pack` and checked on the bundle
+inside the update package (rule 1043): built in step 3 below; the release notes and the Mac build come in
+`macos-app.yml` (step 3), not in `release.yml`.
+
+Step 2, notifications and the keychain item (regression rules 1044 and 1045):
+
+- [x] Notifications through `UNUserNotificationCenter` in the signed `Flare.app`: the permission asked once a run,
+  lazily, the first time Flare has something to say (never at launch, never in a test), a no honoured for the run, one
+  notification per tab (identifier `agent-question.<tab>`, a newer one replaces the older), shown while Flare is in
+  front too, a click that brings the window forward and picks the tab, only for this run's notifications. Outside the
+  signed bundle (a `cargo run`, a test) the answer says why and the Dock bounces. Stands in for the WinRT toast with
+  its AUMID shortcut. (macOS: the_permission_is_asked_once_lazily_and_only_when_flare_first_notifies,
+  one_notification_per_tab_the_newer_replaces_the_older, a_click_brings_back_the_tab_of_this_runs_notification_only,
+  a_copy_in_a_signed_flare_app_is_told_from_a_dev_build, crates/flare-win/src/toast.rs,
+  crates/flare-win/src/macos/notify.rs)
+- [x] The profiles on disk keep their key in Flare's own keychain item ("Flare Safe Storage") in the Developer ID
+  app's real window (a Developer ID Application certificate of the team, by Apple's OIDs, never another certificate
+  of the same team); every other build keeps the mock keychain. Stands in for DPAPI. (macOS:
+  only_the_real_window_of_the_developer_id_app_uses_a_keychain_item_of_its_own, crates/flare-cef/src/macos/engine.rs)
+- [x] A switch between a dev build and the Developer ID app on the same profile folder loses no cookie: the root
+  folder's marker records the key, and the old key's cookie and password files are set aside (`Cookies.mock-key`) and
+  come back when that key is used again (rule 1051). Windows has one key (DPAPI), so it has no such switch. (macOS:
+  a_change_of_key_sets_the_old_keys_cookies_aside_and_brings_the_new_keys_back,
+  a_new_root_is_left_for_cef_and_marked_after_and_an_unknown_marker_counts_as_the_mock_key, crates/flare-cef/src/macos/profile_key.rs)
+
+Still to see by hand on a signed run (not ratchet lines; no test may ask for the notification permission or touch the
+keychain, and the Developer ID key cannot sign without a prompt until Max runs the partition-list command above):
+the permission prompt on the first question, a banner per tab replacing the older one, a click that brings the tab
+back, the Dock bounce after a no; the "Flare Safe Storage" item made on the first run with no prompt and kept across
+an update. The one command, once the key is fixed: `FLARE_MAC_SIGN_IDENTITY="Developer ID Application: MAX AUBERT
+(WV7BY8CUM8)" FLARE_NOTARY_PROFILE=flare-notary tools/release/mac/make-app.sh` (rule 1039), then opening the stapled `target/mac-release/Flare.app` by hand and asking an
+agent a question from a background tab.
+
+Step 3, updates and the release (regression rules 1046 to 1052):
+
+- [x] Velopack updates for osx-arm64: `vpk pack` (channel `osx`), the bundle signed again by role after vpk adds its
+  updater (`flare-mac-app` as vpk's `codesign`), notarized and stapled by vpk, checked inside the update package and
+  the portable zip; an update swaps the whole bundle, proved headless on a Mac from 0.0.1 to 0.0.2 against the real
+  feed and `UpdateMac`, the swapped bundle still sealed. Stands in for the Windows Velopack install, Update.exe and
+  its `current` folder. (macOS: vpks_two_calls_are_its_update_program_then_the_bundle,
+  a_packed_flare_app_updates_itself_headless_and_the_swapped_bundle_still_verifies,
+  a_mac_bundle_vpk_made_is_its_own_root_and_has_no_verb, crates/flare-cef/src/macos/vpk.rs,
+  tools/release/mac/pack.sh, tools/release/mac/update-e2e.sh)
+- [x] The Mac release workflow: after a successful Windows release, from secrets only, into the same GitHub release
+  (`releases.osx.json` beside `releases.win.json`, the DMG), skipping cleanly without the secrets; `release.yml`
+  untouched. Stands in for the Windows release job's Publish step. (macOS:
+  the_mac_release_runs_after_the_windows_one_never_inside_it,
+  credentials_come_from_the_five_secrets_only_and_without_them_nothing_is_published, .github/workflows/macos-app.yml,
+  docs/releasing-macos.md)
+- [x] The Mac build added to a release is made from the commit that release was tagged at, one run per version, the
+  release read again before the upload; signing secrets only in the `mac-release` environment, which only `main` may
+  use (rule 1049). Windows' release job builds its own commit and has no second workflow. (macOS:
+  the_mac_build_is_the_commit_the_release_was_tagged_at_one_run_per_version,
+  signing_secrets_reach_a_run_from_main_only, crates/flare-cef/tests/mac_release_files.rs)
+- [x] No key file, password or scratch folder outlives its one use: the `.p12` and `.p8` gone when `ci-keychain.sh`
+  ends, the keychain made after the build and deleted before the artifact and upload steps, no password on
+  `notarytool`'s command line, `*.p12`/`*.p8`/`AuthKey_*` ignored by git, one cleanup list for the scripts, the e2e
+  work folder resolved and confined before it is emptied (rule 1050). (macOS: no_key_file_or_password_outlives_its_one_use,
+  the_scripts_remove_only_what_they_made_and_never_lose_each_others_cleanup,
+  crates/flare-cef/tests/mac_release_files.rs)
+- [x] Ad hoc signing gives each program its role too (identifier, entitlements; the hardened runtime for the tools),
+  so the ad-hoc pack and update e2e prove `UpdateMac` runs under the hardened runtime with no entitlements (rule 1052).
+  (macOS: a_developer_id_signature_has_the_runtime_and_a_timestamp_and_ad_hoc_has_neither,
+  the_pack_checks_each_programs_role_ad_hoc_too, crates/flare-cef/src/macos/sign.rs, tools/release/mac/pack.sh)
+
+Still to do by hand (not ratchet lines): the signed, notarized update run, one command for Max once the key is fixed
+(`docs/releasing-macos.md`, "Signed and notarized, by Max"), which no session may run while the Developer ID key
+prompts; the `mac-release` environment (main only) and its five secrets (Max makes them, same doc); the first CI
+release with them. Phase 8 is done when
+that run passes (rule 1043).
+
+Open on macOS, so shipping a part is not read as the feature working:
+
+- Installing the Claude Code plugin fails on macOS: the template is found in `Contents/Resources`, but
+  `flare_agent::plugin::install_plugin_with` still requires an absolute System32 `cmd.exe` and returns InvalidInput.
+  It waits for the agent-tools phase's macOS hooks.
+- The microphone key is provisional for dictation (rule 1042): `crates/flare-dictation/src/macos/` holds no audio
+  path yet, and `flare-parakeet-host` (shipped by `release.yml` on Windows) is not in the bundle. The engines it
+  downloads must be signed by the team or loaded in a helper of their own before dictation runs in a hardened Flare.
+
+Deliberate differences: the DMG is a plain drag-to-Applications volume (the app and an `/Applications` link) with no
+background picture or icon positions, because those are set through a Finder window (the screen rule); Finder shows
+the two icons as they are. A program in Flare's terminal can ask for the microphone, the camera and Apple Events, but
+not for location, contacts, calendars or photos (the hardened runtime needs a key for each, and no terminal program in
+common use asks for them; Terminal and iTerm2 users who need one run that program elsewhere). Windows has no such
+gate.

@@ -43,5 +43,10 @@ path = "src/bin/probe.rs"
 name = "flare-cef-bundle"
 path = "src/bin/bundle.rs"
 
+# Builds and signs the release Flare.app under the target dir (port phase 8; tools/release/mac/make-app.sh).
+[[bin]]
+name = "flare-mac-app"
+path = "src/bin/mac_app.rs"
+
 [lints]
 workspace = true

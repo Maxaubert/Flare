@@ -76,6 +76,34 @@ A review of the three steps (2026-11-08) proved six defects, fixed with checks t
 opened a DevTools port), held downloads staged outside `~/Downloads`, no call to Google from the engine with no page
 asking, the mock keychain written down as an accepted gap until phase 8, and no colour or print panel from a page.
 
+Phase 8 progress: step 1 (2026-11-08) is `Flare.app`: `tools/release/mac/make-app.sh` builds the release programs,
+`flare-mac-app` bundles them (the CEF framework, five helpers, `flare-mcp`, the icon, the plugin in `Resources`) and
+signs inside out with the Developer ID and per-program entitlements, then the script notarizes, staples and makes the
+DMG; `.github/workflows/macos-app.yml` does the same in CI from secrets (rules 1036 to 1039, `docs/parity.md` "macOS
+port, phase 8"). On Max's Mac a Developer ID `codesign` asked the keychain for the key with a prompt on the screen, so
+the signed and notarized run waits for the key's access list to let `codesign` in.
+
+A review of step 1 (2026-11-08) led to rules 1040 to 1043: no `codesign` with the identity unless an in-process check
+with the keychain UI off says the key cannot prompt (`flare-mac-app check-key`; Max's key lacks the `apple:`
+partition), the tests' own signing variables, the release check comparing each Mach-O's entitlements with its role's
+and requiring a Developer ID Application signer, Chromium 156's GPU `allow-jit`, a terminal's camera, microphone and
+Apple Events keys with their usage strings, CI cleanup that runs on failure and no cached CEF in the signing job, and
+the Velopack order: sign and notarize the bundle `vpk pack` produced (`flare-mac-app resign`), check it inside the
+update package.
+
+Step 3 (2026-11-09) is updates and the release: `tools/release/mac/pack.sh` packs `Flare.app` with vpk 1.2.161 for
+osx-arm64 and signs the bundle again by role after vpk adds `UpdateMac` (`flare-mac-app` as vpk's `codesign`), vpk
+notarizes and staples it, and the bundle is checked inside the update package; `tools/release/mac/update-e2e.sh`
+proves a whole-bundle update headless on a Mac (0.0.1 to 0.0.2 into a temp folder, the real `VelopackFeed` and
+`UpdateMac`, no restart, no window, the swapped bundle still verifies); `.github/workflows/macos-app.yml` runs after
+each Windows release and adds the Mac build to it when the secrets are set, `docs/releasing-macos.md` (rules 1046 to
+1048). Proved ad hoc only: the signed, notarized run is one command for Max once the Developer ID key lets `codesign`
+in without a prompt. A review of step 3 (2026-11-09) led to rules 1049 to 1052: the Mac build is the commit the release
+was tagged at, one run per version, signed only from `main` through the `mac-release` environment; no key file,
+password or scratch folder outlives its use; a switch between the mock and the real profile key sets cookies aside;
+ad hoc signing carries each role's identifier, entitlements and (tools) the hardened runtime, so the ad-hoc pack
+proves `UpdateMac`'s signature.
+
 ## Known risks
 
 - **Agent browsing on WKWebView** (phase 1 decides). No DevTools protocol and no http(s) request

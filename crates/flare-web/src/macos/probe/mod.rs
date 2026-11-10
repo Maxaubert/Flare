@@ -714,14 +714,25 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
     }
     let text = std::fs::read_to_string(&saved).unwrap_or_default();
     // A saved file carries Gatekeeper's quarantine mark (Chromium's own, as Safari's), so a downloaded app or
-    // script is checked by the system before it first runs.
-    let quarantine = Command::new("/usr/bin/xattr")
-        .args(["-p", "com.apple.quarantine"])
-        .arg(&saved)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    // script is checked by the system before it first runs. Chromium renames the finished file into place first
+    // and annotates it after (RenameAndAnnotate), so the mark can come a moment after the text: the CI runner read
+    // the file in between. The check waits for it.
+    let read_quarantine = || {
+        Command::new("/usr/bin/xattr")
+            .args(["-p", "com.apple.quarantine"])
+            .arg(&saved)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|q| !q.is_empty())
+    };
+    let t = Instant::now();
+    let mut quarantine = read_quarantine();
+    while quarantine.is_none() && t.elapsed() < Duration::from_secs(5) {
+        h.wait(50);
+        quarantine = read_quarantine();
+    }
     rep.check(
         "panel.download-quarantine",
         quarantine.as_deref().is_some_and(|q| !q.is_empty()),
