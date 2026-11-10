@@ -378,6 +378,275 @@ fn glow_bitmap(w: u32, h: u32, scale: f64) -> CursorBitmap {
     glow_region(&glow_ramp(w, r), &glow_ramp(h, r), (0, 0, w, h))
 }
 
+// ---------------------------------------------------------------- Arrows over the page (2026-11-10)
+
+/// The person's arrow: a clear blue, fixed in every theme, so it is never taken for the agent's orange.
+pub const BLUE: (u8, u8, u8) = (0x2f, 0x7c, 0xf6);
+/// The arrow's shaft, its head's length and width, at 100 %.
+const SHAFT_PX: f64 = 4.0;
+const HEAD_LEN_PX: f64 = 16.0;
+const HEAD_W_PX: f64 = 15.0;
+/// How long the agent's arrow is from its tail to the head it points with, at 100 %.
+pub const POINT_TAIL_PX: f64 = 64.0;
+/// The longest label an arrow carries (characters); `ask_agent` cleans it before it comes here.
+pub const POINT_LABEL_CHARS: usize = 48;
+/// The longest arrow drawn, in pixels each way (a bigger one is cut to it rather than a huge bitmap).
+const ARROW_MAX: f64 = 8_192.0;
+
+/// Whose arrow it is: the agent's is orange and may carry a label, the person's is blue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArrowInk {
+    Agent,
+    Person,
+}
+
+impl ArrowInk {
+    fn colour(self) -> (u8, u8, u8) {
+        match self {
+            ArrowInk::Agent => ORANGE,
+            ArrowInk::Person => BLUE,
+        }
+    }
+}
+
+/// Distance from (x, y) to the segment a-b.
+fn segment_distance(x: f64, y: f64, a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (ex, ey) = (b.0 - a.0, b.1 - a.1);
+    let len2 = ex * ex + ey * ey;
+    let t = if len2 > 0.0 {
+        (((x - a.0) * ex + (y - a.1) * ey) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (dx, dy) = (x - a.0 - ex * t, y - a.1 - ey * t);
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// Where the tail of the agent's arrow goes for a head at `head` inside the page `rect` (x, y, w, h, screen or
+/// client pixels alike), `len` pixels away: down and right of the head as a pointer is, turned to whichever
+/// diagonal keeps the tail inside the page when the head is near an edge. The answer is from the head.
+pub fn point_tail(head: (i32, i32), rect: (i32, i32, i32, i32), len: f64) -> (f64, f64) {
+    let d = len / std::f64::consts::SQRT_2;
+    let (x0, y0, x1, y1) = (
+        f64::from(rect.0),
+        f64::from(rect.1),
+        f64::from(rect.0 + rect.2),
+        f64::from(rect.1 + rect.3),
+    );
+    let inside = |dx: f64, dy: f64| {
+        let (x, y) = (f64::from(head.0) + dx, f64::from(head.1) + dy);
+        x >= x0 && x < x1 && y >= y0 && y < y1
+    };
+    [(d, d), (-d, d), (d, -d), (-d, -d)]
+        .into_iter()
+        .find(|(dx, dy)| inside(*dx, *dy))
+        .unwrap_or((d, d))
+}
+
+/// An arrow whose head is at the bitmap's `tip` and whose tail is `tail` pixels away from it (any direction), with
+/// a white rim like the cursor's, at `scale`. A `label` (the agent's) sits on an orange pill past the tail. An
+/// arrow shorter than its head is drawn at its head's length in the same direction (a click with no drag points
+/// down and to the right of where it was made, from up and left). Only the pixels near the shape are worked out,
+/// so a long arrow across a large page costs its length, not its box.
+pub fn compose_arrow(tail: (f64, f64), scale: f64, ink: ArrowInk, label: &str) -> CursorBitmap {
+    let s = clean_scale(scale);
+    let half = RIM_PX * s / 2.0;
+    let head_len = HEAD_LEN_PX * s;
+    let head_w = HEAD_W_PX * s;
+    let shaft = SHAFT_PX * s / 2.0;
+    let mut v = (
+        tail.0.clamp(-ARROW_MAX, ARROW_MAX),
+        tail.1.clamp(-ARROW_MAX, ARROW_MAX),
+    );
+    if !(v.0.is_finite() && v.1.is_finite()) {
+        v = (0.0, 0.0);
+    }
+    let min_len = head_len * 1.5;
+    let len = (v.0 * v.0 + v.1 * v.1).sqrt();
+    if len < min_len {
+        let (ux, uy) = if len > 0.0 {
+            (v.0 / len, v.1 / len)
+        } else {
+            (
+                std::f64::consts::FRAC_1_SQRT_2,
+                std::f64::consts::FRAC_1_SQRT_2,
+            )
+        };
+        v = (ux * min_len, uy * min_len);
+    }
+    let len = (v.0 * v.0 + v.1 * v.1).sqrt();
+    // From the tail towards the head, and across it.
+    let (ux, uy) = (-v.0 / len, -v.1 / len);
+    let (nx, ny) = (-uy, ux);
+    // The label's pill, past the tail on the side away from the head.
+    let text: String = label.trim().chars().take(POINT_LABEL_CHARS).collect();
+    let tag_h = (TAG_H * s).round().max(1.0) as u32;
+    let (text_w, mask) = if matches!(ink, ArrowInk::Agent) && !text.is_empty() {
+        label_mask((TAG_FONT * s).round().max(1.0) as u32, tag_h, &text)
+    } else {
+        (0, Vec::new())
+    };
+    let pad = (TAG_PAD * s).round() as u32;
+    let tag_w = if text_w == 0 { 0 } else { text_w + 2 * pad };
+    let gap = (4.0 * s).round();
+    // In head-relative pixels: the pill's top left.
+    let tag_at = (
+        if v.0 >= 0.0 {
+            v.0 + gap
+        } else {
+            v.0 - gap - f64::from(tag_w)
+        },
+        if v.1 >= 0.0 {
+            v.1 + gap
+        } else {
+            v.1 - gap - f64::from(tag_h)
+        },
+    );
+    // The box, in head-relative pixels, padded for the rim and the head's width.
+    let m = head_w + half + 2.0;
+    let (mut bx0, mut by0) = (v.0.min(0.0) - m, v.1.min(0.0) - m);
+    let (mut bx1, mut by1) = (v.0.max(0.0) + m, v.1.max(0.0) + m);
+    if tag_w > 0 {
+        bx0 = bx0.min(tag_at.0 - 1.0);
+        by0 = by0.min(tag_at.1 - 1.0);
+        bx1 = bx1.max(tag_at.0 + f64::from(tag_w) + 1.0);
+        by1 = by1.max(tag_at.1 + f64::from(tag_h) + 1.0);
+    }
+    let (ox, oy) = (bx0.floor(), by0.floor());
+    let w = (bx1 - ox).ceil().max(1.0) as u32;
+    let h = (by1 - oy).ceil().max(1.0) as u32;
+    let head = (-ox, -oy);
+    let tail_pt = (v.0 - ox, v.1 - oy);
+    let base = (head.0 - ux * head_len, head.1 - uy * head_len);
+    let tri = [
+        head,
+        (base.0 + nx * head_w / 2.0, base.1 + ny * head_w / 2.0),
+        (base.0 - nx * head_w / 2.0, base.1 - ny * head_w / 2.0),
+    ];
+    // The shaft runs into the head a little, so the two meet with no seam.
+    let shaft_end = (base.0 + ux * 2.0 * s, base.1 + uy * 2.0 * s);
+    let colour = ink.colour();
+    let mut bgra = vec![0u8; (w * h * 4) as usize];
+    let paint = |px: i64, py: i64, bgra: &mut [u8]| {
+        if px < 0 || py < 0 || px >= i64::from(w) || py >= i64::from(h) {
+            return;
+        }
+        let (cx, cy) = (px as f64 + 0.5, py as f64 + 0.5);
+        let d = polygon_distance(cx, cy, &tri)
+            .min(segment_distance(cx, cy, tail_pt, shaft_end) - shaft);
+        let o = (half - d + 0.5).clamp(0.0, 1.0) as f32;
+        if o <= 0.0 {
+            return;
+        }
+        let f = (-half - d + 0.5).clamp(0.0, 1.0) as f32;
+        let p = over(over([0.0; 4], (255, 255, 255), o), colour, f);
+        let i = ((py as u32 * w + px as u32) * 4) as usize;
+        for ch in 0..4 {
+            bgra[i + ch] = p[ch].round().clamp(0.0, 255.0) as u8;
+        }
+    };
+    // Along the shaft, a square round each step; then the head's box. Every pixel is worked out from the whole
+    // shape, so one reached twice comes out the same.
+    let reach = (shaft + half + 2.0).ceil() as i64;
+    let steps = len.ceil() as i64;
+    for k in 0..=steps {
+        let t = k as f64 / steps.max(1) as f64;
+        let (cx, cy) = (
+            tail_pt.0 + (shaft_end.0 - tail_pt.0) * t,
+            tail_pt.1 + (shaft_end.1 - tail_pt.1) * t,
+        );
+        for py in (cy.floor() as i64 - reach)..=(cy.floor() as i64 + reach) {
+            for px in (cx.floor() as i64 - reach)..=(cx.floor() as i64 + reach) {
+                paint(px, py, &mut bgra);
+            }
+        }
+    }
+    let hx0 = tri.iter().map(|p| p.0).fold(f64::MAX, f64::min) - half - 2.0;
+    let hy0 = tri.iter().map(|p| p.1).fold(f64::MAX, f64::min) - half - 2.0;
+    let hx1 = tri.iter().map(|p| p.0).fold(f64::MIN, f64::max) + half + 2.0;
+    let hy1 = tri.iter().map(|p| p.1).fold(f64::MIN, f64::max) + half + 2.0;
+    for py in hy0.floor() as i64..=hy1.ceil() as i64 {
+        for px in hx0.floor() as i64..=hx1.ceil() as i64 {
+            paint(px, py, &mut bgra);
+        }
+    }
+    // The label's pill goes under the arrow: each of its pixels once.
+    if tag_w > 0 {
+        let (tx0, ty0) = (
+            (tag_at.0 - ox).round() as u32,
+            (tag_at.1 - oy).round() as u32,
+        );
+        for ty in 0..tag_h {
+            for tx in 0..tag_w {
+                let a = pill_coverage(
+                    f64::from(tx) + 0.5,
+                    f64::from(ty) + 0.5,
+                    f64::from(tag_w),
+                    f64::from(tag_h),
+                ) as f32;
+                if a <= 0.0 || tx0 + tx >= w || ty0 + ty >= h {
+                    continue;
+                }
+                let mut p = over([0.0; 4], ORANGE, a);
+                if tx >= pad && tx - pad < text_w {
+                    let ink_a = f32::from(mask[(ty * text_w + tx - pad) as usize]) / 255.0;
+                    p = over(p, INK, ink_a * a);
+                }
+                let i = (((ty0 + ty) * w + tx0 + tx) * 4) as usize;
+                let k = 1.0 - f32::from(bgra[i + 3]) / 255.0;
+                for ch in 0..4 {
+                    bgra[i + ch] = (f32::from(bgra[i + ch]) + p[ch] * k)
+                        .round()
+                        .clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+    }
+    CursorBitmap {
+        w,
+        h,
+        bgra,
+        tip: (head.0.round() as i32, head.1.round() as i32),
+    }
+}
+
+/// Lays `bmp` (premultiplied BGRA) over a straight RGBA picture of `w * h` with its tip at (x, y): an arrow drawn into
+/// a screenshot, where it is on the screen. Whatever falls outside the picture is left out.
+pub fn blend_onto_rgba(rgba: &mut [u8], w: u32, h: u32, at: (i32, i32), bmp: &CursorBitmap) {
+    if rgba.len() != (w as usize) * (h as usize) * 4
+        || bmp.bgra.len() != (bmp.w * bmp.h * 4) as usize
+    {
+        return;
+    }
+    let (x0, y0) = (at.0 - bmp.tip.0, at.1 - bmp.tip.1);
+    for by in 0..bmp.h {
+        let y = y0 + by as i32;
+        if y < 0 || y >= h as i32 {
+            continue;
+        }
+        for bx in 0..bmp.w {
+            let x = x0 + bx as i32;
+            if x < 0 || x >= w as i32 {
+                continue;
+            }
+            let s = ((by * bmp.w + bx) * 4) as usize;
+            let a = u32::from(bmp.bgra[s + 3]);
+            if a == 0 {
+                continue;
+            }
+            let d = ((y as u32 * w + x as u32) * 4) as usize;
+            let k = 255 - a;
+            // Premultiplied source over the picture (its alpha kept: a screenshot is opaque).
+            for (ch, src) in [(0, 2), (1, 1), (2, 0)] {
+                let under = u32::from(rgba[d + ch]);
+                rgba[d + ch] =
+                    ((u32::from(bmp.bgra[s + src]) * 255 + under * k + 127) / 255).min(255) as u8;
+            }
+            rgba[d + 3] = (a + u32::from(rgba[d + 3]) * k / 255).min(255) as u8;
+        }
+    }
+}
+
 // ---------------------------------------------------------------- Part B: GDI and the window
 
 #[cfg(windows)]
@@ -386,7 +655,7 @@ mod win {
     use std::ffi::c_void;
     use std::ptr::{null, null_mut};
     use std::sync::Once;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::{
         AC_SRC_ALPHA, AC_SRC_OVER, ANTIALIASED_QUALITY, BI_RGB, BITMAPINFO, BITMAPINFOHEADER,
@@ -396,11 +665,13 @@ mod win {
         SetBkMode, SetTextColor, TRANSPARENT,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, HTTRANSPARENT, MA_NOACTIVATE,
-        RegisterClassW, SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow, ULW_ALPHA, UpdateLayeredWindow,
-        WM_MOUSEACTIVATE, WM_NCHITTEST, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-        WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, HTCLIENT, HTTRANSPARENT, IDC_CROSS,
+        LoadCursorW, MA_NOACTIVATE, RegisterClassW, SW_HIDE, SW_SHOWNOACTIVATE, SetCursor,
+        ShowWindow, ULW_ALPHA, UpdateLayeredWindow, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE,
+        WM_MOUSEMOVE, WM_NCHITTEST, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSW,
+        WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
     };
 
     const CLASS: &str = "FlareAgentCursor";
@@ -596,6 +867,72 @@ mod win {
         }
     }
 
+    /// Gives a layered window of ours a picture of `w * h` premultiplied BGRA pixels, which `fill` writes, with its top
+    /// left at (x, y) on the screen and `alpha` over all. True when Windows took it.
+    fn layered_update(
+        hwnd: HWND,
+        (x, y): (i32, i32),
+        (w, h): (u32, u32),
+        alpha: u8,
+        fill: impl FnOnce(&mut [u8]),
+    ) -> bool {
+        if w == 0 || h == 0 {
+            return false;
+        }
+        let info = dib_info(w, h);
+        let mut bits: *mut c_void = null_mut();
+        // SAFETY: a memory DC and a DIB section the size of the picture, released below.
+        let (hdc, dib) = unsafe {
+            let hdc = CreateCompatibleDC(null_mut());
+            let dib = CreateDIBSection(hdc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+            (hdc, dib)
+        };
+        let mut ok = false;
+        if !dib.is_null() && !bits.is_null() {
+            let dst = POINT { x, y };
+            let size = SIZE {
+                cx: w as i32,
+                cy: h as i32,
+            };
+            let src = POINT { x: 0, y: 0 };
+            let blend = BLENDFUNCTION {
+                BlendOp: AC_SRC_OVER as u8,
+                BlendFlags: 0,
+                SourceConstantAlpha: alpha,
+                AlphaFormat: AC_SRC_ALPHA as u8,
+            };
+            // SAFETY: `bits` holds w * h * 4 writable bytes, the DIB section's own; the window is ours and layered;
+            // every pointer lives across the call.
+            unsafe {
+                fill(std::slice::from_raw_parts_mut(
+                    bits as *mut u8,
+                    (w as usize) * (h as usize) * 4,
+                ));
+                let old = SelectObject(hdc, dib);
+                ok = UpdateLayeredWindow(
+                    hwnd,
+                    null_mut(),
+                    &dst,
+                    &size,
+                    hdc,
+                    &src,
+                    0,
+                    &blend,
+                    ULW_ALPHA,
+                ) != 0;
+                SelectObject(hdc, old);
+            }
+        }
+        // SAFETY: made above.
+        unsafe {
+            if !dib.is_null() {
+                DeleteObject(dib);
+            }
+            DeleteDC(hdc);
+        }
+        ok
+    }
+
     impl super::CursorShell for CursorWindow {
         fn show_at(&mut self, x: i32, y: i32, bmp: &CursorBitmap, alpha: u8) -> bool {
             if bmp.w == 0 || bmp.h == 0 || bmp.bgra.len() != (bmp.w * bmp.h * 4) as usize {
@@ -604,61 +941,13 @@ mod win {
             let Some(hwnd) = self.window() else {
                 return false;
             };
-            let info = dib_info(bmp.w, bmp.h);
-            let mut bits: *mut c_void = null_mut();
-            // SAFETY: a memory DC and a DIB section the size of the bitmap, released below.
-            let (hdc, dib) = unsafe {
-                let hdc = CreateCompatibleDC(null_mut());
-                let dib = CreateDIBSection(hdc, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
-                (hdc, dib)
-            };
-            let mut ok = false;
-            if !dib.is_null() && !bits.is_null() {
-                let dst = POINT {
-                    x: x - bmp.tip.0,
-                    y: y - bmp.tip.1,
-                };
-                let size = SIZE {
-                    cx: bmp.w as i32,
-                    cy: bmp.h as i32,
-                };
-                let src = POINT { x: 0, y: 0 };
-                let blend = BLENDFUNCTION {
-                    BlendOp: AC_SRC_OVER as u8,
-                    BlendFlags: 0,
-                    SourceConstantAlpha: alpha,
-                    AlphaFormat: AC_SRC_ALPHA as u8,
-                };
-                // SAFETY: `bits` holds w * h * 4 writable bytes, exactly the bitmap's length; the window is
-                // ours and layered; every pointer lives across the call.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        bmp.bgra.as_ptr(),
-                        bits as *mut u8,
-                        bmp.bgra.len(),
-                    );
-                    let old = SelectObject(hdc, dib);
-                    ok = UpdateLayeredWindow(
-                        hwnd,
-                        null_mut(),
-                        &dst,
-                        &size,
-                        hdc,
-                        &src,
-                        0,
-                        &blend,
-                        ULW_ALPHA,
-                    ) != 0;
-                    SelectObject(hdc, old);
-                }
-            }
-            // SAFETY: made above.
-            unsafe {
-                if !dib.is_null() {
-                    DeleteObject(dib);
-                }
-                DeleteDC(hdc);
-            }
+            let ok = layered_update(
+                hwnd,
+                (x - bmp.tip.0, y - bmp.tip.1),
+                (bmp.w, bmp.h),
+                alpha,
+                |bits| bits.copy_from_slice(&bmp.bgra),
+            );
             if ok && !self.visible {
                 // SAFETY: our own window; shown without taking the focus.
                 unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
@@ -712,10 +1001,213 @@ mod win {
             }
         }
     }
+
+    // ---- the pad the person draws an arrow on ----------------------------------------------------------------
+
+    const PAD_CLASS: &str = "FlareArrowPad";
+
+    /// What the pad's window heard: presses, moves and releases (the probe reads them).
+    static PAD_DOWN: AtomicU32 = AtomicU32::new(0);
+    static PAD_MOVE: AtomicU32 = AtomicU32::new(0);
+    static PAD_UP: AtomicU32 = AtomicU32::new(0);
+
+    /// (presses, moves, releases) the pad's windows have had since the process began.
+    pub fn pad_heard() -> (u32, u32, u32) {
+        (
+            PAD_DOWN.load(Ordering::SeqCst),
+            PAD_MOVE.load(Ordering::SeqCst),
+            PAD_UP.load(Ordering::SeqCst),
+        )
+    }
+
+    unsafe extern "system" fn pad_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+        match msg {
+            // The mouse's everywhere on the pad, but never activated: the page keeps the keyboard.
+            WM_NCHITTEST => HTCLIENT as LRESULT,
+            WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
+            WM_SETCURSOR => {
+                // SAFETY: a system cursor, set while the pointer is over our own window.
+                unsafe { SetCursor(LoadCursorW(null_mut(), IDC_CROSS)) };
+                1
+            }
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
+                PAD_DOWN.fetch_add(1, Ordering::SeqCst);
+                // SAFETY: our own window takes the mouse until the button is let go (no keyboard focus moves).
+                unsafe { SetCapture(hwnd) };
+                0
+            }
+            WM_MOUSEMOVE => {
+                PAD_MOVE.fetch_add(1, Ordering::SeqCst);
+                0
+            }
+            WM_LBUTTONUP | WM_RBUTTONUP => {
+                PAD_UP.fetch_add(1, Ordering::SeqCst);
+                // SAFETY: lets go of the capture taken above.
+                unsafe { ReleaseCapture() };
+                0
+            }
+            // SAFETY: the default handling of the window's own message.
+            _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
+        }
+    }
+
+    fn register_pad() -> bool {
+        static ONCE: Once = Once::new();
+        static OK: AtomicBool = AtomicBool::new(false);
+        ONCE.call_once(|| {
+            // SAFETY: the class name is leaked so it outlives the class; the procedure is ours.
+            let ok = unsafe {
+                let name: &'static [u16] = Box::leak(wide(PAD_CLASS).into_boxed_slice());
+                let wc = WNDCLASSW {
+                    style: 0,
+                    lpfnWndProc: Some(pad_proc),
+                    cbClsExtra: 0,
+                    cbWndExtra: 0,
+                    hInstance: GetModuleHandleW(null()),
+                    hIcon: null_mut(),
+                    hCursor: null_mut(),
+                    hbrBackground: null_mut(),
+                    lpszMenuName: null(),
+                    lpszClassName: name.as_ptr(),
+                };
+                RegisterClassW(&wc) != 0
+            };
+            OK.store(ok, Ordering::SeqCst);
+        });
+        OK.load(Ordering::SeqCst)
+    }
+
+    /// The pad over the page while the person draws an arrow: a layered popup owned by Flare's window, every pixel at
+    /// alpha 1 (all but clear, and so the mouse's), never activated, so a press on it reaches neither the page nor the
+    /// keyboard focus. Made the first time it is shown, destroyed with this value.
+    pub struct PadWindow {
+        owner: isize,
+        hwnd: isize,
+        /// Where it covers now, while shown.
+        at: Option<(i32, i32, u32, u32)>,
+    }
+
+    impl PadWindow {
+        pub fn new(owner: isize) -> Self {
+            Self {
+                owner,
+                hwnd: 0,
+                at: None,
+            }
+        }
+
+        /// The window, for the probe.
+        pub fn hwnd(&self) -> isize {
+            self.hwnd
+        }
+
+        fn window(&mut self) -> Option<HWND> {
+            if self.hwnd == 0 && self.owner != 0 && register_pad() {
+                let class = wide(PAD_CLASS);
+                // SAFETY: a popup owned by Flare's own window, of the class registered above.
+                let h = unsafe {
+                    CreateWindowExW(
+                        WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                        class.as_ptr(),
+                        class.as_ptr(),
+                        WS_POPUP,
+                        0,
+                        0,
+                        1,
+                        1,
+                        self.owner as HWND,
+                        null_mut(),
+                        GetModuleHandleW(null()),
+                        null(),
+                    )
+                };
+                if h.is_null() {
+                    log::warn!("arrow pad: the window was not made");
+                    self.owner = 0;
+                } else {
+                    self.hwnd = h as isize;
+                }
+            }
+            (self.hwnd != 0).then_some(self.hwnd as HWND)
+        }
+    }
+
+    impl super::PadShell for PadWindow {
+        fn show(&mut self, x: i32, y: i32, w: u32, h: u32) -> bool {
+            if w == 0 || h == 0 || w > 16_384 || h > 16_384 {
+                return false;
+            }
+            if self.at == Some((x, y, w, h)) {
+                return true;
+            }
+            let Some(hwnd) = self.window() else {
+                return false;
+            };
+            let ok = layered_update(hwnd, (x, y), (w, h), 255, |bits| {
+                for p in bits.as_chunks_mut::<4>().0 {
+                    *p = [0, 0, 0, 1];
+                }
+            });
+            if ok {
+                if self.at.is_none() {
+                    // SAFETY: our own window; shown without taking the focus.
+                    unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+                }
+                self.at = Some((x, y, w, h));
+            }
+            ok
+        }
+
+        fn hide(&mut self) {
+            if self.at.take().is_some() && self.hwnd != 0 {
+                // SAFETY: our own window; a capture it holds goes with it.
+                unsafe {
+                    ReleaseCapture();
+                    ShowWindow(self.hwnd as HWND, SW_HIDE);
+                }
+            }
+        }
+    }
+
+    impl Drop for PadWindow {
+        fn drop(&mut self) {
+            if self.hwnd != 0 {
+                // SAFETY: our own window, on the thread that made it.
+                unsafe { DestroyWindow(self.hwnd as HWND) };
+                self.hwnd = 0;
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
-pub use win::CursorWindow;
+pub use win::{CursorWindow, PadWindow, pad_heard};
+
+/// The agent's arrow (and the person's kept one): a window of its own like the cursor's, transparent to the mouse.
+#[cfg(windows)]
+pub struct ArrowWindow(CursorWindow);
+
+#[cfg(windows)]
+impl ArrowWindow {
+    pub fn new(owner: isize) -> Self {
+        Self(CursorWindow::new(owner))
+    }
+}
+
+#[cfg(windows)]
+impl CursorShell for ArrowWindow {
+    fn show_at(&mut self, x: i32, y: i32, bmp: &CursorBitmap, alpha: u8) -> bool {
+        self.0.show_at(x, y, bmp, alpha)
+    }
+
+    fn set_alpha(&mut self, alpha: u8) -> bool {
+        self.0.set_alpha(alpha)
+    }
+
+    fn hide(&mut self) {
+        self.0.hide();
+    }
+}
 
 /// The glow's windows: one per edge band, each a [`CursorWindow`].
 #[cfg(windows)]
@@ -801,6 +1293,14 @@ pub trait CursorShell {
     fn hide(&mut self);
 }
 
+/// The window side of the pad the person draws an arrow on (a test and `--e2e` stand in for it).
+pub trait PadShell {
+    /// Covers (x, y, w, h) in screen pixels: all but clear, the mouse's, never the keyboard's. True when shown.
+    fn show(&mut self, x: i32, y: i32, w: u32, h: u32) -> bool;
+    /// Gone at once.
+    fn hide(&mut self);
+}
+
 /// The window side of the glow round the page: [`CursorShell`] for an [`EdgeGlow`], whose top left is put
 /// at (x, y) in screen pixels.
 pub trait GlowShell {
@@ -832,6 +1332,72 @@ std::thread_local! {
     static RECORD: std::cell::RefCell<CursorRecord> = std::cell::RefCell::new(CursorRecord::default());
     static BORDER_RECORD: std::cell::RefCell<CursorRecord> =
         std::cell::RefCell::new(CursorRecord::default());
+    static ARROW_RECORD: std::cell::RefCell<CursorRecord> =
+        std::cell::RefCell::new(CursorRecord::default());
+    static MARK_RECORD: std::cell::RefCell<CursorRecord> =
+        std::cell::RefCell::new(CursorRecord::default());
+    static PAD_RECORD: std::cell::RefCell<CursorRecord> =
+        std::cell::RefCell::new(CursorRecord::default());
+}
+
+/// What a [`RecordArrow`] (the agent's arrow) on this thread was last told: `x`, `y` the head.
+pub fn recorded_arrow() -> CursorRecord {
+    ARROW_RECORD.with(|r| r.borrow().clone())
+}
+
+/// What a [`RecordMark`] (the person's arrow) on this thread was last told: `x`, `y` the head.
+pub fn recorded_mark() -> CursorRecord {
+    MARK_RECORD.with(|r| r.borrow().clone())
+}
+
+/// What a [`RecordPad`] on this thread was last told: `x`, `y` its top left, `w`, `h` its size.
+pub fn recorded_pad() -> CursorRecord {
+    PAD_RECORD.with(|r| r.borrow().clone())
+}
+
+/// The agent's arrow's stand-in, as [`RecordCursor`] is the cursor's.
+pub struct RecordArrow;
+
+impl CursorShell for RecordArrow {
+    fn show_at(&mut self, x: i32, y: i32, bmp: &CursorBitmap, alpha: u8) -> bool {
+        record_show(&ARROW_RECORD, x, y, bmp, alpha)
+    }
+
+    fn hide(&mut self) {
+        ARROW_RECORD.with(|r| r.borrow_mut().shown = false);
+    }
+}
+
+/// The person's arrow's stand-in.
+pub struct RecordMark;
+
+impl CursorShell for RecordMark {
+    fn show_at(&mut self, x: i32, y: i32, bmp: &CursorBitmap, alpha: u8) -> bool {
+        record_show(&MARK_RECORD, x, y, bmp, alpha)
+    }
+
+    fn hide(&mut self) {
+        MARK_RECORD.with(|r| r.borrow_mut().shown = false);
+    }
+}
+
+/// The pad's stand-in.
+pub struct RecordPad;
+
+impl PadShell for RecordPad {
+    fn show(&mut self, x: i32, y: i32, w: u32, h: u32) -> bool {
+        PAD_RECORD.with(|r| {
+            let mut r = r.borrow_mut();
+            r.shown = true;
+            (r.x, r.y, r.w, r.h, r.alpha) = (x, y, w, h, 1);
+            r.draws += 1;
+        });
+        true
+    }
+
+    fn hide(&mut self) {
+        PAD_RECORD.with(|r| r.borrow_mut().shown = false);
+    }
 }
 
 /// What a [`RecordCursor`] on this thread was last told.
@@ -1205,5 +1771,447 @@ mod tests {
         assert!(!w.show_at(10, 10, &compose_cursor(1.0, "Claude", &[]), 255));
         assert!(!w.set_alpha(100));
         w.hide();
+    }
+
+    // ---- arrows (2026-11-10) ----
+
+    /// The pixel `d` pixels from the head back along the arrow (towards its tail).
+    fn along(b: &CursorBitmap, tail: (f64, f64), d: f64) -> [u8; 4] {
+        let len = (tail.0 * tail.0 + tail.1 * tail.1).sqrt();
+        let (x, y) = (
+            f64::from(b.tip.0) + tail.0 / len * d,
+            f64::from(b.tip.1) + tail.1 / len * d,
+        );
+        px(b, x.floor() as i32, y.floor() as i32)
+    }
+
+    #[test]
+    fn an_arrow_is_solid_in_its_ink_along_its_shaft_and_at_its_head() {
+        for s in [1.0, 1.5, 2.25, 3.0] {
+            for (tail, ink, c) in [
+                ((120.0, 80.0), ArrowInk::Agent, ORANGE),
+                ((-60.0, 200.0), ArrowInk::Person, BLUE),
+                ((0.0, -150.0), ArrowInk::Person, BLUE),
+            ] {
+                let tail = (tail.0 * s, tail.1 * s);
+                let b = compose_arrow(tail, s, ink, "");
+                assert_eq!(b.bgra.len(), (b.w * b.h * 4) as usize);
+                let len = (tail.0 * tail.0 + tail.1 * tail.1).sqrt();
+                // The middle of the shaft and the inside of the head are the ink, opaque.
+                let ink = |p: [u8; 4]| {
+                    p[3] == 255
+                        && [(p[0], c.2), (p[1], c.1), (p[2], c.0)]
+                            .iter()
+                            .all(|(got, want)| got.abs_diff(*want) <= 12)
+                };
+                let p = along(&b, tail, len / 2.0);
+                assert!(ink(p), "{tail:?} at {s}: {p:?}");
+                let p = along(&b, tail, HEAD_LEN_PX * s * 0.6);
+                assert!(ink(p), "head {tail:?} at {s}: {p:?}");
+                assert!(px(&b, b.tip.0, b.tip.1)[3] > 0, "the head's point is drawn");
+                // Beside the shaft, well clear of it, nothing.
+                let (nx, ny) = (-tail.1 / len, tail.0 / len);
+                let mid = (
+                    f64::from(b.tip.0) + tail.0 / 2.0,
+                    f64::from(b.tip.1) + tail.1 / 2.0,
+                );
+                let off = 10.0 * s;
+                assert_eq!(
+                    px(&b, (mid.0 + nx * off) as i32, (mid.1 + ny * off) as i32),
+                    [0; 4],
+                    "{tail:?} at {s}"
+                );
+                assert!(
+                    b.bgra
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]),
+                    "premultiplied"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_click_with_no_drag_points_from_up_and_left_and_a_short_one_keeps_its_direction() {
+        let b = compose_arrow((0.0, 0.0), 1.0, ArrowInk::Person, "");
+        let min = HEAD_LEN_PX * 1.5;
+        let d = std::f64::consts::FRAC_1_SQRT_2;
+        assert_eq!(
+            along(&b, (d, d), min - 3.0)[3],
+            255,
+            "drawn down and to the right"
+        );
+        assert_eq!(
+            along(&b, (-d, -d), 10.0)[3],
+            0,
+            "nothing up and to the left"
+        );
+        let b = compose_arrow((0.0, 5.0), 1.0, ArrowInk::Person, "");
+        assert_eq!(
+            along(&b, (0.0, 1.0), min - 3.0)[3],
+            255,
+            "straight down, at its least length"
+        );
+        // A long arrow's picture is its own box, not padded to a page.
+        let b = compose_arrow((1000.0, 0.0), 1.0, ArrowInk::Agent, "");
+        assert!(b.w < 1060 && b.h < 60, "{} x {}", b.w, b.h);
+        let huge = compose_arrow((1e9, f64::NAN), 1.0, ArrowInk::Agent, "");
+        assert!(huge.w <= ARROW_MAX as u32 + 100, "{}", huge.w);
+    }
+
+    #[test]
+    fn only_the_agents_arrow_carries_its_label_and_a_long_one_is_cut() {
+        let plain = compose_arrow((60.0, 60.0), 1.0, ArrowInk::Agent, "");
+        let tagged = compose_arrow((60.0, 60.0), 1.0, ArrowInk::Agent, "Click here to sign in");
+        assert!(tagged.w > plain.w && tagged.h > plain.h);
+        assert_eq!(tagged.tip, plain.tip, "the head stays where it was");
+        let person = compose_arrow((60.0, 60.0), 1.0, ArrowInk::Person, "Click here");
+        assert_eq!((person.w, person.h), (plain.w, plain.h));
+        let long = compose_arrow((60.0, 60.0), 1.0, ArrowInk::Agent, &"w".repeat(200));
+        let cut = compose_arrow(
+            (60.0, 60.0),
+            1.0,
+            ArrowInk::Agent,
+            &"w".repeat(POINT_LABEL_CHARS),
+        );
+        assert_eq!(long.w, cut.w);
+    }
+
+    #[test]
+    fn the_agents_arrow_turns_its_tail_to_stay_on_the_page() {
+        let page = (0, 0, 600, 400);
+        let len = 64.0;
+        let (dx, dy) = point_tail((300, 200), page, len);
+        assert!(dx > 0.0 && dy > 0.0, "down and right in the middle");
+        let (dx, dy) = point_tail((590, 200), page, len);
+        assert!(dx < 0.0 && dy > 0.0, "left of a head at the right edge");
+        let (dx, dy) = point_tail((300, 390), page, len);
+        assert!(dx > 0.0 && dy < 0.0, "above a head at the bottom");
+        let (dx, dy) = point_tail((595, 395), page, len);
+        assert!(dx < 0.0 && dy < 0.0, "up and left in the far corner");
+        assert!(((dx * dx + dy * dy).sqrt() - len).abs() < 0.01);
+    }
+
+    #[test]
+    fn an_arrow_laid_on_a_screenshot_lands_at_its_head_and_stops_at_the_edges() {
+        let (w, h) = (200u32, 100u32);
+        let mut rgba = vec![255u8; (w * h * 4) as usize];
+        let b = compose_arrow((40.0, 30.0), 1.0, ArrowInk::Person, "");
+        blend_onto_rgba(&mut rgba, w, h, (50, 40), &b);
+        // The shaft's middle, laid at (50, 40) + half the tail: the person's blue.
+        let (x, y) = (50 + 20, 40 + 15);
+        let i = ((y * w + x) * 4) as usize;
+        assert_eq!(&rgba[i..i + 4], &[BLUE.0, BLUE.1, BLUE.2, 255]);
+        // Far from it, the picture is as it was.
+        let i = ((5 * w + 190) * 4) as usize;
+        assert_eq!(&rgba[i..i + 4], &[255, 255, 255, 255]);
+        // Half off the picture is drawn where it falls and nowhere else (no panic, nothing wraps).
+        let mut small = vec![0u8; 10 * 10 * 4];
+        blend_onto_rgba(&mut small, 10, 10, (-5, -5), &b);
+        blend_onto_rgba(&mut small, 10, 10, (500, 500), &b);
+        let mut wrong = vec![0u8; 7];
+        blend_onto_rgba(&mut wrong, 10, 10, (0, 0), &b);
+    }
+
+    #[test]
+    fn the_arrow_and_pad_stand_ins_keep_their_own_records() {
+        let b = compose_arrow((60.0, 60.0), 1.0, ArrowInk::Agent, "x");
+        let mut a = RecordArrow;
+        assert!(a.show_at(10, 20, &b, 255));
+        assert!(recorded_arrow().shown && !recorded_mark().shown && !recorded().shown);
+        assert_eq!((recorded_arrow().x, recorded_arrow().y), (10, 20));
+        a.hide();
+        assert!(!recorded_arrow().shown);
+        let mut m = RecordMark;
+        assert!(m.show_at(1, 2, &b, 255));
+        assert!(recorded_mark().shown && !recorded_arrow().shown);
+        m.hide();
+        let mut p = RecordPad;
+        assert!(p.show(5, 6, 300, 200));
+        let r = recorded_pad();
+        assert_eq!((r.shown, r.x, r.y, r.w, r.h), (true, 5, 6, 300, 200));
+        p.hide();
+        assert!(!recorded_pad().shown);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_pad_and_arrow_windows_are_not_made_without_an_owner() {
+        let mut p = PadWindow::new(0);
+        assert!(!p.show(0, 0, 100, 100));
+        assert!(!p.show(0, 0, 0, 100));
+        p.hide();
+        let mut a = ArrowWindow::new(0);
+        assert!(!a.show_at(
+            0,
+            0,
+            &compose_arrow((50.0, 50.0), 1.0, ArrowInk::Agent, ""),
+            255
+        ));
+        a.hide();
+    }
+
+    /// The probe of 2026-11-10 (docs/surfaces/decisions.md, "Arrows"): can an owned layered window over the page catch
+    /// the mouse without taking the keyboard from the page? Run on a desktop of its own that is never shown (nothing
+    /// reaches the person's screen): an owner window, a child window in the page's place holding the focus, and the
+    /// pad over it.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "the overlay probe, run by hand: cargo test -p flare-win --lib pad_probe -- --ignored --nocapture"]
+    fn pad_probe() {
+        let out = std::thread::spawn(probe::run)
+            .join()
+            .expect("the probe ran");
+        println!("{out}");
+        assert!(out.contains("RESULT: pass"), "{out}");
+    }
+
+    #[cfg(windows)]
+    mod probe {
+        use super::super::{
+            ArrowInk, ArrowWindow, CursorShell, PadShell, PadWindow, compose_arrow, pad_heard,
+        };
+        use std::ffi::c_void;
+        use std::ptr::{null, null_mut};
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+        use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            GetActiveWindow, GetCapture, GetFocus, SetActiveWindow, SetFocus,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
+            HTCLIENT, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW, PostMessageW, RegisterClassW,
+            SendMessageW, TranslateMessage, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE,
+            WM_MOUSEMOVE, WNDCLASSW, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WindowFromPoint,
+        };
+
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn CreateDesktopW(
+                name: *const u16,
+                device: *const u16,
+                mode: *const c_void,
+                flags: u32,
+                access: u32,
+                sa: *const c_void,
+            ) -> *mut c_void;
+            fn SetThreadDesktop(desk: *mut c_void) -> i32;
+            fn CloseDesktop(desk: *mut c_void) -> i32;
+        }
+        const GENERIC_ALL: u32 = 0x1000_0000;
+
+        static PAGE_PRESSES: AtomicU32 = AtomicU32::new(0);
+
+        fn wide(s: &str) -> Vec<u16> {
+            s.encode_utf16().chain(Some(0)).collect()
+        }
+
+        unsafe extern "system" fn page_proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+            if m == WM_LBUTTONDOWN {
+                PAGE_PRESSES.fetch_add(1, Ordering::SeqCst);
+            }
+            // SAFETY: the default handling of the window's own message.
+            unsafe { DefWindowProcW(h, m, w, l) }
+        }
+
+        unsafe extern "system" fn plain_proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+            // SAFETY: as above.
+            unsafe { DefWindowProcW(h, m, w, l) }
+        }
+
+        fn pump() {
+            // SAFETY: this thread's own queue.
+            unsafe {
+                let mut msg: MSG = std::mem::zeroed();
+                while PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE) != 0 {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
+        }
+
+        fn class(
+            name: &str,
+            proc: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT,
+        ) -> Vec<u16> {
+            let n = wide(name);
+            // SAFETY: the name outlives the windows of the probe; the procedure is ours.
+            unsafe {
+                let wc = WNDCLASSW {
+                    style: 0,
+                    lpfnWndProc: Some(proc),
+                    cbClsExtra: 0,
+                    cbWndExtra: 0,
+                    hInstance: GetModuleHandleW(null()),
+                    hIcon: null_mut(),
+                    hCursor: null_mut(),
+                    hbrBackground: null_mut(),
+                    lpszMenuName: null(),
+                    lpszClassName: n.as_ptr(),
+                };
+                RegisterClassW(&wc);
+            }
+            n
+        }
+
+        pub fn run() -> String {
+            let mut out = Vec::new();
+            let name = wide(&format!("FlarePadProbe{}", std::process::id()));
+            // SAFETY: a desktop of this probe's own, never switched to (never shown); this new thread has no window yet.
+            let desk =
+                unsafe { CreateDesktopW(name.as_ptr(), null(), null(), 0, GENERIC_ALL, null()) };
+            // SAFETY: the desktop made just above, for this thread, which has no window yet.
+            if desk.is_null() || unsafe { SetThreadDesktop(desk) } == 0 {
+                return "RESULT: not run (no hidden desktop could be made)".to_string();
+            }
+            let owner_class = class("FlarePadProbeOwner", plain_proc);
+            let page_class = class("FlarePadProbePage", page_proc);
+            // SAFETY: windows of this thread, on the hidden desktop.
+            let (owner, page) = unsafe {
+                let owner = CreateWindowExW(
+                    0,
+                    owner_class.as_ptr(),
+                    owner_class.as_ptr(),
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                    100,
+                    100,
+                    900,
+                    700,
+                    null_mut(),
+                    null_mut(),
+                    GetModuleHandleW(null()),
+                    null(),
+                );
+                let page = CreateWindowExW(
+                    0,
+                    page_class.as_ptr(),
+                    page_class.as_ptr(),
+                    WS_CHILD | WS_VISIBLE,
+                    0,
+                    0,
+                    800,
+                    560,
+                    owner,
+                    null_mut(),
+                    GetModuleHandleW(null()),
+                    null(),
+                );
+                SetActiveWindow(owner);
+                SetFocus(page);
+                (owner, page)
+            };
+            pump();
+            // SAFETY: plain reads of this thread's windows.
+            let (focus0, active0) = unsafe { (GetFocus(), GetActiveWindow()) };
+            out.push(format!(
+                "setup: the page has the focus {} and the owner is active {}",
+                focus0 == page,
+                active0 == owner
+            ));
+            let mut rc = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            let mut tl = POINT { x: 0, y: 0 };
+            // SAFETY: plain reads of the page's place.
+            unsafe {
+                GetClientRect(page, &mut rc);
+                ClientToScreen(page, &mut tl);
+            }
+            let (w, h) = ((rc.right - rc.left) as u32, (rc.bottom - rc.top) as u32);
+            let mut pad = PadWindow::new(owner as isize);
+            let shown = pad.show(tl.x, tl.y, w, h);
+            pump();
+            let ph = pad.hwnd() as HWND;
+            let mid = POINT {
+                x: tl.x + w as i32 / 2,
+                y: tl.y + h as i32 / 2,
+            };
+            // The agent's arrow over the middle: it lets the mouse through to the pad.
+            let mut arrow = ArrowWindow::new(owner as isize);
+            let arrow_shown = arrow.show_at(
+                mid.x,
+                mid.y,
+                &compose_arrow((60.0, 60.0), 1.0, ArrowInk::Agent, ""),
+                255,
+            );
+            pump();
+            // SAFETY: plain reads.
+            let (hit_mid, hit_out, focus1, active1) = unsafe {
+                (
+                    WindowFromPoint(mid),
+                    WindowFromPoint(POINT {
+                        x: tl.x + w as i32 + 20,
+                        y: mid.y,
+                    }),
+                    GetFocus(),
+                    GetActiveWindow(),
+                )
+            };
+            let hit = shown && hit_mid == ph;
+            out.push(format!(
+                "hit test: the pad was shown {shown}, the arrow {arrow_shown}; the pad is under the pointer over the page {hit}; beside the page it is not {}",
+                hit_out != ph
+            ));
+            let keeps = focus1 == page && active1 == owner;
+            out.push(format!(
+                "focus: after the pad came up the page still has it {keeps}"
+            ));
+            // SAFETY: what Windows asks a window before a press activates it, asked of the pad.
+            let ma = unsafe {
+                SendMessageW(
+                    ph,
+                    WM_MOUSEACTIVATE,
+                    owner as WPARAM,
+                    ((WM_LBUTTONDOWN as isize) << 16 | HTCLIENT as isize) as LPARAM,
+                )
+            };
+            let no_activate = ma == MA_NOACTIVATE as LRESULT;
+            out.push(format!(
+                "activation: the pad answers no-activate {no_activate}"
+            ));
+            let (d0, m0, u0) = pad_heard();
+            // SAFETY: a press, a drag and a release posted to the pad, as Windows would deliver them.
+            unsafe {
+                PostMessageW(ph, WM_LBUTTONDOWN, 1, 10 << 16 | 10);
+                for i in 1..=3 {
+                    PostMessageW(ph, WM_MOUSEMOVE, 1, (10 + 20 * i) << 16 | (10 + 30 * i));
+                }
+                PostMessageW(ph, WM_LBUTTONUP, 0, 70 << 16 | 100);
+            }
+            pump();
+            let (d1, m1, u1) = pad_heard();
+            // SAFETY: plain reads.
+            let (focus2, capture) = unsafe { (GetFocus(), GetCapture()) };
+            let heard = (d1 - d0, m1 - m0, u1 - u0) == (1, 3, 1);
+            let page_quiet = PAGE_PRESSES.load(Ordering::SeqCst) == 0;
+            let kept = focus2 == page && capture.is_null();
+            out.push(format!(
+                "drag: the pad heard press, 3 moves, release {heard}; the page heard no press {page_quiet}; the page kept the focus and the capture was let go {kept}"
+            ));
+            pad.hide();
+            pump();
+            // SAFETY: plain read.
+            let back = unsafe { WindowFromPoint(mid) } == page;
+            out.push(format!(
+                "hidden: the page is under the pointer again {back}"
+            ));
+            let pass = hit && keeps && no_activate && heard && page_quiet && kept && back;
+            out.push(format!("RESULT: {}", if pass { "pass" } else { "fail" }));
+            drop(arrow);
+            drop(pad);
+            // SAFETY: this thread's own windows and desktop.
+            unsafe {
+                DestroyWindow(owner);
+                CloseDesktop(desk);
+            }
+            out.join("\n")
+        }
     }
 }

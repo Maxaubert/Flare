@@ -459,6 +459,12 @@ export component AppWindow inherits Window {
     out property <length> panel-ask-x: panel-slot.ask-x;
     out property <length> panel-ask-y: panel-slot.ask-y;
     out property <length> panel-ask-w: panel-slot.ask-w;
+    // "Draw arrow" beside it (rule 256): shown on a web page or a mini-app of a tab with an agent, never a plugin's page,
+    // and not while a pop-up is open; pressed while the person draws.
+    in property <bool> panel-draw-on;
+    in property <bool> panel-draw-active;
+    callback panel-draw-arrow();
+    out property <bool> panel-draw-visible: panel-slot.draw-visible;
     in property <string> ask-note;
     out property <length> ask-note-x: ask-note-box.x;
     out property <length> ask-note-w: ask-note-box.width;
@@ -670,15 +676,15 @@ export component AppWindow inherits Window {
     callback update-cancel();
     callback update-abort();
     callback update-notice-dismissed();
-    // The "Build ready" chip and its toast (install when idle, 2026-10-29). The staged-build glue pushes them.
+    // The "Build ready" chip and its toast (2026-10-29; one click since 2026-11-10). The staged-build glue pushes them.
     in property <bool> staged-chip-shown;
     in property <string> staged-chip-label;
     in property <string> staged-chip-aria;
     in property <string> staged-chip-tip;
     in property <string> staged-toast;
     in property <string> staged-toast-button;
-    // The chip's right edge, top and foot: its menu drops from it.
-    callback staged-chip-clicked(length, length, length);
+    // A click installs the staged build (no menu since 2026-11-10).
+    callback staged-chip-clicked();
     callback staged-toast-clicked();
     out property <length> staged-chip-x: root.side-mode ? side-staged.absolute-position.x : top-staged.absolute-position.x;
     out property <length> staged-chip-y: root.side-mode ? side-staged.absolute-position.y : top-staged.absolute-position.y;
@@ -1033,7 +1039,7 @@ export component AppWindow inherits Window {
                         clicked(i) => { root.plugin-top-clicked(i); }
                         tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                     }
-                    // The "Build ready" chip (install when idle): left of the update chip, 8 px from it.
+                    // The "Build ready" chip (a click installs): left of the update chip, 8 px from it.
                     Rectangle {
                         width: (root.staged-chip-shown && !root.side-mode) ? top-staged.chip-width + (root.update-chip-shown ? Px.snap(8px) : Px.snap(10px - 8px)) : 0px;
                         top-staged := UpdateChip {
@@ -1045,7 +1051,7 @@ export component AppWindow inherits Window {
                             label: root.staged-chip-label;
                             aria: root.staged-chip-aria;
                             tip: root.staged-chip-tip;
-                            clicked => { root.staged-chip-clicked(self.absolute-position.x + self.width, self.absolute-position.y, self.absolute-position.y + self.height); }
+                            clicked => { root.staged-chip-clicked(); }
                             tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                         }
                     }
@@ -1131,7 +1137,7 @@ export component AppWindow inherits Window {
                     label: root.staged-chip-label;
                     aria: root.staged-chip-aria;
                     tip: root.staged-chip-tip;
-                    clicked => { root.staged-chip-clicked(self.absolute-position.x + self.width, self.absolute-position.y, self.absolute-position.y + self.height); }
+                    clicked => { root.staged-chip-clicked(); }
                     tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                 }
                 side-chip := UpdateChip {
@@ -1314,6 +1320,9 @@ export component AppWindow inherits Window {
                         ask-on: root.panel-ask-on;
                         ask-agent => { root.panel-ask-agent(); }
                         ask-tip(a, b, c, d, e) => { root.panel-ask-tip(a, b, c, d, e); }
+                        draw-on: root.panel-draw-on;
+                        draw-active: root.panel-draw-active;
+                        draw-arrow => { root.panel-draw-arrow(); }
                         convo-files: root.panel-convo-files;
                         convo-rows: root.panel-convo-rows;
                         convo-max-cols: root.panel-convo-max-cols;

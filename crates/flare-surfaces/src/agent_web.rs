@@ -322,6 +322,86 @@ fn cap(all: Vec<Candidate>) -> (Vec<Candidate>, bool) {
     (kept, true)
 }
 
+/// What a person's arrow points at, read the way a look reads the page: the browser's node, its role and its name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pointed {
+    pub backend_id: i64,
+    pub role: String,
+    pub name: String,
+}
+
+/// What `Accessibility.getPartialAXTree` (with its relatives) says is at the node `backend` that
+/// `DOM.getNodeForLocation` found under an arrow's head: the nearest of it and its ancestors that a look would list
+/// (a control, or a heading, an image or text with words), so an arrow on a button's label names the button. With
+/// none, the node itself with its role (and no name), or None when the tree does not have it.
+pub fn pointed_at(ax: &Value, backend: i64) -> Option<Pointed> {
+    let nodes = ax.get("nodes").and_then(Value::as_array)?;
+    let by_id: std::collections::HashMap<&str, &Value> = nodes
+        .iter()
+        .filter_map(|n| Some((n.get("nodeId")?.as_str()?, n)))
+        .collect();
+    // A parent from `parentId`, or from whoever lists the node as a child.
+    let mut parent: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for n in nodes {
+        let Some(id) = n.get("nodeId").and_then(Value::as_str) else {
+            continue;
+        };
+        for c in n
+            .get("childIds")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            parent.entry(c).or_insert(id);
+        }
+    }
+    for n in nodes {
+        if let (Some(id), Some(p)) = (
+            n.get("nodeId").and_then(Value::as_str),
+            n.get("parentId").and_then(Value::as_str),
+        ) {
+            parent.insert(id, p);
+        }
+    }
+    let start = nodes
+        .iter()
+        .find(|n| n.get("backendDOMNodeId").and_then(Value::as_i64) == Some(backend))?;
+    let mut at = start;
+    // A bound: a hostile tree with a loop in it is walked a few dozen steps at most.
+    for _ in 0..64 {
+        let ignored = at.get("ignored").and_then(Value::as_bool).unwrap_or(false);
+        if !ignored && let Some(c) = candidate_of(at, false) {
+            return Some(Pointed {
+                backend_id: c.backend_id,
+                role: c.role,
+                name: c.name,
+            });
+        }
+        let Some(next) = at
+            .get("nodeId")
+            .and_then(Value::as_str)
+            .and_then(|id| parent.get(id))
+            .and_then(|p| by_id.get(p))
+        else {
+            break;
+        };
+        at = next;
+    }
+    let role = start
+        .get("role")
+        .and_then(|r| r.get("value"))
+        .and_then(Value::as_str)
+        .map(|r| clean_text(&r.to_ascii_lowercase(), 24))
+        .filter(|r| !r.is_empty() && r != "none" && r != "generic" && r != "ignored")
+        .unwrap_or_else(|| "element".to_string());
+    Some(Pointed {
+        backend_id: backend,
+        role,
+        name: String::new(),
+    })
+}
+
 // ---- places on the page -----------------------------------------------------------------------
 
 /// The page's visible area in CSS pixels, and where it sits in the document.
@@ -1378,5 +1458,58 @@ mod tests {
         assert_eq!(wait_timeout(Some(500)), 500);
         assert_eq!(wait_timeout(Some(600_000)), WAIT_MAX_MS);
         assert_eq!(wait_timeout(Some(0)), 0);
+    }
+
+    #[test]
+    fn an_arrow_on_a_buttons_label_names_the_button_and_one_on_nothing_named_says_its_role() {
+        let tree = json!({"nodes": [
+            {"nodeId": "1", "role": {"value": "RootWebArea"}, "childIds": ["2"], "backendDOMNodeId": 1},
+            {"nodeId": "2", "role": {"value": "button"}, "name": {"value": "Copy key"}, "childIds": ["3"], "backendDOMNodeId": 20},
+            {"nodeId": "3", "role": {"value": "generic"}, "ignored": true, "parentId": "2", "childIds": ["4"], "backendDOMNodeId": 21},
+            {"nodeId": "4", "role": {"value": "StaticText"}, "name": {"value": ""}, "parentId": "3", "backendDOMNodeId": 22}
+        ]});
+        assert_eq!(
+            pointed_at(&tree, 22),
+            Some(Pointed {
+                backend_id: 20,
+                role: "button".into(),
+                name: "Copy key".into()
+            })
+        );
+        assert_eq!(pointed_at(&tree, 20).unwrap().backend_id, 20);
+        // A plain box with nothing a look would list: its own role, no name.
+        let tree = json!({"nodes": [
+            {"nodeId": "9", "role": {"value": "region"}, "backendDOMNodeId": 90}
+        ]});
+        assert_eq!(
+            pointed_at(&tree, 90),
+            Some(Pointed {
+                backend_id: 90,
+                role: "region".into(),
+                name: String::new()
+            })
+        );
+        let tree = json!({"nodes": [{"nodeId": "9", "role": {"value": "generic"}, "backendDOMNodeId": 90}]});
+        assert_eq!(pointed_at(&tree, 90).unwrap().role, "element");
+        assert_eq!(pointed_at(&tree, 91), None);
+        assert_eq!(pointed_at(&json!({}), 1), None);
+    }
+
+    #[test]
+    fn a_pointed_name_is_cleaned_and_a_tree_that_loops_ends() {
+        let tree = json!({"nodes": [
+            {"nodeId": "1", "role": {"value": "generic"}, "parentId": "2", "backendDOMNodeId": 1},
+            {"nodeId": "2", "role": {"value": "generic"}, "parentId": "1", "backendDOMNodeId": 2},
+        ]});
+        assert_eq!(pointed_at(&tree, 1).unwrap().backend_id, 1);
+        let tree = json!({"nodes": [
+            {"nodeId": "1", "role": {"value": "link"}, "name": {"value": "Pay\u{202e}\u{1b}[2J now"}, "backendDOMNodeId": 5}
+        ]});
+        let p = pointed_at(&tree, 5).unwrap();
+        assert!(
+            p.name.chars().all(|c| !c.is_control() && c != '\u{202e}'),
+            "{:?}",
+            p.name
+        );
     }
 }
