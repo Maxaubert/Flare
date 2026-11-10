@@ -25,6 +25,7 @@ and the newest are dropped and counted when the queue is full.
     cargo diag -- --kinds main-lag,fs-slow   only these kinds
     cargo diag -- --agent            the agent lines only
     cargo diag -- --agent --tab <id> the agent lines of one tab
+    cargo diag -- --web              the web panel lines only (add --tab <id> for one tab)
     cargo diag -- --dir <folder>     any folder that holds a diag.jsonl
     cargo diag -- --profile <folder> that profile's logs folder
     cargo diag -- --n 50             at most 50 entries
@@ -78,6 +79,9 @@ a field can never overwrite those four.
 | `mark` | a user mark (no note; see below) | `control.rs` |
 | `agent-hook`, `agent-title`, `agent-mark`, `agent-restore` | the agent indicator (M6), see below | `agent_diag.rs` |
 | `agent-poll-failing` | the agent poll's process query failed three times in a row, so agent marks go missing (a problem line) | `agent_hub.rs` |
+| `web-refused`, `web-popup`, `web-close-ignored`, `web-permission` | the browser panel refused a navigation or a pop-up, sent a pop-up to the panel, ignored `window.close()` or denied a permission, see below | `web_diag.rs`, `web_ctl.rs` |
+| `web-load-failed`, `web-process`, `web-cert` | a page failed to load, a browser process failed, or a certificate error (problem lines), see below | `web_diag.rs`, `web_ctl.rs` |
+| `web-nav` | the chain of sites a page went through; verbose only | `web_diag.rs`, `web_ctl.rs` |
 | `logger-error`, `logger-dropped` | the log could not write, or dropped lines (said once, then counted; past twice the 2 MB cap, while rotation keeps failing, lines are dropped and counted too) | `writer.rs` |
 
 The kinds the page version wrote have no native equivalent, so they are not written:
@@ -121,6 +125,27 @@ signals are folded, a flood is capped per tab, and the next line says how many w
 text from the agent never reaches the log: a hook value is kept only when it is in the allowed list,
 and anything else is written as `other`.
 
+## The web kinds (rules 247, 248)
+
+The browser panel writes a line when something goes wrong in it, so a failed hand-off (a shop's pop-up to a bank's 2FA page)
+can be read afterwards. Every line has `id` (the tab), `view` (`web` for the browser panel, `app` for a mini-app, `mod` for a
+plugin's page), `site` and, when there was a page before it, `from` (that page's site).
+
+| Kind | Fields besides those | A problem |
+|---|---|---|
+| `web-refused` | `why`: `scheme` (the browser panel opens http, https and about:blank only), `not-its-page` (a mini-app), `not-its-host` (a plugin), `popup` | no |
+| `web-popup` | `to: panel` (the pop-up opened in the panel), `user` (the person's click opened it) | no |
+| `web-close-ignored` | none: the page called `window.close()` | no |
+| `web-load-failed` | `error`: the WebView2 error's name (`cert-expired`, `name-not-resolved`, `timeout` ...). A navigation Flare cancelled and a stream handed to the player are not failures | yes |
+| `web-process` | `process` (`browser`, `render`, `gpu` ...), and `reason` (`crashed`, `out-of-memory` ...) and `exit` when the Runtime says them | yes |
+| `web-cert` | `error`: the certificate error's name. Logged only: the browser's own handling is unchanged | yes |
+| `web-permission` | `permission` (`camera`, `microphone`, `location`, `notifications` ...), `user` | no |
+| `web-nav` | none: one step of the chain of sites. Verbose only | no |
+
+The gate: one line per kind, site and word per 10 seconds, the copies counted and written as `repeats` once the 10 seconds have
+passed; at most 10 lines per kind per 10 seconds. `web-process` and `web-cert` always write their first line, even over that.
+The page events (`web-nav`, `web-load-failed`, `web-cert`) are the browser panel's only.
+
 ## Wiring and the quiet level
 
 - The writer is a thread with a queue of 2000 lines and a flush every 250 ms. A write on the calling
@@ -137,6 +162,10 @@ and anything else is written as `other`.
 
 The log holds only numbers, times, ids, kinds, short capped strings (paths, shell names, versions) and
 the messages of the app's own errors. It never holds typed text, clipboard content, audio, screen text,
-tab titles or a conversation. `mark` has no note, and the agent kinds drop free text. `PRIVACY.md`
+tab titles or a conversation. `mark` has no note, and the agent kinds drop free text. The web kinds keep a page's site
+only: the host in lower case, never its address, port, login, path, query, fragment, title, cookies, form data or certificate
+(`flare_surfaces::web::site_of`; an address with no host is its scheme, and anything else is `odd` or `unparsed`). The sites are
+made where the browser's event arrives (`flare_web::WebNote`), so an address never reaches the log code. `PRIVACY.md`
 says the same, and the scan in `crates/flare/tests/privacy.rs` and the text-key scan in
-`crates/flare-diag/tests/neutral.rs` hold it: a line with a text key fails the build.
+`crates/flare-diag/tests/neutral.rs` hold it: a line with a text key (`text`, `title`, `url`, `uri`, `query`, `path`, `cookie` and
+the rest) fails the build.

@@ -28,6 +28,10 @@
 //! a failed registration all mean no file is saved (S6). A process failure that the browser mends
 //! itself (GPU, utility, a frame) is only logged; a lost renderer ends that panel's page and a lost
 //! browser process ends every page and the environment, so the next open starts fresh.
+//!
+//! For the diagnostics log, each of these (a refusal, a pop-up, a denied permission, a process failure, an ignored
+//! `window.close()`, and on the web panel the chain of sites, a failed load and a certificate error) is also told as
+//! a [`WebEvent::Note`], made here with the sites alone (rules 247, 248). Noting never changes what the browser does.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -41,7 +45,8 @@ use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::modview::{self, Route};
 use flare_surfaces::netproxy;
 use flare_surfaces::web::{
-    Failure, PhysRect, failure_of_kind, host_label, navigation_allowed, pdf_view,
+    Failure, PhysRect, failure_of_kind, host_label, load_failure_logged, navigation_allowed,
+    pdf_view, permission_word, process_reason_word, process_word, web_error_name,
 };
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
@@ -53,8 +58,9 @@ use webview2_com::{
     FocusChangedEventHandler, HistoryChangedEventHandler, LaunchingExternalUriSchemeEventHandler,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
-    ScriptDialogOpeningEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler,
-    WebResourceRequestedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
+    ScriptDialogOpeningEventHandler, ServerCertificateErrorDetectedEventHandler,
+    SourceChangedEventHandler, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler,
+    WindowCloseRequestedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
@@ -68,7 +74,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, Interface, PCWSTR, PWSTR};
 
 use crate::backend::{
-    ControllerProbe, KeyFilter, KeyPress, Nav, Sink, Slot, ViewSink, WebBackend, WebEvent,
+    ControllerProbe, KeyFilter, KeyPress, Nav, NoteKind, Sink, Slot, ViewSink, WebBackend,
+    WebEvent, WebNote,
 };
 use crate::seal::{DownloadWall, Seal, plugin_seal};
 
@@ -718,6 +725,13 @@ impl WebHost {
             }
         }
         let mut token = 0i64;
+        // The plain web panel's page events (the chain of sites, a failed load, a certificate error) are noted for
+        // the diagnostics log (rule 247); a mini-app's and a plugin's pages are Flare's own and say only refusals,
+        // permissions, pop-ups and process failures.
+        let page_log = app.is_none();
+        // The navigation that began last (its number, its address and the page it left): a failed load names
+        // where it was going and where it came from.
+        let started: Rc<RefCell<Option<(u64, String, String)>>> = Rc::default();
 
         // ---- navigation ----
         {
@@ -726,23 +740,40 @@ impl WebHost {
             let app_url = app.map(|a| a.url.clone());
             // A mod's view may only go to its own host (any path of it).
             let mod_host = app.filter(|a| a.module.is_some()).map(|a| a.host.clone());
-            let h = NavigationStartingEventHandler::create(Box::new(move |_w, args| {
+            let started = Rc::clone(&started);
+            let h = NavigationStartingEventHandler::create(Box::new(move |w, args| {
                 let Some(args) = args else { return Ok(()) };
                 // SAFETY: `args` is the live event argument of this callback.
                 let uri = get_string(|p| unsafe { args.Uri(p) });
-                let allowed = match (&mod_host, &app_url) {
-                    (Some(h), _) => modview::nav_allowed(&uri, h),
-                    (None, Some(u)) => app::nav_allowed(&uri, u),
-                    (None, None) => navigation_allowed(&uri),
+                // The page the navigation leaves (the address only changes once the new one commits).
+                // SAFETY: `w` is the live sender of this callback.
+                let from = w
+                    .map(|w| get_string(|p| unsafe { w.Source(p) }))
+                    .unwrap_or_default();
+                let (allowed, why) = match (&mod_host, &app_url) {
+                    (Some(h), _) => (modview::nav_allowed(&uri, h), "not-its-host"),
+                    (None, Some(u)) => (app::nav_allowed(&uri, u), "not-its-page"),
+                    (None, None) => (navigation_allowed(&uri), "scheme"),
                 };
                 if allowed {
                     let mut nav = 0u64;
                     // SAFETY: as above.
                     let _ = unsafe { args.NavigationId(&mut nav) };
+                    if page_log {
+                        sink.send(|tab| WebEvent::Note {
+                            tab,
+                            note: WebNote::new(NoteKind::Nav, &uri, &from),
+                        });
+                        *started.borrow_mut() = Some((nav, uri.clone(), from));
+                    }
                     sink.send(|tab| WebEvent::Loading { tab, url: uri, nav });
                 } else {
                     // SAFETY: as above.
                     let _ = unsafe { args.SetCancel(true) };
+                    sink.send(|tab| WebEvent::Note {
+                        tab,
+                        note: WebNote::new(NoteKind::NavRefused, &uri, &from).detail(why),
+                    });
                     sink.send(|tab| WebEvent::Refused { tab, url: uri });
                 }
                 Ok(())
@@ -752,6 +783,7 @@ impl WebHost {
         }
         {
             let sink = ViewSink::new(&self.sink, slot);
+            let started = Rc::clone(&started);
             let h = NavigationCompletedEventHandler::create(Box::new(move |w, args| {
                 let (Some(w), Some(args)) = (w, args) else {
                     return Ok(());
@@ -764,6 +796,15 @@ impl WebHost {
                     let _ = args.NavigationId(&mut nav);
                     (get_string(|p| w.Source(p)), get_bool(|b| args.IsSuccess(b)))
                 };
+                if page_log && load_failure_logged(ok, st.0) {
+                    let (to, from) = match started.borrow().as_ref() {
+                        Some((n, to, from)) if *n == nav => (to.clone(), from.clone()),
+                        _ => (url.clone(), String::new()),
+                    };
+                    let note =
+                        WebNote::new(NoteKind::LoadFailed, &to, &from).detail(web_error_name(st.0));
+                    sink.send(|tab| WebEvent::Note { tab, note });
+                }
                 // A new document clears the title (`WebEvent::Url`); one whose title is the same as the last page's
                 // raises no change, so the title is read again once a load has succeeded. Not after a failed one:
                 // a sound file "fails" (its stream is handed to the player) and still reports the last page's title.
@@ -843,18 +884,43 @@ impl WebHost {
             // A mini-app's links open nowhere: it is one page, and the browser panel is the person's to
             // point somewhere.
             refuse_new_windows(&webview, ViewSink::new(&self.sink, slot), app.is_none());
-            deny_permissions(&webview);
+            deny_permissions(&webview, ViewSink::new(&self.sink, slot));
+        }
+        if page_log {
+            log_cert_errors(&webview, ViewSink::new(&self.sink, slot));
         }
         {
             let (sink, inbox) = (Arc::clone(&self.sink), Rc::clone(&self.inbox));
             let events = ViewSink::new(&self.sink, slot);
             let env_kind = EnvKind::of(app);
-            let h = ProcessFailedEventHandler::create(Box::new(move |_w, args| {
+            let h = ProcessFailedEventHandler::create(Box::new(move |w, args| {
                 let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND(-1);
-                if let Some(args) = args {
+                let mut failure = None;
+                if let Some(args) = &args {
                     // SAFETY: `args` is the live argument of this callback.
                     let _ = unsafe { args.ProcessFailedKind(&mut kind) };
+                    // The reason and exit code are a newer interface's: an older Runtime says the kind only.
+                    if let Ok(a2) = args.cast::<ICoreWebView2ProcessFailedEventArgs2>() {
+                        let mut reason = COREWEBVIEW2_PROCESS_FAILED_REASON(-1);
+                        let mut exit = 0i32;
+                        // SAFETY: as above.
+                        unsafe {
+                            let _ = a2.Reason(&mut reason);
+                            let _ = a2.ExitCode(&mut exit);
+                        }
+                        failure = Some((process_reason_word(reason.0), exit));
+                    }
                 }
+                // SAFETY: `w` is the live sender of this callback.
+                let site = w
+                    .map(|w| get_string(|p| unsafe { w.Source(p) }))
+                    .unwrap_or_default();
+                let mut note =
+                    WebNote::new(NoteKind::Process, &site, "").detail(process_word(kind.0));
+                if let Some((reason, exit)) = failure {
+                    note = note.failure(reason, exit);
+                }
+                events.send(|tab| WebEvent::Note { tab, note });
                 match failure_of_kind(kind.0) {
                     // The browser restarts it and the page keeps working.
                     Failure::Recovers => {
@@ -879,7 +945,18 @@ impl WebHost {
         // `window.close()` does nothing here. A page that puts an element in full screen (a video's button) is
         // told to the app, which makes the page cover the window until the page leaves it.
         {
-            let h = WindowCloseRequestedEventHandler::create(Box::new(move |_w, _a| Ok(())));
+            let sink = ViewSink::new(&self.sink, slot);
+            let h = WindowCloseRequestedEventHandler::create(Box::new(move |w, _a| {
+                // SAFETY: `w` is the live sender of this callback.
+                let site = w
+                    .map(|w| get_string(|p| unsafe { w.Source(p) }))
+                    .unwrap_or_default();
+                sink.send(|tab| WebEvent::Note {
+                    tab,
+                    note: WebNote::new(NoteKind::CloseIgnored, &site, ""),
+                });
+                Ok(())
+            }));
             // SAFETY: as above.
             let _ = unsafe { webview.add_WindowCloseRequested(&h, &mut token) };
             let sink = ViewSink::new(&self.sink, slot);
@@ -1054,7 +1131,7 @@ impl WebHost {
             refuse_new_windows(webview, ViewSink::new(&self.sink, slot), false);
         }
         if !seal.permissions {
-            deny_permissions(webview);
+            deny_permissions(webview, ViewSink::new(&self.sink, slot));
         }
         match seal.downloads {
             DownloadWall::Ask => self.hold_downloads(webview, slot)?,
@@ -1525,8 +1602,15 @@ fn refuse_new_windows(webview: &ICoreWebView2, sink: ViewSink, in_place: bool) {
         // SAFETY: both are the live arguments of this callback.
         unsafe {
             let uri = get_string(|p| args.Uri(p));
+            let from = get_string(|p| w.Source(p));
+            let user = get_bool(|b| args.IsUserInitiated(b));
             let _ = args.SetHandled(true);
-            if in_place && navigation_allowed(&uri) {
+            let in_panel = in_place && navigation_allowed(&uri);
+            let note = WebNote::new(NoteKind::Popup, &uri, &from)
+                .detail(if in_panel { "panel" } else { "refused" })
+                .user(user);
+            sink.send(|tab| WebEvent::Note { tab, note });
+            if in_panel {
                 let u = wide(&pdf_view(&uri));
                 let _ = w.Navigate(PCWSTR(u.as_ptr()));
             } else {
@@ -1540,18 +1624,58 @@ fn refuse_new_windows(webview: &ICoreWebView2, sink: ViewSink, in_place: bool) {
     let _ = unsafe { webview.add_NewWindowRequested(&h, &mut token) };
 }
 
-/// Every permission is denied (camera, microphone, location, notifications, clipboard ...).
-fn deny_permissions(webview: &ICoreWebView2) {
-    let h = PermissionRequestedEventHandler::create(Box::new(move |_w, args| {
+/// Every permission is denied (camera, microphone, location, notifications, clipboard ...), and the denial is
+/// noted for the diagnostics log: the permission's word and the asking site.
+fn deny_permissions(webview: &ICoreWebView2, sink: ViewSink) {
+    let h = PermissionRequestedEventHandler::create(Box::new(move |w, args| {
         if let Some(args) = args {
-            // SAFETY: `args` is the live argument of this callback.
-            let _ = unsafe { args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY) };
+            let mut kind = COREWEBVIEW2_PERMISSION_KIND(-1);
+            // SAFETY: `args` and `w` are the live arguments of this callback.
+            let (uri, from, user) = unsafe {
+                let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY);
+                let _ = args.PermissionKind(&mut kind);
+                let from = w.map(|w| get_string(|p| w.Source(p))).unwrap_or_default();
+                (
+                    get_string(|p| args.Uri(p)),
+                    from,
+                    get_bool(|b| args.IsUserInitiated(b)),
+                )
+            };
+            let note = WebNote::new(NoteKind::Permission, &uri, &from)
+                .detail(permission_word(kind.0))
+                .user(user);
+            sink.send(|tab| WebEvent::Note { tab, note });
         }
         Ok(())
     }));
     let mut token = 0i64;
     // SAFETY: `webview` and the handler are live COM objects; `token` is a valid out value.
     let _ = unsafe { webview.add_PermissionRequested(&h, &mut token) };
+}
+
+/// A server certificate error is noted for the diagnostics log: the error's name and the site only. The handler
+/// reads `ErrorStatus` and `RequestUri` and never calls `SetAction`, so the browser does what it always did (its
+/// own error page). An older Runtime without `ICoreWebView2_14` notes nothing.
+fn log_cert_errors(webview: &ICoreWebView2, sink: ViewSink) {
+    let Ok(w14) = webview.cast::<ICoreWebView2_14>() else {
+        return;
+    };
+    let h = ServerCertificateErrorDetectedEventHandler::create(Box::new(move |w, args| {
+        let Some(args) = args else { return Ok(()) };
+        let mut st = COREWEBVIEW2_WEB_ERROR_STATUS(-1);
+        // SAFETY: `args` and `w` are the live arguments of this callback.
+        let (uri, from) = unsafe {
+            let _ = args.ErrorStatus(&mut st);
+            let from = w.map(|w| get_string(|p| w.Source(p))).unwrap_or_default();
+            (get_string(|p| args.RequestUri(p)), from)
+        };
+        let note = WebNote::new(NoteKind::Cert, &uri, &from).detail(web_error_name(st.0));
+        sink.send(|tab| WebEvent::Note { tab, note });
+        Ok(())
+    }));
+    let mut token = 0i64;
+    // SAFETY: `w14` and the handler are live COM objects; `token` is a valid out value.
+    let _ = unsafe { w14.add_ServerCertificateErrorDetected(&h, &mut token) };
 }
 
 /// A download is cancelled as it starts (a view with nobody to ask): nothing is saved, nothing is asked.
