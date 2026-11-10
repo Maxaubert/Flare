@@ -4,7 +4,7 @@
 
 use flare_dictation::catalog::{self, LANGUAGES, ModelEntry, Runner};
 use flare_dictation::hotkey::DictMode;
-use flare_dictation::hotkey::format_hotkey;
+use flare_dictation::hotkey::format_hotkey_here;
 use flare_settings::page::dictation::{
     self as page, Ask, DictationData, GPU_PACK_ID, ItemInfo, ItemState, ModelInfo, Prefs, Vendor,
 };
@@ -95,14 +95,15 @@ pub fn page_data(env: &PageEnv<'_>) -> DictationData {
     let stored_limited = limits_language(&dp.model);
     DictationData {
         models: model_infos(),
-        recommended: recommended(pack),
+        // Metal on a Mac is the GPU the pack is on Windows: Turbo is the pick there without one (rule 1082).
+        recommended: recommended(flare_dictation::gpu::gpu_ready(pack)),
         items,
         mics: crate::dictation_ctl::page_mics(),
         languages: LANGUAGES.to_vec(),
         prefs: Prefs {
             enabled: dp.enabled,
             toggle: dp.mode == DictMode::Toggle,
-            key_text: format_hotkey(&dp.hotkey),
+            key_text: format_hotkey_here(&dp.hotkey),
             mic: dp.mic,
             language: dp.language,
             pause_media: dp.pause_media,
@@ -120,6 +121,11 @@ pub fn page_data(env: &PageEnv<'_>) -> DictationData {
             model_id,
             text: catalog::LIMITED_LANGUAGES_TEXT,
         }),
+        pause_media_unavailable: flare_dictation::media::unavailable().map(str::to_string),
+        // Read without asking (macOS: CGPreflightListenEventAccess), so a grant shows at the next page build.
+        anywhere_problem: flare_dictation::keyhook::anywhere_problem(&dp.hotkey)
+            .map(str::to_string),
+        gpu_built_in: flare_dictation::gpu::BUILT_IN_GPU,
     }
 }
 #[cfg(test)]

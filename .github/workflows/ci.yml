@@ -80,5 +80,29 @@ jobs:
           sysctl kern.timer.coalescing_enabled kern.timer_coalesce_bg_ns_max || true
       - name: Tests
         run: cargo nextest run --workspace --no-tests=pass --no-fail-fast
+      # The Mac's speech engine (port phase 7, rule 1084): whisper.cpp built with Metal from its pinned commit and
+      # tree, then one real pass with the pinned tiny model and the Parakeet host loading the built libraries.
+      - uses: actions/cache@v4
+        with:
+          path: vendor/macos
+          key: whisper-macos-arm64-927cfce34f31707e17f2bff35c349632fb9e2c3a-v1
+      - name: Speech engine with Metal (built from the pinned source)
+        shell: bash
+        run: bash tools/build-whisper-macos.sh vendor/macos/whisper vendor/macos/clips
+      - name: The pinned tiny model (checked by size and SHA-256)
+        shell: bash
+        run: |
+          set -euo pipefail
+          m=vendor/macos/models/ggml-tiny.bin
+          sha=be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21
+          if [ ! -f "$m" ] || [ "$(shasum -a 256 "$m" | cut -d' ' -f1)" != "$sha" ]; then
+            mkdir -p vendor/macos/models
+            curl -fsSL -o "$m.part" https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.bin
+            [ "$(stat -f %z "$m.part")" = 77691713 ]
+            [ "$(shasum -a 256 "$m.part" | cut -d' ' -f1)" = "$sha" ]
+            mv "$m.part" "$m"
+          fi
+      - name: A real pass on the Mac's engine
+        run: cargo nextest run -p flare-dictation --test metal_real --run-ignored only --no-fail-fast
       - name: Deny
         run: cargo deny check

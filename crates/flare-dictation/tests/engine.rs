@@ -3,8 +3,9 @@
 //! queue tests; the Parakeet ones are Task 14's). Nothing is mocked, because every rule here is about
 //! processes and sockets (who is alive, who was killed, what went over the wire): the stand-in is
 //! `fake-whisper-server`, started through the engine's `command` seam.
-//! Windows-only until macOS phase 7 of the port plan (the reaping job, the named-pipe link, the pid checks).
-#![cfg(windows)]
+//! Both systems since macOS port phase 7 (rule 1081): the reaping job is the kill-on-close Job Object on Windows and
+//! a process group per child plus a reaper on macOS; a pid is gone when Windows says it ended, or when macOS has no
+//! such process (or only its zombie).
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -17,7 +18,9 @@ use flare_dictation::engine::{
 };
 use flare_dictation::job::Job;
 use serde::Deserialize;
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
     OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
 };
@@ -155,6 +158,8 @@ fn world_in_job(knobs: Knobs, tune: impl FnOnce(&mut EngineConfig), job: Job) ->
         });
         (PathBuf::from(FAKE), all)
     }));
+    // The CPU and GPU folders are told apart here, as on Windows; the Metal engine's own test sets this back.
+    cfg.bundled_gpu = false;
     tune(&mut cfg);
     let job = Arc::new(job);
     World {
@@ -203,6 +208,7 @@ impl Drop for World {
     }
 }
 
+#[cfg(windows)]
 fn pid_gone(pid: u32) -> bool {
     // SAFETY: OpenProcess with query and synchronize rights returns a handle or null; a non-null
     // handle is waited on with a zero timeout and closed exactly once, here.
@@ -219,6 +225,35 @@ fn pid_gone(pid: u32) -> bool {
         CloseHandle(h);
         done
     }
+}
+
+/// macOS: no such process, or only its zombie (`SZOMB`) waiting for a wait that is on its way.
+#[cfg(not(windows))]
+fn pid_gone(pid: u32) -> bool {
+    let Ok(raw) = libc::pid_t::try_from(pid) else {
+        return true;
+    };
+    // SAFETY: signal 0 checks for the process and sends nothing.
+    if unsafe { libc::kill(raw, 0) } != 0
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    {
+        return true;
+    }
+    // SAFETY: proc_bsdinfo is plain C data; all zeroes is a valid value.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = i32::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).unwrap_or(0);
+    // SAFETY: `info` is a writable proc_bsdinfo of `size` bytes for the one call.
+    let got = unsafe {
+        libc::proc_pidinfo(
+            raw,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            std::ptr::from_mut(&mut info).cast(),
+            size,
+        )
+    };
+    // 5 is SZOMB in sys/proc.h.
+    got == size && info.pbi_status == 5
 }
 
 fn until(what: impl Fn() -> bool, ms: u64) {
@@ -369,7 +404,12 @@ fn is_not_started_until_the_first_transcribe_and_is_started_the_way_the_real_one
     let s = seen(&ask(&w, req("base", "nb", true)));
     assert_eq!(w.launched_count(), 1);
     let (_, exe, args) = w.launched.lock().unwrap()[0].clone();
-    assert_eq!(exe, w.cpu_dir.path().join("whisper-server.exe"));
+    assert_eq!(
+        exe,
+        w.cpu_dir
+            .path()
+            .join(flare_dictation::engine::WHISPER_SERVER)
+    );
     assert_eq!(
         args,
         flags(&[
@@ -1016,4 +1056,57 @@ fn dropping_the_engine_does_not_wait_for_a_worker_stuck_in_a_launch() {
         took < Duration::from_millis(1000),
         "dropping the engine waited {took:?} for the worker"
     );
+}
+
+// ---------------------------------------------------------------- the Metal engine (macOS, rule 1082)
+
+type Argvs = Arc<Mutex<Vec<Vec<String>>>>;
+
+/// A world whose ONE bundled folder carries a GPU backend (a Mac's Metal build): `metal_starts` says whether a run
+/// without `-ng` comes up. Every argv is recorded.
+fn metal_world(metal_starts: bool) -> (World, Argvs) {
+    let argvs: Argvs = Arc::new(Mutex::new(Vec::new()));
+    let a = Arc::clone(&argvs);
+    let w = world_with(Knobs::default(), move |cfg| {
+        cfg.bundled_gpu = true;
+        cfg.command = Some(Box::new(move |_exe: &Path, args: &[String]| {
+            a.lock().unwrap().push(args.to_vec());
+            let mut all = args.to_vec();
+            if !metal_starts && !args.iter().any(|x| x == "-ng") {
+                all.push("--fake-exit".to_string());
+            }
+            (PathBuf::from(FAKE), all)
+        }));
+    });
+    (w, argvs)
+}
+
+#[test]
+fn the_app_engine_says_the_bundled_folder_has_a_gpu_on_a_mac_only() {
+    let cfg = EngineConfig::new(Box::new(|| None), Box::new(|| None), Box::new(model_path));
+    assert_eq!(cfg.bundled_gpu, cfg!(target_os = "macos"));
+}
+
+#[test]
+fn a_bundled_gpu_engine_is_started_as_the_gpu_engine_from_its_own_folder_without_ng() {
+    let (w, argvs) = metal_world(true);
+    assert!(ask(&w, base(true)).is_ok());
+    assert_eq!(w.engine.info(), info(true, Some(EngineKind::Gpu), false));
+    assert!(ask(&w, base(true)).is_ok());
+    let all = argvs.lock().unwrap().clone();
+    assert_eq!(all.len(), 1, "one resident server: {all:?}");
+    assert!(!all[0].iter().any(|a| a == "-ng"), "{:?}", all[0]);
+}
+
+#[test]
+fn a_bundled_gpu_engine_that_will_not_start_falls_back_once_and_for_good_to_its_cpu_run_with_ng() {
+    let (w, argvs) = metal_world(false);
+    assert!(ask(&w, base(true)).is_ok());
+    assert_eq!(w.engine.info(), info(true, Some(EngineKind::Cpu), true));
+    // Never tried again this session.
+    assert!(ask(&w, base(true)).is_ok());
+    let all = argvs.lock().unwrap().clone();
+    assert_eq!(all.len(), 2, "{all:?}");
+    assert!(!all[0].iter().any(|a| a == "-ng"));
+    assert_eq!(all[1].last().map(String::as_str), Some("-ng"));
 }

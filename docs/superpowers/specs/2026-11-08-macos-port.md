@@ -130,6 +130,35 @@ own pass over the session and the group before the reap (rule 1053); the end is 
 `waitid` fails (rule 1055); a zip made on Windows installs the Mac helper executable (rule 1059); any quarantined file
 in the folder refuses the helper (rule 1058); off Windows a path ending in `"` is no longer rewritten (rule 1064).
 
+Phase 7 progress: step 1 (2026-11-09) is the microphone and the link. The microphone is a CoreAudio input queue behind
+the WASAPI seams (`crates/flare-dictation/src/macos/mic.rs`: input devices by UID, the default read at each open, 16 kHz
+by the shared resampler, a lost device reported once), with the access read and never asked for: off or restricted
+refuses before any device is touched and Settings names the System Settings pane (`NSMicrophoneUsageDescription` is
+phase 8's Info.plist). The link between copies is a Unix socket in a 0700 folder under the per-user temp folder with
+the named pipe's handshake, a lock per name and `getpeereid` on both ends (`macos/link_sock.rs`), and every link test
+now runs on both systems; a WAV through the file seam drives the controller end to end with a fake engine (rules 1073
+to 1076, `docs/parity.md` "macOS port, phase 7"). Step 2 (2026-11-09) is the key from any app (`macos/keyhook.rs`): a
+chord that ends in a key is a Carbon hot key (no permission), a modifier binding (the default Ctrl+Cmd, Right Option)
+a listen-only event tap made only once Input Monitoring reads as granted, never asked for, with Settings naming the
+pane meanwhile and the window reading the key; the picker's digits and Esc are Carbon hot keys while switched on; one
+copy holds the key by `flock`. Bindings are named and checked as Mac keys (Right Alt is Right Option). Nothing is typed
+into other apps (Windows does not either), so no Accessibility; media pause is off on the Mac with its reason, as no
+public API can pause another app's player (rules 1077 to 1080). Step 3 (2026-11-09) is the reaping job and the engines
+with Metal: each engine child in a process group of its own, handed to one `/bin/sh` reaper that kills every group it
+holds when its pipe closes, so also when Flare is killed with `SIGKILL` (`macos/job.rs`), and every engine and host
+test now runs on both systems; the bundled engine is whisper.cpp built from the commit and tree tag b5130 names (the
+release has no macOS program) with Metal embedded and only system links (`tools/build-whisper-macos.sh`, built and
+given a real pass in CI), run first on Metal and once for good on the CPU (`-ng`), with no NVIDIA pack, Turbo as the
+Recommended pick, the Parakeet host loading the built `libggml` and `libparakeet`, and models in
+`~/Library/Application Support/FlareDictation` with no quarantine flag (rules 1081 to 1085). The engine goes into the
+bundle in phase 8. A review of steps 1 to 3 (2026-11-09) tightened them: a tap whose Input Monitoring is revoked
+ends and lets the lock go, a register gives up as soon as the hook stops (no 2 s stall at quit), the reaper withdraws a
+pid before it is reaped, answers every line and watches Flare's pid, the system's Control chords are refused as a
+binding, the microphone row says the access as it is now, an opened-up link folder of this user is made private
+again, and the engine folder is reused only with exactly its stamped files, and a media worker that crashes closes its queue before
+its reply (a test flake, shared with Windows) (rules 1086 to 1095). Next: cues and the
+widget.
+
 ## Known risks
 
 - **Agent browsing on WKWebView** (phase 1 decides). No DevTools protocol and no http(s) request

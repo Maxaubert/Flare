@@ -10,6 +10,17 @@ use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
 #[cfg(windows)]
 const NVIDIA_VENDOR: u32 = 0x10DE;
 
+/// The bundled engine has a GPU of its own: Metal, on a Mac (rule 1082). Every Mac Flare runs on is Apple
+/// Silicon (aarch64-apple-darwin, macOS 15 or later), and every Apple Silicon GPU has Metal, so nothing is
+/// probed; the engine itself falls back to the CPU once and for good if Metal will not start. No pack exists
+/// on a Mac, so the models the pack is for are fast without one and the Recommended pick follows.
+pub const BUILT_IN_GPU: bool = cfg!(target_os = "macos");
+
+/// Whether a GPU engine is there to run a model: the NVIDIA pack installed (Windows), or Metal (a Mac).
+pub fn gpu_ready(pack_installed: bool) -> bool {
+    pack_installed || BUILT_IN_GPU
+}
+
 /// True when an NVIDIA adapter is present (or the e2e seam says so). Answered once per process.
 pub fn has_nvidia() -> bool {
     static CELL: OnceLock<bool> = OnceLock::new();
@@ -74,6 +85,13 @@ mod tests {
         assert!(decide(&cell, Some("yes"), || true));
         let cell = OnceLock::new();
         assert!(!decide(&cell, None, || false));
+    }
+
+    #[test]
+    fn a_mac_has_a_gpu_engine_without_a_pack_and_windows_only_with_one() {
+        assert_eq!(BUILT_IN_GPU, cfg!(target_os = "macos"));
+        assert!(gpu_ready(true));
+        assert_eq!(gpu_ready(false), cfg!(target_os = "macos"));
     }
 
     #[test]

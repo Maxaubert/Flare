@@ -59,6 +59,19 @@ pub const LAUNCH_FAIL: Duration = Duration::from_millis(30_000);
 /// How often a starting server is asked whether it is up yet.
 const READY_POLL: Duration = Duration::from_millis(100);
 
+/// The Whisper server in an engine folder: `whisper-server.exe` on Windows, `whisper-server` on macOS.
+pub const WHISPER_SERVER: &str = if cfg!(windows) {
+    "whisper-server.exe"
+} else {
+    "whisper-server"
+};
+/// The one-pass Parakeet runner in an engine folder.
+pub const PARAKEET_CLI: &str = if cfg!(windows) {
+    "parakeet-cli.exe"
+} else {
+    "parakeet-cli"
+};
+
 /// Which engine folder answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineKind {
@@ -154,6 +167,10 @@ pub struct EngineConfig {
     pub runner_for: Box<dyn Fn(&str) -> Runner + Send + Sync>,
     /// An NVIDIA adapter is present (a question that cannot be answered reads as no).
     pub has_nvidia: Box<dyn Fn() -> bool + Send + Sync>,
+    /// The bundled engine carries a GPU backend of its own: Metal on a Mac (rule 1082), where there is no pack.
+    /// Then the bundled folder is first started as the GPU engine, and the once-and-for-good fall back runs the
+    /// same folder on the CPU (`-ng`). False on Windows, whose bundled engine is the CPU build.
+    pub bundled_gpu: bool,
     /// Stand down after this long with no request; `None` never stands down (D11, N5).
     pub idle: Option<Duration>,
     pub start_timeout: Duration,
@@ -184,6 +201,7 @@ impl EngineConfig {
                 crate::catalog::model(id).map_or(Runner::Whisper, |m| m.runner)
             }),
             has_nvidia: Box::new(crate::gpu::has_nvidia),
+            bundled_gpu: crate::gpu::BUILT_IN_GPU,
             idle: Some(IDLE),
             start_timeout: START_TIMEOUT,
             request_timeout: REQUEST_TIMEOUT,
@@ -250,6 +268,16 @@ struct Inner {
     st: Mutex<State>,
     cv: Condvar,
     pids: Mutex<Vec<u32>>,
+}
+
+/// The child's PATH with the CPU engine's folder (which holds the C++ runtime) in front, for a GPU folder that has
+/// none: Windows finds a DLL on PATH. A Mac finds a library by its `@loader_path` rpath, never PATH, and its PATH is
+/// joined with `:`: nothing is changed there (rule 1093).
+fn runtime_path(runtime: &Path, dir: &Path, old: &str) -> Option<String> {
+    if !cfg!(windows) || runtime == dir {
+        return None;
+    }
+    Some(format!("{};{old}", runtime.display()))
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -608,12 +636,18 @@ impl Inner {
         s.kill();
     }
 
-    /// The GPU pack when it is installed AND an NVIDIA adapter is present, else the bundled CPU engine.
+    /// The GPU pack when it is installed AND an NVIDIA adapter is present, else the bundled engine: as the GPU
+    /// engine when it carries one (Metal, `bundled_gpu`) and has not fallen back, else as the CPU engine.
     fn pick(&self) -> Want {
         let fell_back = lock(&self.st).gpu_fell_back;
         if !fell_back {
             if let Some(dir) = (self.cfg.gpu_dir)() {
                 if (self.cfg.has_nvidia)() {
+                    return Want::Dir(EngineKind::Gpu, dir);
+                }
+            }
+            if self.cfg.bundled_gpu {
+                if let Some(dir) = (self.cfg.cpu_dir)() {
                     return Want::Dir(EngineKind::Gpu, dir);
                 }
             }
@@ -630,9 +664,9 @@ impl Inner {
     fn child_env(&self, kind: EngineKind, dir: &Path) -> Vec<(String, String)> {
         let mut env = Vec::new();
         if let Some(runtime) = (self.cfg.cpu_dir)() {
-            if runtime != dir {
-                let old = std::env::var("PATH").unwrap_or_default();
-                env.push(("PATH".to_string(), format!("{};{old}", runtime.display())));
+            let old = std::env::var("PATH").unwrap_or_default();
+            if let Some(path) = runtime_path(&runtime, dir, &old) {
+                env.push(("PATH".to_string(), path));
             }
         }
         if kind == EngineKind::Gpu {
@@ -846,7 +880,7 @@ impl Inner {
             return answer;
         }
         let args = parakeet::pass_args(model, self.cfg.threads, kind);
-        let (file, args) = self.command_for(&dir.join("parakeet-cli.exe"), &args);
+        let (file, args) = self.command_for(&dir.join(PARAKEET_CLI), &args);
         let env = self.child_env(kind, dir);
         let spec = parakeet::Spec {
             file: &file,
@@ -976,7 +1010,7 @@ impl Inner {
         if self.stopped_since(mine) {
             return Err("stopped".to_string());
         }
-        let args: Vec<String> = [
+        let mut args: Vec<String> = [
             "-m",
             &crate::ansi_path::engine_safe_path(model_path).to_string_lossy(),
             "--host",
@@ -989,7 +1023,11 @@ impl Inner {
         .iter()
         .map(|s| (*s).to_string())
         .collect();
-        let (file, args) = self.command_for(&dir.join("whisper-server.exe"), &args);
+        if kind == EngineKind::Cpu && self.cfg.bundled_gpu {
+            // The bundled engine has Metal in it: its CPU run must be told so, or the fall back would be Metal again.
+            args.push("-ng".to_string());
+        }
+        let (file, args) = self.command_for(&dir.join(WHISPER_SERVER), &args);
         let env = self.child_env(kind, dir);
         // sync-ok: runs on the engine's worker thread, never the UI thread
         let server = Server::spawn(
@@ -1105,6 +1143,27 @@ impl Inner {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_runtime_goes_on_path_only_on_windows_and_only_for_another_folder() {
+        let cpu = Path::new("/engines/cpu");
+        let gpu = Path::new("/engines/gpu");
+        assert_eq!(runtime_path(cpu, cpu, "/usr/bin"), None);
+        if cfg!(windows) {
+            assert_eq!(
+                runtime_path(cpu, gpu, "C:\\Windows").as_deref(),
+                Some(format!("{};C:\\Windows", cpu.display()).as_str())
+            );
+        } else {
+            // A `;` PATH would break the child's PATH on a Mac, and dylibs are not found through it anyway.
+            assert_eq!(runtime_path(cpu, gpu, "/usr/bin:/bin"), None);
         }
     }
 }

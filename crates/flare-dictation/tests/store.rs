@@ -257,7 +257,12 @@ fn pack_dir(root: &Path, e: &Item) -> PathBuf {
 /// What the official zip looks like once open: the server is under Release/.
 fn fake_unzip_into(out: &Path) {
     fs::create_dir_all(out.join("Release")).unwrap();
-    fs::write(out.join("Release").join("whisper-server.exe"), "MZ").unwrap();
+    fs::write(
+        out.join("Release")
+            .join(flare_dictation::engine::WHISPER_SERVER),
+        "MZ",
+    )
+    .unwrap();
     fs::write(out.join("Release").join("ggml-cuda.dll"), "MZ").unwrap();
 }
 
@@ -728,7 +733,12 @@ fn finds_the_server_at_the_top_and_two_levels_down_and_no_deeper() {
         let rel2 = rel.clone();
         let unzip: Unzip = Arc::new(move |_, out, _| {
             fs::create_dir_all(out.join(&rel2)).unwrap();
-            fs::write(out.join(&rel2).join("whisper-server.exe"), "MZ").unwrap();
+            fs::write(
+                out.join(&rel2)
+                    .join(flare_dictation::engine::WHISPER_SERVER),
+                "MZ",
+            )
+            .unwrap();
             Ok(())
         });
         let s = fx.store_with(vec![e.clone()], None, Some(unzip));
@@ -873,7 +883,11 @@ fn unzips_for_real_with_expand_archive_in_a_path_with_a_space() {
         let mut w = zip::ZipWriter::new(&mut cur);
         let opts = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
-        w.start_file("Release/whisper-server.exe", opts).unwrap();
+        w.start_file(
+            format!("Release/{}", flare_dictation::engine::WHISPER_SERVER),
+            opts,
+        )
+        .unwrap();
         w.write_all(b"MZ pretend").unwrap();
         w.finish().unwrap();
     }
@@ -1000,8 +1014,9 @@ fn the_shipped_catalogue_opens_and_the_failure_texts_are_the_parity_line() {
     let fx = Fx::new();
     let s = Store::open(fx.root.clone(), Box::new(MemFetch(fx.mem.clone())));
     let ids: Vec<String> = status(&s).into_iter().map(|i| i.id).collect();
-    assert_eq!(ids.len(), 8);
-    assert!(ids.contains(&"gpu-pack".to_string()));
+    // The pack is offered on Windows only (rule 1082): a Mac's engine has Metal in it.
+    assert_eq!(ids.len(), if cfg!(windows) { 8 } else { 7 });
+    assert_eq!(ids.contains(&"gpu-pack".to_string()), cfg!(windows));
     assert_eq!(Failure::Network.text(), "The download failed.");
     assert_eq!(
         Failure::Checksum.text(),
@@ -1080,4 +1095,36 @@ fn remove_waits_for_a_held_file_and_reports_one_that_stays_held() {
         Err(Failure::Disk)
     );
     drop(held);
+}
+
+// macOS (port phase 7, rule 1085): a file Flare fetches is data it wrote itself, so it carries no quarantine flag
+// and Gatekeeper is never asked about it; and a model is never made a program.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_fetched_model_carries_no_quarantine_flag_and_is_not_executable() {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fx::new();
+    let s = fx.store(vec![fx.model("base", "/good")]);
+    assert_eq!(end(s.download("base", quiet())), Ok(()));
+    let file = fx.root.join("models").join("base.bin");
+    let path = std::ffi::CString::new(file.as_os_str().as_bytes()).unwrap();
+    // SAFETY: both strings are live and NUL-terminated; a null buffer of size 0 only asks for the length.
+    let got = unsafe {
+        libc::getxattr(
+            path.as_ptr(),
+            c"com.apple.quarantine".as_ptr(),
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+        )
+    };
+    assert_eq!(got, -1, "the model carries a quarantine flag");
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ENOATTR)
+    );
+    let mode = fs::metadata(&file).unwrap().permissions().mode();
+    assert_eq!(mode & 0o111, 0, "a model is never executable: {mode:o}");
 }
