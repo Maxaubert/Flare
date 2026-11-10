@@ -210,7 +210,7 @@ Gated, each with its reason in `mac_gate.rs` (`flare-e2e --list` prints it):
 | Scenarios | Why |
 |---|---|
 | webPanel, webVideo, webNoRuntime, agentBrowser, agentCoveredClick, mcpBrowser, miniApp, diagram, mcpDiagram, pluginBrand, modsSample, pluginFill, devPreview, model | Mac port not written (phase 8): they drive the WebView2 controller; the Mac web panel is CEF, which runs only from the `Flare.app` bundle, and its scenarios are still to write |
-| updateWindow, updateGuard, updateNotes, idleInstall | Mac port not written (phase 8): they drive Velopack's Windows install and swap; the Mac update is a whole-bundle swap |
+| updateWindow, updateGuard, updateNotes, clickInstall | Mac port not written (phase 8): they drive Velopack's Windows install and swap; the Mac update is a whole-bundle swap |
 | dictation, dictationPage, dictationParakeet, dictateAnywhere, dictateTwoCopies | Mac port not written (phase 7): they drive the speech host processes, WASAPI and the Right Alt hook; Mac dictation is still to write |
 | dpiMatrix, monitorMove | Windows only: cmd.exe tabs through WM_DPICHANGED at the eight Windows scale steps and per-monitor moves; a Mac's backing scale is 1 or 2, per screen, and the runner has one 1x display |
 | systemMenu | Windows only: the window's system menu (Alt+Space); a Mac window has none |

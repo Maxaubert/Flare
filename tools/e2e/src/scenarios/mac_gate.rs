@@ -33,7 +33,7 @@ pub const GATED: &[(&str, &str)] = &[
     ("updateWindow", UPDATE),
     ("updateGuard", UPDATE),
     ("updateNotes", UPDATE),
-    ("idleInstall", UPDATE),
+    ("clickInstall", UPDATE),
     ("dictation", DICTATION),
     ("dictationPage", DICTATION),
     ("dictationParakeet", DICTATION),
