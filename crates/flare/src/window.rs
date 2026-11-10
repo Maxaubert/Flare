@@ -1168,9 +1168,9 @@ pub fn run_window(
         {
             let new_dir = flare_surfaces::web::webview_folder(&inst.profile.dir);
             // The default run kept its browsers in the install folder until 2026-11-10, where a reinstall deleted
-            // every login (rule 259): they move under the profile, all or none, before any browser starts. A set the
+            // every login (rule 261): they move under the profile, all or none, before any browser starts. A set the
             // run before still holds stays in use where it is and is tried again when the first browser is made
-            // (rule 261).
+            // (rule 262).
             if let Some(old) = &old_web_dir {
                 crate::web_ctl::log_web_move(flare_surfaces::web::move_old_webview_folders(
                     old, &new_dir,

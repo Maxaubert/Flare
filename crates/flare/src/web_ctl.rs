@@ -3559,7 +3559,7 @@ impl WebCtl {
     }
 }
 
-/// Logs what a move of the old browser folders did (rules 259 and 261).
+/// Logs what a move of the old browser folders did (rules 261 and 262).
 pub fn log_web_move((moved, error): (usize, Option<String>)) {
     match error {
         None if moved == 0 => {}
@@ -3570,10 +3570,10 @@ pub fn log_web_move((moved, error): (usize, Option<String>)) {
     }
 }
 
-/// The production browser: WebView2 in Flare's own window, its profile always `<profile>\WebView2` (rule 259), so a
+/// The production browser: WebView2 in Flare's own window, its profile always `<profile>\WebView2` (rule 261), so a
 /// site's login lasts as long as the profile. Made when the first web panel needs it, so a run that never opens one
 /// never loads the browser's runtime. `old_dir`: the default run's folder from before 2026-11-10; the move is tried
-/// again here, and while it still cannot move the browser runs in it, never in an empty new one (rule 261).
+/// again here, and while it still cannot move the browser runs in it, never in an empty new one (rule 262).
 pub fn production_factory(
     window: slint::Weak<AppWindow>,
     profile_dir: std::path::PathBuf,
