@@ -1235,10 +1235,12 @@ moves.** Main's rule 261 moved Windows's default run out of the install folder; 
 (`webview_folder(profile_dir)`, the mini-apps' and plugins' `-<kind>` siblings beside it) has always been under the
 profile in `~/Library/Application Support/Flare`, which replacing `Flare.app` never touches, so a persistent cookie and
 `localStorage` already outlive a quit and an update. `old_webview_folder_here` is None on macOS: the start moves nothing,
-`settle_webview_folder` gives the profile's folder, and rule 262's held-folder case cannot arise. Different from
-Windows: a disk profile's CEF context keeps session cookies too (`persist_session_cookies` in
-`flare-cef/src/macos/context.rs`), and CEF lives until the quit, so a sign-in without "stay signed in" survives closing
-the last panel and a restart, where WebView2's ends with its browser; the hidden e2e `webLogins` is Windows only. Native:
+`settle_webview_folder` gives the profile's folder, and rule 262's held-folder case cannot arise. Session cookies
+match Windows: no CEF context keeps them, the disk profile included (`PERSIST_SESSION_COOKIES` is 0 in
+`flare-cef/src/macos/context.rs`, held by `no_profile_keeps_session_cookies_past_the_quit`), so a sign-in without "stay
+signed in" ends with the CEF process, at the quit, and does not survive a restart. Still different: CEF lives until the
+quit, so such a sign-in survives closing the last panel, where WebView2's may end with its browser; the hidden e2e
+`webLogins` is Windows only. Native:
 `crates/flare-surfaces/src/web.rs`, `crates/flare/src/window.rs`. Held by
 `a_mac_run_moves_nothing_and_keeps_the_panel_under_its_profile` and the POSIX twins of main's folder tests. Source:
 main's #158 carried to the macOS port (2026-11-10).
