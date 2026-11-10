@@ -1,4 +1,4 @@
-//! The control channel end to end on macOS (port phase 4, rule 243): the agent's own side (`flare_mcp`'s
+//! The control channel end to end on macOS (port phase 4, rule 1012): the agent's own side (`flare_mcp`'s
 //! tools over `FlareChannel`), the real Unix socket, the app's real server (`CtlServer`) and dispatcher, and the
 //! real window controller, headless. The browser is the fake one, played here: a page asked for is loaded, and a
 //! diagram's page says it drew.

@@ -954,7 +954,7 @@ pub fn run_window(
         initial_window(&WindowStateStore::read(file, &areas), &areas)
     });
     // macOS: the saved position is points times the saved window's scale, so the screens are asked
-    // for in that same space (regression rule 242).
+    // for in that same space (regression rule 1011).
     #[cfg(target_os = "macos")]
     let initial = profile_window_file.as_ref().map(|file| {
         let (state, areas) = WindowStateStore::read_at(file, flare_win::monitors::work_areas_at);
