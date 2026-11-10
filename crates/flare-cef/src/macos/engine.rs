@@ -18,7 +18,7 @@ use crate::macos::app;
 use crate::pin::FRAMEWORK;
 
 /// The switches every Flare browser process starts with, and why. They are the only switches CEF takes:
-/// `command_line_args_disabled` keeps the process's own command line out (rule 261), so a switch on Flare's command
+/// `command_line_args_disabled` keeps the process's own command line out (rule 1030), so a switch on Flare's command
 /// line (`--remote-debugging-port`, `--no-sandbox`, `--proxy-server`, `--disable-web-security`) never reaches
 /// Chromium. Added in [`FlareApp`]'s `on_before_command_line_processing`, which CEF still asks.
 pub const SWITCHES: [(&str, &str); 8] = [
@@ -26,13 +26,13 @@ pub const SWITCHES: [(&str, &str); 8] = [
     // that is a system prompt on the person's screen, and an ad-hoc signed build would ask again after every
     // rebuild. The mock keychain never asks, but its key is a fixed, public one: what a profile on disk keeps
     // (the web panel's cookies, a mod's storage) is only as safe as the file's own permissions until phase 8 gives
-    // the signed app a real keychain item (rule 264, an accepted gap). The mini-apps' profiles are in memory.
+    // the signed app a real keychain item (rule 1033, an accepted gap). The mini-apps' profiles are in memory.
     ("use-mock-keychain", ""),
     // No crash or error dialog of Chromium's own.
     ("noerrdialogs", ""),
     // No "restore pages?" bubble after a crash.
     ("hide-crash-restore-bubble", ""),
-    // The engine calls no one on its own (rule 263). The component updater still registers the on-device model
+    // The engine calls no one on its own (rule 1032). The component updater still registers the on-device model
     // manifest with this switch (measured on CEF 156.0.14: update.googleapis.com, then a download from gvt1.com),
     // so its server is also Flare's dead address: a check is refused on loopback and nothing is fetched.
     ("disable-component-update", ""),
@@ -202,7 +202,7 @@ impl Engine {
             // The sandbox stays on: every helper enters it (`cef::sandbox::Sandbox`) before CEF runs there.
             no_sandbox: 0,
             windowless_rendering_enabled: 1,
-            // Only Flare's own switches ([`SWITCHES`]): the process's command line is not CEF's to read (rule 261).
+            // Only Flare's own switches ([`SWITCHES`]): the process's command line is not CEF's to read (rule 1030).
             command_line_args_disabled: 1,
             // The caller's loop calls `do_message_loop_work`: on its own clock, or when CEF asks (`schedule`).
             external_message_pump: i32::from(cfg.schedule.is_some()),

@@ -1,7 +1,7 @@
 //! Flashes the taskbar button when a bell rings in a window nobody is looking at (regression rule 20):
 //! no sound, only the button, and only while the window is not the foreground one. The OS stops the
 //! flash by itself when the window comes to the front. macOS: the Dock icon bounces instead, until
-//! Flare is activated (`crate::dock`, regression rule 245).
+//! Flare is activated (`crate::dock`, regression rule 1014).
 
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::HWND;

@@ -1595,7 +1595,7 @@ fn quiet(rep: &mut Report, data: &Path) -> Result<(), String> {
         .as_ref()
         .map(|u| {
             u.iter()
-                // The component updater's checks go to the dead address (rule 263), refused on loopback.
+                // The component updater's checks go to the dead address (rule 1032), refused on loopback.
                 .filter(|u| {
                     !u.starts_with(&own)
                         && !u.starts_with("about:")

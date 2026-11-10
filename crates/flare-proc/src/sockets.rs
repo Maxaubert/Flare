@@ -4,7 +4,7 @@
 //! The kernel answers these calls only for the processes of this user, so a listener held by another
 //! account's process (a system daemon, another login) is NOT seen: a port only such a process holds
 //! reads as not listening, and one it shares through `SO_REUSEPORT` lists only this user's holders.
-//! Windows' table names every process; this is the known gap of the Mac table (regression rule 244).
+//! Windows' table names every process; this is the known gap of the Mac table (regression rule 1013).
 
 use crate::{TcpListen, parse_tcp_listen, socket_fdinfo};
 

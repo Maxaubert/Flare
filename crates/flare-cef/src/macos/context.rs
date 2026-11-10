@@ -26,7 +26,7 @@ pub struct Profile {
     /// The wall for requests of no browser.
     pub wall: Option<RequestRule>,
     /// Where Chromium keeps a download's bytes while it is held for the person's yes (its default download
-    /// folder): Flare's own staging folder, never `~/Downloads` (rule 262). None leaves Chromium's default.
+    /// folder): Flare's own staging folder, never `~/Downloads` (rule 1031). None leaves Chromium's default.
     pub staging: Option<PathBuf>,
 }
 
@@ -40,7 +40,7 @@ pub const PROXY_PREF: &str = "proxy";
 pub const DOWNLOAD_DIR_PREF: &str = "download.default_directory";
 pub const SAVE_DIR_PREF: &str = "savefile.default_directory";
 /// Chromium's printing switch (`prefs::kPrintingEnabled`): off, `window.print()` and Cmd+P do nothing, so the
-/// native print panel is never asked for (rule 265).
+/// native print panel is never asked for (rule 1034).
 pub const PRINTING_PREF: &str = "printing.enabled";
 
 type Ready = Arc<Mutex<Option<Result<(), String>>>>;
