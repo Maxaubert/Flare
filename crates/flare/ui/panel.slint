@@ -5,7 +5,7 @@
 //
 // Whole device pixels everywhere (`Px.snap`), as the rest of the chrome. Nothing here moves on its own.
 
-import { Theme, Px, SettingsFixed } from "theme.slint";
+import { Theme, Px, SettingsFixed, SettingsInk } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
 import { ViewThumb } from "scrollbar.slint";
 import { ChangesView, ConvoFileRow, ConvoDiffRow } from "convo.slint";
@@ -138,7 +138,19 @@ component TextView inherits Rectangle {
     // keep these columns, so the view stays as wide as they need (a temporary sideways scroll) instead of cutting them.
     in property <int> wrapped-cols;
     in property <int> number-count;
+    // The selection the controller holds, as rows and columns: from column `sel-a-col` of row `sel-a-row` to column
+    // `sel-b-col` of row `sel-b-row` (not included); the rows between are drawn whole.
+    in property <bool> sel-on;
+    in property <int> sel-a-row;
+    in property <int> sel-a-col;
+    in property <int> sel-b-row;
+    in property <int> sel-b-col;
     callback pressed();
+    // The left button went down, moved while held and went up over the text, in the content's own coordinates (the
+    // controller works out the row and the character, and drives the scroll past an edge).
+    callback text-down(length, length, bool);
+    callback text-move(length, length);
+    callback text-up();
 
     out property <length> row-h: Px.snap(18px);
     out property <length> foot-h: root.foot == "" ? 0px : Px.snap(22px);
@@ -170,6 +182,19 @@ component TextView inherits Rectangle {
     public function scroll-to-row(row: int) {
         flick.content-y = min(0px, max(root.view-h - flick.content-height, -row * root.row-h));
     }
+    // Scrolls just enough to show column `col` of row `row` (the end of a selection a key moved).
+    public function reveal(row: int, col: int) {
+        if (row * root.row-h < -flick.content-y) {
+            flick.content-y = min(0px, -row * root.row-h);
+        } else if ((row + 1) * root.row-h > -flick.content-y + root.view-h) {
+            flick.content-y = max(root.view-h - flick.content-height, root.view-h - (row + 1) * root.row-h);
+        }
+        if (col * root.char-w < -flick.content-x) {
+            flick.content-x = min(0px, -col * root.char-w);
+        } else if (root.gutter-w + (col + 1) * root.char-w > -flick.content-x + root.width - Px.snap(16px)) {
+            flick.content-x = max(root.width - flick.content-width, root.width - Px.snap(16px) - root.gutter-w - (col + 1) * root.char-w);
+        }
+    }
     // Wrapping flips: every row starts at the left edge again.
     changed wrapped => {
         flick.content-x = 0px;
@@ -193,14 +218,29 @@ component TextView inherits Rectangle {
     flick := Flickable {
         width: root.width;
         height: root.view-h;
+        // A drag with the mouse selects; the wheel, the keys and the scrollbar scroll (a wheel scrolls whatever this
+        // says). A touch still pans.
+        mouse-drag-pan-enabled: false;
         content-width: root.wrapped ? max(root.width, root.gutter-w + root.wrapped-cols * root.char-w + Px.snap(16px)) : max(root.width, root.gutter-w + (root.max-cols + 2) * root.char-w);
         content-height: max(root.content-h, root.view-h);
         for k in root.count: Rectangle {
             property <int> n: root.first + k;
+            // The row's share of the selection, and whether a line ends on it (its break is drawn as half a column).
+            property <bool> in-sel: root.sel-on && self.n >= root.sel-a-row && self.n <= root.sel-b-row;
+            property <bool> ends-line: root.nums.length == 0 || self.n + 1 >= root.nums.length || root.nums[self.n + 1] > 0;
+            property <length> sel-x0: self.n == root.sel-a-row ? root.sel-a-col * root.char-w : 0px;
+            property <length> sel-x1: self.n == root.sel-b-row ? root.sel-b-col * root.char-w : max(row-text.preferred-width, self.sel-x0) + (self.ends-line ? root.char-w / 2 : 0px);
             y: self.n * root.row-h;
             height: root.row-h;
             width: flick.content-width;
             visible: self.n < root.line-count;
+            Rectangle {
+                x: root.gutter-w + parent.sel-x0;
+                width: max(0px, parent.sel-x1 - parent.sel-x0);
+                height: parent.height;
+                visible: parent.in-sel && parent.sel-x1 > parent.sel-x0;
+                background: SettingsInk.selection;
+            }
             Text {
                 x: 0px;
                 width: root.gutter-w - 10px;
@@ -212,7 +252,7 @@ component TextView inherits Rectangle {
                 font-size: 12px;
                 color: Theme.dim2;
             }
-            Text {
+            row-text := Text {
                 x: root.gutter-w;
                 height: parent.height;
                 vertical-alignment: center;
@@ -226,9 +266,21 @@ component TextView inherits Rectangle {
         TouchArea {
             width: flick.content-width;
             height: flick.content-height;
+            mouse-cursor: MouseCursor.text;
             pointer-event(e) => {
                 if (e.kind == PointerEventKind.down) {
                     root.pressed();
+                    if (e.button == PointerEventButton.left) {
+                        root.text-down(self.mouse-x, self.mouse-y, e.modifiers.shift);
+                    }
+                }
+                if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
+                    root.text-up();
+                }
+            }
+            moved => {
+                if (self.pressed) {
+                    root.text-move(self.mouse-x, self.mouse-y);
                 }
             }
         }
@@ -715,6 +767,20 @@ export component PanelSlot inherits Rectangle {
     out property <length> text-scroll-y: txt.scroll-y;
     public function text-scroll-to-row(row: int) { txt.scroll-to-row(row); }
     public function text-scroll-by(dx: length, dy: length) { txt.scroll-by(dx, dy); }
+    public function text-reveal(row: int, col: int) { txt.reveal(row, col); }
+    // What the controller needs to turn a point of the text into a row and a character.
+    out property <length> text-char-w: txt.char-w;
+    out property <length> text-row-h: txt.row-h;
+    out property <length> text-view-h: txt.view-h;
+    // The selection to draw (`TextView`), and the pointer over the text.
+    in property <bool> sel-on;
+    in property <int> sel-a-row;
+    in property <int> sel-a-col;
+    in property <int> sel-b-row;
+    in property <int> sel-b-col;
+    callback text-down(length, length, bool);
+    callback text-move(length, length);
+    callback text-up();
     out property <length> wrap-button-x: wrap-btn.absolute-position.x;
     out property <length> wrap-button-y: wrap-btn.absolute-position.y;
     out property <length> wrap-button-w: wrap-btn.width;
@@ -866,7 +932,8 @@ export component PanelSlot inherits Rectangle {
                 visible: root.ask-shown;
                 compact: root.ask-compact;
                 // The header's page is a mini-app or a plugin's: only a selection is sent from it.
-                tip-text: root.kind == 3 ? "Ask agent about the selection" : "Ask agent about this file";
+                // A text file sends its selection, or its path with nothing selected; a picture its path.
+                tip-text: root.kind == 3 ? "Ask agent about the selection" : (root.kind == 2 ? "Ask agent about the selection or this file" : "Ask agent about this file");
                 activated => { root.ask-agent(); }
                 tip(t, x, y, w, h) => { root.ask-tip(t, x, y, w, h); }
             }
@@ -964,7 +1031,15 @@ export component PanelSlot inherits Rectangle {
                 wrapped: root.wrapped;
                 wrapped-cols: root.wrapped-cols;
                 number-count: root.number-count;
+                sel-on: root.sel-on;
+                sel-a-row: root.sel-a-row;
+                sel-a-col: root.sel-a-col;
+                sel-b-row: root.sel-b-row;
+                sel-b-col: root.sel-b-col;
                 pressed => { root.pressed(); }
+                text-down(x, y, shift) => { root.text-down(x, y, shift); }
+                text-move(x, y) => { root.text-move(x, y); }
+                text-up => { root.text-up(); }
             }
             changes := ChangesView {
                 width: parent.width;
