@@ -1123,3 +1123,26 @@ Spec: `docs/superpowers/specs/2026-10-28-dns-rebinding-proxy.md`.
   is common) reaches a service listening on all its interfaces through it, so the real rule
   (`netproxy::public_rule`) also drops any address a socket can be bound to (`netproxy::on_this_pc`). The old
   site-local IPv6 range (fec0::/10) joined the refused ranges.
+
+## The 3D model viewer (`feat/model-viewer`, issue #36), 2026-11-09
+
+- 2026-11-09, builder: **its own resolver, not the click allowlist.** `resolve_openable_file` answers None for `.glb`, `.gltf` and `.stl`, and
+  adding them to `OPENABLE` would make a click start the Windows default verb (`.stl` is a certificate list). `path_open::resolve_file_of` has
+  the same checks with the caller's extensions, as `resolve_html_file` does for pages.
+- 2026-11-09, builder: **the policy stays as specified; three is bent to it.** `connect-src 'self'` refuses the blob: fetch of three's
+  `ImageBitmapLoader` and the data: fetch of its buffer loader. The viewer swaps in `TextureLoader` (an image element, allowed by `img-src`) and
+  decodes `data:` buffers itself, instead of adding `blob:` and `data:` to `connect-src`.
+- 2026-11-09, builder: **a model file on a mapped drive is refused like a share** (`preview::on_local_drive`, the check `loadable` already made), as
+  `view.file` does and `view.audio` does not.
+- 2026-11-09, builder: **`view.model` answers when the page has loaded, not when the model has drawn.** The spec has `__flareModel` for tests only, so a bad
+  model is a message in the panel, not a tool error; the tool text tells the agent to use `browser_look`.
+- 2026-11-09, builder: **the grid starts on**, the spec did not say. A plain `Grid` button turns it off.
+## Ask the agent about a selection (#33), 2026-11-09
+
+- **No bracketed paste means one line.** The spec's delivery ("unbracketed never ends in CR") still left a CR between the lines of the frame, and a
+  program that never asked for bracketed paste submits at each one. `paste_unsent` joins the lines with spaces there, so nothing is ever submitted.
+- **The note is a new small toast over the terminal.** The only toasts before it were Windows notifications (for a tab not in front) and the staged
+  build's. It reuses `StagedToast` without a button, over the grid because a page's browser window sits above anything drawn on the panel.
+- **The question gate also reads the screen.** The hub's mark and watch lag behind a box by the settle time; `looks_like_question` on the live rows
+  closes that gap at the moment of the paste.
+- **An answer for a tab no longer in front is dropped**, not typed where nobody is looking.
