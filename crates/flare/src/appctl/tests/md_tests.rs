@@ -163,12 +163,16 @@ fn a_file_shown_again_opens_compiled_again() {
     apps_root(&f);
     show_md(&f, "r.md", DOC);
     f.pump_until("the page", |_| opened_pages(&slot).len() == 1);
+    let first = opened_pages(&slot)[0].host.clone();
     f.h.comp.invoke_panel_md_view_picked(MdView::Code.index());
     f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
     // The same file clicked again: compiled, every time.
     show_md(&f, "r.md", DOC);
     f.ctl.borrow_mut().refresh();
-    f.pump_until("compiled again", |_| opened_pages(&slot).len() == 2);
+    // A sync before the new page arrives may open the kept one again: what counts is that a new page comes.
+    f.pump_until("compiled again", |_| {
+        opened_pages(&slot).last().is_some_and(|p| p.host != first)
+    });
     assert_eq!(f.h.comp.get_panel_md_view(), MdView::Compiled.index());
 }
 
@@ -225,8 +229,12 @@ fn a_render_that_fails_falls_back_to_code_and_says_why_there() {
     let (f, _h, _) = live(Opts::default());
     let slot = with_fake(&f);
     apps_root(&f);
-    let abs = show_md(&f, "r.md", DOC);
-    std::fs::remove_file(&abs).unwrap(); // sync-ok: test code only
+    let abs = f.dir.path().join("r.md").to_string_lossy().into_owned();
+    let id = f.ctl.borrow().front_id().unwrap();
+    // The file is gone before the click: a render on its worker cannot finish before the delete.
+    f.ctl
+        .borrow_mut()
+        .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
     f.ctl.borrow_mut().refresh();
     f.pump_until("the note", |f| {
         f.h.comp.get_panel_note().as_str() == "The file is gone."
@@ -305,7 +313,8 @@ fn ask_agent_on_a_markdown_page_names_the_file_and_sends_its_path_with_nothing_s
         id: sid,
         result: Ok(serde_json::to_string(&format!("{url}\nr.md\nSome text")).unwrap()),
     });
-    f.pump();
+    // The paste reaches the pty on the session's writer, not at once.
+    f.pump_until("the paste", |_| shell.written().ends_with(b"\x1b[201~"));
     let typed = String::from_utf8_lossy(&shell.written()).into_owned();
     assert!(typed.contains("About this from r.md:"), "{typed:?}");
     assert!(typed.contains("> Some text"), "{typed:?}");
@@ -321,7 +330,9 @@ fn ask_agent_on_a_markdown_page_names_the_file_and_sends_its_path_with_nothing_s
         id: sid,
         result: Ok(serde_json::to_string(&format!("{url}\nr.md\n")).unwrap()),
     });
-    f.pump();
+    f.pump_until("the path", |_| {
+        String::from_utf8_lossy(&shell.written()).contains(&abs)
+    });
     let typed = String::from_utf8_lossy(&shell.written()).into_owned();
     assert!(typed.contains(&abs), "{typed:?}");
 }
