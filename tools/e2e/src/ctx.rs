@@ -314,7 +314,10 @@ impl Ctx {
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
         let child = Child::launch(&exe, &refs, &env, &profile);
-        let mut session = Session::connect(&profile, CONNECT_WAIT)?;
+        // A launch whose pipe never opens says whether the app is still running or how it ended (a crash at
+        // start reads as its NTSTATUS, quitStress #63).
+        let mut session = Session::connect(&profile, CONNECT_WAIT)
+            .map_err(|e| format!("{e} (the app's exit code: {:?})", child.exited()))?;
         session.hello()?;
         assert_parked(&mut session)?;
         if let Some(dpi) = opts.scale_dpi {
