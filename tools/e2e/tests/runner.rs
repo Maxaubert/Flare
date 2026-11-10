@@ -155,6 +155,23 @@ fn a_plain_run_never_picks_the_opt_in_tour_and_a_filter_that_names_it_does() {
         "another filter does not pull the tour in"
     );
 }
+
+/// `webBotChecks` opens public pages on the network (#146): only a filter that names it runs it.
+#[test]
+fn a_plain_run_never_opens_the_public_bot_check_pages() {
+    assert!(pick(&[]).iter().all(|s| s.name != "webBotChecks"));
+    let named: Vec<&str> = pick(&["webBotChecks".to_string()])
+        .iter()
+        .map(|s| s.name)
+        .collect();
+    assert_eq!(named, vec!["webBotChecks"]);
+    assert!(
+        pick(&["webPanel".to_string()])
+            .iter()
+            .all(|s| s.name != "webBotChecks"),
+        "the web panel's own scenario does not pull it in"
+    );
+}
 #[test]
 fn the_table_lists_every_scenario_it_ran() {
     let rows = vec![

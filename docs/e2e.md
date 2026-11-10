@@ -23,6 +23,8 @@ cargo run -p flare-e2e --release --target-dir <TARGET> -- --exe <TARGET>\release
 - A missing exe exits 1 with the hint to build first. `--packaged` drives the installed layout instead.
 - `perf` runs the performance bar (`docs/performance.md`, `docs/perf/README.md`).
 - Gentle mode on a shared PC: one scenario at a time, never two `flare.exe` at once.
+- Opt-in scenarios run only when a filter names them: `visualTour`, and `webBotChecks`, which opens public bot-check
+  pages on the network (`docs/web-bot-checks.md`).
 
 Every run prints one line per assertion (`pass` or `FAIL`), then a table of scenario, checks, failures and
 seconds. The exit code is 1 when any assertion failed.
