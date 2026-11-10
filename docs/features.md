@@ -2085,3 +2085,65 @@ only once no session is working. How to stage: `docs/shipping.md`, "Installing a
   start by hand of that exe may not run, and `<name>.old` is then the way back). Files removed from `claude-plugin\` in a
   new build stay in `current\` (the swap is per file, not a mirror). The restarted exe waits up to `HANDOFF_WAIT` (6 s)
   for the quitting one's pipe before it takes the lock, so the window comes back about 6 s after the old one goes.
+
+## 3D model viewer (issue #36), 2026-11-09
+
+The agent's `show_model {path, title?}` and a plugin's `view.model` (namespace `View`) open a `.glb`, `.gltf` or `.stl` file in the
+tab's panel. It is a mini-app Flare writes itself, like the audio player, so there is no new panel kind.
+
+- **Flow.** The path is resolved again (rules 13 and 14) through `path_open::resolve_file_of` with the viewer's extensions; the
+  extension must agree on both names and the file must be on a local drive. A bounded read (64 MB), then `index.html`, `viewer.js` and
+  `model.<ext>` go into the app's folder. No network.
+- **Page.** `flare_surfaces::model::page`, policy first: `default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data: blob:;
+  connect-src 'self'; worker-src 'none'`, with frames, objects and forms none. The viewer fetches the model itself.
+- **Viewer.** `tools/model-viewer/src/viewer.js`, three.js 0.170.0 built once to `assets/three/viewer.js`: orbit, zoom, pan, double-click reset,
+  Wireframe and Grid buttons, a neutral studio light, the camera fitted to the model, the background following light or dark, drawn only
+  when something changes. A message instead of a blank panel for no WebGL, over 5 million triangles, no geometry, a damaged file, or a
+  `.gltf` that points at other files. `window.__flareModel` settles to `{ok, triangles, textures}` or `{ok: false, code, error}`.
+- **Tests.** `flare_surfaces::model` (3), `path_open` (`a_file_for_a_viewer_is_one_of_its_extensions_under_the_same_name_rules`), `ctl_app` (`view_model_*`,
+  `the_real_model_resolver_is_rules_13_and_14_with_the_viewers_extensions`, `the_bundled_model_viewer_is_the_pinned_build`), `flare-mcp`
+  (`show_model_routes_a_path_made_absolute_to_view_model`, the pinned tools list), the method and grant tables, and the e2e `model`.
+- **STL normals.** The viewer works out an STL's normals from its facets and ignores the ones in the file, which are commonly zero and would draw the part as one flat silhouette (rule 233).
+
+Not in this version: click a path to preview, a `.gltf` with separate `.bin` or texture files, Draco or other WASM decoders, OBJ, FBX, animation.
+## Ask the agent about a selection (#33), 2026-11-09
+
+- **What it is.** A small "Ask agent" button in the panel's header (in a web page's address bar, which is its header) and a row "Ask agent about this
+  selection" in the terminal's right-click menu over a grid selection. Both only on a tab with an agent, whichever agent. What is sent lands at the
+  prompt and is never submitted: the person reads it and presses Enter, and the keys go to the terminal.
+- **What is sent.** Web page: `window.getSelection().toString()`, framed. With no selection on a plain web page (2026-11-10), a reference to the
+  page instead (below). A mini-app or plugin page with no selection is a note and nothing typed. Text or image panel: the file's path, quoted for the
+  tab's shell. Handed-over text has no file and says so. Terminal grid: the selection, framed; the selection is then let go.
+- **Ask about the page** (2026-11-10, rule 238). The agent can already read the page with `browser_look`, so only a reference is typed, and the
+  person adds the question:
+  `About the page open in this tab (example.com):` then `> title: Pricing`, `> address: https://example.com/pricing` and
+  `> (use browser_look to read it)`. The address and title come from the document that answered, in the same answer as its (empty) selection, never
+  from the tab. The title is the page's own words: cleaned like a selection, one line, at most 160 characters, left out when empty. The address
+  loses any user name and password and is cut at 2 KB with `[cut]`. Only `http` and `https` pages; `about:blank` and the like keep the note.
+- **Tooltip.** One fixed wording, since whether a page has a selection is only known by asking it: "Ask agent about the selection or this page" in a
+  web page's address bar, "Ask agent about the selection" on a mini-app or plugin page, "Ask agent about this file" on a file. It sits left of the
+  button, so a page's native window cannot cover it.
+- **The frame.** `About this from <label>:` then `> ` per line, at most 4 KB with `> [cut]`. The label is the host or file name, cleaned and capped at
+  64 characters; a page Flare made itself reads "this page". A web page's host is the one its document gave with the text (`location.href`), so a click
+  while the next page loads still names the page that is showing.
+- **Refusals.** A short note over the terminal for 4 s: no agent, a question box up, no selection (mini-app and plugin pages, or a page that is not
+  `http` or `https`), a page that did not answer, answered in a shape that names no page, or answered with more than the script can give (about
+  400 KB, checked natively), a path that cannot be typed.
+- **Narrow panels.** Below 380 px the button is its glyph alone; below 200 px it is gone.
+- **Not in this version.** A row in the page's own right-click menu, selection inside the Text panel, any auto-submit, any ctl, MCP or plugin way in.
+- **Tests.** `ask_agent::tests` (hostile text and titles, `frame_page`), `appctl::tests::ask_tests` (fake shell and fake browser), `ui_tests::panel`
+  (`ask_agent_*`, the tooltip included).
+- **Not covered.** A real WebView2 selection or title and a real agent's prompt: no e2e scenario. Where the tooltip lands is not checked in a real
+  window.
+
+## Image thumbnails on hover (#17), 2026-11-09
+
+Point at a picture's path in the terminal for 350 ms and a small picture appears over the grid, above or below the line so it never covers it. Rows cannot be added under a line without changing the agent's text, so it is a floating bubble.
+
+- **Look.** The tooltip's bubble: hairline border, shadow, 120 ms fade, picture up to 256 px on its longest side, caption with the file name and the picture's own size. It ignores the pointer. In a small window the picture shrinks to the side with more room; with no useful room it is not shown. It stays inside the grid, so a web panel (a native window) cannot cover it.
+- **Hides** when the pointer leaves, the link under the cell changes (a scroll or output under a still pointer included, looked at again every tick), or on a key, press, tab switch, resize, DPI change, Find or a menu. After a key or a press that link stays quiet until the pointer has left it.
+- **Loading.** A worker, one job at a time with only the newest waiting, sharing the panel's decode lock. Vetted like a click (rules 13, 14, 236). A relative path lit only through a folder the tab has shown keeps its picture and its click once the "no" for the tab's own folder has run out (rule 237). Limits 16 MB and 25 MP, below the panel's. Memory only, 32 pictures and about 8 MB, keyed by path, length and time, so an edited picture refreshes.
+- **Setting.** "Show thumbnails when hovering image paths" (Settings > Terminal > Links, `flare.window.hoverThumbs`, default on). Off means no state and no worker.
+- **Tests.** `thumbs` (the clock, the cache, the worker, placement), the `term_ui` rig (`resting_on_an_image_path_*`, every hide reason, the refusals), `preview` (`a_thumbnail_*`), `ui_tests::thumb` at several scales and the `appctl` wiring.
+
+Not in this version: always-on thumbnails, web image URLs (network on hover), SVG (scripts), video, PDF, animation (first frame only), a disk cache.

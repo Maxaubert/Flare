@@ -209,7 +209,7 @@ Gated, each with its reason in `mac_gate.rs` (`flare-e2e --list` prints it):
 
 | Scenarios | Why |
 |---|---|
-| webPanel, webVideo, webNoRuntime, agentBrowser, agentCoveredClick, mcpBrowser, miniApp, diagram, mcpDiagram, pluginBrand, modsSample, pluginFill, devPreview | Mac port not written (phase 8): they drive the WebView2 controller; the Mac web panel is CEF, which runs only from the `Flare.app` bundle, and its scenarios are still to write |
+| webPanel, webVideo, webNoRuntime, agentBrowser, agentCoveredClick, mcpBrowser, miniApp, diagram, mcpDiagram, pluginBrand, modsSample, pluginFill, devPreview, model | Mac port not written (phase 8): they drive the WebView2 controller; the Mac web panel is CEF, which runs only from the `Flare.app` bundle, and its scenarios are still to write |
 | updateWindow, updateGuard, updateNotes, idleInstall | Mac port not written (phase 8): they drive Velopack's Windows install and swap; the Mac update is a whole-bundle swap |
 | dictation, dictationPage, dictationParakeet, dictateAnywhere, dictateTwoCopies | Mac port not written (phase 7): they drive the speech host processes, WASAPI and the Right Alt hook; Mac dictation is still to write |
 | dpiMatrix, monitorMove | Windows only: cmd.exe tabs through WM_DPICHANGED at the eight Windows scale steps and per-monitor moves; a Mac's backing scale is 1 or 2, per screen, and the runner has one 1x display |
@@ -356,6 +356,7 @@ cargo run -p flare-e2e --bin flare-e2e --release --target-dir <TARGET> -- --exe 
 - `mcpDiagram` (10): `show_html` and `show_diagram` are described for an agent; `show_diagram` draws; a bad diagram is a tool error that
   starts `The diagram did not draw. Mermaid said:` and ends with what to do; `show_html` reports that the network it asked for was not
   given; `browser_look` sees the page's button; a missing path and a call with nothing to show are tool errors.
+- `model`: `view.model` on a `.glb`, a binary and an ASCII `.stl` and a `.gltf` with its data inside, written by the scenario: each settles with its four triangles and leaves no message; both `.stl` files carry zero normals and are checked to be shaded, faces that differ rather than one flat silhouette; a `.glb` with a picture inside gets its texture through the page's policy; pixels that are not the background (grid off), the Wireframe and Grid buttons, the title; a damaged file, a `.gltf` that points at a `.bin` and a model over 5 million triangles each show their message; over 64 MB, an `.exe`, a missing file and no path are refused. **Without WebGL** a good model shows the viewer's message (checked) and the drawing checks are printed as `skip` lines, never as passes.
 - The seam: `FLARE_E2E_APP_NO_POLICY` (the `APP_NO_POLICY` e2e variable, `ship_ctl::e2e_var`) writes `view.html` pages without the policy
   tag so the second wall can be tested alone. It does nothing without `--e2e`, and a diagram always has its policy.
 - The probe `web.state` now also reports the browser's own profile name and private flag in `controller` (`profile`, `private`).

@@ -706,6 +706,7 @@ fn mcp_on(
                 "show_html",
                 "show_diagram",
                 "show_audio",
+                "show_model",
                 "open_page",
                 "close_panel",
                 "browser_look",

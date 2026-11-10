@@ -94,7 +94,7 @@ impl TextRows {
 
 /// One picture is decoded at a time: a decode at the pixel limit holds hundreds of megabytes, so a
 /// second one waits (and is dropped unread when the user has moved on by then).
-static DECODE: Mutex<()> = Mutex::new(());
+pub(crate) static DECODE: Mutex<()> = Mutex::new(());
 
 /// A decoded picture, already in the buffer Slint draws from (made on the worker, so the UI thread
 /// copies nothing).

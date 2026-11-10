@@ -29,6 +29,7 @@ pub const GATED: &[(&str, &str)] = &[
     ("modsSample", WEB),
     ("pluginFill", WEB),
     ("devPreview", WEB),
+    ("model", WEB),
     ("updateWindow", UPDATE),
     ("updateGuard", UPDATE),
     ("updateNotes", UPDATE),

@@ -57,6 +57,7 @@ pub mod lifecycle;
 pub mod live_preview;
 mod marks_px;
 pub mod mini_app;
+pub mod model;
 pub mod mods;
 pub mod panel;
 pub mod panel_split;
@@ -655,6 +656,12 @@ pub const ALL: &[Scenario] = &[
         name: "mcpDiagram",
         group: "web",
         run: mini_app::mcp_diagram,
+        limit_secs: 240,
+    },
+    Scenario {
+        name: "model",
+        group: "web",
+        run: model::model,
         limit_secs: 240,
     },
     Scenario {
