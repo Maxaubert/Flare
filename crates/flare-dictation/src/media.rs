@@ -125,7 +125,7 @@ impl MediaPause {
         let factory = Arc::clone(&self.factory);
         let spawned = std::thread::Builder::new()
             .name("flare-media".into())
-            .spawn(move || run_worker(&factory, &rx, &flag));
+            .spawn(move || run_worker(&factory, rx, &flag));
         if spawned.is_err() {
             // The receiver went with the failed spawn; every send fails and the caller is answered empty.
             stopped.store(true, Ordering::SeqCst);
@@ -296,7 +296,7 @@ impl Default for MediaPause {
     }
 }
 
-fn run_worker(factory: &PortFactory, rx: &Receiver<Req>, stopped: &AtomicBool) {
+fn run_worker(factory: &PortFactory, rx: Receiver<Req>, stopped: &AtomicBool) {
     let Some(mut port) = factory() else {
         return;
     };
@@ -305,12 +305,30 @@ fn run_worker(factory: &PortFactory, rx: &Receiver<Req>, stopped: &AtomicBool) {
             // Stood down: a queued request is dropped (its reply sender with it).
             continue;
         }
-        match req {
-            Req::Pause(reply) => {
-                let ids = port.pause_playing();
-                let _ = reply.send(ids);
+        let call = |port: &mut Box<dyn MediaPort>, req: &Req| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match req {
+                Req::Pause(_) => Some(port.pause_playing()),
+                Req::Resume(ids) => {
+                    port.resume(ids);
+                    None
+                }
+            }))
+        };
+        match call(&mut port, &req) {
+            Ok(Some(ids)) => {
+                if let Req::Pause(reply) = req {
+                    let _ = reply.send(ids);
+                }
             }
-            Req::Resume(ids) => port.resume(&ids),
+            Ok(None) => {}
+            Err(_) => {
+                // The port died mid-call. The queue goes first, then the reply: whoever learns of the death
+                // from the reply finds the queue closed and starts a fresh worker, instead of sending into a
+                // worker that is still unwinding and losing that request too.
+                drop(rx);
+                drop(req);
+                return;
+            }
         }
     }
 }
@@ -497,12 +515,29 @@ fn real_port() -> Option<Box<dyn MediaPort>> {
     }))
 }
 
-/// macOS: no port. The media pause is phase 7 of the port plan, and only if a public API allows it
-/// (MediaRemote is locked since macOS 15.4). Nothing is ever paused until then.
+/// macOS: no port, and none can be built on a public API (port phase 7, checked 2026-11-09). What is playing in
+/// another app is known only to MediaRemote, a private framework that refuses third-party apps since macOS 15.4;
+/// `MPRemoteCommandCenter` and `MPNowPlayingInfoCenter` are an app's own player only; the media key (a
+/// system-defined event) only toggles, so with nothing playing it would start music, which this module exists not
+/// to do; scripting each player asks for Automation and covers only the players named. Nothing is ever paused and
+/// Settings shows the switch off with `unavailable`'s words.
 #[cfg(not(windows))]
 fn real_port() -> Option<Box<dyn MediaPort>> {
     None
 }
+
+/// Why "Pause media while dictating" cannot work on this system, in Settings' words, or None where it can.
+pub fn unavailable() -> Option<&'static str> {
+    if cfg!(windows) {
+        None
+    } else {
+        Some(UNAVAILABLE_ON_MAC)
+    }
+}
+
+/// The Mac's reason (`unavailable`).
+pub const UNAVAILABLE_ON_MAC: &str =
+    "Not on a Mac: macOS lets no app pause another app's player and resume only that.";
 
 #[cfg(test)]
 mod tests {

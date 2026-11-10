@@ -19,12 +19,15 @@
 //! current-user DACL and rejects remote clients. Everything blocking runs on this module's own threads; the
 //! caller never waits (`tabs` and `send` answer on a channel).
 //!
+//! On macOS (port phase 7) the transport is a Unix socket instead (`macos/link_sock.rs`): in a 0700 folder of
+//! this user's own under the per-user temp folder, mode 0600, one live service per name (an `flock` beside it),
+//! and the peer's uid read from the kernel (`getpeereid`) on both ends, another user dropped before a byte is
+//! read. The key file, the messages, the handshake and every rule below are the same code on both systems.
+//!
 //! Two deliberate strictnesses over Prism Terminal: an answer is matched to the peer that was asked (a rid from
 //! another peer is ignored), and a single line over 64 KiB drops the peer (Prism Terminal ignored the line and
 //! dropped only past 256 KiB buffered).
 
-// Off Windows only the protocol (keys, names, messages, proofs) compiles; its transport waits for phase 7.
-#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
@@ -67,6 +70,15 @@ use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED
 
 use crate::hmac::{from_hex, hmac_sha256, nonce, random_bytes, same_mac, to_hex};
 use crate::route::{RemoteCopy, SendDecision, SendTab};
+
+/// The macOS transport: the Unix socket, its event, its connection and its acceptor.
+#[cfg(not(windows))]
+#[path = "macos/link_sock.rs"]
+mod sock;
+#[cfg(not(windows))]
+use sock::{connect, Conn, Event};
+#[cfg(not(windows))]
+pub use sock::{peer_allowed, socket_dir};
 
 /// A line from the other end, at most this long (UTF-16 units, as Prism Terminal counts).
 pub const MAX_LINE: usize = 64 * 1024;
@@ -128,7 +140,7 @@ pub fn link_key(file: &Path) -> Option<[u8; 32]> {
     let mut tmp_name = file.as_os_str().to_os_string();
     tmp_name.push(format!(".{}.{}.tmp", std::process::id(), to_hex(&salt)));
     let tmp = std::path::PathBuf::from(tmp_name);
-    if std::fs::write(&tmp, to_hex(&fresh)).is_err() {
+    if write_private(&tmp, to_hex(&fresh).as_bytes()).is_err() {
         let _ = std::fs::remove_file(&tmp);
         return settle(file);
     }
@@ -145,7 +157,28 @@ pub fn link_key(file: &Path) -> Option<[u8; 32]> {
     let _ = std::fs::remove_file(&tmp);
     settle(file)
 }
+/// Writes a new file only this user can read: on macOS mode 0600 from the start (the umask would leave a key
+/// readable by every account); on Windows the profile folder's ACL already keeps other users out.
+fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    #[cfg(not(windows))]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(bytes)
+    }
+    #[cfg(windows)]
+    {
+        std::fs::write(path, bytes)
+    }
+}
+
 /// The pipe's name: the key's hash, never the key.
+#[cfg(windows)]
 pub fn link_pipe(key: &[u8; 32]) -> String {
     let hash = Sha256::digest(key);
     format!(
@@ -153,6 +186,16 @@ pub fn link_pipe(key: &[u8; 32]) -> String {
         flare_win::names::DICTATION_PIPE_PREFIX,
         &to_hex(&hash)[..24]
     )
+}
+
+/// The socket's path: `<per-user temp folder>/flare-dictation/<24 hex of the key's hash>.sock`, never the key.
+#[cfg(not(windows))]
+pub fn link_pipe(key: &[u8; 32]) -> String {
+    let hash = Sha256::digest(key);
+    socket_dir()
+        .join(format!("{}.sock", &to_hex(&hash)[..24]))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// A copy's name in the list: the installed app is "Flare", any other build "Flare (Dev)"; two of the same are
@@ -375,12 +418,10 @@ fn fresh_nonce_hex() -> String {
 /// Cuts a byte stream into lines. A line longer than `MAX_LINE`, complete or not yet ended, is an error: the
 /// peer is dropped.
 #[derive(Default)]
-#[cfg(windows)]
 struct LineReader {
     buf: Vec<u8>,
 }
 
-#[cfg(windows)]
 impl LineReader {
     fn push(&mut self, data: &[u8]) -> Result<Vec<String>, ()> {
         self.buf.extend_from_slice(data);
@@ -407,7 +448,6 @@ impl LineReader {
 // Overlapped pipes
 // ---------------------------------------------------------------------------------------------
 
-#[cfg(windows)]
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -427,6 +467,14 @@ impl Event {
         // SAFETY: default security, manual reset, not signalled, unnamed.
         let h = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
         (!h.is_null()).then(|| Event(h as usize))
+    }
+    /// The stand-in for an event that could not be made: waiting on it never says set.
+    fn none() -> Event {
+        Event(0)
+    }
+    /// False for `none()`.
+    fn is_real(&self) -> bool {
+        self.0 != 0
     }
     fn raw(&self) -> HANDLE {
         self.0 as HANDLE
@@ -773,7 +821,6 @@ fn connect(pipe: &str) -> Option<Arc<Conn>> {
     Conn::new(h)
 }
 
-#[cfg(windows)]
 fn reap(threads: &mut Vec<JoinHandle<()>>) {
     let mut i = 0;
     while i < threads.len() {
@@ -789,7 +836,6 @@ fn reap(threads: &mut Vec<JoinHandle<()>>) {
 // The service
 // ---------------------------------------------------------------------------------------------
 
-#[cfg(windows)]
 struct Peer {
     id: u64,
     conn: Arc<Conn>,
@@ -800,14 +846,12 @@ struct Peer {
     out: Sender<String>,
 }
 
-#[cfg(windows)]
 impl Peer {
     fn named(&self) -> Option<RemoteCopy> {
         lock(&self.copy).clone()
     }
 }
 
-#[cfg(windows)]
 struct Shared {
     key: [u8; 32],
     stop: Event,
@@ -819,7 +863,6 @@ struct Shared {
     proof_ms: u64,
 }
 
-#[cfg(windows)]
 impl Shared {
     fn new(key: [u8; 32], stop: Event, proof_ms: u64) -> Arc<Shared> {
         Arc::new(Shared {
@@ -867,22 +910,17 @@ impl Shared {
 }
 
 /// The service's end: the copies connected now, and asking them.
-#[cfg(windows)]
 pub struct LinkService {
     shared: Arc<Shared>,
     acceptor: Mutex<Option<JoinHandle<()>>>,
 }
 
-#[cfg(windows)]
 type OnError = Arc<dyn Fn(String) + Send + Sync>;
-#[cfg(windows)]
 type AcceptHook = Arc<dyn Fn() + Send + Sync>;
 
 /// A copy that was asked for its tabs: the peer's id, the copy, and the question's rid with its answer channel.
-#[cfg(windows)]
 type Asked = (u64, RemoteCopy, Option<(u64, Receiver<ToService>)>);
 
-#[cfg(windows)]
 impl LinkService {
     /// Takes the pipe's name and starts accepting. If the name is taken (or cannot be made) `on_error` hears
     /// why and the service is inert: it lists no copies.
@@ -923,6 +961,18 @@ impl LinkService {
         )
     }
 
+    #[cfg(not(windows))]
+    fn start_inner(
+        pipe: &str,
+        key: [u8; 32],
+        on_error: OnError,
+        proof_ms: u64,
+        hook: Option<AcceptHook>,
+    ) -> LinkService {
+        sock::start_service(pipe, key, on_error, proof_ms, hook)
+    }
+
+    #[cfg(windows)]
     fn start_inner(
         pipe: &str,
         key: [u8; 32],
@@ -1095,7 +1145,7 @@ impl LinkService {
 
     /// Hangs up on every copy and stops accepting. Waits for the link's own threads.
     pub fn close(&self) {
-        if self.shared.stop.0 != 0 {
+        if self.shared.stop.is_real() {
             self.shared.stop.set();
         }
         self.cancel_peers();
@@ -1111,7 +1161,6 @@ impl LinkService {
     }
 }
 
-#[cfg(windows)]
 impl Drop for LinkService {
     fn drop(&mut self) {
         self.close();
@@ -1119,7 +1168,6 @@ impl Drop for LinkService {
 }
 
 /// Waits on `rx` until `pick` takes a message, the deadline passes or the channel closes.
-#[cfg(windows)]
 fn wait_for<T>(
     rx: &Receiver<ToService>,
     deadline: Instant,
@@ -1186,7 +1234,6 @@ fn acceptor(
     }
 }
 
-#[cfg(windows)]
 fn start_peer(shared: &Arc<Shared>, conn: Arc<Conn>) {
     let (out, lines) = mpsc::channel::<String>();
     let peer = Arc::new(Peer {
@@ -1221,7 +1268,6 @@ fn start_peer(shared: &Arc<Shared>, conn: Arc<Conn>) {
 }
 
 /// The peer's writer: lines out, one at a time, until the channel closes or the connection ends.
-#[cfg(windows)]
 fn writer_loop(conn: &Conn, lines: &Receiver<String>) {
     // Ends with the channel, or with the connection: senders outlive a peer that has gone (a question that
     // picked it just before), so the channel alone may never close.
@@ -1239,7 +1285,6 @@ fn writer_loop(conn: &Conn, lines: &Receiver<String>) {
     }
 }
 
-#[cfg(windows)]
 fn peer_loop(shared: &Arc<Shared>, peer: &Arc<Peer>) {
     let started = Instant::now();
     let mut reader = LineReader::default();
@@ -1305,7 +1350,6 @@ pub trait ClientHandlers: Send + Sync + 'static {
     fn paste(&self, text: &str);
 }
 
-#[cfg(windows)]
 struct ClientShared {
     stop: Event,
     closed: AtomicBool,
@@ -1313,13 +1357,11 @@ struct ClientShared {
 }
 
 /// A client's end: connects, and keeps trying while it is not the service.
-#[cfg(windows)]
 pub struct LinkClient {
     shared: Arc<ClientShared>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
-#[cfg(windows)]
 impl LinkClient {
     /// `on_state` hears when this copy is connected to a service (proved both ways) and when it is not.
     pub fn start(
@@ -1331,7 +1373,7 @@ impl LinkClient {
         on_state: impl Fn(bool) + Send + Sync + 'static,
     ) -> LinkClient {
         let shared = Arc::new(ClientShared {
-            stop: Event::new().unwrap_or(Event(0)),
+            stop: Event::new().unwrap_or_else(Event::none),
             closed: AtomicBool::new(false),
             current: Mutex::new(None),
         });
@@ -1350,7 +1392,7 @@ impl LinkClient {
     /// Hangs up and stops trying. Waits for the client thread.
     pub fn close(&self) {
         self.shared.closed.store(true, Ordering::SeqCst);
-        if self.shared.stop.0 != 0 {
+        if self.shared.stop.is_real() {
             self.shared.stop.set();
         }
         if let Some(c) = lock(&self.shared.current).as_ref() {
@@ -1362,14 +1404,12 @@ impl LinkClient {
     }
 }
 
-#[cfg(windows)]
 impl Drop for LinkClient {
     fn drop(&mut self) {
         self.close();
     }
 }
 
-#[cfg(windows)]
 fn client_loop(
     shared: &Arc<ClientShared>,
     pipe: &str,
@@ -1396,7 +1436,7 @@ fn client_loop(
             *lock(&shared.current) = None;
         }
         set(false);
-        if shared.stop.0 == 0 {
+        if !shared.stop.is_real() {
             std::thread::sleep(Duration::from_millis(retry_ms)); // sync-ok: the client's own thread
         } else if shared.stop.wait(Some(retry_ms)) {
             break;
@@ -1405,7 +1445,6 @@ fn client_loop(
     set(false);
 }
 
-#[cfg(windows)]
 fn session(
     shared: &Arc<ClientShared>,
     conn: &Arc<Conn>,
@@ -1505,76 +1544,6 @@ fn session(
     }
 }
 
-/// The service's end off Windows. macOS: phase 7 of the port plan (a Unix socket with the same proof).
-/// Until then it is inert: `on_error` hears why, and no copy is ever listed.
-#[cfg(not(windows))]
-pub struct LinkService {
-    _private: (),
-}
-
-#[cfg(not(windows))]
-impl LinkService {
-    pub fn start(
-        _pipe: &str,
-        _key: [u8; 32],
-        on_error: impl Fn(String) + Send + Sync + 'static,
-    ) -> LinkService {
-        on_error("the dictation link is not built on this platform yet".into());
-        LinkService { _private: () }
-    }
-
-    pub fn copies(&self) -> Vec<RemoteCopy> {
-        Vec::new()
-    }
-
-    pub fn tabs(&self, _timeout: Duration) -> Receiver<Vec<(RemoteCopy, Vec<SendTab>)>> {
-        let (tx, rx) = mpsc::channel();
-        let _ = tx.send(Vec::new());
-        rx
-    }
-
-    pub fn send(
-        &self,
-        _pid: u32,
-        _id: &str,
-        _text: &str,
-        _timeout: Duration,
-    ) -> Receiver<SendDecision> {
-        let (tx, rx) = mpsc::channel();
-        let _ = tx.send(SendDecision::No("that copy of the app has closed".into()));
-        rx
-    }
-
-    pub fn paste(&self, _pid: u32, _text: &str) -> bool {
-        false
-    }
-
-    pub fn close(&self) {}
-}
-
-/// A client's end off Windows: never connects until phase 7 (`on_state` hears `false` once).
-#[cfg(not(windows))]
-pub struct LinkClient {
-    _private: (),
-}
-
-#[cfg(not(windows))]
-impl LinkClient {
-    pub fn start(
-        _pipe: &str,
-        _key: [u8; 32],
-        _me: RemoteCopy,
-        _handlers: Arc<dyn ClientHandlers>,
-        _retry_ms: u64,
-        on_state: impl Fn(bool) + Send + Sync + 'static,
-    ) -> LinkClient {
-        on_state(false);
-        LinkClient { _private: () }
-    }
-
-    pub fn close(&self) {}
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1589,7 +1558,14 @@ mod tests {
         Conn::new(h).expect("a conn")
     }
 
-    #[cfg(windows)]
+    /// A connection to nobody who speaks: one end of a socket pair (the other end is kept open, then dropped).
+    #[cfg(not(windows))]
+    fn dummy_conn() -> Arc<Conn> {
+        let (a, b) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
+        std::mem::forget(b);
+        Conn::new(a).expect("a conn")
+    }
+
     fn dummy_peer(id: u64) -> (Arc<Peer>, Receiver<String>) {
         let (out, lines) = mpsc::channel();
         let peer = Arc::new(Peer {
@@ -1625,7 +1601,6 @@ mod tests {
         assert_eq!(std::fs::read(&file).unwrap(), before);
     }
 
-    #[cfg(windows)]
     #[test]
     fn a_question_for_a_peer_that_has_hung_up_is_not_kept() {
         let shared = Shared::new([1u8; 32], Event::new().unwrap(), PROOF_MS);
@@ -1636,7 +1611,6 @@ mod tests {
         assert!(lock(&shared.waits).is_empty(), "a waiter was left behind");
     }
 
-    #[cfg(windows)]
     #[test]
     fn the_writer_stops_when_its_connection_is_cancelled_even_if_the_channel_stays_open() {
         let (peer, lines) = dummy_peer(2);

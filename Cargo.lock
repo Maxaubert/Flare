@@ -1856,8 +1856,10 @@ dependencies = [
  "flare-diag",
  "flare-shells",
  "flare-win",
+ "libc",
  "libloading 0.8.9",
  "log",
+ "objc2 0.6.5",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1932,7 +1934,9 @@ name = "flare-mods"
 version = "0.1.0"
 dependencies = [
  "flare-ctl",
+ "flare-proc",
  "flare-settings",
+ "libc",
  "log",
  "serde_json",
  "sha2 0.10.9",
@@ -2055,6 +2059,10 @@ name = "flare-update"
 version = "0.1.0"
 dependencies = [
  "log",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
  "regex",
  "serde",
  "serde_json",

@@ -331,7 +331,8 @@ pub fn tiles(m: &Manifest, c: &Choices) -> Vec<Tile> {
             },
         ));
     }
-    if let Some(h) = &m.helper {
+    // The program this system starts (rule 1057); a plugin whose helper is for another system says it has none here.
+    if let Some(h) = m.helper_here() {
         out.push(Tile {
             key: "fact:program".into(),
             label: "Program".into(),
@@ -341,6 +342,17 @@ pub fn tiles(m: &Manifest, c: &Choices) -> Vec<Tile> {
             detail: String::new(),
             words: "The program Flare runs for it".into(),
             tip: tip_of("The program Flare runs for it", &h.command),
+        });
+    } else if m.has_any_helper() {
+        out.push(Tile {
+            key: "fact:program".into(),
+            label: "Program".into(),
+            kind: TileKind::Fact {
+                value: "None on this system".into(),
+            },
+            detail: String::new(),
+            words: "Its program is for another system: nothing runs here".into(),
+            tip: "Its program is for another system: nothing runs here".into(),
         });
     }
     if let Some(url) = &m.homepage {
@@ -378,12 +390,18 @@ mod tests {
             "permissions": ["tools", "actions", "panel", "process", "fill"],
             "panel": {"entry": "panel.html", "title": "Vault"},
             "helper": {"command": "bin\\vault-helper.exe"},
+            "helpers": {"macos": {"command": "bin/vault-helper"}},
             "contributes": {"actions": [{"key": "toggle", "title": "Lock", "where": ["tab-menu"]}]},
             "tools": [{"name": "fill_login", "description": "Fills.", "input_schema": {"type": "object"}}]
         });
         if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+            // A null takes the key out.
             for (k, x) in e {
-                o.insert(k.clone(), x.clone());
+                if x.is_null() {
+                    o.remove(k);
+                } else {
+                    o.insert(k.clone(), x.clone());
+                }
             }
         }
         crate::manifest::parse_plugin(&v.to_string()).unwrap()
@@ -459,6 +477,30 @@ mod tests {
         assert_eq!(tools.detail.chars().count(), DETAIL_MAX);
         assert!(tools.detail.ends_with("..."));
         assert!(tools.tip.ends_with("tool_number_19"), "{}", tools.tip);
+    }
+
+    /// Rule 1057: the sheet names the program this system starts, and says so when the plugin's program is for another.
+    #[test]
+    fn the_program_tile_is_this_systems_program_or_says_there_is_none() {
+        let windows_only = plugin(serde_json::json!({"helpers": null}));
+        let program = |m: &Manifest| {
+            tiles(m, &Choices::default())
+                .into_iter()
+                .find(|t| t.key == "fact:program")
+                .map(|t| t.kind)
+        };
+        let none = Some(TileKind::Fact {
+            value: "None on this system".into(),
+        });
+        let named = Some(TileKind::Fact {
+            value: "vault-helper".into(),
+        });
+        if cfg!(target_os = "macos") {
+            assert_eq!(program(&windows_only), none);
+        } else {
+            assert_eq!(program(&windows_only), named);
+        }
+        assert_eq!(program(&plugin(serde_json::json!({}))), named);
     }
 
     #[test]

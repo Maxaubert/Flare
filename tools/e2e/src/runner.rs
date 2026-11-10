@@ -110,12 +110,16 @@ pub fn select<'a>(all: &'a [Scenario], filters: &[String]) -> Vec<&'a Scenario> 
         .collect()
 }
 
-/// What a run runs: the gate's scenarios that match, and (only when a filter names it) an opt-in one.
+/// What a run runs: the gate's scenarios that match, and an opt-in one only when a filter word is its
+/// whole name (case-insensitive). A part of the name, such as `web` or `bot`, never pulls in an opt-in
+/// scenario, since `webBotChecks` opens public pages on the network (#146).
 pub fn pick(filters: &[String]) -> Vec<&'static Scenario> {
     let mut picked = select(ALL, filters);
-    if !filters.is_empty() {
-        picked.extend(select(OPT_IN, filters));
-    }
+    picked.extend(
+        OPT_IN
+            .iter()
+            .filter(|s| filters.iter().any(|w| w.eq_ignore_ascii_case(s.name))),
+    );
     picked
 }
 

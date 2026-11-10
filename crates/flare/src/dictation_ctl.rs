@@ -41,7 +41,7 @@ use flare_dictation::cues::Cue;
 use flare_dictation::engine::{Engine, EngineConfig, Reason, TranscribeRequest, TranscribeResult};
 use flare_dictation::hotkey::{
     HOST_TICK_MS, Hotkey, KeyChord, KeyConfig, KeyEvt, KeyState, Phase as KeyPhase,
-    parse_hotkey_from_event, reduce_key, usable_hotkey,
+    parse_hotkey_from_event, reduce_key, usable_hotkey_here,
 };
 use flare_dictation::job::Job;
 use flare_dictation::keyfeed::HookEvent;
@@ -1831,8 +1831,31 @@ pub enum CaptureTake {
     TakenAltUp,
 }
 
-/// Said under the microphone row when the Test could not open it (PT MicField).
+/// Said under the microphone row when the Test could not open it (PT MicField). On a Mac a refusal is the
+/// system's switch being off (read ahead without asking), so the row names where to turn it on.
+#[cfg(windows)]
 const MIC_DENIED: &str = "Microphone access was refused.";
+#[cfg(not(windows))]
+const MIC_DENIED: &str = mic::ACCESS_OFF;
+
+/// What the row says when a Test was refused, for the access read now. Windows: `MIC_DENIED`. A Mac names the real
+/// state: restricted by a profile, else off (`MIC_DENIED`, which names the pane) (rule 1091).
+fn denied_text(a: mic::MicAccess) -> &'static str {
+    if cfg!(windows) {
+        return MIC_DENIED;
+    }
+    mic::access_problem(a).unwrap_or(MIC_DENIED)
+}
+
+/// The row's problem after a listing read the access as `fresh`: a line that was only the access (off or
+/// restricted) follows the new reading, so it goes once access is allowed; a Test's own failure stays.
+fn problem_after_listing(current: Option<String>, fresh: Option<&'static str>) -> Option<String> {
+    match current {
+        None => fresh.map(str::to_string),
+        Some(c) if c == mic::ACCESS_OFF || c == mic::ACCESS_RESTRICTED => fresh.map(str::to_string),
+        Some(c) => Some(c),
+    }
+}
 const MIC_NONE: &str = "No working microphone was found.";
 /// The Test ends by itself after this long (PT: 10000 ms).
 const MIC_TEST_MS: u64 = 10_000;
@@ -1946,11 +1969,14 @@ pub fn page_mics() -> Vec<(String, String)> {
                     .into_iter()
                     .map(|m| (m.id, m.name))
                     .collect();
+                // macOS: access that is off is said at once, read without asking (Windows never knows ahead).
+                let problem = mic::access_problem(mic::access());
                 post_ui(move || {
                     PAGE.with(|p| {
                         let mut p = p.borrow_mut();
                         p.mics = Some(found);
                         p.mics_pending = false;
+                        p.mic_problem = problem_after_listing(p.mic_problem.take(), problem);
                     });
                     page_changed();
                 });
@@ -2232,7 +2258,7 @@ fn capture_key(ev: &KeyEvent, up: bool) -> CaptureTake {
         };
         if is_modifier_code(&code) {
             p.bare = Some(hk);
-        } else if usable_hotkey(&hk, &[]) {
+        } else if usable_hotkey_here(&hk, &[]) {
             p.capturing = false;
             p.held.clear();
             return Ok((Some(hk), false));
@@ -2581,7 +2607,7 @@ fn test_opened(epoch: u64, result: Result<Box<dyn Capture>, CaptureFailure>) {
             PAGE.with(|p| {
                 p.borrow_mut().mic_problem = Some(
                     if f == CaptureFailure::Denied {
-                        MIC_DENIED
+                        denied_text(mic::access())
                     } else {
                         MIC_NONE
                     }
@@ -2961,10 +2987,12 @@ impl RealCfg {
                 name: link::copy_name(exe),
             },
             seam_link,
-            neighbour_root: flare_win::seam::var_os(flare_win::names::SEAM_DICTATION_ROOT)
-                .filter(|v| !v.is_empty())
-                .is_none()
-                .then(flare_dictation::store::neighbour_root),
+            // The neighbour app is a Windows app: a Mac has no models folder of its own to link from.
+            neighbour_root: (cfg!(windows)
+                && flare_win::seam::var_os(flare_win::names::SEAM_DICTATION_ROOT)
+                    .filter(|v| !v.is_empty())
+                    .is_none())
+            .then(flare_dictation::store::neighbour_root),
         }
     }
 }
@@ -3021,7 +3049,10 @@ impl RealParts {
         );
         // The app's engine never stands down by itself while dictation is on (N5, D11).
         ec.idle = None;
-        ec.cuda_cache = Some(cfg.root.join("cuda-cache"));
+        // CUDA's kernel cache is the NVIDIA pack's; a Mac's Metal engine has no such cache to point anywhere.
+        if cfg!(windows) {
+            ec.cuda_cache = Some(cfg.root.join("cuda-cache"));
+        }
         ec.parakeet_host = cfg.host_exe.clone().filter(|p| p.is_file());
         let engine = Engine::start(ec, Arc::new(job));
         // The first switch-on reads or makes the link key: one 64-byte file.
@@ -5077,12 +5108,48 @@ mod page_tests {
     }
 
     #[test]
+    fn a_refused_test_names_the_access_as_it_is_and_a_listing_clears_access_that_came_back() {
+        use mic::MicAccess as A;
+        if cfg!(windows) {
+            for a in [A::Off, A::Restricted, A::Allowed, A::Unknown] {
+                assert_eq!(denied_text(a), "Microphone access was refused.");
+            }
+        } else {
+            assert_eq!(denied_text(A::Restricted), mic::ACCESS_RESTRICTED);
+            assert_eq!(denied_text(A::Off), mic::ACCESS_OFF);
+            // Not known ahead (a refusal the read did not see): the pane is named.
+            assert_eq!(denied_text(A::Unknown), mic::ACCESS_OFF);
+            assert_eq!(denied_text(A::NotAsked), mic::ACCESS_OFF);
+        }
+        let off = Some(mic::ACCESS_OFF.to_string());
+        // Granted since: the stale "off" line goes with the next listing.
+        assert_eq!(problem_after_listing(off.clone(), None), None);
+        assert_eq!(
+            problem_after_listing(off.clone(), Some(mic::ACCESS_RESTRICTED)).as_deref(),
+            Some(mic::ACCESS_RESTRICTED)
+        );
+        assert_eq!(
+            problem_after_listing(None, Some(mic::ACCESS_OFF)),
+            off.clone()
+        );
+        // A Test's own failure is not the access: a listing leaves it.
+        let none = Some(MIC_NONE.to_string());
+        assert_eq!(problem_after_listing(none.clone(), None), none);
+        assert_eq!(
+            problem_after_listing(none.clone(), Some(mic::ACCESS_OFF)),
+            none
+        );
+        let refused = Some("Microphone access was refused.".to_string());
+        assert_eq!(problem_after_listing(refused.clone(), None), refused);
+    }
+
+    #[test]
     fn a_refused_microphone_says_so_and_another_failure_says_none_was_found() {
         let p = page(["a", "b", "c"]);
         let dir = tempfile::tempdir().unwrap();
         TEST_MIC.with(|m| *m.borrow_mut() = Some(MicSource::File(silent_wav(dir.path()))));
         for (failure, said) in [
-            (CaptureFailure::Denied, "Microphone access was refused."),
+            (CaptureFailure::Denied, denied_text(mic::access())),
             (CaptureFailure::NoDevice, "No working microphone was found."),
             (CaptureFailure::Failed, "No working microphone was found."),
         ] {

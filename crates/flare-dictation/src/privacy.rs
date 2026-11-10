@@ -154,9 +154,168 @@ mod tests {
     }
 
     #[test]
+    fn the_mac_microphone_records_from_input_only_and_never_asks_by_itself() {
+        // macOS (port phase 7): the one queue is an input queue on an input device; nothing is ever played or
+        // tapped from an output, and the access is read with the call that never asks. The system's own question
+        // comes only from a real open, the first time (NSMicrophoneUsageDescription words it).
+        let mac = code_of(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src")
+                .join("macos")
+                .join("mic.rs"),
+        );
+        assert!(mac.contains(concat!("AudioQueue", "NewInput(")));
+        assert!(mac.contains(concat!("authorizationStatus", "ForMediaType")));
+        for b in [
+            concat!("AudioQueue", "NewOutput"),
+            concat!("AudioQueue", "ProcessingTap"),
+            concat!("requestAccess", "ForMediaType"),
+            concat!("AVCapture", "Session"),
+            concat!("AVMediaType", "Video"),
+            concat!("ScreenCapture", "Kit"),
+        ] {
+            assert!(!mac.contains(b), "macos/mic.rs uses {b}");
+        }
+        let mut all = Vec::new();
+        files(&workspace().join("crates"), &["rs"], &mut all);
+        let me = this_file().canonicalize().unwrap();
+        for f in all
+            .iter()
+            .filter(|f| f.canonicalize().ok().as_ref() != Some(&me))
+        {
+            let code = code_of(f);
+            assert!(
+                !code.contains(concat!("requestAccess", "ForMediaType")),
+                "{} asks for the microphone itself",
+                f.display()
+            );
+        }
+    }
+
+    #[test]
+    fn the_mac_key_hook_listens_only_posts_nothing_and_never_asks_by_itself() {
+        // macOS (port phase 7): the dictation key is Carbon hot keys and a LISTEN-ONLY event tap; the tap is made
+        // only after Input Monitoring reads as granted with the call that never asks, and no key is ever typed.
+        let mac = code_of(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src")
+                .join("macos")
+                .join("keyhook.rs"),
+        );
+        assert!(mac.contains(concat!("CGPreflight", "ListenEventAccess")));
+        assert!(mac.contains(concat!("Register", "EventHotKey(")));
+        let tap = mac
+            .split(concat!("CGEventTap", "Create("))
+            .nth(2)
+            .expect("the one tap call");
+        let args: String = tap.chars().take(200).collect();
+        assert!(
+            args.contains("LISTEN_ONLY"),
+            "the tap is listen-only: {args}"
+        );
+        assert!(mac.contains("const LISTEN_ONLY: u32 = 1;"));
+        let banned = [
+            concat!("CGRequest", "ListenEventAccess"),
+            concat!("CGRequest", "PostEventAccess"),
+            concat!("CGPreflight", "PostEventAccess"),
+            concat!("AXIsProcess", "TrustedWithOptions"),
+            concat!("kAXTrusted", "CheckOptionPrompt"),
+            concat!("IOHID", "RequestAccess"),
+            concat!("CGEvent", "Post"),
+            concat!("CGEvent", "CreateKeyboardEvent"),
+            concat!("CGEvent", "SetFlags"),
+            concat!("AXUIElement", "PostKeyboardEvent"),
+        ];
+        let mut all = Vec::new();
+        files(&workspace().join("crates"), &["rs"], &mut all);
+        let me = this_file().canonicalize().unwrap();
+        for f in all
+            .iter()
+            .filter(|f| f.canonicalize().ok().as_ref() != Some(&me))
+        {
+            let code = code_of(f);
+            for b in banned {
+                assert!(!code.contains(b), "{} uses {b}", f.display());
+            }
+        }
+        // No key the person types is ever logged.
+        for l in mac.lines().filter(|l| l.contains("log::")) {
+            assert!(
+                !l.contains("kc") && !l.contains("keycode"),
+                "a key is logged: {l}"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_reaches_the_engine_only_over_loopback_and_pipes_on_both_systems() {
+        // Rule 1085 (macOS port phase 7): the same engine code runs on both systems, so the same lines hold the audio
+        // on this machine. The one socket dialled is 127.0.0.1; the server is told to listen there and nowhere else;
+        // Parakeet takes the clip on stdin (`-f -`); and the Mac's engine is built with no network code of its own.
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let http = code_of(&src.join("engine").join("http.rs"));
+        assert!(http.contains("SocketAddr::from((Ipv4Addr::LOCALHOST, port))"));
+        let dials = http.matches(concat!("TcpStream::", "connect")).count();
+        let loopback_dials = http
+            .matches(concat!("TcpStream::", "connect_timeout(&loopback(port)"))
+            .count();
+        assert!(
+            dials >= 1 && dials == loopback_dials,
+            "a socket that is not loopback"
+        );
+        for b in [
+            "0.0.0.0",
+            "Ipv4Addr::UNSPECIFIED",
+            "Ipv6Addr",
+            "ToSocketAddrs",
+        ] {
+            assert!(!http.contains(b), "engine/http.rs mentions {b}");
+        }
+        let engine = code_of(&src.join("engine").join("mod.rs"));
+        assert!(engine.contains("\"--host\",\n            \"127.0.0.1\","));
+        let parakeet = code_of(&src.join("engine").join("parakeet.rs"));
+        assert!(parakeet.contains("\"-f\",\n        \"-\","));
+        let build =
+            std::fs::read_to_string(workspace().join("tools").join("build-whisper-macos.sh"))
+                .expect("the macOS engine build");
+        assert!(build.contains("-DWHISPER_CURL=OFF"));
+        // A Mac child is in a process group of its own and handed to the reaper, as on Windows it is in the job.
+        for f in ["whisper.rs", "parakeet.rs", "host.rs"] {
+            let code = code_of(&src.join("engine").join(f));
+            let isolate = code
+                .find("crate::job::isolate(&mut cmd)")
+                .unwrap_or_else(|| panic!("{f}"));
+            let spawn = code.find("cmd.spawn()").unwrap_or_else(|| panic!("{f}"));
+            let assign = code
+                .find("job.assign(&child)")
+                .unwrap_or_else(|| panic!("{f}"));
+            assert!(isolate < spawn && spawn < assign, "{f}");
+            // After the assign the child is waited only through its member, which withdraws the pid from the
+            // reaper before the reap (rule 1087).
+            let after = &code[assign..];
+            assert!(after.contains("job.member()"), "{f}");
+            for bare in [
+                concat!("child).", "try_wait()"),
+                concat!("child).", "wait()"),
+            ] {
+                assert!(
+                    !after.contains(bare),
+                    "{f} waits a job child without its member"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn no_audio_is_written_to_disk() {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut scanned = vec![src.join("mic.rs"), src.join("controller.rs")];
+        let mut scanned = vec![
+            src.join("mic.rs"),
+            src.join("macos").join("mic.rs"),
+            src.join("macos").join("job.rs"),
+            src.join("controller.rs"),
+            src.join("bin").join("flare_parakeet_host.rs"),
+        ];
         let mut engine = Vec::new();
         files(&src.join("engine"), &["rs"], &mut engine);
         assert!(engine.len() >= 3, "the engine files were not found");

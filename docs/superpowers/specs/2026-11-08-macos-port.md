@@ -76,6 +76,89 @@ A review of the three steps (2026-11-08) proved six defects, fixed with checks t
 opened a DevTools port), held downloads staged outside `~/Downloads`, no call to Google from the engine with no page
 asking, the mock keychain written down as an accepted gap until phase 8, and no colour or print panel from a page.
 
+Phase 8 progress: step 1 (2026-11-08) is `Flare.app`: `tools/release/mac/make-app.sh` builds the release programs,
+`flare-mac-app` bundles them (the CEF framework, five helpers, `flare-mcp`, the icon, the plugin in `Resources`) and
+signs inside out with the Developer ID and per-program entitlements, then the script notarizes, staples and makes the
+DMG; `.github/workflows/macos-app.yml` does the same in CI from secrets (rules 1036 to 1039, `docs/parity.md` "macOS
+port, phase 8"). On Max's Mac a Developer ID `codesign` asked the keychain for the key with a prompt on the screen, so
+the signed and notarized run waits for the key's access list to let `codesign` in.
+
+A review of step 1 (2026-11-08) led to rules 1040 to 1043: no `codesign` with the identity unless an in-process check
+with the keychain UI off says the key cannot prompt (`flare-mac-app check-key`; Max's key lacks the `apple:`
+partition), the tests' own signing variables, the release check comparing each Mach-O's entitlements with its role's
+and requiring a Developer ID Application signer, Chromium 156's GPU `allow-jit`, a terminal's camera, microphone and
+Apple Events keys with their usage strings, CI cleanup that runs on failure and no cached CEF in the signing job, and
+the Velopack order: sign and notarize the bundle `vpk pack` produced (`flare-mac-app resign`), check it inside the
+update package.
+
+Step 3 (2026-11-09) is updates and the release: `tools/release/mac/pack.sh` packs `Flare.app` with vpk 1.2.161 for
+osx-arm64 and signs the bundle again by role after vpk adds `UpdateMac` (`flare-mac-app` as vpk's `codesign`), vpk
+notarizes and staples it, and the bundle is checked inside the update package; `tools/release/mac/update-e2e.sh`
+proves a whole-bundle update headless on a Mac (0.0.1 to 0.0.2 into a temp folder, the real `VelopackFeed` and
+`UpdateMac`, no restart, no window, the swapped bundle still verifies); `.github/workflows/macos-app.yml` runs after
+each Windows release and adds the Mac build to it when the secrets are set, `docs/releasing-macos.md` (rules 1046 to
+1048). Proved ad hoc only: the signed, notarized run is one command for Max once the Developer ID key lets `codesign`
+in without a prompt. A review of step 3 (2026-11-09) led to rules 1049 to 1052: the Mac build is the commit the release
+was tagged at, one run per version, signed only from `main` through the `mac-release` environment; no key file,
+password or scratch folder outlives its use; a switch between the mock and the real profile key sets cookies aside;
+ad hoc signing carries each role's identifier, entitlements and (tools) the hardened runtime, so the ad-hoc pack
+proves `UpdateMac`'s signature.
+
+Phase 6 progress: step 1 (2026-11-08) is the helper's lifetime: `flare_proc::guard` starts a helper in a session and
+group of its own (`setsid`) with an orphan guard in that group, which ends the group, the session and every
+descendant it saw (escapees from the group or the session included) when Flare lets its pipe go, when the helper ends,
+or when Flare ends or crashes; `flare_mods::helper::Host` runs helpers on the Mac with it (stop, update, removal,
+restarts, `stop_all`), proved with real `sh` trees and a stand-in Flare killed with SIGKILL (rules 1053 to 1056,
+`docs/parity.md` "macOS port, phase 6"). Step 2 (2026-11-08) is the per-OS helper entry: `plugin.json` keeps
+`helper` as the Windows `.exe` and adds `helpers` (`windows`, `macos`), each system starting only its own program
+(`Manifest::helper_here`), a Windows manifest loading unchanged everywhere and the channel's bytes unchanged; on a Mac
+the program must be an executable inside the folder that is not quarantined (refused with a sentence rather than left
+to a Gatekeeper dialog), and an install keeps a zip entry's execute bit; a stop while a helper starts no longer leaves
+a zombie that held the update's and the removal's wait to its timeout; every sample plugin and the app's helper tests
+run on the Mac (rules 1057 to 1060). Step 3 (2026-11-09) is "Open in Flare": an `NSServices` entry for folders and
+files (`flare_win::open_in::plist_keys`, for phase 8's `release::app_keys` to take) whose provider, and an
+`application:openURLs:` added to winit's app delegate before the loop runs, turn Finder's pasteboard or an `open -a
+Flare` request into the hand-off a second launch sends, so a folder opens as a new tab and a file as its folder; the
+command line's paths are kept out of open documents; checked with `plutil` and the handlers called as functions,
+nothing registered with the system (rules 1061 to 1063). No Dock-icon drop: it needs a document type, which phase 8
+leaves out. Left for the merge with phase 8: the one line that adds the keys to `Flare.app`, and a test on the built
+bundle that `NSPortName` equals `CFBundleExecutable`. A review of phase 6 (2026-11-09) fixed: the guard, a fork that
+never exec'd, kept a copy-on-write snapshot of Flare's memory per helper (+843 MB in an 800 MB probe), so it now execs
+Flare's own program (`guard::run_if_guard` first in `ship_ctl::bootstrap`, rule 1054); a helper's `kill -9 0` killed the
+guard and left `set -m` jobs and `setsid` escapees running, so the guard leads a group of its own and Flare makes its
+own pass over the session and the group before the reap (rule 1053); the end is marked before any reap, also when
+`waitid` fails (rule 1055); a zip made on Windows installs the Mac helper executable (rule 1059); any quarantined file
+in the folder refuses the helper (rule 1058); off Windows a path ending in `"` is no longer rewritten (rule 1064).
+
+Phase 7 progress: step 1 (2026-11-09) is the microphone and the link. The microphone is a CoreAudio input queue behind
+the WASAPI seams (`crates/flare-dictation/src/macos/mic.rs`: input devices by UID, the default read at each open, 16 kHz
+by the shared resampler, a lost device reported once), with the access read and never asked for: off or restricted
+refuses before any device is touched and Settings names the System Settings pane (`NSMicrophoneUsageDescription` is
+phase 8's Info.plist). The link between copies is a Unix socket in a 0700 folder under the per-user temp folder with
+the named pipe's handshake, a lock per name and `getpeereid` on both ends (`macos/link_sock.rs`), and every link test
+now runs on both systems; a WAV through the file seam drives the controller end to end with a fake engine (rules 1073
+to 1076, `docs/parity.md` "macOS port, phase 7"). Step 2 (2026-11-09) is the key from any app (`macos/keyhook.rs`): a
+chord that ends in a key is a Carbon hot key (no permission), a modifier binding (the default Ctrl+Cmd, Right Option)
+a listen-only event tap made only once Input Monitoring reads as granted, never asked for, with Settings naming the
+pane meanwhile and the window reading the key; the picker's digits and Esc are Carbon hot keys while switched on; one
+copy holds the key by `flock`. Bindings are named and checked as Mac keys (Right Alt is Right Option). Nothing is typed
+into other apps (Windows does not either), so no Accessibility; media pause is off on the Mac with its reason, as no
+public API can pause another app's player (rules 1077 to 1080). Step 3 (2026-11-09) is the reaping job and the engines
+with Metal: each engine child in a process group of its own, handed to one `/bin/sh` reaper that kills every group it
+holds when its pipe closes, so also when Flare is killed with `SIGKILL` (`macos/job.rs`), and every engine and host
+test now runs on both systems; the bundled engine is whisper.cpp built from the commit and tree tag b5130 names (the
+release has no macOS program) with Metal embedded and only system links (`tools/build-whisper-macos.sh`, built and
+given a real pass in CI), run first on Metal and once for good on the CPU (`-ng`), with no NVIDIA pack, Turbo as the
+Recommended pick, the Parakeet host loading the built `libggml` and `libparakeet`, and models in
+`~/Library/Application Support/FlareDictation` with no quarantine flag (rules 1081 to 1085). The engine goes into the
+bundle in phase 8. A review of steps 1 to 3 (2026-11-09) tightened them: a tap whose Input Monitoring is revoked
+ends and lets the lock go, a register gives up as soon as the hook stops (no 2 s stall at quit), the reaper withdraws a
+pid before it is reaped, answers every line and watches Flare's pid, the system's Control chords are refused as a
+binding, the microphone row says the access as it is now, an opened-up link folder of this user is made private
+again, and the engine folder is reused only with exactly its stamped files, and a media worker that crashes closes its queue before
+its reply (a test flake, shared with Windows) (rules 1086 to 1095). Next: cues and the
+widget.
+
 Ongoing progress (2026-11-09): the Mac E2E runs in CI (`e2e-macos` job, `docs/e2e.md` "macOS E2E", rules 1103 to
 1117): the harness over the Unix socket hook, an accessory app whose every window is born clear, the Mac keys, the
 world's pwsh in Windows' edit mode, 72 scenarios run and 29 gated with a reason (plus the opt-in visualTour). From run 42569349881 (42 failing) to

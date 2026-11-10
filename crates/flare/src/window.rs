@@ -1450,6 +1450,16 @@ pub fn run_window(
         // The second launch's folders arrive on the pipe thread (running since main took the
         // lock) and hop onto the event loop; any that came while the window was being made go now.
         inst.sink.attach(Arc::clone(&post));
+        // macOS: Finder's "Open in Flare" service and `open -a Flare <folder>` make the request a second launch
+        // makes, into the same sink (port phase 6, rule 1061). Before the loop runs: the first launch's
+        // open-documents event comes while AppKit finishes launching.
+        #[cfg(target_os = "macos")]
+        {
+            let sink = inst.sink.clone();
+            if !flare_win::open_in::install(Rc::new(move |h| sink.deliver(h))) {
+                log::warn!("Open in Flare is not installed (not on the main thread)");
+            }
+        }
         // A logoff or shutdown flushes both stores synchronously (the OS ends us right after).
         session_end = match SessionEndWatch::start_with_power(
             {
@@ -2808,6 +2818,21 @@ mod tests {
         for banned in [".on_key(", ".on_key_up(", ".send_key(", "consumed"] {
             assert!(!arm.contains(banned), "the arm still has {banned}");
         }
+    }
+
+    /// Open in Flare (macOS, rule 1061) feeds the hand-off sink, and is installed before the loop runs, so the open
+    /// request of the launch itself is not missed.
+    #[test]
+    fn open_in_flare_feeds_the_hand_off_sink_before_the_loop_runs() {
+        let src = include_str!("window.rs");
+        let install = src
+            .find("flare_win::open_in::install(Rc::new(move |h| sink.deliver(h)))")
+            .expect("Open in Flare delivers to the sink");
+        let attach = src
+            .find("inst.sink.attach(Arc::clone(&post));")
+            .expect("the sink attaches");
+        let run = src.find("let result = app.run();").expect("the loop");
+        assert!(attach < install && install < run);
     }
 
     #[test]

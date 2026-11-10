@@ -28,6 +28,12 @@ pub mod menu_bar;
 pub mod menu_spec;
 pub mod monitors;
 pub mod motion;
+#[cfg(target_os = "macos")]
+#[path = "macos/notify.rs"]
+pub mod notify;
+#[cfg(target_os = "macos")]
+#[path = "macos/open_in.rs"]
+pub mod open_in;
 pub mod openers;
 pub mod os_build;
 #[cfg(target_os = "macos")]

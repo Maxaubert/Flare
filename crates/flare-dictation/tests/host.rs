@@ -3,8 +3,8 @@
 //! "the resident Parakeet host", 3 tests), plus the rules N6 and N7 that its three host tests do not
 //! pin. The stand-ins are `fake-parakeet-cli` and `fake-parakeet-host`, started through the engine's
 //! `command` seam (the exe's file name says which one is wanted).
-//! Windows-only until macOS phase 7 of the port plan (the reaping job, the named-pipe link, the pid checks).
-#![cfg(windows)]
+//! Both systems since macOS port phase 7 (rule 1081): the reaping job is the Job Object on Windows and a process
+//! group per child plus a reaper on macOS; the engine's file names carry `.exe` on Windows only.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -17,7 +17,9 @@ use flare_dictation::engine::{
 };
 use flare_dictation::job::Job;
 use serde::Deserialize;
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
     OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
 };
@@ -27,6 +29,10 @@ const FAKE_HOST: &str = env!("CARGO_BIN_EXE_fake-parakeet-host");
 const FAKE_WHISPER: &str = env!("CARGO_BIN_EXE_fake-whisper-server");
 const REAL_HOST: &str = env!("CARGO_BIN_EXE_flare-parakeet-host");
 const WAV_LEN: usize = 1234;
+/// The engine's file names on this system.
+const CLI: &str = flare_dictation::engine::PARAKEET_CLI;
+const WHISPER: &str = flare_dictation::engine::WHISPER_SERVER;
+const HOST: &str = flare_win::names::PARAKEET_HOST_EXE;
 const MODEL_PK: &str = r"C:\Flare Dictation\models\parakeet-v3.bin";
 const MODEL_PK2: &str = r"C:\Flare Dictation\models\parakeet-v3-q4.bin";
 
@@ -156,7 +162,7 @@ fn world_in_job(knobs: Knobs, host: bool, tune: impl FnOnce(&mut EngineConfig), 
     cfg.has_nvidia = Box::new(move || k2.lock().unwrap().nvidia);
     cfg.threads = 6;
     if host {
-        cfg.parakeet_host = Some(cpu_path.join("flare-parakeet-host.exe"));
+        cfg.parakeet_host = Some(cpu_path.join(HOST));
     }
     let log = Arc::clone(&calls);
     cfg.command = Some(Box::new(move |exe: &Path, args: &[String]| {
@@ -166,8 +172,7 @@ fn world_in_job(knobs: Knobs, host: bool, tune: impl FnOnce(&mut EngineConfig), 
             .unwrap_or_default();
         // The host's first argument is its engine folder; the others run in it.
         let in_gpu = exe.starts_with(&gpu_path)
-            || (name == "flare-parakeet-host.exe"
-                && args.first().is_some_and(|d| Path::new(d) == gpu_path));
+            || (name == HOST && args.first().is_some_and(|d| Path::new(d) == gpu_path));
         let kind = if in_gpu {
             EngineKind::Gpu
         } else {
@@ -182,11 +187,11 @@ fn world_in_job(knobs: Knobs, host: bool, tune: impl FnOnce(&mut EngineConfig), 
         let k = k3.lock().unwrap();
         let mut all = args.to_vec();
         let target = match name.as_str() {
-            "parakeet-cli.exe" => {
+            n if n == CLI => {
                 all.extend(if in_gpu { &k.cli_gpu } else { &k.cli_cpu }.clone());
                 FAKE_CLI
             }
-            "flare-parakeet-host.exe" => {
+            n if n == HOST => {
                 all.extend(if in_gpu { &k.host_gpu } else { &k.host_cpu }.clone());
                 FAKE_HOST
             }
@@ -194,6 +199,8 @@ fn world_in_job(knobs: Knobs, host: bool, tune: impl FnOnce(&mut EngineConfig), 
         };
         (PathBuf::from(target), all)
     }));
+    // The CPU and GPU folders are told apart here, as on Windows (a Mac's Metal folder is engine.rs's test).
+    cfg.bundled_gpu = false;
     tune(&mut cfg);
     let job = Arc::new(job);
     World {
@@ -222,11 +229,11 @@ impl World {
     }
 
     fn cli_calls(&self) -> Vec<Call> {
-        self.calls_named("parakeet-cli.exe")
+        self.calls_named(CLI)
     }
 
     fn host_calls(&self) -> Vec<Call> {
-        self.calls_named("flare-parakeet-host.exe")
+        self.calls_named(HOST)
     }
 
     fn kinds(&self) -> Vec<EngineKind> {
@@ -268,6 +275,7 @@ impl Drop for World {
     }
 }
 
+#[cfg(windows)]
 fn pid_gone(pid: u32) -> bool {
     // SAFETY: OpenProcess with query and synchronize rights returns a handle or null; a non-null
     // handle is waited on with a zero timeout and closed exactly once, here.
@@ -284,6 +292,35 @@ fn pid_gone(pid: u32) -> bool {
         CloseHandle(h);
         done
     }
+}
+
+/// macOS: no such process, or only its zombie (`SZOMB`) waiting for a wait that is on its way.
+#[cfg(not(windows))]
+fn pid_gone(pid: u32) -> bool {
+    let Ok(raw) = libc::pid_t::try_from(pid) else {
+        return true;
+    };
+    // SAFETY: signal 0 checks for the process and sends nothing.
+    if unsafe { libc::kill(raw, 0) } != 0
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    {
+        return true;
+    }
+    // SAFETY: proc_bsdinfo is plain C data; all zeroes is a valid value.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = i32::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).unwrap_or(0);
+    // SAFETY: `info` is a writable proc_bsdinfo of `size` bytes for the one call.
+    let got = unsafe {
+        libc::proc_pidinfo(
+            raw,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            std::ptr::from_mut(&mut info).cast(),
+            size,
+        )
+    };
+    // 5 is SZOMB in sys/proc.h.
+    got == size && info.pbi_status == 5
 }
 
 fn until(what: impl Fn() -> bool, ms: u64) {
@@ -363,7 +400,7 @@ fn runs_parakeet_cli_once_per_pass_the_wav_on_stdin_and_never_a_file_and_no_lang
     let s = cli_seen(&r);
     let calls = w.cli_calls();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].exe, w.cpu_dir.path().join("parakeet-cli.exe"));
+    assert_eq!(calls[0].exe, w.cpu_dir.path().join(CLI));
     // `-f -` is stdin: the audio never touches the disk.
     assert_eq!(
         calls[0].args,
@@ -511,14 +548,7 @@ fn takes_down_a_resident_whisper_server_which_holds_a_model_nobody_uses_now() {
         .iter()
         .map(|c| c.name.clone())
         .collect();
-    assert_eq!(
-        names,
-        vec![
-            "whisper-server.exe",
-            "parakeet-cli.exe",
-            "whisper-server.exe"
-        ]
-    );
+    assert_eq!(names, vec![WHISPER, CLI, WHISPER]);
 }
 
 #[test]
@@ -613,10 +643,7 @@ fn the_host_is_started_with_the_folder_the_model_the_gpu_flag_and_the_threads() 
     let calls = w.host_calls();
     let dir = w.cpu_dir.path().to_string_lossy().into_owned();
     assert_eq!(calls[0].args, flags(&[&dir, MODEL_PK, "0", "6"]));
-    assert_eq!(
-        calls[0].exe,
-        w.cpu_dir.path().join("flare-parakeet-host.exe")
-    );
+    assert_eq!(calls[0].exe, w.cpu_dir.path().join(HOST));
 }
 
 #[test]

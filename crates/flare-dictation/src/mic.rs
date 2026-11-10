@@ -16,9 +16,10 @@
 //! `start_capture` waits for the capture thread to say whether the endpoint opened (bounded by
 //! `OPEN_TIMEOUT`), so it belongs on a worker. The UI thread calls `start_capture_async` instead: it
 //! returns at once and answers through a callback on its own worker (D1 runs the mic effect that way).
-
-// Off Windows the capture loop waits for phase 7 of the port plan (CoreAudio); only files and the rules compile there.
-#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
+//!
+//! On macOS (port phase 7) the endpoint layer is CoreAudio (`macos/mic.rs`): the same `Endpoints`, `pump` and
+//! file seam, plus the access rule: the authorization is read without asking, and access that is off is a
+//! refusal before any device is touched (`access`, `access_problem`).
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError};
@@ -67,6 +68,49 @@ impl CaptureFailure {
                 "The microphone could not be opened"
             }
         }
+    }
+}
+
+/// What the system lets this app do with the microphone, read without asking (macOS: `AVCaptureDevice`'s
+/// authorization status). Windows answers `Unknown`: there the refusal is only known when an open is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicAccess {
+    Allowed,
+    /// Never asked: the first open makes the system ask once.
+    NotAsked,
+    /// Switched off for this app in System Settings.
+    Off,
+    /// A profile or parental control forbids it.
+    Restricted,
+    Unknown,
+}
+
+/// Where the switch is, in the system's own words.
+pub const ACCESS_PANE: &str = "System Settings > Privacy & Security > Microphone";
+/// What Settings says on a Mac when the access is off: the honest state, and where to turn it on.
+pub const ACCESS_OFF: &str =
+    "Microphone access is off. Turn it on in System Settings > Privacy & Security > Microphone.";
+/// What Settings says on a Mac when a profile forbids the microphone.
+pub const ACCESS_RESTRICTED: &str = "Microphone access is restricted on this Mac.";
+
+/// The microphone access now, without asking for it and without opening a device.
+pub fn access() -> MicAccess {
+    #[cfg(windows)]
+    {
+        MicAccess::Unknown
+    }
+    #[cfg(not(windows))]
+    {
+        backend::access()
+    }
+}
+
+/// What Settings says when the access is off or restricted (it names the pane); None otherwise.
+pub fn access_problem(a: MicAccess) -> Option<&'static str> {
+    match a {
+        MicAccess::Off => Some(ACCESS_OFF),
+        MicAccess::Restricted => Some(ACCESS_RESTRICTED),
+        MicAccess::Allowed | MicAccess::NotAsked | MicAccess::Unknown => None,
     }
 }
 
@@ -139,7 +183,7 @@ pub fn list_mics() -> Vec<MicInfo> {
     // Own thread, own COM apartment: the caller's may be anything.
     let Ok(h) = std::thread::Builder::new()
         .name("flare-mic-list".into())
-        .spawn(wasapi::list_raw)
+        .spawn(backend::list_raw)
     else {
         return Vec::new();
     };
@@ -230,7 +274,7 @@ fn start_capture_watched(
         MicSource::File(path) => start_file(path, on_frame),
         MicSource::Device => {
             let shared = Arc::new(Mutex::new(on_frame));
-            let ep = wasapi::Real {
+            let ep = backend::Real {
                 on_frame: shared,
                 on_lost: Arc::new(Mutex::new(lost)),
             };
@@ -787,29 +831,12 @@ mod wasapi {
     }
 }
 
-/// The microphone off Windows. macOS: phase 7 of the port plan (CoreAudio through cpal, with the mic
-/// entitlement). Until then no endpoint is listed and every open fails, so a dictation says the
-/// microphone could not be opened.
+/// The microphone on macOS: CoreAudio (port phase 7).
 #[cfg(not(windows))]
-mod wasapi {
-    use super::*;
-
-    pub fn list_raw() -> Vec<(String, Option<String>)> {
-        Vec::new()
-    }
-
-    pub struct Real {
-        pub on_frame: SharedFrameFn,
-        pub on_lost: Arc<Mutex<Option<LostFn>>>,
-    }
-
-    impl Endpoints for Real {
-        fn open(&self, _device: Option<&str>) -> Result<Box<dyn Capture>, OpenError> {
-            let _ = (&self.on_frame, &self.on_lost);
-            Err(OpenError::Other)
-        }
-    }
-}
+#[path = "macos/mic.rs"]
+mod backend;
+#[cfg(windows)]
+use wasapi as backend;
 
 #[cfg(test)]
 mod tests {
@@ -880,6 +907,18 @@ mod tests {
             Some(CaptureFailure::Failed)
         );
         assert_eq!(ep.asked.borrow().len(), 1);
+    }
+
+    #[test]
+    fn access_that_is_off_names_the_settings_pane_and_nothing_else_is_a_problem() {
+        let off = access_problem(MicAccess::Off).unwrap();
+        assert!(off.contains(ACCESS_PANE), "{off}");
+        assert!(access_problem(MicAccess::Restricted).is_some());
+        for a in [MicAccess::Allowed, MicAccess::NotAsked, MicAccess::Unknown] {
+            assert_eq!(access_problem(a), None, "{a:?}");
+        }
+        #[cfg(windows)]
+        assert_eq!(access(), MicAccess::Unknown, "Windows never reads it ahead");
     }
 
     #[test]
