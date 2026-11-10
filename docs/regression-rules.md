@@ -721,7 +721,7 @@ Segoe UI and Cascadia Mono on Windows; Helvetica, Slint's own fallback, has a on
 painter. Held by `font_catalog::macos::tests`, `glyph_images_are_identical_to_the_all_fonts_build_for_the_theme_sample`,
 `tests/metal_macos.rs`, `the_prewarm_instance_starts_metal_alone_unless_a_backend_is_named` and the `_on_macos`
 twins of the Windows pixel tests. Source: macOS port phase 2, step 4 (2026-11-08).
-236. **macOS: the window is a native titled window under Flare's top row, and its glass is an effect view behind
+1005. **macOS: the window is a native titled window under Flare's top row, and its glass is an effect view behind
 the content.** `flare::backend::mac_chrome_attributes` makes the main window titled with a transparent titlebar, a
 hidden title and a full-size content view; `no-frame` is off on macOS (`native-caption`), so Slint keeps the
 decorations on and winit never swaps the style mask (that would drop the full-size content view). Flare's own
@@ -735,10 +735,10 @@ nothing). The glass: `dwm::set_system_backdrop` and `set_immersive_dark` land in
 casts `contentView` back to its own class), Acrylic as the under-window-background material, the window wearing
 dark or light Aqua by the ground. The handle for these calls is `window::native_view_of` (the `NSView`);
 `hwnd_of` stays Win32 only. The session end is `NSApplicationWillTerminateNotification` (Quit, log out, shut
-down), run once, and `NSWorkspaceWillPowerOffNotification`, which flushes every time (rule 239). Held by `crates/flare-win/tests/appkit.rs` (a
+down), run once, and `NSWorkspaceWillPowerOffNotification`, which flushes every time (rule 1008). Held by `crates/flare-win/tests/appkit.rs` (a
 main-thread harness on a window that is never shown) and the `chrome`, `glass`, `session_end` and `window_park`
 tests. Source: macOS port phase 3, step 1 (2026-11-08).
-237. **macOS: Cmd is the app's key, Ctrl is the shell's, and the menu bar is the keymap.** One chord table serves
+1006. **macOS: Cmd is the app's key, Ctrl is the shell's, and the menu bar is the keymap.** One chord table serves
 both systems: `KeyContext::os` (`flare_term::keys::KeyOs`, default Windows) picks the modifier, so on macOS every
 app chord is a Cmd chord and every Ctrl+letter reaches the shell as a control character; Ctrl+Tab and the agent
 guard's Ctrl+C and Ctrl+D stay Ctrl on both (Cmd going down on its own, `"Super"` in winit's names, leaves a
@@ -753,7 +753,7 @@ equivalent is made from that press, so the menu and the keyboard cannot drift ap
 on to Slint as Control, Slint's name for Cmd on macOS). Never add a Mac shortcut in the menu alone. Held by the
 `mac_menu`, `chords`, `keymap` and `mac_keys` tests and `crates/flare-win/tests/appkit.rs`. Source: macOS port
 phase 3, step 2 (2026-11-08).
-238. **macOS: the system glue is AppKit and the per-user Library, never a helper process.** The clipboard is
+1007. **macOS: the system glue is AppKit and the per-user Library, never a helper process.** The clipboard is
 `NSPasteboard` (`flare_win::pasteboard`): text as an `NSString` (UTF-8 whatever the locale, no `pbcopy`), copied
 files as the items' file URLs read back as POSIX paths, an image only seen (PNG or TIFF), the change count as the
 sequence; tests use a private pasteboard and never the user's. The openers are `NSWorkspace`
@@ -773,14 +773,14 @@ dead one's socket is removed. The default profile is `~/Library/Application Supp
 `proc_pid_rusage` (resident set, physical footprint). Held by the `pasteboard`, `workspace`, `openers`,
 `single_instance`, `startup`, `paths`, `memory` and `flare-proc` tests. Source: macOS port phase 3, step 3
 (2026-11-08).
-239. **macOS: a power-off notice flushes but never uses up the final save.** `NSWorkspaceWillPowerOffNotification`
+1008. **macOS: a power-off notice flushes but never uses up the final save.** `NSWorkspaceWillPowerOffNotification`
 comes before the apps are asked to quit, and another app can still cancel the log out or shut down, leaving Flare
 running. So `SessionEndWatch` flushes on it every time without arming anything, and only
 `NSApplicationWillTerminateNotification` (the app really ends) is run once. A shared "fired" flag across both
 would lose every change made after a cancelled log out. Held by
 `the_end_runs_once_a_power_off_never_disarms_it_and_the_power_events_arrive_until_the_watch_stops`
 (`crates/flare-win/src/macos/session_end.rs`). Source: macOS port phase 3 review (2026-11-08).
-240. **macOS: a file opens only in a handler that cannot run it.** The extension allowlist is not enough on a Mac: a
+1009. **macOS: a file opens only in a handler that cannot run it.** The extension allowlist is not enough on a Mac: a
 single file can carry its own "Open with" app (a `notes.txt` set to open with Terminal runs). `workspace::open_file`
 refuses a file with any execute bit, looks the handler up (`URLForApplicationToOpenURL:`), refuses a terminal, a
 script runner, an installer or an app without a bundle id (`workspace::RUNNERS`), and opens the file WITH the
@@ -788,13 +788,13 @@ checked app (`openURLs:withApplicationAtURL:`), never with `openURL:`. Add a new
 Held by `terminals_script_runners_and_unknown_apps_never_open_a_file` and
 `the_handler_lookup_refuses_a_terminal_and_opens_nothing` (`crates/flare-win/src/macos/workspace.rs`). Source:
 macOS port phase 3 review (2026-11-08).
-241. **macOS: an `--e2e` run is an accessory app from its event loop's first turn.** `backend::with_window_attributes`
+1010. **macOS: an `--e2e` run is an accessory app from its event loop's first turn.** `backend::with_window_attributes`
 hands Slint a winit event loop builder under `--e2e` with the Accessory activation policy and no activation at
 launch (`mac_e2e_loop_plan`), so the app never shows a Dock icon or comes forward before `window_park::park`, which
 runs only after `show()`. Without `--e2e` Slint keeps its own event loop. Held by
 `a_mac_e2e_run_is_an_accessory_that_never_activates_from_its_first_event` (`crates/flare/src/backend.rs`). Source:
 macOS port phase 3 review (2026-11-08).
-242. **macOS: every screen is measured in one space, the points times ONE scale.** winit reports a window's position
+1011. **macOS: every screen is measured in one space, the points times ONE scale.** winit reports a window's position
 as points times that window's backing scale, so scaling each screen by its own factor makes a 2x screen's area
 overlap the screen beside it. `chrome::areas_in` scales every screen by the same factor; the saved window state is
 checked against the areas at its own saved scale (`monitors::work_areas_at`, `WindowStateStore::read_at`), and the
