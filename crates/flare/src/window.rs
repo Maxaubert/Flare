@@ -1160,13 +1160,23 @@ pub fn run_window(
         let run_record = (!args.e2e).then(|| crate::plugin_safe::path_in(&inst.profile.dir));
         // A removal (or a change of maker) deletes the plugin's browser profile in both of the plugins' browsers.
         {
-            let web_dir = flare_surfaces::web::webview_folder(
+            let web_dir = flare_surfaces::web::webview_folder(&inst.profile.dir);
+            // The default run kept its browsers in the install folder until 2026-11-10, where a reinstall deleted
+            // every login (rule 259): they move under the profile once, before any browser starts.
+            let local =
+                flare_win::paths::local_app_data().map(|p| p.to_string_lossy().into_owned());
+            if let Some(old) = flare_surfaces::web::old_webview_folder(
                 args.user_data_dir.as_deref(),
-                flare_win::paths::local_app_data()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .as_deref(),
-            )
-            .unwrap_or_else(|| inst.profile.dir.join("WebView2"));
+                local.as_deref(),
+            ) {
+                match flare_surfaces::web::move_old_webview_folders(&old, &web_dir) {
+                    (0, None) => {}
+                    (n, None) => log::info!("moved {n} browser folders under the profile"),
+                    (n, Some(e)) => {
+                        log::warn!("moved {n} browser folders under the profile; one stays: {e}")
+                    }
+                }
+            }
             mods_hub.set_profile_dirs(Arc::new(move |id: &str| {
                 let name = flare_surfaces::modview::profile_name(id);
                 [
@@ -1268,7 +1278,6 @@ pub fn run_window(
         rc.borrow_mut()
             .set_web_factory(crate::web_ctl::production_factory(
                 app.as_weak(),
-                args.user_data_dir.clone(),
                 inst.profile.dir.clone(),
                 Some(plugin_limits),
             ));

@@ -3559,12 +3559,11 @@ impl WebCtl {
     }
 }
 
-/// The production browser: WebView2 in Flare's own window, its profile under the profile folder the
-/// run was given (else `%LOCALAPPDATA%\Flare\WebView2`). Made when the first web panel needs it, so a
-/// run that never opens one never loads the browser's runtime.
+/// The production browser: WebView2 in Flare's own window, its profile always `<profile>\WebView2` (rule 259), so a
+/// site's login lasts as long as the profile. Made when the first web panel needs it, so a run that never opens one
+/// never loads the browser's runtime.
 pub fn production_factory(
     window: slint::Weak<AppWindow>,
-    user_data_dir: Option<std::path::PathBuf>,
     profile_dir: std::path::PathBuf,
     limits: Option<std::sync::Arc<flare_mods::limit::Limits>>,
 ) -> WebFactory {
@@ -3573,13 +3572,7 @@ pub fn production_factory(
             .upgrade()
             .and_then(|a| crate::window::hwnd_of(&a))
             .unwrap_or(0);
-        let data_dir = web::webview_folder(
-            user_data_dir.as_deref(),
-            flare_win::paths::local_app_data()
-                .map(|p| p.to_string_lossy().into_owned())
-                .as_deref(),
-        )
-        .unwrap_or_else(|| profile_dir.join("WebView2"));
+        let data_dir = web::webview_folder(&profile_dir);
         // The e2e's seams (read only under --e2e): a pretend missing runtime, and a folder of local
         // pages served as https://flare-test.local/.
         let missing = crate::ship_ctl::e2e_var("WEBVIEW_RUNTIME").as_deref() == Some("missing");

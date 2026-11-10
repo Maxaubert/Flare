@@ -718,19 +718,62 @@ pub fn web_rect(
     })
 }
 
-/// The WebView2 profile folder: `<profile>\WebView2` for a profile the caller named with
-/// `--user-data-dir` (an e2e run, a second profile), else `%LOCALAPPDATA%\Flare\WebView2`. Never the
-/// user's Edge profile (S4). None when there is no usable place (no LOCALAPPDATA).
-pub fn webview_folder(
+/// The WebView2 profile folder of the web panel: always `<profile>\WebView2`, under the profile folder of the run
+/// (`--user-data-dir`, else `%APPDATA%\Flare`), so its cookies and storage (a site's login) last as long as the
+/// profile. Never the install folder, which an installer replaces whole, and never the user's Edge profile (S4).
+/// The mini-apps' and plugins' folders are its siblings (`WebView2-<kind>`).
+pub fn webview_folder(profile_dir: &Path) -> PathBuf {
+    profile_dir.join("WebView2")
+}
+
+/// Where the default run kept the web panel's profile before 2026-11-10: `%LOCALAPPDATA%\Flare\WebView2`, inside the
+/// installed copy's root, which Velopack's Setup moves aside and deletes on a reinstall (and its uninstall deletes),
+/// taking every login with it. None for a run with its own `--user-data-dir` (that one was always under its profile).
+pub fn old_webview_folder(
     user_data_dir: Option<&Path>,
     local_appdata: Option<&str>,
 ) -> Option<PathBuf> {
-    if let Some(dir) = user_data_dir {
-        return Some(dir.join("WebView2"));
+    if user_data_dir.is_some() {
+        return None;
     }
     local_appdata
         .filter(|a| !a.is_empty())
         .map(|a| PathBuf::from(a).join("Flare").join("WebView2"))
+}
+
+/// The browser folders a profile has: the web panel's, then its siblings (mini-apps and plugins).
+fn browser_folders(web: &Path) -> Vec<PathBuf> {
+    let mut v = vec![web.to_path_buf()];
+    for tail in ["mini-sealed", "app-net", "app-sealed", "plugin-net"] {
+        v.push(crate::app::sibling_folder(web, tail));
+    }
+    v
+}
+
+/// Moves the old browser folders (`old` and its `-<kind>` siblings) to their place beside `new`, once: each is moved
+/// only when it exists and its new place does not, so nothing already there is ever replaced and a second call does
+/// nothing. Called at start, before any browser runs for the profile. Gives how many were moved, and the first
+/// error (the rest are still tried; one that could not move stays where it was and is found again next start).
+pub fn move_old_webview_folders(old: &Path, new: &Path) -> (usize, Option<String>) {
+    let mut moved = 0;
+    let mut first_error = None;
+    for (from, to) in browser_folders(old).into_iter().zip(browser_folders(new)) {
+        if !from.is_dir() || to.exists() {
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            // sync-ok: once at start, before any browser; one folder made, nothing read
+            let _ = std::fs::create_dir_all(parent);
+        }
+        // sync-ok: once at start, before any browser; a rename on the same disk, not a copy
+        match std::fs::rename(&from, &to) {
+            Ok(()) => moved += 1,
+            Err(e) => {
+                first_error.get_or_insert_with(|| format!("{}: {e}", from.display()));
+            }
+        }
+    }
+    (moved, first_error)
 }
 
 /// Is `got` the address `want` asked for? Both parse and compare as addresses (case of the host and a
@@ -1305,33 +1348,82 @@ mod tests {
     }
 
     #[test]
-    fn the_profile_lives_under_the_named_profile_or_local_appdata() {
+    fn the_profile_lives_under_the_profile_folder_never_the_install_folder() {
         assert_eq!(
-            webview_folder(
+            webview_folder(Path::new(r"C:\run\p")),
+            PathBuf::from(r"C:\run\p").join("WebView2")
+        );
+        // The default run: the roaming profile, as Stable's `--user-data-dir` has always had it.
+        let p = webview_folder(Path::new(r"C:\Users\x\AppData\Roaming\Flare"));
+        assert_eq!(
+            p,
+            PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\WebView2")
+        );
+        let s = p.to_string_lossy().to_ascii_lowercase();
+        assert!(!s.contains(r"appdata\local\flare"), "{s}");
+    }
+
+    #[test]
+    fn the_old_place_is_only_the_default_runs_local_appdata_folder() {
+        assert_eq!(
+            old_webview_folder(None, Some(r"C:\Users\x\AppData\Local")),
+            Some(PathBuf::from(r"C:\Users\x\AppData\Local\Flare\WebView2"))
+        );
+        assert_eq!(
+            old_webview_folder(
                 Some(Path::new(r"C:\run\p")),
                 Some(r"C:\Users\x\AppData\Local")
             ),
-            Some(PathBuf::from(r"C:\run\p").join("WebView2"))
+            None
+        );
+        assert_eq!(old_webview_folder(None, None), None);
+        assert_eq!(old_webview_folder(None, Some("")), None);
+    }
+
+    #[test]
+    fn the_old_folders_move_once_and_never_replace_what_is_there() {
+        let d = tempfile::tempdir().unwrap();
+        let old = d.path().join("local").join("Flare").join("WebView2");
+        let new = d.path().join("roaming").join("Flare").join("WebView2");
+        for f in [&old, &old.with_file_name("WebView2-app-sealed")] {
+            std::fs::create_dir_all(f.join("EBWebView")).unwrap();
+            std::fs::write(f.join("EBWebView").join("mark"), b"old").unwrap();
+        }
+        // The networked plugins' folder is already in its new place: it stays as it is.
+        let old_net = old.with_file_name("WebView2-plugin-net");
+        let new_net = new.with_file_name("WebView2-plugin-net");
+        std::fs::create_dir_all(&old_net).unwrap();
+        std::fs::create_dir_all(&new_net).unwrap();
+        std::fs::write(new_net.join("mark"), b"new").unwrap();
+
+        assert_eq!(move_old_webview_folders(&old, &new), (2, None));
+        assert_eq!(
+            std::fs::read(new.join("EBWebView").join("mark")).unwrap(),
+            b"old"
         );
         assert_eq!(
-            webview_folder(None, Some(r"C:\Users\x\AppData\Local")),
-            Some(
-                PathBuf::from(r"C:\Users\x\AppData\Local")
-                    .join("Flare")
-                    .join("WebView2")
+            std::fs::read(
+                new.with_file_name("WebView2-app-sealed")
+                    .join("EBWebView")
+                    .join("mark")
             )
+            .unwrap(),
+            b"old"
         );
-        assert_eq!(webview_folder(None, None), None);
-        assert_eq!(webview_folder(None, Some("")), None);
+        assert!(!old.exists());
+        assert_eq!(std::fs::read(new_net.join("mark")).unwrap(), b"new");
+        assert!(old_net.exists());
+        // A second start finds nothing to move.
+        assert_eq!(move_old_webview_folders(&old, &new), (0, None));
     }
 
     #[test]
     fn the_profile_is_never_an_edge_folder() {
         for p in [
-            webview_folder(None, Some(r"C:\Users\x\AppData\Local")),
-            webview_folder(Some(Path::new(r"D:\data")), None),
+            webview_folder(Path::new(r"C:\Users\x\AppData\Roaming\Flare")),
+            webview_folder(Path::new(r"D:\data")),
         ] {
-            let s = p.unwrap().to_string_lossy().to_ascii_lowercase();
+            let s = p.to_string_lossy().to_ascii_lowercase();
             assert!(!s.contains("microsoft") && !s.contains("edge"), "{s}");
         }
     }

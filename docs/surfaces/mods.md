@@ -247,7 +247,7 @@ stops a mod from reading a page the user is logged into in another tab.
   time.
 - **One profile per mod.** A mod's WebView2 profile is its own (`flare-mod-<id>`, kept between runs so its
   `localStorage` survives a restart), inside the mods' and plugins' own sealed browser, under
-  `%LOCALAPPDATA%\Flare\WebView2-app-sealed` (with a `--user-data-dir`, beside that profile's `WebView2` folder; the
+  `<profile>\WebView2-app-sealed` (beside the profile's `WebView2` folder; before 2026-11-10 the default run kept it in `%LOCALAPPDATA%\Flare`, moved once at start, rule 259; the
   folder name is older than the split from the mini-apps in plugins phase 2b and must not change, or every mod's
   storage is lost);
   never the web panel's profile and never the user's Edge profile. A profile name is the only per-mod name WebView2

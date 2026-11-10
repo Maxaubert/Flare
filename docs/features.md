@@ -2302,3 +2302,17 @@ Spec `docs/superpowers/specs/2026-11-10-ask-agent-additions-design.md`, section 
   `flare-mcp` `browser.rs` (the tool, the look's arrow lines).
 - **Not covered.** A real mouse on the real pad over a real WebView2 (the probe used a plain child window and posted messages on a
   hidden desktop), a real agent's prompt, the arrow's look at every theme: no e2e scenario yet.
+
+## Logins in the web panel last, 2026-11-10
+
+- **Where the panel keeps a site's login.** Cookies, `localStorage` and saved passwords are in `<profile>\WebView2`: `%APPDATA%\Flare\WebView2` for
+  the plain copy (`Flare.exe`, no `--user-data-dir`), `%APPDATA%\FlareStable\WebView2` for Stable (its shortcut's `--user-data-dir`). Before this,
+  the plain copy kept them in `%LOCALAPPDATA%\Flare\WebView2`, inside its install folder, which a reinstall with Setup or an uninstall deletes;
+  the first start of this build moves that folder and its `WebView2-<kind>` siblings (mini-apps, plugins) under the profile, once, and never
+  over a folder already there. Rule 259.
+- **Dev and Stable have separate logins.** They are two profiles, each with its own panel profile, so a site signed in in Stable is not signed in
+  in the plain copy, and the other way round. This is on purpose and is not merged.
+- **What lasts.** A site's cookie with an expiry and its `localStorage` survive closing the panel, quitting Flare and installing a staged build
+  (Build ready). A session-only cookie (a sign-in without "stay signed in") ends when the last web panel closes or Flare quits, since the panel's
+  browser ends then. Held by the hidden e2e `webLogins` (a site of its own on `127.0.0.1`; the page reads `document.cookie` itself) and the unit
+  tests in `crates/flare-surfaces/src/web.rs`.
