@@ -1,19 +1,15 @@
-//! Install when idle (2026-10-29): the chip, its menu and the toast, as one pure state machine.
+//! Build ready (2026-10-29, one click since 2026-11-10): the chip and the toast, as one pure state machine.
 //!
-//! The controller feeds it what it sees (a staged build found or gone, a tick with the busy reading, a pick from the
-//! chip's menu, a click on Cancel, the end of a swap) and draws [`StagedFlow::view`]. What happens on disk is the
-//! controller's: this answers with a [`Do`].
+//! The controller feeds it what it sees (a staged build found or gone, a tick, a click on the chip, a click on
+//! Cancel, the end of a swap) and draws [`StagedFlow::view`]. What happens on disk is the controller's: this answers
+//! with a [`Do`].
 //!
-//! - A ready build shows the chip. By default it installs when idle: after [`crate::idle::IDLE_HOLD_MS`] of quiet a
-//!   10 s toast says so, with Cancel; then the swap runs.
-//! - "Install now" asks first (the controller raises the close question when an agent is at work), then runs the same
-//!   toast. "Not today" hides the chip until the next start (a new build shows it again). "Discard" removes it.
-//! - A countdown the idle rule started stops when anything gets busy again; one started by hand does not.
-//! - Cancel stops the countdown and leaves the build waiting for a click (no new idle install this run until
-//!   "Install when idle" is picked again).
+//! - A ready build shows the chip. It has no menu: a click is "install now" (rule 258). The controller asks the close question
+//!   first when an agent is at work, then the 10 s toast with Cancel runs, then the swap.
+//! - Nothing installs on its own. A build stays on offer until it is installed or a new stage replaces it.
+//! - Cancel stops the countdown and leaves the build waiting for the next click.
 
 use crate::copy;
-use crate::idle::{IDLE_HOLD_MS, IdleClock};
 
 /// How long the toast counts down before the install.
 pub const COUNTDOWN_MS: u64 = 10_000;
@@ -23,7 +19,6 @@ pub const NOTICE_MS: u64 = 8_000;
 /// The flow's waits; the e2e shortens them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Times {
-    pub hold_ms: u64,
     pub countdown_ms: u64,
     pub notice_ms: u64,
 }
@@ -31,7 +26,6 @@ pub struct Times {
 impl Default for Times {
     fn default() -> Self {
         Self {
-            hold_ms: IDLE_HOLD_MS,
             countdown_ms: COUNTDOWN_MS,
             notice_ms: NOTICE_MS,
         }
@@ -47,15 +41,6 @@ pub struct Ready {
     pub sig: String,
 }
 
-/// How the build is to be installed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode {
-    /// On its own, once idle (the default).
-    WhenIdle,
-    /// Only from the menu.
-    Manual,
-}
-
 /// Where an install stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -63,49 +48,20 @@ pub enum Phase {
     /// The toast is up; the install starts at `ends`.
     Countdown {
         ends: u64,
-        by_hand: bool,
     },
     /// The swap runs; a good one ends in the restart.
     Installing,
-}
-
-/// A row of the chip's menu.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Pick {
-    InstallNow,
-    WhenIdle,
-    NotToday,
-    Discard,
-}
-
-impl Pick {
-    pub const ALL: [Pick; 4] = [
-        Pick::InstallNow,
-        Pick::WhenIdle,
-        Pick::NotToday,
-        Pick::Discard,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Pick::InstallNow => copy::STAGED_INSTALL_NOW,
-            Pick::WhenIdle => copy::STAGED_WHEN_IDLE,
-            Pick::NotToday => copy::STAGED_NOT_TODAY,
-            Pick::Discard => copy::STAGED_DISCARD,
-        }
-    }
 }
 
 /// What the controller is to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Do {
     Nothing,
-    /// "Install now": ask the close question if an agent is at work, then call [`StagedFlow::start_countdown`].
+    /// The chip was clicked: ask the close question if an agent is at work, then call
+    /// [`StagedFlow::start_countdown`].
     Ask,
     /// Run the swap on a worker, then report with [`StagedFlow::swapped`].
     Swap,
-    /// Remove `staged\`.
-    Discard,
 }
 
 /// What the window shows.
@@ -119,18 +75,12 @@ pub struct StagedView {
     pub toast: String,
     /// The toast's button; empty for none.
     pub toast_button: String,
-    /// The menu's rows: label and whether it can be picked.
-    pub menu: Vec<(Pick, bool)>,
 }
 
 #[derive(Clone, Debug)]
 pub struct StagedFlow {
     ready: Option<Ready>,
-    mode: Mode,
     phase: Phase,
-    /// The stage "Not today" hid.
-    hidden: Option<String>,
-    idle: IdleClock,
     notice: Option<(String, u64)>,
     times: Times,
 }
@@ -139,10 +89,7 @@ impl StagedFlow {
     pub fn new(times: Times) -> Self {
         Self {
             ready: None,
-            mode: Mode::WhenIdle,
             phase: Phase::Waiting,
-            hidden: None,
-            idle: IdleClock::default(),
             notice: None,
             times,
         }
@@ -152,134 +99,76 @@ impl StagedFlow {
         self.ready.as_ref()
     }
 
-    pub fn mode(&self) -> Mode {
-        self.mode
-    }
-
     pub fn phase(&self) -> Phase {
         self.phase
     }
 
-    /// The chip shows: a ready build that "Not today" did not hide.
+    /// The chip shows: a build is ready.
     pub fn shown(&self) -> bool {
-        self.ready
-            .as_ref()
-            .is_some_and(|r| self.hidden.as_deref() != Some(r.sig.as_str()))
+        self.ready.is_some()
     }
 
-    /// A check of `staged\` answered. The same stage again changes nothing; a new one starts over (installs when
-    /// idle). Nothing changes while the swap runs.
+    /// A check of `staged\` answered. The same stage again changes nothing; a new one (or none) starts over.
+    /// Nothing changes while the swap runs.
     pub fn found(&mut self, r: Option<Ready>) {
         if self.phase == Phase::Installing || self.ready == r {
             return;
         }
         self.ready = r;
-        self.mode = Mode::WhenIdle;
         self.phase = Phase::Waiting;
-        self.idle.reset();
     }
 
-    /// A row of the chip's menu was picked.
-    pub fn pick(&mut self, p: Pick) -> Do {
-        if self.ready.is_none() || self.phase == Phase::Installing {
+    /// The chip was clicked: install now (once the controller has asked, if it must). A click while the toast is up
+    /// or the swap runs does nothing.
+    pub fn click(&mut self) -> Do {
+        if self.ready.is_none() || self.phase != Phase::Waiting {
             return Do::Nothing;
         }
-        match p {
-            Pick::InstallNow => Do::Ask,
-            Pick::WhenIdle => {
-                self.mode = Mode::WhenIdle;
-                self.idle.reset();
-                Do::Nothing
-            }
-            Pick::NotToday => {
-                self.hidden = self.ready.as_ref().map(|r| r.sig.clone());
-                self.phase = Phase::Waiting;
-                Do::Nothing
-            }
-            Pick::Discard => {
-                self.ready = None;
-                self.phase = Phase::Waiting;
-                Do::Discard
-            }
-        }
+        Do::Ask
     }
 
-    /// The toast starts counting down (the idle rule held, or "Install now" was answered yes).
-    pub fn start_countdown(&mut self, now: u64, by_hand: bool) {
+    /// The toast starts counting down (the click was answered yes, or needed no question).
+    pub fn start_countdown(&mut self, now: u64) {
         if !self.shown() || self.phase != Phase::Waiting {
             return;
         }
         self.notice = None;
         self.phase = Phase::Countdown {
             ends: now + self.times.countdown_ms,
-            by_hand,
         };
     }
 
-    /// Cancel on the toast: back to waiting, and only a click installs it now.
+    /// Cancel on the toast: back to waiting for a click.
     pub fn cancel(&mut self) {
         if matches!(self.phase, Phase::Countdown { .. }) {
             self.phase = Phase::Waiting;
-            self.mode = Mode::Manual;
-            self.idle.reset();
         }
     }
 
-    /// The controller stops a countdown to ask first (an agent started working after "Install now" was picked with
-    /// none at work): back to waiting, the mode kept.
+    /// The controller stops a countdown to ask first (an agent started working after a click with none at work):
+    /// back to waiting.
     pub fn pause(&mut self) {
-        if matches!(self.phase, Phase::Countdown { .. }) {
-            self.phase = Phase::Waiting;
-            self.idle.reset();
-        }
+        self.cancel();
     }
 
-    /// The controller took a good swap back before the restart (an agent got busy while it ran): back to waiting,
-    /// the mode kept, the minute starting again.
+    /// The controller took a good swap back before the restart (an agent got busy while it ran): back to waiting.
     pub fn taken_back(&mut self) {
         if self.phase == Phase::Installing {
             self.phase = Phase::Waiting;
-            self.idle.reset();
         }
     }
 
-    /// One reading of the clock and of the busy state.
-    pub fn tick(&mut self, now: u64, busy: bool) -> Do {
+    /// One reading of the clock.
+    pub fn tick(&mut self, now: u64) -> Do {
         if self.notice.as_ref().is_some_and(|(_, until)| now >= *until) {
             self.notice = None;
         }
         match self.phase {
-            Phase::Waiting => {
-                let idle = self.idle.observe(busy, now, self.times.hold_ms);
-                if idle && self.shown() && self.mode == Mode::WhenIdle {
-                    self.start_countdown(now, false);
-                }
-                Do::Nothing
-            }
-            Phase::Countdown { by_hand: false, .. } if busy => {
-                self.phase = Phase::Waiting;
-                self.idle.observe(true, now, self.times.hold_ms);
-                Do::Nothing
-            }
-            Phase::Countdown { ends, .. } if now >= ends => {
+            Phase::Countdown { ends } if now >= ends => {
                 self.phase = Phase::Installing;
                 Do::Swap
             }
             _ => Do::Nothing,
-        }
-    }
-
-    /// A busy moment seen between ticks: the quiet minute starts again, and a countdown the idle rule started stops.
-    pub fn note_busy(&mut self, now: u64) {
-        match self.phase {
-            Phase::Waiting => {
-                self.idle.observe(true, now, self.times.hold_ms);
-            }
-            Phase::Countdown { by_hand: false, .. } => {
-                self.phase = Phase::Waiting;
-                self.idle.reset();
-            }
-            _ => {}
         }
     }
 
@@ -292,8 +181,6 @@ impl StagedFlow {
             return;
         }
         self.phase = Phase::Waiting;
-        self.mode = Mode::Manual;
-        self.idle.reset();
         self.say(copy::STAGED_FAILED, now);
     }
 
@@ -302,24 +189,18 @@ impl StagedFlow {
         self.notice = Some((text.to_string(), now + self.times.notice_ms));
     }
 
-    /// Whether the controller's clock must run: a build that may install on its own, a countdown or a notice.
+    /// Whether the controller's clock must run: a countdown or a notice. A build on offer needs none.
     pub fn needs_tick(&self) -> bool {
-        let waits = self.shown() && self.mode == Mode::WhenIdle && self.phase == Phase::Waiting;
-        waits || matches!(self.phase, Phase::Countdown { .. }) || self.notice.is_some()
+        matches!(self.phase, Phase::Countdown { .. }) || self.notice.is_some()
     }
 
     pub fn view(&self) -> StagedView {
         let mut v = StagedView::default();
-        if let Some(r) = self.ready.as_ref().filter(|_| self.shown()) {
-            let idle = self.mode == Mode::WhenIdle;
+        if let Some(r) = self.ready.as_ref() {
             v.chip_shown = true;
             v.chip_label = copy::STAGED_CHIP.to_string();
-            v.chip_aria = copy::staged_chip_aria(idle);
-            v.chip_tip = copy::staged_chip_tip(&r.commit, idle);
-            v.menu = Pick::ALL
-                .iter()
-                .map(|p| (*p, !(idle && *p == Pick::WhenIdle)))
-                .collect();
+            v.chip_aria = copy::STAGED_CHIP_ARIA.to_string();
+            v.chip_tip = copy::staged_chip_tip(&r.commit);
         }
         match self.phase {
             Phase::Countdown { .. } => {
@@ -356,152 +237,107 @@ mod tests {
 
     #[test]
     fn nothing_staged_shows_nothing_and_needs_no_clock() {
-        let f = StagedFlow::new(Times::default());
+        let mut f = StagedFlow::new(Times::default());
         assert_eq!(f.view(), StagedView::default());
         assert!(!f.needs_tick());
+        assert_eq!(f.click(), Do::Nothing);
     }
 
     #[test]
-    fn a_ready_build_shows_the_chip_with_its_menu() {
+    fn a_ready_build_shows_the_chip_and_needs_no_clock() {
         let f = flow();
         let v = f.view();
         assert!(v.chip_shown);
         assert_eq!(v.chip_label, "Build ready");
-        assert_eq!(v.chip_aria, "Build ready, installs when idle");
-        assert_eq!(
-            v.chip_tip,
-            "Build abc1234 installs once no agent has worked for a minute"
-        );
-        assert_eq!(
-            v.menu,
-            vec![
-                (Pick::InstallNow, true),
-                (Pick::WhenIdle, false),
-                (Pick::NotToday, true),
-                (Pick::Discard, true)
-            ]
-        );
+        assert_eq!(v.chip_aria, "Build ready, click to install and restart");
+        assert_eq!(v.chip_tip, "Build abc1234: click to install and restart");
         assert!(v.toast.is_empty());
-        assert!(f.needs_tick());
+        assert!(!f.needs_tick(), "nothing waits for idle");
     }
 
     #[test]
-    fn a_quiet_minute_starts_the_toast_and_ten_seconds_later_the_swap() {
+    fn nothing_installs_on_its_own() {
         let mut f = flow();
-        assert_eq!(f.tick(0, false), Do::Nothing);
-        assert_eq!(f.tick(59_999, false), Do::Nothing);
+        for t in (0..=600_000).step_by(1_000) {
+            assert_eq!(f.tick(t), Do::Nothing);
+        }
         assert_eq!(f.phase(), Phase::Waiting);
-        assert_eq!(f.tick(60_000, false), Do::Nothing);
-        assert_eq!(
-            f.phase(),
-            Phase::Countdown {
-                ends: 70_000,
-                by_hand: false
-            }
-        );
-        let v = f.view();
-        assert_eq!(v.toast, "Installing the new build and restarting");
-        assert_eq!(v.toast_button, "Cancel");
-        assert_eq!(f.tick(69_999, false), Do::Nothing);
-        assert_eq!(f.tick(70_000, false), Do::Swap);
-        assert_eq!(f.phase(), Phase::Installing);
-        assert_eq!(f.view().toast_button, "", "no Cancel once the swap runs");
+        assert!(f.view().chip_shown, "the build stays on offer");
     }
 
     #[test]
-    fn a_working_agent_holds_it_and_starts_the_minute_again() {
+    fn a_click_asks_then_the_toast_counts_ten_seconds_then_the_swap() {
         let mut f = flow();
-        f.tick(0, false);
-        f.tick(50_000, true);
-        f.tick(50_001, false);
-        f.tick(110_000, false);
-        assert_eq!(f.phase(), Phase::Waiting, "only 59.999 s of quiet");
-        f.tick(110_001, false);
-        assert!(matches!(f.phase(), Phase::Countdown { .. }));
-    }
-
-    #[test]
-    fn work_during_an_idle_countdown_stops_it_but_not_one_started_by_hand() {
-        let mut f = flow();
-        f.tick(0, false);
-        f.tick(60_000, false);
-        assert_eq!(f.tick(65_000, true), Do::Nothing);
-        assert_eq!(f.phase(), Phase::Waiting);
-        assert!(f.view().toast.is_empty());
-
-        let mut g = flow();
-        assert_eq!(g.pick(Pick::InstallNow), Do::Ask);
-        g.start_countdown(1_000, true);
-        assert_eq!(g.tick(5_000, true), Do::Nothing);
-        assert_eq!(g.tick(11_000, true), Do::Swap);
-    }
-
-    #[test]
-    fn cancel_stops_the_countdown_and_waits_for_a_click() {
-        let mut f = flow();
-        f.tick(0, false);
-        f.tick(60_000, false);
-        f.cancel();
-        assert_eq!(f.phase(), Phase::Waiting);
-        assert_eq!(f.mode(), Mode::Manual);
-        assert_eq!(f.tick(500_000, false), Do::Nothing);
-        assert_eq!(f.phase(), Phase::Waiting, "no idle install after a cancel");
-        let v = f.view();
-        assert_eq!(v.chip_aria, "Build ready");
-        assert_eq!(v.chip_tip, "Build abc1234 is ready to install");
-        assert!(v.menu.contains(&(Pick::WhenIdle, true)));
-        assert!(!f.needs_tick());
-        f.pick(Pick::WhenIdle);
-        f.tick(500_001, false);
-        f.tick(560_001, false);
-        assert!(matches!(f.phase(), Phase::Countdown { .. }));
-    }
-
-    #[test]
-    fn not_today_hides_this_build_and_a_new_stage_shows_again() {
-        let mut f = flow();
-        f.pick(Pick::NotToday);
-        assert!(!f.view().chip_shown);
-        f.tick(0, false);
-        f.tick(100_000, false);
+        assert_eq!(f.click(), Do::Ask);
         assert_eq!(
             f.phase(),
             Phase::Waiting,
-            "a hidden build never installs on its own"
+            "nothing until the controller says go"
         );
-        f.found(ready("s1"));
-        assert!(!f.view().chip_shown);
-        f.found(ready("s2"));
-        assert!(f.view().chip_shown);
+        f.start_countdown(1_000);
+        assert_eq!(f.phase(), Phase::Countdown { ends: 11_000 });
+        let v = f.view();
+        assert_eq!(v.toast, "Installing the new build and restarting");
+        assert_eq!(v.toast_button, "Cancel");
+        assert!(f.needs_tick());
+        assert_eq!(
+            f.click(),
+            Do::Nothing,
+            "a second click while the toast is up"
+        );
+        assert_eq!(f.tick(10_999), Do::Nothing);
+        assert_eq!(f.tick(11_000), Do::Swap);
+        assert_eq!(f.phase(), Phase::Installing);
+        assert_eq!(f.view().toast_button, "", "no Cancel once the swap runs");
+        assert_eq!(f.click(), Do::Nothing);
     }
 
     #[test]
-    fn discard_asks_the_controller_to_remove_it() {
+    fn cancel_stops_the_countdown_and_the_build_waits_for_the_next_click() {
         let mut f = flow();
-        assert_eq!(f.pick(Pick::Discard), Do::Discard);
+        f.click();
+        f.start_countdown(0);
+        f.cancel();
+        assert_eq!(f.phase(), Phase::Waiting);
+        assert!(f.view().toast.is_empty());
+        assert!(f.view().chip_shown);
+        assert_eq!(f.tick(500_000), Do::Nothing);
+        assert!(!f.needs_tick());
+        assert_eq!(f.click(), Do::Ask);
+    }
+
+    #[test]
+    fn a_new_stage_replaces_the_offer_and_the_same_one_changes_nothing() {
+        let mut f = flow();
+        f.start_countdown(0);
+        f.found(ready("s1"));
+        assert!(matches!(f.phase(), Phase::Countdown { .. }));
+        f.found(ready("s2"));
+        assert_eq!(f.phase(), Phase::Waiting);
+        assert_eq!(f.ready().unwrap().sig, "s2");
+        f.found(None);
         assert!(!f.view().chip_shown);
-        assert_eq!(f.pick(Pick::InstallNow), Do::Nothing);
     }
 
     #[test]
     fn a_failed_swap_says_so_and_leaves_the_build_for_a_click() {
         let mut f = flow();
-        f.pick(Pick::InstallNow);
-        f.start_countdown(0, true);
-        assert_eq!(f.tick(10_000, false), Do::Swap);
+        f.click();
+        f.start_countdown(0);
+        assert_eq!(f.tick(10_000), Do::Swap);
         f.found(None);
         assert!(f.ready().is_some(), "nothing changes while the swap runs");
         f.swapped(false, 10_500);
         assert_eq!(f.phase(), Phase::Waiting);
-        assert_eq!(f.mode(), Mode::Manual);
         assert_eq!(
             f.view().toast,
             "The build could not be installed; nothing changed"
         );
-        f.tick(18_499, false);
+        f.tick(18_499);
         assert!(!f.view().toast.is_empty());
-        f.tick(18_500, false);
+        f.tick(18_500);
         assert!(f.view().toast.is_empty());
+        assert_eq!(f.click(), Do::Ask);
     }
 
     #[test]
@@ -511,68 +347,23 @@ mod tests {
         assert_eq!(f.view().toast, "Installed abc1234");
         assert_eq!(f.view().toast_button, "");
         assert!(f.needs_tick());
-        f.tick(8_000, false);
+        f.tick(8_000);
         assert!(f.view().toast.is_empty());
         assert!(!f.needs_tick());
     }
 
     #[test]
-    fn the_same_stage_found_again_keeps_the_mode() {
+    fn a_paused_countdown_or_a_swap_taken_back_waits_for_a_click_again() {
         let mut f = flow();
-        f.tick(0, false);
-        f.tick(60_000, false);
-        f.cancel();
-        f.found(ready("s1"));
-        assert_eq!(f.mode(), Mode::Manual);
-        f.found(ready("s2"));
-        assert_eq!(f.mode(), Mode::WhenIdle);
-    }
-
-    #[test]
-    fn a_busy_moment_between_ticks_starts_the_minute_again_and_stops_an_idle_countdown() {
-        let mut f = flow();
-        f.tick(0, false);
-        f.note_busy(30_000);
-        f.tick(60_000, false);
-        assert_eq!(f.phase(), Phase::Waiting);
-        f.tick(120_000, false);
-        assert!(matches!(f.phase(), Phase::Countdown { by_hand: false, .. }));
-        f.note_busy(121_000);
-        assert_eq!(f.phase(), Phase::Waiting);
-
-        let mut g = flow();
-        g.start_countdown(0, true);
-        g.note_busy(1_000);
-        assert!(matches!(g.phase(), Phase::Countdown { by_hand: true, .. }));
-    }
-
-    #[test]
-    fn a_paused_countdown_or_a_swap_taken_back_waits_again_in_the_same_mode() {
-        let mut f = flow();
-        f.start_countdown(0, true);
+        f.start_countdown(0);
         f.pause();
         assert_eq!(f.phase(), Phase::Waiting);
-        assert_eq!(f.mode(), Mode::WhenIdle);
-        f.tick(0, false);
-        f.tick(60_000, false);
-        assert_eq!(f.tick(70_000, false), Do::Swap);
+        f.start_countdown(0);
+        assert_eq!(f.tick(10_000), Do::Swap);
         f.taken_back();
         assert_eq!(f.phase(), Phase::Waiting);
-        assert_eq!(f.mode(), Mode::WhenIdle);
         assert!(f.view().toast.is_empty());
-        f.tick(70_001, false);
-        f.tick(130_000, false);
-        assert_eq!(f.phase(), Phase::Waiting, "the minute starts again");
-        f.tick(130_001, false);
-        assert!(matches!(f.phase(), Phase::Countdown { .. }));
-    }
-
-    #[test]
-    fn the_menu_words() {
-        let labels: Vec<&str> = Pick::ALL.iter().map(|p| p.label()).collect();
-        assert_eq!(
-            labels,
-            ["Install now", "Install when idle", "Not today", "Discard"]
-        );
+        assert_eq!(f.tick(500_000), Do::Nothing, "never on its own");
+        assert_eq!(f.click(), Do::Ask);
     }
 }

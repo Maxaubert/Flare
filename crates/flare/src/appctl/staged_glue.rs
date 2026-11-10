@@ -1,8 +1,9 @@
-//! Install when idle (2026-10-29), in the window: the "Build ready" chip, its menu, the toast and the restart.
+//! Build ready (2026-10-29, one click since 2026-11-10), in the window: the "Build ready" chip, the toast and the
+//! restart. A click on the chip installs; nothing installs on its own.
 //!
-//! The rules are `flare_update::{staged, staged_flow, idle}` (pure or temp-dir tested). This file feeds the flow what
-//! the window knows (the agents, dictation, the close question), runs the disk work on workers, and ends in the
-//! normal end of life followed by the new exe, started on the same profile (`handoff::restart_args_keeping`).
+//! The rules are `flare_update::{staged, staged_flow}` (pure or temp-dir tested). This file feeds the flow what the
+//! window knows (the agents, the close question), runs the disk work on workers, and ends in the normal end of life
+//! followed by the new exe, started on the same profile (`handoff::restart_args_keeping`).
 //!
 //! - Only an installed copy (an exe in a folder named `current`) has this; a build run from `target\release` never
 //!   looks for a stage.
@@ -17,16 +18,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use flare_update::copy;
-use flare_update::idle::Busy;
 use flare_update::staged::{self, Layout, Start};
-use flare_update::staged_flow::{Do, Phase, Pick, Ready, StagedFlow, Times};
+use flare_update::staged_flow::{Do, Phase, Ready, StagedFlow, Times};
 use slint::TimerMode;
 
-use super::{AppCtl, MenuKind, MenuRowData, Post, UiMsg};
+use super::{AppCtl, Post, UiMsg};
 use crate::startup::AskTarget;
 use crate::update_ctl::Spawn;
 
-/// How often the flow is ticked while it waits for idle, counts down or shows a notice.
+/// How often the flow is ticked while it counts down or shows a notice.
 const TICK_MS: u64 = 250;
 
 /// Starts the new exe: (exe, args, working folder). False when it could not be started.
@@ -41,7 +41,7 @@ pub enum StagedMsg {
     Found(Option<Ready>),
     /// The swap ended.
     Swapped(Result<(), String>),
-    /// "Install now" may count down: `agreed` when the close question was answered yes (an agent was at work), false
+    /// A click on the chip may count down: `agreed` when the close question was answered yes (an agent was at work), false
     /// when none was at work and no question was needed.
     GoAhead { agreed: bool },
     /// A swap this run took back (an agent got busy while it ran) is undone on disk.
@@ -84,8 +84,6 @@ pub(super) struct StagedState {
     swapped_here: bool,
     /// The running countdown (or swap) was agreed to in the close question: it goes on while agents work.
     agreed: bool,
-    /// The running swap came from "Install now" (not the idle rule).
-    swap_by_hand: bool,
 }
 
 impl AppCtl {
@@ -119,7 +117,6 @@ impl AppCtl {
             unconfirmed,
             swapped_here: false,
             agreed: false,
-            swap_by_hand: false,
         });
         if unconfirmed {
             let post = Arc::clone(&post);
@@ -156,19 +153,16 @@ impl AppCtl {
                     && s.flow.phase() == Phase::Waiting
                 {
                     s.agreed = agreed;
-                    s.flow.start_countdown(now, true);
+                    s.flow.start_countdown(now);
                 }
             }
             StagedMsg::TakenBack => {
-                let again = self.staged.as_mut().map(|s| {
+                if let Some(s) = self.staged.as_mut() {
                     s.swapped_here = false;
                     s.flow.taken_back();
-                    std::mem::take(&mut s.swap_by_hand)
-                });
-                // "Install now" still stands: it asks now that an agent works.
-                if again == Some(true) {
-                    self.staged_ask();
                 }
+                // The click still stands: it asks now that an agent works.
+                self.staged_ask();
             }
             StagedMsg::Swapped(r) => self.staged_swapped(r),
             StagedMsg::Confirm => self.staged_confirm(),
@@ -204,67 +198,24 @@ impl AppCtl {
         }));
     }
 
-    /// What keeps the app from installing now (the idle rule's reading).
-    fn staged_busy(&self) -> Busy {
-        Busy {
-            working: self.busy_agents().len().max(self.hub.working_count()),
-            questions: self.hub.question_tabs().len(),
-            dictating: crate::dictation_ctl::view().active,
-            asking: self.ask.is_some() || self.install_cb.is_some() || self.plugin_ask.is_some(),
-        }
+    /// An agent in some tab is working.
+    fn staged_working(&self) -> bool {
+        !self.busy_agents().is_empty() || self.hub.working_count() > 0
     }
 
-    /// The chip was clicked: its menu drops from it.
-    pub(super) fn staged_chip_clicked(&mut self, right: f32, top: f32, foot: f32) {
-        let Some(s) = self.staged.as_ref() else {
-            return;
-        };
-        let rows: Vec<(MenuRowData, String)> = s
-            .flow
-            .view()
-            .menu
-            .into_iter()
-            .map(|(p, enabled)| {
-                let mut r = MenuRowData::plain(p.label());
-                r.disabled = !enabled;
-                (r, String::new())
-            })
-            .collect();
-        if rows.is_empty() {
-            return;
-        }
-        self.close_overflow_quietly();
-        self.show_menu_at(MenuKind::Staged, rows, right, top, Some(foot));
-    }
-
-    /// A row of the chip's menu.
-    pub(super) fn staged_menu_picked(&mut self, label: &str) {
-        let Some(pick) = Pick::ALL.into_iter().find(|p| p.label() == label) else {
-            return;
-        };
+    /// The chip was clicked: install now. No menu (rule 258).
+    pub(super) fn staged_chip_clicked(&mut self) {
         let Some(s) = self.staged.as_mut() else {
             return;
         };
-        match s.flow.pick(pick) {
-            Do::Ask => self.staged_ask(),
-            Do::Discard => {
-                let layout = s.parts.layout.clone();
-                (s.parts.spawn)(Box::new(move || {
-                    if let Err(e) = staged::discard(&layout) {
-                        log::warn!("could not remove the staged build: {e}");
-                    }
-                }));
-            }
-            Do::Nothing | Do::Swap => {}
+        if s.flow.click() == Do::Ask {
+            crate::diag_ctl::crumb("staged-click", &[]);
+            self.staged_ask();
         }
-        crate::diag_ctl::crumb(
-            "staged-pick",
-            &[("pick", serde_json::Value::String(label.to_string()))],
-        );
         self.staged_push();
     }
 
-    /// "Install now": with an agent at work the close question asks first (in its install words); else at once.
+    /// A click on the chip: with an agent at work the close question asks first (in its install words); else at once.
     fn staged_ask(&mut self) {
         let post = Arc::clone(&self.deps.post);
         let go = move |agreed: bool| post(UiMsg::Staged(StagedMsg::GoAhead { agreed }));
@@ -295,25 +246,23 @@ impl AppCtl {
         self.staged_push();
     }
 
-    /// The flow's clock: the idle rule, the countdown, the notice.
+    /// The flow's clock: the countdown, the notice.
     fn staged_tick(&mut self) {
         let now = self.now();
-        let busy = self.staged_busy().any();
-        let working = !self.busy_agents().is_empty() || self.hub.working_count() > 0;
+        let working = self.staged_working();
         let Some(s) = self.staged.as_mut() else {
             return;
         };
-        let by_hand = matches!(s.flow.phase(), Phase::Countdown { by_hand: true, .. });
-        if by_hand && !s.agreed && working {
-            // "Install now" was picked with no agent at work, and one started: the close question asks first.
+        let counting = matches!(s.flow.phase(), Phase::Countdown { .. });
+        if counting && !s.agreed && working {
+            // The chip was clicked with no agent at work, and one started: the close question asks first.
             s.flow.pause();
             self.staged_ask();
             self.staged_push();
             return;
         }
-        if s.flow.tick(now, busy) == Do::Swap {
+        if s.flow.tick(now) == Do::Swap {
             s.swapped_here = true;
-            s.swap_by_hand = by_hand;
             // A new build that has not been confirmed yet is the one being replaced: it has run well enough to be
             // picked over, and the swap only goes ahead over a confirmed build (its `.old` files are the last good one).
             let confirm_first = std::mem::take(&mut s.unconfirmed);
@@ -332,20 +281,12 @@ impl AppCtl {
     }
 
     /// After a good swap: whether the restart must wait after all. The swap takes a moment; an agent that started
-    /// in it (or a question that came up) holds an idle install, and a working agent holds an "Install now" that
-    /// was not agreed to in the close question.
+    /// in it holds an install that was not agreed to in the close question.
     fn staged_held_after_swap(&self) -> bool {
         let Some(s) = self.staged.as_ref() else {
             return false;
         };
-        if s.agreed {
-            return false;
-        }
-        if s.swap_by_hand {
-            !self.busy_agents().is_empty() || self.hub.working_count() > 0
-        } else {
-            self.staged_busy().any()
-        }
+        !s.agreed && self.staged_working()
     }
 
     fn staged_swapped(&mut self, r: Result<(), String>) {
@@ -472,11 +413,10 @@ impl AppCtl {
                 "toast": v.toast,
                 "button": v.toast_button,
                 "commit": s.flow.ready().map(|r| r.commit.clone()),
-                "mode": format!("{:?}", s.flow.mode()),
                 "phase": match s.flow.phase() {
-                    flare_update::staged_flow::Phase::Waiting => "waiting",
-                    flare_update::staged_flow::Phase::Countdown { .. } => "countdown",
-                    flare_update::staged_flow::Phase::Installing => "installing",
+                    Phase::Waiting => "waiting",
+                    Phase::Countdown { .. } => "countdown",
+                    Phase::Installing => "installing",
                 },
                 "start": format!("{:?}", s.parts.start),
                 "pid": std::process::id(),
@@ -490,21 +430,6 @@ impl AppCtl {
                     let _ = std::fs::rename(&tmp, &path); // sync-ok: a worker, one small e2e file
                 }
             }));
-        }
-    }
-
-    /// The busy reading changed (the hub, the question): the idle rule hears it at once, not only at the next tick.
-    pub(super) fn staged_note_busy(&mut self) {
-        if self.staged.is_none() {
-            return;
-        }
-        let now = self.now();
-        let busy = self.staged_busy().any();
-        if let Some(s) = self.staged.as_mut()
-            && busy
-        {
-            // Only a busy moment matters between ticks (it starts the minute again); quiet is read by the tick.
-            s.flow.note_busy(now);
         }
     }
 
@@ -620,15 +545,11 @@ pub fn started() -> Option<(Layout, Start)> {
     STARTED.get().cloned()
 }
 
-/// The flow's waits: the real ones, or under `--e2e` the scenario's (`FLARE_E2E_STAGED_HOLD_MS`,
-/// `FLARE_E2E_STAGED_COUNTDOWN_MS`).
+/// The flow's waits: the real ones, or under `--e2e` the scenario's (`FLARE_E2E_STAGED_COUNTDOWN_MS`).
 pub fn times() -> Times {
     let ms =
         |suffix: &str| crate::ship_ctl::e2e_var(suffix).and_then(|v| v.trim().parse::<u64>().ok());
     let mut t = Times::default();
-    if let Some(v) = ms("STAGED_HOLD_MS") {
-        t.hold_ms = v;
-    }
     if let Some(v) = ms("STAGED_COUNTDOWN_MS") {
         t.countdown_ms = v;
     }
