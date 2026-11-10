@@ -10,4 +10,5 @@ pub mod session;
 pub mod stack;
 pub mod stall;
 pub mod summary;
+pub mod web_diag;
 pub mod writer;
