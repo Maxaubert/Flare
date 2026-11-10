@@ -23,5 +23,12 @@ sha2.workspace = true
 tempfile.workspace = true
 serde_json.workspace = true
 
+# The Mac update test (tests/mac_update.rs) samples the window server's list: nothing it runs may show a window.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-core-graphics.workspace = true
+objc2-core-foundation.workspace = true
+
 [lints]
 workspace = true

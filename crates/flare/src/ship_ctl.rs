@@ -285,7 +285,7 @@ pub fn choose_feed(ship: &Ship, env: &dyn Fn(&str) -> Option<String>) -> FeedCho
             // A URL goes to `loopback`, which refuses every host but 127.0.0.1 itself.
             let feed = if value.contains("://") {
                 VelopackFeed::loopback(&value)
-            } else if !is_local_drive_path(&value) {
+            } else if !is_local_feed_path(&value) {
                 Err(flare_update::feed::FeedError::Failed(
                     "update source is not a local drive path".into(),
                 ))
@@ -404,6 +404,7 @@ pub fn set_window_icon(hwnd: isize) {
 /// extended-length forms (`\\server\share`, `\\?\UNC\`, `\\.\`, `//host`) and relative paths are
 /// refused, so a package folder can never be a remote share.
 #[cfg(any(test, feature = "live-updates"))]
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
 fn is_local_drive_path(p: &str) -> bool {
     let b = p.as_bytes();
     b.len() >= 3
@@ -415,10 +416,59 @@ fn is_local_drive_path(p: &str) -> bool {
         && !p[2..].contains(['?', '*', '<', '>', '"', '|', ':', '\0'])
 }
 
+/// A folder of packages for the e2e seam: a local drive path on Windows ([`is_local_drive_path`]),
+/// an absolute local path on macOS ([`is_local_mac_path`]).
+#[cfg(any(test, feature = "live-updates"))]
+fn is_local_feed_path(p: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    return is_local_mac_path(p);
+    #[cfg(not(target_os = "macos"))]
+    return is_local_drive_path(p);
+}
+
+/// True only for an absolute macOS path (`/` then a name): no `//` start, no `.` or `..` part, no
+/// NUL or control character. `/Volumes/<share>` of a mounted server still passes; the seam is e2e
+/// only and the package names are checked bare (`velopack_feed::names_are_bare`).
+#[cfg(any(test, all(feature = "live-updates", target_os = "macos")))]
+fn is_local_mac_path(p: &str) -> bool {
+    p.len() > 1
+        && p.starts_with('/')
+        && !p.starts_with("//")
+        && !p.chars().any(char::is_control)
+        && !p.split('/').any(|c| c == "." || c == "..")
+        && !p.contains("://")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use flare_win::registry::FakeRegistry;
+
+    #[test]
+    fn a_mac_update_source_is_an_absolute_local_path() {
+        for ok in ["/private/tmp/feed", "/Users/x/Releases", "/a"] {
+            assert!(is_local_mac_path(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "/",
+            "//host/share",
+            "feed",
+            "./feed",
+            "/a/../etc",
+            "/a/./b",
+            "/a\u{0}b",
+            "/a\nb",
+            "file:///a",
+            "http://127.0.0.1:1/",
+        ] {
+            assert!(!is_local_mac_path(bad), "{bad:?}");
+        }
+        #[cfg(target_os = "macos")]
+        assert!(is_local_feed_path("/private/tmp/feed") && !is_local_feed_path(r"C:\feed"));
+        #[cfg(not(target_os = "macos"))]
+        assert!(is_local_feed_path(r"C:\feed") && !is_local_feed_path("/private/tmp/feed"));
+    }
 
     #[test]
     fn update_source_must_be_a_local_drive_path() {
