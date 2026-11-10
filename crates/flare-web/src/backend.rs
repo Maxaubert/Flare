@@ -517,6 +517,7 @@ mod tests {
             url: app_url(&app_host(n)),
             allow_network: false,
             module: None,
+            source: None,
         };
         f.open("a", "https://a.example/", r, true);
         assert!(!f.probe("a").unwrap().private);
@@ -635,6 +636,7 @@ mod tests {
             url: app_url(&app_host(1)),
             allow_network: false,
             module: None,
+            source: None,
         };
         f.open_view(&Slot::bar("t1"), mini.clone(), PhysRect::default(), true);
         f.open_view(&Slot::background("x"), mini, PhysRect::default(), true);

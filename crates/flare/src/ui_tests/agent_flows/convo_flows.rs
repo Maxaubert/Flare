@@ -527,6 +527,7 @@ fn a_stored_conversation_panel_reopens_empty_until_the_transcript_loads() {
             open: true,
             width: Some(0.35),
             by_agent: false,
+            view: None,
         }),
     }];
     std::fs::write(&file, flare_surfaces::store::panels_json(&saved)).unwrap(); // sync-ok: test code only
@@ -622,6 +623,7 @@ fn a_stored_panel_of_a_kind_with_the_wrong_target_is_dropped() {
             open: true,
             width: None,
             by_agent: false,
+            view: None,
         }),
     }];
     std::fs::write(&file, flare_surfaces::store::panels_json(&saved)).unwrap(); // sync-ok: test code only

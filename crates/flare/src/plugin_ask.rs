@@ -1,10 +1,10 @@
 //! The words of a plugin's question (the `fill` permission, 2026-10-28; centred in the plugin's own look,
 //! 2026-11-08): a fill to approve and a secret to type, in Flare's own dialog (`ui/plugin_ask.slint`). Every name in it
 //! comes from a plugin or a page, so each is cleaned and cut before it is shown (the dialog draws plain text, so
-//! nothing in a name is read as markup). The line under each question, whose question it is, is Flare's: a plugin
-//! dressed as another cannot change it, and one installed from an address is named with that address's host, so a
-//! copy that took another's name and colour is told apart. A tab's title can be set by what runs in it, so the asker
-//! line quotes it as the tab's own words.
+//! nothing in a name is read as markup). The line under a secret's question, whose question it is, is Flare's: a
+//! plugin dressed as another cannot change it, and one installed from an address is named with that address's host,
+//! so a copy that took another's name and colour is told apart. A fill has no such line (the owner took it out,
+//! 2026-11-10). A tab's title can be set by what runs in it, so the asker line quotes it as the tab's own words.
 
 /// What the dialog shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -23,7 +23,7 @@ pub struct AskView {
     pub site: String,
     pub asker: String,
     pub letter: String,
-    /// Whose question it is, in Flare's words.
+    /// A secret's: whose question it is, in Flare's words. Empty for a fill.
     pub foot: String,
 }
 
@@ -58,12 +58,10 @@ fn plugin_of(plugin_name: &str, source: &str) -> String {
     }
 }
 
-/// "Fill <login>?" for the page on `host`, asked for the plugin by name (`source`: where it was installed from, or
-/// empty); `tab` is the title of the tab it fills, and `by_agent` says the agent's call asked (else the plugin did,
-/// after a click).
+/// "Fill <login>?" for the page on `host`, asked for the plugin by name; `tab` is the title of the tab it fills, and
+/// `by_agent` says the agent's call asked (else the plugin did, after a click). No line under it (2026-11-10).
 pub fn fill_view(
     plugin_name: &str,
-    source: &str,
     login_name: &str,
     host: &str,
     tab: &str,
@@ -87,16 +85,12 @@ pub fn fill_view(
             .find(|c| c.is_alphanumeric())
             .map(|c| c.to_uppercase().collect())
             .unwrap_or_default(),
-        foot: format!(
-            "{} fills it into the page; the agent never sees it.",
-            plugin_of(plugin_name, source)
-        ),
         ..AskView::default()
     }
 }
 
 /// A plugin's ask for a secret: its title as the heading, its sub under it, its label in the field and its word on the
-/// button ([`DEFAULT_BUTTON`] when it names none). `source` as for [`fill_view`].
+/// button ([`DEFAULT_BUTTON`] when it names none). `source`: where the plugin was installed from, or empty.
 pub fn secret_view(
     plugin_name: &str,
     source: &str,
@@ -129,41 +123,27 @@ mod tests {
 
     #[test]
     fn the_fill_question_names_the_login_the_site_the_tab_and_the_plugin() {
-        let v = fill_view("Vault", "", "GitHub", "github.com", "Makro", true);
+        let v = fill_view("Vault", "GitHub", "github.com", "Makro", true);
         assert_eq!(v.kind, 0);
         assert_eq!(v.title, "Fill GitHub?");
         assert_eq!(v.site, "github.com");
         // The tab's title is its own words (what runs in it can set it): quoted, never Flare's sentence.
         assert_eq!(v.asker, "asked by the agent in the tab \"Makro\"");
         assert_eq!(v.letter, "G");
-        assert_eq!(
-            v.foot,
-            "Vault fills it into the page; the agent never sees it."
-        );
-        let v = fill_view("Vault", "", "Bank", "www.bank.example", "", false);
+        // No line under a fill (the owner took it out, 2026-11-10).
+        assert_eq!(v.foot, "");
+        let v = fill_view("Vault", "Bank", "www.bank.example", "", false);
         assert_eq!(
             (v.asker.as_str(), v.letter.as_str()),
             ("asked by Vault", "B")
         );
-        for v in [v, fill_view("V", "", "L", "h", "T", false)] {
+        for v in [v, fill_view("V", "L", "h", "T", false)] {
             assert!(!format!("{v:?}").contains('\u{2014}'));
         }
     }
 
     #[test]
     fn a_plugin_installed_from_an_address_is_named_with_its_host() {
-        let v = fill_view(
-            "Vault",
-            "https://example.com/vault/vault-0.2.0.zip",
-            "L",
-            "h",
-            "",
-            true,
-        );
-        assert_eq!(
-            v.foot,
-            "Vault (from example.com) fills it into the page; the agent never sees it."
-        );
         let v = secret_view("Vault", "https://example.com/v.zip", "t", "l", "", "");
         assert!(
             v.foot.contains("Vault (from example.com) only"),
@@ -179,7 +159,7 @@ mod tests {
 
     #[test]
     fn names_from_a_plugin_are_cut_and_cleaned() {
-        let v = fill_view("P", "", &"x".repeat(200), "h", "t", true);
+        let v = fill_view("P", &"x".repeat(200), "h", "t", true);
         assert_eq!(v.title, format!("Fill {}...?", "x".repeat(SHOWN_MAX)));
         let v = secret_view(
             "Bit\nwarden",

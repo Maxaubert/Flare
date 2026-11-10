@@ -455,9 +455,9 @@ Flare's own dialog, and the user name, password and code never reach the agent.
   shows it); `login_uris` 1 to 32 addresses; each value 1 to 1024 characters with no control character; at least one
   value; any other key is `bad_params`, and no error ever holds a value.
 - **The dialog** (centred, in the plugin's look): its logo, "Fill <login>?", a card with the page's host and who asked in
-  which tab ("asked by the agent in <tab>", or "asked by <plugin> in <tab>"), wide Deny and Fill, "Deny for this
-  session" as a link, and Flare's line "<Plugin> fills it into the page; the agent never sees it.". Only your pointer
-  presses Fill: no key does (Enter and Space press the Deny button that has the focus, Escape and a press outside are
+  which tab ("asked by the agent in <tab>", or "asked by <plugin> in <tab>"), and wide Deny and Fill, with nothing
+  under them (the "Deny for this session" link and the line under the buttons were taken out, 2026-11-10). Only your
+  pointer presses Fill: no key does (Enter and Space press Deny, which holds the keys; Escape and a press outside are
   Deny), and it has no accessible default action. Fill takes no press for its first 0.7 s, so a click already on its way when the dialog appears never
   approves it. The web page hides under it. It waits a minute, then counts as Deny.
 - **On Allow** the page's address is checked again (it may have moved while you read: `interrupted`), then Flare types
@@ -469,7 +469,6 @@ Flare's own dialog, and the user name, password and code never reach the agent.
   field named like `otp`, `2fa` or `verification`; it sets each value as typing does and fires `input` and `change`.
   Fields inside frames are not reached.
 - **Answers.** `{filled, missing}` (kinds of field: `username`, `password`, `totp`), `{declined: true}`,
-  `{declined: true, for_session: true}` (that plugin's fills are declined at once, with no dialog, until Flare quits),
   `{declined: true, timed_out: true}`, or an error. One dialog at a time across plugins (`busy`) and 6 asks a minute per
   plugin (`rate_limited`).
 - **`browser.fill.page {tab?}`** gives `{tab, url, host}`: the address a plugin picks the login for.
@@ -557,7 +556,7 @@ Flare's own dialog, and the user name, password and code never reach the agent.
   secret. A login filled with `fill` and a secret typed for `secret.ask` are in no log, answer or store of Flare's.
 - **A fill is yours to approve.** Flare's own dialog, Fill by the pointer only (or "Always allow", set by you on the
   plugin's details sheet and never by the plugin), the login's site only, one at a time and
-  6 a minute, and "Deny for this session" to stop a plugin that asks too often.
+  6 a minute; turn a plugin off to stop one that asks too often.
 
 ## Claude's own surfaces (no plugin)
 

@@ -1,6 +1,6 @@
 //! The `fill` permission (2026-10-28): `browser.fill` types a saved login into a tab's web page only when the page's
-//! site is the login's and only after the person's Allow in Flare's own dialog; Deny and "Deny for this session" say
-//! no; one question is up at a time and a plugin asks at most six a minute; `secret.ask` hands what the person typed
+//! site is the login's and only after the person's Allow in Flare's own dialog; Deny says no (and the next fill asks
+//! again); one question is up at a time and a plugin asks at most six a minute; `secret.ask` hands what the person typed
 //! to the plugin that asked; and a plugin with only a helper hears the agent's tool calls as a `tool` event. No value
 //! is in any answer, error or post the plugin's pages see, other than the secret it asked for.
 //!
@@ -157,10 +157,8 @@ fn a_fill_needs_the_logins_site_and_the_persons_allow_and_answers_kinds_of_field
         "{}",
         f.h.comp.get_pask_asker()
     );
-    assert_eq!(
-        f.h.comp.get_pask_foot(),
-        "Vault vault fills it into the page; the agent never sees it."
-    );
+    // No line under a fill (the owner took it out, 2026-11-10).
+    assert_eq!(f.h.comp.get_pask_foot(), "");
     assert!(!f.h.comp.get_pask_look().branded, "no brand: Flare's look");
     assert!(
         f.h.comp.get_overlay_open(),
@@ -192,48 +190,30 @@ fn a_fill_needs_the_logins_site_and_the_persons_allow_and_answers_kinds_of_field
 }
 
 #[test]
-fn deny_and_deny_for_this_session_say_no_and_the_second_holds_until_flare_quits() {
+fn deny_says_no_and_the_next_fill_asks_again() {
     let (f, a, _b) = two_tabs();
     let slot = with_fake(&f);
-    let w = world(&f, |r| {
-        fill_plugin(r, "vault", &["fill", "tabs"]);
-        fill_plugin(r, "other", &["fill", "tabs"]);
-    });
+    let w = world(&f, |r| fill_plugin(r, "vault", &["fill", "tabs"]));
     turn(&f, "vault", true);
-    turn(&f, "other", true);
     web_up(&f, &w, &slot, &a, PAGE);
-    let ask = |id: &str| {
+    let ask = || {
         call_on_thread(
             &w.dispatcher,
-            helper_ctx(&w, id),
+            helper_ctx(&w, "vault"),
             Method::BrowserFill,
             fill_params(&a, &["https://accounts.example.com/"]),
         )
     };
 
-    let rx = ask("vault");
-    f.pump_until("the question", asking);
-    f.h.comp.invoke_pask_fill(0);
-    assert_eq!(answer_of(&f, &rx).unwrap(), json!({"declined": true}));
-
-    let rx = ask("vault");
-    f.pump_until("the question", asking);
-    f.h.comp.invoke_pask_fill(2);
-    assert_eq!(
-        answer_of(&f, &rx).unwrap(),
-        json!({"declined": true, "for_session": true})
-    );
-    // From now on that plugin's fills are declined at once, with no question; another plugin still asks.
-    let rx = ask("vault");
-    assert_eq!(
-        answer_of(&f, &rx).unwrap(),
-        json!({"declined": true, "for_session": true})
-    );
-    assert!(!asking(&f));
-    let rx = ask("other");
-    f.pump_until("the other plugin's question", asking);
-    f.h.comp.invoke_pask_fill(0);
-    assert_eq!(answer_of(&f, &rx).unwrap(), json!({"declined": true}));
+    // There is no session-wide deny any more (the owner took it out, 2026-11-10): each Deny answers one fill, and
+    // the plugin's next fill puts the question up again.
+    for _ in 0..2 {
+        let rx = ask();
+        f.pump_until("the question", asking);
+        f.h.comp.invoke_pask_fill(0);
+        assert_eq!(answer_of(&f, &rx).unwrap(), json!({"declined": true}));
+        assert!(!asking(&f));
+    }
     assert!(scripts(&slot).is_empty(), "no answer typed anything");
 }
 
@@ -648,41 +628,4 @@ fn always_allow_fills_with_no_question_and_a_held_back_fill_is_forbidden_like_on
     );
     assert!(!w.hub.fills_without_asking("vault"));
     assert!(!asking(&f));
-}
-
-#[test]
-fn deny_for_this_session_holds_after_always_allow_is_chosen_and_nothing_is_filled() {
-    let (f, a, _b) = two_tabs();
-    let slot = with_fake(&f);
-    let w = world(&f, |r| fill_plugin(r, "vault", &["fill", "tabs"]));
-    turn(&f, "vault", true);
-    web_up(&f, &w, &slot, &a, PAGE);
-    let ask = || {
-        call_on_thread(
-            &w.dispatcher,
-            helper_ctx(&w, "vault"),
-            Method::BrowserFill,
-            fill_params(&a, &["https://accounts.example.com/"]),
-        )
-    };
-    let rx = ask();
-    f.pump_until("the question", asking);
-    f.h.comp.invoke_pask_fill(2);
-    assert_eq!(
-        answer_of(&f, &rx).unwrap(),
-        json!({"declined": true, "for_session": true})
-    );
-    // "Always allow" chosen afterwards never lifts the session's deny: the fill is declined, with no question and
-    // no script typed, however the checks are ordered.
-    w.hub.set_choice("vault", "fill", "always").unwrap();
-    assert!(w.hub.fills_without_asking("vault"));
-    for _ in 0..2 {
-        let rx = ask();
-        assert_eq!(
-            answer_of(&f, &rx).unwrap(),
-            json!({"declined": true, "for_session": true})
-        );
-        assert!(!asking(&f));
-    }
-    assert!(scripts(&slot).is_empty(), "nothing was typed");
 }
