@@ -19,7 +19,9 @@ use flare_diag::agent_diag::{DiagSink, DiagValue};
 use flare_diag::crash::CrashHooks;
 use flare_diag::mem::{MemWatch, Metrics, MetricsSource};
 use flare_diag::session::{Diagnostics, SessionInfo};
-use flare_diag::stack::{FrameSource, MAX_FRAMES, NoSampler, Win32Sampler};
+use flare_diag::stack::NoSampler;
+#[cfg(windows)]
+use flare_diag::stack::{FrameSource, MAX_FRAMES, Win32Sampler};
 use flare_diag::stall::{
     CrumbRing, StackSampler, StallDeps, StallWatch, SystemClock, WorkClass, WorkTable, WorkTimer,
 };
@@ -64,6 +66,7 @@ impl SystemFacts {
 }
 
 /// Physical memory in whole GB (rounded); 0 when the call fails.
+#[cfg(windows)]
 fn installed_ram_gb() -> u32 {
     use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     // SAFETY: a zeroed MEMORYSTATUSEX with its length set is the documented input of the call.
@@ -144,6 +147,7 @@ impl MetricsSource for ProcMetrics {
 }
 
 /// Private bytes of another process of ours (a shell), or None when it cannot be opened.
+#[cfg(windows)]
 fn private_bytes_of(pid: u32) -> Option<u64> {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::ProcessStatus::{
@@ -166,8 +170,10 @@ fn private_bytes_of(pid: u32) -> Option<u64> {
 }
 
 /// The UI thread's stack through `flare-win`'s sampler.
+#[cfg(windows)]
 struct UiFrames(flare_win::thread_stack::ThreadSampler);
 
+#[cfg(windows)]
 impl FrameSource for UiFrames {
     fn raw_frames(&self) -> Option<([u64; MAX_FRAMES], usize)> {
         self.0.raw_frames()
@@ -346,6 +352,7 @@ pub fn start(profile: &Path, facts: SystemFacts, backend: &str, e2e: bool) -> Di
 
 /// The UI thread's sampler, or the safe empty one when the thread cannot be sampled. Made on the UI
 /// thread (the thread that calls `start`).
+#[cfg(windows)]
 fn ui_sampler() -> Arc<dyn StackSampler> {
     match flare_win::thread_stack::ThreadSampler::for_current_thread() {
         Ok(s) => Arc::new(Win32Sampler(UiFrames(s))),
@@ -356,10 +363,35 @@ fn ui_sampler() -> Arc<dyn StackSampler> {
     }
 }
 
+#[cfg(windows)]
 fn is_hung(hwnd: isize) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::IsHungAppWindow;
     // SAFETY: IsHungAppWindow accepts any handle value and only reads window state.
     unsafe { IsHungAppWindow(hwnd as _) != 0 }
+}
+
+/// macOS: phase 3 of the port plan (sysctl hw.memsize). 0 until then: unknown.
+#[cfg(not(windows))]
+fn installed_ram_gb() -> u32 {
+    0
+}
+
+/// macOS: phase 2 of the port plan (libproc). None until then: the shell is not counted.
+#[cfg(not(windows))]
+fn private_bytes_of(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// macOS: phase 3 of the port plan. The UI thread is not sampled until then.
+#[cfg(not(windows))]
+fn ui_sampler() -> Arc<dyn StackSampler> {
+    Arc::new(NoSampler)
+}
+
+/// macOS: phase 3 of the port plan. A window is never reported hung until then.
+#[cfg(not(windows))]
+fn is_hung(_hwnd: isize) -> bool {
+    false
 }
 
 impl DiagCtl {
@@ -595,6 +627,10 @@ mod tests {
         assert!(l.iter().all(|x| x["src"] == "app" || x["src"] == "main"));
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "process memory is read through Win32; macOS phase 3 of the port plan"
+    )]
     #[test]
     fn an_idle_start_writes_nothing_else_for_three_seconds() {
         let _g = lock(&ONE_AT_A_TIME);

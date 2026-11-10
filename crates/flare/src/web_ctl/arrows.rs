@@ -209,7 +209,14 @@ impl Arrows {
     }
 }
 
+/// macOS: phase 5 of the port plan (the person's input through NSEvent). No pointer is read until then.
+#[cfg(not(windows))]
+fn real_pointer(_hwnd: Option<isize>) -> Option<PointerNow> {
+    None
+}
+
 /// The real mouse: where it is in Flare's client pixels, and its buttons. The "pressed since" bits are read here too.
+#[cfg(windows)]
 fn real_pointer(hwnd: Option<isize>) -> Option<PointerNow> {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::Graphics::Gdi::ScreenToClient;

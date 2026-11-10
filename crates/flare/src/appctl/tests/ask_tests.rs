@@ -557,6 +557,10 @@ fn an_answer_after_the_person_moved_to_another_tab_is_dropped() {
     assert!(shell.written().is_empty());
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn a_file_panel_sends_its_path_quoted_for_the_shell_and_no_enter() {
     let (f, h, shell) = live(Opts::default());

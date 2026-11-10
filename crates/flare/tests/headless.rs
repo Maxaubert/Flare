@@ -1,5 +1,7 @@
 //! Runs the built binary without a window: backend probes, the headless screenshots and the live
 //! tab's start-up check.
+//! Windows-only for now: it runs the built binary (ConPTY live tabs, the Toolhelp process scan); macOS phases 2-3.
+#![cfg(windows)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};

@@ -1,5 +1,7 @@
 //! The link between copies (Task 20, N26). Ported from Prism Terminal's `dictationLink.test.ts` at e5848cb, plus
 //! the caps and the drops its prose promises. Every test uses a pipe named for the test, with its own key.
+//! Windows-only until macOS phase 7 of the port plan (the reaping job, the named-pipe link, the pid checks).
+#![cfg(windows)]
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};

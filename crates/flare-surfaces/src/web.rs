@@ -1384,6 +1384,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn the_profile_lives_under_the_profile_folder_never_the_install_folder() {
         assert_eq!(
@@ -1400,6 +1404,10 @@ mod tests {
         assert!(!s.contains(r"appdata\local\flare"), "{s}");
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn the_old_place_is_only_the_default_runs_local_appdata_folder() {
         assert_eq!(

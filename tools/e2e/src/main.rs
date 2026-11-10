@@ -3,9 +3,19 @@
 //! `--fake-fill-helper <record file>` is the `pluginFill` scenario's plugin helper (a copy of this exe that Flare
 //! starts), never a driver run.
 
+#[cfg(windows)]
 use flare_e2e::runner::{run_all, run_one, Cli};
+#[cfg(windows)]
 use flare_e2e::scenarios::{ALL, OPT_IN};
 
+/// The harness drives the Windows app; the Mac E2E is the port plan's "Ongoing" row (CI only).
+#[cfg(not(windows))]
+fn main() {
+    println!("flare-e2e runs on Windows only for now (the Mac E2E is the port plan's Ongoing row)");
+    std::process::exit(2);
+}
+
+#[cfg(windows)]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--fake-fill-helper") {

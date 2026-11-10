@@ -83,6 +83,10 @@ fn an_unknown_scene_or_theme_is_an_error() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("theme-sample"));
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+)]
 #[test]
 fn the_theme_sample_scene_writes_a_picture_in_the_themes_colours() {
     let dir = TempDir::new("scene");
@@ -146,6 +150,10 @@ fn the_sample_file_is_the_stream_the_capture_tool_types() {
 /// INSIDE the box (`after:absolute after:right-0 after:w-px`), so the line's first device pixel is
 /// where the 42nd css pixel ends. Measured on PT 0.58.0's own captures (Task 31): 42 at 100, 63 at
 /// 150 and 95 at 225. Flare drew the line one hairline later (43, 65, 97).
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+)]
 #[test]
 fn the_mark_line_sits_where_prism_terminal_draws_it() {
     let dir = TempDir::new("mark-line");

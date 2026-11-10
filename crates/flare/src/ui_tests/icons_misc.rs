@@ -739,6 +739,10 @@ const CENTRES_BEFORE: &[(&str, [(f32, f32); 8])] = &[
     ),
 ];
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+)]
 #[test]
 fn centre_of_the_glyph_is_unchanged() {
     for (what, draw) in glyphs() {

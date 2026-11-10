@@ -319,12 +319,14 @@ fn with_window_attributes(
 pub fn e2e_attributes(
     attributes: slint::winit_030::winit::window::WindowAttributes,
 ) -> slint::winit_030::winit::window::WindowAttributes {
+    #[cfg(windows)]
     use slint::winit_030::winit::platform::windows::WindowAttributesExtWindows;
     let (x, y) = flare_win::window_park::parked_origin();
-    attributes
-        .with_active(false)
-        .with_skip_taskbar(true)
-        .with_position(slint::winit_030::winit::dpi::PhysicalPosition::new(x, y))
+    let attributes = attributes.with_active(false);
+    // Off the taskbar: a Windows-only attribute (the Mac E2E runs as an accessory app, port plan).
+    #[cfg(windows)]
+    let attributes = attributes.with_skip_taskbar(true);
+    attributes.with_position(slint::winit_030::winit::dpi::PhysicalPosition::new(x, y))
 }
 
 /// Slint's software renderer. Must not be combined with `require_wgpu_30`.

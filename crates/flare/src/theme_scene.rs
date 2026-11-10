@@ -300,6 +300,10 @@ mod tests {
         assert_scene(&s, &look, painter.tolerance(), &label);
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn every_theme_draws_its_own_sixteen_at_100_150_and_225_on_both_painters() {
         for painter in [Painter::Cpu, Painter::Gpu] {
@@ -311,6 +315,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn three_themes_hold_at_all_eight_scales() {
         for painter in [Painter::Cpu, Painter::Gpu] {
@@ -322,6 +330,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn a_theme_switch_in_place_repaints_without_moving_a_cell() {
         let Some((s, args)) = scene("pt-default", 1.5, Painter::Cpu, &[]) else {
@@ -353,6 +365,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn glass_paints_the_ground_once() {
         for painter in [Painter::Cpu, Painter::Gpu] {

@@ -3,32 +3,51 @@
 //! Every opener receives an absolute path that `open_term_path` already resolved and checked. The
 //! functions here only refuse a path they cannot pass to Windows as one argument; they never decide
 //! what may open.
+//!
+//! Off Windows only the pure argument rules compile; the openers refuse (macOS: phase 3 of the port
+//! plan, which re-proves the folder hold against a swapped-in file before anything opens).
+#![cfg_attr(not(windows), allow(dead_code))]
 
+#[cfg(windows)]
 use std::cell::Cell;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(windows)]
 use std::process::Command;
+#[cfg(windows)]
 use std::ptr;
+#[cfg(windows)]
 use std::time::Duration;
 
+#[cfg(windows)]
 use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
+#[cfg(windows)]
 use windows::Win32::System::Variant::VARIANT;
+#[cfg(windows)]
 use windows::Win32::UI::Shell::{IShellWindows, IWebBrowser2, ShellWindows};
+#[cfg(windows)]
 use windows::core::Interface;
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND, INVALID_HANDLE_VALUE};
+#[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
     FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
     GetFileInformationByHandle, OPEN_EXISTING,
 };
+#[cfg(windows)]
 use windows_sys::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx,
 };
+#[cfg(windows)]
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOWNORMAL, SetForegroundWindow, ShowWindowAsync,
 };
 
+#[cfg(windows)]
 use crate::clipboard::utf16_with_nul;
 
 /// `explorer.exe` under the system root, by absolute path (never a bare name).
@@ -103,11 +122,13 @@ fn is_dir(p: &str) -> Option<bool> {
     std::fs::metadata(p).ok().map(|m| m.is_dir()) // sync-ok: called from the open worker only
 }
 
+#[cfg(windows)]
 thread_local! {
     static COM_READY: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Initialises COM (apartment threaded) once on this thread, as ShellExecute documents.
+#[cfg(windows)]
 fn ensure_com() {
     COM_READY.with(|ready| {
         if !ready.get() {
@@ -146,6 +167,7 @@ fn open_file_with(
 
 /// `ShellExecuteW(null, "open", canonical, null, null, SW_SHOWNORMAL)` for an allowlisted file.
 /// `allow` is the caller's allowlist, asked on the canonical path right before the call.
+#[cfg(windows)]
 pub fn shell_open_file(abs: &str, allow: &dyn Fn(&str) -> bool) -> Result<(), String> {
     open_file_with(abs, allow, |canon| {
         ensure_com();
@@ -172,6 +194,7 @@ pub fn shell_open_file(abs: &str, allow: &dyn Fn(&str) -> bool) -> Result<(), St
 }
 
 /// Starts `explorer.exe` with `args` as its one raw command line (not waited on).
+#[cfg(windows)]
 fn spawn_explorer(args: &str) -> Result<(), String> {
     let sys_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
     Command::new(explorer_path(&sys_root)) // sync-ok: called from the open worker only (TermUi::open_path_async)
@@ -183,15 +206,19 @@ fn spawn_explorer(args: &str) -> Result<(), String> {
 
 /// How long a folder stays held after Explorer is started: long enough for Explorer to resolve
 /// the path it was handed.
+#[cfg(windows)]
 const FOLDER_HOLD: Duration = Duration::from_secs(10);
 
 /// An open handle on a real directory, shared for read and write but NOT delete: while it lives
 /// the directory cannot be renamed or removed, so its name cannot become a runnable file.
+#[cfg(windows)]
 pub(crate) struct FolderHold(HANDLE);
 
 // SAFETY: a kernel handle may be closed from any thread; nothing else touches it.
+#[cfg(windows)]
 unsafe impl Send for FolderHold {}
 
+#[cfg(windows)]
 impl Drop for FolderHold {
     fn drop(&mut self) {
         // SAFETY: built only from a valid handle CreateFileW returned; closed exactly once.
@@ -202,6 +229,7 @@ impl Drop for FolderHold {
 }
 
 /// Holds `canon` open when it is a real directory now (not a file, not a link or junction).
+#[cfg(windows)]
 fn hold_folder(canon: &str) -> Option<FolderHold> {
     let wide = utf16_with_nul(canon);
     // SAFETY: `wide` is a zero-terminated UTF-16 path that outlives the call; null security
@@ -262,6 +290,7 @@ fn same_folder(a: &str, b: &str) -> bool {
 /// The visible Explorer window showing `canon` now. None when there is none, or when the shell
 /// cannot be asked: the caller then starts Explorer, as it would for a folder that is not open.
 /// Call it from a worker: a busy Explorer can hold the answer up.
+#[cfg(windows)]
 fn explorer_window_showing(canon: &str) -> Option<HWND> {
     ensure_com();
     // SAFETY: COM is initialised on this thread by `ensure_com`; every interface is a live one
@@ -296,6 +325,7 @@ fn explorer_window_showing(canon: &str) -> Option<HWND> {
 /// raise to it, and the foreground lock can refuse that process (issue #55). This process is the
 /// foreground one during the click, so the raise is made from here. Should the user have moved on
 /// since, Windows refuses it and nothing takes the focus.
+#[cfg(windows)]
 fn bring_open_folder_forward(canon: &str) -> bool {
     let Some(hwnd) = explorer_window_showing(canon) else {
         return false;
@@ -315,6 +345,7 @@ fn bring_open_folder_forward(canon: &str) -> bool {
 /// window already showing it, and otherwise hands that path to `spawn`, so a folder that is open
 /// is never opened twice. The hold is returned so it outlives the spawn: the name stays a folder
 /// while Explorer reads it.
+#[cfg(windows)]
 fn open_folder_with(
     abs: &str,
     bring_forward: impl FnOnce(&str) -> bool,
@@ -333,6 +364,7 @@ fn open_folder_with(
 /// Opens a folder in Explorer, or brings forward the window already showing it. The canonical path is held open as a directory (no rename, no
 /// delete) from before the spawn until `FOLDER_HOLD` after it, so a file swapped in under that
 /// name is never what Explorer runs.
+#[cfg(windows)]
 pub fn explorer_open_folder(abs: &str) -> Result<(), String> {
     let hold = open_folder_with(abs, bring_open_folder_forward, spawn_explorer)?;
     std::thread::spawn(move || {
@@ -350,15 +382,43 @@ pub fn open_args(abs: &str) -> Option<String> {
 
 /// Hands a path to Explorer by its absolute exe path (the Settings page's "Open folder"). Call it
 /// from a worker: the process start can wait on a slow, scanned disk.
+#[cfg(windows)]
 pub fn explorer_open_path(abs: &str) -> Result<(), String> {
     let args = open_args(abs).ok_or_else(|| "path refused".to_string())?;
     spawn_explorer(&args)
 }
 
 /// Shows a file selected in Explorer.
+#[cfg(windows)]
 pub fn explorer_reveal(abs: &str) -> Result<(), String> {
     let args = reveal_args(abs).ok_or_else(|| "path refused".to_string())?;
     spawn_explorer(&args)
+}
+
+/// macOS: phase 3 of the port plan (Finder openers with the folder hold re-proved).
+#[cfg(not(windows))]
+fn not_yet() -> Result<(), String> {
+    Err("opening paths is not built on this platform yet".to_string())
+}
+
+#[cfg(not(windows))]
+pub fn shell_open_file(_abs: &str, _allow: &dyn Fn(&str) -> bool) -> Result<(), String> {
+    not_yet()
+}
+
+#[cfg(not(windows))]
+pub fn explorer_open_folder(_abs: &str) -> Result<(), String> {
+    not_yet()
+}
+
+#[cfg(not(windows))]
+pub fn explorer_open_path(_abs: &str) -> Result<(), String> {
+    not_yet()
+}
+
+#[cfg(not(windows))]
+pub fn explorer_reveal(_abs: &str) -> Result<(), String> {
+    not_yet()
 }
 
 #[cfg(test)]
@@ -472,6 +532,7 @@ mod tests {
         assert!(!ran);
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_folder_open_refuses_a_file_swapped_in_and_spawns_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -490,6 +551,7 @@ mod tests {
         assert!(!spawned);
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_folder_open_hands_explorer_the_canonical_quoted_path() {
         let dir = tempfile::tempdir().unwrap();
@@ -510,6 +572,7 @@ mod tests {
         assert!(got.contains("a b"), "{got}");
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_folder_is_held_against_rename_and_delete_while_explorer_starts() {
         let dir = tempfile::tempdir().unwrap();
@@ -542,6 +605,7 @@ mod tests {
         std::fs::rename(&sub, &moved).unwrap();
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_missing_folder_spawns_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -561,6 +625,7 @@ mod tests {
         assert!(!spawned);
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_folder_already_showing_is_brought_forward_and_explorer_is_not_started() {
         let dir = tempfile::tempdir().unwrap();
@@ -585,6 +650,7 @@ mod tests {
         assert!(asked.ends_with("a b"), "{asked}");
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_folder_no_window_shows_starts_explorer() {
         let dir = tempfile::tempdir().unwrap();
@@ -639,6 +705,7 @@ mod tests {
         assert!(!same_folder("C:\\a", "C:\\a\\b"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_folder_no_explorer_shows_is_not_found_and_nothing_is_raised() {
         // Only reads the shell's window list: nothing opens and nothing comes forward.
@@ -646,6 +713,7 @@ mod tests {
         assert!(!bring_open_folder_forward(dir.path().to_str().unwrap()));
     }
 
+    #[cfg(windows)]
     #[test]
     fn com_is_initialised_once_per_thread() {
         ensure_com();

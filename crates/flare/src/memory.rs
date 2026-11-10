@@ -1,6 +1,8 @@
 //! This process's memory use, for the overlay and the benchmark.
 
+#[cfg(windows)]
 use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -10,6 +12,7 @@ pub struct ProcessMemory {
 }
 
 /// Working set and private bytes of this process, or None when the query fails.
+#[cfg(windows)]
 pub fn process_memory() -> Option<ProcessMemory> {
     // SAFETY: `counters` is a zeroed plain-data struct whose `cb` is set to its own size, and the
     // pseudo handle from GetCurrentProcess is always valid.
@@ -32,6 +35,7 @@ pub fn process_memory() -> Option<ProcessMemory> {
 }
 
 /// The page addresses of the resident pages no other process shares.
+#[cfg(windows)]
 fn private_pages() -> Option<Vec<usize>> {
     use windows_sys::Win32::System::ProcessStatus::QueryWorkingSet;
     // The buffer is a count followed by one word per resident page: the page number in the high
@@ -65,6 +69,7 @@ fn private_pages() -> Option<Vec<usize>> {
 
 /// The private working set in bytes: the resident pages that no other process shares. This is the
 /// number the memory bar (B2) reads (Task Manager's "Memory (private working set)").
+#[cfg(windows)]
 pub fn private_working_set() -> Option<usize> {
     private_pages().map(|p| p.len() * 4096)
 }
@@ -87,6 +92,7 @@ pub struct Regions {
 }
 
 /// Walks this process's private pages (UI thread, a few ms; only when the overlay or a probe asks).
+#[cfg(windows)]
 pub fn regions() -> Option<Regions> {
     use windows_sys::Win32::System::Memory::{
         MEM_IMAGE, MEM_MAPPED, MEMORY_BASIC_INFORMATION, VirtualQuery,
@@ -161,6 +167,7 @@ pub fn regions() -> Option<Regions> {
 }
 
 /// (allocated, committed) bytes summed over this process's heaps, and their handles.
+#[cfg(windows)]
 fn heaps() -> (usize, usize, Vec<usize>) {
     use windows_sys::Win32::System::Memory::{GetProcessHeaps, HEAP_SUMMARY, HeapSummary};
     let mut handles = vec![std::ptr::null_mut(); 64];
@@ -309,6 +316,24 @@ pub fn breakdown() -> Option<Breakdown> {
     Some(b)
 }
 
+/// macOS: phase 3 of the port plan (mach task_info). None until then: the query fails.
+#[cfg(not(windows))]
+pub fn process_memory() -> Option<ProcessMemory> {
+    None
+}
+
+/// macOS: phase 3 of the port plan. None until then.
+#[cfg(not(windows))]
+pub fn private_working_set() -> Option<usize> {
+    None
+}
+
+/// macOS: phase 3 of the port plan. None until then.
+#[cfg(not(windows))]
+pub fn regions() -> Option<Regions> {
+    None
+}
+
 impl ProcessMemory {
     /// `WS 140.2 MB, private 370.1 MB`.
     pub fn summary(&self) -> String {
@@ -325,6 +350,7 @@ impl ProcessMemory {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn reports_nonzero_memory() {
         let m = process_memory().expect("query works");
@@ -332,6 +358,7 @@ mod tests {
         assert!(m.private > 0);
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_private_working_set_is_resident_and_below_the_working_set_plus_slack() {
         let private = private_working_set().expect("the page walk works");
@@ -345,6 +372,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_regions_add_up_to_the_private_working_set() {
         let r = regions().expect("regions");
@@ -427,6 +455,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "process memory is read through Win32; macOS phase 3 of the port plan"
+    )]
     #[test]
     fn no_source_means_no_breakdown_until_the_window_sets_one() {
         // A fresh test thread has no source.

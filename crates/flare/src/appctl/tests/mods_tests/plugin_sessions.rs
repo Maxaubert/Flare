@@ -296,7 +296,9 @@ fn written(f: &Fx, cwd: &str) -> Vec<u8> {
 fn tabs_input_types_as_a_paste_with_its_checks_and_the_enter_comes_after() {
     let (f, a, b) = two_tabs();
     let slot = with_fake(&f);
-    let w = world(&f, |r| {
+    // The still clock: "two a second, the third at once is refused" holds however long the runner takes
+    // between the calls (on the real clock a slow macOS runner refilled the bucket before the third).
+    let w = world_still(&f, |r| {
         bare_plugin(r, "typist", &["input", "tabs"]);
         bare_plugin(r, "narrow", &["input"]);
         bare_plugin(r, "mute", &["tabs", "sessions"]);

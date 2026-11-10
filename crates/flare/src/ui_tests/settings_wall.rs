@@ -347,6 +347,10 @@ fn the_preview_paints_the_cards_own_palette() {
     assert_eq!(f.count_where(x0 + 3, y0 + 3, x1 - 3, y1, is_accent), 0);
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+)]
 #[test]
 fn the_previews_text_sits_on_pts_baselines() {
     // Line 2 ("src docs run.sh") has no descenders, so the bottom of its ink is the baseline. Measured

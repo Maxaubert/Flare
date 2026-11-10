@@ -1,5 +1,7 @@
 //! Real named-pipe round trips, in process, against a fake dispatcher. Each test uses its own pipe
 //! name, so they run in parallel without meeting each other (or a running Flare).
+//! Windows-only until the macOS socket lands (phase 4 of the port plan).
+#![cfg(windows)]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};

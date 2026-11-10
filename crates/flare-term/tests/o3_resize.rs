@@ -1,4 +1,6 @@
 //! Decision O3: the prompt line survives a resize under the real bundled ConPTY.
+//! Windows-only until macOS phase 2 (the real bundled ConPTY and the Windows shells).
+#![cfg(windows)]
 
 mod common;
 

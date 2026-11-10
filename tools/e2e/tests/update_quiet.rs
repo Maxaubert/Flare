@@ -8,6 +8,10 @@
 //! The exe is `FLARE_EXE` when set, else the `flare.exe` in the target folder that holds this test
 //! binary (`<target>\debug\deps\update_quiet.exe` -> `<target>\debug\flare.exe`). Build it first:
 //! `cargo build -p flare --target-dir <TARGET>`.
+//!
+//! Windows-only: the e2e harness drives the Windows app (job objects, the hidden desktop, named pipes).
+//! The Mac E2E is the port plan's "Ongoing" row.
+#![cfg(windows)]
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};

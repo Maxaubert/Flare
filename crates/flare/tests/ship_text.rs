@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use rc_text::rc_text;
 
+#[cfg(windows)]
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn root() -> PathBuf {

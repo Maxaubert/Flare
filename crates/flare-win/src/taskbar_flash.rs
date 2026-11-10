@@ -2,13 +2,16 @@
 //! no sound, only the button, and only while the window is not the foreground one. The OS stops the
 //! flash by itself when the window comes to the front.
 
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::HWND;
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx, GetForegroundWindow,
 };
 
 /// What the flash call is asked: the taskbar button only (never the caption), until the window is
 /// in front.
+#[cfg(windows)]
 pub fn flash_info(hwnd: isize) -> FLASHWINFO {
     FLASHWINFO {
         cbSize: size_of::<FLASHWINFO>() as u32,
@@ -20,6 +23,7 @@ pub fn flash_info(hwnd: isize) -> FLASHWINFO {
 }
 
 /// True when `hwnd` is the foreground window.
+#[cfg(windows)]
 pub fn is_foreground(hwnd: isize) -> bool {
     // SAFETY: a plain query with no arguments.
     unsafe { GetForegroundWindow() as isize == hwnd }
@@ -27,6 +31,7 @@ pub fn is_foreground(hwnd: isize) -> bool {
 
 /// Flashes the taskbar button of `hwnd` unless that window is the foreground one. True when it
 /// flashed.
+#[cfg(windows)]
 pub fn flash_unless_foreground(hwnd: isize) -> bool {
     if is_foreground(hwnd) {
         return false;
@@ -39,10 +44,23 @@ pub fn flash_unless_foreground(hwnd: isize) -> bool {
     true
 }
 
+/// macOS: phase 4 of the port plan (dock attention); no window is known to be in front until then.
+#[cfg(not(windows))]
+pub fn is_foreground(_hwnd: isize) -> bool {
+    false
+}
+
+/// macOS: phase 4 of the port plan (dock attention); nothing flashes until then.
+#[cfg(not(windows))]
+pub fn flash_unless_foreground(_hwnd: isize) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn the_flash_is_the_tray_button_until_the_window_is_in_front() {
         let i = flash_info(1234);

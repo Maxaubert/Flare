@@ -312,6 +312,10 @@ fn no_control_but_save_and_the_on_switch_paints_the_accent() {
 /// (audit V13, 2026-10-21).
 const PT_PANEL_EDGES_PILL_W: [(f32, f32); 3] = [(1.0, 230.0), (1.5, 231.0), (2.25, 231.2)];
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+)]
 #[test]
 fn a_segmented_pill_is_as_wide_as_pts_not_a_whole_pixel_per_label_wider() {
     for (s, want) in PT_PANEL_EDGES_PILL_W {

@@ -42,6 +42,7 @@ use slint::winit_030::winit::keyboard::ModifiersState;
 use slint::winit_030::winit::window::WindowLevel;
 use slint::winit_030::{EventResult, WinitWindowAccessor};
 use slint::{CloseRequestResponse, ComponentHandle, GraphicsAPI, RenderingState};
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW,
@@ -183,6 +184,7 @@ pub fn initial_window(state: &WindowState, areas: &[Area]) -> InitialWindow {
 
 /// The extended style of an `--e2e` window: it can never take the focus or the foreground, and
 /// it stays off the taskbar.
+#[cfg(windows)]
 pub fn e2e_ex_style(current: u32) -> u32 {
     (current | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW
 }
@@ -351,6 +353,7 @@ pub fn e2e_first_position(e2e: bool) -> Option<(i32, i32)> {
 }
 
 /// Gives an `--e2e` window the no-activate style, so it can never take the foreground.
+#[cfg(windows)]
 fn apply_e2e_style_to(hwnd: isize) {
     let hwnd = hwnd as *mut std::ffi::c_void;
     // SAFETY: `hwnd` is this process's own live window on the UI thread; reading and writing its
@@ -360,6 +363,10 @@ fn apply_e2e_style_to(hwnd: isize) {
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, e2e_ex_style(current) as isize);
     }
 }
+
+/// macOS: no window handle style to set (the Mac E2E is an accessory app, port plan "Ongoing").
+#[cfg(not(windows))]
+fn apply_e2e_style_to(_hwnd: isize) {}
 
 /// How often the `--e2e` window looks for its handle, and how many looks it makes (about 10 s).
 const E2E_HANDLE_POLL_MS: u64 = 10;
@@ -1687,9 +1694,18 @@ pub fn run_window(
                     c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
                     // The agent's cursor and the border round the page while it works: windows owned
                     // by this one (under --e2e the recording stand-ins WebCtl starts with stay).
-                    c.set_agent_border(Box::new(flare_win::agent_cursor::GlowWindow::new(hwnd)));
-                    c.set_agent_cursor(Box::new(flare_win::agent_cursor::CursorWindow::new(hwnd)));
+                    // macOS: phase 5 of the port plan; the recording stand-ins stay until then.
+                    #[cfg(windows)]
+                    {
+                        c.set_agent_border(Box::new(flare_win::agent_cursor::GlowWindow::new(
+                            hwnd,
+                        )));
+                        c.set_agent_cursor(Box::new(flare_win::agent_cursor::CursorWindow::new(
+                            hwnd,
+                        )));
+                    }
                     // The arrows over the page and the pad the person draws on (rules 254 to 256).
+                    #[cfg(windows)]
                     c.set_agent_arrows(
                         Box::new(flare_win::agent_cursor::ArrowWindow::new(hwnd)),
                         Box::new(flare_win::agent_cursor::ArrowWindow::new(hwnd)),
@@ -2746,6 +2762,7 @@ mod tests {
         assert_eq!(initial_window(&state, &areas).pos, None);
     }
 
+    #[cfg(windows)]
     #[test]
     fn e2e_style_is_no_activate_tool_window_and_not_app_window() {
         let style = e2e_ex_style(WS_EX_APPWINDOW);

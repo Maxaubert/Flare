@@ -11,10 +11,13 @@
 //! The first copy started owns the key, a later one reports `Waiting` and takes over within the 500 ms poll
 //! when the first lets go.
 
+// Off Windows the hook thread waits for phase 7 of the port plan (a CGEventTap); its imports go unused there.
+#![cfg_attr(not(windows), allow(unused_imports))]
 use crate::keyfeed::{code_of_vk, HookEvent};
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io;
+#[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -23,12 +26,17 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{GetLastError, LPARAM, LRESULT, WPARAM};
+#[cfg(windows)]
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+#[cfg(windows)]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
 };
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, PeekMessageW,
     PostThreadMessageW, SetTimer, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT,
@@ -318,14 +326,17 @@ pub fn lost_ups(s: &mut HookState, is_down: impl Fn(u16) -> bool) -> Vec<HookEve
 }
 
 /// True when the system reports the virtual key physically down right now.
+#[cfg(windows)]
 fn system_key_down(vk: u16) -> bool {
     // SAFETY: GetAsyncKeyState takes a plain virtual-key value and keeps nothing.
     (unsafe { GetAsyncKeyState(vk as i32) } as u16) & 0x8000 != 0
 }
 
 /// How often the hook thread re-checks the keys it holds.
+#[cfg(windows)]
 const SWEEP_MS: u32 = 250;
 /// Open the lock file with no sharing. Held until the returned file drops (or the process ends).
+#[cfg(windows)]
 pub fn take_lock(dir: &Path) -> io::Result<File> {
     let _ = std::fs::create_dir_all(dir);
     OpenOptions::new()
@@ -338,12 +349,14 @@ pub fn take_lock(dir: &Path) -> io::Result<File> {
 }
 
 /// True when the error means another holder has the lock (a sharing or lock violation).
+#[cfg(windows)]
 fn is_busy(e: &io::Error) -> bool {
     matches!(e.raw_os_error(), Some(32) | Some(33))
 }
 
 /// What the owner sets from outside the hook thread.
 #[derive(Default)]
+#[cfg(windows)]
 struct Shared {
     keys: Mutex<HashSet<u16>>,
     mask: AtomicBool,
@@ -352,18 +365,22 @@ struct Shared {
 }
 
 /// The state the hook callback reads: one hook per process (the lock file guarantees it).
+#[cfg(windows)]
 struct Active {
     shared: Arc<Shared>,
     state: HookState,
     tx: Sender<HookEvent>,
 }
 
+#[cfg(windows)]
 static ACTIVE: Mutex<Option<Active>> = Mutex::new(None);
 
+#[cfg(windows)]
 fn lock_active() -> MutexGuard<'static, Option<Active>> {
     ACTIVE.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+#[cfg(windows)]
 fn front_pid() -> Option<u32> {
     // SAFETY: both calls take plain values and an out pointer to a local; no handle is kept.
     unsafe {
@@ -373,6 +390,7 @@ fn front_pid() -> Option<u32> {
     }
 }
 
+#[cfg(windows)]
 fn send_mask_keys() {
     let key = |flags| INPUT {
         r#type: INPUT_KEYBOARD,
@@ -393,6 +411,7 @@ fn send_mask_keys() {
     }
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn hook_proc(n: i32, w: WPARAM, l: LPARAM) -> LRESULT {
     if n >= 0 && l != 0 {
         // SAFETY: for WH_KEYBOARD_LL with n >= 0, `l` points to a KBDLLHOOKSTRUCT valid for this call.
@@ -445,6 +464,7 @@ unsafe extern "system" fn hook_proc(n: i32, w: WPARAM, l: LPARAM) -> LRESULT {
 /// What the thread does once it holds the lock.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(test), allow(dead_code))]
+#[cfg(windows)]
 enum Mode {
     Install,
     WaitOnly,
@@ -452,11 +472,14 @@ enum Mode {
 }
 
 /// How long the lock wait sleeps between looks at `wanted`, so `stop` never waits out a whole poll.
+#[cfg(windows)]
 const WAIT_SLICE: Duration = Duration::from_millis(20);
 /// The lock poll (PT: 500 ms), made of `WAIT_SLICE`s.
+#[cfg(windows)]
 const WAIT_SLICES: u32 = 25;
 
 /// The running hook: a thread that takes the lock, installs the hook and pumps messages.
+#[cfg(windows)]
 pub struct KeyHook {
     thread: Option<JoinHandle<()>>,
     tid: Arc<AtomicU32>,
@@ -464,6 +487,7 @@ pub struct KeyHook {
     shared: Arc<Shared>,
 }
 
+#[cfg(windows)]
 impl KeyHook {
     /// Start the thread: take the lock (a 500 ms poll, `Waiting` while another copy holds it), install
     /// `WH_KEYBOARD_LL`, say `Ready` or `Failed`, then pump messages until stopped.
@@ -551,6 +575,7 @@ impl KeyHook {
     }
 }
 
+#[cfg(windows)]
 impl Drop for KeyHook {
     fn drop(&mut self) {
         // A hook dropped without `stop` still ends its thread (the thread checks `wanted` while waiting
@@ -566,6 +591,7 @@ impl Drop for KeyHook {
     }
 }
 
+#[cfg(windows)]
 fn run(
     lock_dir: PathBuf,
     tx: Sender<HookEvent>,
@@ -669,6 +695,7 @@ fn run(
 }
 
 /// Runs on the hook thread's timer: sends the ups the system never delivered.
+#[cfg(windows)]
 fn sweep_lost_ups() {
     let mut guard = lock_active();
     let Some(a) = guard.as_mut() else { return };
@@ -676,6 +703,7 @@ fn sweep_lost_ups() {
         let _ = a.tx.send(ev);
     }
 }
+#[cfg(windows)]
 fn install_hook() -> HHOOK {
     // SAFETY: `hook_proc` has the HOOKPROC signature; the module handle is this process's own.
     unsafe {
@@ -688,7 +716,7 @@ fn install_hook() -> HHOOK {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(windows, test))]
 fn send_key(vk: u16, up: bool) {
     let input = INPUT {
         r#type: INPUT_KEYBOARD,
@@ -707,6 +735,34 @@ fn send_key(vk: u16, up: bool) {
         SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
     }
 }
+/// The keyboard hook off Windows. macOS: phase 7 of the port plan (a CGEventTap). Until then the
+/// thread is never started: `alive` is false from the start, which the owner reads as a failed hook.
+#[cfg(not(windows))]
+pub struct KeyHook {
+    _private: (),
+}
+
+#[cfg(not(windows))]
+impl KeyHook {
+    pub fn start(_lock_dir: PathBuf, _tx: Sender<HookEvent>) -> Self {
+        KeyHook { _private: () }
+    }
+
+    pub fn keys(&self, _vks: Vec<u16>) {}
+
+    pub fn mask(&self, _on: bool) {}
+
+    pub fn pick(&self, _on: bool) {}
+
+    pub fn rec(&self, _on: bool) {}
+
+    pub fn alive(&self) -> bool {
+        false
+    }
+
+    pub fn stop(self) {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1144,6 +1200,7 @@ mod tests {
         assert_eq!(e, None, "nothing is held after a reset");
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_lock_is_held_by_one_hook_at_a_time() {
         let dir = tempfile::tempdir().unwrap();
@@ -1164,6 +1221,7 @@ mod tests {
     }
 
     /// Wait until the hook thread holds the lock (our own probe fails busy), up to 5 s.
+    #[cfg(windows)]
     fn wait_until_held(dir: &Path) {
         for _ in 0..500 {
             let probe = take_lock(dir);
@@ -1177,6 +1235,7 @@ mod tests {
         panic!("the hook never took the lock");
     }
 
+    #[cfg(windows)]
     #[test]
     fn stop_lets_the_lock_go() {
         let dir = tempfile::tempdir().unwrap();
@@ -1192,6 +1251,7 @@ mod tests {
         assert!(take_lock(dir.path()).is_ok(), "stop let the lock go");
     }
 
+    #[cfg(windows)]
     #[test]
     fn stop_does_not_wait_out_the_lock_poll() {
         let dir = tempfile::tempdir().unwrap();
@@ -1212,6 +1272,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_failed_install_says_failed_once_and_lets_the_lock_go() {
         let dir = tempfile::tempdir().unwrap();
@@ -1235,6 +1296,7 @@ mod tests {
         hook.stop();
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_hook_that_failed_can_be_started_afresh_in_the_same_lock_dir() {
         // The owner's re-arm (N15): drop the dead hook, start a new one; the lock was let go, so it runs.
@@ -1255,6 +1317,7 @@ mod tests {
         );
         second.stop();
     }
+    #[cfg(windows)]
     #[test]
     #[ignore = "by hand: SendInput reaches the desktop in front (docs/dictation-by-hand.md)"]
     fn reports_the_binding_key_down_and_up_and_stops_when_told() {
@@ -1307,6 +1370,7 @@ mod tests {
         again.stop();
     }
 
+    #[cfg(windows)]
     #[test]
     #[ignore = "by hand: SendInput reaches the desktop in front (docs/dictation-by-hand.md)"]
     fn the_hook_says_other_for_a_key_pressed_while_a_binding_key_is_held() {

@@ -68,6 +68,10 @@ fn page_html(spec: &AppSpec) -> String {
     std::fs::read_to_string(spec.folder.join(flare_surfaces::app::PAGE)).unwrap() // sync-ok: test code only
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn a_markdown_file_opens_compiled_as_a_page_flare_wrote() {
     let (f, _h, _) = live(Opts::default());
@@ -111,6 +115,10 @@ fn a_markdown_file_opens_compiled_as_a_page_flare_wrote() {
     assert!(f.ctl.borrow().panels.web_target(&id).is_none());
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn a_text_file_that_is_not_markdown_has_no_view_control() {
     let (f, _h, _) = live(Opts::default());
@@ -122,6 +130,10 @@ fn a_text_file_that_is_not_markdown_has_no_view_control() {
     assert!(opened_pages(&slot).is_empty());
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn the_header_control_switches_between_the_three_views() {
     let (f, _h, _) = live(Opts::default());
@@ -156,6 +168,10 @@ fn the_header_control_switches_between_the_three_views() {
     assert_eq!(f.h.comp.get_panel_md_view(), MdView::Markdown.index());
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn a_file_shown_again_opens_compiled_again() {
     let (f, _h, _) = live(Opts::default());
@@ -172,6 +188,10 @@ fn a_file_shown_again_opens_compiled_again() {
     assert_eq!(f.h.comp.get_panel_md_view(), MdView::Compiled.index());
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn a_page_that_cannot_be_shown_falls_back_to_code() {
     // No browser in this run: the page's view fails at once and the file shows as text.
@@ -188,6 +208,10 @@ fn a_page_that_cannot_be_shown_falls_back_to_code() {
     );
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn a_page_whose_browser_fails_later_falls_back_to_code() {
     let (f, _h, _) = live(Opts::default());
@@ -209,6 +233,10 @@ fn a_page_whose_browser_fails_later_falls_back_to_code() {
     f.pump_until("a new page", |_| opened_pages(&slot).len() == 2);
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn without_an_apps_folder_a_markdown_file_shows_as_code() {
     let (f, _h, _) = live(Opts::default());
@@ -220,6 +248,10 @@ fn without_an_apps_folder_a_markdown_file_shows_as_code() {
     assert!(opened_pages(&slot).is_empty());
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn a_render_that_fails_falls_back_to_code_and_says_why_there() {
     let (f, _h, _) = live(Opts::default());
@@ -235,6 +267,10 @@ fn a_render_that_fails_falls_back_to_code_and_says_why_there() {
     assert!(opened_pages(&slot).is_empty());
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn the_picked_view_is_written_and_comes_back_after_a_restart() {
     let f = fx_with(Opts {
@@ -279,6 +315,10 @@ fn the_picked_view_is_written_and_comes_back_after_a_restart() {
     );
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn ask_agent_on_a_markdown_page_names_the_file_and_sends_its_path_with_nothing_selected() {
     let (f, h, shell) = live(Opts::default());

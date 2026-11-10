@@ -1,5 +1,7 @@
 //! The runaway `cat`: a 100 MB flood keeps snapshots fast and arrives complete, Ctrl+C stops an
 //! endless writer, and the parser alone keeps up.
+//! Windows-only until macOS phase 2 (the real bundled ConPTY and the Windows shells).
+#![cfg(windows)]
 
 mod common;
 

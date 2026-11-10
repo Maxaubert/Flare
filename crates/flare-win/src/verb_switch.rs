@@ -196,9 +196,13 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 mod tests {
     use super::*;
     use crate::names::VERB_LABEL;
-    use crate::registry::{FakeRegistry, RegError, SandboxRoot, WinRegistry};
+    use crate::registry::{FakeRegistry, RegError};
+    #[cfg(windows)]
+    use crate::registry::{SandboxRoot, WinRegistry};
     use crate::verb::{install_verb, verb_installed};
-    use crate::verb_keys::{DEFAULT_CLASSES_ROOT, command_key, verb_keys};
+    use crate::verb_keys::verb_keys;
+    #[cfg(windows)]
+    use crate::verb_keys::{DEFAULT_CLASSES_ROOT, command_key};
     use std::sync::atomic::AtomicUsize;
 
     const ROOT: &str = r"Software\Classes";
@@ -501,6 +505,7 @@ mod tests {
         assert_eq!(format_rfc3339(951_782_400), "2000-02-29T00:00:00Z");
     }
 
+    #[cfg(windows)]
     #[test]
     fn real_round_trip_through_the_row_under_a_sandbox_root() {
         let sandbox = SandboxRoot::new();

@@ -1346,7 +1346,7 @@ impl AppDispatcher {
 
     /// A still clock for the decor limit, so a test can spend a second's worth at one instant.
     #[cfg(test)]
-    fn with_clock(mut self, clock: fn() -> Instant) -> Self {
+    pub(crate) fn with_clock(mut self, clock: fn() -> Instant) -> Self {
         self.clock = clock;
         self
     }
@@ -3956,6 +3956,10 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn an_absolute_path_never_asks_the_ui_for_a_folder_and_a_relative_one_does() {
         const REL: &[(&str, &str)] = &[("a.png", "C:\\work\\a.png")];
@@ -4248,6 +4252,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_page_named_by_path_is_resolved_again_vetted_and_read() {
         let dir = tempfile::tempdir().unwrap();
@@ -4528,6 +4536,10 @@ mod tests {
         r
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn view_model_writes_the_viewer_and_the_model_beside_flares_own_page() {
         let dir = tempfile::tempdir().unwrap();
@@ -4569,6 +4581,10 @@ mod tests {
         assert_eq!(last_app(&r).2, flare_surfaces::model::DEFAULT_TITLE);
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn view_model_refuses_what_is_not_a_model_a_link_a_share_and_a_file_over_the_cap() {
         let dir = tempfile::tempdir().unwrap();
@@ -4620,6 +4636,10 @@ mod tests {
         assert!(r.d.capabilities().contains(&Method::ViewModel));
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn the_real_model_resolver_is_rules_13_and_14_with_the_viewers_extensions() {
         let dir = tempfile::tempdir().unwrap();

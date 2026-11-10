@@ -1,20 +1,28 @@
 //! The clipboard port: the Windows implementation, the in-memory stand-in and the read side.
 //! Everything here BLOCKS and is called from worker threads only.
 
+#[cfg(windows)]
 use std::ptr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(windows)]
 use std::thread::sleep; // sync-ok: the clipboard retry below, at most 80 ms
+#[cfg(windows)]
 use std::time::Duration;
 
 use flare_shells::paste::ClipboardState;
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::HGLOBAL;
+#[cfg(windows)]
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, GetClipboardData, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
     OpenClipboard, RegisterClipboardFormatW,
 };
+#[cfg(windows)]
 use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+#[cfg(windows)]
 use windows_sys::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT};
+#[cfg(windows)]
 use windows_sys::Win32::UI::Shell::DragQueryFileW;
 
 /// UI copies (Copy folder path, the command help): refuse, never trim.
@@ -54,6 +62,7 @@ fn check_write(text: &str, max: usize) -> Result<(), String> {
 pub struct WinClipboard;
 
 /// Opens the clipboard with up to 5 tries, 20 ms apart.
+#[cfg(windows)]
 fn open() -> bool {
     for attempt in 0..5 {
         // SAFETY: a null owner opens the clipboard for this thread; the result is checked.
@@ -68,8 +77,10 @@ fn open() -> bool {
 }
 
 /// Closes the clipboard on every path out of a read.
+#[cfg(windows)]
 struct ClipboardGuard;
 
+#[cfg(windows)]
 impl Drop for ClipboardGuard {
     fn drop(&mut self) {
         // SAFETY: only built after `open()` succeeded on this thread; dropped exactly once.
@@ -80,8 +91,10 @@ impl Drop for ClipboardGuard {
 }
 
 /// Unlocks a locked global block on every path out of a read.
+#[cfg(windows)]
 struct LockGuard(HGLOBAL);
 
+#[cfg(windows)]
 impl Drop for LockGuard {
     fn drop(&mut self) {
         // SAFETY: only built after a successful GlobalLock of this handle; dropped exactly once.
@@ -96,6 +109,7 @@ impl Drop for LockGuard {
 ///
 /// # Safety
 /// `handle` must be null or a live movable global memory handle for the whole call.
+#[cfg(windows)]
 pub(crate) unsafe fn read_utf16_block(handle: HGLOBAL) -> Option<String> {
     if handle.is_null() {
         return None;
@@ -114,6 +128,7 @@ pub(crate) unsafe fn read_utf16_block(handle: HGLOBAL) -> Option<String> {
 }
 
 /// Text from CF_UNICODETEXT; the clipboard must be open on this thread.
+#[cfg(windows)]
 fn unicode_text_open() -> Option<String> {
     // SAFETY: the caller has the clipboard open, so the handle stays valid for the read.
     unsafe {
@@ -125,6 +140,7 @@ fn unicode_text_open() -> Option<String> {
 }
 
 /// Copied files from CF_HDROP; the clipboard must be open on this thread.
+#[cfg(windows)]
 fn files_open() -> Vec<String> {
     let mut out = Vec::new();
     // SAFETY: the caller has the clipboard open; the HDROP handle is used only while non-null and
@@ -153,6 +169,7 @@ fn files_open() -> Vec<String> {
     out
 }
 
+#[cfg(windows)]
 fn image_open() -> bool {
     let name: Vec<u16> = "PNG".encode_utf16().chain(std::iter::once(0)).collect();
     // SAFETY: the caller has the clipboard open; `name` is a NUL-terminated UTF-16 string that
@@ -165,6 +182,7 @@ fn image_open() -> bool {
     }
 }
 
+#[cfg(windows)]
 impl ClipboardPort for WinClipboard {
     fn write_text(&self, text: &str, max: usize) -> Result<(), String> {
         check_write(text, max)?;
@@ -194,6 +212,41 @@ impl ClipboardPort for WinClipboard {
     fn sequence(&self) -> u32 {
         // SAFETY: takes no arguments and only reads a system counter.
         unsafe { GetClipboardSequenceNumber() }
+    }
+}
+
+/// macOS: text through `pbcopy` and `pbpaste`. Files, images and the change count (NSPasteboard)
+/// are phase 3 of the port plan.
+#[cfg(not(windows))]
+impl ClipboardPort for WinClipboard {
+    fn write_text(&self, text: &str, max: usize) -> Result<(), String> {
+        check_write(text, max)?;
+        crate::clipboard::set_text(text)
+    }
+
+    fn read_text(&self) -> Option<String> {
+        // pbpaste writes in the locale's encoding; force UTF-8 (a Finder launch has no LANG).
+        // sync-ok: the port is called from worker threads only
+        let out = std::process::Command::new("/usr/bin/pbpaste")
+            .env("LANG", "en_US.UTF-8")
+            .env("LC_CTYPE", "en_US.UTF-8")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output() // sync-ok: the port is called from worker threads only
+            .ok()?;
+        let text = String::from_utf8(out.stdout).ok()?;
+        (out.status.success() && !text.is_empty()).then_some(text)
+    }
+
+    fn read_state(&self) -> ClipboardState {
+        ClipboardState {
+            text: self.read_text().unwrap_or_default(),
+            ..ClipboardState::default()
+        }
+    }
+
+    fn sequence(&self) -> u32 {
+        0
     }
 }
 
@@ -344,6 +397,7 @@ mod tests {
     }
 
     /// A moveable block filled with `fill` over its whole reported size.
+    #[cfg(windows)]
     fn full_block(bytes: usize, fill: u16) -> (HGLOBAL, usize) {
         use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc};
         // SAFETY: allocates and fills a block this test owns; the caller frees it.
@@ -361,6 +415,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn an_unterminated_block_is_read_exactly_to_its_end() {
         use windows_sys::Win32::Foundation::GlobalFree;
@@ -374,6 +429,7 @@ mod tests {
         assert_eq!(got.unwrap(), "a".repeat(size / 2));
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_terminated_block_stops_at_its_zero() {
         use windows_sys::Win32::Foundation::GlobalFree;
@@ -394,6 +450,7 @@ mod tests {
         assert_eq!(got.as_deref(), Some("h"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_null_handle_reads_nothing() {
         // SAFETY: null is allowed.

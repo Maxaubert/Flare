@@ -98,11 +98,18 @@ pub fn plugins_on(file: &Path) {
 }
 
 /// Whether Shift is held now (at launch, it asks for a start without plugins).
+#[cfg(windows)]
 pub fn shift_held() -> bool {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_SHIFT};
     // SAFETY: a plain read of the key state; no pointer is passed.
     let state = unsafe { GetAsyncKeyState(i32::from(VK_SHIFT)) };
     (state as u16) & 0x8000 != 0
+}
+
+/// macOS: phase 3 of the port plan (NSEvent modifierFlags). Never held until then.
+#[cfg(not(windows))]
+pub fn shift_held() -> bool {
+    false
 }
 
 /// A clean quit: the run is closed and the count starts again.

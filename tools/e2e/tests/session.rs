@@ -1,4 +1,8 @@
 //! The pipe client against a fake server thread speaking the proto over a real named pipe.
+//!
+//! Windows-only: the e2e harness drives the Windows app (job objects, the hidden desktop, named pipes).
+//! The Mac E2E is the port plan's "Ongoing" row.
+#![cfg(windows)]
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};

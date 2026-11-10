@@ -3,8 +3,14 @@
 //! JSON line); the window modes are in `session`, the GDI capture and the PNG writer in `capture`,
 //! the no-window `probe` in `probe`.
 
+// The spike measures Windows' DWM materials; off Windows only its pure parts (and their tests) compile.
+#![cfg_attr(not(windows), allow(dead_code))]
+
+#[cfg(windows)]
 mod capture;
+#[cfg(windows)]
 mod probe;
+#[cfg(windows)]
 mod session;
 
 use std::fmt;
@@ -281,6 +287,13 @@ pub fn num_field(line: &str, key: &str) -> Option<f64> {
     rest[..end].parse().ok()
 }
 
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("material-spike measures Windows' DWM materials; it runs on Windows only");
+    std::process::exit(2);
+}
+
+#[cfg(windows)]
 fn main() {
     let t0 = std::time::Instant::now();
     let argv: Vec<String> = std::env::args().skip(1).collect();

@@ -1,5 +1,9 @@
 //! The stand-ins a scenario needs (M10 Task 15): hook lines, FakeClaude, the Sonara stand-in,
 //! floods, small programs and the fixture cache.
+//!
+//! Windows-only: the e2e harness drives the Windows app (job objects, the hidden desktop, named pipes).
+//! The Mac E2E is the port plan's "Ongoing" row.
+#![cfg(windows)]
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};

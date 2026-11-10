@@ -33,11 +33,13 @@ image.workspace = true
 base64.workspace = true
 log.workspace = true
 env_logger.workspace = true
-windows-sys.workspace = true
 serde_json.workspace = true
 raw-window-handle.workspace = true
 flare-update = { path = "../flare-update" }
 velopack.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
 
 [features]
 default = []
@@ -50,8 +52,14 @@ tempfile.workspace = true
 zip.workspace = true
 sha2.workspace = true
 
+# The UI thread's own CPU time for the hold tests (ui_tests/term.rs).
+[target.'cfg(unix)'.dev-dependencies]
+libc.workspace = true
+
 [build-dependencies]
 slint-build.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
 embed-resource.workspace = true
 
 [lints]

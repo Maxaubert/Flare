@@ -6,13 +6,16 @@
 //! written by a test.
 
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(windows)]
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
 
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{
     ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS,
     ERROR_UNSUPPORTED_TYPE,
 };
+#[cfg(windows)]
 use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE,
     REG_SZ, RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteKeyW, RegDeleteTreeW,
@@ -45,6 +48,7 @@ fn nul_error() -> RegError {
 }
 
 /// UTF-16 with a trailing NUL; refuses an interior NUL.
+#[cfg(any(windows, test))]
 fn wide(s: &str) -> Result<Vec<u16>, RegError> {
     if s.contains('\0') {
         return Err(nul_error());
@@ -54,6 +58,7 @@ fn wide(s: &str) -> Result<Vec<u16>, RegError> {
 
 /// A subkey of the hive as UTF-16. Refuses an empty key (or only separators and blanks): handed
 /// to `RegDeleteTreeW`, an empty subkey means "everything under HKCU".
+#[cfg(any(windows, test))]
 fn subkey(key: &str) -> Result<Vec<u16>, RegError> {
     if key
         .trim_matches(|c: char| c == '\\' || c.is_whitespace())
@@ -67,17 +72,21 @@ fn subkey(key: &str) -> Result<Vec<u16>, RegError> {
     wide(key)
 }
 
+#[cfg(windows)]
 fn wide_opt(s: Option<&str>) -> Result<Option<Vec<u16>>, RegError> {
     s.map(wide).transpose()
 }
 
+#[cfg(windows)]
 fn ptr_of(v: &Option<Vec<u16>>) -> *const u16 {
     v.as_ref().map_or(null(), |w| w.as_ptr())
 }
 
 /// Closes the key on every path.
+#[cfg(windows)]
 struct KeyGuard(HKEY);
 
+#[cfg(windows)]
 impl Drop for KeyGuard {
     fn drop(&mut self) {
         // SAFETY: the handle came from a successful RegCreateKeyExW/RegOpenKeyExW and is closed once.
@@ -87,11 +96,13 @@ impl Drop for KeyGuard {
     }
 }
 
+#[cfg(windows)]
 fn is_missing(code: u32) -> bool {
     code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND
 }
 
 /// Reads a REG_SZ under `hive`, with the standard size loop on ERROR_MORE_DATA.
+#[cfg(windows)]
 fn read_string(hive: HKEY, key: &str, name: Option<&str>) -> Result<Option<String>, RegError> {
     let key_w = wide(key)?;
     let name_w = wide_opt(name)?;
@@ -138,15 +149,19 @@ fn read_string(hive: HKEY, key: &str, name: Option<&str>) -> Result<Option<Strin
 }
 
 /// The per-user registry. There is no constructor for another hive.
+#[cfg(windows)]
 pub struct WinRegistry {
     hive: HKEY,
 }
 
 // SAFETY: HKEY_CURRENT_USER is a process-wide pseudo handle, valid on every thread.
+#[cfg(windows)]
 unsafe impl Send for WinRegistry {}
 // SAFETY: the pseudo handle is read-only data; the registry API is thread safe.
+#[cfg(windows)]
 unsafe impl Sync for WinRegistry {}
 
+#[cfg(windows)]
 impl WinRegistry {
     pub fn current_user() -> Self {
         Self {
@@ -155,6 +170,7 @@ impl WinRegistry {
     }
 }
 
+#[cfg(windows)]
 impl Registry for WinRegistry {
     fn set_string(&self, key: &str, name: Option<&str>, value: &str) -> Result<(), RegError> {
         let key_w = subkey(key)?;
@@ -300,8 +316,10 @@ impl Registry for WinRegistry {
 }
 
 /// Read-only machine-wide strings (the log's session facts only). No trait, no write path.
+#[cfg(windows)]
 pub struct LocalMachineRead;
 
+#[cfg(windows)]
 impl LocalMachineRead {
     pub fn get_string(key: &str, name: &str) -> Option<String> {
         read_string(HKEY_LOCAL_MACHINE, key, Some(name))
@@ -420,10 +438,12 @@ impl Registry for FakeRegistry {
 }
 
 /// A throwaway subtree `HKCU\Software\FlareTest\<uuid>`; Drop deletes it.
+#[cfg(windows)]
 pub struct SandboxRoot {
     root: String,
 }
 
+#[cfg(windows)]
 impl SandboxRoot {
     pub fn new() -> Self {
         Self {
@@ -437,18 +457,69 @@ impl SandboxRoot {
     }
 }
 
+#[cfg(windows)]
 impl Default for SandboxRoot {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(windows)]
 impl Drop for SandboxRoot {
     fn drop(&mut self) {
         let reg = WinRegistry::current_user();
         let _ = reg.delete_tree(&self.root);
         // The parent key goes too when no parallel test still has a subtree under it.
         let _ = reg.delete_if_empty("Software\\FlareTest");
+    }
+}
+
+/// The per-user registry off Windows: there is none. Reads find nothing and writes are refused, so the
+/// Explorer verb (a Windows feature) is never installed; the Finder service is phase 6 of the port plan.
+#[cfg(not(windows))]
+pub struct WinRegistry;
+
+#[cfg(not(windows))]
+impl WinRegistry {
+    pub fn current_user() -> Self {
+        WinRegistry
+    }
+}
+
+#[cfg(not(windows))]
+impl Registry for WinRegistry {
+    fn set_string(&self, _key: &str, _name: Option<&str>, _value: &str) -> Result<(), RegError> {
+        Err(RegError {
+            code: 0,
+            what: "no registry on this platform",
+        })
+    }
+
+    fn get_string(&self, _key: &str, _name: Option<&str>) -> Result<Option<String>, RegError> {
+        Ok(None)
+    }
+
+    fn delete_tree(&self, _key: &str) -> Result<(), RegError> {
+        Ok(())
+    }
+
+    fn delete_if_empty(&self, _key: &str) -> Result<bool, RegError> {
+        Ok(false)
+    }
+
+    fn key_exists(&self, _key: &str) -> Result<bool, RegError> {
+        Ok(false)
+    }
+}
+
+/// macOS: no registry. Machine-wide strings are never found off Windows.
+#[cfg(not(windows))]
+pub struct LocalMachineRead;
+
+#[cfg(not(windows))]
+impl LocalMachineRead {
+    pub fn get_string(_key: &str, _name: &str) -> Option<String> {
+        None
     }
 }
 
@@ -523,8 +594,10 @@ mod tests {
         empty_rules(&FakeRegistry::new());
     }
 
+    #[cfg(windows)]
     struct Prefixed<'a>(&'a WinRegistry, String);
 
+    #[cfg(windows)]
     impl Registry for Prefixed<'_> {
         fn set_string(&self, k: &str, n: Option<&str>, v: &str) -> Result<(), RegError> {
             self.0.set_string(&format!("{}\\{k}", self.1), n, v)
@@ -543,6 +616,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn real_delete_if_empty_under_a_sandbox_root() {
         let sb = SandboxRoot::new();
@@ -550,6 +624,7 @@ mod tests {
         empty_rules(&Prefixed(&real, sb.classes()));
     }
 
+    #[cfg(windows)]
     #[test]
     fn real_round_trip_under_a_sandbox_root() {
         let sb = SandboxRoot::new();
@@ -573,6 +648,7 @@ mod tests {
         assert!(!WinRegistry::current_user().key_exists(&root).unwrap());
     }
 
+    #[cfg(windows)]
     #[test]
     fn real_value_with_unicode_and_quotes_round_trips() {
         let sb = SandboxRoot::new();
@@ -586,6 +662,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn real_a_long_value_over_the_first_buffer_size_round_trips() {
         let sb = SandboxRoot::new();
@@ -600,6 +677,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn real_a_missing_key_reads_none_and_deletes_ok() {
         let sb = SandboxRoot::new();
@@ -611,6 +689,7 @@ mod tests {
         assert!(!real.delete_if_empty(&key).unwrap());
     }
 
+    #[cfg(windows)]
     #[test]
     fn real_a_nul_in_a_string_is_refused_without_a_write() {
         let sb = SandboxRoot::new();

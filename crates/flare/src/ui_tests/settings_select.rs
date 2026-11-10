@@ -118,6 +118,10 @@ fn the_chosen_option_wears_the_accent_hi_ink_and_a_check() {
     }
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+)]
 #[test]
 fn the_font_options_are_drawn_in_their_own_face() {
     for s in SCALES {

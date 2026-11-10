@@ -410,6 +410,10 @@ mod tests {
         PathBuf::from(r"C:\Windows\Fonts")
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "the font list is read from the Windows registry (a D: path); macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn installed_faces_reads_the_registry_without_walking_the_font_folder() {
         // A folder holding a font file the fake registry does not list: it must not appear, and a

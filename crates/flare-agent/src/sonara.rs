@@ -250,6 +250,10 @@ mod tests {
         assert_eq!(sonara_home(&none), None);
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "the port owner check reads the Windows TCP table; macOS phase 4 of the port plan"
+    )]
     #[test]
     fn posts_the_tab_and_the_question_to_the_sonara_in_runtime_json() {
         let (port, server) = fake_sonara(2, "200 OK");
@@ -320,6 +324,10 @@ mod tests {
         ));
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "the port owner check reads the Windows TCP table; macOS phase 4 of the port plan"
+    )]
     #[test]
     fn a_non_200_is_false_and_a_slow_server_times_out() {
         // A 500 answer is not a success.

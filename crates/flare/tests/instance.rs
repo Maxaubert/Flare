@@ -3,6 +3,8 @@
 //! Runs the built binary through its two hidden, window-less modes: `--instance-probe` (the real
 //! startup, lock and hand-off server) and `--live-tabs <n>` (real shells, the close path). Every run
 //! has its own temp profile, so nothing here can reach the owner's running Flare.
+//! Windows-only for now: the single instance and the live tabs are Windows-only until macOS phases 2-3.
+#![cfg(windows)]
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};

@@ -1,11 +1,15 @@
 //! open_url: ShellExecuteW; the caller checks http(s) (Task 17). open_app_uri: an app link the person allowed, on its
 //! own, with no parameters (rule 252).
 
+#[cfg(windows)]
 use std::ptr;
 
+#[cfg(windows)]
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
+#[cfg(windows)]
 use crate::clipboard::utf16_with_nul;
 
 /// The link as the browser's command line may safely carry it: a host after the scheme, and every
@@ -39,9 +43,14 @@ pub fn open_url(url: &str) -> Result<(), String> {
     if !(lower.starts_with("http://") || lower.starts_with("https://")) {
         return Err("only http and https links open".to_string());
     }
-    let verb = utf16_with_nul("open");
     let escaped = escape_web_url(url)?;
-    let target = utf16_with_nul(&escaped);
+    open_escaped(&escaped)
+}
+
+#[cfg(windows)]
+fn open_escaped(escaped: &str) -> Result<(), String> {
+    let verb = utf16_with_nul("open");
+    let target = utf16_with_nul(escaped);
     // SAFETY: both strings are zero-terminated UTF-16 buffers that live across the call; the
     // null window, parameters and directory are all allowed by ShellExecuteW.
     let code = unsafe {
@@ -58,6 +67,24 @@ pub fn open_url(url: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("ShellExecuteW failed with {code}"))
+    }
+}
+
+/// macOS: `/usr/bin/open` hands the (already escaped) web link to the default browser.
+#[cfg(not(windows))]
+fn open_escaped(escaped: &str) -> Result<(), String> {
+    // sync-ok: `open` hands the link over and returns, like ShellExecuteW
+    let status = std::process::Command::new("/usr/bin/open")
+        .arg(escaped)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status() // sync-ok: `open` returns as soon as the browser has the link
+        .map_err(|e| format!("open failed: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("open failed with {status}"))
     }
 }
 
@@ -93,6 +120,7 @@ pub fn escape_app_uri(uri: &str) -> Result<String, String> {
 /// own question (rule 252). The link alone is handed to `ShellExecuteW` with the verb `open`: no parameters, no working
 /// folder, never through `cmd` or any shell of the user's (rule 188). The caller has classified it
 /// (`flare_surfaces::web::external_scheme`); a web address is refused here, as `open_url` is its path.
+#[cfg(windows)]
 pub fn open_app_uri(uri: &str) -> Result<(), String> {
     let lower = uri.to_ascii_lowercase();
     if lower.starts_with("http:") || lower.starts_with("https:") || lower.starts_with("file:") {
@@ -123,6 +151,7 @@ pub fn open_app_uri(uri: &str) -> Result<(), String> {
 /// [`open_app_uri`] as a worker thread of its own runs it: the shell may hand the link to a COM or DDE handler, so the
 /// thread is a single-threaded apartment with DDE off for the call, as `ShellExecute`'s documentation asks. Never on
 /// the UI thread (rule 34): the call does not return until the handler has answered.
+#[cfg(windows)]
 pub fn open_app_uri_on_worker(uri: &str) -> Result<(), String> {
     use windows_sys::Win32::System::Com::{
         COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
@@ -144,6 +173,7 @@ pub fn open_app_uri_on_worker(uri: &str) -> Result<(), String> {
 
 /// Is an app registered for `scheme` (`HKEY_CLASSES_ROOT\<scheme>` with a `URL Protocol` value)? A read of the
 /// registry only; a scheme that is not letters, digits, `+`, `-` and `.` is never looked up.
+#[cfg(windows)]
 pub fn url_handler_registered(scheme: &str) -> bool {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{HKEY_CLASSES_ROOT, RRF_RT_ANY, RegGetValueW};
@@ -172,6 +202,18 @@ pub fn url_handler_registered(scheme: &str) -> bool {
     rc == ERROR_SUCCESS
 }
 
+/// macOS: no app link opens yet; the Mac web panel (phase 5 of the port plan) brings the real one (port rule 1).
+#[cfg(not(windows))]
+pub fn open_app_uri_on_worker(_uri: &str) -> Result<(), String> {
+    Err("app links open on Windows only in this build".to_string())
+}
+
+/// macOS: no handler lookup yet (phase 5 of the port plan), so every scheme reads as having no app.
+#[cfg(not(windows))]
+pub fn url_handler_registered(_scheme: &str) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,6 +238,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)] // the Mac twin comes with the web panel (port phase 5)
     #[test]
     fn open_app_uri_refuses_a_web_address_a_file_and_a_path_before_windows_sees_it() {
         for bad in [
@@ -213,6 +256,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)] // the Mac twin comes with the web panel (port phase 5)
     #[test]
     fn a_scheme_that_is_not_one_is_never_looked_up() {
         for bad in ["", "a\\b", "x y", "..\\..\\x", &"a".repeat(40)] {

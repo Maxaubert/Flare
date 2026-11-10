@@ -480,6 +480,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn an_openable_file_resolves_to_itself_and_its_canonical_form() {
         let (_d, root) = tree();
@@ -523,6 +527,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_file_for_a_viewer_is_one_of_its_extensions_under_the_same_name_rules() {
         let exts = ["glb", "stl"];
@@ -554,6 +562,10 @@ mod tests {
         assert!(resolve_file_of(&root, r"\\server\share\a.glb", "", &exts).is_none());
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_page_resolves_in_the_backend_and_a_script_a_folder_or_a_share_does_not() {
         let dir = tempfile::tempdir().unwrap();
@@ -611,6 +623,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn path_kinds_says_what_exists() {
         let (_d, root) = tree();
@@ -636,6 +652,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn open_a_file_and_a_folder() {
         let (_d, root) = tree();
@@ -651,6 +671,10 @@ mod tests {
         assert_eq!(lock(&r.revealed).len(), 0);
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_runnable_file_is_revealed_never_run() {
         let (_d, root) = tree();
@@ -663,6 +687,10 @@ mod tests {
         assert_eq!(*lock(&r.revealed), vec![format!("{root}\\run.bat")]);
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn reveal_on_request_and_nothing_for_missing() {
         let (_d, root) = tree();
@@ -741,6 +769,10 @@ mod tests {
         assert!(may_open(r"C:\x y\ok.txt"));
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn an_unknown_type_is_revealed_never_opened() {
         let (d, root) = tree();
@@ -769,6 +801,10 @@ mod tests {
         assert!(lock(&r.opened).is_empty());
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn the_extension_comes_from_the_canonical_path() {
         // A link hides the real extension: the real one decides.
@@ -776,7 +812,11 @@ mod tests {
         let target = d.path().join("evil.exe");
         std::fs::write(&target, b"x").unwrap();
         let link = d.path().join("innocent.txt");
-        if std::os::windows::fs::symlink_file(&target, &link).is_err() {
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(&target, &link);
+        #[cfg(not(windows))]
+        let made = std::os::unix::fs::symlink(&target, &link);
+        if made.is_err() {
             return; // no symlink privilege on this machine
         }
         let r = Rec::default();
@@ -787,6 +827,10 @@ mod tests {
         assert!(lock(&r.opened).is_empty());
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_folder_uses_open_folder_a_file_never_does() {
         let (_d, root) = tree();
@@ -810,6 +854,10 @@ mod tests {
         assert_eq!(lock(&r.folders).len(), 1);
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_folder_explorer_did_not_take_is_never_handed_to_the_default_verb() {
         // The stat said Dir; when the folder opener fails nothing opens (the name may have become

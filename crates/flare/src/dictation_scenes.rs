@@ -327,6 +327,10 @@ mod tests {
 
     /// The pill, in the real window: it appears (the picture differs from the same window without it), only
     /// at the bottom centre of the terminal area, and nothing else in the picture moves.
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn the_pill_scenes_draw_the_pill_at_the_bottom_centre_at_every_scale() {
         for name in [
@@ -371,6 +375,10 @@ mod tests {
 
     /// The Dictation page through the real Settings frame: the page title, the cards in Prism Terminal's order, the
     /// label of every control, and ink in the label column (the old sheets drew bare controls with no labels).
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn the_page_scenes_show_the_real_page_with_its_labels_at_every_scale() {
         for scale in SCALES {
@@ -419,6 +427,10 @@ mod tests {
     }
 
     /// The models card at a download in progress, the question, and the foot of the page.
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn the_models_scenes_show_the_rows_their_state_and_the_question() {
         for scale in SCALES {

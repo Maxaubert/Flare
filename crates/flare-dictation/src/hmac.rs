@@ -37,6 +37,7 @@ pub fn same_mac(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// Fills `buf` from the system's random number generator. False when Windows refuses.
+#[cfg(windows)]
 pub fn random_bytes(buf: &mut [u8]) -> bool {
     use windows_sys::Win32::Security::Cryptography::{
         BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
@@ -52,6 +53,15 @@ pub fn random_bytes(buf: &mut [u8]) -> bool {
         )
     };
     status >= 0
+}
+
+/// Fills `buf` from the kernel's random number generator (`/dev/urandom`). False when it cannot be read.
+#[cfg(not(windows))]
+pub fn random_bytes(buf: &mut [u8]) -> bool {
+    use std::io::Read;
+    std::fs::File::open("/dev/urandom") // sync-ok: a device read of a few bytes, returns at once
+        .and_then(|mut f| f.read_exact(buf))
+        .is_ok()
 }
 
 /// A fresh 16-byte nonce from the system's random number generator (all zeros only if Windows refuses, which

@@ -3,6 +3,8 @@
 //! queue tests; the Parakeet ones are Task 14's). Nothing is mocked, because every rule here is about
 //! processes and sockets (who is alive, who was killed, what went over the wire): the stand-in is
 //! `fake-whisper-server`, started through the engine's `command` seam.
+//! Windows-only until macOS phase 7 of the port plan (the reaping job, the named-pipe link, the pid checks).
+#![cfg(windows)]
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;

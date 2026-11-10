@@ -5,6 +5,7 @@
 //! that cannot say never loses its motion.
 
 /// `SPI_GETCLIENTAREAANIMATION`: the system switch for animation inside client areas.
+#[cfg(windows)]
 const SPI_GETCLIENTAREAANIMATION: u32 = 0x1042;
 
 /// Pure rule: a failed call means animate; otherwise the switch is on when its value is non-zero.

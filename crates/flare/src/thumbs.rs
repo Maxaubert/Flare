@@ -658,6 +658,10 @@ mod tests {
         answers.0.lock().unwrap().clone()
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_picture_is_decoded_once_and_comes_from_memory_until_it_is_edited() {
         let dir = tempfile::tempdir().unwrap();
@@ -708,6 +712,10 @@ mod tests {
         assert!(wait_answers(&answers, 1)[0].1.is_none());
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn only_the_newest_job_waits_behind_a_running_one() {
         let answers = Arc::<Answers>::default();

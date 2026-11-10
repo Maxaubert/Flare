@@ -4,13 +4,17 @@
 
 use std::collections::{HashMap, HashSet};
 
+#[cfg(windows)]
 use windows_sys::Wdk::System::Threading::{
     NtQueryInformationProcess, ProcessCommandLineInformation,
 };
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, UNICODE_STRING};
+#[cfg(windows)]
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,11 +83,15 @@ pub fn cmd_from_utf16(units: &[u16]) -> String {
     }
 }
 
+#[cfg(windows)]
 const STATUS_INFO_LENGTH_MISMATCH: i32 = 0xC000_0004u32 as i32;
+#[cfg(windows)]
 const STATUS_BUFFER_OVERFLOW: i32 = 0x8000_0005u32 as i32;
+#[cfg(windows)]
 const STATUS_BUFFER_TOO_SMALL: i32 = 0xC000_0023u32 as i32;
 
 /// The command line of one process; empty when it cannot be opened or read.
+#[cfg(windows)]
 fn command_line(pid: u32) -> String {
     // SAFETY: OpenProcess takes plain values; a null handle means failure and is checked.
     let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
@@ -140,6 +148,7 @@ fn command_line(pid: u32) -> String {
 }
 
 /// Waits until process `pid` has ended, at most `max`. True when it is gone (or was never there to open).
+#[cfg(windows)]
 pub fn wait_for_exit(pid: u32, max: std::time::Duration) -> bool {
     use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
     use windows_sys::Win32::System::Threading::{PROCESS_SYNCHRONIZE, WaitForSingleObject};
@@ -157,6 +166,7 @@ pub fn wait_for_exit(pid: u32, max: std::time::Duration) -> bool {
 }
 
 /// When the process was created (FILETIME ticks); None when it cannot be opened or read.
+#[cfg(windows)]
 fn creation_time(pid: u32) -> Option<u64> {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::Threading::GetProcessTimes;
@@ -179,6 +189,7 @@ fn creation_time(pid: u32) -> Option<u64> {
 
 /// BLOCKING (the poll's worker). Every process as (pid, ppid); `cmd` is read ONLY for descendants of
 /// `roots` and kept only when `wanted(&cmd)` says so. None when the snapshot itself fails or is empty.
+#[cfg(windows)]
 pub fn snapshot_processes(roots: &[u32], wanted: &dyn Fn(&str) -> bool) -> Option<Vec<ProcEntry>> {
     // SAFETY: plain values in; an invalid handle is checked.
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
@@ -229,16 +240,77 @@ pub fn snapshot_processes(roots: &[u32], wanted: &dyn Fn(&str) -> bool) -> Optio
     )
 }
 
+/// Waits until process `pid` has ended, at most `max`. True when it is gone. Off Windows it polls
+/// `kill(pid, 0)`, which sends no signal and only asks whether the pid exists. Phase 2 of the port
+/// plan replaces the poll with a kqueue `NOTE_EXIT` wait.
+#[cfg(not(windows))]
+pub fn wait_for_exit(pid: u32, max: std::time::Duration) -> bool {
+    use std::time::{Duration, Instant};
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    const ESRCH: i32 = 3;
+    let Ok(pid) = i32::try_from(pid) else {
+        return true;
+    };
+    if pid <= 0 {
+        // 0 and negative pids name process groups, never one process.
+        return true;
+    }
+    let alive = || {
+        // SAFETY: signal 0 sends nothing; kill only checks that the pid exists.
+        if unsafe { kill(pid, 0) } == 0 {
+            return true;
+        }
+        // EPERM: it exists but belongs to someone else. Only ESRCH means it is gone.
+        std::io::Error::last_os_error().raw_os_error() != Some(ESRCH)
+    };
+    let started = Instant::now();
+    loop {
+        if !alive() {
+            return true;
+        }
+        let left = max.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return false;
+        }
+        std::thread::sleep(left.min(Duration::from_millis(50))); // sync-ok: startup only, before any window
+    }
+}
+
+/// macOS: phase 2 of the port plan (libproc for the child tree). None: the snapshot fails.
+#[cfg(not(windows))]
+pub fn snapshot_processes(
+    _roots: &[u32],
+    _wanted: &dyn Fn(&str) -> bool,
+) -> Option<Vec<ProcEntry>> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn waiting_for_an_ended_process_returns_at_once_and_a_live_one_times_out() {
         let mut child = std::process::Command::new("cmd")
             .args(["/c", "exit"])
             .spawn()
             .unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        assert!(wait_for_exit(pid, std::time::Duration::from_secs(2)));
+        let me = std::process::id();
+        let t = std::time::Instant::now();
+        assert!(!wait_for_exit(me, std::time::Duration::from_millis(100)));
+        assert!(t.elapsed() >= std::time::Duration::from_millis(90));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn waiting_for_an_ended_process_returns_at_once_and_a_live_one_times_out() {
+        let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
         let pid = child.id();
         child.wait().unwrap();
         assert!(wait_for_exit(pid, std::time::Duration::from_secs(2)));
@@ -288,6 +360,7 @@ mod tests {
         assert_eq!(cmd_from_utf16(&big).chars().count(), CMD_CAP);
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_real_child_command_line_is_read_and_filtered() {
         use std::os::windows::process::CommandExt;
@@ -322,6 +395,7 @@ mod tests {
         assert!(grand.cmd.is_empty());
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_snapshot_includes_every_process_even_without_roots() {
         let rows = snapshot_processes(&[], &|_| true).expect("snapshot");
@@ -333,6 +407,7 @@ mod tests {
         assert!(rows.iter().all(|r| r.cmd.is_empty()));
     }
 
+    #[cfg(windows)]
     #[test]
     fn an_unopenable_process_is_not_an_error() {
         assert!(snapshot_processes(&[4, 1], &|_| true).is_some());

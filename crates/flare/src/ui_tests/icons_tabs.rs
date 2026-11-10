@@ -508,6 +508,10 @@ fn chevron_draws_at_full_size_at_every_scale() {
 
 /// The four tab-strip glyphs keep the centre they had before their boxes grew. The centres are device pixels,
 /// recorded from the build before the change, in `SCALES` order, and each must hold within half a pixel.
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+)]
 #[test]
 fn centre_of_the_glyph_is_unchanged() {
     type Measure = fn(f32) -> Drawn;

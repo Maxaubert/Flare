@@ -2461,6 +2461,10 @@ mod tests {
         r.pump();
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_printed_path_lights_up_after_the_worker_answers() {
         let dir = tempfile::tempdir().unwrap();
@@ -2480,6 +2484,10 @@ mod tests {
     }
 
     /// The owner's log path (2026-10-24): printed before the script that writes it had started, it stayed plain.
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_file_made_after_its_path_was_printed_lights_up_on_a_quiet_screen() {
         let dir = tempfile::tempdir().unwrap();
@@ -2509,6 +2517,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_path_link_click_opens_through_the_allowlist_on_a_worker() {
         let dir = tempfile::tempdir().unwrap();
@@ -2557,6 +2569,10 @@ mod tests {
             .collect()
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_click_on_a_text_file_or_a_picture_asks_for_a_preview_and_a_script_is_still_revealed() {
         let dir = tempfile::tempdir().unwrap();
@@ -2591,6 +2607,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn show_in_side_panel_asks_for_the_preview_the_click_asks_for_and_opens_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -2661,6 +2681,10 @@ mod tests {
         assert!(r.openers.records().is_empty(), "{:?}", r.openers.records());
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn with_previews_off_no_preview_is_asked_for() {
         let dir = tempfile::tempdir().unwrap();
@@ -2731,6 +2755,10 @@ mod tests {
         matches!(last_thumb(r), Some(Some(_)))
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn resting_on_an_image_path_shows_its_thumbnail_after_the_rest_and_not_before() {
         let dir = tempfile::tempdir().unwrap();
@@ -2784,6 +2812,10 @@ mod tests {
         r
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn resting_on_a_picture_found_through_a_shown_folder_shows_it_after_the_no_for_the_cwd_ran_out()
     {
@@ -2797,6 +2829,10 @@ mod tests {
         assert_eq!(caption, "two.png  6 x 3");
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_click_on_a_path_found_through_a_shown_folder_opens_it_after_the_no_for_the_cwd_ran_out() {
         let cwd = tempfile::tempdir().unwrap();
@@ -2842,6 +2878,10 @@ mod tests {
         assert!(!has_thumb_msg(&r));
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn turning_the_setting_off_takes_the_picture_down() {
         let dir = tempfile::tempdir().unwrap();
@@ -2853,6 +2893,10 @@ mod tests {
         assert_eq!(last_thumb(&r), Some(None));
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn scrolling_under_a_still_pointer_takes_the_picture_down_on_the_next_tick() {
         let dir = tempfile::tempdir().unwrap();
@@ -2868,6 +2912,10 @@ mod tests {
     }
 
     /// The bug the per-tick look exists for: a still pointer, another picture's path scrolled under it.
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn another_picture_scrolled_under_the_cell_is_not_shown_as_the_old_one() {
         let dir = tempfile::tempdir().unwrap();
@@ -2889,6 +2937,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn an_answer_for_a_link_that_scrolled_away_while_it_loaded_never_goes_up() {
         let dir = tempfile::tempdir().unwrap();
@@ -2904,6 +2956,10 @@ mod tests {
         assert!(r.thumbs.borrow().is_empty());
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn moving_off_the_link_takes_the_picture_down() {
         let dir = tempfile::tempdir().unwrap();
@@ -2914,6 +2970,10 @@ mod tests {
         assert_eq!(last_thumb(&r), Some(None));
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn the_pointer_leaving_the_grid_takes_the_picture_down() {
         let dir = tempfile::tempdir().unwrap();
@@ -2924,6 +2984,10 @@ mod tests {
         assert_eq!(last_thumb(&r), Some(None));
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_key_a_press_and_find_each_take_it_down_and_a_nudge_does_not_bring_it_back() {
         let dir = tempfile::tempdir().unwrap();
@@ -2960,6 +3024,10 @@ mod tests {
         assert_eq!(last_thumb(&r), Some(None), "Find");
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_tab_switch_takes_it_down() {
         let dir = tempfile::tempdir().unwrap();
@@ -2970,6 +3038,10 @@ mod tests {
         assert_eq!(last_thumb(&r), Some(None));
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_resize_and_a_dpi_change_each_take_it_down() {
         let dir = tempfile::tempdir().unwrap();
@@ -2988,6 +3060,10 @@ mod tests {
         assert_eq!(last_thumb(&r), Some(None), "the DPI");
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_tick_keeps_checking_while_a_picture_is_up_and_stops_when_it_is_gone() {
         let dir = tempfile::tempdir().unwrap();
@@ -3001,6 +3077,10 @@ mod tests {
         assert!(r.tick(0).next_due_ms.is_none_or(|d| d > now + 50));
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_folder_with_a_pictures_name_and_a_broken_picture_show_nothing_and_open_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -3032,6 +3112,10 @@ mod tests {
         assert!(r.thumbs.borrow().is_empty());
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_path_menu_pick_re_resolves_and_never_opens_abs_directly() {
         let dir = tempfile::tempdir().unwrap();

@@ -533,6 +533,10 @@ fn an_empty_list_says_so() {
     assert_eq!(h.comp.get_ov_rows().row_count(), 0);
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+)]
 #[test]
 fn the_tip_reports_its_size_and_wraps_at_320() {
     let h = harness(1.0);

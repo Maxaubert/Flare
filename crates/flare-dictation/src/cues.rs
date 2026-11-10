@@ -136,6 +136,7 @@ fn worker() -> &'static std::sync::mpsc::Sender<(Cue, Sink)> {
 }
 
 /// Hands the WAV to Windows, asynchronously, with no default sound on failure.
+#[cfg(windows)]
 fn play_memory(bytes: &[u8]) {
     use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
     // SAFETY: with SND_MEMORY the buffer is read until the sound stops or the next play. The worker keeps `bytes`
@@ -148,6 +149,10 @@ fn play_memory(bytes: &[u8]) {
         );
     }
 }
+
+/// macOS: phase 7 of the port plan (the cues through CoreAudio). Silent until then.
+#[cfg(not(windows))]
+fn play_memory(_bytes: &[u8]) {}
 
 #[cfg(test)]
 mod tests {

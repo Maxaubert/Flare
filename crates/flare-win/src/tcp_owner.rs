@@ -13,6 +13,7 @@ pub fn only_owner(owners: &[u32], pid: u32) -> bool {
 
 /// The listener table of one address family as the system gives it (`TCP_TABLE_OWNER_PID_LISTENER`): the bytes of the
 /// table, or None when it cannot be read.
+#[cfg(windows)]
 fn listener_table(family: u16) -> Option<Vec<u8>> {
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         GetExtendedTcpTable, TCP_TABLE_OWNER_PID_LISTENER,
@@ -58,6 +59,7 @@ fn listener_table(family: u16) -> Option<Vec<u8>> {
 
 /// The pids listening on `port` in one family's table; None when the table cannot be read (which is not the same as
 /// "nobody listens").
+#[cfg(windows)]
 fn read_listeners(family: u16, port: u16) -> Option<Vec<u32>> {
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID,
@@ -104,12 +106,14 @@ fn read_listeners(family: u16, port: u16) -> Option<Vec<u32>> {
 
 /// The pids of the processes listening on IPv4 `port`, from the TCP table. Empty when nobody is, or
 /// when the table cannot be read (which then reads as "not trusted").
+#[cfg(windows)]
 pub fn listener_pids(port: u16) -> Vec<u32> {
     use windows_sys::Win32::Networking::WinSock::AF_INET;
     read_listeners(AF_INET, port).unwrap_or_default()
 }
 
 /// The pids of the processes listening on IPv6 `port` (a server on `[::1]` or `[::]`), from the TCP table.
+#[cfg(windows)]
 pub fn listener_pids_v6(port: u16) -> Vec<u32> {
     use windows_sys::Win32::Networking::WinSock::AF_INET6;
     read_listeners(AF_INET6, port).unwrap_or_default()
@@ -122,6 +126,7 @@ pub fn is_listening(port: u16) -> bool {
 }
 
 /// The most process rows one snapshot is read for (a machine has thousands, never millions).
+#[cfg(windows)]
 const SNAPSHOT_MAX: usize = 200_000;
 
 /// One process of a snapshot: its pid, its parent's pid and when it was created (FILETIME ticks; 0 when that could
@@ -158,6 +163,7 @@ pub fn descendants(rows: &[ProcRow], root: u32) -> HashSet<u32> {
 }
 
 /// The creation time of a process, or 0 when it cannot be opened or read.
+#[cfg(windows)]
 fn creation_time(pid: u32) -> u64 {
     use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
     use windows_sys::Win32::System::Threading::{
@@ -185,6 +191,7 @@ fn creation_time(pid: u32) -> u64 {
 }
 
 /// Every process from one Toolhelp snapshot (bounded), with its creation time. None when the snapshot cannot be taken.
+#[cfg(windows)]
 fn process_rows() -> Option<Vec<ProcRow>> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -252,6 +259,7 @@ pub fn classify(v4: Option<&[u32]>, v6: Option<&[u32]>, tree: Option<&HashSet<u3
 }
 
 /// Looks at `port` against the tree of `root` (the tab's shell). Run it on a worker.
+#[cfg(windows)]
 pub fn tree_look(port: u16, root: u32) -> TreeLook {
     use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
     let v4 = read_listeners(AF_INET, port);
@@ -276,10 +284,31 @@ pub fn listening_in_tree(port: u16, root: u32) -> bool {
     root != 0 && tree_look(port, root) == TreeLook::InTree
 }
 
+/// macOS: phase 4 of the port plan (the socket table through libproc). Until then no table can be
+/// read: nobody is ever trusted as a port's owner.
+#[cfg(not(windows))]
+pub fn listener_pids(_port: u16) -> Vec<u32> {
+    Vec::new()
+}
+
+/// macOS: phase 4 of the port plan; empty until then.
+#[cfg(not(windows))]
+pub fn listener_pids_v6(_port: u16) -> Vec<u32> {
+    Vec::new()
+}
+
+/// macOS: phase 4 of the port plan; both tables read as unreadable until then.
+#[cfg(not(windows))]
+pub fn tree_look(_port: u16, _root: u32) -> TreeLook {
+    classify(None, None, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
+    #[cfg(windows)]
+    use std::net::Ipv6Addr;
+    use std::net::{Ipv4Addr, TcpListener};
 
     #[test]
     fn only_the_servers_own_pid_is_trusted() {
@@ -290,6 +319,7 @@ mod tests {
         assert!(!only_owner(&[7, 8], 7));
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_listener_in_this_process_names_this_process() {
         let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
@@ -299,6 +329,7 @@ mod tests {
         assert!(listener_pids(port).is_empty());
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_port_is_listening_while_a_listener_holds_it_on_either_family() {
         let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
@@ -375,6 +406,7 @@ mod tests {
         assert_eq!(classify(Some(&[7]), Some(&[]), None), TreeLook::Unreadable);
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_port_held_by_a_stranger_is_foreign_not_nobody() {
         let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
@@ -385,6 +417,7 @@ mod tests {
         assert_eq!(tree_look(port, std::process::id()), TreeLook::Nobody);
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_port_owned_by_another_process_is_not_in_the_tree() {
         let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");

@@ -742,6 +742,10 @@ mod tests {
         assert!((u.advance - 1200.0).abs() <= 1.0);
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn ascii_is_mask_with_ink() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -757,6 +761,10 @@ mod tests {
         assert!(r.glyph(&key("")).is_none());
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn cjk_falls_back() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -772,6 +780,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn emoji_is_color() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -786,6 +798,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn bold_differs_from_regular() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -805,6 +821,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn an_unknown_stack_falls_to_a_monospace_face() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -829,6 +849,10 @@ mod tests {
         assert!((w16 / w13 - 16.0 / 13.0).abs() < 0.1, "{w13} -> {w16}");
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn the_same_look_twice_changes_nothing() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -841,6 +865,10 @@ mod tests {
         assert_eq!(r.generation(), g + 1);
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn a_font_change_clears_the_cache() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -850,6 +878,10 @@ mod tests {
         assert_eq!(r.cached(), 0);
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn scale_changes_size() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -873,6 +905,10 @@ mod tests {
         s
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn glyph_images_are_identical_to_the_all_fonts_build_for_the_theme_sample() {
         let text = sample_text();
@@ -972,6 +1008,10 @@ mod tests {
         assert!(r.uncovered.len() <= UNCOVERED_MAX);
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn the_glyph_cache_is_bounded() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -1032,6 +1072,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn a_fallback_answer_wakes_the_window() {
         let (mut r, gate) = gated();
@@ -1057,6 +1101,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn paint_never_blocks_on_a_family_load() {
         // Audit M2: a character no loaded font covers used to read cmaps and load a family inside
@@ -1222,6 +1270,10 @@ mod tests {
         assert!(glyph_settled(&mut r, &key("\u{E0C0}")).is_some());
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    )]
     #[test]
     fn box_drawing_and_shades_still_come_from_the_font() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);

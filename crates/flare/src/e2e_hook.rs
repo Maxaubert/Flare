@@ -9,6 +9,7 @@
 #![allow(dead_code)] // the dispatcher (Task 8) and the harness use the rest
 
 use std::cell::RefCell;
+#[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::rc::Rc;
@@ -19,17 +20,23 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use flare_e2e_proto::{MAX_LINE_BYTES, PROTO_VERSION, Reply, Request};
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, GetLastError, INVALID_HANDLE_VALUE, LocalFree,
 };
+#[cfg(windows)]
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
+#[cfg(windows)]
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+#[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_FIRST_PIPE_INSTANCE, FlushFileBuffers, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
 };
+#[cfg(windows)]
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
+#[cfg(windows)]
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
@@ -195,7 +202,10 @@ impl Drop for HookServer {
         if let Some(thread) = self.thread.take() {
             // SAFETY: the thread handle is valid while the JoinHandle lives; this wakes a blocking
             // ReadFile or ConnectNamedPipe on that thread.
-            unsafe { CancelSynchronousIo(thread.as_raw_handle() as _) };
+            #[cfg(windows)]
+            unsafe {
+                CancelSynchronousIo(thread.as_raw_handle() as _)
+            };
             // A connect unblocks an accept that began after the cancel; failure just means no waiter.
             let _ = std::fs::OpenOptions::new() // sync-ok: test hook teardown, only under --e2e
                 .read(true)
@@ -216,6 +226,7 @@ impl Drop for HookServer {
     }
 }
 
+#[cfg(windows)]
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
@@ -225,6 +236,7 @@ pub fn pipe_sddl(sid: &str) -> String {
     flare_win::single_instance::dacl_sddl(sid)
 }
 
+#[cfg(windows)]
 fn create_pipe(name: &str) -> Result<usize, HookError> {
     let who = flare_win::single_instance::current_identity()
         .ok_or_else(|| HookError::Pipe("could not read the current user".into()))?;
@@ -273,6 +285,7 @@ fn create_pipe(name: &str) -> Result<usize, HookError> {
     Ok(handle as usize)
 }
 
+#[cfg(windows)]
 fn serve(raw: usize, stop: &AtomicBool, dispatch: &Dispatch) {
     loop {
         if stop.load(Ordering::SeqCst) {
@@ -295,6 +308,7 @@ fn serve(raw: usize, stop: &AtomicBool, dispatch: &Dispatch) {
     unsafe { CloseHandle(raw as _) };
 }
 
+#[cfg(windows)]
 fn read_chunk(raw: usize, buf: &mut [u8]) -> usize {
     let mut read = 0u32;
     // SAFETY: valid pipe handle and buffer; blocks until data, a close or a cancel.
@@ -310,6 +324,7 @@ fn read_chunk(raw: usize, buf: &mut [u8]) -> usize {
     if ok == 0 { 0 } else { read as usize }
 }
 
+#[cfg(windows)]
 fn write_all(raw: usize, mut bytes: &[u8]) -> bool {
     while !bytes.is_empty() {
         let mut written = 0u32;
@@ -435,6 +450,28 @@ fn handle_line(raw: usize, text: &str, dispatch: &Dispatch) -> bool {
     }
 }
 
+// ---- off Windows: the Mac E2E hook is a Unix socket (port plan, "Ongoing"); refused until then ----
+
+#[cfg(not(windows))]
+fn create_pipe(_name: &str) -> Result<usize, HookError> {
+    Err(HookError::Pipe(
+        "the test hook is not built on this platform yet".into(),
+    ))
+}
+
+#[cfg(not(windows))]
+fn serve(_raw: usize, _stop: &AtomicBool, _dispatch: &Dispatch) {}
+
+#[cfg(not(windows))]
+fn read_chunk(_raw: usize, _buf: &mut [u8]) -> usize {
+    0
+}
+
+#[cfg(not(windows))]
+fn write_all(_raw: usize, _bytes: &[u8]) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,6 +552,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_hello_round_trips_without_the_ui_thread() {
         let dir = profile();
@@ -530,6 +568,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_request_reaches_the_dispatch_and_its_answer_comes_back() {
         let dir = profile();
@@ -556,6 +595,7 @@ mod tests {
         ));
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_second_server_on_the_same_profile_cannot_take_the_pipe() {
         let dir = profile();
@@ -567,6 +607,7 @@ mod tests {
         drop(first);
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_pipe_is_refused_to_another_user() {
         let sddl = pipe_sddl("S-1-5-21-1-2-3-1001");
@@ -578,6 +619,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn an_unanswered_request_times_out_with_an_error() {
         let dir = profile();
@@ -608,6 +650,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_latency_request_may_wait_as_long_as_its_own_timeout() {
         let base = Duration::from_secs(10);
@@ -625,6 +668,7 @@ mod tests {
         assert_eq!(reply_limit(&probe, base), base);
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_slow_latency_answer_is_delivered_not_cut_off() {
         let dir = profile();
@@ -643,6 +687,7 @@ mod tests {
         assert_eq!(reply, Reply::Latency { ms: 400.0 });
     }
 
+    #[cfg(windows)]
     #[test]
     fn dropping_the_server_returns_even_with_a_client_connected() {
         let dir = profile();

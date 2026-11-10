@@ -19,7 +19,6 @@ serde_json.workspace = true
 sha2.workspace = true
 uuid.workspace = true
 png.workspace = true
-windows-sys.workspace = true
 flare-e2e-proto = { path = "../../crates/flare-e2e-proto" }
 flare-win = { path = "../../crates/flare-win" }
 flare-agent = { path = "../../crates/flare-agent" }
@@ -30,6 +29,9 @@ flare-tabs = { path = "../../crates/flare-tabs" }
 flare-settings = { path = "../../crates/flare-settings" }
 flare-dictation = { path = "../../crates/flare-dictation" }
 flare-ctl = { path = "../../crates/flare-ctl" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
 
 [lints]
 workspace = true

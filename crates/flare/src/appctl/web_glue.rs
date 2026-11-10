@@ -27,9 +27,7 @@ impl AppCtl {
         let Some(hwnd) = self.app().and_then(|a| crate::window::hwnd_of(&a)) else {
             return false;
         };
-        // SAFETY: GetForegroundWindow takes no arguments and reads the desktop's state.
-        let fg = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
-        fg as isize == hwnd
+        flare_win::taskbar_flash::is_foreground(hwnd)
     }
 
     /// How the browser is made (startup; the tests hand a stand-in).

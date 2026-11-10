@@ -11,6 +11,7 @@
 //! - `client`: the client library, over any wire.
 //! - `text`: words from outside made safe for a model (one copy for both sides).
 //! - `pipe` (Windows): the named pipe, its owner-only descriptor, the accept loop, `connect`.
+//!   Elsewhere `pipe_stub.rs` stands in (macOS: phase 4 of the port plan).
 //!
 //! The contract is `docs/surfaces/protocol.md`; this crate must stay app-neutral so the same rules
 //! can be ported to Prism Terminal.
@@ -20,10 +21,15 @@ pub mod decor;
 pub mod framing;
 pub mod grant;
 pub mod method;
+#[cfg(windows)]
+pub mod pipe;
+#[cfg(not(windows))]
+#[path = "pipe_stub.rs"]
 pub mod pipe;
 pub mod proto;
 pub mod session;
 pub mod text;
+#[cfg(windows)]
 mod winid;
 
 pub use client::{Client, ClientError, HelloInfo, HelloParams};

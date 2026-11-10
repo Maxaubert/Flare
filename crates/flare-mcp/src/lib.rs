@@ -1686,6 +1686,7 @@ mod tests {
         assert!(d.description.contains("error"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn show_html_routes_html_or_a_path_and_never_both() {
         let call = |args: Value, ch: &mut Fake| {
@@ -1977,6 +1978,7 @@ app", "loaded": true}))),
         assert!(text_of(&r).contains("only http, https"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn show_image_routes_to_view_image_with_an_absolute_path() {
         let mut ch = Fake::default();

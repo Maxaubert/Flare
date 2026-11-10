@@ -9,13 +9,21 @@
 //! move the pointer over a known colour and left-click. Expected output: `Picked("#rrggbb")`
 //! with that colour. A right-click or Escape prints `Cancelled`.
 
+#[cfg(windows)]
 use std::cell::{Cell, RefCell};
+#[cfg(windows)]
 use std::ptr::null;
+#[cfg(windows)]
 use std::sync::Once;
-use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(any(windows, test))]
+use std::sync::atomic::AtomicUsize;
+#[cfg(any(windows, test))]
+use std::sync::atomic::Ordering;
 use std::thread;
 
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+#[cfg(windows)]
 use windows_sys::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, BitBlt, CAPTUREBLT, COLORONCOLOR,
     CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, CreateSolidBrush, DIB_RGB_COLORS,
@@ -23,14 +31,19 @@ use windows_sys::Win32::Graphics::Gdi::{
     HDC, HGDIOBJ, InvalidateRect, PAINTSTRUCT, ReleaseDC, SRCCOPY, SelectObject, SetBkMode,
     SetStretchBltMode, SetTextColor, StretchBlt, TRANSPARENT, UpdateWindow,
 };
+#[cfg(windows)]
 use windows_sys::Win32::Graphics::Gdi::{DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER};
+#[cfg(windows)]
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
 };
+#[cfg(windows)]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, SetFocus, VK_ESCAPE,
 };
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
     GetMessageW, GetSystemMetrics, IDC_CROSS, LoadCursorW, MSG, PostQuitMessage, RegisterClassW,
@@ -40,7 +53,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_PAINT, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
+#[cfg(windows)]
 pub use crate::eyedrop_math::Snapshot;
+#[cfg(windows)]
 use crate::eyedrop_math::{
     LOUPE_CELL_PX, LOUPE_CELLS, caption_ink, hex_of, loupe_origin, loupe_source,
 };
@@ -67,6 +82,7 @@ pub fn pick_seam(env: Option<&str>) -> Option<PickResult> {
 }
 
 /// How many pick windows this process has created (tests assert the seam makes none).
+#[cfg(any(windows, test))]
 static WINDOWS_CREATED: AtomicUsize = AtomicUsize::new(0);
 
 /// Asks for a colour. The seam answers at once with no window; else a worker thread owns the
@@ -87,10 +103,12 @@ pub fn pick_colour(seam: Option<String>, done: impl FnOnce(PickResult) + Send + 
     }
 }
 
+#[cfg(windows)]
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
+#[cfg(windows)]
 fn bitmap_info(w: i32, h: i32) -> BITMAPINFO {
     BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
@@ -111,6 +129,7 @@ fn bitmap_info(w: i32, h: i32) -> BITMAPINFO {
 }
 
 /// Copies the whole virtual screen (physical pixels) into a snapshot.
+#[cfg(windows)]
 pub fn capture_virtual_screen() -> Result<Snapshot, String> {
     // SAFETY: plain metric reads.
     let (x, y, w, h) = unsafe {
@@ -178,10 +197,14 @@ pub fn capture_virtual_screen() -> Result<Snapshot, String> {
     }
 }
 
+#[cfg(windows)]
 const LOUPE_SIDE: u32 = LOUPE_CELLS * LOUPE_CELL_PX + 2;
+#[cfg(windows)]
 const CAPTION_H: u32 = 22;
+#[cfg(windows)]
 const LOUPE_BOX: (u32, u32) = (LOUPE_SIDE, LOUPE_SIDE + CAPTION_H);
 
+#[cfg(windows)]
 struct State {
     snap: Snapshot,
     mem: HDC,
@@ -191,17 +214,20 @@ struct State {
     pointer: Option<(i32, i32)>,
 }
 
+#[cfg(windows)]
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
     static RESULT: Cell<Option<PickResult>> = const { Cell::new(None) };
 }
 
+#[cfg(windows)]
 fn rgb_ref(c: [u8; 3]) -> u32 {
     u32::from(c[0]) | (u32::from(c[1]) << 8) | (u32::from(c[2]) << 16)
 }
 
 /// Records the first result and closes the window; later calls (the capture-lost message that
 /// the close itself raises) change nothing.
+#[cfg(windows)]
 fn finish(hwnd: HWND, result: PickResult) {
     let first = RESULT.with(|r| {
         let cur = r.take();
@@ -218,6 +244,7 @@ fn finish(hwnd: HWND, result: PickResult) {
     }
 }
 
+#[cfg(windows)]
 fn loupe_rect(st: &State, p: (i32, i32)) -> RECT {
     let (w, h) = st.snap.size;
     let (ox, oy) = loupe_origin(p, LOUPE_BOX, (0, 0, w, h));
@@ -229,6 +256,7 @@ fn loupe_rect(st: &State, p: (i32, i32)) -> RECT {
     }
 }
 
+#[cfg(windows)]
 fn lparam_point(lp: LPARAM) -> (i32, i32) {
     (
         i32::from((lp & 0xffff) as u16 as i16),
@@ -236,6 +264,7 @@ fn lparam_point(lp: LPARAM) -> (i32, i32) {
     )
 }
 
+#[cfg(windows)]
 fn paint(hwnd: HWND) {
     // SAFETY: BeginPaint/EndPaint pair on this window's own thread; all GDI objects made here
     // are deleted before EndPaint.
@@ -270,6 +299,7 @@ fn paint(hwnd: HWND) {
     }
 }
 
+#[cfg(windows)]
 fn draw_loupe(dc: HDC, st: &State, p: (i32, i32), dx: i32, dy: i32) {
     // SAFETY: GDI calls on a DC that the caller owns; each brush created is deleted here.
     unsafe {
@@ -352,6 +382,7 @@ fn draw_loupe(dc: HDC, st: &State, p: (i32, i32), dx: i32, dy: i32) {
     }
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     // SAFETY: a window procedure called by the system on the window's own thread; the state
     // lives in a thread-local and is never borrowed across a call that can re-enter.
@@ -421,6 +452,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
     }
 }
 
+#[cfg(windows)]
 fn register_class() -> Result<(), String> {
     static ONCE: Once = Once::new();
     static OK: AtomicUsize = AtomicUsize::new(0);
@@ -452,6 +484,7 @@ fn register_class() -> Result<(), String> {
 }
 
 /// The worker body: capture, show, loop, clean up.
+#[cfg(windows)]
 fn run_window() -> PickResult {
     // SAFETY: thread-scoped DPI context, restored at the end.
     let prev = unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
@@ -463,6 +496,7 @@ fn run_window() -> PickResult {
     result
 }
 
+#[cfg(windows)]
 fn run_window_inner() -> PickResult {
     if let Err(e) = register_class() {
         return PickResult::Failed(e);
@@ -546,6 +580,7 @@ fn run_window_inner() -> PickResult {
 }
 
 /// Releases the snapshot's GDI objects.
+#[cfg(windows)]
 fn cleanup() {
     if let Some(st) = STATE.with(|s| s.borrow_mut().take()) {
         // SAFETY: the objects were created by `run_window_inner` on this thread and nothing
@@ -556,6 +591,12 @@ fn cleanup() {
             DeleteDC(st.mem);
         }
     }
+}
+
+/// macOS: phase 3 of the port plan (NSColorSampler). Until then a pick fails at once.
+#[cfg(not(windows))]
+fn run_window() -> PickResult {
+    PickResult::Failed("the eyedropper is not built on this platform yet".to_string())
 }
 
 #[cfg(test)]
@@ -589,6 +630,7 @@ mod tests {
         assert_eq!(WINDOWS_CREATED.load(Ordering::SeqCst), before);
     }
 
+    #[cfg(windows)]
     #[test]
     #[ignore = "needs a desktop"]
     fn capture_has_the_virtual_screen_size() {
@@ -604,6 +646,7 @@ mod tests {
         assert_eq!(s.bgra.len(), (w as usize) * (h as usize) * 4);
     }
 
+    #[cfg(windows)]
     #[test]
     #[ignore = "run by hand: shows a window; see the module header"]
     fn the_window_picks_a_pixel() {
@@ -615,6 +658,7 @@ mod tests {
         println!("{got:?}");
     }
 
+    #[cfg(windows)]
     #[test]
     #[ignore = "needs a desktop"]
     fn no_gdi_object_leaks() {

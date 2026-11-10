@@ -42,7 +42,7 @@ undocumented_unsafe_blocks = "warn"
 [workspace.dependencies]
 slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-femtovg-wgpu", "renderer-software", "unstable-wgpu-30", "unstable-winit-030", "accessibility"] }
 slint-build = "=1.18.1"
-wgpu = { version = "=30.0.1", default-features = false, features = ["std", "dx12", "wgsl", "parking_lot"] }
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "dx12", "metal", "wgsl", "parking_lot"] }
 cosmic-text = { version = "=0.19.0", default-features = false, features = ["std", "swash"] }
 ttf-parser = { version = "0.25.1", default-features = false, features = ["std"] }
 unicode-width = "=0.2.2"
@@ -57,6 +57,8 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Syst
 windows = { version = "=0.62.2", default-features = false, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Media_Control", "Foundation", "Foundation_Collections", "Win32_Media_Audio", "Win32_Media_KernelStreaming", "Win32_Devices_FunctionDiscovery", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Variant", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "UI_Notifications", "Data_Xml_Dom"] }
 alacritty_terminal = { version = "=0.26.0", default-features = false }
 portable-pty = "=0.9.0"
+# The macOS process table (libproc, sysctl, kqueue) and signals; the same version portable-pty pulls in.
+libc = "=0.2.191"
 regex = "=1.13.1"
 memchr = "=2.8.3"
 base64 = "=0.22.1"

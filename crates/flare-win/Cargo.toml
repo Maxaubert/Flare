@@ -12,12 +12,13 @@ flare-shells = { path = "../flare-shells" }
 serde.workspace = true
 serde_json.workspace = true
 log.workspace = true
-windows-sys.workspace = true
 rfd.workspace = true
 raw-window-handle.workspace = true
-windows.workspace = true
-
 uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+windows.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

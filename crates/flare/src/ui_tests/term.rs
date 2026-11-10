@@ -1767,6 +1767,10 @@ mod flow {
     }
 
     /// PT scenario pathLinks.
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_path_is_a_link_only_if_it_exists_and_opens_by_the_allowlist() {
         let w = Wx::with(
@@ -1816,6 +1820,10 @@ mod flow {
     }
 
     /// PT scenario pathLinks.
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn a_path_menu_open_and_show_go_through_the_allowlist() {
         let w = Wx::with(
@@ -1854,20 +1862,55 @@ mod flow {
         });
     }
 
+    /// The calling thread's own clock, the one the hold tests below bound: its CPU time where the system
+    /// keeps it to the microsecond (macOS, Linux), so a shared runner that takes the core away in the
+    /// middle of a tick does not count as the tick's work (an 88 ms tick of 18 ms work with every core
+    /// busy twice over, dev Mac 2026-11-10); the wall clock on Windows, whose thread times move in
+    /// 15.6 ms steps.
+    #[cfg(unix)]
+    fn thread_clock() -> Duration {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `ts` is a live timespec the call fills in; the clock id is one every unix has.
+        let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        assert_eq!(rc, 0, "the thread's CPU clock");
+        Duration::new(
+            u64::try_from(ts.tv_sec).unwrap_or(0),
+            u32::try_from(ts.tv_nsec).unwrap_or(0),
+        )
+    }
+
+    #[cfg(not(unix))]
+    fn thread_clock() -> Duration {
+        static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        START.get_or_init(Instant::now).elapsed()
+    }
+
+    /// How long `f` took on [`thread_clock`].
+    fn thread_time(f: impl FnOnce()) -> Duration {
+        let t = thread_clock();
+        f();
+        thread_clock().saturating_sub(t)
+    }
+
     /// How many times slower than the reference machine this one runs a fixed unit of plain
-    /// unoptimised work (best of five, never below 1). The unit is the same in every run.
+    /// unoptimised work (best of five on [`thread_clock`], never below 1). The unit is the same in every run.
     fn machine_slowness() -> f64 {
         /// Measured on the dev PC (debug build, idle priority): 8.2 ms.
         const REFERENCE_MS: f64 = 8.0;
         let best = (0..5)
             .map(|_| {
-                let t = Instant::now();
-                let mut acc = 0u64;
-                for i in 0..2_000_000u64 {
-                    acc = std::hint::black_box(acc.wrapping_mul(31).wrapping_add(i));
-                }
-                std::hint::black_box(acc);
-                t.elapsed().as_secs_f64() * 1000.0
+                thread_time(|| {
+                    let mut acc = 0u64;
+                    for i in 0..2_000_000u64 {
+                        acc = std::hint::black_box(acc.wrapping_mul(31).wrapping_add(i));
+                    }
+                    std::hint::black_box(acc);
+                })
+                .as_secs_f64()
+                    * 1000.0
             })
             .fold(f64::MAX, f64::min);
         eprintln!("calibration unit took {best:.3} ms");
@@ -1875,6 +1918,14 @@ mod flow {
     }
 
     /// PT linkPaintStall: nothing holds the window while a big scrollback is scanned and searched.
+    ///
+    /// Bounded is what the scrollback and the search add to the UI thread's work ([`thread_clock`]): each
+    /// tick (the find runs its slices there) and how much longer the grid host's frame takes than a plain
+    /// repaint of the same window, measured in the same run. The plain frame (laying out 1000 x 604 pixels, painting them and
+    /// handing them to Slint, unoptimised) is the size of the window, not of the scrollback: 27 ms on the dev
+    /// Mac, of which 16 ms is the hand-over, and 80 to 130 ms on a shared macOS CI runner, which the
+    /// calibration unit does not see (2026-11-10). A real hold, the whole search on the UI thread, is a
+    /// 190 ms tick on the dev Mac where a sliced one is under 20 ms.
     #[test]
     fn find_and_a_big_scrollback_never_hold_the_window() {
         let w = Wx::new(1.0);
@@ -1885,18 +1936,32 @@ mod flow {
             ));
         }
         w.feed(&text);
-        let mut worst = Duration::ZERO;
         // A tick and the grid host's own frame are what the app does on its UI thread each 33 ms; the
         // window's software render of the whole 1000 x 640 window is the toolkit's and, unoptimised, not ours.
-        let mut measure = |w: &Wx, ms: u64| {
-            let t = Instant::now();
-            w.step(ms);
-            worst = worst.max(t.elapsed());
-            worst = worst.max(w.paint_grid());
-        };
         for _ in 0..4 {
-            measure(&w, 50);
+            w.step(50);
+            w.paint_grid();
         }
+        // What a frame of this window costs on this machine now: the middle of five repaints of the same grid.
+        let mut plain: Vec<Duration> = (0..5)
+            .map(|_| {
+                w.host.borrow_mut().mark_dirty();
+                thread_time(|| {
+                    w.paint_grid();
+                })
+            })
+            .collect();
+        plain.sort();
+        let plain = plain[2];
+        let mut worst_tick = Duration::ZERO;
+        let mut worst_extra = Duration::ZERO;
+        let mut measure = |w: &Wx, ms: u64| {
+            worst_tick = worst_tick.max(thread_time(|| w.step(ms)));
+            let frame = thread_time(|| {
+                w.paint_grid();
+            });
+            worst_extra = worst_extra.max(frame.saturating_sub(plain));
+        };
         assert_eq!(w.key(ctrl("f", "KeyF")), KeyOutcome::Consumed);
         w.type_text("line");
         for _ in 0..600 {
@@ -1916,11 +1981,16 @@ mod flow {
         let factor = machine_slowness();
         let budget = Duration::from_millis(50).mul_f64(factor);
         eprintln!(
-            "slowest {worst:?}, budget {budget:?} (this machine is {factor:.2}x the reference)"
+            "slowest tick {worst_tick:?}, a frame at most {worst_extra:?} over a plain one ({plain:?}), \
+             budget {budget:?} (this machine is {factor:.2}x the reference)"
         );
         assert!(
-            worst < budget,
-            "the slowest tick or frame took {worst:?} (budget {budget:?}, machine {factor:.2}x)"
+            worst_tick < budget,
+            "the slowest tick took {worst_tick:?} (budget {budget:?}, machine {factor:.2}x)"
+        );
+        assert!(
+            worst_extra < budget,
+            "a frame took {worst_extra:?} more than a plain one ({plain:?}; budget {budget:?}, machine {factor:.2}x)"
         );
     }
 
@@ -2115,6 +2185,10 @@ mod flow {
         w.quiet()
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
     fn copied_files_paste_quoted_paths_for_each_shell() {
         let plain = "C:\\My Dir\\a b.txt";
@@ -2219,6 +2293,20 @@ mod flow {
             w.pump();
         }
         assert_eq!(w.h.comp.get_tab_rows().row_count(), 0, "no tab is left");
+        // The closed tab's shell is ended on a helper thread, which answers ConPTY's start-up queries
+        // (ESC[1;1R ESC[?1;2c) into the dying pty: wait until it is killed and its pty has gone quiet,
+        // so those bytes are not taken for typing by the drop below (a busy runner wrote them late).
+        let t = Instant::now();
+        let mut last = w.written();
+        let mut calm = 0;
+        while (!w.fake.killed() || calm < 10) && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+            w.pump();
+            let now = w.written();
+            calm = if now == last { calm + 1 } else { 0 };
+            last = now;
+        }
+        assert!(w.fake.killed(), "the closed tab's shell is ended");
         let before = w.written();
         w.ctl
             .borrow_mut()

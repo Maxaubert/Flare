@@ -89,6 +89,8 @@ mod tests {
         assert_eq!(s.load(), SavedTabs::default());
     }
 
+    // Windows-only: the lock is a share_mode(0) handle; Unix has no mandatory locks.
+    #[cfg(windows)]
     #[test]
     fn an_unreadable_tabs_file_is_set_aside_and_a_locked_one_is_never_overwritten() {
         use std::os::windows::fs::OpenOptionsExt;

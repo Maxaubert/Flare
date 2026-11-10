@@ -2,12 +2,16 @@
 
 use flare_diag::writer::{DiagLog, DiagLogOptions, LineSink, DIAG_FILE, QUEUE_MAX};
 use serde_json::{json, Map, Value};
-use std::fs::{self, OpenOptions};
+use std::fs;
+#[cfg(windows)]
+use std::fs::OpenOptions;
+#[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
 fn fields(pairs: &[(&str, Value)]) -> Map<String, Value> {
     let mut m = Map::new();
@@ -145,6 +149,8 @@ fn rotates_at_the_cap_to_1_through_4_so_there_are_never_more_than_five_files() {
     assert!(fs::metadata(live(tmp.path())).unwrap().len() <= 2_000 + 200);
 }
 
+// Windows-only: a share-mode lock blocks the rename; Unix has no mandatory locks.
+#[cfg(windows)]
 #[test]
 fn keeps_writing_when_a_rotation_fails_says_so_once_and_rotates_again_later() {
     let tmp = tempfile::tempdir().unwrap();
@@ -188,6 +194,8 @@ fn keeps_writing_when_a_rotation_fails_says_so_once_and_rotates_again_later() {
     assert!(tmp.path().join("logs").join("diag.jsonl.1").exists());
 }
 
+// Windows-only: a share-mode lock blocks the rename; Unix has no mandatory locks.
+#[cfg(windows)]
 #[test]
 fn a_rotation_that_keeps_failing_never_lets_the_live_file_grow_past_twice_the_cap() {
     let tmp = tempfile::tempdir().unwrap();
@@ -231,6 +239,8 @@ fn a_rotation_that_keeps_failing_never_lets_the_live_file_grow_past_twice_the_ca
     );
 }
 
+// Windows-only: a share-mode lock blocks the rename; Unix has no mandatory locks.
+#[cfg(windows)]
 #[test]
 fn a_blocked_rotation_that_retries_never_costs_an_older_generation() {
     let tmp = tempfile::tempdir().unwrap();
@@ -269,6 +279,8 @@ fn a_blocked_rotation_that_retries_never_costs_an_older_generation() {
     drop(held);
 }
 
+// Windows-only: a share-mode lock blocks the rename; Unix has no mandatory locks.
+#[cfg(windows)]
 #[test]
 fn a_rotation_that_fails_after_the_park_puts_the_live_file_back() {
     let tmp = tempfile::tempdir().unwrap();
@@ -350,6 +362,9 @@ fn a_write_never_does_io_on_the_calling_thread() {
     log.flush();
     let me = std::thread::current().id();
     appenders.lock().unwrap().clear();
+    // Windows only: a share-mode lock blocks the rename (Unix has no mandatory locks), so the
+    // writer thread is stuck while the caller writes. The rule itself holds on every platform.
+    #[cfg(windows)]
     let held = OpenOptions::new()
         .read(true)
         .share_mode(1)
@@ -360,6 +375,7 @@ fn a_write_never_does_io_on_the_calling_thread() {
         log.write("main", "x", fields(&[("a", json!(1))]));
     }
     assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
+    #[cfg(windows)]
     drop(held);
     let t1 = Instant::now();
     while appenders.lock().unwrap().is_empty() && t1.elapsed() < Duration::from_secs(10) {

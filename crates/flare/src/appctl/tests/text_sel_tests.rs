@@ -69,6 +69,10 @@ fn pause() {
     std::thread::sleep(Duration::from_millis(600)); // sync-ok: test code only
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn a_drag_selects_the_shown_text_and_ctrl_c_copies_it_with_tabs_as_spaces() {
     let (f, _h, _) = live(Opts::default());
@@ -89,6 +93,10 @@ fn a_drag_selects_the_shown_text_and_ctrl_c_copies_it_with_tabs_as_spaces() {
     assert!(selected(&f).is_some(), "a copy keeps the selection");
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn ctrl_c_in_the_panel_is_a_copy_even_where_the_agent_guard_would_take_it() {
     let (f, _h, shell) = live(Opts::default());
@@ -110,6 +118,10 @@ fn ctrl_c_in_the_panel_is_a_copy_even_where_the_agent_guard_would_take_it() {
     assert!(shell.written().is_empty(), "the shell heard nothing");
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn a_double_click_picks_a_word_a_triple_click_a_line_and_shift_click_extends() {
     let (f, _h, _) = live(Opts::default());
@@ -131,6 +143,10 @@ fn a_double_click_picks_a_word_a_triple_click_a_line_and_shift_click_extends() {
     assert_eq!(selected(&f).as_deref(), Some("ond line\nth"));
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn an_empty_file_takes_clicks_and_shift_keys_without_a_crash_or_a_selection() {
     let (f, _h, _) = live(Opts::default());
@@ -160,6 +176,10 @@ fn an_empty_file_takes_clicks_and_shift_keys_without_a_crash_or_a_selection() {
     assert_eq!(painted(&f), None);
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn esc_lets_the_selection_go_first_and_gives_the_keys_back_only_with_nothing_selected() {
     let (f, _h, _) = live(Opts::default());
@@ -179,6 +199,10 @@ fn esc_lets_the_selection_go_first_and_gives_the_keys_back_only_with_nothing_sel
     assert!(f.h.comp.get_panel_open());
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn shift_with_the_arrows_and_ctrl_a_select_from_the_keyboard() {
     let (f, _h, _) = live(Opts::default());
@@ -210,6 +234,10 @@ fn shift_with_the_arrows_and_ctrl_a_select_from_the_keyboard() {
     assert_eq!(selected(&f).as_deref(), Some("abc\ndefgh\nij"));
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn the_selection_goes_with_a_reload_another_file_or_another_tab() {
     let (f, _h, _) = live(Opts::default());
@@ -237,6 +265,10 @@ fn the_selection_goes_with_a_reload_another_file_or_another_tab() {
     assert_eq!(painted(&f), None);
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn turning_the_wrap_on_and_off_keeps_the_selection_on_the_same_text() {
     let (f, _h, _) = live(Opts::default());
@@ -266,6 +298,10 @@ fn turning_the_wrap_on_and_off_keeps_the_selection_on_the_same_text() {
     assert_eq!(painted(&f), Some(((1, 2), (rows_i, 3))));
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn a_drag_held_below_the_view_scrolls_and_the_selection_follows() {
     let (f, _h, _) = live(Opts::default());
@@ -305,6 +341,10 @@ fn a_drag_held_below_the_view_scrolls_and_the_selection_follows() {
     );
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn wide_characters_and_emoji_are_selected_by_the_columns_they_take() {
     let (f, _h, _) = live(Opts::default());
@@ -319,6 +359,10 @@ fn wide_characters_and_emoji_are_selected_by_the_columns_they_take() {
     assert_eq!(painted(&f), Some(((0, 3), (0, 8))));
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn ask_agent_sends_the_selection_framed_with_the_file_and_its_lines_and_no_enter() {
     let (f, h, shell) = live(Opts::default());
@@ -347,6 +391,10 @@ fn ask_agent_sends_the_selection_framed_with_the_file_and_its_lines_and_no_enter
     assert_eq!(shell.written(), want.as_bytes(), "no Enter follows");
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn hostile_file_text_cannot_end_the_paste_or_press_enter() {
     let (f, h, shell) = live(Opts::default());
@@ -388,6 +436,10 @@ fn with_fake_web(f: &Fx) -> Rc<RefCell<Vec<FakeWeb>>> {
     slot
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn the_code_view_of_a_markdown_file_selects_and_asks_like_any_text_file() {
     let (f, h, shell) = live(Opts::default());

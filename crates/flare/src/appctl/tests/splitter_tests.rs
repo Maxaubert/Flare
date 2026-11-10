@@ -304,26 +304,46 @@ fn run(scale: f32, kind: i32) {
     }
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn dragging_the_splitter_over_a_picture_at_100_percent_keeps_every_invariant() {
     run(1.0, 1);
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn dragging_the_splitter_over_a_picture_at_225_percent_keeps_every_invariant() {
     run(2.25, 1);
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn dragging_the_splitter_over_a_text_file_at_100_percent_keeps_every_invariant() {
     run(1.0, 2);
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn dragging_the_splitter_over_a_text_file_at_225_percent_keeps_every_invariant() {
     run(2.25, 2);
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn leaving_the_window_during_a_drag_lets_go_of_the_splitter() {
     for scale in [1.0f32, 2.25] {
@@ -375,6 +395,10 @@ fn leaving_the_window_during_a_drag_lets_go_of_the_splitter() {
     }
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn the_slot_going_away_during_a_drag_lets_go_of_the_grab() {
     for scale in [1.0f32, 2.25] {
@@ -410,6 +434,10 @@ fn the_slot_going_away_during_a_drag_lets_go_of_the_grab() {
     }
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn narrowing_the_slot_mid_drag_rewraps_at_once_so_the_text_never_overflows_or_is_cut() {
     for scale in [1.0f32, 2.25] {
@@ -461,6 +489,10 @@ fn narrowing_the_slot_mid_drag_rewraps_at_once_so_the_text_never_overflows_or_is
     }
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn switching_tabs_by_key_during_a_drag_lets_go_and_stores_nothing_on_the_other_tab() {
     for scale in [1.0f32, 2.25] {
@@ -500,6 +532,10 @@ fn switching_tabs_by_key_during_a_drag_lets_go_and_stores_nothing_on_the_other_t
     }
 }
 
+#[cfg_attr(
+    not(windows),
+    ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+)]
 #[test]
 fn another_button_going_up_mid_drag_does_not_end_it_and_the_left_up_does() {
     let (f, _h, _) = live(Opts::default());

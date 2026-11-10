@@ -12,9 +12,10 @@ use flare_dictation::service::{OverlayState, Tone};
 use slint::{Model, ModelRc, VecModel};
 
 use crate::dictation_widget::{
-    Bounds, Display, bar_scale, bounds_for, face_of, items_of, live_line, set_face, texts,
-    wants_inks, win,
+    Bounds, bar_scale, bounds_for, face_of, items_of, live_line, set_face, texts, wants_inks,
 };
+#[cfg(windows)]
+use crate::dictation_widget::{Display, win};
 use crate::ui_harness::{Frame, Harness, SCALES};
 use crate::{DictationWidget, WidgetItem};
 
@@ -494,6 +495,7 @@ fn the_bounds_follow_the_scale_of_the_monitor() {
 // ---------------------------------------------------------------------------------------------------------------------
 
 #[test]
+#[cfg(windows)]
 fn the_style_is_never_active_off_the_taskbar_and_on_top() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
@@ -506,6 +508,7 @@ fn the_style_is_never_active_off_the_taskbar_and_on_top() {
 }
 
 /// Makes a plain popup Win32 window at the parking spot: no monitor ever shows it.
+#[cfg(windows)]
 fn parked_popup() -> isize {
     use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, WS_POPUP};
     let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
@@ -534,11 +537,13 @@ fn parked_popup() -> isize {
 
 /// Drives the real widget (`dictation_widget::set`) against a stand-in popup whose handle appears only after a few
 /// timer ticks, as the winit window does (it is made in the event loop, after `show()`).
+#[cfg(windows)]
 struct Rig {
     popup: isize,
     polls: Rc<std::cell::Cell<u32>>,
 }
 
+#[cfg(windows)]
 impl Rig {
     fn new(late_by: u32, displays: Rc<RefCell<Display>>) -> Rig {
         let popup = parked_popup();
@@ -556,6 +561,7 @@ impl Rig {
     }
 }
 
+#[cfg(windows)]
 impl Drop for Rig {
     fn drop(&mut self) {
         crate::dictation_widget::close();
@@ -566,6 +572,7 @@ impl Drop for Rig {
     }
 }
 
+#[cfg(windows)]
 fn monitor(x: i32, scale: f64) -> Display {
     Display {
         work: Bounds {
@@ -578,11 +585,13 @@ fn monitor(x: i32, scale: f64) -> Display {
     }
 }
 
+#[cfg(windows)]
 fn show(state: &OverlayState) {
     crate::dictation_widget::set(Some(state), &|| None, true);
 }
 
 #[test]
+#[cfg(windows)]
 fn the_window_never_takes_focus() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
@@ -637,6 +646,7 @@ fn the_window_never_takes_focus() {
 }
 
 #[test]
+#[cfg(windows)]
 fn a_height_change_keeps_the_monitor_it_opened_on() {
     let displays = Rc::new(RefCell::new(monitor(0, 1.0)));
     let rig = Rig::new(0, Rc::clone(&displays));

@@ -17,6 +17,8 @@
 //! `OPEN_TIMEOUT`), so it belongs on a worker. The UI thread calls `start_capture_async` instead: it
 //! returns at once and answers through a callback on its own worker (D1 runs the mic effect that way).
 
+// Off Windows the capture loop waits for phase 7 of the port plan (CoreAudio); only files and the rules compile there.
+#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError};
@@ -418,6 +420,7 @@ fn start_file(path: &Path, mut on_frame: FrameFn) -> Result<Box<dyn Capture>, Ca
 // ---------------------------------------------------------------------------------------------
 // The real thing.
 
+#[cfg(windows)]
 mod wasapi {
     use super::*;
     use windows::core::{Interface, PCWSTR};
@@ -780,6 +783,30 @@ mod wasapi {
             assert_eq!(classify(E_NOTFOUND), OpenError::NotFound);
             assert_eq!(classify(AUDCLNT_E_DEVICE_INVALIDATED), OpenError::NotFound);
             assert_eq!(classify(0x8000_4005_u32 as i32), OpenError::Other);
+        }
+    }
+}
+
+/// The microphone off Windows. macOS: phase 7 of the port plan (CoreAudio through cpal, with the mic
+/// entitlement). Until then no endpoint is listed and every open fails, so a dictation says the
+/// microphone could not be opened.
+#[cfg(not(windows))]
+mod wasapi {
+    use super::*;
+
+    pub fn list_raw() -> Vec<(String, Option<String>)> {
+        Vec::new()
+    }
+
+    pub struct Real {
+        pub on_frame: SharedFrameFn,
+        pub on_lost: Arc<Mutex<Option<LostFn>>>,
+    }
+
+    impl Endpoints for Real {
+        fn open(&self, _device: Option<&str>) -> Result<Box<dyn Capture>, OpenError> {
+            let _ = (&self.on_frame, &self.on_lost);
+            Err(OpenError::Other)
         }
     }
 }
