@@ -43,6 +43,7 @@ pub const INVENTORY: &[(&str, &str)] = &[
     ("e2e/src/scenarios/live_preview.rs", "Web panel"),
     // The logins scenario's own site on 127.0.0.1 (a thread of the harness), never the network.
     ("e2e/src/scenarios/web_logins.rs", "Web panel"),
+    ("e2e/src/scenarios/bot_checks.rs", "Web panel"),
     // Mini-apps: the host names a mini-app is served from (a local virtual host, no request), the policy
     // text that keeps a page off the network, and the e2e's loopback addresses a blocked request points at.
     ("flare-surfaces/src/app.rs", "Web panel"),
