@@ -30,6 +30,7 @@ pub const GATED: &[(&str, &str)] = &[
     ("pluginFill", WEB),
     ("devPreview", WEB),
     ("model", WEB),
+    ("webLogins", WEB),
     ("updateWindow", UPDATE),
     ("updateGuard", UPDATE),
     ("updateNotes", UPDATE),
