@@ -512,6 +512,8 @@ struct TabWeb {
     /// The host of the mini-app this view shows (None for a plain web page): a view is closed and made
     /// again when the panel's app is not the one it was made for.
     app_host: Option<String>,
+    /// The file a markdown view's page was made from (None for any other page): Ask agent names it.
+    source: Option<String>,
     /// A diagram's "did it draw" question, while it is out.
     probe: Option<Probe>,
     /// The browser's number of the last navigation the host allowed (one it cancelled never has its own).
@@ -1001,7 +1003,7 @@ impl WebCtl {
         let stale: Vec<String> = self
             .tabs
             .keys()
-            .filter(|t| panels.web_target(t).is_none())
+            .filter(|t| panels.page_target(t).is_none())
             .cloned()
             .collect();
         for t in stale {
@@ -1013,12 +1015,12 @@ impl WebCtl {
             .tabs
             .iter()
             .filter(|(t, w)| w.app_host.as_deref() != panels.app_spec(t).map(|a| a.host.as_str()))
-            .filter_map(|(t, _)| panels.web_target(t).map(|u| (t.clone(), u)))
+            .filter_map(|(t, _)| panels.page_target(t).map(|u| (t.clone(), u)))
             .collect();
         for (t, url) in replaced {
             self.replace_tab(&t, &url, panels.app_spec(&t).cloned());
         }
-        let front_web = front.filter(|t| panels.web_target(t).is_some());
+        let front_web = front.filter(|t| panels.page_target(t).is_some());
         if front_web.is_some() && app.get_panel_kind() != 3 {
             // The bar is part of the head of a web panel: the page's rectangle is known only once it is.
             app.set_panel_kind(3);
@@ -1084,7 +1086,7 @@ impl WebCtl {
         // The tab in front gets its browser the first time it has a place to be.
         if let (Some(tab), true) = (front_web, shown && !rect.is_empty())
             && !self.tabs.contains_key(tab)
-            && let Some(url) = panels.web_target(tab)
+            && let Some(url) = panels.page_target(tab)
         {
             self.open_tab(tab, &url, rect, false, panels.app_spec(tab).cloned());
         }
@@ -1262,6 +1264,7 @@ impl WebCtl {
             TabWeb {
                 url: url.to_string(),
                 app_host: app.as_ref().map(|a| a.host.clone()),
+                source: app.as_ref().and_then(|a| a.source.clone()),
                 ..TabWeb::default()
             },
         );
@@ -1340,7 +1343,7 @@ impl WebCtl {
             app.set_panel_web_missing_runtime(false);
             return;
         };
-        let target = panels.web_target(tab).unwrap_or_default();
+        let target = panels.page_target(tab).unwrap_or_default();
         let t = self.tabs.get(tab);
         let url = t.map_or(target.as_str(), |t| {
             if t.url.is_empty() {
@@ -2647,7 +2650,10 @@ impl WebCtl {
             Err(why) => (None, Err(why)),
         };
         let address = answer.as_ref().map_or("", |a| a.address.as_str());
-        let label = if plain {
+        let label = if let Some(file) = &t.source {
+            // A markdown view: the file the page was made from, by its name.
+            file.rsplit(['\\', '/']).next().unwrap_or(file).to_string()
+        } else if plain {
             flare_surfaces::web::host_label(address)
         } else {
             "this page".to_string()
