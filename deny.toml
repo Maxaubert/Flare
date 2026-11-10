@@ -9,7 +9,7 @@ version = 2
 # 0.24. It is an unmaintained notice, not a vulnerability. Drop this entry when cosmic-text moves off fontdb 0.23
 # (check on each cosmic-text bump).
 #
-# The four entries below come only through velopack 1.2.161 (the newest release older than two weeks on 2026-10-18).
+# The five entries below (four zip, one derivative) come only through velopack 1.2.161 (the newest release older than two weeks on 2026-10-18).
 # velopack 1.3.39 moves to zip ^9 but was published 2026-10-17 as a pre-release build, too new to adopt. zip is used
 # only to unpack an update package, and the updater ships switched OFF until the repo is public (O19). BEFORE the
 # updater is turned on, bump velopack to a release on zip >= 9 and drop these four entries; the release workflow runs
@@ -19,7 +19,12 @@ ignore = [
     { id = "RUSTSEC-2026-0367", reason = "zip 8.6.0 ONLY, via velopack 1.2.161 (updater, off until public; bump velopack first). flare-dictation uses zip 9.0.0, proven clean with these three ignores removed (2026-10-19)" },
     { id = "RUSTSEC-2026-0368", reason = "zip 8.6.0 ONLY, via velopack 1.2.161 (updater, off until public; bump velopack first). flare-dictation uses zip 9.0.0, proven clean with these three ignores removed (2026-10-19)" },
     { id = "RUSTSEC-2026-0369", reason = "zip 8.6.0 ONLY, via velopack 1.2.161 (updater, off until public; bump velopack first). flare-dictation uses zip 9.0.0, proven clean with these three ignores removed (2026-10-19)" },
+    { id = "RUSTSEC-2026-0429", reason = "zip 8.6.0 ONLY, via velopack 1.2.161 (updater, off until public; bump velopack first). Patched >= 9.0.0, so flare-dictation's zip 9.0.0 is clean (2026-11-10)" },
     { id = "RUSTSEC-2024-0388", reason = "derivative unmaintained notice via velopack 1.2.161; not a vulnerability" },
+    # pin-utils was archived upstream on 2026-10-01 (unmaintained notice, no patched release). It reaches us only through
+    # spin_on 0.1.1 <- slint-build / slint-macros 1.18.1, at build time. Drop this when Slint moves off spin_on
+    # (check on each Slint bump). Added 2026-11-10.
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils unmaintained, pulled by slint 1.18.1 via spin_on; no safe upgrade, not a vulnerability" },
 ]
 
 [licenses]
