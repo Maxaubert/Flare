@@ -175,6 +175,7 @@ mod tests {
             "show_text",
             "show_diagram",
             "show_audio",
+            "show_model",
             "show_html",
             "open_page",
             "browser_look",

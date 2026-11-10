@@ -168,6 +168,15 @@ pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
     out
 }
 
+/// `text` as one line: every run of line breaks and tabs is one space. For text that must wait at a prompt where the
+/// program never asked for bracketed paste: there a CR would run the line, and a tab would complete it.
+pub fn one_line(text: &str) -> String {
+    text.split(['\r', '\n', '\t'])
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The quoting a tab's shell reads a path in, from its shell id (`pwsh`, `powershell`, `cmd`,
 /// `wsl-<distro>`): `cmd` -> Cmd; starts with `wsl` or contains `bash` (case-insensitive) -> Bash;
 /// anything else, including `None` and "", -> PowerShell.
@@ -218,6 +227,14 @@ mod tests {
             text: text.to_string(),
             files: files.iter().map(|f| f.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn one_line_leaves_no_break_or_tab_to_act_on_a_prompt() {
+        assert_eq!(one_line("a\r\nb\n\nc\td\re"), "a b c d e");
+        assert_eq!(one_line("\r\nonly\n"), "only");
+        assert_eq!(one_line("plain"), "plain");
+        assert_eq!(one_line("\r\n\t"), "");
     }
 
     // decidePaste
