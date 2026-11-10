@@ -19,8 +19,9 @@ $env:BOT_OUT = "<scratch>\bot.txt"   # optional: also append every record to thi
 cargo run -p flare-e2e --release -- --exe <TARGET>\release\flare.exe webBotChecks
 ```
 
-- It is in `OPT_IN`: a plain run never opens these pages, only a filter that names it does
-  (`a_plain_run_never_opens_the_public_bot_check_pages`).
+- It is in `OPT_IN`: a plain run never opens these pages, only a filter that is its whole name does. A part of the
+  name such as `web` or `bot` does not (`a_plain_run_never_opens_the_public_bot_check_pages`,
+  `a_filter_word_that_is_only_part_of_an_opt_in_name_never_picks_it`).
 - `BOT_PAGES` replaces the list of check pages (space-separated). `BOT_ARGS` adds browser arguments to the panel's
   browser through `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`, to try a change without a build.
 - Every record is a line `bot-check {json}`. The line `ip=` of Cloudflare's trace page is hidden before it is recorded.

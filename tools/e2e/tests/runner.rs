@@ -172,6 +172,31 @@ fn a_plain_run_never_opens_the_public_bot_check_pages() {
         "the web panel's own scenario does not pull it in"
     );
 }
+
+/// A part of an opt-in name (`web` for the web panel group, `bot`, `checks`, `tour`) never pulls in
+/// the opt-in scenario: only its whole name does.
+#[test]
+fn a_filter_word_that_is_only_part_of_an_opt_in_name_never_picks_it() {
+    for word in [
+        "web", "bot", "check", "checks", "e", "WEBBOT", "tour", "visual",
+    ] {
+        let names: Vec<&str> = pick(&[word.to_string()]).iter().map(|s| s.name).collect();
+        assert!(
+            !names.contains(&"webBotChecks") && !names.contains(&"visualTour"),
+            "filter {word:?} picked an opt-in scenario: {names:?}"
+        );
+    }
+    let web: Vec<&str> = pick(&["web".to_string()]).iter().map(|s| s.name).collect();
+    assert!(
+        web.contains(&"webPanel"),
+        "`web` still runs the web panel group"
+    );
+    let both: Vec<&str> = pick(&["web".to_string(), "WEBBOTCHECKS".to_string()])
+        .iter()
+        .map(|s| s.name)
+        .collect();
+    assert!(both.contains(&"webPanel") && both.contains(&"webBotChecks"));
+}
 #[test]
 fn the_table_lists_every_scenario_it_ran() {
     let rows = vec![
