@@ -2114,8 +2114,9 @@ Not in this version: click a path to preview, a `.gltf` with separate `.bin` or 
   selection" in the terminal's right-click menu over a grid selection. Both only on a tab with an agent, whichever agent. What is sent lands at the
   prompt and is never submitted: the person reads it and presses Enter, and the keys go to the terminal.
 - **What is sent.** Web page: `window.getSelection().toString()`, framed. With no selection on a plain web page (2026-11-10), a reference to the
-  page instead (below). A mini-app or plugin page with no selection is a note and nothing typed. Text or image panel: the file's path, quoted for the
-  tab's shell. Handed-over text has no file and says so. Terminal grid: the selection, framed; the selection is then let go.
+  page instead (below). A mini-app or plugin page with no selection is a note and nothing typed. Text panel with text selected (2026-11-10): the
+  selection, framed as from `<file name> lines A-B` (below). Text or image panel with nothing selected: the file's path, quoted for the tab's shell.
+  Handed-over text has no file and says so unless some of it is selected. Terminal grid: the selection, framed; the selection is then let go.
 - **Ask about the page** (2026-11-10, rule 238). The agent can already read the page with `browser_look`, so only a reference is typed, and the
   person adds the question:
   `About the page open in this tab (example.com):` then `> title: Pricing`, `> address: https://example.com/pricing` and
@@ -2123,8 +2124,17 @@ Not in this version: click a path to preview, a `.gltf` with separate `.bin` or 
   from the tab. The title is the page's own words: cleaned like a selection, one line, at most 160 characters, left out when empty. The address
   loses any user name and password and is cut at 2 KB with `[cut]`. Only `http` and `https` pages; `about:blank` and the like keep the note.
 - **Tooltip.** One fixed wording, since whether a page has a selection is only known by asking it: "Ask agent about the selection or this page" in a
-  web page's address bar, "Ask agent about the selection" on a mini-app or plugin page, "Ask agent about this file" on a file. It sits left of the
-  button, so a page's native window cannot cover it.
+  web page's address bar, "Ask agent about the selection" on a mini-app or plugin page, "Ask agent about the selection or this file" on a text
+  file, "Ask agent about this file" on a picture. It sits left of the button, so a page's native window cannot cover it.
+- **Select text in files** (2026-11-10, rules 242 to 244 and 246). The Text panel (and the Code view of a markdown file) selects like an editor: a drag,
+  a double click for a word, a triple click for a line, Shift with a click to extend, Shift with the arrows, Home and End (Ctrl too for the whole
+  file), Ctrl+A and Ctrl+C (the "Copied" badge shows). A drag held past an edge scrolls toward it; the wheel, the keys and the scrollbar scroll as
+  before. Esc lets a selection go first and gives the keys back to the terminal only with nothing selected. The selection is kept as lines and
+  characters, so it stays through scrolling, a splitter drag and the wrap button, and goes with a reload, another file or another tab. The text
+  is what the panel shows: tabs as four spaces, a very long line as cut, rows a wrap made joined with no break. With text selected, Ask agent
+  sends it framed as from `notes.md lines 12-40` (the name is cut first to fit the 64 character label); with none it still sends the path. The
+  Compiled and Markdown views are pages and keep the browser's own selection. The Changes panel has none. An empty file (or empty text an agent
+  shows) takes every click and key and simply selects nothing.
 - **The frame.** `About this from <label>:` then `> ` per line, at most 4 KB with `> [cut]`. The label is the host or file name, cleaned and capped at
   64 characters; a page Flare made itself reads "this page", and a markdown view's page reads the file's name (rule 241). A web page's host is the one its document gave with the text (`location.href`), so a click
   while the next page loads still names the page that is showing.
@@ -2132,9 +2142,11 @@ Not in this version: click a path to preview, a `.gltf` with separate `.bin` or 
   `http` or `https`), a page that did not answer, answered in a shape that names no page, or answered with more than the script can give (about
   400 KB, checked natively), a path that cannot be typed.
 - **Narrow panels.** Below 380 px the button is its glyph alone; below 200 px it is gone.
-- **Not in this version.** A row in the page's own right-click menu, selection inside the Text panel, any auto-submit, any ctl, MCP or plugin way in.
+- **Not in this version.** A row in the page's own right-click menu, a right-click menu in the Text panel, selection in the Changes panel, any
+  auto-submit, any ctl, MCP or plugin way in.
 - **Tests.** `ask_agent::tests` (hostile text and titles, `frame_page`), `appctl::tests::ask_tests` (fake shell and fake browser), `ui_tests::panel`
-  (`ask_agent_*`, the tooltip included).
+  (`ask_agent_*`, the tooltip included, and the text panel's drag, wheel and highlight), `panel_sel::tests` (positions, wrapping, words, lines,
+  wide characters, the label) and `appctl::tests::text_sel_tests` (the pointer, the keys, the copy, the drag's scroll, Ask agent).
 - **Not covered.** A real WebView2 selection or title and a real agent's prompt: no e2e scenario. Where the tooltip lands is not checked in a real
   window.
 
@@ -2178,4 +2190,5 @@ the panel's header switches between three views; it is Flare's own chrome, drawn
   `preview` (`is_markdown`, `read_source`), `appctl::tests::md_tests` (fake browser: the default, the control, the restart, both fallbacks, Ask agent).
 - **Not covered.** A real WebView2 drawing the page: no e2e scenario yet.
 - **Not in this version.** Links that leave the page and pictures (each needs its own safety rules: opening an address from an untrusted file,
-  reading local image files), colouring for other code files, selection in the Code view, a `view` argument for agent tools.
+  reading local image files), colouring for other code files, a `view` argument for agent tools. The Code view selects like any text file
+  (2026-11-10, "Select text in files" above).
