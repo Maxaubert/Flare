@@ -1,8 +1,8 @@
-# Stages a release build for one installed copy of Flare (install when idle, 2026-10-29).
+# Stages a release build for one installed copy of Flare (Build ready, 2026-10-29).
 #
 # Copies the release files into <install>\staged\ under the names they have in <install>\current\, and writes
 # staged.json LAST: {commit, built_at, files: {name: sha256}}. The running app is not touched: Flare sees the
-# staged build, shows "Build ready" and installs it once no agent is working (or when Max clicks Install now).
+# staged build, shows "Build ready" and installs it when Max clicks it.
 # A second stage replaces the first. Always ask Max before staging.
 #
 #   pwsh tools\stage-install.ps1 -Stable              # %LOCALAPPDATA%\StableFlare (FlareStable.exe)
@@ -77,7 +77,7 @@ try {
   $tmp = "$manifest.tmp"
   [IO.File]::WriteAllText($tmp, $json, (New-Object Text.UTF8Encoding($false)))
   Move-Item -Force $tmp $manifest
-  Say "staged $($commit.Substring(0, [Math]::Min(7, $commit.Length))) for $Root ($($hashes.Count) files); it installs when idle"
+  Say "staged $($commit.Substring(0, [Math]::Min(7, $commit.Length))) for $Root ($($hashes.Count) files); click Build ready to install it"
 } catch {
   Say "FAILED: $($_.Exception.Message)"
   exit 1

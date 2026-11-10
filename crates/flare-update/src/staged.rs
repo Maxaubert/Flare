@@ -679,18 +679,10 @@ pub fn take_back(layout: &Layout) {
 }
 
 /// A good swap whose new exe could not be started: the old files go back, the record goes, and so does the stage
-/// (an exe that will not start must not be offered again at every idle minute).
+/// (an exe that will not start must not be offered again).
 pub fn abandon(layout: &Layout) {
     take_back(layout);
     let _ = fs::remove_file(layout.manifest());
-}
-
-/// "Discard": the staged build goes.
-pub fn discard(layout: &Layout) -> std::io::Result<()> {
-    match fs::remove_dir_all(layout.staged()) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        r => r,
-    }
 }
 
 #[cfg(test)]
@@ -1283,15 +1275,6 @@ mod tests {
         confirm(&i.layout);
         assert!(read_marker(&i.layout).is_none());
         assert_eq!(i.read("FlareStable.exe"), b"old exe");
-    }
-
-    #[test]
-    fn discard_removes_the_staged_build_and_is_fine_when_none_is_there() {
-        let i = Inst::new();
-        i.stage_new();
-        discard(&i.layout).unwrap();
-        assert!(!i.layout.staged().exists());
-        discard(&i.layout).unwrap();
     }
 
     #[test]

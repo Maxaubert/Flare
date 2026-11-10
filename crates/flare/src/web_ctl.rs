@@ -69,6 +69,9 @@ use crate::appctl::{Post, UiMsg};
 mod live;
 use crate::panel_ctl::PanelCtl;
 
+pub mod arrows;
+pub use arrows::PointReq;
+
 /// Where a person gets the WebView2 Runtime when it is missing (Microsoft's evergreen bootstrapper page).
 pub const RUNTIME_URL: &str = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
 
@@ -117,6 +120,8 @@ pub enum WebMsg {
     DragSettled,
     /// The web lines' gate has held copies whose window has passed.
     DiagTick,
+    /// Escape reached the page while the person draws an arrow: the draw mode ends.
+    DrawCancel,
 }
 
 /// A `WebMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never an
@@ -132,6 +137,7 @@ impl std::fmt::Debug for WebMsgBox {
             WebMsg::AgentTick => f.write_str("WebMsg::AgentTick"),
             WebMsg::DragSettled => f.write_str("WebMsg::DragSettled"),
             WebMsg::DiagTick => f.write_str("WebMsg::DiagTick"),
+            WebMsg::DrawCancel => f.write_str("WebMsg::DrawCancel"),
         }
     }
 }
@@ -226,6 +232,9 @@ pub enum WebOut {
         page: Option<crate::ask_agent::PageRef>,
         result: Result<String, String>,
     },
+    /// The person drew an arrow on the page (rule 255): its frame (`ask_agent::frame_arrow`), typed at the tab's prompt
+    /// unsent when the tab is still in front.
+    ArrowDrawn { tab: String, text: String },
 }
 
 /// One "Ask agent" read of a page's selection, while it is out.
@@ -542,6 +551,10 @@ struct TabWeb {
     /// The sites of the pop-ups over the page, the one on top last (rule 249): the strip names the top one, and the
     /// agent's input calls wait for the person while any is open (rule 250).
     popups: Vec<String>,
+    /// The agent's arrow over the page (`browser.point`, rule 254), while it is up.
+    point: Option<arrows::AgentPoint>,
+    /// The person's arrow, kept for the agent's next look (rule 255).
+    user_arrow: Option<arrows::UserArrow>,
 }
 
 /// What the agent's input calls answer while a pop-up is open over the page (rule 250).
@@ -580,6 +593,8 @@ struct KeyState {
     /// How many times the key hook was asked about a key while the agent's own press was in flight (it
     /// says whether the browser reports DevTools key events to the hook; the e2e reads it).
     agent_heard: Cell<u32>,
+    /// The person is drawing an arrow on the page: Escape there ends it.
+    drawing: Cell<bool>,
 }
 
 pub struct WebCtl {
@@ -677,6 +692,8 @@ pub struct WebCtl {
     clock_skew: u64,
     /// The web kinds of the diagnostics log and their gate (rule 247).
     web_diag: WebDiag,
+    /// The arrows over the page and the person's draw mode (rules 254 to 256).
+    arrows: arrows::Arrows,
 }
 
 /// The keys WebView2 reports in Win32 virtual-key codes, as the chord table knows them.
@@ -940,6 +957,7 @@ impl WebCtl {
                 job_active: Cell::new(false),
                 agent_keys: Cell::new(false),
                 agent_heard: Cell::new(0),
+                drawing: Cell::new(false),
             }),
             has_focus: false,
             scripts: HashMap::new(),
@@ -970,6 +988,7 @@ impl WebCtl {
             scale: 1.0,
             clock_skew: 0,
             web_diag: WebDiag::new(crate::diag_ctl::agent_sink()),
+            arrows: arrows::Arrows::default(),
         }
     }
 
@@ -1016,6 +1035,11 @@ impl WebCtl {
             if keys.agent_keys.get() {
                 keys.agent_heard.set(keys.agent_heard.get() + 1);
                 return false;
+            }
+            // Escape while the person draws an arrow ends the draw mode, and is not the page's (rule 256).
+            if keys.drawing.get() && k.vk == 0x1B && !k.ctrl && !k.shift && !k.alt {
+                post(UiMsg::Web(WebMsgBox(WebMsg::DrawCancel)));
+                return true;
             }
             // A key of the person's own, while an agent call runs on the page: they have taken over.
             if keys.job_active.get() {
@@ -1134,6 +1158,7 @@ impl WebCtl {
         self.cursor_off();
         self.border.hide();
         self.border_off();
+        self.arrows_off();
         self.backgrounds.clear();
         self.bars.clear();
         if let Some(mut b) = self.backend.take() {
@@ -1564,6 +1589,7 @@ impl WebCtl {
     /// Forgets what is known of the tab's page and answers every call that waited on it. True when the
     /// tab had a page (its browser view is the caller's to close).
     fn forget_tab(&mut self, tab: &str) -> bool {
+        self.arrows_tab_gone(tab);
         let Some(t) = self.tabs.remove(tab) else {
             return false;
         };
@@ -2264,12 +2290,13 @@ impl WebCtl {
         self.keys.agent_heard.get()
     }
 
-    /// How many agent calls run and how many holds are on: when this is the same before and after a
-    /// message, the window's properties need no new sync (a DevTools answer or a timer turn alone).
-    pub fn agent_shape(&self) -> (usize, usize) {
+    /// How many agent calls run, how many holds are on and whether the person draws an arrow: when this is the same
+    /// before and after a message, the window's properties need no new sync (a DevTools answer or a timer turn alone).
+    pub fn agent_shape(&self) -> (usize, usize, bool) {
         (
             self.tabs.values().filter(|t| t.agent.is_some()).count(),
             self.tabs.values().filter(|t| t.hold.is_some()).count(),
+            self.arrows.drawing_any(),
         )
     }
 
@@ -2546,6 +2573,7 @@ impl WebCtl {
     /// drawn again. It fades once its tab has neither a call nor a hold.
     fn update_cursor(&mut self) {
         let now = self.now_ms();
+        self.update_arrows();
         self.update_border(now);
         let place = match &self.cursor_tab {
             Some(t) if self.cursor_on(t) => self.bounds.as_ref().map(|(t, r)| (t.clone(), *r)),
@@ -2662,6 +2690,13 @@ impl WebCtl {
         }
         // What the page does next (in its next frames) still happens if it is not on screen.
         t.awake_until = now + PARK_AWAKE_MS;
+        // A look gets the person's arrow, once (rule 255).
+        let mut result = result;
+        if a.job.op() == "look"
+            && let Ok(v) = result.as_mut()
+        {
+            self.look_gets_arrow(tab, v);
+        }
         let _ = a.reply.send(result.map_err(ctl_error));
         self.refresh_key_flags();
     }
@@ -2676,7 +2711,8 @@ impl WebCtl {
         } else if let Some(t) = self.tabs.get_mut(&tab) {
             t.hold = None;
         }
-        // The person's own input takes the cursor and the border away at once, and ends the hold.
+        // The person's own input takes the cursor, the border and the agent's arrow away at once, and ends the hold.
+        self.arrows_user_input(&tab);
         if self.cursor_tab.as_deref() == Some(tab.as_str()) {
             self.cursor.hide();
         }
@@ -2742,9 +2778,11 @@ impl WebCtl {
                 t.hold = None;
             }
         }
+        self.arrows_tick(now);
         self.update_parked();
         self.update_cursor();
         self.agent_busy()
+            || self.arrows_busy()
             || self.tabs.values().any(|t| t.hold.is_some() || t.parked)
             || self.cursor.shown()
             || self.border.shown()
@@ -2960,6 +2998,10 @@ impl WebCtl {
                 self.arm_diag_timer();
                 vec![]
             }
+            WebMsg::DrawCancel => {
+                self.cancel_draw();
+                vec![]
+            }
         }
     }
 
@@ -3117,6 +3159,8 @@ impl WebCtl {
                     }
                     t.url = url;
                 }
+                // A new document: the arrows on the old one point at nothing now.
+                self.arrows_new_doc(&tab);
             }
             WebEvent::Loaded {
                 tab,
@@ -3373,6 +3417,8 @@ impl WebCtl {
             WebEvent::Cdp { tab, id, result } => {
                 if let Some(o) = self.diagram_answer(&tab, id, &result) {
                     out.push(o);
+                } else if let Some(o) = self.arrow_cdp(&tab, id, &result) {
+                    out.extend(o);
                 } else {
                     self.on_cdp(&tab, id, result);
                 }
