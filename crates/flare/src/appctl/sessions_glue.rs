@@ -90,6 +90,13 @@ impl AppCtl {
         let Some(snap) = self.panels.snap(&tab).filter(|s| s.open) else {
             return;
         };
+        // A markdown view's page: its selection, named by the file (with nothing selected, the file's path goes).
+        if self.panels.is_md_page(&tab) {
+            if !self.web.ask_selection(&tab) {
+                self.ask_note(crate::ask_agent::NOTE_PAGE_FAILED);
+            }
+            return;
+        }
         if let Some(path) = &snap.path {
             self.ask_about_path(&tab, path);
         } else if snap.kind == "web" || snap.kind == "app" || snap.kind.starts_with("mod:") {
@@ -134,7 +141,11 @@ impl AppCtl {
             Some(framed) => {
                 self.deliver_ask(tab, &framed);
             }
-            None => self.ask_note(NOTE_NO_SELECTION),
+            // Nothing selected on a markdown view's page: the file is what the panel shows, as in Code.
+            None => match self.panels.snap(tab).and_then(|s| s.path) {
+                Some(path) if self.panels.is_md_page(tab) => self.ask_about_path(tab, &path),
+                _ => self.ask_note(NOTE_NO_SELECTION),
+            },
         }
     }
 
