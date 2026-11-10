@@ -167,7 +167,7 @@ pub struct EngineConfig {
     pub runner_for: Box<dyn Fn(&str) -> Runner + Send + Sync>,
     /// An NVIDIA adapter is present (a question that cannot be answered reads as no).
     pub has_nvidia: Box<dyn Fn() -> bool + Send + Sync>,
-    /// The bundled engine carries a GPU backend of its own: Metal on a Mac (rule 313), where there is no pack.
+    /// The bundled engine carries a GPU backend of its own: Metal on a Mac (rule 1082), where there is no pack.
     /// Then the bundled folder is first started as the GPU engine, and the once-and-for-good fall back runs the
     /// same folder on the CPU (`-ng`). False on Windows, whose bundled engine is the CPU build.
     pub bundled_gpu: bool,
@@ -272,7 +272,7 @@ struct Inner {
 
 /// The child's PATH with the CPU engine's folder (which holds the C++ runtime) in front, for a GPU folder that has
 /// none: Windows finds a DLL on PATH. A Mac finds a library by its `@loader_path` rpath, never PATH, and its PATH is
-/// joined with `:`: nothing is changed there (rule 324).
+/// joined with `:`: nothing is changed there (rule 1093).
 fn runtime_path(runtime: &Path, dir: &Path, old: &str) -> Option<String> {
     if !cfg!(windows) || runtime == dir {
         return None;

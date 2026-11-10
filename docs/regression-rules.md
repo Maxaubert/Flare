@@ -1135,7 +1135,7 @@ frame could run script in the page above it. `popup_target_allowed` lets only `h
 view's `NavRule` allows for the main frame; `data:`, `file:`, `chrome:`, `devtools:`, `blob:` and every other scheme
 are dropped. Held by `a_popup_loads_only_a_web_address_the_navigation_rule_allows`. Source: commit security review of
 phase 5 (2026-11-08).
-304. **macOS: the dictation link is a Unix socket only this user can reach, with the pipe's handshake on top.**
+1073. **macOS: the dictation link is a Unix socket only this user can reach, with the pipe's handshake on top.**
 `link_pipe` is `<per-user temp folder>/flare-dictation/<24 hex of the key's hash>.sock` (the temp folder from
 `confstr(_CS_DARWIN_USER_TEMP_DIR)`); the folder is made 0700 and a service refuses to start in one that is not a real
 folder of this user's with no group or other bits; the socket is mode 0600; one service per name (an exclusive `flock`
@@ -1147,7 +1147,7 @@ leave it 0644). The protocol (`link.rs`: key, nonces, proofs, 64 KiB lines, the 
 is the same code on both systems, only `Event`, `Conn`, `connect` and the acceptor are per system
 (`macos/link_sock.rs`). Held by every test of `crates/flare-dictation/tests/link.rs` (no longer Windows-only), its
 `unix_socket` module and `link::sock::tests`. Source: macOS port phase 7 (2026-11-09).
-305. **macOS: microphone access is read, never asked for, and access that is off opens nothing.** Flare reads the
+1074. **macOS: microphone access is read, never asked for, and access that is off opens nothing.** Flare reads the
 authorization with `+[AVCaptureDevice authorizationStatusForMediaType:]` only (no `requestAccess`, held by a scan in
 `privacy.rs`); off or restricted is `OpenError::Denied` before any CoreAudio call (macOS would hand a denied app
 silence, which would read as "Heard nothing"); never asked lets the open go ahead, and the system's own question then
@@ -1157,7 +1157,7 @@ microphones and when a Test is refused; the pill keeps Prism Terminal's words. H
 `access_that_is_off_refuses_before_any_device_is_touched`, `the_authorization_status_means_what_apple_says`,
 `reading_the_access_asks_nothing_and_answers`, `access_that_is_off_names_the_settings_pane_and_nothing_else_is_a_problem`
 and `the_mac_microphone_records_from_input_only_and_never_asks_by_itself`. Source: macOS port phase 7 (2026-11-09).
-306. **macOS: the microphone is an input queue on an input device, 16 kHz mono by the shared resampler.** `macos/mic.rs`
+1075. **macOS: the microphone is an input queue on an input device, 16 kHz mono by the shared resampler.** `macos/mic.rs`
 lists the HAL's devices with input streams by UID (opening none), opens an `AudioQueue` input on the chosen UID or on
 the default input read at that open (so a new default is followed at the next press, as on Windows), mono `f32` at the
 device's nominal rate in 50 ms buffers (800 samples at 16 kHz from 48 or 44.1 kHz, nothing lost between buffers), and
@@ -1166,12 +1166,12 @@ gone, the file seam and the async open are the Windows code. Held by `the_c_layo
 `os_statuses_map_to_the_open_outcomes`, `a_device_rate_the_resampler_cannot_take_becomes_48_khz`, the shared
 `mic::tests`, and by hand `the_real_default_microphone_lists_and_records_a_second` (ignored). Source: macOS port phase 7
 (2026-11-09).
-307. **Dictation runs end to end with only the device faked, on both systems.** A 48 kHz WAV played through
+1076. **Dictation runs end to end with only the device faked, on both systems.** A 48 kHz WAV played through
 `MicSource::File` in real time reaches the controller, the final pass is that clip at 16 kHz (its pitch kept), and the
 paste is the fake engine's words cleaned plus one space, into the tab in front at the start, never a newline. Held by
 `a_wav_played_as_the_microphone_is_heard_resampled_and_pasted_into_the_tab_in_front`
 (`crates/flare-dictation/tests/pipeline.rs`). Source: macOS port phase 7 (2026-11-09).
-308. **macOS: the dictation key from any app asks for no permission, and a chord needs none.** A binding that ends in
+1077. **macOS: the dictation key from any app asks for no permission, and a chord needs none.** A binding that ends in
 a key (F9, Ctrl+Shift+D) is a Carbon `RegisterEventHotKey` on the main thread (it swallows the key system-wide and
 reports press and release with no permission). A modifier binding (the default Ctrl+Cmd, Right Option) needs the
 key-up and "another key", so it is a LISTEN-ONLY `CGEventTap` on the hook thread, made only after
@@ -1185,7 +1185,7 @@ from any app" row's sub names System Settings > Privacy & Security > Input Monit
 `the_settings_problem_names_input_monitoring_only_for_a_modifier_key_without_it`,
 `what_stops_dictating_from_any_app_replaces_the_rows_sub_only_while_it_is_on` and
 `the_mac_key_hook_listens_only_posts_nothing_and_never_asks_by_itself`. Source: macOS port phase 7 (2026-11-09).
-309. **macOS: the hook's lines are the Windows hook's lines.** Carbon's press is the binding's modifiers down, then its
+1078. **macOS: the hook's lines are the Windows hook's lines.** Carbon's press is the binding's modifiers down, then its
 key down (a press while held is the key's repeat); its release is the key up, then the modifiers up, so the shared
 `KeyFeed` and reducer decide as on Windows. The tap reports a binding modifier by its side's device bit (Right Option is
 not Left Option), says only `Other` (never which key) for any other key, Caps Lock or Fn going down while a binding key
@@ -1203,7 +1203,7 @@ lets the keys and the lock go, and an earlier owner's let-go never removes a lat
 `a_binding_this_way_cannot_serve_says_failed_once_and_lets_everything_go` and
 `a_chord_another_app_holds_or_a_tap_that_cannot_be_made_is_failed` (`crates/flare-dictation/src/macos/keyhook.rs`).
 Source: macOS port phase 7 (2026-11-09).
-310. **macOS: a binding is named and checked as a Mac key.** The stored binding is the same on both systems (W3C codes
+1079. **macOS: a binding is named and checked as a Mac key.** The stored binding is the same on both systems (W3C codes
 by position): Meta is Command and Alt is Option, so AltGr's key, Right Alt, is Right Option. Settings names it the Mac
 way ("Right Option", Control+Command as the symbols of the phase 3 key table); the capture and the stored-key reading
 refuse Option with a key (it types a character on a Mac), the Command chords the Mac or Flare own (Cmd+C V W T F Q H M
@@ -1213,7 +1213,7 @@ with such a key says so on the row. Windows names and checks are unchanged. Held
 `on_a_mac_a_key_that_types_or_a_command_chord_the_mac_owns_is_refused` (`crates/flare-dictation/src/hotkey.rs`),
 `every_binding_key_maps_to_the_mac_key_in_its_place_and_back` and `a_key_captured_from_the_page_is_stored_and_drawn`.
 Source: macOS port phase 7 (2026-11-09).
-311. **macOS: media pause is off, with the reason, because no public API can do it.** What another app is playing is
+1080. **macOS: media pause is off, with the reason, because no public API can do it.** What another app is playing is
 known only to MediaRemote, private and closed to third-party apps since macOS 15.4; `MPRemoteCommandCenter` and
 `MPNowPlayingInfoCenter` are an app's own player; the media key only toggles (with nothing playing it would start
 music); scripting each player asks for Automation. So the Mac has no media port (nothing is ever paused), and the
@@ -1221,7 +1221,7 @@ music); scripting each player asks for Automation. So the Mac has no media port 
 player and resume only that.", even when an import stored it on. Held by
 `where_media_cannot_be_paused_the_switch_is_off_and_says_why` (`crates/flare-settings/src/page/dictation.rs`) and the
 media tests. Source: macOS port phase 7 (2026-11-09).
-312. **macOS: no engine child runs outside the reaper.** The Windows kill-on-close job is, on a Mac, a process group
+1081. **macOS: no engine child runs outside the reaper.** The Windows kill-on-close job is, on a Mac, a process group
 per child plus one reaper (`crates/flare-dictation/src/macos/job.rs`): every engine spawn calls `job::isolate`
 (`process_group(0)`, a no-op on Windows) before `spawn` and `job.assign` after it; `Job::new` starts `/bin/sh` with the
 fixed `REAPER` program, a clean environment and a pipe on stdin; `assign` writes `+ <pid>` (and `- <pid>` for each
@@ -1232,7 +1232,7 @@ own. Held by `job::tests` (a child, a grandchild, an owner killed with `SIGKILL`
 garbage on the pipe), `audio_reaches_the_engine_only_over_loopback_and_pipes_on_both_systems` (isolate, then spawn,
 then assign in each spawner) and `crates/flare-dictation/tests/engine.rs` and `host.rs`, which now run on both
 systems. Source: macOS port phase 7 (2026-11-09).
-313. **macOS: the bundled engine is the Metal engine, and there is no pack.** Every Mac Flare targets is Apple Silicon,
+1082. **macOS: the bundled engine is the Metal engine, and there is no pack.** Every Mac Flare targets is Apple Silicon,
 whose GPU always has Metal, so `gpu::BUILT_IN_GPU` is true on a Mac (nothing is probed) and `EngineConfig::bundled_gpu`
 follows it: the bundled folder is first started as the GPU engine (no `-ng`), and the once-and-for-good fall back of
 Windows runs the same folder on the CPU (`-ng` to whisper-server and parakeet-cli, `0` to the host). The NVIDIA pack is
@@ -1241,12 +1241,12 @@ the Recommended pick is Large v3 Turbo (`gpu::gpu_ready`), and no model row says
 (`DictationData::gpu_built_in`). Windows is unchanged: `bundled_gpu` is false there. Held by the Metal tests of
 `tests/engine.rs`, `a_large_model_never_warns_where_the_engine_has_a_gpu_of_its_own`, the gpu and catalog tests and
 `the_shipped_catalogue_opens_and_the_failure_texts_are_the_parity_line`. Source: macOS port phase 7 (2026-11-09).
-314. **macOS: models live in `~/Library/Application Support/FlareDictation`, never in the temp folder.** With no
+1083. **macOS: models live in `~/Library/Application Support/FlareDictation`, never in the temp folder.** With no
 `LOCALAPPDATA` the store used to fall back to the temp folder, which the system empties. On a Mac `default_root` is
 `flare_win::paths::local_app_data()` (`~/Library/Application Support`) plus the same folder name as on Windows, apart
 from the profile so a profile reset never deletes gigabytes of models. The neighbour app's models folder is a Windows
 folder and is not looked for on a Mac. Source: macOS port phase 7 (2026-11-09).
-315. **macOS: the engine is built from one pinned source, never fetched as a binary.** whisper.cpp's b5130 release has
+1084. **macOS: the engine is built from one pinned source, never fetched as a binary.** whisper.cpp's b5130 release has
 no macOS program, so `tools/build-whisper-macos.sh` fetches commit `927cfce3...` by its hash, refuses to build unless
 the commit AND its tree hash are the pinned ones (`catalog::ENGINE_MACOS`), builds whisper-server and parakeet-cli with
 Metal embedded, OpenMP, KleidiAI and curl off, keeps only the libraries the programs link to under their versioned
@@ -1257,66 +1257,66 @@ fetches the catalogue's tiny model by size and SHA-256 and runs `tests/metal_rea
 `the_macos_build_pins_match_the_catalogue`, `the_macos_build_checks_the_commit_and_tree_before_it_builds_and_fetches_nothing_unpinned`,
 `the_macos_ci_builds_the_pinned_engine_and_fetches_the_catalogues_tiny_model` and
 `the_mac_host_picks_each_library_by_its_own_stem_and_version`. Source: macOS port phase 7 (2026-11-09).
-316. **macOS: what Flare fetches carries no quarantine, and audio stays on this machine.** A model is written by Flare
+1085. **macOS: what Flare fetches carries no quarantine, and audio stays on this machine.** A model is written by Flare
 itself through ureq and `std::fs`, so it has no `com.apple.quarantine` flag and Gatekeeper never judges it; it is data,
-never made executable, and runs only after its size and SHA-256 match. The engine is built (rule 315) and ships inside
+never made executable, and runs only after its size and SHA-256 match. The engine is built (rule 1084) and ships inside
 the signed bundle (phase 8), never downloaded on a Mac. The clip reaches the engine only over 127.0.0.1 (the one
 address dialled and the one the server is told to listen on) and stdin (`-f -`), the Mac engine is built without curl,
 and no engine file writes audio to disk. Held by `a_fetched_model_carries_no_quarantine_flag_and_is_not_executable`,
 `audio_reaches_the_engine_only_over_loopback_and_pipes_on_both_systems` and `no_audio_is_written_to_disk` (now also
 over `macos/job.rs` and the host). Source: macOS port phase 7 (2026-11-09).
-317. **macOS: a tap whose Input Monitoring is revoked ends and lets the key go.** While the listen-only tap runs, `tick`
+1086. **macOS: a tap whose Input Monitoring is revoked ends and lets the key go.** While the listen-only tap runs, `tick`
 reads `CGPreflightListenEventAccess` (never asks) every 10 ticks (500 ms). When it reads false the tap ends with
 `Failed`, the hook lets go of its hot keys and the `flock`, and the owner re-arms a hook that waits for the permission
 without the lock, so the window reads the key again instead of a deaf tap holding it for good. Held by
 `input_monitoring_revoked_while_the_tap_runs_ends_it_lets_the_lock_go_and_waits_again`. Source: phase 7 review
 (2026-11-09).
-318. **macOS: a pid leaves the reaper before its child is reaped.** Every engine child (whisper-server, parakeet-cli,
+1087. **macOS: a pid leaves the reaper before its child is reaped.** Every engine child (whisper-server, parakeet-cli,
 the Parakeet host) is waited only through `job.member()`, whose `try_wait` and `wait` read the exit with `waitid(...,
 WNOWAIT)`, write `- <pid>` while the child is still a zombie, and only then reap it. The reaper therefore never holds a
 pid the kernel may hand to another process, so its `kill -9` at Flare's end can never hit an unrelated process. A
 source scan holds that no assigned child is waited with a bare `child.try_wait()` or `child.wait()`. Windows' `Member`
 is the plain wait. Held by `a_child_waited_through_its_member_is_withdrawn_before_it_is_reaped` and
 `audio_reaches_the_engine_only_over_loopback_and_pipes_on_both_systems`. Source: phase 7 review (2026-11-09).
-319. **macOS: the reaper reaps even when its pipe leaked.** std creates the reaper's pipe and then sets close-on-exec,
+1088. **macOS: the reaper reaps even when its pipe leaked.** std creates the reaper's pipe and then sets close-on-exec,
 not atomically, so a process another thread spawns at that moment can inherit the write end and keep the pipe open
 after Flare dies. The reaper therefore also watches its parent (`kill -0 $PPID` every 2 s) and reaps when Flare is
 gone. It answers `ok` to every `+` and `-` line and Flare waits for the answer, so a pid is held before `assign`
 returns and a reap the watcher starts never misses a line still in the pipe. SIGPIPE is ignored so an answer to a dead
 Flare cannot end the reaper first. Held by `the_children_die_with_their_killed_owner_even_when_another_process_holds_the_pipe`
 (it fails without the watcher) and the other `macos/job.rs` tests. Source: phase 7 review (2026-11-09).
-320. **macOS: a hot key register never stalls a quit.** Quit and switch-off run on the main thread and join the hook,
+1089. **macOS: a hot key register never stalls a quit.** Quit and switch-off run on the main thread and join the hook,
 while a register waits for the main queue. `await_main` reads the answer in 20 ms slices and gives up as soon as the
 hook is no longer wanted (the queued `unregister` undoes a late register), instead of waiting the full 2 s. Held by
 `a_register_the_main_thread_cannot_answer_gives_up_as_soon_as_the_hook_is_stopped`. Source: phase 7 review
 (2026-11-09).
-321. **macOS: the system's Control chords are never a binding.** Without Shift and Option, Control+Command+Q (Lock
+1090. **macOS: the system's Control chords are never a binding.** Without Shift and Option, Control+Command+Q (Lock
 Screen), Control+Command+F (full screen), Control+Command+Space (emoji picker) and Control with an arrow key (Spaces,
 Mission Control, App Expose) are refused by `usable_hotkey_on(KeyOs::Mac, ..)`: the system wins over a Carbon hot
 key, so such a binding would show as working and never fire or lock the screen. Windows is unchanged. Held by
 `on_a_mac_a_key_that_types_or_a_command_chord_the_mac_owns_is_refused`. Source: phase 7 review (2026-11-09).
-322. **The microphone row says the access as it is now.** A refused Test says `denied_text(mic::access())`: on a Mac
+1091. **The microphone row says the access as it is now.** A refused Test says `denied_text(mic::access())`: on a Mac
 "restricted" for a profile's restriction, else the "off" line with the pane; Windows keeps "Microphone access was
 refused.". Each listing replaces a line that was only the access (off or restricted) with the new reading, so it goes
 once access is allowed, and leaves a Test's own failure. Held by
 `a_refused_test_names_the_access_as_it_is_and_a_listing_clears_access_that_came_back`. Source: phase 7 review
 (2026-11-09).
-323. **macOS: this user's opened-up link folder is made private again.** When the link's folder is a real folder of
+1092. **macOS: this user's opened-up link folder is made private again.** When the link's folder is a real folder of
 this user with group or other bits set, it is opened with `O_NOFOLLOW | O_DIRECTORY`, checked again on the
-descriptor and `fchmod`ed to 0700, then the folder rule (rule 304) is checked as before. A symlink or another user's
+descriptor and `fchmod`ed to 0700, then the folder rule (rule 1073) is checked as before. A symlink or another user's
 folder is still refused and never changed. Held by
 `this_users_own_folder_left_open_is_made_private_and_a_symlink_is_still_refused`. Source: phase 7 review (2026-11-09).
-324. **The child's PATH is changed only on Windows.** `runtime_path` puts the CPU engine's folder in front of PATH
+1093. **The child's PATH is changed only on Windows.** `runtime_path` puts the CPU engine's folder in front of PATH
 with `;` for a GPU folder on Windows (DLLs are found on PATH). A Mac finds libraries by `@loader_path` and joins PATH
 with `:`, so nothing is added there. Held by `the_runtime_goes_on_path_only_on_windows_and_only_for_another_folder`.
 Source: phase 7 review (2026-11-09).
-325. **macOS: the engine folder is reused only with exactly its stamped files.** `engine_ok` in
+1094. **macOS: the engine folder is reused only with exactly its stamped files.** `engine_ok` in
 `tools/build-whisper-macos.sh` requires the stamp's commit, every listed file's SHA-256 AND that the folder holds no
 file the stamp does not list (a library planted beside an `@loader_path` rpath would load), so anything else means a
 rebuild. The stamp lists neither `.source` nor its own `.source.tmp` (which used to be listed and then missing, so the
 check never passed). Held by `the_macos_engine_folder_is_reused_only_when_it_holds_exactly_the_stamped_files`, which
 runs the script's own `engine_ok` and stamp block in bash. Source: phase 7 review (2026-11-09).
-326. **A media worker that dies mid-call closes its queue before its reply.** `run_worker` owns the request queue and
+1095. **A media worker that dies mid-call closes its queue before its reply.** `run_worker` owns the request queue and
 runs each port call under `catch_unwind`; when a call panics it drops the queue first and the reply second. The caller
 learns of the death from the reply, so the next request finds the queue closed and starts a fresh worker. Before,
 a request sent while the dead worker was still unwinding went into its queue and was answered empty as well

@@ -1,4 +1,4 @@
-//! A real pass on a Mac's own engine (port phase 7, rule 315): whisper-server and the Parakeet host built from the
+//! A real pass on a Mac's own engine (port phase 7, rule 1084): whisper-server and the Parakeet host built from the
 //! pinned source with Metal (`tools/build-whisper-macos.sh`), the pinned tiny model, and the source's own clip.
 //! Ignored by default: it needs those files, which no ordinary test run downloads or builds. The macOS CI job builds
 //! the engine and runs it (`--run-ignored only`); `docs/dictation-by-hand.md` has the same check by hand.

@@ -790,7 +790,7 @@ impl TapSink for TapCtx<'_> {
             return false;
         }
         // Input Monitoring revoked while the tap runs: a tap that hears nothing must not keep the lock (and so the
-        // window from reading the key). Failed: the owner re-arms a hook that waits without the lock (rule 317).
+        // window from reading the key). Failed: the owner re-arms a hook that waits without the lock (rule 1086).
         let t = self.ticks.get().wrapping_add(1);
         self.ticks.set(t);
         if t.is_multiple_of(LISTEN_TICKS) && !self.run.sys.listen_allowed() {
@@ -1028,7 +1028,7 @@ fn on_main(f: Box<dyn FnOnce() + Send>) {
 
 /// The main thread's answer to a register, read in slices: `None` after `total`, or as soon as the hook is no
 /// longer wanted. A quit or switch-off runs on the main thread and joins the hook, so the main queue cannot answer
-/// until the hook ends: waiting the whole `total` there would stall the quit for it (rule 320).
+/// until the hook ends: waiting the whole `total` there would stall the quit for it (rule 1089).
 fn await_main(
     rx: &std::sync::mpsc::Receiver<bool>,
     total: Duration,

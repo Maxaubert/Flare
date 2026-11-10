@@ -145,7 +145,7 @@ pub struct DictationData {
     /// What stops dictating from any app with this key (macOS: Input Monitoring for a modifier key); it replaces
     /// the row's sub. None on Windows.
     pub anywhere_problem: Option<String>,
-    /// The bundled engine has a GPU of its own (Metal on a Mac, rule 313): no model is slow for want of the pack,
+    /// The bundled engine has a GPU of its own (Metal on a Mac, rule 1082): no model is slow for want of the pack,
     /// which is not offered there. False on Windows.
     pub gpu_built_in: bool,
 }
@@ -970,7 +970,7 @@ mod tests {
 
     #[test]
     fn a_large_model_never_warns_where_the_engine_has_a_gpu_of_its_own() {
-        // macOS (rule 313): Metal is in the bundled engine, there is no pack, and Turbo is not slow.
+        // macOS (rule 1082): Metal is in the bundled engine, there is no pack, and Turbo is not slow.
         with_env(false, |env| {
             let mut d = data(true);
             d.gpu_built_in = true;

@@ -11,13 +11,13 @@
 //!   way (a crash, `kill -9`, a force quit): the kernel closes a dead process's descriptors, which is the
 //!   one guarantee a library has without an entitlement (no `PR_SET_PDEATHSIG` on Darwin).
 //! - **Refusals.** A job whose reaper is not running refuses `assign`, and the callers never run a child
-//!   they cannot reap (rule 312): the same contract as a job that cannot be made on Windows.
+//!   they cannot reap (rule 1081): the same contract as a job that cannot be made on Windows.
 //!
 //! A pid is only ever told to the reaper while the child behind it has not been waited on (a zombie keeps
 //! its pid), and it is withdrawn BEFORE it is waited on: every engine child is waited through its
 //! [`Member`], which sees the exit without reaping (`waitid` with `WNOWAIT`), writes `- <pid>` while the
 //! child is still a zombie, and only then reaps it. So the reaper never holds a pid that is free for the
-//! kernel to give to another process (rule 318). The lazy withdrawal at the next assign stays as a backstop.
+//! kernel to give to another process (rule 1087). The lazy withdrawal at the next assign stays as a backstop.
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::process::CommandExt;
@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 /// The reaper's whole program (POSIX sh). It holds the pids it is told, and when its stdin ends it kills each
 /// one's group and the pid itself. It also watches its parent (Flare) every 2 s and reaps when Flare is gone:
 /// std sets close-on-exec on the pipe after `pipe()`, not atomically, so a process another thread spawns at that
-/// moment can inherit the write end and keep the pipe open after Flare died (rule 319). Every `+` and `-` line is
+/// moment can inherit the write end and keep the pipe open after Flare died (rule 1088). Every `+` and `-` line is
 /// answered `ok` on stdout once it is held, and Flare waits for the answer: a pid is in the reaper's list before
 /// `assign` returns, so a reap the watcher starts never misses a line still in the pipe. SIGPIPE is ignored too:
 /// an answer to a Flare that is gone must not end the reaper before it reaps. Hang-ups and interrupts are ignored: a closing terminal must not end it
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn a_child_waited_through_its_member_is_withdrawn_before_it_is_reaped() {
-        // Its pid is free once reaped: the reaper must already have let it go (rule 318), not at the next assign.
+        // Its pid is free once reaped: the reaper must already have let it go (rule 1087), not at the next assign.
         let job = Job::new().expect("a reaper");
         let member = job.member();
         let mut quick = Command::new("/usr/bin/true").spawn().expect("true starts");

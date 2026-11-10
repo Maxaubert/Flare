@@ -1014,7 +1014,7 @@ fn the_shipped_catalogue_opens_and_the_failure_texts_are_the_parity_line() {
     let fx = Fx::new();
     let s = Store::open(fx.root.clone(), Box::new(MemFetch(fx.mem.clone())));
     let ids: Vec<String> = status(&s).into_iter().map(|i| i.id).collect();
-    // The pack is offered on Windows only (rule 313): a Mac's engine has Metal in it.
+    // The pack is offered on Windows only (rule 1082): a Mac's engine has Metal in it.
     assert_eq!(ids.len(), if cfg!(windows) { 8 } else { 7 });
     assert_eq!(ids.contains(&"gpu-pack".to_string()), cfg!(windows));
     assert_eq!(Failure::Network.text(), "The download failed.");
@@ -1097,7 +1097,7 @@ fn remove_waits_for_a_held_file_and_reports_one_that_stays_held() {
     drop(held);
 }
 
-// macOS (port phase 7, rule 316): a file Flare fetches is data it wrote itself, so it carries no quarantine flag
+// macOS (port phase 7, rule 1085): a file Flare fetches is data it wrote itself, so it carries no quarantine flag
 // and Gatekeeper is never asked about it; and a model is never made a program.
 #[cfg(target_os = "macos")]
 #[test]

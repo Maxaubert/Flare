@@ -3,7 +3,7 @@
 //! queue tests; the Parakeet ones are Task 14's). Nothing is mocked, because every rule here is about
 //! processes and sockets (who is alive, who was killed, what went over the wire): the stand-in is
 //! `fake-whisper-server`, started through the engine's `command` seam.
-//! Both systems since macOS port phase 7 (rule 312): the reaping job is the kill-on-close Job Object on Windows and
+//! Both systems since macOS port phase 7 (rule 1081): the reaping job is the kill-on-close Job Object on Windows and
 //! a process group per child plus a reaper on macOS; a pid is gone when Windows says it ended, or when macOS has no
 //! such process (or only its zombie).
 
@@ -1058,7 +1058,7 @@ fn dropping_the_engine_does_not_wait_for_a_worker_stuck_in_a_launch() {
     );
 }
 
-// ---------------------------------------------------------------- the Metal engine (macOS, rule 313)
+// ---------------------------------------------------------------- the Metal engine (macOS, rule 1082)
 
 type Argvs = Arc<Mutex<Vec<Vec<String>>>>;
 

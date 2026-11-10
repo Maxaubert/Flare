@@ -95,7 +95,7 @@ pub fn page_data(env: &PageEnv<'_>) -> DictationData {
     let stored_limited = limits_language(&dp.model);
     DictationData {
         models: model_infos(),
-        // Metal on a Mac is the GPU the pack is on Windows: Turbo is the pick there without one (rule 313).
+        // Metal on a Mac is the GPU the pack is on Windows: Turbo is the pick there without one (rule 1082).
         recommended: recommended(flare_dictation::gpu::gpu_ready(pack)),
         items,
         mics: crate::dictation_ctl::page_mics(),

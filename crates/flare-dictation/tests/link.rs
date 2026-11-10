@@ -1064,7 +1064,7 @@ mod unix_socket {
 
     #[test]
     fn a_folder_of_this_user_open_to_others_is_made_private_then_served() {
-        // Copied, restored or chmodded: this user's own folder is closed again (rule 323); another user's folder and
+        // Copied, restored or chmodded: this user's own folder is closed again (rule 1092); another user's folder and
         // a symlink stay refused (link_sock's unit tests).
         let dir = tempfile::tempdir().unwrap();
         let open = dir.path().join("open");

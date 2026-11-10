@@ -80,7 +80,7 @@ jobs:
           sysctl kern.timer.coalescing_enabled kern.timer_coalesce_bg_ns_max || true
       - name: Tests
         run: cargo nextest run --workspace --no-tests=pass --no-fail-fast
-      # The Mac's speech engine (port phase 7, rule 315): whisper.cpp built with Metal from its pinned commit and
+      # The Mac's speech engine (port phase 7, rule 1084): whisper.cpp built with Metal from its pinned commit and
       # tree, then one real pass with the pinned tiny model and the Parakeet host loading the built libraries.
       - uses: actions/cache@v4
         with:

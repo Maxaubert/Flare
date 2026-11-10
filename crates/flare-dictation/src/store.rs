@@ -143,7 +143,7 @@ pub fn shipped_catalog() -> Vec<Item> {
         })
         .collect();
     // The pack is NVIDIA's CUDA build for Windows: a Mac's engine has Metal in it, so the pack is never offered
-    // or fetched there (rule 313).
+    // or fetched there (rule 1082).
     if !catalog::PACK_OFFERED {
         return v;
     }
@@ -159,7 +159,7 @@ pub fn shipped_catalog() -> Vec<Item> {
 }
 
 /// The models folder: `FLARE_DICTATION_ROOT`, else `%LOCALAPPDATA%\FlareDictation` on Windows and
-/// `~/Library/Application Support/FlareDictation` on macOS (rule 314: never the temp folder the system empties).
+/// `~/Library/Application Support/FlareDictation` on macOS (rule 1083: never the temp folder the system empties).
 pub fn default_root() -> PathBuf {
     if let Some(v) = flare_win::seam::var_os(flare_win::names::SEAM_DICTATION_ROOT) {
         if !v.is_empty() {
