@@ -314,10 +314,11 @@ fn is_separator(c: char) -> bool {
 }
 
 /// The word under `at`: a run of letters between separators, a run of spaces, or one separator alone. A place past
-/// a line's end picks its last character's word.
+/// a line's end picks its last character's word; an empty line, or no line at all (an empty file), the empty span.
 fn word<L: AsRef<str>>(lines: &[L], at: Pos) -> (Pos, Pos) {
-    let text = lines[at.line].as_ref();
-    let cs: Vec<char> = text.chars().collect();
+    let cs: Vec<char> = lines
+        .get(at.line)
+        .map_or_else(Vec::new, |l| l.as_ref().chars().collect());
     if cs.is_empty() {
         return (at, at);
     }
@@ -340,13 +341,14 @@ fn word<L: AsRef<str>>(lines: &[L], at: Pos) -> (Pos, Pos) {
     (Pos::new(at.line, s), Pos::new(at.line, e))
 }
 
-/// A whole line with its line break (the last line has none).
+/// A whole line with its line break (the last line has none). No lines (an empty file) is the empty span at the start.
 fn line_span<L: AsRef<str>>(lines: &[L], line: usize) -> (Pos, Pos) {
     let start = Pos::new(line, 0);
     if line + 1 < lines.len() {
         (start, Pos::new(line + 1, 0))
     } else {
-        (start, Pos::new(line, chars(lines[line].as_ref())))
+        let len = lines.get(line).map_or(0, |l| chars(l.as_ref()));
+        (start, Pos::new(line, len))
     }
 }
 
@@ -437,10 +439,13 @@ pub enum Step {
 }
 
 /// Where `from` goes on `step`: a character left or right (across line ends), a row up or down at the same column,
-/// the line's start or end, or the text's.
+/// the line's start or end, or the text's. With no lines (an empty file) every step stays at the start.
 pub fn step<L: AsRef<str>>(map: &RowMap, lines: &[L], from: Pos, step: Step) -> Pos {
+    if lines.is_empty() {
+        return Pos::default();
+    }
     let from = clamp(lines, from);
-    let len = |l: usize| chars(lines[l].as_ref());
+    let len = |l: usize| lines.get(l).map_or(0, |s| chars(s.as_ref()));
     match step {
         Step::Left if from.ch > 0 => Pos::new(from.line, from.ch - 1),
         Step::Left if from.line > 0 => Pos::new(from.line - 1, len(from.line - 1)),
@@ -710,6 +715,35 @@ mod tests {
         let l = label(&long, (Pos::new(0, 0), Pos::new(1233, 2)));
         assert_eq!(l.chars().count(), 64);
         assert!(l.ends_with("\u{2026} lines 1-1234"), "{l}");
+    }
+
+    #[test]
+    fn an_empty_file_takes_every_click_drag_and_key_without_a_selection() {
+        let empty: [&str; 0] = [];
+        let map = RowMap::lines(0);
+        let mut sel = TextSel::default();
+        for clicks in 1..=3 {
+            sel.press(&empty, map.pos_at(&empty, 0, 2.0), clicks, false);
+            sel.drag(&empty, map.pos_at(&empty, 3, 5.0));
+            sel.release();
+            assert!(!sel.has(), "{clicks} clicks");
+        }
+        for s in [
+            Step::Left,
+            Step::Right,
+            Step::Up,
+            Step::Down,
+            Step::Home,
+            Step::End,
+            Step::DocStart,
+            Step::DocEnd,
+        ] {
+            let to = step(&map, &empty, Pos::new(0, 0), s);
+            assert_eq!(to, Pos::default(), "{s:?}");
+            sel.extend(&empty, Pos::default(), to);
+        }
+        assert!(!sel.has());
+        assert_eq!(text_of(&empty, (Pos::new(0, 0), Pos::new(4, 4))), "");
     }
 
     #[test]

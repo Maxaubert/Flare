@@ -132,6 +132,35 @@ fn a_double_click_picks_a_word_a_triple_click_a_line_and_shift_click_extends() {
 }
 
 #[test]
+fn an_empty_file_takes_clicks_and_shift_keys_without_a_crash_or_a_selection() {
+    let (f, _h, _) = live(Opts::default());
+    open(&f, "empty.txt", "");
+    for _ in 0..3 {
+        down(&f, 0, 2.0, false);
+        drag(&f, 1, 4.0);
+        up(&f);
+    }
+    assert_eq!(selected(&f), None);
+    focus(&f);
+    for k in [
+        "End",
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowUp",
+        "Home",
+    ] {
+        assert_eq!(
+            f.key(KeyEvent::new(k, k).shift()),
+            KeyOutcome::Consumed,
+            "{k}"
+        );
+    }
+    assert_eq!(selected(&f), None);
+    assert_eq!(painted(&f), None);
+}
+
+#[test]
 fn esc_lets_the_selection_go_first_and_gives_the_keys_back_only_with_nothing_selected() {
     let (f, _h, _) = live(Opts::default());
     open(&f, "a.txt", "alpha beta\ngamma");

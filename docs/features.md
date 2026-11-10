@@ -2124,14 +2124,15 @@ Not in this version: click a path to preview, a `.gltf` with separate `.bin` or 
 - **Tooltip.** One fixed wording, since whether a page has a selection is only known by asking it: "Ask agent about the selection or this page" in a
   web page's address bar, "Ask agent about the selection" on a mini-app or plugin page, "Ask agent about the selection or this file" on a text
   file, "Ask agent about this file" on a picture. It sits left of the button, so a page's native window cannot cover it.
-- **Select text in files** (2026-11-10, rules 242 to 244). The Text panel (and the Code view of a markdown file) selects like an editor: a drag,
+- **Select text in files** (2026-11-10, rules 242 to 245). The Text panel (and the Code view of a markdown file) selects like an editor: a drag,
   a double click for a word, a triple click for a line, Shift with a click to extend, Shift with the arrows, Home and End (Ctrl too for the whole
   file), Ctrl+A and Ctrl+C (the "Copied" badge shows). A drag held past an edge scrolls toward it; the wheel, the keys and the scrollbar scroll as
   before. Esc lets a selection go first and gives the keys back to the terminal only with nothing selected. The selection is kept as lines and
   characters, so it stays through scrolling, a splitter drag and the wrap button, and goes with a reload, another file or another tab. The text
   is what the panel shows: tabs as four spaces, a very long line as cut, rows a wrap made joined with no break. With text selected, Ask agent
   sends it framed as from `notes.md lines 12-40` (the name is cut first to fit the 64 character label); with none it still sends the path. The
-  Compiled and Markdown views are pages and keep the browser's own selection. The Changes panel has none.
+  Compiled and Markdown views are pages and keep the browser's own selection. The Changes panel has none. An empty file (or empty text an agent
+  shows) takes every click and key and simply selects nothing.
 - **The frame.** `About this from <label>:` then `> ` per line, at most 4 KB with `> [cut]`. The label is the host or file name, cleaned and capped at
   64 characters; a page Flare made itself reads "this page", and a markdown view's page reads the file's name (rule 241). A web page's host is the one its document gave with the text (`location.href`), so a click
   while the next page loads still names the page that is showing.
