@@ -1283,28 +1283,30 @@ after a fixed 1.5 s. Every such wait is a condition (`ctx.until`, never chained 
 has run them. The program-copy unit test ticks once before its press, so the press no longer races the window's real
 timer (the Windows check job, run 42612597989). Source: Mac E2E in CI, runs 42624800535 and 42626884993; review of the
 branch (2026-11-09).
-351. **macOS: a tab adopting a warm spare gets its kept output without its questions to the terminal.** A spare
-shell (`SessionManager::prewarm`) has no emulator, so nobody answers its questions until a tab adopts it. pwsh asks for
-the cursor (`CSI 6n`) at its first prompt and gives up waiting; adopted a minute later, its kept output was replayed
-into the tab's emulator, the stale question was answered at last, .NET read the late report as typed keys, echoed
-characters no key sends, asked again and never stopped: helpPanel's new shell (Ctrl+T beside the help panel) showed
-only junk on the Mac runner (runs 42612597989 to 42630197431). The proof was the e2e write tap
-(`flare_term::session::set_write_tap`, the `pty.written` probe): Flare had written only clean keys and cursor reports.
-`SessionManager::adopt` hands the tab `banner_for_tab(kept output)`: outside Windows, `term_query::without_questions`
-takes out every whole question (device status and attributes, mode, window and keyboard reports, colour queries,
-capability requests), so the stale question is never answered; the rest stays byte for byte. The whole kept output is
-read at adoption, so a question split over two reads is taken out too, and a question cut off at the end stays for the
-live output to finish (the shell is still waiting for that one). Spares stay on for every shell, pwsh and fish
-included (a first fix that let such a spare go stopped prewarming pwsh for the session). Windows hands the kept output
-over as it was (ConPTY stands between the shell and Flare there). Rule 231 is the other half, on every system: a cursor
-question asked before anything is drawn (ConPTY's opening one) is answered by the spare itself at once and leaves the
-banner, so it never reaches this filter; what is left here is a question asked after output, which only a real grid
-could answer and which adoption would answer too late. Held by
+351. **macOS: a warm spare answers its cursor questions from its own grid, and its tab gets its kept output without
+its questions to the terminal.** A spare shell (`SessionManager::prewarm`) has no tab yet. pwsh asks for the cursor
+(`CSI 6n`) after drawing its prompt. Answered only at adoption (the kept output replayed into the tab's emulator), the
+report came late, .NET read it as typed keys, echoed characters no key sends, asked again and never stopped
+(helpPanel's new shell on the Mac runner, runs 42612597989 to 42630197431). Never answered (the question only taken
+out of the kept output, the first fix), pwsh was still waiting when the tab typed, read the typed line as its answer
+and garbled it: bytes no key sends ran as a command (helpPanel, runs 42674535599, 42712456085, 42727386311 and the hand
+run 42727392100; the e2e write tap, `flare_term::session::set_write_tap` and the `pty.written` probe, showed Flare had
+written only the clean line). So outside Windows a spare keeps a grid of its size (`Session::grid`) fed what it prints,
+and every cursor report that grid gives is written at once (`answer_from_grid`), as a tab's would be; the opening
+question of rule 231 is one of them, answered at the top left as before. `SessionManager::adopt` drops the grid and
+hands the tab `banner_for_tab(kept output)`: outside Windows, `term_query::without_questions` takes out every whole
+question (device status and attributes, mode, window and keyboard reports, colour queries, capability requests), so
+none is answered twice or late; the rest stays byte for byte. The whole kept output is read at adoption, so a question
+split over two reads is taken out too, and a question cut off at the end stays for the live output to finish. Spares
+stay on for every shell, pwsh and fish included (a fix that let such a spare go stopped prewarming pwsh for the
+session). Windows is as it was: the spare answers only the opening question (rule 231, `answer_opening`) and hands the
+rest over (ConPTY stands between the shell and Flare there). Held by
 `a_spare_that_asked_the_terminal_is_adopted_without_its_question`, `a_question_split_over_two_reads_is_taken_out_too`,
 the `term_query` tests, and on the Mac by rule 231's `a_spare_answers_the_opening_cursor_question_once_and_the_tab_is_not_asked_again`,
-`a_spare_answers_only_the_opening_question` and `a_cursor_question_after_output_waits_for_the_tab_that_can_answer_it`
-(the question left after the opening one is taken out instead of handed over). Source: Mac E2E in CI and review of
-the branch (2026-11-09); main's rule 231 (2026-11-09).
+`a_spare_answers_only_the_opening_question` (the second question answered by the grid too) and
+`a_cursor_question_after_output_waits_for_the_tab_that_can_answer_it` (answered at the prompt's end, `1;4`), and the
+Mac E2E's helpPanel. Source: Mac E2E in CI and review of the branch (2026-11-09, 2026-11-10); main's rule 231
+(2026-11-09).
 352. **macOS: the Mac E2E runs with the runner quiet and its timers on time.** diagLog's "an idle 3 s writes nothing"
 failed on the Mac runner only, with `main-lag` lines of 100 to 216 ms and nothing in flight. First the runner's own
 `trustd`, `softwareupdated` and Spotlight took about one and a half of its three cores; then, with the runner quiet

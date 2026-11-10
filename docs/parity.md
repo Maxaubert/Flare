@@ -1619,7 +1619,7 @@ dictation, phase 7; the `.cmd` Claude stand-in); the other 8 check what only Win
 - [x] A miniaturised window counts as minimised for the marks' pause, though a Mac sends it no resize. (the_systems_minimised_answer_wins_over_slints, crates/flare/src/window.rs)
 
 - [x] The sidebar's slide-out moves in a window that gets no frames: a timer steps it in a Mac `--e2e` run. (macOS: a_timer_steps_the_slide_without_frames_and_in_a_mac_e2e_run, verticalTabs)
-- [x] A new tab that adopts a warm spare gets the spare's kept output without its questions to the terminal, so a question asked with nobody there is never answered late (pwsh read that late cursor report as typing); spares stay on for every shell. (macOS: a_spare_that_asked_the_terminal_is_adopted_without_its_question, a_question_split_over_two_reads_is_taken_out_too, the term_query tests, helpPanel)
+- [x] A warm spare answers its cursor questions at once from its own grid, as a tab would, and a new tab that adopts it gets its kept output without its questions to the terminal, so no question is answered late (pwsh read that late cursor report as typing) or left unanswered (pwsh then read the next typed line as its answer); spares stay on for every shell. (macOS: a_spare_that_asked_the_terminal_is_adopted_without_its_question, a_question_split_over_two_reads_is_taken_out_too, the term_query tests, helpPanel)
 - [x] An idle run has one silent 3 s window in three on the runner (rule 352; one window elsewhere): two noisy windows still pass and print their lines in the job's log, so the Mac runner does not prove that every idle window is silent. (macOS: diagLog)
 
 Where it stands (2026-11-09, the spec's progress line has the runs): the `e2e-macos` job ran the whole table green in
