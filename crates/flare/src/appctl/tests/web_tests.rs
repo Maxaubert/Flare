@@ -4259,7 +4259,7 @@ fn an_app_nothing_on_the_pc_opens_is_said_in_the_bar_and_not_asked_about() {
     assert!(!f.h.comp.get_dialog_open());
     assert_eq!(
         f.h.comp.get_panel_sub().as_str(),
-        "Nothing on this PC opens swish:"
+        format!("Nothing on this {} opens swish:", crate::app_ask::MACHINE)
     );
     assert!(apps.opened().is_empty());
 }

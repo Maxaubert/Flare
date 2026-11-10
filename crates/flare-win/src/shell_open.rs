@@ -191,14 +191,39 @@ pub fn url_handler_registered(scheme: &str) -> bool {
     rc == ERROR_SUCCESS
 }
 
-/// macOS: no app link opens yet; the Mac web panel (phase 5 of the port plan) brings the real one (port rule 1).
-#[cfg(not(windows))]
-pub fn open_app_uri_on_worker(_uri: &str) -> Result<(), String> {
-    Err("app links open on Windows only in this build".to_string())
+/// macOS: the same checks as on Windows, then `NSWorkspace` opens the bare link with the app LaunchServices has for
+/// its scheme, once that app is no terminal or script runner (`workspace::open_app_url`, rule 1123). No apartment to
+/// set up: the caller's worker thread runs it as it is.
+#[cfg(target_os = "macos")]
+pub fn open_app_uri_on_worker(uri: &str) -> Result<(), String> {
+    let lower = uri.to_ascii_lowercase();
+    if lower.starts_with("http:") || lower.starts_with("https:") || lower.starts_with("file:") {
+        return Err("not an app link".to_string());
+    }
+    let escaped = escape_app_uri(uri)?;
+    crate::workspace::open_app_url(&escaped)
 }
 
-/// macOS: no handler lookup yet (phase 5 of the port plan), so every scheme reads as having no app.
-#[cfg(not(windows))]
+/// macOS: is there an app for `scheme` that may open a page's link (LaunchServices, `workspace::link_handler_ok`)? A
+/// scheme that is not letters, digits, `+`, `-` and `.` is never looked up.
+#[cfg(target_os = "macos")]
+pub fn url_handler_registered(scheme: &str) -> bool {
+    let proper = !scheme.is_empty()
+        && scheme.len() <= 32
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    proper && crate::workspace::link_handler_ok(scheme)
+}
+
+/// Neither Windows nor macOS: no app link opens.
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn open_app_uri_on_worker(_uri: &str) -> Result<(), String> {
+    Err("app links open on Windows and macOS only".to_string())
+}
+
+/// Neither Windows nor macOS: every scheme reads as having no app.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn url_handler_registered(_scheme: &str) -> bool {
     false
 }
@@ -227,7 +252,7 @@ mod tests {
         }
     }
 
-    #[cfg(windows)] // the Mac twin comes with the web panel (port phase 5)
+    #[cfg(windows)]
     #[test]
     fn open_app_uri_refuses_a_web_address_a_file_and_a_path_before_windows_sees_it() {
         for bad in [
@@ -245,14 +270,43 @@ mod tests {
         }
     }
 
-    #[cfg(windows)] // the Mac twin comes with the web panel (port phase 5)
+    /// macOS twin: refused before LaunchServices is asked anything (nothing opens in the test).
+    #[cfg(not(windows))]
+    #[test]
+    fn open_app_uri_refuses_a_web_address_a_file_and_a_path_before_the_system_sees_it() {
+        for bad in [
+            "https://a.example/",
+            "HTTP://a.example/",
+            "file:///etc/hosts",
+            "/Applications/Calculator.app",
+            "C:\\x.exe",
+            "",
+        ] {
+            assert!(
+                open_app_uri_on_worker(bad).is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+    }
+
     #[test]
     fn a_scheme_that_is_not_one_is_never_looked_up() {
-        for bad in ["", "a\\b", "x y", "..\\..\\x", &"a".repeat(40)] {
+        for bad in ["", "a\\b", "x y", "..\\..\\x", "a/b", &"a".repeat(40)] {
             assert!(!url_handler_registered(bad), "{bad:?}");
         }
-        // `http` has a handler on every Windows; reading it changes nothing.
+        // `http` has a handler on every Windows and every Mac (the browser); reading it changes nothing.
         assert!(url_handler_registered("http"));
+    }
+
+    /// macOS: a scheme no app claims has no handler, and one only a terminal takes is refused (rule 1123).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_scheme_no_app_takes_or_only_a_terminal_takes_has_no_handler() {
+        assert!(!url_handler_registered("flare-no-such-scheme-x7"));
+        // Terminal is the handler of `x-man-page:` on every Mac.
+        assert!(!url_handler_registered("x-man-page"));
+        // Mail takes `mailto:` on every Mac.
+        assert!(url_handler_registered("mailto"));
     }
 
     #[test]

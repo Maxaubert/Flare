@@ -1180,3 +1180,35 @@ frame could run script in the page above it. `popup_target_allowed` lets only `h
 view's `NavRule` allows for the main frame; `data:`, `file:`, `chrome:`, `devtools:`, `blob:` and every other scheme
 are dropped. Held by `a_popup_loads_only_a_web_address_the_navigation_rule_allows`. Source: commit security review of
 phase 5 (2026-11-08).
+1123. **macOS: the web panel's pop-ups, app links and diagnostics notes are the Windows ones (rules 247 to 253), on
+CEF.** Notes: the CEF host sends `WebEvent::Note` where WebView2's events would: `on_before_browse` (`web-nav` with the
+page it leaves, `web-refused` with `scheme`, `not-its-page`, `not-its-host` or `frame`), a failed main-frame load
+(`web-load-failed`, `load_failure_logged`), `on_render_process_terminated` (`web-process render` with its reason and
+exit code), the permission handlers (CEF's permission and media bits read as WebView2's kinds, `permission_kinds`),
+`on_certificate_error` (`web-cert`, still answered as CEF's default so Chromium shows its own error page) and every
+new-window request (`web-popup`); sites only, through `WebNote::new`. Pop-ups: the web panel's `NewWindowRule` (and
+each pop-up's, so a pop-up's own requests stack on the same tab) decides with `popup_plan` and `own_blob`; a pop-up is
+a second windowless browser CEF itself makes in `on_before_popup` with Flare's client and `windowless_rendering_enabled`
+(so `window.opener`, the window's name and a POST are the page's own and no native window exists), counted in the
+shared `PopupBook` from the request on and handed over in `on_after_created` (`on_before_popup_aborted` lets it go).
+Its view lives in `popup_views`, never in `views`, so no agent call, script, still or navigation of the window reaches
+it (250); the panel's picture, pointer, keys, input method, focus and still go to the one on top (`front`), sized as
+the page box under Flare's strip; its downloads are cancelled, and it closes on its `window.close()`
+(`on_before_close`), its process ending, the strip's Close (`close_popup`) or its panel closing. A `SameView` answer
+loads only a web address or a `blob:` (`same_view_target_ok`; the wall then checks the blob is the page's own, its
+`NavRule` now given the page it leaves). App links: a main-frame navigation or a new-window request to an address the
+panel does not open is offered by `external_scheme` and told once (`AppLinks`, `AppLinkDedupe`) as on Windows;
+`shell_open` opens it with `NSWorkspace` and the very app LaunchServices names for its scheme
+(`openURLs:withApplicationAtURL:`), refused when that app is a terminal or script runner (`handler_ok`: Terminal takes
+`ssh:` and `x-man-page:`), and `url_handler_registered` asks the same question; the words say "this Mac". Different from
+Windows: a pop-up no click of the person's asked for is stopped by Chromium's own blocker before CEF asks
+(`on_before_popup` never runs), so nothing opens and `window.open` is null as on Windows, but it is not noted and the
+bar does not say "Pop-up blocked"; CEF tells nothing for a page's ignored `window.close()`, so there is no
+`web-close-ignored` line; Alloy has no password manager, so a pop-up offers no autofill (`PopupProbe::autofill` false).
+Native: `crates/flare-cef/src/macos/view.rs`, `crates/flare-web/src/macos/host.rs`, `crates/flare-win/src/shell_open.rs`,
+`crates/flare-win/src/macos/workspace.rs`, `crates/flare/src/app_ask.rs`. Held by the probe's `panel.external-schemes`,
+`panel.popup`, `panel.popup-closes-itself`, `panel.popup-strip-close`, `panel.popup-blocked` and `panel.notes`
+(`flare-web/tests/cef_macos.rs`), `a_same_view_answer_loads_a_web_address_or_a_blob_and_never_a_script`,
+`open_app_uri_refuses_a_web_address_a_file_and_a_path_before_the_system_sees_it`,
+`a_scheme_no_app_takes_or_only_a_terminal_takes_has_no_handler` and `a_scheme_that_is_not_one_is_never_looked_up`.
+Source: main's #150, #151 and #153 carried to the macOS port (2026-11-10).

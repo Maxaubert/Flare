@@ -105,10 +105,12 @@ const RESET_ID: i32 = SETUP_IDS - 100;
 pub enum ViewEvent {
     /// The view's own setup answered: it navigates now (Ok) or cannot be used (Err).
     Armed(Result<(), String>),
-    /// A main-frame navigation the wall let through began; `nav` is the request's number.
+    /// A main-frame navigation the wall let through began; `nav` is the request's number, `from` the address of
+    /// the page it leaves.
     Loading {
         url: String,
         nav: u64,
+        from: String,
     },
     /// A main-frame navigation ended (`status` is WebView2's error status, `0` for success).
     Loaded {
@@ -132,9 +134,12 @@ pub enum ViewEvent {
         can_back: bool,
         can_forward: bool,
     },
-    /// A main-frame navigation the wall cancelled.
+    /// A navigation the wall cancelled: of the main frame (`main`) or of a frame in the page. `from` is the
+    /// address of the page it would have left.
     Refused {
         url: String,
+        from: String,
+        main: bool,
     },
     /// A download is held for a yes ([`View::answer_download`]).
     Download {
@@ -154,9 +159,25 @@ pub enum ViewEvent {
     FullScreen {
         on: bool,
     },
-    /// The page's process ended.
+    /// The page's process ended: the sentence, the reason as a fixed word (`crashed`, `terminated`,
+    /// `out-of-memory`, `launch-failed`, `unexpected`) and the exit code.
     Gone {
         why: String,
+        reason: &'static str,
+        code: i32,
+    },
+    /// A permission the page asked for was denied: CEF's permission bits (`cef_permission_request_types_t`) and
+    /// media bits (`cef_media_access_permission_types_t`), with the asking origin.
+    Permission {
+        origin: String,
+        permissions: u32,
+        media: u32,
+    },
+    /// The server's certificate was refused (Chromium shows its own error page, as before): the address and
+    /// WebView2's error status for the error.
+    Cert {
+        url: String,
+        status: i32,
     },
     /// A DevTools answer for a caller's id.
     Cdp {
@@ -186,13 +207,22 @@ pub enum ViewEvent {
 pub fn popup_target_allowed(url: &str, nav: Option<&NavRule>) -> bool {
     let lower = url.trim_start().to_ascii_lowercase();
     let web = lower.starts_with("https://") || lower.starts_with("http://");
-    web && nav.is_none_or(|rule| rule(url, true))
+    web && nav.is_none_or(|rule| rule(url, true, ""))
+}
+
+/// May a new-window rule's `SameView` answer load `url` into the main frame? A web address or a `blob:` (the
+/// navigation wall then decides whether it is the page's own), never a `javascript:` or any other scheme, which
+/// `load_url` would run or open past the wall (rule 1035).
+pub fn same_view_target_ok(url: &str) -> bool {
+    let lower = url.trim_start().to_ascii_lowercase();
+    lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("blob:")
 }
 
 /// Where a view's events go.
 pub type EventSink = Arc<dyn Fn(ViewEvent) + Send + Sync>;
-/// May a frame navigate to this address? (`url`, whether it is the main frame.)
-pub type NavRule = Arc<dyn Fn(&str, bool) -> bool + Send + Sync>;
+/// May a frame navigate to this address? (`url`, whether it is the main frame, the address of the page it
+/// leaves.)
+pub type NavRule = Arc<dyn Fn(&str, bool, &str) -> bool + Send + Sync>;
 /// What one request gets (called on CEF's IO thread).
 pub type RequestRule = Arc<dyn Fn(&str) -> Answer + Send + Sync>;
 
@@ -211,6 +241,45 @@ pub enum Answer {
         body: Arc<Vec<u8>>,
     },
 }
+
+/// A page's request for a window of its own, as [`NewWindowRule`] is asked it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowAsk {
+    pub url: String,
+    /// The window's name (`window.open`'s second argument, `target`), empty for none.
+    pub name: String,
+    /// The request gave a size or a position.
+    pub features: bool,
+    /// The person's click or key started it.
+    pub user: bool,
+    /// The address of the page that asked.
+    pub from: String,
+}
+
+/// What becomes of a [`WindowAsk`].
+pub enum NewWindow {
+    /// Nothing opens.
+    Refuse,
+    /// The address loads in the view that asked (if the navigation wall lets it).
+    SameView,
+    /// A real second browser, windowless, which keeps its link to the page that opened it (`window.opener`): CEF
+    /// makes it, and [`PopupSpec::made`] is handed its view (or None when CEF gave up on it).
+    Popup(PopupSpec),
+}
+
+/// How a pop-up's browser is made.
+pub struct PopupSpec {
+    pub walls: Walls,
+    pub events: EventSink,
+    pub frame_rate: i32,
+    pub made: Made,
+}
+
+/// Takes a pop-up's view once CEF made its browser, or None when it did not.
+pub type Made = Box<dyn FnOnce(Option<View>) + Send>;
+
+/// Decides a page's request for a window of its own (on CEF's UI thread, the window's).
+pub type NewWindowRule = Arc<dyn Fn(&WindowAsk) -> NewWindow + Send + Sync>;
 
 /// What a page's `window.open` and `target=_blank` do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -236,6 +305,8 @@ pub struct Walls {
     pub nav: Option<NavRule>,
     pub requests: Option<RequestRule>,
     pub new_windows: NewWindows,
+    /// When set, it decides each request for a new window instead of `new_windows`.
+    pub new_window_rule: Option<NewWindowRule>,
     pub downloads: Downloads,
 }
 
@@ -246,6 +317,7 @@ impl Default for Walls {
             nav: None,
             requests: None,
             new_windows: NewWindows::Refuse,
+            new_window_rule: None,
             downloads: Downloads::Cancel,
         }
     }
@@ -376,6 +448,17 @@ struct Ctx {
     state: Shared,
     walls: Walls,
     events: Option<EventSink>,
+    /// A pop-up's: who takes its view once CEF made the browser (shared with the opener's `pending`).
+    made: Option<Slot>,
+    /// The pop-ups this view's page asked for that CEF has not made yet, by CEF's popup id.
+    pending: Mutex<HashMap<i32, Slot>>,
+}
+
+/// Where a pop-up's [`Made`] waits between `on_before_popup` and `on_after_created` (or the abort).
+type Slot = Arc<Mutex<Option<Made>>>;
+
+fn take_made(slot: &Slot) -> Option<Made> {
+    slot.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
 type C = Arc<Ctx>;
@@ -603,27 +686,103 @@ wrap_life_span_handler! {
             &self,
             browser: Option<&mut Browser>,
             _frame: Option<&mut Frame>,
-            _popup_id: ::std::os::raw::c_int,
+            popup_id: ::std::os::raw::c_int,
             target_url: Option<&CefString>,
-            _target_frame_name: Option<&CefString>,
+            target_frame_name: Option<&CefString>,
             _target_disposition: WindowOpenDisposition,
-            _user_gesture: ::std::os::raw::c_int,
-            _popup_features: Option<&PopupFeatures>,
-            _window_info: Option<&mut WindowInfo>,
-            _client: Option<&mut Option<Client>>,
-            _settings: Option<&mut BrowserSettings>,
+            user_gesture: ::std::os::raw::c_int,
+            popup_features: Option<&PopupFeatures>,
+            window_info: Option<&mut WindowInfo>,
+            client: Option<&mut Option<Client>>,
+            settings: Option<&mut BrowserSettings>,
             _extra_info: Option<&mut Option<DictionaryValue>>,
             _no_javascript_access: Option<&mut ::std::os::raw::c_int>,
         ) -> ::std::os::raw::c_int {
-            lock(&self.c.state).refused.popups += 1;
             let url = text(target_url);
-            if self.c.walls.new_windows == NewWindows::SameView
-                && popup_target_allowed(&url, self.c.walls.nav.as_ref())
-                && let Some(f) = browser.and_then(|b| b.main_frame())
-            {
-                f.load_url(Some(&url.as_str().into()));
+            let main = browser.and_then(|b| b.main_frame());
+            let Some(rule) = &self.c.walls.new_window_rule else {
+                lock(&self.c.state).refused.popups += 1;
+                if self.c.walls.new_windows == NewWindows::SameView
+                    && popup_target_allowed(&url, self.c.walls.nav.as_ref())
+                    && let Some(f) = main
+                {
+                    f.load_url(Some(&url.as_str().into()));
+                }
+                return 1;
+            };
+            let features = popup_features
+                .is_some_and(|f| f.x_set != 0 || f.y_set != 0 || f.width_set != 0 || f.height_set != 0);
+            let ask = WindowAsk {
+                url: url.clone(),
+                name: text(target_frame_name),
+                features,
+                user: user_gesture != 0,
+                from: main.as_ref().map(|f| CefString::from(&f.url()).to_string()).unwrap_or_default(),
+            };
+            match rule(&ask) {
+                NewWindow::Refuse => {
+                    lock(&self.c.state).refused.popups += 1;
+                    1
+                }
+                NewWindow::SameView => {
+                    lock(&self.c.state).refused.popups += 1;
+                    if same_view_target_ok(&url)
+                        && let Some(f) = main
+                    {
+                        f.load_url(Some(&url.as_str().into()));
+                    }
+                    1
+                }
+                NewWindow::Popup(spec) => {
+                    let (Some(wi), Some(client), Some(settings)) = (window_info, client, settings) else {
+                        (spec.made)(None);
+                        lock(&self.c.state).refused.popups += 1;
+                        return 1;
+                    };
+                    let (w, h, scale) = {
+                        let s = lock(&self.c.state);
+                        (s.width, s.height, s.scale)
+                    };
+                    let state = new_state(ViewSize { width: w, height: h, scale });
+                    // CEF loads the pop-up's page itself (with the opener's name, POST and `window.opener`):
+                    // nothing waits for a setup of Flare's.
+                    lock(&state).armed = true;
+                    let made: Slot = Arc::new(Mutex::new(Some(spec.made)));
+                    let c = Arc::new(Ctx {
+                        state,
+                        walls: spec.walls,
+                        events: Some(spec.events),
+                        made: Some(Arc::clone(&made)),
+                        pending: Mutex::default(),
+                    });
+                    self.c
+                        .pending
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(popup_id, made);
+                    // Windowless, as every view: no native window ever (the screen rule).
+                    wi.windowless_rendering_enabled = 1;
+                    wi.runtime_style = RuntimeStyle::ALLOY;
+                    settings.windowless_frame_rate = spec.frame_rate.clamp(1, 60);
+                    *client = Some(view_client(&c));
+                    0
+                }
             }
-            1
+        }
+
+        fn on_before_popup_aborted(&self, _browser: Option<&mut Browser>, popup_id: ::std::os::raw::c_int) {
+            let made = self.c.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&popup_id);
+            if let Some(f) = made.as_ref().and_then(take_made) {
+                f(None);
+            }
+        }
+
+        // A pop-up's browser is there: its owner takes its view.
+        fn on_after_created(&self, browser: Option<&mut Browser>) {
+            let (Some(slot), Some(b)) = (&self.c.made, browser) else { return };
+            if let Some(f) = take_made(slot) {
+                f(Some(View { browser: b.clone(), state: self.c.state.clone(), _observer: None }));
+            }
         }
 
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
@@ -758,14 +917,19 @@ wrap_permission_handler! {
             &self,
             _browser: Option<&mut Browser>,
             _frame: Option<&mut Frame>,
-            _requesting_origin: Option<&CefString>,
-            _requested_permissions: u32,
+            requesting_origin: Option<&CefString>,
+            requested_permissions: u32,
             callback: Option<&mut MediaAccessCallback>,
         ) -> ::std::os::raw::c_int {
             lock(&self.c.state).refused.media_requests += 1;
             if let Some(cb) = callback {
                 cb.cancel();
             }
+            self.c.emit(ViewEvent::Permission {
+                origin: text(requesting_origin),
+                permissions: 0,
+                media: requested_permissions,
+            });
             1
         }
 
@@ -773,14 +937,19 @@ wrap_permission_handler! {
             &self,
             _browser: Option<&mut Browser>,
             _prompt_id: u64,
-            _requesting_origin: Option<&CefString>,
-            _requested_permissions: u32,
+            requesting_origin: Option<&CefString>,
+            requested_permissions: u32,
             callback: Option<&mut PermissionPromptCallback>,
         ) -> ::std::os::raw::c_int {
             lock(&self.c.state).refused.permission_prompts += 1;
             if let Some(cb) = callback {
                 cb.cont(PermissionRequestResult::DENY);
             }
+            self.c.emit(ViewEvent::Permission {
+                origin: text(requesting_origin),
+                permissions: requested_permissions,
+                media: 0,
+            });
             1
         }
     }
@@ -1103,7 +1272,7 @@ wrap_request_handler! {
     impl RequestHandler {
         fn on_before_browse(
             &self,
-            _browser: Option<&mut Browser>,
+            browser: Option<&mut Browser>,
             frame: Option<&mut Frame>,
             request: Option<&mut Request>,
             _user_gesture: ::std::os::raw::c_int,
@@ -1117,7 +1286,12 @@ wrap_request_handler! {
             if !armed && url == "about:blank" {
                 return 0;
             }
-            let allowed = self.c.walls.nav.as_ref().is_none_or(|rule| rule(&url, main));
+            // The page the navigation leaves (the main frame's address only changes once the new one commits).
+            let from = browser
+                .and_then(|b| b.main_frame())
+                .map(|f| CefString::from(&f.url()).to_string())
+                .unwrap_or_default();
+            let allowed = self.c.walls.nav.as_ref().is_none_or(|rule| rule(&url, main, &from));
             if !allowed {
                 {
                     let mut s = lock(&self.c.state);
@@ -1126,8 +1300,8 @@ wrap_request_handler! {
                         s.refused_main = Some(url.clone());
                     }
                 }
-                if main {
-                    self.c.emit(ViewEvent::Refused { url });
+                if armed || main {
+                    self.c.emit(ViewEvent::Refused { url, from, main });
                 }
                 return 1;
             }
@@ -1135,7 +1309,7 @@ wrap_request_handler! {
                 let nav = request.identifier();
                 lock(&self.c.state).nav = nav;
                 if armed {
-                    self.c.emit(ViewEvent::Loading { url, nav });
+                    self.c.emit(ViewEvent::Loading { url, nav, from });
                 }
             }
             0
@@ -1148,16 +1322,43 @@ wrap_request_handler! {
             _frame: Option<&mut Frame>,
             target_url: Option<&CefString>,
             _target_disposition: WindowOpenDisposition,
-            _user_gesture: ::std::os::raw::c_int,
+            user_gesture: ::std::os::raw::c_int,
         ) -> ::std::os::raw::c_int {
             let url = text(target_url);
-            if self.c.walls.new_windows == NewWindows::SameView
-                && popup_target_allowed(&url, self.c.walls.nav.as_ref())
-                && let Some(f) = browser.and_then(|b| b.main_frame())
-            {
+            let Some(b) = browser else { return 1 };
+            let from = b
+                .main_frame()
+                .map(|f| CefString::from(&f.url()).to_string())
+                .unwrap_or_default();
+            let same = match &self.c.walls.new_window_rule {
+                Some(rule) => {
+                    let ask = WindowAsk { url: url.clone(), name: String::new(), features: false, user: user_gesture != 0, from };
+                    // A tab of its own is never a pop-up: only the same view, or nothing.
+                    matches!(rule(&ask), NewWindow::SameView) && same_view_target_ok(&url)
+                }
+                None => {
+                    self.c.walls.new_windows == NewWindows::SameView
+                        && popup_target_allowed(&url, self.c.walls.nav.as_ref())
+                }
+            };
+            if same && let Some(f) = b.main_frame() {
                 f.load_url(Some(&url.as_str().into()));
             }
             1
+        }
+
+        fn on_certificate_error(
+            &self,
+            _browser: Option<&mut Browser>,
+            cert_error: Errorcode,
+            request_url: Option<&CefString>,
+            _ssl_info: Option<&mut Sslinfo>,
+            _callback: Option<&mut Callback>,
+        ) -> ::std::os::raw::c_int {
+            // Noted only: 0 cancels the request, CEF's own answer, so the page shows Chromium's error page as before.
+            let status = status::web_error_status(cert_error.get_raw());
+            self.c.emit(ViewEvent::Cert { url: text(request_url), status });
+            0
         }
 
         fn resource_request_handler(
@@ -1186,7 +1387,7 @@ wrap_request_handler! {
                 termination_words(status)
             );
             lock(&self.c.state).gone = Some(why.clone());
-            self.c.emit(ViewEvent::Gone { why });
+            self.c.emit(ViewEvent::Gone { why, reason: termination_reason(status), code: error_code });
         }
     }
 }
@@ -1206,6 +1407,21 @@ fn forget_blank(c: &C, browser: Option<&mut Browser>) {
         &Value::Null,
     ) {
         host.send_dev_tools_message(Some(&msg));
+    }
+}
+
+/// The reason of a page process's end in the words the diagnostics log uses for WebView2's (`process_reason_word`).
+fn termination_reason(s: TerminationStatus) -> &'static str {
+    if s == TerminationStatus::PROCESS_CRASHED {
+        "crashed"
+    } else if s == TerminationStatus::PROCESS_WAS_KILLED {
+        "terminated"
+    } else if s == TerminationStatus::PROCESS_OOM {
+        "out-of-memory"
+    } else if s == TerminationStatus::LAUNCH_FAILED {
+        "launch-failed"
+    } else {
+        "unexpected"
     }
 }
 
@@ -1372,6 +1588,23 @@ wrap_client! {
     }
 }
 
+/// The client of a view: every handler on the view's shared context.
+fn view_client(c: &C) -> Client {
+    ViewClient::new(Handlers {
+        render: Render::new(c.clone()),
+        load: Load::new(c.clone()),
+        display: Display::new(c.clone()),
+        life: LifeSpan::new(c.clone()),
+        menu: Menu::new(c.clone()),
+        dialogs: Dialogs::new(c.clone()),
+        files: Files::new(c.clone()),
+        permissions: Permissions::new(c.clone()),
+        focus: Focus::new(c.clone()),
+        download: Download::new(c.clone()),
+        requests: Requests::new(c.clone()),
+    })
+}
+
 /// A DevTools error as one sentence: Chromium's `{"code":-32000,"message":"..."}`, its message first.
 pub fn cdp_error(body: &str) -> String {
     match serde_json::from_str::<Value>(body) {
@@ -1489,6 +1722,8 @@ impl View {
             state: state.clone(),
             walls: opts.walls.clone(),
             events: opts.events.clone(),
+            made: None,
+            pending: Mutex::default(),
         };
         {
             let mut s = lock(&state);
@@ -1527,6 +1762,8 @@ impl View {
             state,
             walls,
             events,
+            made: None,
+            pending: Mutex::default(),
         });
         Self::make_with(url, c, context, frame_rate)
     }
@@ -1538,19 +1775,7 @@ impl View {
         frame_rate: i32,
     ) -> Result<View, String> {
         let state = c.state.clone();
-        let mut client = ViewClient::new(Handlers {
-            render: Render::new(c.clone()),
-            load: Load::new(c.clone()),
-            display: Display::new(c.clone()),
-            life: LifeSpan::new(c.clone()),
-            menu: Menu::new(c.clone()),
-            dialogs: Dialogs::new(c.clone()),
-            files: Files::new(c.clone()),
-            permissions: Permissions::new(c.clone()),
-            focus: Focus::new(c.clone()),
-            download: Download::new(c.clone()),
-            requests: Requests::new(c.clone()),
-        });
+        let mut client = view_client(&c);
         let window_info = WindowInfo {
             windowless_rendering_enabled: 1,
             // Windowless needs the Alloy style (no Chrome UI, no window).
@@ -1885,6 +2110,26 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn a_same_view_answer_loads_a_web_address_or_a_blob_and_never_a_script() {
+        for bad in [
+            "javascript:alert(1)",
+            " JavaScript:x",
+            "data:text/html,x",
+            "file:///etc/hosts",
+            "chrome://version",
+        ] {
+            assert!(!same_view_target_ok(bad), "{bad}");
+        }
+        for good in [
+            "https://a.test/",
+            "http://a.test/",
+            "blob:https://a.test/1234",
+        ] {
+            assert!(same_view_target_ok(good), "{good}");
+        }
+    }
+
+    #[test]
     fn a_popup_loads_only_a_web_address_the_navigation_rule_allows() {
         for bad in [
             "javascript:alert(document.domain)",
@@ -1900,7 +2145,7 @@ mod tests {
         }
         assert!(popup_target_allowed("https://example.com/", None));
         assert!(popup_target_allowed("http://example.com/", None));
-        let only_a: NavRule = Arc::new(|u, main| main && u.starts_with("https://a.test/"));
+        let only_a: NavRule = Arc::new(|u, main, _| main && u.starts_with("https://a.test/"));
         assert!(popup_target_allowed("https://a.test/x", Some(&only_a)));
         assert!(!popup_target_allowed("https://b.test/x", Some(&only_a)));
     }
