@@ -1,11 +1,12 @@
-//! Install when idle (2026-10-29): idleInstall.
+//! Build ready (2026-10-29, one click since 2026-11-10): clickInstall.
 //!
 //! A temp install inside the world (`<world>\inst\current\Flare.exe`, a copy of the exe under test with its
 //! ConPTY beside it) and a build staged beside it (`<world>\inst\staged\`, the same exe plus a marker file, and
 //! `staged.json` last, as `tools/stage-install.ps1` writes it). The real installs are never named. The app runs from
-//! the temp install, so it is an installed copy; a stand-in Claude works in a tab, which must hold the install;
-//! once it stops, the idle rule (shortened by `FLARE_E2E_STAGED_HOLD_MS`) and the countdown run, the app swaps the
-//! files, quits through its normal end of life and starts the new exe on the same profile, still under `--e2e`
+//! the temp install, so it is an installed copy. A stand-in Claude works in a tab: a click on the chip then asks the
+//! close question, and Escape (Cancel) keeps the build on offer. Once the agent stops, nothing installs on its own;
+//! a click with no agent at work runs the countdown (shortened by `FLARE_E2E_STAGED_COUNTDOWN_MS`), the app swaps
+//! the files, quits through its normal end of life and starts the new exe on the same profile, still under `--e2e`
 //! (offscreen). The scenario then talks to the new process on the same pipe.
 //!
 //! The app writes `staged-state.json` into its profile under `--e2e`: the chip, the toast, the phase, what the start
@@ -26,11 +27,11 @@ use crate::world::{prompt_timeout, wait_for_prompt, Shell};
 
 const IDLE_TITLE: &str = "\u{2733} Claude Code";
 const WORKING_TITLE: &str = "\u{25D0} Claude Code";
-const HOLD_VAR: &str = concat!("FLARE_E2E", "_STAGED_HOLD_MS");
 const COUNTDOWN_VAR: &str = concat!("FLARE_E2E", "_STAGED_COUNTDOWN_MS");
-/// The idle hold and the countdown the scenario sets (the real ones are 60 s and 10 s).
-const HOLD_MS: u64 = 3_000;
+/// The countdown the scenario sets (the real one is 10 s).
 const COUNTDOWN_MS: u64 = 1_500;
+/// How long the scenario watches for an install that must not come.
+const QUIET_MS: u64 = 4_000;
 /// The commit the staged build names.
 const COMMIT: &str = "e2e1234stagedbuild";
 
@@ -117,7 +118,34 @@ fn tab_marks(session: &mut Session) -> Vec<String> {
         .collect()
 }
 
-pub fn idle_install(ctx: &mut Ctx) -> Result<(), String> {
+/// True while the close question is up.
+fn dialog_open(session: &mut Session) -> bool {
+    session
+        .probe("app.state", Value::Null)
+        .is_ok_and(|v| v["dialog"]["open"] == json!(true))
+}
+
+/// The close question's title.
+fn dialog_title(session: &mut Session) -> String {
+    session
+        .probe("app.state", Value::Null)
+        .ok()
+        .and_then(|v| v["dialog"]["title"].as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// Clicks the middle of the "Build ready" chip (`ui.rect staged-chip`).
+fn click_chip(session: &mut Session) -> Result<(), String> {
+    let r = session.probe("ui.rect", json!({ "name": "staged-chip" }))?;
+    let at = |k: &str| {
+        r[k].as_f64()
+            .ok_or(format!("ui.rect staged-chip has no {k}: {r}"))
+    };
+    let (x, y, w, h) = (at("x")?, at("y")?, at("w")?, at("h")?);
+    session.click((x + w / 2.0) as f32, (y + h / 2.0) as f32)
+}
+
+pub fn click_install(ctx: &mut Ctx) -> Result<(), String> {
     let (root, alpha, profile, mut claude) = {
         let w = ctx.ensure_world();
         (
@@ -139,7 +167,6 @@ pub fn idle_install(ctx: &mut Ctx) -> Result<(), String> {
         .map_err(|e| format!("write the stand-in's steps: {e}"))?;
 
     let mut env = claude.env();
-    env.push((HOLD_VAR.into(), HOLD_MS.to_string()));
     env.push((COUNTDOWN_VAR.into(), COUNTDOWN_MS.to_string()));
     let real_exe = std::mem::replace(&mut ctx.exe, exe.clone());
     let launched = ctx.launch(Launch {
@@ -188,11 +215,41 @@ pub fn idle_install(ctx: &mut Ctx) -> Result<(), String> {
     });
     ctx.ok(working, "the agent works");
 
-    // While it works the build waits, for well over the idle hold.
-    let held = !ctx.poll(HOLD_MS * 2 + 1_000, &mut || {
+    // A click while it works asks the close question first; Cancel (Escape) keeps the build on offer.
+    click_chip(&mut app.session)?;
+    let asked = ctx.until("the close question", 5_000, &mut || {
+        dialog_open(&mut app.session)
+    });
+    ctx.ok(asked, "a click with an agent at work asks first");
+    ctx.ok(
+        dialog_title(&mut app.session) == "Stop the agent and install the update?",
+        "in the close question's install words",
+    );
+    ctx.ok(
+        state(&profile)["phase"] == json!("waiting"),
+        "nothing counts down while it asks",
+    );
+    app.session.key("Escape")?;
+    let cancelled = ctx.until("the question to close", 3_000, &mut || {
+        !dialog_open(&mut app.session)
+    });
+    ctx.ok(cancelled, "Escape cancels the question");
+
+    // The agent stops: nothing installs on its own, however long it stays quiet.
+    std::fs::write(&stop, b"").map_err(|e| format!("the stop file: {e}"))?;
+    let stopped = ctx.until("the agent to stop", 10_000, &mut || {
+        !tab_marks(&mut app.session).iter().any(|m| m == "working")
+    });
+    ctx.ok(stopped, "the agent stops");
+    let held = !ctx.poll(QUIET_MS, &mut || {
         state(&profile)["phase"] != json!("waiting")
     });
-    ctx.ok(held, "a working agent holds the install past the idle hold");
+    ctx.ok(held, "an idle app does not install the build on its own");
+    let st = state(&profile);
+    ctx.ok(
+        st["chip"] == json!(true) && st["toast"] == json!(""),
+        "the chip stays on offer and no toast shows",
+    );
     ctx.ok(
         app.child.exited().is_none(),
         "and the app is still the old one",
@@ -202,12 +259,13 @@ pub fn idle_install(ctx: &mut Ctx) -> Result<(), String> {
         "nothing was swapped",
     );
 
-    // It stops: the quiet hold, the toast, the swap, the restart.
-    std::fs::write(&stop, b"").map_err(|e| format!("the stop file: {e}"))?;
-    let toast = ctx.until("the countdown toast", HOLD_MS + 8_000, &mut || {
+    // A click with no agent at work: no question, the toast, the swap, the restart.
+    click_chip(&mut app.session)?;
+    let toast = ctx.until("the countdown toast", 5_000, &mut || {
         state(&profile)["phase"] == json!("countdown")
     });
-    ctx.ok(toast, "once idle, the toast counts down");
+    ctx.ok(toast, "a click with no agent at work counts down at once");
+    ctx.ok(!dialog_open(&mut app.session), "with no question");
     let st = state(&profile);
     ctx.ok(
         st["toast"] == json!("Installing the new build and restarting")

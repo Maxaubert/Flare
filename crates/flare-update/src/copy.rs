@@ -93,37 +93,21 @@ pub fn pct_text(p: u8) -> String {
     format!("{p}%")
 }
 
-// ---- install when idle (2026-10-29): a build the agent staged ------------------------------------
+// ---- Build ready (2026-10-29, one click since 2026-11-10): a build the agent staged --------------
 
-/// The staged build's chip.
+/// The staged build's chip; a click installs it.
 pub const STAGED_CHIP: &str = "Build ready";
-/// The chip's menu.
-pub const STAGED_INSTALL_NOW: &str = "Install now";
-pub const STAGED_WHEN_IDLE: &str = "Install when idle";
-pub const STAGED_NOT_TODAY: &str = "Not today";
-pub const STAGED_DISCARD: &str = "Discard";
+/// The chip's accessible name.
+pub const STAGED_CHIP_ARIA: &str = "Build ready, click to install and restart";
 /// The toast before the install, and its button.
 pub const STAGED_COUNTDOWN: &str = "Installing the new build and restarting";
 pub const STAGED_CANCEL: &str = "Cancel";
 /// A swap that failed and put everything back.
 pub const STAGED_FAILED: &str = "The build could not be installed; nothing changed";
 
-/// The staged chip's accessible name.
-pub fn staged_chip_aria(when_idle: bool) -> String {
-    if when_idle {
-        "Build ready, installs when idle".to_string()
-    } else {
-        STAGED_CHIP.to_string()
-    }
-}
-
 /// The staged chip's tooltip.
-pub fn staged_chip_tip(commit: &str, when_idle: bool) -> String {
-    if when_idle {
-        format!("Build {commit} installs once no agent has worked for a minute")
-    } else {
-        format!("Build {commit} is ready to install")
-    }
+pub fn staged_chip_tip(commit: &str) -> String {
+    format!("Build {commit}: click to install and restart")
 }
 
 /// Said once by the first start of a new build.
@@ -149,10 +133,10 @@ mod tests {
         );
         for s in [
             STAGED_CHIP,
+            STAGED_CHIP_ARIA,
             STAGED_COUNTDOWN,
             STAGED_FAILED,
-            &staged_chip_tip("abc1234", true),
-            &staged_chip_tip("abc1234", false),
+            &staged_chip_tip("abc1234"),
         ] {
             assert!(!s.contains('\u{2014}'), "no em-dash: {s}");
         }
