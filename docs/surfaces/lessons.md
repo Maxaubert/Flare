@@ -259,6 +259,12 @@ Newest last.
   environment variable of the child only), the browser asks Flare for the window, the handler navigates the panel, and the test
   counts top-level windows of both processes. **Electron:** `app.commandLine.appendSwitch('disable-popup-blocking')` under the
   test seam only, and the same count.
+- **A script the host runs counts as the person's gesture (2026-11-10, pop-ups).** With the popup blocker off, a click made
+  by `ExecuteScript` on a `target=_blank` link or a `window.open` reached `NewWindowRequested` with `IsUserInitiated` true, so it
+  cannot stand for "no click". The `webPanel` check of a blocked pop-up loads a page that calls `window.open` as it loads (no
+  activation at all), and the pop-up itself is opened by the browser tools' `browser.click` (DevTools `Input.dispatchMouseEvent`,
+  a trusted click); no test seam was needed. **Electron:** `webContents.executeJavaScript(code, true)` has the same
+  `userGesture` switch; test the blocker with a page that opens on load.
 - **A world shared by two legs restores the first leg's tabs.** The 225 percent leg started with three tabs because the 100
   percent leg had saved two, and `Ctrl+1` then jumped to a different tab. Count tabs instead of assuming, and jump to the tab by
   its place.

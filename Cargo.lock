@@ -1601,6 +1601,7 @@ dependencies = [
  "flare-web",
  "flare-win",
  "image",
+ "libc",
  "log",
  "png",
  "pollster",
