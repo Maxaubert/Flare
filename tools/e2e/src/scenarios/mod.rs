@@ -41,6 +41,7 @@ pub mod update;
 pub mod vertical;
 pub mod visual;
 pub mod web;
+pub mod web_logins;
 
 use crate::ctx::Scenario;
 
@@ -573,6 +574,12 @@ pub const ALL: &[Scenario] = &[
         group: "web",
         run: web::web_video,
         limit_secs: 240,
+    },
+    Scenario {
+        name: "webLogins",
+        group: "web",
+        run: web_logins::web_logins,
+        limit_secs: 300,
     },
     Scenario {
         name: "webNoRuntime",
