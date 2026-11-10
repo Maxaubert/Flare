@@ -1135,10 +1135,10 @@ frame could run script in the page above it. `popup_target_allowed` lets only `h
 view's `NavRule` allows for the main frame; `data:`, `file:`, `chrome:`, `devtools:`, `blob:` and every other scheme
 are dropped. Held by `a_popup_loads_only_a_web_address_the_navigation_rule_allows`. Source: commit security review of
 phase 5 (2026-11-08).
-284. **macOS: a plugin helper and every process it starts end when it is stopped, when it ends, and when Flare ends,
+1053. **macOS: a plugin helper and every process it starts end when it is stopped, when it ends, and when Flare ends,
 a crash included.** The Windows kill-on-close job has no Mac twin, so `flare_proc::guard` builds the same guarantee:
 the helper calls `setsid` between fork and exec (a session and group of its own, its pid both ids, no terminal), and
-before the exec forks a guard that is left an orphan in that session (rule 285: it execs Flare's own executable). The
+before the exec forks a guard that is left an orphan in that session (rule 1054: it execs Flare's own executable). The
 guard leads a group of its own in the helper's session (`setpgid(0, 0)`), so a helper that kills its own group
 (`kill -9 0`, `process.kill(-pid)`) misses it. It holds one end of a Unix socket pair whose other end only Flare holds
 (close-on-exec), closes every other descriptor, ignores HUP, INT, TERM, QUIT and PIPE, says its pid on the socket,
@@ -1165,7 +1165,7 @@ and `releasing_the_guard_ends_the_group_the_session_and_the_orphans`,
 `a_descendant_that_left_the_session_is_ended_too`, `a_program_that_ends_by_itself_takes_its_tree_with_it`
 (crates/flare-proc/src/guard.rs); each tree tries every way out (a child, an orphan, a `set -m` job, a `setsid`
 escapee). Source: macOS port phase 6 step 1 (2026-11-08).
-285. **macOS: the guard is an exec of Flare's own executable, never a fork that lives on.** A fork that never execs
+1054. **macOS: the guard is an exec of Flare's own executable, never a fork that lives on.** A fork that never execs
 keeps a copy-on-write snapshot of Flare's memory: every page Flare changes after the fork is copied, and the guard
 keeps the original, so each running helper held up to all of Flare's dirty memory (the CEF browser process, hundreds
 of MB; an 800 MB probe rewritten after the start cost +843 MB while `ps` and `footprint` showed the guard at 1 MB).
@@ -1185,7 +1185,7 @@ mark), `the_mark_is_written_without_allocating_and_read_back_strictly`, `a_stray
 (crates/flare-proc/src/guard.rs) and `the_bootstrap_first_becomes_a_guard_when_started_as_one`
 (crates/flare/src/ship_ctl.rs). Source: macOS port phase 6 step 1 (2026-11-08); the exec, review of phase 6
 (2026-11-09).
-286. **macOS: a stop never signals a recycled pid.** `Job::terminate` kills the helper's pid only while the helper is
+1055. **macOS: a stop never signals a recycled pid.** `Job::terminate` kills the helper's pid only while the helper is
 not reaped: its thread waits for the end with `waitid(WNOWAIT)` and `Job::finish` marks it ended under the job's lock
 before anything reaps it, also when `waitid` failed (`ECHILD`, say with SIGCHLD ignored: then it is marked, reaped,
 and the pass runs after), so a stop that races the end sees "ended" and lets the guard (which checks start times) do
@@ -1199,12 +1199,12 @@ the group (an update's, a removal's) would run to `STOP_WAIT`. Held by
 `mac_the_end_is_marked_before_the_reap_and_the_pass_runs_while_the_ids_are_held` and
 `an_update_of_a_plugin_whose_helper_runs_waits_for_it_to_end_and_starts_it_again` on a Mac. Source: macOS port
 phase 6 steps 1 and 2 (2026-11-08).
-287. **macOS: a helper program is an executable file inside the plugin folder, checked again when it starts.**
+1056. **macOS: a helper program is an executable file inside the plugin folder, checked again when it starts.**
 `paths::unix_program_inside`: the shared path syntax (no `..`, no absolute path, no `:`), canonicalized inside the
 folder (a link that points out is refused), a file, with the owner's execute bit; no extension is asked for. Windows
-keeps `program_inside` (an `.exe`). The Mac program is `helpers.macos.command` (rule 288). Held by
+keeps `program_inside` (an `.exe`). The Mac program is `helpers.macos.command` (rule 1057). Held by
 `mac_only_an_executable_inside_the_folder_starts`. Source: macOS port phase 6 step 1 (2026-11-08).
-288. **A plugin names its helper per system, and a manifest written for Windows means on Windows what it always
+1057. **A plugin names its helper per system, and a manifest written for Windows means on Windows what it always
 meant.** `plugin.json` keeps `helper` (`{command, args?}`, an `.exe`) as the Windows program and adds `helpers`
 (`{"windows"?, "macos"?}`, each `{command, args?}`): `helpers.windows` is `helper` by another name (both at once is
 refused), `helpers.macos` is an executable with `/` separators and no Windows extension (`paths::check_mac_program`).
@@ -1222,7 +1222,7 @@ unchanged. Held by `helpers_name_a_program_per_system_and_a_windows_manifest_mea
 `every_file_a_plugin_names_must_be_in_its_folder` (crates/flare-mods/src/discover.rs) and
 `the_program_tile_is_this_systems_program_or_says_there_is_none` (crates/flare-mods/src/grants.rs). Source: macOS port
 phase 6 step 2 (2026-11-08).
-289. **macOS: a quarantined helper is refused, never handed to Gatekeeper.** A helper starts in the background (the
+1058. **macOS: a quarantined helper is refused, never handed to Gatekeeper.** A helper starts in the background (the
 plugin turned on, a restart after a crash), so a program macOS marked as downloaded (`com.apple.quarantine`) would make
 Gatekeeper judge it with a dialog while the person may not be there. `paths::unix_program_inside` reads the attribute
 (`getxattr`, links resolved) and refuses the start with a sentence Settings shows, naming `xattr -dr
@@ -1234,7 +1234,7 @@ Windows does the same (the zip's mark of the web is not passed on). Held by
 `mac_only_an_executable_inside_the_folder_starts` (a quarantined copy of a working helper is refused) and
 `mac_a_helper_is_refused_while_any_file_of_its_folder_is_quarantined` (crates/flare-mods/src/helper.rs). Source: macOS port phase 6 step 2
 (2026-11-08).
-290. **An install keeps a zip entry's execute bit, and only that.** Off Windows a file the zip marks executable (any
+1059. **An install keeps a zip entry's execute bit, and only that.** Off Windows a file the zip marks executable (any
 `x` bit of its unix mode) is written `0755`, so a Mac helper installed from a zip can start; set-id, sticky and
 others-write bits of the zip are never used, and every other file keeps the default mode. The program
 `helpers.macos.command` names is made `0755` on the staged copy whatever the zip says, so a zip made on Windows
@@ -1242,7 +1242,7 @@ others-write bits of the zip are never used, and every other file keeps the defa
 `an_executable_in_the_zip_stays_executable_and_nothing_else_does`,
 `a_mac_helper_from_a_zip_without_modes_is_installed_executable` (crates/flare-mods/src/install.rs) and the app's update
 test on a Mac. Source: macOS port phase 6 step 2 (2026-11-08).
-291. **Every sample plugin runs, on Windows and on a Mac.** `plugin_samples` copies each folder of `sample-plugins/` as
+1060. **Every sample plugin runs, on Windows and on a Mac.** `plugin_samples` copies each folder of `sample-plugins/` as
 it ships, turns it on (at most six background pages run at once, so one at a time), brings its background page up in
 the fake browser and drives one round trip of its protocol: a call its own page makes, with the parameters it sends
 (`storage.get`, `tabs.badge.set`, `tabs.progress.set`, `actions.set`, `sidebar.set`), or for the tour the tool its
@@ -1250,7 +1250,7 @@ page answers. A new sample fails the test until it has its round trip. The three
 (`plugin_install.rs`) run on a Mac too, with a `helpers.macos` `#!` script. Held by
 `every_sample_plugin_loads_turns_on_and_answers_one_round_trip_of_its_protocol`
 (crates/flare/src/appctl/tests/mods_tests/plugin_samples.rs). Source: macOS port phase 6 step 2 (2026-11-08).
-292. **macOS: "Open in Flare" makes the request a second launch makes, and nothing else.** Finder's service
+1061. **macOS: "Open in Flare" makes the request a second launch makes, and nothing else.** Finder's service
 (`openInFlare:userData:error:` on the services provider) and an open request (`application:openURLs:`) turn their
 paths into a `Handoff` (`open_in::handoff_for`: absolute paths in order, each once, at most `ARGV_MAX`, non-file URLs
 left out) delivered to the instance's `HandoffSink`, so the controller opens them through `folders_from_argv` as
@@ -1260,7 +1260,7 @@ hand-off worker. No new route to a tab. Held by `the_request_is_a_second_launchs
 `open_in_service_turns_finders_files_into_one_tab_request` (crates/flare-win/tests/appkit.rs) and
 `open_in_flare_feeds_the_hand_off_sink_before_the_loop_runs` (crates/flare/src/window.rs). Source: macOS port phase 6
 step 3 (2026-11-09).
-293. **macOS: the open route is added to winit's delegate before the loop runs, never over a method it has.**
+1062. **macOS: the open route is added to winit's delegate before the loop runs, never over a method it has.**
 winit 0.30 sets its own `NSApplicationDelegate` when the event loop is built (slint builds it with the backend), so
 `open_in::install` adds `application:openURLs:` to that class with `class_addMethod`, only when the class answers no
 such method (`Added::HadOne` leaves it alone), and runs before `app.run()`: the request that launched Flare comes while
@@ -1269,7 +1269,7 @@ path on the command line is opened once, by `main` (rule 32), and not again as a
 `open_in_open_urls_is_added_to_the_delegate_and_opens_tabs_but_never_replaces_one`,
 `open_in_command_line_paths_are_not_open_documents` (crates/flare-win/tests/appkit.rs) and
 `open_in_flare_feeds_the_hand_off_sink_before_the_loop_runs`. Source: macOS port phase 6 step 3 (2026-11-09).
-294. **macOS: the service's `Info.plist` keys live with its handler, and the tests never register it.**
+1063. **macOS: the service's `Info.plist` keys live with its handler, and the tests never register it.**
 `open_in::plist_keys` is the `NSServices` entry (message `SERVICE_MESSAGE`, the label "Open in Flare", `NSPortName`
 the app's name, `NSSendFileTypes` `public.folder` and `public.item`, `NSSendTypes` `NSFilenamesPboardType` and
 `public.file-url`, `NSRequiredContext` so it is on by default) in the bundler's (key, XML value) form, so the message
@@ -1280,7 +1280,7 @@ and `the_service_selector_is_the_plists_message` (crates/flare-win/src/macos/ope
 to the app registered under `NSPortName`, so once phase 8's bundle takes these keys a test on the built bundle must
 check `NSPortName` equals its `CFBundleExecutable` (the process name); otherwise the item shows and the call never
 arrives. Source: macOS port phase 6 step 3 (2026-11-09).
-295. **Off Windows a path argument is taken as it is.** `argv::paths_from_argv` turns Explorer's `C:"` (the
+1064. **Off Windows a path argument is taken as it is.** `argv::paths_from_argv` turns Explorer's `C:"` (the
 backslash before a closing quote) back into the root only on Windows (`unquote_arg` under `cfg!(windows)`): on a Mac
 a Finder folder may be named `say "hi"`, and the fix-up made it `say "hi\`, a path that does not exist, so it was
 dropped without a word. Held by `off_windows_a_name_that_ends_in_a_quote_is_kept_as_it_is` and, on Windows,

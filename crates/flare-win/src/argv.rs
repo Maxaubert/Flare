@@ -39,7 +39,7 @@ pub fn paths_from_argv(argv: &[String], ignore: &[PathBuf], base: &Path) -> Vec<
         if arg.starts_with("--") {
             continue;
         }
-        // Explorer's `C:"` is a Windows quirk: on a Mac a name may end in `"` (rule 295).
+        // Explorer's `C:"` is a Windows quirk: on a Mac a name may end in `"` (rule 1064).
         let raw = if cfg!(windows) {
             unquote_arg(arg)
         } else {
@@ -158,7 +158,7 @@ mod tests {
         );
     }
 
-    /// Rule 295: off Windows a name that ends in `"` is that name (a Finder folder can be called so); only Windows
+    /// Rule 1064: off Windows a name that ends in `"` is that name (a Finder folder can be called so); only Windows
     /// turns Explorer's `C:"` back into the root.
     #[cfg(not(windows))]
     #[test]

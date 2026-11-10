@@ -1398,7 +1398,7 @@ pub fn run_window(
         // lock) and hop onto the event loop; any that came while the window was being made go now.
         inst.sink.attach(Arc::clone(&post));
         // macOS: Finder's "Open in Flare" service and `open -a Flare <folder>` make the request a second launch
-        // makes, into the same sink (port phase 6, rule 292). Before the loop runs: the first launch's
+        // makes, into the same sink (port phase 6, rule 1061). Before the loop runs: the first launch's
         // open-documents event comes while AppKit finishes launching.
         #[cfg(target_os = "macos")]
         {
@@ -2715,7 +2715,7 @@ mod tests {
         }
     }
 
-    /// Open in Flare (macOS, rule 292) feeds the hand-off sink, and is installed before the loop runs, so the open
+    /// Open in Flare (macOS, rule 1061) feeds the hand-off sink, and is installed before the loop runs, so the open
     /// request of the launch itself is not missed.
     #[test]
     fn open_in_flare_feeds_the_hand_off_sink_before_the_loop_runs() {

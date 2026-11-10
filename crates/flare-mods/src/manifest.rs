@@ -137,7 +137,7 @@ const CONTRIBUTES_KEYS: [&str; 3] = ["sidebar", "actions", "icons"];
 const SIDEBAR_KEYS: [&str; 2] = ["key", "title"];
 const ACTION_KEYS: [&str; 4] = ["key", "title", "icon", "where"];
 const HELPER_KEYS: [&str; 2] = ["command", "args"];
-/// The systems `helpers` may name a program for (macOS port phase 6, regression rule 288).
+/// The systems `helpers` may name a program for (macOS port phase 6, regression rule 1057).
 const HELPERS_KEYS: [&str; 2] = ["windows", "macos"];
 const BRAND_KEYS: [&str; 2] = ["color", "icon"];
 
@@ -1185,7 +1185,7 @@ pub fn contrast_with_white(rgb: [u8; 3]) -> f64 {
 }
 
 /// `helper` (the Windows form, unchanged since protocol 2 began) and `helpers` (`{"windows"?, "macos"?}`, macOS port
-/// phase 6, regression rule 288), each `{command, args?}`; the `process` permission goes with any of them, both ways.
+/// phase 6, regression rule 1057), each `{command, args?}`; the `process` permission goes with any of them, both ways.
 /// `helper` and `helpers.windows` are the same program, so a manifest names it once. Returns the Windows program and
 /// the macOS one.
 fn helpers(
@@ -2445,7 +2445,7 @@ mod tests {
         );
     }
 
-    /// Rule 288: a manifest written for Windows (`helper`, an `.exe`) reads exactly as before and names no Mac program;
+    /// Rule 1057: a manifest written for Windows (`helper`, an `.exe`) reads exactly as before and names no Mac program;
     /// `helpers.macos` adds one, `helpers.windows` is `helper` by another name, and each system picks its own.
     #[test]
     fn helpers_name_a_program_per_system_and_a_windows_manifest_means_what_it_meant() {

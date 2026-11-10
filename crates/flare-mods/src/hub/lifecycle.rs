@@ -712,7 +712,7 @@ mod tests {
         assert!(w.hub.helper_of("demo").is_none(), "off: no helper");
         turn_on(&w);
         let spec = w.hub.helper_of("demo").expect("on with process: a helper");
-        // Each system starts the program named for it (rule 288).
+        // Each system starts the program named for it (rule 1057).
         let want = if cfg!(target_os = "macos") {
             "bin/run"
         } else {
@@ -738,7 +738,7 @@ mod tests {
     }
 
     /// A manifest written for Windows only (`helper`, an `.exe`) loads on every system; on a Mac it has no helper to
-    /// start, and tools only its helper could answer are left out with a sentence that says why (rule 288).
+    /// start, and tools only its helper could answer are left out with a sentence that says why (rule 1057).
     #[test]
     fn a_windows_only_helper_runs_only_on_windows_and_a_mac_only_one_only_on_a_mac() {
         let w = world();

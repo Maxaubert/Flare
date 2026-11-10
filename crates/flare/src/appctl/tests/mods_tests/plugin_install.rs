@@ -272,7 +272,7 @@ fn update_opens_the_picker_in_the_folder_the_zip_came_from_and_a_restart_keeps_i
 }
 
 /// A plugin folder with its helper, which runs `line` in the system's shell. Windows: `helper.exe` (a copy of cmd.exe)
-/// runs `cmd /c <line>`, named by `helper` as a manifest always has. macOS (port phase 6, rule 288): `helper`, a `#!`
+/// runs `cmd /c <line>`, named by `helper` as a manifest always has. macOS (port phase 6, rule 1057): `helper`, a `#!`
 /// script that hands its arguments to `/bin/sh`, named by `helpers.macos`, runs `sh -c <line>`.
 fn helper_plugin(root: &Path, perms: &str, line: &str) {
     #[cfg(target_os = "macos")]
@@ -291,7 +291,7 @@ fn helper_plugin(root: &Path, perms: &str, line: &str) {
     std::fs::write(to.join("bg.html"), "<p>bg</p>").unwrap(); // sync-ok: test code only, never the app
 }
 
-/// Not a test on its own: a Mac helper's guard started by this binary's tests runs as this test (rule 285).
+/// Not a test on its own: a Mac helper's guard started by this binary's tests runs as this test (rule 1054).
 #[cfg(target_os = "macos")]
 #[test]
 fn guard_entry() {
@@ -467,7 +467,7 @@ fn an_update_of_a_plugin_whose_helper_runs_waits_for_it_to_end_and_starts_it_aga
             .unwrap();
         z.start_file("bg.html", o).unwrap();
         z.write_all(b"<p>bg</p>").unwrap();
-        // The zip marks the program executable, and the install keeps that bit (rule 290).
+        // The zip marks the program executable, and the install keeps that bit (rule 1059).
         z.start_file(name, o.unix_permissions(0o755)).unwrap();
         z.write_all(&exe).unwrap();
         z.finish().unwrap();

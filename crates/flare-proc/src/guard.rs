@@ -1,6 +1,6 @@
 //! macOS: a program started in a group and session of its own, with a guard that ends the whole tree
 //! when Flare lets it go, when the program itself ends, or when Flare dies, a crash included. This is
-//! what a kill-on-close job object gives a plugin helper on Windows (regression rule 284).
+//! what a kill-on-close job object gives a plugin helper on Windows (regression rule 1053).
 //!
 //! - **The group.** Between fork and exec the child calls `setsid`: it leads a new session and a new
 //!   process group with its own pid as both ids, and has no controlling terminal. Everything it starts
@@ -9,7 +9,7 @@
 //!   process leaves an orphan (launchd reaps it), so the program never sees an unknown child. The guard
 //!   at once execs the guard entry ([`use_this_program`]: Flare's own executable, whose `main` calls
 //!   [`run_if_guard`] first), so it holds none of Flare's memory (a fork that never execs would keep a
-//!   copy-on-write snapshot of all of it, rule 285). Its `argv[0]` is [`MARK`] with the descriptors it
+//!   copy-on-write snapshot of all of it, rule 1054). Its `argv[0]` is [`MARK`] with the descriptors it
 //!   keeps and Flare's pid. As the guard it leads a group of its own inside the program's session (so a
 //!   helper that kills its own group, `kill -9 0`, misses it), ignores the polite signals (HUP, INT,
 //!   TERM, QUIT), closes every descriptor but one end of a socket pair whose other end only Flare holds,
@@ -178,7 +178,7 @@ impl Pending {
 /// A Unix socket pair whose two ends are close-on-exec, so no program Flare starts later inherits
 /// them. `socketpair` and `fcntl` are two calls: a process another thread starts in between keeps a
 /// copy (macOS has no atomic form). That only delays the guard's EOF; a stop also kills the helper,
-/// whose end the guard sees, and Flare's own end is watched by its pid (rule 284).
+/// whose end the guard sees, and Flare's own end is watched by its pid (rule 1053).
 fn socket_pair_cloexec() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0 as libc::c_int; 2];
     // SAFETY: room for the two descriptors the call writes.
@@ -803,8 +803,8 @@ mod tests {
         );
         assert_eq!(crate::session_of(pids.0[2]), Some(lead));
         // The guard is in the session, an orphan (launchd's), not a child of the program, leads a
-        // group of its own (rule 284), and is a fresh exec of the entry, not a fork of this process
-        // (rule 285: it holds none of this process's memory).
+        // group of its own (rule 1053), and is a fresh exec of the entry, not a fork of this process
+        // (rule 1054: it holds none of this process's memory).
         let id = guard.id().expect("the guard said its pid");
         let g = crate::stat(id.pid).unwrap();
         assert_eq!(crate::session_of(id.pid), Some(lead));
@@ -843,7 +843,7 @@ mod tests {
         assert!(all_gone(&pids.0), "{:?}", pids.0);
     }
 
-    /// Rule 284: a helper that kills its own group (`kill -9 0`, a common way to end a tree) does not
+    /// Rule 1053: a helper that kills its own group (`kill -9 0`, a common way to end a tree) does not
     /// take its guard with it, so what left the group (a `set -m` job) or the session (`setsid`) still
     /// ends. With the guard in the helper's group, both survived.
     #[test]

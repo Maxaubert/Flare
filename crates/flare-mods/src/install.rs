@@ -8,7 +8,7 @@
 //!   while they are written: [`MAX_ENTRY_BYTES`] an entry, [`MAX_TOTAL_BYTES`] in all, [`MAX_ZIP_BYTES`] for the zip
 //!   and [`MAX_ENTRIES`] entries.
 //! - **Modes.** Off Windows a file the zip marks executable (any `x` bit of its unix mode) is written `0755`, so a Mac
-//!   helper keeps the bit it needs (rule 290); no other mode bit of the zip is used (never set-id, never writable by
+//!   helper keeps the bit it needs (rule 1059); no other mode bit of the zip is used (never set-id, never writable by
 //!   others), and every other file keeps the default mode. The program `helpers.macos.command` names is made `0755`
 //!   on the staged copy whatever the zip says, so a zip made on Windows (no unix modes) installs a helper that starts.
 //! - **Staging.** A zip is extracted to `plugins\.staging\<random>`, never straight into the plugins folder. Its layout
@@ -181,7 +181,7 @@ pub fn extract(zip: &Path, out: &Path) -> Result<Extracted, String> {
             if raw.is_symlink() || raw.external_attributes() & REPARSE_ATTRIBUTE != 0 {
                 return Err(format!("the zip entry \"{name}\" is a link"));
             }
-            // Only whether the author marked it executable is kept (rule 290); every other mode bit is Flare's.
+            // Only whether the author marked it executable is kept (rule 1059); every other mode bit is Flare's.
             let exec = raw.unix_mode().is_some_and(|m| m & 0o111 != 0);
             (parts, raw.is_dir(), raw.size(), exec)
         };
@@ -236,7 +236,7 @@ pub fn extract(zip: &Path, out: &Path) -> Result<Extracted, String> {
             dest.write_all(&buf[..n])
                 .map_err(|e| format!("\"{}\" cannot be written: {e}", parts.join("/")))?;
         }
-        // A Mac helper must keep its execute bit through the zip (`helpers.macos`, rule 290): the file is made
+        // A Mac helper must keep its execute bit through the zip (`helpers.macos`, rule 1059): the file is made
         // 0755, never set-id or writable by others, whatever the zip says. Windows has no such bit.
         #[cfg(not(windows))]
         if exec {
@@ -337,7 +337,7 @@ pub fn stage(zip: &Path, plugins: &Path) -> Result<Staged, String> {
         .map_err(|e| format!("the unpacked zip cannot be read: {e}"))?;
     let found = check_folder(&canon)?;
     // The Mac helper starts even from a zip made on Windows (Explorer, Compress-Archive), which keeps no unix mode:
-    // the file `helpers.macos.command` names is made 0755 whatever the zip says (rule 290).
+    // the file `helpers.macos.command` names is made 0755 whatever the zip says (rule 1059).
     #[cfg(not(windows))]
     if let Some(h) = found.manifest.helper_macos.as_ref() {
         use std::os::unix::fs::PermissionsExt;
@@ -643,7 +643,7 @@ mod tests {
         assert!(extract(&z, &out2).unwrap_err().contains("is a link"));
     }
 
-    /// Rule 290: a file the zip marks executable keeps the bit (as 0755, never set-id or others-writable); the rest
+    /// Rule 1059: a file the zip marks executable keeps the bit (as 0755, never set-id or others-writable); the rest
     /// keep the default mode (no execute bit), whatever the zip asks.
     #[cfg(not(windows))]
     #[test]
@@ -669,7 +669,7 @@ mod tests {
         assert_eq!(mode("data.txt") & 0o111, 0, "not executable");
     }
 
-    /// Rule 290: a zip made on Windows keeps no unix mode, yet the program `helpers.macos.command` names is
+    /// Rule 1059: a zip made on Windows keeps no unix mode, yet the program `helpers.macos.command` names is
     /// installed executable (0755); the other files of that zip are not.
     #[cfg(not(windows))]
     #[test]

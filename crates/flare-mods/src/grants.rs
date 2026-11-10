@@ -331,7 +331,7 @@ pub fn tiles(m: &Manifest, c: &Choices) -> Vec<Tile> {
             },
         ));
     }
-    // The program this system starts (rule 288); a plugin whose helper is for another system says it has none here.
+    // The program this system starts (rule 1057); a plugin whose helper is for another system says it has none here.
     if let Some(h) = m.helper_here() {
         out.push(Tile {
             key: "fact:program".into(),
@@ -479,7 +479,7 @@ mod tests {
         assert!(tools.tip.ends_with("tool_number_19"), "{}", tools.tip);
     }
 
-    /// Rule 288: the sheet names the program this system starts, and says so when the plugin's program is for another.
+    /// Rule 1057: the sheet names the program this system starts, and says so when the plugin's program is for another.
     #[test]
     fn the_program_tile_is_this_systems_program_or_says_there_is_none() {
         let windows_only = plugin(serde_json::json!({"helpers": null}));

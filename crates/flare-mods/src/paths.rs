@@ -34,7 +34,7 @@ pub fn check_program(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Syntax of `helpers.macos.command` (macOS port phase 6, regression rule 288): the rules every path inside the
+/// Syntax of `helpers.macos.command` (macOS port phase 6, regression rule 1057): the rules every path inside the
 /// folder keeps, `/` as the only separator (a `\\` is a letter of a Mac file name, so it would name another file than
 /// its author meant on Windows), and no Windows program (`.exe`, `.bat`, `.cmd`, `.com`, `.ps1`): a Mac helper is a
 /// Mach-O program or a script with a `#!` line, and has no extension to ask for.
@@ -110,7 +110,7 @@ pub fn mac_program_inside(folder: &Path, rel: &str) -> Result<PathBuf, String> {
 /// macOS: the helper program `rel` names inside the canonical plugin folder, checked when it starts:
 /// the syntax of [`check_mac_program`] (no `..`, no absolute path, no `:`, no `\\`, no Windows program),
 /// resolved inside the folder (a link that points out is refused), a file, executable by its owner, and
-/// not quarantined ([`quarantined`], rule 289).
+/// not quarantined ([`quarantined`], rule 1058).
 #[cfg(not(windows))]
 pub fn unix_program_inside(folder: &Path, rel: &str) -> Result<PathBuf, String> {
     use std::os::unix::fs::PermissionsExt;
@@ -146,7 +146,7 @@ pub fn unix_program_inside(folder: &Path, rel: &str) -> Result<PathBuf, String> 
 const QUARANTINE_SCAN_MAX: usize = 4096;
 
 /// The first file or folder inside `folder` (itself left out) that carries [`QUARANTINE`], as a `/`-separated path
-/// relative to it (rule 289). Links are not followed: each is read as itself. Past [`QUARANTINE_SCAN_MAX`] entries or
+/// relative to it (rule 1058). Links are not followed: each is read as itself. Past [`QUARANTINE_SCAN_MAX`] entries or
 /// 32 levels the rest is not read.
 #[cfg(not(windows))]
 pub fn quarantined_in(folder: &Path) -> Option<String> {
@@ -177,7 +177,7 @@ pub fn quarantined_in(folder: &Path) -> Option<String> {
 /// unpacked from one by Archive Utility).
 pub const QUARANTINE: &str = "com.apple.quarantine";
 
-/// Whether `path` carries [`QUARANTINE`] (macOS port phase 6, regression rule 289). Starting such a program from
+/// Whether `path` carries [`QUARANTINE`] (macOS port phase 6, regression rule 1058). Starting such a program from
 /// Flare would hand it to Gatekeeper, which judges it with a dialog (or, for an unsigned program, a refusal the
 /// person sees only as a dialog): a helper starts in the background, when the plugin turns on or after a crash, so
 /// Flare refuses it with a sentence Settings shows instead. Flare's own install from a zip writes every file itself
