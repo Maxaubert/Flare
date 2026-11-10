@@ -30,6 +30,7 @@ pub mod model;
 pub mod mods;
 pub mod panel;
 pub mod panel_split;
+pub mod quit_stress;
 pub mod settings_a;
 pub mod settings_b;
 pub mod settings_c;
@@ -675,6 +676,7 @@ pub const ALL: &[Scenario] = &[
 
 /// Scenarios that are NOT part of the gate: a plain run never picks them, a filter that names one does.
 /// isualTour is the visual comparison capture (audit 2026-10-20); it takes half an hour and writes pictures.
+/// quitStress (#63) holds many busy shells quit through the normal path, round after round; it reports each exit code.
 /// `webBotChecks` opens public pages on the network to measure what a bot check sees of the web panel (#146).
 pub const OPT_IN: &[Scenario] = &[
     Scenario {
@@ -682,6 +684,12 @@ pub const OPT_IN: &[Scenario] = &[
         group: "visual",
         run: visual::visual_tour,
         limit_secs: 3_300,
+    },
+    Scenario {
+        name: "quitStress",
+        group: "lifecycle",
+        run: quit_stress::quit_stress,
+        limit_secs: 14_400,
     },
     Scenario {
         name: "webBotChecks",
