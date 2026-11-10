@@ -2264,3 +2264,42 @@ read afterwards. Spec: `docs/superpowers/specs/2026-11-10-web-popups-design.md`,
   (`a_note_keeps_the_sites_and_never_the_addresses`), `web_diag::tests` (the gate), `reader::tests`
   (`the_web_panels_failures_are_problems_and_its_steps_show_under_web`), `web_ctl::web_line_tests` and the text-key scan in `neutral.rs`.
 - **Not covered.** A real WebView2 raising these events: no e2e scenario yet.
+
+## Arrows over the page, 2026-11-10
+
+Spec `docs/superpowers/specs/2026-11-10-ask-agent-additions-design.md`, section 2; rules 254 to 256; the probe and the choices in
+`docs/surfaces/decisions.md` ("Arrows over the page").
+
+- **The agent points (`browser_point`).** `browser.point` `{ref | x, y, label?, clear?}` in the Browser namespace, under the same grant
+  as the other browser tools. One orange arrow per tab, with an optional label on an orange pill (gated like Ask agent's text, one line,
+  at most 48 characters). It never clicks and cannot type, and it is not a job: it scrolls its element into view and answers
+  `{pointed, offscreen}` once it has measured it, then measures again about every 100 ms (`Page.getLayoutMetrics`,
+  `DOM.getContentQuads`) so it follows a scroll or a resize, a moment late. It goes on `clear`, a new arrow, the person clicking or
+  typing in the page, a navigation, the panel or tab closing, or after 60 s. It is drawn only where the agent's cursor may be (the page
+  in front and live: not under a Flare menu, the still, another tab or a minimised window) and never over a pop-up; with a pop-up open
+  the call answers "a pop-up is open, the person must finish it". The tool text says it is for steps the person must do themselves.
+- **The person points ("Draw arrow").** A button beside Ask agent in the web bar (and in a mini-app's header), only on a tab with an
+  agent, on a web page or a mini-app (never a plugin's page), and not while a pop-up is open. It puts a pad over the page: a layered
+  window, every pixel at alpha 1, that catches the mouse and never takes the keyboard from the page. Press, drag and release are read on
+  the 16 ms agent tick; a blue arrow follows live. On release Flare asks the browser, with no page script, what is under the head
+  (`DOM.getNodeForLocation`, then `Accessibility.getPartialAXTree` for its role and name, the nearest element a look would list) and types
+  this at the prompt, unsent: `About this arrow on <site>:`, `> points at: <role> "<name>"`, `> at: x, y in a W x H page`,
+  `> (use browser_look to see it)`. A click with no drag points at the target from up and left. Cancel: the button again, a right click,
+  Escape (in the page or in Flare's window), a menu, a tab switch, a pop-up or a navigation.
+- **The agent sees the person's arrow.** It is kept for 5 minutes or until the page moves on. The next `browser_look` gets
+  `user_arrow` `{from, to, ref, role, name}` (a ref is made for the element when the look did not list it) and its screenshot has the
+  arrow drawn on it at the look's scale; after that look it is gone. The arrow is kept on the document, not the screen: while its page is
+  in front the scroll is measured again, so the blue mark moves with what it points at and hides while part of it is scrolled out of
+  sight, and the look gives its ends where they are in the look's viewport, `offscreen` and undrawn when the head is outside it
+  (rule 257). `browser_look`'s text says where the person pointed, with the
+  element's words inside the page-content markers.
+- **Windows.** `flare_win::agent_cursor`: `compose_arrow` (only the pixels near the shape are worked out), `point_tail` (the agent's
+  tail turns to stay on the page), `blend_onto_rgba`, `ArrowWindow`, `PadWindow`, and the stand-ins `RecordArrow`, `RecordMark`,
+  `RecordPad` that the tests and `--e2e` keep. `web_ctl/arrows.rs` holds the rest.
+- **Tests.** `agent_cursor::tests` (the arrow's pixels, labels, the tail, the screenshot blend, the stand-ins, the ignored `pad_probe`),
+  `agent_web::tests` (`pointed_at`), `agent_job::tests` (`ref_for`), `ask_agent::tests` (`frame_arrow`, `point_label`), `ctl_app::tests`
+  (`point_req`, the post), `web_ctl::arrows::tests`, `appctl::tests::arrow_tests` (fake browser, recording windows, a stand-in mouse:
+  the arrow follows, every clear, hidden under a menu, a tab and a pop-up, the draw mode and every cancel, the frame, `user_arrow` once),
+  `flare-mcp` `browser.rs` (the tool, the look's arrow lines).
+- **Not covered.** A real mouse on the real pad over a real WebView2 (the probe used a plain child window and posted messages on a
+  hidden desktop), a real agent's prompt, the arrow's look at every theme: no e2e scenario yet.

@@ -1678,6 +1678,12 @@ pub fn run_window(
                     // by this one (under --e2e the recording stand-ins WebCtl starts with stay).
                     c.set_agent_border(Box::new(flare_win::agent_cursor::GlowWindow::new(hwnd)));
                     c.set_agent_cursor(Box::new(flare_win::agent_cursor::CursorWindow::new(hwnd)));
+                    // The arrows over the page and the pad the person draws on (rules 254 to 256).
+                    c.set_agent_arrows(
+                        Box::new(flare_win::agent_cursor::ArrowWindow::new(hwnd)),
+                        Box::new(flare_win::agent_cursor::ArrowWindow::new(hwnd)),
+                        Box::new(flare_win::agent_cursor::PadWindow::new(hwnd)),
+                    );
                 }
             },
         )
