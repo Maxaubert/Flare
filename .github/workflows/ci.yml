@@ -50,7 +50,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,cargo-deny
-      # The CEF engine (crates/flare-cef, port phase 5, rule 251): cef-dll-sys builds CEF's C++ wrapper with CMake and
+      # The CEF engine (crates/flare-cef, port phase 5, rule 1020): cef-dll-sys builds CEF's C++ wrapper with CMake and
       # Ninja and downloads the pinned CEF build into CEF_PATH, cached between runs (outside the checkout).
       - name: CEF build tools and cache folder
         shell: bash

@@ -63,16 +63,16 @@ Total: about 3 months to full parity at a steady pace.
 
 Phase 5 progress: step 1 (2026-11-08) is the engine, `crates/flare-cef`: CEF 156.0.14 pinned and cached in
 `~/Library/Caches/flare-cef`, the dev bundle with its five helpers (ad hoc), the CEF `NSApplication`, windowless
-pixels, headless; `agent_job`'s DevTools methods (11 then, 14 with main's covered-click check) and the runaway-eval timeout proved on a Mac (rules 251 to 253,
+pixels, headless; `agent_job`'s DevTools methods (11 then, 14 with main's covered-click check) and the runaway-eval timeout proved on a Mac (rules 1020 to 1022,
 `docs/parity.md` "macOS port, phase 5"). Step 2 (2026-11-08) is the web panel: `WebBackend` on CEF
 (`crates/flare-web/src/macos/host.rs`), the page as a picture in its box with the window's pointer, wheel, keys and
 input method handed over, the walls decided in `flare_web::walls` and re-proved with the spike's observers, the real
-app's `NSApplication` made CEF's kind before winit (rules 254 to 257). Step 3 (2026-11-08) re-proves the walls behind Flare's proxy against
+app's `NSApplication` made CEF's kind before winit (rules 1023 to 1026). Step 3 (2026-11-08) re-proves the walls behind Flare's proxy against
 the spike's proxy page (every spelling of this machine and its network, http, https, ws and wss: 0 hits, 0 accepts, 0
 mDNS queries; the web panel control leaks) and runs the real `agent_job` through `WebBackend::cdp` of the CEF host, with
-the agent's editing chords given the command a Mac's text system would make of them (rules 258 and 259).
-A review of the three steps (2026-11-08) proved six defects, fixed with checks that fail without the fix (rules 260 to
-265): a profile per mini-app (a shared worker read another app's files), Flare's switches only (the command line
+the agent's editing chords given the command a Mac's text system would make of them (rules 1027 and 1028).
+A review of the three steps (2026-11-08) proved six defects, fixed with checks that fail without the fix (rules 1029 to
+1034): a profile per mini-app (a shared worker read another app's files), Flare's switches only (the command line
 opened a DevTools port), held downloads staged outside `~/Downloads`, no call to Google from the engine with no page
 asking, the mock keychain written down as an accepted gap until phase 8, and no colour or print panel from a page.
 

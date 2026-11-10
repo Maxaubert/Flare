@@ -1,4 +1,4 @@
-//! The native panels Chromium would put on the person's screen for a page, taken out of the process (rule 265).
+//! The native panels Chromium would put on the person's screen for a page, taken out of the process (rule 1034).
 //! A windowless browser has no window to hang a sheet on, so on a Mac Chromium shows AppKit's shared panels as
 //! windows of their own: `<input type=color>` orders in the shared `NSColorPanel`, and printing (`window.print()`,
 //! Cmd+P) runs `NSPrintPanel` modally. Printing is also off in every profile (`printing.enabled`), so it is never

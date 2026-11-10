@@ -110,7 +110,7 @@ pub fn install(mtm: MainThreadMarker) -> Result<Retained<NSApplication>, String>
     let shared = make_shared(mtm)?;
     // No Dock tile, no menu bar, never active: the screen rule.
     shared.setActivationPolicy(NSApplicationActivationPolicy::Prohibited);
-    // No colour or print panel a page could ask for (rule 265).
+    // No colour or print panel a page could ask for (rule 1034).
     crate::macos::panels::guard();
     Ok(shared)
 }
