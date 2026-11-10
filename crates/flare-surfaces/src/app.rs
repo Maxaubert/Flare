@@ -57,6 +57,16 @@ pub struct AppSpec {
     /// A mod's view (stage 8): the mod, and the browser serves its files itself from `folder` on every
     /// request instead of mapping the folder. None for a mini-app or a diagram.
     pub module: Option<crate::modview::ModSpec>,
+    /// The file a markdown view's page was made from (`mdview`): Ask agent names it, and the page is the panel's view
+    /// of that file, never the agent's. None for every other page.
+    pub source: Option<String>,
+}
+
+/// The next number for an app's folder and host, shared by every writer in the run (the agent's mini-apps and the
+/// markdown views), so no two pages ever share a folder or an origin.
+pub fn next_seq() -> u64 {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
 }
 
 /// The host name of the `seq`th mini-app of the run.
@@ -367,6 +377,7 @@ pub fn write_app(
         folder,
         allow_network,
         module: None,
+        source: None,
     })
 }
 

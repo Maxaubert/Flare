@@ -114,6 +114,7 @@ impl AppCtl {
         let front = self.model.active_shell().map(|t| t.id.clone());
         let ctx = self.key_context();
         self.web.sync(&app, &self.panels, front.as_deref(), ctx);
+        self.md_page_fallback(&app);
         self.sync_bar_views(&app);
         self.sync_web_full();
         self.prune_downloads();

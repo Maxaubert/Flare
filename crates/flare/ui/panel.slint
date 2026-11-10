@@ -353,6 +353,48 @@ component AskAgentButton inherits Rectangle {
     }
 }
 
+// The view control over a markdown file (2026-11-10): Compiled, Markdown or Code, the one on show pressed. Flare's own
+// chrome in the header, drawn outside the page. Shorter words when the panel is narrow.
+component MdViewSwitch inherits Rectangle {
+    in property <int> current;
+    in property <bool> compact;
+    callback picked(int);
+    property <[string]> names: root.compact ? ["Doc", "Md", "Code"] : ["Compiled", "Markdown", "Code"];
+    property <[string]> labels: ["Show compiled", "Show the markdown", "Show as code"];
+    width: lay.preferred-width;
+    height: Px.snap(22px);
+    border-radius: Theme.radius-button;
+    border-width: Px.hair();
+    border-color: Theme.divider;
+    lay := HorizontalLayout {
+        padding: Px.hair();
+        spacing: 0px;
+        for name[i] in root.names: Rectangle {
+            width: Px.snap(word.preferred-width + 14px);
+            border-radius: Theme.radius-button;
+            background: i == root.current ? Theme.hover-hi : (ta.has-hover ? Theme.hover : transparent);
+            accessible-role: button;
+            accessible-label: root.labels[i];
+            accessible-checkable: true;
+            accessible-checked: i == root.current;
+            accessible-action-default => { root.picked(i); }
+            word := Text {
+                width: parent.width;
+                height: parent.height;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                text: name;
+                font-family: Theme.font-ui;
+                font-size: 11.5px;
+                color: i == root.current || ta.has-hover ? Theme.text : Theme.dim;
+            }
+            ta := TouchArea {
+                clicked => { root.picked(i); }
+            }
+        }
+    }
+}
+
 // The browser bar of a web panel: back, forward, reload (stop while a page loads), the address and the
 // panel's close. It is the top of the panel (a web page has no header, Max 2026-10-27). Enter opens what
 // is typed, Escape puts the address of the page back and hands the keys to the terminal.
@@ -641,9 +683,19 @@ export component PanelSlot inherits Rectangle {
     callback ask-agent();
     // The button's tooltip, placed beside it by the window: below it would be under a page's native window.
     callback ask-tip(string, length, length, length, length);
-    // The room the wrap button takes in the header (a text file only), and with "Ask agent" beside it.
+    // The view control (a markdown file, in any of its views): Compiled 0, Markdown 1, Code 2, and a pick.
+    in property <bool> md-file;
+    in property <int> md-view;
+    callback md-view-picked(int);
+    out property <bool> md-visible: root.open && root.md-file && !root.bar-only;
+    out property <length> md-x: md-switch.absolute-position.x;
+    out property <length> md-y: md-switch.absolute-position.y;
+    out property <length> md-w: md-switch.width;
+    // The room the wrap button takes in the header (a text file only), and with "Ask agent" and the view control beside it.
     property <length> head-wrap: root.kind == 2 ? Px.snap(28px) : 0px;
-    property <length> head-extra: root.head-wrap + (root.ask-shown ? ask-btn.width + Px.snap(4px) : 0px);
+    property <length> head-ask: root.ask-shown ? ask-btn.width + Px.snap(4px) : 0px;
+    property <length> head-md: root.md-file ? md-switch.width + Px.snap(6px) : 0px;
+    property <length> head-extra: root.head-wrap + root.head-ask + root.head-md;
     callback wrap-toggled();
     callback close();
     callback escape();
@@ -761,6 +813,14 @@ export component PanelSlot inherits Rectangle {
                 tip-text: root.kind == 3 ? "Ask agent about the selection" : "Ask agent about this file";
                 activated => { root.ask-agent(); }
                 tip(t, x, y, w, h) => { root.ask-tip(t, x, y, w, h); }
+            }
+            md-switch := MdViewSwitch {
+                x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(4px) - root.head-wrap - root.head-ask - Px.snap(2px) - self.width;
+                y: (parent.height - self.height) / 2;
+                visible: root.md-file;
+                current: root.md-view;
+                compact: root.width < 460px;
+                picked(i) => { root.md-view-picked(i); }
             }
             close-btn := PanelClose {
                 x: parent.width - self.width - Px.snap(8px);

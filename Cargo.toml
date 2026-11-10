@@ -91,4 +91,7 @@ webview2-com = "=0.39.1"
 # The GPU pack's unzip (M8 D5). 9.0.0 (2026-10-09) is the OLDEST release patched for RUSTSEC-2026-0367/0368/0369
 # (every one says patched >= 9.0.0; 9.0.0-pre3 is NOT). No fixed release is 14 days old yet (9.0.0 is 10 days old on
 # 2026-10-19), so the age rule gives way to the advisory rule. Never 8.6 (velopack's; ignored in deny.toml for it only).
+# Markdown views (2026-11-10): the compiled page's parser, with no HTML writer of its own (Flare escapes every tag itself).
+# 0.13.4 was already in the lockfile through Slint (MIT).
+pulldown-cmark = { version = "=0.13.4", default-features = false }
 zip = { version = "=9.0.0", default-features = false, features = ["deflate"] }
