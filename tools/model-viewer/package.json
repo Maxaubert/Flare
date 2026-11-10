@@ -1,0 +1,16 @@
+{
+  "name": "flare-model-viewer",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Builds assets/three/viewer.js, the 3D model viewer Flare ships (see assets/three/README.md).",
+  "license": "MIT",
+  "scripts": {
+    "build": "esbuild src/viewer.js --bundle --minify --format=iife --target=chrome110 --charset=ascii --legal-comments=eof --outfile=../../assets/three/viewer.js"
+  },
+  "dependencies": {
+    "three": "0.170.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.24.0"
+  }
+}

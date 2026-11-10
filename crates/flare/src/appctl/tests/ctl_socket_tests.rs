@@ -111,6 +111,7 @@ fn serve(f: &Fx, tab: &str, apps_root: &Path) -> (CtlServer, String) {
         AppsCfg::new(
             apps_root.to_path_buf(),
             Arc::new(flare_term::path_open::resolve_html_file),
+            Arc::new(|_, _, _| None),
             Arc::new(|| false),
             MERMAID,
         ),

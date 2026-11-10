@@ -325,7 +325,8 @@ pub trait WebBackend {
     fn post_to_view(&mut self, slot: &Slot, json: &str);
     /// The e2e only: sets the browser's own zoom of the tab's page (what Ctrl+wheel in the panel does).
     fn set_zoom(&mut self, tab: &str, factor: f64);
-    /// The e2e only: runs a script in the page; answered by `WebEvent::Script`.
+    /// Runs a script in the page; answered by `WebEvent::Script`. Flare's own scripts only, never text from a caller:
+    /// the e2e, a plugin's approved fill, and reading the selection for "Ask agent".
     fn run_script(&mut self, tab: &str, id: u64, js: &str);
     /// The e2e only: the controller's own numbers.
     fn probe(&self, tab: &str) -> Option<ControllerProbe> {
