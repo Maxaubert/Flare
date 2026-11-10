@@ -10,31 +10,33 @@ Scope: the plain browser panel only. Mini-apps and plugin pages keep opening not
 
 ## 1. Real pop-ups
 
-A page's pop-up opens as a real small window, so the bank page keeps its link to the shop page (`window.opener`), its
-window name and its form data.
+A page's pop-up opens as a real second browser view, so the bank page keeps its link to the shop page
+(`window.opener`), its window name and its form data.
 
-**When a request opens a window.** Only after a click or key by the person (WebView2's `IsUserInitiated`), as Chrome's
+**When a request opens a pop-up.** Only after a click or key by the person (WebView2's `IsUserInitiated`), as Chrome's
 blocker does. And only when the request looks like a pop-up: it gives a size or position, names a window, or opens
 `about:blank` for the page to write into. A plain link with `target=_blank` still opens in the panel, as today.
 
 | Case | Result |
 |---|---|
 | Plain `target=_blank` link | Opens in the panel, as today |
-| `window.open(url, name, "width=500,height=600")` after a click | Real pop-up window |
-| A form posting into a named window | Real pop-up, with the POST intact |
+| `window.open(url, name, "width=500,height=600")` after a click | Pop-up in the panel |
+| A form posting into a named window | Pop-up in the panel, with the POST intact |
 | A pop-up the page opens with no click by the person | Refused, with a "Pop-up blocked" note |
 | More than 2 pop-ups for a tab, or 4 in total | Refused |
 
 Known gap: WebView2 doesn't say whether a request is a form post. A form posting to an unnamed `_blank` still opens in
-the panel as a plain page. If 2FA still fails, every pop-up after a click opens as a window instead.
+the panel as a plain page. If 2FA still fails, every new-window request after a click opens as a pop-up instead.
 
-**The window.**
-- It belongs to Flare: it stays above Flare, minimises with it and has no taskbar entry.
-- It is centred over the panel. The page's size is used, clamped to the screen, with a minimum of 360 x 300. The page's
-  position is ignored, so a page can't place a window to look like part of Flare.
-- The title bar shows the site and "(Flare pop-up)", never the page's own title. It follows Flare's light or dark theme.
-- It closes when the page calls `window.close()`, when you press its X, when the panel or tab closes, and when Flare quits.
-  It hides with its panel.
+**Where it shows (owner, 2026-11-10: "in the side panel as part of Flare ... instead of a free window").** The pop-up
+shows inside the side panel, not as a separate window:
+- It covers the page in the panel. The page that opened it keeps running behind it, hidden, so the link back still works.
+- A strip at the top, in Flare's own look, says "Pop-up from bank.example" (the site, never the page's title) with a
+  Close button.
+- The page's requested size and position are ignored: the pop-up fills the panel.
+- It closes when the page calls `window.close()`, when you press Close, when the panel or tab closes, and when Flare quits.
+  Then the page that opened it shows again.
+- A second pop-up from the pop-up stacks on top, with the same strip.
 
 **What carries over.** The panel's profile, saved passwords and autofill, the permission denial, and the page-address
 rules. Downloads from a pop-up are cancelled in this version.

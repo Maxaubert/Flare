@@ -13,8 +13,10 @@ can use it. Each: worktree, tests first for the pure parts, gate, independent re
 
 ## 2. Pop-ups (`feat/web-popups`)
 1. `flare-surfaces/web.rs`: pure `popup_plan` (in place, window, refuse) with limits; tests.
-2. `flare-web/host.rs`: deferral, owned window, controller on the same environment, `SetNewWindow`, `configure_popup`,
-   close paths, size, DPI and theme, hide with the panel; every path completes the deferral.
+2. `flare-web/host.rs`: deferral, a second controller in the main window at the panel's bounds on the same environment,
+   `SetNewWindow`, `configure_popup`, the opener hidden but alive, a stack per tab, close paths, bounds follow the panel;
+   every path completes the deferral.
+3. `ui/panel.slint`: the "Pop-up from <site>" strip with Close, in Flare's look; `web_ctl.rs` reserves its height.
 3. `WebEvent::Popups`; `web_ctl.rs` state; agent input tools pause; `browser_state` line.
 4. e2e: a trusted click opens exactly one window that closes on `window.close()`; a named form post arrives as a POST.
    Hidden or off-screen only. Rule 189, `docs/e2e.md`, `docs/features.md`, `docs/surfaces/README.md` parity note.
