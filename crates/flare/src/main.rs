@@ -38,6 +38,7 @@ mod menus_ui;
 mod mods_ctl;
 mod openers;
 mod panel_ctl;
+mod panel_sel;
 mod picker_ctl;
 mod plugin_ask;
 mod plugin_bar;

@@ -142,6 +142,16 @@ impl<C: ComponentHandle> Harness<C> {
         });
     }
 
+    /// A turn of the wheel over (`x`, `y`): a negative `dy` scrolls the content up (toward the end).
+    pub fn wheel(&self, x: f32, y: f32, dx: f32, dy: f32) {
+        self.move_to(x, y);
+        self.win.dispatch_event(WindowEvent::PointerScrolled {
+            position: Self::at(x, y),
+            delta_x: dx,
+            delta_y: dy,
+        });
+    }
+
     /// The pointer leaves the window (winit's `CursorLeft`).
     pub fn leave(&self) {
         self.win.dispatch_event(WindowEvent::PointerExited);
