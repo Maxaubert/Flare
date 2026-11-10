@@ -155,6 +155,22 @@ fn a_plain_run_never_picks_the_opt_in_tour_and_a_filter_that_names_it_does() {
         "another filter does not pull the tour in"
     );
 }
+
+#[test]
+fn a_plain_run_never_picks_the_quit_stress_and_naming_it_runs_it_alone() {
+    assert!(pick(&[]).iter().all(|s| s.name != "quitStress"));
+    let named: Vec<&str> = pick(&["quitStress".to_string()])
+        .iter()
+        .map(|s| s.name)
+        .collect();
+    assert_eq!(named, vec!["quitStress"]);
+    assert!(
+        pick(&["quitManyShells".to_string()])
+            .iter()
+            .all(|s| s.name != "quitStress"),
+        "the gate's quit scenario does not pull the stress in"
+    );
+}
 #[test]
 fn the_table_lists_every_scenario_it_ran() {
     let rows = vec![

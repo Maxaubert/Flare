@@ -66,7 +66,7 @@ const VIDEO: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>V
 <script>var v=document.getElementById('v');v.src=new URLSearchParams(location.search).get('clip')||'clip.webm';setInterval(function(){var q=v.getVideoPlaybackQuality();document.title=JSON.stringify({t:v.currentTime,paused:v.paused,frames:q.totalVideoFrames,dropped:q.droppedVideoFrames,rs:v.readyState});},100);</script></body></html>"#;
 
 /// A folder of pages inside the world, served as `https://flare-test.local/`.
-fn web_root(ctx: &mut Ctx) -> Result<PathBuf, String> {
+pub(super) fn web_root(ctx: &mut Ctx) -> Result<PathBuf, String> {
     let root = ctx.ensure_world().root.join("web");
     fs::create_dir_all(&root).map_err(|e| format!("make the web folder: {e}"))?;
     for (name, text) in [
