@@ -18,6 +18,7 @@ pub mod audio;
 pub mod devpreview;
 pub mod kind;
 pub mod layout;
+pub mod mdview;
 pub mod model;
 pub mod modview;
 pub mod net;

@@ -1004,6 +1004,7 @@ fn walls(rep: &mut Report, data: &Path) -> Result<(), String> {
         folder: app_dir.clone(),
         allow_network: false,
         module: None,
+        source: None,
     };
     let l0 = srv.requests().len();
     let t0 = obs.lines("tcp").len();
@@ -1116,6 +1117,7 @@ fn walls(rep: &mut Report, data: &Path) -> Result<(), String> {
                 folder: dir.clone(),
                 allow_network: false,
                 module: None,
+                source: None,
             },
             BOUNDS,
             true,
@@ -1178,6 +1180,7 @@ fn walls(rep: &mut Report, data: &Path) -> Result<(), String> {
         folder: net_dir,
         allow_network: true,
         module: None,
+        source: None,
     };
     let from = h.mark();
     h.host.open_app("net", net, BOUNDS, true);
@@ -1234,6 +1237,7 @@ fn walls(rep: &mut Report, data: &Path) -> Result<(), String> {
                         folder: dir.clone(),
                         allow_network: true,
                         module: None,
+                        source: None,
                     },
                     BOUNDS,
                     true,
@@ -1409,6 +1413,7 @@ fn walls(rep: &mut Report, data: &Path) -> Result<(), String> {
             folder: data.to_path_buf(),
             allow_network: false,
             module: None,
+            source: None,
         },
         BOUNDS,
         true,
@@ -1530,6 +1535,7 @@ fn quiet(rep: &mut Report, data: &Path) -> Result<(), String> {
             folder: dir,
             allow_network: false,
             module: None,
+            source: None,
         },
         BOUNDS,
         true,
