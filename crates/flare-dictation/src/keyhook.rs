@@ -1283,6 +1283,12 @@ mod tests {
             rx.recv_timeout(Duration::from_millis(700)).is_err(),
             "Failed must not be said a second time"
         );
+        // The thread drops its sender (which ends the wait above at once) a moment before it counts as finished:
+        // the check is that it ends, so it is given the time to.
+        let t = std::time::Instant::now();
+        while hook.alive() && t.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(5)); // sync-ok: test waits for the hook thread to end
+        }
         assert!(!hook.alive(), "the thread ended");
         assert!(take_lock(dir.path()).is_ok(), "the lock was let go");
         hook.stop();

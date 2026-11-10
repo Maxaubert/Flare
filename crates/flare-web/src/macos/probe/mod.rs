@@ -388,12 +388,25 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
         .is_some();
     let from_b = h.mark();
     h.host.go(tab, Nav::Back);
+    // Each move is let finish (its load done, the history it leaves reported) before the next: a Forward sent
+    // while Back's load is still under way is not a move forward (on the CI runner it reloaded the page Back was
+    // loading).
     let back = h
         .until(
             from_b,
             10_000,
             |e| matches!(e, WebEvent::Url { url, .. } if url.ends_with("/main")),
         )
+        .is_some()
+        && h.until(from_b, 10_000, |e| {
+            matches!(
+                e,
+                WebEvent::History {
+                    can_forward: true,
+                    ..
+                }
+            )
+        })
         .is_some();
     let from_f = h.mark();
     h.host.go(tab, Nav::Forward);
@@ -402,6 +415,12 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
             from_f,
             10_000,
             |e| matches!(e, WebEvent::Url { url, .. } if url.ends_with("/page2")),
+        )
+        .is_some()
+        && h.until(
+            from_f,
+            10_000,
+            |e| matches!(e, WebEvent::Loaded { url, ok: true, .. } if url.ends_with("/page2")),
         )
         .is_some();
     let from_r = h.mark();
