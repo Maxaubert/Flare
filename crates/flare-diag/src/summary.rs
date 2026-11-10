@@ -189,15 +189,16 @@ pub fn kind_ok(kind: &str) -> bool {
         && b.iter().all(|c| c.is_ascii_lowercase() || *c == b'-')
 }
 
-/// Whether the sink takes a line of this kind. `frame-task` is the high-rate line, kept for verbose only.
+/// Whether the sink takes a line of this kind. `frame-task` is the high-rate line, and `web-nav` the chain of sites
+/// a page went through: both are kept for verbose only. The other web kinds are taken at every level.
 pub fn sink_allows(kind: &str, verbose: bool) -> bool {
     if !kind_ok(kind) {
         return false;
     }
-    if kind == "frame-task" {
+    if kind == "frame-task" || kind == "web-nav" {
         return verbose;
     }
-    if SINK_KINDS.contains(&kind) {
+    if SINK_KINDS.contains(&kind) || crate::web_diag::WEB_KINDS.contains(&kind) {
         return true;
     }
     kind.ends_with("-slow") && !MAIN_ONLY_SLOW.contains(&kind)
@@ -393,6 +394,25 @@ mod tests {
     fn keeps_the_high_rate_lines_for_verbose_only() {
         assert!(!sink_allows("frame-task", false));
         assert!(sink_allows("frame-task", true));
+        assert!(!sink_allows("web-nav", false));
+        assert!(sink_allows("web-nav", true));
+    }
+
+    #[test]
+    fn takes_the_web_kinds_at_the_quiet_level_and_no_other_web_kind() {
+        for k in [
+            "web-refused",
+            "web-popup",
+            "web-close-ignored",
+            "web-load-failed",
+            "web-process",
+            "web-cert",
+            "web-permission",
+        ] {
+            assert!(sink_allows(k, false), "{k}");
+        }
+        assert!(!sink_allows("web-anything", false));
+        assert!(!sink_allows("web-anything", true));
     }
 
     #[test]

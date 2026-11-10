@@ -2192,3 +2192,35 @@ the panel's header switches between three views; it is Flare's own chrome, drawn
 - **Not in this version.** Links that leave the page and pictures (each needs its own safety rules: opening an address from an untrusted file,
   reading local image files), colouring for other code files, a `view` argument for agent tools. The Code view selects like any text file
   (2026-11-10, "Select text in files" above).
+
+## Browser problems in the log, 2026-11-10
+
+The diagnostics log now says what went wrong in the browser panel, so a failed 2FA hand-off (a shop sending you to your bank) can be
+read afterwards. Spec: `docs/superpowers/specs/2026-11-10-web-popups-design.md`, section 3.
+
+| Kind | When | A problem in `cargo diag` |
+|---|---|---|
+| `web-refused` | A navigation (`why`: `scheme`, `not-its-page`, `not-its-host`), a mini-app's or plugin's frame (`why: frame`) or app link (`why: app-link`), or a pop-up (`why: popup`) was refused | no |
+| `web-popup` | A pop-up went to the panel (`to: panel`), and whether the person's click opened it (`user`) | no |
+| `web-close-ignored` | The page called `window.close()`, which does nothing here | no |
+| `web-load-failed` | A page failed to load, with the error's name (`cert-expired`, `name-not-resolved` and so on) | yes |
+| `web-process` | A browser process failed: which one, and the reason and exit code when the Runtime says them | yes |
+| `web-cert` | A certificate error, logged only: the browser shows its own error page as before | yes |
+| `web-permission` | A permission the page asked for was denied (`camera`, `location` and so on) | no |
+| `web-nav` | The chain of sites a page went through. Verbose only | no |
+
+- **Site only (rules 110, 247).** Each line has the tab (`id`), the view (`web`, `app` for a mini-app, `mod` for a plugin's page), the
+  `site` and the site of the page it came `from`. A site is the host in lower case, never the address: no port, login, path, query or
+  fragment (`flare_surfaces::web::site_of`; an address with no host is its scheme, anything else `odd` or `unparsed`). The sites are made
+  in `flare-web` (`WebNote::new`), so an address never leaves it for the log.
+- **Rate-limited (rule 248).** One line per kind, site and word per 10 s, the copies counted as `repeats` (the events a line stands for
+  besides itself); at most 10 lines per kind per 10 s, and what is held waits for its kind's next 10 s. A process failure and a certificate
+  error always write their first line. `web-nav` steps are never folded, so a hop back (shop, bank, shop) stays in order.
+- **Nothing changes in the browser.** The certificate handler reads the error and the address and never sets an action. A Runtime too old
+  for the certificate event or the process reason simply logs less.
+- **Reading it.** `cargo diag` lists the failed loads, process failures and certificate errors among the problems; `cargo diag -- --web`
+  shows every web line, and `--web --tab <id>` one tab's.
+- **Tests.** `web::tests` (`the_logs_site_is_the_host_alone_and_never_the_address`, the fixed words), `backend::tests`
+  (`a_note_keeps_the_sites_and_never_the_addresses`), `web_diag::tests` (the gate), `reader::tests`
+  (`the_web_panels_failures_are_problems_and_its_steps_show_under_web`), `web_ctl::web_line_tests` and the text-key scan in `neutral.rs`.
+- **Not covered.** A real WebView2 raising these events: no e2e scenario yet.
