@@ -2152,6 +2152,8 @@ the panel's header switches between three views; it is Flare's own chrome, drawn
   writer) and escapes all text: raw HTML shows as text, a picture shows its alt text, and a link has no address (its target is the tooltip) unless it
   jumps to a heading or footnote inside the page. No script; the policy `default-src 'none'; style-src 'unsafe-inline'; img-src data:` comes first.
   The page is a mini-app of its own in the sealed browser, with no network. Depth and size are capped and the render runs on a worker.
+  Headings of one name are numbered with a counter per name (as GitHub's slugger does), so a file of millions of empty `#` lines names its
+  anchors in linear time, and naming them stops too when the panel moves on.
 - **Look.** The page follows the panel: light or dark, the panel's own ground and ink, Segoe UI for text and Cascadia Mono for code, at a width
   that reads well in a narrow panel. Narrow panels show the control as "Doc", "Md" and "Code".
 - **Fallback (rule 240).** If rendering fails or the WebView2 runtime is missing, the file shows in Code. Picking a view tries again.

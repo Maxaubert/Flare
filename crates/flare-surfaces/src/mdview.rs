@@ -152,23 +152,34 @@ fn slug(text: &str) -> String {
     s
 }
 
-/// `base`, or `base-1`, `base-2` and so on: the first that is not taken yet.
-fn unique(base: String, used: &mut HashSet<String>) -> String {
-    let base = if base.is_empty() {
-        "section".to_string()
-    } else {
-        base
-    };
-    if used.insert(base.clone()) {
-        return base;
-    }
-    let mut n = 1u64;
-    loop {
-        let c = format!("{base}-{n}");
-        if used.insert(c.clone()) {
-            return c;
+/// The anchors named so far, and for each base the next number to try after it (as GitHub's slugger keeps it), so a
+/// file of a million headings of one name costs a million steps, not a million squared.
+#[derive(Default)]
+struct Names {
+    used: HashSet<String>,
+    next: HashMap<String, u64>,
+}
+
+impl Names {
+    /// `base`, or `base-1`, `base-2` and so on: the first that is not taken yet. A number is tried once per base, and
+    /// `base-n` has only one base, so every try that fails is a name taken earlier: the work grows with the names.
+    fn unique(&mut self, base: String) -> String {
+        let base = if base.is_empty() {
+            "section".to_string()
+        } else {
+            base
+        };
+        if self.used.insert(base.clone()) {
+            return base;
         }
-        n += 1;
+        let n = self.next.entry(base.clone()).or_insert(1);
+        loop {
+            let c = format!("{base}-{n}");
+            *n += 1;
+            if self.used.insert(c.clone()) {
+                return c;
+            }
+        }
     }
 }
 
@@ -181,7 +192,7 @@ struct Anchors {
 }
 
 fn anchors(src: &str, stale: &dyn Fn() -> bool) -> Option<Anchors> {
-    let mut used = HashSet::new();
+    let mut names = Names::default();
     let mut notes = HashMap::new();
     let mut texts = Vec::new();
     let mut cur: Option<String> = None;
@@ -200,20 +211,23 @@ fn anchors(src: &str, stale: &dyn Fn() -> bool) -> Option<Anchors> {
                 }
             }
             Event::Start(Tag::FootnoteDefinition(label)) if !notes.contains_key(label.as_ref()) => {
-                let id = unique(format!("fn-{}", slug(&label)), &mut used);
+                let id = names.unique(format!("fn-{}", slug(&label)));
                 notes.insert(label.to_string(), id);
             }
             _ => {}
         }
     }
-    let headings: Vec<String> = texts
-        .into_iter()
-        .map(|t| unique(slug(&t), &mut used))
-        .collect();
+    let mut headings = Vec::with_capacity(texts.len());
+    for (i, t) in texts.into_iter().enumerate() {
+        if i % STALE_EVERY == 0 && stale() {
+            return None;
+        }
+        headings.push(names.unique(slug(&t)));
+    }
     Some(Anchors {
         headings,
         notes,
-        ids: used,
+        ids: names.used,
     })
 }
 
@@ -856,6 +870,73 @@ mod tests {
             b.contains("<a class=\"away\" title=\"#nowhere\">gone</a>"),
             "{b}"
         );
+    }
+
+    #[test]
+    fn headings_of_one_name_number_in_order_around_names_already_taken() {
+        let b = compiled("## a-1\n\n## a\n\n## a\n\n## a\n\n## a-2\n\n#\n\n#\n");
+        let b = body(&b);
+        for want in [
+            "<h2 id=\"a-1\">a-1</h2>",
+            "<h2 id=\"a\">a</h2>",
+            "<h2 id=\"a-2\">a</h2>",
+            "<h2 id=\"a-3\">a</h2>",
+            "<h2 id=\"a-2-1\">a-2</h2>",
+            "<h1 id=\"section\"></h1>",
+            "<h1 id=\"section-1\"></h1>",
+        ] {
+            assert!(b.contains(want), "{want} in {b}");
+        }
+    }
+
+    #[test]
+    fn many_headings_of_one_name_get_their_anchors_in_a_time_that_grows_with_the_file() {
+        // Each name used to be found by trying base-1, base-2 and so on from 1: a file of n empty headings took n
+        // squared steps, and a 4 MB file of `#` lines held its worker for good.
+        let src = "#\n".repeat(60_000);
+        let started = std::time::Instant::now();
+        let a = anchors(&src, &never).unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(a.headings.len(), 60_000);
+        assert_eq!(a.headings[0], "section");
+        assert_eq!(a.headings[59_999], "section-59999");
+        // Footnote labels that differ only in punctuation share the slug `fn-a`.
+        let label = |i: u32| -> String {
+            (0..16)
+                .map(|b| if i >> b & 1 == 1 { '!' } else { '?' })
+                .collect()
+        };
+        let notes: String = (0..20_000)
+            .map(|i| format!("[^a{}]: x\n\n", label(i)))
+            .collect();
+        let started = std::time::Instant::now();
+        let a = anchors(&notes, &never).unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(a.notes.len(), 20_000);
+        assert!(a.ids.contains("fn-a") && a.ids.contains("fn-a-19999"));
+    }
+
+    #[test]
+    fn naming_the_headings_stops_when_the_panel_moved_on() {
+        let src = "#\n".repeat(3 * STALE_EVERY);
+        // Every look the parse makes says "go on"; the first look after it says "stop".
+        let parse_looks = Parser::new_ext(&src, options())
+            .count()
+            .div_ceil(STALE_EVERY);
+        let looks = std::cell::Cell::new(0);
+        let stale = || {
+            looks.set(looks.get() + 1);
+            looks.get() > parse_looks
+        };
+        assert!(anchors(&src, &stale).is_none());
     }
 
     #[test]
