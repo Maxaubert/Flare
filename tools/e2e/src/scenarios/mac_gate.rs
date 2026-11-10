@@ -56,6 +56,10 @@ pub const GATED: &[(&str, &str)] = &[
         "Windows only: the frameless window's WM_NCHITTEST codes through its window procedure; the Mac window is titled and AppKit owns its edges (flare-win macos resize_edges holds the Mac side)",
     ),
     (
+        "quitStress",
+        "Windows only: an opt-in stress of Windows' quit path (#63) whose busy tabs are cmd.exe loops and ping -t; the Mac quit is AppKit's",
+    ),
+    (
         "visualTour",
         "Windows only: an opt-in tour that captures the reference terminal beside Flare with PrintWindow",
     ),
