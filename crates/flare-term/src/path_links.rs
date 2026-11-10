@@ -237,7 +237,7 @@ impl PathLinks {
         now_ms: u64,
         ask: &mut Vec<(String, String)>,
     ) -> Found {
-        match self.known(cwd, path, now_ms) {
+        let cwd_open = match self.known(cwd, path, now_ms) {
             Known::Hit(hit) => {
                 return Found::Hit(PathFound {
                     hit,
@@ -246,14 +246,17 @@ impl PathLinks {
             }
             Known::Unknown => {
                 ask.push((cwd.to_string(), path.to_string()));
-                return Found::Unknown;
+                true
             }
-            Known::No => {}
-        }
+            Known::No => false,
+        };
         if !is_relative(path) {
-            return Found::No;
+            return if cwd_open { Found::Unknown } else { Found::No };
         }
-        let mut unknown = false;
+        // An open question about `cwd` does not hide what a shown folder already answered: its "no" runs out while
+        // the line stays lit, and nothing asks again. Only the questions wait for `cwd`, so a path that is there
+        // never costs one per shown folder.
+        let mut unknown = cwd_open;
         for base in self.anchor_bases(owner, cwd, path) {
             match self.known(&base, path, now_ms) {
                 Known::Hit(b) => {
@@ -263,7 +266,9 @@ impl PathLinks {
                 }
                 Known::Unknown => {
                     unknown = true;
-                    ask.push((base, path.to_string()));
+                    if !cwd_open {
+                        ask.push((base, path.to_string()));
+                    }
                 }
                 Known::No => {}
             }
@@ -865,6 +870,79 @@ mod tests {
     }
 
     #[cfg(windows)]
+    /// `rel` looked up until it is known from `REPO` and from the shown folders. Leaves `p.now` at the last answer,
+    /// which came one pump after the answer from `REPO`.
+    fn settle(p: &mut Pump, rel: &str) {
+        p.lr(rel, REPO, "A");
+        p.pump();
+        p.lr(rel, REPO, "A");
+        p.pump();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_path_found_from_a_shown_folder_stays_found_after_the_no_for_the_tabs_folder_runs_out() {
+        let mut p = misc_pump();
+        teach_full_path(&mut p);
+        settle(&mut p, "see notes.md");
+        let later = p.now + NO_TTL_MS + 1;
+        match p.pl.find_path("A", REPO, "notes.md", later) {
+            Found::Hit(f) => assert_eq!(f.base, "C:\\c\\zz-Misc\\dto\\b\\out"),
+            other => panic!("{other:?}"),
+        }
+        // A fresh scan still links it, and asks the tab's own folder again: a file made there since would win.
+        p.now = later;
+        let asked_before = p.asks.len();
+        assert_eq!(p.lr("see notes.md", REPO, "A").len(), 1);
+        p.pump();
+        let bases: Vec<&str> = p.asks[asked_before..]
+            .iter()
+            .map(|a| a.base.as_str())
+            .collect();
+        assert_eq!(bases, vec![REPO]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_shown_folders_are_asked_only_after_the_tabs_own_folder_says_no() {
+        let mut p = misc_pump();
+        teach_full_path(&mut p);
+        let asked_before = p.asks.len();
+        p.lr("see notes.md", REPO, "A");
+        p.pump();
+        let bases: Vec<&str> = p.asks[asked_before..]
+            .iter()
+            .map(|a| a.base.as_str())
+            .collect();
+        assert_eq!(bases, vec![REPO]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_no_that_ran_out_is_unknown_when_no_shown_folder_has_the_path() {
+        let mut p = misc_pump();
+        teach_full_path(&mut p);
+        settle(&mut p, "see gone.md");
+        // The "no" from `REPO` is one pump older than the ones from the shown folders.
+        let later = p.now + NO_TTL_MS - 49;
+        assert_eq!(p.pl.find_path("A", REPO, "gone.md", later), Found::Unknown);
+        assert_eq!(p.pl.find_path("A", REPO, "gone.md", p.now), Found::No);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_full_path_has_no_shown_folders_to_fall_back_on() {
+        let mut p = misc_pump();
+        teach_full_path(&mut p);
+        let gone = "C:\\c\\zz-Misc\\gone.md";
+        p.lr(gone, REPO, "A");
+        p.pump();
+        assert_eq!(p.pl.find_path("A", REPO, gone, p.now), Found::No);
+        let later = p.now + NO_TTL_MS + 1;
+        assert_eq!(p.pl.find_path("A", REPO, gone, later), Found::Unknown);
+    }
+
+    #[cfg(windows)]
     #[test]
     fn is_cwd_is_only_the_folder_itself() {
         let cwd = "C:\\c\\Github-loftspace\\Stutter";
@@ -1109,6 +1187,75 @@ mod tests {
             p.pump();
             p.lr(full, REPO, "A");
             p.pump();
+        }
+
+        /// `rel` looked up until it is known from `REPO` and from the shown folders. Leaves `p.now` at the last answer,
+        /// which came one pump after the answer from `REPO`.
+        fn settle(p: &mut Pump, rel: &str) {
+            p.lr(rel, REPO, "A");
+            p.pump();
+            p.lr(rel, REPO, "A");
+            p.pump();
+        }
+
+        #[test]
+        fn a_path_found_from_a_shown_folder_stays_found_after_the_no_for_the_tabs_folder_runs_out()
+        {
+            let mut p = misc_pump();
+            teach_full_path(&mut p);
+            settle(&mut p, "see notes.md");
+            let later = p.now + NO_TTL_MS + 1;
+            match p.pl.find_path("A", REPO, "notes.md", later) {
+                Found::Hit(f) => assert_eq!(f.base, "/c/zz-Misc/dto/b/out"),
+                other => panic!("{other:?}"),
+            }
+            // A fresh scan still links it, and asks the tab's own folder again: a file made there since would win.
+            p.now = later;
+            let asked_before = p.asks.len();
+            assert_eq!(p.lr("see notes.md", REPO, "A").len(), 1);
+            p.pump();
+            let bases: Vec<&str> = p.asks[asked_before..]
+                .iter()
+                .map(|a| a.base.as_str())
+                .collect();
+            assert_eq!(bases, vec![REPO]);
+        }
+
+        #[test]
+        fn the_shown_folders_are_asked_only_after_the_tabs_own_folder_says_no() {
+            let mut p = misc_pump();
+            teach_full_path(&mut p);
+            let asked_before = p.asks.len();
+            p.lr("see notes.md", REPO, "A");
+            p.pump();
+            let bases: Vec<&str> = p.asks[asked_before..]
+                .iter()
+                .map(|a| a.base.as_str())
+                .collect();
+            assert_eq!(bases, vec![REPO]);
+        }
+
+        #[test]
+        fn a_no_that_ran_out_is_unknown_when_no_shown_folder_has_the_path() {
+            let mut p = misc_pump();
+            teach_full_path(&mut p);
+            settle(&mut p, "see gone.md");
+            // The "no" from `REPO` is one pump older than the ones from the shown folders.
+            let later = p.now + NO_TTL_MS - 49;
+            assert_eq!(p.pl.find_path("A", REPO, "gone.md", later), Found::Unknown);
+            assert_eq!(p.pl.find_path("A", REPO, "gone.md", p.now), Found::No);
+        }
+
+        #[test]
+        fn a_full_path_has_no_shown_folders_to_fall_back_on() {
+            let mut p = misc_pump();
+            teach_full_path(&mut p);
+            let gone = "/c/zz-Misc/gone.md";
+            p.lr(gone, REPO, "A");
+            p.pump();
+            assert_eq!(p.pl.find_path("A", REPO, gone, p.now), Found::No);
+            let later = p.now + NO_TTL_MS + 1;
+            assert_eq!(p.pl.find_path("A", REPO, gone, later), Found::Unknown);
         }
 
         #[test]

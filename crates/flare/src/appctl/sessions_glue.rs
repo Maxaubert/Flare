@@ -14,9 +14,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use flare_agent::question::looks_like_question;
 use flare_convo::follow::Said;
 use flare_ctl::{CtlError, Grant, Permission, code};
 use flare_mods::bridge;
+use flare_shells::paste::{path_shell_of, quote_path, sanitize_paste};
 use flare_surfaces::slot::Slot;
 use flare_term::handle::PluginInput;
 use serde_json::{Value, json};
@@ -25,7 +27,134 @@ use super::{AppCtl, UiMsg};
 use crate::mods_ctl::{ModsMsg, ModsMsgBox};
 use crate::plugin_sessions::{ENTER_AFTER_MS, Want, entry_json};
 
+/// How long the "Ask agent" note stays up.
+const ASK_NOTE_MS: u64 = 4_000;
+
 impl AppCtl {
+    /// Why this tab cannot be asked now, if it cannot: no live agent, or a question box a paste could answer.
+    fn ask_refusal(&self, tab: &str) -> Option<&'static str> {
+        use crate::ask_agent::{NOTE_NO_AGENT, NOTE_QUESTION_UP};
+        let Some(h) = self
+            .handle_of(tab)
+            .filter(|h| self.is_shell_tab(tab) && h.shell_id().is_some())
+        else {
+            return Some(NOTE_NO_AGENT);
+        };
+        if !self.hub.agent_here(tab) {
+            return Some(NOTE_NO_AGENT);
+        }
+        if self.hub.question_up(tab) || looks_like_question(&h.question_rows()) {
+            return Some(NOTE_QUESTION_UP);
+        }
+        None
+    }
+
+    /// Says why nothing was sent, over the terminal, for a few seconds.
+    fn ask_note(&self, why: &str) {
+        let Some(app) = self.app() else { return };
+        app.set_ask_note(why.into());
+        let weak = self.me.clone();
+        crate::timer_registry::set("ask.note", ASK_NOTE_MS, false, move || {
+            if let Some(rc) = weak.upgrade()
+                && let Ok(c) = rc.try_borrow()
+                && let Some(app) = c.app()
+            {
+                app.set_ask_note("".into());
+            }
+        });
+    }
+
+    /// Types `text` at the tab's agent's prompt and gives the terminal the keys. It is never submitted: no Enter
+    /// follows, and where the program did not ask for bracketed paste no CR is written at all. Checks the gates
+    /// again, for an answer that arrives after the click.
+    fn deliver_ask(&mut self, tab: &str, text: &str) -> bool {
+        if let Some(why) = self.ask_refusal(tab) {
+            self.ask_note(why);
+            return false;
+        }
+        let Some(h) = self.handle_of(tab) else {
+            return false;
+        };
+        h.paste_unsent(text);
+        self.focus_terminal();
+        true
+    }
+
+    /// The panel header's "Ask agent": what is sent depends on what the panel shows.
+    pub(super) fn panel_ask_agent(&mut self) {
+        let Some(tab) = self.front_id() else { return };
+        if let Some(why) = self.ask_refusal(&tab) {
+            self.ask_note(why);
+            return;
+        }
+        let Some(snap) = self.panels.snap(&tab).filter(|s| s.open) else {
+            return;
+        };
+        if let Some(path) = &snap.path {
+            self.ask_about_path(&tab, path);
+        } else if snap.kind == "web" || snap.kind == "app" || snap.kind.starts_with("mod:") {
+            if !self.web.ask_selection(&tab) {
+                self.ask_note(crate::ask_agent::NOTE_PAGE_FAILED);
+            }
+        } else {
+            self.ask_note(crate::ask_agent::NOTE_NO_FILE);
+        }
+    }
+
+    /// A text or image panel has no selection: its file's path is sent, quoted for the tab's shell.
+    fn ask_about_path(&mut self, tab: &str, path: &str) {
+        let shell = self.handle_of(tab).and_then(|h| h.shell_id());
+        let quoted = quote_path(path, Some(path_shell_of(shell.as_deref())))
+            .filter(|q| sanitize_paste(q) == *q);
+        match quoted {
+            Some(q) => {
+                self.deliver_ask(tab, &q);
+            }
+            None => self.ask_note(crate::ask_agent::NOTE_PATH_REFUSED),
+        }
+    }
+
+    /// The page answered with its selection. Dropped when the person has since moved to another tab: what they
+    /// asked about is no longer in front of them, and nothing may be typed where they are not looking. With nothing
+    /// selected, a plain web page (`page`) is sent as a reference for the agent to look at; a mini-app or plugin page
+    /// has none and keeps the note.
+    pub(super) fn ask_selection_done(
+        &mut self,
+        tab: &str,
+        label: &str,
+        page: Option<&crate::ask_agent::PageRef>,
+        result: Result<String, String>,
+    ) {
+        use crate::ask_agent::{NOTE_NO_SELECTION, NOTE_PAGE_FAILED, frame_page, frame_selection};
+        if self.front_id().as_deref() != Some(tab) {
+            return;
+        }
+        let Ok(text) = result else {
+            self.ask_note(NOTE_PAGE_FAILED);
+            return;
+        };
+        match frame_selection(label, &text).or_else(|| page.and_then(frame_page)) {
+            Some(framed) => {
+                self.deliver_ask(tab, &framed);
+            }
+            None => self.ask_note(NOTE_NO_SELECTION),
+        }
+    }
+
+    /// The terminal menu's row: the grid selection the menu was opened over goes to the tab's agent, and the
+    /// selection is let go as a copy lets it go (with it still up, the next keys would act on it).
+    pub(super) fn ask_about_grid(&mut self, tab: &str, selection: &str) {
+        let Some(framed) = crate::ask_agent::frame_selection("the terminal", selection) else {
+            self.ask_note(crate::ask_agent::NOTE_NO_SELECTION);
+            return;
+        };
+        if self.deliver_ask(tab, &framed)
+            && let Some(h) = self.handle_of(tab)
+        {
+            h.with_emu(|em| em.sel_clear());
+        }
+    }
+
     /// Whether the plugin's live grant holds `p`.
     fn plugin_holds(&self, plugin: &str, p: Permission) -> bool {
         self.mods.as_ref().is_some_and(|m| {

@@ -8,3 +8,4 @@ docs/theme-sample.txt -text
 *.sh text eol=lf
 
 assets/mermaid/mermaid.min.js -text
+assets/three/viewer.js -text

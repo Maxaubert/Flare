@@ -81,7 +81,7 @@ fn outside_flare_every_tool_says_so_and_the_handshake_still_works() {
     );
     assert_eq!(replies.len(), 3, "the notification gets no reply");
     assert_eq!(replies[0]["result"]["protocolVersion"], "2025-06-18");
-    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 21);
+    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 22);
     assert_eq!(replies[2]["result"]["isError"], true);
     let text = replies[2]["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("Flare is not running this session"), "{text}");
@@ -289,11 +289,11 @@ fn a_mods_tools_are_listed_called_and_announced_when_they_change() {
         .collect();
     assert_eq!(
         names.len(),
-        22,
+        23,
         "the built-in tools and one mod tool: {names:?}"
     );
-    assert_eq!(names[21], "mod_notes_append_note");
-    assert!(!names[..21].contains(&"mod_bad"));
+    assert_eq!(names[22], "mod_notes_append_note");
+    assert!(!names[..22].contains(&"mod_bad"));
 
     // A call goes to the mod through mods.call, and the mod's words come back.
     send(
