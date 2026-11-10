@@ -1721,6 +1721,10 @@ pub fn run_window(
             #[cfg(target_os = "macos")]
             c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(0));
         }
+        // macOS: no pad catches the mouse over the page and the pointer is not read yet, so "Draw arrow" is not
+        // offered (rule 1124); the agent's arrow still points and its look still carries it.
+        #[cfg(not(windows))]
+        c.set_draw_offered(false);
     }
     // What needs the window's handle, once it has one: the watchdog's hung-window poll, the exe's
     // own icon on the window (again on every scale-factor change) and the taskbar overlay.
@@ -1750,6 +1754,13 @@ pub fn run_window(
                             hwnd,
                         )));
                     }
+                    // The arrows over the page and the pad the person draws on (rules 254 to 256).
+                    #[cfg(windows)]
+                    c.set_agent_arrows(
+                        Box::new(flare_win::agent_cursor::ArrowWindow::new(hwnd)),
+                        Box::new(flare_win::agent_cursor::ArrowWindow::new(hwnd)),
+                        Box::new(flare_win::agent_cursor::PadWindow::new(hwnd)),
+                    );
                 }
             },
         )

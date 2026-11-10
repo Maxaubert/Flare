@@ -476,6 +476,10 @@ component WebBar inherits Rectangle {
     in property <bool> ask-compact;
     callback ask-agent();
     callback ask-tip(string, length, length, length, length);
+    // "Draw arrow" left of it (rule 256): pressed while the person draws.
+    in property <bool> draw-shown;
+    in property <bool> draw-active;
+    callback draw-arrow();
     out property <length> ask-x: ask-btn.absolute-position.x;
     out property <length> ask-y: ask-btn.absolute-position.y;
     out property <length> ask-w: ask-btn.width;
@@ -518,7 +522,7 @@ component WebBar inherits Rectangle {
     field := Rectangle {
         x: Px.snap(8px + 3 * (24px + 2px) + 4px);
         y: (parent.height - self.height) / 2;
-        width: (root.ask-shown ? ask-btn.x : close-btn.x) - self.x - Px.snap(4px);
+        width: (root.draw-shown ? draw-btn.x : root.ask-shown ? ask-btn.x : close-btn.x) - self.x - Px.snap(4px);
         height: Px.snap(24px);
         background: Theme.ground;
         border-radius: Theme.radius-sm;
@@ -593,6 +597,15 @@ component WebBar inherits Rectangle {
         tip-text: "Ask agent about the selection or this page";
         activated => { root.ask-agent(); }
         tip(t, x, y, w, h) => { root.ask-tip(t, x, y, w, h); }
+    }
+    draw-btn := WebButton {
+        x: (root.ask-shown ? ask-btn.x : close-btn.x) - Px.snap(4px) - self.width;
+        y: (parent.height - self.height) / 2;
+        visible: root.draw-shown;
+        path: Glyphs.point-arrow;
+        label: root.draw-active ? "Stop drawing the arrow" : "Draw arrow";
+        on: root.draw-active;
+        activated => { root.draw-arrow(); }
     }
     close-btn := WebButton {
         x: parent.width - self.width - Px.snap(8px);
@@ -812,6 +825,13 @@ export component PanelSlot inherits Rectangle {
     out property <length> ask-y: root.bar-only ? web-bar.ask-y : ask-btn.absolute-position.y;
     out property <length> ask-w: root.bar-only ? web-bar.ask-w : ask-btn.width;
     callback ask-agent();
+    // "Draw arrow" beside it (rule 256): a web page or a mini-app of a tab with an agent (the window says), where "Ask
+    // agent" shows.
+    in property <bool> draw-on;
+    in property <bool> draw-active;
+    callback draw-arrow();
+    property <bool> draw-shown: root.draw-on && root.ask-shown && root.kind == 3;
+    out property <bool> draw-visible: root.open && root.draw-shown;
     // The button's tooltip, placed beside it by the window: below it would be under a page's native window.
     callback ask-tip(string, length, length, length, length);
     // The view control (a markdown file, in any of its views): Compiled 0, Markdown 1, Code 2, and a pick.
@@ -826,7 +846,8 @@ export component PanelSlot inherits Rectangle {
     property <length> head-wrap: root.kind == 2 ? Px.snap(28px) : 0px;
     property <length> head-ask: root.ask-shown ? ask-btn.width + Px.snap(4px) : 0px;
     property <length> head-md: root.md-file ? md-switch.width + Px.snap(6px) : 0px;
-    property <length> head-extra: root.head-wrap + root.head-ask + root.head-md;
+    property <length> head-draw: root.draw-shown ? Px.snap(24px + 4px) : 0px;
+    property <length> head-extra: root.head-wrap + root.head-ask + root.head-draw + root.head-md;
     callback wrap-toggled();
     callback close();
     callback escape();
@@ -946,8 +967,17 @@ export component PanelSlot inherits Rectangle {
                 activated => { root.ask-agent(); }
                 tip(t, x, y, w, h) => { root.ask-tip(t, x, y, w, h); }
             }
+            head-draw-btn := WebButton {
+                x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(4px) - root.head-wrap - root.head-ask - self.width;
+                y: (parent.height - self.height) / 2;
+                visible: root.draw-shown;
+                path: Glyphs.point-arrow;
+                label: root.draw-active ? "Stop drawing the arrow" : "Draw arrow";
+                on: root.draw-active;
+                activated => { root.draw-arrow(); }
+            }
             md-switch := MdViewSwitch {
-                x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(4px) - root.head-wrap - root.head-ask - Px.snap(2px) - self.width;
+                x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(4px) - root.head-wrap - root.head-ask - root.head-draw - Px.snap(2px) - self.width;
                 y: (parent.height - self.height) / 2;
                 visible: root.md-file;
                 current: root.md-view;
@@ -977,6 +1007,9 @@ export component PanelSlot inherits Rectangle {
             ask-shown: root.ask-shown;
             ask-compact: root.ask-compact;
             ask-agent => { root.ask-agent(); }
+            draw-shown: root.draw-shown;
+            draw-active: root.draw-active;
+            draw-arrow => { root.draw-arrow(); }
             ask-tip(t, x, y, w, h) => { root.ask-tip(t, x, y, w, h); }
             loading: root.web-loading;
             can-back: root.web-can-back;

@@ -1163,3 +1163,29 @@ Spec: `docs/superpowers/specs/2026-10-28-dns-rebinding-proxy.md`.
   instead of the "no selection" note, since the panel shows a file.
 - **No pictures, no outside links, no script**, as the spec says. A footnote and a heading are the only targets an `href` may have, and their
   anchors are the ones Flare made.
+
+## Arrows over the page, 2026-11-10
+
+- **The probe (rule 256).** Can an owned layered window over the page catch the mouse without taking the keyboard from it? `pad_probe` in
+  `flare-win` (ignored; `cargo test -p flare-win --lib pad_probe -- --ignored --nocapture`) runs on a desktop of its own that is never switched
+  to, so nothing reaches the screen: an owner window, a child window in the page's place holding the focus, the pad (`PadWindow`: layered,
+  every pixel alpha 1, `WS_EX_NOACTIVATE`, `HTCLIENT`, `MA_NOACTIVATE`) over it, and the agent's arrow window over that. Result, 2026-11-10:
+  **pass.** `WindowFromPoint` over the page is the pad (and the page again once it is hidden; beside the page it is not), the arrow lets the
+  mouse through to the pad, the page keeps the focus and the owner stays active after the pad comes up, the pad answers `MA_NOACTIVATE`, and
+  a press, three moves and a release posted to it reach the pad and not the page, with the focus kept and the capture let go. So the person
+  drags, as the spec wants; the single-click fallback is not built. Limits: the page was a plain child window, not WebView2 (an owned
+  popup sits above every child window of its owner whatever it draws), and the messages were posted, not real input (a hidden desktop takes
+  none). A real drag over a real page is still to be tried by hand.
+- **One pad, one arrow window each.** The pad is drawn once per page rectangle (alpha 1 everywhere); the blue arrow that follows the drag is
+  a window of its own sized to the arrow, so a 4K page does not cost a page-sized bitmap every 16 ms.
+- **The pointer is polled, as the person's takeover is.** The pad's own messages only keep the press from the page and hold the capture;
+  the agent tick reads the buttons and the pointer, so the tests drive it with a stand-in (`WebCtl::set_pointer`).
+- **The person's arrow stays on the page while it is kept,** at the CSS point it was drawn on (it does not follow a scroll), and goes when
+  the agent's look has taken it, the page moves on or 5 minutes pass. The spec said "keep the arrow"; showing it says to the person what the
+  agent will be told.
+- **What is under the head is the nearest element a look would list** (`pointed_at` walks up from the node `DOM.getNodeForLocation` gives),
+  so an arrow on a button's label names the button. With nothing nameable it is the node's own role, and with no node "nothing Flare could
+  name". The element always gets a ref in the next look (`RefMap::ref_for`).
+- **The screenshot is drawn on in the window**, with the `image` crate on the look's PNG at its `scale`, once per look that has an arrow.
+- **Escape where it arrives** is the page's key filter while the page has the keys, and `on_key` while Flare's window has them (a click on
+  the button leaves the keys there).

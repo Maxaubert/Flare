@@ -279,6 +279,7 @@ mod tests {
             Method::BrowserPress,
             Method::BrowserScroll,
             Method::BrowserWait,
+            Method::BrowserPoint,
             Method::ConvoState,
             Method::ModsTools,
             Method::ModsCall,
