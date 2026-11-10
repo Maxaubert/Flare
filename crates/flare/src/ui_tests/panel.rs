@@ -4,7 +4,7 @@
 //! one property that says an overlay is open. No OS window, no controller: the properties are set
 //! directly, as the window's glue sets them.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use flare_surfaces::layout;
@@ -1042,4 +1042,154 @@ fn the_download_button_shows_only_for_a_missing_runtime() {
     h.advance(0);
     h.click(at.0, at.1);
     assert_eq!(hits.get(), 1);
+}
+
+// ---- "Ask agent" (#33) ----
+
+#[test]
+fn ask_agent_is_offered_over_what_can_be_sent_and_only_with_an_agent() {
+    for s in SCALES {
+        let h = window(s);
+        h.comp.set_panel_ask_on(false);
+        open_text(&h, 3);
+        assert!(!h.comp.get_panel_ask_visible(), "no agent, scale {s}");
+        h.comp.set_panel_ask_on(true);
+        h.advance(0);
+        assert!(h.comp.get_panel_ask_visible(), "a text file, scale {s}");
+        h.comp.set_panel_kind(4);
+        h.advance(0);
+        assert!(
+            !h.comp.get_panel_ask_visible(),
+            "the Changes panel, scale {s}"
+        );
+        h.comp.set_panel_kind(0);
+        h.advance(0);
+        assert!(!h.comp.get_panel_ask_visible(), "a note, scale {s}");
+        open_picture(&h, 10, 10, [0, 0, 0, 255], false);
+        assert!(h.comp.get_panel_ask_visible(), "a picture, scale {s}");
+        open_web(&h);
+        assert!(h.comp.get_panel_ask_visible(), "a page, scale {s}");
+    }
+}
+
+#[test]
+fn ask_agent_calls_back_from_the_header_and_from_the_browser_bar() {
+    for s in SCALES {
+        let h = window(s);
+        let pressed = Rc::new(Cell::new(0u32));
+        let p = pressed.clone();
+        h.comp.on_panel_ask_agent(move || p.set(p.get() + 1));
+        h.comp.set_panel_ask_on(true);
+        h.advance(0);
+        for (n, kind) in [1u32, 2].into_iter().zip(["text", "web"]) {
+            if kind == "text" {
+                open_text(&h, 3);
+            } else {
+                open_web(&h);
+            }
+            let (x, y, w) = (
+                h.comp.get_panel_ask_x(),
+                h.comp.get_panel_ask_y(),
+                h.comp.get_panel_ask_w(),
+            );
+            assert!(w > 0.0, "{kind}, scale {s}");
+            h.click(x + w / 2.0, y + 12.0);
+            assert_eq!(pressed.get(), n, "{kind}, scale {s}");
+        }
+    }
+}
+
+#[test]
+fn ask_agent_says_on_hover_what_a_click_sends_with_one_fixed_wording_per_kind() {
+    for s in SCALES {
+        let h = window(s);
+        let tips = Rc::new(RefCell::new(Vec::<String>::new()));
+        let t = tips.clone();
+        h.comp
+            .on_panel_ask_tip(move |text, _, _, _, _| t.borrow_mut().push(text.to_string()));
+        h.comp.set_panel_ask_on(true);
+        h.advance(0);
+        for (kind, want) in [
+            ("web", "Ask agent about the selection or this page"),
+            ("app", "Ask agent about the selection"),
+            ("text", "Ask agent about this file"),
+        ] {
+            match kind {
+                "text" => open_text(&h, 3),
+                _ => {
+                    open_web(&h);
+                    h.comp.set_panel_web_app(kind == "app");
+                    h.advance(0);
+                }
+            }
+            tips.borrow_mut().clear();
+            let (x, y, w) = (
+                h.comp.get_panel_ask_x(),
+                h.comp.get_panel_ask_y(),
+                h.comp.get_panel_ask_w(),
+            );
+            h.move_to(x + w / 2.0, y + 12.0);
+            assert_eq!(tips.borrow().as_slice(), [want], "{kind}, scale {s}");
+            h.move_to(1.0, 1.0);
+            assert_eq!(
+                tips.borrow().last().map(String::as_str),
+                Some(""),
+                "leaving takes it down, {kind}, scale {s}"
+            );
+        }
+    }
+}
+
+#[test]
+fn ask_agent_sits_clear_of_the_buttons_beside_it_and_narrows_with_the_panel() {
+    for s in SCALES {
+        // 1600 css px at 40%: a wide panel. 600 css px at the minimum share: the narrowest it gets.
+        for (css_w, share, compact) in [(1600u32, 0.4f32, false), (600, 0.15, true)] {
+            let h = window_at(s, css_w);
+            h.comp.set_panel_ask_on(true);
+            h.comp.set_panel_share(share);
+            open_web(&h);
+            let (ask_x, ask_w) = (h.comp.get_panel_ask_x(), h.comp.get_panel_ask_w());
+            assert!(
+                ask_x + ask_w <= h.comp.get_panel_web_close_x(),
+                "the bar, {css_w} at scale {s}"
+            );
+            assert!(
+                h.comp.get_panel_web_field_x() + h.comp.get_panel_web_field_w() <= ask_x,
+                "the address field, {css_w} at scale {s}"
+            );
+            assert!(
+                h.comp.get_panel_web_field_w() > 40.0,
+                "the address stays usable, {css_w} at scale {s}"
+            );
+            let glyph_alone = ask_w <= 26.0;
+            assert_eq!(glyph_alone, compact, "{css_w} at scale {s}: {ask_w}");
+            open_text(&h, 3);
+            let (ask_x, ask_w) = (h.comp.get_panel_ask_x(), h.comp.get_panel_ask_w());
+            assert!(
+                ask_x + ask_w <= h.comp.get_panel_wrap_button_x(),
+                "left of wrap, {css_w} at scale {s}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_ask_note_sits_over_the_terminal_never_the_panel() {
+    for s in SCALES {
+        let h = window_at(s, 1200);
+        open_text(&h, 3);
+        h.comp
+            .set_ask_note("Answer the agent's question first".into());
+        h.advance(0);
+        let (x, w) = (h.comp.get_ask_note_x(), h.comp.get_ask_note_w());
+        assert!(w > 0.0, "scale {s}");
+        assert!(
+            x + w <= h.comp.get_panel_slot_x(),
+            "clear of the panel, scale {s}: {} + {} over {}",
+            x,
+            w,
+            h.comp.get_panel_slot_x()
+        );
+    }
 }
