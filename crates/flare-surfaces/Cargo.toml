@@ -13,6 +13,7 @@ image = { workspace = true }
 log.workspace = true
 url.workspace = true
 unicode-width.workspace = true
+pulldown-cmark.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
