@@ -718,19 +718,99 @@ pub fn web_rect(
     })
 }
 
-/// The WebView2 profile folder: `<profile>\WebView2` for a profile the caller named with
-/// `--user-data-dir` (an e2e run, a second profile), else `%LOCALAPPDATA%\Flare\WebView2`. Never the
-/// user's Edge profile (S4). None when there is no usable place (no LOCALAPPDATA).
-pub fn webview_folder(
+/// The WebView2 profile folder of the web panel: always `<profile>\WebView2`, under the profile folder of the run
+/// (`--user-data-dir`, else `%APPDATA%\Flare`), so its cookies and storage (a site's login) last as long as the
+/// profile. Never the install folder, which an installer replaces whole, and never the user's Edge profile (S4).
+/// The mini-apps' and plugins' folders are its siblings (`WebView2-<kind>`).
+pub fn webview_folder(profile_dir: &Path) -> PathBuf {
+    profile_dir.join("WebView2")
+}
+
+/// Where the default run kept the web panel's profile before 2026-11-10: `%LOCALAPPDATA%\Flare\WebView2`, inside the
+/// installed copy's root, which Velopack's Setup moves aside and deletes on a reinstall (and its uninstall deletes),
+/// taking every login with it. None for a run with its own `--user-data-dir` (that one was always under its profile).
+pub fn old_webview_folder(
     user_data_dir: Option<&Path>,
     local_appdata: Option<&str>,
 ) -> Option<PathBuf> {
-    if let Some(dir) = user_data_dir {
-        return Some(dir.join("WebView2"));
+    if user_data_dir.is_some() {
+        return None;
     }
     local_appdata
         .filter(|a| !a.is_empty())
         .map(|a| PathBuf::from(a).join("Flare").join("WebView2"))
+}
+
+/// The browser folders a profile has: the web panel's, then its siblings (mini-apps and plugins).
+fn browser_folders(web: &Path) -> Vec<PathBuf> {
+    let mut v = vec![web.to_path_buf()];
+    for tail in ["mini-sealed", "app-net", "app-sealed", "plugin-net"] {
+        v.push(crate::app::sibling_folder(web, tail));
+    }
+    v
+}
+
+/// The web panel's folder this run's browsers use, with nothing moved: the old one (`old`) while it still waits to
+/// move (it is there and its new place is not), so no browser makes an empty `new` beside the old logins and leaves
+/// them behind for good; else `new`. The mini-apps' and plugins' folders follow it (its `-<kind>` siblings).
+pub fn webview_place(old: Option<&Path>, new: &Path) -> PathBuf {
+    match old {
+        Some(old) if old.is_dir() && !new.exists() => old.to_path_buf(),
+        _ => new.to_path_buf(),
+    }
+}
+
+/// Moves the old browser folders (`old` and its `-<kind>` siblings) to their place beside `new`, all or none: each
+/// is moved only when it exists and its new place does not, so nothing already there is ever replaced and a second
+/// call does nothing. When one cannot move (a browser of the run before still holds a file, another disk), the ones
+/// already moved go back, so the set stays together where `webview_place` finds it, and the next call tries again.
+/// Gives how many were moved and the first error.
+pub fn move_old_webview_folders(old: &Path, new: &Path) -> (usize, Option<String>) {
+    // sync-ok: once at start and once when the first browser is made; a rename on the same disk, not a copy
+    move_old_webview_folders_with(old, new, |from, to| std::fs::rename(from, to))
+}
+
+fn move_old_webview_folders_with(
+    old: &Path,
+    new: &Path,
+    rename: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> (usize, Option<String>) {
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for (from, to) in browser_folders(old).into_iter().zip(browser_folders(new)) {
+        if !from.is_dir() || to.exists() {
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            // sync-ok: once at start, before any browser; one folder made, nothing read
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match rename(&from, &to) {
+            Ok(()) => moved.push((from, to)),
+            Err(e) => {
+                let mut error = format!("{}: {e}", from.display());
+                let mut kept = 0;
+                for (back_to, back_from) in moved.iter().rev() {
+                    if let Err(e) = rename(back_from, back_to) {
+                        kept += 1;
+                        error.push_str(&format!("; {} did not go back: {e}", back_from.display()));
+                    }
+                }
+                return (kept, Some(error));
+            }
+        }
+    }
+    (moved.len(), None)
+}
+
+/// Tries the move again and gives the web panel's folder to use now (`webview_place`): called when the first
+/// browser is made, so folders a browser of the run before still held at start move as soon as it has let go, and
+/// until then this run keeps using the old place with its logins. None `old` (a run with its own profile): `new`.
+pub fn settle_webview_folder(old: Option<&Path>, new: &Path) -> (PathBuf, usize, Option<String>) {
+    let Some(old_dir) = old else {
+        return (new.to_path_buf(), 0, None);
+    };
+    let (moved, error) = move_old_webview_folders(old_dir, new);
+    (webview_place(old, new), moved, error)
 }
 
 /// Is `got` the address `want` asked for? Both parse and compare as addresses (case of the host and a
@@ -1304,34 +1384,169 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
     #[test]
-    fn the_profile_lives_under_the_named_profile_or_local_appdata() {
+    fn the_profile_lives_under_the_profile_folder_never_the_install_folder() {
         assert_eq!(
-            webview_folder(
+            webview_folder(Path::new(r"C:\run\p")),
+            PathBuf::from(r"C:\run\p").join("WebView2")
+        );
+        // The default run: the roaming profile, as Stable's `--user-data-dir` has always had it.
+        let p = webview_folder(Path::new(r"C:\Users\x\AppData\Roaming\Flare"));
+        assert_eq!(
+            p,
+            PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\WebView2")
+        );
+        let s = p.to_string_lossy().to_ascii_lowercase();
+        assert!(!s.contains(r"appdata\local\flare"), "{s}");
+    }
+
+    #[cfg_attr(
+        not(windows),
+        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
+    )]
+    #[test]
+    fn the_old_place_is_only_the_default_runs_local_appdata_folder() {
+        assert_eq!(
+            old_webview_folder(None, Some(r"C:\Users\x\AppData\Local")),
+            Some(PathBuf::from(r"C:\Users\x\AppData\Local\Flare\WebView2"))
+        );
+        assert_eq!(
+            old_webview_folder(
                 Some(Path::new(r"C:\run\p")),
                 Some(r"C:\Users\x\AppData\Local")
             ),
-            Some(PathBuf::from(r"C:\run\p").join("WebView2"))
+            None
+        );
+        assert_eq!(old_webview_folder(None, None), None);
+        assert_eq!(old_webview_folder(None, Some("")), None);
+    }
+
+    #[test]
+    fn the_old_folders_move_once_and_never_replace_what_is_there() {
+        let d = tempfile::tempdir().unwrap();
+        let old = d.path().join("local").join("Flare").join("WebView2");
+        let new = d.path().join("roaming").join("Flare").join("WebView2");
+        for f in [&old, &old.with_file_name("WebView2-app-sealed")] {
+            std::fs::create_dir_all(f.join("EBWebView")).unwrap();
+            std::fs::write(f.join("EBWebView").join("mark"), b"old").unwrap();
+        }
+        // The networked plugins' folder is already in its new place: it stays as it is.
+        let old_net = old.with_file_name("WebView2-plugin-net");
+        let new_net = new.with_file_name("WebView2-plugin-net");
+        std::fs::create_dir_all(&old_net).unwrap();
+        std::fs::create_dir_all(&new_net).unwrap();
+        std::fs::write(new_net.join("mark"), b"new").unwrap();
+
+        assert_eq!(move_old_webview_folders(&old, &new), (2, None));
+        assert_eq!(
+            std::fs::read(new.join("EBWebView").join("mark")).unwrap(),
+            b"old"
         );
         assert_eq!(
-            webview_folder(None, Some(r"C:\Users\x\AppData\Local")),
-            Some(
-                PathBuf::from(r"C:\Users\x\AppData\Local")
-                    .join("Flare")
-                    .join("WebView2")
+            std::fs::read(
+                new.with_file_name("WebView2-app-sealed")
+                    .join("EBWebView")
+                    .join("mark")
             )
+            .unwrap(),
+            b"old"
         );
-        assert_eq!(webview_folder(None, None), None);
-        assert_eq!(webview_folder(None, Some("")), None);
+        assert!(!old.exists());
+        assert_eq!(std::fs::read(new_net.join("mark")).unwrap(), b"new");
+        assert!(old_net.exists());
+        // A second start finds nothing to move.
+        assert_eq!(move_old_webview_folders(&old, &new), (0, None));
+    }
+
+    /// The old web panel folder with a login mark in it, under `d`; gives (old, new).
+    fn old_profile_with_a_login(d: &Path) -> (PathBuf, PathBuf) {
+        let old = d.join("local").join("Flare").join("WebView2");
+        let new = d.join("roaming").join("Flare").join("WebView2");
+        std::fs::create_dir_all(old.join("EBWebView")).unwrap();
+        std::fs::write(old.join("EBWebView").join("Cookies"), b"login").unwrap();
+        (old, new)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_the_last_run_still_holds_stays_in_use_and_moves_when_it_is_let_go() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let (old, new) = old_profile_with_a_login(d.path());
+        // The quitting run's browser still has its cookie file open, sharing nothing: the folder cannot be renamed.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(old.join("EBWebView").join("Cookies"))
+            .unwrap();
+        let (n, e) = move_old_webview_folders(&old, &new);
+        assert_eq!(n, 0);
+        assert!(e.is_some());
+        // A panel opens: its browser is made in the old folder, with the login, and no empty new one appears.
+        let (place, _, e) = settle_webview_folder(Some(&old), &new);
+        assert!(e.is_some());
+        assert_eq!(place, old);
+        assert!(!new.exists());
+        drop(held);
+        // The next try (the next browser made, or the next start) moves it, login and all.
+        assert_eq!(
+            settle_webview_folder(Some(&old), &new),
+            (new.clone(), 1, None)
+        );
+        assert_eq!(
+            std::fs::read(new.join("EBWebView").join("Cookies")).unwrap(),
+            b"login"
+        );
+        assert!(!old.exists());
+    }
+
+    #[test]
+    fn a_sibling_that_cannot_move_takes_the_panels_folder_back_with_it() {
+        let d = tempfile::tempdir().unwrap();
+        let (old, new) = old_profile_with_a_login(d.path());
+        let old_plugins = old.with_file_name("WebView2-plugin-net");
+        std::fs::create_dir_all(&old_plugins).unwrap();
+        let (n, e) = move_old_webview_folders_with(&old, &new, |from, to| {
+            if from.ends_with("WebView2-plugin-net") {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            } else {
+                std::fs::rename(from, to)
+            }
+        });
+        assert_eq!(n, 0);
+        assert!(e.unwrap().contains("WebView2-plugin-net"));
+        // All stay together in the old place, which is the one in use until they can move.
+        assert!(old.join("EBWebView").join("Cookies").is_file());
+        assert!(old_plugins.is_dir());
+        assert!(!new.exists());
+        assert_eq!(webview_place(Some(&old), &new), old);
+    }
+
+    #[test]
+    fn the_place_is_the_new_folder_once_nothing_waits_to_move() {
+        let d = tempfile::tempdir().unwrap();
+        let (old, new) = old_profile_with_a_login(d.path());
+        assert_eq!(webview_place(None, &new), new);
+        assert_eq!(webview_place(Some(&old), &new), old);
+        std::fs::create_dir_all(&new).unwrap();
+        // A new folder already there wins: it is never replaced, so the old one is not used either.
+        assert_eq!(webview_place(Some(&old), &new), new);
+        assert_eq!(settle_webview_folder(None, &new), (new.clone(), 0, None));
+        let gone = d.path().join("none").join("WebView2");
+        assert_eq!(webview_place(Some(&gone), &new), new);
     }
 
     #[test]
     fn the_profile_is_never_an_edge_folder() {
         for p in [
-            webview_folder(None, Some(r"C:\Users\x\AppData\Local")),
-            webview_folder(Some(Path::new(r"D:\data")), None),
+            webview_folder(Path::new(r"C:\Users\x\AppData\Roaming\Flare")),
+            webview_folder(Path::new(r"D:\data")),
         ] {
-            let s = p.unwrap().to_string_lossy().to_ascii_lowercase();
+            let s = p.to_string_lossy().to_ascii_lowercase();
             assert!(!s.contains("microsoft") && !s.contains("edge"), "{s}");
         }
     }
