@@ -1225,6 +1225,11 @@ mod tests {
             rx.recv_timeout(Duration::from_millis(700)).is_err(),
             "Failed must not be said a second time"
         );
+        // Failed is sent just before the thread returns, so give a slow machine time to finish it.
+        let ends = std::time::Instant::now() + Duration::from_secs(5);
+        while hook.alive() && std::time::Instant::now() < ends {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(!hook.alive(), "the thread ended");
         assert!(take_lock(dir.path()).is_ok(), "the lock was let go");
         hook.stop();
