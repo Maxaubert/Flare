@@ -604,6 +604,124 @@ pub fn host_label(url: &str) -> String {
         .unwrap_or_else(|| url.to_string())
 }
 
+/// The longest host the diagnostics log keeps (a DNS name is at most 253 characters).
+const SITE_MAX: usize = 253;
+
+/// The site an address belongs to, as the diagnostics log may keep it (rule 247): the host only, in lower case,
+/// with no port, user name, password, path, query or fragment. An address with no host (`about:blank`, `data:`,
+/// `blob:`) is its scheme alone. Anything else is `unparsed` (not an address) or `odd` (a host or scheme with
+/// characters no site name has). It never returns the text it was given, unlike [`host_label`].
+pub fn site_of(url: &str) -> String {
+    let Ok(u) = url::Url::parse(url.trim()) else {
+        return "unparsed".to_string();
+    };
+    match u.host_str().filter(|h| !h.is_empty()) {
+        Some(host) => {
+            let host = host.to_ascii_lowercase();
+            let clean = host.len() <= SITE_MAX
+                && host.bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'[' | b']')
+                });
+            if clean { host } else { "odd".to_string() }
+        }
+        None => {
+            let scheme = u.scheme();
+            let clean = scheme.len() <= 32
+                && scheme
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'));
+            if clean {
+                scheme.to_ascii_lowercase()
+            } else {
+                "odd".to_string()
+            }
+        }
+    }
+}
+
+/// WebView2's `COREWEBVIEW2_WEB_ERROR_STATUS` (the number) as a fixed word for the diagnostics log.
+pub fn web_error_name(status: i32) -> &'static str {
+    match status {
+        0 => "unknown",
+        1 => "cert-name-mismatch",
+        2 => "cert-expired",
+        3 => "client-cert-error",
+        4 => "cert-revoked",
+        5 => "cert-invalid",
+        6 => "server-unreachable",
+        7 => "timeout",
+        8 => "invalid-response",
+        9 => "connection-aborted",
+        10 => "connection-reset",
+        11 => "disconnected",
+        12 => "cannot-connect",
+        13 => "name-not-resolved",
+        14 => "cancelled",
+        15 => "redirect-failed",
+        16 => "unexpected-error",
+        17 => "auth-required",
+        18 => "proxy-auth-required",
+        _ => "other",
+    }
+}
+
+/// WebView2's `COREWEBVIEW2_PERMISSION_KIND` (the number) as a fixed word for the diagnostics log.
+pub fn permission_word(kind: i32) -> &'static str {
+    match kind {
+        0 => "unknown",
+        1 => "microphone",
+        2 => "camera",
+        3 => "location",
+        4 => "notifications",
+        5 => "sensors",
+        6 => "clipboard-read",
+        7 => "multiple-downloads",
+        8 => "file-access",
+        9 => "autoplay",
+        10 => "local-fonts",
+        11 => "midi-sysex",
+        12 => "window-management",
+        _ => "other",
+    }
+}
+
+/// WebView2's `COREWEBVIEW2_PROCESS_FAILED_KIND` (the number, as [`failure_of_kind`] reads it) as a fixed word.
+pub fn process_word(kind: i32) -> &'static str {
+    match kind {
+        0 => "browser",
+        1 => "render",
+        2 => "render-unresponsive",
+        3 => "frame-render",
+        4 => "utility",
+        5 => "sandbox-helper",
+        6 => "gpu",
+        7 => "plugin",
+        8 => "plugin-broker",
+        9 => "unknown",
+        _ => "other",
+    }
+}
+
+/// WebView2's `COREWEBVIEW2_PROCESS_FAILED_REASON` (the number) as a fixed word.
+pub fn process_reason_word(reason: i32) -> &'static str {
+    match reason {
+        0 => "unexpected",
+        1 => "unresponsive",
+        2 => "terminated",
+        3 => "crashed",
+        4 => "launch-failed",
+        5 => "out-of-memory",
+        6 => "profile-deleted",
+        _ => "other",
+    }
+}
+
+/// Should a failed navigation be logged? Not one Flare cancelled itself (14, its `web-refused` line says why) and
+/// not a stream handed to the player or a download (9): neither is a page that failed.
+pub fn load_failure_logged(ok: bool, status: i32) -> bool {
+    !ok && !matches!(status, 9 | 14)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1115,6 +1233,77 @@ mod tests {
         }
         assert_eq!(failed_load_notice("about:blank", "13"), None);
         assert_eq!(failed_load_notice("", "13"), None);
+    }
+
+    #[test]
+    fn the_logs_site_is_the_host_alone_and_never_the_address() {
+        let cases = [
+            (
+                "https://Bank.Example.COM:8443/acct?id=42&token=s3cret#frag",
+                "bank.example.com",
+            ),
+            ("https://user:pw@shop.example/cart", "shop.example"),
+            ("http://127.0.0.1:3000/x", "127.0.0.1"),
+            ("http://[::1]:8080/", "[::1]"),
+            ("https://xn--bcher-kva.example/", "xn--bcher-kva.example"),
+            ("https://bücher.example/", "xn--bcher-kva.example"),
+            ("about:blank", "about"),
+            ("data:text/html,<b>secret</b>", "data"),
+            ("blob:https://a.example/1234-5678", "blob"),
+            ("mailto:someone@private.example", "mailto"),
+            ("file:///C:/Users/me/secret.txt", "file"),
+        ];
+        for (url, site) in cases {
+            assert_eq!(site_of(url), site, "{url}");
+        }
+        for not_an_address in ["", "secret words", "/just/a/path?q=1", "://"] {
+            assert_eq!(site_of(not_an_address), "unparsed", "{not_an_address}");
+        }
+        // A host a non-web scheme carries as it is: whatever is not a site name's character is `odd`.
+        assert_eq!(site_of("foo://we%20ird/x"), "odd");
+        // Unlike the title's label, the raw text never comes back.
+        assert_eq!(host_label("secret words"), "secret words");
+        assert_ne!(site_of("secret words"), "secret words");
+    }
+
+    #[test]
+    fn errors_permissions_and_processes_are_fixed_words() {
+        assert_eq!(web_error_name(2), "cert-expired");
+        assert_eq!(web_error_name(13), "name-not-resolved");
+        assert_eq!(web_error_name(99), "other");
+        assert_eq!(web_error_name(-1), "other");
+        assert_eq!(permission_word(2), "camera");
+        assert_eq!(permission_word(3), "location");
+        assert_eq!(permission_word(42), "other");
+        assert_eq!(process_word(0), "browser");
+        assert_eq!(process_word(6), "gpu");
+        assert_eq!(process_word(-1), "other");
+        assert_eq!(process_reason_word(3), "crashed");
+        assert_eq!(process_reason_word(77), "other");
+        for n in -1..20 {
+            for w in [
+                web_error_name(n),
+                permission_word(n),
+                process_word(n),
+                process_reason_word(n),
+            ] {
+                assert!(
+                    w.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'),
+                    "{w}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_load_that_failed_on_its_own_is_logged() {
+        assert!(load_failure_logged(false, 13));
+        assert!(load_failure_logged(false, 2));
+        assert!(load_failure_logged(false, 0));
+        // Ours (a cancelled navigation) and the player's hand-off are not failures, and a good load is none.
+        assert!(!load_failure_logged(false, 14));
+        assert!(!load_failure_logged(false, 9));
+        assert!(!load_failure_logged(true, 13));
     }
 }
 
