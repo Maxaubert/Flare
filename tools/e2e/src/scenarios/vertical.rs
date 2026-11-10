@@ -23,6 +23,12 @@ use crate::world::{prompt_timeout, wait_for_prompt, Shell};
 
 /// 225 percent (96 is 100 percent).
 const DPI_225: u32 = 216;
+
+/// macOS: the title row is the native caption, the traffic lights where Windows has its buttons (rule 1115).
+const MAC_CAPTION: bool = cfg!(target_os = "macos");
+
+/// Why a Mac run has no mark to look at (rule 1115).
+const NO_MARK_ON_A_MAC: &str = "the app's mark: a Mac's title row has the traffic lights in its corner and draws no mark (AppMark is hidden with the native caption, app.slint)";
 /// 125 percent.
 const DPI_125: u32 = 120;
 /// The reason every glass check is skipped on the software renderer.
@@ -1067,7 +1073,11 @@ fn vertical_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     // PT: run.mjs:2299
     ctx.ok(
         reference.is_some() && opening <= 1.0,
-        format!("sliding out, the corner keeps to the sidebar's edge, no band beside the line (worst {opening:.1}px)"),
+        format!(
+            "sliding out, the corner keeps to the sidebar's edge, no band beside the line (worst {opening:.1}px; \
+             slid out: panel at {}, slot {}, {} OS frames)",
+            shown["slide_now"], shown["slot_now"], shown["redraws"]
+        ),
     );
     let samples = slide_samples(ctx, app, "closing", false, secondary, k);
     let closing = worst(&samples);
@@ -1084,6 +1094,9 @@ fn vertical_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     // PT: run.mjs:2318. Slid out, a line from the bar down (not up into the bar), the page's own line
     // along the top, and no shadow beside it.
     let slid = snap(ctx, app, "slid-line");
+    // macOS: the terminal's own ground, not a pixel sampled inside it: a sample can land on a prompt's text
+    // (the Mac world's longer path reached it, rule 1119). Windows samples as before.
+    let term_ground = MAC_CAPTION.then(|| token(&side(app), "ground"));
     let (x0, y0) = (dv(nav_w, k), dv(BAR_H, k));
     let slid_line = slid.as_ref().is_some_and(|sn| {
         let down = differs(
@@ -1095,7 +1108,7 @@ fn vertical_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
             sn.at(x0 + dv(100.0, k), y0),
             sn.at(x0 + dv(100.0, k), y0 + dv(3.0, k)),
         );
-        let inside = sn.at(x0 + dv(60.0, k), y0 + dv(60.0, k));
+        let inside = term_ground.unwrap_or_else(|| sn.at(x0 + dv(60.0, k), y0 + dv(60.0, k)));
         let no_shadow = near(sn.at(x0 + dv(5.0, k), y0 + dv(300.0, k)), inside, 12);
         down && not_up && top && no_shadow
     });
@@ -1300,20 +1313,33 @@ fn vertical_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
                 format!("{tag}: one ring on each marked card, nothing else ({motions:?})"),
             );
             let k = scale(app);
-            let at_end = snap(ctx, app, "side-ring").is_some_and(|sn| {
-                [0usize, 2, 3, 4, 5].iter().all(|i| {
-                    let Some(r) = rows(&s).get(*i).and_then(|r| rect_of(&r["rect"])) else {
-                        return false;
-                    };
-                    let bg = sn.at(dv(r.0 + r.2 - 40.0, k), dv(r.1 + 3.0, k));
-                    let end = (r.0 + r.2 - 30.0, r.1 + 8.0, 24.0, r.3 - 16.0);
-                    ink_box(&sn, k, end, bg, 40).is_some()
-                })
-            });
+            // A question's ring breathes: a picture at its faintest shows too little ink, so each card is
+            // looked at over a breath (up to six pictures, 250 ms apart) and counts once it shows its ring
+            // (the Mac runner caught infra's at its low once; rule 1119). Windows looks once, as before.
+            let marked = [0usize, 2, 3, 4, 5];
+            let mut seen = [false; 5];
+            let tries = if MAC_CAPTION { 6 } else { 1 };
+            for attempt in 0..tries {
+                if let Some(sn) = snap(ctx, app, "side-ring") {
+                    for (n, i) in marked.iter().enumerate() {
+                        let Some(r) = rows(&s).get(*i).and_then(|r| rect_of(&r["rect"])) else {
+                            continue;
+                        };
+                        let bg = sn.at(dv(r.0 + r.2 - 40.0, k), dv(r.1 + 3.0, k));
+                        let end = (r.0 + r.2 - 30.0, r.1 + 8.0, 24.0, r.3 - 16.0);
+                        seen[n] |= ink_box(&sn, k, end, bg, 40).is_some();
+                    }
+                }
+                if seen.iter().all(|b| *b) || attempt + 1 == tries {
+                    break;
+                }
+                hold(ctx, 250);
+            }
+            let at_end = seen.iter().all(|b| *b);
             // PT: run.mjs:2434
             ctx.ok(
                 at_end,
-                format!("{tag}: each ring at the card's end, in the close's place"),
+                format!("{tag}: each ring at the card's end, in the close's place (cards 0, 2 to 5: {seen:?})"),
             );
         } else {
             let bar_ok = set
@@ -1565,8 +1591,14 @@ fn vertical_b(ctx: &mut Ctx, app: &mut App, gpu: bool) -> Result<(), String> {
         |r: Option<(f64, f64, f64, f64)>| r.is_some_and(|r| r.1 >= 0.0 && r.1 + r.3 <= BAR_H);
     let cog = ui_rect(app, "cog");
     let close = ui_rect(app, "close");
+    // macOS (rule 1115): the window's buttons are AppKit's traffic lights, which the hook has no rect for.
+    let buttons = if MAC_CAPTION {
+        close.is_none()
+    } else {
+        in_bar(close) && in_bar(ui_rect(app, "min")) && in_bar(ui_rect(app, "max"))
+    };
     ctx.ok(
-        in_bar(cog) && in_bar(close) && in_bar(ui_rect(app, "min")) && in_bar(ui_rect(app, "max")),
+        in_bar(cog) && buttons,
         "with Settings and the window's buttons",
     );
     let grid = ui_rect(app, "grid").unwrap_or((0.0, 0.0, 0.0, 0.0));
@@ -1651,10 +1683,14 @@ fn vertical_b(ctx: &mut Ctx, app: &mut App, gpu: bool) -> Result<(), String> {
         }
         Some((ink, best))
     });
-    ctx.ok(
-        mark.is_some_and(|(b, c)| (8.0..=20.0).contains(&b.2) && near(c, icon, 60)),
-        format!("the bar shows the app's mark alone, in the buttons' ink ({mark:?})"),
-    );
+    if MAC_CAPTION {
+        ctx.skip(NO_MARK_ON_A_MAC);
+    } else {
+        ctx.ok(
+            mark.is_some_and(|(b, c)| (8.0..=20.0).contains(&b.2) && near(c, icon, 60)),
+            format!("the bar shows the app's mark alone, in the buttons' ink ({mark:?})"),
+        );
+    }
     // PT: run.mjs:2640-2642. PT sends WM_NCHITTEST at four points and reads HTCAPTION (2) or HTCLIENT (1).
     // Flare has no hit test to ask: its bar moves the window through Slint's WindowMoveArea, which asks
     // winit to start Windows' move loop, and a synthetic Drag cannot start it (this window sits at
@@ -1924,10 +1960,19 @@ fn vertical_b(ctx: &mut Ctx, app: &mut App, gpu: bool) -> Result<(), String> {
         ink_box(sn, k, (m.0 + 4.0, m.1 + 4.0, m.2 - 8.0, m.3 - 8.0), bg, 40)
     });
     // PT: run.mjs:2810
-    ctx.ok(
-        paths.is_some_and(|b| (8.0..=20.0).contains(&b.2)) && mark_rect.is_some_and(|m| m.0 < first_tab),
-        format!("with the strip, the same quiet mark sits before the tabs ({mark_rect:?}, first tab at {first_tab})"),
-    );
+    if MAC_CAPTION {
+        // The traffic lights' corner still comes before the tabs; it holds no mark.
+        ctx.ok(
+            mark_rect.is_some_and(|m| m.0 + m.2 <= first_tab + 0.5),
+            format!("with the strip, the traffic lights' corner sits before the tabs ({mark_rect:?}, first tab at {first_tab})"),
+        );
+        ctx.skip(NO_MARK_ON_A_MAC);
+    } else {
+        ctx.ok(
+            paths.is_some_and(|b| (8.0..=20.0).contains(&b.2)) && mark_rect.is_some_and(|m| m.0 < first_tab),
+            format!("with the strip, the same quiet mark sits before the tabs ({mark_rect:?}, first tab at {first_tab})"),
+        );
+    }
     // With the strip, Ctrl+Shift+B is the shell's again.
     // The settings file is written a moment after a change, so wait for the pin from above to land
     // before taking the "before" reading; a stale "collapsed" would blame the chord for that write.

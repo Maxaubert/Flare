@@ -634,7 +634,7 @@ fn selection_edit_on(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         !badge_shown(app)
     });
     let sel = select(ctx, app, "example.com", 8, 10); // "com"
-    app.session.key("Ctrl+C")?;
+    app.session.key(&crate::chord::copy_chord("Ctrl+C"))?;
     let shown = ctx.until("the Copied badge after Ctrl+C", 3_000, &mut || {
         badge_shown(app)
     });
@@ -1120,13 +1120,7 @@ fn osc8_on(ctx: &mut Ctx, app: &mut App, script: &Path) -> Result<(), String> {
     }
 
     // The alternate screen, as in Claude Code's fullscreen view.
-    type_line(
-        app,
-        &format!(
-            "& powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
-            script.display()
-        ),
-    )?;
+    type_line(app, &alt_screen_line(script))?;
     let alt = ctx.until("the alternate-screen label", 8_000, &mut || {
         osc8_label_blue(app, "ALTLABEL")
     });
@@ -1346,6 +1340,20 @@ fn powerline_measure(app: &mut App, row: usize, col: usize) -> (bool, String) {
         format!("{far:?}"),
     );
     (ok, note)
+}
+
+/// The line that runs the alternate-screen script: Windows PowerShell on Windows, pwsh on macOS (rule 1109).
+#[cfg(windows)]
+fn alt_screen_line(script: &Path) -> String {
+    format!(
+        "& powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
+        script.display()
+    )
+}
+
+#[cfg(not(windows))]
+fn alt_screen_line(script: &Path) -> String {
+    crate::standins::ps_file_line(script)
 }
 
 #[cfg(test)]

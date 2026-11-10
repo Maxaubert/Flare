@@ -210,7 +210,7 @@ fn set_query(app: &mut App, q: &str) {
         click_rect(app, r);
     }
     let have = v["query"].as_str().unwrap_or("").chars().count();
-    let _ = app.session.key("End");
+    let _ = app.session.key(crate::chord::FIELD_END);
     for _ in 0..have {
         let _ = app.session.key("Backspace");
     }
@@ -253,9 +253,29 @@ fn rgb_of_hex(hex: &str) -> Rgb {
     [ch(0), ch(2), ch(4)]
 }
 
+/// The snapshot `name` once two taken in a row agree (a fade has run its course): waits with `until`, so a
+/// picture that never holds still is a timeout on the next check, never a silent pass.
+fn still_shot(ctx: &mut Ctx, app: &mut App, name: &str) -> Option<Img> {
+    let (dir, scenario) = (ctx.shots.clone(), ctx.name);
+    let mut last: Option<Img> = None;
+    ctx.until(
+        &format!("{name}: the picture holds still"),
+        3_000,
+        &mut || {
+            let now = crate::ctx::shot_file(&dir, scenario, name, |p| app.session.snapshot(p))
+                .and_then(|p| Img::load(&p));
+            let same = now.is_some() && now == last;
+            last = now;
+            same
+        },
+    );
+    last
+}
+
 // ---- snapshots read off the disk ---------------------------------------------------------------------
 
 /// A decoded snapshot: device pixels, three bytes each.
+#[derive(PartialEq)]
 pub struct Img {
     pub w: usize,
     pub h: usize,
@@ -1182,9 +1202,15 @@ fn help_b(ctx: &mut Ctx, app: &mut App, started: Instant) -> Result<(), String> 
     // DROPPED: "the text cursor over a command" because the cursor shape cannot be read from a window
     // that never shows; the same file pins `mouse-cursor: MouseCursor.text` on the well.
     park(app);
-    let plain_shot = ctx
-        .shot(app, "help-select-before")
-        .and_then(|p| Img::load(&p));
+    // macOS: the row's hover fades out over 120 ms, so the picture before is taken once two shots in a row
+    // agree, or a row still lit by the clicks above is the "changed colour" (the Mac runner, rule 1119).
+    // Windows takes it at once, as before.
+    let plain_shot = if cfg!(target_os = "macos") {
+        still_shot(ctx, app, "help-select-before")
+    } else {
+        ctx.shot(app, "help-select-before")
+            .and_then(|p| Img::load(&p))
+    };
     let k = l.k;
     let dev = |css: f64| (css * k).round() as usize;
     let row0 = l.rows[0];
@@ -1445,10 +1471,47 @@ fn help_b(ctx: &mut Ctx, app: &mut App, started: Instant) -> Result<(), String> 
         && ctx.until("kb-2 in the new shell", 15_000, &mut || {
             term_text(app).contains("kb-2")
         });
+    let shown: String = {
+        let t = term_text(app);
+        let tail: Vec<&str> = t.lines().filter(|l| !l.trim().is_empty()).collect();
+        let last = tail.last().copied().unwrap_or("");
+        // The code points too: the Mac runner showed bytes no key sends (^E, ^O, invalid UTF-8).
+        let points: Vec<String> = last
+            .chars()
+            .rev()
+            .take(48)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|c| format!("{:x}", u32::from(c)))
+            .collect();
+        format!(
+            "{} [last line's code points: {}]",
+            tail[tail.len().saturating_sub(4)..].join(" | "),
+            points.join(" ")
+        )
+    };
+    let written = if landed {
+        String::new()
+    } else {
+        let _ = ctx.shot(app, "help-new-shell");
+        let g = probe(app, "grid.text", Value::Null);
+        format!(
+            "; its grid {} cols in a box {:?} css px wide, {} OS frames; Flare wrote to it: {}",
+            g["cols"],
+            rect_of(&probe(app, "ui.rect", json!({ "name": "grid" }))).map(|r| r.2),
+            probe(app, "sidebar.state", Value::Null)["redraws"],
+            probe(app, "pty.written", Value::Null)
+        )
+    };
     check!(
         ctx,
         landed,
-        format!("the new shell has the keyboard (the panel's field held it: {field_had_it})")
+        format!(
+            "the new shell has the keyboard (the panel's field held it: {field_had_it}, its prompt came: {prompt}, \
+             field now: {}, the shell shows: {shown}{written})",
+            hs(app)["field_focused"]
+        )
     );
     let _ = app.session.key("Ctrl+W");
     // PT: run.mjs:4987

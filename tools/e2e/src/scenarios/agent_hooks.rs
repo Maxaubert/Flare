@@ -22,7 +22,7 @@ use crate::ctx::{App, Ctx, Launch};
 use crate::standins::agent_proc;
 use crate::standins::hooklines::hook_line;
 use crate::until::{wait_on, SystemClock};
-use crate::world::{prompt_timeout, wait_for_prompt, Shell};
+use crate::world::{prompt_timeout, wait_for_prompt, Shell, CLEAR_HOST, GET_CONTENT};
 
 /// The seam that asks the app for the Claude plugin under `--e2e` (never written as one literal).
 const PLUGIN_SEAM: &str = concat!("FLARE_E2E", "_PLUGIN");
@@ -547,7 +547,7 @@ fn hooks_claim(ctx: &mut Ctx, app: &mut App, profile: &Path) -> Result<(), Strin
         app,
         1,
         &format!(
-            "cat -Raw -LiteralPath '{}' | Write-Host -NoNewline",
+            "{GET_CONTENT} -Raw -LiteralPath '{}' | Write-Host -NoNewline",
             capture.display()
         ),
     );
@@ -577,7 +577,7 @@ fn hooks_b(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         app,
         0,
         &format!(
-            "{BOX}; {IDLE}; {}; Start-Sleep -Milliseconds 2500; Clear-Host; {}; {}; Start-Sleep -Milliseconds 500; {}",
+            "{BOX}; {IDLE}; {}; Start-Sleep -Milliseconds 2500; {CLEAR_HOST}; {}; {}; Start-Sleep -Milliseconds 500; {}",
             say("question"),
             frames(8),
             say("working"),
@@ -623,7 +623,7 @@ fn hooks_c(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         app,
         0,
         &format!(
-            "{BOX}; {IDLE}; {}; Start-Sleep -Milliseconds 1500; {}; Start-Sleep -Milliseconds 1000; {}; Start-Sleep -Milliseconds 1000; {}; Start-Sleep -Milliseconds 3000; Clear-Host; {}; {}",
+            "{BOX}; {IDLE}; {}; Start-Sleep -Milliseconds 1500; {}; Start-Sleep -Milliseconds 1000; {}; Start-Sleep -Milliseconds 1000; {}; Start-Sleep -Milliseconds 3000; {CLEAR_HOST}; {}; {}",
             say("question"),
             say("working"),
             say("done"),

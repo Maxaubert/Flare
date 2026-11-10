@@ -199,6 +199,9 @@ struct Session {
     banner_cap: usize,
     /// A warm spare that has not yet been asked where its cursor is (rule 231).
     opening: AtomicBool,
+    /// Outside Windows, a warm spare's own grid, fed what it prints, so its cursor questions are answered at once as
+    /// a tab's would be (rule 1120). None for a tab's shell, for an adopted spare and on Windows.
+    grid: Mutex<Option<crate::emulator::Emulator>>,
     killed: AtomicBool,
     exited: AtomicBool,
     proc: Mutex<Option<Box<dyn PtyProcess>>>,
@@ -247,7 +250,11 @@ impl Session {
             match &mut *dest {
                 Dest::Buffer(buf) => {
                     append_capped(buf, &bytes, self.banner_cap);
-                    self.answer_opening(buf);
+                    if cfg!(windows) {
+                        self.answer_opening(buf);
+                    } else {
+                        self.answer_from_grid(&bytes);
+                    }
                 }
                 Dest::Sink { id, sink } => sink.data(id, bytes),
             }
@@ -273,6 +280,38 @@ impl Session {
                         self.queued
                             .fetch_sub(OPENING_CURSOR_REPLY.len(), Ordering::SeqCst);
                     }
+                }
+            }
+        }
+    }
+
+    /// Outside Windows (rule 1120): a warm spare answers every cursor question it asks at once, from its own grid,
+    /// as the tab's would. pwsh asks where its cursor is after drawing its prompt and waits for the answer: left
+    /// unanswered until a tab adopts the spare, the typing that came next was read as the answer and garbled (the
+    /// Mac E2E's helpPanel), and answered only at adoption, a late answer is read as typing. The opening question
+    /// (rule 231) is one of these, answered at the top left as before. Only cursor reports are sent: what else the
+    /// grid would answer is taken out of the banner at adoption, as before.
+    fn answer_from_grid(&self, bytes: &[u8]) {
+        let replies: Vec<Vec<u8>> = {
+            let mut grid = lk(&self.grid);
+            let Some(g) = grid.as_mut() else { return };
+            g.feed(bytes)
+                .into_iter()
+                .filter_map(|e| match e {
+                    crate::emulator::TermEvent::Reply(r) if is_cursor_report(&r) => Some(r),
+                    _ => None,
+                })
+                .collect()
+        };
+        if replies.is_empty() {
+            return;
+        }
+        if let Some(tx) = lk(&self.writer_tx).as_ref() {
+            for r in replies {
+                let n = r.len();
+                self.queued.fetch_add(n, Ordering::SeqCst);
+                if tx.send(r).is_err() {
+                    self.queued.fetch_sub(n, Ordering::SeqCst);
                 }
             }
         }
@@ -427,6 +466,41 @@ fn pump_loop(s: Arc<Session>) {
     }
 }
 
+/// Pure (rule 1120): what a tab adopting a warm spare is handed of the spare's kept output. Outside Windows its
+/// questions to the terminal are taken out: the spare's own grid answered its cursor questions when they were asked
+/// (`answer_from_grid`, the opening one of rule 231 among them), and any other answer given now would come late and
+/// be read as typing. Windows hands it over as it was, once the spare has answered the opening question itself
+/// (`answer_opening`): ConPTY stands between the shell and Flare there, and the Windows E2E never showed it.
+pub(crate) fn banner_for_tab(banner: Vec<u8>) -> Vec<u8> {
+    if cfg!(windows) {
+        banner
+    } else {
+        crate::term_query::without_questions(&banner)
+    }
+}
+
+/// Pure: whether `r` is a cursor position report (`ESC [ row ; col R`).
+fn is_cursor_report(r: &[u8]) -> bool {
+    let Some(body) = r.strip_prefix(b"\x1b[").and_then(|b| b.strip_suffix(b"R")) else {
+        return false;
+    };
+    let mut parts = body.split(|b| *b == b';');
+    let num =
+        |p: Option<&[u8]>| p.is_some_and(|p| !p.is_empty() && p.iter().all(u8::is_ascii_digit));
+    num(parts.next()) && num(parts.next()) && parts.next().is_none()
+}
+
+/// A copy of every write to a shell, for the e2e's evidence (the Mac E2E, rule 1120): set once, under
+/// `--e2e` only; the app without it pays one atomic load per write.
+pub type WriteTap = fn(&str, &[u8]);
+static WRITE_TAP: std::sync::OnceLock<WriteTap> = std::sync::OnceLock::new();
+
+/// Sets the write tap (the first call wins). The tap sees every key typed into a shell: only the e2e glue
+/// may set it, under `--e2e`, never a person's app.
+pub fn set_write_tap(tap: WriteTap) {
+    let _ = WRITE_TAP.set(tap);
+}
+
 fn writer_loop(
     rx: std::sync::mpsc::Receiver<Vec<u8>>,
     mut w: Box<dyn std::io::Write + Send>,
@@ -472,6 +546,12 @@ fn launch(sh: &Arc<Shared>, f: Fresh<'_>) -> Result<Arc<Session>, String> {
         plugin_key: f.plugin_key,
         pid,
         opening: AtomicBool::new(f.warm_key.is_some()),
+        grid: Mutex::new((f.warm_key.is_some() && !cfg!(windows)).then(|| {
+            crate::emulator::Emulator::new(
+                usize::from(f.spec.cols.max(1)),
+                usize::from(f.spec.rows.max(1)),
+            )
+        })),
         warm_key: f.warm_key,
         banner_cap: sh.opts.warm_banner_cap,
         killed: AtomicBool::new(false),
@@ -891,6 +971,9 @@ impl SessionManager {
             append_capped(&mut banner, &rest, w.banner_cap);
         }
         w.space_cv.notify_all();
+        // The tab's own grid takes over from here.
+        *lk(&w.grid) = None;
+        let banner = banner_for_tab(banner);
         if !banner.is_empty() {
             sink.data(id, banner);
         }
@@ -985,6 +1068,9 @@ impl SessionManager {
     }
 
     pub fn write(&self, id: &str, data: &[u8]) {
+        if let Some(tap) = WRITE_TAP.get() {
+            tap(id, data);
+        }
         let s = lk(&self.sh.st).sessions.get(id).cloned();
         if let Some(s) = s
             && let Some(tx) = lk(&s.writer_tx).as_ref()
@@ -1825,6 +1911,59 @@ mod tests {
         assert_eq!(bytes[0], b'F');
     }
 
+    // Rule 1120: a spare whose kept output asked the terminal something is adopted as before, and the tab gets
+    // that output without the question outside Windows (an answer now would be read as typing); Windows hands it
+    // over unchanged.
+    #[test]
+    fn a_spare_that_asked_the_terminal_is_adopted_without_its_question() {
+        let sp = FakeSpawner::new();
+        let m = mgr(&sp);
+        m.prewarm("C:\\home", Some("pwsh"), None);
+        sp.made()[0].feed(b"PS C:\\home> \x1b[6n\x1b[?2004h");
+        assert!(wait_until(|| m.output_ticks() >= 1));
+        let rec = Arc::new(RecSink::default());
+        assert!(m.spawn("tab", "C:\\home", Some("pwsh"), rec.clone(), None, None));
+        assert_eq!(sp.made().len(), 1, "the spare is adopted");
+        assert!(wait_until(|| !rec.events().is_empty()));
+        let Some(Ev::Data(_, bytes)) = rec.events().into_iter().next() else {
+            panic!("first event is not data")
+        };
+        if cfg!(windows) {
+            assert_eq!(bytes, b"PS C:\\home> \x1b[6n\x1b[?2004h");
+        } else {
+            assert_eq!(bytes, b"PS C:\\home> \x1b[?2004h");
+        }
+        m.prewarm("C:\\home", Some("pwsh"), None);
+        assert_eq!(sp.made().len(), 2, "and its shell is prewarmed again");
+    }
+
+    // Rule 1120: a question split over two reads is still taken out, since the whole kept output is read at
+    // adoption.
+    #[test]
+    fn a_question_split_over_two_reads_is_taken_out_too() {
+        let sp = FakeSpawner::new();
+        let m = mgr(&sp);
+        m.prewarm("C:\\home", Some("pwsh"), None);
+        sp.made()[0].feed(b"PS> \x1b[");
+        assert!(wait_until(|| m.output_ticks() >= 1));
+        sp.made()[0].feed(b"6nok");
+        assert!(wait_until(|| m.output_ticks() >= 2));
+        let rec = Arc::new(RecSink::default());
+        assert!(m.spawn("tab", "C:\\home", Some("pwsh"), rec.clone(), None, None));
+        let data: Vec<u8> = rec
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                Ev::Data(_, b) => Some(b),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        if !cfg!(windows) {
+            assert_eq!(data, b"PS> ok");
+        }
+    }
+
     fn banner_of(rec: &RecSink) -> Vec<u8> {
         match rec.events().into_iter().next().expect("a first data") {
             Ev::Data(_, bytes) => bytes,
@@ -1841,7 +1980,12 @@ mod tests {
         assert!(wait_until(|| sp.made()[0].written() == b"\x1b[1;1R"));
         let rec = Arc::new(RecSink::default());
         assert!(m.spawn("tab", "C:\\home", Some("pwsh"), rec.clone(), None, None));
-        assert_eq!(banner_of(&rec), b"\x1b[1t\x1b[c\x1b[?1004h");
+        if cfg!(windows) {
+            assert_eq!(banner_of(&rec), b"\x1b[1t\x1b[c\x1b[?1004h");
+        } else {
+            // Outside Windows the questions left in the banner are taken out as well (rule 1120).
+            assert_eq!(banner_of(&rec), b"\x1b[1t\x1b[?1004h");
+        }
     }
 
     #[test]
@@ -1856,8 +2000,16 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100)); // the second batch reaches the banner
         let rec = Arc::new(RecSink::default());
         assert!(m.spawn("tab", "C:\\home", Some("pwsh"), rec.clone(), None, None));
-        assert_eq!(banner_of(&rec), b"\x1b[6n");
-        assert_eq!(sp.made()[0].written(), b"\x1b[1;1R");
+        if cfg!(windows) {
+            assert_eq!(banner_of(&rec), b"\x1b[6n");
+            assert_eq!(sp.made()[0].written(), b"\x1b[1;1R");
+        } else {
+            // Outside Windows the spare's grid answered the second question too, at once (rule 1120), and the
+            // banner is empty without it.
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(rec.events().iter().all(|e| !matches!(e, Ev::Data(..))));
+            assert_eq!(sp.made()[0].written(), b"\x1b[1;1R\x1b[1;1R");
+        }
     }
 
     #[test]
@@ -1870,8 +2022,15 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100)); // the batch reaches the banner, where a wrong answer would go out
         let rec = Arc::new(RecSink::default());
         assert!(m.spawn("tab", "C:\\home", Some("pwsh"), rec.clone(), None, None));
-        assert_eq!(banner_of(&rec), b"PS>\x1b[6n");
-        assert!(sp.made()[0].written().is_empty());
+        if cfg!(windows) {
+            assert_eq!(banner_of(&rec), b"PS>\x1b[6n");
+            assert!(sp.made()[0].written().is_empty());
+        } else {
+            // Outside Windows the spare's own grid answered where the prompt left the cursor when it was asked,
+            // and the question is not handed to the tab to be answered again, late (rule 1120).
+            assert_eq!(banner_of(&rec), b"PS>");
+            assert_eq!(sp.made()[0].written(), b"\x1b[1;4R");
+        }
     }
 
     #[test]

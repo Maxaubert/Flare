@@ -159,6 +159,32 @@ again, and the engine folder is reused only with exactly its stamped files, and 
 its reply (a test flake, shared with Windows) (rules 1086 to 1095). Next: cues and the
 widget.
 
+Ongoing progress (2026-11-09): the Mac E2E runs in CI (`e2e-macos` job, `docs/e2e.md` "macOS E2E", rules 1103 to
+1117): the harness over the Unix socket hook, an accessory app whose every window is born clear, the Mac keys, the
+world's pwsh in Windows' edit mode, 72 scenarios run and 29 gated with a reason (plus the opt-in visualTour). From run 42569349881 (42 failing) to
+run 42603904272 (7 failing); the scenarios found and fixed Mac bugs: a miniaturised window never paused the marks, a
+stall carried no UI-thread frames, the hook's scale change could panic the software renderer, the Windows `check`
+job's pin test failed on a CRLF Cargo.lock. What still fails is listed in `docs/parity.md`, "macOS E2E".
+Then (rules 1118 to 1121): CI keeps its Rust cache on a red run and has a hand run of the Mac E2E alone with a scenario
+filter (`docs/e2e.md`), so an iteration takes about 10 minutes, not 40. Found and fixed: the slide-out never moved in a
+window with no frames, a warm pwsh spare adopted late read its own cursor report as typing (a real Mac bug for any
+pwsh user), and an idle run's diagnostics lines came from the runner's background load and the kernel's timer
+coalescing. From run
+42612597989 (4 scenarios failing) to run 42655597593, where the `e2e-macos` job ran all 72 scenarios green. The
+runner's timer coalescing is off for the run (a background app's timers ran up to 100 ms late). Left: the `macos`
+job's `flare-web::cef_macos` tests, failing on the phase 5 branch as well, and timing tests that miss now and then on
+both runners (Windows `keyhook` "the thread ended", Mac `flood` and `oracle_notes`; Windows `check` passed in run
+42645829398).
+Then a review of the branch (rules 1119, 1120 and 1122): a warm spare's kept output reaches its tab without its
+questions to the terminal, so spares stay on for pwsh (the first fix had stopped prewarming it); a Mac filter that
+matches only gated scenarios fails instead of passing on nothing; the Mac-only waits are conditions under
+`cfg!(target_os = "macos")`, so the Windows path of every scenario is as it was (the owner's Windows suite still has
+to run the branch). Left, gated on the Mac with "Mac port not written": the 12 web scenarios and the 4 update
+scenarios (phase 8), the 5 dictation scenarios (phase 7) and the 4 that use the `.cmd` Claude stand-in. Run 42669066383: `e2e-macos` green (72 run, 29
+gated), Windows `check` green, `macos` red only on the two `flare-web::cef_macos` tests that fail on the phase 5
+branch too; `flood` and `oracle_notes` passed in that run and in 42663511664. Run 42669105200 (filter `dictation`,
+all gated) failed as rule 1122 wants.
+
 ## Known risks
 
 - **Agent browsing on WKWebView** (phase 1 decides). No DevTools protocol and no http(s) request

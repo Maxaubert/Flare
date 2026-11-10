@@ -173,3 +173,189 @@ impl UpperIfLetter for String {
         }
     }
 }
+
+/// The key that puts a text field's caret at its end: End on Windows; on macOS Cmd+Right, since a Mac
+/// field (Slint's, as AppKit's) scrolls on End and moves nothing (rule 1110).
+pub const FIELD_END: &str = if cfg!(target_os = "macos") {
+    "Meta+ArrowRight"
+} else {
+    "End"
+};
+
+/// The key that selects all of a text field: Ctrl+A on Windows, Cmd+A on macOS, where Ctrl+A moves
+/// the caret to the line's start (rule 1110).
+pub const FIELD_SELECT_ALL: &str = if cfg!(target_os = "macos") {
+    "Meta+KeyA"
+} else {
+    "Ctrl+KeyA"
+};
+
+/// The key event a chord stands for, as far as the app's chord table reads it (the logical key, the
+/// code and the modifiers). None for a chord that does not parse.
+fn table_event(mods: &[Mod], key: &str) -> flare_term::keys::KeyEvent {
+    let shift = mods.contains(&Mod::Shift);
+    let punct = [
+        (',', "Comma"),
+        ('.', "Period"),
+        ('/', "Slash"),
+        (';', "Semicolon"),
+        ('\'', "Quote"),
+        ('[', "BracketLeft"),
+        (']', "BracketRight"),
+        ('\\', "Backslash"),
+        ('-', "Minus"),
+        ('=', "Equal"),
+        ('`', "Backquote"),
+    ];
+    let (name, code) = if let Some(l) = key.strip_prefix("Key").filter(|r| r.len() == 1) {
+        (l.to_string(), key.to_string())
+    } else if let Some(d) = key.strip_prefix("Digit").filter(|r| r.len() == 1) {
+        (d.to_string(), key.to_string())
+    } else if let Some((c, code)) = punct.iter().find(|(_, code)| *code == key) {
+        (c.to_string(), (*code).to_string())
+    } else if key == "Space" {
+        (" ".to_string(), key.to_string())
+    } else if key.chars().count() == 1 {
+        let c = key.chars().next().unwrap_or(' ');
+        let code = if c.is_ascii_alphabetic() {
+            format!("Key{}", c.to_ascii_uppercase())
+        } else if c.is_ascii_digit() {
+            format!("Digit{c}")
+        } else {
+            punct
+                .iter()
+                .find(|(p, _)| *p == c)
+                .map_or_else(String::new, |(_, code)| (*code).to_string())
+        };
+        (c.to_string(), code)
+    } else {
+        (key.to_string(), key.to_string())
+    };
+    let name = if shift && name.len() == 1 {
+        name.to_uppercase()
+    } else {
+        name.to_lowercase_if_single()
+    };
+    let mut ev = flare_term::keys::KeyEvent::new(&name, &code);
+    ev.ctrl = mods.contains(&Mod::Ctrl);
+    ev.shift = shift;
+    ev.alt = mods.contains(&Mod::Alt);
+    ev.meta = mods.contains(&Mod::Meta);
+    ev
+}
+
+trait LowerIfSingle {
+    fn to_lowercase_if_single(&self) -> String;
+}
+
+impl LowerIfSingle for String {
+    fn to_lowercase_if_single(&self) -> String {
+        if self.chars().count() == 1 {
+            self.to_lowercase()
+        } else {
+            self.clone()
+        }
+    }
+}
+
+/// A context where every chord of the table is live (help on, sidebar on, the agent guard on).
+fn table_context(os: flare_term::keys::KeyOs) -> flare_tabs::keymap::KeyContext {
+    flare_tabs::keymap::KeyContext {
+        os,
+        help: true,
+        vertical: true,
+        agent_guard: true,
+        agent_keys: true,
+        ..Default::default()
+    }
+}
+
+/// The copy key over a selection: `chord` (Ctrl+C, or Ctrl+KeyC with a logical key) on Windows; on
+/// macOS the same with Cmd, since a Mac copies with Cmd+C and sends Ctrl+C to the shell (rule 1106).
+pub fn copy_chord(chord: &str) -> String {
+    if cfg!(target_os = "macos") {
+        ctrl_as_meta(chord)
+    } else {
+        chord.to_string()
+    }
+}
+
+/// `chord` with its first `Ctrl` modifier token spelled `Meta` (Cmd on a Mac).
+fn ctrl_as_meta(chord: &str) -> String {
+    let mut out = Vec::new();
+    let mut swapped = false;
+    let parts: Vec<&str> = chord.split('+').collect();
+    let last = parts.len().saturating_sub(1);
+    for (i, p) in parts.iter().enumerate() {
+        if !swapped && i < last && p.eq_ignore_ascii_case("ctrl") {
+            out.push("Meta");
+            swapped = true;
+        } else {
+            out.push(p);
+        }
+    }
+    out.join("+")
+}
+
+/// macOS (rule 1106): the Mac spelling of a scenario's Windows chord. A chord that is an app chord on
+/// Windows (the app's own chord table says so) and whose Mac key is the same chord with Cmd in Ctrl's
+/// place becomes that; paste (Ctrl+V, Ctrl+Shift+V) becomes Cmd+V and Cmd+Shift+V, as the Mac
+/// terminal rules have it. Everything else is unchanged: Ctrl+Tab (the same on both), and the Ctrl
+/// keys that are the shell's (Ctrl+C, Ctrl+A), which a Mac also sends to the shell.
+pub fn mac_app_chord(chord: &str) -> String {
+    use flare_tabs::keymap::chord_of;
+    use flare_term::keys::KeyOs;
+    let Ok((mods, key)) = parse(chord) else {
+        return chord.to_string();
+    };
+    if !mods.contains(&Mod::Ctrl) || mods.contains(&Mod::Meta) {
+        return chord.to_string();
+    }
+    let ev = table_event(&mods, &key);
+    let paste = ev.key.eq_ignore_ascii_case("v") && !ev.alt;
+    if paste {
+        return ctrl_as_meta(chord);
+    }
+    let Some(id) = chord_of(&ev, &table_context(KeyOs::Windows)) else {
+        return chord.to_string();
+    };
+    if chord_of(&ev, &table_context(KeyOs::Mac)) == Some(id) {
+        return chord.to_string();
+    }
+    let swapped = ctrl_as_meta(chord);
+    let Ok((mods2, key2)) = parse(&swapped) else {
+        return chord.to_string();
+    };
+    if chord_of(&table_event(&mods2, &key2), &table_context(KeyOs::Mac)) == Some(id) {
+        swapped
+    } else {
+        chord.to_string()
+    }
+}
+
+#[cfg(test)]
+mod mac_chord_tests {
+    use super::*;
+
+    #[test]
+    fn the_app_chords_take_cmd_on_a_mac_and_the_shell_keys_stay() {
+        assert_eq!(mac_app_chord("Ctrl+T"), "Meta+T");
+        assert_eq!(mac_app_chord("Ctrl+KeyW"), "Meta+KeyW");
+        assert_eq!(mac_app_chord("Ctrl+Shift+P"), "Meta+Shift+P");
+        assert_eq!(mac_app_chord("Ctrl+Comma"), "Meta+Comma");
+        assert_eq!(mac_app_chord("Ctrl+F"), "Meta+F");
+        assert_eq!(mac_app_chord("Ctrl+V"), "Meta+V");
+        assert_eq!(mac_app_chord("Ctrl+Shift+V"), "Meta+Shift+V");
+        // The same on both systems, or the shell's.
+        assert_eq!(mac_app_chord("Ctrl+Tab"), "Ctrl+Tab");
+        // The agent hotkeys: Ctrl+S is Cmd+S on a Mac, Ctrl+PageDown stays.
+        assert_eq!(mac_app_chord("Ctrl+S"), "Meta+S");
+        assert_eq!(mac_app_chord("Ctrl+PageDown"), "Ctrl+PageDown");
+        assert_eq!(ctrl_as_meta("Ctrl+KeyC=с"), "Meta+KeyC=с");
+        assert_eq!(mac_app_chord("Ctrl+C"), "Ctrl+C");
+        assert_eq!(mac_app_chord("Ctrl+A"), "Ctrl+A");
+        assert_eq!(mac_app_chord("Enter"), "Enter");
+        assert_eq!(mac_app_chord("Shift+Enter"), "Shift+Enter");
+        assert_eq!(mac_app_chord("not a chord+"), "not a chord+");
+    }
+}

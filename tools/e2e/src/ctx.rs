@@ -14,7 +14,11 @@ use crate::until::{wait_on, SystemClock};
 use crate::world::World;
 
 /// The release build the driver runs when no `--exe` is given.
+#[cfg(windows)]
 pub const DEFAULT_EXE: &str = r"target\release\flare.exe";
+/// macOS: the release binary (the Mac E2E drives it straight, not the `.app` bundle).
+#[cfg(not(windows))]
+pub const DEFAULT_EXE: &str = "target/release/flare";
 /// The registry-sandbox variable the e2e environment always sets (M9 D5).
 const VERB_ROOT_VAR: &str = concat!("FLARE_E2E", "_VERB_ROOT");
 /// How long `App::close` lets a quit take before it kills the tree.

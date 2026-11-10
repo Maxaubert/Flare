@@ -1018,7 +1018,6 @@ pub fn slint_text_for(ev: &KeyEvent) -> Option<SharedString> {
 /// let go. A Ctrl or Alt chord on a character sends the character, so Ctrl+A is select-all there.
 /// Nothing when Slint has no text for the key.
 pub fn slint_key_events(ev: &KeyEvent) -> Vec<WindowEvent> {
-    use slint::platform::Key;
     let text = slint_text_for(ev).or_else(|| {
         let mut chars = ev.key.chars();
         match (chars.next(), chars.next()) {
@@ -1031,16 +1030,11 @@ pub fn slint_key_events(ev: &KeyEvent) -> Vec<WindowEvent> {
     let Some(text) = text else {
         return Vec::new();
     };
-    let held: Vec<SharedString> = [
-        (ev.shift, Key::Shift),
-        (ev.ctrl, Key::Control),
-        (ev.alt, Key::Alt),
-        (ev.meta, Key::Meta),
-    ]
-    .into_iter()
-    .filter(|(on, _)| *on)
-    .map(|(_, k)| SharedString::from(char::from(k)))
-    .collect();
+    let held: Vec<SharedString> = slint_modifiers(ev)
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, k)| SharedString::from(char::from(k)))
+        .collect();
     let down = |t: SharedString| WindowEvent::KeyPressed { text: t };
     let up = |t: SharedString| WindowEvent::KeyReleased { text: t };
     if ev.pressed {
@@ -1054,21 +1048,34 @@ pub fn slint_key_events(ev: &KeyEvent) -> Vec<WindowEvent> {
     }
 }
 
-/// The key-up of each modifier a chord holds, so Slint never keeps one pressed after the chord.
-pub fn slint_modifier_releases(ev: &KeyEvent) -> Vec<WindowEvent> {
+/// The Slint modifier key for each modifier a chord holds, in press order. On macOS Slint's winit
+/// backend reports Cmd as `Key::Control` and Ctrl as `Key::Meta` (it follows Qt), so a Mac text field
+/// takes Cmd+A, Cmd+Right and Cmd+C as `control`; the hook hands Slint the same keys a real Mac
+/// keyboard would (rule 1110), or a chord's Cmd would reach a field as the Ctrl key.
+pub fn slint_modifiers(ev: &KeyEvent) -> [(bool, slint::platform::Key); 4] {
     use slint::platform::Key;
+    let (cmd_key, ctrl_key) = if cfg!(target_vendor = "apple") {
+        (Key::Control, Key::Meta)
+    } else {
+        (Key::Meta, Key::Control)
+    };
     [
         (ev.shift, Key::Shift),
-        (ev.ctrl, Key::Control),
+        (ev.ctrl, ctrl_key),
         (ev.alt, Key::Alt),
-        (ev.meta, Key::Meta),
+        (ev.meta, cmd_key),
     ]
-    .into_iter()
-    .filter(|(on, _)| *on)
-    .map(|(_, k)| WindowEvent::KeyReleased {
-        text: SharedString::from(char::from(k)),
-    })
-    .collect()
+}
+
+/// The key-up of each modifier a chord holds, so Slint never keeps one pressed after the chord.
+pub fn slint_modifier_releases(ev: &KeyEvent) -> Vec<WindowEvent> {
+    slint_modifiers(ev)
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, k)| WindowEvent::KeyReleased {
+            text: SharedString::from(char::from(k)),
+        })
+        .collect()
 }
 // ---- pointer events (pure) -----------------------------------------------------------------
 
@@ -1388,6 +1395,9 @@ impl GlueCtx {
                 w.set_maximized(false);
             }
             "maximise" | "maximize" => w.set_maximized(true),
+            // The window's own close (the title bar's X, macOS's red traffic light): the close request
+            // the system sends, through the same route (rule 1108; the Mac E2E cannot click AppKit's light).
+            "close" => w.dispatch_event(slint::platform::WindowEvent::CloseRequested),
             "fullscreen" => {
                 // The same chord the user presses.
                 let ev = event_from_chord("F11", true)?;
@@ -1407,6 +1417,11 @@ impl GlueCtx {
             return Err("dpi must be above zero".into());
         }
         let app = self.app.upgrade().ok_or("the window is gone")?;
+        // macOS: the content view (there is no HWND; the event path ignores it). A launch that asked
+        // for a scale failed on "no handle" before this (rule 1108).
+        #[cfg(not(windows))]
+        let hwnd = crate::window::native_view_of(&app).ok_or("the window has no handle")?;
+        #[cfg(windows)]
         let hwnd = crate::window::hwnd_of(&app).ok_or("the window has no handle")?;
         apply_dpi(hwnd, app.window(), dpi, origin, DpiMode::from_env());
         Ok(())
@@ -1625,11 +1640,70 @@ pub fn series_from_redraws() {
     });
 }
 
+/// The last bytes written to each shell under `--e2e` (rule 1120's evidence): what Flare sent, beside
+/// what the shell then showed. It holds typed keys, so the tap is set only by `install` (under `--e2e`,
+/// never in a person's app), and the scenarios print `pty.written` only in a failing check's message.
+static WRITTEN: std::sync::Mutex<Vec<(String, std::collections::VecDeque<u8>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// How many of the last bytes `pty.written` keeps per shell.
+const WRITTEN_KEEP: usize = 512;
+
+fn tap_write(id: &str, data: &[u8]) {
+    let mut all = WRITTEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let i = match all.iter().position(|(k, _)| k == id) {
+        Some(i) => i,
+        None => {
+            all.push((id.to_string(), std::collections::VecDeque::new()));
+            all.len() - 1
+        }
+    };
+    let ring = &mut all[i].1;
+    ring.extend(data.iter().copied());
+    while ring.len() > WRITTEN_KEEP {
+        ring.pop_front();
+    }
+}
+
+/// `pty.written`: each shell's last bytes from Flare, as text with every byte outside printable ASCII
+/// written `\xNN`.
+pub fn written_json() -> serde_json::Value {
+    let all = WRITTEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut out = serde_json::Map::new();
+    for (id, ring) in all.iter() {
+        let text: String = ring
+            .iter()
+            .map(|&b| {
+                if (0x20..0x7f).contains(&b) {
+                    char::from(b).to_string()
+                } else {
+                    format!("\\x{b:02x}")
+                }
+            })
+            .collect();
+        out.insert(id.clone(), serde_json::Value::String(text));
+    }
+    serde_json::Value::Object(out)
+}
+
+/// The OS frames (`RedrawRequested`) the window has had under `--e2e` (rule 1118's evidence).
+static REDRAWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many OS frames the window has had under `--e2e`.
+pub fn redraw_count() -> u64 {
+    REDRAWS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Called for every redraw request of the window (software renderer only; a no-op otherwise).
 pub fn on_redraw() {
     if !crate::e2e::global().on() {
         return;
     }
+    REDRAWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let now = Instant::now();
     let age = crate::startup_trace::since_process_start().as_secs_f64() * 1000.0;
     let env = FRAMES.with(|f| f.try_borrow().ok().and_then(|st| st.env.clone()));
@@ -1732,10 +1806,47 @@ impl DpiSeam for WindowRef<'_> {
     fn scale_factor_changed(&mut self, scale_factor: f32) {
         self.0
             .dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor });
+        // macOS (rule 1117): the window item keeps its logical size through Slint's scale change, so it
+        // asked for 2655 px of a 1180 px buffer until the real window's resize came back, and a frame
+        // drawn in between (an occlusion change at launch) panicked in the software renderer (tabLooks,
+        // run 42598992162). The item is set to the buffer's own size at the new scale at once; the
+        // resize below then grows both together.
+        #[cfg(target_os = "macos")]
+        {
+            let size = self.0.size();
+            if let Some(logical) = item_size_for(size.width, size.height, scale_factor) {
+                self.0
+                    .dispatch_event(WindowEvent::Resized { size: logical });
+            }
+        }
     }
 
     fn set_physical_size(&mut self, w: u32, h: u32) {
         self.0.set_size(slint::PhysicalSize::new(w, h));
+    }
+}
+
+/// Pure (rule 1117): the window item's logical size that fills a `w` by `h` px buffer at `scale`, or None
+/// for an empty buffer or a scale that is not one.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn item_size_for(w: u32, h: u32, scale: f32) -> Option<slint::LogicalSize> {
+    (w > 0 && h > 0 && scale > 0.0)
+        .then(|| slint::LogicalSize::new(w as f32 / scale, h as f32 / scale))
+}
+
+/// Pure (rule 1114): the size a `Resize` to `w` by `h` css px asks the window for. Windows: the logical
+/// size, as before. macOS: device px at the window's own scale, because Slint hands a logical size to
+/// winit, which converts it with the screen's backing scale (1 on the runner), not the scale the hook's
+/// `DpiChange` gave the window: at 225 percent a 1000 css window came out 1000 px wide (444 css).
+pub fn resize_size(mac: bool, scale: f32, w: f32, h: f32) -> slint::WindowSize {
+    if mac {
+        let s = scale.max(0.01);
+        slint::WindowSize::Physical(slint::PhysicalSize::new(
+            (w * s).round().max(1.0) as u32,
+            (h * s).round().max(1.0) as u32,
+        ))
+    } else {
+        slint::WindowSize::Logical(slint::LogicalSize::new(w, h))
     }
 }
 
@@ -1832,7 +1943,15 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
             .app
             .upgrade()
             .ok_or_else(|| "the window is gone".to_string())
-            .map(|a| a.window().set_size(slint::LogicalSize::new(w, h))),
+            .map(|a| {
+                let window = a.window();
+                window.set_size(resize_size(
+                    cfg!(target_os = "macos"),
+                    window.scale_factor(),
+                    w,
+                    h,
+                ))
+            }),
         Request::Focus { on } => {
             crate::window::handle_focus(&ctx.kp, on);
             ctx.dispatch(vec![WindowEvent::WindowActiveChanged(on)])
@@ -1917,6 +2036,7 @@ pub fn install(
     // yet when this runs, so no look for its handle is made here.
     let appdata = flare_win::paths::roaming_app_data();
     let profile = crate::startup::profile_dir(args.user_data_dir.as_deref(), appdata.as_deref());
+    flare_term::session::set_write_tap(tap_write);
     match crate::e2e_hook::start(&profile) {
         Ok(server) => {
             log::info!("e2e: the test hook listens on {}", server.pipe);
@@ -1945,10 +2065,12 @@ fn print_window_snapshot(_hwnd: isize) -> Result<Snap, String> {
     Err("the window snapshot is not built on this platform yet".into())
 }
 
-/// macOS: the Mac E2E (port plan "Ongoing"). Refused until then.
+/// macOS (rule 1117): nothing to do first. The `set_minimized(false)` that follows is AppKit's
+/// `deminiaturize:`, which brings the window back without making the accessory app active; the screen
+/// guard holds that. The refusal here left the window in the Dock and the marks held (indicatorStyles).
 #[cfg(not(windows))]
 fn restore_without_activating(_app: &AppWindow) -> Result<(), String> {
-    Err("restoring without activation is not built on this platform yet".into())
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2308,7 +2430,13 @@ mod tests {
             _ => "other".to_string(),
         };
         let shift = format!("{:?}", String::from(char::from(Key::Shift)));
-        let ctrl = format!("{:?}", String::from(char::from(Key::Control)));
+        // Rule 1110: on a Mac Slint's Control is the Cmd key, and the Ctrl key is its Meta.
+        let ctrl_key = if cfg!(target_vendor = "apple") {
+            Key::Meta
+        } else {
+            Key::Control
+        };
+        let ctrl = format!("{:?}", String::from(char::from(ctrl_key)));
         let left = format!("{:?}", String::from(char::from(Key::LeftArrow)));
         let down: Vec<String> =
             slint_key_events(&event_from_chord("Shift+ArrowLeft", true).unwrap())
@@ -2328,6 +2456,20 @@ mod tests {
             .map(kind)
             .collect();
         assert_eq!(sel, vec![format!("down {ctrl}"), "down \"a\"".to_string()]);
+        // Rule 1110: Cmd+A (Meta in a chord) is what a Mac field selects all with: Slint's Control there.
+        let cmd_key = if cfg!(target_vendor = "apple") {
+            Key::Control
+        } else {
+            Key::Meta
+        };
+        let cmd: Vec<String> = slint_key_events(&event_from_chord("Meta+KeyA", true).unwrap())
+            .iter()
+            .map(kind)
+            .collect();
+        assert_eq!(
+            cmd.first(),
+            Some(&format!("down {:?}", String::from(char::from(cmd_key))))
+        );
         // A plain key carries no modifier, and a key Slint has no text for sends nothing.
         assert_eq!(
             slint_key_events(&event_from_chord("ArrowLeft", true).unwrap()).len(),
@@ -2453,6 +2595,34 @@ mod tests {
         fn set_physical_size(&mut self, w: u32, h: u32) {
             self.calls.push(format!("size {w}x{h}"));
         }
+    }
+
+    // Rule 1117: after a scale change the item fills the buffer it has, so no frame asks for more pixels.
+    #[test]
+    fn the_item_fills_the_buffer_it_has_at_the_new_scale() {
+        assert_eq!(
+            item_size_for(1180, 780, 2.25),
+            Some(slint::LogicalSize::new(1180.0 / 2.25, 780.0 / 2.25))
+        );
+        assert_eq!(item_size_for(0, 780, 2.25), None);
+        assert_eq!(item_size_for(1180, 780, 0.0), None);
+    }
+
+    // Rule 1114: a Mac resize is asked in device px at the window's scale; Windows keeps the logical size.
+    #[test]
+    fn a_mac_resize_is_asked_in_device_px_at_the_windows_own_scale() {
+        assert_eq!(
+            resize_size(true, 2.25, 1000.0, 640.0),
+            slint::WindowSize::Physical(slint::PhysicalSize::new(2250, 1440))
+        );
+        assert_eq!(
+            resize_size(true, 1.0, 1100.0, 700.0),
+            slint::WindowSize::Physical(slint::PhysicalSize::new(1100, 700))
+        );
+        assert_eq!(
+            resize_size(false, 2.25, 1000.0, 640.0),
+            slint::WindowSize::Logical(slint::LogicalSize::new(1000.0, 640.0))
+        );
     }
 
     #[test]

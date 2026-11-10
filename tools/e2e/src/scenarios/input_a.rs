@@ -357,6 +357,13 @@ fn write_agent(dir: &Path) -> Result<PathBuf, String> {
 }
 
 /// Whether `pwsh` is on this machine (PT's clickCaret runs in pwsh).
+#[cfg(not(windows))]
+fn pwsh_present() -> bool {
+    std::path::Path::new(&crate::standins::powershell()).is_absolute()
+}
+
+/// Whether `pwsh` is on this machine (PT's clickCaret runs in pwsh).
+#[cfg(windows)]
 fn pwsh_present() -> bool {
     std::process::Command::new("where.exe")
         .arg("pwsh")
@@ -382,13 +389,7 @@ fn caret_hold_run(ctx: &mut Ctx, app: &mut App, agent: &Path) -> Result<(), Stri
     if !wait_prompt(app) {
         return Err("the shell showed no prompt".into());
     }
-    run_line(
-        app,
-        &format!(
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
-            agent.display()
-        ),
-    )?;
+    run_line(app, &crate::standins::ps_file_line(agent))?;
     // PT: run.mjs:1234
     let streaming = wait_for("the stand-in agent streaming", 15_000, &mut || {
         text(app).contains("stream 3")
@@ -479,13 +480,7 @@ fn mouse_report_run(ctx: &mut Ctx, app: &mut App, stand_in: &Path) -> Result<(),
     if !wait_prompt(app) {
         return Err("the shell showed no prompt".into());
     }
-    run_line(
-        app,
-        &format!(
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'",
-            stand_in.display()
-        ),
-    )?;
+    run_line(app, &crate::standins::ps_file_line(stand_in))?;
     // PT: run.mjs:1306 (node). The program has enabled mouse reporting.
     let up = wait_for("the program has asked for the mouse", 15_000, &mut || {
         mouse_on(app)
@@ -583,6 +578,21 @@ fn click_caret_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         return Err("the shell showed no prompt after the edit".into());
     }
     app.session.type_text("echo zz")?;
+    // macOS: the old output is found once the prompt line shows the line typed and no longer PSReadLine's grey
+    // guess from history ("echo ab1Xcdef" after "echo "): read earlier, the last row held the needle, so the
+    // click landed on the line being edited and moved the caret (the Mac runner; rule 1119). Windows as before.
+    if cfg!(target_os = "macos") {
+        let typed = wait_for("the typed echo zz without the guess", 8_000, &mut || {
+            let t = text(app);
+            t.lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .is_some_and(|l| l.contains("echo zz") && !l.contains("ab1X"))
+        });
+        if !typed {
+            return Err("the prompt line never showed the typed \"echo zz\" alone".into());
+        }
+    }
     // PT: run.mjs:1378-1381
     let old = caret_point(app, "ab1Xcdef", 1);
     if let Some((x, y)) = old {
@@ -595,9 +605,20 @@ fn click_caret_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     let stayed = wait_for("the Q lands at the end", 8_000, &mut || {
         text(app).contains("zzQ")
     });
+    let seen = if stayed {
+        String::new()
+    } else {
+        let t = text(app);
+        let tail: Vec<&str> = t.lines().filter(|l| !l.trim().is_empty()).collect();
+        format!(
+            " (clicked at {old:?}; the screen ends: {}; Flare wrote: {})",
+            tail[tail.len().saturating_sub(5)..].join(" | "),
+            app.session.probe_str("pty.written").unwrap_or_default()
+        )
+    };
     ctx.ok(
         stayed,
-        "a click on old output above the prompt moves nothing",
+        format!("a click on old output above the prompt moves nothing{seen}"),
     );
     Ok(())
 }
@@ -639,7 +660,9 @@ fn find_key_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     app.session.click(gx, gy)?;
     run_line(app, r#"Write-Host -NoNewline "$([char]27)[?1049h""#)?;
     pause(800);
-    app.session.key("Ctrl+F")?;
+    // The program's Ctrl+F, as written on both systems: on a Mac Cmd+F is the app's find everywhere
+    // (the keymap's rule) and Ctrl+F is the program's, so the Mac spelling must not apply (rule 1112).
+    app.session.key_as_is("Ctrl+F")?;
     pause(600);
     // PT: run.mjs:1607
     ctx.ok(

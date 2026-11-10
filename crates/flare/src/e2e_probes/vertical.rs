@@ -162,6 +162,11 @@ fn sidebar_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         "collapsed": vertical && collapsed,
         "shown": shown,
         "sliding": a.get_sidebar_sliding(),
+        // Where the slide has the panel and the slot now (the values drawn), and how many OS frames came:
+        // a slid-out picture with no sidebar names its cause (rule 1118).
+        "slide_now": a.get_sidebar_slide_now(),
+        "slot_now": a.get_sidebar_slot_now(),
+        "redraws": crate::e2e_glue::redraw_count(),
         "mode": if collapsed { "collapsed" } else { "open" },
         "w": w,
         "nav": rect_json(right - w, BAR_H, w, win_h - BAR_H, k),

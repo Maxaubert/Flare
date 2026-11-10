@@ -1815,3 +1815,27 @@ development build).
 Not yet on the Mac (the next steps of phase 7, not ratchet lines): the cues and the widget. A copy's name
 in the list is "Flare (Dev)" for any Mac build until phase 8 knows the installed bundle; phase 8's signed bundle is
 also what the Input Monitoring list will show (a dev build is listed under the terminal that started it).
+
+## macOS E2E: the scenarios on GitHub's macOS runner (2026-11-09)
+
+The visual E2E on macOS, the port plan's Ongoing row (`docs/superpowers/specs/2026-11-08-macos-port.md`; how it runs
+and which scenarios are gated: `docs/e2e.md`, "macOS E2E"; regression rules 1103 to 1122). It runs in CI only, in the
+`e2e-macos` job; nothing of it runs on a person's Mac. 72 scenarios run on the runner, 29 are gated with a reason,
+plus the opt-in visualTour. 21 of the gated ones wait for a Mac port (the web panel and the update, phase 8;
+dictation, phase 7; the `.cmd` Claude stand-in); the other 8 check what only Windows has.
+
+- [x] The harness builds and runs on macOS and drives the app over the `--e2e` Unix socket hook in the control channel's private folder (0600, peer uid checked, first-instance lock). Stands in for the named pipe. (macOS: the_mac_socket_is_this_users_alone_and_goes_with_the_server, the_mac_hook_is_a_short_socket_in_the_private_folder, crates/flare/src/e2e_hook.rs)
+- [x] An `--e2e` window never shows and never takes the keyboard: an accessory app, every window born clear and click-through, kept clear whoever sets its alpha, parked on the main screen so it paints, its focus from the hook alone; the screen guard fails a scenario whose process shows a window or becomes frontmost. Stands in for the hidden desktop. (macOS: a_born_clear_class_initialises_through_the_stand_in, a_parked_class_keeps_its_frame_off_every_screen_and_nswindow_keeps_the_rule, only_a_mac_e2e_run_drops_the_native_focus, the_guard_flags_a_window_or_the_keyboard_of_the_run_and_only_those)
+- [x] A scenario's Windows keys reach the Mac app as a Mac keyboard gives them: app chords with Cmd, a Slint field's Cmd as Slint's Control, a field's End as Cmd+Right, the program's keys as written. (macOS: the_app_chords_take_cmd_on_a_mac_and_the_shell_keys_stay, a_chord_with_modifiers_reaches_slint_as_modifier_presses_around_the_key)
+- [x] A hook resize at a scale other than 100 percent gives the window the css size asked for, and a scale change never outgrows the software renderer's buffer. (macOS: a_mac_resize_is_asked_in_device_px_at_the_windows_own_scale, the_item_fills_the_buffer_it_has_at_the_new_scale)
+- [x] A UI-thread stall names the UI thread's frames, as the Windows `.pdata` walk does (Apple silicon). (macOS: a_busy_thread_is_sampled_200_times_named_and_keeps_running, the_walk_follows_the_chain_inside_the_stack_and_stops_outside_it, crates/flare-win/src/macos/thread_stack.rs)
+- [x] A miniaturised window counts as minimised for the marks' pause, though a Mac sends it no resize. (the_systems_minimised_answer_wins_over_slints, crates/flare/src/window.rs)
+
+- [x] The sidebar's slide-out moves in a window that gets no frames: a timer steps it in a Mac `--e2e` run. (macOS: a_timer_steps_the_slide_without_frames_and_in_a_mac_e2e_run, verticalTabs)
+- [x] A warm spare answers its cursor questions at once from its own grid, as a tab would, and a new tab that adopts it gets its kept output without its questions to the terminal, so no question is answered late (pwsh read that late cursor report as typing) or left unanswered (pwsh then read the next typed line as its answer); spares stay on for every shell. (macOS: a_spare_that_asked_the_terminal_is_adopted_without_its_question, a_question_split_over_two_reads_is_taken_out_too, the term_query tests, helpPanel)
+- [x] An idle run has one silent 3 s window in three on the runner (rule 1121; one window elsewhere): two noisy windows still pass and print their lines in the job's log, so the Mac runner does not prove that every idle window is silent. (macOS: diagLog)
+
+Where it stands (2026-11-09, the spec's progress line has the runs): the `e2e-macos` job ran the whole table green in
+the full hand run 42655597593 (72 scenarios, 29 gated with a reason, the opt-in visualTour not run). Not green there:
+the `macos` job's `flare-web::cef_macos` tests (the network observers, the panel's picture, the engine's switches),
+which fail on the base branch `feat/macos-5-web-panel` too and belong to phase 5.

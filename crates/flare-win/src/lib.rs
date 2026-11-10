@@ -79,6 +79,10 @@ pub mod resize_edges;
 #[path = "macos/resize_edges.rs"]
 pub mod resize_edges;
 pub mod seam;
+#[cfg(not(target_os = "macos"))]
+pub mod thread_stack;
+#[cfg(target_os = "macos")]
+#[path = "macos/thread_stack.rs"]
 pub mod thread_stack;
 pub mod verb;
 pub mod verb_keys;

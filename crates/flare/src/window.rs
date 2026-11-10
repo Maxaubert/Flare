@@ -539,6 +539,7 @@ fn attach_material_when_ready(
 /// timer does). Right after `show()` there is none: the winit backend makes the native window only
 /// once the event loop runs, so a step that asked then got nothing and was skipped for good (the
 /// taskbar badge never showed, 2026-10-26). Keep the returned timer alive for the run.
+#[cfg(windows)]
 fn when_handle_ready(
     app: &AppWindow,
     what: &'static str,
@@ -574,9 +575,42 @@ fn when_handle_ready(
     );
     timer
 }
+/// macOS: what waits for an HWND (the hung-window watchdog, the exe's icon, the taskbar overlay) has no
+/// Mac meaning, and `hwnd_of` never answers there: polling it only ended in a false "never got a handle"
+/// warning 10 s into every run (seen in the Mac E2E, rule 1108). The Dock badge is set up without a handle.
+#[cfg(not(windows))]
+fn when_handle_ready(
+    _app: &AppWindow,
+    _what: &'static str,
+    _f: impl FnOnce(&AppWindow, isize) + 'static,
+) -> Rc<slint::Timer> {
+    Rc::new(slint::Timer::default())
+}
+
+/// Pure (rule 1117): whether the window is minimised, from Slint's state and, when there is one, the
+/// system's own answer. On macOS a window miniaturised by Cmd+M, the yellow light or the hook gets no
+/// resize, so Slint's state, which it updates on a resize, stayed "not minimised" and the marks kept
+/// moving behind the Dock (indicatorStyles on the runner). The system's answer wins when it gives one.
+pub fn minimised_from(slint_says: bool, system_says: Option<bool>) -> bool {
+    system_says.unwrap_or(slint_says)
+}
+
+/// Whether the window is minimised (see `minimised_from`): on macOS winit's `is_minimized`, read live
+/// from the native window (`isMiniaturized`), else Slint's own state.
+pub fn is_minimised(window: &slint::Window) -> bool {
+    use slint::winit_030::WinitWindowAccessor;
+    // Windows keeps Slint's state, which its minimise resize keeps right.
+    let system = if cfg!(target_os = "macos") {
+        window.with_winit_window(|w| w.is_minimized()).flatten()
+    } else {
+        None
+    };
+    minimised_from(window.is_minimized(), system)
+}
+
 /// Brings the window forward the way `raise_plan` says (under `--e2e` it only shows).
 fn raise_window(app: &AppWindow, e2e: bool) {
-    let minimised = app.window().is_minimized();
+    let minimised = is_minimised(app.window());
     for step in raise_plan(e2e, minimised) {
         app.window().with_winit_window(|w| match step {
             RaiseStep::ShowInactive | RaiseStep::Show => w.set_visible(true),
@@ -599,7 +633,7 @@ fn observe(window: &slint::Window) -> Observed {
         y: pos.y,
         scale: f64::from(window.scale_factor()),
         maximised: window.is_maximized(),
-        minimised: window.is_minimized(),
+        minimised: is_minimised(window),
         fullscreen: window.is_fullscreen(),
     }
 }
@@ -2169,6 +2203,15 @@ pub(crate) fn handle_key(kp: &KeyPath, ev: &KeyEvent) -> EventResult {
     EventResult::PreventDefault
 }
 
+/// Pure (rule 1113): whether winit's own `Focused` is dropped. macOS under `--e2e` only: the parked
+/// window is an accessory's that is never key, so AppKit reports it as having lost the focus when it is
+/// parked, and every "the person is looking" rule then read the run as away (a visited tab kept its
+/// Finished mark on the Mac runner). The Windows e2e window, no-activate, never gets either event; on
+/// both systems the scenarios move the focus with the hook's `Focus` alone.
+pub(crate) fn e2e_drops_native_focus(mac: bool, e2e: bool) -> bool {
+    mac && e2e
+}
+
 /// The window gained or lost the focus (winit's `Focused`, or the test hook's `Focus`).
 pub(crate) fn handle_focus(kp: &KeyPath, on: bool) {
     if let Some(app) = kp.app.upgrade() {
@@ -2429,6 +2472,18 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 crate::e2e_glue::on_redraw();
                 EventResult::Propagate
             }
+            WindowEvent::Occluded(hidden) => {
+                // macOS (rule 1117): a miniaturise or its undo sends no resize, only this, so the marks'
+                // pause is read again here (Windows has its resize to zero for it, and logs nothing new).
+                if cfg!(target_os = "macos") {
+                    // Said once per change: a window the system holds as hidden gets no frames (the Mac
+                    // E2E's clear window, rule 1115).
+                    log::info!("window occluded: {hidden}");
+                    let minimised = is_minimised(window);
+                    with_ctl(&mut |c| c.on_minimised(minimised));
+                }
+                EventResult::Propagate
+            }
             WindowEvent::ModifiersChanged(m) => {
                 mods.set(m.state());
                 EventResult::Propagate
@@ -2516,7 +2571,9 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 EventResult::Propagate
             }
             WindowEvent::Focused(on) => {
-                handle_focus(&kp, *on);
+                if !e2e_drops_native_focus(cfg!(target_os = "macos"), crate::e2e::global().on()) {
+                    handle_focus(&kp, *on);
+                }
                 EventResult::Propagate
             }
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
@@ -2610,6 +2667,24 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Rule 1117: the system's answer wins; without one Slint's state stands.
+    #[test]
+    fn the_systems_minimised_answer_wins_over_slints() {
+        assert!(minimised_from(false, Some(true)));
+        assert!(!minimised_from(true, Some(false)));
+        assert!(minimised_from(true, None));
+        assert!(!minimised_from(false, None));
+    }
+
+    // Rule 1113: only a Mac --e2e run drops winit's focus events; the real app and Windows keep them.
+    #[test]
+    fn only_a_mac_e2e_run_drops_the_native_focus() {
+        assert!(e2e_drops_native_focus(true, true));
+        assert!(!e2e_drops_native_focus(true, false));
+        assert!(!e2e_drops_native_focus(false, true));
+        assert!(!e2e_drops_native_focus(false, false));
+    }
 
     #[test]
     fn a_session_end_flushes_the_panels_file_too() {

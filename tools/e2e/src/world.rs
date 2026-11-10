@@ -23,6 +23,23 @@ const REMOVE_WAIT: Duration = Duration::from_millis(200);
 pub const PSREADLINE_MUTE: &str =
     "Set-PSReadLineKeyHandler -Chord 'Ctrl+v','Ctrl+V','Shift+Insert' -ScriptBlock {}; Clear-Host";
 
+/// Clear-Host as Windows has it, screen and scrollback: on macOS pwsh sends the terminfo `clear` alone, the
+/// screen goes into the scrollback, and a question box "cleared" that way is still the last text of the
+/// buffer, so the Mac line adds the scrollback clear (rule 1112; agentHooks and attention on the runner).
+pub const CLEAR_HOST: &str = if cfg!(target_os = "macos") {
+    "Clear-Host; [Console]::Write([string][char]27 + '[3J')"
+} else {
+    "Clear-Host"
+};
+
+/// `cat` as a scenario means it (PowerShell's Get-Content): on macOS pwsh has no `cat` alias and the
+/// name is /bin/cat (rule 1112).
+pub const GET_CONTENT: &str = if cfg!(target_os = "macos") {
+    "Get-Content"
+} else {
+    "cat"
+};
+
 /// The world of one scenario.
 pub struct World {
     sandbox: Sandbox,
@@ -131,6 +148,41 @@ pub fn prompt_showing(text: &str, shell: Shell) -> bool {
             None => false,
         },
         Shell::Cmd => true,
+    }
+}
+
+/// The diagnostics log folder of a launched app's profile, where the app writes it: `<profile>/logs`,
+/// or on macOS `<home>/Library/Logs/<name>` when the profile is the default one under a HOME (the Mac
+/// world's, rule 1112), as the app's `logs_dir_of` has it (Console.app looks there).
+pub fn logs_dir(profile: &std::path::Path) -> std::path::PathBuf {
+    let mac_default = || {
+        let name = profile.file_name()?;
+        let support = profile.parent()?;
+        let library = support.parent()?;
+        (support.file_name()? == "Application Support" && library.file_name()? == "Library")
+            .then(|| library.join("Logs").join(name))
+    };
+    match mac_default() {
+        Some(dir) if cfg!(target_os = "macos") => dir,
+        _ => profile.join("logs"),
+    }
+}
+
+/// The home folder the launched app sees: the owner's own on Windows (`USERPROFILE`, the app inherits
+/// it), the world's `home/` on macOS (the sandbox sets HOME, rule 1104).
+pub fn user_home(ctx: &mut crate::ctx::Ctx) -> String {
+    #[cfg(windows)]
+    {
+        let _ = ctx;
+        std::env::var("USERPROFILE").unwrap_or_default()
+    }
+    #[cfg(not(windows))]
+    {
+        ctx.ensure_world()
+            .sandbox()
+            .home
+            .to_string_lossy()
+            .into_owned()
     }
 }
 

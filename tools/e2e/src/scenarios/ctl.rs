@@ -13,8 +13,11 @@
 //! Nothing here touches the user's windows, pipes or Claude settings: the only pipe connected to is
 //! the one the app under test reported about itself.
 
+#[cfg(target_os = "macos")]
+use crate::proc::CommandExt;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -147,7 +150,7 @@ fn channel_on(ctx: &mut Ctx, app: &mut App, alpha: &Path, beta: &Path) -> Result
         "each tab has its own 64 digit secret, which is not its id",
     );
     ctx.ok(
-        inf.pipe.starts_with("\\\\.\\pipe\\flare-ctl-") && inf.pipe.matches('-').count() >= 3,
+        pipe_is_scoped(&inf.pipe),
         format!("the pipe is scoped to this profile ({})", inf.pipe),
     );
     let Some((front_id, _, front_token)) = inf.tabs.iter().find(|t| t.1).cloned() else {
@@ -522,6 +525,22 @@ pub(super) struct Mcp<'a> {
     cwd: Option<&'a Path>,
 }
 
+/// Whether the channel's name is the profile-scoped one: `\\.\pipe\flare-ctl-<user>-<scope>` on
+/// Windows; on macOS `<user temp>/flare-ctl/<16 hex>-<8 hex>.sock` (the same hashes, rule 1012).
+fn pipe_is_scoped(pipe: &str) -> bool {
+    if cfg!(windows) {
+        return pipe.starts_with("\\\\.\\pipe\\flare-ctl-") && pipe.matches('-').count() >= 3;
+    }
+    let name = pipe.rsplit('/').next().unwrap_or("");
+    let stem = name.strip_suffix(".sock").unwrap_or("");
+    pipe.contains("/flare-ctl/")
+        && stem.split_once('-').is_some_and(|(a, b)| {
+            a.len() == 16
+                && b.len() == 8
+                && (a.to_string() + b).chars().all(|c| c.is_ascii_hexdigit())
+        })
+}
+
 pub(super) fn run_mcp(m: &Mcp, lines: &[Value]) -> Result<Vec<Value>, String> {
     let mut cmd = Command::new(m.exe);
     cmd.stdin(Stdio::piped())
@@ -580,7 +599,13 @@ pub(super) fn mcp<'a>(
 pub(super) fn mcp_exe_of(ctx: &Ctx) -> PathBuf {
     ctx.exe
         .parent()
-        .map(|d| d.join("flare-mcp.exe"))
+        .map(|d| {
+            d.join(if cfg!(windows) {
+                "flare-mcp.exe"
+            } else {
+                "flare-mcp"
+            })
+        })
         .unwrap_or_default()
 }
 

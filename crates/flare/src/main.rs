@@ -198,6 +198,12 @@ fn main() {
     }
 
     e2e::init(args.e2e);
+    // macOS: an --e2e window is never pulled onto a screen, from its first order-in (rule 1107).
+    #[cfg(target_os = "macos")]
+    if args.e2e {
+        flare_win::window_park::keep_windows_off_screen();
+        flare_win::window_park::hold_off_app_nap();
+    }
     // Single instance: a second launch hands its folders to the first and exits 0. The lock and
     // the pipe are keyed by the profile folder, so an e2e run (its own profile) never reaches the
     // owner's running Flare.

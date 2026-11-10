@@ -174,6 +174,12 @@ pub fn run_one(name: &str, cli: &Cli) -> i32 {
     let mut ctx = Ctx::new(s.name);
     ctx.json = true;
     ctx.exe = exe_path(cli);
+    // macOS: an absolute path, since a child started in another folder resolves a relative program
+    // against that folder there (`flare-mcp` beside the exe, started in the agent's folder).
+    #[cfg(not(windows))]
+    if let Ok(abs) = std::fs::canonicalize(&ctx.exe) {
+        ctx.exe = abs;
+    }
     ctx.packaged = cli.packaged;
     if let Some(dir) = &cli.shots {
         ctx.shots = dir.clone();
@@ -400,13 +406,61 @@ pub fn run_all(cli: &Cli) -> i32 {
         println!("no scenario matches {}", cli.filters.join(" "));
         return 1;
     }
+    #[cfg(target_os = "macos")]
+    let (picked, gated) = mac::split_gated(picked);
+    // Rule 1122: a filter that only hits gated scenarios runs nothing, and nothing run is no pass.
+    #[cfg(target_os = "macos")]
+    if picked.is_empty() {
+        println!(
+            "only gated scenarios match {}: nothing runs on macOS",
+            cli.filters.join(" ")
+        );
+        for (name, why) in &gated {
+            println!("  gated  {name}: {why}");
+        }
+        return 1;
+    }
+    #[cfg(target_os = "macos")]
+    let mut clip = crate::guards::ClipboardGuard::new(crate::guards::MacPasteboard);
+    #[cfg(target_os = "macos")]
+    clip.begin();
     let mut rows = Vec::new();
     for s in picked {
         println!("\n{}", s.name);
-        rows.push(run_scenario(s, cli, &exe));
+        #[cfg(target_os = "macos")]
+        let watch = mac::Watch::start();
+        #[cfg(target_os = "macos")]
+        let mut row = run_scenario(s, cli, &exe);
+        #[cfg(not(target_os = "macos"))]
+        let row = run_scenario(s, cli, &exe);
+        #[cfg(target_os = "macos")]
+        for problem in watch.stop() {
+            row.fails += 1;
+            println!("  FAIL  {problem}");
+        }
+        rows.push(row);
     }
     println!();
     print!("{}", report::table(&rows));
+    #[cfg(target_os = "macos")]
+    {
+        let problems = clip.end();
+        for p in &problems {
+            println!("FAIL  {p}");
+        }
+        if !problems.is_empty() {
+            return 1;
+        }
+        if !gated.is_empty() {
+            println!(
+                "{} gated on macOS (docs/e2e.md, \"macOS E2E\"):",
+                gated.len()
+            );
+            for (name, why) in &gated {
+                println!("  gated  {name}: {why}");
+            }
+        }
+    }
     let skips: u32 = rows.iter().map(|r| r.skips).sum();
     if skips > 0 {
         println!("{skips} skipped (a skip is never a pass)");
@@ -418,6 +472,160 @@ pub fn run_all(cli: &Cli) -> i32 {
     } else {
         println!("all scenarios passed");
         0
+    }
+}
+
+/// macOS (rules 1104 and 1105): the gate and the screen guard around each scenario.
+#[cfg(target_os = "macos")]
+pub mod mac {
+    use std::collections::{BTreeSet, HashSet};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::thread::JoinHandle;
+    use std::time::Duration;
+
+    use crate::ctx::Scenario;
+    use crate::scenarios::mac_gate;
+
+    /// The picked scenarios a Mac run starts, and the gated ones with their reasons (never run, never a pass).
+    pub fn split_gated(
+        picked: Vec<&'static Scenario>,
+    ) -> (Vec<&'static Scenario>, Vec<(&'static str, &'static str)>) {
+        let mut run = Vec::new();
+        let mut gated = Vec::new();
+        for s in picked {
+            match mac_gate::reason(s.name) {
+                Some(why) => gated.push((s.name, why)),
+                None => run.push(s),
+            }
+        }
+        (run, gated)
+    }
+
+    /// How often the guard looks at the desktop while a scenario runs.
+    const EVERY: Duration = Duration::from_millis(200);
+
+    /// Pure: what one look found wrong, given the run's processes, the frontmost app and how many
+    /// windows of the run show on a display.
+    pub fn look(run: &HashSet<u32>, front: Option<u32>, shown: &[String]) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(pid) = front.filter(|p| run.contains(p)) {
+            out.push(format!("the scenario became the frontmost app (pid {pid})"));
+        }
+        for w in shown {
+            out.push(format!("the scenario showed a window on a display: {w}"));
+        }
+        out
+    }
+
+    /// The run's processes: every `--run-one` child of this runner and everything below it.
+    fn run_processes() -> HashSet<u32> {
+        let me = std::process::id();
+        let rows = crate::proc::process_rows();
+        let roots: Vec<u32> = rows
+            .iter()
+            .filter(|(_, ppid, cmd)| *ppid == me && cmd.contains("--run-one"))
+            .map(|(pid, _, _)| *pid)
+            .collect();
+        let table: Vec<(u32, u32)> = rows.iter().map(|(p, pp, _)| (*p, *pp)).collect();
+        crate::guards::run_set(&roots, &table)
+    }
+
+    /// The screen guard: a thread that looks every 200 ms while a scenario runs. A Mac run must never
+    /// take the keyboard or show a window (the Windows foreground guard's job, plus the window server's
+    /// list, since a Mac has no hidden desktop).
+    pub struct Watch {
+        stop: Arc<AtomicBool>,
+        found: Arc<Mutex<BTreeSet<String>>>,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    impl Watch {
+        pub fn start() -> Watch {
+            let stop = Arc::new(AtomicBool::new(false));
+            let found = Arc::new(Mutex::new(BTreeSet::new()));
+            let (s, f) = (Arc::clone(&stop), Arc::clone(&found));
+            let thread = std::thread::spawn(move || {
+                while !s.load(Ordering::SeqCst) {
+                    let run = run_processes();
+                    if !run.is_empty() {
+                        let pids: Vec<u32> = run.iter().copied().collect();
+                        let windows = crate::mac::shown_windows_of(&pids);
+                        // The owner's command line says which launch it was (rule 1111's diagnosis).
+                        let rows = if windows.is_empty() {
+                            Vec::new()
+                        } else {
+                            crate::proc::process_rows()
+                        };
+                        let shown: Vec<String> = windows
+                            .iter()
+                            .map(|w| {
+                                let (x, y, ww, h) = w.bounds;
+                                let cmd: String = rows
+                                    .iter()
+                                    .find(|(p, _, _)| *p == w.pid)
+                                    .map(|(_, _, c)| c.chars().take(160).collect())
+                                    .unwrap_or_default();
+                                format!(
+                                    "{} (pid {}), window {}, level {}, alpha {:.2}, at ({x}, {y}) size {ww} by {h}; {cmd}",
+                                    w.owner, w.pid, w.number, w.layer, w.alpha
+                                )
+                            })
+                            .collect();
+                        let problems = look(&run, crate::mac::frontmost_pid(), &shown);
+                        if let Ok(mut f) = f.lock() {
+                            f.extend(problems);
+                        }
+                    }
+                    std::thread::sleep(EVERY);
+                }
+            });
+            Watch {
+                stop,
+                found,
+                thread: Some(thread),
+            }
+        }
+
+        /// Stops the guard and returns what it found, each problem once.
+        pub fn stop(mut self) -> Vec<String> {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
+            }
+            self.found
+                .lock()
+                .map(|f| f.iter().cloned().collect())
+                .unwrap_or_default()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_guard_flags_a_window_or_the_keyboard_of_the_run_and_only_those() {
+            let run: HashSet<u32> = [10, 11].into_iter().collect();
+            let two = ["a".to_string(), "b".to_string()];
+            assert!(
+                look(&run, Some(99), &[]).is_empty(),
+                "another app in front is not a failure"
+            );
+            assert!(look(&run, None, &[]).is_empty());
+            assert_eq!(look(&run, Some(11), &[]).len(), 1);
+            assert_eq!(look(&run, Some(99), &two).len(), 2);
+            assert_eq!(look(&run, Some(10), &two[..1]).len(), 2);
+        }
+
+        #[test]
+        fn a_gated_scenario_is_never_started() {
+            let picked = crate::runner::pick(&[]);
+            let total = picked.len();
+            let (run, gated) = split_gated(picked);
+            assert_eq!(run.len() + gated.len(), total);
+            assert!(run.iter().all(|s| mac_gate::reason(s.name).is_none()));
+        }
     }
 }
 

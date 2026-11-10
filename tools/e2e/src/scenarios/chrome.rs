@@ -227,10 +227,16 @@ pub fn title_bar(ctx: &mut Ctx) -> Result<(), String> {
     let close = rect(&mut app, "close");
     let cog = rect(&mut app, "cog");
     let min = rect(&mut app, "min");
+    #[cfg(windows)]
     let at_end = match (close, cog, min) {
         (Some(c), Some(_), Some(_)) => css_w - (c.0 + c.2) <= 12.0,
         _ => false,
     };
+    // macOS: the window buttons are AppKit's traffic lights on the left (outside what the app draws,
+    // `ui.rect` refuses them), and the cog is what ends the row (rule 1108).
+    #[cfg(not(windows))]
+    let at_end =
+        close.is_none() && min.is_none() && cog.is_some_and(|c| css_w - (c.0 + c.2) <= 12.0);
     ctx.ok(
         at_end,
         format!("and the settings, minimise and close buttons sit at its right end ({close:?})"),
@@ -270,10 +276,13 @@ pub fn title_bar(ctx: &mut Ctx) -> Result<(), String> {
     ctx.ok(closed, "every tab closed");
     let empty_cog = rect(&mut app, "cog");
     let empty_close = rect(&mut app, "close");
+    #[cfg(windows)]
     let held = match (empty_cog, empty_close) {
         (Some(c), Some(x)) => c.1 + c.3 <= 36.0 && x.1 + x.3 <= 36.0,
         _ => false,
     };
+    #[cfg(not(windows))]
+    let held = empty_close.is_none() && empty_cog.is_some_and(|c| c.1 + c.3 <= 36.0);
     ctx.ok(held, "with no tabs the top row still holds the buttons");
     app.close();
     Ok(())
@@ -296,7 +305,7 @@ pub fn new_tab_folder(ctx: &mut Ctx) -> Result<(), String> {
     ctx.ok(cog, "the title bar has a settings cog");
     // PT: opening in a folder is the default. With no folder stored, the first tab opens in the
     // user's own folder, so its tooltip is that folder's full path.
-    let home = std::env::var("USERPROFILE").unwrap_or_default();
+    let home = crate::world::user_home(ctx);
     let _opened = first_tab(ctx, &mut app);
     let tip = probe(&mut app, "app.state", Value::Null)["tabs"][0]["tooltip"]
         .as_str()
@@ -470,6 +479,23 @@ pub fn theme(ctx: &mut Ctx) -> Result<(), String> {
     })?;
     // The first tab is the precondition the port waits for; the checks below read it.
     let _one = first_tab(ctx, &mut app);
+    // macOS: pwsh starts later than the first frame, and until it prints the block cursor sits on the
+    // cell the frame check reads; wait for its prompt (Windows' ConPTY keeps the cursor hidden there).
+    #[cfg(target_os = "macos")]
+    {
+        let front = app
+            .session
+            .state()
+            .ok()
+            .and_then(|s| s.front)
+            .unwrap_or_default();
+        let _ = crate::world::wait_for_prompt(
+            &mut app,
+            &front,
+            crate::world::Shell::PowerShell,
+            crate::world::prompt_timeout(crate::world::Shell::PowerShell),
+        );
+    }
     let dark = probe(&mut app, "window.ground", Value::Null)["light"] == false;
     ctx.ok(dark, "the default theme is dark");
     let ground = ground_rgb(&mut app);

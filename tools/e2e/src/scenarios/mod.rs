@@ -1,18 +1,50 @@
 //! The scenario table: one row per scenario of Appendix B, in the order the parent runs them. Task 1
 //! writes the rows and one stub per scenario; each port task replaces its own stub body.
+//!
+//! macOS (rule 1105): the table is the same; `mac_gate` names the scenarios a Mac run does not start and
+//! why. The modules that need Windows-only harness parts (the speech host's process list, the tour's
+//! window capture) are stubs there, and every one of their scenarios is gated.
+
+/// Scenario bodies that only say they are gated: the Mac build of a module that needs Windows-only
+/// harness parts. The runner never starts a gated scenario, so these only answer a direct `--run-one`.
+#[cfg(not(windows))]
+macro_rules! gated_stubs {
+    ($($name:ident),+ $(,)?) => {
+        $(
+            pub fn $name(ctx: &mut crate::ctx::Ctx) -> Result<(), String> {
+                let why = super::mac_gate::reason(ctx.name).unwrap_or("Windows only");
+                Err(format!("gated on macOS: {why}"))
+            }
+        )+
+    };
+}
+#[cfg(not(windows))]
+use gated_stubs;
+
 pub mod agent_hooks;
 pub mod agent_launch;
 pub mod agent_misc;
 pub mod agent_web;
 pub mod anywhere;
 pub mod bot_checks;
+#[cfg(windows)]
 pub mod brand;
+pub mod mac_gate;
+#[cfg(not(windows))]
+pub mod brand {
+    super::gated_stubs!(plugin_brand);
+}
 pub mod chrome;
 pub mod closeask;
 pub mod convo;
 pub mod ctl;
 pub mod diag;
+#[cfg(windows)]
 pub mod dictation;
+#[cfg(not(windows))]
+pub mod dictation {
+    super::gated_stubs!(dictation, dictation_page, dictation_parakeet);
+}
 pub mod dpi;
 mod driver;
 pub mod fill;
@@ -40,7 +72,12 @@ pub mod staged;
 pub mod strip;
 pub mod update;
 pub mod vertical;
+#[cfg(windows)]
 pub mod visual;
+#[cfg(not(windows))]
+pub mod visual {
+    super::gated_stubs!(visual_tour);
+}
 pub mod web;
 pub mod web_logins;
 

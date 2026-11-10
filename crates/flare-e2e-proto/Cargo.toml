@@ -9,5 +9,9 @@ publish = false
 serde.workspace = true
 serde_json.workspace = true
 
+# macOS: the hook's socket lives in the control channel's private folder (rule 1103).
+[target.'cfg(target_os = "macos")'.dependencies]
+flare-ctl = { path = "../flare-ctl" }
+
 [lints]
 workspace = true

@@ -244,7 +244,7 @@ fn goto_row(ctx: &mut Ctx, app: &mut App, id: &str) -> bool {
 /// Clicks a text field at a css point, selects its text, types `text` and presses Enter.
 fn fill_at(app: &mut App, x: f64, y: f64, text: &str) {
     let _ = click_at(app, x, y);
-    let _ = app.session.key("End");
+    let _ = app.session.key(crate::chord::FIELD_END);
     for _ in 0..12 {
         let _ = app.session.key("Backspace");
     }
@@ -1061,6 +1061,14 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
     ctx.until("the unsaved agent colour is held", 3_000, &mut || {
         save_dirty(&mut app)
     });
+    // settings.json is written after a debounce: the colour is read once it is on the disk, or the
+    // Cancel below is held to a store that had not caught up yet (the Mac runner read "" here, then
+    // "#c0ffee" after Cancel, though nothing changed; rule 1119). Windows reads it at once, as before.
+    if cfg!(target_os = "macos") {
+        ctx.poll(3_000, &mut || {
+            hex6(&stored_str(&app, "flare.term.agentColor")) == "#c0ffee"
+        });
+    }
     let dirty_agent = stored_str(&app, "flare.term.agentColor");
     let _ = goto_page(ctx, &mut app, "appearance");
     let _ = scroll_pick_card(ctx, &mut app, "nord");
@@ -1081,7 +1089,11 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
             && kept_theme == "pitch"
             && kept_agent == dirty_agent
             && save_dirty(&mut app),
-        format!("Cancel changes nothing (theme {kept_theme}, agent {kept_agent})"),
+        format!(
+            "Cancel changes nothing (theme {kept_theme}, agent {kept_agent}; it asked: {asks_again}, \
+             the colour held before: {dirty_agent:?}, still unsaved: {})",
+            save_dirty(&mut app)
+        ),
     );
 
     // PT: Discard switches, and the change is gone.

@@ -19,6 +19,23 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The shell a new tab starts: the saved one. macOS under `--e2e` only: with none saved, the shell the
+/// run names in `FLARE_E2E_SHELL` (the Mac E2E runs its PowerShell scenarios in pwsh, rule 1106); the
+/// variable reads as absent without the flag, and Windows never looks.
+#[cfg(not(target_os = "macos"))]
+fn shell_id_of(prefs: &PrefStore) -> Option<String> {
+    saved_shell_id(prefs)
+}
+
+#[cfg(target_os = "macos")]
+fn shell_id_of(prefs: &PrefStore) -> Option<String> {
+    saved_shell_id(prefs).or_else(|| {
+        crate::e2e::global()
+            .env(&["FLARE_E2E", "_SHELL"].concat())
+            .filter(|v| !v.is_empty())
+    })
+}
+
 /// How long the quit waits for the shells (rule 28).
 const QUIT_WAIT: Duration = Duration::from_secs(3);
 
@@ -159,7 +176,7 @@ impl TabHost {
         let (cols, rows) = self.dims;
         let handle = TermHandle::new(id, Arc::clone(&self.mgr), cols, rows);
         handle.set_waker(Arc::clone(&self.waker));
-        let shell_id = saved_shell_id(&self.prefs);
+        let shell_id = shell_id_of(&self.prefs);
         // The second of the three validations of a resume id (rule 2): only a session id or the
         // Codex marker ever reaches a command line.
         let valid = valid_resume(resume);
@@ -255,7 +272,7 @@ impl TabHost {
     /// BLOCKING inside `SessionManager::prewarm`, so it runs on a worker thread; best effort.
     pub fn prewarm(&self, cwd: &str) {
         let mgr = Arc::clone(&self.mgr);
-        let shell_id = saved_shell_id(&self.prefs);
+        let shell_id = shell_id_of(&self.prefs);
         let plugin = self.plugin_env();
         let cwd = cwd.to_string();
         let r = std::thread::Builder::new()

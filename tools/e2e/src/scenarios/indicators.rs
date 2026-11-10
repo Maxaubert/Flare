@@ -538,10 +538,26 @@ pub fn attention(ctx: &mut Ctx) -> Result<(), String> {
             covered(&foot_row(&s, k, r), ground, 12),
         )
     };
-    let (thick, share) = line(ctx, &mut app, "question", 0);
+    // A question's line breathes: a picture at its faintest shows no line, so it is looked at over a breath (up
+    // to six pictures, 250 ms apart) and the clearest counts (the Mac runner caught it at 0 px once; rule 1119).
+    // Windows looks once, as before.
+    let want = thick_rows(3.0, k);
+    let tries = if cfg!(target_os = "macos") { 6 } else { 1 };
+    let mut best = (0usize, 0.0f32);
+    for attempt in 0..tries {
+        let got = line(ctx, &mut app, "question", 0);
+        if (got.0 == want && got.1 > best.1) || (best.0 != want && got.0 > best.0) {
+            best = got;
+        }
+        if (best.0 == want && best.1 > 0.9) || attempt + 1 == tries {
+            break;
+        }
+        hold(ctx, 250);
+    }
+    let (thick, share) = best;
     let m0 = mark(&mut app, 0);
     ctx.ok(
-        m0["kind"] == json!("line") && thick == thick_rows(3.0, k) && share > 0.9,
+        m0["kind"] == json!("line") && thick == want && share > 0.9,
         format!(
             "as a line along the bottom (kind {}, {thick} px thick, {:.0}% of the foot)",
             m0["kind"],
@@ -602,7 +618,11 @@ pub fn attention(ctx: &mut Ctx) -> Result<(), String> {
         "leaving it unanswered keeps the line",
     );
     // Answering is work again: the line goes, and the badge with it.
-    at(&mut app, 0, &format!("Clear-Host; {WORK}"));
+    at(
+        &mut app,
+        0,
+        &format!("{}; {WORK}", crate::world::CLEAR_HOST),
+    );
     let answered = until_state(ctx, &mut app, 0, "working", 8000);
     ctx.ok(answered, "answering it takes the question down");
     let unbadged = until_badge(ctx, &mut app, "", 4000);

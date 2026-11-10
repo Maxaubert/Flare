@@ -216,7 +216,7 @@ fn sidebar_mode(app: &App) -> String {
 
 /// The lines of the log, in time order, every file of the log folder (rotated ones too).
 fn log_lines(app: &App) -> Vec<Line> {
-    read_lines(&app.profile.join("logs"))
+    read_lines(&crate::world::logs_dir(&app.profile))
 }
 
 /// Every file of the log folder, as text.
@@ -508,7 +508,7 @@ fn agent_diag_body(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     // A real agent process in tab 0 (review #47): its hooks are a genuine agent's, not a claim.
     stand_in(ctx, app, 0)?;
     blur(app);
-    let logs = app.profile.join("logs");
+    let logs = crate::world::logs_dir(&app.profile);
 
     // A run of tool calls: three `working` signals, and the screen says the marker.
     let working_hook = say("working");

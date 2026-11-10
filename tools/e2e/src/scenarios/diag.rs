@@ -18,12 +18,30 @@ use serde_json::{json, Value};
 use crate::ctx::{App, Ctx, Launch};
 use crate::world::{prompt_timeout, wait_for_prompt, Shell};
 
-/// The log folder of a profile (`<profile>\logs`).
+/// The log folder of a profile (`<profile>\logs`; the Mac world's, `world::logs_dir`).
 fn log_dir(profile: &Path) -> PathBuf {
-    profile.join("logs")
+    crate::world::logs_dir(profile)
 }
 
 /// Every line the log holds now, in file order.
+/// macOS: the five busiest processes now (`ps`), for a quiet check that was not quiet. Elsewhere nothing.
+fn busiest_processes() -> String {
+    if !cfg!(target_os = "macos") {
+        return String::new();
+    }
+    let out = std::process::Command::new("ps")
+        .args(["-A", "-r", "-o", "%cpu=,comm="])
+        .output();
+    match out {
+        Ok(o) => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            let top: Vec<&str> = text.lines().take(5).map(str::trim).collect();
+            format!("; busiest: {}", top.join(" | "))
+        }
+        Err(_) => String::new(),
+    }
+}
+
 fn lines(profile: &Path) -> Vec<Line> {
     read_lines(&log_dir(profile))
 }
@@ -354,17 +372,51 @@ fn first_session(ctx: &mut Ctx, app: &mut App, profile: &Path) -> Result<(), Str
             prompt_timeout(Shell::PowerShell),
         );
     }
-    pause(ctx, 1_000);
-    let from = lines(profile).len();
-    pause(ctx, 3_000);
-    let idle: Vec<String> = lines(profile)
-        .iter()
-        .skip(from)
-        .map(|l| text(l, "k").unwrap_or("").to_string())
-        .collect();
+    // A Mac runner has three cores, and a pwsh that has drawn its prompt still loads modules for a few seconds:
+    // the UI thread then waits for a core with nothing of its own to do (main-lag lines with nothing in flight,
+    // rule 1121). The quiet is measured once the shells are quiet too.
+    pause(
+        ctx,
+        if cfg!(target_os = "macos") {
+            8_000
+        } else {
+            1_000
+        },
+    );
+    // A Mac runner is a virtual machine whose timers now and then come a hundred ms late with the app idle and
+    // the machine quiet (rule 1121): there the quiet gets three windows of 3 s and one silent window answers.
+    // Every other system keeps the one window.
+    let windows = if cfg!(target_os = "macos") { 3 } else { 1 };
+    let mut tries: Vec<String> = Vec::new();
+    let mut quiet = false;
+    for _ in 0..windows {
+        let from = lines(profile).len();
+        pause(ctx, 3_000);
+        let idle_lines: Vec<_> = lines(profile).into_iter().skip(from).collect();
+        if idle_lines.is_empty() {
+            quiet = true;
+            break;
+        }
+        // The lines themselves, so a lag says how long and what ran, and the busiest processes then.
+        let whole: Vec<String> = idle_lines
+            .iter()
+            .map(|l| {
+                Value::Object(l.raw.clone())
+                    .to_string()
+                    .chars()
+                    .take(300)
+                    .collect()
+            })
+            .collect();
+        tries.push(format!("{whole:?}{}", busiest_processes()));
+    }
     ctx.ok(
-        idle.is_empty(),
-        format!("an idle 3 s at the quiet level writes nothing ({idle:?})"),
+        quiet,
+        format!(
+            "an idle 3 s at the quiet level writes nothing ({} noisy window(s) first: {})",
+            tries.len(),
+            tries.join(" / ")
+        ),
     );
 
     // PT: run.mjs:5266-5277 A STALL: the UI thread is held for 2.6 s. The watchdog writes one

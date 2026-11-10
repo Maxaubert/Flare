@@ -679,6 +679,9 @@ const E2E_SEAMS: &[&str] = &[
     // browser-level WebRTC policy and the dead proxy on their own.
     "FLARE_E2E_APP_NO_WEBRTC_SCRIPT",
     "FLARE_E2E_WEBVIEW_RUNTIME",
+    // The Mac E2E (rule 1106): the shell a new tab starts when the profile saves none (tab_host.rs, macOS
+    // only; the harness's sandbox sets pwsh so the PowerShell scenarios run unchanged).
+    "FLARE_E2E_SHELL",
 ];
 
 /// Every `FLARE_E2E_<NAME>` literal in the text.

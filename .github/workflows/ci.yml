@@ -3,9 +3,22 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A hand run (gh workflow run ci --ref <branch> -f e2e_only=true -f e2e_filter='<words>'): e2e_only skips the check
+  # and macos jobs, e2e_filter passes scenario name words to flare-e2e (any word a name contains selects it).
+  workflow_dispatch:
+    inputs:
+      e2e_filter:
+        description: Scenario name words for flare-e2e (empty runs them all)
+        type: string
+        default: ""
+      e2e_only:
+        description: Run only the Mac E2E job
+        type: boolean
+        default: false
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # A hand run with another filter is its own group, so a full run and a run of a few scenarios go side by side.
+  group: ci-${{ github.ref }}-${{ inputs.e2e_only }}-${{ inputs.e2e_filter }}
   cancel-in-progress: true
 
 env:
@@ -13,13 +26,17 @@ env:
 
 jobs:
   check:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.e2e_only }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       # rustup 1.28+ no longer installs on `rustup show`; this reads rust-toolchain.toml.
       - name: Toolchain
         run: rustup toolchain install
+      # Saved even when a later step fails, so a red run still warms the next one.
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,cargo-deny
@@ -40,13 +57,17 @@ jobs:
   # The macOS port (docs/superpowers/specs/2026-11-08-macos-port.md, rule 227): the same gates on macos-latest.
   # Tests that encode Windows-only behaviour are gated in the source (cfg(windows) or an ignore with the phase).
   macos:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.e2e_only }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       # rustup 1.28+ no longer installs on `rustup show`; this reads rust-toolchain.toml.
       - name: Toolchain
         run: rustup toolchain install
+      # Saved even when a later step fails, so a red run still warms the next one.
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,cargo-deny
@@ -106,3 +127,79 @@ jobs:
         run: cargo nextest run -p flare-dictation --test metal_real --run-ignored only --no-fail-fast
       - name: Deny
         run: cargo deny check
+
+  # The Mac E2E (rules 1103 to 1122, docs/e2e.md "macOS E2E"): the release app driven through its --e2e hook (a Unix
+  # socket), an accessory app parked off every display; the harness fails a scenario that takes the keyboard or shows a
+  # window. Its own job so the gates above stay as fast as they were. A Mac has no hidden desktop, so this runs only here.
+  e2e-macos:
+    runs-on: macos-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e-release
+          cache-on-failure: true
+      - name: CEF build tools and cache folder
+        shell: bash
+        run: |
+          brew install ninja cmake || true
+          echo "CEF_PATH=$HOME/Library/Caches/flare-cef" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/flare-cef
+          key: cef-macos-arm64-156.0.14
+      - name: Build the app, the MCP server and the harness (release)
+        run: cargo build --release -p flare -p flare-mcp -p flare-e2e
+      # The runner's own indexing and update checks took a core and a half of three while diagLog measured an idle
+      # app, and the kernel let a background app's timers run up to 100 ms late (kern.timer_coalesce_bg_ns_max):
+      # an idle beat became a main-lag line and a program's 30 ms poll missed the 80 ms redraw nudge (rule 1121).
+      # Spotlight, the update schedule and timer coalescing are off for the run.
+      - name: Quiet the runner
+        shell: bash
+        run: |
+          sudo mdutil -a -i off >/dev/null 2>&1 || true
+          sudo softwareupdate --schedule off >/dev/null 2>&1 || true
+          sudo sysctl -w kern.timer.coalescing_enabled=0 || true
+          sysctl kern.timer.coalescing_enabled kern.timer_coalesce_bg_ns_max || true
+      - name: The shells the scenarios use
+        shell: bash
+        run: |
+          ls -l /usr/local/bin/pwsh /opt/homebrew/bin/pwsh 2>/dev/null || true
+          pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' || echo "no pwsh: the PowerShell scenarios fail"
+      - name: E2E
+        shell: bash
+        run: |
+          mkdir -p e2e-out
+          target/release/flare-e2e --list > e2e-out/list.txt
+          set -o pipefail
+          # The filter's words as words: no globbing, and none may be a harness flag (rule 1122).
+          read -ra words <<<"$E2E_FILTER"
+          for w in "${words[@]}"; do
+            case "$w" in -*) echo "the filter word '$w' starts with '-': only scenario names"; exit 1 ;; esac
+          done
+          target/release/flare-e2e --exe target/release/flare --shots e2e-out/shots --keep "${words[@]}" 2>&1 | tee e2e-out/e2e.log
+        env:
+          E2E_FILTER: ${{ inputs.e2e_filter }}
+          # The worlds under /tmp (/private/tmp/flare-e2e-*), not the long per-user /var/folders path, so a
+          # path a scenario prints fits a row as it does on Windows.
+          TMPDIR: /tmp
+      - name: Collect the worlds' logs
+        if: failure()
+        shell: bash
+        run: |
+          for w in /tmp/flare-e2e-*; do
+            [ -d "$w" ] || continue
+            n=$(basename "$w")
+            mkdir -p "e2e-out/worlds/$n"
+            find "$w" -type f \( -name '*.log' -o -name '*.jsonl' -o -name '*.json' -o -name '*.txt' \) -size -5M \
+              -exec cp {} "e2e-out/worlds/$n/" \; 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-macos
+          path: e2e-out
+          retention-days: 7

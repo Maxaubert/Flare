@@ -84,7 +84,7 @@ pub fn spawn(ctx: &mut Ctx) -> Result<(), String> {
         )],
         ..Launch::default()
     })?;
-    let home = std::env::var("USERPROFILE").unwrap_or_default();
+    let home = crate::world::user_home(ctx);
 
     // PT: run.mjs:478
     let start = app.session.probe_str("start.state")?;
@@ -470,7 +470,12 @@ pub fn restore(ctx: &mut Ctx) -> Result<(), String> {
             saved
                 .tabs
                 .iter()
-                .map(|t| t.cwd.rsplit('\\').next().unwrap_or_default().to_string())
+                .map(|t| t
+                    .cwd
+                    .rsplit(['\\', '/'])
+                    .next()
+                    .unwrap_or_default()
+                    .to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -654,6 +659,11 @@ pub fn last_tab(ctx: &mut Ctx) -> Result<(), String> {
     });
 
     // The X really quits: no resident process is left holding the lock.
+    // macOS: the X is AppKit's red light, outside what the app draws; its close request goes through
+    // the hook instead (the same route the light takes).
+    #[cfg(target_os = "macos")]
+    let _ = app.session.call(&Request::Window { op: "close".into() });
+    #[cfg(windows)]
     if let Some((x, y)) = centre_of(&mut app, "close") {
         app.session.click(x, y)?;
     }
@@ -708,6 +718,17 @@ pub fn exit_closes_tab(ctx: &mut Ctx) -> Result<(), String> {
     if let Some((x, y)) = centre_of(&mut app, "tab:1") {
         app.session.click(x, y)?;
     }
+    // The tab that comes to the front takes its size and its shell draws its prompt again: "exit" goes once
+    // that prompt is back, as a hand would type it. Typed at once, pwsh on the Mac runner read it inside the
+    // redraw's cursor reports and never ran it (rule 1119). Windows types it at once, as before.
+    if cfg!(target_os = "macos") {
+        ctx.until("the second tab in front", 5_000, &mut || {
+            tabs_of(&mut app).get(1).is_some_and(|t| t.front)
+        });
+        // A timeout here is recorded as a failure by the next check (`Ctx::ok`).
+        let second = front_id(&mut app);
+        wait_redraw_over(ctx, &mut app, &second);
+    }
     type_line(&mut app, "exit")?;
     let ended = ctx.until("the shell ending takes its tab", 15_000, &mut || {
         tabs_of(&mut app).len() == 1
@@ -720,6 +741,35 @@ pub fn exit_closes_tab(ctx: &mut Ctx) -> Result<(), String> {
     );
     app.close();
     Ok(())
+}
+
+/// macOS (rule 1119): true once the tab shows its prompt and its screen and what Flare wrote to its shell (the
+/// answers to the redraw's cursor reports) have both held still for `REDRAW_QUIET`: the shell's redraw is over.
+/// A miss is a pending timeout, which the next check records.
+fn wait_redraw_over(ctx: &mut Ctx, app: &mut App, tab: &str) -> bool {
+    const REDRAW_QUIET: Duration = Duration::from_millis(300);
+    let mut seen = (String::new(), String::new());
+    let mut since = Instant::now();
+    let timeout = prompt_timeout(Shell::PowerShell).as_millis() as u64 + 5_000;
+    ctx.until(
+        "the tab's prompt and the end of its redraw",
+        timeout,
+        &mut || {
+            let screen = rows_text(app, tab);
+            let written = app
+                .session
+                .probe("pty.written", json!(null))
+                .map(|v| v[tab].to_string())
+                .unwrap_or_default();
+            let now = (screen, written);
+            if now != seen {
+                seen = now;
+                since = Instant::now();
+                return false;
+            }
+            prompt_showing(&seen.0, Shell::PowerShell) && since.elapsed() >= REDRAW_QUIET
+        },
+    )
 }
 
 /// A prompt survives the window getting narrower and wider again (ConPTY sends nothing on a

@@ -1788,6 +1788,204 @@ a request sent while the dead worker was still unwinding went into its queue and
 (`answers_empty_when_the_worker_dies_mid_call_and_starts_another_on_the_next_pause` failed about 1 run in 40 under
 `--stress-count`; 300 of 300 pass now). Shared with Windows; what a caller is told is unchanged (an empty token for a
 crash). Source: phase 7 review gate run (2026-11-09).
+1103. **macOS: the `--e2e` test hook is a Unix socket with the named pipe's guarantees.** The hook serves
+`flare_e2e_proto::pipe_name(profile)`, `e2e-<16 hex of the profile hash>.sock` in the control channel's private
+folder (`<user temp>/flare-ctl`, 0700, this user's), bound 0600 through `flare_ctl::pipe::bind_private_socket` under
+the control channel's first-instance lock, so a second `--e2e` launch on the same profile cannot take it over; a
+client of another uid is dropped before a byte is read; every wait is a 50 ms `poll` that looks at the stop flag, so
+dropping the server never hangs on a connected client (the Windows `CancelSynchronousIo`), and the socket is removed
+when the server stops. Without `--e2e` there is no socket. Held by the e2e_hook tests that now run on macOS
+(`a_hello_round_trips_without_the_ui_thread`, `a_second_server_on_the_same_profile_cannot_take_the_pipe`,
+`dropping_the_server_returns_even_with_a_client_connected` and the rest) and
+`the_mac_socket_is_this_users_alone_and_goes_with_the_server`, `the_mac_hook_is_a_short_socket_in_the_private_folder`.
+Source: Mac E2E in CI, the port plan's Ongoing row (2026-11-09).
+1104. **macOS: the harness never takes the screen, the keyboard or the owner's processes.** `tools/e2e` runs on macOS
+with the Windows guarantees in Mac terms: a launched app leads its own process group and dropping it kills the group
+and every descendant by parent pid (the job object's kill-on-close; a tab's shell sits in its own session); reaping
+is by the world's path in a command line only (`ps`), so the owner's Flare is never touched; the world is a HOME of
+its own (`<root>/home`, its `Library/Application Support/Flare` the profile) at its canonical path (`/private/var/...`),
+so the app, the hook's socket name and the reaper read one spelling; pixels come only from the app's own render
+(`Snapshot`, Slint's snapshot), never a screen capture, which would need Screen Recording. Around every scenario a
+guard looks every 200 ms and fails the scenario when a process of the run is the frontmost app or owns a window that
+overlaps a display (the window server's list: owner pid, bounds and alpha need no right); the pasteboard's change count
+is compared before the first and after the last scenario. Held by `a_launched_tree_is_killed_when_the_child_drops`,
+`the_reaper_spares_a_process_without_the_world_path` (proc_mac.rs),
+`the_guard_flags_a_window_or_the_keyboard_of_the_run_and_only_those`, `a_parked_or_clear_window_shows_nowhere`,
+`the_harness_itself_owns_no_on_screen_window`, and the CI job's first run, where the guard caught the clamped window
+of rule 1107. Source: Mac E2E in CI (2026-11-09).
+1105. **macOS: a scenario is gated only in `mac_gate::GATED`, with its reason, and a gated one is never a pass.** The
+scenario table is the same on both systems. A Mac run does not start a gated scenario, prints it as `gated` with its
+reason after the table and counts it apart; a module that needs Windows-only harness parts (the speech host's process
+list, the tour's capture) is a stub on macOS that answers only that it is gated. Gate only what is Windows' own
+(WebView2, Velopack's Windows swap, the Windows speech host and key hook, PrintWindow) or a Mac port not written yet,
+and say which in the reason; a Mac bug a scenario finds is fixed, not gated. `docs/e2e.md` ("macOS E2E") lists both
+sets. Held by `every_gated_name_is_a_scenario_once_with_a_reason` and `a_gated_scenario_is_never_started`. Source: Mac
+E2E in CI (2026-11-09).
+1106. **macOS: the scenarios keep their Windows keys and shell; the harness and one seam translate them.** A chord a
+scenario presses goes through `chord::mac_app_chord` in `Session::call`: an app chord of the Windows table whose Mac
+key is the same chord with Cmd in Ctrl's place is sent with Cmd (`Ctrl+T` is `Meta+T`, `Ctrl+Shift+P` is
+`Meta+Shift+P`), paste is Cmd+V, and Ctrl+Tab and the shell's Ctrl keys (Ctrl+C, Ctrl+A) are unchanged, decided by
+the app's own `flare_tabs::keymap::chord_of` for both systems, never a hand list. The tab's shell is pwsh when the
+runner has it: `FLARE_E2E_SHELL` (read through `e2e::global().env`, macOS only, only when the profile saves no shell)
+names the shell a new tab starts, so the PowerShell prompt checks run unchanged. Held by
+`the_app_chords_take_cmd_on_a_mac_and_the_shell_keys_stay` and `the_e2e_seams_are_the_listed_ones`. Source: Mac E2E in
+CI (2026-11-09).
+1107. **macOS: an `--e2e` window is never pulled onto a screen.** AppKit keeps a titled window on a screen when it is
+ordered in or moved, so the parking spot (-32000, -32000) became a 40 px strip at the display's edge on the macOS
+runner ((-984, 673) to (40, 1347) on a 1024 by 768 display; the launch's `window.park` check and the screen guard
+both failed it). Under `--e2e` only, before the first window, `window_park::keep_windows_off_screen` gives `NSWindow`
+a `constrainFrameRect:toScreen:` that keeps the frame it is given, and `park` puts it on the window's own class too;
+the real app never calls either. Held by `a_parked_class_keeps_its_frame_off_every_screen_and_nswindow_keeps_the_rule`
+and every Mac launch's `window.park` check. Source: Mac E2E in CI, run 42558418417 (2026-11-09).
+1108. **macOS: the hook's title rects and scale change follow the Mac window.** With the native caption the window
+buttons are AppKit's traffic lights, so `ui.rect` answers `cog` and `help` counted from the right edge without the
+three Windows buttons, refuses `close`, `max` and `min` with a reason, and starts the strip after the traffic lights'
+corner (`Px.snap(caption-gap) + Px.hair()`), not after the 42 px mark; `DpiChange` takes the content view, since there
+is no HWND. Held by `the_title_rects_follow_the_mac_caption`. Source: Mac E2E in CI (2026-11-09).
+1109. **macOS: an `--e2e` window is clear and click-through on the main screen, and the run is never napped.** A Mac
+draws nothing for a window on no screen (no display-link tick, no Metal drawable), so the parked window is put on the
+main screen at alpha 0, shadowless and ignoring every click; under `--e2e` `NSWindow`'s `setAlphaValue:` and
+`setIgnoresMouseEvents:` keep 0 and YES whoever asks (Slint reveals a GPU window at alpha 1 after its first frame),
+and the process holds a user-interactive activity so App Nap never stretches a scenario's waits. `window.park`'s
+report fails a window on a screen that is not clear. Held by `a_window_on_a_screen_in_the_dock_or_in_front_is_a_problem`
+and every Mac launch's `window.park` check. Source: Mac E2E in CI (2026-11-09).
+1110. **macOS: a chord reaches a Slint field with the keys a Mac keyboard gives it, and a field's End is Cmd+Right.**
+Slint's winit backend reports Cmd as `Key::Control` and Ctrl as `Key::Meta` on Apple systems (it follows Qt), so
+`e2e_glue::slint_modifiers` hands a chord's Meta (Cmd) to Slint as Control and its Ctrl as Meta there; Windows is
+unchanged. A Mac text field scrolls on End and moves nothing (Slint's `TextCursorDirection` has no End on Apple), and
+Ctrl+A moves to the line's start, so the scenarios that fill a field press `chord::FIELD_END` (Cmd+Right on a Mac) and
+`chord::FIELD_SELECT_ALL` (Cmd+A). Before this the Mac runner typed every colour code after the field's first
+character and no picked colour ever applied (themeEditorLive, themeSwitch, accent, accentAsk, colourPicker and five
+more, run 42569349881). Held by `a_chord_with_modifiers_reaches_slint_as_modifier_presses_around_the_key`. Source: Mac
+E2E in CI (2026-11-09).
+1111. **macOS: every `--e2e` window is born clear.** The park makes the main window clear once it has a handle, a tick
+after Slint has ordered it in; the screen guard saw windows of 18 scenarios on the runner's display at full alpha for
+that moment (run 42569349881). Under `--e2e` only, `window_park::born_clear` replaces `NSWindow`'s two content-rect
+initialisers with ones that call AppKit's own and then set alpha 0, no shadow, click-through and no order-in
+animation, so no window of the run is ever drawn on a screen; the guard's line names the window number, alpha and the
+owner's command line. Held by `a_born_clear_class_initialises_through_the_stand_in` and the screen guard. Source: Mac
+E2E in CI (2026-11-09).
+1112. **macOS: the world's pwsh, logs and program keys are the Mac's.** The world's pwsh profile sets PSReadLine's
+Windows edit mode (pwsh on a Mac starts in Emacs mode, where Escape is a prefix: a scenario's Escape ate the next
+paste's escape sequence and left the line it meant to clear); the harness reads a profile's diagnostics log where the
+app writes it (`world::logs_dir`: `<home>/Library/Logs/Flare` for the default profile under the world's HOME, as
+`startup::logs_dir_of`); and a key a scenario means as the program's own is sent as written
+(`Session::key_as_is`), since on a Mac Ctrl+F is the program's and Cmd+F finds everywhere (the keymap's Mac rule).
+The profile's Clear-Host also clears the scrollback, as Windows' does, with `cls` its alias, and the scenarios that
+clear a question box type `world::CLEAR_HOST` (the same, spelled out) and read a file with `world::GET_CONTENT` (pwsh
+on a Mac has no `cat` alias) (pwsh on a Mac sends the
+terminfo `clear` alone; the screen went into the scrollback and a "cleared" question box was still the last thing
+written, agentHooks in run 42587853627); a dropped path is quoted as a POSIX path; the bell burst has no sleep
+between its ten bells (pwsh on the runner stretched it past the one-second gate).
+Held by `the_app_chords_take_cmd_on_a_mac_and_the_shell_keys_stay`. Source: Mac E2E in CI, run 42569349881
+(2026-11-09).
+1113. **macOS: an `--e2e` window takes its focus from the hook alone.** The parked window is an accessory's that is
+never key, so AppKit reported it as having lost the focus and every "the person is looking" rule read the run as
+away: a visited tab kept its Finished mark and the badge counted it (indicator, attention, agentHooks on the runner).
+`window::e2e_drops_native_focus` drops winit's `Focused` on macOS under `--e2e`; the scenarios move the focus with the
+hook's `Focus`, as the no-activate Windows window, which never gets either event, always did. Held by
+`only_a_mac_e2e_run_drops_the_native_focus`. Source: Mac E2E in CI (2026-11-09).
+1114. **macOS: a resize to css px is asked in device px at the window's own scale, and the Windows DPI matrix is
+gated.** Slint hands a logical size to winit, which converts it with the screen's backing scale (1 on the runner),
+not the scale the hook's `DpiChange` gave the window, so at 225 percent a `Resize` to 1000 css came out 1000 px
+(444 css) and every panel check of panelImage, panelSplitter and convoPanels at 225 percent failed (run
+42569349881). On macOS `e2e_glue::resize_size` asks for `w` and `h` times the window's scale in device px; Windows
+keeps the logical size. Slint's own `SLINT_SCALE_FACTOR` was tried and is no stand-in: the app's logical sizes then
+missed the scale too (run 42587853627). `dpiMatrix` and `monitorMove`, which drive cmd.exe through the eight Windows
+scale steps and per-monitor moves, are gated (a Mac's backing scale is 1 or 2 and changes only with the screen). Held
+by `a_mac_resize_is_asked_in_device_px_at_the_windows_own_scale`. Source: Mac E2E in CI (2026-11-09).
+1115. **macOS: the scenarios read the Mac title row as it is.** With the native caption the window's buttons are the
+traffic lights, which have no hook rect, and no app mark is drawn (`AppMark` is hidden), so verticalTabs checks the
+cog in the bar and the traffic lights' corner before the tabs and skips the mark with its reason; the ? is the second
+button from the right edge, so its tip is held 6 px inside the window (`tip_place`'s margin) rather than centred, and
+tooltips accepts that on a Mac only. Source: Mac E2E in CI, runs 42569349881 and 42587853627 (2026-11-09).
+1116. **macOS: a UI-thread stall names the UI thread's frames, as on Windows.** The stall watchdog's `ui-stack` line
+carried no frames on a Mac (`NoSampler`; diagLog's "with the frames of the UI thread named (0 lines)" on the runner).
+On Apple silicon `flare_win::thread_stack` (macos/thread_stack.rs) suspends the UI thread, reads its registers
+(`ARM_THREAD_STATE64`), walks the frame-pointer chain inside the thread's own stack bounds into a fixed buffer with
+nothing allocated or locked while it is stopped, resumes it through a guard and names each address `image+0xoffset`
+through `dladdr` afterwards; an Intel Mac keeps no sampler. Held by
+`the_walk_follows_the_chain_inside_the_stack_and_stops_outside_it`,
+`a_busy_thread_is_sampled_200_times_named_and_keeps_running` and `a_finished_thread_is_not_sampled`. Source: Mac E2E
+in CI, run 42592969003 (2026-11-09).
+1117. **macOS: a miniaturised window is minimised to Flare, and a hook scale change never outgrows its buffer.** A
+window miniaturised by Cmd+M, the yellow light or the hook gets no resize on a Mac, and Slint updates its minimised
+state on a resize only, so the marks kept moving behind the Dock (indicatorStyles' "minimising pauses the marks" on
+the runner, where the window server said occluded and Slint said not minimised). `window::is_minimised` reads winit's
+live `is_minimized` (`isMiniaturized`) on macOS, Slint's state elsewhere, for the marks' pause, the tick, the raise
+and the saved bounds, read again on each occlusion change (the one event a miniaturise sends); the hook's restore
+deminiaturises without the refusal it had. Under `--e2e`, the hook's `DpiChange` on a Mac sets the window item to the buffer's own size at
+the new scale at once (`e2e_glue::item_size_for`), because Slint's scale change kept the item's logical size and a
+frame drawn before the real window grew asked the software renderer for 2655 px of a 1180 px buffer: the app
+panicked (tabLooks, run 42598992162). Held by `the_systems_minimised_answer_wins_over_slints` and
+`the_item_fills_the_buffer_it_has_at_the_new_scale`. Source: Mac E2E in CI (2026-11-09).
+1118. **macOS: a timer steps the sidebar's slide in a Mac `--e2e` run.** The parked clear window gets no
+`RedrawRequested` from AppKit, and the slide (audit V3) starts at its first frame, so a reveal, the one slide that
+never ends in a jump, never moved: every slid-out picture of verticalTabs showed no sidebar while the probes said it
+was out (nine checks, runs 42612597989 and 42622873207). `appctl::timer_steps_slide` starts the slide timer where
+there is no OS window and on a Mac under `--e2e`; the app with a real window keeps its frames. `sidebar.state` now
+carries `slide_now`, `slot_now` and the OS frame count, so a slid-out picture with no sidebar names its cause. Held by
+`a_timer_steps_the_slide_without_frames_and_in_a_mac_e2e_run`. Source: Mac E2E in CI, run 42624800535 (2026-11-09).
+1119. **A scenario's picture or store check waits out what moves, on a Mac; Windows is as it was.** Seven checks held
+a moving thing to one instant and failed on the Mac runner only by its timing: helpPanel's picture before a selection
+is taken once two shots in a row agree (the row's 120 ms hover fade lit the "changed colour"), themeSwitch reads the
+agent colour once `settings.json` has it (the store is written after a debounce; Cancel was held to a store that had
+not caught up), clickCaret finds the old output once the prompt line shows "echo zz" and no longer PSReadLine's grey
+guess from history, "echo ab1Xcdef" (the last row held the needle, and the click moved the caret), verticalTabs'
+slid-out no-shadow check compares with the terminal's ground token (a sampled pixel landed on the Mac world's longer
+prompt) and its ring check looks over a breath (a question's ring was caught at its faintest), as attention's question
+line does (caught at 0 px once). exitClosesTab types "exit" once the tab it brought to the front shows its prompt and
+its screen and Flare's answers to it have held still 300 ms (typed at once, pwsh read it inside the redraw's cursor
+reports and never ran it); colourPicker types its first hook line once the process poll sees the stand-in agent, not
+after a fixed 1.5 s. Every such wait is a condition (`ctx.until`, never chained `settle` calls) under
+`cfg!(target_os = "macos")`: CI has no Windows E2E job, so the Windows path keeps its old checks until the owner's PC
+has run them. The program-copy unit test ticks once before its press, so the press no longer races the window's real
+timer (the Windows check job, run 42612597989). Source: Mac E2E in CI, runs 42624800535 and 42626884993; review of the
+branch (2026-11-09).
+1120. **macOS: a warm spare answers its cursor questions from its own grid, and its tab gets its kept output without
+its questions to the terminal.** A spare shell (`SessionManager::prewarm`) has no tab yet. pwsh asks for the cursor
+(`CSI 6n`) after drawing its prompt. Answered only at adoption (the kept output replayed into the tab's emulator), the
+report came late, .NET read it as typed keys, echoed characters no key sends, asked again and never stopped
+(helpPanel's new shell on the Mac runner, runs 42612597989 to 42630197431). Never answered (the question only taken
+out of the kept output, the first fix), pwsh was still waiting when the tab typed, read the typed line as its answer
+and garbled it: bytes no key sends ran as a command (helpPanel, runs 42674535599, 42712456085, 42727386311 and the hand
+run 42727392100; the e2e write tap, `flare_term::session::set_write_tap` and the `pty.written` probe, showed Flare had
+written only the clean line). So outside Windows a spare keeps a grid of its size (`Session::grid`) fed what it prints,
+and every cursor report that grid gives is written at once (`answer_from_grid`), as a tab's would be; the opening
+question of rule 231 is one of them, answered at the top left as before. `SessionManager::adopt` drops the grid and
+hands the tab `banner_for_tab(kept output)`: outside Windows, `term_query::without_questions` takes out every whole
+question (device status and attributes, mode, window and keyboard reports, colour queries, capability requests), so
+none is answered twice or late; the rest stays byte for byte. The whole kept output is read at adoption, so a question
+split over two reads is taken out too, and a question cut off at the end stays for the live output to finish. Spares
+stay on for every shell, pwsh and fish included (a fix that let such a spare go stopped prewarming pwsh for the
+session). Windows is as it was: the spare answers only the opening question (rule 231, `answer_opening`) and hands the
+rest over (ConPTY stands between the shell and Flare there). Held by
+`a_spare_that_asked_the_terminal_is_adopted_without_its_question`, `a_question_split_over_two_reads_is_taken_out_too`,
+the `term_query` tests, and on the Mac by rule 231's `a_spare_answers_the_opening_cursor_question_once_and_the_tab_is_not_asked_again`,
+`a_spare_answers_only_the_opening_question` (the second question answered by the grid too) and
+`a_cursor_question_after_output_waits_for_the_tab_that_can_answer_it` (answered at the prompt's end, `1;4`), and the
+Mac E2E's helpPanel. Source: Mac E2E in CI and review of the branch (2026-11-09, 2026-11-10); main's rule 231
+(2026-11-09).
+1121. **macOS: the Mac E2E runs with the runner quiet and its timers on time.** diagLog's "an idle 3 s writes nothing"
+failed on the Mac runner only, with `main-lag` lines of 100 to 216 ms and nothing in flight. First the runner's own
+`trustd`, `softwareupdated` and Spotlight took about one and a half of its three cores; then, with the runner quiet
+and Flare under 1 percent of a core, the 50 ms beat still came late: the kernel coalesces the timers of an app that
+is not in front by up to `kern.timer_coalesce_bg_ns_max`, 100 ms, so the beat gap reached 150 ms and more. The same
+slack let termReplies' stand-in, which polls its width every 30 ms, miss the 80 ms redraw nudge. A beat posted from a
+thread lagged as much, and asking `task_policy_set` for the foreground role was granted and changed nothing; neither
+was kept. The `e2e-macos` job turns Spotlight, the update schedule and timer coalescing
+(`kern.timer.coalescing_enabled=0`) off before the scenarios, diagLog waits 8 s on a Mac before it measures (1 s
+elsewhere), gets three windows of 3 s there with one silent window answering, and every noisy window prints its lines
+and the five busiest processes. So on a Mac the check proves one silent window in three, not that every idle window is silent; `docs/parity.md` says so. The app, its 100 ms lag threshold and Windows are unchanged. Open for the owner: a
+person's Flare in the background gets the same timer slack, so its diagnostics can hold `main-lag` lines of about
+100 ms with nothing in flight. Source: Mac E2E in CI, runs 42633987601, 42635727345, 42639363621, 42640936487 and
+42648599333 (2026-11-09).
+1122. **A Mac E2E run that runs nothing never passes.** A scenario filter that matches only gated scenarios (`web`,
+`dictation`, a typo that hits one gated name) left nothing to run after the macOS gate, and the runner printed "all
+scenarios passed" and exited 0. `run_all` now prints "only gated scenarios match" with the reasons and returns 1.
+The `e2e-macos` job's hand-run filter (`e2e_filter`) is read into words with `read -ra` and passed quoted, so `*` and
+`?` are never globbed against the repo's files, and a word that starts with `-` fails the step (a filter is scenario
+names, never a harness flag such as `--exe`). Source: review of the branch (2026-11-09).
 1123. **macOS: the web panel's pop-ups, app links and diagnostics notes are the Windows ones (rules 247 to 253), on
 CEF.** Notes: the CEF host sends `WebEvent::Note` where WebView2's events would: `on_before_browse` (`web-nav` with the
 page it leaves, `web-refused` with `scheme`, `not-its-page`, `not-its-host` or `frame`), a failed main-frame load

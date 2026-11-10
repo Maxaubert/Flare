@@ -2401,6 +2401,10 @@ mod flow {
         let w = Wx::new(1.0);
         w.feed("hello world");
         w.feed(MOUSE_ON);
+        // The copy watch hears that the program has the mouse on the controller's tick: one tick before
+        // the press, or the press raced the window's real timer (it lost once on the Windows check job,
+        // run 42612597989, and the press was not kept).
+        w.run(50);
         w.raw_drag(0, 0, 5, false, false);
         w.clip.set_text("picked by the program");
         w.run(200);
@@ -2409,6 +2413,7 @@ mod flow {
         let w = Wx::new(1.0);
         w.feed("hello world");
         w.feed(MOUSE_ON);
+        w.run(50);
         w.raw_drag(0, 0, 5, false, false);
         w.run(1800);
         assert_eq!(w.h.comp.get_copied_phase(), 0);

@@ -94,12 +94,7 @@ fn write_prog(dir: &Path, name: &str, body: &str) -> Result<PathBuf, String> {
     let script = format!("$e = [char]27\r\n$bel = [char]7\r\n{body}\r\n");
     fs::write(dir.join(format!("{name}.ps1")), script)
         .map_err(|e| format!("the program script: {e}"))?;
-    let cmd = dir.join(format!("{name}.cmd"));
-    let runner = format!(
-        "@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{name}.ps1\"\r\n"
-    );
-    fs::write(&cmd, runner).map_err(|e| format!("the program runner: {e}"))?;
-    Ok(cmd)
+    crate::standins::ps_runner(dir, name).map_err(|e| format!("the program runner: {e}"))
 }
 
 /// The program that sends its queries and logs every byte it is sent (PT's replies probe). It
@@ -547,10 +542,15 @@ pub fn bell(ctx: &mut Ctx) -> Result<(), String> {
         format!("one bell, one flash ({})", flash_count(&mut app)),
     );
     hold(ctx, 1_300); // past the one-second gate
-    type_line(
-        &mut app,
-        "1..10 | % { [Console]::Write([char]7); Start-Sleep -Milliseconds 20 }",
-    )?;
+                      // macOS: pwsh's Start-Sleep and pipeline on the runner stretched the ten 20 ms steps past the
+                      // one-second gate (two flashes, run 42587853627), so the Mac burst has no sleep; it is still ten
+                      // writes of one bell each (rule 1112).
+    let burst_line = if cfg!(target_os = "macos") {
+        "1..10 | % { [Console]::Write([char]7) }"
+    } else {
+        "1..10 | % { [Console]::Write([char]7); Start-Sleep -Milliseconds 20 }"
+    };
+    type_line(&mut app, burst_line)?;
     hold(ctx, 1_500);
     let burst = flash_count(&mut app);
     ctx.ok(

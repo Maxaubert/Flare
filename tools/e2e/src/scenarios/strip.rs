@@ -1049,10 +1049,36 @@ pub fn tooltips(ctx: &mut Ctx) -> Result<(), String> {
     // PT: run.mjs:2886-2892. Not at once: over half a second on the ? shows no tip yet.
     if let Some(help) = ui_rect(&mut app, "help") {
         let (cx, cy) = centre(help);
+        let t0 = std::time::Instant::now();
         move_to(&mut app, cx, cy);
-        hold(ctx, 600);
-        let early = tip_state(&mut app)["visible"] == json!(true);
-        ctx.ok(!early, "over half a second on the ? shows no tip yet");
+        // macOS: read every 50 ms, so a tip that came too soon says when it came and what it was. Windows
+        // reads once after 600 ms, as before.
+        let mut early: Option<(u128, Value)> = None;
+        if !cfg!(target_os = "macos") {
+            hold(ctx, 600);
+            let t = tip_state(&mut app);
+            if t["visible"] == json!(true) {
+                early = Some((t0.elapsed().as_millis(), t));
+            }
+        }
+        while cfg!(target_os = "macos") && t0.elapsed() < std::time::Duration::from_millis(600) {
+            let t = tip_state(&mut app);
+            if t["visible"] == json!(true) {
+                early = Some((t0.elapsed().as_millis(), t));
+                break;
+            }
+            ctx.settle(50);
+        }
+        ctx.ok(
+            early.is_none(),
+            match &early {
+                None => "over half a second on the ? shows no tip yet".to_string(),
+                Some((ms, t)) => format!(
+                    "over half a second on the ? shows no tip yet (one showed after {ms} ms: {})",
+                    t["text"]
+                ),
+            },
+        );
         move_to(&mut app, rest.0, rest.1);
         ctx.until("the tip to go", 2_000, &mut || {
             tip_state(&mut app)["visible"] != json!(true)
@@ -1095,7 +1121,28 @@ pub fn tooltips(ctx: &mut Ctx) -> Result<(), String> {
                     format!("hovering the ? shows the app's own tip (\"{text}\")"),
                 );
                 let dx = (tip.0 + tip.2 / 2.0 - (help.0 + help.2 / 2.0)).abs();
-                ctx.ok(dx <= 1.5, format!("centred under it (off by {dx:.1}px)"));
+                // macOS (rule 1115): the ? is the row's second button from the right edge (the traffic
+                // lights are on the left), so a centred tip would cross the window's edge: it is held
+                // 6 px inside it (tip_place's TIP_MARGIN), as the cog's tip below is.
+                let k = scale(&mut app);
+                let client = app_json(&mut app)["window"]["client_w"]
+                    .as_f64()
+                    .unwrap_or(0.0) as f32
+                    / k;
+                let held_in = cfg!(target_os = "macos")
+                    && (tip.0 + tip.2 - (client - 6.0)).abs() <= 1.5
+                    && tip.0 + tip.2 / 2.0 < help.0 + help.2 / 2.0;
+                ctx.ok(
+                    dx <= 1.5 || held_in,
+                    format!(
+                        "centred under it (off by {dx:.1}px{})",
+                        if held_in {
+                            ", held inside the window's edge"
+                        } else {
+                            ""
+                        }
+                    ),
+                );
                 let dy = (tip.1 - (help.1 + help.3 + 6.0)).abs();
                 ctx.ok(
                     dy <= 1.5,

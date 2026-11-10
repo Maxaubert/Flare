@@ -132,6 +132,95 @@ Every `FLARE_E2E_*` read goes through `e2e::global().env(..)`, which returns not
 a stray variable in the owner's environment cannot change the real app. No source file reads such a
 variable directly (`no_source_file_reads_an_e2e_variable_directly`).
 
+## macOS E2E (CI only, rules 1103 to 1122)
+
+The same harness and scenario table drive the Mac build, on GitHub's macOS runners only (the `e2e-macos` job in
+`.github/workflows/ci.yml`). A Mac has no hidden desktop, so nothing here is run on a person's Mac: locally only the
+unit tests run (`cargo nextest run -p flare-e2e`).
+
+```bash
+cargo build --release -p flare -p flare-mcp -p flare-e2e
+TMPDIR=/tmp target/release/flare-e2e --exe target/release/flare --shots e2e-out/shots --keep   # what CI runs
+target/release/flare-e2e --list      # a gated scenario says so, with its reason
+```
+
+**Iterating on GitHub** (2026-11-09): the job runs on every pull request and on a hand run. A hand run of the Mac E2E
+alone, on some scenarios only, skips the `check` and `macos` jobs:
+
+```bash
+gh workflow run ci --ref <branch> -f e2e_only=true -f e2e_filter='verticalTabs helpPanel'   # name words, as flare-e2e takes them
+gh workflow run ci --ref <branch>                                                          # every job, the full table
+```
+
+Every `rust-cache` step keeps its cache on a red run (`cache-on-failure`), so a failing run still warms the next: the
+release build went from about 9 minutes from scratch to about 5. Batch several fixes per run, and read the uploaded
+`e2e-macos` artifact (`gh run download <id> -n e2e-macos`) while the next run builds.
+
+- **The hook** is a Unix socket, `e2e-<16 hex>.sock` in the control channel's private folder
+  (`<user temp>/flare-ctl`, 0700; the socket 0600; the peer's uid checked; the first-instance lock), with the
+  pipe's protocol and lockstep (rule 1103). `Session` connects to it by `flare_e2e_proto::pipe_name(profile)`.
+- **The window** belongs to an accessory app that never activates and is never key. It is born off every screen,
+  then made clear (alpha 0, no shadow, every click passing through) and put on the main screen: a Mac draws nothing
+  for a window on no screen (no display-link tick, no Metal drawable), so an off-screen window never painted. Under
+  `--e2e` `NSWindow` keeps any frame it is given (AppKit pulled the parked window back until 40 px showed) and stays
+  clear whoever sets its alpha (Slint reveals a GPU window after its first frame), and the run holds off App Nap
+  (rules 1107 and 1109). Every window of the run is also born clear, so none shows for the tick before the park
+  (rule 1111). The window takes its focus from the hook's `Focus` alone (rule 1113). The launch's `window.park` check
+  fails a window that would show.
+- **Pictures** are the app's own render (`Snapshot`, Slint's snapshot); nothing reads the screen, which would need
+  Screen Recording.
+- **The guards** (rule 1104): a scenario fails when a process of the run becomes the frontmost app or owns a window
+  that shows on a display (the window server's list: owner, bounds, alpha; no right needed), checked every 200 ms;
+  the pasteboard's change count is compared over the run; a launched app leads its own process group and its tree
+  is killed by parent pid; reaping is by the world's path only.
+- **The world** is a HOME of its own (`<root>/home`, the profile in its `Library/Application Support/Flare`), at
+  its canonical path. CI puts the worlds under `/tmp` so a printed path fits a row as on Windows.
+- **Keys and shell** (rule 1106): the scenarios keep their Windows keys; `Session` sends the Mac app chord (Cmd in
+  Ctrl's place where the app's own table says so, paste as Cmd+V), and the copy key over a selection is
+  `chord::copy_chord` (Cmd+C). The tab's shell is pwsh (`FLARE_E2E_SHELL`, under `--e2e` only, when the profile
+  saves none), so the PowerShell prompt checks and programs run unchanged; the programs' runners are shell scripts
+  that start pwsh, and the agent stand-in is a `claude` script run by zsh with pwsh as its child (rule 1109). The
+  world's pwsh profile puts PSReadLine in its Windows edit mode, a Slint field gets Cmd as Slint's Control, a
+  field's End is Cmd+Right (`chord::FIELD_END`), and a key meant for the program is sent as written
+  (`Session::key_as_is`) (rules 1110 and 1112).
+- **Scale** (rule 1114): `DpiChange` takes the event path, and a `Resize` is asked in device px at the window's scale
+  (winit would convert a logical size with the screen's 1x). **Logs** are read where the Mac app writes them (`world::logs_dir`, `<home>/Library/Logs/Flare`).
+- **Frames and timers** (rules 1118 and 1121): the clear window gets almost no OS frames, so the sidebar's slide is
+  stepped by a timer there; the job turns the runner's Spotlight, update schedule and timer coalescing off (a
+  background app's timers ran up to 100 ms late). `sidebar.state` reports the OS frame count, `pty.written` what Flare
+  last wrote to each shell (rule 1120).
+- **Gates** (rule 1105) live in `tools/e2e/src/scenarios/mac_gate.rs`, each with its reason; a gated scenario is never
+  started and never a pass. A filter that matches only gated scenarios runs nothing and fails (rule 1122), and the hand
+  run's filter is split into words, never globbed, and may not hold a flag.
+- **Mac-only waits**: where the Mac runner needed a scenario to wait for something (a hover fade, a prompt redraw, the
+  process poll, a breathing mark), the wait is a condition under `cfg!(target_os = "macos")`; the Windows path of every
+  scenario is as it was, and the Windows suite still runs on the owner's PC. On failure the job uploads `e2e-macos`: the log, the shots and the worlds' logs.
+
+### Which scenarios run on a Mac
+
+72 of the table's scenarios run on the macOS runner: spawn, hookSmoke, cwdLabel, indicator, attention, agentHooks,
+agentDiag, theme, newTabFolder, caretHold, mouseReport, clickCaret, selectionEdit, findKey, scrollbar, paste,
+tabDragFirst, tabWidth, tabLooks, tabSwitch, indicatorStyles, verticalTabs, windowColoursSave, tooltips, manyTabs,
+backgroundWork, agentKeys, cogToggle, accentAsk, titleBar, settingsPage, restore, handoff, quitManyShells, lastTab,
+powerlineGlyphs, pathLinks, linkPaintStall, termReplies, termClipboard, bell, hiddenResize, links, osc8Links,
+reviewKeys, dropAndMenu, helpPanel, options, diagLog, settingsLook, settingsSearch, settingsKeys, themeEditorLive,
+themeSwitch, reviewSettings, colourPicker, pickedGround, opacityAlpha, seeThrough, themeCards, edges, accent,
+exitClosesTab, promptLayout, settingsLive, verticalStart, panelImage, panelSplitter, ctlChannel, mcpRoundTrip,
+convoPanels, questionToast.
+
+Gated, each with its reason in `mac_gate.rs` (`flare-e2e --list` prints it):
+
+| Scenarios | Why |
+|---|---|
+| webPanel, webVideo, webNoRuntime, agentBrowser, agentCoveredClick, mcpBrowser, miniApp, diagram, mcpDiagram, pluginBrand, modsSample, pluginFill, devPreview, model, webLogins | Mac port not written (phase 8): they drive the WebView2 controller; the Mac web panel is CEF, which runs only from the `Flare.app` bundle, and its scenarios are still to write |
+| updateWindow, updateGuard, updateNotes, clickInstall | Mac port not written (phase 8): they drive Velopack's Windows install and swap; the Mac update is a whole-bundle swap |
+| dictation, dictationPage, dictationParakeet, dictateAnywhere, dictateTwoCopies | Mac port not written (phase 7): they drive the speech host processes, WASAPI and the Right Alt hook; Mac dictation is still to write |
+| dpiMatrix, monitorMove | Windows only: cmd.exe tabs through WM_DPICHANGED at the eight Windows scale steps and per-monitor moves; a Mac's backing scale is 1 or 2, per screen, and the runner has one 1x display |
+| systemMenu | Windows only: the window's system menu (Alt+Space); a Mac window has none |
+| resizeEdges | Windows only: the frameless window's WM_NCHITTEST; the Mac window is titled and AppKit owns its edges |
+| launchSkeleton, closeAsk, sonaraQuestion, imagePaste | Mac port not written: the Claude stand-in there is a `claude.cmd` |
+| visualTour (opt-in) | Windows only: captures the reference terminal with PrintWindow |
+
 ## When a scenario fails
 
 1. Read its FAIL lines and the screenshot in `.e2e-shots/` (`--shots` moves it).

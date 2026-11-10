@@ -1,14 +1,19 @@
-//! Parking the --e2e window on macOS (port phase 3). The Mac meaning of the Windows park: the app
-//! becomes an accessory (no Dock icon, never the active app unless it asks, and it never asks), and
-//! the window is moved off every screen. AppKit may still pull a titled window back onto a screen
-//! when it is ordered front, so the report reads the real frame and says so; the Mac E2E itself
-//! runs in CI only (the port plan's "Ongoing" row).
+//! Parking the --e2e window on macOS (port phase 3, rules 1107 and 1109). The Mac meaning of the Windows
+//! park: the app becomes an accessory (no Dock icon, never the active app unless it asks, and it never
+//! asks), and the window is clear: alpha 0, no shadow, every click passing through it to what is below.
+//! It is born off every screen (and kept there by `keep_windows_off_screen` until it is clear), then put
+//! on the main screen, because a Mac draws nothing for a window that is on no screen: the display link
+//! that paces Slint's frames does not tick for it, and Metal hands out no drawable, so an off-screen
+//! window never paints (the Mac E2E's first runs: one software frame, no GPU frame, no link colour). The
+//! report reads the real frame and alpha; the Mac E2E itself runs in CI only (the port plan's "Ongoing" row).
 //!
 //! The handle is the window's `NSView` as an integer (raw-window-handle's `AppKit` handle).
 
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
-use objc2_foundation::NSPoint;
+use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
+use objc2::sel;
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSScreen};
+use objc2_foundation::{NSPoint, NSRect};
 
 /// Where a parked window sits: far outside every monitor's rectangle.
 const PARK_AT: i32 = -32000;
@@ -18,8 +23,296 @@ pub fn parked_origin() -> (i32, i32) {
     (PARK_AT, PARK_AT)
 }
 
-/// Makes the app an accessory and moves the window to the parking spot. Never activates the app,
-/// never orders the window front, never resizes it. Nothing happens off the main thread.
+/// `constrainFrameRect:toScreen:` that keeps the frame it is given: a parked window stays where it was
+/// put instead of being pulled back until a strip of it is on a screen (rule 1107).
+extern "C-unwind" fn keep_frame(
+    _this: *mut AnyObject,
+    _cmd: Sel,
+    frame: NSRect,
+    _screen: *mut AnyObject,
+) -> NSRect {
+    frame
+}
+
+/// The implementation `allow_off_screen` puts in.
+fn keep_frame_imp() -> Imp {
+    // SAFETY: an `extern "C-unwind"` function pointer as the runtime's untyped implementation pointer; the
+    // type encoding given with it (`CONSTRAIN_TYPES`) says how the runtime calls it.
+    unsafe {
+        std::mem::transmute::<
+            extern "C-unwind" fn(*mut AnyObject, Sel, NSRect, *mut AnyObject) -> NSRect,
+            Imp,
+        >(keep_frame)
+    }
+}
+
+/// The type encoding of `- (NSRect)constrainFrameRect:(NSRect)frame toScreen:(NSScreen *)screen`.
+const CONSTRAIN_TYPES: &std::ffi::CStr =
+    c"{CGRect={CGPoint=dd}{CGSize=dd}}@:{CGRect={CGPoint=dd}{CGSize=dd}}@";
+
+/// macOS under `--e2e` only (rule 1107): `class` (the parked window's own class, winit's window
+/// subclass) stops constraining its frame to a screen. AppKit keeps a titled window on a screen when it
+/// is ordered in or moved, so without this the parking spot became a 40 px strip at a screen's edge
+/// (seen on the macOS runner: (-984, 673) to (40, 1347) on a 1024 by 768 display). Only this class
+/// changes; NSWindow and every other window keep AppKit's rule.
+pub fn allow_off_screen(class: &AnyClass) {
+    let cls: *const AnyClass = class;
+    // SAFETY: replacing (or adding, on this class only) an instance method with a function of the
+    // signature its type encoding states; AppKit calls it on the main thread only.
+    unsafe {
+        objc2::ffi::class_replaceMethod(
+            cls.cast_mut(),
+            sel!(constrainFrameRect:toScreen:),
+            keep_frame_imp(),
+            CONSTRAIN_TYPES.as_ptr(),
+        );
+    }
+}
+
+/// Whether `class` keeps a frame off every screen (its `constrainFrameRect:toScreen:` is ours).
+pub fn allows_off_screen(class: &AnyClass) -> bool {
+    class
+        .instance_method(sel!(constrainFrameRect:toScreen:))
+        .is_some_and(|m| std::ptr::fn_addr_eq(m.implementation(), keep_frame_imp()))
+}
+
+/// macOS under `--e2e`, before the first window is made (rule 1107): no window of the run is ever pulled
+/// onto a screen, so the main window is born at the parking spot and stays there from its first order-in
+/// (the park after `show()` would come after AppKit had already moved it). Every window of the process
+/// inherits it from `NSWindow`; the real app never calls this.
+pub fn keep_windows_off_screen() {
+    if let Some(window) = AnyClass::get(c"NSWindow") {
+        allow_off_screen(window);
+        keep_clear(window);
+        born_clear(window);
+    }
+}
+
+/// `NSWindow`'s own two content-rect initialisers, kept by `born_clear`.
+static ORIGINAL_INIT4: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+static ORIGINAL_INIT5: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// Makes a just-initialised window clear before anything can order it in: alpha 0, no shadow, every
+/// click through, no order-in animation (rule 1111). A null window (a failed init) is left alone.
+fn make_clear(window: *mut AnyObject) {
+    if window.is_null() {
+        return;
+    }
+    // SAFETY: `window` is the NSWindow its initialiser just returned, alive and owned by the caller;
+    // each message is a plain NSWindow setter with the argument type it declares.
+    unsafe {
+        let w: &AnyObject = &*window;
+        let _: () = objc2::msg_send![w, setAlphaValue: 0.0f64];
+        let _: () = objc2::msg_send![w, setHasShadow: objc2::runtime::Bool::NO];
+        let _: () = objc2::msg_send![w, setIgnoresMouseEvents: objc2::runtime::Bool::YES];
+        // NSWindowAnimationBehaviorNone: AppKit draws no zoom-in of the window on its first order-in.
+        let _: () = objc2::msg_send![w, setAnimationBehavior: 2isize];
+    }
+}
+
+/// `initWithContentRect:styleMask:backing:defer:` under `--e2e`: NSWindow's own, then clear.
+extern "C-unwind" fn init4_clear(
+    this: *mut AnyObject,
+    cmd: Sel,
+    rect: NSRect,
+    style: usize,
+    backing: usize,
+    defer: objc2::runtime::Bool,
+) -> *mut AnyObject {
+    let Some(&imp) = ORIGINAL_INIT4.get() else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: `imp` is NSWindow's own initialiser of exactly this signature, saved when it was replaced.
+    let f: extern "C-unwind" fn(
+        *mut AnyObject,
+        Sel,
+        NSRect,
+        usize,
+        usize,
+        objc2::runtime::Bool,
+    ) -> *mut AnyObject = unsafe { std::mem::transmute(imp) };
+    let w = f(this, cmd, rect, style, backing, defer);
+    make_clear(w);
+    w
+}
+
+/// `initWithContentRect:styleMask:backing:defer:screen:` under `--e2e`: NSWindow's own, then clear.
+extern "C-unwind" fn init5_clear(
+    this: *mut AnyObject,
+    cmd: Sel,
+    rect: NSRect,
+    style: usize,
+    backing: usize,
+    defer: objc2::runtime::Bool,
+    screen: *mut AnyObject,
+) -> *mut AnyObject {
+    let Some(&imp) = ORIGINAL_INIT5.get() else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: as in `init4_clear`, with the screen argument passed on.
+    let f: extern "C-unwind" fn(
+        *mut AnyObject,
+        Sel,
+        NSRect,
+        usize,
+        usize,
+        objc2::runtime::Bool,
+        *mut AnyObject,
+    ) -> *mut AnyObject = unsafe { std::mem::transmute(imp) };
+    let w = f(this, cmd, rect, style, backing, defer, screen);
+    make_clear(w);
+    w
+}
+
+/// macOS under `--e2e` only (rule 1111): every window of the run is BORN clear. The park makes the
+/// main window clear once it has a handle, but a window is ordered in before that (Slint shows it, the
+/// park's timer comes a tick later), and the Mac E2E's screen guard saw such windows on the runner's
+/// display at full alpha for a moment (18 scenarios of run 42569349881). Once per process; the real
+/// app never calls this.
+pub fn born_clear(class: &AnyClass) {
+    let cls: *const AnyClass = class;
+    // SAFETY: as in `keep_clear`: function pointers given as the runtime's untyped `Imp` with the type
+    // encodings that say how the runtime calls them.
+    unsafe {
+        let four: Imp = std::mem::transmute::<
+            extern "C-unwind" fn(
+                *mut AnyObject,
+                Sel,
+                NSRect,
+                usize,
+                usize,
+                objc2::runtime::Bool,
+            ) -> *mut AnyObject,
+            Imp,
+        >(init4_clear);
+        let five: Imp = std::mem::transmute::<
+            extern "C-unwind" fn(
+                *mut AnyObject,
+                Sel,
+                NSRect,
+                usize,
+                usize,
+                objc2::runtime::Bool,
+                *mut AnyObject,
+            ) -> *mut AnyObject,
+            Imp,
+        >(init5_clear);
+        // The original is saved before it is replaced, so the stand-in always has one to call.
+        if ORIGINAL_INIT4.get().is_none()
+            && let Some(m) =
+                class.instance_method(sel!(initWithContentRect:styleMask:backing:defer:))
+            && ORIGINAL_INIT4.set(m.implementation() as usize).is_ok()
+        {
+            let _ = objc2::ffi::class_replaceMethod(
+                cls.cast_mut(),
+                sel!(initWithContentRect:styleMask:backing:defer:),
+                four,
+                c"@@:{CGRect={CGPoint=dd}{CGSize=dd}}QQB".as_ptr(),
+            );
+        }
+        // The original is saved before it is replaced, so the stand-in always has one to call.
+        if ORIGINAL_INIT5.get().is_none()
+            && let Some(m) =
+                class.instance_method(sel!(initWithContentRect:styleMask:backing:defer:screen:))
+            && ORIGINAL_INIT5.set(m.implementation() as usize).is_ok()
+        {
+            let _ = objc2::ffi::class_replaceMethod(
+                cls.cast_mut(),
+                sel!(initWithContentRect:styleMask:backing:defer:screen:),
+                five,
+                c"@@:{CGRect={CGPoint=dd}{CGSize=dd}}QQB@".as_ptr(),
+            );
+        }
+    }
+}
+
+/// `NSWindow`'s own `setAlphaValue:` and `setIgnoresMouseEvents:`, kept by `keep_clear`.
+static ORIGINAL_ALPHA: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+static ORIGINAL_IGNORE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// `setAlphaValue:` under `--e2e`: whatever is asked, the window stays at alpha 0.
+extern "C-unwind" fn alpha_stays_clear(this: *mut AnyObject, cmd: Sel, _alpha: f64) {
+    if let Some(&imp) = ORIGINAL_ALPHA.get() {
+        // SAFETY: `imp` is NSWindow's own `setAlphaValue:` (a `void (id, SEL, CGFloat)`), saved when it
+        // was replaced; it is called with the receiver and selector it was called with.
+        let f: extern "C-unwind" fn(*mut AnyObject, Sel, f64) = unsafe { std::mem::transmute(imp) };
+        f(this, cmd, 0.0);
+    }
+}
+
+/// `setIgnoresMouseEvents:` under `--e2e`: every click goes through the window to what is below.
+extern "C-unwind" fn clicks_stay_through(
+    this: *mut AnyObject,
+    cmd: Sel,
+    _flag: objc2::runtime::Bool,
+) {
+    if let Some(&imp) = ORIGINAL_IGNORE.get() {
+        // SAFETY: `imp` is NSWindow's own `setIgnoresMouseEvents:` (a `void (id, SEL, BOOL)`), saved when
+        // it was replaced.
+        let f: extern "C-unwind" fn(*mut AnyObject, Sel, objc2::runtime::Bool) =
+            unsafe { std::mem::transmute(imp) };
+        f(this, cmd, objc2::runtime::Bool::YES);
+    }
+}
+
+/// macOS under `--e2e` only (rule 1109): every window of the run stays clear and click-through, whoever
+/// asks otherwise. Slint reveals a GPU window by setting its alpha back to 1 once the first frame is
+/// drawn (its `RevealOnFirstFrame`), which put the parked window on the runner's display (the Mac
+/// E2E's fourth run: "not clear and click-through" at every GPU launch). The original methods are kept
+/// and called with 0 and YES. Once per process; the real app never calls this.
+pub fn keep_clear(class: &AnyClass) {
+    let cls: *const AnyClass = class;
+    // SAFETY: as in `panels::guard`: function pointers given as the runtime's untyped `Imp` with the type
+    // encodings that say how the runtime calls them.
+    unsafe {
+        let alpha: Imp = std::mem::transmute::<extern "C-unwind" fn(*mut AnyObject, Sel, f64), Imp>(
+            alpha_stays_clear,
+        );
+        let through: Imp = std::mem::transmute::<
+            extern "C-unwind" fn(*mut AnyObject, Sel, objc2::runtime::Bool),
+            Imp,
+        >(clicks_stay_through);
+        if ORIGINAL_ALPHA.get().is_none()
+            && let Some(old) = objc2::ffi::class_replaceMethod(
+                cls.cast_mut(),
+                sel!(setAlphaValue:),
+                alpha,
+                c"v@:d".as_ptr(),
+            )
+        {
+            let _ = ORIGINAL_ALPHA.set(old as usize);
+        }
+        if ORIGINAL_IGNORE.get().is_none()
+            && let Some(old) = objc2::ffi::class_replaceMethod(
+                cls.cast_mut(),
+                sel!(setIgnoresMouseEvents:),
+                through,
+                c"v@:B".as_ptr(),
+            )
+        {
+            let _ = ORIGINAL_IGNORE.set(old as usize);
+        }
+    }
+}
+
+/// macOS under `--e2e` (rule 1109): no App Nap for the run. An accessory app whose only window is clear
+/// would be napped by the system (timers coalesced to seconds, I/O at background priority), and a
+/// scenario's 8 s waits would time out on a Mac only. Held for the whole process; the real app never
+/// calls this.
+pub fn hold_off_app_nap() {
+    use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
+    let token = NSProcessInfo::processInfo().beginActivityWithOptions_reason(
+        NSActivityOptions::UserInteractive,
+        &NSString::from_str("Flare --e2e run"),
+    );
+    // The activity lasts as long as the token; the run's whole life.
+    std::mem::forget(token);
+}
+
+/// Makes the app an accessory and the window clear (alpha 0, no shadow, click-through), then puts it on
+/// the main screen's visible area so it paints (rule 1109). Its class keeps the frame it is given (rule
+/// 1107). Never activates the app, never orders the window front, never resizes it. Nothing happens off
+/// the main thread.
 pub fn park(view: isize) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
@@ -29,7 +322,16 @@ pub fn park(view: isize) {
     };
     NSApplication::sharedApplication(mtm)
         .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-    window.setFrameOrigin(NSPoint::new(f64::from(PARK_AT), f64::from(PARK_AT)));
+    let obj: &AnyObject = window.as_ref();
+    allow_off_screen(obj.class());
+    // Clear before it moves: it is never seen on the way.
+    window.setAlphaValue(0.0);
+    window.setHasShadow(false);
+    window.setIgnoresMouseEvents(true);
+    let at = NSScreen::mainScreen(mtm)
+        .map(|s| s.visibleFrame().origin)
+        .unwrap_or(NSPoint::new(0.0, 0.0));
+    window.setFrameOrigin(at);
 }
 
 /// What the harness checks of an `--e2e` window (the same shape as on Windows).
@@ -44,6 +346,9 @@ pub struct ParkReport {
     pub screen: (i32, i32, i32, i32),
     /// Whether Flare is the active app and this its key window.
     pub foreground: bool,
+    /// macOS: the window is clear (alpha 0) and lets every click through, so on a screen it shows
+    /// nothing and takes nothing (rule 1109).
+    pub clear: bool,
 }
 
 /// The accessory activation policy, as `ex_style` holds it.
@@ -65,9 +370,9 @@ impl ParkReport {
     /// Everything wrong with the window as an `--e2e` window; empty when it is safe.
     pub fn problems(&self) -> Vec<String> {
         let mut out = Vec::new();
-        if self.on_screen() {
+        if self.on_screen() && !self.clear {
             out.push(format!(
-                "the window is on a screen at {:?} (screens {:?}), it is not parked",
+                "the window shows on a screen at {:?} (screens {:?}): it is not clear and click-through",
                 self.rect, self.screen
             ));
         }
@@ -108,6 +413,7 @@ pub fn report(view: isize) -> ParkReport {
         ex_style: app.activationPolicy().0.max(0) as u32,
         screen: screen.unwrap_or_default(),
         foreground: app.isActive() && window.isKeyWindow(),
+        clear: window.alphaValue() == 0.0 && window.ignoresMouseEvents(),
     }
 }
 
@@ -123,6 +429,7 @@ mod tests {
             ex_style: POLICY_ACCESSORY,
             screen: SCREEN,
             foreground: false,
+            clear: false,
         }
     }
 
@@ -141,13 +448,68 @@ mod tests {
         let mut r = safe();
         r.rect = (3000, 100, 4000, 700);
         assert!(r.on_screen());
-        assert!(r.problems().iter().any(|p| p.contains("not parked")));
+        assert!(r.problems().iter().any(|p| p.contains("not clear")));
+        // Rule 1109: on a screen, clear and click-through, it is safe.
+        r.clear = true;
+        assert!(r.problems().is_empty());
         let r = ParkReport {
             ex_style: 0,
             foreground: true,
             ..safe()
         };
         assert_eq!(r.problems().len(), 2);
+    }
+
+    // Rule 1107: the parked window's class keeps the frame it is given, and only that class changes.
+    #[test]
+    fn a_parked_class_keeps_its_frame_off_every_screen_and_nswindow_keeps_the_rule() {
+        use objc2::runtime::ClassBuilder;
+        let window = AnyClass::get(c"NSWindow").expect("AppKit is linked");
+        let class = ClassBuilder::new(c"FlareParkTestWindow", window)
+            .expect("a new class name")
+            .register();
+        assert!(!allows_off_screen(class));
+        allow_off_screen(class);
+        assert!(allows_off_screen(class));
+        assert!(!allows_off_screen(window), "NSWindow itself is untouched");
+        let frame = NSRect::new(
+            NSPoint::new(-32000.0, -32000.0),
+            objc2_foundation::NSSize::new(1000.0, 640.0),
+        );
+        let kept = keep_frame(
+            std::ptr::null_mut(),
+            sel!(constrainFrameRect:toScreen:),
+            frame,
+            std::ptr::null_mut(),
+        );
+        assert_eq!(kept, frame);
+    }
+
+    // Rule 1111: a class made born-clear initialises through the stand-in, which calls NSWindow's own.
+    #[test]
+    fn a_born_clear_class_initialises_through_the_stand_in() {
+        use objc2::runtime::ClassBuilder;
+        let window = AnyClass::get(c"NSWindow").expect("AppKit is linked");
+        let class = ClassBuilder::new(c"FlareBornClearTestWindow", window)
+            .expect("a new class name")
+            .register();
+        let sel4 = sel!(initWithContentRect:styleMask:backing:defer:);
+        let own = window
+            .instance_method(sel4)
+            .expect("NSWindow has it")
+            .implementation();
+        born_clear(class);
+        let now = class
+            .instance_method(sel4)
+            .expect("inherited")
+            .implementation();
+        assert!(
+            !std::ptr::fn_addr_eq(now, own),
+            "the class now has the stand-in"
+        );
+        assert_eq!(ORIGINAL_INIT4.get().copied(), Some(own as usize));
+        assert!(ORIGINAL_INIT5.get().is_some());
+        make_clear(std::ptr::null_mut());
     }
 
     #[test]

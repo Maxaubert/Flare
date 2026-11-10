@@ -306,7 +306,7 @@ fn click_format(app: &mut App) -> bool {
 fn type_code(app: &mut App, id: &str, text: &str) {
     let r = row(app, id);
     click_r(app, &r["code_box"]);
-    press(app, "Ctrl+KeyA");
+    press(app, crate::chord::FIELD_SELECT_ALL);
     let _ = app.session.type_text(text);
     press(app, "Enter");
 }
@@ -578,7 +578,27 @@ pub fn colour_picker(ctx: &mut Ctx) -> Result<(), String> {
     const ID: &str = "agent-color";
     const KEY: &str = "flare.term.agentColor";
 
-    // A shell stands in for Claude, mid-answer, as in `indicator`.
+    // A shell stands in for Claude, mid-answer, as in `indicator`. macOS (rule 1112): pwsh on the runner
+    // gives its prompt long after the process poll's first "no agent" for the tab, which takes a bare
+    // hook claim back at once, so the Mac run starts the agent stand-in in the tab first, as agentHooks
+    // and backgroundWork do (the hook then belongs to a real agent process).
+    #[cfg(target_os = "macos")]
+    {
+        let cmd = crate::standins::agent_proc::command(&app.profile)?;
+        type_line(&mut app, &cmd);
+        // A timeout here is recorded as a failure by the next check (`Ctx::ok`).
+        ctx.until(
+            "the process poll sees the stand-in agent",
+            15_000,
+            &mut || {
+                app.session
+                    .probe("agent.state", Value::Null)
+                    .ok()
+                    .and_then(|v| v["tabs"].as_array().cloned())
+                    .is_some_and(|tabs| tabs.iter().any(|t| t["present"] == true))
+            },
+        );
+    }
     type_line(&mut app, &say("working"));
     let working = ctx.until("the stand-in agent to work", 12_000, &mut || {
         mark_state(&mut app) == "working"

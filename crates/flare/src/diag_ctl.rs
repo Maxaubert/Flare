@@ -20,7 +20,7 @@ use flare_diag::crash::CrashHooks;
 use flare_diag::mem::{MemWatch, Metrics, MetricsSource};
 use flare_diag::session::{Diagnostics, SessionInfo};
 use flare_diag::stack::NoSampler;
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 use flare_diag::stack::{FrameSource, MAX_FRAMES, Win32Sampler};
 use flare_diag::stall::{
     CrumbRing, StackSampler, StallDeps, StallWatch, SystemClock, WorkClass, WorkTable, WorkTimer,
@@ -169,11 +169,11 @@ fn private_bytes_of(pid: u32) -> Option<u64> {
     }
 }
 
-/// The UI thread's stack through `flare-win`'s sampler.
-#[cfg(windows)]
+/// The UI thread's stack through `flare-win`'s sampler (the Mac one on Apple silicon, rule 1116).
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 struct UiFrames(flare_win::thread_stack::ThreadSampler);
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 impl FrameSource for UiFrames {
     fn raw_frames(&self) -> Option<([u64; MAX_FRAMES], usize)> {
         self.0.raw_frames()
@@ -384,8 +384,20 @@ fn private_bytes_of(pid: u32) -> Option<u64> {
     flare_proc::memory(pid).map(|m| m.footprint)
 }
 
-/// macOS: phase 3 of the port plan. The UI thread is not sampled until then.
-#[cfg(not(windows))]
+/// macOS on Apple silicon (rule 1116): the UI thread's frame-pointer walk, as on Windows.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn ui_sampler() -> Arc<dyn StackSampler> {
+    match flare_win::thread_stack::ThreadSampler::for_current_thread() {
+        Ok(s) => Arc::new(Win32Sampler(UiFrames(s))),
+        Err(e) => {
+            log::debug!("no ui stack sampler: {e}");
+            Arc::new(NoSampler)
+        }
+    }
+}
+
+/// An Intel Mac keeps no sampler: the stall line names the work in flight alone.
+#[cfg(all(not(windows), not(all(target_os = "macos", target_arch = "aarch64"))))]
 fn ui_sampler() -> Arc<dyn StackSampler> {
     Arc::new(NoSampler)
 }
