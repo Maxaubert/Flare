@@ -133,7 +133,7 @@ plugin's page), `site` and, when there was a page before it, `from` (that page's
 
 | Kind | Fields besides those | A problem |
 |---|---|---|
-| `web-refused` | `why`: `scheme` (the browser panel opens http, https and about:blank only), `not-its-page` (a mini-app), `not-its-host` (a plugin), `popup` | no |
+| `web-refused` | `why`: `scheme` (the browser panel opens http, https and about:blank only), `not-its-page` (a mini-app), `not-its-host` (a plugin), `frame` (a mini-app's or plugin's frame to another site), `app-link` (a mini-app's or plugin's `mailto:` or app link), `popup` | no |
 | `web-popup` | `to: panel` (the pop-up opened in the panel), `user` (the person's click opened it) | no |
 | `web-close-ignored` | none: the page called `window.close()` | no |
 | `web-load-failed` | `error`: the WebView2 error's name (`cert-expired`, `name-not-resolved`, `timeout` ...). A navigation Flare cancelled and a stream handed to the player are not failures | yes |
@@ -143,7 +143,7 @@ plugin's page), `site` and, when there was a page before it, `from` (that page's
 | `web-nav` | none: one step of the chain of sites. Verbose only | no |
 
 The gate: one line per kind, site and word per 10 seconds, the copies counted and written as `repeats` once the 10 seconds have
-passed; at most 10 lines per kind per 10 seconds. `web-process` and `web-cert` always write their first line, even over that.
+passed (`repeats` is always the events a line stands for besides itself); at most 10 lines per kind per 10 seconds, and the held lines wait for their kind's next 10 seconds. `web-process` and `web-cert` always write their first line, even over that. `web-nav` lines are never folded: a hop back to a site seen a moment ago is its own line, in order.
 The page events (`web-nav`, `web-load-failed`, `web-cert`) are the browser panel's only.
 
 ## Wiring and the quiet level

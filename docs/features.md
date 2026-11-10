@@ -2187,7 +2187,7 @@ read afterwards. Spec: `docs/superpowers/specs/2026-11-10-web-popups-design.md`,
 
 | Kind | When | A problem in `cargo diag` |
 |---|---|---|
-| `web-refused` | A navigation (`why`: `scheme`, `not-its-page`, `not-its-host`) or a pop-up (`why: popup`) was refused | no |
+| `web-refused` | A navigation (`why`: `scheme`, `not-its-page`, `not-its-host`), a mini-app's or plugin's frame (`why: frame`) or app link (`why: app-link`), or a pop-up (`why: popup`) was refused | no |
 | `web-popup` | A pop-up went to the panel (`to: panel`), and whether the person's click opened it (`user`) | no |
 | `web-close-ignored` | The page called `window.close()`, which does nothing here | no |
 | `web-load-failed` | A page failed to load, with the error's name (`cert-expired`, `name-not-resolved` and so on) | yes |
@@ -2200,8 +2200,9 @@ read afterwards. Spec: `docs/superpowers/specs/2026-11-10-web-popups-design.md`,
   `site` and the site of the page it came `from`. A site is the host in lower case, never the address: no port, login, path, query or
   fragment (`flare_surfaces::web::site_of`; an address with no host is its scheme, anything else `odd` or `unparsed`). The sites are made
   in `flare-web` (`WebNote::new`), so an address never leaves it for the log.
-- **Rate-limited (rule 248).** One line per kind, site and word per 10 s, the copies counted as `repeats`; at most 10 lines per kind per
-  10 s. A process failure and a certificate error always write their first line.
+- **Rate-limited (rule 248).** One line per kind, site and word per 10 s, the copies counted as `repeats` (the events a line stands for
+  besides itself); at most 10 lines per kind per 10 s, and what is held waits for its kind's next 10 s. A process failure and a certificate
+  error always write their first line. `web-nav` steps are never folded, so a hop back (shop, bank, shop) stays in order.
 - **Nothing changes in the browser.** The certificate handler reads the error and the address and never sets an action. A Runtime too old
   for the certificate event or the process reason simply logs less.
 - **Reading it.** `cargo diag` lists the failed loads, process failures and certificate errors among the problems; `cargo diag -- --web`

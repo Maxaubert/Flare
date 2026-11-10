@@ -1141,7 +1141,7 @@ impl WebHost {
             refuse_external_uris(webview, ViewSink::new(&self.sink, slot))?;
         }
         if seal.frames_own_only {
-            own_frames_only(webview, app)?;
+            own_frames_only(webview, app, ViewSink::new(&self.sink, slot))?;
         }
         Ok(())
     }
@@ -1332,7 +1332,7 @@ impl WebHost {
         } else {
             // A mini-app's launch and frame walls (a mod's are part of its seal).
             refuse_external_uris(webview, ViewSink::new(&self.sink, slot))?;
-            own_frames_only(webview, app)?;
+            own_frames_only(webview, app, ViewSink::new(&self.sink, slot))?;
         }
         Ok(())
     }
@@ -1696,18 +1696,38 @@ fn cancel_downloads_at_once(webview: &ICoreWebView2) -> Result<(), String> {
         .map_err(|_| "the download wall could not be registered".to_string())
 }
 
+/// The note of an app link (a mailto: or custom scheme) the launch wall refused: `why: app-link`, sites only.
+fn app_link_refused(uri: &str, from: &str) -> WebNote {
+    WebNote::new(NoteKind::NavRefused, uri, from).detail("app-link")
+}
+
+/// The frame wall's answer for a frame going to `uri` in the view showing `from`: nothing for a blank or srcdoc
+/// frame or the page's own (the app's page, or any page of a mod's own host), and otherwise the note of its
+/// refusal (`why: frame`), sites only.
+fn frame_refusal(uri: &str, from: &str, app_url: &str, mod_host: Option<&str>) -> Option<WebNote> {
+    let own = match mod_host {
+        Some(h) => modview::nav_allowed(uri, h),
+        None => app::nav_allowed(uri, app_url),
+    };
+    (!(uri == "about:blank" || uri == "about:srcdoc" || own))
+        .then(|| WebNote::new(NoteKind::NavRefused, uri, from).detail("frame"))
+}
+
 /// No external program is launched from the page (a mailto: or custom scheme would carry the page's data out
-/// through another program, past the proxy).
+/// through another program, past the proxy). A refused link is noted for the diagnostics log.
 fn refuse_external_uris(webview: &ICoreWebView2, sink: ViewSink) -> Result<(), String> {
     let w18 = webview
         .cast::<ICoreWebView2_18>()
         .map_err(|_| "this WebView2 Runtime cannot seal a mini-app".to_string())?;
-    let h = LaunchingExternalUriSchemeEventHandler::create(Box::new(move |_w, args| {
+    let h = LaunchingExternalUriSchemeEventHandler::create(Box::new(move |w, args| {
         if let Some(args) = args {
-            // SAFETY: `args` is the live argument of this callback.
+            // SAFETY: `args` and `w` are the live arguments of this callback.
             unsafe {
                 let uri = get_string(|p| args.Uri(p));
+                let from = w.map(|w| get_string(|p| w.Source(p))).unwrap_or_default();
                 let _ = args.SetCancel(true);
+                let note = app_link_refused(&uri, &from);
+                sink.send(|tab| WebEvent::Note { tab, note });
                 sink.send(|tab| WebEvent::Refused { tab, url: uri });
             }
         }
@@ -1722,20 +1742,19 @@ fn refuse_external_uris(webview: &ICoreWebView2, sink: ViewSink) -> Result<(), S
 /// No frame navigates anywhere but a blank or srcdoc frame or the page's own: the app's page, or any page of
 /// a mod's own host. (No cookie sweep: each app has a site of its own, and wiping the shared profile's jar
 /// would log another app's tab out.)
-fn own_frames_only(webview: &ICoreWebView2, app: &AppSpec) -> Result<(), String> {
+/// A refused frame is noted for the diagnostics log (`why: frame`).
+fn own_frames_only(webview: &ICoreWebView2, app: &AppSpec, sink: ViewSink) -> Result<(), String> {
     let app_url = app.url.clone();
     let mod_host = app.module.is_some().then(|| app.host.clone());
-    let h = NavigationStartingEventHandler::create(Box::new(move |_w, args| {
+    let h = NavigationStartingEventHandler::create(Box::new(move |w, args| {
         if let Some(args) = args {
-            // SAFETY: `args` is the live argument of this callback.
+            // SAFETY: `args` and `w` are the live arguments of this callback.
             unsafe {
                 let uri = get_string(|p| args.Uri(p));
-                let own = match &mod_host {
-                    Some(h) => modview::nav_allowed(&uri, h),
-                    None => app::nav_allowed(&uri, &app_url),
-                };
-                if !(uri == "about:blank" || uri == "about:srcdoc" || own) {
+                let from = w.map(|w| get_string(|p| w.Source(p))).unwrap_or_default();
+                if let Some(note) = frame_refusal(&uri, &from, &app_url, mod_host.as_deref()) {
                     let _ = args.SetCancel(true);
+                    sink.send(|tab| WebEvent::Note { tab, note });
                 }
             }
         }
@@ -2328,5 +2347,34 @@ mod tests {
             );
         }
         assert_eq!(env_arguments(EnvKind::Web), Ok(None));
+    }
+
+    #[test]
+    fn a_refused_frame_or_app_link_of_a_mini_app_is_noted_by_site() {
+        let app = "https://flare-app-1.local/index.html";
+        let from = "https://flare-app-1.local/index.html?tok=1";
+        let note = frame_refusal("https://pay.example/checkout?card=1", from, app, None)
+            .expect("a frame to another site is refused");
+        assert_eq!(note.kind(), NoteKind::NavRefused);
+        assert_eq!(note.word(), "frame");
+        assert_eq!(note.site(), "pay.example");
+        assert_eq!(note.from(), "flare-app-1.local");
+        // A mod's frame wall refuses another host and notes it the same way.
+        let note = frame_refusal("https://evil.example/", "", app, Some("mod-x.local"))
+            .expect("a mod's frame to another host is refused");
+        assert_eq!(note.word(), "frame");
+        // The page's own frames, and blank or srcdoc ones, pass with no note.
+        for uri in [app, "about:blank", "about:srcdoc"] {
+            assert_eq!(frame_refusal(uri, from, app, None), None, "{uri}");
+        }
+        assert_eq!(
+            frame_refusal("https://mod-x.local/a.html", "", app, Some("mod-x.local")),
+            None
+        );
+        let note = app_link_refused("zoommtg://zoom.us/join?pwd=secret", from);
+        assert_eq!(note.kind(), NoteKind::NavRefused);
+        assert_eq!(note.word(), "app-link");
+        assert_eq!(note.from(), "flare-app-1.local");
+        assert!(!note.site().contains("pwd"), "{}", note.site());
     }
 }
