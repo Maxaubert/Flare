@@ -44,7 +44,7 @@ fn web_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         round(a.get_panel_slot_h()),
         f64::from(k),
         (share > 0.0).then_some(share),
-        round(a.get_panel_header_h() + a.get_panel_bar_h()),
+        round(a.get_panel_header_h() + a.get_panel_bar_h() + a.get_panel_popup_h()),
     );
     let c = ctx
         .ctl
@@ -67,6 +67,11 @@ fn web_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         "missing_runtime": a.get_panel_web_missing_runtime(),
         "input_focused": a.get_panel_web_input_focused(),
         "h": a.get_panel_bar_h(),
+    });
+    // The strip over a pop-up (rule 249): its words and height (0 while none is open).
+    v["strip"] = json!({
+        "text": a.get_panel_web_popup().to_string(),
+        "h": a.get_panel_popup_h(),
     });
     // Who is using the page in front: during an agent call and its hold (no ribbon is drawn any more,
     // Max 2026-10-27; the glow and the cursor show it).
