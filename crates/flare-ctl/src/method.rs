@@ -68,6 +68,9 @@ pub enum Method {
     BrowserScroll,
     BrowserWait,
     BrowserEval,
+    /// An arrow over the page at what the person must do themselves (2026-11-10, rule 254): it never clicks and cannot
+    /// type, and it is not a job.
+    BrowserPoint,
     /// A plugin fills a saved login into a tab's web page (under `fill`): only a page whose address matches the
     /// login's, and only after the person allowed it in Flare's own dialog. The values go to the page only.
     BrowserFill,
@@ -183,7 +186,7 @@ impl Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 45] = [
+    pub const ALL: [Method; 46] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -219,6 +222,7 @@ impl Method {
         Method::BrowserScroll,
         Method::BrowserWait,
         Method::BrowserEval,
+        Method::BrowserPoint,
         Method::BrowserFill,
         Method::BrowserFillPage,
         Method::SecretAsk,
@@ -269,6 +273,7 @@ impl Method {
             Method::BrowserScroll => "browser.scroll",
             Method::BrowserWait => "browser.wait",
             Method::BrowserEval => "browser.eval",
+            Method::BrowserPoint => "browser.point",
             Method::BrowserFill => "browser.fill",
             Method::BrowserFillPage => "browser.fill.page",
             Method::SecretAsk => "secret.ask",
@@ -318,7 +323,8 @@ impl Method {
             | Method::BrowserPress
             | Method::BrowserScroll
             | Method::BrowserWait
-            | Method::BrowserEval => Namespace::Browser,
+            | Method::BrowserEval
+            | Method::BrowserPoint => Namespace::Browser,
             Method::BrowserFill | Method::BrowserFillPage | Method::SecretAsk => Namespace::Fill,
             Method::ConvoState => Namespace::Convo,
             Method::ToolsRespond => Namespace::Tools,

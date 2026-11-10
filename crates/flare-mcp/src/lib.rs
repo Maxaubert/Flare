@@ -1443,6 +1443,7 @@ mod tests {
                 "browser_wait",
                 "browser_navigate",
                 "browser_eval",
+                "browser_point",
                 "browser_state",
                 "set_tab_badge",
                 "clear_tab_badge",

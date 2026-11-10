@@ -1,5 +1,5 @@
-//! Install when idle (2026-10-29): the "Build ready" chip, its menu, the toast, the idle rule and the restart, in the
-//! real `AppCtl` over a temp install. Headless: nothing starts a shell, a process or an OS window; the restart is a
+//! Build ready (2026-10-29, one click since 2026-11-10): the chip (a click installs, no menu), the close question,
+//! the toast and the restart, in the real `AppCtl` over a temp install. Nothing installs on its own. Headless: nothing starts a shell, a process or an OS window; the restart is a
 //! recorder and the disk work runs as queued jobs.
 
 use std::cell::{Cell, RefCell};
@@ -15,9 +15,8 @@ use flare_tabs::restore::NoSessions;
 use flare_tabs::tabs_store::TabsStore;
 use flare_term::fake::{FakeShells, FakeSpawner};
 use flare_update::staged::{self, Layout, Manifest, Start};
-use flare_update::staged_flow::{Mode, Phase, Times};
+use flare_update::staged_flow::{Phase, Times};
 use flare_win::window_state::WindowStateStore;
-use slint::Model;
 
 use crate::AppWindow;
 use crate::appctl::staged_glue::{StagedMsg, StagedParts};
@@ -254,17 +253,11 @@ impl Fx {
         id
     }
 
-    fn menu_labels(&self) -> Vec<(String, bool)> {
-        self.app()
-            .get_menu_rows()
-            .iter()
-            .map(|r| (r.label.to_string(), r.disabled))
-            .collect()
-    }
-
+    /// A click on the chip: no menu opens.
     fn click_chip(&self) {
-        self.app().invoke_staged_chip_clicked(900.0, 6.0, 30.0);
+        self.app().invoke_staged_chip_clicked();
         self.pump();
+        assert!(!self.app().get_menu_open(), "the chip has no menu");
     }
 
     fn read(&self, name: &str) -> Vec<u8> {
@@ -284,14 +277,13 @@ fn no_stage_no_chip_and_a_ready_stage_shows_build_ready() {
     assert_eq!(app.get_staged_chip_label(), "Build ready");
     assert_eq!(
         app.get_staged_chip_aria(),
-        "Build ready, installs when idle"
+        "Build ready, click to install and restart"
     );
     assert_eq!(
         app.get_staged_chip_tip(),
-        "Build abc1234 installs once no agent has worked for a minute"
+        "Build abc1234: click to install and restart"
     );
 }
-
 #[test]
 fn a_stage_whose_hash_does_not_match_shows_no_chip() {
     let f = make(Start::Plain, false);
@@ -306,37 +298,25 @@ fn a_stage_whose_hash_does_not_match_shows_no_chip() {
 }
 
 #[test]
-fn the_chip_opens_its_menu_and_install_when_idle_is_the_choice_already_made() {
+fn a_click_with_no_agent_at_work_counts_down_ten_seconds_then_swaps_and_restarts_on_the_same_profile()
+ {
     let f = make(Start::Plain, true);
+    f.clock.set(1_000);
     f.click_chip();
-    assert!(f.app().get_menu_open());
-    assert_eq!(
-        f.menu_labels(),
-        vec![
-            ("Install now".to_string(), false),
-            ("Install when idle".to_string(), true),
-            ("Not today".to_string(), false),
-            ("Discard".to_string(), false),
-        ]
+    assert!(
+        !f.app().get_dialog_open(),
+        "no question with no agent at work"
     );
-}
-
-#[test]
-fn a_quiet_minute_counts_down_ten_seconds_then_swaps_and_restarts_on_the_same_profile() {
-    let f = make(Start::Plain, true);
-    f.at(1_000);
-    f.at(60_000);
-    assert_eq!(f.phase(), Phase::Waiting, "59 s of quiet is not enough");
-    f.at(61_000);
+    assert_eq!(f.phase(), Phase::Countdown { ends: 11_000 });
     assert_eq!(
         f.app().get_staged_toast(),
         "Installing the new build and restarting"
     );
     assert_eq!(f.app().get_staged_toast_button(), "Cancel");
     assert!(f.restarts.borrow().is_empty());
-    f.at(70_999);
+    f.at(10_999);
     assert!(f.restarts.borrow().is_empty(), "the full 10 s");
-    f.at(71_000);
+    f.at(11_000);
     assert_eq!(f.read("FlareStable.exe"), b"new exe");
     assert_eq!(f.read("FlareStable.exe.old"), b"old exe");
     let r = f.restarts.borrow();
@@ -361,54 +341,43 @@ fn a_quiet_minute_counts_down_ten_seconds_then_swaps_and_restarts_on_the_same_pr
 }
 
 #[test]
-fn a_working_agent_or_its_question_holds_the_install_and_starts_the_minute_again() {
+fn nothing_installs_on_its_own_after_a_minute_idle() {
     let f = make(Start::Plain, true);
-    f.agent_working(true);
-    f.at(1_000);
-    f.at(200_000);
-    assert_eq!(f.phase(), Phase::Waiting, "never while an agent works");
-    assert!(f.restarts.borrow().is_empty());
-    f.agent_working(false);
-    f.at(200_250);
-    f.at(260_000);
+    for t in [1_000, 30_000, 61_000, 71_000, 200_000, 600_000] {
+        f.at(t);
+    }
     assert_eq!(f.phase(), Phase::Waiting);
-    f.at(260_250);
-    assert!(matches!(f.phase(), Phase::Countdown { by_hand: false, .. }));
-    // Work starts during the countdown: it stops, and the minute starts again.
-    f.agent_working(true);
-    f.at(262_000);
-    assert_eq!(f.phase(), Phase::Waiting);
-    assert_eq!(f.app().get_staged_toast(), "");
-    f.at(400_000);
     assert!(f.restarts.borrow().is_empty());
-}
-
-#[test]
-fn cancel_on_the_toast_stops_it_and_leaves_the_build_for_a_click() {
-    let f = make(Start::Plain, true);
-    f.at(1_000);
-    f.at(61_000);
-    f.app().invoke_staged_toast_clicked();
-    f.pump();
     assert_eq!(f.app().get_staged_toast(), "");
-    assert_eq!(f.ctl.borrow().staged_flow().unwrap().mode(), Mode::Manual);
-    assert_eq!(
-        f.app().get_staged_chip_tip(),
-        "Build abc1234 is ready to install"
-    );
-    f.at(500_000);
-    assert!(f.restarts.borrow().is_empty());
+    assert!(f.app().get_staged_chip_shown(), "the build stays on offer");
     assert_eq!(f.read("FlareStable.exe"), b"old exe");
 }
 
 #[test]
-fn install_now_under_a_working_agent_asks_first_then_counts_down_without_waiting_for_idle() {
+fn cancel_on_the_toast_stops_it_and_leaves_the_build_for_the_next_click() {
+    let f = make(Start::Plain, true);
+    f.click_chip();
+    f.app().invoke_staged_toast_clicked();
+    f.pump();
+    assert_eq!(f.app().get_staged_toast(), "");
+    assert_eq!(f.phase(), Phase::Waiting);
+    assert!(f.app().get_staged_chip_shown());
+    f.at(500_000);
+    assert!(f.restarts.borrow().is_empty());
+    assert_eq!(f.read("FlareStable.exe"), b"old exe");
+    f.click_chip();
+    assert!(
+        matches!(f.phase(), Phase::Countdown { .. }),
+        "a new click installs"
+    );
+}
+
+#[test]
+fn a_click_under_a_working_agent_asks_first_and_cancel_keeps_the_build_on_offer() {
     let f = make(Start::Plain, true);
     f.agent_working(true);
     f.at(5_000);
     f.click_chip();
-    f.app().invoke_menu_picked(0);
-    f.pump();
     let app = f.app();
     assert!(app.get_dialog_open(), "the close question is up");
     assert_eq!(
@@ -416,41 +385,35 @@ fn install_now_under_a_working_agent_asks_first_then_counts_down_without_waiting
         "Stop the agent and install the update?"
     );
     assert_eq!(app.get_dialog_primary().as_str(), "Install and restart");
+    assert_eq!(
+        f.phase(),
+        Phase::Waiting,
+        "nothing counts down while it asks"
+    );
     app.invoke_dialog_cancel();
     f.pump();
     assert!(!app.get_dialog_open());
     assert_eq!(f.phase(), Phase::Waiting, "a no installs nothing");
+    assert!(app.get_staged_chip_shown(), "the build stays on offer");
+    f.at(200_000);
+    assert!(f.restarts.borrow().is_empty());
 
     f.click_chip();
-    app.invoke_menu_picked(0);
-    f.pump();
     app.invoke_dialog_confirm();
     f.pump();
-    assert!(matches!(f.phase(), Phase::Countdown { by_hand: true, .. }));
-    f.at(16_000);
+    assert!(matches!(f.phase(), Phase::Countdown { .. }));
+    f.at(211_000);
     assert_eq!(
         f.restarts.borrow().len(),
         1,
-        "a countdown by hand goes on while the agent works"
+        "a countdown agreed to goes on while the agent works"
     );
-}
-
-#[test]
-fn install_now_with_no_agent_at_work_needs_no_question() {
-    let f = make(Start::Plain, true);
-    f.click_chip();
-    f.app().invoke_menu_picked(0);
-    f.pump();
-    assert!(!f.app().get_dialog_open());
-    assert!(matches!(f.phase(), Phase::Countdown { by_hand: true, .. }));
 }
 
 #[test]
 fn a_build_that_cannot_be_installed_says_so_and_nothing_changes() {
     let f = make(Start::Plain, true);
     f.click_chip();
-    f.app().invoke_menu_picked(0);
-    f.pump();
     // The staged exe changes between the check and the swap: the swap's own check refuses it.
     std::fs::write(f.layout.staged().join("FlareStable.exe"), b"tampered").unwrap();
     f.at(10_000);
@@ -463,30 +426,6 @@ fn a_build_that_cannot_be_installed_says_so_and_nothing_changes() {
     assert_eq!(f.read("FlareStable.exe"), b"old exe");
     assert!(f.app().get_staged_chip_shown(), "the chip stays");
 }
-
-#[test]
-fn not_today_hides_the_chip_and_discard_removes_the_stage() {
-    let f = make(Start::Plain, true);
-    f.click_chip();
-    f.app().invoke_menu_picked(2);
-    f.pump();
-    assert!(!f.app().get_staged_chip_shown());
-    f.at(1_000);
-    f.at(100_000);
-    assert!(
-        f.restarts.borrow().is_empty(),
-        "a hidden build never installs on its own"
-    );
-
-    let g = make(Start::Plain, true);
-    g.click_chip();
-    g.app().invoke_menu_picked(3);
-    g.pump();
-    g.settle();
-    assert!(!g.app().get_staged_chip_shown());
-    assert!(!g.layout.staged().exists(), "the staged folder is gone");
-}
-
 /// A temp install whose new build was swapped in and has just started (the guard said "installed").
 fn new_build_started(layout: &Layout) -> Start {
     stage(layout, b"new exe");
@@ -556,8 +495,7 @@ fn the_rolled_back_build_says_so_once() {
 #[test]
 fn the_chip_is_drawn_in_the_bar_and_the_toast_hangs_under_it() {
     let f = make(Start::Plain, true);
-    f.at(1_000);
-    f.at(61_000);
+    f.click_chip();
     let app = f.app();
     let (cx, cy, cw, ch) = (
         app.get_staged_chip_x(),
@@ -585,12 +523,10 @@ fn the_chip_is_drawn_in_the_bar_and_the_toast_hangs_under_it() {
 }
 
 #[test]
-fn install_now_with_no_agent_at_work_asks_when_one_starts_during_the_countdown() {
+fn a_click_with_no_agent_at_work_asks_when_one_starts_during_the_countdown() {
     let f = make(Start::Plain, true);
     f.click_chip();
-    f.app().invoke_menu_picked(0);
-    f.pump();
-    assert!(matches!(f.phase(), Phase::Countdown { by_hand: true, .. }));
+    assert!(matches!(f.phase(), Phase::Countdown { .. }));
     f.agent_working(true);
     f.at(2_000);
     let app = f.app();
@@ -600,18 +536,18 @@ fn install_now_with_no_agent_at_work_asks_when_one_starts_during_the_countdown()
     assert!(f.restarts.borrow().is_empty(), "nothing while it asks");
     app.invoke_dialog_confirm();
     f.pump();
-    assert!(matches!(f.phase(), Phase::Countdown { by_hand: true, .. }));
+    assert!(matches!(f.phase(), Phase::Countdown { .. }));
     f.at(41_000);
     assert_eq!(f.restarts.borrow().len(), 1, "a yes goes ahead");
 }
 
 #[test]
-fn an_agent_that_starts_while_the_swap_runs_takes_the_swap_back() {
+fn an_agent_that_starts_while_the_swap_runs_takes_the_swap_back_and_asks() {
     let f = make(Start::Plain, true);
-    f.at(1_000);
-    f.at(61_000);
+    f.clock.set(1_000);
+    f.click_chip();
     // The countdown ends: the swap is queued on a worker, and an agent starts before it is done.
-    f.clock.set(71_000);
+    f.clock.set(11_000);
     f.h.advance(250);
     f.pump();
     assert_eq!(f.phase(), Phase::Installing);
@@ -630,11 +566,13 @@ fn an_agent_that_starts_while_the_swap_runs_takes_the_swap_back() {
         f.app().get_staged_chip_shown(),
         "the build is still on offer"
     );
-    // Once the agent is done and a quiet minute passes, it installs.
-    f.agent_working(false);
-    f.at(80_000);
-    f.at(140_000);
-    f.at(150_250);
+    // The click still stands: the close question asks now that an agent works.
+    let app = f.app();
+    assert!(app.get_dialog_open(), "the close question asks");
+    app.invoke_dialog_confirm();
+    f.pump();
+    assert!(matches!(f.phase(), Phase::Countdown { .. }));
+    f.at(30_000);
     assert_eq!(f.restarts.borrow().len(), 1);
     assert_eq!(f.read("FlareStable.exe"), b"new exe");
 }
@@ -645,8 +583,6 @@ fn a_new_build_not_yet_confirmed_can_be_replaced_and_the_one_it_ran_is_put_aside
     stage(&f.layout, b"newer exe");
     f.changed();
     f.click_chip();
-    f.app().invoke_menu_picked(0);
-    f.pump();
     f.at(10_000);
     assert_eq!(
         f.restarts.borrow().len(),

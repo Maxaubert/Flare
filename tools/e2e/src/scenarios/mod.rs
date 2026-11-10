@@ -658,9 +658,9 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 300,
     },
     Scenario {
-        name: "idleInstall",
+        name: "clickInstall",
         group: "staged",
-        run: staged::idle_install,
+        run: staged::click_install,
         limit_secs: 180,
     },
 ];

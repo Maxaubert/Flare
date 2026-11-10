@@ -1310,6 +1310,7 @@ fn mcp_on(ctx: &mut Ctx, app: &mut App, exe: &Path) -> Result<(), String> {
         "browser_wait",
         "browser_navigate",
         "browser_eval",
+        "browser_point",
     ];
     ctx.ok(
         want.iter().all(|w| names.contains(w)),
