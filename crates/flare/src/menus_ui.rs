@@ -171,8 +171,6 @@ pub enum MenuKind {
     Section {
         sid: String,
     },
-    /// The menu of the "Build ready" chip (install when idle, 2026-10-29).
-    Staged,
 }
 
 /// The folder menu's first row: the folder picker, then a tab there (2026-10-27).
