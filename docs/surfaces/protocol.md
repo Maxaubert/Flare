@@ -452,9 +452,10 @@ moved the keys into the panel they go back to the terminal. Stage 2.
 
 ### panel.state
 
-Params: none. Result: `{"open": bool, "panel"?: PanelInfo, "width"?: number}` where `width` is the
+Params: none. Result: `{"open": bool, "panel"?: PanelInfo, "width"?: number, "popup"?: true}` where `width` is the
 slot's fraction of the page (the user's splitter position, else the default 0.4). Both are absent when
-`open` is false (a closed panel is not reported). Errors: `no_tab`. Stage 2.
+`open` is false (a closed panel is not reported). `popup` is there while a pop-up the page opened is shown over a web
+page (regression rule 250): the agent's input calls wait for the person until it closes. Errors: `no_tab`. Stage 2.
 
 ### view.image
 

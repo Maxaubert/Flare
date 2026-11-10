@@ -80,6 +80,8 @@ impl WebBackend for WebHost {
 
     fn close_view(&mut self, _slot: &Slot) {}
 
+    fn close_popup(&mut self, _tab: &str) {}
+
     fn close_all(&mut self) {}
 
     fn answer_download(&mut self, _id: u64, _save: bool) {}
