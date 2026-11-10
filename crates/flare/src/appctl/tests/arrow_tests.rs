@@ -843,6 +843,51 @@ fn the_persons_arrow_is_kept_five_minutes_or_until_the_page_moves_on() {
 }
 
 #[test]
+fn the_persons_arrow_stays_on_what_it_points_at_as_the_page_scrolls() {
+    let (f, _h, shell) = live(Opts::default());
+    let slot = with_fake(&f);
+    claude(&f);
+    let id = up(&f, &slot);
+    let scrolled = with_shop(&slot);
+    let m = mouse(&f);
+    press_draw(&f);
+    drag(&f, &m, (20.0, 130.0), (160.0, 155.0));
+    until_written(&shell, |w| !w.is_empty());
+    assert_eq!(
+        (recorded_mark().x, recorded_mark().y),
+        on_page(&f, 160.0, 155.0)
+    );
+    // The person scrolls 100 down before sending: the blue arrow goes up with the field it points at.
+    scrolled.set(100.0);
+    agent_turn(&f, POINT_MEASURE_MS);
+    assert!(recorded_mark().shown);
+    assert_eq!(
+        (recorded_mark().x, recorded_mark().y),
+        on_page(&f, 160.0, 55.0),
+        "{}",
+        f.ctl.borrow().web.arrow_probe()
+    );
+    // Scrolled so far its tail is off the top: it is not drawn over something else, and comes back with the page.
+    scrolled.set(300.0);
+    agent_turn(&f, POINT_MEASURE_MS);
+    assert!(!recorded_mark().shown);
+    scrolled.set(0.0);
+    agent_turn(&f, POINT_MEASURE_MS);
+    assert_eq!(
+        (recorded_mark().x, recorded_mark().y),
+        on_page(&f, 160.0, 155.0)
+    );
+    // The look is taken scrolled 300 down: the arrow's head is above what it shows, said so and not drawn there, and
+    // it still names the field.
+    scrolled.set(300.0);
+    let v = look(&f, &id);
+    let u = &v["user_arrow"];
+    assert_eq!(u["offscreen"], json!(true), "{u}");
+    assert!((u["to"][1].as_f64().unwrap() + 145.0).abs() <= 1.0, "{u}");
+    assert_eq!(u["name"], "Quantity");
+}
+
+#[test]
 fn when_the_browser_names_nothing_under_the_arrow_the_frame_says_so() {
     let (f, _h, shell) = live(Opts::default());
     let slot = with_fake(&f);

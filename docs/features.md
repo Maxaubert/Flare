@@ -2275,7 +2275,10 @@ Spec `docs/superpowers/specs/2026-11-10-ask-agent-additions-design.md`, section 
   Escape (in the page or in Flare's window), a menu, a tab switch, a pop-up or a navigation.
 - **The agent sees the person's arrow.** It is kept for 5 minutes or until the page moves on. The next `browser_look` gets
   `user_arrow` `{from, to, ref, role, name}` (a ref is made for the element when the look did not list it) and its screenshot has the
-  arrow drawn on it at the look's scale; after that look it is gone. `browser_look`'s text says where the person pointed, with the
+  arrow drawn on it at the look's scale; after that look it is gone. The arrow is kept on the document, not the screen: while its page is
+  in front the scroll is measured again, so the blue mark moves with what it points at and hides while part of it is scrolled out of
+  sight, and the look gives its ends where they are in the look's viewport, `offscreen` and undrawn when the head is outside it
+  (rule 257). `browser_look`'s text says where the person pointed, with the
   element's words inside the page-content markers.
 - **Windows.** `flare_win::agent_cursor`: `compose_arrow` (only the pixels near the shape are worked out), `point_tail` (the agent's
   tail turns to stay on the page), `blend_onto_rgba`, `ArrowWindow`, `PadWindow`, and the stand-ins `RecordArrow`, `RecordMark`,

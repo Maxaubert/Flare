@@ -15,7 +15,10 @@
 //!   on the page starts the arrow, a blue arrow follows the drag, the release asks the browser (no page script) what
 //!   is under the head and hands the window a framed note to type, unsent. The button again, a right click, Escape
 //!   where it arrives, a menu, a tab switch, a pop-up or a navigation cancel it. The arrow is kept for
-//!   [`USER_ARROW_MS`] or until a navigation, and the agent's next look gets it, drawn on its screenshot.
+//!   [`USER_ARROW_MS`] or until a navigation, and the agent's next look gets it, drawn on its screenshot. Its ends are
+//!   kept on the document (the viewport point plus the scroll at the release), so it stays on what it points at: the
+//!   scroll is measured again while its page is in front, it is drawn only while all of it shows, and a look gets its
+//!   ends in the look's own viewport, `offscreen` and undrawn when its head is outside it.
 
 use flare_surfaces::agent_job::Target;
 use flare_surfaces::agent_web::{Pointed, click_point, element_rect, pointed_at, viewport_of};
@@ -93,15 +96,38 @@ pub(super) struct AgentPoint {
     reply: Option<(Reply, u64)>,
 }
 
-/// The person's arrow, kept for the agent's next look.
+/// The person's arrow, kept for the agent's next look. Its ends are on the document, not the screen, so it stays with
+/// what it points at as the page scrolls.
 pub(super) struct UserArrow {
+    /// Tail and head on the document: the viewport point plus the scroll at the release, CSS pixels.
     from: (f64, f64),
     to: (f64, f64),
-    /// The viewport it was drawn on, CSS pixels.
-    vp: (f64, f64),
+    /// The scroll at the release, for a look that does not say its own.
+    scroll: (f64, f64),
+    /// The page as last measured while it is in front: scroll x, y and the viewport's width and height. None until
+    /// it is measured again (it is not drawn on a stale scroll).
+    seen: Option<[f64; 4]>,
+    /// The measure out (`Page.getLayoutMetrics`) and when it was sent.
+    measure: Option<(u64, u64)>,
+    next_ms: u64,
     pointed: Option<Pointed>,
     doc: u64,
     until: u64,
+}
+
+impl UserArrow {
+    /// The arrow in a viewport scrolled to `scroll`: tail and head in its CSS pixels.
+    fn in_view(&self, scroll: (f64, f64)) -> ((f64, f64), (f64, f64)) {
+        (
+            (self.from.0 - scroll.0, self.from.1 - scroll.1),
+            (self.to.0 - scroll.0, self.to.1 - scroll.1),
+        )
+    }
+}
+
+/// Whether a CSS point is inside a viewport of `vp`.
+fn shows(p: (f64, f64), vp: (f64, f64)) -> bool {
+    p.0 >= 0.0 && p.1 >= 0.0 && p.0 < vp.0 && p.1 < vp.1
 }
 
 /// The draw mode: on one tab's page, before and during the drag.
@@ -116,23 +142,18 @@ struct Draw {
 }
 
 enum LookupStage {
-    Metrics {
-        waiting: Vec<u64>,
-        layout: Slot,
-    },
-    Node {
-        id: u64,
-        vp: (f64, f64),
-        from: (f64, f64),
-        to: (f64, f64),
-    },
-    Ax {
-        id: u64,
-        vp: (f64, f64),
-        from: (f64, f64),
-        to: (f64, f64),
-        backend: i64,
-    },
+    Metrics { waiting: Vec<u64>, layout: Slot },
+    Node { id: u64, at: Released },
+    Ax { id: u64, at: Released, backend: i64 },
+}
+
+/// Where the person let go, in the viewport of the release: its size, the tail, the head and the scroll, CSS pixels.
+#[derive(Clone, Copy)]
+struct Released {
+    vp: (f64, f64),
+    from: (f64, f64),
+    to: (f64, f64),
+    scroll: (f64, f64),
 }
 
 /// The person's arrow, let go: the browser is asked what is under its head, step by step.
@@ -256,27 +277,49 @@ fn clamp_in(p: (i32, i32), r: &PhysRect) -> (i32, i32) {
     )
 }
 
-/// The look's answer gets the person's arrow: `user_arrow` `{from, to, ref, role, name}`, a ref made for the element
-/// when the look did not list it, and the arrow drawn on the screenshot where it is on the screen.
+/// The look's answer gets the person's arrow: `user_arrow` `{from, to, ref, role, name, offscreen?}`, a ref made for
+/// the element when the look did not list it, and the arrow drawn on the screenshot. Its ends are where they are in
+/// the look's own viewport (the page may have scrolled since the release); when its head is outside that viewport it
+/// is `offscreen` and not drawn.
 fn add_user_arrow(v: &mut Value, u: &UserArrow, refs: &mut RefMap) {
+    let num = |k: &str| {
+        v.get("viewport")
+            .and_then(|p| p.get(k))
+            .and_then(Value::as_f64)
+    };
+    let look_scroll = v
+        .get("viewport")
+        .and_then(|p| p.get("scroll"))
+        .and_then(Value::as_array)
+        .and_then(|a| Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?)));
+    let scroll = look_scroll
+        .or_else(|| u.seen.map(|s| (s[0], s[1])))
+        .unwrap_or(u.scroll);
+    let (from, to) = u.in_view(scroll);
+    let offscreen = match (num("width"), num("height")) {
+        (Some(w), Some(h)) => !shows(to, (w, h)),
+        _ => false,
+    };
     let r = u.pointed.as_ref().map(|p| refs.ref_for(p.backend_id));
     v["user_arrow"] = json!({
-        "from": [r1(u.from.0), r1(u.from.1)],
-        "to": [r1(u.to.0), r1(u.to.1)],
+        "from": [r1(from.0), r1(from.1)],
+        "to": [r1(to.0), r1(to.1)],
         "ref": r,
         "role": u.pointed.as_ref().map_or("", |p| p.role.as_str()),
         "name": u.pointed.as_ref().map_or("", |p| p.name.as_str()),
     });
-    if let Some(img) = v.get_mut("image")
-        && let Some(drawn) = arrow_on_shot(img, u)
+    if offscreen {
+        v["user_arrow"]["offscreen"] = json!(true);
+    } else if let Some(img) = v.get_mut("image")
+        && let Some(drawn) = arrow_on_shot(img, from, to)
     {
         img["data"] = json!(drawn);
     }
 }
 
-/// The screenshot of a look (base64 PNG) with the person's arrow drawn on it at the look's scale, or None when the
-/// picture could not be read.
-fn arrow_on_shot(img: &Value, u: &UserArrow) -> Option<String> {
+/// The screenshot of a look (base64 PNG) with the person's arrow drawn on it at the look's scale (tail and head in
+/// the look's viewport, CSS pixels), or None when the picture could not be read.
+fn arrow_on_shot(img: &Value, from: (f64, f64), to: (f64, f64)) -> Option<String> {
     use base64::Engine;
     let data = img.get("data")?.as_str()?;
     let scale = img
@@ -290,12 +333,9 @@ fn arrow_on_shot(img: &Value, u: &UserArrow) -> Option<String> {
         .ok()?
         .to_rgba8();
     let (w, h) = rgba.dimensions();
-    let tail = ((u.from.0 - u.to.0) * scale, (u.from.1 - u.to.1) * scale);
+    let tail = ((from.0 - to.0) * scale, (from.1 - to.1) * scale);
     let bmp = compose_arrow(tail, scale, ArrowInk::Person, "");
-    let head = (
-        (u.to.0 * scale).round() as i32,
-        (u.to.1 * scale).round() as i32,
-    );
+    let head = ((to.0 * scale).round() as i32, (to.1 * scale).round() as i32);
     blend_onto_rgba(&mut rgba, w, h, head, &bmp);
     let mut out = Vec::new();
     image::DynamicImage::ImageRgba8(rgba)
@@ -756,20 +796,26 @@ impl WebCtl {
                 if !waiting.is_empty() {
                     return Some(Vec::new());
                 }
-                let vp = layout
+                let metrics = layout
                     .1
                     .take()
                     .and_then(Result::ok)
-                    .and_then(|v| viewport_of(&v))
-                    .map(|v| (v.w, v.h));
-                let Some(vp) = vp else {
+                    .and_then(|v| viewport_of(&v));
+                let Some(metrics) = metrics else {
                     // No size, no place on the page: the arrow is dropped with nothing typed.
                     self.arrows.lookup = None;
                     self.update_arrows();
                     return Some(Vec::new());
                 };
+                let vp = (metrics.w, metrics.h);
                 let from = to_css(l.from_px, &l.rect, vp);
                 let to = to_css(l.to_px, &l.rect, vp);
+                let at = Released {
+                    vp,
+                    from,
+                    to,
+                    scroll: (metrics.page_x, metrics.page_y),
+                };
                 let node = self.next_id();
                 self.send_cdp(
                     tab,
@@ -783,30 +829,20 @@ impl WebCtl {
                     }),
                 );
                 if let Some(l) = self.arrows.lookup.as_mut() {
-                    l.stage = LookupStage::Node {
-                        id: node,
-                        vp,
-                        from,
-                        to,
-                    };
+                    l.stage = LookupStage::Node { id: node, at };
                 }
                 Some(Vec::new())
             }
-            LookupStage::Node {
-                id: want,
-                vp,
-                from,
-                to,
-            } => {
+            LookupStage::Node { id: want, at } => {
                 if *want != id {
                     return None;
                 }
-                let (vp, from, to) = (*vp, *from, *to);
+                let at = *at;
                 let backend = parsed
                     .ok()
                     .and_then(|v| v.get("backendNodeId").and_then(Value::as_i64));
                 let Some(backend) = backend else {
-                    return Some(self.lookup_done(vp, from, to, None));
+                    return Some(self.lookup_done(at, None));
                 };
                 let ax = self.next_id();
                 self.send_cdp(
@@ -818,9 +854,7 @@ impl WebCtl {
                 if let Some(l) = self.arrows.lookup.as_mut() {
                     l.stage = LookupStage::Ax {
                         id: ax,
-                        vp,
-                        from,
-                        to,
+                        at,
                         backend,
                     };
                 }
@@ -828,15 +862,13 @@ impl WebCtl {
             }
             LookupStage::Ax {
                 id: want,
-                vp,
-                from,
-                to,
+                at,
                 backend,
             } => {
                 if *want != id {
                     return None;
                 }
-                let (vp, from, to, backend) = (*vp, *from, *to, *backend);
+                let (at, backend) = (*at, *backend);
                 let pointed = parsed
                     .ok()
                     .and_then(|v| pointed_at(&v, backend))
@@ -845,19 +877,19 @@ impl WebCtl {
                         role: "element".to_string(),
                         name: String::new(),
                     }));
-                Some(self.lookup_done(vp, from, to, pointed))
+                Some(self.lookup_done(at, pointed))
             }
         }
     }
 
     /// The person's arrow is known: it is kept for the agent's next look, and the window types its frame.
-    fn lookup_done(
-        &mut self,
-        vp: (f64, f64),
-        from: (f64, f64),
-        to: (f64, f64),
-        pointed: Option<Pointed>,
-    ) -> Vec<WebOut> {
+    fn lookup_done(&mut self, at: Released, pointed: Option<Pointed>) -> Vec<WebOut> {
+        let Released {
+            vp,
+            from,
+            to,
+            scroll,
+        } = at;
         let now = self.now_ms();
         let Some(l) = self.arrows.lookup.take() else {
             return Vec::new();
@@ -880,9 +912,12 @@ impl WebCtl {
             vp,
         );
         t.user_arrow = Some(UserArrow {
-            from,
-            to,
-            vp,
+            from: (from.0 + scroll.0, from.1 + scroll.1),
+            to: (to.0 + scroll.0, to.1 + scroll.1),
+            scroll,
+            seen: Some([scroll.0, scroll.1, vp.0, vp.1]),
+            measure: None,
+            next_ms: now + POINT_MEASURE_MS,
             pointed,
             doc: l.doc,
             until: now + USER_ARROW_MS,
@@ -891,7 +926,39 @@ impl WebCtl {
         vec![WebOut::ArrowDrawn { tab: l.tab, text }]
     }
 
-    /// The person's arrow on the tab's page, while it is kept (the tests): from and to, CSS pixels.
+    /// Asks where the page is scrolled now, for the person's arrow kept on it.
+    fn user_arrow_measure(&mut self, tab: &str, now: u64) {
+        let id = self.next_id();
+        self.send_cdp(tab, id, "Page.getLayoutMetrics", json!({}));
+        if let Some(u) = self.tabs.get_mut(tab).and_then(|t| t.user_arrow.as_mut()) {
+            u.measure = Some((id, now));
+        }
+    }
+
+    /// A DevTools answer for the person's kept arrow (where the page is scrolled). False when it is not one of its.
+    fn user_arrow_answer(&mut self, tab: &str, id: u64, result: &Result<String, String>) -> bool {
+        let now = self.now_ms();
+        let Some(u) = self
+            .tabs
+            .get_mut(tab)
+            .and_then(|t| t.user_arrow.as_mut())
+            .filter(|u| u.measure.is_some_and(|(m, _)| m == id))
+        else {
+            return false;
+        };
+        u.measure = None;
+        u.next_ms = now + POINT_MEASURE_MS;
+        u.seen = result
+            .as_ref()
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .and_then(|v| viewport_of(&v))
+            .map(|v| [v.page_x, v.page_y, v.w, v.h]);
+        self.update_arrows();
+        true
+    }
+
+    /// The person's arrow on the tab's page, while it is kept (the tests): from and to on the document, CSS pixels.
     #[cfg(test)]
     pub fn user_arrow_of(&self, tab: &str) -> Option<((f64, f64), (f64, f64))> {
         let now = self.now_ms();
@@ -912,6 +979,9 @@ impl WebCtl {
     ) -> Option<Vec<WebOut>> {
         if let Some(out) = self.lookup_answer(tab, id, result) {
             return Some(out);
+        }
+        if self.user_arrow_answer(tab, id, result) {
+            return Some(Vec::new());
         }
         self.point_answer(tab, id, result).then(Vec::new)
     }
@@ -963,11 +1033,15 @@ impl WebCtl {
         }
     }
 
-    /// Whether the agent timer still has an arrow to watch: a measure to make, a draw, a lookup.
+    /// Whether the agent timer still has an arrow to watch: a measure to make, a draw, a lookup, the person's arrow
+    /// kept (it follows the page's scroll).
     pub(super) fn arrows_busy(&self) -> bool {
         self.arrows.draw.is_some()
             || self.arrows.lookup.is_some()
-            || self.tabs.values().any(|t| t.point.is_some())
+            || self
+                .tabs
+                .values()
+                .any(|t| t.point.is_some() || t.user_arrow.is_some())
     }
 
     /// One turn of the agent timer for the arrows: the draw mode, the measures, the ends by time, the person's own
@@ -1017,6 +1091,36 @@ impl WebCtl {
             }
             if p.measure.is_none() && p.scrolling.is_empty() && now >= p.next_ms {
                 self.point_measure(&tab);
+            }
+        }
+        // The person's kept arrow: it goes with its time or its page, and while its page is in front the scroll is
+        // measured again, so it is drawn where its ends are now. Away from the front its last scroll is not trusted.
+        let kept: Vec<String> = self
+            .tabs
+            .iter()
+            .filter(|(_, t)| t.user_arrow.is_some())
+            .map(|(k, _)| k.clone())
+            .collect();
+        for tab in kept {
+            let front = self.cursor_on(&tab);
+            let Some(t) = self.tabs.get_mut(&tab) else {
+                continue;
+            };
+            let doc = t.doc;
+            let Some(u) = t.user_arrow.as_mut() else {
+                continue;
+            };
+            if u.doc != doc || now >= u.until {
+                t.user_arrow = None;
+                continue;
+            }
+            if u.measure.is_some_and(|(_, sent)| now >= sent + LOOKUP_MS) {
+                u.measure = None;
+            }
+            if !front {
+                u.seen = None;
+            } else if u.measure.is_none() && now >= u.next_ms {
+                self.user_arrow_measure(&tab, now);
             }
         }
         // The person's own click or key on the page in front takes the agent's arrow away (as it ends a call).
@@ -1117,7 +1221,12 @@ impl WebCtl {
                 .user_arrow
                 .as_ref()
                 .filter(|u| u.doc == t.doc && now < u.until)?;
-            Some((to_client(u.from, rect, u.vp), to_client(u.to, rect, u.vp)))
+            // Where its ends are now the page has scrolled; drawn only while all of it shows, so it never points
+            // at something else or reaches over Flare's own bar.
+            let [sx, sy, w, h] = u.seen?;
+            let (from, to) = u.in_view((sx, sy));
+            (shows(from, (w, h)) && shows(to, (w, h)))
+                .then(|| (to_client(from, rect, (w, h)), to_client(to, rect, (w, h))))
         });
         match mark {
             Some((from, to)) => {
@@ -1222,20 +1331,32 @@ mod tests {
         assert_eq!(clamp_in((5000, -10), &rect), (999, 50));
     }
 
+    /// A kept arrow drawn on a page that was not scrolled.
+    fn kept(from: (f64, f64), to: (f64, f64), pointed: Option<Pointed>) -> UserArrow {
+        UserArrow {
+            from,
+            to,
+            scroll: (0.0, 0.0),
+            seen: None,
+            measure: None,
+            next_ms: 0,
+            pointed,
+            doc: 1,
+            until: 0,
+        }
+    }
+
     #[test]
     fn a_look_gets_the_arrow_with_a_ref_made_for_an_element_it_did_not_list() {
-        let u = UserArrow {
-            from: (10.04, 20.0),
-            to: (100.0, 120.06),
-            vp: (600.0, 400.0),
-            pointed: Some(Pointed {
+        let u = kept(
+            (10.04, 20.0),
+            (100.0, 120.06),
+            Some(Pointed {
                 backend_id: 77,
                 role: "button".into(),
                 name: "Copy key".into(),
             }),
-            doc: 1,
-            until: 0,
-        };
+        );
         let mut refs = RefMap::default();
         refs.ref_for(11);
         let mut v = json!({"elements": [{"ref": "e1"}]});
@@ -1254,6 +1375,45 @@ mod tests {
     }
 
     #[test]
+    fn a_look_after_a_scroll_gets_the_arrow_where_its_ends_are_now_and_off_screen_undrawn() {
+        use base64::Engine;
+        let white = image::RgbaImage::from_pixel(600, 400, image::Rgba([255, 255, 255, 255]));
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(white)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let data = base64::engine::general_purpose::STANDARD.encode(&png);
+        // Drawn at 412,300 on a page scrolled 100 down: on the document, its head is at 412,400.
+        let u = UserArrow {
+            scroll: (0.0, 100.0),
+            ..kept((300.0, 250.0), (412.0, 400.0), None)
+        };
+        let look_at = |dy: f64| {
+            json!({
+                "viewport": {"width": 600.0, "height": 400.0, "scroll": [0.0, dy]},
+                "image": {"data": data, "scale": 1.0},
+            })
+        };
+        // The page was scrolled 200 more since: the arrow is 200 higher in the look, and drawn there.
+        let mut v = look_at(300.0);
+        add_user_arrow(&mut v, &u, &mut RefMap::default());
+        assert_eq!(v["user_arrow"]["to"], json!([412.0, 100.0]));
+        assert_eq!(v["user_arrow"]["from"], json!([300.0, -50.0]));
+        assert!(v["user_arrow"].get("offscreen").is_none());
+        assert_ne!(v["image"]["data"], json!(data), "drawn on the screenshot");
+        // Scrolled so far its head is above the look: said so, and the screenshot is left alone.
+        let mut v = look_at(800.0);
+        add_user_arrow(&mut v, &u, &mut RefMap::default());
+        assert_eq!(v["user_arrow"]["to"], json!([412.0, -400.0]));
+        assert_eq!(v["user_arrow"]["offscreen"], json!(true));
+        assert_eq!(v["image"]["data"], json!(data), "nothing drawn");
+        // A look that does not say its scroll uses the release's.
+        let mut v = json!({"viewport": {"width": 600.0, "height": 400.0}});
+        add_user_arrow(&mut v, &u, &mut RefMap::default());
+        assert_eq!(v["user_arrow"]["to"], json!([412.0, 300.0]));
+    }
+
+    #[test]
     fn the_screenshot_gets_the_arrow_where_it_was_drawn_at_the_looks_scale() {
         use base64::Engine;
         let (w, h) = (300u32, 200u32);
@@ -1264,15 +1424,8 @@ mod tests {
             .unwrap();
         let img =
             json!({"data": base64::engine::general_purpose::STANDARD.encode(&png), "scale": 2.0});
-        let u = UserArrow {
-            from: (20.0, 20.0),
-            to: (100.0, 60.0),
-            vp: (150.0, 100.0),
-            pointed: None,
-            doc: 0,
-            until: 0,
-        };
-        let drawn = arrow_on_shot(&img, &u).expect("drawn");
+        let (from, to) = ((20.0, 20.0), (100.0, 60.0));
+        let drawn = arrow_on_shot(&img, from, to).expect("drawn");
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(drawn)
             .unwrap();
@@ -1285,7 +1438,7 @@ mod tests {
         assert_eq!(out.get_pixel(290, 190), &image::Rgba([255, 255, 255, 255]));
         // A picture that is not one is left alone.
         assert_eq!(
-            arrow_on_shot(&json!({"data": "xx", "scale": 1.0}), &u),
+            arrow_on_shot(&json!({"data": "xx", "scale": 1.0}), from, to),
             None
         );
     }

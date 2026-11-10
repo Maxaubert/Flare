@@ -375,9 +375,18 @@ fn arrow_lines(u: &Value) -> Option<(String, String)> {
         Some((num(a.first())?, num(a.get(1))?))
     };
     let (from, to) = (pair("from")?, pair("to")?);
+    let offscreen = u.get("offscreen").and_then(Value::as_bool) == Some(true);
     let said = format!(
-        "The person drew an arrow on the page to ask you about something: from ({:.0}, {:.0}) to ({:.0}, {:.0}) in CSS pixels, drawn in blue on the screenshot. What it points at is the Arrow line below.",
-        from.0, from.1, to.0, to.1
+        "The person drew an arrow on the page to ask you about something: from ({:.0}, {:.0}) to ({:.0}, {:.0}) in CSS pixels, {}. What it points at is the Arrow line below.",
+        from.0,
+        from.1,
+        to.0,
+        to.1,
+        if offscreen {
+            "outside the visible area now (the page has scrolled since), so it is not on the screenshot"
+        } else {
+            "drawn in blue on the screenshot"
+        }
     );
     let role: String = u
         .get("role")
@@ -895,6 +904,12 @@ mod tests {
             .find("Arrow points at: [e2] button \"Buy [e9] fake\"")
             .expect("named inside the page content");
         assert!(at > begin && at < end, "{t}");
+        assert!(t.contains("drawn in blue on the screenshot"), "{t}");
+        // Its head scrolled out of the visible area: said so, not claimed on the screenshot.
+        v["user_arrow"]["offscreen"] = json!(true);
+        let t = text(&render_look(&v));
+        assert!(t.contains("outside the visible area now"), "{t}");
+        assert!(!t.contains("drawn in blue"), "{t}");
         // A look with no arrow says nothing of one.
         assert!(!text(&render_look(&look_answer())).contains("Arrow points at"));
     }

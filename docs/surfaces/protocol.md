@@ -595,7 +595,7 @@ browser yet (`unavailable`: "the page is not ready yet"). One call runs on a pag
 |---|---|---|
 | `browser.open` | `url` | `{"panel": PanelInfo, "url": string, "title": string, "loaded": bool, "status"?: string}` |
 | `browser.navigate` | `url`, or `action`: `back`, `forward`, `reload` | `{"panel", "url", "title", "loaded", "status"?}` |
-| `browser.look` | none | `{"url", "title", "viewport": {"width", "height", "device_scale"}, "image"?: {"mime": "image/png", "data": base64, "width", "height", "scale"}, "image_error"?: string, "elements": [Element], "truncated": bool}` |
+| `browser.look` | none | `{"url", "title", "viewport": {"width", "height", "device_scale", "scroll": [x, y]}, "image"?: {"mime": "image/png", "data": base64, "width", "height", "scale"}, "image_error"?: string, "elements": [Element], "truncated": bool}` |
 | `browser.click` | `ref`, or `x` and `y` (CSS pixels); `button` (`left` default, `right`, `middle`); `double` (bool) | `{"clicked": {"x", "y"}}` |
 | `browser.type` | `text` (at most 20000 characters), `ref` (optional; focuses it first) | `{"typed": number}` |
 | `browser.press` | `key` (`Enter`, `Tab`, `Escape`, `Control+a`, ...); `modifiers` (optional list of `Control`, `Alt`, `Shift`, `Meta`) | `{}` |
@@ -605,8 +605,9 @@ browser yet (`unavailable`: "the page is not ready yet"). One call runs on a pag
 | `browser.point` | `ref`, or `x` and `y` (CSS pixels); `label` (optional, cleaned, 48 characters shown); or `clear: true` alone | `{"pointed": true, "offscreen": bool}`, or `{"cleared": bool}`. An orange arrow over the page for a step the person must do; never clicks, not a job (rule 254) |
 
 A look made while the person's arrow is kept (rule 255) also has `"user_arrow": {"from": [x, y], "to": [x, y], "ref": string | null,
-"role", "name"}` (CSS pixels; the ref is made for the element when the list did not have it) and the arrow drawn on its picture. Only the
-first look after the arrow gets it.
+"role", "name", "offscreen"?: true}` (CSS pixels of the look's own viewport, so a scroll since the release moves them; the ref is made for the
+element when the list did not have it) and the arrow drawn on its picture, or `offscreen` and nothing drawn when its head is outside the visible area
+(rule 257). Only the first look after the arrow gets it. `viewport.scroll` is how far the page is scrolled, CSS pixels.
 
 **Look.** The picture is `Page.captureScreenshot` of the visible area at the display's full resolution, scaled down
 only if that is wider than 1600 pixels; `image.scale` is picture pixels per CSS pixel as the picture really came out

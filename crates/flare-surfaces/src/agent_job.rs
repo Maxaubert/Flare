@@ -1391,7 +1391,7 @@ impl Job {
         let mut out = json!({
             "url": page.url,
             "title": page.title,
-            "viewport": {"width": r1(vp.w), "height": r1(vp.h), "device_scale": dpr},
+            "viewport": {"width": r1(vp.w), "height": r1(vp.h), "device_scale": dpr, "scroll": [r1(vp.page_x), r1(vp.page_y)]},
             "elements": elements,
             "truncated": truncated,
         });
@@ -1718,6 +1718,11 @@ mod tests {
             "picture pixels per css pixel"
         );
         assert_eq!(v["viewport"]["device_scale"], json!(2.25));
+        assert_eq!(
+            v["viewport"]["scroll"],
+            json!([0.0, 0.0]),
+            "how far the page is scrolled"
+        );
         assert_eq!(v["image"]["mime"], json!("image/png"));
         let els = v["elements"].as_array().unwrap();
         let named: Vec<(&str, &str, &str)> = els
