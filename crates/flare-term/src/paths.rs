@@ -21,10 +21,21 @@ pub fn find_paths(text: &str) -> Vec<PathCandidate> {
     // A quoted run that holds spaces and is rooted like a path is ONE candidate ('C:/Users/X/OneDrive -
     // Contoso/plan.docx'), never the prefix before its first space. Its chars are blanked for the word pass.
     let mut masked = chars.clone();
+    // The platform's own forms first (macOS: `file://` URLs and words with escaped spaces).
+    for s in crate::path_grammar::special_candidates(&chars) {
+        for m in &mut masked[s.mask.0..s.mask.1] {
+            *m = ' ';
+        }
+        out.push(PathCandidate {
+            start: s.start,
+            end: s.end,
+            path: s.path,
+        });
+    }
     let mut i = 0;
     while i < chars.len() {
-        if let Some(close) = quoted_path_end(&chars, i) {
-            let inner: String = chars[i + 1..close].iter().collect();
+        if let Some(close) = quoted_path_end(&masked, i) {
+            let inner: String = masked[i + 1..close].iter().collect();
             if let Some((from, path)) = candidate(&inner) {
                 let start = i + 1 + from;
                 let end = start + path.chars().count();
@@ -102,7 +113,7 @@ fn is_break(c: char) -> bool {
 }
 
 /// A word's path, with the sentence's punctuation off, and how many leading chars it lost.
-fn candidate(word: &str) -> Option<(usize, String)> {
+pub(crate) fn candidate(word: &str) -> Option<(usize, String)> {
     if word.contains("://") {
         return None;
     }
@@ -203,6 +214,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn find_paths_leaves_urls() {
         assert!(paths("https://github.com/a/b/pull/11 and file:///C:/x").is_empty());
@@ -243,5 +255,33 @@ mod tests {
     fn a_trailing_line_and_column_in_parentheses_is_not_part_of_the_path() {
         assert_eq!(paths("src/a.ts(12,5): error"), vec!["src/a.ts"]);
         assert_eq!(paths("src/a.ts(12):"), vec!["src/a.ts"]);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn find_paths_reads_a_local_file_url_and_leaves_web_ones() {
+        assert!(paths("https://github.com/a/b/pull/11").is_empty());
+        assert_eq!(paths("open file:///C:/x"), vec!["/C:/x"]);
+        assert_eq!(
+            paths("file:///Users/me/a%20b.md and file://far/x.md"),
+            vec!["/Users/me/a b.md"]
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn find_paths_knows_posix_paths() {
+        assert_eq!(
+            paths("/Users/me/notes.txt and ~/src/main.rs:10:2 and ./a/b.md"),
+            vec!["/Users/me/notes.txt", "~/src/main.rs", "./a/b.md"]
+        );
+        let text = "edit My\\ Docs/plan\\ v2.md, then";
+        let got = find_paths(text);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].path, "My Docs/plan v2.md");
+        assert_eq!(
+            slice(text, got[0].start, got[0].end),
+            "My\\ Docs/plan\\ v2.md"
+        );
     }
 }

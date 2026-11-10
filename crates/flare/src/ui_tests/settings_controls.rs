@@ -314,17 +314,41 @@ const PT_PANEL_EDGES_PILL_W: [(f32, f32); 3] = [(1.0, 230.0), (1.5, 231.0), (2.2
 
 #[cfg_attr(
     not(windows),
-    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    ignore = "PT's widths are Segoe UI's (Windows); the macOS twin is a_segmented_pill_keeps_its_fractional_width_on_macos"
 )]
 #[test]
 fn a_segmented_pill_is_as_wide_as_pts_not_a_whole_pixel_per_label_wider() {
-    for (s, want) in PT_PANEL_EDGES_PILL_W {
+    pill_widths_hold(&PT_PANEL_EDGES_PILL_W, "PT's");
+}
+
+/// The same pill with macOS's system face (SF), measured on the port (2026-11-08): there is no PT
+/// reference on a Mac, so these are Flare's own widths. They are fractional, like PT's: a label
+/// rounded up to a whole css px again would make the pill 2 to 3 px wider and fail this. SF changes
+/// its optical size with the pixel size, so 150 percent draws narrower letters than 100 and 225.
+#[cfg(not(windows))]
+const MAC_PANEL_EDGES_PILL_W: [(f32, f32); 3] = [(1.0, 227.31), (1.5, 219.58), (2.25, 228.4)];
+
+/// macOS twin of `a_segmented_pill_is_as_wide_as_pts_not_a_whole_pixel_per_label_wider`.
+#[cfg(not(windows))]
+#[test]
+fn a_segmented_pill_keeps_its_fractional_width_on_macos() {
+    pill_widths_hold(&MAC_PANEL_EDGES_PILL_W, "the macOS reference");
+    for (s, _) in MAC_PANEL_EDGES_PILL_W {
+        let h = harness(s);
+        h.advance(0);
+        let w = h.comp.get_seg4_w();
+        assert!(w.fract() != 0.0, "the pill is a whole {w} css px at {s}");
+    }
+}
+
+fn pill_widths_hold(widths: &[(f32, f32)], whose: &str) {
+    for &(s, want) in widths {
         let h = harness(s);
         h.advance(0);
         let w = h.comp.get_seg4_w();
         assert!(
             (w - want).abs() <= 1.4,
-            "the four-label pill is {w} css px at {s}, PT's is {want}"
+            "the four-label pill is {w} css px at {s}, {whose} is {want}"
         );
     }
 }

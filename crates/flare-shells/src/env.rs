@@ -170,6 +170,13 @@ pub fn pty_env(
             None => {}
         }
     }
+    // macOS: TERM_PROGRAM, a UTF-8 locale and zsh's integration shim (`macos::env`).
+    #[cfg(not(windows))]
+    crate::macos::env::finish(
+        &mut out,
+        shell_id,
+        crate::macos::integration::installed_dir().as_deref(),
+    );
     out
 }
 

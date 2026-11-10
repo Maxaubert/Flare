@@ -21,6 +21,7 @@ pub mod links;
 pub mod mouse_report;
 pub mod osc52;
 pub mod osc8;
+pub mod path_grammar;
 pub mod path_links;
 pub mod path_open;
 pub mod paths;

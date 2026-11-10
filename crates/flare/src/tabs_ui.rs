@@ -834,6 +834,7 @@ mod tests {
         m.state.tabs.iter().map(|t| t.id.clone()).collect()
     }
 
+    #[cfg(windows)]
     #[test]
     fn rows_carry_label_tip_folder_and_flags() {
         let m = three();
@@ -844,6 +845,22 @@ mod tests {
         assert_eq!(tips, [r"C:\w\api", r"C:\w\web", r"D:\x\api"]);
         let folders: Vec<&str> = v.rows.iter().map(|r| r.folder.as_str()).collect();
         assert_eq!(folders, [r"C:\w", r"C:\w", r"D:\x"]);
+        assert!(v.rows[2].active && !v.rows[0].active && !v.rows[1].active);
+        assert!(v.rows.iter().all(|r| !r.loading && r.kept));
+        assert!(v.has_tabs);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn rows_carry_label_tip_folder_and_flags_posix() {
+        let m = model_of(&["/w/api", "/w/web", "/x/api"]);
+        let v = view_of(&m, 1000, 1.0, "");
+        let labels: Vec<&str> = v.rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["api - w", "web", "api - x"]);
+        let tips: Vec<&str> = v.rows.iter().map(|r| r.tip.as_str()).collect();
+        assert_eq!(tips, ["/w/api", "/w/web", "/x/api"]);
+        let folders: Vec<&str> = v.rows.iter().map(|r| r.folder.as_str()).collect();
+        assert_eq!(folders, ["/w", "/w", "/x"]);
         assert!(v.rows[2].active && !v.rows[0].active && !v.rows[1].active);
         assert!(v.rows.iter().all(|r| !r.loading && r.kept));
         assert!(v.has_tabs);

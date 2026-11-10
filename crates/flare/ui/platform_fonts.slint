@@ -1,0 +1,20 @@
+// The UI faces per platform (macOS port phase 2, step 4). Windows keeps Prism Terminal's faces (Segoe UI,
+// Segoe UI Variable, Cascadia Mono). macOS has none of them, and Slint's fallback there is Helvetica, whose
+// line is one em tall (Segoe UI's is 1.33): every row of text would shrink. So macOS names its own system
+// face, SF (fontique lists it as "System Font"), and Menlo, the monospace face every macOS has.
+export global PlatformFonts {
+    out property <bool> mac: Platform.os == OperatingSystemType.macos;
+    // Windows: Prism Terminal's --p-font-ui, the settings page faces and the mono face.
+    out property <string> windows-ui: "Segoe UI";
+    out property <string> windows-text: "Segoe UI Variable Text";
+    out property <string> windows-display: "Segoe UI Variable Display";
+    out property <string> windows-mono: "Cascadia Mono";
+    // macOS: the system face for every UI role, and Menlo.
+    out property <string> macos-ui: "System Font";
+    out property <string> macos-mono: "Menlo";
+    // What the theme reads.
+    out property <string> ui: self.mac ? self.macos-ui : self.windows-ui;
+    out property <string> text: self.mac ? self.macos-ui : self.windows-text;
+    out property <string> display: self.mac ? self.macos-ui : self.windows-display;
+    out property <string> mono: self.mac ? self.macos-mono : self.windows-mono;
+}

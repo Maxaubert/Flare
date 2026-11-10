@@ -20,6 +20,7 @@ members = [
     "crates/flare-mcp",
     "crates/flare-convo",
     "crates/flare-mods",
+    "crates/flare-proc",
     "crates/flare-e2e-proto",
     "tools/e2e",
     "tools/material-spike",

@@ -1754,6 +1754,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "flare-proc"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+]
+
+[[package]]
 name = "flare-render"
 version = "0.1.0"
 dependencies = [
@@ -1785,7 +1793,10 @@ dependencies = [
 name = "flare-shells"
 version = "0.1.0"
 dependencies = [
+ "flare-proc",
+ "libc",
  "log",
+ "tempfile",
 ]
 
 [[package]]
@@ -1794,6 +1805,7 @@ version = "0.1.0"
 dependencies = [
  "flare-ctl",
  "flare-settings",
+ "flare-shells",
  "image",
  "log",
  "pulldown-cmark",
@@ -1825,9 +1837,11 @@ dependencies = [
  "alacritty_terminal",
  "base64 0.22.1",
  "flare-agent",
+ "flare-proc",
  "flare-render",
  "flare-shells",
  "flare-theme",
+ "libc",
  "log",
  "memchr",
  "portable-pty",
@@ -1875,6 +1889,7 @@ dependencies = [
 name = "flare-win"
 version = "0.1.0"
 dependencies = [
+ "flare-proc",
  "flare-settings",
  "flare-shells",
  "flare-theme",

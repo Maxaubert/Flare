@@ -1,9 +1,11 @@
-// Off Windows the tree walk and the PE probe wait for phase 2 of the port plan (process groups).
+// The tree walk, the kill set and the PE probe serve the Windows kill; macOS has its own (macos/pty.rs).
 #![cfg_attr(not(windows), allow(dead_code))]
 
 //! PtyProcess trait, SpawnSpec, PortablePty.
 
-use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
+#[cfg(windows)]
+use portable_pty::ChildKiller;
+use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -31,6 +33,11 @@ pub trait PtyProcess: Send {
     fn exit_code(&mut self) -> Option<u32>;
     /// `cb` runs once on another thread when the process has exited (or at once, on this thread, if it already has).
     fn on_exit(&mut self, cb: Box<dyn FnOnce(Option<u32>) + Send>);
+    /// The leader of the process group in the terminal's foreground: the shell at its prompt, or the
+    /// job it runs (`tcgetpgrp`). None when unknown, and on Windows, where ConPTY has no such thing.
+    fn foreground_pid(&self) -> Option<u32> {
+        None
+    }
 }
 
 pub trait PtySpawner: Send + Sync {
@@ -62,7 +69,11 @@ struct ExitState {
 
 pub struct PortablePty {
     master: Option<Box<dyn MasterPty + Send>>,
+    #[cfg(windows)]
     killer: Box<dyn ChildKiller + Send + Sync>,
+    /// The shell's session, which the tab owns: what a kill ends (macOS).
+    #[cfg(not(windows))]
+    tab: macos::Tab,
     reader: Option<Box<dyn Read + Send>>,
     writer: Option<Box<dyn Write + Send>>,
     pid: u32,
@@ -91,8 +102,14 @@ impl PortablePty {
         let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
         let pid = child.process_id().unwrap_or(0);
         // Every shell joins the kill-on-close job: nothing outlives the process that started it.
+        #[cfg(windows)]
         join_kill_on_close_job(pid);
+        #[cfg(windows)]
         let killer = child.clone_killer();
+        // macOS: portable-pty made the shell a session and group leader (setsid, TIOCSCTTY) before exec;
+        // the tab records which session that is.
+        #[cfg(not(windows))]
+        let tab = macos::Tab::of(pid, pair.master.as_raw_fd());
         let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
         let exit = Arc::new(Mutex::new(ExitState::default()));
@@ -116,7 +133,10 @@ impl PortablePty {
         drop(pair.slave);
         Ok(PortablePty {
             master: Some(pair.master),
+            #[cfg(windows)]
             killer,
+            #[cfg(not(windows))]
+            tab,
             reader: Some(reader),
             writer: Some(writer),
             pid,
@@ -153,6 +173,7 @@ impl PtyProcess for PortablePty {
         }
     }
 
+    #[cfg(windows)]
     fn kill(&mut self) {
         // The shell's children (an agent, a ping) would keep the pseudo console open after the shell is
         // gone, and closing it waits for them: end the tree first, while the shell still names them.
@@ -162,6 +183,14 @@ impl PtyProcess for PortablePty {
         }
         // Errors mean the process is already gone.
         let _ = self.killer.kill();
+    }
+
+    /// macOS: the whole session the shell leads, its jobs, and what they started, get SIGHUP now,
+    /// then SIGTERM and SIGKILL after a short grace (on a reaper thread). Also after the shell has
+    /// exited on its own: a background job it left keeps the session. Never blocks.
+    #[cfg(not(windows))]
+    fn kill(&mut self) {
+        self.tab.end();
     }
 
     fn exit_code(&mut self) -> Option<u32> {
@@ -178,6 +207,12 @@ impl PtyProcess for PortablePty {
         } else {
             st.cb = Some(cb);
         }
+    }
+
+    #[cfg(not(windows))]
+    fn foreground_pid(&self) -> Option<u32> {
+        let leader = self.master.as_ref()?.process_group_leader()?;
+        u32::try_from(leader).ok().filter(|p| *p != 0)
     }
 }
 
@@ -517,14 +552,13 @@ fn join_kill_on_close_job(pid: u32) {
         CloseHandle(p);
     }
 }
-/// macOS: phase 2 of the port plan (the process group, killpg). Until then only the shell itself is
-/// killed, through portable-pty.
+/// macOS: the session the shell leads and the reaper that ends it (no job object: a crash closes the
+/// pty, and the hangup ends the shell and its jobs).
 #[cfg(not(windows))]
-fn kill_descendants(_root: u32) {}
-
-/// macOS: phase 2 of the port plan (a process group the shells lead). No job to join until then.
+#[path = "macos/pty.rs"]
+mod macos;
 #[cfg(not(windows))]
-fn join_kill_on_close_job(_pid: u32) {}
+pub(crate) use macos::finish_reapers;
 
 impl Drop for PortablePty {
     fn drop(&mut self) {

@@ -665,10 +665,18 @@ fn rect_instance(r: &RectFill) -> RectInstance {
     }
 }
 
-/// A DX12 device for tests and tools: high-performance adapter, then WARP; full default limits.
+/// The backend Flare draws with on this platform: DX12 on Windows, Metal on macOS.
+#[cfg(windows)]
+pub const NATIVE_BACKEND: wgpu::Backends = wgpu::Backends::DX12;
+/// The backend Flare draws with on this platform: DX12 on Windows, Metal on macOS.
+#[cfg(not(windows))]
+pub const NATIVE_BACKEND: wgpu::Backends = wgpu::Backends::METAL;
+
+/// A device on the native backend (DX12, Metal on macOS) for tests and tools: high-performance
+/// adapter, then the fallback one (WARP; Metal has none); full default limits. Needs no window.
 pub fn headless_device() -> Result<(wgpu::Device, wgpu::Queue, wgpu::AdapterInfo), String> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::DX12,
+        backends: NATIVE_BACKEND,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {

@@ -6723,10 +6723,6 @@ mod tests {
         f.pump_until("the new tab", |f| f.rows() == rows + 1);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_drop_over_the_side_panel_types_nothing_into_the_shell() {
         let (f, _h, fake) = live(Opts::default());
@@ -6836,10 +6832,6 @@ mod tests {
         assert!(f.openers.records().is_empty());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_path_click_opens_through_the_openers_port() {
         let (f, h, _) = live(Opts::default());
@@ -6916,10 +6908,6 @@ mod tests {
             .collect()
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn show_in_side_panel_on_a_text_file_menu_opens_the_preview_and_opens_nothing_in_windows() {
         let (f, h, _) = live(Opts::default());
@@ -6952,10 +6940,6 @@ two",
         );
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn show_in_side_panel_works_even_when_plain_clicks_open_files_in_windows() {
         let (f, h, _) = live(Opts::default());
@@ -6974,10 +6958,6 @@ two",
         assert!(f.openers.records().is_empty(), "{:?}", f.openers.records());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn show_in_side_panel_on_a_picture_menu_and_never_for_a_script_or_a_folder() {
         let (f, h, _) = live(Opts::default());
@@ -7020,10 +7000,6 @@ two",
         f.h.comp.get_panel_lines().row_count()
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_click_on_a_text_file_shows_it_in_the_panel_and_hands_nothing_to_windows() {
         let (f, h, _) = live(Opts::default());
@@ -7040,10 +7016,6 @@ two",
         assert!(!f.h.comp.get_panel_has_focus());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_click_on_a_picture_shows_it_with_its_size() {
         let (f, h, _) = live(Opts::default());
@@ -7062,10 +7034,6 @@ two",
         assert!(f.openers.records().is_empty());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_picture_that_is_not_one_answers_with_a_reason_in_the_panel() {
         let (f, h, _) = live(Opts::default());
@@ -7084,10 +7052,7 @@ two",
         );
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
+    #[cfg(windows)]
     #[test]
     fn a_script_a_document_and_a_folder_never_open_a_panel() {
         let (f, h, _) = live(Opts::default());
@@ -7124,10 +7089,43 @@ two",
         assert_eq!(f.ctl.borrow().open_panels(), 0);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
+    #[cfg(not(windows))]
+    #[test]
+    fn a_script_a_document_and_a_folder_never_open_a_panel_posix() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(f.dir.path().join("run.bat"), "x").unwrap(); // sync-ok: test code only
+        std::fs::write(f.dir.path().join("d.pdf"), "x").unwrap(); // sync-ok: test code only
+        std::fs::create_dir(f.dir.path().join("sub")).unwrap(); // sync-ok: test code only
+        click_word(&f, &h, &dir, "run.bat", 0);
+        click_word(&f, &h, &dir, "d.pdf", 1);
+        click_word(&f, &h, &dir, "sub/", 2);
+        let t = Instant::now();
+        while f.openers.records().len() < 3 && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        f.pump();
+        let want = |n: &str| f.dir.path().join(n).to_string_lossy().into_owned();
+        let rec = f.openers.records();
+        assert!(
+            rec.contains(&OpenedRecord::Reveal(want("run.bat"))),
+            "{rec:?}"
+        );
+        assert!(rec.contains(&OpenedRecord::Open(want("d.pdf"))), "{rec:?}");
+        assert!(
+            rec.iter().any(
+                |r| matches!(r, OpenedRecord::Folder(p) if p.trim_end_matches('/') == want("sub"))
+            ),
+            "{rec:?}"
+        );
+        assert!(!rec.contains(&OpenedRecord::Open(want("run.bat"))));
+        assert!(
+            !f.h.comp.get_panel_open(),
+            "none of them is shown in a panel"
+        );
+        assert_eq!(f.ctl.borrow().open_panels(), 0);
+    }
+
     #[test]
     fn a_picture_named_like_one_that_is_a_script_is_not_shown() {
         // A name that says png but a file that is not on the allowlist as the system names it
@@ -7173,10 +7171,6 @@ two",
             .unwrap();
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn resting_on_a_picture_path_shows_the_bubble_under_the_line_and_leaving_the_grid_ends_it() {
         let (f, h, _) = live(Opts::default());
@@ -7220,10 +7214,6 @@ two",
         assert!(!f.h.comp.get_thumb_visible());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_key_takes_the_thumbnail_down() {
         let (f, h, _) = live(Opts::default());
@@ -7240,10 +7230,6 @@ two",
         assert!(!f.h.comp.get_thumb_visible());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn with_previews_off_a_text_file_goes_to_windows_and_turning_them_on_again_shows_it() {
         let (f, h, _) = live(Opts::default());
@@ -7281,10 +7267,6 @@ two",
         abs
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn each_tab_has_its_own_panel_and_the_front_tab_decides_what_shows() {
         let (f, _h, _) = live(Opts::default());
@@ -7309,10 +7291,6 @@ two",
         assert_eq!(f.h.comp.get_panel_title().as_str(), "one.txt");
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn closing_a_tab_forgets_its_panel() {
         let (f, _h, _) = live(Opts::default());
@@ -7327,10 +7305,6 @@ two",
         assert_eq!(rows_in_panel(&f), 0);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn the_close_button_and_the_toggle_chord_close_and_bring_the_panel_back() {
         let (f, _h, _) = live(Opts::default());
@@ -7350,10 +7324,6 @@ two",
         assert_eq!(f.ctl.borrow().open_panels(), 0);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn the_focus_chord_moves_the_keys_both_ways_and_escape_gives_them_back() {
         let (f, _h, _) = live(Opts::default());
@@ -7383,10 +7353,6 @@ two",
         assert!(!f.h.comp.get_panel_has_focus());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn the_keys_return_to_the_terminal_when_the_panel_they_were_in_closes() {
         let (f, _h, _) = live(Opts::default());
@@ -7405,10 +7371,6 @@ two",
         assert!(!f.h.comp.get_panel_has_focus());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn the_keys_return_to_the_terminal_when_the_tab_changes_or_the_close_button_is_pressed() {
         let (f, _h, _) = live(Opts::default());
@@ -7439,10 +7401,6 @@ two",
         assert_ne!(f.key(KeyEvent::new("j", "KeyJ")), KeyOutcome::Slint);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn the_keys_return_to_the_terminal_when_the_tab_changes_to_one_with_a_panel_too() {
         let (f, _h, _) = live(Opts::default());
@@ -7474,10 +7432,6 @@ two",
         assert_ne!(f.key(KeyEvent::new("j", "KeyJ")), KeyOutcome::Slint);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_click_on_the_file_already_shown_reads_it_again() {
         let (f, _h, _) = live(Opts::default());
@@ -7492,10 +7446,6 @@ two",
         f.pump_until("the second read", |f| rows_in_panel(f) == 3);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_file_that_was_missing_shows_when_it_exists_and_is_clicked_again() {
         let (f, _h, _) = live(Opts::default());
@@ -7516,10 +7466,6 @@ two",
         assert_eq!(rows_in_panel(&f), 2);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_restored_target_that_fails_the_clicks_checks_is_not_read() {
         // A folder named like a text file passes the string checks; the click's checks refuse it.
@@ -7597,10 +7543,6 @@ two",
         f.h.comp.get_panel_line_nums().iter().collect()
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_long_line_wraps_by_default_and_the_header_button_turns_it_off_and_on() {
         let (f, _h, _) = live(Opts::default());
@@ -7643,10 +7585,6 @@ two",
         assert!(f.h.comp.get_panel_wrapped());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn with_the_setting_off_a_file_opens_unwrapped_and_the_settings_switch_flips_it_too() {
         let (f, _h, _) = live(Opts::default());
@@ -7663,10 +7601,6 @@ two",
         assert!(rows_in_panel(&f) > 3);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn the_sidebar_sliding_wraps_the_text_once_not_at_every_frame() {
         let (f, _h, _) = live(Opts::default());
@@ -7705,10 +7639,6 @@ two",
         f.pump();
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_splitter_drag_wraps_live_at_every_step_and_the_release_changes_nothing_more() {
         for scale in [1.0f32, 2.25] {
@@ -7784,10 +7714,6 @@ two",
         }
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_live_drag_keeps_the_line_at_the_top_in_place() {
         for scale in [1.0f32, 2.25] {
@@ -7836,10 +7762,6 @@ two",
         format!("{}\n", "word ".repeat(300).trim_end()).repeat(900)
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_big_file_drag_never_stalls_the_ui_and_ends_exact() {
         for scale in [1.0f32, 2.25] {
@@ -7901,10 +7823,6 @@ two",
         }
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_small_file_wrap_per_step_is_cheap() {
         // The common case: a whole drag step (model build, push, top-line restore) on a file just under the live
@@ -7958,10 +7876,6 @@ two",
         .repeat(900)
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_window_edge_drag_never_wraps_a_mid_file_inline_nor_restarts_the_worker() {
         let (f, _h, _) = live(Opts::default());
@@ -8026,10 +7940,6 @@ two",
             .unwrap_or(1)
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_rewrap_keeps_the_line_the_reader_was_on_at_the_top() {
         let (f, _h, _) = live(Opts::default());
@@ -8078,10 +7988,6 @@ two",
         );
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn turning_wrap_on_brings_a_sideways_scrolled_view_back_to_the_left_edge() {
         let (f, _h, _) = live(Opts::default());
@@ -8109,10 +8015,6 @@ two",
         );
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn settings_in_front_wraps_nothing_and_the_return_wraps_once() {
         let (f, _h, _) = live(Opts::default());
@@ -8153,10 +8055,6 @@ two",
         assert!(f.openers.records().is_empty());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_click_on_a_file_in_a_window_too_narrow_for_a_slot_opens_it_in_windows() {
         let (f, _h, _) = live(Opts::default());
@@ -8179,10 +8077,6 @@ two",
         assert!(!f.h.comp.get_panel_open(), "and opened no invisible panel");
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_tab_that_comes_back_finds_its_file_where_the_reader_left_it() {
         let (f, _h, _) = live(Opts::default());
@@ -8215,10 +8109,6 @@ two",
         );
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_refused_show_in_side_panel_leaves_the_panel_that_is_open_as_it_was() {
         let (f, _h, _) = live(Opts::default());
@@ -8251,10 +8141,6 @@ two",
         assert!(!f.h.comp.get_panel_sub().as_str().starts_with("Cannot show"));
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_big_file_wraps_on_a_worker_and_a_stale_answer_changes_nothing() {
         use crate::panel_ctl::{PanelMsg, PanelMsgBox};
@@ -8282,10 +8168,6 @@ two",
         assert_eq!(rows_in_panel(&f), rows);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn the_splitter_release_stores_the_share_for_that_tab_only() {
         let (f, _h, _) = live(Opts::default());
@@ -8317,10 +8199,6 @@ two",
         assert!((f.h.comp.get_panel_share() - 0.31).abs() < 1e-6);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn an_answer_for_a_file_no_longer_on_show_is_dropped() {
         use crate::panel_ctl::{PanelMsg, PanelMsgBox};
@@ -8352,10 +8230,6 @@ two",
         assert_eq!(rows_in_panel(&f), 1, "another tab's answer changed nothing");
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_new_click_replaces_the_panel_and_a_late_answer_of_the_old_one_is_dropped() {
         let (f, _h, _) = live(Opts::default());
@@ -8370,10 +8244,6 @@ two",
         assert_eq!(rows_in_panel(&f), 2);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_panel_comes_back_with_its_tab_and_a_closed_one_stays_closed() {
         let f = fx_with(Opts {
@@ -8527,10 +8397,6 @@ two",
         assert_eq!(f.ctl.borrow().open_panels(), 1);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn view_file_shows_a_file_under_a_title_and_a_picture_with_its_size() {
         let (f, _h, _) = live(Opts::default());
@@ -8682,10 +8548,6 @@ two",
         f.pump_until("the text", |f| rows_in_panel(f) == 1);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn text_handed_over_is_not_written_to_the_panels_file_and_not_restored() {
         let (f, _h, _) = live(Opts::default());
@@ -8744,10 +8606,6 @@ two",
         );
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_click_after_a_titled_call_shows_the_file_under_its_own_name() {
         let (f, _h, _) = live(Opts::default());
@@ -8795,10 +8653,6 @@ two",
         });
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn panel_changes_are_published_to_the_tab_s_clients() {
         let (f, _h, _) = live(Opts::default());
@@ -9554,10 +9408,6 @@ two",
         assert!(f.h.comp.get_panel_open());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_panel_the_user_opened_stays_when_claude_leaves() {
         let (f, _h, _) = live(Opts::default());

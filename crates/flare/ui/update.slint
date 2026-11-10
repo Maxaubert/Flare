@@ -3,6 +3,7 @@
 // except the notice's shadow, which Prism Terminal fixes the same way.
 // Source: PT core/renderer/components/UpdateChip.tsx (Appendix C of the plan).
 import { Theme, Px, Motion } from "theme.slint";
+import { PlatformFonts } from "platform_fonts.slint";
 import { NoteSection } from "types.slint";
 import { DialogButton } from "dialog.slint";
 
@@ -441,7 +442,10 @@ export component UpdateWindow inherits Rectangle {
 
     box := Rectangle {
         width: Px.snap(min(460px, root.width - 48px));
-        height: col.preferred-height;
+        // SF's lines are fractions of a device pixel (Segoe UI's land on the grid at every scale
+        // Flare draws at), so on macOS the column's height is rounded up to the grid, or the box
+        // edges would fall between device pixels.
+        height: PlatformFonts.mac ? Px.snap-up(col.preferred-height) : col.preferred-height;
         x: Px.snap((root.width - self.width) / 2);
         y: Px.snap((root.height - self.height) / 2);
         background: Theme.side-flat;

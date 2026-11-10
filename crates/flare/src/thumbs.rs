@@ -619,6 +619,7 @@ mod tests {
         assert!(!h.point(Some(1), 400).started);
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_vetting_is_a_clicks_for_a_network_path_a_nul_and_a_link_that_changes_kind() {
         assert!(thumb_target(r"C:\a\p.png", r"C:\a\p.png"));
@@ -629,6 +630,20 @@ mod tests {
         assert!(!thumb_target(r"C:\a\link.png", r"C:\b\run.exe"));
         assert!(!thumb_target(r"C:\a\link.png", r"C:\b\notes.txt"));
         assert!(!thumb_target(r"C:\a\notes.txt", r"C:\a\notes.txt"));
+    }
+
+    /// macOS twin (rule 1003): a `//` path and an automount point are the network paths.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_vetting_is_a_clicks_for_a_network_path_a_nul_and_a_link_that_changes_kind_on_macos() {
+        assert!(thumb_target("/a/p.png", "/a/p.png"));
+        assert!(thumb_target("/a/link.png", "/b/real.JPG"));
+        assert!(!thumb_target("//srv/share/p.png", "//srv/share/p.png"));
+        assert!(!thumb_target("/a/p.png", "/net/srv/p.png"));
+        assert!(!thumb_target("/a/p\0.png", "/a/p\0.png"));
+        assert!(!thumb_target("/a/link.png", "/b/run.sh"));
+        assert!(!thumb_target("/a/link.png", "/b/notes.txt"));
+        assert!(!thumb_target("/a/notes.txt", "/a/notes.txt"));
     }
 
     fn png(path: &Path, w: u32, h: u32) {
@@ -658,10 +673,6 @@ mod tests {
         answers.0.lock().unwrap().clone()
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_picture_is_decoded_once_and_comes_from_memory_until_it_is_edited() {
         let dir = tempfile::tempdir().unwrap();
@@ -712,10 +723,6 @@ mod tests {
         assert!(wait_answers(&answers, 1)[0].1.is_none());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn only_the_newest_job_waits_behind_a_running_one() {
         let answers = Arc::<Answers>::default();

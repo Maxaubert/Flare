@@ -16,7 +16,7 @@ use alacritty_terminal::term::{Config, Osc52 as AlacrittyOsc52, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use flare_render::decor::{Decor, DecorInk, RowSpan};
 use flare_render::grid::Grid;
-use flare_shells::cwd::{has_control, parse_osc9};
+use flare_shells::cwd::{has_control, parse_cwd_report};
 
 use crate::alt_click::{MoveRow, MoveScreen, move_to_cell_sequence};
 use crate::cells::{
@@ -70,7 +70,7 @@ pub enum TermEvent {
     Title(String),
     ResetTitle,
     Bell,
-    /// OSC 9;9 folder report.
+    /// OSC 9;9 folder report (and OSC 7 on macOS).
     Cwd(String),
     /// OSC 52 write, at most `OSC52_MAX` chars.
     ClipboardWrite(String),
@@ -409,8 +409,9 @@ impl Emulator {
                     return;
                 };
                 match ident {
-                    9 => {
-                        if let Some(p) = parse_osc9(data).filter(|p| !has_control(p)) {
+                    // OSC 9;9 everywhere; on macOS also OSC 7 (`parse_cwd_report`).
+                    7 | 9 => {
+                        if let Some(p) = parse_cwd_report(ident, data).filter(|p| !has_control(p)) {
                             out.push(TermEvent::Cwd(p));
                         }
                     }
@@ -1900,6 +1901,38 @@ mod tests {
             vec![TermEvent::Cwd("C:\\Users\\me".into())]
         );
         assert!(e.feed(b"\x1b]9;4;100;50\x07").is_empty());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn osc_7_is_the_folder_report_on_macos() {
+        let mut e = Emulator::new(80, 24);
+        assert_eq!(
+            e.feed(b"\x1b]7;file:///Users/me/a%20b\x1b\\"),
+            vec![TermEvent::Cwd("/Users/me/a b".into())]
+        );
+        assert_eq!(
+            e.feed(b"\x1b]7;file://localhost/tmp\x07"),
+            vec![TermEvent::Cwd("/tmp".into())]
+        );
+        // Another machine's folder (a shell in ssh) and an encoded CR are never a folder here.
+        for bad in [
+            &b"\x1b]7;file://far-away/home/me\x07"[..],
+            b"\x1b]7;file:///tmp/x%0Dcalc\x07",
+        ] {
+            let evs = e.feed(bad);
+            assert!(
+                !evs.iter().any(|ev| matches!(ev, TermEvent::Cwd(_))),
+                "{evs:?}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn osc_7_is_no_folder_report_on_windows() {
+        let mut e = Emulator::new(80, 24);
+        assert!(e.feed(b"\x1b]7;file:///C:/Users/me\x07").is_empty());
     }
 
     #[test]

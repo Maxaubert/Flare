@@ -1,0 +1,17 @@
+[package]
+name = "flare-proc"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+publish = false
+
+# The process table and process-group signals off Windows (macOS: libproc, sysctl, kqueue). On
+# Windows the crate is empty: the Win32 process code stays in flare-term and flare-win (rule 227).
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

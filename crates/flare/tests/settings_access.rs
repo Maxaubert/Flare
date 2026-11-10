@@ -165,11 +165,19 @@ fn the_help_search_field_is_a_combobox_with_the_long_label() {
 #[test]
 fn the_settings_font_is_the_system_ui_stack_whatever_the_theme() {
     // The two page faces are fixed tokens: Segoe UI Variable, falling back to Segoe UI.
+    // The faces sit behind the platform seam (macOS port phase 2, step 4): these are the Windows
+    // ones, and theme.slint reads them from there.
     let theme = ui("theme.slint");
-    assert!(theme.contains("font-text: \"Segoe UI Variable Text\";"));
-    assert!(theme.contains("font-display: \"Segoe UI Variable Display\";"));
-    assert!(theme.contains("font-fallback: \"Segoe UI\";"));
-    assert!(theme.contains("out property <string> font-ui: \"Segoe UI\";"));
+    assert!(theme.contains("font-text: PlatformFonts.text;"));
+    assert!(theme.contains("font-display: PlatformFonts.display;"));
+    assert!(theme.contains("font-fallback: PlatformFonts.ui;"));
+    assert!(theme.contains("out property <string> font-ui: PlatformFonts.ui;"));
+    let fonts = ui("platform_fonts.slint");
+    assert!(fonts.contains("windows-text: \"Segoe UI Variable Text\";"));
+    assert!(fonts.contains("windows-display: \"Segoe UI Variable Display\";"));
+    assert!(fonts.contains("windows-ui: \"Segoe UI\";"));
+    assert!(fonts.contains("text: self.mac ? self.macos-ui : self.windows-text;"));
+    assert!(fonts.contains("display: self.mac ? self.macos-ui : self.windows-display;"));
     let ctl = src("settings_ctl.rs");
     assert!(
         ctl.contains("\"Segoe UI\".to_string()"),

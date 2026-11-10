@@ -2,7 +2,9 @@
 //!
 //! Sources: PT EmptyState.tsx `whereabouts`, tabMenus.tsx `plusMenuRows`.
 
-use crate::folder_names::{base_name, path_parts};
+use crate::folder_names::base_name;
+#[cfg(windows)]
+use crate::folder_names::path_parts;
 use flare_settings::recent_roots::{RECENT_SHOWN, plus_menu_list, recent_labels};
 
 /// One folder offered by the + menu or the start screen.
@@ -16,7 +18,16 @@ pub struct PlaceRow {
 }
 
 /// Where a folder lives: the last two folders above it, with a leading ellipsis when more exist.
+/// macOS: POSIX folders (`macos/names.rs`).
 pub fn whereabouts(p: &str) -> String {
+    #[cfg(not(windows))]
+    return crate::macos::names::whereabouts(p);
+    #[cfg(windows)]
+    whereabouts_win(p)
+}
+
+#[cfg(windows)]
+fn whereabouts_win(p: &str) -> String {
     let parts = path_parts(p);
     let above = &parts[..parts.len().saturating_sub(1)];
     let near = above[above.len().saturating_sub(2)..].join("\\");
@@ -55,6 +66,7 @@ mod tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
+    #[cfg(windows)]
     #[test]
     fn whereabouts_shows_the_last_two_folders_above() {
         assert_eq!(

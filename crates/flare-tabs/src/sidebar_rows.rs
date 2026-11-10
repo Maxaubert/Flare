@@ -1,7 +1,16 @@
 //! folder_line and find_keeps for the sidebar rows (Task 9).
 
 /// The folder a tab's folder sits in, the user's own folder as `~`. A drive's root says the drive.
+/// macOS: POSIX folders (`macos/names.rs`).
 pub fn folder_line(cwd: &str, home: &str) -> String {
+    #[cfg(not(windows))]
+    return crate::macos::names::folder_line(cwd, home);
+    #[cfg(windows)]
+    folder_line_win(cwd, home)
+}
+
+#[cfg(windows)]
+fn folder_line_win(cwd: &str, home: &str) -> String {
     let path = cwd.trim_end_matches(['\\', '/']);
     let Some(cut) = path.rfind(['\\', '/']).filter(|&i| i > 0) else {
         return path.to_string();
@@ -39,8 +48,10 @@ pub fn find_keeps(query: &str, name: &str, cwd: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     const HOME: &str = r"C:\Users\Admin";
 
+    #[cfg(windows)]
     #[test]
     fn folder_line_is_the_parent_with_home_as_tilde() {
         assert_eq!(
@@ -51,6 +62,7 @@ mod tests {
         assert_eq!(folder_line(r"c:\users\admin\code\api", HOME), r"~\code");
     }
 
+    #[cfg(windows)]
     #[test]
     fn folder_line_says_the_drive_at_a_root() {
         assert_eq!(folder_line(r"X:\Emulators", HOME), "X:");

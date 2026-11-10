@@ -615,10 +615,14 @@ fn kill_pty(sh: &Arc<Shared>, s: Arc<Session>) {
             // ConPTY asks for the cursor (ESC[6n) and the device attributes (ESC[c) at startup and
             // waits for both answers, on close too: a shell killed before they were answered makes
             // the pseudo console linger 1.5 to 3 s, so the quit wait runs out. The shell is dying,
-            // so answer both ourselves (measured 2026-10-17: close 3 s -> under 10 ms).
+            // so answer both ourselves (measured 2026-10-17: close 3 s -> under 10 ms). Windows only: a
+            // macOS pty asks nothing, and the bytes would reach a program that ignores SIGHUP as input.
+            #[cfg(windows)]
             if let Some(tx) = lk(&s2.writer_tx).take() {
                 let _ = tx.send(b"\x1b[1;1R\x1b[?1;2c".to_vec());
             }
+            #[cfg(not(windows))]
+            drop(lk(&s2.writer_tx).take());
             let proc = lk(&s2.proc).take();
             if let Some(mut p) = proc {
                 p.kill();
@@ -1123,6 +1127,14 @@ impl SessionManager {
         }
     }
 
+    /// The leader of the job in the tab's terminal foreground: the shell itself while it waits at
+    /// its prompt, the program it runs otherwise ("is a program running in this tab"). None when the
+    /// tab is gone, and on Windows, where ConPTY cannot say.
+    pub fn foreground_pid(&self, id: &str) -> Option<u32> {
+        let s = lk(&self.sh.st).sessions.get(id).cloned()?;
+        lk(&s.proc).as_ref()?.foreground_pid()
+    }
+
     pub fn live_pids(&self) -> Vec<(String, u32)> {
         let st = lk(&self.sh.st);
         st.sessions
@@ -1169,15 +1181,23 @@ impl SessionManager {
     }
 
     /// true when every shell we killed is gone and no spawn or prewarm is still in flight;
-    /// false when `timeout` ran out.
+    /// false when `timeout` ran out. On macOS it then also ends what the shells left (a job that
+    /// ignores SIGHUP outlives its shell; the Windows job object needs no wait): the tab reapers are
+    /// hurried to SIGTERM and SIGKILL and waited for, within what is left of `timeout`.
     pub fn shells_gone(&self, timeout: Duration) -> bool {
+        #[cfg(not(windows))]
+        let t0 = Instant::now();
         let guard = lk(&self.sh.dying);
         let (g, _) = self
             .sh
             .dying_cv
             .wait_timeout_while(guard, timeout, |n| n.dying + n.starting > 0) // sync-ok: the quit path waits on purpose, with a cap
             .unwrap_or_else(|p| p.into_inner());
-        g.dying + g.starting == 0
+        let gone = g.dying + g.starting == 0;
+        drop(g);
+        #[cfg(not(windows))]
+        let gone = gone && crate::pty::finish_reapers(timeout.saturating_sub(t0.elapsed()));
+        gone
     }
 
     /// Bumped once per chunk read from any shell; only goes up.

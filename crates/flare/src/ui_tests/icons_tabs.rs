@@ -510,10 +510,37 @@ fn chevron_draws_at_full_size_at_every_scale() {
 /// recorded from the build before the change, in `SCALES` order, and each must hold within half a pixel.
 #[cfg_attr(
     not(windows),
-    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    ignore = "the chevron sits after Segoe UI tab labels (Windows); the macOS twin is centre_of_the_glyph_is_unchanged_on_macos"
 )]
 #[test]
 fn centre_of_the_glyph_is_unchanged() {
+    centres_hold(None);
+}
+
+/// macOS: the overflow chevron sits after the tab labels, which are SF there, so from 200 percent
+/// up it lands one device pixel or so right of the Windows record. Measured on the port
+/// (2026-11-08) by the same drawer; the other three glyphs keep the Windows centres.
+#[cfg(not(windows))]
+const MAC_CHEVRON: [(f32, f32); 8] = [
+    (840.50, 17.53),
+    (1050.62, 21.91),
+    (1260.77, 26.28),
+    (1470.87, 30.60),
+    (1682.00, 34.93),
+    (1892.25, 39.36),
+    (2102.50, 43.75),
+    (2523.00, 52.47),
+];
+
+/// macOS twin of `centre_of_the_glyph_is_unchanged`.
+#[cfg(not(windows))]
+#[test]
+fn centre_of_the_glyph_is_unchanged_on_macos() {
+    centres_hold(Some(MAC_CHEVRON));
+}
+
+/// `chevron` replaces the chevron's recorded centres (the macOS twin).
+fn centres_hold(chevron: Option<[(f32, f32); 8]>) {
     type Measure = fn(f32) -> Drawn;
     type Centres = [(f32, f32); 8];
     let before: [(&str, Measure, Centres); 4] = [
@@ -575,6 +602,10 @@ fn centre_of_the_glyph_is_unchanged() {
         ),
     ];
     for (what, draw, centres) in before {
+        let centres = match chevron {
+            Some(c) if what == "chevron" => c,
+            _ => centres,
+        };
         for (s, want) in SCALES.into_iter().zip(centres) {
             let c = centre_of(draw(s).0);
             assert!(

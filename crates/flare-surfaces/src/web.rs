@@ -1384,10 +1384,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
+    #[cfg(windows)]
     #[test]
     fn the_profile_lives_under_the_profile_folder_never_the_install_folder() {
         assert_eq!(
@@ -1404,10 +1401,7 @@ mod tests {
         assert!(!s.contains(r"appdata\local\flare"), "{s}");
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
+    #[cfg(windows)]
     #[test]
     fn the_old_place_is_only_the_default_runs_local_appdata_folder() {
         assert_eq!(
@@ -1418,6 +1412,40 @@ mod tests {
             old_webview_folder(
                 Some(Path::new(r"C:\run\p")),
                 Some(r"C:\Users\x\AppData\Local")
+            ),
+            None
+        );
+        assert_eq!(old_webview_folder(None, None), None);
+        assert_eq!(old_webview_folder(None, Some("")), None);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_profile_lives_under_the_profile_folder_never_the_install_folder_posix() {
+        assert_eq!(
+            webview_folder(Path::new("/run/p")),
+            PathBuf::from("/run/p/WebView2")
+        );
+        let p = webview_folder(Path::new("/Users/x/Library/Application Support/Flare"));
+        assert_eq!(
+            p,
+            PathBuf::from("/Users/x/Library/Application Support/Flare/WebView2")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_old_place_is_only_the_default_runs_local_appdata_folder_posix() {
+        assert_eq!(
+            old_webview_folder(None, Some("/Users/x/Library/Application Support")),
+            Some(PathBuf::from(
+                "/Users/x/Library/Application Support/Flare/WebView2"
+            ))
+        );
+        assert_eq!(
+            old_webview_folder(
+                Some(Path::new("/run/p")),
+                Some("/Users/x/Library/Application Support")
             ),
             None
         );

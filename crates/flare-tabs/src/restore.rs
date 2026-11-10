@@ -117,9 +117,10 @@ impl SessionLookup for NoSessions {
 /// user action may take a tab there; a restore never does.
 /// The test is flare-shells' own (`is_unc`, `has_control`, the rule behind `folder_after_report`),
 /// so mixed separators (`\/host/share`, `/\host\share`) and the device forms that reach SMB
-/// (`\\?\UNC\`, `\\.\UNC\`) count too.
+/// (`\\?\UNC\`, `\\.\UNC\`) count too. On macOS the same rule (`is_remote`) refuses `//` paths, the
+/// autofs mount points (`/net/<host>`, `/Network`) and a `.` or `..` segment.
 pub fn is_unsafe_restore_folder(cwd: &str) -> bool {
-    flare_shells::cwd::is_unc(cwd) || flare_shells::cwd::has_control(cwd)
+    flare_shells::cwd::is_remote(cwd) || flare_shells::cwd::has_control(cwd)
 }
 
 /// Port of planRestore: drop gone folders, keep the active tab pointing right, hand Claude tabs of
@@ -702,6 +703,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn restore_never_spawns_in_a_reported_unc_folder() {
         let saved = SavedTabs {
@@ -983,5 +985,60 @@ mod tests {
         assert!(s.state.tabs.is_empty());
         assert_eq!(s.state.active_id, None);
         assert!(s.spawn.is_empty());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn restore_never_spawns_in_a_remote_folder_on_macos() {
+        let saved = SavedTabs {
+            tabs: vec![
+                st("//evil/share", None),
+                st("/net/evil/share", None),
+                st("/NET/evil", None),
+                st("/Network/Servers/evil/x", None),
+                st("/tmp/../net/evil", None),
+                st("/Users/me/bad\u{7}dir", None),
+                st("/Users/me/c1\u{85}dir", None),
+                st("/Users/me/ok", None),
+            ],
+            active: 0,
+        };
+        let r = plan_restore(&saved, &all, &no_sessions);
+        assert_eq!(r.tabs, vec![rt("/Users/me/ok", None, Some(7))]);
+        let statted = Arc::new(Mutex::new(Vec::<String>::new()));
+        let s2 = Arc::clone(&statted);
+        let is_dir: Arc<dyn Fn(&str) -> bool + Send + Sync> = Arc::new(move |p| {
+            s2.lock().unwrap().push(p.to_string());
+            true
+        });
+        let r = resolve_restore(&saved, is_dir, Arc::new(NoSessions));
+        assert_eq!(*statted.lock().unwrap(), vec!["/Users/me/ok"]);
+        assert_eq!(r.tabs.len(), 1);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn posix_folders_round_trip_through_the_file_and_restore_from_real_folders() {
+        let home = tempfile::tempdir().unwrap();
+        let spaced = home.path().join("My Files").join("caf\u{e9} (1)");
+        std::fs::create_dir_all(&spaced).unwrap();
+        let spaced = spaced.to_string_lossy().into_owned();
+        let gone = format!("{}/gone", home.path().to_string_lossy());
+        let saved = SavedTabs {
+            tabs: vec![
+                st(&spaced, Some(AgentKind::Claude)),
+                st(&gone, None),
+                st("/", None),
+            ],
+            active: 2,
+        };
+        let back = parse_tabs(&tabs_json(&saved));
+        assert_eq!(back, saved, "the file keeps every POSIX folder as it was");
+        let is_dir: Arc<dyn Fn(&str) -> bool + Send + Sync> =
+            Arc::new(|p| std::path::Path::new(p).is_dir());
+        let r = resolve_restore(&back, is_dir, Arc::new(NoSessions));
+        let cwds: Vec<&str> = r.tabs.iter().map(|t| t.cwd.as_str()).collect();
+        assert_eq!(cwds, vec![spaced.as_str(), "/"]);
+        assert_eq!(r.active, 1, "the front tab still points at /");
     }
 }

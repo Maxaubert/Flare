@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 /// The most texts asked about in one go.
 pub const PATHS_MAX: usize = 300;
-const TEXT_MAX: usize = 1024;
+pub(crate) const TEXT_MAX: usize = 1024;
 const WORKERS: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,65 +103,20 @@ fn canonical(abs: &str) -> Option<String> {
     Some(s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s))
 }
 
-fn has_drive_root(s: &str) -> bool {
+pub(crate) fn has_drive_root(s: &str) -> bool {
     let b = s.as_bytes();
     b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
 }
 
-fn is_sep(c: char) -> bool {
+pub(crate) fn is_sep(c: char) -> bool {
     c == '\\' || c == '/'
 }
 
-/// '/' -> '\', collapse repeated separators, resolve "." and ".." (never above the drive root),
-/// keep a trailing separator, keep the drive letter's case. `p` starts with `X:`.
-fn normalise_win(p: &str) -> String {
-    let drive: String = p.chars().take(2).collect();
-    let rest: String = p.chars().skip(2).collect();
-    let mut parts: Vec<&str> = Vec::new();
-    for seg in rest.split(is_sep) {
-        match seg {
-            "" | "." => {}
-            ".." => {
-                parts.pop();
-            }
-            s => parts.push(s),
-        }
-    }
-    let mut out = format!("{drive}\\{}", parts.join("\\"));
-    if !parts.is_empty() && rest.ends_with(is_sep) {
-        out.push('\\');
-    }
-    out
-}
-
 /// What `text` names from inside `cwd`, or None when it names nothing this checks: a network path,
-/// a NUL, a relative path with no folder to be relative to, an over-long text.
+/// a NUL, a relative path with no folder to be relative to, an over-long text. The grammar is the
+/// platform's (`path_grammar`): drive paths on Windows, POSIX paths on macOS.
 pub fn resolve_term_path(cwd: &str, text: &str, home: &str) -> Option<String> {
-    if text.is_empty() || text.chars().count() > TEXT_MAX || text.contains('\0') {
-        return None;
-    }
-    let mut p = text.to_string();
-    if p == "~" || p.starts_with("~/") || p.starts_with("~\\") {
-        p = format!("{home}{}", &p[1..]);
-    }
-    let mut it = p.chars();
-    if it.next().is_some_and(is_sep) && it.next().is_some_and(is_sep) {
-        return None;
-    }
-    if has_drive_root(&p) {
-        return Some(normalise_win(&p));
-    }
-    if p.starts_with(is_sep) {
-        if !has_drive_root(cwd) {
-            return None;
-        }
-        let drive: String = cwd.chars().take(2).collect();
-        return Some(normalise_win(&format!("{drive}{p}")));
-    }
-    if !has_drive_root(cwd) || cwd.contains('\0') {
-        return None;
-    }
-    Some(normalise_win(&format!("{cwd}\\{p}")))
+    crate::path_grammar::resolve_term_path(cwd, text, home)
 }
 
 /// A blocking stat. Called on worker threads only.
@@ -275,7 +230,7 @@ impl StatGate {
         if !inner.metered {
             return inner.stat.kind(abs);
         }
-        let drive: String = abs.chars().take(2).collect::<String>().to_lowercase();
+        let drive = crate::path_grammar::volume_key(abs);
         if inner.is_slow(&drive) {
             return None;
         }
@@ -480,10 +435,6 @@ mod tests {
         }
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn an_openable_file_resolves_to_itself_and_its_canonical_form() {
         let (_d, root) = tree();
@@ -527,10 +478,6 @@ mod tests {
         }
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_file_for_a_viewer_is_one_of_its_extensions_under_the_same_name_rules() {
         let exts = ["glb", "stl"];
@@ -562,10 +509,6 @@ mod tests {
         assert!(resolve_file_of(&root, r"\\server\share\a.glb", "", &exts).is_none());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn a_page_resolves_in_the_backend_and_a_script_a_folder_or_a_share_does_not() {
         let dir = tempfile::tempdir().unwrap();
@@ -584,6 +527,7 @@ mod tests {
         assert!(resolve_openable_file(&root, "a.html", "").is_none());
     }
 
+    #[cfg(windows)]
     #[test]
     fn resolve_against_the_shell_folder() {
         let r = |t: &str, h: &str| resolve_term_path("C:\\work", t, h);
@@ -611,6 +555,7 @@ mod tests {
         assert_eq!(r("C:\\work", ""), None);
     }
 
+    #[cfg(windows)]
     #[test]
     fn normalise_keeps_trailing_separator_and_stops_at_the_root() {
         assert_eq!(
@@ -623,10 +568,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
+    #[cfg(windows)]
     #[test]
     fn path_kinds_says_what_exists() {
         let (_d, root) = tree();
@@ -652,10 +594,6 @@ mod tests {
         );
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn open_a_file_and_a_folder() {
         let (_d, root) = tree();
@@ -671,10 +609,7 @@ mod tests {
         assert_eq!(lock(&r.revealed).len(), 0);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
+    #[cfg(windows)]
     #[test]
     fn a_runnable_file_is_revealed_never_run() {
         let (_d, root) = tree();
@@ -687,10 +622,6 @@ mod tests {
         assert_eq!(*lock(&r.revealed), vec![format!("{root}\\run.bat")]);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn reveal_on_request_and_nothing_for_missing() {
         let (_d, root) = tree();
@@ -769,10 +700,6 @@ mod tests {
         assert!(may_open(r"C:\x y\ok.txt"));
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn an_unknown_type_is_revealed_never_opened() {
         let (d, root) = tree();
@@ -801,10 +728,6 @@ mod tests {
         assert!(lock(&r.opened).is_empty());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
     #[test]
     fn the_extension_comes_from_the_canonical_path() {
         // A link hides the real extension: the real one decides.
@@ -827,10 +750,7 @@ mod tests {
         assert!(lock(&r.opened).is_empty());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
+    #[cfg(windows)]
     #[test]
     fn a_folder_uses_open_folder_a_file_never_does() {
         let (_d, root) = tree();
@@ -854,10 +774,7 @@ mod tests {
         assert_eq!(lock(&r.folders).len(), 1);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows path grammar in path links and openers; macOS phase 2 of the port plan (POSIX paths)"
-    )]
+    #[cfg(windows)]
     #[test]
     fn a_folder_explorer_did_not_take_is_never_handed_to_the_default_verb() {
         // The stat said Dir; when the folder opener fails nothing opens (the name may have become
@@ -890,6 +807,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn never_more_than_three_stats_in_flight() {
         let (tx, rx) = mpsc::channel();
@@ -920,10 +838,12 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     struct Drives {
         asked: Mutex<Vec<String>>,
         tokens: Mutex<mpsc::Receiver<()>>,
     }
+    #[cfg(windows)]
     impl StatFn for Drives {
         fn kind(&self, abs: &str) -> Option<PathKind> {
             lock(&self.asked).push(abs.into());
@@ -935,6 +855,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_hanging_drive_answers_nothing_for_a_minute() {
         let (tx, rx) = mpsc::channel();
@@ -967,6 +888,234 @@ mod tests {
         assert!(lock(&stat.asked).contains(&"Z:\\share\\c.txt".to_string()));
         for _ in 0..2 {
             let _ = tx.send(());
+        }
+    }
+
+    /// The POSIX twins of the tests above that spell a Windows path (`{root}\\docs`, `C:\\w`).
+    #[cfg(not(windows))]
+    mod posix {
+        use super::*;
+
+        #[test]
+        fn path_kinds_says_what_exists() {
+            let (_d, root) = tree();
+            let gate = StatGate::unmetered(Arc::new(FsStat));
+            let texts: Vec<String> = [
+                "docs/sign-off/rapport.pdf",
+                "docs/sign-off/",
+                "missing/x.txt",
+                "and/or",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            let got = path_kinds(&root, &texts, &gate, "");
+            let kinds: Vec<Option<PathKind>> =
+                got.iter().map(|h| h.as_ref().map(|h| h.kind)).collect();
+            assert_eq!(
+                kinds,
+                vec![Some(PathKind::File), Some(PathKind::Dir), None, None]
+            );
+            assert_eq!(
+                got[0].as_ref().unwrap().abs,
+                format!("{root}/docs/sign-off/rapport.pdf")
+            );
+        }
+
+        #[test]
+        fn a_home_path_and_an_absolute_one_exist_from_any_folder() {
+            let (_d, root) = tree();
+            let gate = StatGate::unmetered(Arc::new(FsStat));
+            let texts = vec![
+                "~/docs/sign-off/rapport.pdf".to_string(),
+                format!("{root}/run.bat"),
+                "~".to_string(),
+            ];
+            let got = path_kinds("/", &texts, &gate, &root);
+            let kinds: Vec<Option<PathKind>> =
+                got.iter().map(|h| h.as_ref().map(|h| h.kind)).collect();
+            assert_eq!(
+                kinds,
+                vec![
+                    Some(PathKind::File),
+                    Some(PathKind::File),
+                    Some(PathKind::Dir)
+                ]
+            );
+        }
+
+        #[test]
+        fn a_runnable_file_is_revealed_never_run() {
+            let (d, root) = tree();
+            std::fs::write(d.path().join("run.sh"), b"x").unwrap();
+            std::fs::write(d.path().join("tool.command"), b"x").unwrap();
+            let r = Rec::default();
+            for t in ["run.bat", "run.sh", "tool.command"] {
+                assert_eq!(
+                    open_term_path(&root, t, OpenMode::Open, &r, ""),
+                    Some(Opened::Revealed),
+                    "{t}"
+                );
+            }
+            assert!(lock(&r.opened).is_empty());
+            assert_eq!(
+                *lock(&r.revealed),
+                vec![
+                    format!("{root}/run.bat"),
+                    format!("{root}/run.sh"),
+                    format!("{root}/tool.command")
+                ]
+            );
+        }
+
+        #[test]
+        fn a_folder_uses_open_folder_a_file_never_does() {
+            let (_d, root) = tree();
+            let r = Rec {
+                handles_folders: true,
+                ..Rec::default()
+            };
+            let o = |t: &str, m| open_term_path(&root, t, m, &r, "");
+            assert_eq!(o("docs", OpenMode::Open), Some(Opened::Opened));
+            assert_eq!(*lock(&r.folders), vec![format!("{root}/docs")]);
+            assert_eq!(
+                o("docs/sign-off/rapport.pdf", OpenMode::Open),
+                Some(Opened::Opened)
+            );
+            assert_eq!(
+                *lock(&r.opened),
+                vec![format!("{root}/docs/sign-off/rapport.pdf")]
+            );
+            assert_eq!(o("run.bat", OpenMode::Open), Some(Opened::Revealed));
+            assert_eq!(o("docs", OpenMode::Reveal), Some(Opened::Revealed));
+            assert_eq!(lock(&r.folders).len(), 1);
+        }
+
+        #[test]
+        fn a_folder_the_finder_did_not_take_is_never_handed_to_the_default_verb() {
+            let (_d, root) = tree();
+            let r = Rec::default();
+            assert_eq!(open_term_path(&root, "docs", OpenMode::Open, &r, ""), None);
+            assert_eq!(*lock(&r.folders), vec![format!("{root}/docs")]);
+            assert!(lock(&r.opened).is_empty());
+        }
+
+        #[test]
+        fn an_app_bundle_is_a_folder_and_never_opened_by_the_default_verb() {
+            // `Evil.app` is a folder to the stat; opening it runs it, so only the folder opener
+            // (which reveals a bundle) may take it.
+            let (d, root) = tree();
+            std::fs::create_dir_all(d.path().join("Evil.app/Contents/MacOS")).unwrap();
+            let r = Rec::default();
+            assert_eq!(
+                open_term_path(&root, "Evil.app", OpenMode::Open, &r, ""),
+                None
+            );
+            assert!(lock(&r.opened).is_empty());
+            assert_eq!(*lock(&r.folders), vec![format!("{root}/Evil.app")]);
+        }
+
+        #[test]
+        fn a_path_under_an_automount_point_is_never_statted() {
+            struct Never;
+            impl StatFn for Never {
+                fn kind(&self, abs: &str) -> Option<PathKind> {
+                    panic!("statted {abs}");
+                }
+            }
+            let gate = StatGate::unmetered(Arc::new(Never));
+            let texts = vec![
+                "/net/evil-host/share/a.txt".to_string(),
+                "/Network/Servers/evil/a.txt".to_string(),
+                "../../net/evil/a.txt".to_string(),
+            ];
+            let got = path_kinds("/Users/me", &texts, &gate, "");
+            assert!(got.iter().all(Option::is_none));
+        }
+
+        #[test]
+        fn never_more_than_three_stats_in_flight() {
+            let (tx, rx) = mpsc::channel();
+            let stat = Arc::new(Blocking {
+                active: AtomicUsize::new(0),
+                most: AtomicUsize::new(0),
+                tokens: Mutex::new(rx),
+            });
+            let gate = StatGate::new(
+                stat.clone(),
+                StatGateOptions {
+                    slots: 3,
+                    ..StatGateOptions::default()
+                },
+            );
+            let texts: Vec<String> = (0..40).map(|i| format!("f{i}.txt")).collect();
+            let h = std::thread::spawn(move || path_kinds("/w", &texts, &gate, ""));
+            for _ in 0..40 {
+                tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let got = h.join().unwrap();
+            assert_eq!(stat.most.load(Ordering::SeqCst), 3);
+            assert_eq!(got.len(), 40);
+            assert!(
+                got.iter()
+                    .all(|h| h.as_ref().map(|h| h.kind) == Some(PathKind::File))
+            );
+        }
+
+        struct Volumes {
+            asked: Mutex<Vec<String>>,
+            tokens: Mutex<mpsc::Receiver<()>>,
+        }
+        impl StatFn for Volumes {
+            fn kind(&self, abs: &str) -> Option<PathKind> {
+                lock(&self.asked).push(abs.into());
+                if abs.starts_with("/Volumes/Share") {
+                    let _ = lock(&self.tokens).recv();
+                    return None;
+                }
+                Some(PathKind::File)
+            }
+        }
+
+        #[test]
+        fn a_hanging_volume_answers_nothing_for_a_minute_and_the_disk_still_answers() {
+            let (tx, rx) = mpsc::channel();
+            let stat = Arc::new(Volumes {
+                asked: Mutex::new(vec![]),
+                tokens: Mutex::new(rx),
+            });
+            let now = Arc::new(AtomicU64::new(0));
+            let c = now.clone();
+            let gate = StatGate::new(
+                stat.clone(),
+                StatGateOptions {
+                    slots: 3,
+                    slow_ms: 50,
+                    slow_for_ms: 60_000,
+                    clock: Arc::new(move || c.load(Ordering::SeqCst)),
+                },
+            );
+            assert_eq!(gate.kind("/Volumes/Share/a.txt"), None);
+            let t = Instant::now();
+            assert_eq!(gate.kind("/Volumes/share/b.txt"), None);
+            assert!(t.elapsed() < Duration::from_millis(20));
+            assert_eq!(gate.kind("/Volumes/Other/x.txt"), Some(PathKind::File));
+            assert_eq!(gate.kind("/Users/me/local.txt"), Some(PathKind::File));
+            assert_eq!(
+                *lock(&stat.asked),
+                vec![
+                    "/Volumes/Share/a.txt".to_string(),
+                    "/Volumes/Other/x.txt".to_string(),
+                    "/Users/me/local.txt".to_string()
+                ]
+            );
+            now.store(60_000, Ordering::SeqCst);
+            assert_eq!(gate.kind("/Volumes/Share/c.txt"), None);
+            assert!(lock(&stat.asked).contains(&"/Volumes/Share/c.txt".to_string()));
+            for _ in 0..2 {
+                let _ = tx.send(());
+            }
         }
     }
 }

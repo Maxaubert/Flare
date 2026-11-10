@@ -4,7 +4,8 @@
 use crate::blend::blend_premul;
 use crate::fallback;
 use crate::font_catalog::{
-    FALLBACK_FAMILIES, LAZY_FALLBACK_FAMILIES, database_for, files_for_family, installed_faces,
+    FALLBACK_FAMILIES, LAZY_FALLBACK_FAMILIES, MONOSPACE_FAMILIES, database_for, files_for_family,
+    installed_faces,
 };
 use crate::glyph::{GlyphBitmap, GlyphKey, GlyphKind, GlyphMemory, GlyphSource};
 use crate::metrics::{BASE_FONT_PX, FontUnits, cell_metrics_at, font_px_for};
@@ -26,7 +27,11 @@ const UNCOVERED_MAX: usize = 4096;
 const LOCALE: &str = "en-US";
 
 /// PT's `TERM_FONTS` 'cascadia' stack, in order of preference.
+#[cfg(windows)]
 pub const DEFAULT_FAMILIES: &[&str] = &["Cascadia Mono", "JetBrainsMono NF", "Consolas"];
+/// macOS: the same stack with the system monospace faces in Consolas' place (`macos/font_catalog.rs`).
+#[cfg(not(windows))]
+pub use crate::font_catalog::DEFAULT_FAMILIES;
 
 pub struct Rasterizer {
     fs: FontSystem,
@@ -501,10 +506,12 @@ fn missing_char(buffer: &Buffer) -> Option<char> {
     })
 }
 
-/// The first installed family of `families`, else the first monospace face, else "monospace".
+/// The first installed family of `families`, else the platform's monospace faces (none on
+/// Windows), else the first monospace face, else "monospace".
 fn pick_family(fs: &FontSystem, families: &[&str]) -> String {
     families
         .iter()
+        .chain(MONOSPACE_FAMILIES.iter())
         .find(|name| has_family(fs, name))
         .map(|name| name.to_string())
         .or_else(|| {
@@ -667,6 +674,28 @@ mod tests {
     use super::*;
     use crate::glyph::GlyphKind;
 
+    /// A lazy fallback family on this platform, and two characters of its script that nothing
+    /// loaded at start-up covers: Javanese on Windows, Egyptian hieroglyphs on macOS.
+    const JAVANESE: &str = if cfg!(windows) {
+        "Javanese Text"
+    } else {
+        "Noto Sans Egyptian Hieroglyphs"
+    };
+    const JAVANESE_A: &str = if cfg!(windows) {
+        "\u{A9B2}"
+    } else {
+        "\u{13000}"
+    };
+    const JAVANESE_B: &str = if cfg!(windows) {
+        "\u{A9B3}"
+    } else {
+        "\u{13001}"
+    };
+    /// A monospace face the start-up fallbacks hold on this platform.
+    const HELD_MONO: &str = if cfg!(windows) { "Consolas" } else { "Menlo" };
+    /// An installed face the start-up fallbacks do not hold on this platform.
+    const UNHELD: &str = if cfg!(windows) { "Arial" } else { "Verdana" };
+
     fn key(text: &str) -> GlyphKey {
         GlyphKey {
             text: text.to_string(),
@@ -742,10 +771,6 @@ mod tests {
         assert!((u.advance - 1200.0).abs() <= 1.0);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn ascii_is_mask_with_ink() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -761,10 +786,6 @@ mod tests {
         assert!(r.glyph(&key("")).is_none());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn cjk_falls_back() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -780,10 +801,6 @@ mod tests {
         }
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn emoji_is_color() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -798,10 +815,6 @@ mod tests {
         }
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn bold_differs_from_regular() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -821,10 +834,6 @@ mod tests {
         }
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn an_unknown_stack_falls_to_a_monospace_face() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -849,10 +858,6 @@ mod tests {
         assert!((w16 / w13 - 16.0 / 13.0).abs() < 0.1, "{w13} -> {w16}");
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn the_same_look_twice_changes_nothing() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -865,10 +870,6 @@ mod tests {
         assert_eq!(r.generation(), g + 1);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn a_font_change_clears_the_cache() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -878,10 +879,6 @@ mod tests {
         assert_eq!(r.cached(), 0);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn scale_changes_size() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -905,10 +902,6 @@ mod tests {
         s
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn glyph_images_are_identical_to_the_all_fonts_build_for_the_theme_sample() {
         let text = sample_text();
@@ -944,20 +937,20 @@ mod tests {
     #[test]
     fn a_missing_character_loads_one_fallback_once() {
         use crate::font_catalog::{files_for_family, installed_faces};
-        if files_for_family(&installed_faces(), "Javanese Text").is_empty() {
-            eprintln!("skipped: Javanese Text is not installed");
+        if files_for_family(&installed_faces(), JAVANESE).is_empty() {
+            eprintln!("skipped: {JAVANESE} is not installed");
             return;
         }
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
-        assert!(!r.has_family_loaded("Javanese Text"));
+        assert!(!r.has_family_loaded(JAVANESE));
         let before = r.face_count();
-        let java = key("\u{A9B2}");
+        let java = key(JAVANESE_A);
         assert!(glyph_settled(&mut r, &java).is_some());
-        assert!(r.has_family_loaded("Javanese Text"));
+        assert!(r.has_family_loaded(JAVANESE));
         let after = r.face_count();
         assert!(after > before);
         // The same family is not loaded again, by this character or another of its script.
-        glyph_settled(&mut r, &key("\u{A9B3}"));
+        glyph_settled(&mut r, &key(JAVANESE_B));
         glyph_settled(&mut r, &java);
         assert_eq!(r.face_count(), after);
         let tried = r.rejected.len();
@@ -1008,10 +1001,6 @@ mod tests {
         assert!(r.uncovered.len() <= UNCOVERED_MAX);
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn the_glyph_cache_is_bounded() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
@@ -1028,22 +1017,22 @@ mod tests {
     #[test]
     fn a_char_no_family_covers_does_not_burn_the_families_for_another_script() {
         use crate::font_catalog::{files_for_family, installed_faces};
-        if files_for_family(&installed_faces(), "Javanese Text").is_empty() {
-            eprintln!("skipped: Javanese Text is not installed");
+        if files_for_family(&installed_faces(), JAVANESE).is_empty() {
+            eprintln!("skipped: {JAVANESE} is not installed");
             return;
         }
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
         // Nothing covers this one: every lazy family is asked about it.
         glyph_settled(&mut r, &key("\u{3FFFD}"));
-        assert!(!r.has_family_loaded("Javanese Text"));
+        assert!(!r.has_family_loaded(JAVANESE));
         let walked = r.rejected.len();
         assert!(r.uncovered.contains(&'\u{3FFFD}'));
         // The same character is never walked again (a prompt icon redrawn every frame).
         glyph_settled(&mut r, &key("x\u{3FFFD}"));
         assert_eq!(r.rejected.len(), walked);
         // A different script still reaches its family.
-        assert!(glyph_settled(&mut r, &key("\u{A9B2}")).is_some());
-        assert!(r.has_family_loaded("Javanese Text"));
+        assert!(glyph_settled(&mut r, &key(JAVANESE_A)).is_some());
+        assert!(r.has_family_loaded(JAVANESE));
     }
 
     /// A gate that holds the fallback worker, standing in for a slow disk.
@@ -1072,10 +1061,6 @@ mod tests {
         );
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn a_fallback_answer_wakes_the_window() {
         let (mut r, gate) = gated();
@@ -1101,10 +1086,6 @@ mod tests {
         }
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn paint_never_blocks_on_a_family_load() {
         // Audit M2: a character no loaded font covers used to read cmaps and load a family inside
@@ -1113,7 +1094,7 @@ mod tests {
         let (mut r, gate) = gated();
         let faces = r.face_count();
         assert!(r.glyph(&key("\u{3FFFD}")).is_none(), "blank while it waits");
-        r.glyph(&key("\u{A9B2}"));
+        r.glyph(&key(JAVANESE_A));
         assert_eq!(r.face_count(), faces, "nothing was loaded by the paint");
         assert_eq!(r.family_loads, 0);
         assert_eq!(
@@ -1135,14 +1116,14 @@ mod tests {
     #[test]
     fn a_family_that_arrives_repaints_the_blank_cell() {
         use crate::font_catalog::{files_for_family, installed_faces};
-        if files_for_family(&installed_faces(), "Javanese Text").is_empty() {
-            eprintln!("skipped: Javanese Text is not installed");
+        if files_for_family(&installed_faces(), JAVANESE).is_empty() {
+            eprintln!("skipped: {JAVANESE} is not installed");
             return;
         }
         let (mut r, gate) = gated();
-        let java = key("\u{A9B2}");
+        let java = key(JAVANESE_A);
         assert!(r.glyph(&java).is_none());
-        assert!(!r.has_family_loaded("Javanese Text"));
+        assert!(!r.has_family_loaded(JAVANESE));
         gate.store(true, std::sync::atomic::Ordering::Release);
         let start = std::time::Instant::now();
         while !r.fallback_ready() {
@@ -1150,7 +1131,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert!(r.apply_fallbacks(), "the host is told to paint again");
-        assert!(r.has_family_loaded("Javanese Text"));
+        assert!(r.has_family_loaded(JAVANESE));
         assert!(!r.fallback_ready(), "the flag is taken with the answers");
         assert!(r.glyph(&java).is_some(), "the cell now draws");
     }
@@ -1158,21 +1139,21 @@ mod tests {
     #[test]
     fn changing_the_font_swaps_the_database() {
         use crate::font_catalog::{files_for_family, installed_faces};
-        if files_for_family(&installed_faces(), "Arial").is_empty() {
-            eprintln!("skipped: Arial is not installed");
+        if files_for_family(&installed_faces(), UNHELD).is_empty() {
+            eprintln!("skipped: {UNHELD} is not installed");
             return;
         }
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
-        assert!(!r.has_family_loaded("Arial"));
+        assert!(!r.has_family_loaded(UNHELD));
         let g = r.generation();
-        r.set_font(&["Arial"], 13.0);
-        assert_eq!(r.family(), "Arial");
-        assert!(r.has_family_loaded("Arial"));
+        r.set_font(&[UNHELD], 13.0);
+        assert_eq!(r.family(), UNHELD);
+        assert!(r.has_family_loaded(UNHELD));
         assert_eq!(r.generation(), g + 1);
         assert!(r.glyph(&key("M")).is_some());
         // Back to a family the fallbacks already hold: no reload needed, the family changes.
-        r.set_font(&["Consolas"], 13.0);
-        assert_eq!(r.family(), "Consolas");
+        r.set_font(&[HELD_MONO], 13.0);
+        assert_eq!(r.family(), HELD_MONO);
     }
 
     #[test]
@@ -1270,10 +1251,6 @@ mod tests {
         assert!(glyph_settled(&mut r, &key("\u{E0C0}")).is_some());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn box_drawing_and_shades_still_come_from_the_font() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);

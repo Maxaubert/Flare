@@ -6,7 +6,9 @@ threads-required = "num-cpus"
 
 # The emulator's lock-hold and screen-read budgets measure wall-clock time of a debug build; with every
 # other test running beside them a shared macOS runner starved the hold to a 41 ms p90 (limit 40) for a
-# copy that takes a few ms alone. They take every slot too, so they measure the code, not the neighbours.
+# copy that takes a few ms alone. The 100 MB flood's worst snapshot is the same kind of budget (a sampler thread
+# timing the lock against the parser's thread): beside the whole suite on a slow runner it read 384 ms (limit 250).
+# They take every slot too, so they measure the code, not the neighbours.
 [[profile.default.overrides]]
-filter = 'package(flare-term) & (test(snapshot_holds_the_lock_under_1_ms) | test(reading_a_huge_screen_full_of_addresses_stays_cheap))'
+filter = 'package(flare-term) & (test(snapshot_holds_the_lock_under_1_ms) | test(reading_a_huge_screen_full_of_addresses_stays_cheap) | test(a_100_mb_flood_keeps_snapshots_fast_and_arrives_complete))'
 threads-required = "num-cpus"

@@ -376,7 +376,7 @@ fn a_row_is_two_columns_with_the_well_and_the_copy_button() {
 
 #[cfg_attr(
     not(windows),
-    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
+    ignore = "Segoe UI's 16.25 px lines outgrow the row; the macOS twin is a_two_line_name_fits_the_row_whole_on_macos"
 )]
 #[test]
 fn a_two_line_name_makes_the_row_taller() {
@@ -750,4 +750,39 @@ fn near_the_end_asks_for_more_rows() {
     h.comp.set_viewport_y(-3000.0);
     h.advance(1);
     assert!(*asked.borrow() > 0, "near-end fired");
+}
+
+/// macOS twin of `a_two_line_name_makes_the_row_taller`. The name is 12.5 px SF, whose line is about
+/// 14.9 px: two lines and the 6 px of air are 35.8, inside the 36 px row, so the row stays 36 where
+/// Segoe UI's two lines grow it to 38.5. The property both hold: the name's two lines are drawn
+/// whole, inside its row.
+#[cfg(not(windows))]
+#[test]
+fn a_two_line_name_fits_the_row_whole_on_macos() {
+    for scale in [1.0_f32, 1.5, 2.25] {
+        let h = harness(scale);
+        let long = "A very long task name that has to wrap onto a second line in the left column of the row";
+        open_with(&h, vec![data(long, "Get-Thing")]);
+        let r = h.comp.get_row0_h();
+        assert!((36.0..=39.0).contains(&r), "row {r} at {scale}");
+        let f = h.render();
+        // Row 0 runs from 172 to 172 + r css px; the name column from 397 to 600.
+        let inked =
+            |y: u32| f.count_where(h.phys(397.0), y, h.phys(600.0), y + 1, |p| p[0] > 120) > 0;
+        let mut runs: Vec<(u32, u32)> = Vec::new();
+        // From the row's top (the list's own edge sits just above it) to well past its bottom.
+        for y in h.phys(172.0)..h.phys(172.0 + r + 12.0) {
+            if inked(y) {
+                match runs.last_mut() {
+                    Some(run) if run.1 + 1 == y => run.1 = y,
+                    _ => runs.push((y, y)),
+                }
+            }
+        }
+        assert_eq!(runs.len(), 2, "two lines of name at {scale}: {runs:?}");
+        assert!(
+            runs[0].0 > h.phys(172.0) && runs[1].1 < h.phys(172.0 + r),
+            "the name sits inside its row at {scale}: {runs:?}"
+        );
+    }
 }

@@ -3,7 +3,8 @@
 //! `FontSystem::new()` makes cosmic-text open every installed font, which costs seconds of disk and
 //! tens of MB of mapped pages. The terminal needs the font stack the user chose plus a short list
 //! of fallbacks, so this module reads the registry's font list (no directory walk), picks the files
-//! for the named families and builds a `fontdb::Database` from just those.
+//! for the named families and builds a `fontdb::Database` from just those. macOS has no such
+//! list: there the font folders are read once instead (`macos/font_catalog.rs`).
 
 use cosmic_text::fontdb;
 use std::path::{Path, PathBuf};
@@ -18,7 +19,14 @@ pub struct FaceFile {
     pub index: u32,
 }
 
+#[cfg(not(windows))]
+#[path = "macos/font_catalog.rs"]
+mod macos;
+#[cfg(not(windows))]
+pub use macos::{DEFAULT_FAMILIES, FALLBACK_FAMILIES, LAZY_FALLBACK_FAMILIES, MONOSPACE_FAMILIES};
+
 /// The families loaded at start-up next to the user's stack, in order of preference.
+#[cfg(windows)]
 pub const FALLBACK_FAMILIES: &[&str] = &[
     "Cascadia Mono",
     "Consolas",
@@ -38,6 +46,7 @@ pub const FALLBACK_FAMILIES: &[&str] = &[
 
 /// Families loaded one at a time, only when a character nothing else covers asks for them (the
 /// per-script lists cosmic-text's Windows fallback names).
+#[cfg(windows)]
 pub const LAZY_FALLBACK_FAMILIES: &[&str] = &[
     "Ebrima",
     "Gadugi",
@@ -54,6 +63,11 @@ pub const LAZY_FALLBACK_FAMILIES: &[&str] = &[
     "Cambria Math",
     "Segoe UI Variable",
 ];
+
+/// The faces the generic `monospace` at the end of every stack stands for. None on Windows: there
+/// the first monospace face of the database is taken, as before.
+#[cfg(windows)]
+pub const MONOSPACE_FAMILIES: &[&str] = &[];
 
 /// Words that follow a family name in a registry display name.
 const STYLE_WORDS: &[&str] = &[
@@ -82,20 +96,27 @@ const STYLE_WORDS: &[&str] = &[
     "retina",
 ];
 
-/// Every installed font file, from the registry's two font lists (system and user). Cached.
+/// Every installed font file, from the registry's two font lists (system and user) on Windows and
+/// from the font folders on macOS. Cached.
 pub fn installed_faces() -> Vec<FaceFile> {
     static FACES: OnceLock<Vec<FaceFile>> = OnceLock::new();
-    FACES
-        .get_or_init(|| {
-            let windir = std::env::var_os("WINDIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
-            let system_dir = windir.join("Fonts");
-            let mut entries = registry::font_values(registry::Hive::Machine);
-            entries.extend(registry::font_values(registry::Hive::User));
-            faces_from_entries(&entries, &system_dir)
-        })
-        .clone()
+    FACES.get_or_init(scan_installed).clone()
+}
+
+#[cfg(not(windows))]
+fn scan_installed() -> Vec<FaceFile> {
+    macos::installed_faces()
+}
+
+#[cfg(windows)]
+fn scan_installed() -> Vec<FaceFile> {
+    let windir = std::env::var_os("WINDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let system_dir = windir.join("Fonts");
+    let mut entries = registry::font_values(registry::Hive::Machine);
+    entries.extend(registry::font_values(registry::Hive::User));
+    faces_from_entries(&entries, &system_dir)
 }
 
 /// The pure half of `installed_faces`: registry (name, file) pairs to font files. A relative file
@@ -387,17 +408,6 @@ mod registry {
     }
 }
 
-#[cfg(not(windows))]
-mod registry {
-    pub enum Hive {
-        Machine,
-        User,
-    }
-    pub fn font_values(_hive: Hive) -> Vec<(String, String)> {
-        Vec::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,10 +420,9 @@ mod tests {
         PathBuf::from(r"C:\Windows\Fonts")
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "the font list is read from the Windows registry (a D: path); macOS phase 2 of the port plan (fonts)"
-    )]
+    // The registry is Windows-only; the macOS folder scan has its twin in `macos/font_catalog.rs`
+    // (`faces_come_from_the_files_names_not_their_file_names`).
+    #[cfg(windows)]
     #[test]
     fn installed_faces_reads_the_registry_without_walking_the_font_folder() {
         // A folder holding a font file the fake registry does not list: it must not appear, and a
@@ -473,6 +482,8 @@ mod tests {
         assert_eq!(files_for_family(&faces, "Segoe UI Emoji").len(), 1);
     }
 
+    // The macOS twin is `the_real_font_folders_hold_the_default_and_the_fallbacks`.
+    #[cfg(windows)]
     #[test]
     fn the_real_registry_lists_the_terminal_fonts() {
         let faces = installed_faces();

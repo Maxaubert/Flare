@@ -293,10 +293,6 @@ fn a_tap_row_toggles_its_switch_from_anywhere_but_the_control() {
     }
 }
 
-#[cfg_attr(
-    not(windows),
-    ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-)]
 #[test]
 fn search_mode_shows_the_results_panel_in_place_of_the_sections() {
     let (h, log) = make(1.0, vec![section(every_kind(), false)]);

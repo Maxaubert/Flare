@@ -43,7 +43,12 @@ const RED: [u8; 4] = [255, 0, 0, 255];
 const RING: [u8; 4] = [0xfe, 0x8f, 0x34, 255];
 
 const BAR_H: f32 = 36.0;
+#[cfg(windows)]
 const HOME: &str = "C:\\home";
+/// A POSIX home on macOS, so the folder rows read it as `~` (`flare_tabs::sidebar_rows::folder_line`).
+/// A Mac home lives under `/Users`: `/home` is the `auto_home` automount point, which a restore refuses.
+#[cfg(not(windows))]
+const HOME: &str = "/Users/me";
 
 #[derive(Default)]
 struct Log {
@@ -944,6 +949,7 @@ fn the_sidebar_jumps_with_reduced_motion() {
     );
 }
 
+#[cfg(windows)]
 #[test]
 fn vertical_tabs_show_a_sidebar_with_folders_find_and_a_collapse_key() {
     let f = Fx::with_prefs(
@@ -992,6 +998,119 @@ fn vertical_tabs_show_a_sidebar_with_folders_find_and_a_collapse_key() {
     assert_eq!(kept, ["web"]);
     f.type_text("\n");
     assert_eq!(f.front_cwd(), "C:\\w\\web");
+    // Whatever Enter left in the box, Escape empties it (Enter itself clearing is tested apart).
+    f.key(KeyEvent::new("K", "KeyK").ctrl().shift());
+    f.type_text("\u{1b}");
+    // Escape clears.
+    f.key(KeyEvent::new("K", "KeyK").ctrl().shift());
+    f.type_text("doc");
+    assert_eq!(f.all_rows().iter().filter(|r| r.kept).count(), 1);
+    f.type_text("\u{1b}");
+    assert!(f.h.comp.get_sidebar_find().is_empty());
+    assert!(f.all_rows().iter().all(|r| r.kept));
+
+    // The sidebar takes room until it is collapsed; Ctrl+Shift+B collapses, Ctrl+S too.
+    f.h.comp.invoke_focus_terminal();
+    f.h.advance(400);
+    f.park_pointer();
+    let open = f.h.render();
+    assert!(
+        !Frame::near(open.px(f.h.phys(5.0), f.h.phys(300.0)), RED, 2),
+        "the sidebar covers the left edge"
+    );
+    assert_eq!(sidebar_mode(&f.prefs), SidebarMode::Open);
+    assert_eq!(
+        f.key(KeyEvent::new("B", "KeyB").ctrl().shift()),
+        KeyOutcome::Consumed
+    );
+    for _ in 0..30 {
+        f.step(16);
+    }
+    f.park_pointer();
+    let shut = f.h.render();
+    assert_eq!(sidebar_mode(&f.prefs), SidebarMode::Collapsed);
+    assert!(
+        Frame::near(shut.px(f.h.phys(5.0), f.h.phys(300.0)), RED, 2),
+        "a collapsed sidebar takes no room"
+    );
+    assert_eq!(f.key(ctrl("s", "KeyS")), KeyOutcome::Consumed);
+    assert_eq!(
+        sidebar_mode(&f.prefs),
+        SidebarMode::Open,
+        "Ctrl+S toggles with agent keys on"
+    );
+    assert_eq!(f.key(ctrl("s", "KeyS")), KeyOutcome::Consumed);
+    for _ in 0..30 {
+        f.step(16);
+    }
+    // Hover at the left edge for 60 ms reveals; leaving hides after 100 ms.
+    let t = f.clock.get();
+    f.ctl.borrow_mut().on_cursor(3.0, 300.0);
+    f.clock.set(t + 30);
+    f.ctl.borrow_mut().tick();
+    assert!(!f.h.comp.get_sidebar_revealed(), "30 ms is too early");
+    f.clock.set(t + 70);
+    f.ctl.borrow_mut().tick();
+    assert!(f.h.comp.get_sidebar_revealed(), "60 ms reveals");
+    let t2 = f.clock.get();
+    f.ctl.borrow_mut().on_cursor(600.0, 300.0);
+    f.clock.set(t2 + 60);
+    f.ctl.borrow_mut().tick();
+    assert!(f.h.comp.get_sidebar_revealed(), "100 ms of grace");
+    f.clock.set(t2 + 120);
+    f.ctl.borrow_mut().tick();
+    assert!(!f.h.comp.get_sidebar_revealed(), "gone after 100 ms");
+}
+
+#[cfg(not(windows))]
+#[test]
+fn vertical_tabs_show_a_sidebar_with_folders_find_and_a_collapse_key_posix() {
+    let f = Fx::with_prefs(
+        Opts::default().saved(&[
+            "/Users/me/mine",
+            "/w/api",
+            "/w/web",
+            "/w/docs",
+            "/w/site",
+            "/w/tools",
+        ]),
+        vertical,
+    );
+    f.restore();
+    assert!(f.h.comp.get_layout_vertical());
+    assert_eq!(f.rows(), 6, "a six-row sidebar");
+    assert!(f.row(0).folder.as_str() == "~", "the home folder reads ~");
+    // The strip shows no tabs: the top row beside the buttons holds no divider but the bar.
+    f.park_pointer();
+    let fr = f.h.render();
+    assert!(
+        fr.count_where(
+            f.h.phys(300.0),
+            0,
+            f.h.phys(800.0),
+            f.h.phys(30.0),
+            |p| !is_ground(p) && !Frame::near(p, [13, 13, 13, 255], 2)
+        ) == 0,
+        "no tab is drawn in the strip"
+    );
+
+    // Find: Ctrl+Shift+K focuses the box; typing filters; Enter fronts the first kept.
+    assert_eq!(
+        f.key(KeyEvent::new("K", "KeyK").ctrl().shift()),
+        KeyOutcome::Consumed
+    );
+    f.h.advance(0);
+    assert!(f.h.comp.get_chrome_has_focus(), "the find box has the keys");
+    f.type_text("web");
+    let kept: Vec<String> = f
+        .all_rows()
+        .iter()
+        .filter(|r| r.kept)
+        .map(|r| r.label.to_string())
+        .collect();
+    assert_eq!(kept, ["web"]);
+    f.type_text("\n");
+    assert_eq!(f.front_cwd(), "/w/web");
     // Whatever Enter left in the box, Escape empties it (Enter itself clearing is tested apart).
     f.key(KeyEvent::new("K", "KeyK").ctrl().shift());
     f.type_text("\u{1b}");

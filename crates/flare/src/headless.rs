@@ -1899,10 +1899,6 @@ mod tests {
     /// Task 33: on Bar, every marked tab's band (its line, not the rainbow) is round(3 * scale)
     /// device pixels thick, at every scaling. The band is the longest run of the line's colour
     /// down the middle of the tab, read from the drawn frame.
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn the_bar_band_is_the_same_weight_on_every_marked_tab_at_every_scale() {
         for scale in MARK_BAR_SCALES {
@@ -1980,10 +1976,6 @@ mod tests {
     /// Task 34 (the screenshots showed the front `tools` tab with both its spinner and the close X):
     /// a ringed tab hides its X until hovered, so the front working tab's end draws exactly what a
     /// working tab behind it draws, at every scaling.
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn a_ringed_front_tab_shows_its_ring_and_no_close_at_every_scale() {
         for scale in MARK_BAR_SCALES {
@@ -2016,10 +2008,6 @@ mod tests {
 
     /// Task 34 (the Codex tab wore Clawd and no shell tab was in the strip): `marks-icons` shows the
     /// OpenAI mark in the ink on the Codex tab and the prompt on a shell tab, neither in Clawd's orange.
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn the_icons_scene_shows_clawd_openai_and_the_prompt() {
         for scale in [1.0, 1.5, 2.25] {
@@ -2063,10 +2051,6 @@ mod tests {
     /// Task 34 (the +N button had no dots: every tab that needed you fitted in the strip): the
     /// overflow scene hides tabs that need you, so the button shows the question's and the failed
     /// tab's colours.
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn the_overflow_button_shows_the_mark_colours_of_hidden_tabs() {
         for scale in [1.0, 1.75, 3.0] {
@@ -2098,10 +2082,6 @@ mod tests {
     /// Task 34 (with four dots the +N button's count touched its left edge: the button kept the
     /// plan's 72 px while Prism Terminal's grows to its content, `px-2`): the count and the chevron
     /// keep at least 6 css px from the button's edges, at every scaling.
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn the_overflow_button_keeps_its_padding_with_four_dots() {
         for scale in MARK_BAR_SCALES {
@@ -2131,10 +2111,6 @@ mod tests {
 
     /// Task 34 (the close question stood over a resume skeleton while its tab already worked): the
     /// grid behind the dialog is the shell's, so the skeleton's first line is not drawn.
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn the_close_scene_has_no_skeleton_behind_the_question() {
         let (scene, pixels) = staged_marks("marks-close", 1.5);
@@ -2151,10 +2127,6 @@ mod tests {
 
     /// Task 34 (the sidebar's rainbow had a ground-coloured column at 175%): no device pixel
     /// inside a Bar line is the ground, in the strip or the sidebar, at every scaling.
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn the_rainbow_line_has_no_gap_at_any_scale() {
         for name in ["marks-bar", "marks-bar-flow", "marks-sidebar-bar"] {
@@ -2214,10 +2186,6 @@ mod tests {
 
     /// Task 27: the screenshot of `term-find-many` read "1 of 1000"; the plan's scene shows the
     /// readout `1000+` (the active match past the thousand that are counted).
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn the_many_scene_reads_a_thousand_plus() {
         let scene = staged("term-find-many");
@@ -2286,10 +2254,6 @@ mod tests {
         assert_eq!(scene_args("update-window", &args).size, (1000, 640));
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "Windows fonts and text metrics; macOS phase 2 of the port plan (fonts)"
-    )]
     #[test]
     fn every_update_scene_shows_its_state_at_every_scaling() {
         for scale in MARK_BAR_SCALES {
