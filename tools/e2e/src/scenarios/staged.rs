@@ -27,7 +27,7 @@ use crate::world::{prompt_timeout, wait_for_prompt, Shell};
 
 const IDLE_TITLE: &str = "\u{2733} Claude Code";
 const WORKING_TITLE: &str = "\u{25D0} Claude Code";
-const COUNTDOWN_VAR: &str = concat!("FLARE_E2E", "_STAGED_COUNTDOWN_MS");
+pub(super) const COUNTDOWN_VAR: &str = concat!("FLARE_E2E", "_STAGED_COUNTDOWN_MS");
 /// The countdown the scenario sets (the real one is 10 s).
 const COUNTDOWN_MS: u64 = 1_500;
 /// How long the scenario watches for an install that must not come.
@@ -71,7 +71,7 @@ fn sha256(path: &Path) -> Result<String, String> {
 }
 
 /// The temp install: `current\Flare.exe` and its ConPTY, from the exe under test.
-fn make_install(exe: &Path, inst: &Path) -> Result<PathBuf, String> {
+pub(super) fn make_install(exe: &Path, inst: &Path) -> Result<PathBuf, String> {
     let cur = inst.join("current");
     std::fs::create_dir_all(&cur).map_err(|e| format!("the install folder: {e}"))?;
     let from = exe.parent().ok_or("the exe has no folder")?;
@@ -84,7 +84,7 @@ fn make_install(exe: &Path, inst: &Path) -> Result<PathBuf, String> {
 }
 
 /// Stages the "new" build: the same exe, a marker that says new, a file the old build did not have; the manifest last.
-fn stage(exe: &Path, inst: &Path) -> Result<(), String> {
+pub(super) fn stage(exe: &Path, inst: &Path) -> Result<(), String> {
     let s = inst.join("staged");
     std::fs::create_dir_all(&s).map_err(|e| e.to_string())?;
     std::fs::copy(exe, s.join("Flare.exe")).map_err(|e| format!("stage the exe: {e}"))?;
@@ -100,7 +100,7 @@ fn stage(exe: &Path, inst: &Path) -> Result<(), String> {
 }
 
 /// `staged-state.json` in the profile, `Null` while there is none.
-fn state(profile: &Path) -> Value {
+pub(super) fn state(profile: &Path) -> Value {
     std::fs::read_to_string(profile.join("staged-state.json"))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -135,7 +135,7 @@ fn dialog_title(session: &mut Session) -> String {
 }
 
 /// Clicks the middle of the "Build ready" chip (`ui.rect staged-chip`).
-fn click_chip(session: &mut Session) -> Result<(), String> {
+pub(super) fn click_chip(session: &mut Session) -> Result<(), String> {
     let r = session.probe("ui.rect", json!({ "name": "staged-chip" }))?;
     let at = |k: &str| {
         r[k].as_f64()

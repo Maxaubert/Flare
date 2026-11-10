@@ -266,14 +266,16 @@ fn the_foreground_says_whether_a_program_runs_in_the_tab() {
         "the shell at its prompt"
     );
     mgr.write("f", b"/bin/sleep 30\n");
+    // The shell's fork is in front before it has run `/bin/sleep` (its argv is still the shell's
+    // for a moment), so this waits for the program itself, never for the first pid that is not the
+    // shell's. A busy CI runner can take seconds between the fork and the exec.
+    let sleeping =
+        |p: u32| p != shell && flare_proc::argv(p).is_some_and(|a| a == ["/bin/sleep", "30"]);
     assert!(
-        wait_until(10_000, || mgr
-            .foreground_pid("f")
-            .is_some_and(|p| p != shell)),
-        "the program never came to the foreground"
+        wait_until(30_000, || mgr.foreground_pid("f").is_some_and(sleeping)),
+        "/bin/sleep never came to the foreground: {:?}",
+        mgr.foreground_pid("f").map(|p| (p, flare_proc::argv(p)))
     );
-    let job = mgr.foreground_pid("f").unwrap();
-    assert_eq!(flare_proc::argv(job).unwrap(), ["/bin/sleep", "30"]);
     // Ctrl+C ends it, and the shell is in front again.
     mgr.write("f", b"\x03");
     assert!(
