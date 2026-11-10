@@ -404,7 +404,7 @@ pub fn run_all(cli: &Cli) -> i32 {
     }
     #[cfg(target_os = "macos")]
     let (picked, gated) = mac::split_gated(picked);
-    // Rule 353: a filter that only hits gated scenarios runs nothing, and nothing run is no pass.
+    // Rule 1122: a filter that only hits gated scenarios runs nothing, and nothing run is no pass.
     #[cfg(target_os = "macos")]
     if picked.is_empty() {
         println!(
@@ -471,7 +471,7 @@ pub fn run_all(cli: &Cli) -> i32 {
     }
 }
 
-/// macOS (rules 335 and 336): the gate and the screen guard around each scenario.
+/// macOS (rules 1104 and 1105): the gate and the screen guard around each scenario.
 #[cfg(target_os = "macos")]
 pub mod mac {
     use std::collections::{BTreeSet, HashSet};
@@ -547,7 +547,7 @@ pub mod mac {
                     if !run.is_empty() {
                         let pids: Vec<u32> = run.iter().copied().collect();
                         let windows = crate::mac::shown_windows_of(&pids);
-                        // The owner's command line says which launch it was (rule 342's diagnosis).
+                        // The owner's command line says which launch it was (rule 1111's diagnosis).
                         let rows = if windows.is_empty() {
                             Vec::new()
                         } else {

@@ -43,7 +43,7 @@ windows-sys.workspace = true
 [target.'cfg(not(windows))'.dependencies]
 flare-proc = { path = "../flare-proc" }
 
-# macOS: the --e2e test hook's Unix socket waits with poll (rule 334).
+# macOS: the --e2e test hook's Unix socket waits with poll (rule 1103).
 [target.'cfg(target_os = "macos")'.dependencies]
 libc.workspace = true
 

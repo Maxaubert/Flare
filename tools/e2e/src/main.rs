@@ -8,7 +8,7 @@ use flare_e2e::runner::{run_all, run_one, Cli};
 #[cfg(any(windows, target_os = "macos"))]
 use flare_e2e::scenarios::{ALL, OPT_IN};
 
-/// The harness drives the Windows and the Mac app (rule 335); no other system has a build.
+/// The harness drives the Windows and the Mac app (rule 1104); no other system has a build.
 #[cfg(not(any(windows, target_os = "macos")))]
 fn main() {
     println!("flare-e2e runs on Windows and macOS only");

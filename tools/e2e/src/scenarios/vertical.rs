@@ -24,10 +24,10 @@ use crate::world::{prompt_timeout, wait_for_prompt, Shell};
 /// 225 percent (96 is 100 percent).
 const DPI_225: u32 = 216;
 
-/// macOS: the title row is the native caption, the traffic lights where Windows has its buttons (rule 346).
+/// macOS: the title row is the native caption, the traffic lights where Windows has its buttons (rule 1115).
 const MAC_CAPTION: bool = cfg!(target_os = "macos");
 
-/// Why a Mac run has no mark to look at (rule 346).
+/// Why a Mac run has no mark to look at (rule 1115).
 const NO_MARK_ON_A_MAC: &str = "the app's mark: a Mac's title row has the traffic lights in its corner and draws no mark (AppMark is hidden with the native caption, app.slint)";
 /// 125 percent.
 const DPI_125: u32 = 120;
@@ -1095,7 +1095,7 @@ fn vertical_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     // along the top, and no shadow beside it.
     let slid = snap(ctx, app, "slid-line");
     // macOS: the terminal's own ground, not a pixel sampled inside it: a sample can land on a prompt's text
-    // (the Mac world's longer path reached it, rule 350). Windows samples as before.
+    // (the Mac world's longer path reached it, rule 1119). Windows samples as before.
     let term_ground = MAC_CAPTION.then(|| token(&side(app), "ground"));
     let (x0, y0) = (dv(nav_w, k), dv(BAR_H, k));
     let slid_line = slid.as_ref().is_some_and(|sn| {
@@ -1315,7 +1315,7 @@ fn vertical_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
             let k = scale(app);
             // A question's ring breathes: a picture at its faintest shows too little ink, so each card is
             // looked at over a breath (up to six pictures, 250 ms apart) and counts once it shows its ring
-            // (the Mac runner caught infra's at its low once; rule 350). Windows looks once, as before.
+            // (the Mac runner caught infra's at its low once; rule 1119). Windows looks once, as before.
             let marked = [0usize, 2, 3, 4, 5];
             let mut seen = [false; 5];
             let tries = if MAC_CAPTION { 6 } else { 1 };
@@ -1591,7 +1591,7 @@ fn vertical_b(ctx: &mut Ctx, app: &mut App, gpu: bool) -> Result<(), String> {
         |r: Option<(f64, f64, f64, f64)>| r.is_some_and(|r| r.1 >= 0.0 && r.1 + r.3 <= BAR_H);
     let cog = ui_rect(app, "cog");
     let close = ui_rect(app, "close");
-    // macOS (rule 346): the window's buttons are AppKit's traffic lights, which the hook has no rect for.
+    // macOS (rule 1115): the window's buttons are AppKit's traffic lights, which the hook has no rect for.
     let buttons = if MAC_CAPTION {
         close.is_none()
     } else {

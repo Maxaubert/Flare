@@ -34,7 +34,7 @@ flare-ctl = { path = "../../crates/flare-ctl" }
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
 
-# macOS (rule 335): process groups and signals, the window server's list, the frontmost app, the pasteboard.
+# macOS (rule 1104): process groups and signals, the window server's list, the frontmost app, the pasteboard.
 [target.'cfg(target_os = "macos")'.dependencies]
 libc.workspace = true
 objc2.workspace = true

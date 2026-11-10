@@ -233,7 +233,7 @@ pub fn title_bar(ctx: &mut Ctx) -> Result<(), String> {
         _ => false,
     };
     // macOS: the window buttons are AppKit's traffic lights on the left (outside what the app draws,
-    // `ui.rect` refuses them), and the cog is what ends the row (rule 339).
+    // `ui.rect` refuses them), and the cog is what ends the row (rule 1108).
     #[cfg(not(windows))]
     let at_end =
         close.is_none() && min.is_none() && cog.is_some_and(|c| css_w - (c.0 + c.2) <= 12.0);

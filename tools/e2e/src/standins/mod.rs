@@ -13,13 +13,13 @@ use std::process::Command;
 use sha2::{Digest, Sha256};
 
 /// The PowerShell that runs the scenarios' scripts: Windows PowerShell on Windows; pwsh on macOS
-/// (rule 340), where it is found where the app's shell detection looks.
+/// (rule 1109), where it is found where the app's shell detection looks.
 #[cfg(windows)]
 pub fn powershell() -> String {
     "powershell.exe".to_string()
 }
 
-/// macOS: pwsh by its absolute path (rule 340); `pwsh` on PATH when none of the usual places has it.
+/// macOS: pwsh by its absolute path (rule 1109); `pwsh` on PATH when none of the usual places has it.
 #[cfg(not(windows))]
 pub fn powershell() -> String {
     [
@@ -33,7 +33,7 @@ pub fn powershell() -> String {
 }
 
 /// The line a PowerShell tab runs to start the script `ps1` in a PowerShell of its own: the Windows
-/// text unchanged; on macOS pwsh by its path (rule 340).
+/// text unchanged; on macOS pwsh by its path (rule 1109).
 pub fn ps_file_line(ps1: &Path) -> String {
     #[cfg(windows)]
     {
@@ -50,7 +50,7 @@ pub fn ps_file_line(ps1: &Path) -> String {
 
 /// Writes the runner of `<dir>/<name>.ps1` and returns it, the program a shell runs: `<name>.cmd`
 /// under Windows PowerShell on Windows (the same text as before); on macOS an executable `<name>`
-/// shell script that runs it under pwsh (rule 340).
+/// shell script that runs it under pwsh (rule 1109).
 pub fn ps_runner(dir: &Path, name: &str) -> std::io::Result<PathBuf> {
     #[cfg(windows)]
     {
@@ -122,7 +122,7 @@ pub fn verify(file: &Path, expected: &str) -> Result<PathBuf, String> {
     ))
 }
 
-/// macOS: downloads `url` into `file` with curl (rule 340). Test code: this blocks.
+/// macOS: downloads `url` into `file` with curl (rule 1109). Test code: this blocks.
 #[cfg(not(windows))]
 fn download(url: &str, file: &Path) -> Result<(), String> {
     let out = Command::new("/usr/bin/curl")

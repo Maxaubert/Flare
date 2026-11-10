@@ -374,7 +374,7 @@ fn first_session(ctx: &mut Ctx, app: &mut App, profile: &Path) -> Result<(), Str
     }
     // A Mac runner has three cores, and a pwsh that has drawn its prompt still loads modules for a few seconds:
     // the UI thread then waits for a core with nothing of its own to do (main-lag lines with nothing in flight,
-    // rule 352). The quiet is measured once the shells are quiet too.
+    // rule 1121). The quiet is measured once the shells are quiet too.
     pause(
         ctx,
         if cfg!(target_os = "macos") {
@@ -384,7 +384,7 @@ fn first_session(ctx: &mut Ctx, app: &mut App, profile: &Path) -> Result<(), Str
         },
     );
     // A Mac runner is a virtual machine whose timers now and then come a hundred ms late with the app idle and
-    // the machine quiet (rule 352): there the quiet gets three windows of 3 s and one silent window answers.
+    // the machine quiet (rule 1121): there the quiet gets three windows of 3 s and one silent window answers.
     // Every other system keeps the one window.
     let windows = if cfg!(target_os = "macos") { 3 } else { 1 };
     let mut tries: Vec<String> = Vec::new();

@@ -57,7 +57,7 @@ mod tests {
         assert_eq!(v["problems"].as_array().map(Vec::len), Some(3));
     }
 
-    // Rule 340: a Mac window on a screen is safe only clear and click-through, in an accessory app.
+    // Rule 1109: a Mac window on a screen is safe only clear and click-through, in an accessory app.
     #[cfg(target_os = "macos")]
     #[test]
     fn the_mac_probe_takes_a_clear_window_on_a_screen_and_nothing_else() {

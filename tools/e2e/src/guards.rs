@@ -119,7 +119,7 @@ impl Foreground for WinForeground {
 }
 
 /// The processes of this run: the launched children and everything they started.
-/// macOS (rule 335): the general pasteboard's change count, which moves on any app's write.
+/// macOS (rule 1104): the general pasteboard's change count, which moves on any app's write.
 #[cfg(target_os = "macos")]
 pub struct MacPasteboard;
 
@@ -130,7 +130,7 @@ impl ClipSeq for MacPasteboard {
     }
 }
 
-/// macOS (rule 335): the frontmost app's pid (the app that has the keyboard).
+/// macOS (rule 1104): the frontmost app's pid (the app that has the keyboard).
 #[cfg(target_os = "macos")]
 pub struct MacForeground;
 

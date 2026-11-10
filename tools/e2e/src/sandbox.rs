@@ -21,7 +21,7 @@ pub struct Sandbox {
     pub reg_root: String,
     #[cfg(windows)]
     reg: SandboxRoot,
-    /// macOS (rule 335): the app's HOME, so `~/Library/...` and the shells' rc files are the world's.
+    /// macOS (rule 1104): the app's HOME, so `~/Library/...` and the shells' rc files are the world's.
     #[cfg(not(windows))]
     pub home: PathBuf,
 }
@@ -53,7 +53,7 @@ impl Sandbox {
         }
     }
 
-    /// macOS (rule 335): the world is a HOME of its own (`home/`), its `Library/Application Support`
+    /// macOS (rule 1104): the world is a HOME of its own (`home/`), its `Library/Application Support`
     /// both the roaming and the local folder (the Mac app keeps both there) and the profile `Flare` in it.
     /// The root is the canonical path (`/private/var/...`, not the `/var` link), so the app, the hook's
     /// socket name and the reaper all see one spelling of it.
@@ -83,7 +83,7 @@ impl Sandbox {
     }
 
     /// macOS: the world's HOME for a launched child (there is no registry to sandbox), and pwsh as
-    /// the tab's shell when it is installed (`FLARE_E2E_SHELL`, read only under `--e2e`, rule 337): the
+    /// the tab's shell when it is installed (`FLARE_E2E_SHELL`, read only under `--e2e`, rule 1106): the
     /// scenarios read PowerShell's prompt, as on Windows. A profile that saves a shell still wins.
     #[cfg(not(windows))]
     pub fn env(&self) -> Vec<(String, String)> {
@@ -153,7 +153,7 @@ impl Drop for Sandbox {
     }
 }
 
-/// macOS (rule 343): the world's pwsh profile puts PSReadLine in its Windows edit mode. pwsh on a Mac
+/// macOS (rule 1112): the world's pwsh profile puts PSReadLine in its Windows edit mode. pwsh on a Mac
 /// starts in Emacs mode, where Escape is a prefix and not "clear the line", so a scenario's Escape
 /// swallowed the next paste's escape sequence and left the line it meant to clear. The scenarios are
 /// written against PowerShell as it is on Windows; this is the shell's setting, never the app's. Clear-Host

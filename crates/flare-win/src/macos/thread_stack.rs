@@ -1,4 +1,4 @@
-//! The UI-thread stack sampler for the stall watchdog on macOS (rule 347), the twin of the Windows
+//! The UI-thread stack sampler for the stall watchdog on macOS (rule 1116), the twin of the Windows
 //! `.pdata` walk.
 //!
 //! `raw_frames` suspends the sampled thread (`thread_suspend`), reads its registers

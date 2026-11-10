@@ -194,7 +194,7 @@ fn main() {
     }
 
     e2e::init(args.e2e);
-    // macOS: an --e2e window is never pulled onto a screen, from its first order-in (rule 338).
+    // macOS: an --e2e window is never pulled onto a screen, from its first order-in (rule 1107).
     #[cfg(target_os = "macos")]
     if args.e2e {
         flare_win::window_park::keep_windows_off_screen();

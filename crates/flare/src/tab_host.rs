@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// The shell a new tab starts: the saved one. macOS under `--e2e` only: with none saved, the shell the
-/// run names in `FLARE_E2E_SHELL` (the Mac E2E runs its PowerShell scenarios in pwsh, rule 337); the
+/// run names in `FLARE_E2E_SHELL` (the Mac E2E runs its PowerShell scenarios in pwsh, rule 1106); the
 /// variable reads as absent without the flag, and Windows never looks.
 #[cfg(not(target_os = "macos"))]
 fn shell_id_of(prefs: &PrefStore) -> Option<String> {

@@ -15,11 +15,11 @@ pub mod perf;
 pub mod pixels;
 #[cfg(windows)]
 pub mod proc;
-// macOS (rule 335): the same API over process groups, `ps` and signals.
+// macOS (rule 1104): the same API over process groups, `ps` and signals.
 #[cfg(target_os = "macos")]
 #[path = "proc_mac.rs"]
 pub mod proc;
-// macOS: the window server list, the frontmost app and the pasteboard count (rule 335).
+// macOS: the window server list, the frontmost app and the pasteboard count (rule 1104).
 #[cfg(target_os = "macos")]
 pub mod mac;
 #[cfg(windows)]

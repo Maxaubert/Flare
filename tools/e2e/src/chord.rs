@@ -175,7 +175,7 @@ impl UpperIfLetter for String {
 }
 
 /// The key that puts a text field's caret at its end: End on Windows; on macOS Cmd+Right, since a Mac
-/// field (Slint's, as AppKit's) scrolls on End and moves nothing (rule 341).
+/// field (Slint's, as AppKit's) scrolls on End and moves nothing (rule 1110).
 pub const FIELD_END: &str = if cfg!(target_os = "macos") {
     "Meta+ArrowRight"
 } else {
@@ -183,7 +183,7 @@ pub const FIELD_END: &str = if cfg!(target_os = "macos") {
 };
 
 /// The key that selects all of a text field: Ctrl+A on Windows, Cmd+A on macOS, where Ctrl+A moves
-/// the caret to the line's start (rule 341).
+/// the caret to the line's start (rule 1110).
 pub const FIELD_SELECT_ALL: &str = if cfg!(target_os = "macos") {
     "Meta+KeyA"
 } else {
@@ -271,7 +271,7 @@ fn table_context(os: flare_term::keys::KeyOs) -> flare_tabs::keymap::KeyContext 
 }
 
 /// The copy key over a selection: `chord` (Ctrl+C, or Ctrl+KeyC with a logical key) on Windows; on
-/// macOS the same with Cmd, since a Mac copies with Cmd+C and sends Ctrl+C to the shell (rule 337).
+/// macOS the same with Cmd, since a Mac copies with Cmd+C and sends Ctrl+C to the shell (rule 1106).
 pub fn copy_chord(chord: &str) -> String {
     if cfg!(target_os = "macos") {
         ctrl_as_meta(chord)
@@ -297,7 +297,7 @@ fn ctrl_as_meta(chord: &str) -> String {
     out.join("+")
 }
 
-/// macOS (rule 337): the Mac spelling of a scenario's Windows chord. A chord that is an app chord on
+/// macOS (rule 1106): the Mac spelling of a scenario's Windows chord. A chord that is an app chord on
 /// Windows (the app's own chord table says so) and whose Mac key is the same chord with Cmd in Ctrl's
 /// place becomes that; paste (Ctrl+V, Ctrl+Shift+V) becomes Cmd+V and Cmd+Shift+V, as the Mac
 /// terminal rules have it. Everything else is unchanged: Ctrl+Tab (the same on both), and the Ctrl

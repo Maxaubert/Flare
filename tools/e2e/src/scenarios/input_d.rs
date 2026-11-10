@@ -263,7 +263,7 @@ fn quoted_path_typed(text: &str) -> bool {
         return false;
     }
     let before = &text[..end];
-    // macOS (rule 343): a POSIX path, the whole of it inside the quote: `'/private/.../my notes.txt'`.
+    // macOS (rule 1112): a POSIX path, the whole of it inside the quote: `'/private/.../my notes.txt'`.
     if cfg!(target_os = "macos") {
         return before
             .rfind(['"', '\''])

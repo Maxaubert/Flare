@@ -1203,7 +1203,7 @@ fn help_b(ctx: &mut Ctx, app: &mut App, started: Instant) -> Result<(), String> 
     // that never shows; the same file pins `mouse-cursor: MouseCursor.text` on the well.
     park(app);
     // macOS: the row's hover fades out over 120 ms, so the picture before is taken once two shots in a row
-    // agree, or a row still lit by the clicks above is the "changed colour" (the Mac runner, rule 350).
+    // agree, or a row still lit by the clicks above is the "changed colour" (the Mac runner, rule 1119).
     // Windows takes it at once, as before.
     let plain_shot = if cfg!(target_os = "macos") {
         still_shot(ctx, app, "help-select-before")

@@ -200,7 +200,7 @@ struct Session {
     /// A warm spare that has not yet been asked where its cursor is (rule 231).
     opening: AtomicBool,
     /// Outside Windows, a warm spare's own grid, fed what it prints, so its cursor questions are answered at once as
-    /// a tab's would be (rule 351). None for a tab's shell, for an adopted spare and on Windows.
+    /// a tab's would be (rule 1120). None for a tab's shell, for an adopted spare and on Windows.
     grid: Mutex<Option<crate::emulator::Emulator>>,
     killed: AtomicBool,
     exited: AtomicBool,
@@ -285,7 +285,7 @@ impl Session {
         }
     }
 
-    /// Outside Windows (rule 351): a warm spare answers every cursor question it asks at once, from its own grid,
+    /// Outside Windows (rule 1120): a warm spare answers every cursor question it asks at once, from its own grid,
     /// as the tab's would. pwsh asks where its cursor is after drawing its prompt and waits for the answer: left
     /// unanswered until a tab adopts the spare, the typing that came next was read as the answer and garbled (the
     /// Mac E2E's helpPanel), and answered only at adoption, a late answer is read as typing. The opening question
@@ -466,7 +466,7 @@ fn pump_loop(s: Arc<Session>) {
     }
 }
 
-/// Pure (rule 351): what a tab adopting a warm spare is handed of the spare's kept output. Outside Windows its
+/// Pure (rule 1120): what a tab adopting a warm spare is handed of the spare's kept output. Outside Windows its
 /// questions to the terminal are taken out: the spare's own grid answered its cursor questions when they were asked
 /// (`answer_from_grid`, the opening one of rule 231 among them), and any other answer given now would come late and
 /// be read as typing. Windows hands it over as it was, once the spare has answered the opening question itself
@@ -490,7 +490,7 @@ fn is_cursor_report(r: &[u8]) -> bool {
     num(parts.next()) && num(parts.next()) && parts.next().is_none()
 }
 
-/// A copy of every write to a shell, for the e2e's evidence (the Mac E2E, rule 351): set once, under
+/// A copy of every write to a shell, for the e2e's evidence (the Mac E2E, rule 1120): set once, under
 /// `--e2e` only; the app without it pays one atomic load per write.
 pub type WriteTap = fn(&str, &[u8]);
 static WRITE_TAP: std::sync::OnceLock<WriteTap> = std::sync::OnceLock::new();
@@ -1911,7 +1911,7 @@ mod tests {
         assert_eq!(bytes[0], b'F');
     }
 
-    // Rule 351: a spare whose kept output asked the terminal something is adopted as before, and the tab gets
+    // Rule 1120: a spare whose kept output asked the terminal something is adopted as before, and the tab gets
     // that output without the question outside Windows (an answer now would be read as typing); Windows hands it
     // over unchanged.
     #[test]
@@ -1937,7 +1937,7 @@ mod tests {
         assert_eq!(sp.made().len(), 2, "and its shell is prewarmed again");
     }
 
-    // Rule 351: a question split over two reads is still taken out, since the whole kept output is read at
+    // Rule 1120: a question split over two reads is still taken out, since the whole kept output is read at
     // adoption.
     #[test]
     fn a_question_split_over_two_reads_is_taken_out_too() {
@@ -1983,7 +1983,7 @@ mod tests {
         if cfg!(windows) {
             assert_eq!(banner_of(&rec), b"\x1b[1t\x1b[c\x1b[?1004h");
         } else {
-            // Outside Windows the questions left in the banner are taken out as well (rule 351).
+            // Outside Windows the questions left in the banner are taken out as well (rule 1120).
             assert_eq!(banner_of(&rec), b"\x1b[1t\x1b[?1004h");
         }
     }
@@ -2004,7 +2004,7 @@ mod tests {
             assert_eq!(banner_of(&rec), b"\x1b[6n");
             assert_eq!(sp.made()[0].written(), b"\x1b[1;1R");
         } else {
-            // Outside Windows the spare's grid answered the second question too, at once (rule 351), and the
+            // Outside Windows the spare's grid answered the second question too, at once (rule 1120), and the
             // banner is empty without it.
             std::thread::sleep(Duration::from_millis(100));
             assert!(rec.events().iter().all(|e| !matches!(e, Ev::Data(..))));
@@ -2027,7 +2027,7 @@ mod tests {
             assert!(sp.made()[0].written().is_empty());
         } else {
             // Outside Windows the spare's own grid answered where the prompt left the cursor when it was asked,
-            // and the question is not handed to the tab to be answered again, late (rule 351).
+            // and the question is not handed to the tab to be answered again, late (rule 1120).
             assert_eq!(banner_of(&rec), b"PS>");
             assert_eq!(sp.made()[0].written(), b"\x1b[1;4R");
         }

@@ -18,7 +18,7 @@ const POWERSHELL: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell
 /// prompt anyway; this is the margin for the first look).
 pub const SETTLE_MS: u64 = 1_500;
 
-/// macOS (rule 340): the stand-in is a script named `claude` run by its interpreter (`/bin/zsh
+/// macOS (rule 1109): the stand-in is a script named `claude` run by its interpreter (`/bin/zsh
 /// <dir>/claude`, which the poll reads as the agent by its exact name, as an npm launcher under node)
 /// that starts pwsh as its child; what the scenario types goes to that pwsh, as on Windows. A copy of
 /// pwsh would not run (its runtime is beside the real one).

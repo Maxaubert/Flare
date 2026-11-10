@@ -173,7 +173,7 @@ mod mac {
 
     fn the_e2e_window_parks_clear_and_click_through_as_an_accessory() {
         let mtm = mtm();
-        // What an --e2e run does before its first window (rules 338 and 340).
+        // What an --e2e run does before its first window (rules 1107 and 1109).
         flare_win::window_park::keep_windows_off_screen();
         let (w, view) = window(mtm);
         flare_win::window_park::park(view);
@@ -194,7 +194,7 @@ mod mac {
             "policy {}",
             r.ex_style
         );
-        // Rule 340: clear and click-through (a window on no screen never paints on a Mac).
+        // Rule 1109: clear and click-through (a window on no screen never paints on a Mac).
         assert!(r.clear, "{r:?}");
         assert!(!r.foreground);
         if r.screen != (0, 0, 0, 0) {

@@ -1,4 +1,4 @@
-//! Parking the --e2e window on macOS (port phase 3, rules 338 and 340). The Mac meaning of the Windows
+//! Parking the --e2e window on macOS (port phase 3, rules 1107 and 1109). The Mac meaning of the Windows
 //! park: the app becomes an accessory (no Dock icon, never the active app unless it asks, and it never
 //! asks), and the window is clear: alpha 0, no shadow, every click passing through it to what is below.
 //! It is born off every screen (and kept there by `keep_windows_off_screen` until it is clear), then put
@@ -24,7 +24,7 @@ pub fn parked_origin() -> (i32, i32) {
 }
 
 /// `constrainFrameRect:toScreen:` that keeps the frame it is given: a parked window stays where it was
-/// put instead of being pulled back until a strip of it is on a screen (rule 338).
+/// put instead of being pulled back until a strip of it is on a screen (rule 1107).
 extern "C-unwind" fn keep_frame(
     _this: *mut AnyObject,
     _cmd: Sel,
@@ -50,7 +50,7 @@ fn keep_frame_imp() -> Imp {
 const CONSTRAIN_TYPES: &std::ffi::CStr =
     c"{CGRect={CGPoint=dd}{CGSize=dd}}@:{CGRect={CGPoint=dd}{CGSize=dd}}@";
 
-/// macOS under `--e2e` only (rule 338): `class` (the parked window's own class, winit's window
+/// macOS under `--e2e` only (rule 1107): `class` (the parked window's own class, winit's window
 /// subclass) stops constraining its frame to a screen. AppKit keeps a titled window on a screen when it
 /// is ordered in or moved, so without this the parking spot became a 40 px strip at a screen's edge
 /// (seen on the macOS runner: (-984, 673) to (40, 1347) on a 1024 by 768 display). Only this class
@@ -76,7 +76,7 @@ pub fn allows_off_screen(class: &AnyClass) -> bool {
         .is_some_and(|m| std::ptr::fn_addr_eq(m.implementation(), keep_frame_imp()))
 }
 
-/// macOS under `--e2e`, before the first window is made (rule 338): no window of the run is ever pulled
+/// macOS under `--e2e`, before the first window is made (rule 1107): no window of the run is ever pulled
 /// onto a screen, so the main window is born at the parking spot and stays there from its first order-in
 /// (the park after `show()` would come after AppKit had already moved it). Every window of the process
 /// inherits it from `NSWindow`; the real app never calls this.
@@ -93,7 +93,7 @@ static ORIGINAL_INIT4: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 static ORIGINAL_INIT5: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
 /// Makes a just-initialised window clear before anything can order it in: alpha 0, no shadow, every
-/// click through, no order-in animation (rule 342). A null window (a failed init) is left alone.
+/// click through, no order-in animation (rule 1111). A null window (a failed init) is left alone.
 fn make_clear(window: *mut AnyObject) {
     if window.is_null() {
         return;
@@ -164,7 +164,7 @@ extern "C-unwind" fn init5_clear(
     w
 }
 
-/// macOS under `--e2e` only (rule 342): every window of the run is BORN clear. The park makes the
+/// macOS under `--e2e` only (rule 1111): every window of the run is BORN clear. The park makes the
 /// main window clear once it has a handle, but a window is ordered in before that (Slint shows it, the
 /// park's timer comes a tick later), and the Mac E2E's screen guard saw such windows on the runner's
 /// display at full alpha for a moment (18 scenarios of run 42569349881). Once per process; the real
@@ -255,7 +255,7 @@ extern "C-unwind" fn clicks_stay_through(
     }
 }
 
-/// macOS under `--e2e` only (rule 340): every window of the run stays clear and click-through, whoever
+/// macOS under `--e2e` only (rule 1109): every window of the run stays clear and click-through, whoever
 /// asks otherwise. Slint reveals a GPU window by setting its alpha back to 1 once the first frame is
 /// drawn (its `RevealOnFirstFrame`), which put the parked window on the runner's display (the Mac
 /// E2E's fourth run: "not clear and click-through" at every GPU launch). The original methods are kept
@@ -295,7 +295,7 @@ pub fn keep_clear(class: &AnyClass) {
     }
 }
 
-/// macOS under `--e2e` (rule 340): no App Nap for the run. An accessory app whose only window is clear
+/// macOS under `--e2e` (rule 1109): no App Nap for the run. An accessory app whose only window is clear
 /// would be napped by the system (timers coalesced to seconds, I/O at background priority), and a
 /// scenario's 8 s waits would time out on a Mac only. Held for the whole process; the real app never
 /// calls this.
@@ -310,8 +310,8 @@ pub fn hold_off_app_nap() {
 }
 
 /// Makes the app an accessory and the window clear (alpha 0, no shadow, click-through), then puts it on
-/// the main screen's visible area so it paints (rule 340). Its class keeps the frame it is given (rule
-/// 338). Never activates the app, never orders the window front, never resizes it. Nothing happens off
+/// the main screen's visible area so it paints (rule 1109). Its class keeps the frame it is given (rule
+/// 1107). Never activates the app, never orders the window front, never resizes it. Nothing happens off
 /// the main thread.
 pub fn park(view: isize) {
     let Some(mtm) = MainThreadMarker::new() else {
@@ -347,7 +347,7 @@ pub struct ParkReport {
     /// Whether Flare is the active app and this its key window.
     pub foreground: bool,
     /// macOS: the window is clear (alpha 0) and lets every click through, so on a screen it shows
-    /// nothing and takes nothing (rule 340).
+    /// nothing and takes nothing (rule 1109).
     pub clear: bool,
 }
 
@@ -449,7 +449,7 @@ mod tests {
         r.rect = (3000, 100, 4000, 700);
         assert!(r.on_screen());
         assert!(r.problems().iter().any(|p| p.contains("not clear")));
-        // Rule 340: on a screen, clear and click-through, it is safe.
+        // Rule 1109: on a screen, clear and click-through, it is safe.
         r.clear = true;
         assert!(r.problems().is_empty());
         let r = ParkReport {
@@ -460,7 +460,7 @@ mod tests {
         assert_eq!(r.problems().len(), 2);
     }
 
-    // Rule 338: the parked window's class keeps the frame it is given, and only that class changes.
+    // Rule 1107: the parked window's class keeps the frame it is given, and only that class changes.
     #[test]
     fn a_parked_class_keeps_its_frame_off_every_screen_and_nswindow_keeps_the_rule() {
         use objc2::runtime::ClassBuilder;
@@ -485,7 +485,7 @@ mod tests {
         assert_eq!(kept, frame);
     }
 
-    // Rule 342: a class made born-clear initialises through the stand-in, which calls NSWindow's own.
+    // Rule 1111: a class made born-clear initialises through the stand-in, which calls NSWindow's own.
     #[test]
     fn a_born_clear_class_initialises_through_the_stand_in() {
         use objc2::runtime::ClassBuilder;
