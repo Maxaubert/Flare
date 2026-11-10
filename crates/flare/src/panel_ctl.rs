@@ -25,6 +25,7 @@ use flare_surfaces::store::{PanelStore, SavedTabPanel, is_blank, match_restored}
 use slint::{Global, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 use crate::appctl::{Post, UiMsg};
+use crate::panel_sel::{self, Pos, RowMap, Step, TextSel};
 use crate::{AppWindow, Theme};
 
 /// A worker's answer for the panel controller.
@@ -152,6 +153,8 @@ enum Content {
         shaped: usize,
         /// The columns the shown rows are wrapped to; 0 while they are the lines.
         wrapped_cols: usize,
+        /// Which rows each line is drawn in, for the selection.
+        map: RowMap,
         /// False while a big file waits for its first wrap (the panel says "Opening").
         ready: bool,
     },
@@ -286,6 +289,29 @@ pub struct PanelCtl {
     fallback: HashMap<String, String>,
     /// The panel's look the pages follow, as the window last had it.
     look: mdview::Look,
+    /// The selection in the text file on show (`panel_sel`). It goes with the file: another file, a reload or another
+    /// tab in front lets it go.
+    sel: TextSel,
+    /// Counts a press as one, two or three clicks, at the system's double-click time and distance.
+    clicks: flare_term::sel_machine::ClickCounter,
+    click_epoch: std::time::Instant,
+    /// Where the pointer is while a drag selects, in the view's coordinates: past an edge, the view scrolls toward it.
+    drag_at: Option<(f32, f32)>,
+}
+
+fn click_counter(dbl: flare_win::dblclick::DoubleClick) -> flare_term::sel_machine::ClickCounter {
+    flare_term::sel_machine::ClickCounter::new(dbl.time_ms, dbl.dx, dbl.dy)
+}
+
+/// How far the view is from where a pointer held past its edge, in the view's own coordinates (0 inside).
+fn past_edge(at: f32, size: f32) -> f32 {
+    if at < 0.0 {
+        at
+    } else if at > size {
+        at - size
+    } else {
+        0.0
+    }
 }
 
 /// The checkerboard tile: 2 by 2 squares of 8 px, two neutral greys that read on any theme.
@@ -378,7 +404,16 @@ impl PanelCtl {
             pages: HashMap::new(),
             fallback: HashMap::new(),
             look: mdview::Look::default(),
+            sel: TextSel::default(),
+            clicks: click_counter(flare_win::dblclick::FALLBACK),
+            click_epoch: std::time::Instant::now(),
+            drag_at: None,
         }
+    }
+
+    /// The system's double-click time and distance, for counting clicks in the text.
+    pub fn set_double_click(&mut self, dbl: flare_win::dblclick::DoubleClick) {
+        self.clicks = click_counter(dbl);
     }
 
     /// The view the tab's panel shows its file in: Code for a file that is not markdown, for text handed over and when
@@ -900,6 +935,7 @@ impl PanelCtl {
             if self.shown.is_some() {
                 self.remember(app);
                 self.shown = None;
+                self.drop_selection();
                 self.generation += 1;
                 self.current.store(self.generation, Ordering::SeqCst);
                 self.clear(app);
@@ -928,6 +964,9 @@ impl PanelCtl {
         if !same && self.shown.as_ref().is_some_and(|s| s.tab != tab) {
             self.remember(app);
         }
+        // Another file, another tab or the same file read again: what was selected in the old text goes with it.
+        self.drop_selection();
+        self.push_sel(app);
         self.generation += 1;
         let generation = self.generation;
         self.current.store(generation, Ordering::SeqCst);
@@ -1072,12 +1111,14 @@ impl PanelCtl {
                             shown,
                             nums: n,
                             wrapped_cols,
+                            map,
                             ready,
                             ..
                         },
                     ..
                 }) = self.shown.as_mut()
                 {
+                    *map = RowMap::wrapped(cols, &nums);
                     *shown = ModelRc::from(Rc::new(VecModel::from(rows)));
                     *n = ModelRc::from(Rc::new(VecModel::from(nums)));
                     *wrapped_cols = cols;
@@ -1229,20 +1270,34 @@ impl PanelCtl {
         let want = self.want_cols(app);
         let count = t.lines.len();
         let shaped = shaped_len(&t.lines);
-        let (shown, nums, wrapped_cols, ready) = if want == 0 {
+        let (shown, nums, wrapped_cols, map, ready) = if want == 0 {
             self.next_wrap_seq();
-            (line_model(&t.lines), no_nums(), 0, true)
+            (
+                line_model(&t.lines),
+                no_nums(),
+                0,
+                RowMap::lines(count),
+                true,
+            )
         } else if is_big(&t.lines) {
             self.spawn_wrap(tab, generation, Arc::clone(&t.lines), want);
-            (ModelRc::default(), no_nums(), 0, false)
+            (
+                ModelRc::default(),
+                no_nums(),
+                0,
+                RowMap::lines(count),
+                false,
+            )
         } else {
             self.next_wrap_seq();
             self.wraps += 1;
             let (rows, nums) = wrap_lines(&t.lines, want, &|| false);
+            let map = RowMap::wrapped(want, &nums);
             (
                 ModelRc::from(Rc::new(VecModel::from(rows))),
                 ModelRc::from(Rc::new(VecModel::from(nums))),
                 want,
+                map,
                 true,
             )
         };
@@ -1256,6 +1311,7 @@ impl PanelCtl {
             bytes: t.bytes,
             shaped,
             wrapped_cols,
+            map,
             ready,
         }
     }
@@ -1403,6 +1459,7 @@ impl PanelCtl {
                             shown,
                             nums,
                             wrapped_cols,
+                            map,
                             ..
                         },
                     ..
@@ -1411,6 +1468,7 @@ impl PanelCtl {
                     *shown = line_model(lines);
                     *nums = no_nums();
                     *wrapped_cols = 0;
+                    *map = RowMap::lines(lines.len());
                 }
                 self.push(app);
                 self.restore_top(app, top);
@@ -1431,11 +1489,13 @@ impl PanelCtl {
                             shown,
                             nums,
                             wrapped_cols,
+                            map,
                             ..
                         },
                     ..
                 }) = self.shown.as_mut()
                 {
+                    *map = RowMap::wrapped(want, &new_nums);
                     *shown = ModelRc::from(Rc::new(VecModel::from(rows)));
                     *nums = ModelRc::from(Rc::new(VecModel::from(new_nums)));
                     *wrapped_cols = want;
@@ -1576,6 +1636,206 @@ impl PanelCtl {
         {
             app.set_panel_sub(why.as_str().into());
         }
+        // The rows may have been made again (a wrap): the selection is drawn on the new ones.
+        self.push_sel(app);
+    }
+
+    // ---- selecting text (`panel_sel`) ----
+
+    /// The lines of the text file on show and the rows they are drawn in, once it is ready.
+    fn text_now(&self) -> Option<(&Arc<Vec<SharedString>>, &RowMap)> {
+        match &self.shown.as_ref()?.content {
+            Content::Text {
+                lines,
+                map,
+                ready: true,
+                ..
+            } => Some((lines, map)),
+            _ => None,
+        }
+    }
+
+    /// The lines on show, shared (for a change to the selection while they are read).
+    fn text_lines(&self) -> Option<Arc<Vec<SharedString>>> {
+        self.text_now().map(|(lines, _)| Arc::clone(lines))
+    }
+
+    fn drop_selection(&mut self) {
+        self.sel.clear();
+        self.drag_at = None;
+    }
+
+    /// Draws the selection, or none, on the rows on show.
+    fn push_sel(&self, app: &AppWindow) {
+        let paint = self.sel.range().and_then(|r| {
+            self.text_now()
+                .map(|(lines, map)| panel_sel::paint(map, lines, r))
+        });
+        app.set_panel_sel_on(paint.is_some());
+        if let Some(p) = paint {
+            let int = |n: usize| i32::try_from(n).unwrap_or(i32::MAX);
+            app.set_panel_sel_a_row(int(p.a_row));
+            app.set_panel_sel_a_col(int(p.a_col));
+            app.set_panel_sel_b_row(int(p.b_row));
+            app.set_panel_sel_b_col(int(p.b_col));
+        }
+    }
+
+    /// The place in the text under a point of the view's content (the coordinates the window reports a press in).
+    fn pos_under(&self, app: &AppWindow, x: f32, y: f32) -> Option<Pos> {
+        let (lines, map) = self.text_now()?;
+        let (row_h, char_w) = (app.get_panel_text_row_h(), app.get_panel_text_char_w());
+        if row_h <= 0.0 || char_w <= 0.0 {
+            return None;
+        }
+        let row = (y / row_h).floor();
+        let row = if row.is_finite() { row as i64 } else { 0 };
+        Some(map.pos_at(lines, row, (x - app.get_panel_gutter_w()) / char_w))
+    }
+
+    /// How far a point of the view lies past its edges, sideways and up or down (0 inside).
+    fn past_view(app: &AppWindow, (vx, vy): (f32, f32)) -> (f32, f32) {
+        (
+            past_edge(vx, app.get_panel_body_w()),
+            past_edge(vy, app.get_panel_text_view_h()),
+        )
+    }
+
+    /// The left button went down over the text at (`x`, `y`) of its content: a caret, a word, a line, or with Shift
+    /// the selection stretched to here.
+    pub fn text_down(&mut self, app: &AppWindow, x: f32, y: f32, shift: bool) {
+        let ms = u64::try_from(self.click_epoch.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let clicks = self.clicks.press(ms, f64::from(x), f64::from(y), 0);
+        let (Some(at), Some(lines)) = (self.pos_under(app, x, y), self.text_lines()) else {
+            return;
+        };
+        self.sel.press(&lines, at, clicks, shift);
+        self.drag_at = Some((
+            x + app.get_panel_text_scroll_x(),
+            y + app.get_panel_text_scroll_y(),
+        ));
+        self.push_sel(app);
+    }
+
+    /// The pointer moved with the left button held. True while it is past an edge of the view: the caller then calls
+    /// [`Self::drag_tick`] every `DRAG_SCROLL_MS` until it says to stop.
+    pub fn text_move(&mut self, app: &AppWindow, x: f32, y: f32) -> bool {
+        if !self.sel.is_dragging() {
+            return false;
+        }
+        let (Some(at), Some(lines)) = (self.pos_under(app, x, y), self.text_lines()) else {
+            return false;
+        };
+        self.sel.drag(&lines, at);
+        let at_view = (
+            x + app.get_panel_text_scroll_x(),
+            y + app.get_panel_text_scroll_y(),
+        );
+        self.drag_at = Some(at_view);
+        self.push_sel(app);
+        Self::past_view(app, at_view) != (0.0, 0.0)
+    }
+
+    /// While a drag is held past an edge: the view scrolls toward the pointer (faster the further it is, as the
+    /// terminal does) and the selection follows to the text now under it. False when there is nothing to scroll.
+    pub fn drag_tick(&mut self, app: &AppWindow) -> bool {
+        let Some(at_view) = self.drag_at.filter(|_| self.sel.is_dragging()) else {
+            return false;
+        };
+        let (px, py) = Self::past_view(app, at_view);
+        if (px, py) == (0.0, 0.0) {
+            return false;
+        }
+        let rows = flare_term::sel_machine::drag_scroll_amount(f64::from(py)) as f32;
+        let cols = flare_term::sel_machine::drag_scroll_amount(f64::from(px)) as f32;
+        app.invoke_panel_scroll_by(
+            -cols * app.get_panel_text_char_w(),
+            -rows * app.get_panel_text_row_h(),
+        );
+        let (x, y) = (
+            at_view.0 - app.get_panel_text_scroll_x(),
+            at_view.1 - app.get_panel_text_scroll_y(),
+        );
+        if let (Some(at), Some(lines)) = (self.pos_under(app, x, y), self.text_lines()) {
+            self.sel.drag(&lines, at);
+        }
+        self.push_sel(app);
+        true
+    }
+
+    /// The left button went up: the drag ends and the selection stays.
+    pub fn text_up(&mut self) {
+        self.sel.release();
+        self.drag_at = None;
+    }
+
+    /// Whether some text of the file on show is selected.
+    pub fn has_selection(&self) -> bool {
+        self.sel.has() && self.text_now().is_some()
+    }
+
+    /// Lets go of the selection. True when there was one (Esc then does nothing more).
+    pub fn clear_selection(&mut self, app: &AppWindow) -> bool {
+        let had = self.has_selection();
+        self.drop_selection();
+        self.push_sel(app);
+        had
+    }
+
+    /// Ctrl+A: the whole text. False when no text file is on show.
+    pub fn select_all(&mut self, app: &AppWindow) -> bool {
+        let Some(lines) = self.text_lines() else {
+            return false;
+        };
+        self.sel.select_all(&lines);
+        self.push_sel(app);
+        true
+    }
+
+    /// Shift with an arrow, Home or End: the selection's moving end goes a step, from the caret a click left or else
+    /// from the first line in view, and the view follows it. False when no text file is on show.
+    pub fn extend_selection(&mut self, app: &AppWindow, step: Step) -> bool {
+        let (from, to, (row, col)) = {
+            let Some((lines, map)) = self.text_now() else {
+                return false;
+            };
+            let from = self
+                .sel
+                .head()
+                .unwrap_or_else(|| map.pos_at(lines, i64::from(app.get_panel_first_line()), 0.0));
+            let to = panel_sel::step(map, lines, from, step);
+            (from, to, map.place(lines, to))
+        };
+        let Some(lines) = self.text_lines() else {
+            return false;
+        };
+        self.sel.extend(&lines, from, to);
+        app.invoke_panel_text_reveal(
+            i32::try_from(row).unwrap_or(i32::MAX),
+            i32::try_from(col).unwrap_or(i32::MAX),
+        );
+        self.push_sel(app);
+        true
+    }
+
+    /// The selected text as the panel shows it (tabs as spaces, a long line as cut), lines joined by `\n`.
+    pub fn selection_text(&self) -> Option<String> {
+        let range = self.sel.range()?;
+        let (lines, _) = self.text_now()?;
+        Some(panel_sel::text_of(lines, range))
+    }
+
+    /// For "Ask agent" on `tab`: the selection's label (`<name> lines A-B`, named as the header names the panel) and
+    /// its text. None when nothing is selected there.
+    pub fn selection_ask(&self, tab: &str) -> Option<(String, String)> {
+        let s = self.shown.as_ref().filter(|s| s.tab == tab)?;
+        let range = self.sel.range()?;
+        let text = self.selection_text()?;
+        let name = self
+            .titles
+            .get(tab)
+            .map_or_else(|| file_name(&s.target), String::as_str);
+        Some((panel_sel::label(name, range), text))
     }
 
     /// Nothing on show: the picture and the rows are let go.
@@ -1590,6 +1850,7 @@ impl PanelCtl {
         app.set_panel_lines(ModelRc::default());
         app.set_panel_max_cols(0);
         app.set_panel_foot("".into());
+        app.set_panel_sel_on(false);
         reset_wrap_props(app);
     }
 
