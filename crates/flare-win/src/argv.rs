@@ -39,7 +39,13 @@ pub fn paths_from_argv(argv: &[String], ignore: &[PathBuf], base: &Path) -> Vec<
         if arg.starts_with("--") {
             continue;
         }
-        let a = clean(&base.join(unquote_arg(arg)));
+        // Explorer's `C:"` is a Windows quirk: on a Mac a name may end in `"` (rule 1064).
+        let raw = if cfg!(windows) {
+            unquote_arg(arg)
+        } else {
+            arg.clone()
+        };
+        let a = clean(&base.join(raw));
         let Ok(meta) = std::fs::metadata(&a) else {
             // sync-ok: runs on the launch / hand-off worker
             continue;
@@ -149,6 +155,20 @@ mod tests {
         assert_eq!(
             folders_from_argv(&args(&["exe", &format!("{root}\"")]), &[], dir.path()),
             vec![format!("{root}\\")]
+        );
+    }
+
+    /// Rule 1064: off Windows a name that ends in `"` is that name (a Finder folder can be called so); only Windows
+    /// turns Explorer's `C:"` back into the root.
+    #[cfg(not(windows))]
+    #[test]
+    fn off_windows_a_name_that_ends_in_a_quote_is_kept_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let odd = dir.path().join("say \"hi\"");
+        fs::create_dir(&odd).unwrap();
+        assert_eq!(
+            folders_from_argv(&args(&["exe", &s(&odd)]), &[], dir.path()),
+            vec![s(&odd)]
         );
     }
 

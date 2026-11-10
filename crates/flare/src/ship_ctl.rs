@@ -45,6 +45,16 @@ pub fn e2e_var(suffix: &str) -> Option<String> {
 /// The first statement of `main`: the e2e flag, Velopack's hooks (they may end the process), the
 /// taskbar identity.
 pub fn bootstrap() {
+    // macOS: a plugin helper's guard is this executable started again (port phase 6, rule 1054). It becomes the guard
+    // here, before anything else of Flare runs (Velopack's hooks included), and never returns; then guards are made of
+    // this program.
+    #[cfg(target_os = "macos")]
+    {
+        flare_proc::guard::run_if_guard();
+        if let Err(e) = flare_proc::guard::use_this_program() {
+            eprintln!("flare: plugin helpers cannot be guarded: {e}");
+        }
+    }
     // `--print-aumid` prints this run's taskbar identity (honouring --user-data-dir=) and exits, so an
     // install script can stamp it on a shortcut; before anything else starts.
     if std::env::args().any(|a| a == "--print-aumid") {
@@ -275,7 +285,7 @@ pub fn choose_feed(ship: &Ship, env: &dyn Fn(&str) -> Option<String>) -> FeedCho
             // A URL goes to `loopback`, which refuses every host but 127.0.0.1 itself.
             let feed = if value.contains("://") {
                 VelopackFeed::loopback(&value)
-            } else if !is_local_drive_path(&value) {
+            } else if !is_local_feed_path(&value) {
                 Err(flare_update::feed::FeedError::Failed(
                     "update source is not a local drive path".into(),
                 ))
@@ -394,6 +404,7 @@ pub fn set_window_icon(hwnd: isize) {
 /// extended-length forms (`\\server\share`, `\\?\UNC\`, `\\.\`, `//host`) and relative paths are
 /// refused, so a package folder can never be a remote share.
 #[cfg(any(test, feature = "live-updates"))]
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
 fn is_local_drive_path(p: &str) -> bool {
     let b = p.as_bytes();
     b.len() >= 3
@@ -405,10 +416,59 @@ fn is_local_drive_path(p: &str) -> bool {
         && !p[2..].contains(['?', '*', '<', '>', '"', '|', ':', '\0'])
 }
 
+/// A folder of packages for the e2e seam: a local drive path on Windows ([`is_local_drive_path`]),
+/// an absolute local path on macOS ([`is_local_mac_path`]).
+#[cfg(any(test, feature = "live-updates"))]
+fn is_local_feed_path(p: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    return is_local_mac_path(p);
+    #[cfg(not(target_os = "macos"))]
+    return is_local_drive_path(p);
+}
+
+/// True only for an absolute macOS path (`/` then a name): no `//` start, no `.` or `..` part, no
+/// NUL or control character. `/Volumes/<share>` of a mounted server still passes; the seam is e2e
+/// only and the package names are checked bare (`velopack_feed::names_are_bare`).
+#[cfg(any(test, all(feature = "live-updates", target_os = "macos")))]
+fn is_local_mac_path(p: &str) -> bool {
+    p.len() > 1
+        && p.starts_with('/')
+        && !p.starts_with("//")
+        && !p.chars().any(char::is_control)
+        && !p.split('/').any(|c| c == "." || c == "..")
+        && !p.contains("://")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use flare_win::registry::FakeRegistry;
+
+    #[test]
+    fn a_mac_update_source_is_an_absolute_local_path() {
+        for ok in ["/private/tmp/feed", "/Users/x/Releases", "/a"] {
+            assert!(is_local_mac_path(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "/",
+            "//host/share",
+            "feed",
+            "./feed",
+            "/a/../etc",
+            "/a/./b",
+            "/a\u{0}b",
+            "/a\nb",
+            "file:///a",
+            "http://127.0.0.1:1/",
+        ] {
+            assert!(!is_local_mac_path(bad), "{bad:?}");
+        }
+        #[cfg(target_os = "macos")]
+        assert!(is_local_feed_path("/private/tmp/feed") && !is_local_feed_path(r"C:\feed"));
+        #[cfg(not(target_os = "macos"))]
+        assert!(is_local_feed_path(r"C:\feed") && !is_local_feed_path("/private/tmp/feed"));
+    }
 
     #[test]
     fn update_source_must_be_a_local_drive_path() {
@@ -466,6 +526,32 @@ mod tests {
             .find(|l| !l.is_empty() && !l.starts_with("//") && !l.starts_with("use "))
             .unwrap();
         assert_eq!(first, "ship_ctl::bootstrap();");
+    }
+
+    /// Rule 1054: on a Mac the bootstrap's first act is to become a helper's guard when started as one, before
+    /// Velopack or anything else of Flare runs, and then to make guards of this program.
+    #[test]
+    fn the_bootstrap_first_becomes_a_guard_when_started_as_one() {
+        let text = src("ship_ctl.rs");
+        let body = text
+            .split("pub fn bootstrap() {")
+            .nth(1)
+            .expect("fn bootstrap");
+        let code: Vec<&str> = body
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with("//"))
+            .take(4)
+            .collect();
+        assert_eq!(
+            code,
+            [
+                "#[cfg(target_os = \"macos\")]",
+                "{",
+                "flare_proc::guard::run_if_guard();",
+                "if let Err(e) = flare_proc::guard::use_this_program() {"
+            ]
+        );
     }
 
     #[test]

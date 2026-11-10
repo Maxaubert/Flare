@@ -102,7 +102,7 @@ const TOP_KEYS_V1: [&str; 8] = [
     "tools",
 ];
 /// The keys protocol 2 adds to the top level.
-const TOP_KEYS_V2_ONLY: [&str; 7] = [
+const TOP_KEYS_V2_ONLY: [&str; 8] = [
     "author",
     "brand",
     "homepage",
@@ -110,8 +110,9 @@ const TOP_KEYS_V2_ONLY: [&str; 7] = [
     "bar",
     "contributes",
     "helper",
+    "helpers",
 ];
-const TOP_KEYS_V2: [&str; 15] = [
+const TOP_KEYS_V2: [&str; 16] = [
     "id",
     "name",
     "version",
@@ -126,6 +127,7 @@ const TOP_KEYS_V2: [&str; 15] = [
     "bar",
     "contributes",
     "helper",
+    "helpers",
     "tools",
 ];
 const PANEL_KEYS: [&str; 2] = ["entry", "title"];
@@ -135,6 +137,8 @@ const CONTRIBUTES_KEYS: [&str; 3] = ["sidebar", "actions", "icons"];
 const SIDEBAR_KEYS: [&str; 2] = ["key", "title"];
 const ACTION_KEYS: [&str; 4] = ["key", "title", "icon", "where"];
 const HELPER_KEYS: [&str; 2] = ["command", "args"];
+/// The systems `helpers` may name a program for (macOS port phase 6, regression rule 1057).
+const HELPERS_KEYS: [&str; 2] = ["windows", "macos"];
 const BRAND_KEYS: [&str; 2] = ["color", "icon"];
 
 /// Device names Windows reserves; a mod id cannot be a folder named one of them.
@@ -215,8 +219,12 @@ pub struct Manifest {
     pub bar: Option<Bar>,
     /// Protocol 2: sidebar sections, actions and named icons. Empty for a mod.
     pub contributes: Contributes,
-    /// Protocol 2: a program inside the plugin folder Flare starts while the plugin is on.
+    /// Protocol 2: the Windows program inside the plugin folder Flare starts while the plugin is on: `helper`, or
+    /// `helpers.windows` (the same thing, never both). An `.exe`.
     pub helper: Option<Helper>,
+    /// Protocol 2: the macOS program, `helpers.macos`: an executable file (no `.exe`, `/` separators). A manifest
+    /// that names none has no helper on a Mac (its pages still run).
+    pub helper_macos: Option<Helper>,
     /// Protocol 2: the colour and logo of the surfaces the plugin owns (its details sheet, its questions, its menu
     /// item). None: those surfaces wear Flare's own look.
     pub brand: Option<Brand>,
@@ -226,6 +234,30 @@ impl Manifest {
     /// A protocol 2 plugin (`plugin.json`), not a protocol 1 mod.
     pub fn is_plugin(&self) -> bool {
         self.protocol == PROTOCOL_V2
+    }
+
+    /// The helper of the system Flare runs on: `helpers.macos` on a Mac, the Windows form (`helper` or
+    /// `helpers.windows`) everywhere else, so a manifest written for Windows means on Windows what it always meant.
+    pub fn helper_here(&self) -> Option<&Helper> {
+        if cfg!(target_os = "macos") {
+            self.helper_macos.as_ref()
+        } else {
+            self.helper.as_ref()
+        }
+    }
+
+    /// The field [`Manifest::helper_here`] came from, for the sentences that name it.
+    pub fn helper_field_here(&self) -> &'static str {
+        if cfg!(target_os = "macos") {
+            "helpers.macos.command"
+        } else {
+            "helper.command"
+        }
+    }
+
+    /// Whether the manifest names a helper for any system.
+    pub fn has_any_helper(&self) -> bool {
+        self.helper.is_some() || self.helper_macos.is_some()
     }
 
     /// Which manifest file it came from.
@@ -494,21 +526,37 @@ fn parse_inner(kind: Kind, text: &str) -> Result<Manifest, String> {
     if !tools.is_empty() && !permissions.contains(&Permission::Tools) {
         return Err("tools need the \"tools\" permission; add it to permissions".into());
     }
-    let (author, homepage, background, bar, contributes, helper, brand) = match kind {
-        Kind::Mod => (None, None, None, None, Contributes::default(), None, None),
+    let (author, homepage, background, bar, contributes, (helper, helper_macos), brand) = match kind
+    {
+        Kind::Mod => (
+            None,
+            None,
+            None,
+            None,
+            Contributes::default(),
+            (None, None),
+            None,
+        ),
         Kind::Plugin => (
             optional_clean(obj, "author", MAX_AUTHOR_CHARS)?,
             homepage(obj)?,
             background(obj)?,
             bar(obj, &permissions)?,
             contributes(obj, &permissions)?,
-            helper(obj, &permissions)?,
+            helpers(obj, &permissions)?,
             brand(obj)?,
         ),
     };
     // A tool is answered by the panel's page (or, for a plugin, its background page or its helper): with none of
     // them nothing could ever answer it.
-    if !tools.is_empty() && panel.is_none() && background.is_none() && helper.is_none() {
+    // Any system's helper counts, so a manifest is valid or not the same way everywhere; on a system it names no
+    // helper for, the hub leaves those tools out and says why.
+    if !tools.is_empty()
+        && panel.is_none()
+        && background.is_none()
+        && helper.is_none()
+        && helper_macos.is_none()
+    {
         return Err(match kind {
             Kind::Mod => "tools need a panel: its page answers them; add a panel".into(),
             Kind::Plugin => {
@@ -540,6 +588,7 @@ fn parse_inner(kind: Kind, text: &str) -> Result<Manifest, String> {
         bar,
         contributes,
         helper,
+        helper_macos,
         brand,
     })
 }
@@ -1135,47 +1184,99 @@ pub fn contrast_with_white(rgb: [u8; 3]) -> f64 {
     1.05 / (l + 0.05)
 }
 
-/// `helper`: `{command, args?}`, and the `process` permission goes with it.
-fn helper(obj: &Map<String, Value>, permissions: &[Permission]) -> Result<Option<Helper>, String> {
-    let Some(v) = obj.get("helper") else {
-        if permissions.contains(&Permission::Process) {
-            return Err(
-                "the \"process\" permission needs a helper: add {\"command\": \"helper.exe\"}"
-                    .into(),
-            );
+/// `helper` (the Windows form, unchanged since protocol 2 began) and `helpers` (`{"windows"?, "macos"?}`, macOS port
+/// phase 6, regression rule 1057), each `{command, args?}`; the `process` permission goes with any of them, both ways.
+/// `helper` and `helpers.windows` are the same program, so a manifest names it once. Returns the Windows program and
+/// the macOS one.
+fn helpers(
+    obj: &Map<String, Value>,
+    permissions: &[Permission],
+) -> Result<(Option<Helper>, Option<Helper>), String> {
+    let mut windows = obj
+        .get("helper")
+        .map(|v| helper_of(v, "helper", Os::Windows))
+        .transpose()?;
+    let mut macos = None;
+    if let Some(v) = obj.get("helpers") {
+        let map = v.as_object().ok_or_else(|| {
+            "helpers must be an object such as {\"macos\": {\"command\": \"bin/helper\"}}"
+                .to_string()
+        })?;
+        no_unknown(map, &HELPERS_KEYS, "helpers")?;
+        if map.is_empty() {
+            return Err("helpers must name a program for \"windows\" or \"macos\"".into());
         }
-        return Ok(None);
-    };
+        if let Some(w) = map.get("windows") {
+            if windows.is_some() {
+                return Err(
+                    "helper and helpers.windows name the same program; keep one of them".into(),
+                );
+            }
+            windows = Some(helper_of(w, "helpers.windows", Os::Windows)?);
+        }
+        macos = map
+            .get("macos")
+            .map(|m| helper_of(m, "helpers.macos", Os::Macos))
+            .transpose()?;
+    }
+    let any = windows.is_some() || macos.is_some();
+    if permissions.contains(&Permission::Process) && !any {
+        return Err(
+            "the \"process\" permission needs a helper: add {\"command\": \"helper.exe\"} or helpers.macos"
+                .into(),
+        );
+    }
+    if any && !permissions.contains(&Permission::Process) {
+        return Err(
+            "a plugin with a helper needs the \"process\" permission; add it to permissions".into(),
+        );
+    }
+    Ok((windows, macos))
+}
+
+/// Which system a helper entry is for: it fixes the rule of its `command`.
+#[derive(Clone, Copy)]
+enum Os {
+    Windows,
+    Macos,
+}
+
+/// One helper entry, `{command, args?}`, named `field` in the sentences.
+fn helper_of(v: &Value, field: &str, os: Os) -> Result<Helper, String> {
     let h = v
         .as_object()
-        .ok_or_else(|| "helper must be an object with \"command\"".to_string())?;
-    no_unknown(h, &HELPER_KEYS, "helper")?;
-    let command = text_of(h, "command", "helper.command")?;
-    crate::paths::check_program(&command).map_err(|e| format!("helper.command {e}"))?;
+        .ok_or_else(|| format!("{field} must be an object with \"command\""))?;
+    no_unknown(h, &HELPER_KEYS, field)?;
+    let command = text_of(h, "command", &format!("{field}.command"))?;
+    match os {
+        Os::Windows => crate::paths::check_program(&command),
+        Os::Macos => crate::paths::check_mac_program(&command),
+    }
+    .map_err(|e| format!("{field}.command {e}"))?;
     let args = match h.get("args") {
         None => Vec::new(),
         Some(a) => {
             let list = a
                 .as_array()
-                .ok_or_else(|| "helper.args must be a list of text".to_string())?;
+                .ok_or_else(|| format!("{field}.args must be a list of text"))?;
             if list.len() > MAX_HELPER_ARGS {
                 return Err(format!(
-                    "helper.args can hold at most {MAX_HELPER_ARGS} arguments"
+                    "{field}.args can hold at most {MAX_HELPER_ARGS} arguments"
                 ));
             }
             let mut out = Vec::new();
             for (i, v) in list.iter().enumerate() {
                 let arg = v
                     .as_str()
-                    .ok_or_else(|| format!("helper.args[{i}] must be text"))?;
+                    .ok_or_else(|| format!("{field}.args[{i}] must be text"))?;
                 if arg.chars().count() > MAX_HELPER_ARG_CHARS {
                     return Err(format!(
-                        "helper.args[{i}] is longer than {MAX_HELPER_ARG_CHARS} characters"
+                        "{field}.args[{i}] is longer than {MAX_HELPER_ARG_CHARS} characters"
                     ));
                 }
                 if arg.chars().any(|c| c.is_control() || is_format_char(c)) {
                     return Err(format!(
-                        "helper.args[{i}] must not contain a control or hidden formatting character"
+                        "{field}.args[{i}] must not contain a control or hidden formatting character"
                     ));
                 }
                 out.push(arg.to_string());
@@ -1183,12 +1284,7 @@ fn helper(obj: &Map<String, Value>, permissions: &[Permission]) -> Result<Option
             out
         }
     };
-    if !permissions.contains(&Permission::Process) {
-        return Err(
-            "a plugin with a helper needs the \"process\" permission; add it to permissions".into(),
-        );
-    }
-    Ok(Some(Helper { command, args }))
+    Ok(Helper { command, args })
 }
 
 fn no_unknown(obj: &Map<String, Value>, allowed: &[&str], ctx: &str) -> Result<(), String> {
@@ -2347,6 +2443,120 @@ mod tests {
             e.contains("the \"process\" permission needs a helper"),
             "{e}"
         );
+    }
+
+    /// Rule 1057: a manifest written for Windows (`helper`, an `.exe`) reads exactly as before and names no Mac program;
+    /// `helpers.macos` adds one, `helpers.windows` is `helper` by another name, and each system picks its own.
+    #[test]
+    fn helpers_name_a_program_per_system_and_a_windows_manifest_means_what_it_meant() {
+        let m = with_plugin(|_| {}).unwrap();
+        let windows = Helper {
+            command: "bin/helper.exe".into(),
+            args: vec!["--quiet".into()],
+        };
+        assert_eq!(m.helper.as_ref(), Some(&windows));
+        assert_eq!(m.helper_macos, None);
+        assert!(m.has_any_helper());
+        let mac = Helper {
+            command: "bin/helper".into(),
+            args: vec!["--mac".into()],
+        };
+        let both = with_plugin(|v| {
+            v["helpers"] =
+                serde_json::json!({"macos": {"command": "bin/helper", "args": ["--mac"]}})
+        })
+        .unwrap();
+        assert_eq!(both.helper.as_ref(), Some(&windows));
+        assert_eq!(both.helper_macos.as_ref(), Some(&mac));
+        if cfg!(target_os = "macos") {
+            assert_eq!(both.helper_here(), Some(&mac));
+            assert_eq!(m.helper_here(), None, "a Mac starts no .exe");
+            assert_eq!(both.helper_field_here(), "helpers.macos.command");
+        } else {
+            assert_eq!(both.helper_here(), Some(&windows));
+            assert_eq!(m.helper_here(), Some(&windows));
+            assert_eq!(both.helper_field_here(), "helper.command");
+        }
+        // `helpers.windows` instead of `helper`: the same program.
+        let renamed = with_plugin(|v| {
+            let h = v["helper"].clone();
+            remove(v, "helper");
+            v["helpers"] = serde_json::json!({ "windows": h });
+        })
+        .unwrap();
+        assert_eq!(renamed.helper.as_ref(), Some(&windows));
+        // A Mac program alone is a helper too: it carries `process`, and answers tools.
+        let mac_only = with_plugin(|v| {
+            remove(v, "helper");
+            remove(v, "panel");
+            remove(v, "background");
+            v["permissions"] =
+                serde_json::json!(["tools", "decorate", "sidebar", "actions", "bar", "process"]);
+            v["helpers"] = serde_json::json!({"macos": {"command": "helper"}});
+        })
+        .unwrap();
+        assert_eq!(mac_only.helper, None);
+        assert!(mac_only.helper_macos.is_some());
+    }
+
+    #[test]
+    fn every_wrong_helpers_entry_is_refused_with_its_field() {
+        for (bad, want) in [
+            (serde_json::json!("bin/h"), "helpers must be an object"),
+            (serde_json::json!({}), "must name a program for"),
+            (serde_json::json!({"linux": {"command": "h"}}), "linux"),
+            (
+                serde_json::json!({"windows": {"command": "h.exe"}}),
+                "keep one of them",
+            ),
+            (
+                serde_json::json!({"macos": "h"}),
+                "helpers.macos must be an object",
+            ),
+            (
+                serde_json::json!({"macos": {}}),
+                "helpers.macos.command is missing",
+            ),
+            (
+                serde_json::json!({"macos": {"command": "h", "x": 1}}),
+                "in helpers.macos",
+            ),
+            (
+                serde_json::json!({"macos": {"command": "h.exe"}}),
+                "Windows program",
+            ),
+            (serde_json::json!({"macos": {"command": "bin\\h"}}), "'/'"),
+            (serde_json::json!({"macos": {"command": "../h"}}), "'..'"),
+            (
+                serde_json::json!({"macos": {"command": "/bin/sh"}}),
+                "absolute",
+            ),
+            (serde_json::json!({"macos": {"command": "a:b"}}), "':'"),
+            (
+                serde_json::json!({"macos": {"command": "h", "args": [1]}}),
+                "helpers.macos.args[0] must be text",
+            ),
+        ] {
+            let e = plugin_err(|v| v["helpers"] = bad.clone());
+            assert!(e.contains(want), "{bad}: {e}");
+        }
+        // `helpers.windows` keeps the `.exe` rule of `helper`.
+        let e = plugin_err(|v| {
+            remove(v, "helper");
+            v["helpers"] = serde_json::json!({"windows": {"command": "h.bat"}});
+        });
+        assert!(
+            e.contains("helpers.windows.command") && e.contains(".exe"),
+            "{e}"
+        );
+        // `process` goes with a helper of any system, both ways.
+        let e = plugin_err(|v| {
+            remove(v, "helper");
+            v["helpers"] = serde_json::json!({"macos": {"command": "h"}});
+            v["permissions"] =
+                serde_json::json!(["panel", "tools", "decorate", "sidebar", "actions", "bar"]);
+        });
+        assert!(e.contains("needs the \"process\" permission"), "{e}");
     }
 
     #[test]

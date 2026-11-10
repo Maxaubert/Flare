@@ -20,6 +20,9 @@ fn main() {
         cef_dir: Path::new(flare_cef::macos::CEF_DIR),
         out_dir: Path::new(&a[4]),
         background_only: true,
+        version: env!("CARGO_PKG_VERSION"),
+        signing: flare_cef::macos::sign::Signing::for_tests(),
+        extras: Default::default(),
     };
     match flare_cef::macos::bundle::build(&spec) {
         Ok(app) => println!("{}", app.display()),

@@ -3,17 +3,47 @@
 //! A packaged install is `<root>\current\Flare.exe` with `<root>\Update.exe` beside `current`. A
 //! portable copy carries `<root>\.portable` and is not packaged for our purposes (no verbs, no
 //! updater). The check only looks at file names, so it works on any path and never starts anything.
+//!
+//! macOS (port phase 8, rule 1047): the installed app is the bundle `vpk pack` made,
+//! `<X>.app/Contents/MacOS/<exe>` with Velopack's `UpdateMac` beside it and its `sq.version` in
+//! `Contents/Resources`; the root is the `.app`, and there are no Explorer verbs.
 
 use std::path::{Path, PathBuf};
 
 /// True when `exe` sits in a folder named `current` (ASCII case-insensitive) whose parent holds
-/// `Update.exe` and does not hold `.portable`.
+/// `Update.exe` and does not hold `.portable` (on macOS also: a Velopack bundle, see [`bundle_root`]).
 pub fn is_packaged(exe: &Path) -> bool {
     install_root(exe).is_some()
 }
 
-/// The folder that holds `Update.exe` and `current`, when `exe` is a packaged install's exe.
+/// The folder that holds `Update.exe` and `current`, when `exe` is a packaged install's exe (on
+/// macOS also: the `.app` of a Velopack bundle).
 pub fn install_root(exe: &Path) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    if let Some(app) = bundle_root(exe) {
+        return Some(app);
+    }
+    windows_root(exe)
+}
+
+/// The `.app` that `exe` is the program of, when it is a bundle `vpk pack` made: `exe` in
+/// `<X>.app/Contents/MacOS` with `UpdateMac` beside it and `Contents/Resources/sq.version`.
+pub fn bundle_root(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    let named = macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && app.extension()? == "app";
+    // sync-ok: startup-only existence probes of two marker files
+    (named
+        && exe.file_name()? != "UpdateMac"
+        && macos.join("UpdateMac").is_file()
+        && contents.join("Resources").join("sq.version").is_file())
+    .then(|| app.to_path_buf())
+}
+
+fn windows_root(exe: &Path) -> Option<PathBuf> {
     let current = exe.parent()?;
     let name = current.file_name()?.to_str()?;
     if !name.eq_ignore_ascii_case("current") {
@@ -28,9 +58,10 @@ pub fn install_root(exe: &Path) -> Option<PathBuf> {
     }
 }
 
-/// The path the Explorer verbs point at: the exe as it is, when packaged.
+/// The path the Explorer verbs point at: the exe as it is, when packaged (never a Mac bundle: the
+/// verbs are Explorer's).
 pub fn verb_exe(exe: &Path) -> Option<String> {
-    install_root(exe)?;
+    windows_root(exe)?;
     Some(exe.to_string_lossy().into_owned())
 }
 
@@ -78,5 +109,49 @@ mod tests {
             exe.parent().unwrap().parent().map(Path::to_path_buf)
         );
         assert_eq!(verb_exe(Path::new(r"C:\dev\target\debug\flare.exe")), None);
+    }
+
+    fn bundle(dir: &Path, update: bool, version: bool) -> PathBuf {
+        let app = dir.join("Flare.app");
+        let macos = app.join("Contents/MacOS");
+        fs::create_dir_all(&macos).unwrap();
+        fs::create_dir_all(app.join("Contents/Resources")).unwrap();
+        fs::write(macos.join("Flare"), b"x").unwrap();
+        if update {
+            fs::write(macos.join("UpdateMac"), b"x").unwrap();
+        }
+        if version {
+            fs::write(app.join("Contents/Resources/sq.version"), b"<package/>").unwrap();
+        }
+        macos.join("Flare")
+    }
+
+    #[test]
+    fn a_mac_bundle_vpk_made_is_its_own_root_and_has_no_verb() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = bundle(dir.path(), true, true);
+        let app = dir.path().join("Flare.app");
+        assert_eq!(bundle_root(&exe), Some(app.clone()));
+        assert_eq!(bundle_root(&app.join("Contents/MacOS/UpdateMac")), None);
+        assert_eq!(verb_exe(&exe), None);
+        #[cfg(target_os = "macos")]
+        {
+            assert!(is_packaged(&exe));
+            assert_eq!(install_root(&exe), Some(app));
+        }
+        #[cfg(not(target_os = "macos"))]
+        assert!(!is_packaged(&exe));
+        for (update, version) in [(false, true), (true, false), (false, false)] {
+            let d = tempfile::tempdir().unwrap();
+            let exe = bundle(d.path(), update, version);
+            assert_eq!(bundle_root(&exe), None, "{update} {version}");
+            assert!(!is_packaged(&exe));
+        }
+        // A dev bundle (no UpdateMac) and a folder that is not an app.
+        let d = tempfile::tempdir().unwrap();
+        let plain = d.path().join("Flare/Contents/MacOS");
+        fs::create_dir_all(&plain).unwrap();
+        fs::write(plain.join("UpdateMac"), b"x").unwrap();
+        assert_eq!(bundle_root(&plain.join("Flare")), None);
     }
 }

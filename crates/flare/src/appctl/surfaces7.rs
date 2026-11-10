@@ -479,7 +479,7 @@ impl AppCtl {
     }
 }
 
-/// The once-a-run warning that the system cannot show notifications (macOS before the signed app).
+/// The once-a-run warning that the system cannot show notifications (macOS outside the signed `Flare.app`).
 static UNAVAILABLE_LOGGED: flare_win::toast::FirstTime = flare_win::toast::FirstTime::new();
 
 /// Installs Windows' notifications and the system's listening table for the real window, or under `--e2e` the
@@ -504,10 +504,13 @@ pub fn install(rc: &Rc<RefCell<AppCtl>>, post: Post, e2e: bool) {
         }));
         return;
     }
+    flare_win::toast::warm_up();
     c.set_toast_sink(Rc::new(move |t: &Toast| {
-        // macOS until the signed app (port phase 8): the system cannot take the request, so no worker is
-        // started to fail; the fallback (the Dock bounce) runs at once and the reason is logged once a run.
-        if let Some(why) = flare_win::toast::system_unavailable() {
+        // macOS outside the signed `Flare.app` (a cargo run): the system cannot take the request, so no worker is
+        // started to fail; the fallback (the Dock bounce) runs at once and the reason is logged once a run. In the
+        // signed app the worker asks `UNUserNotificationCenter` (the permission once, lazily; rule 1044). The answer
+        // is read on a worker at install (`warm_up`): until it is known, the worker reads it and answers itself.
+        if let Some(why) = flare_win::toast::known_unavailable() {
             if UNAVAILABLE_LOGGED.take() {
                 log::warn!("the notification was not accepted: {why}");
             }

@@ -1540,7 +1540,7 @@ phase 4; regression rule 1012).
 - [x] The Claude plugin on the Mac: hooks run `/bin/sh hook.sh` with the same state words and print what the parser reads, the copy lives in `~/Library/Application Support/Flare/claude-plugin-<tag>`, the plugin folder list is `:`-separated as Claude Code reads it, Claude's home (the Changes panel's transcripts, resume) is `HOME` (rule 1017). (macOS: the seven install tests of crates/flare-agent/src/plugin.rs, no longer ignored; the_posix_render_keeps_every_state_word_and_refuses_what_it_cannot_convert, every_hook_prints_what_the_parser_reads_on_macos, prints_the_state_as_valid_json_whatever_the_session_id_holds_on_macos, hook_sh_is_lf_and_static, a_platform_installs_its_own_hook_script_and_never_the_other; the_folder_list_is_split_the_way_claude_code_splits_it, crates/flare-shells/src/env.rs; claude_home_is_the_platforms_home, crates/flare-agent/src/resume.rs)
 - [x] Questions as notifications go through one backend seam; on the Mac it answers "unavailable until the app is signed" up front, so the Dock bounce stands in at once with no worker and one log line a run, as when Windows refuses a toast (rule 1015). (the_backend_gets_the_request_and_its_answer_and_click_come_back, the_system_says_up_front_whether_it_can_take_a_notification; macOS: macos_says_notifications_wait_for_the_signed_app_and_shows_nothing, crates/flare-win/src/toast.rs)
 
-Waits for the Developer ID (port phase 8, not a ratchet line): real Mac notifications through `UNUserNotificationCenter` (authorisation, a request per tab that replaces the older one, the click back to the tab), tested on a signed `Flare.app`. Still to see in CI or on a Mac by hand (not a ratchet line): the Dock icon bouncing on a bell in a background tab and stopping when Flare comes forward, the badge count on the Dock tile.
+Real Mac notifications through `UNUserNotificationCenter` came with port phase 8 step 2 (rule 1044, the lines under phase 8); a banner on a signed run is still to be seen by hand. Still to see in CI or on a Mac by hand (not a ratchet line): the Dock icon bouncing on a bell in a background tab and stopping when Flare comes forward, the badge count on the Dock tile.
 
 ## macOS port, phase 5: the web engine (2026-11-08)
 
@@ -1587,7 +1587,8 @@ and held by checks that fail without the fix.
 
 Accepted gap (rule 1033, not a ratchet line): the web panel's profile and each mod's and plugin's are kept on disk with
 Chromium's mock keychain, whose key is public, so their cookies and storage are protected only by the files'
-permissions (Windows uses DPAPI); a real keychain item waits for the signed app (phase 8).
+permissions (Windows uses DPAPI). Since phase 8 step 2 this is true of every build but the Developer ID app's real
+window, which keeps the key in a keychain item of its own (rule 1045).
 
 Not yet on the Mac (the next steps of phase 5, not ratchet lines): running the real Flare window with CEF needs Flare
 itself inside an app bundle with the framework and helpers (`Flare.app`, phase 8; a `cargo run` says the engine is not
@@ -1600,8 +1601,170 @@ live preview are mini-apps and ride on the mini-app path; a diagram's Mermaid ru
 WebView2 password autosave and form autofill have no CEF Alloy counterpart (`ControllerProbe::autofill` is false).
 A frame's contents are not in the numbered list (the agent uses a frame by point); on Windows the same Chromium
 call gives the root frame's tree, but a Windows look of the agent page has not been diffed with the Mac one yet. Waits for the Developer ID (phase 8): the signed
-bundle, the hardened runtime and its entitlements, notarization, camera and microphone prompts, a real keychain item
-for the profiles kept on disk (the mock keychain is used until then, rule 1033).
+bundle, the hardened runtime and its entitlements, notarization, camera and microphone prompts for programs run in
+the terminal (a page's camera and microphone are refused on both platforms: WebView2's handler and CEF's deny them).
+The keychain item for the profiles on disk is phase 8 step 2 (rule 1045).
+
+## macOS port, phase 8: shipping the Mac app (2026-11-08)
+
+Step 1, `Flare.app` (regression rules 1036 to 1039). Windows ships through Velopack (`tools/release/pack.ps1`); the Mac
+ships an app bundle built by `tools/release/mac/make-app.sh` (`flare-mac-app`, `flare_cef::macos::{release, bundle,
+sign}`), under `target/mac-release`.
+
+- [x] The app bundle: `Flare.app` for Apple Silicon, macOS 15+, id `com.flare.terminal` (Windows' AppUserModelID), the
+  workspace version, the developer-tools category, the microphone's reason; `Contents/MacOS/Flare` and `flare-mcp`, the
+  CEF framework and its five helpers, `Flare.icns` from `build/icon-source.png`, the Claude plugin, the licenses and
+  CEF's credits in `Resources`. Stands in for the Velopack staging folder. (macOS:
+  the_app_plist_names_the_app_its_version_its_mac_its_category_and_why_it_wants_the_mic,
+  a_mac_app_bundle_finds_the_plugin_in_its_resources_first, crates/flare-cef/src/macos/release.rs,
+  crates/flare-agent/src/plugin.rs)
+- [x] Signing inside out with the Developer ID, hardened runtime, secure timestamp, each program's entitlements
+  (Chromium 156's, plus a terminal's camera, microphone and Apple Events keys with their usage strings), and every
+  Mach-O checked for the team, a Developer ID Application signer and exactly its role's keys; no `codesign` with the
+  identity unless the key cannot raise a prompt (rules 1036, 1038, 1040 to 1042). Stands in for Authenticode (not done on
+  Windows yet). (macOS: each_program_carries_chromiums_keys_for_it_plus_the_terminals_and_never_the_broad_ones,
+  a_release_mach_o_has_exactly_its_roles_keys_and_a_developer_id_application_signer,
+  a_key_codesign_would_have_to_ask_for_is_refused_before_codesign_runs, crates/flare-cef/src/macos/sign.rs,
+  crates/flare-cef/src/macos/keychain.rs)
+
+Not yet (the next steps of phase 8, not ratchet lines): the notarized and stapled app and DMG with `spctl` saying
+"source=Notarized Developer ID". The script does it (`make-app.sh`, `macos-app.yml`), but on Max's Mac
+`flare-mac-app check-key` refuses: the Developer ID key's partition list is only `apple-tool:`, so `codesign` would
+put a keychain prompt on the screen (rule 1040). It runs once Max has run `security set-key-partition-list -S
+apple-tool:,apple: -s ~/Library/Keychains/login.keychain-db` himself. Then: the entitlements proved by the engine
+probes under the hardened runtime (`FLARE_TEST_SIGN_IDENTITY` and `FLARE_TEST_SIGN_KEYCHAIN`, `cargo nextest run -p
+flare-cef -p flare-web`), with WebGL on SwiftShader (`--use-angle=swiftshader`) for the GPU helper's JIT key;
+Velopack osx-arm64 updates with a whole-bundle swap, signed and notarized after `vpk pack` and checked on the bundle
+inside the update package (rule 1043): built in step 3 below; the release notes and the Mac build come in
+`macos-app.yml` (step 3), not in `release.yml`.
+
+Step 2, notifications and the keychain item (regression rules 1044 and 1045):
+
+- [x] Notifications through `UNUserNotificationCenter` in the signed `Flare.app`: the permission asked once a run,
+  lazily, the first time Flare has something to say (never at launch, never in a test), a no honoured for the run, one
+  notification per tab (identifier `agent-question.<tab>`, a newer one replaces the older), shown while Flare is in
+  front too, a click that brings the window forward and picks the tab, only for this run's notifications. Outside the
+  signed bundle (a `cargo run`, a test) the answer says why and the Dock bounces. Stands in for the WinRT toast with
+  its AUMID shortcut. (macOS: the_permission_is_asked_once_lazily_and_only_when_flare_first_notifies,
+  one_notification_per_tab_the_newer_replaces_the_older, a_click_brings_back_the_tab_of_this_runs_notification_only,
+  a_copy_in_a_signed_flare_app_is_told_from_a_dev_build, crates/flare-win/src/toast.rs,
+  crates/flare-win/src/macos/notify.rs)
+- [x] The profiles on disk keep their key in Flare's own keychain item ("Flare Safe Storage") in the Developer ID
+  app's real window (a Developer ID Application certificate of the team, by Apple's OIDs, never another certificate
+  of the same team); every other build keeps the mock keychain. Stands in for DPAPI. (macOS:
+  only_the_real_window_of_the_developer_id_app_uses_a_keychain_item_of_its_own, crates/flare-cef/src/macos/engine.rs)
+- [x] A switch between a dev build and the Developer ID app on the same profile folder loses no cookie: the root
+  folder's marker records the key, and the old key's cookie and password files are set aside (`Cookies.mock-key`) and
+  come back when that key is used again (rule 1051). Windows has one key (DPAPI), so it has no such switch. (macOS:
+  a_change_of_key_sets_the_old_keys_cookies_aside_and_brings_the_new_keys_back,
+  a_new_root_is_left_for_cef_and_marked_after_and_an_unknown_marker_counts_as_the_mock_key, crates/flare-cef/src/macos/profile_key.rs)
+
+Still to see by hand on a signed run (not ratchet lines; no test may ask for the notification permission or touch the
+keychain, and the Developer ID key cannot sign without a prompt until Max runs the partition-list command above):
+the permission prompt on the first question, a banner per tab replacing the older one, a click that brings the tab
+back, the Dock bounce after a no; the "Flare Safe Storage" item made on the first run with no prompt and kept across
+an update. The one command, once the key is fixed: `FLARE_MAC_SIGN_IDENTITY="Developer ID Application: MAX AUBERT
+(WV7BY8CUM8)" FLARE_NOTARY_PROFILE=flare-notary tools/release/mac/make-app.sh` (rule 1039), then opening the stapled `target/mac-release/Flare.app` by hand and asking an
+agent a question from a background tab.
+
+Step 3, updates and the release (regression rules 1046 to 1052):
+
+- [x] Velopack updates for osx-arm64: `vpk pack` (channel `osx`), the bundle signed again by role after vpk adds its
+  updater (`flare-mac-app` as vpk's `codesign`), notarized and stapled by vpk, checked inside the update package and
+  the portable zip; an update swaps the whole bundle, proved headless on a Mac from 0.0.1 to 0.0.2 against the real
+  feed and `UpdateMac`, the swapped bundle still sealed. Stands in for the Windows Velopack install, Update.exe and
+  its `current` folder. (macOS: vpks_two_calls_are_its_update_program_then_the_bundle,
+  a_packed_flare_app_updates_itself_headless_and_the_swapped_bundle_still_verifies,
+  a_mac_bundle_vpk_made_is_its_own_root_and_has_no_verb, crates/flare-cef/src/macos/vpk.rs,
+  tools/release/mac/pack.sh, tools/release/mac/update-e2e.sh)
+- [x] The Mac release workflow: after a successful Windows release, from secrets only, into the same GitHub release
+  (`releases.osx.json` beside `releases.win.json`, the DMG), skipping cleanly without the secrets; `release.yml`
+  untouched. Stands in for the Windows release job's Publish step. (macOS:
+  the_mac_release_runs_after_the_windows_one_never_inside_it,
+  credentials_come_from_the_five_secrets_only_and_without_them_nothing_is_published, .github/workflows/macos-app.yml,
+  docs/releasing-macos.md)
+- [x] The Mac build added to a release is made from the commit that release was tagged at, one run per version, the
+  release read again before the upload; signing secrets only in the `mac-release` environment, which only `main` may
+  use (rule 1049). Windows' release job builds its own commit and has no second workflow. (macOS:
+  the_mac_build_is_the_commit_the_release_was_tagged_at_one_run_per_version,
+  signing_secrets_reach_a_run_from_main_only, crates/flare-cef/tests/mac_release_files.rs)
+- [x] No key file, password or scratch folder outlives its one use: the `.p12` and `.p8` gone when `ci-keychain.sh`
+  ends, the keychain made after the build and deleted before the artifact and upload steps, no password on
+  `notarytool`'s command line, `*.p12`/`*.p8`/`AuthKey_*` ignored by git, one cleanup list for the scripts, the e2e
+  work folder resolved and confined before it is emptied (rule 1050). (macOS: no_key_file_or_password_outlives_its_one_use,
+  the_scripts_remove_only_what_they_made_and_never_lose_each_others_cleanup,
+  crates/flare-cef/tests/mac_release_files.rs)
+- [x] Ad hoc signing gives each program its role too (identifier, entitlements; the hardened runtime for the tools),
+  so the ad-hoc pack and update e2e prove `UpdateMac` runs under the hardened runtime with no entitlements (rule 1052).
+  (macOS: a_developer_id_signature_has_the_runtime_and_a_timestamp_and_ad_hoc_has_neither,
+  the_pack_checks_each_programs_role_ad_hoc_too, crates/flare-cef/src/macos/sign.rs, tools/release/mac/pack.sh)
+
+Still to do by hand (not ratchet lines): the signed, notarized update run, one command for Max once the key is fixed
+(`docs/releasing-macos.md`, "Signed and notarized, by Max"), which no session may run while the Developer ID key
+prompts; the `mac-release` environment (main only) and its five secrets (Max makes them, same doc); the first CI
+release with them. Phase 8 is done when
+that run passes (rule 1043).
+
+Open on macOS, so shipping a part is not read as the feature working:
+
+- Installing the Claude Code plugin fails on macOS: the template is found in `Contents/Resources`, but
+  `flare_agent::plugin::install_plugin_with` still requires an absolute System32 `cmd.exe` and returns InvalidInput.
+  It waits for the agent-tools phase's macOS hooks.
+- The microphone key is provisional for dictation (rule 1042): `crates/flare-dictation/src/macos/` holds no audio
+  path yet, and `flare-parakeet-host` (shipped by `release.yml` on Windows) is not in the bundle. The engines it
+  downloads must be signed by the team or loaded in a helper of their own before dictation runs in a hardened Flare.
+
+Deliberate differences: the DMG is a plain drag-to-Applications volume (the app and an `/Applications` link) with no
+background picture or icon positions, because those are set through a Finder window (the screen rule); Finder shows
+the two icons as they are. A program in Flare's terminal can ask for the microphone, the camera and Apple Events, but
+not for location, contacts, calendars or photos (the hardened runtime needs a key for each, and no terminal program in
+common use asks for them; Terminal and iTerm2 users who need one run that program elsewhere). Windows has no such
+gate.
+
+## macOS port, phase 6: plugins on the Mac (2026-11-08)
+
+Plugin helpers, the per-OS helper entry in `plugin.json` and the Finder service
+(`docs/superpowers/specs/2026-11-08-macos-port.md`, phase 6). Step 1 is the helper's process lifetime (regression
+rules 1053 to 1056): what a kill-on-close job object gives a helper on Windows, built from a session, a process group
+and a guard (`crates/flare-proc/src/guard.rs`, `crates/flare-mods/src/helper.rs`).
+
+- [x] A helper runs in a session and group of its own with no terminal, in the plugin folder, stdin closed, its output in `<profile>/plugins-logs/<id>.log`, with `FLARE_PLUGIN_TOKEN` and `FLARE_CTL_PIPE` and without `FLARE_TAB_TOKEN` and `FLARE_RESUME_ID`. Stands in for the suspended start in a job with no console. (macOS: mac_the_helper_gets_its_token_and_channel_but_not_the_tab_secret_and_logs_its_output, crates/flare-mods/src/helper.rs; the_program_leads_a_new_session_and_its_guard_is_an_exec_d_orphan_with_a_group_of_its_own, crates/flare-proc/src/guard.rs)
+- [x] Turning a plugin off, an update and a removal end the helper and all it started (a child, an orphan, a job in its own group, a process in its own session), the wait an update makes returns once they are gone, and a stop is never followed by a restart. Stands in for `TerminateJobObject` and the wait on the job's processes. (macOS: mac_a_stopped_helper_leaves_no_process_and_is_not_restarted, mac_stop_all_ends_every_helper_tree, crates/flare-mods/src/helper.rs; releasing_the_guard_ends_the_group_the_session_and_the_orphans, a_descendant_that_left_the_session_is_ended_too, crates/flare-proc/src/guard.rs)
+- [x] A helper that crashes or is killed takes its tree with it, and the restart policy (three restarts in five minutes, then stopped) holds, each start's children gone. Stands in for the job's last handle closing. (macOS: mac_a_killed_helper_takes_its_whole_tree_with_it, mac_a_helper_that_keeps_ending_is_started_three_times_more_then_stopped, crates/flare-mods/src/helper.rs; a_program_that_ends_by_itself_takes_its_tree_with_it, crates/flare-proc/src/guard.rs)
+- [x] No helper process outlives Flare, a crash included: a stand-in Flare killed with SIGKILL leaves no process of its helper's tree. Stands in for kill-on-close when Flare's handles close. (macOS: mac_no_helper_process_outlives_a_crash_of_flare, crates/flare-mods/src/helper.rs)
+- [x] A helper's guard costs no copy of Flare's memory: it is an exec of Flare's own program (`argv[0]` `flare-guard:...`), not a fork that lives on, and a guard started by hand refuses and ends nothing. Windows has no guard process (the job object is the kernel's). (macOS: the_program_leads_a_new_session_and_its_guard_is_an_exec_d_orphan_with_a_group_of_its_own, a_stray_guard_start_refuses_and_ends_nothing, crates/flare-proc/src/guard.rs; the_bootstrap_first_becomes_a_guard_when_started_as_one, crates/flare/src/ship_ctl.rs)
+- [x] A helper that kills its own group (`kill -9 0`) or kills its guard by pid still has its tree ended: the guard has a group of its own, and Flare's own pass ends the session and the group before the helper is reaped; the end is marked before any reap, so a stop never signals a recycled pid. Stands in for a job a process cannot leave. (macOS: a_program_that_kills_its_own_group_still_has_its_whole_tree_ended, end_session_ends_the_session_and_the_group_but_never_this_process, crates/flare-proc/src/guard.rs; mac_a_helper_whose_guard_was_killed_still_has_its_session_and_group_ended, mac_the_end_is_marked_before_the_reap_and_the_pass_runs_while_the_ids_are_held, crates/flare-mods/src/helper.rs)
+- [x] Only an executable inside the plugin folder starts: `..`, an absolute path, a missing file and a file without the execute bit are refused with the reason Settings shows. Stands in for the `.exe`-inside-the-folder check. (macOS: mac_only_an_executable_inside_the_folder_starts, crates/flare-mods/src/helper.rs)
+
+
+Step 2 is the per-OS helper entry and the samples (regression rules 1057 to 1060):
+
+- [x] `plugin.json` names a helper per system: `helper` (or `helpers.windows`) is the Windows `.exe` as before, `helpers.macos` the Mac program (`/` separators, no Windows extension); each system starts only its own, a manifest written for Windows loads unchanged everywhere, and a plugin with no program for this system runs its pages, leaves out tools only its helper answers and shows "None on this system". Stands in for `helper.command` alone. (helpers_name_a_program_per_system_and_a_windows_manifest_means_what_it_meant, every_wrong_helpers_entry_is_refused_with_its_field, crates/flare-mods/src/manifest.rs; a_windows_only_helper_runs_only_on_windows_and_a_mac_only_one_only_on_a_mac, crates/flare-mods/src/hub/lifecycle.rs; the_program_tile_is_this_systems_program_or_says_there_is_none, crates/flare-mods/src/grants.rs)
+- [x] A quarantined helper (`com.apple.quarantine`), or one whose plugin folder holds any quarantined file, is refused with a sentence instead of a Gatekeeper dialog, and a Windows program named for the Mac or a `\` path is refused. Stands in for the `.exe` rule. Flare's own zip install adds no quarantine, on purpose and as on Windows (no mark of the web passed on): the approved install is the check. (macOS: mac_only_an_executable_inside_the_folder_starts, mac_a_helper_is_refused_while_any_file_of_its_folder_is_quarantined, crates/flare-mods/src/helper.rs)
+- [x] An install from a zip keeps a file's execute bit (as `0755`, nothing else of the zip's mode), and the `helpers.macos.command` program is always made `0755`, so a zip made on Windows (no unix modes) installs a helper that starts. Windows has no such bit. (an_executable_in_the_zip_stays_executable_and_nothing_else_does, a_mac_helper_from_a_zip_without_modes_is_installed_executable, crates/flare-mods/src/install.rs)
+- [x] A helper runs only while its plugin is on and hears the events it may see, one that ends too often is stopped, and an update and a removal wait for it, in the app, with a `helpers.macos` script; a stop while it starts leaves no zombie. Stands in for the same tests on Windows, which were ignored on a Mac. (macOS: a_helper_runs_only_while_its_plugin_is_on_and_hears_the_events_it_may_see, a_helper_without_tabs_hears_no_tab_events_and_one_that_ends_too_often_is_stopped, an_update_of_a_plugin_whose_helper_runs_waits_for_it_to_end_and_starts_it_again, crates/flare/src/appctl/tests/mods_tests/plugin_install.rs; mac_a_helper_stopped_while_it_starts_is_reaped_and_the_wait_returns, crates/flare-mods/src/helper.rs)
+- [x] Every sample plugin loads, turns on and answers one round trip of its protocol (a call its page makes, or the tour's tool). The samples are pages only, so none needed a macOS form. (every_sample_plugin_loads_turns_on_and_answers_one_round_trip_of_its_protocol, crates/flare/src/appctl/tests/mods_tests/plugin_samples.rs)
+
+Step 3 is "Open in Flare" (regression rules 1061 to 1063), the Mac counterpart of the Explorer verb and of a second
+launch's hand-off (`crates/flare-win/src/macos/open_in.rs`, wired in `crates/flare/src/window.rs`):
+
+- [x] Finder's Services menu offers "Open in Flare" on folders and files (`NSServices`: `NSSendFileTypes` `public.folder` and `public.item`, read as `public.file-url` or `NSFilenamesPboardType`, on by default through `NSRequiredContext`); the plist fragment is valid (`plutil -lint`) and its message is the provider's selector. Stands in for the Explorer verb's registry keys (O4 label). (macOS: the_service_plist_is_valid_and_offers_folders_and_files, the_service_selector_is_the_plists_message, crates/flare-win/src/macos/open_in.rs)
+- [x] The service turns what Finder put on the pasteboard into one request, the one a second launch sends: a folder opens as a new tab, a file opens the folder that holds it, each path once, at most 32, non-file URLs left out, and an empty pasteboard gets the sentence "Flare found no folder or file to open." Stands in for the verb's `"%V"` command line. (macOS: file_urls_become_paths_and_other_urls_are_left_out, the_older_file_name_list_is_read_when_there_are_no_file_urls, the_request_is_a_second_launchs_hand_off_with_each_path_once, a_folder_opens_as_itself_and_a_file_as_the_folder_that_holds_it, crates/flare-win/src/macos/open_in.rs; open_in_service_turns_finders_files_into_one_tab_request, crates/flare-win/tests/appkit.rs)
+- [x] A path whose name ends in `"` opens as itself off Windows; only Windows turns Explorer's `C:"` back into the drive root. (off_windows_a_name_that_ends_in_a_quote_is_kept_as_it_is, crates/flare-win/src/argv.rs)
+- [x] `open -a Flare <folder>` (and any app's open request) reaches the same path through `application:openURLs:`, added to winit's app delegate without replacing a method it has, installed before the loop runs so the launch's own request is kept; the command line's paths are not also opened as documents (`NSTreatUnknownArgumentsAsOpen` NO, in memory). Stands in for a second launch with a folder argument. (macOS: open_in_open_urls_is_added_to_the_delegate_and_opens_tabs_but_never_replaces_one, open_in_command_line_paths_are_not_open_documents, crates/flare-win/tests/appkit.rs; open_in_flare_feeds_the_hand_off_sink_before_the_loop_runs, crates/flare/src/window.rs)
+
+Still to see on a Mac with the installed app (not ratchet lines, never run locally: nothing may register a service
+with the running system): the item in Finder's Services menu and its right-click menu once `pbs` has read the
+installed `Flare.app`, and a folder opening as a tab in the running Flare. The fragment reaches `Flare.app` when phase
+8's `release::app_keys` takes `flare_win::open_in::plist_keys(APP_NAME)` (a one-line merge; this branch does not touch
+the bundler, which phase 8 rewrites). Dropping a folder on Flare's Dock icon needs a `CFBundleDocumentTypes` entry,
+which phase 8 decided against ("Flare opens no file kind"), so it is not offered; `open -a Flare` and the service do
+the same job. After that merge, a test on the built bundle checks `NSPortName` equals `CFBundleExecutable` (rule 1063),
+or the item would show and the call never arrive. A `plugin.json` with `helpers` loads only in builds with this phase:
+released Windows builds refuse the unknown key (`docs/surfaces/plugins.md`). No
+sample plugin has a helper, so no sample shows `helpers.macos`; a sample helper would need a program in the repo for
+each system. Accepted gaps (rule 1053): a process that leaves the session and is orphaned by its parent within one
+250 ms tick is not caught, nor one that left the session of a helper that killed its guard by pid.
 
 ## macOS port, phase 7: dictation (2026-11-09)
 

@@ -271,22 +271,63 @@ fn update_opens_the_picker_in_the_folder_the_zip_came_from_and_a_restart_keeps_i
     assert_eq!(saved.source, None, "a folder is not a source");
 }
 
-/// A plugin folder with `helper.exe` (a copy of cmd.exe) that runs `cmd /c <line>`.
+/// A plugin folder with its helper, which runs `line` in the system's shell. Windows: `helper.exe` (a copy of cmd.exe)
+/// runs `cmd /c <line>`, named by `helper` as a manifest always has. macOS (port phase 6, rule 1057): `helper`, a `#!`
+/// script that hands its arguments to `/bin/sh`, named by `helpers.macos`, runs `sh -c <line>`.
 fn helper_plugin(root: &Path, perms: &str, line: &str) {
+    #[cfg(target_os = "macos")]
+    flare_proc::guard::use_test_entry("appctl::tests::mods_tests::plugin_install::guard_entry")
+        .unwrap();
     let to = root.join("demo");
     std::fs::create_dir_all(&to).unwrap(); // sync-ok: test code only, never the app
-    let sys = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-    std::fs::copy(format!(r"{sys}\System32\cmd.exe"), to.join("helper.exe")).unwrap(); // sync-ok: test code only, never the app
+    let (name, bytes) = helper_program();
+    std::fs::write(to.join(name), bytes).unwrap(); // sync-ok: test code only, never the app
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(to.join(name), std::fs::Permissions::from_mode(0o755)).unwrap(); // sync-ok: test code only, never the app
+    }
     std::fs::write(to.join("plugin.json"), helper_json("1.0.0", perms, line)).unwrap(); // sync-ok: test code only, never the app
     std::fs::write(to.join("bg.html"), "<p>bg</p>").unwrap(); // sync-ok: test code only, never the app
 }
 
+/// Not a test on its own: a Mac helper's guard started by this binary's tests runs as this test (rule 1054).
+#[cfg(target_os = "macos")]
+#[test]
+fn guard_entry() {
+    flare_proc::guard::run_if_guard();
+}
+
+/// The helper program's file name in the plugin folder and its bytes.
+fn helper_program() -> (&'static str, Vec<u8>) {
+    if cfg!(windows) {
+        let sys = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        (
+            "helper.exe",
+            std::fs::read(format!(r"{sys}\System32\cmd.exe")).unwrap(), // sync-ok: test code only, never the app
+        )
+    } else {
+        ("helper", b"#!/bin/sh\nexec /bin/sh \"$@\"\n".to_vec())
+    }
+}
+
+/// A line for the helper's shell that waits about a minute.
+fn wait_a_minute() -> &'static str {
+    if cfg!(windows) {
+        "ping -n 60 127.0.0.1 >nul"
+    } else {
+        "sleep 60"
+    }
+}
+
 /// The text of [`helper_plugin`]'s `plugin.json` at `version`.
 fn helper_json(version: &str, perms: &str, line: &str) -> String {
-    let helper = format!(
-        r#","helper":{{"command":"helper.exe","args":["/d","/c",{}]}}"#,
-        serde_json::to_string(line).unwrap()
-    );
+    let line = serde_json::to_string(line).unwrap();
+    let helper = if cfg!(windows) {
+        format!(r#","helper":{{"command":"helper.exe","args":["/d","/c",{line}]}}"#)
+    } else {
+        format!(r#","helpers":{{"macos":{{"command":"helper","args":["-c",{line}]}}}}"#)
+    };
     plugin_json(version, perms, &helper)
 }
 
@@ -300,15 +341,15 @@ fn helpers_running(f: &Fx) -> Vec<String> {
 }
 
 #[cfg_attr(
-    not(windows),
-    ignore = "plugin helpers need the Windows job object; macOS phase 6 of the port plan"
+    not(any(windows, target_os = "macos")),
+    ignore = "plugin helpers are built on Windows and macOS only"
 )]
 #[test]
 fn a_helper_runs_only_while_its_plugin_is_on_and_hears_the_events_it_may_see() {
     let f = fx();
     let _slot = with_fake(&f);
     let w = world(&f, |root| {
-        helper_plugin(root, r#"["process","tabs"]"#, "ping -n 60 127.0.0.1 >nul")
+        helper_plugin(root, r#"["process","tabs"]"#, wait_a_minute())
     });
     let heard: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
     {
@@ -347,8 +388,8 @@ fn a_helper_runs_only_while_its_plugin_is_on_and_hears_the_events_it_may_see() {
 }
 
 #[cfg_attr(
-    not(windows),
-    ignore = "plugin helpers need the Windows job object; macOS phase 6 of the port plan"
+    not(any(windows, target_os = "macos")),
+    ignore = "plugin helpers are built on Windows and macOS only"
 )]
 #[test]
 fn a_helper_without_tabs_hears_no_tab_events_and_one_that_ends_too_often_is_stopped() {
@@ -376,9 +417,16 @@ fn a_helper_without_tabs_hears_no_tab_events_and_one_that_ends_too_often_is_stop
     )]);
     assert!(heard.lock().unwrap().is_empty());
     // `exit 2` ends at once: three restarts, then it stays stopped and Settings says so.
-    f.pump_until("the helper is stopped", |_| {
-        w.hub.helper_stopped("demo").is_some()
-    });
+    // Four starts and four ends, each end waited for: on a busy runner that passes the five seconds of `pump_until`.
+    let t = std::time::Instant::now();
+    while w.hub.helper_stopped("demo").is_none() {
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(30),
+            "timed out waiting for the helper to be stopped"
+        );
+        f.pump();
+        std::thread::sleep(std::time::Duration::from_millis(5)); // sync-ok: test code only, never the app
+    }
     assert_eq!(
         w.hub.snapshot().mods[0].stopped.as_deref(),
         Some(flare_mods::helper::STOPPED_HELPER)
@@ -390,8 +438,8 @@ fn a_helper_without_tabs_hears_no_tab_events_and_one_that_ends_too_often_is_stop
 }
 
 #[cfg_attr(
-    not(windows),
-    ignore = "plugin helpers need the Windows job object; macOS phase 6 of the port plan"
+    not(any(windows, target_os = "macos")),
+    ignore = "plugin helpers are built on Windows and macOS only"
 )]
 #[test]
 fn an_update_of_a_plugin_whose_helper_runs_waits_for_it_to_end_and_starts_it_again() {
@@ -399,7 +447,7 @@ fn an_update_of_a_plugin_whose_helper_runs_waits_for_it_to_end_and_starts_it_aga
     // the stopped helper to end, or the move is refused.
     let f = fx();
     let _slot = with_fake(&f);
-    let line = "ping -n 60 127.0.0.1 >nul";
+    let line = wait_a_minute();
     let w = world(&f, |root| helper_plugin(root, r#"["process"]"#, line));
     recycle_by_deleting(&w);
     f.ctl
@@ -409,8 +457,7 @@ fn an_update_of_a_plugin_whose_helper_runs_waits_for_it_to_end_and_starts_it_aga
     assert_eq!(helpers_running(&f), ["demo"]);
     let log = flare_mods::helper::log_file(&f.dir.path().join("plugins-logs"), "demo");
     f.pump_until("the helper runs", |_| log.exists());
-    let sys = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-    let exe = std::fs::read(format!(r"{sys}\System32\cmd.exe")).unwrap(); // sync-ok: test code only, never the app
+    let (name, exe) = helper_program();
     let mut cur = std::io::Cursor::new(Vec::new());
     {
         let mut z = zip::ZipWriter::new(&mut cur);
@@ -420,7 +467,8 @@ fn an_update_of_a_plugin_whose_helper_runs_waits_for_it_to_end_and_starts_it_aga
             .unwrap();
         z.start_file("bg.html", o).unwrap();
         z.write_all(b"<p>bg</p>").unwrap();
-        z.start_file("helper.exe", o).unwrap();
+        // The zip marks the program executable, and the install keeps that bit (rule 1059).
+        z.start_file(name, o.unix_permissions(0o755)).unwrap();
         z.write_all(&exe).unwrap();
         z.finish().unwrap();
     }
