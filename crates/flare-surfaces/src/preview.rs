@@ -61,6 +61,14 @@ pub fn classify(path: &str) -> Option<PanelKind> {
     }
 }
 
+/// The markdown files: a text file that opens compiled and has the three views (`mdview`).
+pub const MARKDOWN_EXTS: [&str; 2] = ["md", "markdown"];
+
+/// True for a markdown file by its name.
+pub fn is_markdown(path: &str) -> bool {
+    ext_of(path).is_some_and(|e| MARKDOWN_EXTS.contains(&e.as_str()))
+}
+
 /// The kind for a resolved path AND its canonical form: both must name the same previewable kind,
 /// so a link called `a.png` that points at `run.exe` shows nothing.
 pub fn classify_resolved(abs: &str, canonical: &str) -> Option<PanelKind> {
@@ -171,6 +179,20 @@ fn decode_text(buf: &[u8]) -> std::borrow::Cow<'_, str> {
 /// Reads up to `cap` bytes of a text file. Bytes that are not UTF-8 show as replacement marks; a
 /// file with a NUL in its first 8 KB is not text.
 pub fn read_text(path: &Path, cap: usize) -> Result<TextDoc, Reason> {
+    let (buf, more, len) = read_capped(path, cap)?;
+    Ok(doc_of(&decode_text(&buf), more, len))
+}
+
+/// Reads up to `cap` bytes of a text file as one string, for a page made of it (a markdown view): the same checks and
+/// decoding as [`read_text`], without the shaping into rows. The bool says the file goes on past the cap.
+pub fn read_source(path: &Path, cap: usize) -> Result<(String, bool), Reason> {
+    let (buf, more, _) = read_capped(path, cap)?;
+    Ok((decode_text(&buf).into_owned(), more))
+}
+
+/// The first `cap` bytes of a file, whether it goes on, and its real length. A file with a NUL in its first 8 KB (and
+/// no UTF-16 mark) is not text.
+fn read_capped(path: &Path, cap: usize) -> Result<(Vec<u8>, bool, u64), Reason> {
     // sync-ok: runs on a worker thread only
     let file = std::fs::File::open(path).map_err(|e| io_reason(&e))?;
     let meta = file.metadata().map_err(|e| io_reason(&e))?;
@@ -190,7 +212,7 @@ pub fn read_text(path: &Path, cap: usize) -> Result<TextDoc, Reason> {
     if !bom16 && buf.iter().take(8192).any(|b| *b == 0) {
         return Err(Reason::NotText);
     }
-    Ok(doc_of(&decode_text(&buf), more, meta.len()))
+    Ok((buf, more, meta.len()))
 }
 
 /// The rows of `text`: at most `LINES_MAX`, each shaped for drawing. `more` says a byte cap already
@@ -390,6 +412,35 @@ mod tests {
                 "{ext}"
             );
         }
+    }
+
+    #[test]
+    fn a_markdown_file_is_known_by_its_extension_in_any_case() {
+        for name in [r"C:\a\README.md", "x/notes.MARKDOWN", "a.Md"] {
+            assert!(is_markdown(name), "{name}");
+            assert_eq!(classify(name), Some(PanelKind::Text), "still a text file");
+        }
+        for name in ["a.txt", "a.mdx", "md", "a.md.txt", r"C:\x.md\a.rs"] {
+            assert!(!is_markdown(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_markdown_source_is_read_whole_and_says_when_it_was_cut() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.md");
+        std::fs::write(&p, b"\xEF\xBB\xBF# Hi\r\n\tx\r\n").unwrap(); // sync-ok: test code only
+        assert_eq!(
+            read_source(&p, 1000).unwrap(),
+            ("# Hi\r\n\tx\r\n".to_string(), false)
+        );
+        assert!(read_source(&p, 5).unwrap().1, "the cap cut it");
+        std::fs::write(&p, b"a\0b").unwrap(); // sync-ok: test code only
+        assert_eq!(read_source(&p, 1000), Err(Reason::NotText));
+        assert_eq!(
+            read_source(&dir.path().join("gone.md"), 10),
+            Err(Reason::Missing)
+        );
     }
 
     #[test]

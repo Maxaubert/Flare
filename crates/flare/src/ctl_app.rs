@@ -19,7 +19,7 @@
 //! `storage.*` reads and changes the plugin's own store here, its writes going to a worker of their own.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -374,7 +374,6 @@ pub struct AppsCfg {
     /// False only for the e2e's seam `APP_NO_POLICY`: a page is written without its policy so the second
     /// wall (the browser glue's refusal of outside requests) can be tested alone. Always true otherwise.
     pub policy: bool,
-    seq: AtomicU64,
 }
 
 impl AppsCfg {
@@ -392,7 +391,6 @@ impl AppsCfg {
             network,
             mermaid,
             policy: true,
-            seq: AtomicU64::new(0),
         }
     }
 
@@ -1522,7 +1520,7 @@ impl AppDispatcher {
         (deadline, cancel): (Instant, &CancelFlag),
     ) -> Result<Value, CtlError> {
         let apps = self.apps()?;
-        let seq = apps.seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let seq = app::next_seq();
         let spec = app::write_app(&apps.root, seq, files, allow_network).map_err(|e| {
             CtlError::new(
                 code::INTERNAL,
@@ -4609,6 +4607,7 @@ mod tests {
                     url: "https://flare-app-1.local/index.html".into(),
                     allow_network: false,
                     module: None,
+                    source: None,
                 },
                 title: "SECRET".into(),
                 diagram: false,

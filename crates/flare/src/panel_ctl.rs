@@ -18,13 +18,14 @@ use std::sync::{Arc, Mutex};
 
 use flare_surfaces::PanelKind;
 use flare_surfaces::app::{self, AppSpec};
+use flare_surfaces::mdview::{self, MdView};
 use flare_surfaces::preview::{self, Cut, Decoded, LINES_MAX, Reason, TEXT_CAP};
-use flare_surfaces::state::TabPanels;
+use flare_surfaces::state::{TabPanel, TabPanels};
 use flare_surfaces::store::{PanelStore, SavedTabPanel, is_blank, match_restored};
-use slint::{Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
+use slint::{Global, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
-use crate::AppWindow;
 use crate::appctl::{Post, UiMsg};
+use crate::{AppWindow, Theme};
 
 /// A worker's answer for the panel controller.
 pub enum PanelMsg {
@@ -47,6 +48,13 @@ pub enum PanelMsg {
         cols: usize,
         rows: Vec<SharedString>,
         nums: Vec<i32>,
+    },
+    /// A markdown view's page, written on a worker: the app it is served as, or why not (the panel then falls back to
+    /// Code).
+    Page {
+        generation: u64,
+        tab: String,
+        result: Result<AppSpec, Reason>,
     },
 }
 
@@ -113,6 +121,7 @@ impl std::fmt::Debug for PanelMsgBox {
             PanelMsg::Image { .. } => "PanelMsg::Image",
             PanelMsg::Text { .. } => "PanelMsg::Text",
             PanelMsg::Wrapped { .. } => "PanelMsg::Wrapped",
+            PanelMsg::Page { .. } => "PanelMsg::Page",
         })
     }
 }
@@ -146,6 +155,28 @@ enum Content {
         /// False while a big file waits for its first wrap (the panel says "Opening").
         ready: bool,
     },
+    /// A markdown view's page: the tab's browser draws it (the web controller owns the window's properties then).
+    Page,
+}
+
+/// A markdown view's page (`mdview`): the file, view and look it was made of, and the app it is served as. It lives
+/// while the tab shows that file in that view; its folder goes when it is replaced or the tab shows something else.
+struct MdPage {
+    target: String,
+    view: MdView,
+    look: mdview::Look,
+    spec: AppSpec,
+}
+
+/// The panel's look as the window has it now: light or dark, and its solid ground and ink.
+fn look_of(app: &AppWindow) -> mdview::Look {
+    let t = Theme::get(app);
+    let rgb = |c: slint::Color| (c.alpha() == 255).then(|| [c.red(), c.green(), c.blue()]);
+    mdview::Look {
+        light: t.get_light(),
+        ground: rgb(t.get_ground_solid()),
+        ink: rgb(t.get_text()),
+    }
 }
 
 /// Where the reader was in a tab's file when the tab left the front: the line at the top of a text view, and whether a
@@ -163,6 +194,9 @@ struct Shown {
     tab: String,
     kind: PanelKind,
     target: String,
+    /// The view the file is shown in (Code for every file that is not markdown), and for a page the look it follows.
+    view: MdView,
+    look: Option<mdview::Look>,
     generation: u64,
     content: Content,
 }
@@ -245,6 +279,13 @@ pub struct PanelCtl {
     wrap_moving: bool,
     /// How many wraps were made (inline or on a worker): the tests hold that a drag makes none and its release one.
     wraps: u64,
+    /// The markdown view's page each tab has (Compiled or Markdown), by tab.
+    pages: HashMap<String, MdPage>,
+    /// Tabs whose markdown page could not be made or shown (a render that failed, no WebView2 runtime), with the file:
+    /// they show it in Code until the person picks a view or the tab shows another file.
+    fallback: HashMap<String, String>,
+    /// The panel's look the pages follow, as the window last had it.
+    look: mdview::Look,
 }
 
 /// The checkerboard tile: 2 by 2 squares of 8 px, two neutral greys that read on any theme.
@@ -270,6 +311,11 @@ pub(crate) fn checker_tile() -> Image {
 /// The last part of a path, for the header.
 fn file_name(path: &str) -> &str {
     path.rsplit(['\\', '/']).next().unwrap_or(path)
+}
+
+/// A markdown file read from disk (text handed over is never one, whatever its title).
+fn is_md(p: &TabPanel) -> bool {
+    p.kind == PanelKind::Text && !p.target.starts_with(INLINE) && preview::is_markdown(&p.target)
 }
 
 /// Whether a panel of `kind` may point at `target`: a file on a local drive of the right kind, or
@@ -329,6 +375,74 @@ impl PanelCtl {
             wrap_pending: 0,
             wrap_moving: false,
             wraps: 0,
+            pages: HashMap::new(),
+            fallback: HashMap::new(),
+            look: mdview::Look::default(),
+        }
+    }
+
+    /// The view the tab's panel shows its file in: Code for a file that is not markdown, for text handed over and when
+    /// pages cannot be written (no apps folder); else Code after the file's page failed, or the person's pick, or
+    /// Compiled.
+    fn view_of(&self, tab: &str, p: &TabPanel) -> MdView {
+        if !is_md(p) || self.apps_root.is_none() || self.fallback.get(tab) == Some(&p.target) {
+            return MdView::Code;
+        }
+        p.view.unwrap_or_default()
+    }
+
+    /// The view of the markdown file the tab's OPEN panel shows; None for any other panel.
+    pub fn md_view(&self, tab: &str) -> Option<MdView> {
+        let p = self.panels.open_on(tab).filter(|p| is_md(p))?;
+        Some(self.view_of(tab, p))
+    }
+
+    /// The header's view control picked `view` for the tab's markdown file. True when what shows changes.
+    pub fn set_md_view(&mut self, tab: &str, view: MdView) -> bool {
+        let Some(before) = self.md_view(tab) else {
+            return false;
+        };
+        // A pick is the person's: a page that failed is tried again when they ask for one.
+        let retried = self.fallback.remove(tab).is_some();
+        self.panels.set_view(tab, view);
+        before != view || (retried && view.is_page())
+    }
+
+    /// The page the tab shows now: its panel is open on the file the page was made of, in that view and look.
+    fn page_of(&self, tab: &str) -> Option<&MdPage> {
+        let p = self.panels.open_on(tab)?;
+        let page = self.pages.get(tab)?;
+        (page.target == p.target && page.view == self.view_of(tab, p) && page.look == self.look)
+            .then_some(page)
+    }
+
+    /// The tab's panel shows a markdown view's page now.
+    pub fn is_md_page(&self, tab: &str) -> bool {
+        self.page_of(tab).is_some()
+    }
+
+    /// The address the tab's browser shows: its web panel's page, or its markdown view's page.
+    pub fn page_target(&self, tab: &str) -> Option<String> {
+        self.web_target(tab)
+            .or_else(|| self.page_of(tab).map(|p| p.spec.url.clone()))
+    }
+
+    /// The tab's markdown page could not be shown (its browser failed, or the WebView2 runtime is missing): the file
+    /// shows in Code instead. False when the tab shows no markdown page.
+    pub fn page_failed(&mut self, tab: &str) -> bool {
+        let Some(target) = self.page_of(tab).map(|p| p.target.clone()) else {
+            return false;
+        };
+        log::info!("a markdown view's page could not be shown; the file shows as Code");
+        self.fallback.insert(tab.to_string(), target);
+        self.drop_page(tab);
+        true
+    }
+
+    /// The tab's markdown page goes, and its folder with it (on a worker).
+    fn drop_page(&mut self, tab: &str) {
+        if let Some(page) = self.pages.remove(tab) {
+            self.remove_folder(page.spec);
         }
     }
 
@@ -365,6 +479,12 @@ impl PanelCtl {
         }
         // Whatever the tab shows now replaces a mini-app it had.
         self.drop_app(tab);
+        // A file shown (again) opens in its default view, every time: a page that failed is tried again. The page of
+        // another file goes; the same file's stays until its new page replaces it.
+        self.fallback.remove(tab);
+        if self.pages.get(tab).is_some_and(|p| p.target != target) {
+            self.drop_page(tab);
+        }
         // The file may have changed since it was read, or failed and now exist: a click on what
         // is on show reads it again.
         if self.shown.as_ref().is_some_and(|s| s.tab == tab) {
@@ -438,6 +558,7 @@ impl PanelCtl {
     /// the tab had goes first. False for an address the panel cannot hold.
     pub fn show_app(&mut self, tab: &str, spec: AppSpec, title: &str) -> bool {
         self.drop_app(tab);
+        self.drop_page(tab);
         self.titles.remove(tab);
         self.inline.remove(tab);
         if self.shown.as_ref().is_some_and(|s| s.tab == tab) {
@@ -456,6 +577,7 @@ impl PanelCtl {
     /// What the tab showed goes first. False for an address the panel cannot hold.
     pub fn show_mod(&mut self, tab: &str, spec: AppSpec, title: &str) -> bool {
         self.drop_app(tab);
+        self.drop_page(tab);
         self.titles.remove(tab);
         self.inline.remove(tab);
         if self.shown.as_ref().is_some_and(|s| s.tab == tab) {
@@ -488,14 +610,18 @@ impl PanelCtl {
         v
     }
 
-    /// The mini-app or mod the tab shows (open or not).
+    /// The mini-app or mod the tab shows (open or not), or the markdown view's page it shows now.
     pub fn app_spec(&self, tab: &str) -> Option<&AppSpec> {
-        self.apps.get(tab).or_else(|| self.mods.get(tab))
+        self.apps
+            .get(tab)
+            .or_else(|| self.mods.get(tab))
+            .or_else(|| self.page_of(tab).map(|p| &p.spec))
     }
 
-    /// The tab shows a page that is not the person's to point anywhere: a mini-app or a mod (no address bar).
+    /// The tab shows a page that is not the person's to point anywhere: a mini-app, a mod or a markdown view (no
+    /// address bar).
     pub fn is_app(&self, tab: &str) -> bool {
-        self.apps.contains_key(tab) || self.mods.contains_key(tab)
+        self.apps.contains_key(tab) || self.mods.contains_key(tab) || self.is_md_page(tab)
     }
 
     pub fn reopen(&mut self, tab: &str) -> bool {
@@ -608,6 +734,8 @@ impl PanelCtl {
         self.refused.remove(tab);
         self.memory.remove(tab);
         self.drop_app(tab);
+        self.drop_page(tab);
+        self.fallback.remove(tab);
         self.panels.forget(tab);
         self.titles.remove(tab);
         self.inline.remove(tab);
@@ -641,6 +769,7 @@ impl PanelCtl {
         self.inline_seq += 1;
         let target = format!("{INLINE}{}", self.inline_seq);
         self.drop_app(tab);
+        self.drop_page(tab);
         if !self.panels.show(tab, PanelKind::Text, &target) {
             return false;
         }
@@ -712,7 +841,11 @@ impl PanelCtl {
                 panel: self
                     .panels
                     .get(id)
-                    .filter(|p| !p.target.starts_with(INLINE) && !self.is_app(id))
+                    .filter(|p| {
+                        !p.target.starts_with(INLINE)
+                            && !self.apps.contains_key(id)
+                            && !self.mods.contains_key(id)
+                    })
                     .cloned(),
             })
             .collect();
@@ -743,15 +876,27 @@ impl PanelCtl {
         app.set_panel_open(open.is_some());
         app.set_panel_share(open.and_then(|p| p.width).unwrap_or(0.0));
         app.set_panel_wrap_on(self.wrap);
+        self.look = look_of(app);
+        // The header's view control, over a markdown file only.
+        let md = front.and_then(|t| self.md_view(t));
+        app.set_panel_md(md.is_some());
+        app.set_panel_md_view(md.map_or(0, MdView::index));
         // A web panel is not read from disk: the web controller owns its content (and the window's
         // `panel-*` properties for it).
         let want = front.and_then(|t| {
             self.panels
                 .open_on(t)
                 .filter(|p| p.kind.is_built() && p.kind != PanelKind::Web && !p.kind.is_convo())
-                .map(|p| (t.to_string(), p.kind.clone(), p.target.clone()))
+                .map(|p| {
+                    (
+                        t.to_string(),
+                        p.kind.clone(),
+                        p.target.clone(),
+                        self.view_of(t, p),
+                    )
+                })
         });
-        let Some((tab, kind, target)) = want else {
+        let Some((tab, kind, target, view)) = want else {
             if self.shown.is_some() {
                 self.remember(app);
                 self.shown = None;
@@ -762,20 +907,23 @@ impl PanelCtl {
             self.reload = false;
             return;
         };
-        let same = self
-            .shown
-            .as_ref()
-            .is_some_and(|s| s.tab == tab && s.kind == kind && s.target == target);
-        if same && !std::mem::take(&mut self.reload) {
+        // A page follows the panel's look: a new look makes the page again.
+        let look = view.is_page().then_some(self.look);
+        let same = self.shown.as_ref().is_some_and(|s| {
+            s.tab == tab && s.kind == kind && s.target == target && s.view == view && s.look == look
+        });
+        let reload = std::mem::take(&mut self.reload);
+        if same && !reload {
             // The width or the setting may have changed since the rows were made.
-            if self.wrap_moving {
-                self.live_wrap(app);
-            } else {
-                self.settle_wrap(app);
+            if !view.is_page() {
+                if self.wrap_moving {
+                    self.live_wrap(app);
+                } else {
+                    self.settle_wrap(app);
+                }
             }
             return;
         }
-        self.reload = false;
         // Another tab's file comes to the front: where the reader was in the one that leaves is kept for its return.
         if !same && self.shown.as_ref().is_some_and(|s| s.tab != tab) {
             self.remember(app);
@@ -783,6 +931,21 @@ impl PanelCtl {
         self.generation += 1;
         let generation = self.generation;
         self.current.store(generation, Ordering::SeqCst);
+        // The tab's page of this file, view and look is shown again as it is (the tab back at the front, the panel
+        // opened again). A click on the file reads it afresh.
+        if view.is_page() && !reload && self.page_of(&tab).is_some() {
+            self.shown = Some(Shown {
+                tab,
+                kind,
+                target,
+                view,
+                look,
+                generation,
+                content: Content::Page,
+            });
+            self.push(app);
+            return;
+        }
         if same {
             // What is on show stays until the new read answers (no flash of "Opening").
             if let Some(s) = self.shown.as_mut() {
@@ -793,19 +956,22 @@ impl PanelCtl {
                 tab: tab.clone(),
                 kind: kind.clone(),
                 target: target.clone(),
+                view,
+                look,
                 generation,
                 content: Content::Reading,
             });
             self.push(app);
         }
-        self.spawn_load(&tab, &kind, &target, generation);
+        match look {
+            Some(look) => self.spawn_render(&tab, &target, view, look, generation),
+            None => self.spawn_load(&tab, &kind, &target, generation),
+        }
     }
 
-    /// A worker's answer. Dropped when it is for a file no longer on show.
-    pub fn on_msg(&mut self, app: &AppWindow, msg: PanelMsg) {
-        let Some(shown) = self.shown.as_ref() else {
-            return;
-        };
+    /// A worker's answer. Dropped when it is for a file no longer on show. True when the window must be refreshed (a
+    /// markdown page arrived for the browser to show, or failed and the file shows as Code instead).
+    pub fn on_msg(&mut self, app: &AppWindow, msg: PanelMsg) -> bool {
         let (generation, tab) = match &msg {
             PanelMsg::Image {
                 generation, tab, ..
@@ -815,10 +981,24 @@ impl PanelCtl {
             }
             | PanelMsg::Wrapped {
                 generation, tab, ..
+            }
+            | PanelMsg::Page {
+                generation, tab, ..
             } => (*generation, tab.clone()),
         };
-        if generation != shown.generation || tab != shown.tab {
-            return;
+        let current = self
+            .shown
+            .as_ref()
+            .is_some_and(|s| s.generation == generation && s.tab == tab);
+        if !current {
+            // A page nobody will show: its folder goes now.
+            if let PanelMsg::Page {
+                result: Ok(spec), ..
+            } = msg
+            {
+                self.remove_folder(spec);
+            }
+            return false;
         }
         let content = match msg {
             PanelMsg::Image { result, .. } => match result {
@@ -835,6 +1015,45 @@ impl PanelCtl {
                 Ok(t) => self.text_content(app, &tab, generation, t),
                 Err(r) => Content::Failed(r.to_string()),
             },
+            PanelMsg::Page { result, .. } => {
+                let Some((target, view, look)) = self
+                    .shown
+                    .as_ref()
+                    .and_then(|s| s.look.map(|l| (s.target.clone(), s.view, l)))
+                else {
+                    if let Ok(spec) = result {
+                        self.remove_folder(spec);
+                    }
+                    return false;
+                };
+                match result {
+                    Ok(spec) => {
+                        let page = MdPage {
+                            target,
+                            view,
+                            look,
+                            spec,
+                        };
+                        if let Some(old) = self.pages.insert(tab.clone(), page) {
+                            self.remove_folder(old.spec);
+                        }
+                        if let Some(s) = self.shown.as_mut() {
+                            s.content = Content::Page;
+                        }
+                        self.push(app);
+                    }
+                    Err(why) => {
+                        // The file shows in Code: the next sync reads it the native way (a file that is gone says so
+                        // there, as any text file does).
+                        log::info!(
+                            "a markdown view could not be made ({why}); the file shows as Code"
+                        );
+                        self.fallback.insert(tab.clone(), target);
+                        self.drop_page(&tab);
+                    }
+                }
+                return true;
+            }
             PanelMsg::Wrapped {
                 seq,
                 cols,
@@ -843,7 +1062,7 @@ impl PanelCtl {
                 ..
             } => {
                 if seq != self.wrap_seq {
-                    return;
+                    return false;
                 }
                 self.wrap_pending = 0;
                 let top = self.top_line(app);
@@ -869,7 +1088,7 @@ impl PanelCtl {
                 self.apply_memory(app);
                 // The width may have moved while the wrap was on its way (a drag goes on while it is made).
                 self.live_wrap(app);
-                return;
+                return false;
             }
         };
         if let Some(s) = self.shown.as_mut() {
@@ -877,6 +1096,7 @@ impl PanelCtl {
         }
         self.push(app);
         self.apply_memory(app);
+        false
     }
 
     /// Keeps the reader's place in the file on show (a text view's top line, a picture's real-size state) for the
@@ -1239,6 +1459,18 @@ impl PanelCtl {
         app.set_panel_actual(false);
         let empty_rows: ModelRc<SharedString> = ModelRc::default();
         match &s.content {
+            // The page's browser draws the panel and the web controller pushes its properties: the native views let
+            // go of what they held.
+            Content::Page => {
+                app.set_panel_note("".into());
+                app.set_panel_picture(Image::default());
+                app.set_panel_alpha(false);
+                app.set_panel_lines(empty_rows);
+                app.set_panel_max_cols(0);
+                app.set_panel_foot("".into());
+                reset_wrap_props(app);
+                return;
+            }
             Content::Reading => {
                 app.set_panel_kind(0);
                 app.set_panel_sub("".into());
@@ -1359,6 +1591,78 @@ impl PanelCtl {
         app.set_panel_max_cols(0);
         app.set_panel_foot("".into());
         reset_wrap_props(app);
+    }
+
+    /// Makes the markdown view's page on a worker thread: the file is vetted and read as any text file is, the page
+    /// written from it (`mdview`) and put in a folder of its own under the apps root. The answer is a `PanelMsg::Page`;
+    /// a render the panel no longer wants stops at its next look, and a page written for nobody is removed.
+    fn spawn_render(
+        &self,
+        tab: &str,
+        target: &str,
+        view: MdView,
+        look: mdview::Look,
+        generation: u64,
+    ) {
+        let Some(root) = self.apps_root.clone() else {
+            return;
+        };
+        let post = Arc::clone(&self.post);
+        let failed = Arc::clone(&self.post);
+        let current = Arc::clone(&self.current);
+        let (tab, target) = (tab.to_string(), target.to_string());
+        let tab_again = tab.clone();
+        let title = self
+            .titles
+            .get(&tab)
+            .cloned()
+            .unwrap_or_else(|| file_name(&target).to_string());
+        let job = move || {
+            let stale = || current.load(Ordering::SeqCst) != generation;
+            let result = vetted(&target, &PanelKind::Text)
+                .and_then(|real| preview::read_source(Path::new(&real), TEXT_CAP))
+                .and_then(|(src, cut)| {
+                    mdview::page_for(view, &src, &title, look, cut, &stale)
+                        .ok_or(Reason::Superseded)
+                })
+                .and_then(|html| {
+                    if stale() {
+                        return Err(Reason::Superseded);
+                    }
+                    let mut spec = app::write_app(
+                        &root,
+                        app::next_seq(),
+                        &[(app::PAGE, html.as_bytes())],
+                        false,
+                    )
+                    .map_err(|e| Reason::Other(e.kind().to_string()))?;
+                    spec.source = Some(target.clone());
+                    Ok(spec)
+                });
+            if stale() {
+                if let Ok(spec) = &result {
+                    app::remove_app(&root, &spec.folder);
+                }
+                return;
+            }
+            post(UiMsg::Panel(PanelMsgBox(PanelMsg::Page {
+                generation,
+                tab,
+                result,
+            })));
+        };
+        if let Err(e) = std::thread::Builder::new()
+            .name("flare-panel-md".into())
+            .spawn(job)
+        {
+            log::warn!("could not start the markdown view: {e}");
+            // The panel does not wait for a page that will never come: the file shows as Code.
+            failed(UiMsg::Panel(PanelMsgBox(PanelMsg::Page {
+                generation,
+                tab: tab_again,
+                result: Err(Reason::Other("no worker".to_string())),
+            })));
+        }
     }
 
     /// Reads the file on a worker thread; the answer is a `UiMsg::Panel`.

@@ -2126,7 +2126,7 @@ Not in this version: click a path to preview, a `.gltf` with separate `.bin` or 
   web page's address bar, "Ask agent about the selection" on a mini-app or plugin page, "Ask agent about this file" on a file. It sits left of the
   button, so a page's native window cannot cover it.
 - **The frame.** `About this from <label>:` then `> ` per line, at most 4 KB with `> [cut]`. The label is the host or file name, cleaned and capped at
-  64 characters; a page Flare made itself reads "this page". A web page's host is the one its document gave with the text (`location.href`), so a click
+  64 characters; a page Flare made itself reads "this page", and a markdown view's page reads the file's name (rule 241). A web page's host is the one its document gave with the text (`location.href`), so a click
   while the next page loads still names the page that is showing.
 - **Refusals.** A short note over the terminal for 4 s: no agent, a question box up, no selection (mini-app and plugin pages, or a page that is not
   `http` or `https`), a page that did not answer, answered in a shape that names no page, or answered with more than the script can give (about
@@ -2149,3 +2149,33 @@ Point at a picture's path in the terminal for 350 ms and a small picture appears
 - **Tests.** `thumbs` (the clock, the cache, the worker, placement), the `term_ui` rig (`resting_on_an_image_path_*`, every hide reason, the refusals), `preview` (`a_thumbnail_*`), `ui_tests::thumb` at several scales and the `appctl` wiring.
 
 Not in this version: always-on thumbnails, web image URLs (network on hover), SVG (scripts), video, PDF, animation (first frame only), a disk cache.
+
+## Markdown views, 2026-11-10
+
+A `.md` or `.markdown` file opens **compiled** in the panel, every time (owner: "compiled by default"; no remembered preference). A control in
+the panel's header switches between three views; it is Flare's own chrome, drawn outside the page.
+
+| View | What you see | How |
+|---|---|---|
+| Compiled (default) | The formatted document: headings, lists, tables, code blocks, block quotes, GitHub callouts, task lists, footnotes | A page Flare writes |
+| Markdown | The text with its markdown coloured (headings, emphasis, code, links, quotes, list and task markers, raw HTML) | A page Flare writes |
+| Code | The text with line numbers and the wrap button, as before | The native Text panel |
+
+- **Keeps its view.** A panel's pick stays with it across a restart (`"view"` in `panels.json`, written only once picked). Showing a file again,
+  by a click or the agent's `show_file`, opens it compiled.
+- **Safety (rule 239).** The file is untrusted. `flare_surfaces::mdview` writes every tag from pulldown-cmark's events (0.13.4, pinned with no HTML
+  writer) and escapes all text: raw HTML shows as text, a picture shows its alt text, and a link has no address (its target is the tooltip) unless it
+  jumps to a heading or footnote inside the page. No script; the policy `default-src 'none'; style-src 'unsafe-inline'; img-src data:` comes first.
+  The page is a mini-app of its own in the sealed browser, with no network. Depth and size are capped and the render runs on a worker.
+  Headings of one name are numbered with a counter per name (as GitHub's slugger does), so a file of millions of empty `#` lines names its
+  anchors in linear time, and naming them stops too when the panel moves on.
+- **Look.** The page follows the panel: light or dark, the panel's own ground and ink, Segoe UI for text and Cascadia Mono for code, at a width
+  that reads well in a narrow panel. Narrow panels show the control as "Doc", "Md" and "Code".
+- **Fallback (rule 240).** If rendering fails or the WebView2 runtime is missing, the file shows in Code. Picking a view tries again.
+- **Ask agent (rule 241).** Works on selected text in the two page views, framed `About this from <file name>:`. With nothing selected the file's
+  path is sent, as from Code.
+- **Tests.** `mdview::tests` (escaping, links, anchors, pictures, caps, the stale stop, the look), `store` and `state` (the view and rule 40),
+  `preview` (`is_markdown`, `read_source`), `appctl::tests::md_tests` (fake browser: the default, the control, the restart, both fallbacks, Ask agent).
+- **Not covered.** A real WebView2 drawing the page: no e2e scenario yet.
+- **Not in this version.** Links that leave the page and pictures (each needs its own safety rules: opening an address from an untrusted file,
+  reading local image files), colouring for other code files, selection in the Code view, a `view` argument for agent tools.

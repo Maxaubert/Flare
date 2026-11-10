@@ -1794,6 +1794,7 @@ dependencies = [
  "flare-settings",
  "image",
  "log",
+ "pulldown-cmark",
  "serde_json",
  "tempfile",
  "unicode-width",

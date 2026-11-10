@@ -420,6 +420,15 @@ export component AppWindow inherits Window {
     out property <length> panel-wrap-button-y: panel-slot.wrap-button-y;
     out property <length> panel-wrap-button-w: panel-slot.wrap-button-w;
     callback panel-wrap-toggled();
+    // Markdown views (2026-11-10): the front panel shows a markdown file, the view it shows it in (Compiled 0, Markdown
+    // 1, Code 2), and the header control's pick.
+    in property <bool> panel-md;
+    in property <int> panel-md-view;
+    callback panel-md-view-picked(int);
+    out property <bool> panel-md-visible: panel-slot.md-visible;
+    out property <length> panel-md-x: panel-slot.md-x;
+    out property <length> panel-md-y: panel-slot.md-y;
+    out property <length> panel-md-w: panel-slot.md-w;
     // "Ask agent": the header's button, and the note that says why nothing was sent.
     in property <bool> panel-ask-on;
     callback panel-ask-agent();
@@ -1244,6 +1253,9 @@ export component AppWindow inherits Window {
                         wrap-on: root.panel-wrap-on;
                         number-count: root.panel-number-count;
                         wrap-toggled => { root.panel-wrap-toggled(); }
+                        md-file: root.panel-md;
+                        md-view: root.panel-md-view;
+                        md-view-picked(i) => { root.panel-md-view-picked(i); }
                         ask-on: root.panel-ask-on;
                         ask-agent => { root.panel-ask-agent(); }
                         ask-tip(a, b, c, d, e) => { root.panel-ask-tip(a, b, c, d, e); }
