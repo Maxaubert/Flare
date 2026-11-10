@@ -499,6 +499,9 @@ struct TabWeb {
 /// What the agent's input calls answer while a pop-up is open over the page (rule 250).
 pub const POPUP_OPEN: &str = "a pop-up is open, the person must finish it";
 
+/// What the bar says when its buttons or address are used while a pop-up is open over the page (rule 251).
+pub const POPUP_FIRST: &str = "Close the pop-up first";
+
 /// The bar's words for a pop-up that opened nothing because no click of the person's asked for it.
 pub const POPUP_BLOCKED: &str = "Pop-up blocked";
 
@@ -1951,8 +1954,12 @@ impl WebCtl {
         Ok(url)
     }
 
-    /// Sends the tab's page to `url` (already normalised).
+    /// Sends the tab's page to `url` (already normalised). Never while a pop-up is open over it (rule 251): the
+    /// pop-up's link back is to the page as it is.
     pub fn go_to(&mut self, tab: &str, url: &str) {
+        if self.popup_open(tab) {
+            return;
+        }
         if let Some(t) = self.tabs.get_mut(tab) {
             t.notice.clear();
             t.url = url.to_string();
@@ -1981,7 +1988,11 @@ impl WebCtl {
         self.update_cursor();
     }
 
+    /// A step through the page's history, a reload or a stop. Never while a pop-up is open over it (rule 251).
     pub fn nav(&mut self, tab: &str, nav: Nav) {
+        if self.popup_open(tab) {
+            return;
+        }
         if let Some(b) = self.backend.as_mut() {
             b.go(tab, nav);
         }
@@ -3303,6 +3314,10 @@ impl WebCtl {
                     && t.popups != sites
                 {
                     t.popups = sites;
+                    // The bar's "close the pop-up first" is old news once none is open (rule 251).
+                    if t.popups.is_empty() && t.notice == POPUP_FIRST {
+                        t.notice.clear();
+                    }
                     // The strip comes or goes: the page's box changes and the next sync moves what shows.
                     out.push(WebOut::Changed);
                 }

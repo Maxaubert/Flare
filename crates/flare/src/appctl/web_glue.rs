@@ -162,6 +162,12 @@ impl AppCtl {
             && !self.panels.is_app(&id)
             && self.web.can_go(&id, nav)
         {
+            // The page is hidden behind a pop-up that links back to it (rule 251): it stays as it is.
+            if self.web.popup_open(&id) {
+                self.web.notice(&id, crate::web_ctl::POPUP_FIRST);
+                self.refresh();
+                return;
+            }
             // Reload on a page whose renderer died makes the page again; any other step has nothing to step.
             if self.web.failure(&id).is_some() {
                 if nav == Nav::Reload && self.web.recover(&id) {
@@ -184,6 +190,12 @@ impl AppCtl {
     pub(super) fn web_submit(&mut self, text: &SharedString) {
         let Some(id) = self.front_id() else { return };
         if self.panels.web_target(&id).is_none() || self.panels.is_app(&id) {
+            return;
+        }
+        // The page is hidden behind a pop-up that links back to it (rule 251): it stays where it is.
+        if self.web.popup_open(&id) {
+            self.web.notice(&id, crate::web_ctl::POPUP_FIRST);
+            self.refresh();
             return;
         }
         // A page whose renderer died starts again at what is typed (the refresh below makes it).
@@ -478,6 +490,10 @@ impl AppCtl {
     ) -> Result<(String, bool), CtlError> {
         if !self.is_shell_tab(tab) {
             return Err(CtlError::new(code::NO_TAB, "that tab is closed"));
+        }
+        // A pop-up over the page is the person's to finish (rule 250): the page behind it is not replaced.
+        if self.web.popup_open(tab) {
+            return Err(CtlError::new(code::UNAVAILABLE, crate::web_ctl::POPUP_OPEN));
         }
         // A page whose renderer died is made again for the address (the refresh below opens it).
         self.web.recover(tab);

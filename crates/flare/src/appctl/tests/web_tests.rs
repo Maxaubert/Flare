@@ -3779,6 +3779,61 @@ fn popup(f: &Fx, slot: &Slot, tab: &str, site: &str) {
     f.pump();
 }
 
+/// How many times the page was sent somewhere or stepped through its history.
+fn moves(slot: &Slot) -> usize {
+    fake(slot)
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, Call::Navigate(..) | Call::Go(..)))
+        .count()
+}
+
+#[test]
+fn the_bar_leaves_the_page_behind_a_popup_alone() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    fake(&slot).say(WebEvent::History {
+        tab: id.clone(),
+        can_back: true,
+        can_forward: true,
+    });
+    f.pump();
+    f.h.advance(0);
+    popup(&f, &slot, &id, "bank.example");
+    let moved = moves(&slot);
+    f.h.comp.invoke_panel_web_back();
+    f.h.comp.invoke_panel_web_forward();
+    f.h.comp.invoke_panel_web_reload();
+    f.h.comp.invoke_panel_web_stop();
+    f.h.comp
+        .invoke_panel_web_submit("example.com/elsewhere".into());
+    f.pump();
+    f.h.advance(0);
+    assert_eq!(
+        moves(&slot),
+        moved,
+        "the page the pop-up links back to stays as it is"
+    );
+    assert_eq!(f.ctl.borrow().panels.web_target(&id).as_deref(), Some(PAGE));
+    assert_eq!(
+        f.h.comp.get_panel_sub().as_str(),
+        crate::web_ctl::POPUP_FIRST
+    );
+    // Once the person closes it, the note goes and the bar drives the page again.
+    f.h.comp.invoke_panel_web_popup_close();
+    f.pump();
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(f.h.comp.get_panel_sub().as_str(), "");
+    f.h.comp.invoke_panel_web_reload();
+    assert!(
+        fake(&slot)
+            .calls()
+            .contains(&Call::Go(id.clone(), Nav::Reload))
+    );
+}
+
 #[test]
 fn a_popup_shows_under_flares_strip_and_closing_it_brings_the_page_back() {
     let (f, _h, _) = live(Opts::default());
@@ -3849,6 +3904,7 @@ fn the_agents_input_calls_wait_for_the_person_while_a_popup_is_open() {
         assert_eq!(e.message, crate::web_ctl::POPUP_OPEN, "{what}");
     };
     let before = cdp_calls(&slot).len();
+    let moved = moves(&slot);
     refused(click_ref(&f, &id, "e1"), "a click");
     for (op, what) in [
         (
@@ -3886,11 +3942,22 @@ fn the_agents_input_calls_wait_for_the_person_while_a_popup_is_open() {
         ),
         "a navigation",
     );
+    // open_page on the tab would send the page behind the pop-up away and break its link back.
+    refused(
+        ask(&f, open_op(&id, TWO), Duration::from_secs(5)),
+        "open_page",
+    );
     assert_eq!(
         cdp_calls(&slot).len(),
         before,
         "nothing reached the page behind the pop-up"
     );
+    assert_eq!(
+        moves(&slot),
+        moved,
+        "the page behind the pop-up was not sent anywhere"
+    );
+    assert_eq!(f.ctl.borrow().panels.web_target(&id).as_deref(), Some(PAGE));
     // Reading the page behind it still works, and the panel's state says a pop-up is open.
     let rx = look(&f, &id);
     f.pump();

@@ -1093,9 +1093,10 @@ one controller per tab with an open web panel, parented to Flare's window.
   shows again; a pop-up from the pop-up stacks on top. It has the panel's profile, saved passwords and autofill, the permission
   denial and the address rule; its downloads are cancelled. The browser tools never reach it: while one is open, click, type,
   press, scroll, navigate and eval answer "a pop-up is open, the person must finish it", a look still reads the page behind, and
-  `browser_state` says a pop-up is open. Mini-apps and plugin pages still open nothing. Held by regression rules 249 and 250
+  `browser_state` says a pop-up is open; `open_page` answers the same. The bar's Back, Forward, Reload and address leave the page
+  behind a pop-up alone and say "Close the pop-up first". Mini-apps and plugin pages still open nothing. Held by regression rules 249 to 251
   (`popup_plan`'s tests in `web.rs`, the `popups.rs` tests, `a_popup_shows_under_flares_strip_and_closing_it_brings_the_page_back`,
-  `the_agents_input_calls_wait_for_the_person_while_a_popup_is_open`, `closing_the_tab_takes_its_popups_with_it`,
+  `the_agents_input_calls_wait_for_the_person_while_a_popup_is_open`, `closing_the_tab_takes_its_popups_with_it`, `the_bar_leaves_the_page_behind_a_popup_alone`,
   `a_popup_no_click_asked_for_is_said_in_the_bar`, `the_popup_strip_takes_the_pages_top_and_its_close_calls_back`) and the e2e
   `webPanel`. Spec: `docs/superpowers/specs/2026-11-10-web-popups-design.md`, section 1.
 - **A download is asked about (S6).** WebView2 saves straight into Downloads, so Flare holds every download (`DownloadStarting`
