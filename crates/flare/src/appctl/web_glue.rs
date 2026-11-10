@@ -173,6 +173,8 @@ impl AppCtl {
                 app.set_dialog_primary(v.primary.into());
                 app.set_dialog_danger(false);
                 app.set_dialog_default_cancel(true);
+                // A new question each time: one shown after another in the open dialog starts on Cancel again.
+                app.set_dialog_question(app.get_dialog_question().wrapping_add(1));
                 self.web.release_focus(crate::window::hwnd_of(&app));
                 app.set_dialog_open(true);
                 let now = self.now();
@@ -206,9 +208,18 @@ impl AppCtl {
             } else if !self.app_launcher.has_handler(&a.scheme) {
                 self.web
                     .notice(&a.tab, &crate::app_ask::no_handler_notice(&a.scheme));
-            } else if let Err(e) = self.app_launcher.open(&a.uri) {
-                log::warn!("an app link ({}) did not open: {e}", a.scheme);
-                self.web.notice(&a.tab, "The app could not be opened");
+            } else {
+                // The shell runs on the launcher's worker (rule 34); a failure comes back as a message.
+                let post = std::sync::Arc::clone(&self.deps.post);
+                let (tab, scheme) = (a.tab.clone(), a.scheme.clone());
+                self.app_launcher.open(
+                    &a.uri,
+                    Box::new(move |r| {
+                        if let Err(error) = r {
+                            post(crate::appctl::UiMsg::AppLinkFailed { tab, scheme, error });
+                        }
+                    }),
+                );
             }
         }
         if self.app_asks.current().is_some() {
@@ -221,6 +232,13 @@ impl AppCtl {
             self.refresh();
             self.focus_terminal();
         }
+    }
+
+    /// The launcher's worker could not open the link the person allowed: said in that tab's bar.
+    pub(super) fn app_link_failed(&mut self, tab: &str, scheme: &str, error: &str) {
+        log::warn!("an app link ({scheme}) did not open: {error}");
+        self.web.notice(tab, crate::app_ask::APP_NOT_OPENED);
+        self.refresh();
     }
 
     /// An app link whose tab is gone is not asked about, and a tab's page on another site forgets its Cancels.

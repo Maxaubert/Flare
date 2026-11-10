@@ -153,6 +153,12 @@ pub enum UiMsg {
     /// The window lost the keyboard while it was still the foreground window: asks again once the
     /// switch has settled (it may be the keyboard moving into the page, or a real switch to another app).
     FocusLostCheck,
+    /// The app link the person allowed did not open (the launcher's worker answered, rule 252).
+    AppLinkFailed {
+        tab: String,
+        scheme: String,
+        error: String,
+    },
     /// A worker looked whether anything listens on a local port a tab printed (Surfaces stage 7).
     DevLook {
         tab: String,
@@ -5062,6 +5068,9 @@ impl AppCtl {
                 }
             }
             UiMsg::Convo(ConvoMsgBox(m)) => self.on_convo_msg(m),
+            UiMsg::AppLinkFailed { tab, scheme, error } => {
+                self.app_link_failed(&tab, &scheme, &error);
+            }
             UiMsg::DevLook { tab, token, look } => self.on_dev_look(&tab, token, look),
             UiMsg::DevClickLook { tab, token, look } => self.on_dev_click_look(&tab, token, look),
             UiMsg::ToastClicked(tab) => self.on_toast_clicked(&tab),

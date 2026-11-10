@@ -1103,7 +1103,10 @@ one controller per tab with an open web panel, parented to Flare's window.
   Flare's own question instead of being blocked: "Open an app?", "<site> wants to open <scheme> on this PC.", with Open and
   Cancel. The browser never launches the app; Flare does, after Open, with the Windows shell on the bare link and nothing else.
   Cancel is the default: Enter, Space, Escape and a press outside cancel, Open needs a click or Tab then Enter, and does nothing
-  in its first 0.3 s. No click by the person is needed (a bank page opens its app from a script). Never asked, cancelled with
+  in its first 0.3 s. A question that follows another in the open dialog starts on Cancel again, so the Tab given to the
+  first never opens the next. The shell opens the app on a worker thread, so a slow handler never freezes the window; if it
+  fails, the bar says "The app could not be opened". No click by the person is needed (a bank page opens its app from a
+  script). Never asked, cancelled with
   "Not opened here" as before: `javascript:`, `data:`, `file:`, `vbscript:`, `about:`, another site's `blob:`, browser pages and a
   list of Windows handlers that have been used to run code (`ms-msdt`, `search-ms`, `ms-officecmd`, the Office schemes and
   others; `NEVER_SCHEMES`), and anything too long, odd or path-like. An app nothing on the PC opens says "Nothing on this PC

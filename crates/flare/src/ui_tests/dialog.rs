@@ -136,6 +136,27 @@ fn with_cancel_the_default_tab_then_enter_or_a_click_confirms() {
     assert_eq!((h.comp.get_cancels(), h.comp.get_confirms()), (0, 1));
 }
 
+/// One app link after another keeps the title and the default, so only `question` says it is new: the Tab given to
+/// the first must not leave the second on Open (review of 2026-11-10).
+#[test]
+fn a_new_question_in_the_open_dialog_starts_on_cancel_again() {
+    let h = harness(1.0, 1000, 600);
+    h.comp.set_default_cancel(true);
+    open(&h);
+    assert_eq!(h.comp.get_focused_button(), 0, "Cancel has the focus");
+    h.key_text("\t");
+    assert_eq!(h.comp.get_focused_button(), 1, "Tab moved it to Open");
+    h.comp.set_question(h.comp.get_question() + 1);
+    h.advance(0);
+    assert_eq!(
+        h.comp.get_focused_button(),
+        0,
+        "the next question starts on Cancel"
+    );
+    h.key_text("\n");
+    assert_eq!((h.comp.get_cancels(), h.comp.get_confirms()), (1, 0));
+}
+
 #[test]
 fn tab_stays_inside_the_two_buttons() {
     let h = harness(1.0, 1000, 600);

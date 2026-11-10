@@ -4205,6 +4205,70 @@ fn a_download_goes_first_and_the_app_link_is_asked_after_it() {
     assert_eq!(apps.opened(), vec![BANKID.to_string()]);
 }
 
+/// Two tabs' app links: the second question takes the open dialog with the same title and default, and still starts on
+/// Cancel, so the Tab the person gave the first never opens the second with a plain Enter (review of 2026-11-10).
+#[test]
+fn the_next_app_link_question_starts_on_cancel_after_a_tab_to_open_the_first() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let first = up(&f, &slot);
+    assert_eq!(f.key(ctrl("t", "KeyT")), KeyOutcome::Consumed);
+    f.h.advance(0);
+    f.pump();
+    let second = up(&f, &slot);
+    assert_ne!(first, second);
+    let apps = launcher(&f);
+    f.clock.set(10_000);
+    app_link(&fake(&slot), &first, BANKID, "bank.example");
+    app_link(&fake(&slot), &second, BANKID, "other.example");
+    f.pump();
+    f.h.advance(0);
+    assert!(f.h.comp.get_dialog_open());
+    assert_eq!(f.h.comp.get_dialog_focus(), 0, "Cancel has the focus");
+    f.clock.set(10_400);
+    f.h.key_text("\t\n");
+    assert_eq!(
+        apps.opened(),
+        vec![BANKID.to_string()],
+        "Tab then Enter opens"
+    );
+    f.h.advance(0);
+    assert!(f.h.comp.get_dialog_open(), "the second question is up");
+    assert_eq!(f.h.comp.get_dialog_title().as_str(), "Open an app?");
+    assert_eq!(
+        f.h.comp.get_dialog_focus(),
+        0,
+        "the second question starts on Cancel"
+    );
+    f.clock.set(11_000);
+    f.h.key_text("\n");
+    assert_eq!(apps.opened().len(), 1, "a plain Enter cancels it");
+    assert!(!f.h.comp.get_dialog_open());
+}
+
+/// The shell answers from its worker (rule 34): a failure reaches the bar once that answer is handled on the UI thread.
+#[test]
+fn an_app_that_could_not_be_opened_is_said_in_the_bar_when_its_worker_answers() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let apps = launcher(&f);
+    *apps.fails.lock().unwrap() = true;
+    f.clock.set(10_000);
+    app_link(&fake(&slot), &id, BANKID, "bank.example");
+    f.pump();
+    f.clock.set(10_300);
+    f.h.comp.invoke_dialog_confirm();
+    assert_eq!(apps.opened(), vec![BANKID.to_string()]);
+    assert!(!f.h.comp.get_dialog_open());
+    f.pump();
+    f.h.advance(0);
+    assert_eq!(
+        f.h.comp.get_panel_sub().as_str(),
+        crate::app_ask::APP_NOT_OPENED
+    );
+}
+
 #[test]
 fn while_an_agent_waits_on_the_page_an_app_link_is_never_asked_and_its_call_answered_once() {
     let (f, _h, _) = live(Opts::default());

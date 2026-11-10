@@ -76,6 +76,9 @@ pub fn no_handler_notice(scheme: &str) -> String {
 /// The bar's words for an app link that was not asked about: a limit, or the person's Cancel for it on this site.
 pub const APP_LINK_HELD: &str = "App link not opened: asked too often";
 
+/// The bar's words when the shell could not open a link the person allowed (its worker answered).
+pub const APP_NOT_OPENED: &str = "The app could not be opened";
+
 /// The bar's words for an app link while an agent uses the page: only the person may allow one (rule 252).
 pub const APP_LINK_AGENT: &str = "App link not opened while an agent uses the page";
 
@@ -238,29 +241,60 @@ impl AppAsks {
 pub trait AppLauncher {
     /// Has Windows an app for `scheme` (`HKEY_CLASSES_ROOT\<scheme>` with `URL Protocol`)?
     fn has_handler(&self, scheme: &str) -> bool;
-    /// Opens the link with that app.
-    fn open(&self, uri: &str) -> Result<(), String>;
+    /// Opens the link with that app and tells `done` how it went. The UI thread never waits for it (rule 34): the shell
+    /// may start a handler or hold a DDE talk with one before it answers.
+    fn open(&self, uri: &str, done: Opened);
 }
 
-/// The real one.
+/// How an app link's open went, told from wherever it ran.
+pub type Opened = Box<dyn FnOnce(Result<(), String>) + Send>;
+
+/// The real one: the shell on a worker thread of its own, one per Open.
 pub struct ShellLauncher;
 
 impl AppLauncher for ShellLauncher {
     fn has_handler(&self, scheme: &str) -> bool {
+        // A read of one registry value, no process and no disk wait beyond the loaded hive (rule 34 is about waits).
         flare_win::shell_open::url_handler_registered(scheme)
     }
 
-    fn open(&self, uri: &str) -> Result<(), String> {
-        flare_win::shell_open::open_app_uri(uri)
+    fn open(&self, uri: &str, done: Opened) {
+        let uri = uri.to_string();
+        // The worker owns `done` until it answers; if it cannot start, the answer is the failure, here.
+        let slot = std::sync::Arc::new(Mutex::new(Some(done)));
+        let theirs = std::sync::Arc::clone(&slot);
+        let spawned = std::thread::Builder::new()
+            .name("flare-app-link".into())
+            .spawn(move || {
+                let r = flare_win::shell_open::open_app_uri_on_worker(&uri);
+                let done = theirs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(done) = done {
+                    done(r);
+                }
+            });
+        if let Err(e) = spawned {
+            let done = slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(done) = done {
+                done(Err(format!("could not start the worker: {e}")));
+            }
+        }
     }
 }
 
 /// Records what it was asked to open and opens nothing (the tests, `--e2e`, and every window until startup hands in
-/// the real one). It says it has an app for every scheme except those in `missing`.
+/// the real one). It says it has an app for every scheme except those in `missing`, and answers at once: a failure when
+/// `fails` is set.
 #[derive(Debug, Default)]
 pub struct RecordingLauncher {
     pub opened: Mutex<Vec<String>>,
     pub missing: Mutex<Vec<String>>,
+    pub fails: Mutex<bool>,
 }
 
 impl RecordingLauncher {
@@ -283,18 +317,48 @@ impl AppLauncher for RecordingLauncher {
             .any(|m| m == scheme)
     }
 
-    fn open(&self, uri: &str) -> Result<(), String> {
+    fn open(&self, uri: &str, done: Opened) {
         self.opened
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(uri.to_string());
-        Ok(())
+        let fails = *self
+            .fails
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        done(if fails {
+            Err("the recorder was told to fail".to_string())
+        } else {
+            Ok(())
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Rule 34: the shell's open runs on a worker and answers from there, never on the caller's thread. A path is refused
+    /// before Windows sees it, so nothing opens.
+    #[test]
+    fn the_shell_launcher_opens_on_a_worker_and_answers_from_it() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        ShellLauncher.open(
+            "C:\\x.exe",
+            Box::new(move |r| {
+                let _ = tx.send((std::thread::current().id(), r));
+            }),
+        );
+        let (thread, r) = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the worker answers");
+        assert_ne!(
+            thread,
+            std::thread::current().id(),
+            "answered from a worker"
+        );
+        assert!(r.is_err(), "a path is refused");
+    }
 
     fn ask(tab: &str, scheme: &str, site: &str) -> AppAsk {
         AppAsk {
@@ -472,7 +536,14 @@ mod tests {
         let r = RecordingLauncher::default();
         r.missing.lock().unwrap().push("swish".into());
         assert!(r.has_handler("bankid") && !r.has_handler("swish"));
-        assert!(r.open("bankid:///x").is_ok());
+        let (tx, rx) = std::sync::mpsc::channel();
+        r.open(
+            "bankid:///x",
+            Box::new(move |res| {
+                let _ = tx.send(res);
+            }),
+        );
+        assert_eq!(rx.try_recv().unwrap(), Ok(()), "answered at once");
         assert_eq!(r.opened(), vec!["bankid:///x".to_string()]);
     }
 }

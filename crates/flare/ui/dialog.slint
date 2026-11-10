@@ -2,7 +2,8 @@
 // The question and notice dialog (Task 24). PT Dialog.tsx on the core's Modal frame (Modal.tsx):
 // Escape cancels unless locked and is swallowed either way; a plain Tab (and Shift+Tab) moves
 // between the two buttons and never leaves the dialog; a press outside cancels unless locked;
-// focus lands on the primary button on open and again when the title changes.
+// focus lands on the default button (the primary, or Cancel with default-cancel) on open and again when the
+// title or the question changes.
 // Slint's StyledText has no line-height, so the body is not the 1.625 of PT (noted in the commit).
 import { Theme, Px } from "theme.slint";
 
@@ -81,6 +82,9 @@ export component Dialog inherits Rectangle {
     // whichever button has the focus, and the primary needs a click or Tab then Enter. Every other question keeps the
     // primary as its default.
     in property <bool> default-cancel: false;
+    // A new question in the open dialog whose title and default stay the same (one app link after another): a change
+    // puts the focus back on the default, so a Tab given to the last question never opens the next.
+    in property <int> question: 0;
     out property <bool> ring-shown: root.by-key;
     property <bool> by-key;
     callback cancel();
@@ -130,6 +134,12 @@ export component Dialog inherits Rectangle {
     changed default-cancel => {
         if root.open {
             root.focus-idx = root.first-idx;
+        }
+    }
+    changed question => {
+        if root.open {
+            root.focus-idx = root.first-idx;
+            fs.focus();
         }
     }
 
@@ -249,6 +259,8 @@ export component DialogPreview inherits Window {
     in-out property <bool> locked;
     in-out property <bool> opened-by-key;
     in-out property <bool> default-cancel;
+    in-out property <int> question;
+    out property <int> focused-button: dlg.focused-button;
     out property <bool> ring-shown: dlg.ring-shown;
     in-out property <int> cancels;
     in-out property <int> confirms;
@@ -294,6 +306,7 @@ export component DialogPreview inherits Window {
         locked: root.locked;
         opened-by-key: root.opened-by-key;
         default-cancel: root.default-cancel;
+        question: root.question;
         cancel => { root.cancels += 1; }
         confirm => { root.confirms += 1; }
     }

@@ -120,6 +120,28 @@ pub fn open_app_uri(uri: &str) -> Result<(), String> {
     }
 }
 
+/// [`open_app_uri`] as a worker thread of its own runs it: the shell may hand the link to a COM or DDE handler, so the
+/// thread is a single-threaded apartment with DDE off for the call, as `ShellExecute`'s documentation asks. Never on
+/// the UI thread (rule 34): the call does not return until the handler has answered.
+pub fn open_app_uri_on_worker(uri: &str) -> Result<(), String> {
+    use windows_sys::Win32::System::Com::{
+        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
+    };
+    // SAFETY: no pointer is passed; the thread is the caller's own worker, so its apartment is set here only.
+    let hr = unsafe {
+        CoInitializeEx(
+            ptr::null(),
+            (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
+        )
+    };
+    let r = open_app_uri(uri);
+    if hr >= 0 {
+        // SAFETY: balances the successful CoInitializeEx above on the same thread.
+        unsafe { CoUninitialize() };
+    }
+    r
+}
+
 /// Is an app registered for `scheme` (`HKEY_CLASSES_ROOT\<scheme>` with a `URL Protocol` value)? A read of the
 /// registry only; a scheme that is not letters, digits, `+`, `-` and `.` is never looked up.
 pub fn url_handler_registered(scheme: &str) -> bool {
@@ -184,6 +206,10 @@ mod tests {
             "",
         ] {
             assert!(open_app_uri(bad).is_err(), "{bad:?} must be refused");
+            assert!(
+                open_app_uri_on_worker(bad).is_err(),
+                "{bad:?} must be refused on a worker too"
+            );
         }
     }
 
