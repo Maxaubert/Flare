@@ -1730,6 +1730,51 @@ mod tests {
         }
     }
 
+    /// The macOS twin: the same routing with POSIX paths.
+    #[cfg(not(windows))]
+    #[test]
+    fn show_html_routes_html_or_a_path_and_never_both_posix() {
+        let call = |args: Value, ch: &mut Fake| {
+            handle_message(
+                &req(
+                    1,
+                    "tools/call",
+                    json!({"name": "show_html", "arguments": args}),
+                ),
+                ch,
+            )
+            .unwrap()
+        };
+        let mut ch = Fake::default();
+        let r = call(json!({"html": "<p>hi</p>", "title": "Hi"}), &mut ch);
+        assert_eq!(r["result"]["isError"], false);
+        assert_eq!(ch.calls[0].0, Method::ViewHtml);
+        assert_eq!(ch.calls[0].1, json!({"html": "<p>hi</p>", "title": "Hi"}));
+        let t = text_of(&r);
+        assert!(t.contains("no network access"), "{t}");
+
+        let mut ch = Fake::default();
+        let r = call(json!({"path": "/work/chart.html"}), &mut ch);
+        assert_eq!(r["result"]["isError"], false);
+        assert_eq!(ch.calls[0].1, json!({"path": "/work/chart.html"}));
+
+        for bad in [
+            json!({}),
+            json!({"html": ""}),
+            json!({"html": "  "}),
+            json!({"html": "x", "path": "/a.html"}),
+            json!({"path": ""}),
+            json!({"html": 3}),
+            json!({"html": "x", "title": 3}),
+            json!({"html": "x", "allow_network": "yes"}),
+        ] {
+            let mut ch = Fake::default();
+            let r = call(bad.clone(), &mut ch);
+            assert_eq!(r["result"]["isError"], true, "{bad}");
+            assert!(ch.calls.is_empty(), "{bad}");
+        }
+    }
+
     #[test]
     fn the_network_the_agent_asked_for_is_reported_as_given_or_not() {
         let call = |answer: Value| {
@@ -1994,6 +2039,28 @@ app", "loaded": true}))),
         assert_eq!(
             ch.calls,
             vec![(Method::ViewImage, json!({"path": "C:\\pics\\a.png"}))]
+        );
+        assert_eq!(r["result"]["isError"], false);
+        assert!(text_of(&r).contains("a.png"));
+    }
+
+    /// The macOS twin, with a POSIX path.
+    #[cfg(not(windows))]
+    #[test]
+    fn show_image_routes_to_view_image_with_an_absolute_path_posix() {
+        let mut ch = Fake::default();
+        let r = handle_message(
+            &req(
+                1,
+                "tools/call",
+                json!({"name": "show_image", "arguments": {"path": "/pics/a.png"}}),
+            ),
+            &mut ch,
+        )
+        .unwrap();
+        assert_eq!(
+            ch.calls,
+            vec![(Method::ViewImage, json!({"path": "/pics/a.png"}))]
         );
         assert_eq!(r["result"]["isError"], false);
         assert!(text_of(&r).contains("a.png"));

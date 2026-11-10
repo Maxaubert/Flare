@@ -1200,7 +1200,8 @@ pub fn run_window(
             mods_hub.set_safe_mode(why);
         }
         let run_record = (!args.e2e).then(|| crate::plugin_safe::path_in(&inst.profile.dir));
-        let old_web_dir = flare_surfaces::web::old_webview_folder(
+        // None on macOS: its panel's folder was always under the profile (rule 1125).
+        let old_web_dir = flare_surfaces::web::old_webview_folder_here(
             args.user_data_dir.as_deref(),
             flare_win::paths::local_app_data()
                 .map(|p| p.to_string_lossy().into_owned())
@@ -1681,7 +1682,9 @@ pub fn run_window(
         let weak = app.as_weak();
         let e2e = args.e2e;
         rc.borrow_mut().set_flash(Rc::new(move || {
-            let Some(hwnd) = weak.upgrade().and_then(|a| hwnd_of(&a)) else {
+            // The HWND on Windows; on macOS the content view, which only says the window exists (the
+            // Dock's attention is the app's, `flare_win::dock`).
+            let Some(hwnd) = weak.upgrade().and_then(|a| native_view_of(&a)) else {
                 return;
             };
             if e2e {
@@ -1714,7 +1717,16 @@ pub fn run_window(
             c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::with_shell(Box::new(
                 flare_win::taskbar::RecordShell,
             )));
+        } else {
+            // macOS: the badge is the Dock tile's, which needs no window handle (Windows waits for
+            // the HWND below).
+            #[cfg(target_os = "macos")]
+            c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(0));
         }
+        // macOS: no pad catches the mouse over the page and the pointer is not read yet, so "Draw arrow" is not
+        // offered (rule 1124); the agent's arrow still points and its look still carries it.
+        #[cfg(not(windows))]
+        c.set_draw_offered(false);
     }
     // What needs the window's handle, once it has one: the watchdog's hung-window poll, the exe's
     // own icon on the window (again on every scale-factor change) and the taskbar overlay.

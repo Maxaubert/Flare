@@ -3769,6 +3769,111 @@ fn a_window_already_full_screen_stays_so_when_the_page_leaves_full_screen() {
     );
 }
 
+/// macOS (CEF, port phase 5): a backend that draws off screen. Its picture is shown in the page box, the pointer, the
+/// wheel and the keys over the box go to it (in device pixels, the key with its virtual key, its Mac key code and its
+/// text), and a press or a typed key while an agent works in the page is the person taking it over. A backend with
+/// no picture (WebView2) leaves the box empty and takes no input there.
+#[test]
+fn an_off_screen_page_is_drawn_in_its_box_takes_the_input_there_and_a_press_stops_the_agent() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    assert!(
+        !f.h.comp.get_panel_web_live(),
+        "no picture yet: WebView2's case"
+    );
+    fake(&slot).state.borrow_mut().frame = Some(flare_web::ViewFrame {
+        width: 4,
+        height: 2,
+        bgra: std::sync::Arc::new([0xcc, 0x66, 0x33, 0xff].repeat(8)),
+        serial: 1,
+    });
+    fake(&slot).say(WebEvent::Pump);
+    f.pump();
+    assert!(f.h.comp.get_panel_web_live(), "the picture is shown");
+    assert_eq!(f.h.comp.get_panel_web_frame().size().width, 4);
+    let scale = f.h.comp.get_scale();
+    f.h.comp.invoke_panel_web_pointer(0, 10.0, 20.0, 0, 8);
+    f.h.comp.invoke_panel_web_pointer(1, 10.0, 20.0, 0, 0);
+    f.h.comp.invoke_panel_web_wheel(10.0, 20.0, 0.0, -3.0, 0);
+    f.h.comp.invoke_panel_web_key(true, "a".into(), 0, false);
+    f.h.comp
+        .invoke_panel_web_key(true, "\u{10}".into(), 1, false);
+    let calls = fake(&slot).calls();
+    let page = flare_web::Slot::panel(&id);
+    let pointers: Vec<flare_web::Pointer> = calls
+        .iter()
+        .filter_map(|c| match c {
+            Call::Pointer(s, p) if *s == page => Some(*p),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(pointers.len(), 3, "{calls:?}");
+    assert_eq!(
+        pointers[0].act,
+        flare_web::PointerAct::Down(flare_web::PointerButton::Left, 1)
+    );
+    assert!(pointers[0].mods.cmd);
+    assert!(
+        (pointers[0].x - 10.0 * scale).abs() < 0.01 && (pointers[0].y - 20.0 * scale).abs() < 0.01
+    );
+    assert_eq!(
+        pointers[2].act,
+        flare_web::PointerAct::Wheel {
+            dx: 0.0,
+            dy: 3.0 * scale
+        },
+        "a wheel turned toward the person scrolls the page down"
+    );
+    assert!(
+        calls.contains(&Call::Focus(id.clone())),
+        "a press gives the page the keys"
+    );
+    let keys: Vec<&flare_web::KeyInput> = calls
+        .iter()
+        .filter_map(|c| match c {
+            Call::Key(s, k) if *s == page => Some(k),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(keys.len(), 1, "a modifier alone goes nowhere: {keys:?}");
+    assert_eq!(
+        (keys[0].vk, keys[0].mac_code, keys[0].text.as_str()),
+        (0x41, 0x00, "a")
+    );
+    // While the agent works, the person's press ends its call.
+    let rx = look(&f, &id);
+    f.pump();
+    assert_eq!(f.ctl.borrow().web.agent_op(&id), Some("look"));
+    f.h.comp.invoke_panel_web_pointer(0, 30.0, 30.0, 0, 0);
+    f.pump();
+    assert!(rx.try_recv().unwrap().is_err(), "the call ended");
+    assert_eq!(f.ctl.borrow().web.agent_op(&id), None);
+    // A shortcut (Cmd with a key) is not the person taking the page; a typed key is.
+    let rx = look(&f, &id);
+    f.pump();
+    f.h.comp.invoke_panel_web_key(true, "c".into(), 8, false);
+    f.pump();
+    assert_eq!(
+        f.ctl.borrow().web.agent_op(&id),
+        Some("look"),
+        "Cmd+C leaves the agent's call running"
+    );
+    f.h.comp.invoke_panel_web_key(true, "x".into(), 0, false);
+    f.pump();
+    assert!(
+        rx.try_recv().unwrap().is_err(),
+        "a typed key ended the call"
+    );
+    assert_eq!(f.ctl.borrow().web.agent_op(&id), None);
+    // The picture goes when the page has none.
+    fake(&slot).state.borrow_mut().frame = None;
+    fake(&slot).say(WebEvent::Pump);
+    f.pump();
+    assert!(!f.h.comp.get_panel_web_live());
+}
+
 // ---- pop-ups (rules 249, 250) ----
 
 /// The page of the tab opens a pop-up from `site` and the window takes the news in.
@@ -4154,7 +4259,7 @@ fn an_app_nothing_on_the_pc_opens_is_said_in_the_bar_and_not_asked_about() {
     assert!(!f.h.comp.get_dialog_open());
     assert_eq!(
         f.h.comp.get_panel_sub().as_str(),
-        "Nothing on this PC opens swish:"
+        format!("Nothing on this {} opens swish:", crate::app_ask::MACHINE)
     );
     assert!(apps.opened().is_empty());
 }

@@ -36,7 +36,73 @@ const RUNNERS: &[&str] = &[
     "com.mitchellh.ghostty",
     "com.github.wez.wezterm",
     "co.zeit.hyper",
+    // Indirect runners: Finder follows .fileloc and alias files to their target (an app or a
+    // script), the Jar Launcher runs Java, Shortcuts imports and runs workflows, and Settings
+    // installs .prefPane bundles.
+    "com.apple.finder",
+    "com.apple.jarlauncher",
+    "com.apple.shortcuts",
+    "com.apple.systempreferences",
+    "com.apple.systemsettings",
+    "com.apple.archiveutility",
 ];
+
+/// File types that run, install or point elsewhere whatever app opens them (lower case, no dot).
+/// Refused before the handler is even looked up, so a renamed or unknown handler cannot let them
+/// through: location and alias files, Terminal and shell launchers, Java, AppleScript, Automator
+/// and Shortcuts workflows, installers and loadable bundles.
+const RUNNABLE_TYPES: &[&str] = &[
+    "fileloc",
+    "inetloc",
+    "webloc",
+    "afploc",
+    "ftploc",
+    "alias",
+    "terminal",
+    "command",
+    "tool",
+    "sh",
+    "zsh",
+    "bash",
+    "csh",
+    "tcsh",
+    "fish",
+    "py",
+    "pl",
+    "rb",
+    "jar",
+    "workflow",
+    "action",
+    "scpt",
+    "scptd",
+    "applescript",
+    "shortcut",
+    "pkg",
+    "mpkg",
+    "app",
+    "prefpane",
+    "saver",
+    "qlgenerator",
+    "kext",
+    "plugin",
+    "bundle",
+    "dylib",
+    "osax",
+    "mobileconfig",
+    "dmg",
+    "iso",
+];
+
+/// Pure: whether a file's name ends in a type that runs, installs or redirects (`RUNNABLE_TYPES`).
+pub fn runnable_type(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => {
+            RUNNABLE_TYPES.contains(&ext.to_ascii_lowercase().as_str())
+        }
+        _ => false,
+    }
+}
 
 /// Bundle id prefixes of runners that ship under several ids (Warp's channels).
 const RUNNER_PREFIXES: &[&str] = &["dev.warp."];
@@ -50,6 +116,34 @@ pub fn handler_ok(bundle_id: Option<&str>) -> bool {
     !id.is_empty()
         && !RUNNERS.contains(&id.as_str())
         && !RUNNER_PREFIXES.iter().any(|p| id.starts_with(p))
+}
+
+/// Whether the file carries a per-file "Open with" choice (`com.apple.LaunchServices.OpenWith`).
+/// Such a file could name any app, runner or not, so Flare only opens files that follow their
+/// type's default app; the denylist above is the second wall, not the only one.
+pub fn has_open_with_override(path: &str) -> bool {
+    let (Ok(p), Ok(name)) = (
+        std::ffi::CString::new(path),
+        std::ffi::CString::new("com.apple.LaunchServices.OpenWith"),
+    ) else {
+        return true;
+    };
+    // SAFETY: both are valid NUL-terminated strings; a null buffer with size 0 only asks the size.
+    let n = unsafe {
+        libc::getxattr(
+            p.as_ptr(),
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            0,
+            0,
+            libc::XATTR_NOFOLLOW,
+        )
+    };
+    if n >= 0 {
+        return true;
+    }
+    // ENOATTR means no override; any other error (unreadable file) is refused too.
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOATTR)
 }
 
 /// Pure: whether a file mode has any execute bit (user, group or other).
@@ -115,6 +209,57 @@ pub fn open_web_url(escaped: &str) -> Result<(), String> {
     })
 }
 
+/// An app link (`bankid:`, `mailto:`) as `NSURL` reads it: `escaped` is the percent-encoded link
+/// (`shell_open::escape_app_uri`), and anything `NSURL` reads as a web address, a file or with no
+/// scheme is refused.
+pub fn app_url(escaped: &str) -> Result<Retained<NSURL>, String> {
+    let url = NSURL::URLWithString(&NSString::from_str(escaped))
+        .ok_or_else(|| "not a link the system can read".to_string())?;
+    let scheme = url.scheme().map(|s| s.to_string().to_ascii_lowercase());
+    match scheme.as_deref() {
+        None | Some("" | "http" | "https" | "file") => Err("not an app link".to_string()),
+        Some(_) => Ok(url),
+    }
+}
+
+/// The app this Mac opens links of `url`'s scheme with, when it is one that may (`handler_ok`): a
+/// terminal or a script runner (Terminal takes `ssh:`, `telnet:` and `x-man-page:`) never opens a
+/// page's link (regression rule 1123).
+fn safe_link_handler(url: &NSURL) -> Result<Retained<NSURL>, String> {
+    safe_handler(url).map_err(|e| {
+        if e.starts_with("no app") {
+            "no app opens this link".to_string()
+        } else {
+            e.replace("this file", "this link")
+        }
+    })
+}
+
+/// Is there an app that may open links of `scheme` (`URLForApplicationToOpenURL:` on `<scheme>:`)?
+/// Asks LaunchServices only: nothing opens.
+pub fn link_handler_ok(scheme: &str) -> bool {
+    autoreleasepool(|_| {
+        NSURL::URLWithString(&NSString::from_str(&format!("{scheme}:")))
+            .is_some_and(|u| safe_link_handler(&u).is_ok())
+    })
+}
+
+/// Opens a checked app link with the very app that was checked (`openURLs:withApplicationAtURL:`),
+/// so nothing can swap the handler in between. The link alone: no arguments, no shell.
+pub fn open_app_url(escaped: &str) -> Result<(), String> {
+    autoreleasepool(|_| {
+        let url = app_url(escaped)?;
+        let app = safe_link_handler(&url)?;
+        let list = NSArray::from_retained_slice(&[url]);
+        let config = NSWorkspaceOpenConfiguration::configuration();
+        NSWorkspace::sharedWorkspace()
+            .openURLs_withApplicationAtURL_configuration_completionHandler(
+                &list, &app, &config, None,
+            );
+        Ok(())
+    })
+}
+
 /// Pure: whether `abs` may be handed to Finder as a path: absolute, and no control character
 /// (0x00 to 0x1F, 0x7F, 0x80 to 0x9F). A quote is an ordinary file name character on the Mac and
 /// no command line is built, so it is allowed.
@@ -144,6 +289,16 @@ pub fn open_file(canon: &str) -> Result<(), String> {
         .mode();
     if has_exec_bit(mode) {
         return Err("an executable file never opens from Flare".to_string());
+    }
+    if has_open_with_override(canon) {
+        return Err(
+            "this file is set to open with its own app, so Flare does not open it".to_string(),
+        );
+    }
+    if runnable_type(canon) {
+        return Err(
+            "this kind of file runs or installs something, so Flare does not open it".to_string(),
+        );
     }
     autoreleasepool(|_| {
         let url = NSURL::fileURLWithPath(&*checked(canon)?);
@@ -184,6 +339,63 @@ pub fn reveal(abs: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_with_its_own_open_with_choice_is_refused_and_a_plain_one_is_not() {
+        let dir = std::env::temp_dir().join(format!("flare-openwith-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("notes.txt");
+        std::fs::write(&f, "hi").unwrap();
+        let path = f.to_str().unwrap();
+        assert!(!has_open_with_override(path));
+        let st = std::process::Command::new("/usr/bin/xattr")
+            .args(["-w", "com.apple.LaunchServices.OpenWith", "x", path])
+            .status()
+            .unwrap();
+        assert!(st.success());
+        assert!(has_open_with_override(path));
+        assert!(has_open_with_override(
+            dir.join("missing.txt").to_str().unwrap()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn runnable_and_redirecting_types_are_refused_before_any_handler() {
+        for bad in [
+            "/u/a.fileloc",
+            "/u/a.webloc",
+            "/u/x.TERMINAL",
+            "/u/run.command",
+            "/u/a.jar",
+            "/u/s.scpt",
+            "/u/w.workflow",
+            "/u/i.pkg",
+            "/u/p.prefPane",
+            "/u/a.shortcut",
+            "/u/x.sh",
+            "/u/m.mobileconfig",
+        ] {
+            assert!(runnable_type(bad), "{bad}");
+        }
+        for ok in [
+            "/u/notes.txt",
+            "/u/a.png",
+            "/u/r.md",
+            "/u/.fileloc",
+            "/u/dir.d/plain",
+            "/u/x.pdf",
+        ] {
+            assert!(!runnable_type(ok), "{ok}");
+        }
+        for runner in [
+            "com.apple.finder",
+            "com.apple.JarLauncher",
+            "com.apple.shortcuts",
+        ] {
+            assert!(!handler_ok(Some(runner)), "{runner}");
+        }
+    }
 
     #[test]
     fn only_http_and_https_with_a_host_pass() {

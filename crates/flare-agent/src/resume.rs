@@ -192,9 +192,10 @@ pub fn store_root(home: &Path, config_dir: Option<&std::ffi::OsStr>) -> PathBuf 
     }
 }
 
-/// The home Claude uses: `USERPROFILE`, else None.
+/// The home Claude uses: `USERPROFILE` on Windows, `HOME` on macOS (Node's `os.homedir()`), else None.
 pub fn claude_home() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE").map(PathBuf::from)
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var).map(PathBuf::from)
 }
 
 #[cfg(test)]
@@ -207,6 +208,16 @@ mod tests {
     const SDK_HEAD: &str = "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-09-28T18:02:10.114Z\",\"content\":\"Review this change for security vulnerabilities.\"}\n{\"parentUuid\":null,\"isSidechain\":false,\"userType\":\"external\",\"entrypoint\":\"sdk-py\",\"type\":\"user\"}\n";
 
     const ID: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
+
+    #[test]
+    fn claude_home_is_the_platforms_home() {
+        // Node's `os.homedir()`: USERPROFILE on Windows, HOME on macOS (the Changes panel and resume read
+        // Claude's store under it).
+        let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        assert_eq!(claude_home(), std::env::var_os(var).map(PathBuf::from));
+        #[cfg(not(windows))]
+        assert!(claude_home().is_some(), "a Mac test run has a HOME");
+    }
 
     #[test]
     fn claude_config_dir_moves_the_store() {

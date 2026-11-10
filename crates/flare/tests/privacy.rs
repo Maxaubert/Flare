@@ -72,6 +72,17 @@ pub const INVENTORY: &[(&str, &str)] = &[
     ("e2e/src/scenarios/fill.rs", "Filling logins"),
     ("flare/src/web_ctl.rs", "Web panel"),
     ("e2e/src/scenarios/web.rs", "Web panel"),
+    // The macOS engine (CEF, port phase 5): the dev bundle's Info.plist names Apple's plist DTD (text, no request),
+    // and the engine tests' probe serves its pages from a loopback server of its own.
+    ("flare-cef/src/macos/bundle.rs", "Web panel"),
+    ("flare-cef/src/macos/probe/server.rs", "Web panel"),
+    // The macOS web host (CEF, port phase 5, step 2): a walled profile's proxy is the dead one or Flare's filtering
+    // proxy on 127.0.0.1; the host tests' probe drives its pages from a loopback server and the network observers.
+    ("flare-web/src/macos/host.rs", "Web panel"),
+    ("flare-web/src/walls.rs", "Web panel"),
+    ("flare-web/src/macos/probe/mod.rs", "Web panel"),
+    ("flare-web/src/macos/probe/observers.rs", "Web panel"),
+    ("flare-web/src/macos/probe/pages.rs", "Web panel"),
     // The plugin fill API and brand (2026-10-28, 2026-11-08): string work on addresses, no request. The fill's site
     // check builds an `https://` address from a login's host to compare it with the page's; the details sheet and a
     // plugin's question show a homepage's or an install address's host.

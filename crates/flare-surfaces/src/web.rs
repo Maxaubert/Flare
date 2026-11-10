@@ -741,6 +741,20 @@ pub fn old_webview_folder(
         .map(|a| PathBuf::from(a).join("Flare").join("WebView2"))
 }
 
+/// The old folder this build's default run may still have to move (rule 262): `old_webview_folder` on Windows; none
+/// on macOS, where the panel's folder has always been `<profile>/WebView2` under `~/Library/Application Support` and
+/// no installer replaces it, so nothing ever moves there (rule 1125).
+pub fn old_webview_folder_here(
+    user_data_dir: Option<&Path>,
+    local_appdata: Option<&str>,
+) -> Option<PathBuf> {
+    if cfg!(windows) {
+        old_webview_folder(user_data_dir, local_appdata)
+    } else {
+        None
+    }
+}
+
 /// The browser folders a profile has: the web panel's, then its siblings (mini-apps and plugins).
 fn browser_folders(web: &Path) -> Vec<PathBuf> {
     let mut v = vec![web.to_path_buf()];
@@ -1552,6 +1566,30 @@ mod tests {
         assert!(old_plugins.is_dir());
         assert!(!new.exists());
         assert_eq!(webview_place(Some(&old), &new), old);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_mac_run_moves_nothing_and_keeps_the_panel_under_its_profile() {
+        let d = tempfile::tempdir().unwrap();
+        let support = d.path().join("Library").join("Application Support");
+        let profile = support.join("Flare");
+        let new = webview_folder(&profile);
+        std::fs::create_dir_all(new.join("Default")).unwrap();
+        std::fs::write(new.join("Default").join("Cookies"), b"login").unwrap();
+        let support_s = support.to_string_lossy().into_owned();
+        // The default run and one with its own profile: neither has an old folder on macOS.
+        assert_eq!(old_webview_folder_here(None, Some(&support_s)), None);
+        assert_eq!(
+            old_webview_folder_here(Some(&profile), Some(&support_s)),
+            None
+        );
+        assert_eq!(settle_webview_folder(None, &new), (new.clone(), 0, None));
+        assert_eq!(webview_place(None, &new), new);
+        assert_eq!(
+            std::fs::read(new.join("Default").join("Cookies")).unwrap(),
+            b"login"
+        );
     }
 
     #[test]

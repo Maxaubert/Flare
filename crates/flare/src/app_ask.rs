@@ -44,6 +44,13 @@ fn shown(s: &str) -> String {
     escape_markdown(&text)
 }
 
+/// What the questions call this computer: a Mac on macOS (rule 1123), a PC elsewhere.
+pub const MACHINE: &str = if cfg!(target_os = "macos") {
+    "Mac"
+} else {
+    "PC"
+};
+
 /// The question. `ink` is the theme's text colour (the site and the app wear it).
 pub fn app_view(a: &AppAsk, ink: &str) -> AppView {
     let named = |s: &str| format!("<font color=\"{ink}\">{}</font>", shown(s));
@@ -55,7 +62,7 @@ pub fn app_view(a: &AppAsk, ink: &str) -> AppView {
     AppView {
         title: "Open an app?",
         body: format!(
-            "{} wants to open {} on this PC.",
+            "{} wants to open {} on this {MACHINE}.",
             named(site),
             named(&a.scheme)
         ),
@@ -70,7 +77,7 @@ pub fn no_handler_notice(scheme: &str) -> String {
         .filter(|c| !c.is_control())
         .take(32)
         .collect();
-    format!("Nothing on this PC opens {s}:")
+    format!("Nothing on this {MACHINE} opens {s}:")
 }
 
 /// The bar's words for an app link that was not asked about: a limit, or the person's Cancel for it on this site.
@@ -381,7 +388,9 @@ mod tests {
         assert_eq!(v.primary, "Open");
         assert_eq!(
             v.body,
-            "<font color=\"#ffffff\">bank\\.example</font> wants to open <font color=\"#ffffff\">bankid</font> on this PC."
+            format!(
+                "<font color=\"#ffffff\">bank\\.example</font> wants to open <font color=\"#ffffff\">bankid</font> on this {MACHINE}."
+            )
         );
         assert!(!v.body.contains("secret"));
         let v = app_view(&ask("t1", "x<b>y</b>\u{7}", ""), "#fff");
@@ -393,7 +402,7 @@ mod tests {
         assert!(v.body.contains("A page"));
         assert_eq!(
             no_handler_notice("swish"),
-            "Nothing on this PC opens swish:"
+            format!("Nothing on this {MACHINE} opens swish:")
         );
     }
 

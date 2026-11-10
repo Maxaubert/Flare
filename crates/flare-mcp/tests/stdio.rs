@@ -1,4 +1,5 @@
-//! The real `flare-mcp.exe` over its stdio, against a real in-process control-channel server.
+//! The real `flare-mcp` binary over its stdio, against a real in-process control-channel server (the
+//! named pipe on Windows, the Unix socket on macOS).
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -33,6 +34,38 @@ impl Dispatcher for Recorder {
             return Err(CtlError::new(code::NOT_FOUND, "no such file"));
         }
         Ok(json!({"closed": true}))
+    }
+}
+
+/// This test's own channel name: the Windows pipe name the tests always used, or on macOS a socket in
+/// this user's socket folder (`flare_ctl::pipe_name`, the server makes the folder).
+fn test_pipe(tag: &str) -> String {
+    let id = format!("{tag}-{}", std::process::id());
+    #[cfg(windows)]
+    {
+        format!("\\\\.\\pipe\\{id}")
+    }
+    #[cfg(not(windows))]
+    {
+        flare_ctl::pipe_name(&id, None)
+    }
+}
+
+/// An absolute picture path in this system's grammar, and a missing one beside it.
+#[cfg(windows)]
+const CAT: (&str, &str) = ("C:\\pics\\cat.png", "C:\\pics\\missing.png");
+#[cfg(not(windows))]
+const CAT: (&str, &str) = ("/pics/cat.png", "/pics/missing.png");
+
+/// A channel name no server listens on.
+fn nobody_pipe(tag: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!("\\\\.\\pipe\\{tag}")
+    }
+    #[cfg(not(windows))]
+    {
+        flare_ctl::pipe_name(tag, None)
     }
 }
 
@@ -92,7 +125,7 @@ fn with_a_tab_but_no_server_it_is_still_not_running() {
     let replies = drive(
         &[
             ("FLARE_TAB_TOKEN", "secret-7"),
-            ("FLARE_CTL_PIPE", "\\\\.\\pipe\\flare-mcp-test-nobody"),
+            ("FLARE_CTL_PIPE", &nobody_pipe("flare-mcp-test-nobody")),
         ],
         &[],
         &session(json!({"name":"close_panel"})),
@@ -101,12 +134,8 @@ fn with_a_tab_but_no_server_it_is_still_not_running() {
 }
 
 #[test]
-#[cfg_attr(
-    not(windows),
-    ignore = "the control channel server is Windows-only until macOS phase 4"
-)]
 fn a_tool_call_reaches_the_server_with_the_tab() {
-    let pipe = format!("\\\\.\\pipe\\flare-mcp-test-{}", std::process::id());
+    let pipe = test_pipe("flare-mcp-test");
     let rec = Arc::new(Recorder::default());
     let server = Server::start(&pipe, ServerConfig::default(), rec.clone()).unwrap();
     let pid = std::process::id().to_string();
@@ -119,8 +148,8 @@ fn a_tool_call_reaches_the_server_with_the_tab() {
         &[],
         &[
             json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"show_image","arguments":{"path":"C:\\pics\\cat.png"}}}),
-            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"show_file","arguments":{"path":"C:\\pics\\missing.png"}}}),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"show_image","arguments":{"path":CAT.0}}}),
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"show_file","arguments":{"path":CAT.1}}}),
             json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"close_panel"}}),
             json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"show_text","arguments":{"text":"hello","title":"T"}}}),
         ],
@@ -139,7 +168,7 @@ fn a_tool_call_reaches_the_server_with_the_tab() {
     let calls = rec.calls.lock().unwrap();
     assert_eq!(calls.len(), 4);
     assert_eq!(calls[0].0, Method::ViewImage);
-    assert_eq!(calls[0].1["path"], "C:\\pics\\cat.png");
+    assert_eq!(calls[0].1["path"], CAT.0);
     assert_eq!(calls[0].2.as_deref(), Some("tab-7"));
     assert_eq!(calls[1].0, Method::ViewFile);
     assert_eq!(calls[2].0, Method::PanelClose);
@@ -151,12 +180,8 @@ fn a_tool_call_reaches_the_server_with_the_tab() {
 }
 
 #[test]
-#[cfg_attr(
-    not(windows),
-    ignore = "the control channel server is Windows-only until macOS phase 4"
-)]
 fn an_unknown_tab_token_is_reported_as_flare_refusing() {
-    let pipe = format!("\\\\.\\pipe\\flare-mcp-test-badtab-{}", std::process::id());
+    let pipe = test_pipe("flare-mcp-test-badtab");
     let server = Server::start(
         &pipe,
         ServerConfig::default(),
@@ -180,15 +205,11 @@ fn an_unknown_tab_token_is_reported_as_flare_refusing() {
 }
 
 #[test]
-#[cfg_attr(
-    not(windows),
-    ignore = "the control channel server is Windows-only until macOS phase 4"
-)]
 fn a_pipe_served_by_another_process_is_never_given_the_secret() {
     // The server here is this process; the shell was told another process serves the pipe. The binary
     // leaves before it says hello, so the recorder never sees a token, and the model is told Flare is
     // not running.
-    let pipe = format!("\\\\.\\pipe\\flare-mcp-test-squat-{}", std::process::id());
+    let pipe = test_pipe("flare-mcp-test-squat");
     let rec = Arc::new(Recorder::default());
     let server = Server::start(&pipe, ServerConfig::default(), rec.clone()).unwrap();
     let other = std::process::id().wrapping_add(4).to_string();
@@ -246,12 +267,8 @@ impl Dispatcher for ModServer {
 }
 
 #[test]
-#[cfg_attr(
-    not(windows),
-    ignore = "the control channel server is Windows-only until macOS phase 4"
-)]
 fn a_mods_tools_are_listed_called_and_announced_when_they_change() {
-    let pipe = format!(r"\\.\pipe\flare-mcp-test-mods-{}", std::process::id());
+    let pipe = test_pipe("flare-mcp-test-mods");
     let srv = Arc::new(ModServer {
         calls: Mutex::new(Vec::new()),
     });
@@ -378,12 +395,8 @@ fn wait_until(what: &str, ok: impl Fn() -> bool) {
 }
 
 #[test]
-#[cfg_attr(
-    not(windows),
-    ignore = "the control channel server is Windows-only until macOS phase 4"
-)]
 fn a_cancel_during_a_call_ends_the_job_on_flares_side_and_the_next_call_still_works() {
-    let pipe = format!(r"\\.\pipe\flare-mcp-test-cancel-{}", std::process::id());
+    let pipe = test_pipe("flare-mcp-test-cancel");
     let srv = Arc::new(WaitsForCaller::default());
     let server = Server::start(&pipe, ServerConfig::default(), srv.clone()).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_flare-mcp"))
@@ -474,10 +487,6 @@ fn prompt_hook(
 }
 
 #[test]
-#[cfg_attr(
-    not(windows),
-    ignore = "the control channel server is Windows-only until macOS phase 4"
-)]
 fn the_prompt_hook_tells_the_agent_of_a_page_once_and_says_nothing_outside_flare() {
     // Its own temp folder, so the state the hook keeps is this test's alone.
     let temp = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -489,7 +498,11 @@ fn the_prompt_hook_tells_the_agent_of_a_page_once_and_says_nothing_outside_flare
 
     // Outside Flare: nothing, at once.
     let (out, took) = prompt_hook(
-        &[("TEMP", &temp_text), ("TMP", &temp_text)],
+        &[
+            ("TEMP", &temp_text),
+            ("TMP", &temp_text),
+            ("TMPDIR", &temp_text),
+        ],
         &["FLARE_TAB_TOKEN", "FLARE_CTL_PIPE", "FLARE_CTL_PID"],
         input,
     );
@@ -500,8 +513,9 @@ fn the_prompt_hook_tells_the_agent_of_a_page_once_and_says_nothing_outside_flare
         &[
             ("TEMP", &temp_text),
             ("TMP", &temp_text),
+            ("TMPDIR", &temp_text),
             ("FLARE_TAB_TOKEN", "secret-9"),
-            ("FLARE_CTL_PIPE", "\\\\.\\pipe\\flare-mcp-hook-nobody"),
+            ("FLARE_CTL_PIPE", &nobody_pipe("flare-mcp-hook-nobody")),
             ("FLARE_CTL_PID", "4"),
         ],
         &[],
@@ -515,6 +529,7 @@ fn the_prompt_hook_tells_the_agent_of_a_page_once_and_says_nothing_outside_flare
         .arg("--hook-context")
         .env("TEMP", &temp_text)
         .env("TMP", &temp_text)
+        .env("TMPDIR", &temp_text)
         .env("FLARE_TAB_TOKEN", "secret-9")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -532,7 +547,7 @@ fn the_prompt_hook_tells_the_agent_of_a_page_once_and_says_nothing_outside_flare
         started.elapsed()
     );
 
-    let pipe = format!("\\\\.\\pipe\\flare-mcp-hook-test-{}", std::process::id());
+    let pipe = test_pipe("flare-mcp-hook-test");
     let server_state = Arc::new(PanelServer {
         state: Mutex::new(json!({"open": false})),
         calls: Mutex::new(Vec::new()),
@@ -542,6 +557,7 @@ fn the_prompt_hook_tells_the_agent_of_a_page_once_and_says_nothing_outside_flare
     let env = [
         ("TEMP", temp_text.as_str()),
         ("TMP", temp_text.as_str()),
+        ("TMPDIR", temp_text.as_str()),
         ("FLARE_TAB_TOKEN", "secret-9"),
         ("FLARE_CTL_PIPE", pipe.as_str()),
         ("FLARE_CTL_PID", pid.as_str()),

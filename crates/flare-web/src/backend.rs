@@ -401,6 +401,87 @@ pub struct PopupProbe {
     pub autofill: bool,
 }
 
+/// A view's latest picture, for a backend that draws its pages off screen (macOS: CEF's windowless rendering): BGRA,
+/// premultiplied, `width * height` device pixels, and a number that changes with every new picture. The window
+/// shows it where the page sits (on Windows the page is a child window and there is no picture).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ViewFrame {
+    pub width: u32,
+    pub height: u32,
+    pub bgra: Arc<Vec<u8>>,
+    pub serial: u64,
+}
+
+/// The modifier keys held with a pointer or key event the window forwards.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Mods {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    /// Cmd on a Mac.
+    pub cmd: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerButton {
+    Left,
+    Middle,
+    Right,
+}
+
+/// What the pointer did over a view.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PointerAct {
+    Move,
+    /// It left the view.
+    Leave,
+    /// A button went down; the click count (2 for a double click).
+    Down(PointerButton, u8),
+    Up(PointerButton, u8),
+    /// A wheel or trackpad scroll, in device pixels (positive `dy` scrolls the content down, as a wheel turned
+    /// toward the person does).
+    Wheel {
+        dx: f32,
+        dy: f32,
+    },
+}
+
+/// A pointer event the window forwards to an off-screen view: where, in device pixels from the view's top left.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pointer {
+    pub x: f32,
+    pub y: f32,
+    pub act: PointerAct,
+    pub mods: Mods,
+}
+
+/// A key the window forwards to an off-screen view that has the keyboard.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeyInput {
+    pub down: bool,
+    pub repeat: bool,
+    /// The Win32 virtual-key code (Chromium's `keyCode`, and what the key filter reads).
+    pub vk: u32,
+    /// The macOS key code (`kVK_*`), 0 when unknown.
+    pub mac_code: u16,
+    /// What the key types (empty for a key that types nothing).
+    pub text: String,
+    pub mods: Mods,
+}
+
+/// The input method's text, forwarded to the view that has the keyboard.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImeInput {
+    /// Text being composed, the caret at `cursor` (UTF-16 units).
+    Preedit {
+        text: String,
+        cursor: u32,
+    },
+    /// The composed text is chosen.
+    Commit(String),
+    Cancel,
+}
+
 /// One web view per slot: the panel of each tab with an open web panel and, for plugins, a bar beside a tab or
 /// a background page (see [`Slot`]; only panels are made by the app so far). The methods that take a tab act on
 /// its panel.
@@ -481,6 +562,22 @@ pub trait WebBackend {
         self.probe_view(&Slot::panel(tab))
     }
     fn probe_view(&self, slot: &Slot) -> Option<ControllerProbe>;
+    /// The view's latest picture when the backend draws off screen (macOS); None on Windows, where the page is a
+    /// window of its own.
+    fn frame(&self, _slot: &Slot) -> Option<ViewFrame> {
+        None
+    }
+    /// The pointer over an off-screen view (macOS). Windows' page window takes the pointer itself.
+    fn pointer(&mut self, _slot: &Slot, _p: Pointer) {}
+    /// A key for an off-screen view that has the keyboard (macOS). The key filter decides first, as the
+    /// accelerator hook does on Windows.
+    fn key(&mut self, _slot: &Slot, _k: KeyInput) {}
+    /// The input method's text for an off-screen view (macOS).
+    fn ime(&mut self, _slot: &Slot, _i: ImeInput) {}
+    /// The window's device scale (macOS: an off-screen view is laid out in CSS pixels at it).
+    fn set_scale(&mut self, _scale: f64) {}
+    /// The window takes the keyboard back from the tab's page (macOS; on Windows focusing the window does it).
+    fn blur(&mut self, _tab: &str) {}
 }
 
 #[cfg(test)]

@@ -16,15 +16,15 @@ use serde_json::{Value, json};
 
 use super::{AppCtl, SharedString};
 use crate::ctl_app::NavTo;
-use crate::web_ctl::{Settled, WebFactory, WebMsg, WebOut, key_event_of};
+use crate::web_ctl::{Settled, WebFactory, WebMsg, WebOut, key_event_for};
 
 type Reply = Sender<Result<Value, CtlError>>;
 
 impl AppCtl {
     /// Flare's own window is the foreground window of Windows (the keyboard may be in the page's child
-    /// window, which is still this window being in use).
+    /// window, which is still this window being in use). macOS: Flare is the active app.
     pub(super) fn window_is_foreground(&self) -> bool {
-        let Some(hwnd) = self.app().and_then(|a| crate::window::hwnd_of(&a)) else {
+        let Some(hwnd) = self.app().and_then(|a| crate::window::native_view_of(&a)) else {
             return false;
         };
         flare_win::taskbar_flash::is_foreground(hwnd)
@@ -55,6 +55,11 @@ impl AppCtl {
         pad: Box<dyn flare_win::agent_cursor::PadShell>,
     ) {
         self.web.set_arrow_shells(agent, mark, pad);
+    }
+
+    /// Whether "Draw arrow" is offered at all (off on macOS, rule 1124).
+    pub fn set_draw_offered(&mut self, on: bool) {
+        self.web.set_draw_offered(on);
     }
 
     /// The browser's controllers now (0 while no web panel is open).
@@ -402,7 +407,7 @@ impl AppCtl {
                     if k.vk == 0x1B {
                         // The second Escape: the keys go back to the terminal.
                         self.panel_escape();
-                    } else if let Some(ev) = key_event_of(&k) {
+                    } else if let Some(ev) = key_event_for(&k, &self.key_context()) {
                         // The page still holds the Windows keyboard focus while the chord runs. A chord that moves
                         // the keys into a field of the window (find, the tab list, help) would type into the
                         // page, so the window takes the focus back first. The chords that decide about the page

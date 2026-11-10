@@ -3,6 +3,9 @@
 //! and then be handed the user's audio. The TCP table names the process behind every listener, so the
 //! engine trusts the port only when every listener on it is its own server, and the Sonara post sends
 //! its bearer token only to the process runtime.json names.
+//!
+//! Windows reads the IP Helper table (`GetExtendedTcpTable`); macOS reads libproc's socket table
+//! (`flare_proc::tcp_listeners`), which sees this user's processes only (regression rule 1013).
 
 use std::collections::HashSet;
 
@@ -284,31 +287,199 @@ pub fn listening_in_tree(port: u16, root: u32) -> bool {
     root != 0 && tree_look(port, root) == TreeLook::InTree
 }
 
-/// macOS: phase 4 of the port plan (the socket table through libproc). Until then no table can be
-/// read: nobody is ever trusted as a port's owner.
+/// macOS: the listeners on `port` of one family, from libproc's socket table
+/// (`flare_proc::tcp_listeners`, never `lsof`, never a connection). None when the table cannot be read.
+/// Only this user's processes are seen (regression rule 1013).
 #[cfg(not(windows))]
-pub fn listener_pids(_port: u16) -> Vec<u32> {
-    Vec::new()
+fn read_listeners(v6: bool, port: u16) -> Option<Vec<u32>> {
+    let table = flare_proc::tcp_listeners()?;
+    Some(listeners_in(&table, v6, port))
 }
 
-/// macOS: phase 4 of the port plan; empty until then.
+/// Pure: the pids of `table` listening on `port` in one family.
 #[cfg(not(windows))]
-pub fn listener_pids_v6(_port: u16) -> Vec<u32> {
-    Vec::new()
+fn listeners_in(table: &[flare_proc::TcpListen], v6: bool, port: u16) -> Vec<u32> {
+    table
+        .iter()
+        .filter(|l| l.port == port && l.v6 == v6)
+        .map(|l| l.pid)
+        .collect()
 }
 
-/// macOS: phase 4 of the port plan; both tables read as unreadable until then.
+/// macOS: the pids listening on IPv4 `port`. Empty when nobody is, or when the table cannot be read.
 #[cfg(not(windows))]
-pub fn tree_look(_port: u16, _root: u32) -> TreeLook {
-    classify(None, None, None)
+pub fn listener_pids(port: u16) -> Vec<u32> {
+    read_listeners(false, port).unwrap_or_default()
+}
+
+/// macOS: the pids listening on IPv6 `port` (a server on `[::1]` or `[::]`).
+#[cfg(not(windows))]
+pub fn listener_pids_v6(port: u16) -> Vec<u32> {
+    read_listeners(true, port).unwrap_or_default()
+}
+
+/// macOS: every process with its parent and start (microseconds; 0 when unknown, as another user's
+/// process is), from libproc. None when the table cannot be read.
+#[cfg(not(windows))]
+fn process_rows() -> Option<Vec<ProcRow>> {
+    let table = flare_proc::table();
+    if table.is_empty() {
+        return None;
+    }
+    Some(
+        table
+            .into_iter()
+            .map(|r| (r.pid, r.ppid, r.start_us.unwrap_or(0)))
+            .collect(),
+    )
+}
+
+/// macOS: looks at `port` against the tree of `root` (the tab's shell), one socket table read for both
+/// families. An in-tree answer stands only when each loopback family the tree holds no listener on is
+/// shown free as well ([`confirm_unseen_families`]): the table never names another account's listener,
+/// and `localhost` may reach either family. Run it on a worker.
+#[cfg(not(windows))]
+pub fn tree_look(port: u16, root: u32) -> TreeLook {
+    let table = flare_proc::tcp_listeners();
+    let v4 = table.as_ref().map(|t| listeners_in(t, false, port));
+    let v6 = table.as_ref().map(|t| listeners_in(t, true, port));
+    let any =
+        v4.as_ref().is_some_and(|v| !v.is_empty()) || v6.as_ref().is_some_and(|v| !v.is_empty());
+    let tree = if !any {
+        None
+    } else if root == 0 {
+        Some(HashSet::new())
+    } else {
+        process_rows().map(|rows| descendants(&rows, root))
+    };
+    let look = classify(v4.as_deref(), v6.as_deref(), tree.as_ref());
+    confirm_unseen_families(
+        look,
+        v4.as_ref().is_some_and(|v| !v.is_empty()),
+        v6.as_ref().is_some_and(|v| !v.is_empty()),
+        |v6| loopback_bind_refused(v6, port),
+    )
+}
+
+/// The pure part of the macOS family check (regression rules 1013 and 1019). The listener table shows this user's
+/// processes only, so a tree that holds 127.0.0.1:P says nothing of [::1]:P, which another account may
+/// hold, and `http://localhost:P` may reach either. So an `InTree` answer stands only when every family
+/// with no listener in the table is shown free: `refused(v6)` is whether binding that family's loopback
+/// address on the port was refused (Some(true): a holder the table cannot see), shown free (Some(false)),
+/// or could not be told (None). Anything but "free" makes the answer `Unreadable`, never trusted.
+/// Within ONE family the kernel already refuses another account's bind on the same or an overlapping
+/// address (unless that account is root), so a family the tree holds needs no probe.
+pub fn confirm_unseen_families(
+    look: TreeLook,
+    v4_seen: bool,
+    v6_seen: bool,
+    mut refused: impl FnMut(bool) -> Option<bool>,
+) -> TreeLook {
+    if look != TreeLook::InTree {
+        return look;
+    }
+    for (v6, seen) in [(false, v4_seen), (true, v6_seen)] {
+        if !seen && refused(v6) != Some(false) {
+            return TreeLook::Unreadable;
+        }
+    }
+    look
+}
+
+/// macOS: whether binding the loopback address of one family (127.0.0.1 or ::1) on `port` is refused,
+/// with SO_REUSEADDR and never a `listen`, so no client can ever reach the probe. With SO_REUSEADDR a
+/// wildcard listener of THIS user does not refuse it, while any listener of another account on that
+/// address or the family's wildcard does (the kernel's per-uid check), which is the holder the table
+/// cannot show. Some(true): refused; Some(false): free, or the family is missing (nothing can listen on
+/// it); None: could not be told.
+#[cfg(not(windows))]
+pub fn loopback_bind_refused(v6: bool, port: u16) -> Option<bool> {
+    let family = if v6 { libc::AF_INET6 } else { libc::AF_INET };
+    // SAFETY: plain values in; the result is checked.
+    let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        let e = std::io::Error::last_os_error();
+        return (e.raw_os_error() == Some(libc::EAFNOSUPPORT)).then_some(false);
+    }
+    let one: libc::c_int = 1;
+    let int_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: a live socket; the option value is a c_int that outlives the call.
+    unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            (&raw const one).cast(),
+            int_len,
+        );
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_NOSIGPIPE,
+            (&raw const one).cast(),
+            int_len,
+        );
+    }
+    let r = if v6 {
+        // SAFETY: plain data; all-zero is a valid sockaddr_in6 before the fields are set.
+        let mut a: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
+        a.sin6_len = std::mem::size_of::<libc::sockaddr_in6>() as u8;
+        a.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+        a.sin6_port = port.to_be();
+        a.sin6_addr.s6_addr[15] = 1;
+        // SAFETY: a live socket; the option value is a c_int that outlives the call.
+        unsafe {
+            libc::setsockopt(
+                fd,
+                libc::IPPROTO_IPV6,
+                libc::IPV6_V6ONLY,
+                (&raw const one).cast(),
+                int_len,
+            );
+        }
+        // SAFETY: a live socket and an address of the stated length.
+        unsafe {
+            libc::bind(
+                fd,
+                (&raw const a).cast(),
+                std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+            )
+        }
+    } else {
+        // SAFETY: plain data; all-zero is a valid sockaddr_in before the fields are set.
+        let mut a: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+        a.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
+        a.sin_family = libc::AF_INET as libc::sa_family_t;
+        a.sin_port = port.to_be();
+        a.sin_addr.s_addr = u32::from(std::net::Ipv4Addr::LOCALHOST).to_be();
+        // SAFETY: a live socket and an address of the stated length.
+        unsafe {
+            libc::bind(
+                fd,
+                (&raw const a).cast(),
+                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            )
+        }
+    };
+    let err = (r != 0).then(|| std::io::Error::last_os_error().raw_os_error());
+    // SAFETY: `fd` is this function's own socket, closed once.
+    unsafe { libc::close(fd) };
+    match err {
+        None => Some(false),
+        Some(Some(libc::EADDRINUSE)) => Some(true),
+        Some(Some(libc::EADDRNOTAVAIL)) => Some(false),
+        Some(_) => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(windows)]
-    use std::net::Ipv6Addr;
-    use std::net::{Ipv4Addr, TcpListener};
+    use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
+
+    /// A process whose tree does not hold this test: System (4) on Windows; launchd (1) on macOS, root's,
+    /// whose start cannot be read, so no parent link from it is ever trusted.
+    const STRANGER: u32 = if cfg!(windows) { 4 } else { 1 };
 
     #[test]
     fn only_the_servers_own_pid_is_trusted() {
@@ -319,7 +490,6 @@ mod tests {
         assert!(!only_owner(&[7, 8], 7));
     }
 
-    #[cfg(windows)]
     #[test]
     fn a_listener_in_this_process_names_this_process() {
         let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
@@ -329,7 +499,6 @@ mod tests {
         assert!(listener_pids(port).is_empty());
     }
 
-    #[cfg(windows)]
     #[test]
     fn a_port_is_listening_while_a_listener_holds_it_on_either_family() {
         let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
@@ -406,28 +575,121 @@ mod tests {
         assert_eq!(classify(Some(&[7]), Some(&[]), None), TreeLook::Unreadable);
     }
 
-    #[cfg(windows)]
     #[test]
     fn a_port_held_by_a_stranger_is_foreign_not_nobody() {
         let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
         let port = l.local_addr().expect("addr").port();
         assert_eq!(tree_look(port, std::process::id()), TreeLook::InTree);
-        assert_eq!(tree_look(port, 4), TreeLook::Foreign);
+        assert_eq!(tree_look(port, STRANGER), TreeLook::Foreign);
         drop(l);
         assert_eq!(tree_look(port, std::process::id()), TreeLook::Nobody);
     }
 
-    #[cfg(windows)]
     #[test]
     fn a_port_owned_by_another_process_is_not_in_the_tree() {
         let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
         let port = l.local_addr().expect("addr").port();
         // This process owns it: it is in its own tree, not in an unrelated one.
         assert!(listening_in_tree(port, std::process::id()));
-        assert!(!listening_in_tree(port, 4));
+        assert!(!listening_in_tree(port, STRANGER));
         assert!(!listening_in_tree(port, 0));
         drop(l);
         assert!(!listening_in_tree(port, std::process::id()));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_childs_listener_is_in_this_processs_tree_on_macos() {
+        use std::process::{Command, Stdio};
+        let probe = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
+        let port = probe.local_addr().expect("addr").port();
+        drop(probe);
+        // sync-ok: test code on the test thread only
+        let mut child = Command::new("/usr/bin/nc")
+            .args(["-l", "127.0.0.1", &port.to_string()])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("nc");
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while listener_pids(port).is_empty() && std::time::Instant::now() < end {
+            std::thread::sleep(std::time::Duration::from_millis(20)); // sync-ok: test code
+        }
+        let pids = listener_pids(port);
+        let mine = tree_look(port, std::process::id());
+        let theirs = tree_look(port, child.id());
+        let stranger = tree_look(port, STRANGER);
+        let _ = child.kill();
+        let _ = child.wait(); // sync-ok: test code on the test thread only
+        assert_eq!(pids, vec![child.id()]);
+        assert_eq!(mine, TreeLook::InTree, "the child is below this process");
+        assert_eq!(theirs, TreeLook::InTree, "the root itself holds it");
+        assert_eq!(stranger, TreeLook::Foreign);
+    }
+
+    #[test]
+    fn an_in_tree_answer_stands_only_when_the_unseen_family_is_shown_free() {
+        use TreeLook::*;
+        let free = |_v6: bool| Some(false);
+        let held = |v6: bool| Some(v6);
+        // The tree holds v4 only: v6 is probed, and a hidden v6 holder (another account) makes it unknown.
+        assert_eq!(confirm_unseen_families(InTree, true, false, free), InTree);
+        assert_eq!(
+            confirm_unseen_families(InTree, true, false, held),
+            Unreadable
+        );
+        assert_eq!(
+            confirm_unseen_families(InTree, true, false, |_| None),
+            Unreadable
+        );
+        // The tree holds v6 only: v4 is probed.
+        assert_eq!(
+            confirm_unseen_families(InTree, false, true, |v6| Some(!v6)),
+            Unreadable
+        );
+        assert_eq!(confirm_unseen_families(InTree, false, true, free), InTree);
+        // Both families held by the tree: nothing to probe.
+        let mut asked = 0;
+        assert_eq!(
+            confirm_unseen_families(InTree, true, true, |_| {
+                asked += 1;
+                None
+            }),
+            InTree
+        );
+        assert_eq!(asked, 0);
+        // Every other answer passes through untouched, and nothing is probed for it.
+        for look in [Nobody, Foreign, Unreadable] {
+            assert_eq!(confirm_unseen_families(look, true, false, |_| None), look);
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_loopback_probe_tells_a_held_address_from_a_free_one() {
+        let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
+        let port = l.local_addr().expect("addr").port();
+        assert_eq!(loopback_bind_refused(false, port), Some(true), "held");
+        // The tree holds 127.0.0.1 only and nothing holds [::1]: the in-tree answer stands.
+        assert_eq!(loopback_bind_refused(true, port), Some(false));
+        assert_eq!(tree_look(port, std::process::id()), TreeLook::InTree);
+        // The probe never listens: the port still has exactly one listener, this one.
+        assert_eq!(listener_pids(port), vec![std::process::id()]);
+        assert!(listener_pids_v6(port).is_empty());
+        drop(l);
+        assert_eq!(loopback_bind_refused(false, port), Some(false));
+        // A wildcard listener of THIS user does not refuse the loopback probe (SO_REUSEADDR); another
+        // account's would (the kernel's per-uid check), which no test can stage without a second user.
+        let any = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).expect("bind any");
+        let p2 = any.local_addr().expect("addr").port();
+        assert_eq!(loopback_bind_refused(false, p2), Some(false));
+        drop(any);
+        if let Ok(l6) = TcpListener::bind((Ipv6Addr::LOCALHOST, 0)) {
+            let p6 = l6.local_addr().expect("addr").port();
+            assert_eq!(loopback_bind_refused(true, p6), Some(true));
+            assert_eq!(tree_look(p6, std::process::id()), TreeLook::InTree);
+        }
     }
 
     #[test]

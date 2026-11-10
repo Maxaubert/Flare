@@ -1,6 +1,7 @@
 //! The Claude Code plugin: its identity and where it lives (Task 3). The plugin is the bundled
-//! `flare-status` folder; Claude Code runs its `hook.cmd` for the events in `hooks/hooks.json`
-//! and that prints the OSC 777 sequence `signal.rs` reads. PT: `claudePlugin.ts`, `index.ts`.
+//! `flare-status` folder; Claude Code runs its `hook.cmd` (Windows, through the System32 `cmd.exe`)
+//! or its `hook.sh` (macOS, through `/bin/sh`) for the events in `hooks/hooks.json`, and that prints
+//! the OSC 777 sequence `signal.rs` reads. PT: `claudePlugin.ts`, `index.ts`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -66,8 +67,29 @@ pub fn candidate_plugin_dirs(env_dir: Option<&str>, exe_dir: Option<&Path>) -> V
 /// template itself to Claude Code.
 pub const SYSTEM_CMD_PLACEHOLDER: &str = "@@FLARE_SYSTEM_CMD@@";
 
-/// The Windows system folder (`C:\Windows\System32`) from `GetSystemDirectoryW`, never from an
-/// environment variable. None off Windows or when the call fails.
+/// The hook script the state hooks run on this platform: `hook.cmd` on Windows, `hook.sh` on macOS. The
+/// other platform's script is never installed.
+#[cfg(windows)]
+pub const HOOK_SCRIPT: &str = "hook.cmd";
+#[cfg(not(windows))]
+pub const HOOK_SCRIPT: &str = "hook.sh";
+#[cfg(windows)]
+const OTHER_HOOK_SCRIPT: &str = "hook.sh";
+#[cfg(not(windows))]
+const OTHER_HOOK_SCRIPT: &str = "hook.cmd";
+
+/// The arguments every state hook of the template starts with: the Windows `cmd.exe` form. On macOS
+/// the install swaps them for the one `${CLAUDE_PLUGIN_ROOT}/hook.sh` (`/bin/sh` runs it, no shell
+/// string, no execute bit needed).
+#[cfg_attr(windows, allow(dead_code))]
+const CMD_HOOK_ARGS: [&str; 4] = ["/d", "/c", "call", "${CLAUDE_PLUGIN_ROOT}/hook.cmd"];
+/// The script argument of a macOS state hook.
+#[cfg_attr(windows, allow(dead_code))]
+const SH_HOOK_ARG: &str = "${CLAUDE_PLUGIN_ROOT}/hook.sh";
+
+/// The system folder the hooks' program comes from. Windows: `C:\Windows\System32` from
+/// `GetSystemDirectoryW`, never from an environment variable (None when the call fails). macOS:
+/// `/bin`, whose `sh` is part of the sealed system volume.
 pub fn system_directory() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -83,13 +105,27 @@ pub fn system_directory() -> Option<PathBuf> {
     }
     #[cfg(not(windows))]
     {
-        None
+        Some(PathBuf::from("/bin"))
     }
 }
 
-/// `<system_dir>\cmd.exe` when `system_dir` is a drive-rooted folder named `System32` (any case);
-/// else None.
+/// The hooks' program in `system_dir`: on Windows `<system_dir>\cmd.exe` when `system_dir` is a
+/// drive-rooted folder named `System32` (any case); on macOS `<system_dir>/sh` when `system_dir` is an
+/// absolute folder named `bin` with no `.` or `..` in it. Else None.
 pub fn system_cmd_path(system_dir: &Path) -> Option<String> {
+    #[cfg(windows)]
+    {
+        windows_cmd_path(system_dir)
+    }
+    #[cfg(not(windows))]
+    {
+        posix_shell_path(system_dir)
+    }
+}
+
+/// The Windows rule of [`system_cmd_path`].
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_cmd_path(system_dir: &Path) -> Option<String> {
     let named = system_dir
         .file_name()
         .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("system32"));
@@ -100,10 +136,36 @@ pub fn system_cmd_path(system_dir: &Path) -> Option<String> {
     is_drive_path(&path).then_some(path)
 }
 
+/// The macOS rule of [`system_cmd_path`].
+#[cfg_attr(windows, allow(dead_code))]
+fn posix_shell_path(system_dir: &Path) -> Option<String> {
+    let text = system_dir.to_str()?;
+    if !is_posix_absolute(text) || system_dir.file_name().and_then(|n| n.to_str()) != Some("bin") {
+        return None;
+    }
+    Some(format!("{}/sh", text.trim_end_matches('/')))
+}
+
 /// `X:\...` only: a rooted path without a drive, or a relative one, is still found by search rules.
 fn is_drive_path(text: &str) -> bool {
     let bytes = text.as_bytes();
     bytes.len() > 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
+}
+
+/// An absolute POSIX path that names one file the same way from any folder: `/` first, more than the
+/// root, no control character, and no `.` or `..` segment (so nothing is found by a search rule or
+/// walks out of where it says).
+fn is_posix_absolute(text: &str) -> bool {
+    text.len() > 1
+        && text.starts_with('/')
+        && !text.chars().any(char::is_control)
+        && !text.split('/').any(|seg| seg == "." || seg == "..")
+}
+
+/// A program path a hook or the manifest may name: a drive path everywhere, and on macOS also an
+/// absolute POSIX path. Never a bare name.
+fn is_absolute_program(text: &str) -> bool {
+    is_drive_path(text) || (cfg!(not(windows)) && is_posix_absolute(text))
 }
 
 /// The template with every placeholder replaced by `cmd_path` (JSON-escaped), and the hooks that run
@@ -118,6 +180,10 @@ pub fn render_hooks(template: &str, cmd_path: &str) -> Option<String> {
 /// (and a group or event they leave empty with them), so a build without the program gives Claude Code
 /// nothing to fail on. None as the answer when `mcp_exe` is given but is not an absolute drive path.
 pub fn render_hooks_with(template: &str, cmd_path: &str, mcp_exe: Option<&str>) -> Option<String> {
+    #[cfg(not(windows))]
+    if is_posix_absolute(cmd_path) && cmd_path.ends_with("/bin/sh") {
+        return render_posix_hooks(template, cmd_path, mcp_exe);
+    }
     if !is_drive_path(cmd_path) || !cmd_path.to_lowercase().ends_with("\\system32\\cmd.exe") {
         return None;
     }
@@ -137,6 +203,49 @@ pub fn render_hooks_with(template: &str, cmd_path: &str, mcp_exe: Option<&str>) 
         None if out.contains(MCP_EXE_PLACEHOLDER) => out = without_mcp_hooks(&out)?,
         None => {}
     }
+    hooks_commands_are_absolute(&out).then_some(out)
+}
+
+/// The macOS form of [`render_hooks_with`]: every state hook runs `sh_path` (an absolute `.../bin/sh`) with
+/// the one argument `${CLAUDE_PLUGIN_ROOT}/hook.sh` in place of the template's four `cmd.exe` ones, and the
+/// state words after them as they are. A state hook whose arguments do not start with the template's four
+/// fails the render, so nothing half-converted is ever written. `mcp_exe` must be an absolute POSIX path.
+#[cfg(not(windows))]
+fn render_posix_hooks(template: &str, sh_path: &str, mcp_exe: Option<&str>) -> Option<String> {
+    if !template.contains(SYSTEM_CMD_PLACEHOLDER) {
+        return None;
+    }
+    if mcp_exe.is_some_and(|exe| !is_posix_absolute(exe)) {
+        return None;
+    }
+    let base = match mcp_exe {
+        Some(_) => template.to_string(),
+        None => without_mcp_hooks(template)?,
+    };
+    let mut value: serde_json::Value = serde_json::from_str(&base).ok()?;
+    let events = value.get_mut("hooks")?.as_object_mut()?;
+    for groups in events.values_mut() {
+        for group in groups.as_array_mut()?.iter_mut() {
+            for hook in group.get_mut("hooks")?.as_array_mut()?.iter_mut() {
+                let command = hook.get("command").and_then(|c| c.as_str()).unwrap_or("");
+                if command == SYSTEM_CMD_PLACEHOLDER {
+                    let args = hook.get("args")?.as_array()?;
+                    let head: Vec<&str> = args.iter().take(4).filter_map(|a| a.as_str()).collect();
+                    if head != CMD_HOOK_ARGS {
+                        return None;
+                    }
+                    let mut new_args = vec![serde_json::Value::String(SH_HOOK_ARG.to_string())];
+                    new_args.extend(args.iter().skip(4).cloned());
+                    hook["command"] = serde_json::Value::String(sh_path.to_string());
+                    hook["args"] = serde_json::Value::Array(new_args);
+                } else if command == MCP_EXE_PLACEHOLDER {
+                    hook["command"] = serde_json::Value::String(mcp_exe?.to_string());
+                }
+            }
+        }
+    }
+    let mut out = serde_json::to_string_pretty(&value).ok()?;
+    out.push('\n');
     hooks_commands_are_absolute(&out).then_some(out)
 }
 
@@ -170,7 +279,7 @@ fn without_mcp_hooks(text: &str) -> Option<String> {
 }
 
 /// True when `hooks.json` text parses, has at least one hook, and every `command` is an absolute
-/// drive path: no program is ever found by name.
+/// drive path (on macOS also an absolute POSIX path): no program is ever found by name.
 pub fn hooks_commands_are_absolute(text: &str) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
         return false;
@@ -189,7 +298,7 @@ pub fn hooks_commands_are_absolute(text: &str) -> bool {
             {
                 count += 1;
                 let command = hook.get("command").and_then(|c| c.as_str()).unwrap_or("");
-                if !is_drive_path(command) {
+                if !is_absolute_program(command) {
                     return false;
                 }
             }
@@ -211,7 +320,7 @@ pub fn render_manifest(template: &str, mcp_exe: Option<&str>) -> Option<String> 
     let mut value: serde_json::Value = serde_json::from_str(template).ok()?;
     let object = value.as_object_mut()?;
     match mcp_exe {
-        Some(exe) if is_drive_path(exe) => {
+        Some(exe) if is_absolute_program(exe) => {
             let server = object
                 .get_mut("mcpServers")?
                 .get_mut("flare")?
@@ -293,6 +402,10 @@ pub fn install_plugin_with(
                 pending.push(child);
                 continue;
             }
+            // The other platform's hook script is never installed: nothing here runs it.
+            if child == Path::new(OTHER_HOOK_SCRIPT) {
+                continue;
+            }
             let bytes = if child == hooks_rel {
                 hooks.clone().into_bytes()
             } else if child == manifest_rel {
@@ -319,15 +432,22 @@ pub fn install_plugin_with(
 /// tag naming the folder the exe is in. The copy holds the absolute path of THIS Flare's `flare-mcp.exe`, so
 /// two Flares (the installed one, a dev or worktree build) must not share one: the last started would decide
 /// which program every Claude session of every Flare runs, and a removed worktree would break the others.
+///
+/// macOS: `~/Library/Application Support/Flare/claude-plugin-<tag>`.
 pub fn installed_plugin_path(exe_dir: Option<&Path>) -> Option<PathBuf> {
-    let local = std::env::var("LOCALAPPDATA")
-        .ok()
-        .filter(|value| !value.is_empty())?;
+    #[cfg(windows)]
+    let local = PathBuf::from(
+        std::env::var("LOCALAPPDATA")
+            .ok()
+            .filter(|value| !value.is_empty())?,
+    );
+    #[cfg(not(windows))]
+    let local = flare_win::paths::local_app_data()?;
     let name = match exe_dir {
         Some(dir) => format!("claude-plugin-{}", dir_tag(dir)),
         None => "claude-plugin".to_string(),
     };
-    Some(PathBuf::from(local).join("Flare").join(name))
+    Some(local.join("Flare").join(name))
 }
 
 /// Eight hex digits naming a folder (FNV-1a of its lowercased path, slashes unified).
@@ -342,7 +462,7 @@ fn dir_tag(dir: &Path) -> String {
 }
 
 /// The plugin folder to hand a shell: the bundled template is installed (refreshed) into
-/// `%LOCALAPPDATA%\Flare\claude-plugin` with the absolute System32 `cmd.exe`, and that copy is
+/// [`installed_plugin_path`] with the absolute System32 `cmd.exe` (macOS: `/bin/sh`), and that copy is
 /// returned. None when no template is found or the install fails (then no shell is handed a
 /// plugin; the template itself is never handed out).
 pub fn plugin_dir(env_dir: Option<&str>) -> Option<PathBuf> {
@@ -355,7 +475,7 @@ pub fn plugin_dir(env_dir: Option<&str>) -> Option<PathBuf> {
     // The MCP server is only offered when its program is really beside this exe.
     let mcp = exe_dir
         .as_deref()
-        .map(|d| d.join("flare-mcp.exe"))
+        .map(|d| d.join(format!("flare-mcp{}", std::env::consts::EXE_SUFFIX)))
         .filter(|p| p.is_file()); // sync-ok: one stat, on the spawn worker
     match install_plugin_with(&src, &dest, &system, mcp.as_deref()) {
         Ok(_) => Some(dest),
@@ -378,7 +498,6 @@ pub fn plugin_dir_in(candidates: &[PathBuf]) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::signal::agent_hook_events;
-    #[cfg(windows)]
     use crate::signal::{AgentSignal, HookState, parse_agent_signal};
 
     #[test]
@@ -428,10 +547,16 @@ mod tests {
                         .iter()
                         .map(|arg| arg.as_str().expect("arg").to_string())
                         .collect();
+                    // The template's and a Windows install's four `cmd.exe` arguments, or a macOS install's one script.
+                    let fixed = if args.first().map(String::as_str) == Some(SH_HOOK_ARG) {
+                        1
+                    } else {
+                        4
+                    };
                     out.push((
                         event.clone(),
                         matcher.clone(),
-                        args[4..].join(" "),
+                        args[fixed..].join(" "),
                         hook.clone(),
                     ));
                 }
@@ -443,7 +568,10 @@ mod tests {
     /// The hook runs `flare-mcp` (the placeholder, or an installed `...\flare-mcp.exe`).
     fn is_mcp_hook(hook: &serde_json::Value) -> bool {
         let command = hook["command"].as_str().unwrap_or("");
-        command == MCP_EXE_PLACEHOLDER || command.to_lowercase().ends_with("flare-mcp.exe")
+        let lower = command.to_lowercase();
+        command == MCP_EXE_PLACEHOLDER
+            || lower.ends_with("flare-mcp.exe")
+            || lower.ends_with("/flare-mcp")
     }
 
     /// Every `flare-mcp` hook entry as (event, matcher, the hook).
@@ -518,15 +646,11 @@ mod tests {
         assert!(render_hooks_with(&template, cmd, Some("..\\flare-mcp.exe")).is_none());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "the plugin install checks an absolute System32 folder; macOS phase 4 of the port plan"
-    )]
     #[test]
     fn install_writes_the_prompt_hook_only_when_the_program_exists_and_ships_the_browser_command() {
         let tmp = tempfile::tempdir().expect("tmp");
         let system = fake_system32(tmp.path());
-        let exe = tmp.path().join("flare-mcp.exe");
+        let exe = tmp.path().join(MCP_NAME);
         let with = tmp.path().join("with");
         install_plugin_with(&plugin_root(), &with, &system, Some(&exe)).expect("install");
         let text = std::fs::read_to_string(with.join("hooks").join("hooks.json")).expect("hooks"); // sync-ok: test fixture on a temp folder
@@ -650,16 +774,12 @@ mod tests {
         assert!(render_manifest("not json", None).is_none());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "the plugin install checks an absolute System32 folder; macOS phase 4 of the port plan"
-    )]
     #[test]
     fn install_writes_the_mcp_server_only_when_the_program_exists() {
         let tmp = tempfile::tempdir().expect("tmp");
         let system = fake_system32(tmp.path());
         let with = tmp.path().join("with");
-        let exe = tmp.path().join("flare-mcp.exe");
+        let exe = tmp.path().join(MCP_NAME);
         install_plugin_with(&plugin_root(), &with, &system, Some(&exe)).expect("install");
         let text = std::fs::read_to_string(with.join(".claude-plugin").join("plugin.json"))
             .expect("manifest"); // sync-ok: test fixture on a temp folder
@@ -667,8 +787,8 @@ mod tests {
         let command = value["mcpServers"]["flare"]["command"]
             .as_str()
             .expect("command");
-        assert!(is_drive_path(command), "{command}");
-        assert!(command.ends_with("flare-mcp.exe"));
+        assert!(is_absolute_program(command), "{command}");
+        assert!(command.ends_with(MCP_NAME));
         let without = tmp.path().join("without");
         install_plugin_with(&plugin_root(), &without, &system, None).expect("install");
         let text = std::fs::read_to_string(without.join(".claude-plugin").join("plugin.json"))
@@ -736,6 +856,7 @@ mod tests {
         for rel in [
             ".claude-plugin/plugin.json",
             "hook.cmd",
+            "hook.sh",
             "hooks/hooks.json",
             "commands/browser.md",
         ] {
@@ -762,6 +883,236 @@ mod tests {
             "%*", "more", "set /p", "findstr", "type con", "typecon", "<",
         ] {
             assert!(!text.contains(banned), "hook.cmd contains {banned}");
+        }
+    }
+
+    #[test]
+    fn hook_sh_is_lf_and_static() {
+        let bytes = std::fs::read(plugin_root().join("hook.sh")).expect("hook.sh"); // sync-ok: test fixture
+        assert!(
+            !bytes.contains(&b'\r'),
+            "a CR in hook.sh: /bin/sh would read it as part of a word"
+        );
+        let text = String::from_utf8(bytes).expect("utf8");
+        let code: String = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // No stdin, no evaluation, no program found by name beyond the shell's own builtins.
+        for banned in [
+            "read ", "eval", "$*", "$@", "`", "$(", "<", "exec", "source", ". /", "cat ", "env ",
+        ] {
+            assert!(!code.contains(banned), "hook.sh runs {banned}");
+        }
+        // The values are printf's arguments, never its format.
+        for line in text
+            .lines()
+            .filter(|l| l.trim_start().starts_with("printf"))
+        {
+            assert!(line.trim_start().starts_with("printf '"), "{line}");
+        }
+        assert!(!text.contains('\u{2014}'));
+    }
+
+    #[test]
+    fn a_platform_installs_its_own_hook_script_and_never_the_other() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let system = fake_system32(tmp.path());
+        let dest = tmp.path().join("plug");
+        install_plugin(&plugin_root(), &dest, &system).expect("install");
+        assert!(dest.join(HOOK_SCRIPT).is_file());
+        assert!(!dest.join(OTHER_HOOK_SCRIPT).exists());
+        let value: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dest.join("hooks").join("hooks.json")).expect("hooks"), // sync-ok: test fixture
+        )
+        .expect("json");
+        for (_, _, _, hook) in hook_entries(&value) {
+            let script = hook["args"]
+                .as_array()
+                .expect("args")
+                .iter()
+                .filter_map(|a| a.as_str())
+                .find(|a| a.starts_with("${CLAUDE_PLUGIN_ROOT}/"))
+                .expect("the script argument")
+                .to_string();
+            assert_eq!(script, format!("${{CLAUDE_PLUGIN_ROOT}}/{HOOK_SCRIPT}"));
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_posix_render_keeps_every_state_word_and_refuses_what_it_cannot_convert() {
+        let template = read_plugin_file("hooks/hooks.json");
+        let exe = "/Applications/Flare [x].app/Contents/MacOS/flare-mcp";
+        let out = render_hooks_with(&template, "/bin/sh", Some(exe)).expect("renders");
+        assert!(!out.contains("@@") && !out.contains("/hook.cmd\"") && !out.contains("\"/d\""));
+        assert!(hooks_commands_are_absolute(&out));
+        let value: serde_json::Value = serde_json::from_str(&out).expect("json");
+        let mut got: Vec<(String, String, String)> = hook_entries(&value)
+            .into_iter()
+            .map(|(e, m, a, hook)| {
+                assert_eq!(hook["command"].as_str(), Some("/bin/sh"));
+                assert_eq!(hook["args"][0].as_str(), Some(SH_HOOK_ARG));
+                (e, m, a)
+            })
+            .collect();
+        let mut want: Vec<(String, String, String)> = agent_hook_events()
+            .into_iter()
+            .map(|row| (row.event, row.matcher, row.args))
+            .collect();
+        got.sort();
+        want.sort();
+        assert_eq!(got, want);
+        assert_eq!(mcp_hook_entries(&value)[0].2["command"].as_str(), Some(exe));
+        // Without the program the prompt hook goes, as on Windows.
+        let bare = render_hooks_with(&template, "/bin/sh", None).expect("renders");
+        assert!(mcp_hook_entries(&serde_json::from_str(&bare).expect("json")).is_empty());
+        // A relative program, a relative shell, a `..` shell and a hook of another shape write nothing.
+        assert!(render_hooks_with(&template, "/bin/sh", Some("flare-mcp")).is_none());
+        assert!(render_hooks_with(&template, "bin/sh", None).is_none());
+        assert!(render_hooks_with(&template, "/x/../bin/sh", None).is_none());
+        let odd = template.replacen("\"/d\"", "\"/q\"", 1);
+        assert!(render_hooks_with(&odd, "/bin/sh", None).is_none());
+        // The shell is `/bin/sh` from a folder named `bin`, and nothing else.
+        assert_eq!(system_directory(), Some(PathBuf::from("/bin")));
+        assert_eq!(
+            system_cmd_path(Path::new("/bin")).as_deref(),
+            Some("/bin/sh")
+        );
+        for bad in ["/usr/local", "bin", "/x/./bin", "/"] {
+            assert_eq!(system_cmd_path(Path::new(bad)), None, "{bad}");
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn every_hook_prints_what_the_parser_reads_on_macos() {
+        use std::process::{Command, Stdio};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let folder = tmp.path().join("Flare [x] (T) $HOME");
+        std::fs::create_dir_all(&folder).expect("folder"); // sync-ok: test fixture on a temp folder
+        let system = system_directory().expect("system directory");
+        install_plugin(&plugin_root(), &folder, &system).expect("install");
+        let folder_text = folder.to_string_lossy().to_string();
+        let installed = std::fs::read_to_string(folder.join("hooks").join("hooks.json")) // sync-ok: test fixture
+            .expect("installed hooks");
+        let value: serde_json::Value = serde_json::from_str(&installed).expect("json");
+        let entries = hook_entries(&value);
+        assert_eq!(entries.len(), 25);
+        for (_event, _matcher, joined, hook) in entries {
+            let args: Vec<String> = hook["args"]
+                .as_array()
+                .expect("args")
+                .iter()
+                .map(|arg| {
+                    arg.as_str()
+                        .expect("arg")
+                        .replace("${CLAUDE_PLUGIN_ROOT}", &folder_text)
+                })
+                .collect();
+            let output = Command::new(hook["command"].as_str().expect("command")) // sync-ok: test fixture
+                .args(&args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .env("CLAUDE_CODE_SESSION_ID", SESSION)
+                .output()
+                .expect("/bin/sh runs the hook");
+            assert!(output.status.success(), "hook {joined} failed");
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let line: serde_json::Value =
+                serde_json::from_str(stdout.trim()).expect("hook prints JSON");
+            let sequence = line["terminalSequence"].as_str().expect("terminalSequence");
+            assert!(sequence.starts_with("\u{1b}]777;"), "{sequence:?}");
+            assert!(sequence.ends_with('\u{7}'), "{sequence:?}");
+            let payload = &sequence[6..sequence.len() - 1];
+            assert_eq!(
+                parse_agent_signal(payload),
+                Some(expected_signal(&joined)),
+                "payload {payload}"
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn prints_the_state_as_valid_json_whatever_the_session_id_holds_on_macos() {
+        use std::process::{Command, Stdio};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        install_plugin(
+            &plugin_root(),
+            tmp.path(),
+            &system_directory().expect("bin"),
+        )
+        .expect("install");
+        let hook = tmp.path().join("hook.sh");
+        let upper = SESSION.to_uppercase();
+        let semicolon = format!(";{}", &SESSION[1..]);
+        let trailing = format!("{SESSION}x");
+        let quote = format!("\"{}", &SESSION[1..]);
+        let run = |value: &str| {
+            let output = Command::new("/bin/sh") // sync-ok: test fixture
+                .arg(&hook)
+                .args(["done", "+sid"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .env("CLAUDE_CODE_SESSION_ID", value)
+                .output()
+                .expect("/bin/sh runs the hook");
+            String::from_utf8_lossy(&output.stdout).to_string()
+        };
+        for value in [
+            "a&calc",
+            "x)\"",
+            "a\\b",
+            "$PATH",
+            "%s%n%s",
+            "$(id)",
+            upper.as_str(),
+            semicolon.as_str(),
+            trailing.as_str(),
+            quote.as_str(),
+            "",
+        ] {
+            let stdout = run(value);
+            let line: serde_json::Value = serde_json::from_str(stdout.trim())
+                .unwrap_or_else(|e| panic!("{value:?} broke the JSON: {e}: {stdout}"));
+            let sequence = line["terminalSequence"].as_str().expect("terminalSequence");
+            let payload = &sequence[6..sequence.len() - 1];
+            assert_eq!(
+                parse_agent_signal(payload),
+                Some(AgentSignal {
+                    state: HookState::Done,
+                    kind: None,
+                    session: None,
+                }),
+                "{value:?}"
+            );
+        }
+        assert!(run(SESSION).contains(&format!("session={SESSION}")));
+    }
+
+    /// The signal a hook with these state words (`done +sid`, `failed rate_limit`) must print.
+    #[cfg(not(windows))]
+    fn expected_signal(joined: &str) -> AgentSignal {
+        let mut words = joined.split(' ');
+        let state = match words.next().expect("state") {
+            "working" => HookState::Working,
+            "question" => HookState::Question,
+            "done" => HookState::Done,
+            "failed" => HookState::Failed,
+            other => panic!("unknown state {other}"),
+        };
+        let (kind, session) = match words.next() {
+            Some("+sid") => (None, Some(SESSION.to_string())),
+            other => (other.map(str::to_string), None),
+        };
+        AgentSignal {
+            state,
+            kind,
+            session,
         }
     }
 
@@ -838,8 +1189,14 @@ mod tests {
         assert!(started.elapsed().as_secs() < 20, "25 spawns took too long");
     }
 
-    #[cfg(windows)]
     const SESSION: &str = "b44e954e-a9cf-4ba9-a3c0-99ec6795d1d9";
+
+    /// The MCP server's file name on this platform.
+    const MCP_NAME: &str = if cfg!(windows) {
+        "flare-mcp.exe"
+    } else {
+        "flare-mcp"
+    };
 
     /// The id is Claude's, but read with care: cmd expands %VAR% before it parses, so a ) & | < > ^
     /// or quote in the value would break the block or the JSON and lose the STATE with it.
@@ -910,11 +1267,28 @@ mod tests {
         assert!(stdout.contains(&format!("session={SESSION}")), "{stdout}");
     }
 
+    /// A stand-in for the system folder the hooks' program comes from: `<tmp>\Windows\System32` on
+    /// Windows, `<tmp>/usr/bin` on macOS (any absolute folder of that name is taken, as any drive's
+    /// `System32` is on Windows).
     fn fake_system32(tmp: &Path) -> PathBuf {
-        let dir = tmp.join("Windows").join("System32");
+        fake_system_dir(tmp, if cfg!(windows) { "Windows" } else { "usr" })
+    }
+
+    /// `<tmp>/<parent>/System32` (Windows) or `<tmp>/<parent>/bin` (macOS), made.
+    fn fake_system_dir(tmp: &Path, parent: &str) -> PathBuf {
+        let dir = tmp
+            .join(parent)
+            .join(if cfg!(windows) { "System32" } else { "bin" });
         std::fs::create_dir_all(&dir).expect("dir"); // sync-ok: test fixture on a temp folder
         dir
     }
+
+    /// The end of the hooks' program path on this platform.
+    const SYSTEM_CMD_TAIL: &str = if cfg!(windows) {
+        "system32\\cmd.exe"
+    } else {
+        "/bin/sh"
+    };
 
     fn installed_cmd_commands(dest: &Path) -> Vec<String> {
         let text = std::fs::read_to_string(dest.join("hooks").join("hooks.json")).expect("hooks"); // sync-ok: test fixture on a temp folder
@@ -932,10 +1306,6 @@ mod tests {
         assert!(!hooks_commands_are_absolute(&text));
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "the plugin install checks an absolute System32 folder; macOS phase 4 of the port plan"
-    )]
     #[test]
     fn install_leaves_no_bare_program_name() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -951,21 +1321,17 @@ mod tests {
                 "{command} is not absolute"
             );
             assert!(
-                command.to_lowercase().ends_with("system32\\cmd.exe"),
+                command.to_lowercase().ends_with(SYSTEM_CMD_TAIL),
                 "{command}"
             );
             assert!(!command.contains(SYSTEM_CMD_PLACEHOLDER));
         }
         let text = std::fs::read_to_string(dest.join("hooks").join("hooks.json")).expect("read"); // sync-ok: test fixture on a temp folder
         assert!(hooks_commands_are_absolute(&text));
-        assert!(dest.join("hook.cmd").is_file());
+        assert!(dest.join(HOOK_SCRIPT).is_file());
         assert!(is_our_plugin(&dest.to_string_lossy()));
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "the plugin install checks an absolute System32 folder; macOS phase 4 of the port plan"
-    )]
     #[test]
     fn a_second_install_writes_nothing() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -978,10 +1344,6 @@ mod tests {
         );
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "the plugin install checks an absolute System32 folder; macOS phase 4 of the port plan"
-    )]
     #[test]
     fn an_installed_plugin_with_a_bare_name_is_rewritten() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -992,7 +1354,7 @@ mod tests {
         let good = std::fs::read_to_string(&hooks).expect("read"); // sync-ok: test fixture on a temp folder
         let bare = good.replace(
             &system_cmd_path(&system).expect("cmd").replace('\\', "\\\\"),
-            "cmd.exe",
+            if cfg!(windows) { "cmd.exe" } else { "sh" },
         );
         assert_ne!(bare, good);
         assert!(!hooks_commands_are_absolute(&bare));
@@ -1004,10 +1366,6 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&hooks).expect("read"), good); // sync-ok: test fixture on a temp folder
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "the plugin install checks an absolute System32 folder; macOS phase 4 of the port plan"
-    )]
     #[test]
     fn a_refresh_goes_through_a_temp_file_and_a_rename() {
         // A refresh must never leave a half-written file for Claude Code to read (audit L26). With the
@@ -1015,8 +1373,7 @@ mod tests {
         // in-place write would have gone ahead and changed it.
         let tmp = tempfile::tempdir().expect("tempdir");
         let one = fake_system32(tmp.path());
-        let other = tmp.path().join("Other").join("System32");
-        std::fs::create_dir_all(&other).expect("dir"); // sync-ok: test fixture on a temp folder
+        let other = fake_system_dir(tmp.path(), "Other");
         let dest = tmp.path().join("plug");
         install_plugin(&plugin_root(), &dest, &one).expect("install");
         let hooks = dest.join("hooks").join("hooks.json");
@@ -1033,16 +1390,11 @@ mod tests {
         assert!(!temp_name(&hooks).exists());
     }
 
-    #[cfg_attr(
-        not(windows),
-        ignore = "the plugin install checks an absolute System32 folder; macOS phase 4 of the port plan"
-    )]
     #[test]
     fn a_moved_system_folder_is_rewritten() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let one = fake_system32(tmp.path());
-        let other = tmp.path().join("Other").join("System32");
-        std::fs::create_dir_all(&other).expect("dir"); // sync-ok: test fixture on a temp folder
+        let other = fake_system_dir(tmp.path(), "Other");
         let dest = tmp.path().join("plug");
         install_plugin(&plugin_root(), &dest, &one).expect("install");
         assert_eq!(

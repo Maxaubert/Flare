@@ -7,12 +7,15 @@ pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// The user's home folder, read from the environment on first use and cached for the run.
-/// `.` when the environment has none.
+/// The user's home folder, read from the environment on first use and cached for the run:
+/// `USERPROFILE` on Windows, `HOME` on macOS. `.` when the environment has none.
 pub fn home() -> &'static str {
     static HOME: OnceLock<String> = OnceLock::new();
-    HOME.get_or_init(|| std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string()))
+    HOME.get_or_init(|| std::env::var(HOME_VAR).unwrap_or_else(|_| ".".to_string()))
 }
+
+/// The variable that names the home folder on this platform.
+const HOME_VAR: &str = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
 
 #[cfg(test)]
 mod tests {

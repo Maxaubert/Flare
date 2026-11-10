@@ -390,7 +390,38 @@ mod mac {
         assert_eq!(got.borrow().len(), 2);
     }
 
+    /// The Dock calls on the main thread, in an app whose policy is "prohibited": it has no Dock tile to
+    /// draw on and is never active, so the badge shows nothing anywhere.
+    fn the_dock_badge_reads_back_and_attention_is_asked_only_while_flare_is_not_active() {
+        use flare_win::{dock, taskbar, taskbar_flash};
+        let mtm = mtm();
+        let app = NSApplication::sharedApplication(mtm);
+        app.setActivationPolicy(NSApplicationActivationPolicy::Prohibited);
+        assert!(!dock::is_active(), "a prohibited app is never active");
+        assert!(!taskbar_flash::is_foreground(0));
+        assert!(dock::set_badge_label(Some("3")));
+        assert_eq!(dock::badge_label().as_deref(), Some("3"));
+        assert!(dock::set_badge_label(None));
+        assert_eq!(dock::badge_label(), None);
+        // The taskbar badge on macOS is the Dock tile's label.
+        let mut badge = taskbar::TaskbarBadge::new(0);
+        assert!(badge.set(12, 2.0));
+        assert_eq!(dock::badge_label().as_deref(), Some("9+"));
+        assert!(badge.clear());
+        assert_eq!(dock::badge_label(), None);
+        // Not active, so a bell would ask for a critical request. The request itself is never made
+        // from a test (the planner and its AppKit type are checked in `dock::tests`).
+        assert_eq!(
+            dock::attention_for(dock::is_active()),
+            Some(dock::Attention::Critical)
+        );
+    }
+
     pub const TESTS: &[(&str, fn())] = &[
+        (
+            "dock_badge_reads_back_and_attention_is_asked_only_while_flare_is_not_active",
+            the_dock_badge_reads_back_and_attention_is_asked_only_while_flare_is_not_active,
+        ),
         (
             "menu_bar_is_built_from_the_spec_with_its_keys_and_actions",
             the_menu_bar_is_built_from_the_spec_with_its_keys_and_actions,

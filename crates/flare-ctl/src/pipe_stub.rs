@@ -1,6 +1,6 @@
-//! The control channel endpoint off Windows: not built yet. macOS: phase 4 of the port plan (a Unix
-//! socket with peer-uid checks). Until then the server refuses to start and every connect fails,
-//! so the app runs without the channel and clients report that Flare is unreachable.
+//! The control channel endpoint on a system that is neither Windows nor macOS (Flare ships on those
+//! two only; macOS has `uds.rs`). The server refuses to start and every connect fails, so the app
+//! runs without the channel and clients report that Flare is unreachable.
 
 use std::convert::Infallible;
 use std::io;
@@ -23,7 +23,7 @@ fn unsupported() -> io::Error {
     )
 }
 
-/// The channel name for `id` and `scope`. macOS: phase 4 of the port plan picks the socket path.
+/// The channel name for `id` and `scope`.
 pub fn pipe_name(id: &str, scope: Option<&str>) -> String {
     match scope {
         None => format!("flare-ctl-{id}"),
@@ -31,12 +31,12 @@ pub fn pipe_name(id: &str, scope: Option<&str>) -> String {
     }
 }
 
-/// Who this process runs as. macOS: phase 4 of the port plan (the uid); None until then.
+/// Who this process runs as: unknown here.
 pub fn user_sid() -> Option<String> {
     None
 }
 
-/// The channel of the current user, None until phase 4.
+/// The channel of the current user: none here.
 pub fn user_pipe_name(scope: Option<&str>) -> Option<String> {
     user_sid().map(|id| pipe_name(&id, scope))
 }
@@ -49,7 +49,7 @@ pub fn default_pipe_name() -> Option<String> {
     }
 }
 
-/// One end of a connected channel. None can exist until phase 4.
+/// One end of a connected channel. None can exist here.
 pub struct PipeEnd(Infallible);
 
 impl Wire for PipeEnd {
@@ -62,7 +62,7 @@ impl Wire for PipeEnd {
     }
 }
 
-/// The running server. None can exist until phase 4: `start` always fails.
+/// The running server. None can exist here: `start` always fails.
 pub struct Server(Infallible);
 
 impl Server {
