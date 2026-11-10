@@ -2111,17 +2111,30 @@ Not in this version: click a path to preview, a `.gltf` with separate `.bin` or 
 - **What it is.** A small "Ask agent" button in the panel's header (in a web page's address bar, which is its header) and a row "Ask agent about this
   selection" in the terminal's right-click menu over a grid selection. Both only on a tab with an agent, whichever agent. What is sent lands at the
   prompt and is never submitted: the person reads it and presses Enter, and the keys go to the terminal.
-- **What is sent.** Web page: `window.getSelection().toString()`, framed; no selection is a note and nothing typed. Text or image panel: the file's
-  path, quoted for the tab's shell. Handed-over text has no file and says so. Terminal grid: the selection, framed; the selection is then let go.
+- **What is sent.** Web page: `window.getSelection().toString()`, framed. With no selection on a plain web page (2026-11-10), a reference to the
+  page instead (below). A mini-app or plugin page with no selection is a note and nothing typed. Text or image panel: the file's path, quoted for the
+  tab's shell. Handed-over text has no file and says so. Terminal grid: the selection, framed; the selection is then let go.
+- **Ask about the page** (2026-11-10, rule 238). The agent can already read the page with `browser_look`, so only a reference is typed, and the
+  person adds the question:
+  `About the page open in this tab (example.com):` then `> title: Pricing`, `> address: https://example.com/pricing` and
+  `> (use browser_look to read it)`. The address and title come from the document that answered, in the same answer as its (empty) selection, never
+  from the tab. The title is the page's own words: cleaned like a selection, one line, at most 160 characters, left out when empty. The address
+  loses any user name and password and is cut at 2 KB with `[cut]`. Only `http` and `https` pages; `about:blank` and the like keep the note.
+- **Tooltip.** One fixed wording, since whether a page has a selection is only known by asking it: "Ask agent about the selection or this page" in a
+  web page's address bar, "Ask agent about the selection" on a mini-app or plugin page, "Ask agent about this file" on a file. It sits left of the
+  button, so a page's native window cannot cover it.
 - **The frame.** `About this from <label>:` then `> ` per line, at most 4 KB with `> [cut]`. The label is the host or file name, cleaned and capped at
   64 characters; a page Flare made itself reads "this page". A web page's host is the one its document gave with the text (`location.href`), so a click
   while the next page loads still names the page that is showing.
-- **Refusals.** A short note over the terminal for 4 s: no agent, a question box up, no selection, a page that did not answer or answered with more
-  than the script can give (about 400 KB, checked natively), a path that cannot be typed.
+- **Refusals.** A short note over the terminal for 4 s: no agent, a question box up, no selection (mini-app and plugin pages, or a page that is not
+  `http` or `https`), a page that did not answer, answered in a shape that names no page, or answered with more than the script can give (about
+  400 KB, checked natively), a path that cannot be typed.
 - **Narrow panels.** Below 380 px the button is its glyph alone; below 200 px it is gone.
 - **Not in this version.** A row in the page's own right-click menu, selection inside the Text panel, any auto-submit, any ctl, MCP or plugin way in.
-- **Tests.** `ask_agent::tests` (hostile text), `appctl::tests::ask_tests` (fake shell and fake browser), `ui_tests::panel` (`ask_agent_*`).
-- **Not covered.** A real WebView2 selection and a real agent's prompt: no e2e scenario.
+- **Tests.** `ask_agent::tests` (hostile text and titles, `frame_page`), `appctl::tests::ask_tests` (fake shell and fake browser), `ui_tests::panel`
+  (`ask_agent_*`, the tooltip included).
+- **Not covered.** A real WebView2 selection or title and a real agent's prompt: no e2e scenario. Where the tooltip lands is not checked in a real
+  window.
 
 ## Image thumbnails on hover (#17), 2026-11-09
 

@@ -1401,6 +1401,14 @@ impl AppCtl {
             on_tip_request,
             |c, t: SharedString, x: f32, y: f32, w: f32, h: f32| c.tip_request(&t, x, y, w, h)
         );
+        bind!(
+            app,
+            rc,
+            on_panel_ask_tip,
+            |c, t: SharedString, x: f32, y: f32, w: f32, h: f32| {
+                c.tip_request_toward(&t, x, y, w, h, Some(TipSide::Left));
+            }
+        );
         // The Settings view's tooltips go the same way as every other surface's.
         {
             let weak = Rc::downgrade(rc);
@@ -3011,13 +3019,28 @@ impl AppCtl {
     // ---- tooltips ---------------------------------------------------------------------------------------
 
     fn tip_request(&mut self, text: &str, x: f32, y: f32, w: f32, h: f32) {
+        self.tip_request_toward(text, x, y, w, h, None);
+    }
+
+    /// A tooltip on the side `side` asks for (still flipped when there is no room), or where tips usually go.
+    fn tip_request_toward(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        side: Option<TipSide>,
+    ) {
         if text.is_empty() {
             self.clear_tip();
             return;
         }
         let now = self.now();
         let side_width = self.sidebar.view(self.scale, now).width_css as f32;
-        let prefer = if self.vertical() && x < side_width {
+        let prefer = if let Some(side) = side {
+            side
+        } else if self.vertical() && x < side_width {
             TipSide::Right
         } else {
             TipSide::Below
