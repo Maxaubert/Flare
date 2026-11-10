@@ -139,6 +139,11 @@ pub enum CtlOp {
         /// Raised when the call's client has gone: the job ends at the next turn of the agent timer.
         cancel: CancelFlag,
     },
+    /// `browser.point` (rule 254): the agent's arrow over the tab's web page, or none (`clear`). Not a job: answered`n    /// once the arrow is measured, by the browser's message.
+    BrowserPoint {
+        tab: String,
+        req: crate::web_ctl::PointReq,
+    },
     /// `panel.open` with kind `mod:<id>` (stage 8): that mod's panel on the tab. The mod is on and has a panel
     /// (checked by the call's thread); answered once the panel is shown.
     ShowMod {
@@ -326,6 +331,7 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::BrowserOpen { .. } => "CtlOp::BrowserOpen",
             CtlOp::BrowserNavigate { .. } => "CtlOp::BrowserNavigate",
             CtlOp::BrowserAgent { .. } => "CtlOp::BrowserAgent",
+            CtlOp::BrowserPoint { .. } => "CtlOp::BrowserPoint",
             CtlOp::ShowMod { .. } => "CtlOp::ShowMod",
             CtlOp::ModTool { .. } => "CtlOp::ModTool",
             CtlOp::BadgeSet { .. } => "CtlOp::BadgeSet",
@@ -1910,6 +1916,42 @@ fn ref_param(params: &Value) -> Result<Option<String>, CtlError> {
     }
 }
 
+/// The longest label `browser.point` takes before it is cleaned and cut to `ask_agent::POINT_LABEL_MAX` (characters).
+const POINT_LABEL_IN_MAX: usize = 1_000;
+
+/// `browser.point`'s params: `ref` or `x` and `y`, an optional `label`, or `clear` alone.
+pub fn point_req(params: &Value) -> Result<crate::web_ctl::PointReq, CtlError> {
+    let bad = |m: &str| CtlError::new(code::BAD_PARAMS, m.to_string());
+    let clear = bool_param(params, "clear")?.unwrap_or(false);
+    let target = match (
+        ref_param(params)?,
+        num_param(params, "x")?,
+        num_param(params, "y")?,
+    ) {
+        (None, None, None) => None,
+        (Some(r), None, None) => Some(Target::Ref(r)),
+        (None, Some(x), Some(y)) => Some(Target::Point(x, y)),
+        _ => {
+            return Err(bad(
+                "give either ref, or both x and y, not both and not neither",
+            ));
+        }
+    };
+    let label = str_param(params, "label")?.unwrap_or_default();
+    if label.chars().count() > POINT_LABEL_IN_MAX {
+        return Err(bad("label is a few words: at most 48 characters are shown"));
+    }
+    match (clear, &target) {
+        (true, Some(_)) => Err(bad("clear takes the arrow away; give it alone")),
+        (false, None) => Err(bad("give ref, or both x and y, or clear")),
+        _ => Ok(crate::web_ctl::PointReq {
+            target,
+            label: label.to_string(),
+            clear,
+        }),
+    }
+}
+
 /// The stage 4 methods as agent jobs, and how long the call may wait for the browser's answer.
 pub fn agent_op(method: Method, params: &Value) -> Result<(AgentOp, Duration), CtlError> {
     let bad = |m: &str| CtlError::new(code::BAD_PARAMS, m.to_string());
@@ -2077,6 +2119,7 @@ impl Dispatcher for AppDispatcher {
             Method::BrowserScroll,
             Method::BrowserWait,
             Method::BrowserEval,
+            Method::BrowserPoint,
             Method::ViewImage,
             Method::ViewFile,
             Method::ViewText,
@@ -2274,6 +2317,15 @@ impl Dispatcher for AppDispatcher {
                 self.ask_until(
                     CtlOp::BrowserAgent { tab, op, cancel },
                     Instant::now() + wait,
+                    &ctx.cancel,
+                )
+            }
+            Method::BrowserPoint => {
+                let tab = Self::tab_of_call(ctx)?;
+                let req = point_req(&params)?;
+                self.ask_until(
+                    CtlOp::BrowserPoint { tab, req },
+                    Instant::now() + BROWSER_WAIT,
                     &ctx.cancel,
                 )
             }
@@ -3293,6 +3345,76 @@ mod tests {
 
     fn parsed(m: Method, p: Value) -> Result<(AgentOp, Duration), CtlError> {
         agent_op(m, &p)
+    }
+
+    #[test]
+    fn browser_point_takes_a_ref_or_a_point_with_a_label_or_clear_alone() {
+        use crate::web_ctl::PointReq;
+        assert_eq!(
+            point_req(&json!({"ref": "e3", "label": "Sign in here"})).unwrap(),
+            PointReq {
+                target: Some(Target::Ref("e3".into())),
+                label: "Sign in here".into(),
+                clear: false
+            }
+        );
+        assert_eq!(
+            point_req(&json!({"x": 10, "y": 20.5})).unwrap(),
+            PointReq {
+                target: Some(Target::Point(10.0, 20.5)),
+                label: String::new(),
+                clear: false
+            }
+        );
+        assert!(point_req(&json!({"clear": true})).unwrap().clear);
+        for bad in [
+            json!({}),
+            json!({"clear": false}),
+            json!({"x": 1}),
+            json!({"ref": "e1", "x": 1, "y": 2}),
+            json!({"ref": "e1", "clear": true}),
+            json!({"ref": "e 1"}),
+            json!({"ref": "e1", "label": 5}),
+            json!({"ref": "e1", "label": "x".repeat(POINT_LABEL_IN_MAX + 1)}),
+            json!({"clear": "yes"}),
+        ] {
+            assert_eq!(point_req(&bad).unwrap_err().code, code::BAD_PARAMS, "{bad}");
+        }
+    }
+
+    #[test]
+    fn browser_point_is_posted_for_the_callers_own_tab_only_and_is_listed() {
+        let r = rig(ok_all, false, FILES);
+        let c = agent_in_tab();
+        assert!(r.d.capabilities().contains(&Method::BrowserPoint));
+        assert!(Grant::agent().may_call(Method::BrowserPoint));
+        assert!(
+            r.d.call(
+                &c,
+                Method::BrowserPoint,
+                json!({"ref": "e3", "tab": "tab-9"})
+            )
+            .is_ok()
+        );
+        assert!(
+            r.d.call(&c, Method::BrowserPoint, json!({"clear": true}))
+                .is_ok()
+        );
+        assert_eq!(
+            *r.ops.lock().unwrap(),
+            ["CtlOp::BrowserPoint", "CtlOp::BrowserPoint"]
+        );
+        // A bad call never reaches the window, and neither does one with no tab.
+        assert_eq!(
+            code_of(r.d.call(&c, Method::BrowserPoint, json!({}))),
+            code::BAD_PARAMS
+        );
+        let none = ctx(None, Grant::agent());
+        assert_eq!(
+            code_of(r.d.call(&none, Method::BrowserPoint, json!({"ref": "e1"}))),
+            code::NO_TAB
+        );
+        assert_eq!(r.ops.lock().unwrap().len(), 2);
     }
 
     #[test]

@@ -1373,12 +1373,7 @@ impl AppCtl {
         bind!(app, rc, on_start_settings, |c| c.toggle_settings());
         bind!(app, rc, on_start_github, |c| c.open_github());
         bind!(app, rc, on_menu_picked, |c, i: i32| c.menu_picked(i));
-        bind!(
-            app,
-            rc,
-            on_staged_chip_clicked,
-            |c, r: f32, t: f32, f: f32| c.staged_chip_clicked(r, t, f)
-        );
+        bind!(app, rc, on_staged_chip_clicked, |c| c.staged_chip_clicked());
         bind!(app, rc, on_staged_toast_clicked, |c| c
             .staged_toast_clicked());
         bind!(app, rc, on_menu_trailing, |c, i: i32| c.menu_trailing(i));
@@ -1490,6 +1485,7 @@ impl AppCtl {
         bind!(app, rc, on_panel_md_view_picked, |c, i: i32| c
             .panel_md_view_picked(i));
         bind!(app, rc, on_panel_ask_agent, |c| c.panel_ask_agent());
+        bind!(app, rc, on_panel_draw_arrow, |c| c.panel_draw_arrow());
         bind!(app, rc, on_panel_wrap_cols_changed, |c| c
             .panel_wrap_cols_changed());
         bind!(app, rc, on_preview_chip_clicked, |c| c
@@ -1654,7 +1650,6 @@ impl AppCtl {
     /// build_view, then push every property; a changed tab report goes to `tabs_store`.
     pub fn refresh(&mut self) {
         let Some(app) = self.app() else { return };
-        self.staged_note_busy();
         let now = self.now();
         let front = self.model.state.active_id.clone();
         if front != self.crumbed_front {
@@ -2913,7 +2908,6 @@ impl AppCtl {
             }
             MenuKind::Tab { id, .. } if self.plugin_menu_picked(&id.clone(), &path.clone()) => {}
             MenuKind::Section { sid } => self.section_menu_picked(&sid.clone(), &row.label.clone()),
-            MenuKind::Staged => self.staged_menu_picked(&row.label.clone()),
             MenuKind::Tab { id, cwd } => match row.label.as_str() {
                 "Close tab" => self.request_close(id),
                 "Copy folder path" => (self.deps.clipboard)(cwd),
@@ -3403,6 +3397,7 @@ impl AppCtl {
         self.push_bar(app);
         let ctx = self.key_context();
         self.web.sync(app, &self.panels, front.as_deref(), ctx);
+        self.push_draw_arrow(app, front.as_deref());
         self.md_page_fallback(app);
         self.sync_bar_views(app);
         self.sync_web_full();
@@ -3987,6 +3982,7 @@ impl AppCtl {
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }
             | CtlOp::BrowserAgent { .. }
+            | CtlOp::BrowserPoint { .. }
             | CtlOp::ShowMod { .. }
             | CtlOp::ModTool { .. }
             | CtlOp::Fill { .. }
@@ -4406,6 +4402,16 @@ impl AppCtl {
         // reaches the shell; every other key goes where it would without the menu.
         if ev.pressed && ev.key == "Escape" && self.menu.is_some() {
             self.close_menu();
+            return KeyOutcome::Consumed;
+        }
+        // Escape while the person draws an arrow ends the draw mode and goes nowhere else (rule 256).
+        if ev.pressed
+            && ev.key == "Escape"
+            && let Some(tab) = self.front_id()
+            && self.web.drawing(&tab)
+        {
+            self.web.cancel_draw();
+            self.refresh();
             return KeyOutcome::Consumed;
         }
         let mut ctx = self.key_context();
@@ -5121,7 +5127,7 @@ impl AppCtl {
                             self.ctl_browser(op, req.reply, req.deadline);
                         }
                         // The agent uses the page: the browser's messages answer these too.
-                        op @ CtlOp::BrowserAgent { .. } => {
+                        op @ (CtlOp::BrowserAgent { .. } | CtlOp::BrowserPoint { .. }) => {
                             self.ctl_browser_agent(op, req.reply);
                         }
                         // A mini-app or a diagram: answered when the page has loaded (and drawn).
@@ -5412,6 +5418,7 @@ impl AppCtl {
 
 #[cfg(test)]
 mod tests {
+    mod arrow_tests;
     mod ask_tests;
     mod md_tests;
     mod mods_tests;
