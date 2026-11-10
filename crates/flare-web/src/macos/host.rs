@@ -27,18 +27,24 @@ use std::time::{Duration, Instant};
 use flare_cef::macos::context::{Context, Profile};
 use flare_cef::macos::engine::{Engine, EngineConfig, Schedule};
 use flare_cef::macos::view::{
-    Answer, Button, Downloads, EventSink, Key, KeyKind, NewWindows, Options, RequestRule, View,
-    ViewEvent, ViewSize, Walls,
+    Answer, Button, Downloads, EventSink, Key, KeyKind, Made, NavRule, NewWindow, NewWindowRule,
+    NewWindows, Options, PopupSpec, RequestRule, View, ViewEvent, ViewSize, Walls, WindowAsk,
 };
 use flare_cef::status::{self, flags};
 use flare_surfaces::app::AppSpec;
 use flare_surfaces::modview;
-use flare_surfaces::web::{PhysRect, host_label, pdf_view};
+use flare_surfaces::web::{
+    AppLinkDedupe, ExternalScheme, PhysRect, PopupPlan, PopupRefusal, external_scheme, host_label,
+    load_failure_logged, navigation_allowed, own_blob, pdf_view, permission_word, popup_plan,
+    site_of, web_error_name,
+};
 
 use crate::backend::{
-    ControllerProbe, ImeInput, KeyFilter, KeyInput, KeyPress, Mods, Nav, Pointer, PointerAct,
-    PointerButton, Sink, Slot, ViewFrame, ViewSink, WebBackend, WebEvent,
+    ControllerProbe, ImeInput, KeyFilter, KeyInput, KeyPress, Mods, Nav, NoteKind, Pointer,
+    PointerAct, PointerButton, PopupProbe, Sink, Slot, ViewFrame, ViewSink, WebBackend, WebEvent,
+    WebNote,
 };
+use crate::popups::PopupBook;
 use crate::seal::{DownloadWall, plugin_seal};
 use crate::walls::{self, BINDING, DEAD_PROXY, Decision, Kind, NO_BYPASS};
 
@@ -182,6 +188,211 @@ struct HeldDownload {
 
 type Inbox = Arc<Mutex<VecDeque<(Slot, u64, ViewEvent)>>>;
 
+/// What comes in from the pop-ups (rules 249, 250): CEF made (or gave up on) a pop-up's browser, or a pop-up's
+/// handler said something. Their handlers only queue, as a view's do.
+enum PopupIn {
+    Made { id: u64, view: Option<View> },
+    Event { id: u64, event: ViewEvent },
+}
+
+type PopupInbox = Arc<Mutex<VecDeque<PopupIn>>>;
+
+/// The pop-ups of every web panel: a request waits (its site) while CEF makes the browser, an open one is its id
+/// (its view is the host's, in `popup_views`). Shared with the new-window rule, which counts and asks in CEF's
+/// handler.
+type Book = Arc<Mutex<PopupBook<String, u64>>>;
+
+/// An open pop-up's browser and what the host follows of it.
+struct PopupView {
+    view: View,
+    /// The address the strip last named the site of.
+    url: String,
+    /// The frame serial of its last picture.
+    serial: u64,
+}
+
+/// The web panels' app links (rule 252): where they are told and, per panel, the last one told, so a link said
+/// twice within a second is asked about once.
+#[derive(Clone)]
+struct AppLinks {
+    sink: Sink,
+    seen: Arc<Mutex<HashMap<Slot, AppLinkDedupe>>>,
+    start: Instant,
+}
+
+impl AppLinks {
+    /// The page at `from` in the panel of `slot` went to `uri`, which the wall stopped. True when it is a link to
+    /// an app (`external_scheme` offers it): the window is told once (`WebEvent::AppLink`) and the log notes
+    /// `why: app-link`; the caller says nothing more. False for anything else, which the caller refuses as before.
+    fn offer(&self, slot: &Slot, uri: &str, from: &str) -> bool {
+        let ExternalScheme::Offer(scheme) = external_scheme(uri) else {
+            return false;
+        };
+        let now = u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let fresh = lock(&self.seen)
+            .entry(slot.clone())
+            .or_default()
+            .fresh(uri, now);
+        if fresh {
+            let sink = ViewSink::new(&self.sink, slot);
+            let note = WebNote::new(NoteKind::NavRefused, uri, from).detail("app-link");
+            sink.send(|tab| WebEvent::Note { tab, note });
+            let site = if from.is_empty() {
+                String::new()
+            } else {
+                site_of(from)
+            };
+            sink.send(|tab| WebEvent::AppLink {
+                tab,
+                uri: uri.to_string(),
+                scheme,
+                site,
+            });
+        }
+        true
+    }
+}
+
+/// The web panel's navigation wall: the main frame goes to http, https, about:blank, or a `blob:` the page it
+/// leaves made itself (rule 253); a frame in the page anywhere, as on Windows.
+fn web_nav_rule() -> NavRule {
+    Arc::new(|url: &str, main: bool, from: &str| {
+        !main || navigation_allowed(url) || own_blob(url, from)
+    })
+}
+
+/// WebView2's permission kinds (`permission_word`'s numbers) for CEF's permission and media bits.
+pub fn permission_kinds(permissions: u32, media: u32) -> Vec<i32> {
+    let mut v = Vec::new();
+    let mut add = |on: bool, kind: i32| {
+        if on && !v.contains(&kind) {
+            v.push(kind);
+        }
+    };
+    add(media & 1 != 0 || permissions & 4096 != 0, 1);
+    add(
+        media & 2 != 0 || permissions & 4 != 0 || permissions & 2 != 0,
+        2,
+    );
+    add(permissions & 256 != 0, 3);
+    add(permissions & 32768 != 0, 4);
+    add(permissions & 268_435_456 != 0, 5);
+    add(permissions & 16 != 0, 6);
+    add(permissions & 16384 != 0, 7);
+    add(permissions & 16_777_216 != 0, 8);
+    add(permissions & 128 != 0, 10);
+    add(permissions & 8192 != 0, 11);
+    add(permissions & 8_388_608 != 0, 12);
+    if v.is_empty() && (permissions != 0 || media != 0) {
+        v.push(-1);
+    }
+    v
+}
+
+/// What a web panel's new-window rule holds. It runs in CEF's `on_before_popup`, on the UI thread, while the host
+/// is not borrowed (inside its pump): it only reads and writes these shared parts.
+struct PopupRule {
+    slot: Slot,
+    sink: Sink,
+    book: Book,
+    inbox: PopupInbox,
+    links: AppLinks,
+    requests: Option<RequestRule>,
+}
+
+/// The web panel's (and its pop-ups') answer to a page that asks for a window (rule 249, `popup_plan`), as the
+/// Windows host's `take_new_windows`: a link to an app is asked about, a pop-up is a second windowless browser CEF
+/// makes with the page's `window.opener`, a plain new-tab link opens in the view that asked, anything else opens
+/// nothing; every request is noted for the log by site.
+fn popup_rule(r: Arc<PopupRule>) -> NewWindowRule {
+    Arc::new(move |ask: &WindowAsk| r.decide(ask))
+}
+
+impl PopupRule {
+    fn decide(self: &Arc<Self>, ask: &WindowAsk) -> NewWindow {
+        let (uri, from) = (ask.url.as_str(), ask.from.as_str());
+        let sink = ViewSink::new(&self.sink, &self.slot);
+        if !navigation_allowed(uri) && self.links.offer(&self.slot, uri, from) {
+            return NewWindow::Refuse;
+        }
+        let counts = lock(&self.book).counts(&self.slot);
+        let mut plan = popup_plan(uri, Some(&ask.name), ask.features, ask.user, counts);
+        if plan == PopupPlan::Refuse(PopupRefusal::Scheme) && own_blob(uri, from) {
+            plan = if ask.user {
+                PopupPlan::InPlace
+            } else {
+                PopupPlan::Refuse(PopupRefusal::Blocked)
+            };
+        }
+        let word = match plan {
+            PopupPlan::InPlace => "panel",
+            PopupPlan::Popup => "popup",
+            PopupPlan::Refuse(r) => r.word(),
+        };
+        let note = WebNote::new(NoteKind::Popup, uri, from)
+            .detail(word)
+            .user(ask.user);
+        sink.send(|tab| WebEvent::Note { tab, note });
+        match plan {
+            PopupPlan::InPlace => NewWindow::SameView,
+            PopupPlan::Refuse(why) => {
+                // An address that may not open is said in the bar as before; a blocked pop-up from its note.
+                if why == PopupRefusal::Scheme {
+                    sink.send(|tab| WebEvent::Refused {
+                        tab,
+                        url: uri.to_string(),
+                    });
+                }
+                NewWindow::Refuse
+            }
+            PopupPlan::Popup => {
+                let blank = uri.trim().is_empty() || uri.trim().eq_ignore_ascii_case("about:blank");
+                let site = site_of(if blank { from } else { uri });
+                let id = lock(&self.book).ask(&self.slot, site);
+                let inbox = Arc::clone(&self.inbox);
+                let events: EventSink = Arc::new(move |event| {
+                    lock(&inbox).push_back(PopupIn::Event { id, event });
+                });
+                let (inbox, wake) = (Arc::clone(&self.inbox), Arc::clone(&self.sink));
+                let made: Made = Box::new(move |view| {
+                    lock(&inbox).push_back(PopupIn::Made { id, view });
+                    wake(WebEvent::Pump);
+                });
+                NewWindow::Popup(PopupSpec {
+                    walls: Walls {
+                        nav: Some(web_nav_rule()),
+                        requests: self.requests.clone(),
+                        new_windows: NewWindows::Refuse,
+                        // A pop-up's own requests stack on the same tab.
+                        new_window_rule: Some(popup_rule(Arc::clone(self))),
+                        // A pop-up's downloads are cancelled at once, as on Windows.
+                        downloads: Downloads::Cancel,
+                    },
+                    events,
+                    frame_rate: 60,
+                    made,
+                })
+            }
+        }
+    }
+}
+
+/// A mini-app's or a plugin's page opens no window of its own: noted by site and said in the bar.
+fn refusing_rule(slot: Slot, sink: Sink) -> NewWindowRule {
+    Arc::new(move |ask: &WindowAsk| {
+        let sink = ViewSink::new(&sink, &slot);
+        let note = WebNote::new(NoteKind::Popup, &ask.url, &ask.from)
+            .detail("refused")
+            .user(ask.user);
+        sink.send(|tab| WebEvent::Note { tab, note });
+        sink.send(|tab| WebEvent::Refused {
+            tab,
+            url: ask.url.clone(),
+        });
+        NewWindow::Refuse
+    })
+}
+
 /// The CEF host.
 pub struct WebHost {
     sink: Sink,
@@ -207,6 +418,17 @@ pub struct WebHost {
     scale: f64,
     /// Chromium's network log for the engine, or none (the tests).
     net_log: Option<PathBuf>,
+    /// The web panels' pop-ups (rules 249, 250): the book the new-window rules share, the open ones' views (never
+    /// in `views`, so no agent call, script or navigation reaches one), and what their handlers queued.
+    book: Book,
+    popup_views: HashMap<u64, PopupView>,
+    popup_inbox: PopupInbox,
+    links: AppLinks,
+    /// The web panel's navigation under way, per panel: its number, address and the page it left (the failed
+    /// load's note names them).
+    started: HashMap<Slot, (u64, String, String)>,
+    /// The frame serial: every new picture of a page or a pop-up takes the next one.
+    serial: u64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -291,6 +513,7 @@ pub fn script_result(answer: Result<String, String>) -> Result<String, String> {
 
 impl WebHost {
     pub fn new(cfg: HostConfig) -> Self {
+        let cfg_sink = Arc::clone(&cfg.sink);
         let downloads_dir = std::env::var_os("HOME")
             .map(|h| PathBuf::from(h).join("Downloads"))
             .unwrap_or_else(std::env::temp_dir);
@@ -316,6 +539,16 @@ impl WebHost {
             filter: None,
             scale: 2.0,
             net_log: None,
+            book: Arc::default(),
+            popup_views: HashMap::new(),
+            popup_inbox: Arc::default(),
+            links: AppLinks {
+                sink: Arc::clone(&cfg_sink),
+                seen: Arc::default(),
+                start: Instant::now(),
+            },
+            started: HashMap::new(),
+            serial: 0,
         }
     }
 
@@ -541,6 +774,18 @@ impl WebHost {
             _ => return,
         };
         let requests = self.request_rule(app.as_ref());
+        let new_window_rule = if app.is_none() {
+            popup_rule(Arc::new(PopupRule {
+                slot: slot.clone(),
+                sink: Arc::clone(&self.sink),
+                book: Arc::clone(&self.book),
+                inbox: Arc::clone(&self.popup_inbox),
+                links: self.links.clone(),
+                requests: requests.clone(),
+            }))
+        } else {
+            refusing_rule(slot.clone(), Arc::clone(&self.sink))
+        };
         let Some(v) = self.views.get_mut(slot) else {
             return;
         };
@@ -551,11 +796,17 @@ impl WebHost {
             .filter(|a| a.module.is_some())
             .map(|_| plugin_seal(slot.kind));
         let nav_app = app.clone();
-        let walls = Walls {
-            nav: Some(Arc::new(move |url: &str, main: bool| {
+        let nav: NavRule = if app.is_none() {
+            web_nav_rule()
+        } else {
+            Arc::new(move |url: &str, main: bool, _from: &str| {
                 walls::nav_allowed(nav_app.as_ref(), url, main)
-            })),
+            })
+        };
+        let walls = Walls {
+            nav: Some(nav),
             requests,
+            new_window_rule: Some(new_window_rule),
             // A page cannot open a window: the web panel's goes to the same view, a mini-app's or a mod's nowhere.
             new_windows: if app.is_none() {
                 NewWindows::SameView
@@ -607,6 +858,10 @@ impl WebHost {
     }
 
     fn drop_view(&mut self, slot: &Slot) {
+        // Its pop-ups go with it (and the requests CEF has not made a browser for yet).
+        self.close_popups(Some(slot));
+        self.started.remove(slot);
+        lock(&self.links.seen).remove(slot);
         if let Some(v) = self.views.remove(slot) {
             let held: Vec<u64> = self
                 .downloads
@@ -743,20 +998,43 @@ impl WebHost {
 
     fn deliver(&mut self, slot: &Slot, e: ViewEvent) {
         let sink = self.view_sink(slot);
+        let app = self.views.get(slot).and_then(|v| v.app.clone());
+        // The page events of the diagnostics log (`web-nav`, `web-load-failed`, `web-cert`) are the plain web
+        // panel's only (rule 248).
+        let page_log = app.is_none();
+        let note = |note: WebNote| sink.send(|tab| WebEvent::Note { tab, note });
         match e {
             ViewEvent::Armed(_) | ViewEvent::Closed | ViewEvent::DownloadEnded { .. } => {}
             ViewEvent::Painted => {
+                self.serial += 1;
+                let serial = self.serial;
                 if let Some(v) = self.views.get_mut(slot) {
-                    v.paints += 1;
+                    v.paints = serial;
                 }
             }
-            ViewEvent::Loading { url, nav } => sink.send(|tab| WebEvent::Loading { tab, url, nav }),
+            ViewEvent::Loading { url, nav, from } => {
+                if page_log {
+                    note(WebNote::new(NoteKind::Nav, &url, &from));
+                    self.started.insert(slot.clone(), (nav, url.clone(), from));
+                }
+                sink.send(|tab| WebEvent::Loading { tab, url, nav })
+            }
             ViewEvent::Loaded {
                 url,
                 ok,
                 status,
                 nav,
             } => {
+                if page_log && load_failure_logged(ok, status) {
+                    let (to, from) = match self.started.get(slot) {
+                        Some((n, to, from)) if *n == nav => (to.clone(), from.clone()),
+                        _ => (url.clone(), String::new()),
+                    };
+                    note(
+                        WebNote::new(NoteKind::LoadFailed, &to, &from)
+                            .detail(web_error_name(status)),
+                    );
+                }
                 // A load that succeeded reads the title again (one equal to the last page's raises no change), as
                 // the Windows host does.
                 if ok && let Some(view) = self.live(slot) {
@@ -782,7 +1060,45 @@ impl WebHost {
                 can_back,
                 can_forward,
             }),
-            ViewEvent::Refused { url } => sink.send(|tab| WebEvent::Refused { tab, url }),
+            ViewEvent::Refused { url, from, main } => {
+                if !main {
+                    // A frame of a mini-app's or a mod's page going elsewhere (the web panel's frames go anywhere).
+                    if app.is_some() {
+                        note(WebNote::new(NoteKind::NavRefused, &url, &from).detail("frame"));
+                    }
+                    return;
+                }
+                // A link to an app is stopped here and the window asks the person (rule 252).
+                if page_log && self.links.offer(slot, &url, &from) {
+                    return;
+                }
+                let why = match &app {
+                    None => "scheme",
+                    Some(a) if a.module.is_some() => "not-its-host",
+                    Some(_) => "not-its-page",
+                };
+                note(WebNote::new(NoteKind::NavRefused, &url, &from).detail(why));
+                sink.send(|tab| WebEvent::Refused { tab, url })
+            }
+            ViewEvent::Permission {
+                origin,
+                permissions,
+                media,
+            } => {
+                let page = self.live(slot).map(View::url).unwrap_or_default();
+                for kind in permission_kinds(permissions, media) {
+                    note(
+                        WebNote::new(NoteKind::Permission, &origin, &page)
+                            .detail(permission_word(kind)),
+                    );
+                }
+            }
+            ViewEvent::Cert { url, status } => {
+                if page_log {
+                    let page = self.live(slot).map(View::url).unwrap_or_default();
+                    note(WebNote::new(NoteKind::Cert, &url, &page).detail(web_error_name(status)));
+                }
+            }
             ViewEvent::Download { id, file, url } => {
                 self.download_seq += 1;
                 let hid = self.download_seq;
@@ -809,7 +1125,15 @@ impl WebHost {
             }
             ViewEvent::Focus { has } => sink.send(|tab| WebEvent::Focus { tab, has }),
             ViewEvent::FullScreen { on } => sink.send(|tab| WebEvent::FullScreen { tab, on }),
-            ViewEvent::Gone { why } => sink.send(|tab| WebEvent::Gone { tab, why }),
+            ViewEvent::Gone { why, reason, code } => {
+                let site = self.live(slot).map(View::url).unwrap_or_default();
+                note(
+                    WebNote::new(NoteKind::Process, &site, "")
+                        .detail("render")
+                        .failure(reason, code),
+                );
+                sink.send(|tab| WebEvent::Gone { tab, why })
+            }
             ViewEvent::Dialog { kind } => log::debug!("a page's {kind} was answered, not shown"),
             ViewEvent::Cdp { id, result } => match self.calls.remove(&id) {
                 Some(Call::Agent { slot: s, id }) => {
@@ -857,6 +1181,224 @@ impl WebHost {
         }
     }
 
+    // ---- the web panel's pop-ups (rules 249, 250) ----
+
+    /// Lets go of the pop-ups of one panel, or of all: a request CEF has not made a browser for yet makes nothing
+    /// (its view is closed when it comes), and every open pop-up is closed.
+    fn close_popups(&mut self, slot: Option<&Slot>) {
+        let (_, ids) = lock(&self.book).drain(slot);
+        for id in ids {
+            self.shut_popup(id);
+        }
+    }
+
+    fn shut_popup(&mut self, id: u64) {
+        if let Some(p) = self.popup_views.remove(&id)
+            && !p.view.state().closed
+        {
+            p.view.close();
+            self.closing.push(p.view);
+        }
+    }
+
+    /// The pop-up on top of the panel of `slot`, if one is open.
+    fn top_popup(&self, slot: &Slot) -> Option<&PopupView> {
+        let id = lock(&self.book).top_id(slot)?;
+        self.popup_views.get(&id)
+    }
+
+    /// What shows in the panel of `slot`: the pop-up on top, else the page.
+    fn front(&self, slot: &Slot) -> Option<&View> {
+        match self.top_popup(slot) {
+            Some(p) => Some(&p.view),
+            None => self.live(slot),
+        }
+    }
+
+    /// The panel's pop-up on top (or, with none, the page) shows as the panel is; everything else waits hidden.
+    fn show_front(&mut self, slot: &Slot) {
+        let visible = self.views.get(slot).is_some_and(|v| v.visible);
+        let top = lock(&self.book).top_id(slot);
+        let ids: Vec<u64> = lock(&self.book)
+            .open_of(slot)
+            .iter()
+            .map(|o| o.view)
+            .collect();
+        for id in ids {
+            if let Some(p) = self.popup_views.get(&id) {
+                p.view.set_hidden(!(visible && Some(id) == top));
+            }
+        }
+        if let Some(page) = self.live(slot) {
+            page.set_hidden(!(visible && top.is_none()));
+        }
+        // The window draws the new front at once.
+        self.serial += 1;
+        let serial = self.serial;
+        if let Some(v) = self.views.get_mut(slot) {
+            v.paints = serial;
+        }
+    }
+
+    /// Tells the window the sites of the panel's pop-ups (its strip).
+    fn tell_popups(&self, slot: &Slot) {
+        if !slot.is_panel() {
+            return;
+        }
+        let sites = lock(&self.book).sites(slot);
+        self.view_sink(slot)
+            .send(|tab| WebEvent::Popups { tab, sites });
+    }
+
+    /// Takes in what the pop-ups queued: a browser CEF made, and their handlers' events.
+    fn take_popups(&mut self) {
+        loop {
+            let next = lock(&self.popup_inbox).pop_front();
+            match next {
+                None => break,
+                Some(PopupIn::Made { id, view }) => self.adopt_popup(id, view),
+                Some(PopupIn::Event { id, event }) => self.popup_event(id, event),
+            }
+        }
+        // The strip names the site each pop-up is on now (not a blank page the opener is still writing into).
+        let moved: Vec<(u64, String)> = self
+            .popup_views
+            .iter_mut()
+            .filter_map(|(id, p)| {
+                let url = p.view.state().url.clone();
+                (url != p.url).then(|| {
+                    p.url = url.clone();
+                    (*id, url)
+                })
+            })
+            .collect();
+        for (id, url) in moved {
+            if url.is_empty() || url.eq_ignore_ascii_case("about:blank") {
+                continue;
+            }
+            let slot = {
+                let mut b = lock(&self.book);
+                b.set_site(id, site_of(&url))
+                    .then(|| b.slot_of(id).cloned())
+                    .flatten()
+            };
+            if let Some(slot) = slot {
+                self.tell_popups(&slot);
+            }
+        }
+    }
+
+    /// A pop-up's browser is there: it shows over the page in the panel, sized as the page, and the page (or the
+    /// pop-up below) waits hidden behind it.
+    fn adopt_popup(&mut self, id: u64, view: Option<View>) {
+        let taken = lock(&self.book).take(id);
+        let Some(view) = view else {
+            return;
+        };
+        let Some((slot, site)) = taken.filter(|(s, _)| self.live(s).is_some()) else {
+            // Let go meanwhile (the panel closed, or its page went): the pop-up is not wanted.
+            view.close();
+            self.closing.push(view);
+            return;
+        };
+        let bounds = self.views.get(&slot).map(|v| v.bounds).unwrap_or_default();
+        let (w, h) = status::css_size(bounds.w, bounds.h, self.scale);
+        let _ = view.resize_scaled(w, h, self.scale as f32);
+        let focused = self.front(&slot).is_some_and(|f| f.state().focused);
+        lock(&self.book).push(&slot, id, site, id);
+        if focused {
+            view.set_focus(true);
+        }
+        self.popup_views.insert(
+            id,
+            PopupView {
+                view,
+                url: String::new(),
+                serial: 0,
+            },
+        );
+        self.show_front(&slot);
+        self.tell_popups(&slot);
+    }
+
+    /// A pop-up closes (its page's `window.close()`, its process, the strip's Close): the next one down, or the
+    /// page, shows again.
+    fn remove_popup(&mut self, id: u64) {
+        let closed = lock(&self.book).close(id);
+        let Some((slot, _, top)) = closed else {
+            return;
+        };
+        self.shut_popup(id);
+        if top {
+            self.show_front(&slot);
+        }
+        self.tell_popups(&slot);
+    }
+
+    /// What a pop-up's handlers said: never told as the panel's page events (rule 250), only what the log, the app
+    /// links and the strip need.
+    fn popup_event(&mut self, id: u64, e: ViewEvent) {
+        if matches!(e, ViewEvent::Closed) {
+            self.closing.retain(|v| !v.state().closed);
+        }
+        let slot = lock(&self.book).slot_of(id).cloned();
+        let Some(slot) = slot else {
+            return;
+        };
+        let sink = self.view_sink(&slot);
+        let note = |note: WebNote| sink.send(|tab| WebEvent::Note { tab, note });
+        match e {
+            ViewEvent::Closed => self.remove_popup(id),
+            ViewEvent::Gone { reason, code, .. } => {
+                let site = self
+                    .popup_views
+                    .get(&id)
+                    .map(|p| p.view.url())
+                    .unwrap_or_default();
+                note(
+                    WebNote::new(NoteKind::Process, &site, "")
+                        .detail("render")
+                        .failure(reason, code),
+                );
+                self.remove_popup(id);
+            }
+            ViewEvent::Refused {
+                url,
+                from,
+                main: true,
+            } => {
+                if !self.links.offer(&slot, &url, &from) {
+                    note(WebNote::new(NoteKind::NavRefused, &url, &from).detail("scheme"));
+                }
+            }
+            ViewEvent::Permission {
+                origin,
+                permissions,
+                media,
+            } => {
+                let page = self
+                    .popup_views
+                    .get(&id)
+                    .map(|p| p.view.url())
+                    .unwrap_or_default();
+                for kind in permission_kinds(permissions, media) {
+                    note(
+                        WebNote::new(NoteKind::Permission, &origin, &page)
+                            .detail(permission_word(kind)),
+                    );
+                }
+            }
+            ViewEvent::Painted => {
+                self.serial += 1;
+                let serial = self.serial;
+                if let Some(p) = self.popup_views.get_mut(&id) {
+                    p.serial = serial;
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn next_call(&mut self, call: Call) -> u64 {
         self.call_seq += 1;
         // CEF's ids are an `int`; the view's own setup counts down from near its top.
@@ -900,11 +1442,22 @@ impl WebBackend for WebHost {
 
     fn set_view_bounds(&mut self, slot: &Slot, bounds: PhysRect) {
         let scale = self.scale;
+        let (w, h) = status::css_size(bounds.w, bounds.h, scale);
         if let Some(v) = self.views.get_mut(slot) {
             v.bounds = bounds;
             if let Some(l) = &v.live {
-                let (w, h) = status::css_size(bounds.w, bounds.h, scale);
                 let _ = l.view.resize_scaled(w, h, scale as f32);
+            }
+        }
+        // A pop-up takes the page's box (under Flare's strip, which the window has already taken off it).
+        let ids: Vec<u64> = lock(&self.book)
+            .open_of(slot)
+            .iter()
+            .map(|o| o.view)
+            .collect();
+        for id in ids {
+            if let Some(p) = self.popup_views.get(&id) {
+                let _ = p.view.resize_scaled(w, h, scale as f32);
             }
         }
     }
@@ -912,15 +1465,20 @@ impl WebBackend for WebHost {
     fn set_view_visible(&mut self, slot: &Slot, visible: bool) {
         if let Some(v) = self.views.get_mut(slot) {
             v.visible = visible;
-            if let Some(l) = &v.live {
+            if let Some(l) = &v.live
+                && lock(&self.book).top_id(slot).is_none()
+            {
                 l.view.set_hidden(!visible);
             }
+        }
+        if lock(&self.book).top_id(slot).is_some() {
+            self.show_front(slot);
         }
     }
 
     fn capture_still(&mut self, tab: &str, token: u64) {
         let png = self
-            .live(&Slot::panel(tab))
+            .front(&Slot::panel(tab))
             .and_then(|v| v.frame())
             .and_then(|p| p.png());
         (self.sink)(WebEvent::Still {
@@ -932,7 +1490,7 @@ impl WebBackend for WebHost {
 
     /// Only a tab's panel takes the keyboard: a bar or a background page never does.
     fn focus(&mut self, tab: &str) {
-        if let Some(v) = self.live(&Slot::panel(tab)) {
+        if let Some(v) = self.front(&Slot::panel(tab)) {
             let had = v.state().focused;
             v.set_focus(true);
             if !had {
@@ -945,7 +1503,7 @@ impl WebBackend for WebHost {
     }
 
     fn blur(&mut self, tab: &str) {
-        if let Some(v) = self.live(&Slot::panel(tab)) {
+        if let Some(v) = self.front(&Slot::panel(tab)) {
             let had = v.state().focused;
             v.set_focus(false);
             if had {
@@ -961,7 +1519,15 @@ impl WebBackend for WebHost {
         self.drop_view(slot);
     }
 
+    fn close_popup(&mut self, tab: &str) {
+        let top = lock(&self.book).top_id(&Slot::panel(tab));
+        if let Some(id) = top {
+            self.remove_popup(id);
+        }
+    }
+
     fn close_all(&mut self) {
+        self.close_popups(None);
         let slots: Vec<Slot> = self.views.keys().cloned().collect();
         for s in slots {
             self.drop_view(&s);
@@ -1012,6 +1578,7 @@ impl WebBackend for WebHost {
         self.make_waiting();
         self.arm();
         self.flush();
+        self.take_popups();
     }
 
     fn runtime_checked(&mut self, result: Result<String, String>) {
@@ -1144,11 +1711,39 @@ impl WebBackend for WebHost {
             private,
             // CEF's Alloy browser has no password manager or form autofill: nothing is offered or filled in.
             autofill: false,
+            popups: {
+                let top = lock(&self.book).top_id(slot);
+                let ids: Vec<u64> = lock(&self.book)
+                    .open_of(slot)
+                    .iter()
+                    .map(|o| o.view)
+                    .collect();
+                ids.into_iter()
+                    .filter_map(|id| {
+                        let p = self.popup_views.get(&id)?;
+                        Some(PopupProbe {
+                            bounds: v.bounds,
+                            visible: v.visible && Some(id) == top,
+                            url: p.view.state().url.clone(),
+                            autofill: false,
+                        })
+                    })
+                    .collect()
+            },
         })
     }
 
     fn frame(&self, slot: &Slot) -> Option<ViewFrame> {
         let v = self.views.get(slot)?;
+        if let Some(top) = self.top_popup(slot) {
+            let p = top.view.frame()?;
+            return Some(ViewFrame {
+                width: p.width,
+                height: p.height,
+                bgra: p.bgra,
+                serial: top.serial.max(v.paints),
+            });
+        }
         let p = v.live.as_ref()?.view.frame()?;
         Some(ViewFrame {
             width: p.width,
@@ -1159,7 +1754,7 @@ impl WebBackend for WebHost {
     }
 
     fn pointer(&mut self, slot: &Slot, p: Pointer) {
-        let Some(v) = self.live(slot) else { return };
+        let Some(v) = self.front(slot) else { return };
         let (x, y) = status::css_point(f64::from(p.x), f64::from(p.y), self.scale);
         let mods = mod_flags(p.mods);
         match p.act {
@@ -1195,7 +1790,7 @@ impl WebBackend for WebHost {
             });
             return;
         }
-        let Some(v) = self.live(slot) else { return };
+        let Some(v) = self.front(slot) else { return };
         let mut modifiers = mod_flags(k.mods);
         if k.repeat {
             modifiers |= flags::IS_REPEAT;
@@ -1233,7 +1828,7 @@ impl WebBackend for WebHost {
     }
 
     fn ime(&mut self, slot: &Slot, i: ImeInput) {
-        let Some(v) = self.live(slot) else { return };
+        let Some(v) = self.front(slot) else { return };
         match i {
             ImeInput::Preedit { text, cursor } => v.ime_compose(&text, cursor),
             ImeInput::Commit(text) => v.ime_commit(&text),

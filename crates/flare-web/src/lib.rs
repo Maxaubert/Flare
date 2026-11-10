@@ -18,6 +18,9 @@ pub mod host;
 #[cfg(not(any(windows, target_os = "macos")))]
 #[path = "stub_host.rs"]
 pub mod host;
+// The pop-ups' bookkeeping, the Windows and the macOS host's alike (its tests run everywhere).
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+mod popups;
 pub mod seal;
 pub mod walls;
 

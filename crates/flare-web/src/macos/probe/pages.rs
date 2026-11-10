@@ -29,8 +29,16 @@ window.__log = []; window.__clicks = 0; window.__keys = 0;
 <select id="sel"><option>one</option><option>two</option><option>three</option></select>
 <a id="p2" href="/page2">page two</a>
 <a id="blank" target="_blank" href="/page2" style="position:absolute;left:20px;top:230px;width:200px;height:30px;display:block;background:#eee">new window</a>
+<button id="pop" onclick="window.open('/popup', 'pay', 'width=400,height=300')" style="position:absolute;left:20px;top:270px;width:200px;height:30px">pay</button>
 <div id="tall"></div>
 </body></html>"#;
+
+/// A pop-up's page (rule 249): its own colour, a box at the top left that closes it (`window.close()`), and a word to
+/// the page that opened it through `window.opener`, which a pop-up keeps.
+pub const POPUP: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Pop-up</title>
+<style>html,body{margin:0;height:100%;background:#cc3366} #x{position:absolute;left:20px;top:20px;width:200px;height:60px;background:#22aa44}</style>
+<script>if (window.opener) { window.opener.document.title = 'Opener seen'; }</script>
+</head><body><div id="x" onclick="window.close()"></div></body></html>"#;
 
 pub const PAGE2: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Page two</title></head><body><h1>Page two</h1></body></html>"#;
 
@@ -321,6 +329,7 @@ fn route(path: &str) -> (&'static str, Vec<(&'static str, String)>, String) {
     match p {
         "/" | "/main" => html(MAIN),
         "/page2" => html(PAGE2),
+        "/popup" => html(POPUP),
         "/paint" => html(PAINT),
         "/agent" => {
             let port = PORT.load(std::sync::atomic::Ordering::SeqCst);

@@ -155,6 +155,12 @@ pub enum UiMsg {
     /// The window lost the keyboard while it was still the foreground window: asks again once the
     /// switch has settled (it may be the keyboard moving into the page, or a real switch to another app).
     FocusLostCheck,
+    /// The app link the person allowed did not open (the launcher's worker answered, rule 252).
+    AppLinkFailed {
+        tab: String,
+        scheme: String,
+        error: String,
+    },
     /// A worker looked whether anything listens on a local port a tab printed (Surfaces stage 7).
     DevLook {
         tab: String,
@@ -611,6 +617,10 @@ pub struct AppCtl {
     web: WebCtl,
     /// The downloads of web pages waiting for a yes (S6).
     downloads: crate::download_ask::DownloadQueue,
+    /// The app links of web pages waiting for the person's Open (rule 252).
+    app_asks: crate::app_ask::AppAsks,
+    /// What opens an app link after Open: a recorder until startup hands in the shell (rule 252).
+    app_launcher: Rc<dyn crate::app_ask::AppLauncher>,
     /// A plugin's question in Flare's own dialog (a fill to approve, a secret to type), one at a time (the `fill`
     /// permission, 2026-10-28).
     plugin_ask: Option<ask_glue::PluginAsk>,
@@ -1081,6 +1091,8 @@ impl AppCtl {
             convo,
             web,
             downloads: crate::download_ask::DownloadQueue::default(),
+            app_asks: crate::app_ask::AppAsks::default(),
+            app_launcher: Rc::new(crate::app_ask::RecordingLauncher::default()),
             plugin_ask: None,
             plugin_ask_seq: 0,
             panel_focus_seen: false,
@@ -1516,6 +1528,7 @@ impl AppCtl {
         bind!(app, rc, on_panel_web_submit, |c, text: SharedString| c
             .web_submit(&text));
         bind!(app, rc, on_panel_web_download, |c| c.web_download());
+        bind!(app, rc, on_panel_web_popup_close, |c| c.web_popup_close());
         bind!(app, rc, on_panel_web_moved, |c| c.web_moved());
         // macOS: the pointer, the wheel and the keys over the page's picture go to the browser (inert on Windows,
         // where the page is a window of its own and the box takes no input).
@@ -3474,6 +3487,7 @@ impl AppCtl {
         self.sync_chip();
         self.sync_mods();
         self.prune_downloads();
+        self.prune_app_asks();
         let had = self.panel_focus_seen;
         self.panel_focus_seen = app.get_panel_has_focus();
         if had && !app.get_panel_shown() {
@@ -3856,11 +3870,18 @@ impl AppCtl {
                     return Err(no_tab());
                 }
                 Ok(match self.panels.snap(&tab).filter(|s| s.open) {
-                    Some(s) => json!({
-                        "open": true,
-                        "panel": Self::panel_info(&s),
-                        "width": s.width.unwrap_or(flare_surfaces::layout::DEFAULT_SHARE),
-                    }),
+                    Some(s) => {
+                        let mut v = json!({
+                            "open": true,
+                            "panel": Self::panel_info(&s),
+                            "width": s.width.unwrap_or(flare_surfaces::layout::DEFAULT_SHARE),
+                        });
+                        // A pop-up over the page is the person's to finish (rule 250): `browser_state` says so.
+                        if self.web.popup_open(&tab) {
+                            v["popup"] = json!(true);
+                        }
+                        v
+                    }
                     None => json!({"open": false}),
                 })
             }
@@ -4953,6 +4974,7 @@ impl AppCtl {
         self.mods_shutdown();
         self.web.close_all();
         self.downloads.drain();
+        self.app_asks.drain();
         (self.deps.hide)();
         end_of_life(
             &self.deps.tabs_store,
@@ -5003,7 +5025,10 @@ impl AppCtl {
                     app.set_dialog_primary(v.primary.into());
                     // PT's close question never uses the danger fill: the confirm is the solid accent.
                     app.set_dialog_danger(false);
+                    app.set_dialog_default_cancel(false);
                     app.set_dialog_by_key(std::mem::take(&mut self.ask_by_key));
+                    // An app link's question waiting under it shows again later, with its guard from then.
+                    self.app_asks.unshown();
                     app.set_dialog_open(true);
                 }
                 None => app.set_dialog_open(false),
@@ -5017,11 +5042,15 @@ impl AppCtl {
             self.answer_download(false);
             return;
         }
+        if self.ask.is_none() && self.app_asks.current().is_some() {
+            self.answer_app(false);
+            return;
+        }
         self.ask = None;
         let install = self.install_cb.take();
         self.show_ask();
         let stepped = std::mem::take(&mut self.update_stepped_aside);
-        // A download waiting behind the question is asked now.
+        // A download waiting behind the question is asked now (and an app link after the downloads).
         self.show_download_ask();
         match install {
             // The update window comes back and lands its own focus.
@@ -5043,6 +5072,10 @@ impl AppCtl {
     fn dialog_confirm(&mut self) {
         if self.ask.is_none() && self.downloads.current().is_some() {
             self.answer_download(true);
+            return;
+        }
+        if self.ask.is_none() && self.app_asks.current().is_some() {
+            self.answer_app(true);
             return;
         }
         let Some(ask) = self.ask.take() else { return };
@@ -5140,6 +5173,9 @@ impl AppCtl {
                 }
             }
             UiMsg::Convo(ConvoMsgBox(m)) => self.on_convo_msg(m),
+            UiMsg::AppLinkFailed { tab, scheme, error } => {
+                self.app_link_failed(&tab, &scheme, &error);
+            }
             UiMsg::DevLook { tab, token, look } => self.on_dev_look(&tab, token, look),
             UiMsg::DevClickLook { tab, token, look } => self.on_dev_click_look(&tab, token, look),
             UiMsg::ToastClicked(tab) => self.on_toast_clicked(&tab),
