@@ -781,13 +781,15 @@ guard's Ctrl+C and Ctrl+D stay Ctrl on both (Cmd going down on its own, `"Super"
 Ctrl+Tab walk open on the Mac; Windows keeps its old list), Alt+Space is Windows only, the zoom keys and Cmd+Shift+[ and ] are
 `MAC_ONLY`. `AppCtl::key_os` is `keymap::app_key_os()`: the Mac in a Mac build, Windows in every unit test, so the
 Ctrl tests hold on both systems and the Mac tests set the Mac keys. The terminal's copy, paste and select all
-follow `term_key_action_on(os)` (Cmd+C, Cmd+V, Cmd+A on a Mac), and a key left for the shell goes through
+follow `term_key_action_on(os)` (Cmd+C, Cmd+V, Cmd+A on a Mac), so do the Text panel's selection keys
+(`AppCtl::panel_text_key`: Cmd+C, Cmd+A, Shift+Cmd with an arrow for a line's or the file's end), and a key left for the shell goes through
 `keymap::pty_key`, which on macOS sends nothing for a Cmd key (except the line keys) and gives Option to the
 layout unless `flare.term.optionAsMeta` is on. The menu bar (`mac_menu`, built by `flare_win::menu_bar`) never has
 an action of its own for a key item: the item IS its key press, sent through `window::handle_key`, and its key
 equivalent is made from that press, so the menu and the keyboard cannot drift apart (a key a Slint field has goes
 on to Slint as Control, Slint's name for Cmd on macOS). Never add a Mac shortcut in the menu alone. Held by the
-`mac_menu`, `chords`, `keymap` and `mac_keys` tests and `crates/flare-win/tests/appkit.rs`. Source: macOS port
+`mac_menu`, `chords`, `keymap` and `mac_keys` tests,
+`on_the_mac_cmd_c_cmd_a_and_cmd_with_the_arrows_are_the_selections_and_ctrl_is_not` and `crates/flare-win/tests/appkit.rs`. Source: macOS port
 phase 3, step 2 (2026-11-08).
 1007. **macOS: the system glue is AppKit and the per-user Library, never a helper process.** The clipboard is
 `NSPasteboard` (`flare_win::pasteboard`): text as an `NSString` (UTF-8 whatever the locale, no `pbcopy`), copied
