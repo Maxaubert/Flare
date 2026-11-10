@@ -52,6 +52,8 @@ impl<R, V> PopupBook<R, V> {
     }
 
     /// The panel a waiting request belongs to.
+    // The Windows host's only (the Mac host keeps its views by id).
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn waiting_slot(&self, id: u64) -> Option<&Slot> {
         self.waiting.get(&id).map(|(s, _)| s)
     }
@@ -70,6 +72,8 @@ impl<R, V> PopupBook<R, V> {
     }
 
     /// The pop-up on top of the stack of `slot`: the one shown.
+    // The Windows host's only (the Mac host keeps its views by id).
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn top(&self, slot: &Slot) -> Option<&V> {
         self.stacks
             .get(slot)
@@ -127,6 +131,8 @@ impl<R, V> PopupBook<R, V> {
     }
 
     /// Every open pop-up's view (the window moved: each is told).
+    // The Windows host's only (the Mac host keeps its views by id).
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn views(&self) -> impl Iterator<Item = &V> {
         self.stacks.values().flatten().map(|o| &o.view)
     }

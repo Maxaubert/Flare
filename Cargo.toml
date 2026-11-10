@@ -16,6 +16,7 @@ members = [
     "crates/flare-help",
     "crates/flare-surfaces",
     "crates/flare-web",
+    "crates/flare-cef",
     "crates/flare-ctl",
     "crates/flare-mcp",
     "crates/flare-convo",
@@ -81,6 +82,17 @@ objc2-app-kit = "=0.3.2"
 block2 = "=0.6.2"
 # The main queue on macOS (the eyedropper hands its sampler to the main thread): the version objc2 already pulls in.
 dispatch2 = "=0.3.1"
+# The macOS web engine (port phase 5, the phase 1 verdict: CEF): tauri-apps/cef-rs. 156.2.0+156.0.14 (2026-10-25,
+# CEF 156.0.14, Chromium 156.0.8078.48) is the newest release at least two weeks old on 2026-11-08. The sys crate is
+# pinned beside it so the bindings and the CEF binary it downloads always agree (cef asks only for ^156.2; Cargo.lock
+# holds the full 156.2.0+156.0.14). The binary
+# is fetched by cef-dll-sys's build script into `$CEF_PATH/<version>` (set it to ~/Library/Caches/flare-cef) or the
+# target dir, never the repo. macOS only: no other target pulls either crate.
+cef = { version = "=156.2.0", default-features = false, features = ["sandbox"] }
+cef-dll-sys = { version = "=156.2.0", default-features = false, features = ["sandbox"] }
+# The window server's list (the screen rule's evidence in the CEF tests): the version objc2-app-kit already pulls in.
+objc2-core-graphics = "=0.3.2"
+objc2-core-foundation = "=0.3.2"
 velopack = "=1.2.161"
 embed-resource = "=3.0.11"
 ureq = "=3.4.2"

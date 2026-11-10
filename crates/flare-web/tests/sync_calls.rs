@@ -35,7 +35,9 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in rd.flatten() {
         let p = entry.path();
         if p.is_dir() {
-            if p.file_name().is_some_and(|n| n == "bin") {
+            // `bin` holds the binaries' mains; `probe` is the macOS web host tests' own browser process (it runs
+            // in a dev bundle for the tests, never in the window, and waits on purpose).
+            if p.file_name().is_some_and(|n| n == "bin" || n == "probe") {
                 continue;
             }
             rust_files(&p, out);

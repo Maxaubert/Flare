@@ -1526,6 +1526,26 @@ impl AppCtl {
         bind!(app, rc, on_panel_web_download, |c| c.web_download());
         bind!(app, rc, on_panel_web_popup_close, |c| c.web_popup_close());
         bind!(app, rc, on_panel_web_moved, |c| c.web_moved());
+        // macOS: the pointer, the wheel and the keys over the page's picture go to the browser (inert on Windows,
+        // where the page is a window of its own and the box takes no input).
+        bind!(
+            app,
+            rc,
+            on_panel_web_pointer,
+            |c, k: i32, x: f32, y: f32, b: i32, m: i32| c.web.page_pointer(k, x, y, b, m)
+        );
+        bind!(
+            app,
+            rc,
+            on_panel_web_wheel,
+            |c, x: f32, y: f32, dx: f32, dy: f32, m: i32| c.web.page_wheel(x, y, dx, dy, m)
+        );
+        bind!(
+            app,
+            rc,
+            on_panel_web_key,
+            |c, d: bool, t: slint::SharedString, m: i32, r: bool| c.web.page_key(d, &t, m, r)
+        );
         bind!(app, rc, on_overlay_changed, |c| c.web_moved());
     }
 

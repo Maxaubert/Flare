@@ -910,3 +910,38 @@ fn when_the_browser_names_nothing_under_the_arrow_the_frame_says_so() {
         "{typed}"
     );
 }
+
+/// macOS (rule 1124): with the draw mode not offered, "Draw arrow" never shows and its callback starts nothing, while
+/// the agent's arrow still points. The window turns it off on macOS; the switch is the same on every platform.
+#[test]
+fn with_the_draw_mode_not_offered_the_button_hides_and_starts_nothing_but_the_agent_still_points() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    claude(&f);
+    f.ctl.borrow_mut().refresh();
+    f.pump();
+    assert!(f.h.comp.get_panel_draw_on(), "offered: it shows");
+    let m = mouse(&f);
+    press_draw(&f);
+    assert!(drawing(&f, &id));
+    // Turned off while drawing: the mode ends and the button goes.
+    f.ctl.borrow_mut().set_draw_offered(false);
+    f.ctl.borrow_mut().refresh();
+    f.pump();
+    assert!(!drawing(&f, &id), "the draw mode ended");
+    assert!(!f.h.comp.get_panel_draw_on());
+    assert!(!f.h.comp.get_panel_draw_visible());
+    // The callback (a stray press) starts nothing, and a drag over the page is no arrow.
+    press_draw(&f);
+    assert!(!drawing(&f, &id));
+    drag(&f, &m, (20.0, 30.0), (160.0, 155.0));
+    assert!(asked_for_node(&slot).is_empty(), "nothing was asked about");
+    // The agent's arrow is unaffected.
+    looked_shop(&f, &slot, &id);
+    let rx = point(&f, &id, Some(Target::Ref("e1".into())), "Buy", false);
+    assert_eq!(
+        rx.try_recv().unwrap().unwrap(),
+        json!({"pointed": true, "offscreen": false})
+    );
+}

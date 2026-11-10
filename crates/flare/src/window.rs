@@ -1200,7 +1200,8 @@ pub fn run_window(
             mods_hub.set_safe_mode(why);
         }
         let run_record = (!args.e2e).then(|| crate::plugin_safe::path_in(&inst.profile.dir));
-        let old_web_dir = flare_surfaces::web::old_webview_folder(
+        // None on macOS: its panel's folder was always under the profile (rule 1125).
+        let old_web_dir = flare_surfaces::web::old_webview_folder_here(
             args.user_data_dir.as_deref(),
             flare_win::paths::local_app_data()
                 .map(|p| p.to_string_lossy().into_owned())
@@ -1722,6 +1723,10 @@ pub fn run_window(
             #[cfg(target_os = "macos")]
             c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(0));
         }
+        // macOS: no pad catches the mouse over the page and the pointer is not read yet, so "Draw arrow" is not
+        // offered (rule 1124); the agent's arrow still points and its look still carries it.
+        #[cfg(not(windows))]
+        c.set_draw_offered(false);
     }
     // What needs the window's handle, once it has one: the watchdog's hung-window poll, the exe's
     // own icon on the window (again on every scale-factor change) and the taskbar overlay.
