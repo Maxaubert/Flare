@@ -417,7 +417,173 @@ mod mac {
         );
     }
 
+    /// The Finder service and the open-documents route (port phase 6, step 3), called as functions: the service's
+    /// method on a private pasteboard, `application:openURLs:` on a stand-in delegate class. Nothing is registered
+    /// with the system (no services provider is set, no `pbs`), and nothing shows.
+    mod open_in_tests {
+        use flare_win::open_in::{self, Added};
+        use flare_win::single_instance::Handoff;
+        use objc2::rc::Retained;
+        use objc2::runtime::{AnyObject, NSObject};
+        use objc2::{ClassType, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+        use objc2_app_kit::NSPasteboard;
+        use objc2_foundation::{NSArray, NSObjectProtocol, NSString, NSURL, NSUserDefaults};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        define_class!(
+            // SAFETY: NSObject has no subclassing requirements and the class has no `Drop`.
+            #[unsafe(super(NSObject))]
+            #[thread_kind = MainThreadOnly]
+            #[name = "FlareTestBareDelegate"]
+            struct BareDelegate;
+
+            unsafe impl NSObjectProtocol for BareDelegate {}
+        );
+
+        define_class!(
+            // SAFETY: as above.
+            #[unsafe(super(NSObject))]
+            #[thread_kind = MainThreadOnly]
+            #[name = "FlareTestOwnOpenDelegate"]
+            struct OwnOpenDelegate;
+
+            impl OwnOpenDelegate {
+                #[unsafe(method(application:openURLs:))]
+                fn open_urls(&self, _app: &AnyObject, _urls: &NSArray<NSURL>) {}
+            }
+
+            unsafe impl NSObjectProtocol for OwnOpenDelegate {}
+        );
+
+        fn mtm() -> MainThreadMarker {
+            MainThreadMarker::new().expect("main thread")
+        }
+
+        fn catch() -> Rc<RefCell<Vec<Handoff>>> {
+            let got = Rc::new(RefCell::new(Vec::new()));
+            let sink = got.clone();
+            open_in::set_handler(Rc::new(move |h| sink.borrow_mut().push(h)));
+            got
+        }
+
+        struct Private(Retained<NSPasteboard>);
+        impl Drop for Private {
+            fn drop(&mut self) {
+                // SAFETY: releaseGlobally takes no arguments; it frees the private pasteboard.
+                let _: () = unsafe { msg_send![&*self.0, releaseGlobally] };
+            }
+        }
+
+        fn call_service(pb: &NSPasteboard) -> Option<String> {
+            let mtm = mtm();
+            let provider = open_in::ServiceProvider::new(mtm);
+            let mut err: *mut NSString = std::ptr::null_mut();
+            let user = NSString::from_str("");
+            // SAFETY: the selector the class defines, with a pasteboard, a string and an out pointer.
+            let _: () = unsafe {
+                msg_send![&*provider, openInFlare: pb, userData: &*user, error: &mut err]
+            };
+            // SAFETY: null, or the autoreleased string the method wrote (the pool of the test outlives it).
+            unsafe { err.as_ref() }.map(|s| s.to_string())
+        }
+
+        pub fn the_service_turns_finders_files_into_one_tab_request() {
+            let got = catch();
+            let pb = Private(NSPasteboard::pasteboardWithUniqueName());
+            flare_win::pasteboard::write_files(&pb.0, &["/Users/me/My Project", "/Users/me/a.txt"])
+                .expect("files on the pasteboard");
+            assert_eq!(call_service(&pb.0), None);
+            assert_eq!(
+                got.borrow().as_slice(),
+                &[Handoff {
+                    cwd: "/".into(),
+                    args: vec![
+                        "Flare".into(),
+                        "/Users/me/My Project".into(),
+                        "/Users/me/a.txt".into()
+                    ],
+                }]
+            );
+            // The older list of file names, as an app that writes only that type sends it.
+            got.borrow_mut().clear();
+            let t = NSString::from_str(open_in::FILENAMES_TYPE);
+            // SAFETY: no owner; the type is a string constant.
+            unsafe { pb.0.declareTypes_owner(&NSArray::from_slice(&[&*t]), None) };
+            let names = NSArray::from_retained_slice(&[NSString::from_str("/opt/src")]);
+            // SAFETY: an array of strings is a property list.
+            assert!(unsafe { pb.0.setPropertyList_forType(&names, &t) });
+            assert_eq!(call_service(&pb.0), None);
+            assert_eq!(
+                got.borrow()[0].args,
+                vec!["Flare".to_string(), "/opt/src".into()]
+            );
+            // Nothing to open: no request, and the sentence the Services menu shows.
+            got.borrow_mut().clear();
+            pb.0.clearContents();
+            assert_eq!(
+                call_service(&pb.0).as_deref(),
+                Some("Flare found no folder or file to open.")
+            );
+            assert!(got.borrow().is_empty());
+        }
+
+        pub fn open_urls_is_added_to_the_delegate_and_opens_tabs_but_never_replaces_one() {
+            let mtm = mtm();
+            let got = catch();
+            assert_eq!(open_in::add_open_urls(BareDelegate::class()), Added::Added);
+            assert_eq!(open_in::add_open_urls(BareDelegate::class()), Added::HadOne);
+            assert_eq!(
+                open_in::add_open_urls(OwnOpenDelegate::class()),
+                Added::HadOne
+            );
+            let d: Retained<BareDelegate> = {
+                let this = BareDelegate::alloc(mtm).set_ivars(());
+                // SAFETY: NSObject's plain init.
+                unsafe { msg_send![super(this), init] }
+            };
+            assert!(d.respondsToSelector(sel!(application:openURLs:)));
+            let urls = NSArray::from_retained_slice(&[
+                NSURL::fileURLWithPath(&NSString::from_str("/Users/me/proj")),
+                NSURL::URLWithString(&NSString::from_str("https://example.com/")).expect("url"),
+            ]);
+            // Never a Dock icon or activation, as the file's header promises (nextest runs this test alone).
+            let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+            app.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Prohibited);
+            assert_eq!(
+                app.activationPolicy(),
+                objc2_app_kit::NSApplicationActivationPolicy::Prohibited
+            );
+            // SAFETY: the method added above, with the application and an array of URLs.
+            let _: () = unsafe { msg_send![&*d, application: &*app, openURLs: &*urls] };
+            assert_eq!(got.borrow().len(), 1);
+            assert_eq!(
+                got.borrow()[0].args,
+                vec!["Flare".to_string(), "/Users/me/proj".into()]
+            );
+        }
+
+        pub fn command_line_paths_are_not_open_documents() {
+            open_in::keep_arguments_out_of_open();
+            let v = NSUserDefaults::standardUserDefaults()
+                .stringForKey(&NSString::from_str(open_in::TREAT_ARGS_AS_OPEN));
+            assert_eq!(v.map(|s| s.to_string()).as_deref(), Some("NO"));
+        }
+    }
+
     pub const TESTS: &[(&str, fn())] = &[
+        (
+            "open_in_service_turns_finders_files_into_one_tab_request",
+            open_in_tests::the_service_turns_finders_files_into_one_tab_request,
+        ),
+        (
+            "open_in_open_urls_is_added_to_the_delegate_and_opens_tabs_but_never_replaces_one",
+            open_in_tests::open_urls_is_added_to_the_delegate_and_opens_tabs_but_never_replaces_one,
+        ),
+        (
+            "open_in_command_line_paths_are_not_open_documents",
+            open_in_tests::command_line_paths_are_not_open_documents,
+        ),
         (
             "dock_badge_reads_back_and_attention_is_asked_only_while_flare_is_not_active",
             the_dock_badge_reads_back_and_attention_is_asked_only_while_flare_is_not_active,

@@ -488,7 +488,7 @@ impl Hub {
                 && f.manifest.is_plugin()
                 && f.manifest.background.is_none()
                 && f.manifest.panel.is_none()
-                && f.manifest.helper.is_some()
+                && f.manifest.helper_here().is_some()
         })
     }
 
@@ -842,7 +842,7 @@ impl Hub {
                 let answers = (m.panel.is_some() && held(Permission::Panel))
                     || (m.is_plugin()
                         && (m.background.is_some()
-                            || (m.helper.is_some() && held(Permission::Process))));
+                            || (m.helper_here().is_some() && held(Permission::Process))));
                 g.tokens.token_of(&m.id).is_some() && held(Permission::Tools) && answers
             })
             .map(|f| &f.manifest)
@@ -1097,12 +1097,19 @@ impl Hub {
             let m = &f.manifest;
             if !m.tools.is_empty()
                 && m.panel.is_none()
-                && !(m.is_plugin() && (m.background.is_some() || m.helper.is_some()))
+                && !(m.is_plugin() && (m.background.is_some() || m.helper_here().is_some()))
             {
-                notes.push(format!(
-                    "The tools of {} are left out: it has no panel, background page or helper to answer them.",
-                    m.id
-                ));
+                notes.push(if m.is_plugin() && m.has_any_helper() {
+                    format!(
+                        "The tools of {} are left out: only its helper answers them, and that program is for another system.",
+                        m.id
+                    )
+                } else {
+                    format!(
+                        "The tools of {} are left out: it has no panel, background page or helper to answer them.",
+                        m.id
+                    )
+                });
             }
         }
         for c in &g.collisions {

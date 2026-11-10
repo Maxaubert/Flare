@@ -2,7 +2,12 @@
 
 Protocol 2 plugins (`plugin.json`) for authors to copy. Each folder here is loaded as a valid plugin by the
 `flare-mods` tests (`discover::tests::the_sample_plugins_are_valid`), so a sample that breaks a manifest rule fails the
-build. To try one, copy its folder into `%APPDATA%\Flare\plugins\` and turn it on in Settings > Plugins.
+build, and each is turned on and driven through one round trip of its protocol by
+`appctl::tests::mods_tests::plugin_samples` on Windows and on a Mac. To try one, copy its folder into
+`%APPDATA%\Flare\plugins\` (Windows) or `~/Library/Application Support/Flare/plugins/` (macOS) and turn it on in
+Settings > Plugins. They are pages only, so nothing in them differs by system. A plugin with a helper program names it
+per system: `helper` (or `helpers.windows`) for the Windows `.exe`, `helpers.macos` for the Mac program
+(`docs/surfaces/plugins.md`, "The manifest").
 
 - `manifest-tour/`: uses every manifest key a page-only plugin can (author, homepage, background, panel, bar,
   contributes with a sidebar section, two actions and an icon of its own, and a tool). Its background page answers the

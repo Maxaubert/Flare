@@ -1924,7 +1924,9 @@ name = "flare-mods"
 version = "0.1.0"
 dependencies = [
  "flare-ctl",
+ "flare-proc",
  "flare-settings",
+ "libc",
  "log",
  "serde_json",
  "sha2 0.10.9",

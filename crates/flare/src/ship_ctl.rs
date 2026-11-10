@@ -45,6 +45,16 @@ pub fn e2e_var(suffix: &str) -> Option<String> {
 /// The first statement of `main`: the e2e flag, Velopack's hooks (they may end the process), the
 /// taskbar identity.
 pub fn bootstrap() {
+    // macOS: a plugin helper's guard is this executable started again (port phase 6, rule 1054). It becomes the guard
+    // here, before anything else of Flare runs (Velopack's hooks included), and never returns; then guards are made of
+    // this program.
+    #[cfg(target_os = "macos")]
+    {
+        flare_proc::guard::run_if_guard();
+        if let Err(e) = flare_proc::guard::use_this_program() {
+            eprintln!("flare: plugin helpers cannot be guarded: {e}");
+        }
+    }
     // `--print-aumid` prints this run's taskbar identity (honouring --user-data-dir=) and exits, so an
     // install script can stamp it on a shortcut; before anything else starts.
     if std::env::args().any(|a| a == "--print-aumid") {
@@ -516,6 +526,32 @@ mod tests {
             .find(|l| !l.is_empty() && !l.starts_with("//") && !l.starts_with("use "))
             .unwrap();
         assert_eq!(first, "ship_ctl::bootstrap();");
+    }
+
+    /// Rule 1054: on a Mac the bootstrap's first act is to become a helper's guard when started as one, before
+    /// Velopack or anything else of Flare runs, and then to make guards of this program.
+    #[test]
+    fn the_bootstrap_first_becomes_a_guard_when_started_as_one() {
+        let text = src("ship_ctl.rs");
+        let body = text
+            .split("pub fn bootstrap() {")
+            .nth(1)
+            .expect("fn bootstrap");
+        let code: Vec<&str> = body
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with("//"))
+            .take(4)
+            .collect();
+        assert_eq!(
+            code,
+            [
+                "#[cfg(target_os = \"macos\")]",
+                "{",
+                "flare_proc::guard::run_if_guard();",
+                "if let Err(e) = flare_proc::guard::use_this_program() {"
+            ]
+        );
     }
 
     #[test]
