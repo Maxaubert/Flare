@@ -29,6 +29,8 @@ wgpu.workspace = true
 pollster.workspace = true
 png.workspace = true
 image.workspace = true
+# The person's arrow drawn on a look's screenshot (2026-11-10): the picture comes and goes as base64.
+base64.workspace = true
 log.workspace = true
 env_logger.workspace = true
 serde_json.workspace = true
