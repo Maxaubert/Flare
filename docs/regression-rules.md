@@ -659,7 +659,13 @@ Native: `flare_term::spare_opening`, `Session::answer_opening`. Held by `the_que
 `anything_drawn_before_the_question_ends_the_opening`, `a_spare_answers_the_opening_cursor_question_once_and_the_tab_is_not_asked_again`,
 `a_spare_answers_only_the_opening_question`, `a_cursor_question_after_output_waits_for_the_tab_that_can_answer_it` and
 `a_shell_started_for_a_tab_leaves_the_question_to_the_tab`.
-232. **macOS: closing a tab ends its whole session, and throws away the output nobody will read.** The shell leads
+## macOS port
+
+The rules the macOS port stack added (PRs #121 to #140) are numbered from 1001 so they never clash with main: main's
+numbering continues below 1000. When the stack merges, this block is renumbered into the main sequence, or kept as it
+is. A gap in the numbers is a rule of a sibling branch of the stack.
+
+1001. **macOS: closing a tab ends its whole session, and throws away the output nobody will read.** The shell leads
 its own session (portable-pty `setsid`); a kill sends SIGHUP to the session's process groups and to the shell's
 descendants, then SIGTERM and SIGKILL after 250 ms and 500 ms more (`flare-term/src/macos/pty.rs`), sparing an
 `.app` bundle the shell launched. While it waits the reaper runs `tcflush(TCOFLUSH)` on a duplicate of the master:
@@ -675,7 +681,7 @@ tab, and a crash of Flare leaves a job that ignores SIGHUP running. Held by `qui
 (`ten_real_shells_with_jobs_killed_none_remain`,
 `quitting_ends_a_job_that_ignores_the_hangup_before_the_process_exits`) and `pty::macos::tests`. Source: macOS port
 phase 2, step 1 (measured 2026-11-08: 6 of 10 shells stuck in exit without the flush), and the phase 2 review.
-233. **macOS: every shell starts as a login shell and reports its folder with OSC 7, without touching the user's
+1002. **macOS: every shell starts as a login shell and reports its folder with OSC 7, without touching the user's
 dotfiles.** zsh, bash, fish and pwsh are found by absolute path (the login shell from the user record first, then
 Homebrew, `/etc/shells`, `/bin`), never through PATH; the login shell is listed first and is the default
 (`shell_by_id` prefers no name on macOS). zsh starts with `ZDOTDIR` on Flare's shim, whose `.zshenv` hands the
@@ -688,7 +694,7 @@ a Mac named by its network can be renamed mid-session), decoded, absolute, with 
 OSC 7 is no folder report. The files live in `~/Library/Application Support/Flare/shell-integration/<version>`
 (`flare-shells/src/macos/`). Held by `flare-term/tests/real_shells_macos.rs` and `flare-shells` `macos::*` tests.
 Source: macOS port phase 2, step 2 (2026-11-08).
-234. **macOS: paths are read with the POSIX grammar behind one seam, and a path that would reach a server is never
+1003. **macOS: paths are read with the POSIX grammar behind one seam, and a path that would reach a server is never
 statted, restored or adopted.** `flare-term/src/path_grammar.rs` picks the grammar: Windows
 (`path_grammar/windows.rs`, the drive and UNC rules moved there unchanged) or macOS (`macos/path_grammar.rs`): one
 root `/`, `~` and `~/` for home (`~user` is refused), `/` the only separator (a `\` is a name character), case kept,
@@ -703,7 +709,7 @@ refuses the same autofs and `//` paths, a `.` or `..` segment and the Windows UN
 menu read POSIX folders (`~/code`, `.../Claude/Github`). Held by the `posix` twins in `path_open`, `path_links`,
 `paths`, the `macos::*` tests of flare-term, flare-shells, flare-tabs and flare-surfaces, and
 `restore_never_spawns_in_a_remote_folder_on_macos`. Source: macOS port phase 2, step 3 (2026-11-08).
-235. **macOS: fonts come from the font folders, the stacks fall to SF Mono and Menlo, the UI is SF, and wgpu
+1004. **macOS: fonts come from the font folders, the stacks fall to SF Mono and Menlo, the UI is SF, and wgpu
 draws on Metal.** `flare-render/src/macos/font_catalog.rs` reads `/System/Library/Fonts`, the downloadable
 `AssetsV2` fonts, `/Library/Fonts` and `~/Library/Fonts` once (never `/Network/Library/Fonts`, an autofs mount). Its
 start-up fallbacks are SF Mono, Menlo and every face cosmic-text's macOS fallback names (per-script, Han, common):

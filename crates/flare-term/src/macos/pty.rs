@@ -11,7 +11,7 @@
 //! too (`finish_reapers`, which hurries them to SIGTERM and SIGKILL), so a job that ignores SIGHUP
 //! does not outlive Flare. A crash of Flare has no job object to lean on: the pty master closes with
 //! the process, the hangup ends the shell, and the shell hangs up its jobs; a job that ignores
-//! SIGHUP survives a crash (regression rule 232 lists the gaps).
+//! SIGHUP survives a crash (regression rule 1001 lists the gaps).
 
 use flare_proc::Signal;
 use std::collections::{HashMap, HashSet};
