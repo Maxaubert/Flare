@@ -175,7 +175,11 @@ impl<W: Wire> Client<W> {
         self.next_id += 1;
         let line = to_line(&Request::new(id, method, params));
         if let Err(e) = write_line(&self.wire, &line, MAX_LINE) {
-            if e.kind() != io::ErrorKind::BrokenPipe {
+            // A Unix socket whose peer has already closed it can say ENOTCONN rather than EPIPE (macOS, seen on
+            // the CI runner): the same hang-up, with the refusal still waiting to be read.
+            let hung_up = e.kind() == io::ErrorKind::BrokenPipe
+                || (cfg!(unix) && e.kind() == io::ErrorKind::NotConnected);
+            if !hung_up {
                 return Err(ClientError::Io(e));
             }
             // The server hung up first. If it left a reason (a refusal sent just before it closed),
