@@ -1488,6 +1488,7 @@ impl AppCtl {
         bind!(app, rc, on_panel_md_view_picked, |c, i: i32| c
             .panel_md_view_picked(i));
         bind!(app, rc, on_panel_ask_agent, |c| c.panel_ask_agent());
+        bind!(app, rc, on_panel_draw_arrow, |c| c.panel_draw_arrow());
         bind!(app, rc, on_panel_wrap_cols_changed, |c| c
             .panel_wrap_cols_changed());
         bind!(app, rc, on_preview_chip_clicked, |c| c
@@ -3392,6 +3393,7 @@ impl AppCtl {
         self.push_bar(app);
         let ctx = self.key_context();
         self.web.sync(app, &self.panels, front.as_deref(), ctx);
+        self.push_draw_arrow(app, front.as_deref());
         self.md_page_fallback(app);
         self.sync_bar_views(app);
         self.sync_web_full();
@@ -3976,6 +3978,7 @@ impl AppCtl {
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }
             | CtlOp::BrowserAgent { .. }
+            | CtlOp::BrowserPoint { .. }
             | CtlOp::ShowMod { .. }
             | CtlOp::ModTool { .. }
             | CtlOp::Fill { .. }
@@ -4401,6 +4404,16 @@ impl AppCtl {
         // reaches the shell; every other key goes where it would without the menu.
         if ev.pressed && ev.key == "Escape" && self.menu.is_some() {
             self.close_menu();
+            return KeyOutcome::Consumed;
+        }
+        // Escape while the person draws an arrow ends the draw mode and goes nowhere else (rule 256).
+        if ev.pressed
+            && ev.key == "Escape"
+            && let Some(tab) = self.front_id()
+            && self.web.drawing(&tab)
+        {
+            self.web.cancel_draw();
+            self.refresh();
             return KeyOutcome::Consumed;
         }
         let mut ctx = self.key_context();
@@ -5113,7 +5126,7 @@ impl AppCtl {
                             self.ctl_browser(op, req.reply, req.deadline);
                         }
                         // The agent uses the page: the browser's messages answer these too.
-                        op @ CtlOp::BrowserAgent { .. } => {
+                        op @ (CtlOp::BrowserAgent { .. } | CtlOp::BrowserPoint { .. }) => {
                             self.ctl_browser_agent(op, req.reply);
                         }
                         // A mini-app or a diagram: answered when the page has loaded (and drawn).
@@ -5404,6 +5417,7 @@ impl AppCtl {
 
 #[cfg(test)]
 mod tests {
+    mod arrow_tests;
     mod ask_tests;
     mod md_tests;
     mod mods_tests;

@@ -1022,6 +1022,7 @@ mod tests {
             "browser.look",
             "browser.eval",
             "browser.click",
+            "browser.point",
         ]
         .iter()
         .enumerate()

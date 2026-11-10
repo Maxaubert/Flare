@@ -602,6 +602,11 @@ browser yet (`unavailable`: "the page is not ready yet"). One call runs on a pag
 | `browser.scroll` | `dx`, `dy` (CSS pixels, default 0, not both 0), `ref` (optional: scroll over that element) | `{"scrolled": {"x", "y"}}` |
 | `browser.wait` | exactly one of `text`, `selector`, `ms`; `timeout_ms` (default 10000, at most 30000) | `{"met": bool}` |
 | `browser.eval` | `expression` (at most 20000 characters) | `{"value": any, "truncated"?: true}` (grant-gated, S4) |
+| `browser.point` | `ref`, or `x` and `y` (CSS pixels); `label` (optional, cleaned, 48 characters shown); or `clear: true` alone | `{"pointed": true, "offscreen": bool}`, or `{"cleared": bool}`. An orange arrow over the page for a step the person must do; never clicks, not a job (rule 254) |
+
+A look made while the person's arrow is kept (rule 255) also has `"user_arrow": {"from": [x, y], "to": [x, y], "ref": string | null,
+"role", "name"}` (CSS pixels; the ref is made for the element when the list did not have it) and the arrow drawn on its picture. Only the
+first look after the arrow gets it.
 
 **Look.** The picture is `Page.captureScreenshot` of the visible area at the display's full resolution, scaled down
 only if that is wider than 1600 pixels; `image.scale` is picture pixels per CSS pixel as the picture really came out
@@ -854,6 +859,7 @@ already read is still answered, and whatever is still running 5 s later is cance
 | `browser_wait` | one of `text`, `selector`, `ms`; `timeout_ms` | `browser.wait` |
 | `browser_navigate` | `url`, or `action` (`back`, `forward`, `reload`) | `browser.navigate` (opens the panel with `browser.open` when none is open and a `url` was given) |
 | `browser_eval` | `expression` | `browser.eval` |
+| `browser_point` | `ref`, or `x` and `y`; `label`; or `clear` | `browser.point` (the tool text says it is for steps the person must do themselves and that it never clicks) |
 | `browser_state` | none | `panel.state` (says whether a panel is open and what kind; for a web page its title and address, cleaned, quoted and between the page-content markers like a look's) |
 | `set_tab_badge` | `key`, `icon` (an enum of the built-in badges), `tip` | `tabs.badge.set` |
 | `clear_tab_badge` | `key` | `tabs.badge.clear` |

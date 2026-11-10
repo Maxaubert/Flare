@@ -152,6 +152,54 @@ impl AppCtl {
         }
     }
 
+    /// "Draw arrow" (rule 256): the draw mode over the front tab's page, or its end when it is on. Only where "Ask agent"
+    /// could type: a tab with an agent and no question up.
+    pub(super) fn panel_draw_arrow(&mut self) {
+        let Some(tab) = self.front_id() else { return };
+        // The button again ends the draw mode, whatever else holds now.
+        if self.web.drawing(&tab) {
+            self.web.toggle_draw(&tab);
+            self.refresh();
+            return;
+        }
+        if let Some(why) = self.ask_refusal(&tab) {
+            self.ask_note(why);
+            return;
+        }
+        let kind_ok = self
+            .panels
+            .snap(&tab)
+            .is_some_and(|s| s.open && (s.kind == "web" || s.kind == "app"));
+        if !kind_ok || !self.web.toggle_draw(&tab) {
+            self.ask_note(crate::ask_agent::NOTE_ARROW_PAGE);
+        }
+        self.refresh();
+    }
+
+    /// The person's arrow is known: its frame is typed at the tab's prompt, unsent, while the tab is still in front.
+    pub(super) fn arrow_drawn(&mut self, tab: &str, text: &str) {
+        if self.front_id().as_deref() != Some(tab) {
+            return;
+        }
+        self.deliver_ask(tab, text);
+    }
+
+    /// Whether the bar shows "Draw arrow", and pressed: the front tab has an agent and a web page or a mini-app (never a
+    /// plugin's page) is up in its panel, with no pop-up over it.
+    pub(super) fn push_draw_arrow(&self, app: &crate::AppWindow, front: Option<&str>) {
+        let on = front.is_some_and(|t| {
+            self.hub.agent_here(t)
+                && self
+                    .panels
+                    .snap(t)
+                    .is_some_and(|s| s.open && (s.kind == "web" || s.kind == "app"))
+                && self.web.has_tab(t)
+                && !self.web.popup_open(t)
+        });
+        app.set_panel_draw_on(on);
+        app.set_panel_draw_active(front.is_some_and(|t| self.web.drawing(t)));
+    }
+
     /// The terminal menu's row: the grid selection the menu was opened over goes to the tab's agent, and the
     /// selection is let go as a copy lets it go (with it still up, the next keys would act on it).
     pub(super) fn ask_about_grid(&mut self, tab: &str, selection: &str) {

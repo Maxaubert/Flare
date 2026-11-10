@@ -146,6 +146,23 @@ impl RefMap {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// The ref of the browser's node `backend`: the one a look gave it, or a new one after the last (the element
+    /// a person's arrow points at always has a ref, whether or not the look listed it).
+    pub fn ref_for(&mut self, backend: i64) -> String {
+        if let Some((r, _)) = self.0.iter().find(|(_, b)| **b == backend) {
+            return r.clone();
+        }
+        let last = self
+            .0
+            .keys()
+            .filter_map(|r| r.strip_prefix('e')?.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0);
+        let r = format!("e{}", last + 1);
+        self.0.insert(r.clone(), backend);
+        r
+    }
 }
 
 /// What the page is, for the answer of a look.
@@ -3126,5 +3143,19 @@ mod tests {
         assert_eq!(evals.len(), 1);
         assert_eq!(evals[0].params["expression"], "window.devicePixelRatio");
         assert!(evals[0].params["timeout"].as_u64().is_some());
+    }
+
+    #[test]
+    fn the_element_an_arrow_points_at_keeps_its_ref_or_gets_one_after_the_last() {
+        let mut refs = RefMap(HashMap::from([
+            ("e1".to_string(), 11),
+            ("e2".to_string(), 12),
+        ]));
+        assert_eq!(refs.ref_for(12), "e2");
+        assert_eq!(refs.ref_for(99), "e3");
+        assert_eq!(refs.get("e3"), Some(99));
+        assert_eq!(refs.ref_for(99), "e3", "the same node keeps it");
+        let mut none = RefMap::default();
+        assert_eq!(none.ref_for(5), "e1");
     }
 }
