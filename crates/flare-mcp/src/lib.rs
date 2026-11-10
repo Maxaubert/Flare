@@ -323,7 +323,7 @@ fn show_tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "show_html",
-            description: "Show a small web page you write (a chart, a calculator, a table you can sort, an explainer, a 3D viewer, a form) in an interactive panel beside this terminal tab in Flare, so the user can use it instead of reading a wall of text. Give the whole page as `html` (one self-contained page: put your CSS and JavaScript inline; at most 4 MB) or the path of an .html file as `path` (only that one file is shown, files next to it are not served). The page runs in a sandbox of its own with NO network access, so include everything it needs (inline SVG or canvas for charts, data: images, libraries pasted inline). Blocked with no network: fetch, XMLHttpRequest, WebSocket, EventSource and beacons; scripts, styles, fonts, images and media from anywhere but the page itself or data:/blob: content; child frames (iframes) and plug-ins; form posts; opening windows and following links away from the page; and WebRTC (peer connections are removed from the page and the page's browser has no UDP and no route out, so STUN, TURN and address lookups go nowhere). Web workers work only from the page's own code or a blob:. Camera, microphone, location and notifications are refused. NOT blocked: the page's own JavaScript, CSS, canvas, SVG and data: images, and its own localStorage, cookies and IndexedDB (private to this page; kept only while a mini-app panel is open, gone when the last one closes or Flare exits). It cannot read or change anything on the PC. Set allow_network only for a page that must load https content: it works only if the user switched on \"Let mini apps use the network\" in Flare's settings (the reply says what you got), and then the page can load from and send to any https address (WebRTC stays restricted, plain http stays blocked), so put nothing private in it. This is a browser-level sandbox, not a virtual machine. Replaces what the panel showed. Returns once the page has loaded; use browser_look to see it and browser_click / browser_type to use it yourself.",
+            description: "Show a small web page you write (a chart, a calculator, a table you can sort, an explainer, a 3D viewer, a form) in an interactive panel beside this terminal tab in Flare, so the user can use it instead of reading a wall of text. To look at a 3D model file (.glb, .gltf, .stl), use show_model instead of writing a viewer. Give the whole page as `html` (one self-contained page: put your CSS and JavaScript inline; at most 4 MB) or the path of an .html file as `path` (only that one file is shown, files next to it are not served). The page runs in a sandbox of its own with NO network access, so include everything it needs (inline SVG or canvas for charts, data: images, libraries pasted inline). Blocked with no network: fetch, XMLHttpRequest, WebSocket, EventSource and beacons; scripts, styles, fonts, images and media from anywhere but the page itself or data:/blob: content; child frames (iframes) and plug-ins; form posts; opening windows and following links away from the page; and WebRTC (peer connections are removed from the page and the page's browser has no UDP and no route out, so STUN, TURN and address lookups go nowhere). Web workers work only from the page's own code or a blob:. Camera, microphone, location and notifications are refused. NOT blocked: the page's own JavaScript, CSS, canvas, SVG and data: images, and its own localStorage, cookies and IndexedDB (private to this page; kept only while a mini-app panel is open, gone when the last one closes or Flare exits). It cannot read or change anything on the PC. Set allow_network only for a page that must load https content: it works only if the user switched on \"Let mini apps use the network\" in Flare's settings (the reply says what you got), and then the page can load from and send to any https address (WebRTC stays restricted, plain http stays blocked), so put nothing private in it. This is a browser-level sandbox, not a virtual machine. Replaces what the panel showed. Returns once the page has loaded; use browser_look to see it and browser_click / browser_type to use it yourself.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -359,6 +359,19 @@ fn show_tools() -> Vec<ToolDef> {
                     "title": {"type": "string", "description": "A short title for the panel header."},
                     "autoplay": {"type": "boolean", "description": "Start playing once as soon as the player is shown (default false)."}
                 },
+                "additionalProperties": false
+            }),
+        },
+        ToolDef {
+            name: "show_model",
+            description: "Show a 3D model file (.glb, .gltf or .stl) in an interactive viewer beside this terminal tab in Flare: drag to orbit, scroll to zoom, right-drag to pan, double-click to reset, with wireframe and grid toggles. The camera is fitted to the model. The file is copied into the viewer (at most 64 MB) and never leaves the PC; no network is used. A .gltf must carry its buffers and textures inside itself: a .gltf that points at separate .bin or image files is not loaded, so use a .glb for those. Draco and other compressed meshes, OBJ, FBX and animation are not supported. A model over 5 million triangles or a damaged file shows a message in the panel instead (use browser_look to check). Replaces what the panel showed.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path of the model file (absolute, or relative to the folder you are working in)."},
+                    "title": {"type": "string", "description": "A short title for the panel header."}
+                },
+                "required": ["path"],
                 "additionalProperties": false
             }),
         },
@@ -583,6 +596,21 @@ pub fn call_tool(
             channel
                 .call(Method::ViewAudio, params)
                 .map(|_| ToolResult::text("Showing the audio player in Flare."))
+        }
+        "show_model" => {
+            let path = match path_arg() {
+                Ok(p) => p,
+                Err(e) => return Some(e),
+            };
+            let mut params = json!({"path": path});
+            match args.get("title") {
+                None | Some(Value::Null) => {}
+                Some(Value::String(t)) => params["title"] = json!(t),
+                Some(_) => return Some(ToolResult::error("title must be a string.")),
+            }
+            channel.call(Method::ViewModel, params).map(|_| {
+                ToolResult::text("Showing the 3D model in Flare. Call browser_look to see it.")
+            })
         }
         "show_diagram" => {
             let src = match args.get("mermaid") {
@@ -1404,6 +1432,7 @@ mod tests {
                 "show_html",
                 "show_diagram",
                 "show_audio",
+                "show_model",
                 "open_page",
                 "close_panel",
                 "browser_look",
@@ -1430,8 +1459,9 @@ mod tests {
         assert!(list[3]["inputSchema"].get("required").is_none());
         assert_eq!(list[4]["inputSchema"]["required"], json!(["mermaid"]));
         assert!(list[5]["inputSchema"].get("required").is_none());
-        assert_eq!(list[6]["inputSchema"]["required"], json!(["url"]));
-        assert_eq!(list[7]["inputSchema"]["properties"], json!({}));
+        assert_eq!(list[6]["inputSchema"]["required"], json!(["path"]));
+        assert_eq!(list[7]["inputSchema"]["required"], json!(["url"]));
+        assert_eq!(list[8]["inputSchema"]["properties"], json!({}));
     }
 
     #[test]
@@ -1483,6 +1513,44 @@ mod tests {
                     3,
                     "tools/call",
                     json!({"name": "show_audio", "arguments": args}),
+                ),
+                &mut ch,
+            )
+            .unwrap();
+            assert_eq!(r["result"]["isError"], true, "{args}");
+            assert!(ch.calls.is_empty(), "{args}");
+        }
+    }
+
+    #[test]
+    fn show_model_routes_a_path_made_absolute_to_view_model() {
+        let mut ch = Fake::default();
+        let r = handle_message(
+            &req(
+                1,
+                "tools/call",
+                json!({"name": "show_model", "arguments": {"path": "part.glb", "title": "Bracket"}}),
+            ),
+            &mut ch,
+        )
+        .unwrap();
+        assert_eq!(r["result"]["isError"], false);
+        assert_eq!(ch.calls[0].0, Method::ViewModel);
+        let p = &ch.calls[0].1;
+        assert!(std::path::Path::new(p["path"].as_str().unwrap()).is_absolute());
+        assert_eq!(p["title"], json!("Bracket"));
+        for args in [
+            json!({}),
+            json!({"path": ""}),
+            json!({"path": 3}),
+            json!({"path": "a.glb", "title": 1}),
+        ] {
+            let mut ch = Fake::default();
+            let r = handle_message(
+                &req(
+                    2,
+                    "tools/call",
+                    json!({"name": "show_model", "arguments": args}),
                 ),
                 &mut ch,
             )

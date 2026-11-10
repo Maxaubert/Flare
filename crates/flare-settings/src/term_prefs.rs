@@ -15,6 +15,7 @@ const AGENT_EVAL: &str = "flare.web.agentEval";
 const APP_NETWORK: &str = "flare.web.appNetwork";
 const DEV_PREVIEW: &str = "flare.window.devPreview";
 const WRAP_PREVIEWS: &str = "flare.window.wrapPreviews";
+const HOVER_THUMBS: &str = "flare.window.hoverThumbs";
 const OPTION_AS_META: &str = "flare.term.optionAsMeta";
 
 /// The shell the user chose. None until chosen; an empty stored value reads as None too.
@@ -70,6 +71,16 @@ pub fn wrap_previews(s: &PrefStore) -> bool {
 
 pub fn set_wrap_previews(s: &PrefStore, on: bool) {
     bool_pref_set(s, WRAP_PREVIEWS, on);
+}
+
+/// Show thumbnails when hovering image paths (#17): pointing at a picture's path shows a small picture over the
+/// grid. Default ON; only a stored "0" is off. Off means no hover state and no worker at all.
+pub fn hover_thumbs(s: &PrefStore) -> bool {
+    bool_pref_get(s, HOVER_THUMBS, true)
+}
+
+pub fn set_hover_thumbs(s: &PrefStore, on: bool) {
+    bool_pref_set(s, HOVER_THUMBS, on);
 }
 
 /// Let agents run scripts in pages (Surfaces stage 4): `browser.eval` for the agent. Default OFF; only a
@@ -188,6 +199,19 @@ mod tests {
         assert!(wrap_previews(&s));
         s.set("flare.window.wrapPreviews", "junk");
         assert!(wrap_previews(&s), "an unknown value reads as the default");
+    }
+
+    #[test]
+    fn hover_thumbnails_are_on_until_a_stored_zero() {
+        let s = PrefStore::memory();
+        assert!(hover_thumbs(&s));
+        set_hover_thumbs(&s, false);
+        assert!(!hover_thumbs(&s));
+        assert_eq!(s.get("flare.window.hoverThumbs").as_deref(), Some("0"));
+        set_hover_thumbs(&s, true);
+        assert!(hover_thumbs(&s));
+        s.set("flare.window.hoverThumbs", "junk");
+        assert!(hover_thumbs(&s), "an unknown value reads as the default");
     }
 
     #[test]
