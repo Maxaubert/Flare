@@ -479,6 +479,7 @@ fn the_advisory_gate_runs_in_the_release_before_the_updater_can_be_built_in() {
         "RUSTSEC-2026-0367",
         "RUSTSEC-2026-0368",
         "RUSTSEC-2026-0369",
+        "RUSTSEC-2026-0429",
     ] {
         assert!(script.contains(id), "the gate must name {id}");
     }

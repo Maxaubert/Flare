@@ -1740,6 +1740,13 @@ pub fn run_window(
                             hwnd,
                         )));
                     }
+                    // The arrows over the page and the pad the person draws on (rules 254 to 256).
+                    #[cfg(windows)]
+                    c.set_agent_arrows(
+                        Box::new(flare_win::agent_cursor::ArrowWindow::new(hwnd)),
+                        Box::new(flare_win::agent_cursor::ArrowWindow::new(hwnd)),
+                        Box::new(flare_win::agent_cursor::PadWindow::new(hwnd)),
+                    );
                 }
             },
         )

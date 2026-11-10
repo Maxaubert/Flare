@@ -46,6 +46,17 @@ impl AppCtl {
         self.web.set_border_shell(shell);
     }
 
+    /// What draws the agent's arrow, the person's arrow and the pad the person draws on (as
+    /// [`AppCtl::set_agent_cursor`]).
+    pub fn set_agent_arrows(
+        &mut self,
+        agent: Box<dyn flare_win::agent_cursor::CursorShell>,
+        mark: Box<dyn flare_win::agent_cursor::CursorShell>,
+        pad: Box<dyn flare_win::agent_cursor::PadShell>,
+    ) {
+        self.web.set_arrow_shells(agent, mark, pad);
+    }
+
     /// The browser's controllers now (0 while no web panel is open).
     pub fn web_controllers(&self) -> usize {
         self.web.controllers()
@@ -261,6 +272,7 @@ impl AppCtl {
         let front = self.model.active_shell().map(|t| t.id.clone());
         let ctx = self.key_context();
         self.web.sync(&app, &self.panels, front.as_deref(), ctx);
+        self.push_draw_arrow(&app, front.as_deref());
         self.md_page_fallback(&app);
         self.sync_bar_views(&app);
         self.sync_web_full();
@@ -456,6 +468,7 @@ impl AppCtl {
                 } => {
                     self.ask_selection_done(&tab, &label, page.as_ref(), result);
                 }
+                WebOut::ArrowDrawn { tab, text } => self.arrow_drawn(&tab, &text),
             }
         }
     }
@@ -525,14 +538,21 @@ impl AppCtl {
 
     /// `browser.look` and the calls that use the page (stage 4). The agent's own tab only (the dispatcher
     /// names it from the token); the answer is sent by the browser's messages, or by the person taking
-    /// over. The glow and the cursor go up with the call.
+    /// over. The glow and the cursor go up with the call. `browser.point` (rule 254) is checked the same way and puts the
+    /// agent's arrow over the page; it is not a job.
     pub(super) fn ctl_browser_agent(&mut self, op: crate::ctl_app::CtlOp, reply: Reply) {
-        let crate::ctl_app::CtlOp::BrowserAgent { tab, op, cancel } = op else {
-            let _ = reply.send(Err(CtlError::new(
-                code::INTERNAL,
-                "not an agent browser call",
-            )));
-            return;
+        let (tab, what, cancel) = match op {
+            crate::ctl_app::CtlOp::BrowserAgent { tab, op, cancel } => (tab, Ok(op), cancel),
+            crate::ctl_app::CtlOp::BrowserPoint { tab, req } => {
+                (tab, Err(req), flare_ctl::CancelFlag::default())
+            }
+            _ => {
+                let _ = reply.send(Err(CtlError::new(
+                    code::INTERNAL,
+                    "not an agent browser call",
+                )));
+                return;
+            }
         };
         // The caller went away while this waited for the UI thread: nothing is started on the page.
         if cancel.is_set() {
@@ -564,8 +584,13 @@ impl AppCtl {
         // A tab that is behind has no browser yet; the agent's call makes one, hidden.
         let app = self.panels.app_spec(&tab).cloned();
         self.web.ensure_hidden(&tab, &url, app);
-        let label = crate::web_ctl::agent_label(self.agent_named(&tab));
-        self.web.start_agent(&tab, op, &label, reply, cancel);
+        match what {
+            Ok(op) => {
+                let label = crate::web_ctl::agent_label(self.agent_named(&tab));
+                self.web.start_agent(&tab, op, &label, reply, cancel);
+            }
+            Err(req) => self.web.start_point(&tab, req, reply),
+        }
         self.web_moved();
     }
 
@@ -824,6 +849,7 @@ impl AppCtl {
                 "keys_heard": self.web.agent_keys_heard(),
             })),
             "cursor": self.web.cursor_probe(),
+            "arrows": self.web.arrow_probe(),
             "url": tab.and_then(|t| self.web.tab_url(t)),
             "controller": probe.map(|p| json!({
                 "bounds": {"x": p.bounds.x, "y": p.bounds.y, "w": p.bounds.w, "h": p.bounds.h},
