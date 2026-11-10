@@ -1272,6 +1272,12 @@ pub fn run_window(
                 inst.profile.dir.clone(),
                 Some(plugin_limits),
             ));
+        // An app link the person allowed opens through the Windows shell; under --e2e the recorder stays and nothing
+        // opens outside the app (rule 252).
+        if !args.e2e {
+            rc.borrow_mut()
+                .set_app_launcher(Rc::new(crate::app_ask::ShellLauncher));
+        }
         // Windows' notifications and the system's listening table (stage 7); under --e2e a recorder.
         crate::appctl::install_surfaces7(&rc, Arc::clone(&post), args.e2e);
         // The sidebar's slide reads the curve at each frame's own moment, to the fraction of a ms.

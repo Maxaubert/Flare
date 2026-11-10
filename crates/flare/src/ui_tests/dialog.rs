@@ -97,6 +97,45 @@ fn escape_does_nothing_while_locked_and_is_still_swallowed() {
     );
 }
 
+/// The app-link question (rule 252): Cancel is the default, so Enter, Space, Escape and a press outside all cancel, and
+/// Open needs a click or Tab then Enter.
+#[test]
+fn with_cancel_the_default_enter_space_escape_and_a_press_outside_cancel() {
+    for keys in ["\n", " ", "\u{1b}", "\t "] {
+        let h = harness(1.0, 1000, 600);
+        h.comp.set_default_cancel(true);
+        open(&h);
+        h.key_text(keys);
+        assert_eq!(h.comp.get_cancels(), 1, "{keys:?} cancels");
+        assert_eq!(h.comp.get_confirms(), 0, "{keys:?} never opens");
+    }
+    let h = harness(1.0, 1000, 600);
+    h.comp.set_default_cancel(true);
+    open(&h);
+    h.click(5.0, 5.0);
+    assert_eq!((h.comp.get_cancels(), h.comp.get_confirms()), (1, 0));
+}
+
+#[test]
+fn with_cancel_the_default_tab_then_enter_or_a_click_confirms() {
+    let h = harness(1.0, 1000, 600);
+    h.comp.set_default_cancel(true);
+    open(&h);
+    h.key_text("\t\n");
+    assert_eq!((h.comp.get_cancels(), h.comp.get_confirms()), (0, 1));
+    let h = harness(1.0, 1000, 600);
+    h.comp.set_default_cancel(true);
+    open(&h);
+    let (px, py) = primary_centre(&h);
+    h.click(px, py);
+    assert_eq!((h.comp.get_cancels(), h.comp.get_confirms()), (0, 1));
+    // Every other question keeps the primary as its default.
+    let h = harness(1.0, 1000, 600);
+    open(&h);
+    h.key_text(" ");
+    assert_eq!((h.comp.get_cancels(), h.comp.get_confirms()), (0, 1));
+}
+
 #[test]
 fn tab_stays_inside_the_two_buttons() {
     let h = harness(1.0, 1000, 600);

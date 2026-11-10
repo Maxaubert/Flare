@@ -1080,7 +1080,7 @@ one controller per tab with an open web panel, parented to Flare's window.
   in a real page and a real switch to another app (below).
 - **What a page may not do.** Permissions are denied (the e2e's geolocation request is answered with the denied code), a plain
   `target=_blank` link opens in the same panel, a pop-up after the person's click opens over the page in the panel (below), one no
-  click asked for opens nothing (the e2e counts top-level windows of both processes before and after), only http, https and about:blank open whoever asks, the profile is the run's own folder and never
+  click asked for opens nothing (the e2e counts top-level windows of both processes before and after), only http, https and about:blank open whoever asks (a link to an app is asked about, below, and a page's own `blob:` opens), the profile is the run's own folder and never
   Edge's (`the_profile_lives_under_the_named_profile_or_local_appdata`, `the_profile_is_never_an_edge_folder`). Held by the e2e
   `webPanel` for the page behaviours and the unit tests above for the rest.
 - **Pop-ups (2026-11-10).** A page's pop-up (a card's 3-D Secure check, a sign-in window) opens as a real second browser view
@@ -1099,6 +1099,27 @@ one controller per tab with an open web panel, parented to Flare's window.
   `the_agents_input_calls_wait_for_the_person_while_a_popup_is_open`, `closing_the_tab_takes_its_popups_with_it`, `the_bar_leaves_the_page_behind_a_popup_alone`,
   `a_popup_no_click_asked_for_is_said_in_the_bar`, `the_popup_strip_takes_the_pages_top_and_its_close_calls_back`) and the e2e
   `webPanel`. Spec: `docs/superpowers/specs/2026-11-10-web-popups-design.md`, section 1.
+- **Links to apps (2026-11-10).** A link in a web page or a pop-up to an app (`bankid:`, `swish:`, `mailto:`, `tel:`) shows
+  Flare's own question instead of being blocked: "Open an app?", "<site> wants to open <scheme> on this PC.", with Open and
+  Cancel. The browser never launches the app; Flare does, after Open, with the Windows shell on the bare link and nothing else.
+  Cancel is the default: Enter, Space, Escape and a press outside cancel, Open needs a click or Tab then Enter, and does nothing
+  in its first 0.3 s. No click by the person is needed (a bank page opens its app from a script). Never asked, cancelled with
+  "Not opened here" as before: `javascript:`, `data:`, `file:`, `vbscript:`, `about:`, another site's `blob:`, browser pages and a
+  list of Windows handlers that have been used to run code (`ms-msdt`, `search-ms`, `ms-officecmd`, the Office schemes and
+  others; `NEVER_SCHEMES`), and anything too long, odd or path-like. An app nothing on the PC opens says "Nothing on this PC
+  opens X:". One question per tab, two more waiting, one per site and app every 10 s, 5 a minute in all; a Cancel mutes that
+  site and app in the tab until the page is on another site ("App link not opened: asked too often"). While an agent uses the
+  page no question appears: the link is not opened, the bar says so, and a waiting call answers "only the person can allow
+  opening an app". A page may open a `blob:` it made itself (a receipt) in the panel or its pop-up; the address bar and an agent
+  still cannot. The probe of 2026-11-10 (a hidden WebView2 view, the installed Runtime): `NavigationStarting` fires for a link
+  to any scheme, registered or not, with or without a click, and cancelling it means no launch at all;
+  `LaunchingExternalUriScheme` fires only for a scheme Windows has a handler for and only after a click, and a link in a frame
+  raises `FrameNavigationStarting` only. So Flare asks from the navigation and keeps the launch event as a backstop that is
+  always cancelled. Held by regression rules 252 and 253 (`app_link_tests` in `web.rs`, the `app_ask.rs` tests,
+  `an_app_link_is_asked_about_with_cancel_the_default_and_opened_only_on_open`,
+  `while_an_agent_waits_on_the_page_an_app_link_is_never_asked_and_its_call_answered_once`,
+  `with_cancel_the_default_enter_space_escape_and_a_press_outside_cancel`). Spec:
+  `docs/superpowers/specs/2026-11-10-web-popups-design.md`, section 2.
 - **A download is asked about (S6).** WebView2 saves straight into Downloads, so Flare holds every download (`DownloadStarting`
   deferral) behind its own question: "Save this file?", the file name and the host, Save or Cancel. A no, a closed panel, a
   closing window or no answer saves nothing; a second download waits behind the first. Held by
@@ -2203,7 +2224,7 @@ read afterwards. Spec: `docs/superpowers/specs/2026-11-10-web-popups-design.md`,
 
 | Kind | When | A problem in `cargo diag` |
 |---|---|---|
-| `web-refused` | A navigation (`why`: `scheme`, `not-its-page`, `not-its-host`), a mini-app's or plugin's frame (`why: frame`) or app link (`why: app-link`), or a pop-up (`why: popup`, `popup-blocked` when no click asked for it, `popup-limit` past the limits) was refused | no |
+| `web-refused` | A navigation (`why`: `scheme`, `not-its-page`, `not-its-host`), a mini-app's or plugin's frame (`why: frame`) or app link (`why: app-link`; the web panel's app links too, which the browser never opens and Flare asks about), or a pop-up (`why: popup`, `popup-blocked` when no click asked for it, `popup-limit` past the limits) was refused | no |
 | `web-popup` | A pop-up opened over the page (`to: popup`) or a new-tab link went to the panel (`to: panel`), and whether the person's click opened it (`user`) | no |
 | `web-close-ignored` | The page called `window.close()`, which does nothing here | no |
 | `web-load-failed` | A page failed to load, with the error's name (`cert-expired`, `name-not-resolved` and so on) | yes |
