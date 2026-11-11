@@ -2052,3 +2052,11 @@ later), so a scenario that waits for the prompt text and snaps at once can still
 that row holds text or the cursor (`ground_spots` in `tools/e2e/src/scenarios/chrome.rs`). Windows reads the same
 spots. Held by `the_spots_miss_cell_zero_where_the_cursor_sits`, `the_spots_scale_with_the_window` and
 `a_last_row_with_text_or_the_cursor_fails_loudly`. Source: main's first full CI run after the macOS port (2026-11-11).
+1127. **A fresh profile has vertical tabs; a stored choice is kept.** Max asked for tabs down the side by default
+(2026-11-11). Native: `flare.window.tabLayout` falls back to `vertical` (`crates/flare-settings/src/tab_layout.rs`),
+the sidebar keeps its own defaults (open, 220 px), and nothing is stored until somebody picks, so a stored or
+imported `horizontal` still wins. A test or e2e scenario written for the strip chooses Horizontal itself (the
+fixtures, the `--scene` setups, `flare_e2e::world::tabs_along_the_top`) instead of leaning on the default. Held by
+`tab_layout_is_vertical_until_chosen`, `a_stored_horizontal_choice_is_kept`,
+`a_fresh_profile_starts_vertical_with_the_sidebar_open_at_220` and the e2e `verticalStart`. Source: Max (2026-11-11);
+Prism Terminal's default is horizontal (lib/tabLayoutPrefs.ts).

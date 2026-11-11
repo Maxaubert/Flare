@@ -663,6 +663,16 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   cases only, by `appctl::tests::a_profile_stored_as_vertical_starts_vertical_on_the_first_frame` and the e2e
   `verticalStart`; `appctl::tests::a_vertical_profile_with_no_tabs_keeps_vertical_but_has_no_tabs_for_the_sidebar`
   pins the zero-tab inputs as they are.
+- **Vertical tabs are the default.** 2026-11-11 (Max: "the tab bar should be vertical by default"): a profile
+  that has never chosen a Tab position opens with the tabs down the side, the sidebar open at 220 px, and
+  Settings shows Vertical. Nothing is written until somebody picks: a stored `horizontal` (picked, or imported
+  from Prism Terminal) is kept, and an unknown word reads vertical. Prism Terminal's default stays horizontal,
+  so this is a DIFF in `docs/parity.md` and rule 1127. The zero-tab start screen still shows the top bar (the
+  entry above). Held by `tab_layout_is_vertical_until_chosen`, `a_stored_horizontal_choice_is_kept`,
+  `a_fresh_profile_starts_vertical_with_the_sidebar_open_at_220`, `a_profile_stored_as_horizontal_keeps_the_strip`,
+  `tab_position_shows_vertical_on_a_fresh_profile_and_a_stored_horizontal` and the e2e `verticalStart`. Tests and
+  e2e scenarios written for the strip now choose Horizontal themselves (the test fixtures, the `--scene` setups,
+  `flare_e2e::world::tabs_along_the_top`).
 - **Privacy.** `PRIVACY.md` states one automatic request, the update check, and that it is off until the
   repository is public. A new network call without a line in `PRIVACY.md` fails the build
   (`a_new_file_with_a_network_call_fails_the_scan`).

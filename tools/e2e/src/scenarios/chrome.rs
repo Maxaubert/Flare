@@ -209,6 +209,7 @@ pub fn cog_toggle(ctx: &mut Ctx) -> Result<(), String> {
 pub fn title_bar(ctx: &mut Ctx) -> Result<(), String> {
     let mut app = ctx.launch(Launch {
         renderer: Some("software"),
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     // The first tab is the precondition; the check below is whether the second one opens.
@@ -528,6 +529,7 @@ fn ground_spots(
 pub fn theme(ctx: &mut Ctx) -> Result<(), String> {
     let mut app = ctx.launch(Launch {
         renderer: Some("software"),
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     // The first tab is the precondition the port waits for; the checks below read it.
@@ -573,6 +575,7 @@ pub fn theme(ctx: &mut Ctx) -> Result<(), String> {
     let mut light = ctx.launch(Launch {
         renderer: Some("software"),
         args: vec!["--theme".into(), "paper".into()],
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     let _one = first_tab(ctx, &mut light);

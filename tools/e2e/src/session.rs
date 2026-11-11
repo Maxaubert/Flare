@@ -97,8 +97,15 @@ pub struct TabState {
     pub front: bool,
     #[serde(default)]
     pub kind: String,
-    #[serde(default)]
+    /// The tab's box in the strip. Down the side (the default since 2026-11-11) the probe answers
+    /// `null`, which reads as an empty box: before, one `null` failed the whole `app.state`, so a
+    /// vertical window seemed to have no tabs at all.
+    #[serde(default, deserialize_with = "null_is_empty")]
     pub rect: Rect,
+}
+
+fn null_is_empty<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Rect, D::Error> {
+    Ok(Option::<Rect>::deserialize(d)?.unwrap_or_default())
 }
 
 /// A typed view of the `app.state` probe: the fields scenarios use most. Unknown fields are ignored.
@@ -323,5 +330,27 @@ mod reply_line_tests {
         let e = read_reply_line(&mut r).unwrap_err();
         assert!(e.contains("over"), "{e}");
         assert_eq!(read_reply_line(&mut r).unwrap(), "{\"ok\":true}\n");
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    #[test]
+    fn a_vertical_window_s_tabs_read_with_an_empty_box() {
+        let v = serde_json::json!({
+            "scale": 1.0,
+            "tabs": [
+                { "id": "t1", "front": true, "rect": null },
+                { "id": "t2", "rect": { "x": 4.0, "y": 0.0, "w": 90.0, "h": 36.0 } },
+                { "id": "t3" }
+            ]
+        });
+        let s: AppState = serde_json::from_value(v).expect("a null rect is not an error");
+        assert_eq!(s.tabs.len(), 3);
+        assert_eq!(s.tabs[0].rect.w, 0.0);
+        assert_eq!(s.tabs[1].rect.w, 90.0);
+        assert_eq!(s.tabs[2].rect.w, 0.0);
     }
 }

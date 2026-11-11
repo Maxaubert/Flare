@@ -179,6 +179,7 @@ fn open(ctx: &mut Ctx, folders: Vec<PathBuf>) -> Result<App, String> {
         renderer: Some("software"),
         folders,
         scale_dpi: Some(run_dpi()),
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     Ok(app)
@@ -326,6 +327,7 @@ fn launch_marked(ctx: &mut Ctx, still: bool) -> Result<App, String> {
         folders: marked_folders(&root),
         scale_dpi: Some(run_dpi()),
         env,
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     let _ = app.session.call(&Request::Resize {
