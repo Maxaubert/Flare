@@ -1644,7 +1644,8 @@ key-up and "another key", so it is a LISTEN-ONLY `CGEventTap` on the hook thread
 says nothing, holds no lock, re-reads the permission every 500 ms, and the window reads the key itself; the "Dictate
 from any app" row's sub names System Settings > Privacy & Security > Input Monitoring. Nothing is ever posted or typed
 (no `CGEventPost`, no Accessibility: the Windows build types only into Flare's own tabs), and no code calls
-`CGRequestListenEventAccess`, `IOHIDRequestAccess` or `AXIsProcessTrustedWithOptions` (scan). Held by
+`IOHIDRequestAccess` or `AXIsProcessTrustedWithOptions`, and `CGRequestListenEventAccess` only in
+`macos/listen_ask.rs` on the person's own act, never from the hook (rule 1137; scan). Held by
 `a_chord_registers_says_ready_and_reports_its_keys_with_the_app_in_front`,
 `a_modifier_key_waits_silently_for_input_monitoring_and_asks_for_nothing`,
 `the_settings_problem_names_input_monitoring_only_for_a_modifier_key_without_it`,
@@ -2092,3 +2093,27 @@ run` previews, `--preview-update` previews everywhere, a packaged Mac build goes
 `in_app_bundle_reads_the_path_alone`, `mode_table`, `an_unpackaged_mac_bundle_is_off_and_the_rest_keep_d11` and
 `an_unpackaged_app_bundle_is_off_on_a_mac_only`. Source: Max, the installed ad hoc app showing an update chip
 (2026-11-11).
+1137. **macOS: the default dictation key Ctrl+Cmd works in Flare's window, and a missing Input Monitoring is asked for
+and logged, never silence.** Max switched dictation on (Large v3 Turbo downloaded) and the key did nothing, with not
+one dictation line in the diag log (owner, 2026-11-11). Root cause: macOS' winit (`flagsChanged:`) queues a modifier's
+`KeyboardInput` BEFORE the new `ModifiersChanged`, so a modifier's press never carried its own flag: Cmd down after
+Ctrl carried ctrl only, Ctrl down after Cmd carried meta only, and the chord of modifiers, which wants both flags on its down, never matched. Without Input Monitoring the hook waits
+silently (rule 1077) and the window is the only reader, so nothing ever happened. `keymap::with_own_modifier` now sets a
+modifier key's own flag on its press and clears it on its release (what Windows' winit already reports), inside
+`key_event_from_parts`, and the e2e's `event_from_chord` builds the same event. Second: nothing asked for Input Monitoring, so dictating from another app stayed off for good.
+`keyhook::ask_for_anywhere` calls `CGRequestListenEventAccess` once per run (`macos/listen_ask.rs`, on a worker) on the
+person's act only: switching "Use dictation" or "Dictate from any app" on, or pressing the key in the window, while the
+binding needs Input Monitoring it lacks; the hook still never asks. Third: the diag log now shows it: `dictation-on`
+(the key as the Mac names it, the mode, anywhere, the problem, the model) once per change of the preferences,
+`dictation-key` (`start`/`stop`/`cancel`, `from: window`) for each action (the hook's key from another app was
+already `dictate-anywhere` with `key`), `dictation-ask` when the system was asked,
+and `dictation-engine` (`pass` or `warm`, ok, the reason and detail of a failure, a character count and never the
+words). The microphone keeps its entitlement and usage sentence; Input Monitoring has neither. Native:
+`crates/flare/src/keymap.rs`, `crates/flare/src/dictation_ctl.rs`, `crates/flare-dictation/src/keyhook.rs`,
+`crates/flare-dictation/src/macos/listen_ask.rs`. Held by
+`a_modifier_key_carries_its_own_flag_so_ctrl_cmd_dictates_with_the_macs_late_modifier_state`,
+`a_modifier_key_alone_is_a_key_event_so_a_held_ctrl_can_be_let_go`,
+`the_window_key_logs_its_start_asks_once_for_anywhere_and_the_engine_answer_is_logged`,
+`the_mac_key_hook_listens_only_posts_nothing_and_never_asks_by_itself` and
+`dictation_has_the_microphone_entitlement_with_its_usage_and_the_key_needs_no_entitlement`. Source: Max, dictation on
+and the hotkey doing nothing (2026-11-11).
