@@ -3990,6 +3990,34 @@ mod tests {
         assert_eq!(lines.lock().unwrap().as_slice(), [Some(42), None, None]);
     }
 
+    /// The macOS half of `view_file_hands_its_line_to_the_panel`, with the Mac's path grammar (rule 1145).
+    #[cfg(not(windows))]
+    #[test]
+    fn view_file_hands_its_line_to_the_panel() {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let got = lines.clone();
+        let r = rig(
+            move |op| match op {
+                CtlOp::ShowFile { line, .. } => {
+                    got.lock().unwrap().push(*line);
+                    Ok(json!({"panel": {"kind": "text"}}))
+                }
+                _ => Ok(json!({"cwd": "/work"})),
+            },
+            false,
+            FILES_POSIX,
+        );
+        let c = agent_in_tab();
+        for p in [
+            json!({"path": "/work/a.txt", "line": 42}),
+            json!({"path": "/work/a.txt"}),
+            json!({"path": "/work/a.txt", "line": null}),
+        ] {
+            r.d.call(&c, Method::ViewFile, p).unwrap();
+        }
+        assert_eq!(lines.lock().unwrap().as_slice(), [Some(42), None, None]);
+    }
+
     #[test]
     fn view_text_is_capped_and_a_title_is_one_short_line() {
         let r = rig(ok_all, false, FILES);
