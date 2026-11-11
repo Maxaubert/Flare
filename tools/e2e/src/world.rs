@@ -126,6 +126,13 @@ pub fn tabs_along_the_top(profile: &Path) -> Result<(), String> {
     store_setting(profile, "flare.window.tabLayout", "horizontal")
 }
 
+/// Makes the tab marks Bar in the closed profile. Ring is the default, and with Ring Settings draws
+/// no Mark colours section and Find offers none of its rows (rule 1140); a scenario that works the
+/// agent colours says so with this before it launches.
+pub fn marks_as_bar(profile: &Path) -> Result<(), String> {
+    store_setting(profile, "flare.term.agentIndicator", "minimal")
+}
+
 /// Removes `root` recursively, retrying `REMOVE_RETRIES` times `REMOVE_WAIT` apart. True when it
 /// is gone at the end. A missing folder counts as gone.
 pub fn remove_with_retries(root: &Path) -> bool {
@@ -300,5 +307,23 @@ mod settings_tests {
         fs::write(profile.join("settings.json"), "not json").unwrap();
         store_setting(&profile, "flare.window.edges", "faint").unwrap();
         assert_eq!(read(), json!({ "flare.window.edges": "faint" }));
+    }
+
+    #[test]
+    fn marks_as_bar_stores_minimal_beside_the_strip() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        tabs_along_the_top(&profile).unwrap();
+        marks_as_bar(&profile).unwrap();
+        let read: Value =
+            serde_json::from_str(&fs::read_to_string(profile.join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            read,
+            json!({
+                "flare.window.tabLayout": "horizontal",
+                "flare.term.agentIndicator": "minimal"
+            })
+        );
     }
 }
