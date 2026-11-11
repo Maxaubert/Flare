@@ -1153,6 +1153,41 @@ fn app_loop(rep: &mut Report, data: &Path) -> Result<(), String> {
         "a later navigation loads too",
         json!({"events": first.since(from)}),
     );
+    // `browser_navigate` and `open_page` answer on the navigation's own number: the Loaded that ends it carries the
+    // number its Loading gave, and a navigation before it had another (rule 1159).
+    let navs = |kind: &str| -> Vec<(u64, String)> {
+        first
+            .seen
+            .iter()
+            .filter_map(|e| match e {
+                WebEvent::Loading { tab, url, nav } if tab == "t1" && kind == "Loading" => {
+                    Some((*nav, url.clone()))
+                }
+                WebEvent::Loaded {
+                    tab,
+                    url,
+                    nav,
+                    ok: true,
+                    ..
+                } if tab == "t1" && kind == "Loaded" => Some((*nav, url.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    let (loading, loaded) = (navs("Loading"), navs("Loaded"));
+    let page2 = srv.url("/page2");
+    let own = loaded
+        .iter()
+        .find(|(_, u)| *u == page2)
+        .is_some_and(|(n, _)| loading.iter().any(|(m, u)| m == n && *u == page2));
+    let first_nav = loading.iter().find(|(_, u)| *u == main).map(|(n, _)| *n);
+    let page2_nav = loading.iter().find(|(_, u)| *u == page2).map(|(n, _)| *n);
+    rep.check(
+        "app-loop.nav-id",
+        own && first_nav.is_some() && first_nav != page2_nav,
+        "turned as the window turns, a navigation ends on the number it began with, not an earlier one's",
+        json!({"loading": format!("{loading:?}"), "loaded": format!("{loaded:?}")}),
+    );
     // The last panel closes: the window closes its view and lets the host go (no close_all: the window lives on).
     first.host.close("t1");
     first.wait(300);
@@ -1171,9 +1206,46 @@ fn app_loop(rep: &mut Report, data: &Path) -> Result<(), String> {
         "a panel opened after the last one closed (a new host, the same CEF) loads and paints",
         json!({"pixel": format!("{px:?}"), "events": second.since(0), "pumps": PUMPS.load(Ordering::Relaxed), "controllers": second.host.controllers()}),
     );
+    rep.check(
+        "app-loop.one-engine",
+        crate::host::engine_starts() == (1, 0),
+        "the second host adopted the engine the first started: CEF started once, never shut down by the idle host",
+        json!({"starts_and_shutdowns": format!("{:?}", crate::host::engine_starts())}),
+    );
+    // The GPU process fails: Chromium starts it again, and every live view gets a note (rule 1158).
+    let gpu: Vec<i32> = bundle_processes()
+        .into_iter()
+        .filter(|(_, cmd)| cmd.contains("--type=gpu-process"))
+        .filter_map(|(pid, _)| pid.parse().ok())
+        .collect();
+    let from = second.mark();
+    for pid in &gpu {
+        // SAFETY: a pid of this probe's own GPU helper, read just now.
+        unsafe { libc::kill(*pid, libc::SIGKILL) };
+    }
+    let noted = second
+        .until(from, 10_000, |e| {
+            matches!(e, WebEvent::Note { tab, note }
+                if tab == "t2" && note.kind() == NoteKind::Process && note.word() == "gpu")
+        })
+        .is_some();
+    rep.check(
+        "app-loop.gpu-note",
+        !gpu.is_empty() && noted,
+        "a GPU process that fails is a Process note on the live view (detail gpu), as on Windows",
+        json!({"gpu": gpu, "events": second.since(from)}),
+    );
     second.host.close("t2");
     second.wait(300);
-    second.host.close_all();
+    // The last panel closes again and the window lets the host go; then it quits with no host (rule 1156).
+    drop(second);
+    crate::host::end_engine();
+    rep.check(
+        "app-loop.quit-after-idle",
+        crate::host::engine_starts() == (1, 1),
+        "the quit with no host left shuts the process's CEF down, once",
+        json!({"starts_and_shutdowns": format!("{:?}", crate::host::engine_starts())}),
+    );
     Ok(())
 }
 

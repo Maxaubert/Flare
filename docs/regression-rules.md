@@ -2506,3 +2506,45 @@ draws an arrow on stays off on the Mac (rule 1124). Not under `--e2e`, where the
 shown), the `page_overlay` unit tests (device pixels to points, flipped or not; the glow's bands tiling the page's
 rectangle; an empty picture or no view refused; the tag's ink) and `the_tag_is_an_orange_pill_with_the_name_readable_on_it`
 (now also on macOS). Source: Max on his Mac (2026-11-11).
+1156. **macOS: CEF is the process's, started once by the first web host and shut down once at quit; an idle host
+never takes it down or unloads it.** The window lets its host go when the last panel, background page and bar are
+gone (`web_ctl`'s `drop_idle_backend`, as on Windows, whose environment goes with its last view). On the Mac that
+dropped the `Engine`, whose `LibraryLoader` unloaded the CEF framework while CEF was still initialized; the next panel
+made a new host that ran `Engine::start` (`cef_initialize`) a second time in the same process, and the quit, with no
+host left, never ran `CefShutdown`, so the cookies and profiles were not flushed. Now the engine, its scheduler and the
+browsers still closing live in a holder of the main thread's (`Cef` in `host.rs`): a later host adopts it (the
+scheduler's turns go to the newest host's sink), a dropped host hands over what it was closing (and closes what it
+left open), `WebBackend::close_all` and `end_engine` (called by `web_ctl`'s `close_all` at quit even with no host)
+pump until those browsers closed and shut CEF down once. An `Engine` dropped without `shutdown` keeps the framework
+loaded. The quit still closes every view first and answers waiting `browser.*` calls `UNAVAILABLE` "Flare is closing"
+(rule 28). Windows is unchanged. Native: `crates/flare-web/src/macos/host.rs`, `crates/flare-cef/src/macos/engine.rs`,
+`crates/flare/src/web_ctl.rs`. Held by the `app-loop.one-engine` and `app-loop.quit-after-idle` checks of
+`a_web_panel_turned_as_the_window_turns_loads_and_paints_and_again_after_the_last_closed`
+(`crates/flare-web/tests/cef_macos.rs`: the second host never calls `Engine::start`, the quit with no host shuts
+down exactly once). Source: browser parity audit, gaps LC-02 and LC-06 (2026-11-11).
+1157. **macOS: the web engine's pump thread ends with its scheduler.** `flare-cef-pump` waited forever, so every
+dropped host left one behind (Max's Flare had two). The scheduler is now the process's (rule 1156), and its `Drop`
+sets a stop flag under the lock the thread waits on and wakes it, so the thread ends at the shutdown. Native:
+`crates/flare-web/src/macos/host.rs`. Held by the `app-loop` probe scenario (the shutdown drops the scheduler before
+`CefShutdown`). Source: browser parity audit, gap LC-02 (2026-11-11).
+1158. **macOS: a GPU or utility helper that fails is a `Process` note on every live view and a line in the log, and
+nothing more.** Windows notes every `ProcessFailed` kind and only logs the GPU and utility ones (`Failure::Recovers`:
+the browser starts them again). CEF has no callback for any helper but a renderer, so the browser process watches its
+own children (`flare_cef::macos::helpers`): after each `on_before_child_process_launch` (and at the start) it looks at
+its children for 2 s, knows a helper by its `--type=` switch (`gpu-process` is `gpu`, `utility` is `utility`, a
+renderer is left to `on_render_process_terminated`), and waits for its end with `EVFILT_PROC` `NOTE_EXIT` and the wait
+status. A signal is `crashed`, a non-zero exit `unexpected`; a clean exit (a utility that finished) and every end during
+the shutdown are not reported. The note's detail is the Windows word (`gpu`, `utility`) and it carries the reason and
+the signal or exit code; no page ends. Windows' browser-process loss (restart the environment) does not apply: CEF runs
+inside Flare's own process. Native: `crates/flare-cef/src/macos/helpers.rs`, `crates/flare-cef/src/macos/engine.rs`,
+`crates/flare-web/src/macos/host.rs`. Held by `a_helper_that_crashes_is_reported_and_one_that_exits_cleanly_or_at_shutdown_is_not`
+and the other `helpers` unit tests, and the `app-loop.gpu-note` check (the probe kills its own GPU helper). Source:
+browser parity audit, gap LC-05 (2026-11-11).
+1159. **macOS: `browser_navigate` and `open_page` answer on their own navigation's number when the host is turned the
+window's way.** `web_ctl` binds a waiting call to the first `Loading` after it and answers on the `Loaded` with the same
+`nav`; on the Mac that needs the host's own turns (rule 1152), without which no `Loading` or `Loaded` came at all. The
+`app-loop` scenario checks that the `Loaded` of a navigation carries the number its `Loading` gave and that an earlier
+navigation had another. The CEF probe tests run one at a time (`.config/nextest.toml`): each starts a browser with its
+helpers, and side by side they starved each other. Native: `crates/flare-web/src/macos/host.rs`,
+`crates/flare-cef/src/macos/view.rs`. Held by the `app-loop.nav-id` check (`crates/flare-web/tests/cef_macos.rs`).
+Source: browser parity audit, gap AG-05 (2026-11-11).

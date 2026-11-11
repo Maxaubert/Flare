@@ -23,6 +23,7 @@ objc2-core-foundation.workspace = true
 flare-surfaces = { path = "../flare-surfaces" }
 base64.workspace = true
 png.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

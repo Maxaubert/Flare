@@ -105,8 +105,8 @@ const RESET_ID: i32 = SETUP_IDS - 100;
 pub enum ViewEvent {
     /// The view's own setup answered: it navigates now (Ok) or cannot be used (Err).
     Armed(Result<(), String>),
-    /// A main-frame navigation the wall let through began; `nav` is the request's number, `from` the address of
-    /// the page it leaves.
+    /// A main-frame navigation the wall let through began; `nav` is its number (unique in the process), `from` the
+    /// address of the page it leaves.
     Loading {
         url: String,
         nav: u64,
@@ -227,6 +227,12 @@ pub type EventSink = Arc<dyn Fn(ViewEvent) + Send + Sync>;
 /// Asks the owner for a turn (the web panel's host: a `WebEvent::Pump` soon). Called from CEF's threads when
 /// something the owner only sees in its turn has changed (rule 1152).
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
+/// The next main-frame navigation's number: unique in the process, never 0, a redirect a number of its own.
+fn next_nav() -> u64 {
+    static NAV: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NAV.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+}
+
 /// May a frame navigate to this address? (`url`, whether it is the main frame, the address of the page it
 /// leaves.)
 pub type NavRule = Arc<dyn Fn(&str, bool, &str) -> bool + Send + Sync>;
@@ -376,7 +382,7 @@ pub struct State {
     pub armed: bool,
     setup: HashSet<i32>,
     start_url: String,
-    /// The main-frame navigation under way (its request's number).
+    /// The main-frame navigation under way (its number).
     nav: u64,
     main_frame: String,
     history: Option<(bool, bool)>,
@@ -1313,7 +1319,9 @@ wrap_request_handler! {
                 return 1;
             }
             if main {
-                let nav = request.identifier();
+                // A number of the view's own (as WebView2's `NavigationId`): CEF's request identifier is still 0 here,
+                // so every navigation had the same one and a call could be answered on an earlier load's end (rule 1159).
+                let nav = next_nav();
                 lock(&self.c.state).nav = nav;
                 if armed {
                     self.c.emit(ViewEvent::Loading { url, nav, from });

@@ -12,3 +12,12 @@ threads-required = "num-cpus"
 [[profile.default.overrides]]
 filter = 'package(flare-term) & (test(snapshot_holds_the_lock_under_1_ms) | test(reading_a_huge_screen_full_of_addresses_stays_cheap) | test(a_100_mb_flood_keeps_snapshots_fast_and_arrives_complete))'
 threads-required = "num-cpus"
+
+# The CEF probe tests each start a browser with its helpers (GPU, network, renderers); side by side they starve each
+# other and time out (rule 1159). They run one at a time.
+[test-groups]
+cef-probe = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = '(package(flare-web) & binary(cef_macos)) | (package(flare-cef) & binary(engine_macos))'
+test-group = 'cef-probe'
