@@ -358,6 +358,10 @@ are added as milestones land.
   `off`, `full` and the Powerline `prompt` style do not exist here, and a stored word `minimal` is
   Bar, anything else Ring. Held by `the_stored_word_minimal_is_bar_everything_else_ring` and
   `the_indicator_pick_turns_a_ring_row_into_a_run_bar`.
+- **Mark colours are a Bar setting (2026-11-11).** Settings > Agents shows the Mark colours section (working,
+  finished and question colour) only while the marks are Bar; Ring marks are mono in the tab name's ink, so the
+  section and its Find entries are hidden with Ring and come back live when Bar is picked (the +N button's dots
+  still wear a pick). Owner: "these should be hidden if you use the ring style". Rule 1136.
 - **Finished is news and Question is state (2026-10-09).** Finished and Failed are raised once and
   cleared by the next turn or by looking; a question stays until it is answered or the agent leaves.
   The front tab never gets a finished or failed mark while it is being looked at, but a question is
