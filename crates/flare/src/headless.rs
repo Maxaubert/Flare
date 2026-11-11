@@ -420,7 +420,11 @@ fn saved(cwds: &[String], active: usize) -> SavedTabs {
     }
 }
 
-fn no_prefs(_: &PrefStore) {}
+/// The strip along the top. The scenes were drawn with it; vertical is the default since 2026-11-11,
+/// so a scene that wants the strip says so.
+fn horizontal(p: &PrefStore) {
+    set_tab_layout(p, TabLayout::Horizontal);
+}
 
 fn vertical(p: &PrefStore) {
     set_tab_layout(p, TabLayout::Vertical);
@@ -433,6 +437,7 @@ fn collapsed(p: &PrefStore) {
 
 /// Two pinned places and two recent ones: the start screen.
 fn start_places(p: &PrefStore) {
+    horizontal(p);
     toggle_pin(p, &github("Atlas"));
     toggle_pin(p, &github("Flare"));
     remember_root(p, &github("Sonara"));
@@ -441,6 +446,7 @@ fn start_places(p: &PrefStore) {
 
 /// Two pinned places and three recent ones: the + button's right-click menu lists them.
 fn menu_places(p: &PrefStore) {
+    horizontal(p);
     toggle_pin(p, &github("Atlas"));
     toggle_pin(p, &github("Flare"));
     remember_root(p, &github("Sonara"));
@@ -463,27 +469,27 @@ pub(crate) fn setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
         github("notes"),
     ];
     match name {
-        "strip-many" | "strip-list" => (saved(&many, 0), no_prefs),
+        "strip-many" | "strip-list" => (saved(&many, 0), horizontal),
         "sidebar-open" | "sidebar-find" => (saved(&side, 1), vertical),
         "sidebar-collapsed" => (saved(&side, 1), collapsed),
         "start" => (saved(&[], 0), start_places),
         "menu-places" => (saved(&three, 0), menu_places),
-        "dialog-close" => (saved(&three, 0), no_prefs),
+        "dialog-close" => (saved(&three, 0), horizontal),
         // M3's strip-3 window with a single tab.
-        "theme-sample" => (saved(&[github("Flare")], 0), no_prefs),
+        "theme-sample" => (saved(&[github("Flare")], 0), horizontal),
         // The Settings tab alone, as a fresh Prism Terminal profile shows it, in a fixed store
         // (M7, Task 51).
         "settings" => (saved(&[], 0), crate::settings_scene::prep),
         // The Dictation page alone, with dictation on and the Base model in use (M8, Task 35).
         name if is_dictation_page_scene(name) => (saved(&[], 0), settings_scene::prep_dictation),
         // The pill over a Flare tab's terminal.
-        name if is_dictation_pill_scene(name) => (saved(&[github("Flare")], 0), no_prefs),
+        name if is_dictation_pill_scene(name) => (saved(&[github("Flare")], 0), horizontal),
         // The terminal scenes: one live tab in the Flare folder, its shell fed with the text.
-        name if is_term_scene(name) => (saved(&[github("Flare")], 0), no_prefs),
+        name if is_term_scene(name) => (saved(&[github("Flare")], 0), horizontal),
         name if is_mark_scene(name) => marks_setup(name),
         // The update scenes: one tab; the update controller is made over it when the scene stages.
-        name if is_update_scene(name) => (saved(&[github("Flare")], 0), no_prefs),
-        _ => (saved(&three, 0), no_prefs),
+        name if is_update_scene(name) => (saved(&[github("Flare")], 0), horizontal),
+        _ => (saved(&three, 0), horizontal),
     }
 }
 
@@ -566,6 +572,7 @@ fn mark_tab(folder: &str, agent: Option<AgentKind>) -> SavedTab {
 
 /// Sets the Bar mark (the stored word `minimal`) and nothing else.
 fn mark_bar(p: &PrefStore) {
+    horizontal(p);
     LookStore::new(p.clone()).set_agent_indicator(AgentIndicator::Minimal);
 }
 
@@ -590,7 +597,7 @@ fn marks_setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
                 mark_tab("tools", None),
             ];
             let prep: fn(&PrefStore) = if name == "marks-ring" {
-                no_prefs
+                horizontal
             } else {
                 mark_bar
             };
@@ -620,14 +627,14 @@ fn marks_setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
                 mark_tab("Sonara", None),
                 mark_tab("docs", None),
             ];
-            (SavedTabs { tabs, active: 0 }, no_prefs)
+            (SavedTabs { tabs, active: 0 }, horizontal)
         }
         "marks-overflow" => {
             // Sixteen tabs at 700 px: the strip shows icons, one name and the +N control.
             let tabs = (1..=16)
                 .map(|i| mark_tab(&format!("Tab{i:02}"), None))
                 .collect();
-            (SavedTabs { tabs, active: 0 }, no_prefs)
+            (SavedTabs { tabs, active: 0 }, horizontal)
         }
         "marks-tip" => {
             let tabs = vec![
@@ -636,12 +643,12 @@ fn marks_setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
                 mark_tab("Sonara", None),
                 mark_tab("api", None),
             ];
-            (SavedTabs { tabs, active: 0 }, no_prefs)
+            (SavedTabs { tabs, active: 0 }, horizontal)
         }
         "marks-skeleton" => {
             // A Claude tab coming back, in front: the skeleton draws over its grid.
             let tabs = vec![mark_tab("Atlas", claude), mark_tab("Flare", claude)];
-            (SavedTabs { tabs, active: 1 }, no_prefs)
+            (SavedTabs { tabs, active: 1 }, horizontal)
         }
         // marks-close: one working Claude tab. Saved as a plain shell, so it is not coming back to
         // a session: the question stands over the shell, not over a resume skeleton.
@@ -650,7 +657,7 @@ fn marks_setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
                 tabs: vec![mark_tab("Atlas", None)],
                 active: 0,
             },
-            no_prefs,
+            horizontal,
         ),
     }
 }

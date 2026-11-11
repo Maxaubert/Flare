@@ -15,6 +15,14 @@
 //!   have are computed and readable through [`snapshot`].
 //! - The faces wear the inks the main window hands over at each outside start (N32), not a theme of their own.
 //!
+//! macOS (rule 1139): the same Slint card in the same winit window, made a floating panel by `win` (through
+//! `flare_win::float_panel`): the status-window level on every Space and over full-screen apps, shown with
+//! `orderFrontRegardless`, and AppKit's non-activating-panel switch so a click on a row never brings Flare forward
+//! (should a system lack it and the click activate Flare, the app that was in front gets the focus back). Digits 1
+//! to 9 and Esc pick and cancel through the hook's Carbon hot keys, so the picker never needs the keyboard focus; a
+//! click in another app cancels it like Esc. Placed in points at the bottom centre of the visible frame of the
+//! screen under the pointer.
+//!
 //! **[seam]** The plan names `Pick(id)`; the click reaches the controller through `dictation_ctl::widget_pick`.
 //! "Visible on every virtual desktop" (PT `setVisibleOnAllWorkspaces`) is a no-op in Electron on Windows too, and
 //! Windows offers no documented way to pin a window to all desktops, so it is not done here (listed in the report).
@@ -314,12 +322,20 @@ pub fn attributes(
         .with_decorations(false)
         .with_transparent(true)
         .with_active(false);
-    // Off the taskbar and with no shadow: Windows-only attributes (macOS: phase 7 of the port plan).
+    // Off the taskbar and with no shadow: Windows-only attributes (a Mac panel is never in the Dock or the
+    // window cycle: `win::prepare`).
     #[cfg(windows)]
     let a = a.with_skip_taskbar(true);
     let a = a.with_resizable(false);
     #[cfg(windows)]
     let a = a.with_undecorated_shadow(false);
+    // macOS (rule 1139): no shadow either; the panel's level, Spaces and never-activate switch are set on the
+    // NSWindow itself once it exists (`win::prepare`).
+    #[cfg(target_os = "macos")]
+    let a = {
+        use slint::winit_030::winit::platform::macos::WindowAttributesExtMacOS;
+        a.with_has_shadow(false)
+    };
     a.with_window_level(WindowLevel::AlwaysOnTop)
         .with_position(slint::winit_030::winit::dpi::PhysicalPosition::new(x, y))
 }
@@ -483,13 +499,255 @@ pub mod win {
     }
 }
 
-/// The window half off Windows. macOS: phase 7 of the port plan (an NSPanel that never activates). Until
-/// then nothing is styled, placed or shown, and no display is known.
-#[cfg(not(windows))]
+/// The window half on macOS (rule 1139): a floating panel that never activates Flare, through
+/// `flare_win::float_panel`. The handle is the window's content `NSView`. Bounds are top-left points (the display
+/// it reads has scale 1), so `bounds_for` works unchanged.
+///
+/// Under test a stand-in plays the window (`stand_in`): every call on its handle is recorded instead of reaching
+/// AppKit, so the widget's rules are checked with no window shown and no focus taken.
+#[cfg(target_os = "macos")]
+pub mod win {
+    use super::{Bounds, Display};
+    use flare_win::float_panel as panel;
+
+    /// The bits the probe reads, as on Windows: the Mac panel's own facts in the same shape.
+    pub const WS_EX_NOACTIVATE: u32 = 0x0800_0000;
+    pub const WS_EX_TOPMOST: u32 = 0x0000_0008;
+    pub const WS_EX_TRANSPARENT: u32 = 0x0000_0020;
+
+    /// What the stand-in window was told.
+    #[cfg(test)]
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub struct StandIn {
+        pub handle: isize,
+        pub prepared: bool,
+        pub through: bool,
+        pub placed: Option<Bounds>,
+        pub visible: bool,
+        pub shows: u32,
+        /// The app in front, as the stand-in says it (`front_app`).
+        pub front: Option<u32>,
+        /// Whether Flare is the active app (a click activated it on a system with no never-activate switch).
+        pub active: bool,
+        /// The apps given the focus back, in order.
+        pub handed_back: Vec<u32>,
+        pub watching_away: bool,
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        static STAND_IN: std::cell::RefCell<Option<StandIn>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Plays the window with handle `handle` by a stand-in from now on (None: the real AppKit window again).
+    #[cfg(test)]
+    pub fn stand_in(handle: Option<isize>) {
+        STAND_IN.with(|s| {
+            *s.borrow_mut() = handle.map(|handle| StandIn {
+                handle,
+                ..StandIn::default()
+            })
+        });
+    }
+
+    /// The stand-in as it is now.
+    #[cfg(test)]
+    pub fn stand_in_state() -> Option<StandIn> {
+        STAND_IN.with(|s| s.borrow().clone())
+    }
+
+    /// Changes the stand-in (the test plays the system: the app in front, Flare activated by a click).
+    #[cfg(test)]
+    pub fn with_stand_in(f: impl FnOnce(&mut StandIn)) {
+        STAND_IN.with(|s| {
+            if let Some(st) = s.borrow_mut().as_mut() {
+                f(st)
+            }
+        });
+    }
+
+    /// Runs `f` on the stand-in when one plays this handle (or any, for `None`).
+    #[cfg(test)]
+    fn fake<R>(h: Option<isize>, f: impl FnOnce(&mut StandIn) -> R) -> Option<R> {
+        STAND_IN.with(|s| {
+            let mut s = s.borrow_mut();
+            let st = s.as_mut()?;
+            (h.is_none_or(|h| h == st.handle)).then(|| f(st))
+        })
+    }
+
+    pub fn prepare(hwnd: isize) {
+        #[cfg(test)]
+        if fake(Some(hwnd), |s| {
+            s.prepared = true;
+        })
+        .is_some()
+        {
+            return;
+        }
+        panel::prepare(hwnd);
+    }
+
+    pub fn set_click_through(hwnd: isize, pass: bool) {
+        #[cfg(test)]
+        if fake(Some(hwnd), |s| {
+            s.through = pass;
+        })
+        .is_some()
+        {
+            return;
+        }
+        panel::set_click_through(hwnd, pass);
+    }
+
+    pub fn is_prepared(hwnd: isize) -> bool {
+        #[cfg(test)]
+        if let Some(r) = fake(Some(hwnd), |s| s.prepared) {
+            return r;
+        }
+        panel::is_prepared(hwnd)
+    }
+
+    pub fn place(hwnd: isize, b: Bounds) {
+        #[cfg(test)]
+        if fake(Some(hwnd), |s| {
+            s.placed = Some(b);
+        })
+        .is_some()
+        {
+            return;
+        }
+        panel::place(
+            hwnd,
+            panel::TopLeft {
+                x: f64::from(b.x),
+                y: f64::from(b.y),
+                w: f64::from(b.w),
+                h: f64::from(b.h),
+            },
+        );
+    }
+
+    /// Shows the panel above the app in front, never activating Flare.
+    pub fn show(hwnd: isize) {
+        #[cfg(test)]
+        if fake(Some(hwnd), |s| {
+            s.visible = true;
+            s.shows += 1;
+        })
+        .is_some()
+        {
+            return;
+        }
+        panel::show(hwnd);
+    }
+
+    pub fn hide(hwnd: isize) {
+        #[cfg(test)]
+        if fake(Some(hwnd), |s| {
+            s.visible = false;
+        })
+        .is_some()
+        {
+            return;
+        }
+        panel::hide(hwnd);
+    }
+
+    /// The panel's facts in the Windows bits: never activates, floats, lets clicks through.
+    pub fn ex_style(hwnd: isize) -> u32 {
+        #[cfg(test)]
+        if let Some(r) = fake(Some(hwnd), |s| {
+            let mut bits = 0;
+            if s.prepared {
+                bits |= WS_EX_NOACTIVATE | WS_EX_TOPMOST;
+            }
+            if s.through {
+                bits |= WS_EX_TRANSPARENT;
+            }
+            bits
+        }) {
+            return r;
+        }
+        let mut bits = 0;
+        if panel::never_activates(hwnd) {
+            bits |= WS_EX_NOACTIVATE;
+        }
+        if panel::is_floating(hwnd) {
+            bits |= WS_EX_TOPMOST;
+        }
+        if panel::click_through(hwnd) {
+            bits |= WS_EX_TRANSPARENT;
+        }
+        bits
+    }
+
+    pub fn is_visible(hwnd: isize) -> bool {
+        #[cfg(test)]
+        if let Some(r) = fake(Some(hwnd), |s| s.visible) {
+            return r;
+        }
+        panel::is_visible(hwnd)
+    }
+
+    /// The visible frame of the screen under the pointer, in points (scale 1: the panel is placed in points).
+    pub fn display_under_cursor() -> Option<Display> {
+        let t = panel::work_area_under_pointer()?;
+        Some(Display {
+            work: Bounds {
+                x: t.x.round() as i32,
+                y: t.y.round() as i32,
+                w: t.w.round() as i32,
+                h: t.h.round() as i32,
+            },
+            scale: 1.0,
+        })
+    }
+
+    /// The app in front, when it is not Flare (the one to give the focus back to).
+    pub fn front_app() -> Option<u32> {
+        #[cfg(test)]
+        if let Some(r) = fake(None, |s| s.front) {
+            return r;
+        }
+        panel::front_app_pid().filter(|p| *p != std::process::id())
+    }
+
+    /// After a click on the picker: if Flare became the active app (a system with no never-activate switch), the
+    /// app that was in front gets the focus back. True when it was handed back.
+    pub fn hand_back(front: Option<u32>) -> bool {
+        #[cfg(test)]
+        if let Some(r) = fake(None, |s| {
+            let give = s.active && front.is_some();
+            if give {
+                s.handed_back.extend(front);
+                s.active = false;
+            }
+            give
+        }) {
+            return r;
+        }
+        match front {
+            Some(pid) if panel::flare_active() => panel::activate(pid),
+            _ => false,
+        }
+    }
+
+    /// While on, a click in another app cancels the picker (`dictation_ctl::widget_away`).
+    pub fn watch_away(on: bool) {
+        #[cfg(test)]
+        if fake(None, |s| s.watching_away = on).is_some() {
+            return;
+        }
+        panel::watch_clicks_away(on, crate::dictation_ctl::widget_away);
+    }
+}
+
+/// The window half off Windows and macOS: nothing is styled, placed or shown, and no display is known.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub mod win {
     use super::{Bounds, Display};
 
-    /// The bits the Windows widget sets; here a plain value with no window behind it.
     pub const WS_EX_NOACTIVATE: u32 = 0x0800_0000;
     pub const WS_EX_TOPMOST: u32 = 0x0000_0008;
 
@@ -518,6 +776,16 @@ pub mod win {
     pub fn display_under_cursor() -> Option<Display> {
         None
     }
+
+    pub fn front_app() -> Option<u32> {
+        None
+    }
+
+    pub fn hand_back(_front: Option<u32>) -> bool {
+        false
+    }
+
+    pub fn watch_away(_on: bool) {}
 }
 
 #[cfg(not(windows))]
@@ -568,6 +836,33 @@ struct Widget {
     settle: slint::Timer,
     /// Polls for the real window until the event loop has made it.
     attach: slint::Timer,
+    /// The picker is on screen: on macOS a click in another app cancels it (rule 1139).
+    picking: bool,
+}
+
+thread_local! {
+    /// The app in front when the picker opened (macOS: the one a click on a row gives the focus back to, should
+    /// the click have activated Flare). Kept apart from `WIDGET` so the row's click handler never borrows it.
+    static PICK_FRONT: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+/// A row clicked: the pick goes to the service, and on macOS the app that was in front keeps (or gets back) the
+/// focus.
+pub fn on_row_click(id: String) {
+    crate::dictation_ctl::widget_pick(id);
+    #[cfg(not(windows))]
+    win::hand_back(PICK_FRONT.with(|f| f.get()));
+}
+
+/// The picker opened or closed: on macOS, note the app in front and watch for a click in another app.
+fn picking_changed(on: bool) {
+    #[cfg(not(windows))]
+    {
+        PICK_FRONT.with(|f| f.set(if on { win::front_app() } else { None }));
+        win::watch_away(on);
+    }
+    #[cfg(windows)]
+    let _ = (on, &PICK_FRONT);
 }
 
 thread_local! {
@@ -623,6 +918,8 @@ fn source_display() -> Option<Display> {
 fn hwnd_of(w: &slint::Window) -> Option<isize> {
     w.with_winit_window(|w| match w.window_handle().ok()?.as_raw() {
         RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+        // macOS: the content NSView, which `flare_win::float_panel` takes (rule 1139).
+        RawWindowHandle::AppKit(h) => Some(h.ns_view.as_ptr() as isize),
         _ => None,
     })
     .flatten()
@@ -671,7 +968,7 @@ impl Widget {
         let model = Rc::new(VecModel::<WidgetItem>::default());
         comp.set_items(ModelRc::from(model.clone()));
         // untimed: a row click only posts one event-loop call and returns at once
-        comp.on_pick(|id| crate::dictation_ctl::widget_pick(id.to_string()));
+        comp.on_pick(|id| on_row_click(id.to_string()));
         let shown = comp.show();
         CREATING.store(false, Ordering::Relaxed);
         if let Err(e) = shown {
@@ -692,6 +989,7 @@ impl Widget {
             rise: slint::Timer::default(),
             settle: slint::Timer::default(),
             attach: slint::Timer::default(),
+            picking: false,
         })
     }
 
@@ -882,6 +1180,10 @@ pub fn set(face: Option<&OverlayState>, inks: &dyn Fn() -> Option<Inks>, e2e: bo
         }
         w.draw(&f);
         w.click_through(f.phase != 3);
+        if w.picking != (f.phase == 3) {
+            w.picking = f.phase == 3;
+            picking_changed(w.picking);
+        }
         if !was_shown {
             w.display = source_display();
         }
@@ -918,6 +1220,10 @@ pub fn hide() {
             return;
         }
         w.shown = false;
+        if w.picking {
+            w.picking = false;
+            picking_changed(false);
+        }
         w.rise.stop();
         w.settle.stop();
         w.display = None;
@@ -933,6 +1239,9 @@ pub fn hide() {
 pub fn close() {
     WIDGET.with(|cell| {
         if let Some(w) = cell.borrow_mut().take() {
+            if w.picking {
+                picking_changed(false);
+            }
             w.attach.stop();
             if let Some(h) = w.hwnd {
                 win::hide(h);

@@ -207,11 +207,13 @@ fn drawn_rows(f: &Fx) -> Vec<String> {
         .collect()
 }
 
-/// The rows the index says this PC draws (no NVIDIA; the Dictation page is wired, M8 Task 24).
+/// The rows the index says this PC draws (no NVIDIA; the Dictation page is wired, M8 Task 24;
+/// the fixture's marks are Ring, so no Mark colours, rule 1140).
 fn index_ids() -> Vec<String> {
     settings_index(&IndexEnv {
         nvidia: false,
         dictation_wired: true,
+        mark_colours: false,
     })
     .into_iter()
     .map(|e| e.id)
@@ -224,8 +226,8 @@ fn index_ids() -> Vec<String> {
 fn the_index_has_31_rows_on_this_pc() {
     let n = index_ids().len();
     assert_eq!(
-        n, 47,
-        "the 37 rows of the other pages and the 9 dictation rows"
+        n, 44,
+        "the 34 rows of the other pages (no Mark colours with Ring) and the 9 dictation rows"
     );
     assert!(n >= 30, "PT's own gate says at least 30");
 }
@@ -493,6 +495,10 @@ fn settings_opens_on_appearance_keeps_dictation_across_tab_switches_and_resets_o
 #[test]
 fn the_page_shows_the_tables_and_nothing_else() {
     let f = fx();
+    // Bar, so the Agents page draws its Mark colours too (Ring hides them, rule 1140).
+    f.b()
+        .invoke_row_choose("agent-indicator".into(), "minimal".into());
+    f.pump();
     let mut drawn: Vec<String> = Vec::new();
     for p in PAGES.iter() {
         f.page(p.id);
@@ -525,6 +531,7 @@ fn each_core_section_is_drawn_once_in_one_panel_in_the_tables_order() {
     let entries = settings_index(&IndexEnv {
         nvidia: false,
         dictation_wired: true,
+        mark_colours: false,
     });
     let mut seen_sections: Vec<String> = Vec::new();
     for p in PAGES.iter() {
@@ -574,6 +581,58 @@ fn no_gpu_row_without_nvidia() {
         f.page(p.id);
         assert!(!drawn_rows(&f).iter().any(|id| id == "dictation-gpu"));
     }
+}
+
+const COLOUR_ROWS: [&str; 3] = ["agent-color", "agent-done-color", "agent-question-color"];
+
+/// Rule 1140 (Max, 2026-11-11: "these should be hidden if you use the ring style"): with Ring the
+/// Agents page draws no Mark colours and Find does not offer them; the segmented control's Bar
+/// brings both back live, and Ring takes them away again.
+#[test]
+fn the_mark_colours_show_and_are_found_only_with_bar_and_follow_the_switch_live() {
+    let f = fx();
+    let has_colours = |f: &Fx| f.sections().iter().any(|s| s.id == "colours");
+    f.page("agents");
+    assert!(!has_colours(&f), "Ring: no Mark colours section");
+    assert!(f.row("agent-color").is_none());
+    let colour_hit = |f: &Fx| {
+        f.hit_ids()
+            .iter()
+            .any(|id| COLOUR_ROWS.contains(&id.as_str()))
+    };
+    f.type_query("mark colours");
+    assert!(!colour_hit(&f), "Ring: Find offers no hidden row");
+    f.type_query("");
+
+    f.b()
+        .invoke_row_choose("agent-indicator".into(), "minimal".into());
+    f.pump();
+    assert!(
+        has_colours(&f),
+        "Bar: the section is back without leaving the page"
+    );
+    let colours = f
+        .sections()
+        .into_iter()
+        .find(|s| s.id == "colours")
+        .expect("the section");
+    assert_eq!(colours.title.as_str(), "Mark colours");
+    assert!(colours.action_save, "its heading has the Save action");
+    assert!(f.row("agent-color").is_some());
+    f.type_query("mark colours");
+    assert!(
+        f.hit_ids().iter().any(|id| id == "agent-color"),
+        "Bar: Find offers the working colour: {:?}",
+        f.hit_ids()
+    );
+    f.type_query("");
+
+    f.b()
+        .invoke_row_choose("agent-indicator".into(), "ring".into());
+    f.pump();
+    assert!(!has_colours(&f), "Ring again: hidden again");
+    f.type_query("agent working colour");
+    assert!(!colour_hit(&f), "Ring again: not found again");
 }
 
 #[test]

@@ -936,6 +936,15 @@ pub fn event_from_chord(chord: &str, down: bool) -> Result<KeyEvent, String> {
         return Err(format!("unknown key {key_token:?} in {chord:?}"));
     };
     shift |= implied_shift;
+    // A modifier key carries its own flag on its press and not on its release, as `keymap::with_own_modifier`
+    // makes the window's own events (rule 1137).
+    match code.as_str() {
+        "ControlLeft" | "ControlRight" => ctrl = down,
+        "ShiftLeft" | "ShiftRight" => shift = down,
+        "AltLeft" | "AltRight" => alt = down,
+        "SuperLeft" | "SuperRight" | "MetaLeft" | "MetaRight" => meta = down,
+        _ => {}
+    }
     let key = match logical_override {
         Some(l) if !l.is_empty() => l.to_string(),
         Some(_) => return Err(format!("empty logical key in {chord:?}")),
@@ -1343,6 +1352,7 @@ impl GlueCtx {
         let k = f64::from(app.window().scale_factor()).max(0.01);
         self.kp.wheel(
             crate::window::WheelDelta::Lines(wheel_lines(dy)),
+            crate::live::ScrollPhase::Wheel,
             (f64::from(x) * k, f64::from(y) * k),
             false,
         );

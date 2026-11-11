@@ -729,6 +729,12 @@ mod tests {
             };
             std::fs::write(dir.path().join("tabs.json"), tabs_json(&saved)).unwrap(); // sync-ok: test code only, never the app
             let prefs = PrefStore::memory();
+            // The strip along the top: these probes were written for it (vertical is the default
+            // since 2026-11-11).
+            flare_settings::tab_layout::set_tab_layout(
+                &prefs,
+                flare_settings::tab_layout::TabLayout::Horizontal,
+            );
             let q: Queue = Arc::default();
             let post: Post = {
                 let q = q.clone();

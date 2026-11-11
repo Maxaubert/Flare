@@ -5683,6 +5683,9 @@ mod tests {
             std::fs::write(dir.path().join("tabs.json"), tabs_json(&saved)).unwrap(); // sync-ok: test code only, never the app
         }
         let prefs = PrefStore::memory();
+        // The strip along the top: these tests were written for it. Vertical is the default
+        // since 2026-11-11; a test of the default clears the key in its `prep`.
+        set_tab_layout(&prefs, TabLayout::Horizontal);
         prep(&prefs);
         let q: Queue = Arc::default();
         let post: Post = {
@@ -6287,6 +6290,49 @@ mod tests {
     }
 
     #[test]
+    fn a_fresh_profile_starts_vertical_with_the_sidebar_open_at_220() {
+        // Max, 2026-11-11: tabs down the side until somebody chooses. Nothing is stored for the
+        // layout or the sidebar, and nothing is written by starting.
+        let f = fx_with_prefs(
+            Opts {
+                saved: vec![("C:\\a", None), ("C:\\b", None)],
+                ..Opts::default()
+            },
+            |p| p.remove("flare.window.tabLayout"),
+        );
+        assert!(
+            f.h.comp.get_layout_vertical(),
+            "a fresh profile built horizontal"
+        );
+        f.start_restore_and_wait();
+        f.pump();
+        f.ctl.borrow_mut().refresh();
+        assert!(
+            f.h.comp.get_layout_vertical(),
+            "horizontal after the restore"
+        );
+        assert!(!f.h.comp.get_sidebar_collapsed(), "the sidebar starts open");
+        assert_eq!(f.h.comp.get_sidebar_width(), 220.0);
+        assert_eq!(f.prefs.get("flare.window.tabLayout"), None);
+        assert_eq!(f.prefs.get("flare.window.sidebar"), None);
+    }
+
+    #[test]
+    fn a_profile_stored_as_horizontal_keeps_the_strip() {
+        let f = fx_with_prefs(
+            Opts {
+                saved: vec![("C:\\a", None)],
+                ..Opts::default()
+            },
+            |p| set_tab_layout(p, TabLayout::Horizontal),
+        );
+        f.start_restore_and_wait();
+        f.pump();
+        f.ctl.borrow_mut().refresh();
+        assert!(!f.h.comp.get_layout_vertical());
+    }
+
+    #[test]
     fn a_profile_stored_as_vertical_starts_vertical_on_the_first_frame() {
         let f = fx_with_prefs(
             Opts {
@@ -6328,10 +6374,13 @@ mod tests {
 
     #[test]
     fn the_key_context_reads_the_prefs() {
-        let f = fx();
+        // A fresh store: vertical is the default (2026-11-11), horizontal only when chosen.
+        let f = fx_with_prefs(Opts::default(), |p| p.remove("flare.window.tabLayout"));
         let c = f.ctl.borrow().key_context();
         assert!(c.agent_keys);
-        assert!(!c.vertical);
+        assert!(c.vertical);
+        set_tab_layout(&f.prefs, TabLayout::Horizontal);
+        assert!(!f.ctl.borrow().key_context().vertical);
         set_tab_layout(&f.prefs, TabLayout::Vertical);
         assert!(f.ctl.borrow().key_context().vertical);
         // Ctrl+S is the agent key of the sidebar toggle.
@@ -7154,7 +7203,7 @@ mod tests {
             f.ctl.borrow().hub().agent_folder(&id),
             Some(agent_dir.as_str())
         );
-        // The relative path as this platform writes it: a `\` is a name character on macOS (rules 227, 1145).
+        // The platform's own separator: on the Mac a backslash is part of a file name.
         let rel = if cfg!(windows) {
             "app\\a.txt"
         } else {

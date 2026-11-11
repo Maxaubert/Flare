@@ -389,6 +389,7 @@ fn with_app(
         renderer: Some(renderer),
         folders: vec![folder.to_path_buf()],
         args,
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     let result = body(ctx, &mut app);
@@ -903,13 +904,6 @@ fn marker_cut_by_hand(ctx: &mut Ctx, app: &mut App, cut: &Path) -> Result<(), St
 /// with no border in it, and a relative path is read from the folder the session's hooks name (here the real
 /// `flare-mcp --hook-context --folder`, run in the tab with its token), not the shell's.
 fn marker_links_review(ctx: &mut Ctx, app: &mut App, notes: &Path) -> Result<(), String> {
-    // The relative mark as a session on this platform writes it: on macOS a `\` is a name character, so the
-    // path is `app/pick.txt` there (rule 1145).
-    const PICK: &str = if cfg!(windows) {
-        "app\\pick.txt"
-    } else {
-        "app/pick.txt"
-    };
     let alpha = notes.parent().ok_or("the notes have a folder")?;
     let shell_copy = alpha.join("app").join("pick.txt");
     let agent_copy = alpha.join("wt").join("app").join("pick.txt");
@@ -943,17 +937,23 @@ fn marker_links_review(ctx: &mut Ctx, app: &mut App, notes: &Path) -> Result<(),
 
     // The session's folder: the hook tells Flare, then a relative mark opens under it. The shell stays busy, as it
     // is while a session runs: a shell prompt means the agent has left the tab, and its folder goes with it.
+    // A session writes the platform's own separator: on the Mac a backslash is part of a file name.
+    let rel = if cfg!(windows) {
+        "app\\pick.txt"
+    } else {
+        "app/pick.txt"
+    };
     type_line(
         app,
         &format!(
-            "cls; '{{\"cwd\":\"' + (Resolve-Path wt).Path.Replace('\\', '\\\\') + '\"}}' | & $env:FLARE_MCP_EXE --hook-context --folder; {MARKS}; Write-Host ('pick ' + $o + '{PICK}' + $c); Start-Sleep -Seconds 30"
+            "cls; '{{\"cwd\":\"' + (Resolve-Path wt).Path.Replace('\\', '\\\\') + '\"}}' | & $env:FLARE_MCP_EXE --hook-context --folder; {MARKS}; Write-Host ('pick ' + $o + '{rel}' + $c); Start-Sleep -Seconds 30"
         ),
     )?;
     ctx.until("the relative link", 8_000, &mut || {
-        file_links(app).iter().any(|(p, _, _)| p == PICK)
+        file_links(app).iter().any(|(p, _, _)| p == rel)
     });
     ctx.settle(50);
-    click_on(app, PICK, 2, Button::Left)?;
+    click_on(app, rel, 2, Button::Left)?;
     let shown = ctx.until("the agent's copy in the panel", 6_000, &mut || {
         let s = probe(app, "panel.state", Value::Null);
         s["kind"] == json!(2) && s["title"] == json!("pick.txt") && s["lines"] == json!(3)

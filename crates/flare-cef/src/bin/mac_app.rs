@@ -1,7 +1,9 @@
 //! The release `Flare.app` (port phase 8; `tools/release/mac/make-app.sh` runs it, then notarizes). macOS only.
 //!
 //! ```text
-//! flare-mac-app <out dir> <bin dir>     build and sign Flare.app from the release flare, flare-mcp, flare-cef-helper
+//! flare-mac-app <out dir> <bin dir>     build and sign Flare.app from the release flare, flare-mcp, flare-cef-helper,
+//!                                       flare-parakeet-host and the speech engine (FLARE_WHISPER_DIR, default
+//!                                       vendor/macos/whisper, built by tools/build-whisper-macos.sh)
 //! flare-mac-app check-key               whether codesign can use the identity's key without a prompt (exit 1: no)
 //! flare-mac-app resign <app>            sign a bundle again, inside out by role (one a packager added programs to)
 //! flare-mac-app sign-file <file>        sign one file, the DMG (no entitlements)
@@ -99,10 +101,15 @@ fn main() {
             let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
             let root = root.canonicalize().unwrap_or(root);
             let year = std::env::var("FLARE_COPYRIGHT_YEAR").unwrap_or_else(|_| "2026".into());
+            // The engine make-app.sh built (tools/build-whisper-macos.sh); FLARE_WHISPER_DIR names another build.
+            let engine = std::env::var_os("FLARE_WHISPER_DIR")
+                .filter(|v| !v.is_empty())
+                .map_or_else(|| root.join("vendor/macos/whisper"), PathBuf::from);
             let inputs = release::Inputs {
                 root: &root,
                 bin_dir: Path::new(&pos[1]),
                 cef_dir: Path::new(flare_cef::macos::CEF_DIR),
+                engine_dir: &engine,
                 out_dir: Path::new(&pos[0]),
                 version: &version,
                 year: &year,

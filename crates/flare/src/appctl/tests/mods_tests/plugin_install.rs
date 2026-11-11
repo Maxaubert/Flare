@@ -184,7 +184,10 @@ fn remove_turns_the_plugin_off_and_forgets_its_approval_and_storage() {
     assert!(!w.hub.is_enabled("demo"), "off at once");
     f.pump_until("the removal ends", |f| !installing(f));
     let (failed, said) = note(&f).unwrap();
-    assert!(!failed && said.contains("Recycle Bin"), "{said}");
+    assert!(
+        !failed && said.contains(flare_settings::page::mods::BIN),
+        "{said}"
+    );
     assert!(!w.root.join("demo").exists());
     assert!(w.hub.found("demo").is_none());
     let state = std::fs::read_to_string(&w.state_file).unwrap(); // sync-ok: test code only

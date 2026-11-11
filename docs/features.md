@@ -358,6 +358,10 @@ are added as milestones land.
   `off`, `full` and the Powerline `prompt` style do not exist here, and a stored word `minimal` is
   Bar, anything else Ring. Held by `the_stored_word_minimal_is_bar_everything_else_ring` and
   `the_indicator_pick_turns_a_ring_row_into_a_run_bar`.
+- **Mark colours are a Bar setting (2026-11-11).** Settings > Agents shows the Mark colours section (working,
+  finished and question colour) only while the marks are Bar; Ring marks are mono in the tab name's ink, so the
+  section and its Find entries are hidden with Ring and come back live when Bar is picked (the +N button's dots
+  still wear a pick). Owner: "these should be hidden if you use the ring style". Rule 1140.
 - **Finished is news and Question is state (2026-10-09).** Finished and Failed are raised once and
   cleared by the next turn or by looking; a question stays until it is answered or the agent leaves.
   The front tab never gets a finished or failed mark while it is being looked at, but a question is
@@ -626,7 +630,9 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   under "Show more options", not on the first menu. Test: `verb_keys`, `verb`, `verb_switch`, `registry` in flare-win.
 - **Two apps side by side.** Different app id, verb key, single-instance mutex and pipe, profile, plugin name,
   hook signal and tab-id variable. `side_by_side::flare_runs_beside_the_neighbour_and_shares_nothing` runs on this
-  PC (Layer A); the real install of both runs on a clean CI runner (Layer B).
+  PC (Layer A); the real install of both runs on a clean CI runner (Layer B). Since 2026-11-11 Layer B downloads
+  the neighbour's installer from its private repository with the read-only `PRISM_RELEASE_TOKEN` secret, given to
+  that step alone; without the secret the step fails with one `::error::` line (rule 1141, `docs/shipping.md`).
 - **The log.** `%APPDATA%\Flare\logs\diag.jsonl`, one JSON object per line, rotated at 2 MB into four old files,
   written by a thread that never blocks the UI (a queue of 2000 lines, dropped and counted when full). It holds
   no typed text, clipboard, audio or conversation, and `mark` carries no note (D12). Read it with `cargo diag`
@@ -663,6 +669,16 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   cases only, by `appctl::tests::a_profile_stored_as_vertical_starts_vertical_on_the_first_frame` and the e2e
   `verticalStart`; `appctl::tests::a_vertical_profile_with_no_tabs_keeps_vertical_but_has_no_tabs_for_the_sidebar`
   pins the zero-tab inputs as they are.
+- **Vertical tabs are the default.** 2026-11-11 (Max: "the tab bar should be vertical by default"): a profile
+  that has never chosen a Tab position opens with the tabs down the side, the sidebar open at 220 px, and
+  Settings shows Vertical. Nothing is written until somebody picks: a stored `horizontal` (picked, or imported
+  from Prism Terminal) is kept, and an unknown word reads vertical. Prism Terminal's default stays horizontal,
+  so this is a DIFF in `docs/parity.md` and rule 1130. The zero-tab start screen still shows the top bar (the
+  entry above). Held by `tab_layout_is_vertical_until_chosen`, `a_stored_horizontal_choice_is_kept`,
+  `a_fresh_profile_starts_vertical_with_the_sidebar_open_at_220`, `a_profile_stored_as_horizontal_keeps_the_strip`,
+  `tab_position_shows_vertical_on_a_fresh_profile_and_a_stored_horizontal` and the e2e `verticalStart`. Tests and
+  e2e scenarios written for the strip now choose Horizontal themselves (the test fixtures, the `--scene` setups,
+  `flare_e2e::world::tabs_along_the_top`).
 - **Privacy.** `PRIVACY.md` states one automatic request, the update check, and that it is off until the
   repository is public. A new network call without a line in `PRIVACY.md` fails the build
   (`a_new_file_with_a_network_call_fails_the_scan`).

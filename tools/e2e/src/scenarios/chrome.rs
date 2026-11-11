@@ -135,6 +135,7 @@ fn sysmenu_count(app: &mut App) -> u64 {
 pub fn system_menu(ctx: &mut Ctx) -> Result<(), String> {
     let mut app = ctx.launch(Launch {
         renderer: Some("software"),
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     if !first_tab(ctx, &mut app) {
@@ -209,6 +210,7 @@ pub fn cog_toggle(ctx: &mut Ctx) -> Result<(), String> {
 pub fn title_bar(ctx: &mut Ctx) -> Result<(), String> {
     let mut app = ctx.launch(Launch {
         renderer: Some("software"),
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     // The first tab is the precondition; the check below is whether the second one opens.
@@ -411,6 +413,7 @@ fn rail_rect(app: &mut App, id: &str) -> Option<(f64, f64, f64, f64)> {
 pub fn settings_page(ctx: &mut Ctx) -> Result<(), String> {
     let mut app = ctx.launch(Launch {
         renderer: Some("software"),
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     let one = first_tab(ctx, &mut app);
@@ -528,6 +531,7 @@ fn ground_spots(
 pub fn theme(ctx: &mut Ctx) -> Result<(), String> {
     let mut app = ctx.launch(Launch {
         renderer: Some("software"),
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     // The first tab is the precondition the port waits for; the checks below read it.
@@ -573,6 +577,7 @@ pub fn theme(ctx: &mut Ctx) -> Result<(), String> {
     let mut light = ctx.launch(Launch {
         renderer: Some("software"),
         args: vec!["--theme".into(), "paper".into()],
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     let _one = first_tab(ctx, &mut light);

@@ -690,3 +690,136 @@ fn the_heard_words_have_their_bar_on_the_left() {
         assert_eq!(mid, 0, "scale {s}: a bar stands in the middle");
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// macOS: the floating picker panel (rule 1139), with a stand-in playing the window: nothing is shown, no focus taken
+// ---------------------------------------------------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+mod mac_panel {
+    use super::*;
+    use crate::dictation_widget::{Display, win};
+
+    const HANDLE: isize = 0x5150;
+
+    /// The real widget (`dictation_widget::set`) against a stand-in window whose handle appears a few timer ticks
+    /// after `show()`, as winit's does, on a 1440 x 875 visible frame in points (scale 1, as the Mac panel is placed).
+    struct Rig;
+
+    impl Rig {
+        fn new(late_by: u32) -> Rig {
+            win::stand_in(Some(HANDLE));
+            let polls = Rc::new(std::cell::Cell::new(0u32));
+            crate::dictation_widget::test_sources(
+                move |_| {
+                    polls.set(polls.get() + 1);
+                    (polls.get() > late_by).then_some(HANDLE)
+                },
+                || {
+                    Some(Display {
+                        work: Bounds {
+                            x: 0,
+                            y: 25,
+                            w: 1440,
+                            h: 875,
+                        },
+                        scale: 1.0,
+                    })
+                },
+            );
+            crate::ui_harness::provide_window(480, 196);
+            Rig
+        }
+    }
+
+    impl Drop for Rig {
+        fn drop(&mut self) {
+            crate::dictation_widget::close();
+            win::stand_in(None);
+        }
+    }
+
+    fn show(state: &OverlayState) {
+        crate::dictation_widget::set(Some(state), &|| None, false);
+    }
+
+    fn panel() -> win::StandIn {
+        win::stand_in_state().expect("the stand-in")
+    }
+
+    #[test]
+    fn the_panel_floats_never_activates_and_catches_clicks_only_while_picking() {
+        let _rig = Rig::new(3);
+        show(&listening("", 0.0));
+        // No handle yet: the widget waits, then picks the window up on its own.
+        assert!(!crate::dictation_widget::snapshot().visible);
+        for _ in 0..10 {
+            crate::ui_harness::advance_clock(10);
+        }
+        let s = crate::dictation_widget::snapshot();
+        assert!(s.visible, "the card never appeared: {s:?}");
+        assert!(!s.focusable && s.topmost, "{s:?}");
+        let p = panel();
+        assert!(
+            p.prepared && p.through,
+            "clicks pass while listening: {p:?}"
+        );
+        assert!(!p.watching_away);
+        // Bottom centre of the visible frame, 16 pt up, 480 pt wide.
+        assert_eq!(
+            p.placed,
+            Some(Bounds {
+                x: 480,
+                y: 25 + 875 - 196 - 16,
+                w: 480,
+                h: 196
+            })
+        );
+        // The picker catches clicks and grows; it watches for a click in another app.
+        show(&pick(vec![row("a", 1, None), row("b", 2, None)]));
+        let p = panel();
+        assert!(!p.through, "the picker must catch clicks");
+        assert!(p.watching_away);
+        assert_eq!(p.placed.map(|b| b.h), Some(196 + 96));
+        let s = crate::dictation_widget::snapshot();
+        assert_eq!(s.phase, 3);
+        assert_eq!(
+            s.items.iter().map(|i| i.n).collect::<Vec<_>>(),
+            vec![1, 2],
+            "the rows keep their digits"
+        );
+        // Sending: clicks pass again and the watch ends.
+        show(&OverlayState::Sending { to: "tab 1".into() });
+        let p = panel();
+        assert!(p.through && !p.watching_away, "{p:?}");
+        crate::dictation_widget::hide();
+        assert!(!panel().visible);
+        assert!(!crate::dictation_widget::snapshot().visible);
+    }
+
+    #[test]
+    fn hiding_while_picking_ends_the_click_away_watch() {
+        let _rig = Rig::new(0);
+        show(&pick(vec![row("a", 1, None)]));
+        assert!(panel().watching_away);
+        crate::dictation_widget::hide();
+        assert!(!panel().watching_away);
+    }
+
+    #[test]
+    fn a_row_click_leaves_the_app_in_front_or_gives_it_the_focus_back() {
+        let _rig = Rig::new(0);
+        win::with_stand_in(|s| s.front = Some(777));
+        show(&pick(vec![row("a", 1, None)]));
+        // The never-activate switch held: Flare is not active, nothing to hand back.
+        crate::dictation_widget::on_row_click("a".into());
+        assert!(panel().handed_back.is_empty());
+        // A system without the switch: the click activated Flare, so the app in front gets the focus back.
+        show(&pick(vec![row("a", 1, None)]));
+        win::with_stand_in(|s| s.active = true);
+        crate::dictation_widget::on_row_click("a".into());
+        let p = panel();
+        assert_eq!(p.handed_back, vec![777]);
+        assert!(!p.active);
+    }
+}

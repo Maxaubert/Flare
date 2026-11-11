@@ -27,9 +27,34 @@ pub fn key_name(k: &Key) -> String {
     }
 }
 
+/// The modifiers as they are once this key event has happened: a modifier key's own flag is set on its
+/// press and cleared on its release. Windows' winit sends `ModifiersChanged` before the key, so this changes
+/// nothing there; macOS' winit (`flagsChanged:`) sends the modifier's `KeyboardInput` FIRST and the new
+/// `ModifiersChanged` after it, so the window's state still lacks the key just pressed. Without this the
+/// second key of the default dictation chord Ctrl+Cmd never carried both flags and the key never matched
+/// (rule 1137).
+pub fn with_own_modifier(
+    pressed: bool,
+    physical: &PhysicalKey,
+    mods: ModifiersState,
+) -> ModifiersState {
+    use slint::winit_030::winit::keyboard::KeyCode;
+    let own = match physical {
+        PhysicalKey::Code(KeyCode::ControlLeft | KeyCode::ControlRight) => ModifiersState::CONTROL,
+        PhysicalKey::Code(KeyCode::ShiftLeft | KeyCode::ShiftRight) => ModifiersState::SHIFT,
+        PhysicalKey::Code(KeyCode::AltLeft | KeyCode::AltRight) => ModifiersState::ALT,
+        PhysicalKey::Code(KeyCode::SuperLeft | KeyCode::SuperRight) => ModifiersState::SUPER,
+        _ => return mods,
+    };
+    let mut m = mods;
+    m.set(own, pressed);
+    m
+}
+
 /// Builds the terminal key event from the parts of a winit keyboard event.
 /// `text` is dropped when Ctrl is down without Alt: winit then reports the control byte
 /// ("\u{3}" for Ctrl+C), and the encoder decides from the physical key instead.
+/// A modifier key carries its own flag on its press and not on its release ([`with_own_modifier`]).
 pub fn key_event_from_parts(
     pressed: bool,
     physical: &PhysicalKey,
@@ -37,6 +62,7 @@ pub fn key_event_from_parts(
     text: Option<&str>,
     mods: ModifiersState,
 ) -> KeyEvent {
+    let mods = with_own_modifier(pressed, physical, mods);
     let ctrl = mods.control_key();
     let alt = mods.alt_key();
     let text = text
@@ -317,5 +343,99 @@ mod tests {
     #[test]
     fn the_unit_tests_keep_the_windows_keys() {
         assert_eq!(app_key_os(), KeyOs::Windows);
+    }
+
+    /// Rule 1137: macOS' winit sends a modifier's key event before the new modifier state, so the window's
+    /// `mods` lack the key just pressed. The key carries its own flag anyway, and the default dictation chord
+    /// Ctrl+Cmd, pressed in either order with the Mac's stale state, starts a recording after the hold.
+    #[test]
+    fn a_modifier_key_carries_its_own_flag_so_ctrl_cmd_dictates_with_the_macs_late_modifier_state()
+    {
+        use flare_dictation::hotkey::{
+            DictMode, HOST_TICK_MS, KeyAction, KeyChord, KeyConfig, KeyEvt, KeyState,
+            default_hotkey, reduce_key,
+        };
+        let ctrl = code(KeyCode::ControlLeft);
+        let cmd = code(KeyCode::SuperLeft);
+        let named = |n| Key::Named(n);
+        // The press of a modifier sets its flag, its release clears it; any other key is left alone.
+        let down = key_event_from_parts(
+            true,
+            &ctrl,
+            &named(NamedKey::Control),
+            None,
+            ModifiersState::empty(),
+        );
+        assert!(down.ctrl && !down.meta);
+        let up = key_event_from_parts(
+            false,
+            &ctrl,
+            &named(NamedKey::Control),
+            None,
+            ModifiersState::CONTROL,
+        );
+        assert!(!up.ctrl);
+        let c = key_event_from_parts(
+            true,
+            &code(KeyCode::KeyC),
+            &ch("c"),
+            Some("c"),
+            ModifiersState::SHIFT,
+        );
+        assert!(c.shift && !c.ctrl);
+        assert_eq!(
+            with_own_modifier(true, &code(KeyCode::AltRight), ModifiersState::CONTROL),
+            ModifiersState::CONTROL | ModifiersState::ALT
+        );
+
+        let cfg = KeyConfig {
+            hotkey: default_hotkey(),
+            mode: DictMode::Hold,
+            hold_ms: None,
+        };
+        let chord = |ev: &KeyEvent, at: f64| KeyChord {
+            code: crate::dictation_ctl::w3c_code(&ev.code).to_string(),
+            ctrl: ev.ctrl,
+            alt: ev.alt,
+            shift: ev.shift,
+            meta: ev.meta,
+            repeat: false,
+            at,
+        };
+        // Either order, each press seen with the state from BEFORE it (the Mac's order of events).
+        for (first, first_name, then, then_name, before_second) in [
+            (
+                &ctrl,
+                NamedKey::Control,
+                &cmd,
+                NamedKey::Super,
+                ModifiersState::CONTROL,
+            ),
+            (
+                &cmd,
+                NamedKey::Super,
+                &ctrl,
+                NamedKey::Control,
+                ModifiersState::SUPER,
+            ),
+        ] {
+            let a = key_event_from_parts(
+                true,
+                first,
+                &named(first_name),
+                None,
+                ModifiersState::empty(),
+            );
+            let b = key_event_from_parts(true, then, &named(then_name), None, before_second);
+            let s = KeyState::initial();
+            let r = reduce_key(&s, &KeyEvt::Down(chord(&a, 0.0)), &cfg);
+            let r = reduce_key(&r.state, &KeyEvt::Down(chord(&b, 10.0)), &cfg);
+            assert!(r.swallow, "the chord's second key is the hotkey");
+            let tick = KeyEvt::Tick {
+                at: 10.0 + HOST_TICK_MS as f64,
+            };
+            let r = reduce_key(&r.state, &tick, &cfg);
+            assert_eq!(r.action, Some(KeyAction::Start));
+        }
     }
 }

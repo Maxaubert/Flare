@@ -149,15 +149,22 @@ jobs:
         shell: pwsh
         run: ./tools/release/verify-pack.ps1 -Out Releases -Version "${{ steps.ver.outputs.version }}"
 
+      # The test downloads the Prism Terminal installer from its private repository, so this step alone gets the
+      # read-only release token (regression rule 1141, docs/shipping.md). Without it the step fails, never skips.
       - name: Flare beside Prism Terminal, installed for real on this clean runner
         if: steps.ver.outputs.fresh == 'true'
         shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PRISM_RELEASE_TOKEN }}
           FLARE_E2E_INSTALL: '1'
           FLARE_EXE: target/release/flare.exe
           FLARE_RELEASES: Releases
-        run: cargo test -p flare-e2e --test side_by_side -- --include-ignored
+        run: |
+          if (-not $env:GH_TOKEN) {
+            Write-Host '::error::PRISM_RELEASE_TOKEN is not set: add a fine-grained read-only token for arkivert/PrismTerminal as a repository secret (docs/shipping.md)'
+            exit 1
+          }
+          cargo test -p flare-e2e --test side_by_side -- --include-ignored
 
       - name: Keep the symbols
         if: steps.ver.outputs.fresh == 'true'
