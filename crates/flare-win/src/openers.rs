@@ -55,6 +55,14 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 #[cfg(windows)]
 use crate::clipboard::utf16_with_nul;
 
+/// The menu row that shows a path selected in the OS file manager (`explorer_reveal`): "Show in
+/// Finder" on the Mac, "Show in Explorer" elsewhere (Mac rule 1147).
+pub const REVEAL_LABEL: &str = if cfg!(target_os = "macos") {
+    "Show in Finder"
+} else {
+    "Show in Explorer"
+};
+
 /// `explorer.exe` under the system root, by absolute path (never a bare name).
 pub fn explorer_path(sys_root: &str) -> String {
     format!("{}\\explorer.exe", sys_root.trim_end_matches('\\'))

@@ -7185,7 +7185,11 @@ two",
         let labels = menu_labels(&f);
         assert_eq!(
             labels[..3],
-            ["Open", "Show in side panel", "Show in Explorer"],
+            [
+                "Open",
+                "Show in side panel",
+                flare_win::openers::REVEAL_LABEL
+            ],
             "{labels:?}"
         );
         let i = labels
