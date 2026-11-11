@@ -70,6 +70,8 @@ pub struct OverlayRow {
 pub const SEND_MAX: usize = 8000;
 /// The lone Enter follows the paste after this long, only if the same tab is still sendable.
 pub const SEND_ENTER_MS: u64 = 300;
+/// Who the process check asks, as a refusal names it.
+pub const SYSTEM: &str = if cfg!(windows) { "Windows" } else { "macOS" };
 /// The picker shows nine rows at most (the digits 1 to 9).
 const PICK_MAX: usize = 9;
 
@@ -227,7 +229,7 @@ pub fn type_checked(
     let said = match decide() {
         SendDecision::Ok(t) if host.agent_under(&t.id).as_deref() != Some("claude") => {
             SendDecision::No(format!(
-                "no Claude is running in {} (checked with Windows)",
+                "no Claude is running in {} (checked with {SYSTEM})",
                 t.label
             ))
         }
@@ -716,7 +718,9 @@ mod tests {
         let decide = || SendDecision::Ok(tab());
         assert_eq!(
             type_checked(&decide, "hello", &host),
-            SendDecision::No("no Claude is running in Wind (checked with Windows)".into())
+            SendDecision::No(format!(
+                "no Claude is running in Wind (checked with {SYSTEM})"
+            ))
         );
         assert!(host.written.borrow().is_empty());
     }

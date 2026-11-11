@@ -2191,6 +2191,39 @@ ends with `_exit` on a Mac, because ggml-metal's static device list asserts at e
 `auto`, `NoEngine` naming the folder), `the_pack_checks_each_programs_role_ad_hoc_too` and the ignored
 `the_engine_inside_a_built_app_transcribes_with_language_auto` and `the_real_host_loads_the_mac_libraries_and_answers_a_pass`
 in `tests/metal_real.rs`. Source: Max, the mic test hears him and dictation transcribes nothing (2026-11-11).
+1139. **macOS: dictating from another app ends in the session picker, a floating panel that never activates Flare,
+and the picked session gets the words in the background.** Max held Ctrl+Cmd in another app, spoke and let go: the
+words were transcribed (`dictation-engine` pass ok, 604 characters) and then nothing happened, no paste and no window
+(owner, 2026-11-11: "it can't paste. It doesn't recognize that there's a window in front and that it needs to bring up
+the secondary window"). Root cause: the route was right (the hook named the other app's process, the service asked for
+the tabs and opened the picker: the next press logged `pick: not sent`), but the widget window's macOS half was a stub
+(`dictation_widget::win`, "phase 7 of the port plan"): the window never got a handle (`hwnd_of` read only Win32), was
+never placed, shown, styled or made to catch clicks, so it stayed parked at -32000 and the picker waited unseen for
+30 s. Now `flare_win::float_panel` is the Mac half: the same Slint card in the same winit window, at the status-window
+level on every Space and over full-screen apps, shown with `orderFrontRegardless` (never made key), AppKit's
+non-activating-panel switch so a click on a row reaches the card while the other app stays in front (should a system
+lack it and the click activate Flare, the app that was in front gets the focus back), clicks passing through except
+while picking, placed in points at the bottom centre of the visible frame of the screen under the pointer. The digits
+1 to 9 and Esc pick and cancel through the hook's Carbon hot keys (no focus needed, as on Windows); a click in another
+app cancels the picker like Esc (a global mouse monitor, no permission) and the words are kept on the clipboard, as on
+Esc and the 30 s timeout. The pick types into that tab's shell as one bracketed paste and the Enter 300 ms later,
+through the checked send, without bringing Flare forward. The diag log (`dictate-anywhere`) now says the route
+(`front tab`, `other copy`, `picker`) with a character count, the picker shown (rows), the row picked (its number and
+tab id), the send (sent or refused, a count) and a cancel (`esc`, `click away`, `timed out`), never the words. A
+process-check refusal names macOS, not Windows. Native: `crates/flare-win/src/macos/float_panel.rs`,
+`crates/flare/src/dictation_widget.rs`, `crates/flare-dictation/src/service.rs`, `crates/flare/src/dictation_ctl.rs`.
+Held by `the_route_is_named_by_the_app_in_front_at_the_press`,
+`flare_in_front_pastes_and_another_app_in_front_opens_the_picker`,
+`the_picker_logs_shown_picked_and_sent_with_counts_never_the_words`,
+`a_click_in_another_app_cancels_the_picker_like_esc_and_keeps_the_words` and `esc_and_the_timeout_are_logged_as_cancels`
+(service), `heard_with_another_app_in_front_the_picked_session_gets_the_words_in_its_pty` and
+`a_click_away_from_the_picker_types_nothing_and_keeps_the_words` (dictation_ctl),
+`the_panel_floats_never_activates_and_catches_clicks_only_while_picking`,
+`hiding_while_picking_ends_the_click_away_watch` and `a_row_click_leaves_the_app_in_front_or_gives_it_the_focus_back`
+(ui_tests/dictation_widget.rs, a stand-in window), and
+`dictation_panel_floats_never_activates_and_is_placed_in_top_left_points` (crates/flare-win/tests/appkit.rs, a window
+never shown). Source: Max, dictating from another app transcribes but never pastes or shows the session list
+(2026-11-11).
 1136. **Settings > Agents draws the Mark colours section (Agent working, finished and question colour, with its
 Save changes) only while the tab marks are Bar; with Ring it is left out, and Find does not offer its three rows.**
 The Ring mark (`MarkRing` in `crates/flare/ui/tabmark.slint`) is mono and draws with the tab name's ink, so the

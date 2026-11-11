@@ -186,6 +186,8 @@ pub enum DictMsg {
     Pick(String),
     /// The widget dismissed (Task 26).
     Dismiss,
+    /// A click in another app while the picker is open (macOS, rule 1139).
+    Away,
     /// Words kept on the clipboard: whether the copy took. A failure puts `fallback` back on the widget while
     /// `shown` is still on it; with no `fallback` it says the words could not be copied.
     Copied {
@@ -1081,6 +1083,7 @@ impl Dict {
             DictMsg::Paste { session, text } => self.paste(&session, &text),
             DictMsg::Pick(id) => self.svc_on(SvcEvent::Pick(id)),
             DictMsg::Dismiss => self.svc_on(SvcEvent::Dismiss),
+            DictMsg::Away => self.svc_on(SvcEvent::Away),
             DictMsg::Copied {
                 ok,
                 shown,
@@ -1892,6 +1895,12 @@ pub fn stop_all() {
 /// A row clicked in the widget (M8 Task 26): it reaches the service on the next turn of the event loop.
 pub fn widget_pick(id: String) {
     make_post()(DictMsg::Pick(id));
+}
+
+/// A click in another app while the picker is open (macOS, rule 1139): the same as Esc, on the next turn of the
+/// event loop.
+pub fn widget_away() {
+    make_post()(DictMsg::Away);
 }
 
 /// The model store: the process's one store, made at startup by [install] and kept for the life of the process, so
@@ -3426,6 +3435,8 @@ mod tests {
         copies: RefCell<Vec<String>>,
         copy_ok: Cell<bool>,
         faces: RefCell<Option<OverlayState>>,
+        /// What was written into a tab's shell (its PTY): (tab, bytes).
+        writes: RefCell<Vec<(String, String)>>,
         asks: Cell<u32>,
     }
 
@@ -3444,6 +3455,7 @@ mod tests {
                 copies: RefCell::default(),
                 copy_ok: Cell::new(true),
                 faces: RefCell::default(),
+                writes: RefCell::default(),
                 asks: Cell::new(0),
             })
         }
@@ -3465,7 +3477,10 @@ mod tests {
                 .push((session.to_string(), text.to_string()));
             PasteOutcome::Done
         }
-        fn write_tab(&self, _tab: &str, _text: &str) -> bool {
+        fn write_tab(&self, tab: &str, text: &str) -> bool {
+            self.writes
+                .borrow_mut()
+                .push((tab.to_string(), text.to_string()));
             true
         }
         fn send_tabs(&self) -> Vec<SendTab> {
@@ -4164,6 +4179,120 @@ mod tests {
             Some(OverlayState::Note { message, .. }) => Some(message.clone()),
             _ => None,
         }
+    }
+
+    /// A Claude tab the picker can list.
+    fn claude_tab(id: &str, label: &str) -> SendTab {
+        SendTab {
+            id: id.into(),
+            tab: id.into(),
+            label: label.into(),
+            cwd: "/Users/me/src".into(),
+            agent: Some("claude".into()),
+            state: None,
+            orchestrator: false,
+            session: Some(format!("{id}-session")),
+            copy: None,
+        }
+    }
+
+    /// Rule 1139: heard with another app in front (Safari, pid 777, not this copy's 4242), the words open the
+    /// session picker; the session picked gets them in its shell as one bracketed paste, then the Enter, in the
+    /// background (no paste at the front tab), and the trail says so with counts only.
+    #[test]
+    fn heard_with_another_app_in_front_the_picked_session_gets_the_words_in_its_pty() {
+        let mut r = Rig::on_with_model(true);
+        r.set("flare.dictation.anywhere", "1");
+        r.d.apply_prefs();
+        r.d.on_msg(DictMsg::Hook(HookEvent::Ready));
+        *r.host.tabs.borrow_mut() = vec![claude_tab("t1", "Wind"), claude_tab("t2", "Web")];
+        assert!(r.d.e2e_route("check the build".into(), Some(777)));
+        r.pump();
+        let rows = match &*r.host.faces.borrow() {
+            Some(OverlayState::Pick { rows, .. }) => rows.clone(),
+            other => panic!("no picker: {other:?}"),
+        };
+        assert_eq!(
+            rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["t1", "t2"]
+        );
+        assert!(
+            r.host.pastes.borrow().is_empty(),
+            "nothing goes to the front tab"
+        );
+        // A click on the second row (the widget posts it).
+        r.d.on_msg(DictMsg::Pick("t2".into()));
+        let end = Instant::now() + Duration::from_secs(5);
+        while !r.host.writes.borrow().iter().any(|(_, b)| b == "\r") {
+            r.pump();
+            assert!(
+                Instant::now() < end,
+                "no Enter: {:?}",
+                r.host.writes.borrow()
+            );
+        }
+        let writes = r.host.writes.borrow().clone();
+        assert_eq!(
+            writes,
+            [
+                (
+                    "t2".to_string(),
+                    "\u{1b}[200~check the build\u{1b}[201~".to_string()
+                ),
+                ("t2".to_string(), "\r".to_string()),
+            ]
+        );
+        assert!(r.host.pastes.borrow().is_empty());
+        let end = Instant::now() + Duration::from_secs(5);
+        while !matches!(&*r.host.faces.borrow(), Some(OverlayState::Sent { .. })) {
+            r.pump();
+            assert!(Instant::now() < end, "never said sent");
+        }
+        let trail: Vec<String> = r
+            .host
+            .crumbs
+            .borrow()
+            .iter()
+            .filter(|c| c.starts_with("dictate-anywhere "))
+            .cloned()
+            .collect();
+        for want in [
+            r#"("route", String("picker")), ("chars", Number(15))"#,
+            r#"("pick", String("shown")), ("rows", Number(2))"#,
+            r#"("pick", String("picked")), ("row", Number(2)), ("id", String("t2"))"#,
+            r#"("sent", Bool(true)), ("chars", Number(15))"#,
+        ] {
+            assert!(
+                trail.iter().any(|c| c.contains(want)),
+                "{want} not in {trail:?}"
+            );
+        }
+        assert!(
+            trail.iter().all(|c| !c.contains("check the build")),
+            "{trail:?}"
+        );
+    }
+
+    /// Rule 1139: a click in another app while the picker is open cancels it like Esc: nothing is typed and the
+    /// words are kept on the clipboard.
+    #[test]
+    fn a_click_away_from_the_picker_types_nothing_and_keeps_the_words() {
+        let mut r = Rig::on_with_model(true);
+        r.set("flare.dictation.anywhere", "1");
+        r.d.apply_prefs();
+        r.d.on_msg(DictMsg::Hook(HookEvent::Ready));
+        *r.host.tabs.borrow_mut() = vec![claude_tab("t1", "Wind")];
+        assert!(r.d.e2e_route("keep me".into(), Some(777)));
+        r.pump();
+        assert!(matches!(
+            &*r.host.faces.borrow(),
+            Some(OverlayState::Pick { .. })
+        ));
+        r.d.on_msg(DictMsg::Away);
+        r.pump();
+        assert!(r.host.writes.borrow().is_empty());
+        assert_eq!(*r.host.copies.borrow(), ["keep me"]);
+        assert_eq!(note_now(&r).as_deref(), Some("Not sent, copied"));
     }
 
     #[test]
