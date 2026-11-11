@@ -147,6 +147,8 @@ fn stand_in(ctx: &mut Ctx, app: &mut App, i: usize) {
         Ok(cmd) => {
             at(app, i, &cmd);
             hold(ctx, agent_proc::SETTLE_MS);
+            // Rule 1136: a Mac waits for the stand-in's pwsh to run a line before the next one goes in.
+            agent_proc::wait_ready(app);
         }
         Err(e) => println!("  note  the stand-in agent could not be made ({e})"),
     }

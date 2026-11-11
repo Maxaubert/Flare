@@ -2052,3 +2052,19 @@ later), so a scenario that waits for the prompt text and snaps at once can still
 that row holds text or the cursor (`ground_spots` in `tools/e2e/src/scenarios/chrome.rs`). Windows reads the same
 spots. Held by `the_spots_miss_cell_zero_where_the_cursor_sits`, `the_spots_scale_with_the_window` and
 `a_last_row_with_text_or_the_cursor_fails_loudly`. Source: main's first full CI run after the macOS port (2026-11-11).
+1136. **macOS: a scenario types into a stand-in agent only after its pwsh has run a line, and a Ctrl+Tab goes out only
+after the last one landed.** Of the Mac E2E failures on main and PR runs from 2026-11-10 to 2026-11-11 (ci runs
+42917628472 to 42999224318), the most common was colourPicker's trio "a working stand-in agent is on the strip",
+"the working line is opaque" and "the red line is on screen" (3 runs: 42970917834 on main c789a5bb, 42973156632,
+42983045830). The scenario typed the hook line as soon as the nested pwsh of the stand-in (`/bin/zsh <dir>/claude`,
+rule 1109) showed its first prompt; on the runner that line can be lost, or kept without its Enter, so the hook never
+ran and the red line typed later ran glued to it. markStrip's "six tabs in the mockups' states" and the reduced-motion
+"the run is a full line and the question fully on" (42936130845) are the same lost hook line. `agent_proc::wait_ready`
+now types `Write-Host ('stand-in' + '-ready-' + 'n')` and waits for the printed answer on a row of its own, up to
+four tries of 4 s, each after a bare Enter so a half-taken line runs first; colourPicker, markStrip, indicators,
+agentHooks and agent_misc call it after starting the stand-in. themeEditorLive's "an Appearance picker left open is
+open again on return" (42932844893, 42999224318) sent the second Ctrl+Tab as soon as the picker shut, before the
+shell was in front; a Mac now waits for Settings to leave the front and to come back as well. Windows is unchanged:
+`wait_ready` returns at once and the Ctrl+Tab waits are as before (rule 1119). The other Mac misses of that window are
+held elsewhere: the frame's `[187, 187, 187]` by rule 1126, the theme's `0.0:1` by #162, attention and linkPaintStall
+by #163. Held by `the_ready_answer_is_the_printed_row_and_not_the_typed_line`. Source: Mac E2E in CI (2026-11-11).
