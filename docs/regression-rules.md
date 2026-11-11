@@ -2052,3 +2052,18 @@ later), so a scenario that waits for the prompt text and snaps at once can still
 that row holds text or the cursor (`ground_spots` in `tools/e2e/src/scenarios/chrome.rs`). Windows reads the same
 spots. Held by `the_spots_miss_cell_zero_where_the_cursor_sits`, `the_spots_scale_with_the_window` and
 `a_last_row_with_text_or_the_cursor_fails_loudly`. Source: main's first full CI run after the macOS port (2026-11-11).
+1127. **The update e2e installs 0.0.1 from the setup kept aside after the 0.0.1 pack, never from the `Releases`
+folder.** vpk writes `Flare-win-Setup.exe` for the version it packs, so the 0.0.2 pack overwrites the 0.0.1 setup and
+the one left in `Releases` installs 0.0.2: every install scenario of `update_apply` then failed its first check
+(`installed_version == 0.0.1`, left `0.0.2`), on every update-e2e run since the job was added (run 39113290734,
+2026-10-18, to run 42986938206). `.github/workflows/update-e2e.yml` copies the setup out right after the 0.0.1 pack
+and hands it over as `FLARE_SETUP_EXE`; `install` in `tools/e2e/tests/update_apply.rs` runs only that one. Held by
+`the_scenarios_install_the_0_0_1_setup_kept_aside_before_the_0_0_2_pack`. Source: the update-e2e logs of #163 and
+#166 (2026-11-11).
+1128. **Under `--e2e` the update controller writes `update-calls.json` before `update-state.json`.** The tests wait on
+the state and then read the calls. With the state written first, a reader could see the new state beside the calls
+of the push before it: `a_real_shaped_offer_is_refused_before_any_request` saw `idle` and the refusal notice with
+`installs 0` (the calls written when the download began), check job of run 42986938340 (2026-11-11). Both files
+of a push come from one snapshot, so the calls written first are never older than the state a test sees
+(`e2e_writes` in `crates/flare/src/update_ctl.rs`). Held by `the_e2e_calls_file_is_written_before_the_state_file`.
+Source: the check job of #167 (2026-11-11).

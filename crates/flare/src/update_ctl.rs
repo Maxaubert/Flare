@@ -522,10 +522,25 @@ impl UpdateCtl {
             if latest.load(Ordering::SeqCst) != seq {
                 return;
             }
-            write_atomic(&dir.join("update-state.json"), &state);
-            write_atomic(&dir.join("update-calls.json"), &calls);
+            for (path, text) in e2e_writes(&dir, state, calls) {
+                write_atomic(&path, &text);
+            }
         }));
     }
+}
+
+/// The two e2e files of one push, in the order they are written: the calls first, then the state.
+/// Tests wait on the state and then read the calls, so a state they see never sits beside the
+/// calls of an earlier push (a refused install read as `installs 0`).
+fn e2e_writes(
+    dir: &std::path::Path,
+    state: String,
+    calls: String,
+) -> [(std::path::PathBuf, String); 2] {
+    [
+        (dir.join("update-calls.json"), calls),
+        (dir.join("update-state.json"), state),
+    ]
 }
 
 /// Takes the e2e command: renames `update-command` to a claimed name first (so a command written
@@ -1032,6 +1047,17 @@ mod tests {
         .unwrap();
         assert_eq!(calls["checks"], 1);
         assert_eq!(calls["installs"], 0);
+    }
+
+    #[test]
+    fn the_e2e_calls_file_is_written_before_the_state_file() {
+        // update_quiet waits on the state, then reads the calls: the calls must already be new.
+        let dir = std::path::Path::new("p");
+        let [(first, calls), (second, state)] = e2e_writes(dir, "S".into(), "C".into());
+        assert_eq!(first, dir.join("update-calls.json"));
+        assert_eq!(calls, "C");
+        assert_eq!(second, dir.join("update-state.json"));
+        assert_eq!(state, "S");
     }
 
     #[test]

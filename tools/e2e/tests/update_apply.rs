@@ -6,8 +6,11 @@
 //!
 //! The inputs, all made by `.github/workflows/update-e2e.yml`:
 //!
-//! - `FLARE_PACKED_DIR`: a `Releases` folder with `Flare-win-Setup.exe` and the `0.0.1` and `0.0.2`
-//!   packages of a `live-updates` build.
+//! - `FLARE_PACKED_DIR`: a `Releases` folder with the `0.0.1` and `0.0.2` packages of a
+//!   `live-updates` build. Its `Flare-win-Setup.exe` installs 0.0.2 (vpk writes the setup of the
+//!   version it packs last), so the scenarios never run it.
+//! - `FLARE_SETUP_EXE`: the `Flare-win-Setup.exe` of the 0.0.1 pack, kept aside before 0.0.2 was
+//!   packed. It installs 0.0.1.
 //! - `FLARE_PACKED_BIG_DIR`: a folder whose `0.0.2` full package carries a 120 MB incompressible
 //!   filler (only the cancel scenario uses it).
 //!
@@ -253,10 +256,15 @@ fn until(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
     }
 }
 
-/// Runs the one-click setup silently into `inst`, then ends whatever it launched (the setup
+/// The setup that installs 0.0.1: `FLARE_SETUP_EXE`. The one in `FLARE_PACKED_DIR` installs 0.0.2.
+fn setup_exe() -> PathBuf {
+    env_dir("FLARE_SETUP_EXE")
+}
+
+/// Runs the 0.0.1 one-click setup silently into `inst`, then ends whatever it launched (the setup
 /// starts the app on the default profile; nothing of ours may stay running).
-fn install(releases: &Path, inst: &Path) {
-    let mut cmd = Command::new(releases.join("Flare-win-Setup.exe"));
+fn install(inst: &Path) {
+    let mut cmd = Command::new(setup_exe());
     cmd.arg("--silent")
         .arg("--installto")
         .arg(inst)
@@ -409,6 +417,36 @@ fn the_install_scenarios_need_ci_or_an_explicit_local_opt_in() {
 }
 
 #[test]
+fn the_scenarios_install_the_0_0_1_setup_kept_aside_before_the_0_0_2_pack() {
+    // vpk writes `Flare-win-Setup.exe` for the version it packs, so the setup left in the
+    // `Releases` folder installs 0.0.2 and no offer could follow. The workflow copies the 0.0.1
+    // setup out after the 0.0.1 pack and before the 0.0.2 pack, and hands it over as
+    // `FLARE_SETUP_EXE`.
+    let yml = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/update-e2e.yml"),
+    )
+    .expect("update-e2e.yml");
+    let pack = yml.find("pack.ps1 -Version $v").expect("the pack loop");
+    let keep = yml
+        .find("if ($v -eq '0.0.1')")
+        .expect("the 0.0.1 setup is kept aside");
+    let handed = yml
+        .find("FLARE_SETUP_EXE=")
+        .expect("FLARE_SETUP_EXE is set");
+    assert!(
+        pack < keep && keep < handed,
+        "kept inside the loop, after the pack"
+    );
+    assert!(yml[keep..handed].contains("Flare-win-Setup.exe"));
+    let me = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/update_apply.rs"),
+    )
+    .expect("this file");
+    let install = me.find("fn install(inst: &Path)").expect("fn install");
+    assert!(me[install..].contains("Command::new(setup_exe())"));
+}
+
+#[test]
 fn deltas_are_removed_from_the_feed_and_everything_else_is_kept() {
     let json = r#"{"Assets":[
         {"PackageId":"Flare","Version":"0.0.2","Type":"Full","FileName":"Flare-0.0.2-full.nupkg"},
@@ -495,7 +533,7 @@ fn an_offered_update_is_installed_and_the_app_restarts_on_its_profile() {
     let profile = sb.root.join("p");
     std::fs::create_dir_all(&profile).unwrap();
     let _reap = Reaper(vec![inst.clone(), profile.clone()]);
-    install(&releases, &inst);
+    install(&inst);
     assert_eq!(installed_version(&inst).as_deref(), Some("0.0.1"));
 
     let exe = inst.join("current").join("Flare.exe");
@@ -534,7 +572,7 @@ fn a_downloaded_package_is_never_applied_without_the_install_command() {
     std::fs::create_dir_all(&profile).unwrap();
     std::fs::create_dir_all(&empty_feed).unwrap();
     let _reap = Reaper(vec![inst.clone(), profile.clone()]);
-    install(&releases, &inst);
+    install(&inst);
     assert_eq!(installed_version(&inst).as_deref(), Some("0.0.1"));
 
     // The 0.0.2 full package is already in the install's packages folder before the launch.
@@ -572,14 +610,13 @@ fn cancel_leaves_nothing_and_a_second_install_still_works() {
     if !install_enabled() {
         return;
     }
-    let releases = env_dir("FLARE_PACKED_DIR");
     let big = env_dir("FLARE_PACKED_BIG_DIR");
     let sb = Sandbox::new();
     let inst = sb.root.join("inst");
     let profile = sb.root.join("p");
     std::fs::create_dir_all(&profile).unwrap();
     let _reap = Reaper(vec![inst.clone(), profile.clone()]);
-    install(&releases, &inst);
+    install(&inst);
     assert_eq!(installed_version(&inst).as_deref(), Some("0.0.1"));
 
     let server = Throttle::start(&big);
