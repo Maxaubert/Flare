@@ -579,6 +579,61 @@ mod mac {
         }
     }
 
+    /// Rule 1139: the dictation picker's window is a floating panel that never activates Flare, catches clicks
+    /// only when told, and is placed in top-left points. On a borderless window that is never ordered in.
+    fn the_dictation_panel_floats_never_activates_and_is_placed_in_top_left_points() {
+        use flare_win::float_panel::{self, PANEL_LEVEL, TopLeft};
+        let mtm = mtm();
+        NSApplication::sharedApplication(mtm)
+            .setActivationPolicy(NSApplicationActivationPolicy::Prohibited);
+        let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(480.0, 196.0));
+        // SAFETY: a plain borderless window made on the main thread, deferred and never shown.
+        let w = unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                mtm.alloc(),
+                rect,
+                NSWindowStyleMask::Borderless,
+                NSBackingStoreType::Buffered,
+                true,
+            )
+        };
+        // SAFETY: owned by the Retained here.
+        unsafe { w.setReleasedWhenClosed(false) };
+        let view = NSView::initWithFrame(mtm.alloc(), rect);
+        w.setContentView(Some(&view));
+        let h = Retained::as_ptr(&view) as isize;
+        assert!(!float_panel::is_prepared(h));
+        assert!(float_panel::prepare(h));
+        assert!(float_panel::is_prepared(h));
+        assert_eq!(w.level(), PANEL_LEVEL);
+        assert!(w.collectionBehavior().contains(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+        ));
+        assert!(!w.hidesOnDeactivate());
+        assert!(
+            float_panel::never_activates(h),
+            "a click must not activate Flare"
+        );
+        assert!(float_panel::is_floating(h));
+        float_panel::set_click_through(h, true);
+        assert!(w.ignoresMouseEvents() && float_panel::click_through(h));
+        float_panel::set_click_through(h, false);
+        assert!(!w.ignoresMouseEvents());
+        let t = TopLeft {
+            x: 120.0,
+            y: 300.0,
+            w: 480.0,
+            h: 292.0,
+        };
+        float_panel::place(h, t);
+        assert_eq!(float_panel::frame(h), Some(t));
+        assert!(!w.isVisible(), "the test window must never show");
+        assert!(!float_panel::is_visible(h));
+        assert!(float_panel::work_area_under_pointer().is_some_and(|a| a.w > 0.0 && a.h > 0.0));
+        assert!(!float_panel::prepare(0));
+    }
+
     pub const TESTS: &[(&str, fn())] = &[
         (
             "open_in_service_turns_finders_files_into_one_tab_request",
@@ -627,6 +682,10 @@ mod mac {
         (
             "e2e_window_parks_clear_and_click_through_as_an_accessory",
             the_e2e_window_parks_clear_and_click_through_as_an_accessory,
+        ),
+        (
+            "dictation_panel_floats_never_activates_and_is_placed_in_top_left_points",
+            the_dictation_panel_floats_never_activates_and_is_placed_in_top_left_points,
         ),
     ];
 }
