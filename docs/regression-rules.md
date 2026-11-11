@@ -761,6 +761,18 @@ no `SessionStart`). Held by `the_session_start_hook_tells_claude_about_file_link
 `the_session_start_note_asks_for_paths_between_the_marks`,
 `the_session_start_hook_tells_a_flare_session_about_file_links_once` and
 `the_server_instructions_end_with_the_file_link_note`.
+270. **Every row that acts on a file link tries its spellings, and a wide character's empty last cell is no space.** Review
+of 266 to 269 (2026-11-11): only the plain click tried a link's `alts`, so for a path Claude Code cut at a space the menu's
+Copy path copied a path that does not exist, Open did nothing and Show in side panel said the file changed. Open, Show in
+Explorer, Show in side panel, Copy path (`TermMenuAct::CopyPath`, only for a link with other spellings) and the hover
+thumbnail (`ThumbJob::alts`) now take, on their worker, the first spelling that names something (`term_ui::spelling`,
+`path_open::first_existing`), else the one as written. On a row the terminal wrapped, Alacritty leaves the last column
+empty (`LEADING_WIDE_CHAR_SPACER`, read as an empty cell of width 1) when a wide character does not fit there;
+`file_marks` skips that cell when the next row starts with a wide character, and offers a space there as an alt. Held by
+`the_menu_rows_act_on_the_spelling_with_a_space_where_the_row_broke`,
+`copy_path_of_a_link_with_other_spellings_is_left_to_the_worker_that_finds_the_one_that_exists`,
+`a_picture_named_with_a_space_where_its_row_broke_is_found_by_that_spelling` and
+`a_marked_path_the_terminal_wrapped_before_a_wide_character_reads_with_no_space`.
 
 ## macOS port
 

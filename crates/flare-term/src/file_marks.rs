@@ -2,7 +2,8 @@
 //! writes a file path between `⟦` (U+27E6) and `⟧` (U+27E7); this reader finds each span and reads what is between
 //! the marks exactly. Flare guesses no file paths any more: only what is written between marks is a file link.
 //!
-//! A span may run over rows: a row the terminal wrapped is joined with nothing dropped, and a row the program broke
+//! A span may run over rows: a row the terminal wrapped is joined with nothing dropped (but the empty last cell a wide
+//! character left when it did not fit, which is no space of the path), and a row the program broke
 //! by hand (Claude Code breaks its own lines and indents the next row) is joined with the next row's leading spaces
 //! and the last row's trailing blanks dropped. A trailing `:line` or `:line:col` is taken off and kept. A lone `⟦`
 //! never eats the screen: a span ends within `MARK_ROWS` rows and `MARK_CHARS` characters, or is no link.
@@ -29,8 +30,9 @@ pub struct FileMark {
     pub text: String,
     pub line: Option<u32>,
     pub col: Option<u32>,
-    /// The same path with one space where a row broke by hand (each break alone, then all of them): a click tries
-    /// these, in order, when `text` names nothing.
+    /// The same path with one space where a row broke by hand, or where the terminal left the last column empty
+    /// before a wide character (each break alone, then all of them): a click, the menu rows and the hover thumbnail
+    /// try these, in order, when `text` names nothing.
     pub alts: Vec<String>,
     /// One piece per row, marks included. `row` is absolute.
     pub pieces: Vec<Piece>,
@@ -143,9 +145,24 @@ fn read_from(rows: &mut Rows, y0: usize, c0: usize) -> Read {
         let Some(row) = rows.cells(y).cloned() else {
             return Read::Lost;
         };
+        // A wide character that did not fit in the last column leaves it empty and starts the next row: that cell is
+        // no space of the path (it reads like one), so it is skipped, and a space there is offered as a second spelling.
+        let spacer = cols - 1;
+        let wide_next = rows.wrapped(y + 1)
+            && row
+                .get(spacer)
+                .is_some_and(|c| c.width == 1 && c.chars.is_empty())
+            && rows
+                .cells(y + 1)
+                .and_then(|r| r.first())
+                .is_some_and(|c| c.width == 2);
         let mut blank_tail = 0usize;
         for (x, cell) in row.iter().enumerate().skip(from) {
             if cell.width == 0 {
+                continue;
+            }
+            if wide_next && x == spacer {
+                breaks.push(n);
                 continue;
             }
             if is_mark(cell, MARK_CLOSE) {

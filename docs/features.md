@@ -2328,11 +2328,11 @@ poor. many links dont work."
 - **A file link is a path between `⟦` and `⟧`.** A session writes the absolute path (or one relative to the tab's folder)
   between U+27E6 and U+27E7, optionally with `:line` or `:line:col`: `⟦C:\repo\src\main.rs:42⟧`. The whole span, marks
   included, is one link. Nothing is statted before it lights: the session wrote it on purpose. A relative path is a link
-  only while the tab's folder is known. Rule 1127.
+  only while the tab's folder is known. Rule 266.
 - **Read exactly, over rows.** `flare_term::file_marks` reads to the end mark in the same row and up to 7 rows below
   (at most 1,024 characters): a row the terminal wrapped joins with nothing dropped; a row Claude Code broke by hand
   joins with its leading spaces (Claude Code's indent) and the last row's trailing blanks dropped. A second start mark
-  starts again; a blank row or no end mark is no link. A web address stops at a mark. Rule 1128.
+  starts again; a blank row or no end mark is no link. A web address stops at a mark. Rule 267.
 - **No more path guessing.** A plain shell's output (`dir`, `git status`, a compiler error) has no file links, even for
   names that exist. Web addresses (http and https) are still found in the text, also across a row broken by hand, and
   OSC 8 links are as before. `paths.rs`, `path_links.rs` (the cache, the shown folders, the questions to a worker)
@@ -2344,13 +2344,17 @@ poor. many links dont work."
   is there the panel says "Flare found no such file" (a note in a closed panel, the header or the page's bar in an open
   one). A text preview opens at the link's line with that line marked in the selection colour, a few lines below the
   top; a markdown file with a line opens in Code for it. The right-click menu keeps Open, Show in side panel, Show in
-  Explorer (Finder on macOS) and Copy path; hover thumbnails work for a marked picture. Rule 1129.
+  Explorer (Finder on macOS) and Copy path; hover thumbnails work for a marked picture. Rule 268.
+- **The menu and the thumbnail try the same spellings.** Open, Show in side panel, Show in Explorer, Copy path and
+  the hover thumbnail act, on their worker, on the first spelling that names something, as the click does. A wide
+  character the terminal moved to the next row leaves the last column empty: that cell is no space of the path (a space
+  there is tried as a second spelling). Rule 270.
 - **`show_file` takes `line`.** The same scroll and mark as a click (`view.file`'s `line`, from 1).
 - **Every Claude session is told.** The Flare plugin's `SessionStart` hook (start, resume, clear and compact) runs
   `flare-mcp --hook-context --session-start`, which prints, only inside a Flare tab, the note "You are running inside
   Flare. When you mention a file in your reply, write its absolute path between ⟦ and ⟧, ..." as
   `additionalContext`. The MCP server's `instructions` end with the same note, so a session that skips the hook still
-  sees it. Codex and Antigravity are not told (no Flare plugin), but any program that prints marks gets links. Rule 1130.
+  sees it. Codex and Antigravity are not told (no Flare plugin), but any program that prints marks gets links. Rule 269.
 - **Tests.** `file_marks::tests`, `link_scan::tests` (`a_plain_listing_has_no_file_links`,
   `a_marked_path_is_a_file_link_with_its_line`), `emulator::tests` (`a_marked_path_broken_by_hand_and_indented_is_one_link`),
   `term_ui::tests` (`a_click_on_a_marked_line_asks_for_the_preview_at_that_line`,

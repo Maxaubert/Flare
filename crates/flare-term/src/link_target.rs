@@ -20,6 +20,18 @@ pub struct TermPathAt {
     pub base: String,
     /// The line the link named, for the panel.
     pub line: Option<u32>,
+    /// The link's other spellings (`file_marks::FileMark::alts`): every row that acts on the path takes, on its
+    /// worker, the first of `text` and these that names something, as a plain click does.
+    pub alts: Vec<String>,
+}
+
+impl TermPathAt {
+    /// `text`, then `alts`: the spellings a worker tries in order.
+    pub fn spellings(&self) -> Vec<String> {
+        std::iter::once(self.text.clone())
+            .chain(self.alts.iter().cloned())
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

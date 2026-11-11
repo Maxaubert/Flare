@@ -382,15 +382,15 @@ fn thumb_at(tab: &TabInfo, cell: (usize, usize)) -> Option<ThumbAt> {
 
 /// Only a path whose name is a picture's. A web address never is: hovering must not reach the network.
 fn thumb_of(tab: &TabInfo, mark: LinkMark, top: usize) -> Option<ThumbAt> {
-    let LinkTarget::Path { text, .. } = &mark.target else {
+    let LinkTarget::Path { text, alts, .. } = &mark.target else {
         return None;
     };
-    (flare_surfaces::preview::classify(text) == Some(flare_surfaces::PanelKind::Image)).then(|| {
-        ThumbAt {
-            tab: tab.id.to_string(),
-            top,
-            mark,
-        }
+    let image =
+        |t: &String| flare_surfaces::preview::classify(t) == Some(flare_surfaces::PanelKind::Image);
+    (image(text) || alts.iter().any(image)).then(|| ThumbAt {
+        tab: tab.id.to_string(),
+        top,
+        mark,
     })
 }
 
@@ -405,7 +405,10 @@ fn previewable(base: &str, text: &str, home: &str) -> Option<(flare_surfaces::Pa
 /// The menu's path for a file link (a path between marks): read from the tab's folder, a folder when the text ends in a
 /// separator. Nothing is statted: the row a person picks is vetted on a worker.
 fn marked_path_at(target: &LinkTarget, cwd: Option<&str>, home: &str) -> Option<TermPathAt> {
-    let LinkTarget::Path { text, line, .. } = target else {
+    let LinkTarget::Path {
+        text, line, alts, ..
+    } = target
+    else {
         return None;
     };
     let base = cwd.unwrap_or_default().to_string();
@@ -420,7 +423,18 @@ fn marked_path_at(target: &LinkTarget, cwd: Option<&str>, home: &str) -> Option<
         text: text.clone(),
         base,
         line: *line,
+        alts: alts.clone(),
     })
+}
+
+/// The spelling of a file link a worker acts on: the first of `texts` that names something, or the first as written
+/// when none does. A link with one spelling costs no stat here.
+fn spelling(base: &str, texts: &[String], home: &str) -> String {
+    let first = texts.first().cloned().unwrap_or_default();
+    if texts.len() < 2 {
+        return first;
+    }
+    first_existing(base, texts, home).unwrap_or(first)
 }
 
 fn mods(e: &PointerIn) -> MouseMods {
@@ -642,18 +656,33 @@ impl TermUi {
 
     /// "Show in side panel" from the path menu: the same vetting as the click, and when the path is not a picture or
     /// a text file after all (it changed since the menu was built) the panel says so: this row never opens anything.
-    fn preview_path_async(&self, tab: String, base: String, text: String, line: Option<u32>) {
+    fn preview_path_async(&self, tab: String, base: String, texts: Vec<String>, line: Option<u32>) {
         let home = self.deps.home.clone();
         let post = Arc::clone(&self.deps.post);
-        thread::spawn(move || match previewable(&base, &text, &home) {
-            Some((kind, abs)) => post(TermMsg::Preview {
-                tab,
-                kind,
-                abs,
-                line,
-                asked: true,
-            }),
-            None => post(TermMsg::PreviewRefused { tab }),
+        thread::spawn(move || {
+            let text = spelling(&base, &texts, &home);
+            match previewable(&base, &text, &home) {
+                Some((kind, abs)) => post(TermMsg::Preview {
+                    tab,
+                    kind,
+                    abs,
+                    line,
+                    asked: true,
+                }),
+                None => post(TermMsg::PreviewRefused { tab }),
+            }
+        });
+    }
+
+    /// "Copy path" for a file link with other spellings: the one that names something, read from the tab's folder.
+    fn copy_path_async(&self, base: String, texts: Vec<String>) {
+        let home = self.deps.home.clone();
+        let clip = Arc::clone(&self.deps.clipboard);
+        let done = self.post_copied();
+        thread::spawn(move || {
+            let text = spelling(&base, &texts, &home);
+            let abs = resolve_term_path(&base, &text, &home).unwrap_or(text);
+            copy_async(clip, abs, COPY_MAX, done);
         });
     }
 
@@ -760,7 +789,7 @@ impl TermUi {
         came_down |= st.hover.recheck(here.as_ref());
         if let Some(seq) = st.hover.fire(now) {
             let job = here.as_ref().zip(tab).and_then(|(at, t)| {
-                let LinkTarget::Path { text, .. } = &at.mark.target else {
+                let LinkTarget::Path { text, alts, .. } = &at.mark.target else {
                     return None;
                 };
                 let item = item_box(&at.mark.pieces, at.top, g.rows, &g.metrics, g.scale)?;
@@ -769,6 +798,7 @@ impl TermUi {
                         seq,
                         base: t.cwd.unwrap_or_default().to_string(),
                         text: text.clone(),
+                        alts: alts.clone(),
                     },
                     item,
                 ))
@@ -811,10 +841,12 @@ impl TermUi {
     }
 
     /// The only way a path is opened: a worker re-resolves it and applies the allowlist.
-    fn open_path_async(&self, base: String, text: String, mode: OpenMode) {
+    /// A file link's spellings are tried in order (`spelling`).
+    fn open_path_async(&self, base: String, texts: Vec<String>, mode: OpenMode) {
         let openers = Arc::clone(&self.deps.openers);
         let home = self.deps.home.clone();
         thread::spawn(move || {
+            let text = spelling(&base, &texts, &home);
             let _ = open_term_path(&base, &text, mode, &*openers, &home);
         });
     }
@@ -1470,10 +1502,16 @@ impl TermUi {
                 } else {
                     OpenMode::Open
                 };
-                self.open_path_async(path.base, path.text, mode);
+                let texts = path.spellings();
+                self.open_path_async(path.base, texts, mode);
             }
             TermMenuAct::ShowInPanel { path } => {
-                self.preview_path_async(t.id.to_string(), path.base, path.text, path.line);
+                let texts = path.spellings();
+                self.preview_path_async(t.id.to_string(), path.base, texts, path.line);
+            }
+            TermMenuAct::CopyPath { path } => {
+                let texts = path.spellings();
+                self.copy_path_async(path.base, texts);
             }
             TermMenuAct::Copy(text) => self.copy(text, COPY_MAX),
             TermMenuAct::OpenLink(u) => self.open_link(&u),
@@ -2481,6 +2519,45 @@ mod tests {
             "{rec:?}"
         );
     }
+
+    /// The same link as above, through the menu: every row acts on the spelling that names something.
+    #[test]
+    fn the_menu_rows_act_on_the_spelling_with_a_space_where_the_row_broke() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("My Docs")).unwrap();
+        std::fs::write(dir.path().join("My Docs").join("a.txt"), "x").unwrap();
+        let mut r = Rig::with_cwd(1.0, dir.path());
+        let cols = r.g.cols;
+        let head = format!("{}\u{27E6}My", " ".repeat(cols - 3));
+        r.feed(&format!("{head}\r\n  Docs/a.txt\u{27E7}"));
+        r.tick(0);
+        r.frame();
+        let pick = |r: &mut Rig, label: &str| {
+            r.right_click(4, 1).open_menu.expect("a menu");
+            let rows = r.ui.menu_rows(false, "Ctrl+F", "");
+            let i = rows.iter().position(|x| x.label == label).expect(label);
+            r.with_tab(|ui, t| ui.on_menu_pick(Some(t), i));
+        };
+        pick(&mut r, "Copy path");
+        until("the copy", || r.clip.read_text().is_some());
+        let copied = r.clip.read_text().unwrap();
+        assert!(copied.contains("My Docs"), "{copied}");
+        pick(&mut r, "Show in side panel");
+        until("the preview", || !previews(&r).is_empty());
+        let got = previews(&r);
+        assert!(
+            got[0].1 == "text" && got[0].2.contains("My Docs"),
+            "{got:?}"
+        );
+        pick(&mut r, "Show in Explorer");
+        until("the reveal", || !r.openers.records().is_empty());
+        let rec = r.openers.records();
+        assert!(
+            matches!(&rec[0], OpenedRecord::Reveal(p) if p.contains("My Docs")),
+            "{rec:?}"
+        );
+    }
+
     #[test]
     fn a_path_link_click_opens_through_the_allowlist_on_a_worker() {
         let dir = tempfile::tempdir().unwrap();
@@ -2581,6 +2658,7 @@ mod tests {
                 text: "a.txt".into(),
                 base,
                 line: None,
+                alts: Vec::new(),
             }),
         });
         let rows = r.ui.menu_rows(false, "Ctrl+F", "");
@@ -2614,6 +2692,7 @@ mod tests {
                 text: "a.txt".into(),
                 base,
                 line: None,
+                alts: Vec::new(),
             }),
         });
         let rows = r.ui.menu_rows(false, "Ctrl+F", "");
@@ -2962,6 +3041,7 @@ mod tests {
                 text: "a.txt".into(),
                 base,
                 line: None,
+                alts: Vec::new(),
             }),
         });
         let rows = r.ui.menu_rows(false, "Ctrl+F", "");
