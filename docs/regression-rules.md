@@ -2067,3 +2067,15 @@ of the push before it: `a_real_shaped_offer_is_refused_before_any_request` saw `
 of a push come from one snapshot, so the calls written first are never older than the state a test sees
 (`e2e_writes` in `crates/flare/src/update_ctl.rs`). Held by `the_e2e_calls_file_is_written_before_the_state_file`.
 Source: the check job of #167 (2026-11-11).
+1137. **An update offer is measured against the version Velopack installed, not the build's own version.** The engine
+drops a find that is not newer than its current version. It was handed `CARGO_PKG_VERSION` (the workspace's 0.1.0),
+while Velopack compares with its manifest (`sq.version`). update-e2e packs one exe as 0.0.1 and 0.0.2: Velopack found
+0.0.2 over the installed 0.0.1, and the engine then dropped it as older than 0.1.0, so no chip ever showed
+(`no real 0.0.2 offer`, job 130475061549, 2026-11-11, and every run since 2026-10-18). `choose_feed` now records
+`VelopackFeed::installed_version` in `FeedChoice::installed`, and `window.rs` builds the engine and the update window
+from `FeedChoice::current_version` (the installed version, else the build's). A release packs the Cargo version, so
+a shipped app sees no change. The engine logs a find that is not newer, and `update_apply` prints the calls and the
+app's update crumbs when no offer comes. Native: `crates/flare/src/ship_ctl.rs`, `crates/flare/src/window.rs`,
+`crates/flare-update/src/velopack_feed.rs`, `crates/flare-update/src/engine.rs`. Held by
+`an_offer_is_measured_against_the_installed_version_not_the_builds` and
+`a_missing_offer_reports_the_calls_and_the_apps_update_crumbs`. Source: the update-e2e log of #173 (2026-11-11).

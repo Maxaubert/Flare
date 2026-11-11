@@ -186,6 +186,11 @@ impl VelopackFeed {
         Self::with_source(Box::new(source), None)
     }
 
+    /// The version Velopack installed: its manifest (`sq.version`), the one `check` compares with.
+    pub fn installed_version(&self) -> String {
+        self.um.get_current_version_as_string()
+    }
+
     /// The stored find when its version is `version`.
     fn offered(&self, version: &str) -> Result<UpdateInfo, FeedError> {
         let guard = lock_it(&self.info);

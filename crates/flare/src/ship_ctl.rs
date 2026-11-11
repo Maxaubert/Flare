@@ -257,6 +257,19 @@ pub struct FeedChoice {
     /// Set under `--e2e` with `FLARE_E2E_UPDATE_OFFER`: shown after `engine.start()` through
     /// `engine.set_offer`, so the chip appears with `checks` still 0.
     pub preset_offer: Option<Offer>,
+    /// The version Velopack installed (its manifest), when the feed is Velopack's. The update
+    /// compares an offer with this one, as Velopack itself does (rule 1137).
+    pub installed: Option<String>,
+}
+
+impl FeedChoice {
+    /// The version an offer must beat and the window shows as the current one: the installed
+    /// version when Velopack knows it, else `built` (the build's own version). The update e2e packs
+    /// one exe as 0.0.1 and 0.0.2, so the build's own version (the workspace's) is not what is
+    /// installed there, and a 0.0.2 offer measured against it was dropped as not newer (rule 1137).
+    pub fn current_version(&self, built: &str) -> String {
+        self.installed.clone().unwrap_or_else(|| built.to_string())
+    }
 }
 
 /// Picks the feed (D11 and the e2e seams). `env` reads a `FLARE_E2E_<suffix>` variable.
@@ -272,6 +285,7 @@ pub fn choose_feed(ship: &Ship, env: &dyn Fn(&str) -> Option<String>) -> FeedCho
                 mock: false,
                 token: 0,
             }),
+            installed: None,
         };
     }
     #[cfg(feature = "live-updates")]
@@ -295,21 +309,28 @@ pub fn choose_feed(ship: &Ship, env: &dyn Fn(&str) -> Option<String>) -> FeedCho
                     None,
                 )
             };
-            if let Ok(feed) = feed {
-                return FeedChoice {
-                    feed: Arc::new(feed),
-                    mode: mode_for(ship.packaged, false, ship.preview, true),
-                    preset_offer: None,
-                };
+            match feed {
+                Ok(feed) => {
+                    let installed = Some(feed.installed_version());
+                    return FeedChoice {
+                        feed: Arc::new(feed),
+                        mode: mode_for(ship.packaged, false, ship.preview, true),
+                        preset_offer: None,
+                        installed,
+                    };
+                }
+                Err(e) => log::warn!("update: the e2e update source was refused: {e:?}"),
             }
         }
         if ship.mode == Mode::Live
             && let Ok(feed) = VelopackFeed::github(REPO_URL)
         {
+            let installed = Some(feed.installed_version());
             return FeedChoice {
                 feed: Arc::new(feed),
                 mode: Mode::Live,
                 preset_offer: None,
+                installed,
             };
         }
     }
@@ -317,6 +338,7 @@ pub fn choose_feed(ship: &Ship, env: &dyn Fn(&str) -> Option<String>) -> FeedCho
         feed: Arc::new(NullFeed),
         mode: ship.mode,
         preset_offer: None,
+        installed: None,
     }
 }
 
@@ -738,6 +760,57 @@ mod tests {
         let c = choose_feed(&ship(true, false, false, false, None), &get);
         assert!(c.preset_offer.is_none());
         assert_eq!(c.mode, Mode::Off);
+    }
+
+    /// Rule 1137: the update e2e installs one exe packed as 0.0.1 and offers it as 0.0.2, while the
+    /// build's own version is the workspace's (0.1.0). Measured against that, 0.0.2 was never newer
+    /// and the installed app showed no chip on any update-e2e run (job 130475061549).
+    #[test]
+    fn an_offer_is_measured_against_the_installed_version_not_the_builds() {
+        struct Quiet;
+        impl flare_update::engine::Events for Quiet {
+            fn offer(&self, _: Offer) {}
+            fn progress(&self, _: u8) {}
+            fn crumb(&self, _: &str, _: Vec<(String, flare_update::engine::Fld)>) {}
+            fn quit_in(&self, _: u64) {}
+            fn rss_mb(&self) -> Option<u64> {
+                None
+            }
+        }
+        let feed = flare_update::feed::FakeFeed::new().offering("0.0.2", "");
+        let choice = |installed: Option<&str>| FeedChoice {
+            feed: Arc::new(feed.clone()),
+            mode: Mode::Live,
+            preset_offer: None,
+            installed: installed.map(str::to_string),
+        };
+        let installed = choice(Some("0.0.1"));
+        assert_eq!(installed.current_version("0.1.0"), "0.0.1");
+        let engine = build_engine(
+            &installed,
+            &installed.current_version("0.1.0"),
+            None,
+            Arc::new(Quiet),
+        );
+        engine.tick();
+        assert_eq!(engine.offer().map(|o| o.version), Some("0.0.2".into()));
+        // Without an installed version (a dev build, the null feed) the build's own one is used.
+        let built = choice(None);
+        assert_eq!(built.current_version("0.1.0"), "0.1.0");
+        let engine = build_engine(
+            &built,
+            &built.current_version("0.1.0"),
+            None,
+            Arc::new(Quiet),
+        );
+        engine.tick();
+        assert!(engine.offer().is_none());
+        // The window builds the engine and the update window from that one value.
+        let window = code_of(&src("window.rs")).to_string();
+        assert!(
+            window.contains("let current = choice.current_version(crate::app_facts::version());")
+        );
+        assert!(window.contains("current_version: current,"));
     }
 
     #[test]

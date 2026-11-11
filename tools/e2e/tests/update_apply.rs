@@ -312,6 +312,46 @@ fn calls(profile: &Path) -> Option<Value> {
     serde_json::from_str(&text).ok()
 }
 
+/// What a failed offer wait prints: the state, the calls (was there a check at all?) and the app's
+/// update crumbs from every diagnostics log under `root` (the sandbox: the profile and its Local).
+fn offer_report(root: &Path, profile: &Path) -> String {
+    let mut logs = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("diag.jsonl"))
+            {
+                logs.push(p);
+            }
+        }
+    }
+    let mut crumbs = Vec::new();
+    for log in &logs {
+        let text = std::fs::read_to_string(log).unwrap_or_default();
+        crumbs.extend(
+            text.lines()
+                .filter(|l| l.contains("update") || l.contains("first-run"))
+                .map(str::to_string),
+        );
+    }
+    let tail = crumbs.len().saturating_sub(40);
+    format!(
+        "state {:?}\ncalls {:?}\ndiag logs {:?}\nupdate crumbs:\n{}",
+        state(profile),
+        calls(profile),
+        logs,
+        crumbs[tail..].join("\n")
+    )
+}
+
 /// Writes the e2e command word and waits for the app to take it (it deletes the file).
 fn send(profile: &Path, word: &str) {
     let path = profile.join("update-command");
@@ -486,6 +526,28 @@ fn the_manifest_version_is_read_from_the_nuspec() {
 }
 
 #[test]
+fn a_missing_offer_reports_the_calls_and_the_apps_update_crumbs() {
+    let dir = tempfile::tempdir().unwrap();
+    let profile = dir.path().join("p");
+    let logs = profile.join("logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    std::fs::write(
+        profile.join("update-calls.json"),
+        r#"{"checks":1,"installs":0}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        logs.join("diag.jsonl"),
+        "{\"a\":\"update-check\",\"offered\":false}\n{\"a\":\"settings-page\"}\n",
+    )
+    .unwrap();
+    let r = offer_report(dir.path(), &profile);
+    assert!(r.contains("\"checks\": Number(1)"), "{r}");
+    assert!(r.contains("\"offered\":false"), "{r}");
+    assert!(!r.contains("settings-page"), "{r}");
+}
+
+#[test]
 fn the_server_throttles_counts_and_hides_deltas() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -545,8 +607,8 @@ fn an_offered_update_is_installed_and_the_app_restarts_on_its_profile() {
         until(Duration::from_secs(60), || state(&profile).is_some_and(
             |s| { s["chip"] == true && s["version"] == "0.0.2" && s["mock"] == false }
         )),
-        "no real 0.0.2 offer: {:?}",
-        state(&profile)
+        "no real 0.0.2 offer: {}",
+        offer_report(&sb.root, &profile)
     );
     send(&profile, "open");
     assert!(until(Duration::from_secs(10), || state(&profile)
@@ -628,8 +690,9 @@ fn cancel_leaves_nothing_and_a_second_install_still_works() {
     assert!(
         until(Duration::from_secs(60), || state(&profile)
             .is_some_and(|s| s["chip"] == true && s["version"] == "0.0.2")),
-        "no 0.0.2 offer from the loopback feed: {:?}",
-        state(&profile)
+        "no 0.0.2 offer from the loopback feed: {}\nserved {:?}",
+        offer_report(&sb.root, &profile),
+        server.served()
     );
     send(&profile, "install");
     assert!(

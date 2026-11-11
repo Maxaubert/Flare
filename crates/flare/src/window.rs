@@ -1388,9 +1388,12 @@ pub fn run_window(
         {
             let choice =
                 crate::ship_ctl::choose_feed(&ship, &|suffix| crate::ship_ctl::e2e_var(suffix));
+            // The installed version when Velopack knows it, so the offer is measured as Velopack
+            // measures it (rule 1137).
+            let current = choice.current_version(crate::app_facts::version());
             let engine = crate::ship_ctl::build_engine(
                 &choice,
-                crate::app_facts::version(),
+                &current,
                 args.user_data_dir.clone(),
                 Arc::new(crate::update_ctl::PostEvents {
                     post: Arc::clone(&post),
@@ -1401,7 +1404,7 @@ pub fn run_window(
                 &rc,
                 crate::appctl::UpdateParts {
                     engine: Arc::clone(&engine),
-                    current_version: crate::app_facts::version().to_string(),
+                    current_version: current,
                     e2e_dir: args.e2e.then(|| inst.profile.dir.clone()),
                     spawn: crate::update_ctl::std_spawn(),
                 },

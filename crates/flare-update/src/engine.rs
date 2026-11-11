@@ -232,6 +232,11 @@ impl Inner {
                         st.next_token = next;
                         st.offer = Some(o.clone());
                         offered = true;
+                    } else {
+                        log::info!(
+                            "update: {version} is not newer than {}, no offer",
+                            self.current
+                        );
                     }
                     made
                 }
