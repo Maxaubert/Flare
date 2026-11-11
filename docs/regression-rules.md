@@ -2052,6 +2052,18 @@ later), so a scenario that waits for the prompt text and snaps at once can still
 that row holds text or the cursor (`ground_spots` in `tools/e2e/src/scenarios/chrome.rs`). Windows reads the same
 spots. Held by `the_spots_miss_cell_zero_where_the_cursor_sits`, `the_spots_scale_with_the_window` and
 `a_last_row_with_text_or_the_cursor_fails_loudly`. Source: main's first full CI run after the macOS port (2026-11-11).
+1135. **macOS: a removed or replaced plugin folder goes to the Trash, and "Reduce motion" stills the agent icons.**
+Plugin Remove (and the copy an Update replaces) handed the folder to `flare_mods::install::recycle`, which on a Mac
+was a refusal ("not built on this platform yet"), so Remove failed with the folder left in place and an update left
+the old copy in `plugins/.staging`. It now moves the folder with `NSFileManager trashItemAtURL:` on the install
+worker; Settings says "Remove (to the Trash)" and "Its folder is in the Trash." (`BIN` and `REMOVE_TIP` in
+`flare-settings/src/page/mods.rs`). And `flare_win::motion::animations_enabled` answered "animate" on every Mac, so
+System Settings > Accessibility > Display > Reduce motion never stilled the `agent-moves` sample's icon motions, the
+marks or the slides; it now reads `NSWorkspace accessibilityDisplayShouldReduceMotion` (any thread), as Windows reads
+its "Animation effects" switch. The app-level plugin tests stub the bin with a delete, so they never saw the refusal.
+Held by `mac_remove_moves_the_plugin_folder_to_the_trash` (`flare-mods/src/install.rs`, the real Trash, taken back
+out) and `mac_reduce_motion_decides` (`flare-win/src/motion.rs`). Source: porting the `agent-moves` sample to the
+Mac (2026-11-11).
 1133. **macOS: a tab that hosted Claude comes back resumed after a quit or restart, as on Windows.** `tabs.json` keeps
 only the folder and `"agent": "claude"`; the restore finds the session id in Claude's store
 (`~/.claude/projects/<encode_cwd>/*.jsonl`, newest interactive first) and hands it to the spawn. `with_resume`

@@ -45,12 +45,13 @@ approve. This file is the contract, for plugin authors and for the Prism Termina
 2. Write `background.html`: a page that runs, hidden, while the plugin is on, and talks to Flare through
    `window.flare` (see "The bridge"). Keep scripts and styles inline or in the folder.
 3. Zip the folder and install it from Settings > Plugins ("Install from file", or an `https` address), or copy the
-   folder into `%APPDATA%\Flare\plugins\`. It arrives off; Settings shows what it asks for in plain words, and turning
+   folder into `%APPDATA%\Flare\plugins\` (`~/Library/Application Support/Flare/plugins/` on a Mac). It arrives off; Settings shows what it asks for in plain words, and turning
    it on is your approval.
 
 ## Where plugins live and when they run
 
-- **Folder:** `%APPDATA%\Flare\plugins\<id>\` (the profile's `plugins` folder), the one folder for protocol 1 and
+- **Folder:** `%APPDATA%\Flare\plugins\<id>\` (the profile's `plugins` folder; on a Mac
+  `~/Library/Application Support/Flare/plugins/<id>/`), the one folder for protocol 1 and
   protocol 2 alike. The folder name is the id. A folder holds either `plugin.json` (protocol 2) or `mod.json`
   (protocol 1), never both. Settings > Plugins has an "Open plugins folder" button.
 - **Off until you turn it on.** A plugin found in the folder, installed from a zip or updated to ask for more is off
@@ -428,7 +429,8 @@ sends the agent's artwork, never draws a check or a dot, and the agent's marks (
   | `breathe` | Grows from 0.82 to 1.05 times its size and back, fading a little, 2.6 s each way | all |
 
 - **When it moves.** Only on the tab of an agent that is working (its Working mark is on), in the strip and the sidebar
-  (the +N list keeps its icons still), and never with Windows' animation effects off. Every frame comes from the mark
+  (the +N list keeps its icons still), and never with Windows' animation effects off or a Mac's "Reduce motion" on
+  (System Settings > Accessibility > Display, rule 1135). Every frame comes from the mark
   clock that already runs while a tab works, so nothing new ticks while all is idle. Without a pick an icon stands
   still, as before. (On the software renderer a turn is left out; the icon still fades.)
 - **Who wins.** One pick per plugin per agent; the newest pick wins. A plugin that clears its pick, is turned off or
@@ -529,9 +531,9 @@ Flare's own dialog, and the user name, password and code never reach the agent.
   the zip it was last installed from (`installed.folder` in `mods.json`, never part of the approval); the zip must
   hold the same id, and an older version is refused ("Remove it first"). A plugin that is on is paused, its views closed
   and its helper stopped and waited for, then the folders are swapped by rename and the old copy goes to the Recycle
-  Bin. The same permissions and maker keep it on, as a new generation; more permissions, or another author, homepage,
+  Bin (the Trash on a Mac, rule 1135). The same permissions and maker keep it on, as a new generation; more permissions, or another author, homepage,
   source or protocol, turn it off until approved, and another maker or source also wipes its storage and profile.
-- **Remove** (the card's button): turns it off, waits for its helper, sends its folder to the Recycle Bin and forgets
+- **Remove** (the card's button): turns it off, waits for its helper, sends its folder to the Recycle Bin (the Trash on a Mac) and forgets
   its approval, install record, storage, helper log, browser profiles, sidebar order and folds.
 - Install, update, remove and the scan run one at a time on one worker queue. A folder copied into `plugins\` by hand
   works too, and is off until approved.
