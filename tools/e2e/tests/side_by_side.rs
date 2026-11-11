@@ -1,7 +1,8 @@
 //! M9 Task 37: Flare beside Prism Terminal. No shared lock, profile, verb, plugin or signal.
 //!
 //! The other product's names are DATA, read from `names.json` (the fixture Task 2 made), never
-//! spelled in this file.
+//! spelled in this file. The one exception is the repository its installer comes from, which its own
+//! sources do not hold (`NEIGHBOUR_RELEASE_REPO`).
 //!
 //! Two layers. Layer A runs everywhere: the sandbox plays the owner's machine, a stand-in for the
 //! neighbour is written into it with the neighbour's real names, and the built `flare.exe` is
@@ -36,6 +37,9 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 const WAIT: Duration = Duration::from_secs(40);
+
+/// The repository the neighbour's installer is downloaded from (moved and made private 2026-11-11).
+const NEIGHBOUR_RELEASE_REPO: &str = "arkivert/PrismTerminal";
 
 // ---- the neighbour's names (data) -----------------------------------------------------------------
 
@@ -546,7 +550,8 @@ fn flare_installs_beside_the_neighbour_and_both_leave_clean() {
     fs::create_dir_all(&dict_dir).unwrap();
     fs::write(dict_dir.join("model.bin"), b"models").unwrap();
 
-    // The neighbour first, from its latest public release.
+    // The neighbour first, from its latest release. Its repository is private, so `gh` reads it with
+    // the step's `GH_TOKEN`, the read-only release token (regression rule 1141).
     let dl = tmp.path().join("pt-dl");
     fs::create_dir_all(&dl).unwrap();
     let pattern = format!("{}*.exe", pt(&v, "installerPrefix"));
@@ -555,7 +560,7 @@ fn flare_installs_beside_the_neighbour_and_both_leave_clean() {
             "release",
             "download",
             "--repo",
-            "Maxaubert/PrismTerminal",
+            NEIGHBOUR_RELEASE_REPO,
             "--pattern",
             &pattern,
             "--dir",
