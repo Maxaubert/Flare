@@ -246,6 +246,31 @@ pub fn framework_of(exe: &Path) -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
+/// One turn of the main thread's run loop, never blocking and without CEF's own work: AppKit's queued events
+/// (through `sendEvent:`) and the run loop's due sources and timers. What winit's loop does for the real app, so a
+/// test can run the app's way: CEF's work only when CEF asks for it.
+pub fn run_loop_turn(app: &NSApplication) {
+    // SAFETY: a static NSString AppKit exports.
+    let mode = unsafe { NSDefaultRunLoopMode };
+    let past = NSDate::distantPast();
+    while let Some(ev) = app.nextEventMatchingMask_untilDate_inMode_dequeue(
+        NSEventMask::Any,
+        Some(&past),
+        mode,
+        true,
+    ) {
+        app.sendEvent(&ev);
+    }
+    // SAFETY: a static CFString CoreFoundation exports.
+    let cf_mode = unsafe { kCFRunLoopDefaultMode };
+    CFRunLoop::run_in_mode(cf_mode, 0.0, false);
+}
+
+/// [`run_loop_turn`] of the shared application.
+pub fn shared_run_loop_turn(mtm: MainThreadMarker) {
+    run_loop_turn(&NSApplication::sharedApplication(mtm));
+}
+
 impl Engine {
     /// Loads and initializes CEF in this (the browser) process, on the main thread. Fails with a sentence when the
     /// process is not inside a bundle with the framework, when `NSApp` is someone else's, or when CEF refuses.
@@ -352,20 +377,7 @@ impl Engine {
     /// CEF wants them), the run loop's due sources and timers (Chromium posts its compositor's frames and the main
     /// dispatch queue's tasks there: without this turn a windowless view never paints), then CEF's own work.
     pub fn pump(&self) {
-        // SAFETY: a static NSString AppKit exports.
-        let mode = unsafe { NSDefaultRunLoopMode };
-        let past = NSDate::distantPast();
-        while let Some(ev) = self.app.nextEventMatchingMask_untilDate_inMode_dequeue(
-            NSEventMask::Any,
-            Some(&past),
-            mode,
-            true,
-        ) {
-            self.app.sendEvent(&ev);
-        }
-        // SAFETY: a static CFString CoreFoundation exports.
-        let cf_mode = unsafe { kCFRunLoopDefaultMode };
-        CFRunLoop::run_in_mode(cf_mode, 0.0, false);
+        run_loop_turn(&self.app);
         do_message_loop_work();
     }
 
