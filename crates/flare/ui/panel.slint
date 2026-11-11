@@ -9,6 +9,7 @@ import { Theme, Px, SettingsFixed, SettingsInk } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
 import { ViewThumb } from "scrollbar.slint";
 import { ChangesView, ConvoFileRow, ConvoDiffRow } from "convo.slint";
+import { FindBar } from "find.slint";
 
 // The header's close button: 20 px, the glyph 10 px, as the tab strip's close.
 component PanelClose inherits Rectangle {
@@ -741,6 +742,24 @@ export component PanelSlot inherits Rectangle {
     callback web-wheel(length, length, length, length, int);
     callback web-key(bool, string, int, bool);
     public function focus-page() { page-keys.focus(); }
+    public function focus-page-find() { page-find.focus-input(); }
+    // macOS: the page's own scope has the keys (the window then leaves every key to it; the key filter hands the
+    // app's chords back), and the pointer is over the page (the zoom keys zoom the page then).
+    out property <bool> web-page-focused: root.web-live && page-keys.has-focus;
+    property <bool> page-hover;
+    out property <bool> web-hovered: root.web-live && root.page-hover;
+    // macOS: Flare's find bar over the page (WebView2 has its own), and the page's status text (a link's address
+    // under the pointer) at the page's bottom left, where WebView2 draws its status bar.
+    in property <bool> web-find-open;
+    in-out property <string> web-find-query;
+    in property <string> web-find-readout;
+    in property <bool> web-find-can-step;
+    out property <bool> web-find-focused: root.open && page-find.input-has-focus;
+    callback web-find-edited(string);
+    callback web-find-next();
+    callback web-find-previous();
+    callback web-find-close();
+    in property <string> web-status;
     // A web page (not a mini-app) has no header: the bar is its head, and the page starts under it (Max
     // 2026-10-27: more room for the page). An agent at work shows only in the page's edge glow and its
     // cursor; the page title stays the tab's and `web.state`'s.
@@ -1077,13 +1096,15 @@ export component PanelSlot inherits Rectangle {
                             if e.kind == PointerEventKind.down {
                                 page-keys.focus();
                             }
+                            // Buttons: 0 left, 1 middle, 2 right, 3 back, 4 forward, 5 any other.
                             root.web-pointer(
                                 e.kind == PointerEventKind.down ? 0 : (e.kind == PointerEventKind.up ? 1 : (e.kind == PointerEventKind.move ? 2 : 3)),
                                 self.mouse-x, self.mouse-y,
-                                e.button == PointerEventButton.left ? 0 : (e.button == PointerEventButton.middle ? 1 : (e.button == PointerEventButton.right ? 2 : 3)),
+                                e.button == PointerEventButton.left ? 0 : (e.button == PointerEventButton.middle ? 1 : (e.button == PointerEventButton.right ? 2 : (e.button == PointerEventButton.back ? 3 : (e.button == PointerEventButton.forward ? 4 : 5)))),
                                 (e.modifiers.shift ? 1 : 0) + (e.modifiers.control ? 2 : 0) + (e.modifiers.alt ? 4 : 0) + (e.modifiers.meta ? 8 : 0));
                         }
                         changed has-hover => {
+                            root.page-hover = self.has-hover;
                             if !self.has-hover {
                                 root.web-pointer(3, self.mouse-x, self.mouse-y, 0, 0);
                             }
@@ -1093,6 +1114,42 @@ export component PanelSlot inherits Rectangle {
                             accept
                         }
                     }
+                }
+                if root.web-live && root.web-status != "": Rectangle {
+                    property <length> pad: Px.snap(6px);
+                    x: 0px;
+                    y: parent.height - self.height;
+                    width: min(status-text.preferred-width + 2 * self.pad, parent.width * 2 / 3);
+                    height: Px.snap(20px);
+                    background: Theme.side-flat;
+                    border-width: Px.hair();
+                    border-color: Theme.divider;
+                    status-text := Text {
+                        x: parent.pad;
+                        width: parent.width - 2 * parent.pad;
+                        height: parent.height;
+                        text: root.web-status;
+                        font-family: Theme.font-ui;
+                        font-size: 11px;
+                        color: Theme.dim2;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        wrap: no-wrap;
+                    }
+                }
+                page-find := FindBar {
+                    width: parent.width;
+                    height: parent.height;
+                    visible: root.web-live;
+                    placeholder: "Find in page";
+                    open: root.web-find-open;
+                    query <=> root.web-find-query;
+                    readout: root.web-find-readout;
+                    can-step: root.web-find-can-step;
+                    query-edited(q) => { root.web-find-edited(q); }
+                    next => { root.web-find-next(); }
+                    previous => { root.web-find-previous(); }
+                    close => { root.web-find-close(); }
                 }
             }
             img := ImageView {

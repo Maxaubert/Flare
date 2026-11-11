@@ -196,6 +196,15 @@ pub enum ViewEvent {
     },
     /// A new picture is there ([`View::frame`]).
     Painted,
+    /// The page's status text (a link's address while the pointer is over it); empty when it is gone.
+    Status {
+        text: String,
+    },
+    /// A find in the page ([`View::find`]) counted `count` matches, the `active` one (1-based) selected.
+    Found {
+        count: i32,
+        active: i32,
+    },
     /// One of the view's own setup calls answered: the owner's next turn ([`View::poll`]) may navigate. Sent so
     /// an owner that turns only when told (the real window: CEF's work runs in AppKit's run loop, and CEF does
     /// not ask for a turn of its own for this) is told (rule 1152).
@@ -383,6 +392,11 @@ pub struct State {
     downloads: HashMap<u64, Held>,
     download_seq: u64,
     pub focused: bool,
+    /// How many of the person's keys the page left alone were run as Chrome's Mac keys ([`status::mac_page_key`]).
+    pub page_keys: u32,
+    /// The person's Cmd key downs sent ([`View::key`]) whose `on_key_event` may still come: only those are run as
+    /// Chrome's Mac keys, never an agent's DevTools key (which carries its own editing command).
+    person_cmd_keys: std::collections::VecDeque<i32>,
     pub fullscreen: bool,
     pub gone: Option<String>,
     pub closed: bool,
@@ -676,6 +690,79 @@ wrap_display_handler! {
             let on = fullscreen != 0;
             lock(&self.c.state).fullscreen = on;
             self.c.emit(ViewEvent::FullScreen { on });
+        }
+
+        fn on_status_message(&self, _browser: Option<&mut Browser>, value: Option<&CefString>) {
+            self.c.emit(ViewEvent::Status { text: text(value) });
+        }
+    }
+}
+
+wrap_keyboard_handler! {
+    struct Keys {
+        c: C,
+    }
+
+    impl KeyboardHandler {
+        // A key down the page left alone: Chrome's Mac menu keys and key bindings (`status::mac_page_key`).
+        fn on_key_event(
+            &self,
+            browser: Option<&mut Browser>,
+            event: Option<&KeyEvent>,
+            _os_event: *mut u8,
+        ) -> ::std::os::raw::c_int {
+            let (Some(b), Some(e)) = (browser, event) else { return 0 };
+            if e.type_ != KeyEventType::RAWKEYDOWN {
+                return 0;
+            }
+            {
+                let mut s = lock(&self.c.state);
+                let Some(i) = s.person_cmd_keys.iter().position(|k| *k == e.windows_key_code) else {
+                    return 0;
+                };
+                s.person_cmd_keys.remove(i);
+            }
+            let Some(act) = status::mac_page_key(e.windows_key_code, e.modifiers, e.focus_on_editable_field != 0)
+            else {
+                return 0;
+            };
+            match act {
+                status::MacPageKey::Back => b.go_back(),
+                status::MacPageKey::Forward => b.go_forward(),
+                status::MacPageKey::Edit(cmd) => {
+                    let Some(f) = b.focused_frame().or_else(|| b.main_frame()) else { return 0 };
+                    match cmd {
+                        "copy" => f.copy(),
+                        "cut" => f.cut(),
+                        "paste" => f.paste(),
+                        "selectAll" => f.select_all(),
+                        "undo" => f.undo(),
+                        _ => f.redo(),
+                    }
+                }
+            }
+            lock(&self.c.state).page_keys += 1;
+            1
+        }
+    }
+}
+
+wrap_find_handler! {
+    struct Finder {
+        c: C,
+    }
+
+    impl FindHandler {
+        fn on_find_result(
+            &self,
+            _browser: Option<&mut Browser>,
+            _identifier: ::std::os::raw::c_int,
+            count: ::std::os::raw::c_int,
+            _selection_rect: Option<&Rect>,
+            active_match_ordinal: ::std::os::raw::c_int,
+            _final_update: ::std::os::raw::c_int,
+        ) {
+            self.c.emit(ViewEvent::Found { count, active: active_match_ordinal });
         }
     }
 }
@@ -1554,6 +1641,8 @@ struct Handlers {
     focus: FocusHandler,
     download: DownloadHandler,
     requests: RequestHandler,
+    keys: KeyboardHandler,
+    finder: FindHandler,
 }
 
 wrap_client! {
@@ -1595,6 +1684,12 @@ wrap_client! {
         fn request_handler(&self) -> Option<RequestHandler> {
             Some(self.h.requests.clone())
         }
+        fn keyboard_handler(&self) -> Option<KeyboardHandler> {
+            Some(self.h.keys.clone())
+        }
+        fn find_handler(&self) -> Option<FindHandler> {
+            Some(self.h.finder.clone())
+        }
     }
 }
 
@@ -1612,6 +1707,8 @@ fn view_client(c: &C) -> Client {
         focus: Focus::new(c.clone()),
         download: Download::new(c.clone()),
         requests: Requests::new(c.clone()),
+        keys: Keys::new(c.clone()),
+        finder: Finder::new(c.clone()),
     })
 }
 
@@ -1959,6 +2056,26 @@ impl View {
         }
     }
 
+    /// Finds `text` in the page (`find_next`: the next match of the same search, `forward` or back); the count comes
+    /// as [`ViewEvent::Found`].
+    pub fn find(&self, text: &str, forward: bool, find_next: bool) {
+        if let Ok(h) = self.host() {
+            h.find(
+                Some(&text.into()),
+                i32::from(forward),
+                0,
+                i32::from(find_next),
+            );
+        }
+    }
+
+    /// Ends the find: the matches are no longer marked (the active one stays selected).
+    pub fn stop_finding(&self) {
+        if let Ok(h) = self.host() {
+            h.stop_finding(0);
+        }
+    }
+
     pub fn zoom_level(&self) -> f64 {
         self.host().map(|h| h.zoom_level()).unwrap_or(0.0)
     }
@@ -2002,6 +2119,13 @@ impl View {
 
     pub fn key(&self, k: Key) {
         let Ok(h) = self.host() else { return };
+        if k.kind == KeyKind::Down && k.modifiers & status::flags::COMMAND != 0 {
+            let mut s = lock(&self.state);
+            if s.person_cmd_keys.len() >= 8 {
+                s.person_cmd_keys.pop_front();
+            }
+            s.person_cmd_keys.push_back(k.windows_code);
+        }
         let e = KeyEvent {
             type_: match k.kind {
                 KeyKind::Down => KeyEventType::RAWKEYDOWN,

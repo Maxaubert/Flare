@@ -2506,3 +2506,65 @@ draws an arrow on stays off on the Mac (rule 1124). Not under `--e2e`, where the
 shown), the `page_overlay` unit tests (device pixels to points, flipped or not; the glow's bands tiling the page's
 rectangle; an empty picture or no view refused; the tag's ink) and `the_tag_is_an_orange_pill_with_the_name_readable_on_it`
 (now also on macOS). Source: Max on his Mac (2026-11-11).
+1160. **macOS: the page drawn in the web panel has its own keys; only the app's chords and the second Escape come back
+to Flare, and Cmd+Shift+O and a click move the keys.** On Windows WebView2's own window takes every key and its
+accelerator hook hands the app's chords back (`app_takes`); on the Mac the page is a picture in Slint's `page-keys`
+scope, and `AppCtl::on_key` sent every key that was no chord to the shell (it read only `panel-has-focus`, the zero-size
+`keys` scope). Now, while the page's scope has Slint's focus and the browser has the keyboard (`page_has_keys`:
+`panel-web-focused` and `WebCtl::has_focus`), `on_key` returns every key to Slint before the chord table, so the page's
+filter (`key_filter`: `EscTwice`, a held Escape's autorepeats ignored, `app_takes`) decides as on Windows; a key the
+filter hands back runs through `on_key_from_page`, never the page again. Key ups follow (`window::handle_key`). The
+chord moves Slint's focus too (`invoke_focus_web_page`), a press with the pointer over the page keeps the keys there
+(no blur and focus again), a press anywhere else takes them back. Slint reports Cmd as `control` on a Mac (rule 1110),
+so `web_live::mods_of` reads bit 2 as Cmd there (keys, pointer and wheel). The view's punctuation keys carry their
+virtual key (`key_of`: Cmd+= and Cmd+Shift+[ reach the chord table). Windows is unchanged (`panel-web-live` is false
+there). Native: `crates/flare/src/appctl.rs`, `crates/flare/src/web_live.rs`, `crates/flare/src/window.rs`,
+`crates/flare/ui/panel.slint`. Held by `page_keys_tests` (`a_page_with_the_keys_gets_every_key_and_its_filter_hands_the_apps_chords_back`,
+`the_second_escape_within_600_ms_gives_the_keys_back_and_a_held_escape_counts_once`,
+`the_focus_chord_moves_the_keys_both_ways_and_a_press_off_the_page_takes_them_back`) and `panel.key-filter`. Source: the
+browser parity audit (KEY-01, KEY-02, KEY-03, 2026-11-11).
+1161. **macOS: Cmd+[ and Cmd+] go back and forward in the web panel, Cmd+Left and Cmd+Right too outside an editable
+field, and a mouse's back and forward buttons step through the history, never a left click.** WebView2 keeps its
+browser keys (Alt+Left, the XButtons) for a panel; windowless CEF has none. The view's `KeyboardHandler` runs, for a
+key down the page left alone (`on_key_event`: not cancelled, not used by the renderer) and only for the person's own
+Cmd keys (`View::key` records them; an agent's DevTools key never counts), Chrome's Mac meaning (`status::mac_page_key`;
+`focus_on_editable_field` keeps Cmd+Left for the caret). The panel encodes back and forward as buttons 3 and 4
+(`PointerEventButton.back`, `.forward`) and `page_pointer` sends them to `nav` on the press when the page can go there;
+any other button is dropped. Native: `crates/flare-cef/src/macos/view.rs`, `crates/flare-cef/src/status.rs`,
+`crates/flare/src/web_live.rs`. Held by `panel.history-keys` (`crates/flare-web/tests/cef_macos.rs`),
+`a_persons_cmd_chord_the_page_left_is_the_frames_edit_command_or_a_step_through_the_history` and
+`the_back_and_forward_buttons_step_through_the_history_and_are_never_a_left_click`. Source: the browser parity audit
+(NAV-06, 2026-11-11).
+1162. **macOS: Cmd+C, X, V, A, Z and Shift+Z are the frame's edit commands in the web panel, a link's address under
+the pointer shows at the page's bottom left, and the input method composes in the page.** The same `on_key_event`
+runs the focused frame's `copy`, `cut`, `paste`, `select_all`, `undo` and `redo` (Cmd+Y is no redo on a Mac), so a page
+that cancels the key keeps it. `DisplayHandler::on_status_message` becomes `WebEvent::Status`, drawn by the panel as a
+pill at the page's bottom left, for the plain web panel only (WebView2's status bar is off for a mini-app and a plugin,
+seal.rs). winit's `Ime::Preedit` and `Ime::Commit` go to the page while it has the keys (`page_ime`, the caret in UTF-16
+units), never to the shell. Left: the candidate window's place at the caret, drag and drop into the page, spellcheck
+(it needs a context menu of Flare's). Native: `crates/flare-cef/src/macos/view.rs`, `crates/flare-web/src/macos/host.rs`,
+`crates/flare/src/web_live.rs`, `crates/flare/src/window.rs`. Held by `panel.edit-keys` and `panel.status`
+(`cef_macos.rs`; the probe never touches the pasteboard), and
+`the_pages_status_text_shows_under_it_and_the_input_method_goes_to_it`. Source: the browser parity audit (NAT-09,
+2026-11-11).
+1163. **macOS: Cmd+F while the web panel has the keys opens Flare's find bar over the page, which drives CEF's find.**
+WebView2 has its own find bar, so on Windows Ctrl+F stays the page's (`app_takes`); windowless CEF has none, so on a
+Mac `app_takes` takes Cmd+F and the window opens the terminal's `FindBar` (placeholder "Find in page") at the page's
+top right. Its text starts a search (`WebBackend::find`), Enter and Shift+Enter step (`again`), the readout is the
+terminal's ("3 of 12", "none"; empty until counted) from `FindHandler::on_find_result` (`WebEvent::Found`). CEF selects
+none of a new search's matches, so one step selects the first, as typing does in Chrome. Escape or Close stops the find
+and gives the page the keys back; the bar closes when its page goes elsewhere or another tab comes to the front. Native:
+`crates/flare/src/web_live.rs`, `crates/flare/ui/panel.slint`, `crates/flare/ui/find.slint`,
+`crates/flare-cef/src/macos/view.rs`. Held by `panel.find`, `cmd_f_in_the_page_opens_flares_find_bar_which_drives_the_pages_find`,
+`the_find_bar_closes_when_its_page_goes_elsewhere` and `on_windows_ctrl_f_stays_the_pages_and_on_a_mac_cmd_f_is_flares`.
+Source: the browser parity audit (NAT-02, 2026-11-11).
+1164. **macOS: Cmd+plus, Cmd+minus and Cmd+0 zoom the page when the web panel has the keys or the pointer, and
+Cmd+wheel over the page zooms it; the agent's clicks land under the zoom.** WebView2 zooms its page with Ctrl+plus and
+Ctrl+wheel. `zoom_front_step` (the chord and the View menu) zooms the page in Chromium's steps (`ZOOM_STEPS`, 25 % to
+500 %, one per tab, Cmd+0 back to 100 %) instead of the terminal's shared size (#190) while `page_has_keys` or
+`panel-web-hovered` holds, and the page keeps the keys through it. `page_wheel` turns a Cmd wheel into whole steps and
+never scrolls with it. The agent's click at an element's CSS centre lands on it at 150 % (Chromium maps DevTools
+coordinates through the zoom). Native: `crates/flare/src/appctl.rs`, `crates/flare/src/web_live.rs`,
+`crates/flare/src/appctl/web_glue.rs`. Held by `the_zoom_keys_zoom_the_page_that_has_the_keys_and_keep_them_there`,
+`the_zoom_steps_are_chromiums_and_stop_at_the_ends` and `panel.zoomed-agent-click`. Source: the browser parity audit
+(NAT-05, 2026-11-11).

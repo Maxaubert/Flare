@@ -3801,7 +3801,9 @@ fn an_off_screen_page_is_drawn_in_its_box_takes_the_input_there_and_a_press_stop
     assert!(f.h.comp.get_panel_web_live(), "the picture is shown");
     assert_eq!(f.h.comp.get_panel_web_frame().size().width, 4);
     let scale = f.h.comp.get_scale();
-    f.h.comp.invoke_panel_web_pointer(0, 10.0, 20.0, 0, 8);
+    // Slint calls Cmd `control` on a Mac (rule 1110): the panel's bit 2 there, 8 elsewhere.
+    let cmd_bit = if cfg!(target_vendor = "apple") { 2 } else { 8 };
+    f.h.comp.invoke_panel_web_pointer(0, 10.0, 20.0, 0, cmd_bit);
     f.h.comp.invoke_panel_web_pointer(1, 10.0, 20.0, 0, 0);
     f.h.comp.invoke_panel_web_wheel(10.0, 20.0, 0.0, -3.0, 0);
     f.h.comp.invoke_panel_web_key(true, "a".into(), 0, false);
@@ -3860,7 +3862,8 @@ fn an_off_screen_page_is_drawn_in_its_box_takes_the_input_there_and_a_press_stop
     // A shortcut (Cmd with a key) is not the person taking the page; a typed key is.
     let rx = look(&f, &id);
     f.pump();
-    f.h.comp.invoke_panel_web_key(true, "c".into(), 8, false);
+    f.h.comp
+        .invoke_panel_web_key(true, "c".into(), cmd_bit, false);
     f.pump();
     assert_eq!(
         f.ctl.borrow().web.agent_op(&id),

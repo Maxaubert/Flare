@@ -72,6 +72,9 @@ pub enum Call {
     Blur(String),
     /// The strip's Close: the pop-up on top of the tab's page.
     ClosePopup(String),
+    /// A find in the tab's page: the text, forward, again.
+    Find(String, String, bool, bool),
+    StopFind(String),
 }
 
 /// How a test plays the page's DevTools: method and params in, the answer out.
@@ -459,6 +462,20 @@ impl WebBackend for FakeWeb {
 
     fn blur(&mut self, tab: &str) {
         self.state.borrow_mut().calls.push(Call::Blur(tab.into()));
+    }
+
+    fn find(&mut self, tab: &str, text: &str, forward: bool, again: bool) {
+        self.state
+            .borrow_mut()
+            .calls
+            .push(Call::Find(tab.into(), text.into(), forward, again));
+    }
+
+    fn stop_find(&mut self, tab: &str) {
+        self.state
+            .borrow_mut()
+            .calls
+            .push(Call::StopFind(tab.into()));
     }
 
     fn probe_view(&self, slot: &Slot) -> Option<ControllerProbe> {

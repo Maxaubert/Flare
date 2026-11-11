@@ -1171,6 +1171,15 @@ impl WebHost {
             }
             ViewEvent::Focus { has } => sink.send(|tab| WebEvent::Focus { tab, has }),
             ViewEvent::FullScreen { on } => sink.send(|tab| WebEvent::FullScreen { tab, on }),
+            // The plain web panel's status bar only: a mini-app or a plugin has none (as WebView2's is off there).
+            ViewEvent::Status { text } if page_log && slot.is_panel() => {
+                sink.send(|tab| WebEvent::Status { tab, text });
+            }
+            ViewEvent::Status { .. } => {}
+            ViewEvent::Found { count, active } => {
+                let (count, active) = (count.max(0) as u32, active.max(0) as u32);
+                sink.send(|tab| WebEvent::Found { tab, count, active });
+            }
             ViewEvent::Gone { why, reason, code } => {
                 let site = self.live(slot).map(View::url).unwrap_or_default();
                 note(
@@ -1440,6 +1449,14 @@ impl WebHost {
                 if let Some(p) = self.popup_views.get_mut(&id) {
                     p.serial = serial;
                 }
+            }
+            // A pop-up stands in the page's place: its links' addresses and its find count are the panel's.
+            ViewEvent::Status { text } if slot.is_panel() => {
+                sink.send(|tab| WebEvent::Status { tab, text });
+            }
+            ViewEvent::Found { count, active } => {
+                let (count, active) = (count.max(0) as u32, active.max(0) as u32);
+                sink.send(|tab| WebEvent::Found { tab, count, active });
             }
             _ => {}
         }
@@ -1870,6 +1887,18 @@ impl WebBackend for WebHost {
                     modifiers,
                 });
             }
+        }
+    }
+
+    fn find(&mut self, tab: &str, text: &str, forward: bool, again: bool) {
+        if let Some(v) = self.front(&Slot::panel(tab)) {
+            v.find(text, forward, again);
+        }
+    }
+
+    fn stop_find(&mut self, tab: &str) {
+        if let Some(v) = self.front(&Slot::panel(tab)) {
+            v.stop_finding();
         }
     }
 

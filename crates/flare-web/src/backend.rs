@@ -145,6 +145,18 @@ pub enum WebEvent {
         tab: String,
         on: bool,
     },
+    /// macOS: the web panel's status text (a link's address under the pointer), empty when it went. WebView2 draws
+    /// its own status bar.
+    Status {
+        tab: String,
+        text: String,
+    },
+    /// macOS: a find in the tab's page ([`WebBackend::find`]) counted `count` matches, the `active` one selected.
+    Found {
+        tab: String,
+        count: u32,
+        active: u32,
+    },
     /// The browser process of the tab ended or the controller was closed under us.
     Gone {
         tab: String,
@@ -352,6 +364,8 @@ impl WebEvent {
             WebEvent::Key { .. } => "Key",
             WebEvent::Focus { .. } => "Focus",
             WebEvent::FullScreen { .. } => "FullScreen",
+            WebEvent::Status { .. } => "Status",
+            WebEvent::Found { .. } => "Found",
             WebEvent::Gone { .. } => "Gone",
             WebEvent::Script { .. } => "Script",
             WebEvent::Cdp { .. } => "Cdp",
@@ -578,6 +592,11 @@ pub trait WebBackend {
     fn set_scale(&mut self, _scale: f64) {}
     /// The window takes the keyboard back from the tab's page (macOS; on Windows focusing the window does it).
     fn blur(&mut self, _tab: &str) {}
+    /// macOS: finds `text` in the tab's page, the next (`forward`) or the one before; `again` steps through the
+    /// same search. Answered by `WebEvent::Found`. WebView2 has its own find bar.
+    fn find(&mut self, _tab: &str, _text: &str, _forward: bool, _again: bool) {}
+    /// macOS: ends the tab's find (the matches are no longer marked).
+    fn stop_find(&mut self, _tab: &str) {}
 }
 
 #[cfg(test)]
