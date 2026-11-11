@@ -31,7 +31,7 @@ pub type PageNames = std::collections::HashMap<String, String>;
 
 /// What this PC draws: the GPU row needs an NVIDIA card, every dictation row needs the
 /// Dictation page to be wired (decision D6; M8 sets both), and the Mark colours rows need the Bar
-/// indicator (rule 1136: Ring hides the section, so Find must not lead to it).
+/// indicator (rule 1140: Ring hides the section, so Find must not lead to it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IndexEnv {
     pub nvidia: bool,
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(ids, expect);
     }
 
-    /// Rule 1136: the Mark colours section is hidden with Ring, so its rows leave the index.
+    /// Rule 1140: the Mark colours section is hidden with Ring, so its rows leave the index.
     #[test]
     fn the_mark_colour_rows_are_indexed_only_for_bar() {
         let colours = ["agent-color", "agent-done-color", "agent-question-color"];

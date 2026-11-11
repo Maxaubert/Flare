@@ -6,7 +6,7 @@
 //! are drawn only while the indicator is Bar: the Ring marks are mono, in the tab name's ink, so
 //! the three colours change nothing on them (Max, 2026-11-11: "these should be hidden if you use
 //! the ring style"). The one Ring surface that still wears them is the dots on the +N button of an
-//! overflowing strip; a pick made under Bar stays in force there (regression rule 1136).
+//! overflowing strip; a pick made under Bar stays in force there (regression rule 1140).
 
 use super::{
     BlockModel, Control, HeadingAction, PageEnv, PageModel, RowModel, SectionModel, opts,
