@@ -399,6 +399,7 @@ pub fn agent_hooks(ctx: &mut Ctx) -> Result<(), String> {
                 template.to_string_lossy().into_owned(),
             ),
         ],
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     let two = ctx.until("two tabs", 15_000, &mut || tab_count(&mut app) == 2);

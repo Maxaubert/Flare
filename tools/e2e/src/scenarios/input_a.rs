@@ -687,6 +687,7 @@ pub fn scrollbar(ctx: &mut Ctx) -> Result<(), String> {
         renderer: Some("software"),
         folders: vec![alpha],
         scale_dpi: Some(SCALE_225),
+        tabs_along_the_top: true,
         ..Launch::default()
     };
     with_app(ctx, opts, scrollbar_run)

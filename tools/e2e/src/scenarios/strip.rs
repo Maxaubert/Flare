@@ -319,6 +319,7 @@ fn launch_strip(
         renderer: Some("software"),
         folders,
         scale_dpi: dpi,
+        tabs_along_the_top: true,
         ..Launch::default()
     })
 }
