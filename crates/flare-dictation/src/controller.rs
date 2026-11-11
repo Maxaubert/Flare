@@ -183,7 +183,7 @@ pub enum Effect {
         after_ms: u64,
     },
     StopEngine,
-    /// A phase crumb for the diag timeline: the phase's name only.
+    /// A phase crumb for the diag timeline: the phase's name only (or `cap`: the 300 s cap stopped the recording).
     Crumb(&'static str),
 }
 
@@ -468,6 +468,7 @@ impl Controller {
         let rate = f64::from(TARGET_RATE);
         let have = r.samples.len();
         if have as f64 >= MAX_SECONDS * rate {
+            fx.push(Effect::Crumb("cap"));
             self.stop(fx, now);
             return;
         }
@@ -1259,6 +1260,10 @@ mod tests {
         h.at(400.0);
         let fx = h.tick();
         assert!(final_id(&fx).is_some(), "300 s stops the recording");
+        assert!(
+            fx.iter().any(|e| matches!(e, Effect::Crumb("cap"))),
+            "the log says the cap stopped it"
+        );
         assert_eq!(h.c.view().phase, Phase::Transcribing);
     }
 

@@ -477,7 +477,7 @@ impl Service {
                     }
                 }
             }
-            SvcEvent::Pick(id) => self.choose(&mut fx, &id),
+            SvcEvent::Pick(id) => self.choose(&mut fx, &id, "click"),
             SvcEvent::Away => {
                 if self.picking.is_some() {
                     fx.push(SvcEffect::Crumb(
@@ -500,15 +500,23 @@ impl Service {
             SvcEvent::Tabs(all) => self.on_tabs(&mut fx, all),
             SvcEvent::Sent(d, text) => {
                 self.outside = false;
+                // `sent`: the words and the Enter landed. `typed`: the words are in the prompt (sent or not).
                 fx.push(SvcEffect::Crumb(json!({
                     "sent": matches!(d, SendDecision::Ok(_)),
                     "chars": text.chars().count(),
+                    "typed": !matches!(d, SendDecision::No(_)),
                 })));
                 match d {
                     SendDecision::Ok(t) => {
                         fx.push(SvcEffect::Widget(OverlayState::Sent { to: t.label }));
                         fx.push(SvcEffect::WidgetHide { after_ms: SHOW_MS });
                     }
+                    // The words are in the prompt, but the Enter did not send them: say so, plainly.
+                    SendDecision::Typed(t) => self.note(
+                        &mut fx,
+                        format!("Typed into {}, press Enter there", t.label),
+                        Tone::Warn,
+                    ),
                     SendDecision::No(why) => {
                         self.unsent(&mut fx, Some(text), &format!("Not sent: {why}"), Tone::Warn)
                     }
@@ -524,6 +532,7 @@ impl Service {
             SvcEvent::PasteFailed => {
                 // The host kept the words (the paste found the tab gone), so nothing waits on an answer.
                 self.pending_paste = None;
+                fx.push(SvcEffect::Crumb(json!({ "pasted": "tab gone" })));
                 self.note(&mut fx, "Not typed: that tab has closed", Tone::Warn)
             }
         }
@@ -677,6 +686,11 @@ impl Service {
                 // The last recording's words have not come back: a second one would be lost, and the first
                 // would route by the second's front. Say so; the first keeps its own.
                 if self.busy_since.is_some_and(|t| self.now - t < BUSY_MAX_MS) {
+                    // Nothing started, so the key must not think it did: its next press is a start again.
+                    self.feed.to_idle();
+                    fx.push(SvcEffect::Crumb(
+                        json!({ "key": "start", "refused": "busy" }),
+                    ));
                     self.flash(fx, "Still transcribing", Tone::Quiet);
                     return;
                 }
@@ -692,6 +706,7 @@ impl Service {
                 self.rec = true;
                 self.busy_since = Some(self.now);
                 self.rec_front = self.last_front;
+                fx.push(SvcEffect::Crumb(self.front_crumb(self.rec_front)));
                 fx.push(SvcEffect::NoteFront);
                 fx.push(SvcEffect::Widget(OverlayState::Listening {
                     text: String::new(),
@@ -732,7 +747,7 @@ impl Service {
                         .and_then(|p| p.rows.iter().find(|r| r.n == *n))
                         .map(|r| r.id.clone());
                     if let Some(id) = id {
-                        self.choose(fx, &id);
+                        self.choose(fx, &id, "digit");
                     }
                     return;
                 }
@@ -766,12 +781,16 @@ impl Service {
         if !self.cfg.as_ref().is_some_and(|c| c.on) {
             return;
         }
-        // Which app is in front: this copy, one on the link, or another app.
+        // Which app is in front: this copy, one on the link, or another app. The chord's FIRST key-down says
+        // it: by a later key's down (Win after Ctrl) the shell's own windows may be in front, or none at all.
+        // A later down only fills in a front the first one could not name.
         if let HookEvent::Key {
             down: true, front, ..
         } = &h
         {
-            self.last_front = *front;
+            if !self.feed.holding() || self.last_front.is_none() {
+                self.last_front = *front;
+            }
         }
         let a = self.feed.feed(&h, now, &self.key_config());
         self.act(fx, a);
@@ -868,7 +887,25 @@ impl Service {
         }
     }
 
+    /// A crumb naming the window in front at a press: this copy, another process (by id), or none.
+    fn front_crumb(&self, front: Option<u32>) -> Value {
+        match front {
+            Some(p) if p == self.opts.self_pid => json!({ "front": "self" }),
+            Some(p) => json!({ "front": "other", "pid": p }),
+            None => json!({ "front": "none" }),
+        }
+    }
+
     fn on_live(&mut self, fx: &mut Vec<SvcEffect>, v: LiveView) {
+        // The recording ended without the key (the 300 s cap): the key must not think it is still on, or its
+        // next press is a dead stop and the one after starts a recording nobody wanted.
+        if v.phase != LivePhase::Listening && self.feed.listening() {
+            self.feed.to_idle();
+            fx.push(SvcEffect::Crumb(json!({
+                "stop": "not by the key",
+                "phase": if v.phase == LivePhase::Idle { "idle" } else { "transcribing" },
+            })));
+        }
         if !self.outside {
             return;
         }
@@ -900,26 +937,28 @@ impl Service {
             }
             RouteResult::Text(t) => cap(t, TEXT_MAX),
         };
-        fx.push(SvcEffect::Crumb(json!({
-            "route": route_name(front, self.opts.self_pid, self.svc),
-            "chars": text.chars().count(),
-        })));
-        // This copy's window was in front: the words go to its front tab, at the cursor, never Enter.
-        if front == Some(self.opts.self_pid) {
-            // The note waits for the answer: with no shell in front the words go on to the list.
-            let older = self.pending_paste.replace(text.clone());
-            self.keep(fx, older, None);
-            fx.push(SvcEffect::PastePage(text));
-            return;
+        // Which way the words go, and why: never the words, only their length.
+        let way = route_name(front, self.opts.self_pid, self.svc);
+        let mut crumb = self.front_crumb(front);
+        crumb["route"] = json!(way);
+        crumb["chars"] = json!(text.chars().count());
+        fx.push(SvcEffect::Crumb(crumb));
+        match (way, front) {
+            // This copy's window was in front: the words go to its front tab, at the cursor, never Enter.
+            ("front tab", _) => {
+                // The note waits for the answer: with no shell in front the words go on to the list.
+                let older = self.pending_paste.replace(text.clone());
+                self.keep(fx, older, None);
+                fx.push(SvcEffect::PastePage(text));
+            }
+            // Another linked copy's window was in front: that copy pastes.
+            ("other copy", Some(pid)) => {
+                let older = self.pending_paste.replace(text.clone());
+                self.keep(fx, older, None);
+                fx.push(SvcEffect::PasteCopy { pid, text });
+            }
+            _ => self.ask(fx, text),
         }
-        // Another linked copy's window was in front: that copy pastes.
-        if let (Some(pid), true) = (front, self.svc) {
-            let older = self.pending_paste.replace(text.clone());
-            self.keep(fx, older, None);
-            fx.push(SvcEffect::PasteCopy { pid, text });
-            return;
-        }
-        self.ask(fx, text);
     }
 
     fn ask(&mut self, fx: &mut Vec<SvcEffect>, text: String) {
@@ -955,7 +994,7 @@ impl Service {
                     rows: rows.clone(),
                 });
                 fx.push(SvcEffect::Crumb(
-                    json!({ "pick": "shown", "rows": rows.len() }),
+                    json!({ "pick": "shown", "rows": rows.len(), "tabs": all.len() }),
                 ));
                 fx.push(SvcEffect::SetTimer(TimerId::Pick, PICK_MS));
                 fx.push(SvcEffect::HookPick(true));
@@ -988,7 +1027,8 @@ impl Service {
         }
     }
 
-    fn choose(&mut self, fx: &mut Vec<SvcEffect>, id: &str) {
+    /// A row picked `how` (a digit or a click).
+    fn choose(&mut self, fx: &mut Vec<SvcEffect>, id: &str, how: &str) {
         let Some(p) = &self.picking else { return };
         let Some(row) = p.rows.iter().find(|r| r.id == id) else {
             return;
@@ -998,7 +1038,7 @@ impl Service {
         }
         let (rid, label, text) = (row.id.clone(), row.label.clone(), p.text.clone());
         fx.push(SvcEffect::Crumb(
-            json!({ "pick": "picked", "row": row.n, "id": rid }),
+            json!({ "pick": "picked", "row": row.n, "id": rid, "by": how }),
         ));
         self.end_pick(fx);
         self.send_to(fx, rid, label, text);
@@ -1060,16 +1100,18 @@ pub trait ClientHost: Send + Sync + 'static {
     fn agent_under(&self, id: &str) -> Option<String>;
     /// Write to a tab's shell. False when nothing was written (the window could not take it).
     fn write(&self, id: &str, data: &str) -> bool;
-    /// Whether Claude's prompt box in the tab holds unsent text (read off its screen). Unknown is `false`.
-    fn prompt_has_draft(&self, _id: &str) -> bool {
-        false
+    /// Whether Claude's prompt box in the tab holds unsent text (read off its screen). `None`: no box to read.
+    fn prompt_draft(&self, _id: &str) -> Option<bool> {
+        None
     }
-    /// Wait this long (the Enter follows the paste after `SEND_ENTER_MS`). The link's handler thread sleeps; the
+    /// Wait this long (the send watches its words land and its Enter take). The link's handler thread sleeps; the
     /// UI thread never calls this.
     fn pause(&self, ms: u64) {
         // sync-ok: runs on the link's own handler thread, never the UI thread
         std::thread::sleep(std::time::Duration::from_millis(ms));
     }
+    /// A step of a checked send, for the diagnostics log (never the words).
+    fn stage(&self, _what: &str, _n: u64) {}
     /// Paste dictated words at the cursor of the tab in front, never Enter. Must not block.
     fn paste(&self, text: &str);
 }
@@ -1083,12 +1125,18 @@ impl<H: ClientHost> SendHost for Checked<'_, H> {
     fn write(&self, id: &str, bytes: &str) -> bool {
         self.0.write(id, bytes)
     }
-    fn prompt_has_draft(&self, id: &str) -> bool {
-        self.0.prompt_has_draft(id)
+    fn prompt_draft(&self, id: &str) -> Option<bool> {
+        self.0.prompt_draft(id)
     }
     fn later(&self, ms: u64, f: Box<dyn FnOnce() + '_>) {
         self.0.pause(ms);
         f();
+    }
+    fn pause(&self, ms: u64) {
+        self.0.pause(ms);
+    }
+    fn stage(&self, what: &str, n: u64) {
+        self.0.stage(what, n);
     }
 }
 
@@ -1355,6 +1403,176 @@ mod tests {
         // Once it is back, a new press starts again.
         let fx = s.on(key(true, Some(9)), 30.0);
         assert!(started_ctl(&fx), "{fx:?}");
+    }
+
+    /// A toggle F8 service that serves, under `--e2e`-free rules (the PT tests' `started`, toggled).
+    fn toggling() -> Service {
+        let mut s = Service::new(opts(false, true));
+        s.start();
+        s.on(SvcEvent::Config(cfg(f8(), DictMode::Toggle)), 0.0);
+        s.on(SvcEvent::Hook(HookEvent::Ready), 1.0);
+        s
+    }
+
+    fn tap(s: &mut Service, at: f64) -> Vec<SvcEffect> {
+        let mut fx = s.on(key(true, Some(1)), at);
+        fx.extend(s.on(key(false, None), at + 1.0));
+        fx
+    }
+
+    fn live(phase: LivePhase) -> SvcEvent {
+        SvcEvent::Live(LiveView {
+            phase,
+            text: String::new(),
+            level: 0.0,
+            starting: false,
+        })
+    }
+
+    #[test]
+    fn a_start_refused_while_transcribing_leaves_the_key_ready_to_start_again() {
+        let mut s = toggling();
+        assert!(started_ctl(&tap(&mut s, 10.0)));
+        let fx = tap(&mut s, 20.0);
+        assert!(has(&fx, &SvcEffect::ToController(OutsideAction::Stop)));
+        // Pressed while the words are still coming back: refused, and the log says so.
+        let fx = tap(&mut s, 30.0);
+        assert!(!started_ctl(&fx), "{fx:?}");
+        assert!(has(
+            &fx,
+            &SvcEffect::Crumb(json!({ "key": "start", "refused": "busy" }))
+        ));
+        s.on(SvcEvent::Routed(RouteResult::Text("words".into())), 40.0);
+        // The next press starts: it is not a dead stop.
+        let fx = tap(&mut s, 50.0);
+        assert!(started_ctl(&fx), "{fx:?}");
+    }
+
+    #[test]
+    fn a_recording_the_cap_stopped_leaves_the_key_ready_to_start_again() {
+        let mut s = toggling();
+        assert!(started_ctl(&tap(&mut s, 10.0)));
+        s.on(live(LivePhase::Listening), 20.0);
+        // Five minutes: the controller stops by itself, no key involved.
+        let fx = s.on(live(LivePhase::Transcribing), 300_010.0);
+        assert!(
+            has(
+                &fx,
+                &SvcEffect::Crumb(json!({ "stop": "not by the key", "phase": "transcribing" }))
+            ),
+            "{fx:?}"
+        );
+        s.on(
+            SvcEvent::Routed(RouteResult::Text("words".into())),
+            300_020.0,
+        );
+        let fx = tap(&mut s, 300_030.0);
+        assert!(
+            started_ctl(&fx),
+            "the first press after the cap starts: {fx:?}"
+        );
+    }
+
+    #[test]
+    fn the_chords_first_key_down_names_the_window_in_front_not_the_win_key_down() {
+        let mut s = Service::new(opts(false, true));
+        s.start();
+        s.on(
+            SvcEvent::Config(cfg(default_hotkey(), DictMode::Toggle)),
+            0.0,
+        );
+        s.on(SvcEvent::Hook(HookEvent::Ready), 1.0);
+        let k = |down: bool, code: &str, front: Option<u32>| {
+            SvcEvent::Hook(HookEvent::Key {
+                down,
+                code: code.into(),
+                front,
+            })
+        };
+        // One tap of Ctrl+Win, with the window each down sees in front.
+        let chord = |s: &mut Service, at: f64, ctrl: Option<u32>, win: Option<u32>| {
+            let mut fx = s.on(k(true, "ControlLeft", ctrl), at);
+            fx.extend(s.on(k(true, "MetaLeft", win), at + 10.0));
+            fx.extend(s.on(k(false, "MetaLeft", None), at + 90.0));
+            fx.extend(s.on(k(false, "ControlLeft", None), at + 100.0));
+            fx
+        };
+        // Ctrl down with this copy in front; by the Win down the shell's window (another process) is in front.
+        let fx = chord(&mut s, 10.0, Some(1), Some(77));
+        assert!(started_ctl(&fx), "{fx:?}");
+        assert!(has(&fx, &SvcEffect::Crumb(json!({ "front": "self" }))));
+        // The stopping tap's fronts do not matter.
+        chord(&mut s, 1000.0, Some(77), Some(77));
+        let fx = s.on(SvcEvent::Routed(RouteResult::Text("hi".into())), 1500.0);
+        assert!(has(&fx, &SvcEffect::PastePage("hi".into())), "{fx:?}");
+        assert!(!has(&fx, &SvcEffect::AskTabs));
+        s.on(SvcEvent::Pasted(true), 1600.0);
+        // A first down that names nothing is filled in by the next down of the same chord.
+        let fx = chord(&mut s, 2000.0, None, Some(1));
+        assert!(started_ctl(&fx), "{fx:?}");
+        chord(&mut s, 3000.0, None, None);
+        let fx = s.on(SvcEvent::Routed(RouteResult::Text("hi".into())), 3500.0);
+        assert!(has(&fx, &SvcEffect::PastePage("hi".into())), "{fx:?}");
+    }
+
+    #[test]
+    fn a_send_whose_enter_did_not_take_says_typed_not_sent_and_keeps_no_copy() {
+        let mut s = serving();
+        let fx = s.on(
+            SvcEvent::Sent(
+                SendDecision::Typed(tab(|t| t.label = "Web".into())),
+                "the words".into(),
+            ),
+            10.0,
+        );
+        assert!(
+            has(
+                &fx,
+                &SvcEffect::Widget(plain("Typed into Web, press Enter there", Tone::Warn))
+            ),
+            "{fx:?}"
+        );
+        assert!(copies(&fx).is_empty(), "the words are in the prompt");
+        assert!(!fx
+            .iter()
+            .any(|e| matches!(e, SvcEffect::Widget(OverlayState::Sent { .. }))));
+        assert!(has(
+            &fx,
+            &SvcEffect::Crumb(json!({ "sent": false, "chars": 9, "typed": true }))
+        ));
+    }
+
+    #[test]
+    fn the_route_and_pick_crumbs_name_the_way_and_lengths_never_the_words() {
+        let mut s = serving();
+        let mut all = hear(&mut s, Some(77), "secret words");
+        all.extend(s.on(SvcEvent::Pasted(false), 21.0));
+        all.extend(s.on(SvcEvent::Tabs(vec![tab(|_| {})]), 22.0));
+        all.extend(s.on(SvcEvent::Pick("p1".into()), 23.0));
+        all.extend(s.on(
+            SvcEvent::Sent(SendDecision::Ok(tab(|_| {})), "secret words".into()),
+            24.0,
+        ));
+        let crumbs: Vec<&Value> = all
+            .iter()
+            .filter_map(|e| match e {
+                SvcEffect::Crumb(v) => Some(v),
+                _ => None,
+            })
+            .collect();
+        for want in [
+            json!({ "front": "other", "pid": 77, "route": "other copy", "chars": 12 }),
+            json!({ "pasted": false, "chars": 12 }),
+            json!({ "pick": "shown", "rows": 1, "tabs": 1 }),
+            json!({ "pick": "picked", "row": 1, "id": "p1", "by": "click" }),
+            json!({ "sent": true, "chars": 12, "typed": true }),
+        ] {
+            assert!(crumbs.contains(&&want), "{want} in {crumbs:?}");
+        }
+        assert!(
+            crumbs.iter().all(|c| !c.to_string().contains("secret")),
+            "never the words"
+        );
     }
 
     #[test]
@@ -2011,24 +2229,26 @@ mod tests {
         let mut s = started();
         let fx = hear(&mut s, Some(1), "hello");
         assert!(has(&fx, &SvcEffect::PastePage("hello".into())));
-        assert!(crumbs_of(&fx).contains(&r#"{"route":"front tab","chars":5}"#.to_string()));
+        assert!(crumbs_of(&fx)
+            .contains(&r#"{"front":"self","route":"front tab","chars":5}"#.to_string()));
         // Another app in front (Safari, say), alone with no link: the list of sessions, then the picker.
         let mut s = started();
         let fx = hear(&mut s, Some(4242), "hello");
         assert!(has(&fx, &SvcEffect::AskTabs));
         assert!(!fx.iter().any(|e| matches!(e, SvcEffect::PastePage(_))));
-        assert!(crumbs_of(&fx).contains(&r#"{"route":"picker","chars":5}"#.to_string()));
+        assert!(crumbs_of(&fx)
+            .contains(&r#"{"front":"other","pid":4242,"route":"picker","chars":5}"#.to_string()));
         let fx = s.on(SvcEvent::Tabs(vec![tab(|_| {})]), 21.0);
         assert!(s.picking());
         assert_eq!(rows_of(&fx).len(), 1);
-        assert!(crumbs_of(&fx).contains(&r#"{"pick":"shown","rows":1}"#.to_string()));
+        assert!(crumbs_of(&fx).contains(&r#"{"pick":"shown","rows":1,"tabs":1}"#.to_string()));
     }
 
     #[test]
     fn the_picker_logs_shown_picked_and_sent_with_counts_never_the_words() {
         let mut s = serving();
         let fx = open_picker(&mut s, vec![tab(|_| {}), tab(|t| t.id = "p2".into())]);
-        assert!(crumbs_of(&fx).contains(&r#"{"pick":"shown","rows":2}"#.to_string()));
+        assert!(crumbs_of(&fx).contains(&r#"{"pick":"shown","rows":2,"tabs":2}"#.to_string()));
         let fx = s.on(SvcEvent::Hook(HookEvent::Digit(2)), 30.0);
         assert!(has(
             &fx,
@@ -2037,7 +2257,8 @@ mod tests {
                 text: "send this".into()
             }
         ));
-        assert!(crumbs_of(&fx).contains(&r#"{"pick":"picked","row":2,"id":"p2"}"#.to_string()));
+        assert!(crumbs_of(&fx)
+            .contains(&r#"{"pick":"picked","row":2,"id":"p2","by":"digit"}"#.to_string()));
         let fx = s.on(
             SvcEvent::Sent(
                 SendDecision::Ok(tab(|t| t.id = "p2".into())),
@@ -2045,7 +2266,7 @@ mod tests {
             ),
             31.0,
         );
-        assert!(crumbs_of(&fx).contains(&r#"{"sent":true,"chars":9}"#.to_string()));
+        assert!(crumbs_of(&fx).contains(&r#"{"sent":true,"chars":9,"typed":true}"#.to_string()));
         for c in crumbs_of(&fx) {
             assert!(!c.contains("send this"), "{c}");
         }
@@ -2347,7 +2568,12 @@ mod tests {
             }),
             3.0,
         );
-        assert_eq!(fx, vec![SvcEffect::Widget(OverlayState::Transcribing)]);
+        // No key stopped it (the cap did): the key is told, and the log says so, before the face.
+        assert_eq!(
+            fx.last(),
+            Some(&SvcEffect::Widget(OverlayState::Transcribing)),
+            "{fx:?}"
+        );
         // After the words are routed the recording is over: late live views draw nothing.
         s.on(
             SvcEvent::Routed(RouteResult::Message("Cancelled".into())),
@@ -2504,22 +2730,28 @@ mod tests {
             "{crumbs:?}"
         );
         assert!(crumbs.iter().all(|c| !c.contains("secret")), "{crumbs:?}");
-        // A crumb is one of its shapes and nothing else: the route's carries a count, never the words.
+        // The route's crumb carries the window in front, the way and a count, never the words.
         assert!(
             crumbs
                 .iter()
-                .any(|c| c == r#"{"route":"other copy","chars":15}"#),
+                .any(|c| c == r#"{"front":"other","pid":5,"route":"other copy","chars":15}"#),
             "{crumbs:?}"
         );
+        // A crumb names only what happened (a key action, a hook state, a role, the way the words went and
+        // their length), never anything typed.
+        let fields = [
+            "key", "refused", "hook", "role", "front", "pid", "route", "chars", "pick", "rows",
+            "tabs", "by", "row", "id", "pasted", "sent", "typed", "stop", "phase",
+        ];
         for c in &crumbs {
             let v: Value = serde_json::from_str(c).unwrap();
             let o = v.as_object().unwrap();
-            let k: Vec<&str> = o.keys().map(String::as_str).collect();
-            let shape = matches!(
-                k.as_slice(),
-                ["key"] | ["hook"] | ["role"] | ["route", "chars"]
+            assert!(o.keys().all(|k| fields.contains(&k.as_str())), "{c}");
+            assert!(
+                o.values()
+                    .all(|v| v.is_number() || v.is_boolean() || v.is_string()),
+                "{c}"
             );
-            assert!(shape, "{c}");
         }
     }
 

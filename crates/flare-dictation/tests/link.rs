@@ -203,6 +203,30 @@ fn the_caps_of_a_tab_list() {
 }
 
 #[test]
+fn a_send_typed_but_not_entered_stays_a_send_to_an_older_copy_and_an_older_answer_is_a_send() {
+    let t = tab(|_| {});
+    let line = encode_to_service(&ToService::Sent {
+        rid: 5,
+        res: SendDecision::Typed(t.clone()),
+    });
+    let v: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+    // What an older service reads: `ok` true and the target, as before.
+    assert_eq!(v["res"]["ok"], serde_json::Value::Bool(true));
+    assert_eq!(v["res"]["target"]["id"], serde_json::json!(t.id));
+    assert_eq!(v["res"]["entered"], serde_json::Value::Bool(false));
+    // What an older client sends (no `entered`): a send.
+    let mut old = v.clone();
+    old["res"].as_object_mut().unwrap().remove("entered");
+    assert_eq!(
+        parse_to_service(&old.to_string()),
+        Some(ToService::Sent {
+            rid: 5,
+            res: SendDecision::Ok(t)
+        })
+    );
+}
+
+#[test]
 fn messages_survive_their_own_encoding() {
     let t = tab(|_| {});
     let msgs = [
@@ -223,6 +247,10 @@ fn messages_survive_their_own_encoding() {
         ToService::Sent {
             rid: 3,
             res: SendDecision::No("no".into()),
+        },
+        ToService::Sent {
+            rid: 4,
+            res: SendDecision::Typed(t.clone()),
         },
     ];
     for m in msgs {

@@ -575,7 +575,8 @@ finished transcript that ends unsent is copied to the clipboard and the widget n
 the 30 s timeout on the picker, a refused or failed checked send, a copy of the app that has closed. A picker that is
 dismissed, a new recording that replaces words still waiting, a newer text over an older one, and switching dictation
 off with words waiting copy them too, with no note. "Cancelled", "Heard nothing", a paste and a successful send copy
-nothing. A copy that fails puts the plain note back only while the exact "copied" note is still showing; a silent copy that
+nothing; a send whose words are in the prompt but whose Enter did not send them copies nothing either ("Typed into X,
+press Enter there", rule 1142). A copy that fails puts the plain note back only while the exact "copied" note is still showing; a silent copy that
 fails says "Words could not be copied" when nothing else is on screen. A paste into this copy's front tab with no shell
 in front (Settings, an empty window) goes on to the list and copies, never claiming "Typed into the tab in front"
 (`SvcEffect::PastePage` is answered with `Pasted`); words another copy routes here with no shell in front are copied by
@@ -2275,6 +2276,48 @@ Windows never reads the phase (`phase_from_winit` is `Wheel` off macOS). No sett
 `winits_phase_is_a_plain_wheel_off_the_mac_and_for_a_mouse` and `a_wheel_that_moves_the_view_asks_for_a_redraw`.
 Source: Max on his Mac (2026-11-11).
 1141. **The side-by-side run reads Prism Terminal's private installer with a read-only token, given to its step alone, and fails without it.** Prism Terminal moved to `arkivert/PrismTerminal` and became private (2026-11-11), so `gh release download` with the workflow's `GITHUB_TOKEN` answered "release not found". The side-by-side step of `release.yml` and `installer-e2e.yml` sets `GH_TOKEN` from the repository secret `PRISM_RELEASE_TOKEN` (a fine-grained token, Contents read on that one repository); no other step reads a secret. When the secret is missing the step prints one `::error::` line naming the secret, the repository and `docs/shipping.md`, and exits 1 before the test runs: never a skip, and the token is never printed. Native: the two workflow steps, `NEIGHBOUR_RELEASE_REPO` in `tools/e2e/tests/side_by_side.rs`. Held by `only_the_side_by_side_step_gets_the_neighbour_token_and_it_fails_without_it`, `no_secret_other_than_the_github_token_and_the_neighbour_release_token` and `the_release_goes_to_this_repository_only` (`crates/flare/tests/release_files.rs`), and the name scan's third widening (`the_widenings_are_narrow`, `crates/flare/tests/names.rs`). Source: owner decision 2026-11-11; `docs/shipping.md`.
+1142. **Dictation from another app says "Sent" only when the words were sent, its key never gets out of step, and the
+Flare window in front at the press is found.** Owner report (Flare Stable, toggle mode, Ctrl+Win, 2026-11-11): every
+stop asked which session with Flare's tab in front; a card said "Sent to web-application-project" and the words never
+arrived; a press after a recording did nothing and the next started a recording nobody wanted. (1) The front: the
+chord's FIRST key-down names the window in front; a later down of the same chord (Win after Ctrl, when the shell's own
+windows may be in front or none is) only fills in a front the first could not name (`Service::on_hook`). The hook reads
+the foreground window, or with none the foreground thread's active window, and resolves it to its root owner
+(`keyhook::front_of`). With this copy in front and no tab noted at the press (the window was busy), the paste asks the
+window once more on the next turn before it goes to the list (`Dict::paste_page`). (2) The send: `type_checked` reads
+Claude's prompt box (`question::prompt_draft`, `None` when no box is on screen). With a box, it waits until the words
+show there (300 ms + 1 ms a character, at most 3 s), writes the Enter no sooner than 300 ms after them, and waits up to
+2 s for the box to empty: emptied is `Ok` ("Sent to X"), still full is `SendDecision::Typed` (a warning, "Typed into
+X, press Enter there", nothing copied), words never shown is `No` ("Not sent: the words did not show in X, copied"). An
+Enter held back because the tab changed is now `No` too, never "Sent". With no box to read, the Enter follows after
+300 ms as before. On the link `Typed` is `ok: true` plus `entered: false`, so an older copy still reads a send. (3) The
+key: a start refused as busy and a recording the cap (or anything but the key) ended set the key feed back to idle
+(`KeyFeed::to_idle`, the keys held stay held so the chord's key-up is still the binding's). (4) Crumbs, never the
+words: the front at a start, the route taken with the text's length, the picker shown and how a row was picked, every
+send stage and its result, the paste's outcome, a refused start, the cap (`dictation phase cap`), and a dropped PTY
+write (`pty-write-dropped`, at most one a second). Native: `crates/flare-dictation/src/{route,service,keyfeed,keyhook,
+link,controller}.rs`, `crates/flare/src/dictation_ctl.rs`, `crates/flare-agent/src/question.rs`,
+`crates/flare-term/src/session.rs`. Held by `type_checked_says_sent_only_once_the_words_showed_and_the_enter_emptied_the_prompt`,
+`type_checked_presses_no_enter_when_the_words_never_show_in_the_prompt`,
+`type_checked_waits_longer_for_a_long_paste_but_never_past_three_seconds`,
+`type_checked_says_typed_not_sent_when_the_enter_leaves_the_words_in_the_prompt`,
+`a_send_typed_but_not_entered_stays_a_send_to_an_older_copy_and_an_older_answer_is_a_send`,
+`the_chords_first_key_down_names_the_window_in_front_not_the_win_key_down`,
+`the_front_names_the_app_that_owns_the_window_even_with_no_foreground_window`,
+`a_route_to_this_copy_while_the_window_is_busy_pastes_into_the_front_tab_on_the_next_turn`,
+`a_start_refused_while_transcribing_leaves_the_key_ready_to_start_again`,
+`a_recording_the_cap_stopped_leaves_the_key_ready_to_start_again`,
+`to_idle_makes_the_next_tap_a_start_and_still_swallows_the_held_chords_key_up`,
+`the_route_and_pick_crumbs_name_the_way_and_lengths_never_the_words` and `the_kill_hook_writes_a_crumb`. Source:
+owner report and the Stable diag log (2026-11-11).
+1143. **A dictation long enough to push Claude's prompt box past the rows read is still sent.** The box is read in the
+last 16 screen rows (`SCREEN_TAIL_ROWS`). A long one-line text pasted inline wraps over many rows, so in a narrow pane
+the box's top rule leaves those rows and `question::prompt_draft` reads `None`. A box that read empty before the paste
+and reads `None` after it grew with the words: `type_checked` counts them as shown (stage "words shown, box past the
+screen"), still writes the Enter no sooner than 300 ms after them, and watches the box empty as before. Only a box that
+stays empty for the whole bound is "the words did not show". Native: `crates/flare-dictation/src/route.rs`. Held by
+`type_checked_presses_enter_when_a_long_paste_grows_the_box_past_the_rows_read`. Source: review of rule 1142
+(2026-11-11).
 1142. **The update e2e installs 0.0.1 from the setup kept aside after the 0.0.1 pack, never from the `Releases`
 folder.** vpk writes `Flare-win-Setup.exe` for the version it packs, so the 0.0.2 pack overwrites the 0.0.1 setup and
 the one left in `Releases` installs 0.0.2: every install scenario of `update_apply` then failed its first check

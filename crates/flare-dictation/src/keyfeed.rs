@@ -252,6 +252,22 @@ impl KeyFeed {
         self.state.phase == Phase::Arming
     }
 
+    /// Does the feed think a recording is under way (`Start` given, no `Stop` or `Cancel` yet)?
+    pub fn listening(&self) -> bool {
+        self.state.phase == Phase::Listening
+    }
+
+    /// Is any of the binding's keys down, as far as the feed knows (a chord is in progress)?
+    pub fn holding(&self) -> bool {
+        !self.held.is_empty()
+    }
+
+    /// The recording ended without the key (the service refused a start, or the 300 s cap stopped it): the
+    /// next press starts again. The keys held stay held, so the chord's own key-up is still the binding's.
+    pub fn to_idle(&mut self) {
+        self.state.phase = Phase::Idle;
+    }
+
     pub fn reset(&mut self) {
         self.state = KeyState::initial();
         self.held.clear();
@@ -378,6 +394,37 @@ mod tests {
         f.feed(&key(true, "MetaLeft"), 10.0, &c);
         assert_eq!(f.feed(&HookEvent::Other, 50.0, &c), None);
         assert_eq!(f.tick(220.0, &c), None);
+    }
+
+    #[test]
+    fn to_idle_makes_the_next_tap_a_start_and_still_swallows_the_held_chords_key_up() {
+        let c = cfg(default_hotkey(), DictMode::Toggle);
+        let mut f = KeyFeed::new();
+        f.feed(&key(true, "ControlLeft"), 0.0, &c);
+        f.feed(&key(true, "MetaLeft"), 10.0, &c);
+        assert_eq!(
+            f.feed(&key(false, "MetaLeft"), 100.0, &c),
+            Some(KeyAction::Start)
+        );
+        assert!(f.listening());
+        // A second press is under way (Ctrl+Win down) when the recording ends by itself.
+        f.feed(&key(true, "MetaLeft"), 500.0, &c);
+        assert!(f.holding());
+        f.to_idle();
+        assert!(!f.listening());
+        assert!(f.holding(), "the keys held stay held");
+        // The press's own key-up is still the binding's: swallowed, and it stops nothing.
+        let up = KeyEvt::Up(f.chord("MetaLeft", false, 600.0));
+        assert!(reduce_key(&f.state, &up, &c).swallow);
+        assert_eq!(f.feed(&key(false, "MetaLeft"), 600.0, &c), None);
+        assert_eq!(f.feed(&key(false, "ControlLeft"), 610.0, &c), None);
+        // The next tap starts.
+        f.feed(&key(true, "ControlLeft"), 2000.0, &c);
+        f.feed(&key(true, "MetaLeft"), 2010.0, &c);
+        assert_eq!(
+            f.feed(&key(false, "MetaLeft"), 2100.0, &c),
+            Some(KeyAction::Start)
+        );
     }
 
     #[test]
