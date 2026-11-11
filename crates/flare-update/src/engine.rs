@@ -29,10 +29,18 @@ pub enum Mode {
     Live,
 }
 
-/// D11: `--preview-update` (or an unpackaged non-e2e build) previews; a packaged, non-e2e build
-/// with the `live-updates` feature checks for real; everything else is off.
-pub fn mode_for(packaged: bool, e2e: bool, preview_flag: bool, live_feature: bool) -> Mode {
-    if preview_flag || (!packaged && !e2e) {
+/// D11: `--preview-update` (or an unpackaged non-e2e build that is not in an app bundle) previews; a
+/// packaged, non-e2e build with the `live-updates` feature checks for real; everything else is off.
+/// `bundled` is a run from a macOS `.app` that Velopack did not make (rule 1128): it is off, so the
+/// ad hoc app shows no fake update chip. It is always false on Windows.
+pub fn mode_for(
+    packaged: bool,
+    bundled: bool,
+    e2e: bool,
+    preview_flag: bool,
+    live_feature: bool,
+) -> Mode {
+    if preview_flag || (!packaged && !bundled && !e2e) {
         Mode::Preview
     } else if packaged && !e2e && live_feature {
         Mode::Live

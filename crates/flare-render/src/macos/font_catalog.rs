@@ -85,10 +85,31 @@ pub const FALLBACK_FAMILIES: &[&str] = &[
     "Apple Symbols",
     "Monaco",
     "Courier New",
+    // The one text face on macOS with U+23FA (Claude Code's bullet) and the other media-control
+    // symbols; Apple Symbols, Menlo and Arial Unicode MS lack them, so without it the bullet can
+    // only come from Apple Color Emoji (rule 1131). Last, so it is only a final fallback for maths.
+    "STIX Two Math",
 ];
 
+/// The text faces a text-presentation character (U+23FA, U+2764 without VS16) is drawn from when
+/// cosmic-text's common fallback picked Apple Color Emoji for it, in order, after the user's
+/// stack (`presentation.rs`). All are loaded at start-up. Of the ~900 faces on macOS 26 only STIX
+/// Two Math has U+23FA outside the emoji faces (checked 2026-11-11 with each face's cmap).
+pub const TEXT_SYMBOL_FAMILIES: &[&str] = &[
+    "Apple Symbols",
+    "SF Mono",
+    "Menlo",
+    ".SF NS",
+    "Arial Unicode MS",
+    "STIX Two Math",
+];
+
+/// The colour emoji faces a cluster asking for emoji presentation (VS16) is drawn from when a text
+/// face took it (Menlo has U+2764, so cosmic-text's common fallback never reaches the emoji).
+pub const EMOJI_FAMILIES: &[&str] = &["Apple Color Emoji"];
+
 /// Families loaded one at a time, only when a character nothing else covers asks for them: the
-/// faces of scripts cosmic-text names no face for, and maths.
+/// faces of scripts cosmic-text names no face for (maths, STIX Two Math, is loaded at start-up).
 pub const LAZY_FALLBACK_FAMILIES: &[&str] = &[
     "Noto Sans Egyptian Hieroglyphs",
     "Noto Sans Cuneiform",
@@ -119,7 +140,6 @@ pub const LAZY_FALLBACK_FAMILIES: &[&str] = &[
     "Noto Serif Ahom",
     "Plantagenet Cherokee",
     "Kefa III",
-    "STIX Two Math",
 ];
 
 /// PT's `TERM_FONTS` 'cascadia' stack with the macOS system monospace faces in Consolas' place

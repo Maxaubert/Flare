@@ -169,6 +169,9 @@ pub fn set_aumid() {}
 #[allow(dead_code)] // `preview` and `exe` are read by the `live-updates` build and the tests
 pub struct Ship {
     pub packaged: bool,
+    /// macOS: the exe sits in some `.app` bundle (Velopack's or an ad hoc one), by its path alone.
+    /// Always false on Windows (rule 1128).
+    pub bundled: bool,
     pub e2e: bool,
     pub preview: bool,
     pub exe: PathBuf,
@@ -203,6 +206,7 @@ impl Ship {
         verb_root: Option<&str>,
         verb_exe_seam: Option<&str>,
     ) -> Ship {
+        let bundled = cfg!(target_os = "macos") && packaged::in_app_bundle(&exe);
         let sandbox_root = if e2e { hook_root(e2e, verb_root) } else { None };
         let sandboxed = sandbox_root.is_some();
         let root = sandbox_root.unwrap_or_else(|| DEFAULT_CLASSES_ROOT.to_string());
@@ -215,11 +219,12 @@ impl Ship {
         };
         Ship {
             packaged,
+            bundled,
             e2e,
             preview,
             exe,
             verb_exe,
-            mode: mode_for(packaged, e2e, preview, live_feature),
+            mode: mode_for(packaged, bundled, e2e, preview, live_feature),
             root,
             sandboxed,
         }
@@ -258,7 +263,7 @@ pub struct FeedChoice {
     /// `engine.set_offer`, so the chip appears with `checks` still 0.
     pub preset_offer: Option<Offer>,
     /// The version Velopack installed (its manifest), when the feed is Velopack's. The update
-    /// compares an offer with this one, as Velopack itself does (rule 1137).
+    /// compares an offer with this one, as Velopack itself does (rule 1144).
     pub installed: Option<String>,
 }
 
@@ -266,7 +271,7 @@ impl FeedChoice {
     /// The version an offer must beat and the window shows as the current one: the installed
     /// version when Velopack knows it, else `built` (the build's own version). The update e2e packs
     /// one exe as 0.0.1 and 0.0.2, so the build's own version (the workspace's) is not what is
-    /// installed there, and a 0.0.2 offer measured against it was dropped as not newer (rule 1137).
+    /// installed there, and a 0.0.2 offer measured against it was dropped as not newer (rule 1144).
     pub fn current_version(&self, built: &str) -> String {
         self.installed.clone().unwrap_or_else(|| built.to_string())
     }
@@ -314,7 +319,7 @@ pub fn choose_feed(ship: &Ship, env: &dyn Fn(&str) -> Option<String>) -> FeedCho
                     let installed = Some(feed.installed_version());
                     return FeedChoice {
                         feed: Arc::new(feed),
-                        mode: mode_for(ship.packaged, false, ship.preview, true),
+                        mode: mode_for(ship.packaged, ship.bundled, false, ship.preview, true),
                         preset_offer: None,
                         installed,
                     };
@@ -688,8 +693,34 @@ mod tests {
         for bits in 0u8..16 {
             let (p, e, f, l) = (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0, bits & 8 != 0);
             let s = ship(p, e, f, l, None);
-            assert_eq!(s.mode, mode_for(p, e, f, l), "{bits:04b}");
+            assert!(!s.bundled);
+            assert_eq!(s.mode, mode_for(p, false, e, f, l), "{bits:04b}");
         }
+    }
+
+    fn mac_ship(exe: &str, e2e: bool, preview: bool, live: bool) -> Ship {
+        Ship::from_parts(PathBuf::from(exe), false, e2e, preview, live, None, None)
+    }
+
+    #[test]
+    fn an_unpackaged_app_bundle_is_off_on_a_mac_only() {
+        // Rule 1128: the ad hoc /Applications/Flare.app shows no fake update chip.
+        let app = "/Applications/Flare.app/Contents/MacOS/Flare";
+        let s = mac_ship(app, false, false, true);
+        assert_eq!(s.bundled, cfg!(target_os = "macos"));
+        let want = if cfg!(target_os = "macos") {
+            Mode::Off
+        } else {
+            Mode::Preview
+        };
+        assert_eq!(s.mode, want);
+        // --preview-update still previews from the bundle; e2e from the bundle stays off.
+        assert_eq!(mac_ship(app, false, true, true).mode, Mode::Preview);
+        assert_eq!(mac_ship(app, true, false, true).mode, Mode::Off);
+        // cargo run still previews.
+        let dev = mac_ship("/Users/me/Flare/target/debug/flare", false, false, true);
+        assert!(!dev.bundled);
+        assert_eq!(dev.mode, Mode::Preview);
     }
 
     #[test]
@@ -762,7 +793,7 @@ mod tests {
         assert_eq!(c.mode, Mode::Off);
     }
 
-    /// Rule 1137: the update e2e installs one exe packed as 0.0.1 and offers it as 0.0.2, while the
+    /// Rule 1144: the update e2e installs one exe packed as 0.0.1 and offers it as 0.0.2, while the
     /// build's own version is the workspace's (0.1.0). Measured against that, 0.0.2 was never newer
     /// and the installed app showed no chip on any update-e2e run (job 130475061549).
     #[test]
