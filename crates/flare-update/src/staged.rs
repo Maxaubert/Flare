@@ -16,6 +16,15 @@
 //!   [`START_GRACE_MS`] (or quits cleanly) confirms the build, and the `.old` files go (a stage made since stays). When the new exe
 //!   dies early twice, the next start puts the `.old` files back and starts the old exe instead.
 //!
+//! **macOS (2026-11-11, rule 1132).** The unit is the whole bundle. An installed copy is a `.app` in an
+//! `Applications` folder (`/Applications/Flare.app/Contents/MacOS/Flare`); its root is
+//! `~/Library/Application Support/Flare` (or `FLARE_STAGE_ROOT`), which holds `staged/Flare.app`, `staged/staged.json`
+//! (the same manifest, its names relative to the bundle: `Contents/MacOS/Flare`), `install.json` and `install.lock`.
+//! The stage must be on the bundle's volume ([`NotReady::OtherVolume`]): the swap renames the running bundle aside to
+//! `Flare.app.old` (macOS allows that while it runs), renames the staged bundle in, and checks every hash in place.
+//! A swap undone moves the new bundle back to `staged/` while the stage is on offer, so it stays on offer; the confirm
+//! deletes `Flare.app.old`.
+//!
 //! Every function here touches the disk; the app calls them on a worker or at start, before the window.
 
 use std::collections::BTreeMap;
@@ -30,6 +39,8 @@ use sha2::{Digest, Sha256};
 pub const STAGED_DIR: &str = "staged";
 /// The manifest, written last by the stage script.
 pub const MANIFEST: &str = "staged.json";
+/// The staged bundle's name in `staged/` (macOS).
+pub const STAGED_APP: &str = "Flare.app";
 /// The record of the last swap, in the install root.
 pub const MARKER: &str = "install.json";
 /// How long a new build must stay up before it counts as good.
@@ -37,11 +48,13 @@ pub const START_GRACE_MS: u64 = 20_000;
 /// How many early deaths of a new build are allowed; the start after that rolls back.
 pub const EARLY_DEATHS: u32 = 2;
 
-/// Where one installed copy lives, and the name of its exe in `current\`.
+/// Where one installed copy lives, and the name of its exe in `current\` (Windows) or in the bundle's
+/// `Contents/MacOS` (macOS, where `bundle` is the installed `.app`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Layout {
     root: PathBuf,
     exe_name: String,
+    bundle: Option<PathBuf>,
 }
 
 impl Layout {
@@ -49,6 +62,21 @@ impl Layout {
         Self {
             root: root.into(),
             exe_name: exe_name.into(),
+            bundle: None,
+        }
+    }
+
+    /// A macOS copy: the installed `bundle` (`/Applications/Flare.app`), the program's name in its
+    /// `Contents/MacOS`, and the `root` that holds the stage, `install.json` and the lock.
+    pub fn mac(
+        root: impl Into<PathBuf>,
+        bundle: impl Into<PathBuf>,
+        exe_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            root: root.into(),
+            exe_name: exe_name.into(),
+            bundle: Some(bundle.into()),
         }
     }
 
@@ -67,6 +95,22 @@ impl Layout {
         Some(Self::new(root, exe_name))
     }
 
+    /// The macOS layout of a running exe, by its path alone: `<X>.app/Contents/MacOS/<exe>` with the `.app` in a
+    /// folder named `Applications` (`/Applications`, `~/Applications`). A bundle anywhere else (`target/mac-release`,
+    /// an e2e run's temp bundle) is no installed copy.
+    pub fn from_bundle_exe(exe: &Path, root: &Path) -> Option<Self> {
+        let app = bundle_of(exe)?;
+        let in_applications = app
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|n| n == "Applications");
+        if !in_applications {
+            return None;
+        }
+        let exe_name = exe.file_name()?.to_string_lossy().into_owned();
+        Some(Self::mac(root, app, exe_name))
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -75,12 +119,30 @@ impl Layout {
         &self.exe_name
     }
 
+    /// The installed `.app` (macOS); None on Windows.
+    pub fn bundle(&self) -> Option<&Path> {
+        self.bundle.as_deref()
+    }
+
+    /// The folder the marker's names are relative to: `<root>\current` (Windows), or the folder that holds the
+    /// bundle (macOS: `/Applications`, whose `Flare.app` is the one name a swap moves).
     pub fn current(&self) -> PathBuf {
-        self.root.join("current")
+        match &self.bundle {
+            Some(b) => b.parent().map(Path::to_path_buf).unwrap_or_default(),
+            None => self.root.join("current"),
+        }
     }
 
     pub fn staged(&self) -> PathBuf {
         self.root.join(STAGED_DIR)
+    }
+
+    /// The folder the manifest's names are relative to: `staged\` (Windows), `staged/Flare.app` (macOS).
+    pub fn staged_files(&self) -> PathBuf {
+        match &self.bundle {
+            Some(_) => self.staged().join(STAGED_APP),
+            None => self.staged(),
+        }
     }
 
     pub fn manifest(&self) -> PathBuf {
@@ -91,10 +153,41 @@ impl Layout {
         self.root.join(MARKER)
     }
 
-    /// The exe the copy starts: `current\<exe name>`.
+    /// The exe the copy starts: `current\<exe name>`, or `<bundle>/Contents/MacOS/<exe name>`.
     pub fn exe(&self) -> PathBuf {
-        self.current().join(&self.exe_name)
+        match &self.bundle {
+            Some(b) => b.join("Contents").join("MacOS").join(&self.exe_name),
+            None => self.current().join(&self.exe_name),
+        }
     }
+
+    /// The exe's name in the manifest: `FlareStable.exe`, or `Contents/MacOS/Flare` in a bundle.
+    pub fn exe_key(&self) -> String {
+        match &self.bundle {
+            Some(_) => format!("Contents/MacOS/{}", self.exe_name),
+            None => self.exe_name.clone(),
+        }
+    }
+
+    /// A moved name is the one this copy runs from (the exe, or the whole bundle).
+    fn runs_from(&self, moved: &str) -> bool {
+        match &self.bundle {
+            Some(b) => b.file_name().is_some_and(|n| n.to_string_lossy() == moved),
+            None => moved.eq_ignore_ascii_case(&self.exe_name),
+        }
+    }
+}
+
+/// The `<X>.app` of `exe` when its path is `<X>.app/Contents/MacOS/<exe>` (names only, no file is touched).
+pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
+    exe.file_name()?;
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    (macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && app.extension()? == "app")
+        .then(|| app.to_path_buf())
 }
 
 /// `staged.json`: which build, when it was made, and every file with its SHA-256 (lowercase hex).
@@ -145,6 +238,8 @@ pub enum NotReady {
     MissingFile(String),
     /// A listed file's hash is not the manifest's.
     Mismatch(String),
+    /// macOS: the stage is on another volume than the bundle, so the swap could not be a rename: `(stage, app folder)`.
+    OtherVolume(String, String),
 }
 
 impl std::fmt::Display for NotReady {
@@ -156,6 +251,10 @@ impl std::fmt::Display for NotReady {
             NotReady::NoExe(n) => write!(f, "staged.json does not hold {n}"),
             NotReady::MissingFile(n) => write!(f, "{n} is listed but not staged"),
             NotReady::Mismatch(n) => write!(f, "{n} does not have the hash staged.json names"),
+            NotReady::OtherVolume(s, a) => write!(
+                f,
+                "the stage {s} is on another volume than {a}; set FLARE_STAGE_ROOT to a folder on that volume"
+            ),
         }
     }
 }
@@ -212,23 +311,37 @@ pub fn read_manifest(layout: &Layout) -> Result<Manifest, NotReady> {
             return Err(NotReady::BadName(name.clone()));
         }
     }
-    let has_exe = m
-        .files
-        .keys()
-        .any(|k| k.eq_ignore_ascii_case(layout.exe_name()));
+    let exe_key = layout.exe_key();
+    let has_exe = m.files.keys().any(|k| {
+        safe_name(k).is_some_and(|p| {
+            p.to_string_lossy()
+                .replace('\\', "/")
+                .eq_ignore_ascii_case(&exe_key)
+        })
+    });
     if !has_exe {
-        return Err(NotReady::NoExe(layout.exe_name().to_string()));
+        return Err(NotReady::NoExe(exe_key));
     }
     Ok(m)
 }
 
 /// The staged build, when it is ready: [`read_manifest`] and every file's hash.
+/// On macOS the bundle's folder must be on the stage's volume too ([`same_volume`]).
 pub fn check(layout: &Layout) -> Result<Manifest, NotReady> {
     let m = read_manifest(layout)?;
-    let staged = layout.staged();
+    if layout.bundle().is_some() {
+        let (stage, app_dir) = (layout.staged(), layout.current());
+        same_volume(volume_of(&stage), volume_of(&app_dir), &stage, &app_dir)?;
+    }
+    hashes_match(&m, &layout.staged_files())?;
+    Ok(m)
+}
+
+/// Every file the manifest names, under `dir`, has its hash.
+fn hashes_match(m: &Manifest, dir: &Path) -> Result<(), NotReady> {
     for (name, want) in &m.files {
         let rel = safe_name(name).ok_or_else(|| NotReady::BadName(name.clone()))?;
-        let got = match sha256_file(&staged.join(rel)) {
+        let got = match sha256_file(&dir.join(rel)) {
             Ok(h) => h,
             Err(_) => return Err(NotReady::MissingFile(name.clone())),
         };
@@ -236,7 +349,38 @@ pub fn check(layout: &Layout) -> Result<Manifest, NotReady> {
             return Err(NotReady::Mismatch(name.clone()));
         }
     }
-    Ok(m)
+    Ok(())
+}
+
+/// The volume (device id) a path is on; None when it cannot be read, and always on Windows (no bundle there).
+pub fn volume_of(path: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(path).ok().map(|m| m.dev()) // sync-ok: one stat, on a worker
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// The macOS swap is two renames, so the stage and the bundle's folder must be on one volume. Two known, different
+/// volumes refuse; an unknown one is let through (the rename then fails and everything is put back).
+pub fn same_volume(
+    stage: Option<u64>,
+    app_dir: Option<u64>,
+    stage_path: &Path,
+    app_dir_path: &Path,
+) -> Result<(), NotReady> {
+    match (stage, app_dir) {
+        (Some(a), Some(b)) if a != b => Err(NotReady::OtherVolume(
+            stage_path.display().to_string(),
+            app_dir_path.display().to_string(),
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// The SHA-256 of a file, lowercase hex.
@@ -293,6 +437,17 @@ pub struct Marker {
     /// Files in `current\` still to delete (in use the last time).
     #[serde(default)]
     pub left: Vec<String>,
+    /// macOS: the bundle this record is about. A run of another bundle that shares the root leaves it alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+/// The record is this copy's: always on Windows; on macOS when it names this bundle (or none).
+fn is_mine(layout: &Layout, m: &Marker) -> bool {
+    match (layout.bundle(), &m.app) {
+        (Some(b), Some(a)) => Path::new(a) == b,
+        _ => true,
+    }
 }
 
 /// Why a swap failed. Every file was put back as it was.
@@ -322,7 +477,8 @@ impl std::fmt::Display for SwapError {
 }
 
 /// The lock a swap, an undo and the start-up guard hold, so two processes on one install (two profiles) never
-/// move the same files at once. Windows lets go of it when the process ends, so it never goes stale.
+/// move the same files at once. Windows (no sharing) and macOS (`flock`) let go of it when the process ends, so it
+/// never goes stale.
 pub struct InstallLock {
     _file: fs::File,
 }
@@ -337,28 +493,39 @@ pub fn lock(layout: &Layout) -> Option<InstallLock> {
         o.share_mode(0);
     }
     // sync-ok: one small file, at start or on a worker
-    o.open(layout.root().join(LOCK))
-        .ok()
-        .map(|f| InstallLock { _file: f })
+    let f = o.open(layout.root().join(LOCK)).ok()?;
+    #[cfg(not(windows))]
+    f.try_lock().ok()?;
+    Some(InstallLock { _file: f })
 }
 
 /// The lock file, in the install root.
 pub const LOCK: &str = "install.lock";
 
 /// The first free aside name for `name` in `dir`: `<name>.<tag>`, else `<name>.<tag>1`, `<name>.<tag>2`...
-fn aside_name(dir: &Path, name: &str, tag: &str) -> String {
+fn aside_name(layout: &Layout, dir: &Path, name: &str, tag: &str) -> String {
     let first = format!("{name}.{tag}");
     if !dir.join(&first).exists() {
         return first;
     }
     // An old leftover that can go makes room for the plain name.
-    if fs::remove_file(dir.join(&first)).is_ok() {
+    if remove_leftover(layout, &dir.join(&first)).is_ok() {
         return first;
     }
     (1..)
         .map(|n| format!("{name}.{tag}{n}"))
         .find(|c| !dir.join(c).exists())
         .unwrap_or(first)
+}
+
+/// Deletes a leftover: a file, or on macOS a whole bundle (`Flare.app.old`). On Windows a folder is never removed
+/// here (a file in use cannot be either; the tests stand one in for the other).
+fn remove_leftover(layout: &Layout, p: &Path) -> std::io::Result<()> {
+    if layout.bundle().is_some() && p.is_dir() && !p.is_symlink() {
+        fs::remove_dir_all(p)
+    } else {
+        fs::remove_file(p)
+    }
 }
 
 /// Puts the staged build into `current\`. Checks it first (the hashes, right before the copy), then per file:
@@ -370,11 +537,18 @@ fn aside_name(dir: &Path, name: &str, tag: &str) -> String {
 ///
 /// Refused while the last swap is not confirmed: its `.old` files are the last good build, which a second swap
 /// would replace with the unconfirmed one.
+///
+/// macOS: the same, for one name, the bundle: it is renamed aside to `Flare.app.old`, `staged/Flare.app` is renamed
+/// in (one volume, [`check`]), and every hash is checked in place.
 pub fn swap(layout: &Layout) -> Result<Marker, SwapError> {
-    swap_with(layout, &|from, to| fs::copy(from, to).map(|_| ()))
+    if layout.bundle().is_some() {
+        swap_with(layout, &|from, to| fs::rename(from, to))
+    } else {
+        swap_with(layout, &|from, to| fs::copy(from, to).map(|_| ()))
+    }
 }
 
-/// [`swap`] with the copy step handed in (the tests make it fail).
+/// [`swap`] with the copy step handed in (the tests make it fail). On macOS it moves the staged bundle in.
 pub fn swap_with(
     layout: &Layout,
     copy: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
@@ -400,8 +574,12 @@ pub fn swap_with(
         starts: 0,
         moved: Vec::new(),
         left: carried,
+        app: layout.bundle().map(|b| b.to_string_lossy().into_owned()),
     };
     let result = (|| -> Result<(), SwapError> {
+        if let Some(bundle) = layout.bundle() {
+            return swap_bundle(layout, bundle, &m, &mut marker, copy);
+        }
         for (name, want) in &m.files {
             let rel = safe_name(name)
                 .ok_or_else(|| SwapError::NotReady(NotReady::BadName(name.clone())))?;
@@ -420,7 +598,9 @@ pub fn swap_with(
                 .file_name()
                 .map(|f| f.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let aside = target.exists().then(|| aside_name(&dir, &file, "old"));
+            let aside = target
+                .exists()
+                .then(|| aside_name(layout, &dir, &file, "old"));
             // The journal first: a swap cut off after this line is put back by the next start.
             marker.moved.push(Moved {
                 name: rel.to_string_lossy().into_owned(),
@@ -450,6 +630,45 @@ pub fn swap_with(
         return Err(SwapError::Marker(e));
     }
     Ok(marker)
+}
+
+/// The macOS swap: the journal, the running bundle renamed aside, the staged one moved in, every hash checked there.
+fn swap_bundle(
+    layout: &Layout,
+    bundle: &Path,
+    m: &Manifest,
+    marker: &mut Marker,
+    mover: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(), SwapError> {
+    let dir = layout.current();
+    let name = bundle
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let io = |e: std::io::Error| SwapError::Io {
+        name: name.clone(),
+        error: e.to_string(),
+    };
+    let aside = bundle
+        .exists()
+        .then(|| aside_name(layout, &dir, &name, "old"));
+    // The journal first: a swap cut off after this line is put back by the next start.
+    marker.moved.push(Moved {
+        name: name.clone(),
+        old: aside.clone(),
+    });
+    write_marker(layout, marker).map_err(SwapError::Marker)?;
+    if let Some(a) = &aside {
+        fs::rename(bundle, dir.join(a)).map_err(io)?;
+    }
+    mover(&layout.staged_files(), bundle).map_err(io)?;
+    match hashes_match(m, bundle) {
+        Ok(()) => Ok(()),
+        Err(NotReady::Mismatch(n) | NotReady::MissingFile(n) | NotReady::BadName(n)) => {
+            Err(SwapError::Hash(n))
+        }
+        Err(e) => Err(SwapError::NotReady(e)),
+    }
 }
 
 /// A swap that failed (or was cut off): every moved file goes back. What could not be put back stays in the record
@@ -495,12 +714,12 @@ pub fn undo(layout: &Layout, moved: &[Moved]) -> Undone {
             // Never renamed: the file at the name is still the old one (or the rename is what failed).
             continue;
         }
-        if target.exists() && fs::remove_file(&target).is_err() {
+        if target.exists() && !clear_new(layout, &target) {
             let file = Path::new(&mv.name)
                 .file_name()
                 .map(|f| f.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let bad = aside_name(&dir, &file, "bad");
+            let bad = aside_name(layout, &dir, &file, "bad");
             if fs::rename(&target, dir.join(&bad)).is_ok() {
                 out.left.push(
                     Path::new(&mv.name)
@@ -521,6 +740,20 @@ pub fn undo(layout: &Layout, moved: &[Moved]) -> Undone {
     }
     out.stuck.reverse();
     out
+}
+
+/// Clears the name the old file gets back: the new file is deleted (Windows: false for a running exe, which is put
+/// aside instead). macOS: the new bundle goes back to `staged/` while that stage is on offer, so a swap taken back
+/// keeps it on offer; else it is deleted.
+fn clear_new(layout: &Layout, target: &Path) -> bool {
+    if layout.bundle().is_some() {
+        let back = layout.staged_files();
+        if layout.manifest().is_file() && !back.exists() && fs::rename(target, &back).is_ok() {
+            return true;
+        }
+        return remove_leftover(layout, target).is_ok();
+    }
+    fs::remove_file(target).is_ok()
 }
 
 /// Reads `install.json`; `None` when there is none or it cannot be read.
@@ -569,13 +802,13 @@ pub fn on_start(layout: &Layout) -> Start {
     let Some(mut m) = read_marker(layout) else {
         return Start::Plain;
     };
+    if !is_mine(layout, &m) {
+        return Start::Plain;
+    }
     match m.state {
         MarkerState::Swapping => {
             let commit = m.commit.clone();
-            let exe_moved = m
-                .moved
-                .iter()
-                .any(|mv| mv.name.eq_ignore_ascii_case(layout.exe_name()));
+            let exe_moved = m.moved.iter().any(|mv| layout.runs_from(&mv.name));
             put_back(layout, &mut m);
             // Only a whole put-back restarts: one that left files stuck keeps the record, and restarting on it
             // would start this again and again.
@@ -638,7 +871,7 @@ pub fn confirm(layout: &Layout) {
     let Some(mut m) = read_marker(layout) else {
         return;
     };
-    if m.state != MarkerState::Pending {
+    if m.state != MarkerState::Pending || !is_mine(layout, &m) {
         return;
     }
     m.state = MarkerState::Good;
@@ -654,7 +887,7 @@ fn sweep(layout: &Layout, m: &mut Marker) {
     let cur = layout.current();
     m.left.retain(|name| {
         let p = cur.join(name);
-        p.exists() && fs::remove_file(&p).is_err()
+        p.exists() && remove_leftover(layout, &p).is_err()
     });
     if m.left.is_empty() {
         let _ = fs::remove_file(layout.marker());
@@ -672,7 +905,7 @@ pub fn take_back(layout: &Layout) {
     let Some(mut m) = read_marker(layout) else {
         return;
     };
-    if m.state != MarkerState::Pending || m.starts != 0 {
+    if m.state != MarkerState::Pending || m.starts != 0 || !is_mine(layout, &m) {
         return;
     }
     put_back(layout, &mut m);
@@ -683,6 +916,10 @@ pub fn take_back(layout: &Layout) {
 pub fn abandon(layout: &Layout) {
     take_back(layout);
     let _ = fs::remove_file(layout.manifest());
+    if layout.bundle().is_some() {
+        // The bundle that would not start went back to `staged/`: it goes too.
+        let _ = fs::remove_dir_all(layout.staged());
+    }
 }
 
 #[cfg(test)]
@@ -954,6 +1191,7 @@ mod tests {
             starts: 1,
             moved: Vec::new(),
             left: vec!["busy.old".into()],
+            app: None,
         };
         write_marker(&i.layout, &held).unwrap();
         i.stage_new();
@@ -992,6 +1230,7 @@ mod tests {
                 },
             ],
             left: Vec::new(),
+            app: None,
         };
         write_marker(&i.layout, &m).unwrap();
         assert_eq!(
@@ -1019,6 +1258,7 @@ mod tests {
                 old: None,
             }],
             left: Vec::new(),
+            app: None,
         };
         write_marker(&i.layout, &m).unwrap();
         assert_eq!(
@@ -1286,6 +1526,7 @@ mod tests {
             starts: 1,
             moved: Vec::new(),
             left: vec!["gone.old".into(), "busy.old".into()],
+            app: None,
         };
         // A folder with a file in it cannot be removed as a file: it stands in for one in use.
         fs::create_dir_all(i.layout.current().join("busy.old")).unwrap();
@@ -1299,5 +1540,383 @@ mod tests {
         fs::remove_dir_all(i.layout.current().join("busy.old")).unwrap();
         assert_eq!(on_start(&i.layout), Start::Plain);
         assert!(read_marker(&i.layout).is_none());
+    }
+}
+
+/// macOS (rule 1132): the whole bundle is the unit. Temp folders with fake bundles; nothing is launched.
+#[cfg(all(test, unix))]
+mod mac_tests {
+    use super::*;
+
+    /// `<tmp>/Applications/Flare.app` with an old build, and the root `<tmp>/Support/Flare`.
+    struct Mac {
+        _dir: tempfile::TempDir,
+        layout: Layout,
+    }
+
+    const OLD: &[(&str, &[u8])] = &[
+        ("Contents/MacOS/Flare", b"old exe"),
+        ("Contents/MacOS/flare-mcp", b"old mcp"),
+        ("Contents/Info.plist", b"old plist"),
+    ];
+    const NEW: &[(&str, &[u8])] = &[
+        ("Contents/MacOS/Flare", b"new exe"),
+        ("Contents/MacOS/flare-mcp", b"new mcp"),
+        ("Contents/Info.plist", b"new plist"),
+        ("Contents/Frameworks/new.dylib", b"new lib"),
+    ];
+
+    fn write_bundle(dir: &Path, files: &[(&str, &[u8])]) {
+        for (name, bytes) in files {
+            let p = dir.join(name);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, bytes).unwrap();
+        }
+    }
+
+    impl Mac {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let app = dir.path().join("Applications").join("Flare.app");
+            write_bundle(&app, OLD);
+            let root = dir.path().join("Support").join("Flare");
+            fs::create_dir_all(&root).unwrap();
+            let layout = Layout::from_bundle_exe(&app.join("Contents/MacOS/Flare"), &root).unwrap();
+            Self { _dir: dir, layout }
+        }
+
+        fn app(&self) -> PathBuf {
+            self.layout.bundle().unwrap().to_path_buf()
+        }
+
+        fn old_app(&self) -> PathBuf {
+            self.layout.current().join("Flare.app.old")
+        }
+
+        /// What `tools/release/mac/stage-install.sh` writes: `staged/Flare.app`, then `staged/staged.json`.
+        fn stage(&self, files: &[(&str, &[u8])]) -> Manifest {
+            let _ = fs::remove_dir_all(self.layout.staged());
+            let b = self.layout.staged_files();
+            write_bundle(&b, files);
+            let mut map = BTreeMap::new();
+            for (name, _) in files {
+                map.insert((*name).to_string(), sha256_file(&b.join(name)).unwrap());
+            }
+            let m = Manifest {
+                commit: "fedcba9876543210".into(),
+                built_at: "2026-11-11T10:00:00Z".into(),
+                files: map,
+            };
+            fs::write(self.layout.manifest(), serde_json::to_string(&m).unwrap()).unwrap();
+            m
+        }
+
+        fn read(&self, name: &str) -> Vec<u8> {
+            fs::read(self.app().join(name)).unwrap_or_default()
+        }
+
+        fn assert_old(&self) {
+            for (name, bytes) in OLD {
+                assert_eq!(self.read(name), *bytes, "{name}");
+            }
+            assert!(!self.app().join("Contents/Frameworks/new.dylib").exists());
+            assert!(!self.old_app().exists(), "no Flare.app.old is left");
+            assert!(read_marker(&self.layout).is_none());
+        }
+
+        fn assert_new(&self) {
+            for (name, bytes) in NEW {
+                assert_eq!(self.read(name), *bytes, "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_installed_copy_is_a_bundle_in_an_applications_folder() {
+        let root = Path::new("/Users/me/Library/Application Support/Flare");
+        let l = Layout::from_bundle_exe(
+            Path::new("/Applications/Flare.app/Contents/MacOS/Flare"),
+            root,
+        )
+        .unwrap();
+        assert_eq!(l.bundle(), Some(Path::new("/Applications/Flare.app")));
+        assert_eq!(l.current(), Path::new("/Applications"));
+        assert_eq!(
+            l.exe(),
+            Path::new("/Applications/Flare.app/Contents/MacOS/Flare")
+        );
+        assert_eq!(l.exe_key(), "Contents/MacOS/Flare");
+        assert_eq!(l.staged_files(), root.join("staged").join("Flare.app"));
+        assert_eq!(l.manifest(), root.join("staged").join("staged.json"));
+        assert_eq!(l.marker(), root.join("install.json"));
+        assert!(
+            Layout::from_bundle_exe(
+                Path::new("/Users/me/Applications/Flare.app/Contents/MacOS/Flare"),
+                root
+            )
+            .is_some()
+        );
+        for p in [
+            "/Users/me/Flare/target/mac-release/Flare.app/Contents/MacOS/Flare",
+            "/Users/me/Flare/target/release/flare",
+            "/Applications/Flare.app/Contents/Resources/Flare",
+            "/Applications/Flare/Contents/MacOS/Flare",
+        ] {
+            assert!(Layout::from_bundle_exe(Path::new(p), root).is_none(), "{p}");
+        }
+    }
+
+    #[test]
+    fn nothing_staged_is_missing_a_good_bundle_is_ready_and_a_bad_one_is_not() {
+        let i = Mac::new();
+        assert_eq!(check(&i.layout), Err(NotReady::Missing));
+        let m = i.stage(NEW);
+        assert_eq!(check(&i.layout), Ok(m));
+        fs::write(i.layout.staged_files().join("Contents/Info.plist"), b"evil").unwrap();
+        assert_eq!(
+            check(&i.layout),
+            Err(NotReady::Mismatch("Contents/Info.plist".into()))
+        );
+        i.stage(&[("Contents/Info.plist", b"x")]);
+        assert_eq!(
+            check(&i.layout),
+            Err(NotReady::NoExe("Contents/MacOS/Flare".into()))
+        );
+    }
+
+    #[test]
+    fn a_stage_on_another_volume_than_the_bundle_is_refused() {
+        let (s, a) = (
+            Path::new("/Users/me/stage"),
+            Path::new("/Volumes/X/Applications"),
+        );
+        assert_eq!(
+            same_volume(Some(1), Some(2), s, a),
+            Err(NotReady::OtherVolume(
+                "/Users/me/stage".into(),
+                "/Volumes/X/Applications".into()
+            ))
+        );
+        assert_eq!(same_volume(Some(3), Some(3), s, a), Ok(()));
+        assert_eq!(same_volume(None, Some(3), s, a), Ok(()));
+        // The temp install is on one volume, so a real check passes it.
+        let i = Mac::new();
+        i.stage(NEW);
+        assert!(check(&i.layout).is_ok());
+    }
+
+    #[test]
+    fn a_swap_renames_the_running_bundle_aside_and_moves_the_stage_in() {
+        let i = Mac::new();
+        i.stage(NEW);
+        let m = swap(&i.layout).unwrap();
+        i.assert_new();
+        assert_eq!(
+            fs::read(i.old_app().join("Contents/MacOS/Flare")).unwrap(),
+            b"old exe"
+        );
+        assert_eq!(m.state, MarkerState::Pending);
+        assert_eq!(
+            m.moved,
+            vec![Moved {
+                name: "Flare.app".into(),
+                old: Some("Flare.app.old".into())
+            }]
+        );
+        assert_eq!(m.app.as_deref(), Some(i.app().to_str().unwrap()));
+        assert_eq!(read_marker(&i.layout), Some(m));
+        assert!(
+            !i.layout.staged_files().exists(),
+            "the stage was moved, not copied"
+        );
+        assert!(
+            i.layout.manifest().exists(),
+            "the manifest stays until the first start"
+        );
+    }
+
+    #[test]
+    fn a_bundle_that_lands_with_a_bad_hash_is_rolled_back() {
+        let i = Mac::new();
+        i.stage(NEW);
+        let err = swap_with(&i.layout, &|from, to| {
+            fs::rename(from, to)?;
+            fs::write(to.join("Contents/MacOS/flare-mcp"), b"half")
+        })
+        .unwrap_err();
+        assert!(
+            matches!(err, SwapError::Hash(ref n) if n == "Contents/MacOS/flare-mcp"),
+            "{err}"
+        );
+        i.assert_old();
+        assert_eq!(
+            check(&i.layout),
+            Err(NotReady::Mismatch("Contents/MacOS/flare-mcp".into())),
+            "the bad bundle went back to the stage, which is no longer ready"
+        );
+    }
+
+    #[test]
+    fn a_move_that_fails_puts_the_old_bundle_back_and_keeps_the_stage() {
+        let i = Mac::new();
+        i.stage(NEW);
+        let err = swap_with(&i.layout, &|_, _| Err(std::io::Error::other("no room"))).unwrap_err();
+        assert!(
+            matches!(err, SwapError::Io { ref name, .. } if name == "Flare.app"),
+            "{err}"
+        );
+        i.assert_old();
+        assert!(check(&i.layout).is_ok(), "still on offer");
+    }
+
+    #[test]
+    fn a_swap_cut_off_by_a_crash_is_put_back_at_the_next_start() {
+        let i = Mac::new();
+        i.stage(NEW);
+        // A crash after both renames, before the marker said pending.
+        let marker = Marker {
+            commit: "fedcba9876543210".into(),
+            state: MarkerState::Swapping,
+            starts: 0,
+            moved: vec![Moved {
+                name: "Flare.app".into(),
+                old: Some("Flare.app.old".into()),
+            }],
+            left: Vec::new(),
+            app: Some(i.app().to_string_lossy().into_owned()),
+        };
+        write_marker(&i.layout, &marker).unwrap();
+        fs::rename(i.app(), i.old_app()).unwrap();
+        fs::rename(i.layout.staged_files(), i.app()).unwrap();
+        assert_eq!(
+            on_start(&i.layout),
+            Start::Interrupted {
+                commit: "fedcba9876543210".into(),
+                restart: true
+            }
+        );
+        i.assert_old();
+        assert!(check(&i.layout).is_ok(), "the stage is on offer again");
+
+        // A crash between the two renames: the bundle is aside, nothing is in its place.
+        write_marker(&i.layout, &marker).unwrap();
+        fs::rename(i.app(), i.old_app()).unwrap();
+        assert!(matches!(
+            on_start(&i.layout),
+            Start::Interrupted { restart: true, .. }
+        ));
+        i.assert_old();
+        assert!(check(&i.layout).is_ok());
+    }
+
+    #[test]
+    fn the_first_start_says_installed_and_the_confirm_deletes_the_old_bundle() {
+        let i = Mac::new();
+        i.stage(NEW);
+        swap(&i.layout).unwrap();
+        assert_eq!(
+            on_start(&i.layout),
+            Start::Installed {
+                commit: "fedcba9876543210".into()
+            }
+        );
+        assert!(
+            !i.layout.staged().exists(),
+            "the stage goes at the first start"
+        );
+        assert!(
+            i.old_app().exists(),
+            "the last good build stays until the confirm"
+        );
+        confirm(&i.layout);
+        assert!(
+            !i.old_app().exists(),
+            "Flare.app.old is deleted after the confirm"
+        );
+        assert!(read_marker(&i.layout).is_none());
+        i.assert_new();
+        assert_eq!(on_start(&i.layout), Start::Plain);
+    }
+
+    #[test]
+    fn two_early_deaths_put_the_old_bundle_back() {
+        let i = Mac::new();
+        i.stage(NEW);
+        swap(&i.layout).unwrap();
+        assert!(matches!(on_start(&i.layout), Start::Installed { .. }));
+        assert!(matches!(
+            on_start(&i.layout),
+            Start::Trying { starts: 2, .. }
+        ));
+        assert!(matches!(on_start(&i.layout), Start::RollBack { .. }));
+        for (name, bytes) in OLD {
+            assert_eq!(i.read(name), *bytes, "{name}");
+        }
+        assert!(!i.old_app().exists());
+        assert!(matches!(on_start(&i.layout), Start::RolledBack { .. }));
+        assert_eq!(on_start(&i.layout), Start::Plain);
+        i.assert_old();
+        assert_eq!(
+            check(&i.layout),
+            Err(NotReady::Missing),
+            "the bad build is not offered again"
+        );
+    }
+
+    #[test]
+    fn a_swap_taken_back_keeps_the_stage_and_an_abandoned_one_drops_it() {
+        let i = Mac::new();
+        i.stage(NEW);
+        swap(&i.layout).unwrap();
+        take_back(&i.layout);
+        i.assert_old();
+        assert!(check(&i.layout).is_ok(), "still on offer");
+        swap(&i.layout).unwrap();
+        abandon(&i.layout);
+        i.assert_old();
+        assert_eq!(check(&i.layout), Err(NotReady::Missing));
+        assert!(!i.layout.staged().exists());
+    }
+
+    #[test]
+    fn a_record_of_another_bundle_is_left_alone() {
+        let i = Mac::new();
+        i.stage(NEW);
+        swap(&i.layout).unwrap();
+        let other = Layout::mac(
+            i.layout.root(),
+            i.layout.current().join("Other.app"),
+            "Flare",
+        );
+        assert_eq!(on_start(&other), Start::Plain);
+        confirm(&other);
+        take_back(&other);
+        assert_eq!(read_marker(&i.layout).unwrap().starts, 0);
+        assert!(i.old_app().exists());
+    }
+
+    #[test]
+    fn while_another_process_holds_the_lock_nothing_moves() {
+        let i = Mac::new();
+        i.stage(NEW);
+        let held = lock(&i.layout).unwrap();
+        assert!(matches!(swap(&i.layout), Err(SwapError::Busy(_))));
+        assert_eq!(i.read("Contents/MacOS/Flare"), b"old exe");
+        drop(held);
+        swap(&i.layout).unwrap();
+        i.assert_new();
+    }
+
+    #[test]
+    fn a_leftover_old_bundle_from_before_is_cleared_for_the_new_one() {
+        let i = Mac::new();
+        write_bundle(&i.old_app(), &[("Contents/MacOS/Flare", b"older")]);
+        i.stage(NEW);
+        let m = swap(&i.layout).unwrap();
+        assert_eq!(m.moved[0].old.as_deref(), Some("Flare.app.old"));
+        assert_eq!(
+            fs::read(i.old_app().join("Contents/MacOS/Flare")).unwrap(),
+            b"old exe"
+        );
     }
 }

@@ -1860,7 +1860,7 @@ mod flow {
     /// path in the cell, as written (rules 273 and 274).
     #[test]
     fn a_table_cell_link_that_names_nothing_opens_nothing_and_copies_exactly_its_path() {
-        // The Windows paths as this platform writes them (`path_grammar::native_text`, rule 1127).
+        // The Windows paths as this platform writes them (`path_grammar::native_text`, rule 1140).
         let native = |s: &str| {
             if cfg!(windows) {
                 s.to_string()

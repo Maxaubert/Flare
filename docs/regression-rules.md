@@ -2166,7 +2166,65 @@ later), so a scenario that waits for the prompt text and snaps at once can still
 that row holds text or the cursor (`ground_spots` in `tools/e2e/src/scenarios/chrome.rs`). Windows reads the same
 spots. Held by `the_spots_miss_cell_zero_where_the_cursor_sits`, `the_spots_scale_with_the_window` and
 `a_last_row_with_text_or_the_cursor_fails_loudly`. Source: main's first full CI run after the macOS port (2026-11-11).
-1127. **A unit test that writes a Windows path for a file link writes it through `path_grammar::native_text`.** A
+1127. **macOS: attention reads a question line in a picture at full breath, and linkPaintStall never names its file
+before the shell makes it.** Run 42953387295 (main, 34a6268a) failed two checks that pass on reruns. attention's "and it
+is visible there" (the question line on the tab in front) read 0 px, 0% of the foot: its `question-active` shot shows
+alpha in front with no line at its foot while the background shot a moment before showed it faint. The line breathes
+from full to nothing every 2 s and that check took one picture; rule 1119 had only sampled the background one. Both
+pictures are now `snap_full_breath` on a Mac (the app's own breath for the picture, read on the UI thread, at least
+0.85), so the check reads the line, not the phase. linkPaintStall's "the path tab A printed wears the link colour" typed
+`cls; Set-Content found-167.txt x; Write-Host 'made found-167.txt here'`: PSReadLine echoes the line before it runs,
+the painter asks whether `found-167.txt` exists, and an answer that comes before Set-Content made it is a "no" kept
+`NO_TTL_MS` (15 s), so the printed line lit only on the retry after 16 s and the 8 s wait missed it. On a Mac the
+command builds the name in the shell (`'found-' + '167.txt'`), so the first question about the file is the printed
+line's; a miss names whether the line is on screen, the ink and the links painted. The app is unchanged (the 15 s "no"
+is PT's). Windows keeps both old checks (rule 1119). Held by `the_mac_command_names_the_file_only_in_what_it_prints`.
+Source: Mac E2E in CI, run 42953387295 (2026-11-11).
+1131. **macOS: a text-presentation symbol draws from a text face, and only VS16 makes it a colour emoji.** Claude Code's
+message bullet U+23FA showed as Apple Color Emoji's blue tile on the Mac and as a plain circle on Windows (owner,
+2026-11-11). cosmic-text's macOS common fallback is `.SF NS`, Menlo, Apple Color Emoji, and of the ~900 faces on
+macOS 26 only STIX Two Math has U+23FA outside the emoji faces (Apple Symbols does not), so the emoji face won. The
+rasteriser now follows UTS #51 per cluster (`presentation::wants_emoji`): VS15 forces text, VS16 or a keycap forces
+emoji, otherwise Emoji_Presentation decides (a range table generated from Unicode 16.0 `emoji-data.txt`). A
+text-presentation cluster that landed on an emoji face is drawn from the user's stack, then `TEXT_SYMBOL_FAMILIES`
+(Apple Symbols, SF Mono, Menlo, .SF NS, Arial Unicode MS, STIX Two Math), when one of them has every glyph; an emoji
+cluster a text face took (Menlo has U+2764, so U+2764 U+FE0F drew as text) comes from `EMOJI_FAMILIES`. STIX Two Math
+moved from the lazy list to the end of the start-up fallbacks so it is there to be asked. Both lists are empty on
+Windows, whose output does not change. Native: `crates/flare-render/src/presentation.rs`, `raster.rs`,
+`macos/font_catalog.rs`. Held by `the_presentation_rule_follows_uts_51` and
+`a_text_presentation_symbol_draws_from_a_text_face_and_vs16_makes_it_an_emoji`. Source: macOS port (2026-11-11).
+1128. **macOS: a run from an `.app` bundle that Velopack did not make has updates off, so it shows no fake update
+chip.** D11 previews in an unpackaged build so `cargo run` shows the update flow, but the ad hoc
+`/Applications/Flare.app` that `tools/release/mac/make-app.sh` builds is unpackaged too (no `UpdateMac`, no
+`Contents/Resources/sq.version`), so it showed "Update 0.2.0" from the preview feed to a user who had installed it.
+`packaged::in_app_bundle` reads the path alone (`<X>.app/Contents/MacOS/<exe>`, no file probes); `Ship::from_parts`
+sets `bundled` from it on macOS only (always false on Windows), and `mode_for(packaged, bundled, e2e, flag, live)`
+previews only when `--preview-update` is given or the run is unpackaged, not bundled and not e2e. Unchanged: `cargo
+run` previews, `--preview-update` previews everywhere, a packaged Mac build goes Live with `live-updates`, an e2e run
+(which on a Mac runs from a bundle) stays Off as before, and Windows is as it was. Native:
+`crates/flare-win/src/packaged.rs`, `crates/flare-update/src/engine.rs`, `crates/flare/src/ship_ctl.rs`. Held by
+`in_app_bundle_reads_the_path_alone`, `mode_table`, `an_unpackaged_mac_bundle_is_off_and_the_rest_keep_d11` and
+`an_unpackaged_app_bundle_is_off_on_a_mac_only`. Source: Max, the installed ad hoc app showing an update chip
+1132. **macOS: a build an agent stages shows as "Build ready" in the running Flare.app, and only Max's click swaps the
+bundle.** Max runs Claude Code inside `/Applications/Flare.app`, so an agent never replaces that bundle; it runs
+`tools/release/mac/stage-install.sh`, which builds with `make-app.sh` into a temp folder and writes
+`~/Library/Application Support/Flare/staged.tmp/Flare.app`, renames it to `staged/` and writes `staged/staged.json` last
+(the Windows manifest; names relative to the bundle, `Contents/MacOS/Flare`). It never touches `/Applications`, and
+refuses a root in an `Applications` folder or a bundle. A `.app` in an `Applications` folder is an installed copy whatever
+the update mode (`Layout::from_bundle_exe`); an `--e2e` run never uses the real root. The swap journals `install.json`,
+renames the running bundle to `Flare.app.old`, renames the stage in (the stage must be on the bundle's volume, else
+`NotReady::OtherVolume` and no chip), checks every hash in place and puts everything back on any failure (the new bundle
+goes back to `staged/` while it is on offer). The restart is `open -n <bundle> --args ... --after-pid <pid>`; the
+start guard, the 20 s confirm (which deletes `Flare.app.old`) and the rollback after two early deaths are Windows'.
+`install.lock` is an `flock`. A record naming another bundle is left alone. Native: `crates/flare-update/src/staged.rs`,
+`crates/flare/src/appctl/staged_glue.rs`, `tools/release/mac/stage-install.sh`. Held by `staged::mac_tests` (layout,
+check, swap, a bad hash, a failed move, a crash at each step, confirm, rollback, take back and abandon, another
+bundle's record, the lock, the cross-volume refusal as a pure function), `stage_script::mac` (the real script on a fake
+bundle with `FLARE_STAGE_APP` and `FLARE_STAGE_ROOT`) and `ui_tests::staged_flows` (`a_mac_bundle_...`,
+`the_mac_restart_...`, `an_installed_mac_bundle_...`). An ad hoc signature changes per build, so macOS may ask for
+permissions again after an install. Source: Max, "always stage apps so they show as update here in the ui"
+(2026-11-11).
+1140. **A unit test that writes a Windows path for a file link writes it through `path_grammar::native_text`.** A
 `C:\...` path is relative on macOS (rule 227), so a marked `C:\...` with no tab folder is rightly no link there, and the
 six marked-path tests in `link_scan` and `emulator` found none on the Mac runner (run 42983045830, PR 166). The helper
 keeps the text on Windows and writes `/C/` for `C:\` and `/` for every `\` elsewhere, the same length, so piece
