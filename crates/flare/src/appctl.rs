@@ -7154,7 +7154,13 @@ mod tests {
             f.ctl.borrow().hub().agent_folder(&id),
             Some(agent_dir.as_str())
         );
-        feed(&h, "\u{27E6}app\\a.txt\u{27E7}");
+        // The platform's own separator: on the Mac a backslash is part of a file name.
+        let rel = if cfg!(windows) {
+            "app\\a.txt"
+        } else {
+            "app/a.txt"
+        };
+        feed(&h, &format!("\u{27E6}{rel}\u{27E7}"));
         for _ in 0..8 {
             f.ctl.borrow().decor_inputs().borrow_mut().decor(&h);
             f.clock.set(f.clock.get() + 60);
