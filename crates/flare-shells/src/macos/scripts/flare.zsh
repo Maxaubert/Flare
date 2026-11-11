@@ -15,12 +15,30 @@ __flare_osc7() {
   printf '\e]7;file://%s\e\\' "$out"
 }
 
+# A restored tab that hosted an agent: the shim kept FLARE_RESUME_ID (a Claude session id Flare has
+# checked, or codex:last / agy:last) in __flare_resume. It runs once, at the first prompt, so PATH
+# is the one .zprofile and .zshrc set and `claude` is found as when the user types it.
+__flare_resume_run() {
+  local r=${__flare_resume-}
+  __flare_resume=
+  case $r in
+    (codex:last) codex resume --last ;;
+    (agy:last) agy -c ;;
+    (*)
+      if [[ -n $r && $r != -* && $r != *[^0-9A-Fa-f-]* ]]; then
+        claude --resume "$r"
+      fi
+      ;;
+  esac
+}
+
 # Installed at the first prompt, after .zshrc has run, and put last, so a prompt theme that set up
 # its own hooks keeps them and Flare's still runs.
 __flare_install() {
   precmd_functions=(${precmd_functions:#__flare_install})
   precmd_functions=(${precmd_functions:#__flare_osc7} __flare_osc7)
   __flare_osc7
+  __flare_resume_run
 }
 typeset -ag precmd_functions
 precmd_functions+=(__flare_install)

@@ -11,6 +11,10 @@
 //!   of `staged\` on a worker. The chip shows only once every hash matches.
 //! - The quit is the one the update installer uses: `finish` (tabs.json with the agents, so the sessions resume),
 //!   then the new exe, then the event loop ends. Nothing here forces a close.
+//! - macOS (rule 1132): the installed copy is a `.app` in an `Applications` folder, ad hoc or not, Velopack's live
+//!   updates on or off; its root is `~/Library/Application Support/Flare` (`FLARE_STAGE_ROOT` overrides). The watch
+//!   polls `staged/staged.json` every 2 s (its size and time, no hashing), and the restart is `open -n <bundle>`.
+//!   An `--e2e` run never uses the real root (only with `FLARE_STAGE_ROOT`).
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -91,7 +95,7 @@ impl AppCtl {
     pub fn attach_staged(rc: &Rc<std::cell::RefCell<AppCtl>>, parts: StagedParts) {
         let post = Arc::clone(&rc.borrow().deps.post);
         if parts.watch {
-            watch_root(parts.layout.root().to_path_buf(), Arc::clone(&post));
+            watch_root(&parts.layout, Arc::clone(&post));
         }
         let mut flow = StagedFlow::new(parts.times);
         let now = rc.borrow().now();
@@ -449,13 +453,14 @@ impl AppCtl {
 /// Watches the install root (and below) on a thread of its own; every change posts one `Changed` (a burst of
 /// writes, such as a stage being copied, settles for 300 ms first).
 #[cfg(windows)]
-fn watch_root(root: PathBuf, post: Post) {
+fn watch_root(layout: &Layout, post: Post) {
     use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
         FindFirstChangeNotificationW, FindNextChangeNotification,
     };
     use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
+    let root = layout.root().to_path_buf();
     let spawned = std::thread::Builder::new()
         .name("flare-staged-watch".into())
         .spawn(move || {
@@ -498,20 +503,67 @@ fn watch_root(root: PathBuf, post: Post) {
     }
 }
 
+/// macOS: polls the manifest every 2 s on a thread of its own; a change in whether it is there, its size or its
+/// time posts one `Changed` (the stage script writes it last, by a rename). Nothing is hashed here.
 #[cfg(not(windows))]
-fn watch_root(_root: PathBuf, _post: Post) {}
+fn watch_root(layout: &Layout, post: Post) {
+    let manifest = layout.manifest();
+    let stamp = move || {
+        // sync-ok: the watch thread, one stat
+        std::fs::metadata(&manifest)
+            .ok()
+            .map(|m| (m.len(), m.modified().ok()))
+    };
+    let spawned = std::thread::Builder::new()
+        .name("flare-staged-watch".into())
+        .spawn(move || {
+            let mut last = stamp();
+            loop {
+                std::thread::sleep(Duration::from_secs(2)); // sync-ok: the watch thread, a poll
+                let now = stamp();
+                if now != last {
+                    last = now;
+                    post(UiMsg::Staged(StagedMsg::Changed));
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        log::warn!("could not start the staged-build watch: {e}");
+    }
+}
 
 /// What the start-up guard found, for the window glue.
 static STARTED: std::sync::OnceLock<(Layout, Start)> = std::sync::OnceLock::new();
 
+/// The installed copy this exe is, if any: `<root>\current\<exe>` on Windows; on macOS a bundle in an
+/// `Applications` folder, whose root is `FLARE_STAGE_ROOT` or `~/Library/Application Support/Flare`. An `--e2e`
+/// run of a bundle uses only a root it was given, never the real one.
+pub fn installed_layout(exe: &Path, e2e: bool) -> Option<Layout> {
+    if let Some(l) = Layout::from_exe(exe) {
+        return Some(l);
+    }
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let given = std::env::var_os("FLARE_STAGE_ROOT")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
+    let root = match given {
+        Some(r) => r,
+        None if e2e => return None,
+        None => flare_win::paths::roaming_app_data().map(|d| Path::new(&d).join("Flare"))?,
+    };
+    Layout::from_bundle_exe(exe, &root)
+}
+
 /// The last-good guard, once per start of an installed copy (`main`, after the single-instance check, so a launch
 /// that only hands its folders over does not count). When the new build died early too often, its files were just
 /// put back: the old exe starts on the same profile and this process ends.
-pub fn guard_at_start(argv: &[String], user_data_dir: Option<&Path>) {
+pub fn guard_at_start(argv: &[String], user_data_dir: Option<&Path>, e2e: bool) {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let Some(layout) = Layout::from_exe(&exe) else {
+    let Some(layout) = installed_layout(&exe, e2e) else {
         return;
     };
     let start = staged::on_start(&layout); // sync-ok: startup, before the window; one small file
@@ -533,7 +585,8 @@ pub fn guard_at_start(argv: &[String], user_data_dir: Option<&Path>) {
     };
     if back {
         let args = flare_update::handoff::restart_args_keeping(user_data_dir, argv);
-        let home = std::env::var("USERPROFILE").unwrap_or_default();
+        let home =
+            std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap_or_default();
         spawn_exe()(&layout.exe(), &args, &home);
         std::process::exit(0);
     }
@@ -557,19 +610,43 @@ pub fn times() -> Times {
 }
 
 /// The production restart: the new exe, detached from nothing (a test run's job keeps it, so the reaper finds it).
+/// macOS: an exe in a bundle starts through LaunchServices, `open -n <bundle> --args ...` (a new instance of the
+/// bundle now at that path, the one just swapped in).
 pub fn spawn_exe() -> Restart {
     Rc::new(|exe, args, dir| {
-        let mut cmd = std::process::Command::new(exe); // sync-ok: the quit path, one process start
-        cmd.args(args);
+        let mut cmd = restart_command(exe, args);
         if Path::new(dir).is_dir() {
             cmd.current_dir(dir);
         }
         match cmd.spawn() {
-            Ok(_) => true,
+            Ok(mut child) => {
+                if cfg!(target_os = "macos") && staged::bundle_of(exe).is_some() {
+                    // `open` returns once LaunchServices has the app; its status says whether it could.
+                    return child.wait().is_ok_and(|s| s.success()); // sync-ok: the quit path, `open` returns at once
+                }
+                true
+            }
             Err(e) => {
                 log::warn!("could not start {}: {e}", exe.display());
                 false
             }
         }
     })
+}
+
+/// The command that starts `exe` again with `args`: the exe itself, or on macOS `open -n <bundle> --args ...`.
+pub fn restart_command(exe: &Path, args: &[String]) -> std::process::Command {
+    if cfg!(target_os = "macos")
+        && let Some(app) = staged::bundle_of(exe)
+    {
+        let mut cmd = std::process::Command::new("/usr/bin/open"); // sync-ok: the quit path, one process start
+        cmd.arg("-n").arg(app);
+        if !args.is_empty() {
+            cmd.arg("--args").args(args);
+        }
+        return cmd;
+    }
+    let mut cmd = std::process::Command::new(exe); // sync-ok: the quit path, one process start
+    cmd.args(args);
+    cmd
 }

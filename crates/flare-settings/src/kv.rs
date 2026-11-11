@@ -379,10 +379,10 @@ mod tests {
         let _sub = s.on_change(LAYOUT, move || {
             h.fetch_add(1, Ordering::SeqCst);
         });
-        crate::tab_layout::set_tab_layout(&s, crate::tab_layout::TabLayout::Vertical);
+        crate::tab_layout::set_tab_layout(&s, crate::tab_layout::TabLayout::Horizontal);
         assert_eq!(
             crate::tab_layout::tab_layout(&s),
-            crate::tab_layout::TabLayout::Horizontal
+            crate::tab_layout::TabLayout::Vertical
         );
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
@@ -457,7 +457,7 @@ mod tests {
     fn an_enum_pref_reads_unknown_as_the_fallback_and_never_stores_junk() {
         let s = PrefStore::memory();
         crate::tab_layout::set_tab_layout_word(&s, "left");
-        assert_eq!(s.get(LAYOUT), Some("horizontal".to_string()));
+        assert_eq!(s.get(LAYOUT), Some("vertical".to_string()));
     }
 
     #[test]

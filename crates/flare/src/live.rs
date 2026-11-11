@@ -165,6 +165,60 @@ impl WheelAccum {
         self.lines -= f64::from(n);
         n
     }
+
+    /// One macOS scroll event, filtered and turned into a step the way Terminal.app scrolls
+    /// (rule 1129): momentum (AppKit's synthetic events after the fingers lift) moves nothing; a
+    /// finger gesture's precise pixels build up into whole lines, one per cell height, and a new
+    /// gesture (`Began`) starts from zero, so neither a leftover nor a reversed drag carries over; a
+    /// plain mouse wheel (no phase) keeps its notches, `WHEEL_LINES_PER_NOTCH` lines each.
+    /// `notches` asks for the pixels in notches instead (Cmd+wheel zoom, one pixel a notch).
+    pub fn add_mac(
+        &mut self,
+        delta: ScrollDelta,
+        phase: ScrollPhase,
+        cell_h: u32,
+        notches: bool,
+    ) -> WheelStep {
+        if phase == ScrollPhase::Momentum {
+            return WheelStep::Lines(0);
+        }
+        if phase == ScrollPhase::Began {
+            self.acc = 0.0;
+            self.lines = 0.0;
+        }
+        match delta {
+            ScrollDelta::Lines(l) => WheelStep::Notches(self.add_lines(l)),
+            ScrollDelta::Pixels(px) if notches => WheelStep::Notches(self.add(px, cell_h)),
+            ScrollDelta::Pixels(px) => {
+                let line = f64::from(cell_h.max(1));
+                self.acc += px;
+                let n = (self.acc / line).trunc() as i32;
+                self.acc -= f64::from(n) * line;
+                WheelStep::Lines(n)
+            }
+        }
+    }
+}
+
+/// One scroll event's amount, as winit gives it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScrollDelta {
+    /// Wheel lines (a mouse notch is 1.0).
+    Lines(f32),
+    /// Precise touchpad pixels, physical.
+    Pixels(f64),
+}
+
+/// A scroll event's place in its trackpad gesture (macOS); every event off macOS is `Wheel`.
+pub use flare_win::scroll_phase::ScrollPhase;
+
+/// What one scroll event moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WheelStep {
+    /// Whole wheel notches (`WHEEL_LINES_PER_NOTCH` lines of view each).
+    Notches(i32),
+    /// Whole lines (a trackpad drag on macOS).
+    Lines(i32),
 }
 
 #[cfg(test)]
@@ -247,6 +301,93 @@ mod tests {
             ),
             (5, 3)
         );
+    }
+
+    // Rule 1129: Mac scrolling is Terminal.app's, line for line while the fingers move, and no
+    // momentum after they lift; a mouse wheel keeps its notches.
+    #[test]
+    fn mac_scroll_moves_with_the_fingers_and_never_with_the_momentum() {
+        use ScrollDelta::{Lines as L, Pixels as P};
+        use ScrollPhase::*;
+        use WheelStep::{Lines, Notches};
+        // (case, events, the steps they give); cell height 16 px.
+        type Ev = (ScrollDelta, ScrollPhase);
+        let table: &[(&str, &[Ev], &[WheelStep])] = &[
+            (
+                "a finger gesture scrolls one line per cell height",
+                &[
+                    (P(0.0), Began),
+                    (P(32.0), Changed),
+                    (P(16.0), Changed),
+                    (P(0.0), Ended),
+                ],
+                &[Lines(0), Lines(2), Lines(1), Lines(0)],
+            ),
+            (
+                "momentum after the lift scrolls nothing",
+                &[
+                    (P(48.0), Momentum),
+                    (P(160.0), Momentum),
+                    (P(0.0), Momentum),
+                ],
+                &[Lines(0), Lines(0), Lines(0)],
+            ),
+            (
+                "a gesture then its momentum: only the fingers count",
+                &[
+                    (P(20.0), Began),
+                    (P(20.0), Changed),
+                    (P(0.0), Ended),
+                    (P(400.0), Momentum),
+                ],
+                &[Lines(1), Lines(1), Lines(0), Lines(0)],
+            ),
+            (
+                "a mouse wheel notch is one notch, as on Windows",
+                &[
+                    (L(1.0), Wheel),
+                    (L(-2.0), Wheel),
+                    (L(0.5), Wheel),
+                    (L(0.5), Wheel),
+                ],
+                &[Notches(1), Notches(-2), Notches(0), Notches(1)],
+            ),
+            (
+                "small deltas add up until they cross one line",
+                &[
+                    (P(5.0), Began),
+                    (P(5.0), Changed),
+                    (P(5.0), Changed),
+                    (P(5.0), Changed),
+                ],
+                &[Lines(0), Lines(0), Lines(0), Lines(1)],
+            ),
+            (
+                "the remainder resets when a new gesture begins",
+                &[
+                    (P(15.0), Began),
+                    (P(0.0), Ended),
+                    (P(2.0), Began),
+                    (P(2.0), Changed),
+                    (P(-15.0), Began),
+                    (P(-2.0), Changed),
+                ],
+                &[Lines(0), Lines(0), Lines(0), Lines(0), Lines(0), Lines(-1)],
+            ),
+        ];
+        for (case, events, want) in table {
+            let mut w = WheelAccum::new();
+            let got: Vec<WheelStep> = events
+                .iter()
+                .map(|&(d, p)| w.add_mac(d, p, 16, false))
+                .collect();
+            assert_eq!(&got, want, "{case}");
+        }
+        // Cmd+wheel zoom on a trackpad keeps the notches (3 cell heights), momentum still dropped.
+        let mut w = WheelAccum::new();
+        assert_eq!(w.add_mac(P(40.0), Began, 16, true), Notches(0));
+        assert_eq!(w.add_mac(P(10.0), Changed, 16, true), Notches(1));
+        assert_eq!(w.add_mac(P(480.0), Momentum, 16, true), Lines(0));
     }
 
     #[test]

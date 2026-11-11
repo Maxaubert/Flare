@@ -319,6 +319,7 @@ fn launch_strip(
         renderer: Some("software"),
         folders,
         scale_dpi: dpi,
+        tabs_along_the_top: true,
         ..Launch::default()
     })
 }
@@ -391,6 +392,8 @@ pub(super) fn mark_strip(ctx: &mut Ctx, app: &mut App) -> (bool, Vec<String>) {
         }
         for i in [0usize, 2, 3, 4, 5] {
             focus_tab(ctx, app, i);
+            // Rule 1136: on a Mac the stand-in's pwsh runs a line first, so the hook line is not lost.
+            crate::standins::agent_proc::wait_ready(app);
             type_line(app, &say("working", ""));
         }
         focus_tab(ctx, app, 3);

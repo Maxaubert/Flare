@@ -470,6 +470,7 @@ fn launch_on(ctx: &mut Ctx, folders: Vec<PathBuf>) -> Result<App, String> {
     ctx.launch(Launch {
         renderer: Some("software"),
         folders,
+        tabs_along_the_top: true,
         ..Launch::default()
     })
 }
@@ -624,6 +625,8 @@ fn stand_in(ctx: &mut Ctx, app: &mut App, i: usize) -> Result<(), String> {
     let cmd = agent_proc::command(&app.profile)?;
     at(app, i, &cmd);
     pause(ctx, agent_proc::SETTLE_MS);
+    // Rule 1136: a Mac waits for the stand-in's pwsh to run a line before the hook line goes in.
+    agent_proc::wait_ready(app);
     Ok(())
 }
 
