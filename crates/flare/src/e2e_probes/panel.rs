@@ -198,6 +198,11 @@ fn panel_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         "lines": slint::Model::row_count(&a.get_panel_lines()),
         "row0": slint::Model::row_data(&a.get_panel_lines(), 0).map(|r| r.to_string()),
         "first_line": a.get_panel_first_line(),
+        // The text's selection (a file link's line is marked with it): its first and last rows, or null.
+        "sel": a.get_panel_sel_on().then(|| json!({
+            "a_row": a.get_panel_sel_a_row(),
+            "b_row": a.get_panel_sel_b_row(),
+        })),
         "gutter_w": a.get_panel_gutter_w(),
         // Wrapping (2026-10-22): the columns that fit, whether the rows are wrapped, the setting, and how many wraps ran.
         "wrap_cols": a.get_panel_wrap_cols(),

@@ -98,7 +98,15 @@ pub enum Port {
     Elsewhere(&'static str),
     /// Not in `scenarios::ALL` and not ported (the reason is the string).
     Waits(&'static str),
+    /// Retired on purpose: Flare differs from Prism Terminal here (the reason is the string, see `docs/parity.md`).
+    Retired(&'static str),
 }
+
+/// The PT scenarios Flare retired as a deliberate difference, with the reason.
+const RETIRED: &[(&str, &str)] = &[(
+    "pathLinks",
+    "retired 2026-11-11: Flare guesses no file paths; `markerLinks` checks the file links by marker",
+)];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
@@ -282,6 +290,9 @@ pub fn ledger(dir: &Path) -> Vec<Row> {
     let files = scenario_files(dir);
     PT.iter()
         .map(|&(name, pt_ok)| {
+            if let Some((_, why)) = RETIRED.iter().find(|(n, _)| *n == name) {
+                return row(name, pt_ok, Port::Retired(why), 0, 0);
+            }
             if name == "updateQuiet" {
                 return row(
                     name,
@@ -340,6 +351,7 @@ fn row(name: &str, pt_ok: u32, port: Port, flare_ok: usize, dropped: usize) -> R
         Port::Flare { .. } => "SHORT",
         Port::Elsewhere(_) => "elsewhere",
         Port::Waits(_) => "waits",
+        Port::Retired(_) => "retired",
     };
     Row {
         name: name.to_string(),
@@ -365,7 +377,7 @@ pub fn markdown(rows: &[Row]) -> String {
                 r.flare_ok.to_string(),
             ),
             Port::Elsewhere(where_) => (where_.to_string(), "-".to_string()),
-            Port::Waits(why) => (why.to_string(), "-".to_string()),
+            Port::Waits(why) | Port::Retired(why) => (why.to_string(), "-".to_string()),
         };
         out.push_str(&format!(
             "| `{}` | {} | {} | {} | {} | {} |\n",
@@ -441,14 +453,21 @@ mod tests {
     }
 
     #[test]
-    fn the_flare_ports_are_the_75_scenarios_of_all() {
-        // 70 before M8, plus the five dictation scenarios (Tasks 29 to 31), none waiting any more.
+    fn the_flare_ports_are_the_74_scenarios_of_all() {
+        // 70 before M8, plus the five dictation scenarios (Tasks 29 to 31), none waiting any more, less pathLinks,
+        // retired on 2026-11-11 (Flare guesses no file paths).
         let rows = ledger(&scenarios_dir());
         let ported = rows
             .iter()
             .filter(|r| matches!(r.port, Port::Flare { .. }))
             .count();
-        assert_eq!(ported, 75);
+        assert_eq!(ported, 74);
+        let retired: Vec<&str> = rows
+            .iter()
+            .filter(|r| matches!(r.port, Port::Retired(_)))
+            .map(|r| r.name.as_str())
+            .collect();
+        assert_eq!(retired, ["pathLinks"]);
     }
 
     #[test]

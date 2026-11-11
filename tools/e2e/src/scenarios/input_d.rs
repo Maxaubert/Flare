@@ -326,7 +326,7 @@ fn link_paint_stall_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     let b = front_id(app);
     // A tab that has not shown yet may still be starting its shell: typing before its prompt is lost.
     let _ = wait_prompt(app);
-    // Tab B: 10,000 lines, each with a path that names nothing and a web link (painted at once).
+    // Tab B: 10,000 lines, each with a plain path (never a link) and a web link (painted at once).
     type_line(
         app,
         r#"1..10000 | % { "line $_ see docs/x.md at https://e.x/n$_" }"#,
@@ -343,13 +343,13 @@ fn link_paint_stall_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
 
     frames_reset(app);
 
-    // Tab A finds a path.
+    // Tab A prints a file link (a path between the marks a session writes; no path is guessed since 2026-11-11).
     let (ax, ay) = centre_of(app, "tab:0").unwrap_or((0.0, 0.0));
     app.session.click(ax, ay)?;
     let _ = wait_prompt(app);
     type_line(
         app,
-        "cls; Set-Content found-167.txt x; Write-Host 'made found-167.txt here'",
+        "cls; Set-Content found-167.txt x; Write-Host ('made ' + [char]0x27E6 + 'found-167.txt' + [char]0x27E7 + ' here')",
     )?;
     // PT: run.mjs:3697
     ctx.ok(
