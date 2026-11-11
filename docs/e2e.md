@@ -56,7 +56,7 @@ seconds. The exit code is 1 when any assertion failed.
   110 to 260 ms; the software leg and every other scenario are unaffected). It is the machine, not the app:
   the same build passes once the display is awake (found 2026-10-19 by running the gate at the older commit
   `39d8483`, which failed the same way). Wake the screen before a full run.
-- **Tab position.** The app's default is vertical since 2026-11-11 (rule 1127). A scenario written for the strip
+- **Tab position.** The app's default is vertical since 2026-11-11 (rule 1130). A scenario written for the strip
   sets `Launch { tabs_along_the_top: true, .. }`, which stores Horizontal in the profile just before the start
   (`flare_e2e::world::tabs_along_the_top`). The ported scenarios that click tabs by their strip box, read the strip's
   pixels or measure the window as Prism Terminal's horizontal layout drew it do: the strip and indicator groups,

@@ -667,7 +667,7 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   that has never chosen a Tab position opens with the tabs down the side, the sidebar open at 220 px, and
   Settings shows Vertical. Nothing is written until somebody picks: a stored `horizontal` (picked, or imported
   from Prism Terminal) is kept, and an unknown word reads vertical. Prism Terminal's default stays horizontal,
-  so this is a DIFF in `docs/parity.md` and rule 1127. The zero-tab start screen still shows the top bar (the
+  so this is a DIFF in `docs/parity.md` and rule 1130. The zero-tab start screen still shows the top bar (the
   entry above). Held by `tab_layout_is_vertical_until_chosen`, `a_stored_horizontal_choice_is_kept`,
   `a_fresh_profile_starts_vertical_with_the_sidebar_open_at_220`, `a_profile_stored_as_horizontal_keeps_the_strip`,
   `tab_position_shows_vertical_on_a_fresh_profile_and_a_stored_horizontal` and the e2e `verticalStart`. Tests and
