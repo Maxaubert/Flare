@@ -2390,7 +2390,7 @@ Windows never reads the phase (`phase_from_winit` is `Wheel` off macOS). No sett
 `winits_phase_is_a_plain_wheel_off_the_mac_and_for_a_mouse` and `a_wheel_that_moves_the_view_asks_for_a_redraw`.
 Source: Max on his Mac (2026-11-11).
 1141. **The side-by-side run reads Prism Terminal's private installer with a read-only token, given to its step alone, and fails without it.** Prism Terminal moved to `arkivert/PrismTerminal` and became private (2026-11-11), so `gh release download` with the workflow's `GITHUB_TOKEN` answered "release not found". The side-by-side step of `release.yml` and `installer-e2e.yml` sets `GH_TOKEN` from the repository secret `PRISM_RELEASE_TOKEN` (a fine-grained token, Contents read on that one repository); no other step reads a secret. When the secret is missing the step prints one `::error::` line naming the secret, the repository and `docs/shipping.md`, and exits 1 before the test runs: never a skip, and the token is never printed. Native: the two workflow steps, `NEIGHBOUR_RELEASE_REPO` in `tools/e2e/tests/side_by_side.rs`. Held by `only_the_side_by_side_step_gets_the_neighbour_token_and_it_fails_without_it`, `no_secret_other_than_the_github_token_and_the_neighbour_release_token` and `the_release_goes_to_this_repository_only` (`crates/flare/tests/release_files.rs`), and the name scan's third widening (`the_widenings_are_narrow`, `crates/flare/tests/names.rs`). Source: owner decision 2026-11-11; `docs/shipping.md`.
-1142. **Dictation from another app says "Sent" only when the words were sent, its key never gets out of step, and the
+1149. **Dictation from another app says "Sent" only when the words were sent, its key never gets out of step, and the
 Flare window in front at the press is found.** Owner report (Flare Stable, toggle mode, Ctrl+Win, 2026-11-11): every
 stop asked which session with Flare's tab in front; a card said "Sent to web-application-project" and the words never
 arrived; a press after a recording did nothing and the next started a recording nobody wanted. (1) The front: the
@@ -2424,7 +2424,7 @@ link,controller}.rs`, `crates/flare/src/dictation_ctl.rs`, `crates/flare-agent/s
 `to_idle_makes_the_next_tap_a_start_and_still_swallows_the_held_chords_key_up`,
 `the_route_and_pick_crumbs_name_the_way_and_lengths_never_the_words` and `the_kill_hook_writes_a_crumb`. Source:
 owner report and the Stable diag log (2026-11-11).
-1143. **A dictation long enough to push Claude's prompt box past the rows read is still sent.** The box is read in the
+1150. **A dictation long enough to push Claude's prompt box past the rows read is still sent.** The box is read in the
 last 16 screen rows (`SCREEN_TAIL_ROWS`). A long one-line text pasted inline wraps over many rows, so in a narrow pane
 the box's top rule leaves those rows and `question::prompt_draft` reads `None`. A box that read empty before the paste
 and reads `None` after it grew with the words: `type_checked` counts them as shown (stage "words shown, box past the
