@@ -14,7 +14,7 @@ Test mapping: [docs/test-port.md](docs/test-port.md).
 - Selection on the grid: character, word, line and block (Alt drag), drag scroll and Shift to extend.
 - Copy (Ctrl+C with a selection, the Copied badge, OSC 52), paste (Ctrl+V, Ctrl+Shift+V, right-click Paste) and file drop (a quoted path, never Enter).
 - Find in scrollback (Ctrl+F, Ctrl+Shift+F) with highlights, the count and wrap-around.
-- Links: web links and OSC 8 links, and existing paths, painted and opened by a left click through an allowlist.
+- Links: web links and OSC 8 links, and file paths a session writes between `⟦` and `⟧` (a `:line` opens the file at that line), painted and opened by a left click through an allowlist.
 - A terminal right-click menu that fits what was clicked.
 - Panels: a click on a path to a picture or a text file (or "Show in side panel" in its right-click menu) shows it beside the terminal, per tab, behind a draggable splitter (fit, click for 1:1, scroll, a checkerboard under transparency; long text lines wrap, with a button in the header to turn that off). Ctrl+Shift+P shows or hides it and Ctrl+Shift+O moves the keys; Settings > Terminal > Links turns it off.
 - Agent tools: Claude in a Flare tab can show an image, a file or some text in that tab's panel (`show_image`, `show_file`, `show_text`, `open_page`, `close_panel`) through a local, per-user, per-tab control channel and the bundled `flare-mcp.exe`; no setup, nothing leaves the PC. The contract is `docs/surfaces/protocol.md`.
@@ -76,7 +76,7 @@ Each dependency is listed here with its reason, and has an entry in `THIRD-PARTY
 - `windows` 0.62.2: the taskbar overlay badge (`ITaskbarList3`); already in the build graph through Slint's accessibility stack; M8 reuses it for GSMTC. Surfaces stage 7 adds its `UI_Notifications` and `Data_Xml_Dom` features (no new crate, nothing new in `Cargo.lock`) for the Windows notification a question from an agent shows; the check whether a local dev server listens uses `windows-sys`' `Win32_NetworkManagement_IpHelper`, already enabled.
 - `alacritty_terminal`: terminal state, the escape-sequence parser, the grid, scrollback and reflow (owner decision, parity with Prism Terminal's xterm.js).
 - `portable-pty`: the ConPTY child process and its pipes, one pty per shell tab.
-- `regex`: the ported link and path finders (`find_links`, `find_paths`).
+- `regex`: the ported web link finder (`find_links`).
 - `memchr`: the fast scan for escape bytes in the output stream.
 - `base64`: decodes and encodes OSC 52 clipboard payloads.
 - `url`: compares the host of an OSC 8 link, so only web links open.
