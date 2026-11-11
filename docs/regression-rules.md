@@ -2126,3 +2126,20 @@ shell was in front; a Mac now waits for Settings to leave the front and to come 
 `wait_ready` returns at once and the Ctrl+Tab waits are as before (rule 1119). The other Mac misses of that window are
 held elsewhere: the frame's `[187, 187, 187]` by rule 1126, the theme's `0.0:1` by #162, attention and linkPaintStall
 by #163. Held by `the_ready_answer_is_the_printed_row_and_not_the_typed_line`. Source: Mac E2E in CI (2026-11-11).
+1129. **macOS: the terminal scrolls like Terminal.app, line for line with the fingers and no momentum after they
+lift.** Max (2026-11-11): "the scrolling in this app has inertia, I'd like it to be like it is in the normal terminal
+app where it scrolls line for line with no momentum". AppKit sends a trackpad scroll in phases (`NSEvent.phase` Began,
+Changed, Ended while the fingers are down) and then synthetic momentum events (`momentumPhase` not None, `phase` None);
+winit 0.30 folds both into one `TouchPhase`, so a momentum Changed reads as a finger Moved. The window's wheel arm reads
+the phases from `NSApp.currentEvent` (`flare_win::scroll_phase::current`, winit calls the handler from the view's
+`scrollWheel:`; winit's phase stands in when the current event is not the scroll). `WheelAccum::add_mac` then drops
+every momentum event, builds a drag's precise pixels into whole lines (one per cell height, `TermHandle::wheel_lines`:
+one line of view, one alternate-screen arrow or one mouse report a line, so vim and less get no momentum either), and
+resets the remainder when a gesture begins. A plain mouse wheel (both phases None) keeps its notches, three lines each;
+Cmd+wheel zoom keeps its notches too. Only the grid's path changes: a web panel (CEF) scrolls itself, with its momentum.
+Windows never reads the phase (`phase_from_winit` is `Wheel` off macOS). No setting. Native: `crates/flare/src/live.rs`,
+`crates/flare/src/window.rs`, `crates/flare-win/src/scroll_phase.rs`, `crates/flare-term/src/wheel.rs`. Held by
+`mac_scroll_moves_with_the_fingers_and_never_with_the_momentum`, `momentum_wins_and_each_finger_phase_is_read`,
+`a_line_step_is_one_line_everywhere_and_a_notch_stays_three`,
+`winits_phase_is_a_plain_wheel_off_the_mac_and_for_a_mouse` and `a_wheel_that_moves_the_view_asks_for_a_redraw`.
+Source: Max on his Mac (2026-11-11).

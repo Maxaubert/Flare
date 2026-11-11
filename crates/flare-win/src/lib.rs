@@ -42,6 +42,7 @@ pub mod pasteboard;
 pub mod paths;
 pub mod pick;
 pub mod procs;
+pub mod scroll_phase;
 #[cfg(windows)]
 pub mod session_end;
 #[cfg(not(windows))]
