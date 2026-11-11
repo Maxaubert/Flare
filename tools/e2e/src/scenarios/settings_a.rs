@@ -279,6 +279,7 @@ fn launch_with_tab(ctx: &mut Ctx) -> Result<App, String> {
     ctx.launch(Launch {
         folders: vec![alpha],
         renderer: Some("software"),
+        tabs_along_the_top: true,
         ..Launch::default()
     })
 }

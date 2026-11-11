@@ -2287,6 +2287,35 @@ mod tests {
         assert!(same_secret("", ""));
     }
 
+    /// Rule 1133: a restored Mac zsh tab gets the plain login shell and the id in its environment
+    /// (the integration runs `claude --resume`); before, the resume was dropped for zsh and bash.
+    #[test]
+    fn a_mac_zsh_resume_carries_the_id_into_the_login_shell() {
+        let sp = FakeSpawner::new();
+        let def = ShellDef {
+            id: "zsh".into(),
+            name: "zsh".into(),
+            exe: "/bin/zsh".into(),
+            args: vec!["-l".into()],
+        };
+        let m = mgr_with(&sp, FakeShells::with(vec![def]), fast());
+        m.prewarm("/Users/me", Some("zsh"), None);
+        let id = "5a1d0c2e-1111-4222-8333-94445555a666";
+        assert!(m.spawn("tab", "/Users/me", Some("zsh"), null(), Some(id), None));
+        assert_eq!(
+            sp.made().len(),
+            2,
+            "a warm zsh is never adopted for a resume"
+        );
+        let spec = sp.made()[1].spec();
+        assert_eq!(spec.exe, "/bin/zsh");
+        assert_eq!(spec.args, ["-l"]);
+        assert!(
+            spec.env
+                .contains(&("FLARE_RESUME_ID".to_string(), id.to_string()))
+        );
+    }
+
     #[test]
     fn the_environment_is_pty_env_plus_the_resume_variable() {
         let sp = FakeSpawner::new();

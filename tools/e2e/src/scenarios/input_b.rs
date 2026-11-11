@@ -386,6 +386,7 @@ fn with_app(
         renderer: Some(renderer),
         folders: vec![folder.to_path_buf()],
         args,
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     let result = body(ctx, &mut app);

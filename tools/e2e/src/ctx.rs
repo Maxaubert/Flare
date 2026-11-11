@@ -60,6 +60,9 @@ pub struct Launch {
     pub renderer: Option<&'static str>,
     pub scale_dpi: Option<u32>,
     pub packaged: bool,
+    /// Stores Horizontal as the Tab position in the profile just before the start. Vertical is the
+    /// app's default since 2026-11-11; a scenario written for the strip asks for it here.
+    pub tabs_along_the_top: bool,
 }
 
 /// One running app and its pipe. Dropping it reaps the process.
@@ -297,6 +300,9 @@ impl Ctx {
         env.extend(opts.env.iter().cloned());
         packaged_guard(packaged, &env)?;
         let profile = w.profile.clone();
+        if opts.tabs_along_the_top {
+            crate::world::tabs_along_the_top(&profile)?;
+        }
         let exe = if packaged {
             installed_exe()?
         } else {

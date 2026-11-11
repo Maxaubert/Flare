@@ -841,15 +841,19 @@ pub fn theme_editor_live(ctx: &mut Ctx) -> Result<(), String> {
         ctx.until("the Background picker opens", 3_000, &mut || {
             picker_open(&mut app)
         });
+        // macOS (rule 1136): the picker shuts before the tab switch is done, and a second Ctrl+Tab sent then
+        // went nowhere (twice on the runner), so a Mac also waits for the shell to be in front, and for
+        // Settings to be back before it looks for the picker. Windows waits as before.
+        let mac = cfg!(target_os = "macos");
         let _ = app.session.key("Ctrl+Tab");
         ctx.until("the Background picker is shut away", 3_000, &mut || {
-            !picker_open(&mut app)
+            !picker_open(&mut app) && (!mac || !settings_front(&mut app))
         });
         let _ = app.session.key("Ctrl+Tab");
         let again = ctx.until(
             "an Appearance picker left open is open again on return",
             3_000,
-            &mut || picker_open(&mut app),
+            &mut || (!mac || settings_front(&mut app)) && picker_open(&mut app),
         );
         ctx.ok(
             again,
