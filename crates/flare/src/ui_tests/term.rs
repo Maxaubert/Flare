@@ -1854,6 +1854,43 @@ mod flow {
             w.clip_text().as_deref() == Some(a.as_str())
         });
     }
+
+    /// Owner, 2026-11-11: on a table link that names nothing, Open said nothing and Copy path copied the path read
+    /// across the borders. Open now says "Flare found no such file" and calls no opener; Copy path copies exactly the
+    /// path in the cell, as written (rules 273 and 274).
+    #[test]
+    fn a_table_cell_link_that_names_nothing_opens_nothing_and_copies_exactly_its_path() {
+        // The Windows paths as this platform writes them (`path_grammar::native_text`, rule 1127).
+        let native = |s: &str| {
+            if cfg!(windows) {
+                s.to_string()
+            } else {
+                s.replace("C:\\", "/C/").replace('\\', "/")
+            }
+        };
+        let w = Wx::new(1.0);
+        w.feed(&native(concat!(
+            "\u{2502} 4  \u{2502} \u{27E6}C:\\Users\\me\\web-application-project\\app\\   \u{2502} \u{1F504}  \u{2502}\r\n",
+            "\u{2502}    \u{2502} src\\app\\favorites\\favorites.ts\u{27E7}            \u{2502} now \u{2502}",
+        )));
+        light_paths(&w, 8..20);
+        w.right_click(12, 1);
+        w.pick("Copy path");
+        w.pump_until("the path copy", |w| w.clip_text().is_some());
+        assert_eq!(
+            w.clip_text(),
+            Some(native(
+                "C:\\Users\\me\\web-application-project\\app\\src\\app\\favorites\\favorites.ts"
+            ))
+        );
+        w.right_click(12, 0);
+        w.pick("Open");
+        w.pump_until("the word in the panel", |w| {
+            w.h.comp.get_panel_title().as_str() == "No such file"
+        });
+        assert!(w.records().is_empty(), "{:?}", w.records());
+    }
+
     /// The calling thread's own clock, the one the hold tests below bound: its CPU time where the system
     /// keeps it to the microsecond (macOS, Linux), so a shared runner that takes the core away in the
     /// middle of a tick does not count as the tick's work (an 88 ms tick of 18 ms work with every core

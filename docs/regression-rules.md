@@ -765,12 +765,12 @@ no `SessionStart`). Held by `the_session_start_hook_tells_claude_about_file_link
 of 266 to 269 (2026-11-11): only the plain click tried a link's `alts`, so for a path Claude Code cut at a space the menu's
 Copy path copied a path that does not exist, Open did nothing and Show in side panel said the file changed. Open, Show in
 Explorer, Show in side panel, Copy path (`TermMenuAct::CopyPath`, only for a link with other spellings) and the hover
-thumbnail (`ThumbJob::alts`) now take, on their worker, the first spelling that names something (`term_ui::spelling`,
-`path_open::first_existing`), else the one as written. On a row the terminal wrapped, Alacritty leaves the last column
+thumbnail (`ThumbJob::alts`) now take, on their worker, the first spelling that names something
+(`path_open::first_existing`), else the one as written. On a row the terminal wrapped, Alacritty leaves the last column
 empty (`LEADING_WIDE_CHAR_SPACER`, read as an empty cell of width 1) when a wide character does not fit there;
 `file_marks` skips that cell when the next row starts with a wide character, and offers a space there as an alt. Held by
 `the_menu_rows_act_on_the_spelling_with_a_space_where_the_row_broke`,
-`copy_path_of_a_link_with_other_spellings_is_left_to_the_worker_that_finds_the_one_that_exists`,
+`copy_path_of_every_file_link_is_left_to_the_worker_that_finds_the_one_that_exists`,
 `a_picture_named_with_a_space_where_its_row_broke_is_found_by_that_spelling` and
 `a_marked_path_the_terminal_wrapped_before_a_wide_character_reads_with_no_space`.
 271. **A marked path in a table cell is read inside the cell.** Owner, 2026-11-11, with a screenshot: Claude Code draws a
@@ -802,6 +802,33 @@ the param ignores it; an older `flare-mcp` sends none. Held by `every_hook_that_
 `entering_or_leaving_a_worktree_tells_flare_the_sessions_folder`,
 `panel_state_carries_the_agents_folder_only_when_it_is_a_plain_absolute_path`,
 `a_relative_file_link_opens_under_the_agents_folder_not_the_shells` and the hidden e2e `markerLinks`.
+273. **A file link that names nothing reaches no opener on any route, and every route says so.** Owner, 2026-11-11, on
+the build before rule 271: right-click Open on a table link did nothing, and Prism (the default app for files and
+folders) logged the path read across the table's borders. Prism's log shows a `navigate` inside a Prism window two
+seconds after it opened the project folder, not a launch by Flare: the path came from Copy path (rule 274), and every
+opener (`open_term_path`, `shell_open_file`, `explorer_open_folder`) already stats first. Now the plain click, Open,
+Show in Explorer and Show in side panel each take the first spelling that names something on their worker
+(`path_open::first_existing`) and, when none does, call no opener and post `TermMsg::NoSuchFile` ("Flare found no such
+file"); `PreviewRefused` stays for a file that is there but not shown. Held by
+`a_file_link_that_names_nothing_reaches_no_opener_from_the_click_or_any_menu_row`,
+`show_in_side_panel_on_a_file_that_went_away_says_flare_found_no_such_file_and_opens_nothing`,
+`show_in_side_panel_on_a_file_that_is_there_but_not_shown_says_it_cannot_and_opens_nothing` and
+`a_table_cell_link_that_names_nothing_opens_nothing_and_copies_exactly_its_path`.
+274. **Copy path copies the first spelling that names something, else the text as written.** Owner, 2026-11-11: Copy
+path copied the path read across a table's borders. Every file link's Copy path is now `TermMenuAct::CopyPath`
+(rule 270 made it so only for a link with other spellings): a worker copies the first spelling that names something as
+a whole path, else the first spelling exactly as written, never a resolved path that names nothing. With rule 271 a
+table cell's path is copied without borders. Held by
+`copy_path_copies_the_spelling_that_exists_as_a_whole_path_else_the_text_as_written`,
+`copy_path_of_every_file_link_is_left_to_the_worker_that_finds_the_one_that_exists` and
+`a_table_cell_link_that_names_nothing_opens_nothing_and_copies_exactly_its_path` (the two-row table of rule 271).
+275. **The agent's folder reads relative file links only, and only when a relative path resolves from it.** Review of
+rule 272 (2026-11-11): the agent's folder replaced the tab's for every link, so `\x` took the agent folder's drive, and
+a UNC or `\\?\` agent folder lit relative marks that then named nothing. `TabInfo::link_base` reads a relative
+spelling (`path_grammar::is_relative`) from `cwd` and any other from `shell_cwd`, the tab's own folder;
+`appctl::link_folder` uses the agent's folder only when `resolve_term_path(folder, "x")` answers, else the tab's.
+Held by `only_a_relative_file_link_is_read_from_the_agents_folder` and
+`the_agents_folder_is_used_for_relative_links_only_when_a_relative_path_resolves_from_it`.
 ## macOS port
 
 The rules the macOS port stack added (PRs #121 to #140) are numbered from 1001 so they never clash with main: main's

@@ -28,7 +28,7 @@ pub enum TermMenuAct {
         path: TermPathAt,
     },
     Copy(String),
-    /// "Copy path" for a file link with other spellings: a worker copies the first that names something.
+    /// "Copy path" for a file link: a worker copies the first spelling that names something, else the text as written.
     CopyPath {
         path: TermPathAt,
     },
@@ -90,14 +90,14 @@ pub fn term_menu_rows(
                 reveal: true,
             },
         ));
-        // A path with other spellings (a space where a row broke) is copied as the one that names something, which a
-        // worker finds; any other is copied as it reads.
-        let copy = if p.alts.is_empty() {
-            TermMenuAct::Copy(p.abs.clone())
-        } else {
-            TermMenuAct::CopyPath { path: p.clone() }
-        };
-        rows.push(row("Copy path", "", "menu-copy", copy));
+        // A worker copies the first spelling that names something (a space where a row broke), else the text as
+        // written: never a path read across a table's borders that names nothing (rule 274).
+        rows.push(row(
+            "Copy path",
+            "",
+            "menu-copy",
+            TermMenuAct::CopyPath { path: p.clone() },
+        ));
     }
     if let Some(link) = &m.link {
         rows.push(row(
@@ -344,18 +344,21 @@ mod tests {
         assert_eq!(act("Copy"), TermMenuAct::Copy("sel".to_string()));
         assert_eq!(
             act("Copy path"),
-            TermMenuAct::Copy("C:\\work\\src".to_string())
+            TermMenuAct::CopyPath {
+                path: folder_path()
+            }
         );
     }
 
     #[test]
-    fn copy_path_of_a_link_with_other_spellings_is_left_to_the_worker_that_finds_the_one_that_exists()
-     {
+    fn copy_path_of_every_file_link_is_left_to_the_worker_that_finds_the_one_that_exists() {
         let mut p = file_named("MyDocs\\a.pdf");
         p.alts = vec!["My Docs\\a.pdf".to_string()];
-        let rows = term_menu_rows(&at("", None, Some(p.clone())), false, FIND, HELP);
-        let copy = rows.iter().find(|r| r.label == "Copy path").unwrap();
-        assert_eq!(copy.act, TermMenuAct::CopyPath { path: p });
+        for p in [p, file_named("a.pdf")] {
+            let rows = term_menu_rows(&at("", None, Some(p.clone())), false, FIND, HELP);
+            let copy = rows.iter().find(|r| r.label == "Copy path").unwrap();
+            assert_eq!(copy.act, TermMenuAct::CopyPath { path: p });
+        }
     }
 
     #[test]

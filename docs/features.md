@@ -2362,6 +2362,15 @@ poor. many links dont work."
   prompt or when the tab closes) and reads a relative file link from it, else from the tab's own folder: the click, the
   menu rows, the hover thumbnail and the lighting of a relative mark. A Flare that does not know the field ignores it.
   Rule 272.
+- **A link that names nothing goes to no app (2026-11-11, owner report).** The menu's Open, Show in Explorer (Finder)
+  and Show in side panel now say "Flare found no such file" when no spelling of the link names anything, as the click
+  does; before, Open and Show in Explorer did nothing at all. No route hands such a path to an app. Rule 273.
+- **Copy path copies a path that exists, or exactly what was written (2026-11-11, owner report).** Copy path on every
+  file link copies, from a worker, the first spelling that names something as a whole path; when none does, the text
+  as written. A path in a table cell is copied without the table's borders or the cells beside it. Rule 274.
+- **The agent's folder reads relative links only (2026-11-11, review).** A path rooted with no drive (`\x`) and `~`
+  are read from the tab's own folder, as before. An agent folder no relative path can be read from (a network or
+  `\\?\` path) is not used: the tab's own folder is. Rule 275.
 - **`show_file` takes `line`.** The same scroll and mark as a click (`view.file`'s `line`, from 1).
 - **Every Claude session is told.** The Flare plugin's `SessionStart` hook (start, resume, clear and compact) runs
   `flare-mcp --hook-context --session-start`, which prints, only inside a Flare tab, the note "You are running inside

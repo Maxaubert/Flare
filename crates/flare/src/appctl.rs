@@ -690,11 +690,13 @@ enum Skel {
 }
 
 /// The front shell tab as owned pieces; `info` lends them to the terminal controller. `cwd` is the folder a relative
-/// file link is read from: the agent's folder while its hooks have named one, else the tab's own folder.
+/// file link is read from: the agent's folder while its hooks have named one a relative path can be read from, else
+/// the tab's own folder (`shell_cwd`), which a rooted path with no drive and `~` are always read from.
 struct FrontTab {
     id: String,
     handle: Arc<TermHandle>,
     cwd: Option<String>,
+    shell_cwd: Option<String>,
     alive: bool,
 }
 
@@ -704,9 +706,19 @@ impl FrontTab {
             id: &self.id,
             handle: &self.handle,
             cwd: self.cwd.as_deref(),
+            shell_cwd: self.shell_cwd.as_deref(),
             alive: self.alive,
         }
     }
+}
+
+/// The folder a relative file link is read from: the agent's folder when a relative path resolves from it (a drive
+/// path on Windows, never a network or `\\?\` one: those would light marks that then name nothing), else the shell's.
+fn link_folder(agent: Option<&str>, shell: Option<&str>) -> Option<String> {
+    agent
+        .filter(|a| flare_term::path_open::resolve_term_path(a, "x", "").is_some())
+        .or(shell)
+        .map(str::to_string)
 }
 
 impl TermPorts {
@@ -3190,14 +3202,12 @@ impl AppCtl {
         let t = self.model.active_shell()?;
         let handle = self.deps.host.handle(&t.id)?;
         let alive = handle.shell_id().is_some();
+        let shell = (!t.cwd.is_empty()).then_some(t.cwd.as_str());
         Some(FrontTab {
             id: t.id.clone(),
             handle,
-            cwd: self
-                .hub
-                .agent_folder(&t.id)
-                .map(str::to_string)
-                .or_else(|| (!t.cwd.is_empty()).then(|| t.cwd.clone())),
+            cwd: link_folder(self.hub.agent_folder(&t.id), shell),
+            shell_cwd: shell.map(str::to_string),
             alive,
         })
     }
@@ -7169,7 +7179,34 @@ mod tests {
         f.ctl.borrow_mut().hub_mut().on_closed(&id);
         assert_eq!(f.ctl.borrow().hub().agent_folder(&id), None);
     }
-    // ---- the panels (Surfaces stage 1) --------------------------------------------------------
+
+    /// Review (2026-11-11): an agent folder no relative path can be read from (a network or `\\?\` path) would light
+    /// relative marks that then name nothing; the shell's folder is used instead.
+    #[test]
+    fn the_agents_folder_is_used_for_relative_links_only_when_a_relative_path_resolves_from_it() {
+        let (agent, shell) = if cfg!(windows) {
+            ("C:\\repo\\wt", "C:\\repo")
+        } else {
+            ("/repo/wt", "/repo")
+        };
+        assert_eq!(
+            link_folder(Some(agent), Some(shell)).as_deref(),
+            Some(agent)
+        );
+        assert_eq!(link_folder(None, Some(shell)).as_deref(), Some(shell));
+        assert_eq!(link_folder(None, None), None);
+        if cfg!(windows) {
+            for odd in [r"\\host\share\repo", r"\\?\C:\repo\wt", r"\repo"] {
+                assert_eq!(
+                    link_folder(Some(odd), Some(shell)).as_deref(),
+                    Some(shell),
+                    "{odd}"
+                );
+                assert_eq!(link_folder(Some(odd), None), None, "{odd}");
+            }
+        }
+    }
+    // ---- the panels (Surfaces stage 1)--------------------------------------------------------
 
     /// Feeds `word` on its own row between the file-link marks, lets a few frames run, and left-clicks it. `row` is
     /// the row the word lands on (the rows before it were fed by earlier calls).
