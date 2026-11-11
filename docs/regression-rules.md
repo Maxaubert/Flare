@@ -2230,3 +2230,10 @@ six marked-path tests in `link_scan` and `emulator` found none on the Mac runner
 keeps the text on Windows and writes `/C/` for `C:\` and `/` for every `\` elsewhere, the same length, so piece
 widths hold on both. Held by `native_test_text_is_an_absolute_path_of_the_same_length` and the
 `a_marked_path_*` tests. Source: PR 166's macos check (2026-11-11).
+1145. **A relative marked path in a test is written the way the platform writes it: `app\pick.txt` on Windows,
+`app/pick.txt` on macOS.** A `\` is a name character on macOS (rule 227), so a marked `app\pick.txt` there names one
+file in the tab folder, not `pick.txt` under `app`, and the session-folder checks of PR 166 found no such file. The
+E2E step `markerLinks` (its review part, `PICK` in `tools/e2e/src/scenarios/input_b.rs`) and the unit test
+`a_relative_file_link_opens_under_the_agents_folder_not_the_shells` (`appctl.rs`) pick the separator with `cfg!(windows)`;
+`ctl_app`'s `view_file_hands_its_line_to_the_panel` has a POSIX twin on `FILES_POSIX`. Source: the Mac check of
+PR 166 (2026-11-11).

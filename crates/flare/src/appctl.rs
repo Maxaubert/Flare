@@ -7154,7 +7154,13 @@ mod tests {
             f.ctl.borrow().hub().agent_folder(&id),
             Some(agent_dir.as_str())
         );
-        feed(&h, "\u{27E6}app\\a.txt\u{27E7}");
+        // The relative path as this platform writes it: a `\` is a name character on macOS (rules 227, 1145).
+        let rel = if cfg!(windows) {
+            "app\\a.txt"
+        } else {
+            "app/a.txt"
+        };
+        feed(&h, &format!("\u{27E6}{rel}\u{27E7}"));
         for _ in 0..8 {
             f.ctl.borrow().decor_inputs().borrow_mut().decor(&h);
             f.clock.set(f.clock.get() + 60);

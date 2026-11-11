@@ -903,6 +903,13 @@ fn marker_cut_by_hand(ctx: &mut Ctx, app: &mut App, cut: &Path) -> Result<(), St
 /// with no border in it, and a relative path is read from the folder the session's hooks name (here the real
 /// `flare-mcp --hook-context --folder`, run in the tab with its token), not the shell's.
 fn marker_links_review(ctx: &mut Ctx, app: &mut App, notes: &Path) -> Result<(), String> {
+    // The relative mark as a session on this platform writes it: on macOS a `\` is a name character, so the
+    // path is `app/pick.txt` there (rule 1145).
+    const PICK: &str = if cfg!(windows) {
+        "app\\pick.txt"
+    } else {
+        "app/pick.txt"
+    };
     let alpha = notes.parent().ok_or("the notes have a folder")?;
     let shell_copy = alpha.join("app").join("pick.txt");
     let agent_copy = alpha.join("wt").join("app").join("pick.txt");
@@ -939,14 +946,14 @@ fn marker_links_review(ctx: &mut Ctx, app: &mut App, notes: &Path) -> Result<(),
     type_line(
         app,
         &format!(
-            "cls; '{{\"cwd\":\"' + (Resolve-Path wt).Path.Replace('\\', '\\\\') + '\"}}' | & $env:FLARE_MCP_EXE --hook-context --folder; {MARKS}; Write-Host ('pick ' + $o + 'app\\pick.txt' + $c); Start-Sleep -Seconds 30"
+            "cls; '{{\"cwd\":\"' + (Resolve-Path wt).Path.Replace('\\', '\\\\') + '\"}}' | & $env:FLARE_MCP_EXE --hook-context --folder; {MARKS}; Write-Host ('pick ' + $o + '{PICK}' + $c); Start-Sleep -Seconds 30"
         ),
     )?;
     ctx.until("the relative link", 8_000, &mut || {
-        file_links(app).iter().any(|(p, _, _)| p == "app\\pick.txt")
+        file_links(app).iter().any(|(p, _, _)| p == PICK)
     });
     ctx.settle(50);
-    click_on(app, "app\\pick.txt", 2, Button::Left)?;
+    click_on(app, PICK, 2, Button::Left)?;
     let shown = ctx.until("the agent's copy in the panel", 6_000, &mut || {
         let s = probe(app, "panel.state", Value::Null);
         s["kind"] == json!(2) && s["title"] == json!("pick.txt") && s["lines"] == json!(3)
