@@ -2466,3 +2466,23 @@ six marked-path tests in `link_scan` and `emulator` found none on the Mac runner
 keeps the text on Windows and writes `/C/` for `C:\` and `/` for every `\` elsewhere, the same length, so piece
 widths hold on both. Held by `native_test_text_is_an_absolute_path_of_the_same_length` and the
 `a_marked_path_*` tests. Source: PR 166's macos check (2026-11-11).
+1152. **macOS: the web panel's host asks for its own turn whenever CEF's handlers leave it something, and keeps
+turning while a view waits for CEF.** Max's web panel stayed dark (account.apple.com, then example.com: "did not finish
+loading", no title, `browser_look` "not ready"), while the engine tests all passed. The window pumps the host
+(`WebBackend::pump`) only on `WebEvent::Pump`, which came only when CEF asked for its own work
+(`on_schedule_message_pump_work`); in the real window CEF's main-thread tasks run in AppKit's run loop, so CEF asks
+rarely, and what its handlers set (a profile initialized, a view's setup answered, a load, a paint) sat until a turn
+that never came: no browser made, no navigation, nothing painted. Always so after the last panel closed: `web_ctl`
+drops the host (`drop_idle_backend`) and the next panel makes a new one in the CEF the first started, whose turns CEF
+never asks for (Max's Flare had two `flare-cef-pump` threads; its profile had no `Cookies` and no cache: no request
+was ever made). Signing, entitlements and the keychain were ruled out: the same probe loads and paints ad hoc, signed
+with the Developer ID, and as `com.flare.terminal` with Flare's own keychain item. Now every view's and pop-up's
+event and the profile's `on_request_context_initialized` wake the host through its scheduler (`WebHost::wake`, one
+pump at a time), a setup answer is a `ViewEvent::SetupAnswered`, and while a view waits for its profile or its setup
+the host turns again every 20 ms (`retry_while_waiting`). The engine tests pumped on every turn and hid it: the
+`app-loop` probe scenario turns the window's way (`run_loop_turn`, pumps only when told) and reopens in a new host.
+Native: `crates/flare-web/src/macos/host.rs`, `crates/flare-cef/src/macos/view.rs`,
+`crates/flare-cef/src/macos/context.rs`, `crates/flare-cef/src/macos/engine.rs`. Held by
+`a_web_panel_turned_as_the_window_turns_loads_and_paints_and_again_after_the_last_closed`
+(`crates/flare-web/tests/cef_macos.rs`; without the fix its reopen check fails, nothing loads). Source: Max on his Mac
+("the flare browser is just dark", 2026-11-11).
