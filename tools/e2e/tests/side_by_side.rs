@@ -551,7 +551,7 @@ fn flare_installs_beside_the_neighbour_and_both_leave_clean() {
     fs::write(dict_dir.join("model.bin"), b"models").unwrap();
 
     // The neighbour first, from its latest release. Its repository is private, so `gh` reads it with
-    // the step's `GH_TOKEN`, the read-only release token (regression rule 1127).
+    // the step's `GH_TOKEN`, the read-only release token (regression rule 1141).
     let dl = tmp.path().join("pt-dl");
     fs::create_dir_all(&dl).unwrap();
     let pattern = format!("{}*.exe", pt(&v, "installerPrefix"));

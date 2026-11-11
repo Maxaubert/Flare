@@ -36,7 +36,7 @@ read it ("release not found"). Owner decision 2026-11-11: a repository secret ho
 - Dependabot pull requests get only Dependabot secrets, so an `installer-e2e` run on one fails the same way unless
   the same token is also added as a Dependabot secret of the same name (the Prism Terminal token).
 - When the token expires, make a new one with the same settings and replace the secret's value.
-- Held by regression rule 1127 and `only_the_side_by_side_step_gets_the_neighbour_token_and_it_fails_without_it`
+- Held by regression rule 1141 and `only_the_side_by_side_step_gets_the_neighbour_token_and_it_fails_without_it`
   (`crates/flare/tests/release_files.rs`).
 
 ## Packing locally (installs nothing)

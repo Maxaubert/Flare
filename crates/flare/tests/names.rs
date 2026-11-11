@@ -102,7 +102,7 @@ const STOCK_ID_FILES: &[&str] = &[
 ];
 
 /// The two exact words a workflow may hold to read the reference app's private installer: the release
-/// token's secret name and the repository it reads (regression rule 1127). Spelled in pieces.
+/// token's secret name and the repository it reads (regression rule 1141). Spelled in pieces.
 fn release_token_words() -> [String; 2] {
     [
         ["PRI", "SM_RELEASE_TOKEN"].concat(),

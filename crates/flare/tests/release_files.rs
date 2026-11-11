@@ -248,7 +248,7 @@ fn no_secret_other_than_the_github_token_and_the_neighbour_release_token() {
     }
 }
 
-// ---- 2026-11-11: the neighbour's installer sits in a private repository (regression rule 1127) ----
+// ---- 2026-11-11: the neighbour's installer sits in a private repository (regression rule 1141) ----
 
 /// The secret the side-by-side step reads the neighbour's private releases with.
 const NEIGHBOUR_TOKEN_SECRET: &str = "secrets.PRISM_RELEASE_TOKEN";

@@ -150,7 +150,7 @@ jobs:
         run: ./tools/release/verify-pack.ps1 -Out Releases -Version "${{ steps.ver.outputs.version }}"
 
       # The test downloads the Prism Terminal installer from its private repository, so this step alone gets the
-      # read-only release token (regression rule 1127, docs/shipping.md). Without it the step fails, never skips.
+      # read-only release token (regression rule 1141, docs/shipping.md). Without it the step fails, never skips.
       - name: Flare beside Prism Terminal, installed for real on this clean runner
         if: steps.ver.outputs.fresh == 'true'
         shell: pwsh

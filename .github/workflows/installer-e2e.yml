@@ -69,7 +69,7 @@ jobs:
           "FLARE_RELEASES=$out" >> $env:GITHUB_ENV
 
       # The test downloads the Prism Terminal installer from its private repository, so this step alone gets the
-      # read-only release token (regression rule 1127, docs/shipping.md). Without it the step fails, never skips.
+      # read-only release token (regression rule 1141, docs/shipping.md). Without it the step fails, never skips.
       - name: Flare beside Prism Terminal, installed for real
         shell: pwsh
         env:
