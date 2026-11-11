@@ -2066,3 +2066,16 @@ command builds the name in the shell (`'found-' + '167.txt'`), so the first ques
 line's; a miss names whether the line is on screen, the ink and the links painted. The app is unchanged (the 15 s "no"
 is PT's). Windows keeps both old checks (rule 1119). Held by `the_mac_command_names_the_file_only_in_what_it_prints`.
 Source: Mac E2E in CI, run 42953387295 (2026-11-11).
+1131. **macOS: a text-presentation symbol draws from a text face, and only VS16 makes it a colour emoji.** Claude Code's
+message bullet U+23FA showed as Apple Color Emoji's blue tile on the Mac and as a plain circle on Windows (owner,
+2026-11-11). cosmic-text's macOS common fallback is `.SF NS`, Menlo, Apple Color Emoji, and of the ~900 faces on
+macOS 26 only STIX Two Math has U+23FA outside the emoji faces (Apple Symbols does not), so the emoji face won. The
+rasteriser now follows UTS #51 per cluster (`presentation::wants_emoji`): VS15 forces text, VS16 or a keycap forces
+emoji, otherwise Emoji_Presentation decides (a range table generated from Unicode 16.0 `emoji-data.txt`). A
+text-presentation cluster that landed on an emoji face is drawn from the user's stack, then `TEXT_SYMBOL_FAMILIES`
+(Apple Symbols, SF Mono, Menlo, .SF NS, Arial Unicode MS, STIX Two Math), when one of them has every glyph; an emoji
+cluster a text face took (Menlo has U+2764, so U+2764 U+FE0F drew as text) comes from `EMOJI_FAMILIES`. STIX Two Math
+moved from the lazy list to the end of the start-up fallbacks so it is there to be asked. Both lists are empty on
+Windows, whose output does not change. Native: `crates/flare-render/src/presentation.rs`, `raster.rs`,
+`macos/font_catalog.rs`. Held by `the_presentation_rule_follows_uts_51` and
+`a_text_presentation_symbol_draws_from_a_text_face_and_vs16_makes_it_an_emoji`. Source: macOS port (2026-11-11).
