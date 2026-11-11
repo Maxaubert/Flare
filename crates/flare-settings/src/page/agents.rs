@@ -1,8 +1,12 @@
 //! The Agents page model (M7 Task 22).
 //!
-//! Three sections in order: the tab marks (the indicator, the finished, rainbow, question and
-//! failed switches, then the taskbar count), Claude Code (the exact status switch), and the mark
-//! colours (three colour rows under one Save changes heading action).
+//! Sections in order: the tab marks (the indicator, the finished, rainbow, question and failed
+//! switches, then the taskbar count), Claude Code (the exact status switch), the mark colours
+//! (three colour rows under one Save changes heading action) and Notifications. The mark colours
+//! are drawn only while the indicator is Bar: the Ring marks are mono, in the tab name's ink, so
+//! the three colours change nothing on them (Max, 2026-11-11: "these should be hidden if you use
+//! the ring style"). The one Ring surface that still wears them is the dots on the +N button of an
+//! overflowing strip; a pick made under Bar stays in force there (regression rule 1136).
 
 use super::{
     BlockModel, Control, HeadingAction, PageEnv, PageModel, RowModel, SectionModel, opts,
@@ -30,18 +34,25 @@ const OWN_COLOUR: &str = "Your own colour.";
 /// The Agents page id.
 const PAGE_ID: &str = "agents";
 
-/// The Agents page: marks, Claude Code and the mark colours.
+/// The Agents page: marks, Claude Code, the mark colours (Bar only) and Notifications.
 pub fn build(env: &PageEnv<'_>) -> PageModel {
+    let mut sections = vec![marks_section(env), claude_section(env)];
+    if mark_colours_drawn(env.look.agent_indicator()) {
+        sections.push(colours_section(env));
+    }
+    sections.push(notify_section(env));
     PageModel {
         id: PAGE_ID,
         label: "Agents",
-        sections: vec![
-            marks_section(env),
-            claude_section(env),
-            colours_section(env),
-            notify_section(env),
-        ],
+        sections,
     }
+}
+
+/// Whether the Mark colours section is drawn: only for the Bar indicator (`Minimal`), the same
+/// reading as the indicator row. Ring marks wear the tab name's ink, never these colours. Find
+/// asks the same question (`IndexEnv::mark_colours`), so it never leads to a hidden section.
+pub fn mark_colours_drawn(indicator: AgentIndicator) -> bool {
+    matches!(indicator, AgentIndicator::Minimal)
 }
 
 /// The table entry of a row this page draws. Every id passed here is in the tables.
@@ -206,6 +217,13 @@ mod tests {
         with_env(&prefs, &look, ["#ff0000", "#00ff00", "#0000ff"], f)
     }
 
+    /// A look whose indicator is Bar, so the Mark colours section is drawn.
+    fn bar_look(prefs: PrefStore) -> LookStore {
+        let look = LookStore::new(prefs);
+        look.set_agent_indicator(AgentIndicator::Minimal);
+        look
+    }
+
     /// The row with this id on the built page.
     fn the_row(page: &PageModel, id: &str) -> RowModel {
         row_of(page, id)
@@ -222,7 +240,9 @@ mod tests {
 
     #[test]
     fn the_marks_rows_are_in_order_with_the_rainbow_after_finished_and_the_badge_last() {
-        fresh(|env| {
+        let prefs = PrefStore::memory();
+        let look = bar_look(PrefStore::memory());
+        with_env(&prefs, &look, ["#ff0000", "#00ff00", "#0000ff"], |env| {
             let page = build(env);
             let ids: Vec<&str> = page.sections.iter().map(|s| s.id).collect();
             assert_eq!(ids, ["marks", "claude", "colours", "notify"]);
@@ -380,7 +400,7 @@ mod tests {
     fn the_mark_colours_save_lights_with_the_setup_but_not_with_a_window_colour_alone() {
         // One store under both, as the app has it: the window colour and the look share it.
         let prefs = PrefStore::memory();
-        let look = LookStore::new(prefs.clone());
+        let look = bar_look(prefs.clone());
         with_env(&prefs, &look, ["", "", ""], |env| {
             let action = section_of(&build(env), "colours")
                 .action
@@ -418,7 +438,7 @@ mod tests {
     #[test]
     fn a_mark_colour_follows_the_theme_until_picked() {
         let prefs = PrefStore::memory();
-        let look = LookStore::new(PrefStore::memory());
+        let look = bar_look(PrefStore::memory());
         with_env(&prefs, &look, ["", "", ""], |env| {
             let page = build(env);
             let row = the_row(&page, "agent-color");
@@ -438,7 +458,7 @@ mod tests {
     #[test]
     fn the_three_colour_rows_say_what_they_follow_and_a_picked_one_says_it_is_yours() {
         let prefs = PrefStore::memory();
-        let look = LookStore::new(PrefStore::memory());
+        let look = bar_look(PrefStore::memory());
         let rows = [
             ("agent-color", "Agent working colour", "Follows the accent."),
             (
@@ -477,7 +497,7 @@ mod tests {
     #[test]
     fn the_swatch_shows_the_colour_in_force() {
         let prefs = PrefStore::memory();
-        let look = LookStore::new(PrefStore::memory());
+        let look = bar_look(PrefStore::memory());
         with_env(&prefs, &look, ["#111111", "#222222", "#333333"], |env| {
             let page = build(env);
             let expected = [
@@ -495,5 +515,55 @@ mod tests {
                 }
             }
         });
+    }
+
+    /// Max (2026-11-11): the Mark colours are hidden with the Ring style, whose marks wear the
+    /// tab name's ink. Ring is the fresh indicator.
+    #[test]
+    fn ring_draws_no_mark_colours_section() {
+        fresh(|env| {
+            let page = build(env);
+            let ids: Vec<&str> = page.sections.iter().map(|s| s.id).collect();
+            assert_eq!(ids, ["marks", "claude", "notify"]);
+            for id in ["agent-color", "agent-done-color", "agent-question-color"] {
+                assert!(row_of(&page, id).is_none(), "{id} is not drawn with Ring");
+            }
+            assert!(!mark_colours_drawn(AgentIndicator::Ring));
+            assert!(!mark_colours_drawn(AgentIndicator::Off));
+            assert!(!mark_colours_drawn(AgentIndicator::Full));
+        });
+    }
+
+    #[test]
+    fn bar_draws_the_mark_colours_with_their_save() {
+        let prefs = PrefStore::memory();
+        let look = bar_look(PrefStore::memory());
+        with_env(&prefs, &look, ["", "", ""], |env| {
+            let page = build(env);
+            let colours = section_of(&page, "colours");
+            assert_eq!(colours.title, "Mark colours");
+            assert_eq!(colours.blocks.len(), 3);
+            let action = colours.action.clone().expect("the heading has a Save");
+            assert!(!action.dirty);
+            assert_eq!(action.title, SAVE_CLEAN);
+        });
+    }
+
+    #[test]
+    fn switching_the_indicator_hides_and_reshows_the_mark_colours() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(PrefStore::memory());
+        let has_colours = |look: &LookStore| {
+            with_env(&prefs, look, ["", "", ""], |env| {
+                build(env).sections.iter().any(|s| s.id == "colours")
+            })
+        };
+        assert!(!has_colours(&look), "Ring: hidden");
+        look.set_agent_indicator(AgentIndicator::Minimal);
+        assert!(has_colours(&look), "Bar: shown");
+        look.set_agent_indicator(AgentIndicator::Ring);
+        assert!(!has_colours(&look), "back to Ring: hidden again");
+        look.set_agent_indicator(AgentIndicator::Minimal);
+        assert!(has_colours(&look), "Bar again: shown again");
     }
 }

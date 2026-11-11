@@ -1,5 +1,6 @@
-//! Whether Windows wants animation: the native `prefers-reduced-motion`, read from the
-//! "Animation effects" switch under Settings > Accessibility > Visual effects (Task 21).
+//! Whether the system wants animation: the native `prefers-reduced-motion`, read on Windows from the
+//! "Animation effects" switch under Settings > Accessibility > Visual effects (Task 21), and on a Mac from
+//! "Reduce motion" under System Settings > Accessibility > Display (regression rule 1135).
 //!
 //! The answer is read once per decision; a failed call answers `true` (animate), so a machine
 //! that cannot say never loses its motion.
@@ -16,7 +17,8 @@ pub fn animations_from(call_ok: bool, value: i32) -> bool {
     value != 0
 }
 
-/// Whether Windows' "Animation effects" switch is on. Any failure answers `true`.
+/// Whether the system lets the window animate: Windows' "Animation effects" switch is on, or a Mac's "Reduce motion"
+/// is off. Any failure answers `true`.
 pub fn animations_enabled() -> bool {
     #[cfg(windows)]
     {
@@ -35,7 +37,14 @@ pub fn animations_enabled() -> bool {
         };
         animations_from(ok != 0, value)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        // sync-ok: one NSWorkspace property read (any thread), returns at once
+        let reduce =
+            objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
+        animations_from(true, i32::from(!reduce))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         animations_from(false, 0)
     }
@@ -55,6 +64,19 @@ mod tests {
         assert!(!animations_from(true, 0));
         assert!(animations_from(true, 1));
         assert!(animations_from(true, 7));
+    }
+
+    /// Rule 1135: on a Mac the answer is "Reduce motion" itself, read off the main thread too (the agent icons and
+    /// every mark stand still when it is on, as with Windows' switch off).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_reduce_motion_decides() {
+        let reduce = std::thread::spawn(|| {
+            objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(animations_enabled(), !reduce);
     }
 
     #[test]

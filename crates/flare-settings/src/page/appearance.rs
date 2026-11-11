@@ -346,6 +346,19 @@ mod tests {
     }
 
     #[test]
+    fn tab_position_shows_vertical_on_a_fresh_profile_and_a_stored_horizontal() {
+        use crate::tab_layout::{TabLayout, set_tab_layout};
+        let (prefs, look) = fresh();
+        let value = |p: &PageModel| match &row(p, "tab-layout").control {
+            Control::Segmented { value, .. } => value.clone(),
+            other => panic!("tab-layout is segmented, not {other:?}"),
+        };
+        assert_eq!(value(&page(&prefs, &look, GlassSupport::Ok)), "vertical");
+        set_tab_layout(&prefs, TabLayout::Horizontal);
+        assert_eq!(value(&page(&prefs, &look, GlassSupport::Ok)), "horizontal");
+    }
+
+    #[test]
     fn tab_switching_says_what_the_choice_in_force_does() {
         let (prefs, look) = fresh();
         set_tab_switch(&prefs, TabSwitch::Order);

@@ -372,6 +372,7 @@ pub fn launch_skeleton(ctx: &mut Ctx) -> Result<(), String> {
     let mut app = ctx.launch(Launch {
         renderer: Some("software"),
         env,
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     let outcome = launch_skeleton_checks(ctx, &mut app);
@@ -477,6 +478,7 @@ pub fn sonara_question(ctx: &mut Ctx) -> Result<(), String> {
         renderer: Some("software"),
         folders: vec![alpha.clone()],
         env: sonara.env(),
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     let outcome = sonara_checks(ctx, &mut app, &sonara, &probe_script);
@@ -567,6 +569,7 @@ pub fn image_paste(ctx: &mut Ctx) -> Result<(), String> {
         renderer: Some("software"),
         folders: vec![alpha.clone()],
         env: claude.env(),
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     let outcome = image_paste_checks(ctx, &mut app, &plain);

@@ -204,7 +204,10 @@ impl AppCtl {
                     self.forget_plugin_sections(&id);
                     self.install_end(
                         false,
-                        format!("{id} was removed. Its folder is in the Recycle Bin."),
+                        format!(
+                            "{id} was removed. Its folder is in the {}.",
+                            flare_settings::page::mods::BIN
+                        ),
                     );
                 }
                 Err(why) => {

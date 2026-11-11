@@ -90,6 +90,19 @@ impl FindState {
             .collect();
     }
 
+    /// Replaces the index (a row came or went, such as the Mark colours with the indicator) and,
+    /// while searching, recomputes the hits over it. The query stays.
+    pub fn set_index(&mut self, index: Vec<IndexEntry>) {
+        if index == self.index {
+            return;
+        }
+        self.index = index;
+        if self.searching() {
+            let q = self.query.clone();
+            self.set_query(&q);
+        }
+    }
+
     /// True while the query holds something other than spaces.
     pub fn searching(&self) -> bool {
         !self.query.trim().is_empty()
@@ -380,6 +393,24 @@ mod tests {
 
     fn machine() -> FindState {
         FindState::new(index(), names())
+    }
+
+    #[test]
+    fn a_new_index_redoes_the_hits_of_the_query_in_the_field() {
+        let mut m = machine();
+        m.set_query("theme");
+        assert_eq!(m.hits().len(), 1);
+        let smaller: Vec<IndexEntry> = index()
+            .into_iter()
+            .filter(|e| e.id != "flare.look.theme")
+            .collect();
+        m.set_index(smaller);
+        assert!(m.hits().is_empty(), "a row that left the index is no hit");
+        m.set_index(index());
+        assert_eq!(m.hits().len(), 1, "it is found again once back");
+        m.set_query("");
+        m.set_index(Vec::new());
+        assert!(m.hits().is_empty() && !m.searching());
     }
 
     #[test]

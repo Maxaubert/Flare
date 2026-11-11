@@ -367,6 +367,8 @@ fn start_stand_in(ctx: &mut Ctx, app: &mut App, profile: &Path, i: usize) -> Res
     let cmd = agent_proc::command(profile)?;
     at(app, i, &cmd);
     pause(ctx, agent_proc::SETTLE_MS);
+    // Rule 1136: a Mac waits for the stand-in's pwsh to run a line before the hook line goes in.
+    agent_proc::wait_ready(app);
     at(app, i, IDLE);
     pause(ctx, 2_500);
     Ok(())
@@ -397,6 +399,7 @@ pub fn agent_hooks(ctx: &mut Ctx) -> Result<(), String> {
                 template.to_string_lossy().into_owned(),
             ),
         ],
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     let two = ctx.until("two tabs", 15_000, &mut || tab_count(&mut app) == 2);

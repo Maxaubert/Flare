@@ -607,7 +607,13 @@ fn settings_tab_centre(app: &mut App) -> Option<(f32, f32)> {
 
 /// PT `verticalTabs` (run.mjs:2152-2819).
 pub fn vertical_tabs(ctx: &mut Ctx) -> Result<(), String> {
-    let root = ctx.ensure_world().root.clone();
+    let (root, profile) = {
+        let w = ctx.ensure_world();
+        (w.root.clone(), w.profile.clone())
+    };
+    // PT's scenario marks the strip first and then picks Vertical. Vertical is Flare's default since
+    // 2026-11-11 (a fresh profile is verticalStart's), so this profile chooses Horizontal first.
+    crate::world::tabs_along_the_top(&profile)?;
     let folders: Vec<std::path::PathBuf> =
         ["FlareTerminal", "notes", "api", "web", "infra", "docs"]
             .iter()
@@ -795,7 +801,7 @@ fn vertical_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     ctx.ok(
         on_row && row_is(app, "tab-layout", &["horizontal"]),
         format!(
-            "Horizontal is the default ({})",
+            "a stored Horizontal is the one shown ({})",
             r["value"].as_str().unwrap_or("")
         ),
     );

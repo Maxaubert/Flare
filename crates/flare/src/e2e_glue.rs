@@ -1352,6 +1352,7 @@ impl GlueCtx {
         let k = f64::from(app.window().scale_factor()).max(0.01);
         self.kp.wheel(
             crate::window::WheelDelta::Lines(wheel_lines(dy)),
+            crate::live::ScrollPhase::Wheel,
             (f64::from(x) * k, f64::from(y) * k),
             false,
         );
