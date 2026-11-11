@@ -5,7 +5,9 @@
 //! A span may run over rows: a row the terminal wrapped is joined with nothing dropped (but the empty last cell a wide
 //! character left when it did not fit, which is no space of the path), and a row the program broke
 //! by hand (Claude Code breaks its own lines and indents the next row) is joined with the next row's leading spaces
-//! and the last row's trailing blanks dropped. A trailing `:line` or `:line:col` is taken off and kept. A lone `⟦`
+//! and the last row's trailing blanks dropped. A span in a table cell (a vertical box border each side of its start
+//! mark) that the program broke by hand reads each row only up to the cell's right border, and goes on in the next
+//! row right of the cell's left border, which that row must have at the same column. A trailing `:line` or `:line:col` is taken off and kept. A lone `⟦`
 //! never eats the screen: a span ends within `MARK_ROWS` rows and `MARK_CHARS` characters, or is no link.
 
 use crate::cells::{BufferLike, CellInfo, ScratchCell, buffer_row_cells};
@@ -71,6 +73,18 @@ fn is_blank(cell: &CellInfo) -> bool {
 /// The cell just past the last one that holds anything.
 fn text_end(row: &[CellInfo]) -> usize {
     row.iter().rposition(|c| !is_blank(c)).map_or(0, |i| i + 1)
+}
+
+/// A table's vertical border: `│`, `┃` or `║`.
+fn is_border(cell: &CellInfo) -> bool {
+    cell.width > 0 && cell.chars.starts_with(['\u{2502}', '\u{2503}', '\u{2551}'])
+}
+
+/// The column of the left border of the table cell a start mark at `c0` sits in: a vertical border left of the
+/// mark and another right of it on the same row. None when the mark is not in a table cell.
+fn table_cell(row: &[CellInfo], c0: usize) -> Option<usize> {
+    let left = (0..c0.min(row.len())).rev().find(|&i| is_border(&row[i]))?;
+    row.iter().skip(c0 + 1).any(is_border).then_some(left)
 }
 
 /// How a read from a start mark ended.
@@ -141,6 +155,9 @@ fn read_from(rows: &mut Rows, y0: usize, c0: usize) -> Read {
     let mut breaks: Vec<usize> = Vec::new();
     let mut pieces: Vec<Piece> = Vec::new();
     let (mut y, mut from, mut start) = (y0, c0 + 1, c0);
+    // Claude Code draws a markdown table with box borders and breaks a long cell inside its column: in a table
+    // cell each row's text stops at the cell's right border, and the next row goes on right of the left border.
+    let table = rows.cells(y0).and_then(|r| table_cell(r, c0));
     loop {
         let Some(row) = rows.cells(y).cloned() else {
             return Read::Lost;
@@ -157,9 +174,14 @@ fn read_from(rows: &mut Rows, y0: usize, c0: usize) -> Read {
                 .and_then(|r| r.first())
                 .is_some_and(|c| c.width == 2);
         let mut blank_tail = 0usize;
+        let mut border = None;
         for (x, cell) in row.iter().enumerate().skip(from) {
             if cell.width == 0 {
                 continue;
+            }
+            if table.is_some() && is_border(cell) {
+                border = Some(x);
+                break;
             }
             if wide_next && x == spacer {
                 breaks.push(n);
@@ -194,6 +216,36 @@ fn read_from(rows: &mut Rows, y0: usize, c0: usize) -> Read {
         let next = y + 1;
         if next - y0 >= MARK_ROWS || next >= rows.b.len() {
             return Read::Lost;
+        }
+        if let Some(left) = table {
+            // The cell goes on in the next row only when that row has a border where the cell's left border is
+            // (a table's bottom edge has a corner there, not a border).
+            let Some(right) = border else {
+                return Read::Lost;
+            };
+            for _ in 0..blank_tail {
+                text.pop();
+            }
+            n -= blank_tail;
+            let end = text_end(&row[..right]).max(start + 1);
+            pieces.push(Piece {
+                row: y,
+                col: start,
+                width: end - start,
+            });
+            let Some(lead) = rows.cells(next).and_then(|r| {
+                if !r.get(left).is_some_and(is_border) {
+                    return None;
+                }
+                (left + 1..r.len())
+                    .find(|&i| !is_blank(&r[i]))
+                    .filter(|&i| !is_border(&r[i]))
+            }) else {
+                return Read::Lost;
+            };
+            breaks.push(n);
+            (y, from, start) = (next, lead, lead);
+            continue;
         }
         if rows.wrapped(next) {
             pieces.push(Piece {
@@ -474,6 +526,109 @@ mod tests {
     fn a_relative_path_is_read_as_written() {
         let m = marks(&[("⟦src\\main.rs:9⟧", false)], 30);
         assert_eq!((m[0].text.as_str(), m[0].line), ("src\\main.rs", Some(9)));
+    }
+
+    #[test]
+    fn a_path_in_a_table_cell_broken_by_hand_reads_only_inside_the_cell() {
+        // Claude Code's table: the long cell goes on in the same column of the next row.
+        let rows = [
+            (
+                "\u{2502} 4  \u{2502} ⟦C:\\Users\\me\\web-application-project\\app\\   \u{2502} 🔄  \u{2502}",
+                false,
+            ),
+            (
+                "\u{2502}    \u{2502} src\\app\\favorites\\favorites.ts⟧            \u{2502} now \u{2502}",
+                false,
+            ),
+        ];
+        let m = marks(&rows, 60);
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert_eq!(
+            m[0].text,
+            "C:\\Users\\me\\web-application-project\\app\\src\\app\\favorites\\favorites.ts"
+        );
+        assert_eq!(
+            m[0].pieces,
+            vec![
+                Piece {
+                    row: 0,
+                    col: 7,
+                    width: 41
+                },
+                Piece {
+                    row: 1,
+                    col: 7,
+                    width: 31
+                }
+            ]
+        );
+        assert_eq!(
+            m[0].alts,
+            vec!["C:\\Users\\me\\web-application-project\\app\\ src\\app\\favorites\\favorites.ts"]
+        );
+        // No border cell is under the link.
+        for p in &m[0].pieces {
+            let row: Vec<char> = rows[p.row].0.chars().collect();
+            assert!(row[p.col..p.col + p.width].iter().all(|c| *c != '\u{2502}'));
+        }
+    }
+
+    #[test]
+    fn a_path_over_three_rows_of_a_table_cell_is_one_link() {
+        let m = marks(
+            &[
+                ("\u{2551} ⟦C:\\a\\  \u{2551} x \u{2551}", false),
+                ("\u{2551} b\\c\\   \u{2551} y \u{2551}", false),
+                ("\u{2551} d.rs:4⟧ \u{2551}   \u{2551}", false),
+            ],
+            20,
+        );
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert_eq!(
+            (m[0].text.as_str(), m[0].line),
+            ("C:\\a\\b\\c\\d.rs", Some(4))
+        );
+        let at: Vec<(usize, usize, usize)> = m[0]
+            .pieces
+            .iter()
+            .map(|p| (p.row, p.col, p.width))
+            .collect();
+        assert_eq!(at, [(0, 2, 6), (1, 2, 4), (2, 2, 7)]);
+        // Ending in the first row of a cell is the plain case.
+        let m = marks(&[("\u{2503} ⟦C:\\a.rs⟧ \u{2503} x \u{2503}", false)], 20);
+        assert_eq!(m[0].text, "C:\\a.rs");
+        assert_eq!(m[0].pieces.len(), 1);
+    }
+
+    #[test]
+    fn a_table_cell_that_ends_at_the_tables_bottom_edge_is_no_link() {
+        let m = marks(
+            &[
+                ("\u{2502} 4 \u{2502} ⟦C:\\a\\ \u{2502}", false),
+                (
+                    "\u{2514}\u{2500}\u{2500}\u{2500}\u{2534}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2518}",
+                    false,
+                ),
+            ],
+            20,
+        );
+        assert!(m.is_empty(), "{m:?}");
+        // Nor does a next row without the cell's left border in the same column.
+        let m = marks(
+            &[
+                ("\u{2502} 4 \u{2502} ⟦C:\\a\\ \u{2502}", false),
+                ("  b.rs⟧", false),
+            ],
+            20,
+        );
+        assert!(m.is_empty(), "{m:?}");
+    }
+
+    #[test]
+    fn a_border_only_left_of_the_mark_is_no_table() {
+        // A bar down the left (a quote) with no border right of the mark: the plain hand-break rule.
+        let m = marks(&[("\u{2502} ⟦C:\\long", false), ("  \\b.rs⟧", false)], 20);
+        assert_eq!(m[0].text, "C:\\long\\b.rs");
     }
 
     #[test]
