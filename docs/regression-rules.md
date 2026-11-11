@@ -2091,4 +2091,22 @@ run` previews, `--preview-update` previews everywhere, a packaged Mac build goes
 `crates/flare-win/src/packaged.rs`, `crates/flare-update/src/engine.rs`, `crates/flare/src/ship_ctl.rs`. Held by
 `in_app_bundle_reads_the_path_alone`, `mode_table`, `an_unpackaged_mac_bundle_is_off_and_the_rest_keep_d11` and
 `an_unpackaged_app_bundle_is_off_on_a_mac_only`. Source: Max, the installed ad hoc app showing an update chip
+1132. **macOS: a build an agent stages shows as "Build ready" in the running Flare.app, and only Max's click swaps the
+bundle.** Max runs Claude Code inside `/Applications/Flare.app`, so an agent never replaces that bundle; it runs
+`tools/release/mac/stage-install.sh`, which builds with `make-app.sh` into a temp folder and writes
+`~/Library/Application Support/Flare/staged.tmp/Flare.app`, renames it to `staged/` and writes `staged/staged.json` last
+(the Windows manifest; names relative to the bundle, `Contents/MacOS/Flare`). It never touches `/Applications`, and
+refuses a root in an `Applications` folder or a bundle. A `.app` in an `Applications` folder is an installed copy whatever
+the update mode (`Layout::from_bundle_exe`); an `--e2e` run never uses the real root. The swap journals `install.json`,
+renames the running bundle to `Flare.app.old`, renames the stage in (the stage must be on the bundle's volume, else
+`NotReady::OtherVolume` and no chip), checks every hash in place and puts everything back on any failure (the new bundle
+goes back to `staged/` while it is on offer). The restart is `open -n <bundle> --args ... --after-pid <pid>`; the
+start guard, the 20 s confirm (which deletes `Flare.app.old`) and the rollback after two early deaths are Windows'.
+`install.lock` is an `flock`. A record naming another bundle is left alone. Native: `crates/flare-update/src/staged.rs`,
+`crates/flare/src/appctl/staged_glue.rs`, `tools/release/mac/stage-install.sh`. Held by `staged::mac_tests` (layout,
+check, swap, a bad hash, a failed move, a crash at each step, confirm, rollback, take back and abandon, another
+bundle's record, the lock, the cross-volume refusal as a pure function), `stage_script::mac` (the real script on a fake
+bundle with `FLARE_STAGE_APP` and `FLARE_STAGE_ROOT`) and `ui_tests::staged_flows` (`a_mac_bundle_...`,
+`the_mac_restart_...`, `an_installed_mac_bundle_...`). An ad hoc signature changes per build, so macOS may ask for
+permissions again after an install. Source: Max, "always stage apps so they show as update here in the ui"
 (2026-11-11).
