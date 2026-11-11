@@ -1158,10 +1158,14 @@ fn the_panel_reports_the_url_and_no_path() {
         s.title, "Flare test page",
         "named by the page, as the header is"
     );
-    let v = ask(&f, CtlOp::PanelState { tab: id }, Duration::from_secs(5))
-        .try_recv()
-        .unwrap()
-        .unwrap();
+    let v = ask(
+        &f,
+        CtlOp::PanelState { tab: id, cwd: None },
+        Duration::from_secs(5),
+    )
+    .try_recv()
+    .unwrap()
+    .unwrap();
     assert_eq!(v["open"], true);
     assert_eq!(v["panel"]["kind"], "web");
     assert_eq!(v["panel"]["url"], PAGE);
@@ -3152,7 +3156,10 @@ fn the_page_cannot_rename_the_panel_or_move_its_address() {
     f.pump();
     let state = ask(
         &f,
-        CtlOp::PanelState { tab: id.clone() },
+        CtlOp::PanelState {
+            tab: id.clone(),
+            cwd: None,
+        },
         Duration::from_secs(5),
     );
     let v = state.try_recv().unwrap().unwrap();
@@ -4072,7 +4079,10 @@ fn the_agents_input_calls_wait_for_the_person_while_a_popup_is_open() {
     );
     let v = ask(
         &f,
-        CtlOp::PanelState { tab: id.clone() },
+        CtlOp::PanelState {
+            tab: id.clone(),
+            cwd: None,
+        },
         Duration::from_secs(5),
     )
     .try_recv()
@@ -4084,7 +4094,10 @@ fn the_agents_input_calls_wait_for_the_person_while_a_popup_is_open() {
     f.pump();
     let v = ask(
         &f,
-        CtlOp::PanelState { tab: id.clone() },
+        CtlOp::PanelState {
+            tab: id.clone(),
+            cwd: None,
+        },
         Duration::from_secs(5),
     )
     .try_recv()

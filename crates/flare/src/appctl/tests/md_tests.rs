@@ -60,7 +60,7 @@ fn show_md(f: &Fx, name: &str, body: &str) -> String {
     let id = f.ctl.borrow().front_id().unwrap();
     f.ctl
         .borrow_mut()
-        .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+        .show_preview(&id, flare_surfaces::PanelKind::Text, &abs, None);
     abs
 }
 
@@ -234,7 +234,7 @@ fn a_render_that_fails_falls_back_to_code_and_says_why_there() {
     // The file is gone before the click: a render on its worker cannot finish before the delete.
     f.ctl
         .borrow_mut()
-        .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+        .show_preview(&id, flare_surfaces::PanelKind::Text, &abs, None);
     f.ctl.borrow_mut().refresh();
     f.pump_until("the note", |f| {
         f.h.comp.get_panel_note().as_str() == "The file is gone."

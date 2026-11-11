@@ -822,7 +822,6 @@ mod flow {
                     openers: openers.clone(),
                     agent: Some(agent.clone()),
                     dbl: flare_win::dblclick::FALLBACK,
-                    stat: Arc::new(flare_term::path_open::FsStat),
                     metrics: {
                         let host = host.clone();
                         Rc::new(move || host.borrow().metrics())
@@ -1761,44 +1760,43 @@ mod flow {
         assert!(w.h.comp.get_menu_open(), "and offers the menu");
     }
 
-    /// Drives the frames until the stat worker has answered for `cols` of row 0.
+    /// Drives the frames until `cols` of row 0 wear the link ink.
     fn light_paths(w: &Wx, cols: std::ops::Range<usize>) -> Frame {
-        w.frame_until("the path links", |w, f| w.inked(f, 0, cols.clone()) > 0)
+        w.frame_until("the file links", |w, f| w.inked(f, 0, cols.clone()) > 0)
     }
 
-    #[cfg(windows)]
-    /// PT scenario pathLinks.
+    /// Spec 2026-11-11 (replaces PT scenario pathLinks): a path is a file link only between the marks a session
+    /// writes, whether or not it exists, and a click opens it by the allowlist.
     #[test]
-    fn a_path_is_a_link_only_if_it_exists_and_opens_by_the_allowlist() {
+    fn a_path_is_a_link_only_between_marks_and_opens_by_the_allowlist() {
         let w = Wx::with(
             1.0,
             Opts {
-                files: vec!["a.pdf", "b.bat", "folder/"],
+                files: vec!["a.pdf", "b.bat", "missing.txt", "folder/"],
                 ..Opts::default()
             },
         );
-        // a.pdf 0..5, b.bat 6..11, missing.txt 12..23, folder\ 24..31
-        w.feed("a.pdf b.bat missing.txt folder\\");
-        let f = light_paths(&w, 0..5);
-        for _ in 0..4 {
-            w.step(50);
-        }
-        let f2 = w.frame();
-        let _ = f;
-        assert!(w.inked(&f2, 0, 6..11) > 0, "b.bat exists");
-        assert!(w.inked(&f2, 0, 24..31) > 0, "a folder is a link too");
-        assert_eq!(w.inked(&f2, 0, 12..23), 0, "a missing name is not");
+        // [a.pdf] 0..7, [b.bat] 8..15, missing.txt 16..27 (exists, but no marks), [folder/] 28..37
+        w.feed("\u{27E6}a.pdf\u{27E7} \u{27E6}b.bat\u{27E7} missing.txt \u{27E6}folder/\u{27E7}");
+        let f = light_paths(&w, 1..6);
+        assert!(w.inked(&f, 0, 9..14) > 0, "b.bat is marked");
+        assert!(w.inked(&f, 0, 29..36) > 0, "a folder is a link too");
+        assert_eq!(
+            w.inked(&f, 0, 16..27),
+            0,
+            "a path with no marks is never guessed"
+        );
         let a = w.work().join("a.pdf").to_string_lossy().into_owned();
         let b = w.work().join("b.bat").to_string_lossy().into_owned();
         w.click(2, 0);
         w.pump_until("the open", |w| !w.records().is_empty());
         assert_eq!(w.records(), [OpenedRecord::Open(a.clone())]);
         // A script is never run by a click: revealed, and never opened (O22).
-        w.click(8, 0);
+        w.click(10, 0);
         w.pump_until("the reveal", |w| w.records().len() == 2);
         assert_eq!(w.records()[1], OpenedRecord::Reveal(b.clone()));
         assert!(!w.records().contains(&OpenedRecord::Open(b)));
-        // The menu on a path: open, show, copy the whole absolute path.
+        // The menu on a file link: open, show, copy the whole absolute path.
         w.right_click(2, 0);
         assert_eq!(
             w.menu_labels(),
@@ -1816,52 +1814,7 @@ mod flow {
         });
     }
 
-    #[cfg(not(windows))]
-    /// PT scenario pathLinks.
-    #[test]
-    fn a_path_is_a_link_only_if_it_exists_and_opens_by_the_allowlist_posix() {
-        let w = Wx::with(
-            1.0,
-            Opts {
-                files: vec!["a.pdf", "b.bat", "folder/"],
-                ..Opts::default()
-            },
-        );
-        // a.pdf 0..5, b.bat 6..11, missing.txt 12..23, folder\ 24..31
-        w.feed("a.pdf b.bat missing.txt folder/");
-        let f = light_paths(&w, 0..5);
-        for _ in 0..4 {
-            w.step(50);
-        }
-        let f2 = w.frame();
-        let _ = f;
-        assert!(w.inked(&f2, 0, 6..11) > 0, "b.bat exists");
-        assert!(w.inked(&f2, 0, 24..31) > 0, "a folder is a link too");
-        assert_eq!(w.inked(&f2, 0, 12..23), 0, "a missing name is not");
-        let a = w.work().join("a.pdf").to_string_lossy().into_owned();
-        let b = w.work().join("b.bat").to_string_lossy().into_owned();
-        w.click(2, 0);
-        w.pump_until("the open", |w| !w.records().is_empty());
-        assert_eq!(w.records(), [OpenedRecord::Open(a.clone())]);
-        // A script is never run by a click: revealed, and never opened (O22).
-        w.click(8, 0);
-        w.pump_until("the reveal", |w| w.records().len() == 2);
-        assert_eq!(w.records()[1], OpenedRecord::Reveal(b.clone()));
-        assert!(!w.records().contains(&OpenedRecord::Open(b)));
-        // The menu on a path: open, show, copy the whole absolute path.
-        w.right_click(2, 0);
-        let labels = w.menu_labels();
-        assert!(
-            labels.iter().any(|l| l == "Open") && labels.iter().any(|l| l == "Copy path"),
-            "{labels:?}"
-        );
-        w.pick("Copy path");
-        w.pump_until("the path copy", |w| {
-            w.clip_text().as_deref() == Some(a.as_str())
-        });
-    }
-
-    /// PT scenario pathLinks.
+    /// Spec 2026-11-11 (replaces PT scenario pathLinks): the menu on a file link goes through the allowlist.
     #[test]
     fn a_path_menu_open_and_show_go_through_the_allowlist() {
         let w = Wx::with(
@@ -1871,12 +1824,12 @@ mod flow {
                 ..Opts::default()
             },
         );
-        w.feed("a.txt b.bat");
-        light_paths(&w, 0..5);
-        w.frame_until("b.bat", |w, f| w.inked(f, 0, 6..11) > 0);
+        // [a.txt] 0..7, [b.bat] 8..15
+        w.feed("\u{27E6}a.txt\u{27E7} \u{27E6}b.bat\u{27E7}");
+        light_paths(&w, 1..6);
         let a = w.work().join("a.txt").to_string_lossy().into_owned();
         let b = w.work().join("b.bat").to_string_lossy().into_owned();
-        w.right_click(8, 0);
+        w.right_click(10, 0);
         w.pick("Open");
         w.pump_until("the reveal", |w| !w.records().is_empty());
         assert_eq!(
@@ -1898,6 +1851,42 @@ mod flow {
         w.pump_until("the path copy", |w| {
             w.clip_text().as_deref() == Some(a.as_str())
         });
+    }
+
+    /// Owner, 2026-11-11: on a table link that names nothing, Open said nothing and Copy path copied the path read
+    /// across the borders. Open now says "Flare found no such file" and calls no opener; Copy path copies exactly the
+    /// path in the cell, as written (rules 273 and 274).
+    #[test]
+    fn a_table_cell_link_that_names_nothing_opens_nothing_and_copies_exactly_its_path() {
+        // The Windows paths as this platform writes them (`path_grammar::native_text`, rule 1148).
+        let native = |s: &str| {
+            if cfg!(windows) {
+                s.to_string()
+            } else {
+                s.replace("C:\\", "/C/").replace('\\', "/")
+            }
+        };
+        let w = Wx::new(1.0);
+        w.feed(&native(concat!(
+            "\u{2502} 4  \u{2502} \u{27E6}C:\\Users\\me\\web-application-project\\app\\   \u{2502} \u{1F504}  \u{2502}\r\n",
+            "\u{2502}    \u{2502} src\\app\\favorites\\favorites.ts\u{27E7}            \u{2502} now \u{2502}",
+        )));
+        light_paths(&w, 8..20);
+        w.right_click(12, 1);
+        w.pick("Copy path");
+        w.pump_until("the path copy", |w| w.clip_text().is_some());
+        assert_eq!(
+            w.clip_text(),
+            Some(native(
+                "C:\\Users\\me\\web-application-project\\app\\src\\app\\favorites\\favorites.ts"
+            ))
+        );
+        w.right_click(12, 0);
+        w.pick("Open");
+        w.pump_until("the word in the panel", |w| {
+            w.h.comp.get_panel_title().as_str() == "No such file"
+        });
+        assert!(w.records().is_empty(), "{:?}", w.records());
     }
 
     /// The calling thread's own clock, the one the hold tests below bound: its CPU time where the system

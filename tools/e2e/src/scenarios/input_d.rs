@@ -352,10 +352,11 @@ pub(super) fn stall_reason(lines: &[flare_diag::reader::Line], from: i64) -> Str
 
 /// linkPaintStall's tab A command as PT typed it: the typed line itself names `found-167.txt` before the
 /// file exists (Windows, as it was).
-const MADE_NAMED: &str = "cls; Set-Content found-167.txt x; Write-Host 'made found-167.txt here'";
+const MADE_NAMED: &str =
+    "cls; Set-Content found-167.txt x; Write-Host ('made ' + [char]0x27E6 + 'found-167.txt' + [char]0x27E7 + ' here')";
 /// The same command with the name built in the shell, so only the printed line names the file (macOS, rule 1127).
 const MADE_UNNAMED: &str =
-    "cls; Set-Content ('found-' + '167.txt') x; Write-Host ('made found-' + '167.txt here')";
+    "cls; Set-Content ('found-' + '167.txt') x; Write-Host ('made ' + [char]0x27E6 + 'found-' + '167.txt' + [char]0x27E7 + ' here')";
 
 /// PT: run.mjs:3669-3762. Tab B prints 10,000 lines with a web link on each; tab A's found path
 /// wears the link colour; no frame gap of 200 ms or more while it lights up, and none on a theme
@@ -385,7 +386,7 @@ fn link_paint_stall_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     let b = front_id(app);
     // A tab that has not shown yet may still be starting its shell: typing before its prompt is lost.
     let _ = wait_prompt(app);
-    // Tab B: 10,000 lines, each with a path that names nothing and a web link (painted at once).
+    // Tab B: 10,000 lines, each with a plain path (never a link) and a web link (painted at once).
     type_line(
         app,
         r#"1..10000 | % { "line $_ see docs/x.md at https://e.x/n$_" }"#,
@@ -402,7 +403,7 @@ fn link_paint_stall_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
 
     frames_reset(app);
 
-    // Tab A finds a path.
+    // Tab A prints a file link (a path between the marks a session writes; no path is guessed since 2026-11-11).
     let (ax, ay) = centre_of(app, "tab:0").unwrap_or((0.0, 0.0));
     app.session.click(ax, ay)?;
     let _ = wait_prompt(app);
@@ -784,19 +785,15 @@ mod tests {
         Line { ms, raw }
     }
 
-    fn names(text: &str) -> Vec<String> {
-        flare_term::path_links::path_candidates(text)
-            .into_iter()
-            .map(|c| c.path)
-            .collect()
-    }
-
-    // Rule 1127: the typed line must not ask about the file before the shell makes it, and what it prints must.
+    // Rule 1127, with file links by marker: the macOS command never writes the file's name whole in the typed
+    // line, and both commands print it between the marks.
     #[test]
     fn the_mac_command_names_the_file_only_in_what_it_prints() {
-        assert!(names(MADE_NAMED).iter().any(|p| p == "found-167.txt"));
-        assert!(!names(MADE_UNNAMED).iter().any(|p| p.contains("found-167")));
-        assert_eq!(names("made found-167.txt here"), vec!["found-167.txt"]);
+        assert!(MADE_NAMED.contains("'found-167.txt'"));
+        assert!(!MADE_UNNAMED.contains("found-167"));
+        for made in [MADE_NAMED, MADE_UNNAMED] {
+            assert!(made.contains("[char]0x27E6") && made.contains("[char]0x27E7"));
+        }
     }
 
     #[test]

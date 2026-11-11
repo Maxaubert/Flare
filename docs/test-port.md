@@ -124,8 +124,8 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-term | `core/renderer/lib/termLinks.test.ts` | port (split) | findLinks here; the linkColor group goes to flare-theme (4.5:1 floor) |
 | flare-term | `core/renderer/lib/termOsc52.test.ts` | port | write-only parse, base64 and UTF-8 checks, 1 MB cap; the clipboard write goes through flare-win |
 | flare-term | `core/renderer/lib/termOsc8.test.ts` | port | parseOsc8, isWebLink, osc8Target, Osc8Spans follow and cap |
-| flare-term | `core/renderer/lib/termPathLinks.test.ts` | port | path cache, asked-line bookkeeping, relative resolution, 300-path pieces; the repaint wake-up maps to flare-render |
-| flare-term | `core/renderer/lib/termPaths.test.ts` | port | findPaths candidate rules |
+| flare-term | `core/renderer/lib/termPathLinks.test.ts` | retired 2026-11-11 | the path cache went with the guesser (DIFF-27 in `docs/parity.md`); file links by marker are `file_marks.rs` |
+| flare-term | `core/renderer/lib/termPaths.test.ts` | retired 2026-11-11 | findPaths went with the guesser (DIFF-27); `file_marks.rs` reads the paths between marks |
 | flare-term | `core/renderer/lib/termReplies.test.ts` | port | bell gate (1000 ms) and answered-only-when-asked replies; theme-push and redraw-nudge groups belong to flare-theme |
 | flare-term | `core/renderer/lib/termSelectionEdit.test.ts` | port | selectionDeleteAllowed, selectionDeleteKeys, linkAt |
 | flare-term | `core/shared/termVersion.test.ts` | port | version constants match the crate and renderer versions |
@@ -201,8 +201,8 @@ Tests for `tabMark.test.ts` and `TabMark.test.ts` in flare cover the mark spec; 
 | `core/renderer/lib/termLinks.test.ts` | 5 (+ linkColor group) | `links.rs` (8) | `find_links_*` (5) | `linkColor` group (flare-theme, M4) |
 | `core/renderer/lib/termOsc52.test.ts` | 11 | `osc52.rs` (11) | `osc52_*` (11) | none |
 | `core/renderer/lib/termOsc8.test.ts` | 25 | `osc8.rs` (11) | `osc8_target_*` (4), `parse_osc8_*` (4), `is_web_link_http_https_only`, `spans_*`/`newer_span_*`/`clear_one_screen` (8), `span_rows_*` (2), `span_text_*` (4), `pieces_overlap_*` (2) | none |
-| `core/renderer/lib/termPathLinks.test.ts` | 17 | `path_links.rs` (16) | 17 tests of Task 16 | none |
-| `core/renderer/lib/termPaths.test.ts` | 6 | `paths.rs` (8) | `find_paths_*` (6) | none |
+| `core/renderer/lib/termPathLinks.test.ts` | 17 | retired 2026-11-11 (`path_links.rs` removed, DIFF-27) | `file_marks::tests` and `link_scan::tests` hold file links by marker | none |
+| `core/renderer/lib/termPaths.test.ts` | 6 | retired 2026-11-11 (`paths.rs` removed, DIFF-27) | `file_marks::tests` | none |
 | `core/renderer/lib/termReplies.test.ts` | 19 of 25 | `replies.rs` (11) | `osc_colour_*` (2), `colour_query_*` (4), `ground_mode_*` (3), `dsr_theme_reply_values`, `decrqm_reply_values`, `mode_params_flattens`, `xtversion_*` (4), `bell_*` (3) | `themePush` x4, `nudgeWidths` x2 (flare-theme, M4) |
 | `core/renderer/lib/termSelectionEdit.test.ts` | 11 | `selection_edit.rs` (9) | 11 tests of Task 9 | none |
 | `core/shared/termVersion.test.ts` | 2 | `version.rs` (11) | `flare_term_version_matches_the_workspace_version`, `alacritty_version_matches_cargo_lock` | none |
@@ -329,7 +329,7 @@ Prism Terminal v0.55.6 test files that the M5 areas map to (Appendix A of the M5
 | `core/renderer/lib/termSelectionEdit.test.ts` | 11 | flare-term `selection_edit.rs` (M2) | done; wired in Task 16e |
 | `core/renderer/lib/termLinks.test.ts` (`findLinks`) | 5 | flare-term `links.rs` (M2) | done; the `linkColor` group is M4 (flare-theme) |
 | `core/renderer/lib/termOsc8.test.ts` | 25 | flare-term `osc8.rs` (M2) | done; D18: `osc8_target`, `is_web_link` used, the span tracker is library code only |
-| `core/renderer/lib/termPaths.test.ts`, `termPathLinks.test.ts` | 6 + 17 | flare-term (M2) | done; wired in Tasks 13, 16c, and the ask/answer pump in Task 23 (rule 13) |
+| `core/renderer/lib/termPaths.test.ts`, `termPathLinks.test.ts` | 6 + 17 | flare-term (M2) | done in M2 to M5; retired 2026-11-11 with the path guesser (DIFF-27, rules 266 to 269) |
 | `core/renderer/lib/termOsc52.test.ts`, `core/shared/webUrl.test.ts` | 11 + 2 | flare-term (M2) | done; wired in Task 23 |
 | `core/renderer/lib/appCopyNotice.test.ts` | 9 | flare-term `app_copy.rs` (M2) | done; wired in Tasks 21, 23 |
 | `core/renderer/lib/termCaretHold.test.ts` | 5 | flare-term `caret_hold.rs` (M2) | done; wired in Task 24b |
@@ -540,7 +540,7 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `quitManyShells` | 3 | `scenarios/lifecycle.rs`, `quit_many_shells` | 3 | 0 | ok |
 | `lastTab` | 7 | `scenarios/lifecycle.rs`, `last_tab` | 6 | 1 | ok |
 | `closeAsk` | 12 | `scenarios/closeask.rs`, `close_ask` | 12 | 0 | ok |
-| `pathLinks` | 13 | `scenarios/input_b.rs`, `path_links` | 24 | 0 | ok |
+| `pathLinks` | 13 | retired 2026-11-11: Flare guesses no file paths; `markerLinks` checks the file links by marker | - | 0 | retired |
 | `linkPaintStall` | 6 | `scenarios/input_d.rs`, `link_paint_stall` | 7 | 0 | ok |
 | `sonaraQuestion` | 10 | `scenarios/agent_launch.rs`, `sonara_question` | 10 | 0 | ok |
 | `termReplies` | 17 | `scenarios/input_c.rs`, `term_replies` | 16 | 2 | ok |

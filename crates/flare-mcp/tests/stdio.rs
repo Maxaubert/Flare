@@ -602,3 +602,35 @@ fn the_prompt_hook_tells_the_agent_of_a_page_once_and_says_nothing_outside_flare
     drop(calls);
     let _ = std::fs::remove_dir_all(&temp);
 }
+
+/// Spec 2026-11-11: the `SessionStart` hook prints the file-link note once per start inside a Flare tab, and
+/// nothing outside one. It asks Flare for nothing, so it needs no pipe.
+#[test]
+fn the_session_start_hook_tells_a_flare_session_about_file_links_once() {
+    let run = |token: Option<&str>| -> String {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_flare-mcp"));
+        cmd.args(["--hook-context", "--session-start"])
+            .env_remove("FLARE_CTL_PIPE")
+            .env_remove("FLARE_CTL_PID")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        match token {
+            Some(t) => cmd.env("FLARE_TAB_TOKEN", t),
+            None => cmd.env_remove("FLARE_TAB_TOKEN"),
+        };
+        let out = cmd.output().unwrap();
+        assert!(out.status.success(), "the hook always exits 0");
+        String::from_utf8(out.stdout).unwrap()
+    };
+    assert_eq!(run(None), "", "outside Flare: nothing");
+    assert_eq!(run(Some("")), "");
+    let out = run(Some("secret-9"));
+    assert_eq!(out.lines().count(), 1, "{out}");
+    let v: Value = serde_json::from_str(out.trim()).expect("one JSON object");
+    assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SessionStart");
+    assert_eq!(
+        v["hookSpecificOutput"]["additionalContext"].as_str(),
+        Some(flare_mcp::FILE_LINK_NOTE)
+    );
+}

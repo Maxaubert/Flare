@@ -325,6 +325,18 @@ mod tests {
     }
 
     #[test]
+    fn a_marked_path_the_terminal_wrapped_before_a_wide_character_reads_with_no_space() {
+        // Ten columns: `報` would start in the last one, so the terminal leaves it empty and starts the next row.
+        let t = term(10, 4, "\u{27E6}D:\\資料\\報告\\a.txt\u{27E7}");
+        let buf = TermBuf::all(&t);
+        assert!(buf.line(1).unwrap().is_wrapped());
+        let m = crate::file_marks::find_marks(&buf, 10, 0, 2);
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert_eq!(m[0].text, "D:\\資料\\報告\\a.txt");
+        assert_eq!(m[0].alts, vec!["D:\\資料\\ 報告\\a.txt"]);
+    }
+
+    #[test]
     fn out_of_range_is_none() {
         let t = term(5, 3, "ab");
         let buf = TermBuf::all(&t);

@@ -1,8 +1,6 @@
 //! The Windows path grammar (see `path_grammar`): drive letters, `\` and `/` both separators, a
-//! network path never resolved, folders compared without case. Moved here unchanged from
-//! `path_open` and `path_links` when the macOS grammar was added.
+//! network path never resolved. Moved here from `path_open` when the macOS grammar was added.
 
-use super::Special;
 use crate::path_open::{TEXT_MAX, has_drive_root, is_sep};
 
 /// '/' -> '\', collapse repeated separators, resolve "." and ".." (never above the drive root),
@@ -71,30 +69,4 @@ pub fn is_relative(p: &str) -> bool {
         Some(c) if c.is_ascii_alphabetic() => it.next() != Some(':'),
         Some(_) => true,
     }
-}
-
-/// Whether `dir` is `cwd` itself. Such a folder found from a shown folder is the one the shell is
-/// already in said another way (a status line prints it on every redraw). A folder above `cwd` is
-/// a real place the text names (`Documents/Claude` from inside `...\Claude\Github\Flare`), so it links.
-pub fn is_cwd(dir: &str, cwd: &str) -> bool {
-    let norm = |p: &str| p.replace('/', "\\").trim_end_matches('\\').to_lowercase();
-    norm(dir) == norm(cwd)
-}
-
-/// The folder above `dir`, or None at a drive's root.
-pub fn parent_dir(dir: &str) -> Option<String> {
-    let d = dir.trim_end_matches(['\\', '/']);
-    let i = d.rfind(['\\', '/'])?;
-    let up = &d[..i];
-    let b = up.as_bytes();
-    if b.len() == 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
-        None
-    } else {
-        Some(up.to_string())
-    }
-}
-
-/// Windows reads no path out of terminal text before the word pass.
-pub fn special_candidates(_chars: &[char]) -> Vec<Special> {
-    Vec::new()
 }

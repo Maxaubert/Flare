@@ -21,7 +21,6 @@ use flare_tabs::restore::{SavedTab, SavedTabs, tabs_json};
 use flare_tabs::tabs_store::TabsStore;
 use flare_term::fake::{FakeShells, FakeSpawner, FakeState};
 use flare_term::keys::KeyEvent;
-use flare_term::path_open::FsStat;
 use flare_win::clipboard_port::{ClipboardPort, MemoryClipboard};
 use flare_win::dblclick::FALLBACK;
 use flare_win::window_state::WindowStateStore;
@@ -115,7 +114,6 @@ fn fx(opts: Opts) -> Fx {
             openers: openers.clone(),
             agent: None,
             dbl: FALLBACK,
-            stat: Arc::new(FsStat),
             metrics: Rc::new(|| cell_metrics(&FakeGlyphs::new(8, 16).font_units(), 1.0)),
             mark_grid_dirty: Rc::new(|| {}),
         },

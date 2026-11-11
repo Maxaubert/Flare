@@ -29,6 +29,10 @@ pub enum TermMenuAct {
         path: TermPathAt,
     },
     Copy(String),
+    /// "Copy path" for a file link: a worker copies the first spelling that names something, else the text as written.
+    CopyPath {
+        path: TermPathAt,
+    },
     OpenLink(String),
     Paste,
     Find,
@@ -87,11 +91,13 @@ pub fn term_menu_rows(
                 reveal: true,
             },
         ));
+        // A worker copies the first spelling that names something (a space where a row broke), else the text as
+        // written: never a path read across a table's borders that names nothing (rule 274).
         rows.push(row(
             "Copy path",
             "",
             "menu-copy",
-            TermMenuAct::Copy(p.abs.clone()),
+            TermMenuAct::CopyPath { path: p.clone() },
         ));
     }
     if let Some(link) = &m.link {
@@ -176,6 +182,8 @@ mod tests {
             abs: "C:\\work\\notes.txt".to_string(),
             text: "notes.txt".to_string(),
             base: "C:\\work".to_string(),
+            line: None,
+            alts: Vec::new(),
         }
     }
 
@@ -185,6 +193,8 @@ mod tests {
             abs: "C:\\work\\src".to_string(),
             text: "src".to_string(),
             base: "C:\\work".to_string(),
+            line: None,
+            alts: Vec::new(),
         }
     }
 
@@ -239,6 +249,8 @@ mod tests {
             abs: format!(r"C:\work\{name}"),
             text: name.to_string(),
             base: r"C:\work".to_string(),
+            line: None,
+            alts: Vec::new(),
         }
     }
 
@@ -328,7 +340,9 @@ mod tests {
         assert_eq!(act("Copy"), TermMenuAct::Copy("sel".to_string()));
         assert_eq!(
             act("Copy path"),
-            TermMenuAct::Copy("C:\\work\\src".to_string())
+            TermMenuAct::CopyPath {
+                path: folder_path()
+            }
         );
     }
 
@@ -353,6 +367,17 @@ mod tests {
             })
             .unwrap();
         assert_eq!(reveal.label, want);
+    }
+
+    #[test]
+    fn copy_path_of_every_file_link_is_left_to_the_worker_that_finds_the_one_that_exists() {
+        let mut p = file_named("MyDocs\\a.pdf");
+        p.alts = vec!["My Docs\\a.pdf".to_string()];
+        for p in [p, file_named("a.pdf")] {
+            let rows = term_menu_rows(&at("", None, Some(p.clone())), false, FIND, HELP);
+            let copy = rows.iter().find(|r| r.label == "Copy path").unwrap();
+            assert_eq!(copy.act, TermMenuAct::CopyPath { path: p });
+        }
     }
 
     #[test]

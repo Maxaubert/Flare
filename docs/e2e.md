@@ -214,7 +214,7 @@ release build went from about 9 minutes from scratch to about 5. Batch several f
 agentDiag, theme, newTabFolder, caretHold, mouseReport, clickCaret, selectionEdit, findKey, scrollbar, paste,
 tabDragFirst, tabWidth, tabLooks, tabSwitch, indicatorStyles, verticalTabs, windowColoursSave, tooltips, manyTabs,
 backgroundWork, agentKeys, cogToggle, accentAsk, titleBar, settingsPage, restore, handoff, quitManyShells, lastTab,
-powerlineGlyphs, pathLinks, linkPaintStall, termReplies, termClipboard, bell, hiddenResize, links, osc8Links,
+powerlineGlyphs, markerLinks, linkPaintStall, termReplies, termClipboard, bell, hiddenResize, links, osc8Links,
 reviewKeys, dropAndMenu, helpPanel, options, diagLog, settingsLook, settingsSearch, settingsKeys, themeEditorLive,
 themeSwitch, reviewSettings, colourPicker, pickedGround, opacityAlpha, seeThrough, themeCards, edges, accent,
 exitClosesTab, promptLayout, settingsLive, verticalStart, panelImage, panelSplitter, ctlChannel, mcpRoundTrip,

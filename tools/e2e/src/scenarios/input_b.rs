@@ -1,4 +1,5 @@
-//! Input B: selection and links scenarios (Task 30): selectionEdit, pathLinks, links, osc8Links.
+//! Input B: selection and links scenarios (Task 30): selectionEdit, markerLinks (pathLinks until 2026-11-11), links,
+//! osc8Links.
 //!
 //! PT: run.mjs:1399-1586 (selectionEdit), 3545-3640 (pathLinks), 4215-4337 (links), 4339-4420
 //! (osc8Links). Flare answers PT's page queries through the probes `term.selection` and `term.links`
@@ -124,7 +125,9 @@ fn cell_point(app: &mut App, needle: &str, offset: usize, frac: f64) -> Option<(
     let row = lines
         .iter()
         .rposition(|r| r.as_str().is_some_and(|s| s.contains(needle)))?;
-    let col = lines[row].as_str()?.rfind(needle)? + offset;
+    // Columns count characters, not bytes: a row may hold a file-link mark (three bytes, one cell) before the needle.
+    let text = lines[row].as_str()?;
+    let col = text[..text.rfind(needle)?].chars().count() + offset;
     let d = probe(app, "dpi.state", Value::Null);
     let pad = d["padding"].as_f64()?;
     let cw = d["cell_w"].as_f64()?;
@@ -652,30 +655,36 @@ fn selection_edit_on(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     Ok(())
 }
 
-/// PT: run.mjs:3545-3640. A printed path is a link only when it exists; a click opens a file
-/// (resolved against the shell folder) and a folder (the folder verb); a `.bat` is revealed, never
-/// run (DIFF-6); a right-click opens nothing and offers Open, Show in Explorer (Show in
-/// Finder on the Mac, rule 1147), Copy path with icons.
-pub fn path_links(ctx: &mut Ctx) -> Result<(), String> {
+/// Spec 2026-11-11 (replaces PT's pathLinks, a deliberate difference): a file link is only a path a session writes
+/// between the marks `⟦` and `⟧`. A marked path broken over two rows by hand with an indent is ONE link; a marked
+/// path with a line opens the text in the panel at that line, marked; a click opens a file and a folder, reveals a
+/// script and never runs it; a right-click opens nothing and offers Open, Show in Explorer (Show in Finder on the
+/// Mac, rule 1147), Copy path with icons; a plain `dir` listing shows no file links at all.
+pub fn marker_links(ctx: &mut Ctx) -> Result<(), String> {
     let alpha = ctx.ensure_world().alpha.clone();
     let sign_off = alpha.join("docs").join("sign-off");
-    let png = alpha.join("docs").join("wireframes").join("png");
-    let pdf = sign_off.join("rapport.pdf");
-    let bat = alpha.join("run.bat");
-    for dir in [&sign_off, &png] {
+    let deep = alpha.join("scratchpad").join("flare-pack").join("Releases");
+    for dir in [&sign_off, &deep] {
         fs::create_dir_all(dir).map_err(|e| format!("make {}: {e}", dir.display()))?;
     }
+    let pdf = sign_off.join("rapport.pdf");
+    let bat = alpha.join("run.bat");
+    let notes = alpha.join("marker-notes.txt");
+    let cut = deep.join("Flare-notes.txt");
     fs::write(&pdf, b"%PDF-1.4").map_err(|e| format!("write the pdf: {e}"))?;
     fs::write(&bat, b"@echo off").map_err(|e| format!("write the script: {e}"))?;
+    let body: String = (1..=40).map(|i| format!("note line {i}\n")).collect();
+    fs::write(&notes, body).map_err(|e| format!("write the notes: {e}"))?;
+    fs::write(&cut, b"x").map_err(|e| format!("write the cut notes: {e}"))?;
     for renderer in renderers(false) {
         with_app(ctx, renderer, &alpha, Vec::new(), |ctx, app| {
-            path_links_on(ctx, app, &pdf, &bat, &png)
+            marker_links_on(ctx, app, &pdf, &bat, &notes, &cut)
         })?;
     }
     Ok(())
 }
 
-/// The texts of the path marks on the viewport.
+/// The texts of the file-link marks on the viewport (marks included, as the cells print them).
 pub(super) fn path_texts(app: &mut App) -> Vec<String> {
     marks(app)
         .0
@@ -685,41 +694,84 @@ pub(super) fn path_texts(app: &mut App) -> Vec<String> {
         .collect()
 }
 
-fn path_links_on(
+/// The file-link marks as (the path they name, their line, how many rows they cover).
+fn file_links(app: &mut App) -> Vec<(String, Option<u64>, usize)> {
+    marks(app)
+        .0
+        .iter()
+        .filter(|m| m["kind"] == json!("path"))
+        .map(|m| {
+            let rows: std::collections::BTreeSet<i64> = m["pieces"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p["row"].as_i64())
+                .collect();
+            (
+                m["uri"].as_str().unwrap_or_default().to_string(),
+                m["line"].as_u64(),
+                rows.len(),
+            )
+        })
+        .collect()
+}
+
+/// The PowerShell that sets `$o` and `$c` to the start and end marks, typed as ASCII.
+const MARKS: &str = "$o = [char]0x27E6; $c = [char]0x27E7";
+
+fn marker_links_on(
     ctx: &mut Ctx,
     app: &mut App,
     pdf: &Path,
     bat: &Path,
-    png: &Path,
+    notes: &Path,
+    cut: &Path,
 ) -> Result<(), String> {
     prompt(app)?;
+    // A plain listing first: every name in it exists, and none is a link (the anti-goal of the spec).
     type_line(
         app,
-        "cls; Write-Host 'Rapport: docs/sign-off/rapport.pdf, PNG i docs/wireframes/png/. Mangler: missing/file.txt og run.bat.'",
+        "cls; dir docs\\sign-off; Write-Host 'run.bat docs/sign-off/rapport.pdf'",
     )?;
+    let listed = ctx.until("the listing", 8_000, &mut || {
+        rows(app).contains("rapport.pdf") && rows(app).contains("run.bat docs/sign-off")
+    });
+    ctx.settle(50);
+    ctx.settle(50);
+    let none = file_links(app);
+    ctx.ok(
+        listed && none.is_empty(),
+        format!("a plain dir listing and plain paths show no file links ({none:?})"),
+    );
+
+    // Marked paths: a file, a folder, a script and a text file with a line.
+    type_line(
+        app,
+        &format!(
+            "cls; {MARKS}; Write-Host ('Rapport ' + $o + 'docs/sign-off/rapport.pdf' + $c + ', folder ' + $o + 'docs/sign-off/' + $c + ', script ' + $o + 'run.bat' + $c + ', notes ' + $o + (Resolve-Path marker-notes.txt).Path + ':30' + $c)"
+        ),
+    )?;
+    let notes_s = notes.to_string_lossy().into_owned();
     let painted = ctx.until(
-        "the existing paths to wear the link colour",
+        "the marked paths to wear the link colour",
         8_000,
         &mut || {
-            let t = path_texts(app);
-            [
-                "docs/sign-off/rapport.pdf",
-                "docs/wireframes/png/",
-                "run.bat",
-            ]
-            .iter()
-            .all(|want| t.iter().any(|p| p.contains(want)))
+            let t = file_links(app);
+            ["docs/sign-off/rapport.pdf", "docs/sign-off/", "run.bat"]
+                .iter()
+                .all(|want| t.iter().any(|(p, _, _)| p == want))
+                && t.iter()
+                    .any(|(p, l, _)| same_path(p, &notes_s) && *l == Some(30))
         },
     );
     ctx.ok(
         painted,
-        "a file, a folder and a script that exist wear the link colour",
+        format!(
+            "a file, a folder, a script and a file with :30 between marks are links ({:?})",
+            file_links(app)
+        ),
     );
-    let names_nothing = path_texts(app)
-        .iter()
-        .any(|t| t.contains("missing/file.txt"));
-    ctx.ok(!names_nothing, "a path that names nothing does not");
-    ctx.shot(app, "path-links");
+    ctx.shot(app, "marker-links");
 
     click_on(app, "docs/sign-off/rapport.pdf", 2, Button::Left)?;
     let pdf_s = pdf.to_string_lossy().into_owned();
@@ -733,26 +785,24 @@ fn path_links_on(
         "a click opens the file, resolved against the shell folder",
     );
 
-    let png_s = png.to_string_lossy().into_owned();
-    click_on(app, "docs/wireframes/png/", 2, Button::Left)?;
-    let opened_png = ctx.until("the folder opened", 4_000, &mut || {
+    let folder_s = pdf
+        .parent()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // The folder is the last `docs/sign-off/` on the row (`click_on` takes the last).
+    click_on(app, "docs/sign-off/", 2, Button::Left)?;
+    let opened_folder = ctx.until("the folder opened", 4_000, &mut || {
         opened(app)
             .iter()
-            .any(|(k, p)| k == "folder" && same_path(p, &png_s))
+            .any(|(k, p)| k == "folder" && same_path(p.trim_end_matches('\\'), &folder_s))
     });
-    ctx.ok(
-        opened_png,
-        "a folder opens through Windows' folder verb (PT #393)",
-    );
+    ctx.ok(opened_folder, "a folder opens through Windows' folder verb");
 
     let bat_s = bat.to_string_lossy().into_owned();
     click_on(app, "run.bat", 2, Button::Left)?;
     let bat_clicked = ctx.until("the script clicked", 4_000, &mut || {
         opened(app).iter().any(|(_, p)| same_path(p, &bat_s))
     });
-    ctx.ok(bat_clicked, "the script was clicked");
-    // DIFF-6: revealed, never opened (O22's allowlist): PT's "shown selected in Explorer" is the
-    // reveal, and "never run" is no open.
     let calls = opened(app);
     let never_run = !calls
         .iter()
@@ -761,11 +811,11 @@ fn path_links_on(
             .iter()
             .any(|(k, p)| k == "reveal" && same_path(p, &bat_s));
     ctx.ok(
-        never_run,
-        "and it is NEVER run: it is shown selected in Explorer instead (DIFF-6: revealed)",
+        bat_clicked && never_run,
+        "a script is NEVER run: it is shown selected in Explorer instead (DIFF-6: revealed)",
     );
 
-    // A right-click opens nothing.
+    // A right-click opens nothing and offers the path's rows.
     let before = opened(app).len();
     click_on(app, "docs/sign-off/rapport.pdf", 2, Button::Right)?;
     ctx.settle(50);
@@ -799,56 +849,56 @@ fn path_links_on(
             same_path(&clip_text(app), &pdf_s)
         });
     ctx.ok(copied, "Copy path copies it whole and absolute");
-    path_cut_at_the_edge(ctx, app, pdf)
+
+    // The line: the text opens in the panel at line 30, marked.
+    // The absolute path is long and may wrap: the click lands on its first character, after the start mark.
+    click_on(app, ", notes ", 9, Button::Left)?;
+    let at_line = ctx.until("the notes at their line", 6_000, &mut || {
+        let s = probe(app, "panel.state", Value::Null);
+        s["kind"] == json!(2)
+            && s["title"] == json!("marker-notes.txt")
+            && s["sel"]["a_row"] == json!(29)
+    });
+    ctx.ok(
+        at_line,
+        format!(
+            "a click on a marked path with :30 shows the text in the panel with line 30 marked ({})",
+            probe(app, "panel.state", Value::Null)["sel"]
+        ),
+    );
+    marker_cut_by_hand(ctx, app, cut)?;
+    marker_links_review(ctx, app, notes)
 }
 
-/// BROKEN BY HAND AT THE EDGE (owner, 2026-10-21, PT #250, core 0.44.2: a path Claude printed was
-/// not a link). Claude Code cuts its own rows at the window's width, so the second row is never
-/// marked wrapped; written the same way here, the first row exactly as wide as the window, then a
-/// new line. PT: run.mjs pathLinks, "a path cut at the edge".
-fn path_cut_at_the_edge(ctx: &mut Ctx, app: &mut App, pdf: &Path) -> Result<(), String> {
-    // `pdf` is <alpha>\docs\sign-off\rapport.pdf: the world's alpha folder is three up.
-    let alpha = pdf
-        .ancestors()
-        .nth(3)
-        .ok_or("the alpha folder of the pdf")?;
-    let deep = alpha.join("scratchpad").join("flare-pack").join("Releases");
-    fs::create_dir_all(&deep).map_err(|e| format!("make {}: {e}", deep.display()))?;
-    let notes = deep.join("Flare-notes.txt");
-    fs::write(&notes, b"x").map_err(|e| format!("write the notes: {e}"))?;
-    let notes_s = notes.to_string_lossy().into_owned();
+/// BROKEN BY HAND AND INDENTED (the spec's screenshot, 2026-11-11): Claude Code cuts its own rows at the window's
+/// width and indents the next one, so the second row is never marked wrapped and starts with spaces. Written the
+/// same way here: the first row exactly as wide as the window, then a new line and two spaces.
+fn marker_cut_by_hand(ctx: &mut Ctx, app: &mut App, cut: &Path) -> Result<(), String> {
+    let cut_s = cut.to_string_lossy().into_owned();
     type_line(
         app,
-        "cls; $w = $Host.UI.RawUI.WindowSize.Width; $s = ('word ' * 100).Substring(0, $w - 21) + ' ' + (Resolve-Path scratchpad\\flare-pack\\Releases\\Flare-notes.txt).Path; Write-Host $s.Substring(0, $w); Write-Host $s.Substring($w)",
+        &format!(
+            "cls; {MARKS}; $w = $Host.UI.RawUI.WindowSize.Width; $s = ('word ' * 100).Substring(0, $w - 21) + ' ' + $o + (Resolve-Path scratchpad\\flare-pack\\Releases\\Flare-notes.txt).Path + $c; Write-Host $s.Substring(0, $w); Write-Host ('  ' + $s.Substring($w))"
+        ),
     )?;
     let mut seen = String::new();
     let one_link = ctx.until(
         "the cut path to wear the link colour on both rows",
         8_000,
         &mut || {
-            let (links, _) = marks(app);
+            let links = file_links(app);
             seen = format!("{links:?}");
-            links.iter().any(|m| {
-                let rows: std::collections::BTreeSet<i64> = m["pieces"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|p| p["row"].as_i64())
-                    .collect();
-                m["kind"] == json!("path")
-                    && m["text"].as_str().is_some_and(|t| same_path(t, &notes_s))
-                    && rows.len() >= 2
-            })
+            links
+                .iter()
+                .any(|(p, _, rows)| same_path(p, &cut_s) && *rows >= 2)
         },
     );
     ctx.ok(
         one_link,
-        format!("a path cut at the edge wears the link colour on both rows as ONE link ({seen})"),
+        format!("a marked path cut at the edge and indented is ONE link over both rows ({seen})"),
     );
-    ctx.shot(app, "path-links-cut");
+    ctx.shot(app, "marker-links-cut");
     click_on(app, "Flare-notes.txt", 2, Button::Left)?;
-    // A text file shows in the tab's panel (Surfaces stage 1) instead of going to Windows: the
-    // whole path was resolved, so the panel names the file and holds its one line.
     let shown = ctx.until("the cut file shown in the panel", 4_000, &mut || {
         let s = probe(app, "panel.state", Value::Null);
         s["kind"] == json!(2) && s["title"] == json!("Flare-notes.txt") && s["lines"] == json!(1)
@@ -857,7 +907,7 @@ fn path_cut_at_the_edge(ctx: &mut Ctx, app: &mut App, pdf: &Path) -> Result<(), 
         shown
             && !opened(app)
                 .iter()
-                .any(|(k, p)| k == "open" && same_path(p, &notes_s)),
+                .any(|(k, p)| k == "open" && same_path(p, &cut_s)),
         format!(
             "and a click on its second row shows the whole file in the panel and hands it to nobody ({:?})",
             opened(app)
@@ -866,6 +916,73 @@ fn path_cut_at_the_edge(ctx: &mut Ctx, app: &mut App, pdf: &Path) -> Result<(), 
     Ok(())
 }
 
+/// Changes after review (2026-11-11): a path in a table cell that Claude Code broke inside its column is one link
+/// with no border in it, and a relative path is read from the folder the session's hooks name (here the real
+/// `flare-mcp --hook-context --folder`, run in the tab with its token), not the shell's.
+fn marker_links_review(ctx: &mut Ctx, app: &mut App, notes: &Path) -> Result<(), String> {
+    let alpha = notes.parent().ok_or("the notes have a folder")?;
+    let shell_copy = alpha.join("app").join("pick.txt");
+    let agent_copy = alpha.join("wt").join("app").join("pick.txt");
+    for (file, body) in [(&shell_copy, "shell"), (&agent_copy, "one\ntwo\nthree")] {
+        let dir = file.parent().ok_or("the file has a folder")?;
+        fs::create_dir_all(dir).map_err(|e| format!("make {}: {e}", dir.display()))?;
+        fs::write(file, body).map_err(|e| format!("write {}: {e}", file.display()))?;
+    }
+
+    // The table: the cell's path goes on in the same column of the next row.
+    type_line(
+        app,
+        &format!(
+            "cls; {MARKS}; $v = [char]0x2502; Write-Host ($v + ' 4 ' + $v + ' ' + $o + 'C:\\tbl\\web-app\\  ' + $v + ' a ' + $v); Write-Host ($v + '   ' + $v + ' src\\fav.ts' + $c + '    ' + $v + ' b ' + $v)"
+        ),
+    )?;
+    let mut seen = String::new();
+    let one = ctx.until("the table cell link", 8_000, &mut || {
+        let links = file_links(app);
+        seen = format!("{links:?}");
+        links
+            .iter()
+            .any(|(p, _, rows)| p == "C:\\tbl\\web-app\\src\\fav.ts" && *rows == 2)
+    });
+    let texts = path_texts(app);
+    ctx.ok(
+        one && texts.iter().all(|t| !t.contains('\u{2502}')),
+        format!("a path broken inside a table cell is ONE link with no border in it ({seen}, {texts:?})"),
+    );
+    ctx.shot(app, "marker-links-table");
+
+    // The session's folder: the hook tells Flare, then a relative mark opens under it. The shell stays busy, as it
+    // is while a session runs: a shell prompt means the agent has left the tab, and its folder goes with it.
+    // A session writes the platform's own separator: on the Mac a backslash is part of a file name.
+    let rel = if cfg!(windows) {
+        "app\\pick.txt"
+    } else {
+        "app/pick.txt"
+    };
+    type_line(
+        app,
+        &format!(
+            "cls; '{{\"cwd\":\"' + (Resolve-Path wt).Path.Replace('\\', '\\\\') + '\"}}' | & $env:FLARE_MCP_EXE --hook-context --folder; {MARKS}; Write-Host ('pick ' + $o + '{rel}' + $c); Start-Sleep -Seconds 30"
+        ),
+    )?;
+    ctx.until("the relative link", 8_000, &mut || {
+        file_links(app).iter().any(|(p, _, _)| p == rel)
+    });
+    ctx.settle(50);
+    click_on(app, rel, 2, Button::Left)?;
+    let shown = ctx.until("the agent's copy in the panel", 6_000, &mut || {
+        let s = probe(app, "panel.state", Value::Null);
+        s["kind"] == json!(2) && s["title"] == json!("pick.txt") && s["lines"] == json!(3)
+    });
+    ctx.ok(
+        shown,
+        format!(
+            "a relative mark opens the file under the folder the session's hook named, not the shell's ({})",
+            probe(app, "panel.state", Value::Null)
+        ),
+    );
+    Ok(())
+}
 /// PT: run.mjs:4215-4337. A printed link wears the link blue, its full stop is not part of it, a
 /// wrapped link is painted on every row, the alternate screen keeps the blue through a hover, a
 /// row rewritten in place keeps no link colour, and on a light theme the link takes a colour that

@@ -65,7 +65,7 @@ use flare_term::click_caret::MouseTracking;
 use flare_term::emulator::TermEvent;
 use flare_term::handle::TermHandle;
 use flare_term::keys::{KeyEvent, KeyState, term_key_action_on};
-use flare_term::path_open::{PathOpeners, StatFn};
+use flare_term::path_open::PathOpeners;
 use flare_theme::agent_colours::theme_agent_colours;
 use flare_theme::look::apply_look;
 use flare_theme::resolve::preset_accent;
@@ -216,7 +216,7 @@ impl std::fmt::Debug for TermMsgBox {
             TermMsg::Clip(..) => "TermMsg::Clip",
             TermMsg::Copied(_) => "TermMsg::Copied",
             TermMsg::BigCopied(..) => "TermMsg::BigCopied",
-            TermMsg::PathAnswer(..) => "TermMsg::PathAnswer",
+            TermMsg::NoSuchFile { .. } => "TermMsg::NoSuchFile",
             TermMsg::Preview { .. } => "TermMsg::Preview",
             TermMsg::PreviewRefused { .. } => "TermMsg::PreviewRefused",
             TermMsg::Thumb { .. } => "TermMsg::Thumb",
@@ -276,8 +276,7 @@ pub struct TermPorts {
     /// may pass its own.
     pub agent: Option<Rc<dyn AgentView>>,
     pub dbl: DoubleClick,
-    /// The stat behind the path-link questions (`FsStat` in production).
-    pub stat: Arc<dyn StatFn>,
+
     /// The grid's cell metrics now (production: the grid host's).
     pub metrics: Rc<dyn Fn() -> CellMetrics>,
     /// Marks the grid dirty so the next frame redraws the decoration.
@@ -690,11 +689,14 @@ enum Skel {
     Leaving(u64),
 }
 
-/// The front shell tab as owned pieces; `info` lends them to the terminal controller.
+/// The front shell tab as owned pieces; `info` lends them to the terminal controller. `cwd` is the folder a relative
+/// file link is read from: the agent's folder while its hooks have named one a relative path can be read from, else
+/// the tab's own folder (`shell_cwd`), which a rooted path with no drive and `~` are always read from.
 struct FrontTab {
     id: String,
     handle: Arc<TermHandle>,
     cwd: Option<String>,
+    shell_cwd: Option<String>,
     alive: bool,
 }
 
@@ -704,9 +706,19 @@ impl FrontTab {
             id: &self.id,
             handle: &self.handle,
             cwd: self.cwd.as_deref(),
+            shell_cwd: self.shell_cwd.as_deref(),
             alive: self.alive,
         }
     }
+}
+
+/// The folder a relative file link is read from: the agent's folder when a relative path resolves from it (a drive
+/// path on Windows, never a network or `\\?\` one: those would light marks that then name nothing), else the shell's.
+fn link_folder(agent: Option<&str>, shell: Option<&str>) -> Option<String> {
+    agent
+        .filter(|a| flare_term::path_open::resolve_term_path(a, "x", "").is_some())
+        .or(shell)
+        .map(str::to_string)
 }
 
 impl TermPorts {
@@ -719,7 +731,6 @@ impl TermPorts {
             openers: Arc::new(crate::openers::RecordingOpeners::new()),
             agent: None,
             dbl: flare_win::dblclick::FALLBACK,
-            stat: Arc::new(flare_term::path_open::FsStat),
             metrics: Rc::new(|| {
                 flare_render::metrics::cell_metrics(&FakeGlyphs::new(8, 16).font_units(), 1.0)
             }),
@@ -1600,7 +1611,6 @@ impl AppCtl {
             agent,
             home: deps.home.clone(),
             dbl: deps.term.dbl,
-            stat: Arc::clone(&deps.term.stat),
             right_click_reports: {
                 let prefs = deps.prefs.clone();
                 Rc::new(move || flare_settings::term_prefs::right_click_reports(&prefs))
@@ -3192,10 +3202,12 @@ impl AppCtl {
         let t = self.model.active_shell()?;
         let handle = self.deps.host.handle(&t.id)?;
         let alive = handle.shell_id().is_some();
+        let shell = (!t.cwd.is_empty()).then_some(t.cwd.as_str());
         Some(FrontTab {
             id: t.id.clone(),
             handle,
-            cwd: (!t.cwd.is_empty()).then(|| t.cwd.clone()),
+            cwd: link_folder(self.hub.agent_folder(&t.id), shell),
+            shell_cwd: shell.map(str::to_string),
             alive,
         })
     }
@@ -3670,9 +3682,40 @@ impl AppCtl {
         true
     }
 
+    /// Tells the person about a file in the tab's panel. A tab with no panel open gets `why` as a note in one, titled
+    /// `title`; a tab whose panel is open keeps what it shows (a mini-app or a page would be ended by a note) and says
+    /// `short` in the panel's header or the page's bar.
+    fn say_in_panel(&mut self, tab: &str, why: &str, short: &str, title: &str) {
+        if !self.is_shell_tab(tab) {
+            return;
+        }
+        if self.panels.is_open(tab) {
+            if let Some(app) = self.app() {
+                let page = (self.panels.web_target(tab).is_some() && !self.panels.is_app(tab))
+                    || self.panels.is_md_page(tab);
+                if page {
+                    self.web.notice(tab, short);
+                } else {
+                    self.panels.refuse(&app, tab, short);
+                }
+            }
+            self.refresh();
+        } else if self.panels.show_text(tab, why, Some(title)) {
+            self.refresh();
+            self.panel_changed(tab);
+        }
+    }
+
     /// A click on a path that is a picture or a text file: the backend resolved it and a worker
-    /// said what it may be shown as. The panel opens on that tab; the keys stay where they are.
-    pub(crate) fn show_preview(&mut self, tab: &str, kind: flare_surfaces::PanelKind, abs: &str) {
+    /// said what it may be shown as. The panel opens on that tab, a text file at `line` when the link
+    /// named one; the keys stay where they are.
+    pub(crate) fn show_preview(
+        &mut self,
+        tab: &str,
+        kind: flare_surfaces::PanelKind,
+        abs: &str,
+        line: Option<u32>,
+    ) {
         let is_shell = flare_tabs::tabs::shell_tabs(&self.model.state)
             .iter()
             .any(|t| t.id == tab);
@@ -3699,7 +3742,7 @@ impl AppCtl {
             }
             return;
         }
-        self.show_preview_asked(tab, kind, abs);
+        self.show_preview_asked(tab, kind, abs, line);
     }
 
     /// The person asked for it (the menu's "Show in side panel"): the same panel, whatever "Open previews in Flare"
@@ -3709,11 +3752,12 @@ impl AppCtl {
         tab: &str,
         kind: flare_surfaces::PanelKind,
         abs: &str,
+        line: Option<u32>,
     ) {
         if !self.is_shell_tab(tab) {
             return;
         }
-        if self.panels.show(tab, kind, abs) {
+        if self.panels.show_at(tab, kind, abs, line) {
             self.refresh();
             self.panel_changed(tab);
         }
@@ -3868,9 +3912,16 @@ impl AppCtl {
                     .ok_or_else(no_tab)?;
                 Ok(json!({"cwd": t.cwd}))
             }
-            CtlOp::PanelState { tab } => {
+            CtlOp::PanelState { tab, cwd } => {
                 if !self.is_shell_tab(&tab) {
                     return Err(no_tab());
+                }
+                // The agent's hooks name the folder its session works in: a relative file link is read from it.
+                if let Some(cwd) = cwd
+                    && self.hub.agent_folder(&tab) != Some(cwd.as_str())
+                {
+                    self.hub.set_agent_folder(&tab, &cwd);
+                    self.wake_term();
                 }
                 Ok(match self.panels.snap(&tab).filter(|s| s.open) {
                     Some(s) => {
@@ -3928,14 +3979,21 @@ impl AppCtl {
                 kind,
                 abs,
                 title,
+                line,
             } => {
                 if !self.is_shell_tab(&tab) {
                     return Err(no_tab());
                 }
                 // An explicit ask of the agent: the "Open previews in Flare" switch is for clicks only.
                 // A tab behind gets its panel (stored) and keeps its place: no tab is ever switched.
-                if !self.panels.show_titled(&tab, kind, &abs, title.as_deref()) {
+                if !self
+                    .panels
+                    .show_titled(&tab, kind.clone(), &abs, title.as_deref())
+                {
                     return Err(CtlError::new(code::BAD_PARAMS, "that file cannot be shown"));
+                }
+                if kind == flare_surfaces::PanelKind::Text {
+                    self.panels.go_to_line(&tab, &abs, line);
                 }
                 self.mark_agent_panel(&tab);
                 self.after_ctl_show(&tab)
@@ -5263,42 +5321,32 @@ impl AppCtl {
                 tab,
                 kind,
                 abs,
+                line,
                 asked,
             })) => {
                 if asked {
-                    self.show_preview_asked(&tab, kind, &abs);
+                    self.show_preview_asked(&tab, kind, &abs, line);
                 } else {
-                    self.show_preview(&tab, kind, &abs);
+                    self.show_preview(&tab, kind, &abs, line);
                 }
             }
             UiMsg::Term(TermMsgBox(TermMsg::PreviewRefused { tab })) => {
-                // The person picked "Show in side panel" and the file is no longer showable: say so. A tab with no
-                // panel open gets the words as a note in one; a tab whose panel is open keeps what it shows (a mini-app
-                // or a page would be ended by a note) and says it in the panel's header or the page's bar.
-                const WHY: &str = "This file cannot be shown here. It may have changed or been removed since the menu opened.";
-                const SHORT: &str = "Cannot show that file: it changed or was removed";
-                if !self.is_shell_tab(&tab) {
-                    return;
-                }
-                if self.panels.is_open(&tab) {
-                    if let Some(app) = self.app() {
-                        let page = (self.panels.web_target(&tab).is_some()
-                            && !self.panels.is_app(&tab))
-                            || self.panels.is_md_page(&tab);
-                        if page {
-                            self.web.notice(&tab, SHORT);
-                        } else {
-                            self.panels.refuse(&app, &tab, SHORT);
-                        }
-                    }
-                    self.refresh();
-                } else if self
-                    .panels
-                    .show_text(&tab, WHY, Some("Cannot show this file"))
-                {
-                    self.refresh();
-                    self.panel_changed(&tab);
-                }
+                // The person picked "Show in side panel" and the file is no longer showable: say so.
+                self.say_in_panel(
+                    &tab,
+                    "This file cannot be shown here. It may have changed or been removed since the menu opened.",
+                    "Cannot show that file: it changed or was removed",
+                    "Cannot show this file",
+                );
+            }
+            UiMsg::Term(TermMsgBox(TermMsg::NoSuchFile { tab, text })) => {
+                // A file link a session wrote names nothing (spec 2026-11-11): said where a refused preview is.
+                self.say_in_panel(
+                    &tab,
+                    &format!("Flare found no such file: {text}"),
+                    "Flare found no such file",
+                    "No such file",
+                );
             }
             UiMsg::Term(TermMsgBox(m)) => {
                 let front = self.front_tab();
@@ -5731,7 +5779,6 @@ mod tests {
                 openers: openers.clone(),
                 agent: None,
                 dbl: flare_win::dblclick::FALLBACK,
-                stat: Arc::new(flare_term::path_open::FsStat),
                 metrics: Rc::new(|| cell_metrics(&FakeGlyphs::new(8, 16).font_units(), 1.0)),
                 mark_grid_dirty: Rc::new(|| {}),
             },
@@ -7105,7 +7152,7 @@ mod tests {
         let dir = f.dir.path().to_string_lossy().into_owned();
         let id = f.ctl.borrow().front_id().unwrap();
         f.ctl.borrow_mut().model_mut().set_cwd(&id, &dir);
-        feed(&h, "a.txt");
+        feed(&h, "\u{27E6}a.txt\u{27E7}");
         for _ in 0..8 {
             f.ctl.borrow().decor_inputs().borrow_mut().decor(&h);
             f.clock.set(f.clock.get() + 60);
@@ -7124,14 +7171,104 @@ mod tests {
         assert_eq!(f.openers.records(), [OpenedRecord::Open(want)]);
     }
 
-    // ---- the panels (Surfaces stage 1) --------------------------------------------------------
+    /// Changes after review (2026-11-11): a relative file link is read from the folder the tab's agent works in
+    /// (its hooks send it with `panel.state`), not the shell's, when they differ (a worktree); with the agent gone it
+    /// is the shell's folder again.
+    #[test]
+    fn a_relative_file_link_opens_under_the_agents_folder_not_the_shells() {
+        let (f, h, _) = live(Opts::default());
+        f.prefs.set("flare.window.openPreviews", "0");
+        f.pump();
+        let shell = f.dir.path().join("repo");
+        let agent = shell.join(".claude").join("worktrees").join("x");
+        for d in [&shell, &agent] {
+            std::fs::create_dir_all(d.join("app")).unwrap(); // sync-ok: test code only, never the app
+            std::fs::write(d.join("app").join("a.txt"), "x").unwrap(); // sync-ok: test code only, never the app
+        }
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl
+            .borrow_mut()
+            .model_mut()
+            .set_cwd(&id, &shell.to_string_lossy());
+        let agent_dir = agent.to_string_lossy().into_owned();
+        ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::PanelState {
+                tab: id.clone(),
+                cwd: Some(agent_dir.clone()),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            f.ctl.borrow().hub().agent_folder(&id),
+            Some(agent_dir.as_str())
+        );
+        // The platform's own separator: on the Mac a backslash is part of a file name.
+        let rel = if cfg!(windows) {
+            "app\\a.txt"
+        } else {
+            "app/a.txt"
+        };
+        feed(&h, &format!("\u{27E6}{rel}\u{27E7}"));
+        for _ in 0..8 {
+            f.ctl.borrow().decor_inputs().borrow_mut().decor(&h);
+            f.clock.set(f.clock.get() + 60);
+            f.ctl.borrow_mut().tick();
+            std::thread::sleep(Duration::from_millis(30));
+            f.pump();
+        }
+        f.ctl.borrow().decor_inputs().borrow_mut().decor(&h);
+        f.ptr(0, 0, cell_css(1, 0, false));
+        f.ptr(1, 0, cell_css(1, 0, false));
+        let t = Instant::now();
+        while f.openers.records().is_empty() && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let want = agent
+            .join("app")
+            .join("a.txt")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(f.openers.records(), [OpenedRecord::Open(want)]);
+        // The tab closing forgets it.
+        f.ctl.borrow_mut().hub_mut().on_closed(&id);
+        assert_eq!(f.ctl.borrow().hub().agent_folder(&id), None);
+    }
 
-    /// Feeds `word` on its own row, lets the path questions settle, and left-clicks it. `row` is
+    /// Review (2026-11-11): an agent folder no relative path can be read from (a network or `\\?\` path) would light
+    /// relative marks that then name nothing; the shell's folder is used instead.
+    #[test]
+    fn the_agents_folder_is_used_for_relative_links_only_when_a_relative_path_resolves_from_it() {
+        let (agent, shell) = if cfg!(windows) {
+            ("C:\\repo\\wt", "C:\\repo")
+        } else {
+            ("/repo/wt", "/repo")
+        };
+        assert_eq!(
+            link_folder(Some(agent), Some(shell)).as_deref(),
+            Some(agent)
+        );
+        assert_eq!(link_folder(None, Some(shell)).as_deref(), Some(shell));
+        assert_eq!(link_folder(None, None), None);
+        if cfg!(windows) {
+            for odd in [r"\\host\share\repo", r"\\?\C:\repo\wt", r"\repo"] {
+                assert_eq!(
+                    link_folder(Some(odd), Some(shell)).as_deref(),
+                    Some(shell),
+                    "{odd}"
+                );
+                assert_eq!(link_folder(Some(odd), None), None, "{odd}");
+            }
+        }
+    }
+    // ---- the panels (Surfaces stage 1)--------------------------------------------------------
+
+    /// Feeds `word` on its own row between the file-link marks, lets a few frames run, and left-clicks it. `row` is
     /// the row the word lands on (the rows before it were fed by earlier calls).
     fn click_word(f: &Fx, h: &TermHandle, dir: &str, word: &str, row: usize) {
         let id = f.ctl.borrow().front_id().unwrap();
         f.ctl.borrow_mut().model_mut().set_cwd(&id, dir);
-        feed(h, &format!("{word}\r\n"));
+        feed(h, &format!("\u{27E6}{word}\u{27E7}\r\n"));
         for _ in 0..8 {
             f.ctl.borrow().decor_inputs().borrow_mut().decor(h);
             f.clock.set(f.clock.get() + 60);
@@ -7148,7 +7285,7 @@ mod tests {
     fn right_click_word(f: &Fx, h: &TermHandle, dir: &str, word: &str, row: usize) {
         let id = f.ctl.borrow().front_id().unwrap();
         f.ctl.borrow_mut().model_mut().set_cwd(&id, dir);
-        feed(h, &format!("{word}\r\n"));
+        feed(h, &format!("\u{27E6}{word}\u{27E7}\r\n"));
         for _ in 0..8 {
             f.ctl.borrow().decor_inputs().borrow_mut().decor(h);
             f.clock.set(f.clock.get() + 60);
@@ -7415,11 +7552,11 @@ two",
         assert!(!f.h.comp.get_panel_open());
     }
 
-    /// Prints a word, lights it up as a link and leaves the pointer on it.
+    /// Prints a word between the file-link marks (a link at once) and leaves the pointer on it.
     fn rest_on_word(f: &Fx, h: &TermHandle, dir: &str, word: &str) {
         let id = f.ctl.borrow().front_id().unwrap();
         f.ctl.borrow_mut().model_mut().set_cwd(&id, dir);
-        feed(h, &format!("{word}\r\n"));
+        feed(h, &format!("\u{27E6}{word}\u{27E7}\r\n"));
         for _ in 0..8 {
             f.ctl.borrow().decor_inputs().borrow_mut().decor(h);
             f.clock.set(f.clock.get() + 60);
@@ -7529,8 +7666,41 @@ two",
         let id = f.ctl.borrow().front_id().unwrap();
         f.ctl
             .borrow_mut()
-            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs, None);
         abs
+    }
+
+    /// Spec 2026-11-11: a file link's `:line` (and `show_file`'s `line`) opens the text at that line, marked.
+    #[test]
+    fn a_preview_at_a_line_marks_that_line_and_a_later_one_without_marks_nothing() {
+        let (f, _h, _) = live(Opts::default());
+        let body: String = (1..=60).map(|i| format!("line {i}\n")).collect();
+        let path = f.dir.path().join("long.txt");
+        std::fs::write(&path, &body).unwrap(); // sync-ok: test code only
+        let abs = path.to_string_lossy().into_owned();
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl
+            .borrow_mut()
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs, Some(40));
+        f.pump_until("the marked line", |f| {
+            f.h.comp.get_panel_kind() == 2 && f.h.comp.get_panel_sel_on()
+        });
+        assert_eq!(f.h.comp.get_panel_sel_a_row(), 39);
+        assert_eq!(f.h.comp.get_panel_sel_a_col(), 0);
+        assert_eq!(
+            f.h.comp.get_panel_sel_b_row(),
+            40,
+            "the whole line, with its break"
+        );
+        // The same file shown again with no line: read afresh, nothing marked.
+        f.ctl
+            .borrow_mut()
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs, None);
+        f.pump_until("the text again", |f| f.h.comp.get_panel_kind() == 2);
+        for _ in 0..5 {
+            f.pump();
+        }
+        assert!(!f.h.comp.get_panel_sel_on());
     }
 
     #[test]
@@ -7708,7 +7878,7 @@ two",
         let id = f.ctl.borrow().front_id().unwrap();
         f.ctl
             .borrow_mut()
-            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs, None);
         f.pump_until("the second read", |f| rows_in_panel(f) == 3);
     }
 
@@ -7720,14 +7890,14 @@ two",
         let id = f.ctl.borrow().front_id().unwrap();
         f.ctl
             .borrow_mut()
-            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs, None);
         f.pump_until("the reason", |f| {
             f.h.comp.get_panel_note().as_str() == "The file is gone."
         });
         std::fs::write(&path, "now\nhere").unwrap(); // sync-ok: test code only
         f.ctl
             .borrow_mut()
-            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs, None);
         f.pump_until("the content", |f| f.h.comp.get_panel_kind() == 2);
         assert_eq!(rows_in_panel(&f), 2);
     }
@@ -8334,7 +8504,7 @@ two",
         let id = f.ctl.borrow().front_id().unwrap();
         f.ctl
             .borrow_mut()
-            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs, None);
         let t = Instant::now();
         while f.openers.records().is_empty() && t.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(10)); // sync-ok: test code only
@@ -8677,6 +8847,7 @@ two",
                 kind: flare_surfaces::PanelKind::Text,
                 abs: abs.clone(),
                 title: Some("Notes".into()),
+                line: None,
             },
         )
         .unwrap();
@@ -8692,6 +8863,7 @@ two",
                 kind: flare_surfaces::PanelKind::Text,
                 abs,
                 title: None,
+                line: None,
             },
         )
         .unwrap();
@@ -8726,8 +8898,16 @@ two",
     fn panel_state_and_close_report_what_is_open() {
         let (f, _h, _) = live(Opts::default());
         let id = f.ctl.borrow().front_id().unwrap();
-        let state =
-            |f: &Fx| ctl_call(f, crate::ctl_app::CtlOp::PanelState { tab: id.clone() }).unwrap();
+        let state = |f: &Fx| {
+            ctl_call(
+                f,
+                crate::ctl_app::CtlOp::PanelState {
+                    tab: id.clone(),
+                    cwd: None,
+                },
+            )
+            .unwrap()
+        };
         assert_eq!(state(&f), serde_json::json!({"open": false}));
         let close = |f: &Fx| {
             ctl_call(f, crate::ctl_app::CtlOp::PanelClose { tab: id.clone() }).unwrap()["closed"]
@@ -8793,7 +8973,10 @@ two",
         for tab in [b.as_str(), "nope", "settings", ""] {
             for op in [
                 show_text_op(tab, "x", None),
-                crate::ctl_app::CtlOp::PanelState { tab: tab.into() },
+                crate::ctl_app::CtlOp::PanelState {
+                    tab: tab.into(),
+                    cwd: None,
+                },
                 crate::ctl_app::CtlOp::PanelClose { tab: tab.into() },
                 crate::ctl_app::CtlOp::TabCwd { tab: tab.into() },
             ] {
@@ -8838,6 +9021,7 @@ two",
                 kind: flare_surfaces::PanelKind::Text,
                 abs: note.to_string_lossy().into_owned(),
                 title: None,
+                line: None,
             },
         )
         .unwrap();
@@ -8887,11 +9071,19 @@ two",
             &id,
             flare_surfaces::PanelKind::Text,
             &note.to_string_lossy(),
+            None,
         );
         f.pump_until("the file's name", |f| {
             f.h.comp.get_panel_title().as_str() == "clicked.txt"
         });
-        let state = ctl_call(&f, crate::ctl_app::CtlOp::PanelState { tab: id.clone() }).unwrap();
+        let state = ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::PanelState {
+                tab: id.clone(),
+                cwd: None,
+            },
+        )
+        .unwrap();
         assert_eq!(state["panel"]["title"], "clicked.txt", "{state}");
         let ev = events.lock().unwrap().clone();
         assert_eq!(ev.last().unwrap().1["panel"]["title"], "clicked.txt");
@@ -8903,6 +9095,7 @@ two",
                 kind: flare_surfaces::PanelKind::Text,
                 abs: note.to_string_lossy().into_owned(),
                 title: Some("Fake".into()),
+                line: None,
             },
         )
         .unwrap();
@@ -8913,6 +9106,7 @@ two",
             &id,
             flare_surfaces::PanelKind::Text,
             &note.to_string_lossy(),
+            None,
         );
         f.pump_until("the name again", |f| {
             f.h.comp.get_panel_title().as_str() == "clicked.txt"
@@ -8933,6 +9127,7 @@ two",
             &id,
             flare_surfaces::PanelKind::Text,
             &note.to_string_lossy(),
+            None,
         );
         f.ctl.borrow_mut().close_front_panel();
         let ev = events.lock().unwrap().clone();
@@ -9036,35 +9231,6 @@ two",
         store.flush();
         assert!(!file.exists());
         assert!(!store.started());
-    }
-
-    #[test]
-    fn closing_a_tab_tells_term_ui() {
-        let (f, _h, _) = live(Opts::default());
-        let id = f.ctl.borrow().front_id().unwrap();
-        let inputs = f.ctl.borrow().decor_inputs();
-        {
-            // The tab shows a path in a folder that exists, so it teaches that folder.
-            let mut i = inputs.borrow_mut();
-            let hit = |p: &str| {
-                Some(flare_term::path_open::PathHit {
-                    kind: flare_term::path_open::PathKind::File,
-                    abs: p.to_string(),
-                })
-            };
-            i.paths
-                .link_ranges("see C:\\d\\f.txt", Some("C:\\cwd"), &id, 0);
-            i.paths.advance(50);
-            let ask = i.paths.take_ask().expect("an ask");
-            let hits = ask.paths.iter().map(|p| hit(p)).collect();
-            i.paths.answer(&ask, Some(hits), 50);
-            i.paths
-                .link_ranges("see C:\\d\\f.txt and rel\\x.txt", Some("C:\\cwd"), &id, 60);
-        }
-        assert_eq!(inputs.borrow().paths.owners_kept(), 1);
-        f.ctl.borrow_mut().request_close(&id);
-        f.pump();
-        assert_eq!(inputs.borrow().paths.owners_kept(), 0);
     }
 
     // ---- the marks on the rows, the mark clock, reduced motion and minimise (Task 29) -------------

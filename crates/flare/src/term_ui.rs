@@ -7,8 +7,7 @@
 //! handler, `pasteHere`), `App.tsx` (the menu, the drop, the find chord), xterm `SelectionService`.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,10 +32,9 @@ use flare_term::link_scan::{LinkMark, LinkTarget};
 use flare_term::link_target::{LinkAction, TermPathAt, click_action};
 use flare_term::mouse_report::{MouseButton, MouseEvt, MouseKind, MouseMods, encode_mouse};
 use flare_term::osc52::OSC52_MAX;
-use flare_term::path_links::{Ask, BATCH_MS, Found, PathLinks};
 use flare_term::path_open::{
-    OpenMode, PathHit, PathOpeners, StatFn, StatGate, StatGateOptions, open_term_path, path_kinds,
-    resolve_openable_file,
+    OpenMode, PathKind, PathOpeners, first_existing, open_term_path, resolve_openable_file,
+    resolve_term_path,
 };
 use flare_term::sel_machine::{
     ClickCounter, DRAG_SCROLL_MS, Drag, Press, SelMachine, SelOut, ViewBox,
@@ -69,12 +67,13 @@ pub enum TermMsg {
     /// A big copy's answer: the tab and copy number it began with, and `Some(ok)` when the copy
     /// ran (`None` when it was dropped). The UI frees that tab's pending copy when it handles it.
     BigCopied(String, u64, Option<bool>),
-    PathAnswer(Ask, Option<Vec<Option<PathHit>>>),
     /// A click resolved to a file the panel may show: the tab, what to show it as, and the path.
     Preview {
         tab: String,
         kind: flare_surfaces::PanelKind,
         abs: String,
+        /// The line the link named: the text view scrolls to it and marks it.
+        line: Option<u32>,
         /// The person asked outright ("Show in side panel" in the menu): the "Open previews in Flare" setting,
         /// which only decides what a plain click does, does not stop it.
         asked: bool,
@@ -83,6 +82,12 @@ pub enum TermMsg {
     /// one the panel may show): the app tells the person in the panel. Nothing is ever opened in Windows.
     PreviewRefused {
         tab: String,
+    },
+    /// A click on a file link whose path (in every spelling the link allows) names nothing: the app says so, where a
+    /// refused preview says it.
+    NoSuchFile {
+        tab: String,
+        text: String,
     },
     /// A hover thumbnail's answer: the job's number and the picture, None for a refused, abandoned or broken one.
     Thumb {
@@ -111,21 +116,33 @@ pub struct TermDeps {
     pub agent: Rc<dyn AgentView>,
     pub home: String,
     pub dbl: DoubleClick,
-    /// The stat behind the path-link questions, wrapped once in a metered `StatGate`.
-    pub stat: Arc<dyn StatFn>,
     /// The opt-in "Send right-clicks to programs" setting, read on every right press. Off (the
     /// default): a right-click opens Flare's menu and sends nothing to the program.
     pub right_click_reports: Rc<dyn Fn() -> bool>,
 }
 
-/// The front tab as M3's tab model keeps it. `cwd` is the tab's LOCAL folder after
-/// `folder_after_report`, never a raw OSC 9 report. There is no shell id here on purpose: quoting
-/// reads `handle.shell_id()`.
+/// The front tab as M3's tab model keeps it. `cwd` is the folder a relative file link is read from: the folder
+/// the tab's agent works in while its hooks have named one that a relative path can be read from (changes after
+/// review, 2026-11-11), else the tab's LOCAL folder after `folder_after_report`, never a raw OSC 9 report.
+/// `shell_cwd` is the tab's own folder, which a rooted path with no drive (`\x`) and `~` are read from; None reads
+/// them from `cwd` too. There is no shell id here on purpose: quoting reads `handle.shell_id()`.
 pub struct TabInfo<'a> {
     pub id: &'a str,
     pub handle: &'a Arc<TermHandle>,
     pub cwd: Option<&'a str>,
+    pub shell_cwd: Option<&'a str>,
     pub alive: bool,
+}
+
+impl TabInfo<'_> {
+    /// The folder a file link spelled `text` is read from: the agent's folder only for a relative path (rule 275).
+    fn link_base(&self, text: &str) -> &str {
+        if flare_term::path_grammar::is_relative(text) {
+            self.cwd.unwrap_or_default()
+        } else {
+            self.shell_cwd.or(self.cwd).unwrap_or_default()
+        }
+    }
 }
 
 pub struct GridGeom {
@@ -232,11 +249,8 @@ pub struct DecorInputs {
     pub hover: Option<(usize, usize)>,
     pub find_open: bool,
     pub ink: Option<DecorInk>,
-    pub paths: PathLinks,
     pub ink_key: u32,
-    pub owner: String,
     pub cwd: Option<String>,
-    pub now: u64,
 }
 
 impl DecorInputs {
@@ -245,21 +259,15 @@ impl DecorInputs {
             hover: None,
             find_open: false,
             ink: None,
-            paths: PathLinks::new(),
             ink_key: 0,
-            owner: String::new(),
             cwd: None,
-            now: 0,
         }
     }
 
     /// One frame's decoration for `handle`.
     pub fn decor(&mut self, handle: &TermHandle) -> Decor {
         let mut req = DecorReq {
-            paths: &mut self.paths,
-            owner: &self.owner,
             cwd: self.cwd.as_deref(),
-            now_ms: self.now,
             ink_key: self.ink_key,
             hover: self.hover,
             find_open: self.find_open,
@@ -302,7 +310,6 @@ struct MenuStore {
 pub struct TermUi {
     deps: TermDeps,
     inputs: Rc<RefCell<DecorInputs>>,
-    gate: Arc<StatGate>,
     machine: SelMachine,
     clicks: ClickCounter,
     badge: Rc<RefCell<BadgeClock>>,
@@ -322,9 +329,6 @@ pub struct TermUi {
     drops: DropBatcher,
     menu: Option<MenuStore>,
     last_rows: RefCell<Vec<TermMenuRow>>,
-    ask_pending: bool,
-    recheck: bool,
-    stale: HashSet<String>,
     /// Counts the big copies started; a finished read whose number is no longer the last is dropped.
     copy_gen: Arc<AtomicU64>,
     /// The tabs with a big copy in flight, each with the number of that copy and when it began:
@@ -392,15 +396,48 @@ fn thumb_at(tab: &TabInfo, cell: (usize, usize)) -> Option<ThumbAt> {
 
 /// Only a path whose name is a picture's. A web address never is: hovering must not reach the network.
 fn thumb_of(tab: &TabInfo, mark: LinkMark, top: usize) -> Option<ThumbAt> {
-    let LinkTarget::Path { text } = &mark.target else {
+    let LinkTarget::Path { text, alts, .. } = &mark.target else {
         return None;
     };
-    (flare_surfaces::preview::classify(text) == Some(flare_surfaces::PanelKind::Image)).then(|| {
-        ThumbAt {
-            tab: tab.id.to_string(),
-            top,
-            mark,
-        }
+    let image =
+        |t: &String| flare_surfaces::preview::classify(t) == Some(flare_surfaces::PanelKind::Image);
+    (image(text) || alts.iter().any(image)).then(|| ThumbAt {
+        tab: tab.id.to_string(),
+        top,
+        mark,
+    })
+}
+
+/// What the panel may show `text` as, and the file as the file system names it: a picture or a text file on the click
+/// allowlist (rules 13 and 14). Runs on a worker (one stat).
+fn previewable(base: &str, text: &str, home: &str) -> Option<(flare_surfaces::PanelKind, String)> {
+    let (abs, real) = resolve_openable_file(base, text, home)?;
+    let kind = flare_surfaces::preview::classify_resolved(&abs, &real)?;
+    flare_surfaces::preview::loadable(&real, &kind).then_some((kind, real))
+}
+
+/// The menu's path for a file link (a path between marks): read from the tab's folder, a folder when the text ends in a
+/// separator. Nothing is statted: the row a person picks is vetted on a worker.
+fn marked_path_at(target: &LinkTarget, tab: &TabInfo, home: &str) -> Option<TermPathAt> {
+    let LinkTarget::Path {
+        text, line, alts, ..
+    } = target
+    else {
+        return None;
+    };
+    let base = tab.link_base(text).to_string();
+    let kind = if text.ends_with(['\\', '/']) {
+        PathKind::Dir
+    } else {
+        PathKind::File
+    };
+    Some(TermPathAt {
+        kind,
+        abs: resolve_term_path(&base, text, home).unwrap_or_else(|| text.clone()),
+        text: text.clone(),
+        base,
+        line: *line,
+        alts: alts.clone(),
     })
 }
 
@@ -431,15 +468,11 @@ impl TermUi {
             announce,
         ));
         let osc_copier = LatestCopier::new(Arc::clone(&deps.clipboard));
-        let gate = Arc::new(StatGate::new(
-            Arc::clone(&deps.stat),
-            StatGateOptions::default(),
-        ));
+
         let clicks = ClickCounter::new(deps.dbl.time_ms, deps.dbl.dx, deps.dbl.dy);
         Self {
             deps,
             inputs: Rc::new(RefCell::new(DecorInputs::new())),
-            gate,
             machine: SelMachine::new(),
             clicks,
             badge,
@@ -465,9 +498,6 @@ impl TermUi {
             drops: DropBatcher::new(),
             menu: None,
             last_rows: RefCell::new(Vec::new()),
-            ask_pending: false,
-            recheck: false,
-            stale: HashSet::new(),
             copy_gen: Arc::new(AtomicU64::new(0)),
             copy_pending: Arc::new(Mutex::new(HashMap::new())),
             osc_copier,
@@ -489,15 +519,11 @@ impl TermUi {
         (self.deps.redraw)();
     }
 
-    fn sync_inputs(&self, tab: &TabInfo, now: u64) {
+    fn sync_inputs(&self, tab: &TabInfo) {
         let mut i = self.inputs.borrow_mut();
-        if i.owner != tab.id {
-            i.owner = tab.id.to_string();
-        }
         if i.cwd.as_deref() != tab.cwd {
             i.cwd = tab.cwd.map(str::to_string);
         }
-        i.now = now;
     }
 
     fn set_cursor(&mut self, k: CursorKind) {
@@ -602,46 +628,73 @@ impl TermUi {
         );
     }
 
-    /// A plain click on a path. With previews on, a worker re-resolves the path (rule 13) and, when
-    /// it is a picture or a text file on the click allowlist (rule 14), tells the app to show it in
-    /// the tab's panel; everything else (a folder, a document, a script) goes the way it always
-    /// went. Never runs anything.
-    fn click_path_async(&self, tab: String, base: String, text: String) {
-        if !self.previews {
-            self.open_path_async(base, text, OpenMode::Open);
-            return;
-        }
-        self.preview_or_open_async(tab, base, text, true);
+    /// A plain click on a file link (a path between marks). A worker takes the first spelling that names something
+    /// (`texts`: as written, then with a space where a row broke) and re-resolves it (rule 13). With previews on, a
+    /// picture or a text file on the click allowlist (rule 14) goes to the tab's panel, at `line`; everything else (a
+    /// folder, a document, a script) goes the way it always went. A path that names nothing is said in the panel.
+    /// Never runs anything.
+    fn click_path_async(&self, tab: String, base: String, texts: Vec<String>, line: Option<u32>) {
+        let openers = Arc::clone(&self.deps.openers);
+        let home = self.deps.home.clone();
+        let post = Arc::clone(&self.deps.post);
+        let previews = self.previews;
+        thread::spawn(move || {
+            let Some(text) = first_existing(&base, &texts, &home) else {
+                let text = texts.into_iter().next().unwrap_or_default();
+                post(TermMsg::NoSuchFile { tab, text });
+                return;
+            };
+            if previews && let Some((kind, abs)) = previewable(&base, &text, &home) {
+                post(TermMsg::Preview {
+                    tab,
+                    kind,
+                    abs,
+                    line,
+                    asked: false,
+                });
+                return;
+            }
+            let _ = open_term_path(&base, &text, OpenMode::Open, &*openers, &home);
+        });
     }
 
     /// "Show in side panel" from the path menu: the same vetting as the click, and when the path is not a picture or
     /// a text file after all (it changed since the menu was built) the panel says so: this row never opens anything.
-    fn preview_path_async(&self, tab: String, base: String, text: String) {
-        self.preview_or_open_async(tab, base, text, false);
-    }
-
-    fn preview_or_open_async(&self, tab: String, base: String, text: String, open_else: bool) {
-        let openers = Arc::clone(&self.deps.openers);
+    /// A link none of whose spellings names anything is said as the click says it.
+    fn preview_path_async(&self, tab: String, base: String, texts: Vec<String>, line: Option<u32>) {
         let home = self.deps.home.clone();
         let post = Arc::clone(&self.deps.post);
         thread::spawn(move || {
-            if let Some((abs, real)) = resolve_openable_file(&base, &text, &home)
-                && let Some(kind) = flare_surfaces::preview::classify_resolved(&abs, &real)
-                && flare_surfaces::preview::loadable(&real, &kind)
-            {
-                post(TermMsg::Preview {
+            let Some(text) = first_existing(&base, &texts, &home) else {
+                let text = texts.into_iter().next().unwrap_or_default();
+                post(TermMsg::NoSuchFile { tab, text });
+                return;
+            };
+            match previewable(&base, &text, &home) {
+                Some((kind, abs)) => post(TermMsg::Preview {
                     tab,
                     kind,
-                    abs: real,
-                    asked: !open_else,
-                });
-                return;
+                    abs,
+                    line,
+                    asked: true,
+                }),
+                None => post(TermMsg::PreviewRefused { tab }),
             }
-            if open_else {
-                let _ = open_term_path(&base, &text, OpenMode::Open, &*openers, &home);
-            } else {
-                post(TermMsg::PreviewRefused { tab });
-            }
+        });
+    }
+
+    /// "Copy path" for a file link: the first spelling that names something, read from the tab's folder, as a whole
+    /// path. When none does, the text as written (a table cell's path without its borders), never a guess.
+    fn copy_path_async(&self, base: String, texts: Vec<String>) {
+        let home = self.deps.home.clone();
+        let clip = Arc::clone(&self.deps.clipboard);
+        let done = self.post_copied();
+        thread::spawn(move || {
+            let copied = match first_existing(&base, &texts, &home) {
+                Some(text) => resolve_term_path(&base, &text, &home).unwrap_or(text),
+                None => texts.into_iter().next().unwrap_or_default(),
+            };
+            copy_async(clip, copied, COPY_MAX, done);
         });
     }
 
@@ -748,21 +801,16 @@ impl TermUi {
         came_down |= st.hover.recheck(here.as_ref());
         if let Some(seq) = st.hover.fire(now) {
             let job = here.as_ref().zip(tab).and_then(|(at, t)| {
-                let LinkTarget::Path { text } = &at.mark.target else {
+                let LinkTarget::Path { text, alts, .. } = &at.mark.target else {
                     return None;
                 };
-                let found = self
-                    .inputs
-                    .borrow()
-                    .paths
-                    .find_path(t.id, t.cwd?, text, now);
-                let Found::Hit(f) = found else { return None };
                 let item = item_box(&at.mark.pieces, at.top, g.rows, &g.metrics, g.scale)?;
                 Some((
                     ThumbJob {
                         seq,
-                        base: f.base,
+                        base: t.link_base(text).to_string(),
                         text: text.clone(),
+                        alts: alts.clone(),
                     },
                     item,
                 ))
@@ -804,11 +852,19 @@ impl TermUi {
         }
     }
 
-    /// The only way a path is opened: a worker re-resolves it and applies the allowlist.
-    fn open_path_async(&self, base: String, text: String, mode: OpenMode) {
+    /// The menu's Open and Show in Explorer: a worker re-resolves the link and applies the allowlist. A file link's
+    /// spellings are tried in order; when none names anything no opener is called and the panel says so, as the
+    /// click does (rule 273).
+    fn open_path_async(&self, tab: String, base: String, texts: Vec<String>, mode: OpenMode) {
         let openers = Arc::clone(&self.deps.openers);
         let home = self.deps.home.clone();
+        let post = Arc::clone(&self.deps.post);
         thread::spawn(move || {
+            let Some(text) = first_existing(&base, &texts, &home) else {
+                let text = texts.into_iter().next().unwrap_or_default();
+                post(TermMsg::NoSuchFile { tab, text });
+                return;
+            };
             let _ = open_term_path(&base, &text, mode, &*openers, &home);
         });
     }
@@ -829,7 +885,7 @@ impl TermUi {
             return out;
         };
         let now = self.now();
-        self.sync_inputs(tab, now);
+        self.sync_inputs(tab);
         let scale = f64::from(g.scale);
         let dev = (e.x_css * scale, e.y_css * scale);
         let hit = hit_cell(dev.0, dev.1, &g.metrics, g.cols, g.rows);
@@ -1078,7 +1134,7 @@ impl TermUi {
                 }
                 let release = tab.handle.with_emu_quiet(|em| em.link_at_view(row_c, col));
                 match (&p.mark, &release) {
-                    (Some(a), Some(b)) if a == b => self.click_link(tab, a, now),
+                    (Some(a), Some(b)) if a == b => self.click_link(tab, a),
                     // A press and a release on different links open neither, and send no arrows.
                     (None, None) => {
                         let plan = tab.handle.with_emu_quiet(|em| {
@@ -1110,19 +1166,18 @@ impl TermUi {
                         (col, row_c),
                     );
                 }
-                let ctx = {
-                    let mut i = self.inputs.borrow_mut();
-                    let paths = &mut i.paths;
-                    tab.handle
-                        .with_emu_quiet(|em| em.context_at(row_c, col, paths, tab.id, tab.cwd, now))
-                };
+                let ctx = tab.handle.with_emu_quiet(|em| em.context_at(row_c, col));
+                let path = ctx
+                    .link
+                    .as_ref()
+                    .and_then(|m| marked_path_at(&m.target, tab, &self.deps.home));
                 let store = MenuStore {
                     tab: tab.id.to_string(),
                     x: e.x_css as f32,
                     y: e.y_css as f32,
                     selection: ctx.selection,
                     link: ctx.link_text,
-                    path: ctx.path,
+                    path,
                 };
                 let at = store.at();
                 self.menu = Some(store);
@@ -1146,24 +1201,23 @@ impl TermUi {
         }
     }
 
-    /// A plain left click on a link mark. A web address opens through `open_url`; a path is
-    /// handed to a worker that re-resolves it and applies the allowlist.
-    fn click_link(&mut self, tab: &TabInfo, mark: &LinkMark, now: u64) {
+    /// A plain left click on a link mark. A web address opens through `open_url`; a file link is
+    /// handed to a worker that re-resolves it and applies the allowlist. A relative path is read
+    /// from the tab's folder (the scan only marks one when the folder is known).
+    fn click_link(&mut self, tab: &TabInfo, mark: &LinkMark) {
         let shown = tab.handle.with_emu_quiet(|em| em.shown_for(mark));
-        let base = match (&mark.target, tab.cwd) {
-            (LinkTarget::Path { text }, Some(cwd)) => {
-                let found = self.inputs.borrow().paths.find_path(tab.id, cwd, text, now);
-                match found {
-                    Found::Hit(f) => Some(f.base),
-                    _ => None,
-                }
-            }
-            _ => None,
+        let base = match &mark.target {
+            LinkTarget::Path { text, .. } => tab.link_base(text),
+            _ => tab.cwd.unwrap_or_default(),
         };
-        match click_action(&mark.target, shown.as_deref(), base.as_deref(), 0) {
+        match click_action(&mark.target, shown.as_deref(), Some(base), 0) {
             LinkAction::OpenUrl(u) => self.open_link(&u),
             LinkAction::OpenPath { base, text } => {
-                self.click_path_async(tab.id.to_string(), base, text);
+                let LinkTarget::Path { line, alts, .. } = &mark.target else {
+                    return;
+                };
+                let texts = std::iter::once(text).chain(alts.iter().cloned()).collect();
+                self.click_path_async(tab.id.to_string(), base, texts, *line);
             }
             LinkAction::Nothing => {}
         }
@@ -1404,23 +1458,10 @@ impl TermUi {
                 }
             }
             // The app shows it (AppCtl::on_msg takes this before it gets here).
-            TermMsg::Preview { .. } | TermMsg::PreviewRefused { .. } => {}
+            TermMsg::Preview { .. }
+            | TermMsg::PreviewRefused { .. }
+            | TermMsg::NoSuchFile { .. } => {}
             TermMsg::Thumb { seq, thumb } => self.thumb_arrived(tab, seq, thumb),
-            TermMsg::PathAnswer(ask, hits) => {
-                let woken = self.inputs.borrow_mut().paths.answer(&ask, hits, now);
-                self.recheck = true;
-                for o in woken {
-                    match tab {
-                        Some(t) if t.id == o => {
-                            t.handle.with_emu(|em| em.links_revisit());
-                            self.redraw();
-                        }
-                        _ => {
-                            self.stale.insert(o);
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -1482,10 +1523,16 @@ impl TermUi {
                 } else {
                     OpenMode::Open
                 };
-                self.open_path_async(path.base, path.text, mode);
+                let texts = path.spellings();
+                self.open_path_async(t.id.to_string(), path.base, texts, mode);
             }
             TermMenuAct::ShowInPanel { path } => {
-                self.preview_path_async(t.id.to_string(), path.base, path.text);
+                let texts = path.spellings();
+                self.preview_path_async(t.id.to_string(), path.base, texts, path.line);
+            }
+            TermMenuAct::CopyPath { path } => {
+                let texts = path.spellings();
+                self.copy_path_async(path.base, texts);
             }
             TermMenuAct::Copy(text) => self.copy(text, COPY_MAX),
             TermMenuAct::OpenLink(u) => self.open_link(&u),
@@ -1502,7 +1549,7 @@ impl TermUi {
     // ---- tabs ----
 
     /// The front tab changed: the menu and the find bar close (D17), a drag ends.
-    pub fn tab_changed(&mut self, front: Option<&str>) {
+    pub fn tab_changed(&mut self, _front: Option<&str>) {
         self.menu = None;
         self.last_rows.borrow_mut().clear();
         self.find_close();
@@ -1513,18 +1560,9 @@ impl TermUi {
         self.press = None;
         self.set_hover(None);
         self.pointer_left();
-        if let Some(id) = front {
-            self.inputs.borrow_mut().paths.subscribe(id);
-        }
     }
 
     pub fn tab_closed(&mut self, id: &str) {
-        {
-            let mut i = self.inputs.borrow_mut();
-            i.paths.forget_owner(id);
-            i.paths.unsubscribe(id);
-        }
-        self.stale.remove(id);
         self.copy_pending.lock().unwrap().remove(id);
         if self.find.tab.as_deref() == Some(id) {
             self.find_close();
@@ -1547,18 +1585,9 @@ impl TermUi {
         let mut out = TickOut::default();
         let mut due: Vec<u64> = Vec::new();
         if let Some(t) = tab {
-            self.sync_inputs(t, now);
+            self.sync_inputs(t);
             self.mouse_flag
                 .set(t.handle.mode().mouse != MouseTracking::None);
-            // A path that named nothing when it was printed is looked at again once the "no" runs out, so a file
-            // made later (a log a script starts writing) becomes a link on a screen that prints nothing new.
-            if let Some(at) = t.handle.with_emu_quiet(|em| em.links_next_retry()) {
-                if now >= at {
-                    out.redraw = true;
-                } else {
-                    due.push(at);
-                }
-            }
         }
 
         let phase = self.badge.borrow().phase(now);
@@ -1622,13 +1651,6 @@ impl TermUi {
             }
         }
 
-        if let Some(t) = tab {
-            self.pump_paths(t, now, &mut out);
-        }
-        if self.ask_pending || self.recheck {
-            due.push(now + BATCH_MS);
-            self.recheck = false;
-        }
         self.thumb_tick(tab, g, now, &mut due);
 
         if let Some(paths) = self.drops.take_ready(now) {
@@ -1645,49 +1667,6 @@ impl TermUi {
         }
         out.next_due_ms = due.into_iter().min();
         out
-    }
-
-    /// The pump M2 left for the host: moves queued questions along and starts one metered worker.
-    fn pump_paths(&mut self, t: &TabInfo, now: u64, out: &mut TickOut) {
-        let woken = self.inputs.borrow_mut().paths.advance(now);
-        for o in woken {
-            if o == t.id {
-                t.handle.with_emu(|em| em.links_revisit());
-                out.redraw = true;
-            } else {
-                self.stale.insert(o);
-            }
-        }
-        if self.stale.remove(t.id) {
-            t.handle.with_emu(|em| em.links_revisit());
-            out.redraw = true;
-        }
-        if self.inputs.borrow_mut().paths.take_asked(t.id) {
-            self.ask_pending = true;
-        }
-        let ask = self.inputs.borrow_mut().paths.take_ask();
-        if let Some(ask) = ask {
-            self.ask_pending = false;
-            self.spawn_ask(ask);
-        }
-    }
-
-    fn spawn_ask(&self, ask: Ask) {
-        let gate = Arc::clone(&self.gate);
-        let home = self.deps.home.clone();
-        let post = Arc::clone(&self.deps.post);
-        let post_fail = Arc::clone(&self.deps.post);
-        let ask_fail = ask.clone();
-        let spawned = thread::Builder::new().spawn(move || {
-            let hits = catch_unwind(AssertUnwindSafe(|| {
-                path_kinds(&ask.base, &ask.paths, &gate, &home)
-            }))
-            .ok();
-            post(TermMsg::PathAnswer(ask, hits));
-        });
-        if spawned.is_err() {
-            post_fail(TermMsg::PathAnswer(ask_fail, None));
-        }
     }
 }
 
@@ -1735,7 +1714,6 @@ mod tests {
     use flare_term::fake::{FakeShells, FakeSpawner, FakeState};
     use flare_term::handle::StartOptions;
     use flare_term::keys::{KeyState, term_key_action};
-    use flare_term::path_open::FsStat;
     use flare_term::sel_machine::{Anchor, SelSpec};
     use flare_term::session::{SessionManager, SessionOptions};
     use flare_win::clipboard_port::MemoryClipboard;
@@ -1911,7 +1889,6 @@ mod tests {
                 agent: agent.clone(),
                 home: std::env::temp_dir().to_string_lossy().to_string(),
                 dbl: FALLBACK,
-                stat: Arc::new(FsStat),
                 right_click_reports: {
                     let f = Rc::clone(&rcr);
                     Rc::new(move || f.get())
@@ -1998,6 +1975,7 @@ mod tests {
                 id: "a",
                 handle: &h,
                 cwd: self.cwd.as_deref(),
+                shell_cwd: None,
                 alive: true,
             };
             let e = PointerIn {
@@ -2051,6 +2029,7 @@ mod tests {
                 id: "a",
                 handle: &h,
                 cwd: self.cwd.as_deref(),
+                shell_cwd: None,
                 alive: true,
             };
             self.ui.tick(Some(&tab), &self.g)
@@ -2066,6 +2045,7 @@ mod tests {
                 id: "a",
                 handle: &h,
                 cwd: self.cwd.as_deref(),
+                shell_cwd: None,
                 alive: true,
             };
             let has = self.ui.has_selection(&tab);
@@ -2096,6 +2076,7 @@ mod tests {
                 id: tab_id,
                 handle: &h,
                 cwd: self.cwd.as_deref(),
+                shell_cwd: None,
                 alive: true,
             };
             for m in all {
@@ -2113,6 +2094,7 @@ mod tests {
                 id: "a",
                 handle: &h,
                 cwd: self.cwd.as_deref(),
+                shell_cwd: None,
                 alive: true,
             };
             self.ui.find_edited(&tab, q);
@@ -2124,6 +2106,7 @@ mod tests {
                 id: "a",
                 handle: &h,
                 cwd: self.cwd.as_deref(),
+                shell_cwd: None,
                 alive: true,
             };
             f(&mut self.ui, &tab)
@@ -2456,61 +2439,149 @@ mod tests {
         assert_eq!(r.ui.inputs().borrow().hover, Some((0, 8)));
     }
 
-    /// Prints the texts, asks the worker and handles its answer, so the paths light up.
+    /// The words of `text` that name a file (they hold a dot) between the marks a session writes (`file_marks`).
+    fn marked(text: &str) -> String {
+        let line = |l: &str| {
+            l.split(' ')
+                .map(|w| {
+                    if w.contains('.') {
+                        format!("\u{27E6}{w}\u{27E7}")
+                    } else {
+                        w.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        text.split("\r\n")
+            .map(line)
+            .collect::<Vec<_>>()
+            .join("\r\n")
+    }
+
+    /// Prints the texts with their file names between marks: they are links at once, with no stat.
     fn light_up(r: &mut Rig, text: &str) {
-        r.feed(text);
+        r.feed(&marked(text));
         r.tick(0);
-        let first = r.frame();
-        assert!(first.links.is_empty(), "no span before the worker answers");
-        r.tick(40);
-        r.pump();
     }
 
     #[test]
-    fn a_printed_path_lights_up_after_the_worker_answers() {
+    fn a_marked_path_lights_up_at_once_and_a_plain_one_never() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "x").unwrap();
         let mut r = Rig::with_cwd(1.0, dir.path());
-        light_up(&mut r, "a.txt\r\nb.txt");
+        r.feed("a.txt\r\n\u{27E6}b.txt\u{27E7}");
+        r.tick(0);
         let d = r.frame();
+        assert!(
+            !d.links.iter().any(|s| s.row == 0),
+            "a path with no marks is never guessed, even one that exists"
+        );
         assert!(
             d.links
                 .iter()
-                .any(|s| s.row == 0 && s.col == 0 && s.width == 5)
-        );
-        assert!(
-            !d.links.iter().any(|s| s.row == 1),
-            "a missing file never lights up"
+                .any(|s| s.row == 1 && s.col == 0 && s.width == 7),
+            "the session marked it on purpose: no stat before it lights"
         );
     }
 
-    /// The owner's log path (2026-10-24): printed before the script that writes it had started, it stayed plain.
     #[test]
-    fn a_file_made_after_its_path_was_printed_lights_up_on_a_quiet_screen() {
+    fn a_click_on_a_marked_path_that_names_nothing_says_so_and_opens_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let mut r = Rig::with_cwd(1.0, dir.path());
-        light_up(&mut r, "late.log");
-        assert!(r.frame().links.is_empty(), "no file yet");
-        std::fs::write(dir.path().join("late.log"), "x").unwrap();
-        // Nothing new is printed. A frame before the "no" runs out still shows no link.
-        assert!(r.tick(0).next_due_ms.is_some(), "a wake is booked");
-        r.tick(1000);
-        assert!(r.frame().links.is_empty(), "too soon for a second look");
-        // Once it has run out, the tick wakes and draws, and that frame asks again.
-        assert!(
-            r.tick(flare_term::link_scan::RETRY_AFTER_MS).redraw,
-            "the wake draws a frame"
-        );
+        light_up(&mut r, "gone.txt");
         r.frame();
-        r.tick(40);
-        r.pump();
-        let d = r.frame();
-        assert!(
-            d.links
+        r.click(2, 0);
+        until("the word", || {
+            r.msgs
+                .lock()
+                .unwrap()
                 .iter()
-                .any(|s| s.row == 0 && s.col == 0 && s.width == 8),
-            "{:?}",
-            d.links
+                .any(|m| matches!(m, TermMsg::NoSuchFile { tab, text } if tab == "a" && text == "gone.txt"))
+        });
+        assert!(previews(&r).is_empty());
+        assert!(r.openers.records().is_empty(), "{:?}", r.openers.records());
+    }
+
+    #[test]
+    fn a_click_on_a_marked_line_asks_for_the_preview_at_that_line() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "1\n2\n3\n").unwrap();
+        let mut r = Rig::with_cwd(1.0, dir.path());
+        r.feed("\u{27E6}a.txt:3\u{27E7}");
+        r.tick(0);
+        r.frame();
+        r.click(2, 0);
+        until("the preview", || !previews(&r).is_empty());
+        let lines: Vec<Option<u32>> = r
+            .msgs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|m| match m {
+                TermMsg::Preview { line, .. } => Some(*line),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines, [Some(3)]);
+    }
+
+    /// A path with a space where Claude Code broke the row: nothing between the rows names nothing, one space does.
+    #[test]
+    fn a_click_tries_a_space_where_the_row_broke_when_the_joined_path_names_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("My Docs")).unwrap();
+        std::fs::write(dir.path().join("My Docs").join("a.pdf"), "x").unwrap();
+        let mut r = Rig::with_cwd(1.0, dir.path());
+        let cols = r.g.cols;
+        let head = format!("{}\u{27E6}My", " ".repeat(cols - 3));
+        r.feed(&format!("{head}\r\n  Docs/a.pdf\u{27E7}"));
+        r.tick(0);
+        r.frame();
+        r.click(4, 1);
+        until("the open", || !r.openers.records().is_empty());
+        let rec = r.openers.records();
+        assert!(
+            matches!(&rec[0], OpenedRecord::Open(p) if p.ends_with("a.pdf") && p.contains("My Docs")),
+            "{rec:?}"
+        );
+    }
+
+    /// The same link as above, through the menu: every row acts on the spelling that names something.
+    #[test]
+    fn the_menu_rows_act_on_the_spelling_with_a_space_where_the_row_broke() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("My Docs")).unwrap();
+        std::fs::write(dir.path().join("My Docs").join("a.txt"), "x").unwrap();
+        let mut r = Rig::with_cwd(1.0, dir.path());
+        let cols = r.g.cols;
+        let head = format!("{}\u{27E6}My", " ".repeat(cols - 3));
+        r.feed(&format!("{head}\r\n  Docs/a.txt\u{27E7}"));
+        r.tick(0);
+        r.frame();
+        let pick = |r: &mut Rig, label: &str| {
+            r.right_click(4, 1).open_menu.expect("a menu");
+            let rows = r.ui.menu_rows(false, "Ctrl+F", "");
+            let i = rows.iter().position(|x| x.label == label).expect(label);
+            r.with_tab(|ui, t| ui.on_menu_pick(Some(t), i));
+        };
+        pick(&mut r, "Copy path");
+        until("the copy", || r.clip.read_text().is_some());
+        let copied = r.clip.read_text().unwrap();
+        assert!(copied.contains("My Docs"), "{copied}");
+        pick(&mut r, "Show in side panel");
+        until("the preview", || !previews(&r).is_empty());
+        let got = previews(&r);
+        assert!(
+            got[0].1 == "text" && got[0].2.contains("My Docs"),
+            "{got:?}"
+        );
+        pick(&mut r, flare_win::openers::REVEAL_LABEL);
+        until("the reveal", || !r.openers.records().is_empty());
+        let rec = r.openers.records();
+        assert!(
+            matches!(&rec[0], OpenedRecord::Reveal(p) if p.contains("My Docs")),
+            "{rec:?}"
         );
     }
 
@@ -2524,8 +2595,8 @@ mod tests {
         light_up(&mut r, "a.pdf run.bat x.d");
         r.frame();
         r.click(2, 0);
-        r.click(8, 0);
-        r.click(15, 0);
+        r.click(10, 0);
+        r.click(20, 0);
         until("three opener calls", || r.openers.records().len() >= 3);
         // Three workers run at once, so the order is theirs.
         let rec = r.openers.records();
@@ -2572,8 +2643,8 @@ mod tests {
         light_up(&mut r, "a.txt p.png run.bat");
         r.frame();
         r.click(2, 0);
-        r.click(8, 0);
-        r.click(15, 0);
+        r.click(10, 0);
+        r.click(18, 0);
         until("two previews and a reveal", || {
             previews(&r).len() >= 2 && !r.openers.records().is_empty()
         });
@@ -2613,6 +2684,8 @@ mod tests {
                 abs: format!("{base}/a.txt"),
                 text: "a.txt".into(),
                 base,
+                line: None,
+                alts: Vec::new(),
             }),
         });
         let rows = r.ui.menu_rows(false, "Ctrl+F", "");
@@ -2628,7 +2701,8 @@ mod tests {
     }
 
     #[test]
-    fn show_in_side_panel_on_a_file_that_went_away_says_so_and_opens_nothing() {
+    fn show_in_side_panel_on_a_file_that_went_away_says_flare_found_no_such_file_and_opens_nothing()
+    {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("a.txt");
         std::fs::write(&file, "x").unwrap();
@@ -2645,6 +2719,8 @@ mod tests {
                 abs: format!("{base}/a.txt"),
                 text: "a.txt".into(),
                 base,
+                line: None,
+                alts: Vec::new(),
             }),
         });
         let rows = r.ui.menu_rows(false, "Ctrl+F", "");
@@ -2655,6 +2731,20 @@ mod tests {
         // The menu was built with the file there; it is gone when the row is picked.
         std::fs::remove_file(&file).unwrap();
         r.with_tab(|ui, t| ui.on_menu_pick(Some(t), i));
+        until("the word", || no_such_file(&r, "a.txt"));
+        assert!(previews(&r).is_empty());
+        assert!(r.openers.records().is_empty(), "{:?}", r.openers.records());
+    }
+
+    #[test]
+    fn show_in_side_panel_on_a_file_that_is_there_but_not_shown_says_it_cannot_and_opens_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        // A folder with a text file's name: it names something, so it is no "no such file", and it is not shown.
+        std::fs::create_dir(dir.path().join("a.txt")).unwrap();
+        let mut r = Rig::with_cwd(1.0, dir.path());
+        light_up(&mut r, "a.txt");
+        r.frame();
+        pick_on(&mut r, 2, 0, "Show in side panel");
         until("the refusal", || {
             r.msgs
                 .lock()
@@ -2662,8 +2752,103 @@ mod tests {
                 .iter()
                 .any(|m| matches!(m, TermMsg::PreviewRefused { tab } if tab == "a"))
         });
+        assert!(!no_such_file(&r, "a.txt"));
+        assert!(r.openers.records().is_empty(), "{:?}", r.openers.records());
+    }
+
+    /// Whether the panel was asked to say that `text` names nothing.
+    fn no_such_file(r: &Rig, text: &str) -> bool {
+        r.msgs
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|m| matches!(m, TermMsg::NoSuchFile { tab, text: t } if tab == "a" && t == text))
+    }
+
+    /// Opens the menu on the link at (`col`, `row`) and picks the row with this label.
+    fn pick_on(r: &mut Rig, col: usize, row: usize, label: &str) {
+        r.right_click(col, row).open_menu.expect("a menu");
+        let rows = r.ui.menu_rows(false, "Ctrl+F", "");
+        let i = rows.iter().position(|x| x.label == label).expect(label);
+        r.with_tab(|ui, t| ui.on_menu_pick(Some(t), i));
+    }
+
+    /// Owner, 2026-11-11: a table link whose spellings name nothing must never reach an opener, on any route. Each row
+    /// says "Flare found no such file" as the click does, with the text as written.
+    #[test]
+    fn a_file_link_that_names_nothing_reaches_no_opener_from_the_click_or_any_menu_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut r = Rig::with_cwd(1.0, dir.path());
+        let cols = r.g.cols;
+        // Broken by hand, so it has a second spelling; neither names anything.
+        let head = format!("{}\u{27E6}My", " ".repeat(cols - 3));
+        r.feed(&format!("{head}\r\n  Docs/gone.txt\u{27E7}"));
+        r.tick(0);
+        r.frame();
+        let says = |r: &Rig| {
+            r.msgs
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|m| matches!(m, TermMsg::NoSuchFile { tab, text } if tab == "a" && text == "MyDocs/gone.txt"))
+                .count()
+        };
+        r.click(4, 1);
+        until("the click's word", || says(&r) == 1);
+        for (n, label) in [
+            "Open",
+            flare_win::openers::REVEAL_LABEL,
+            "Show in side panel",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            pick_on(&mut r, 4, 1, label);
+            until(label, || says(&r) == n + 2);
+        }
         assert!(previews(&r).is_empty());
         assert!(r.openers.records().is_empty(), "{:?}", r.openers.records());
+    }
+
+    /// Review (2026-11-11): the agent's folder reads relative links only; a rooted path with no drive and `~` are read
+    /// from the tab's own folder, as before the agent's folder was known.
+    #[test]
+    fn only_a_relative_file_link_is_read_from_the_agents_folder() {
+        let r = Rig::new(1.0);
+        let tab = TabInfo {
+            id: "a",
+            handle: &r.handle,
+            cwd: Some("AGENT"),
+            shell_cwd: Some("SHELL"),
+            alive: true,
+        };
+        assert_eq!(tab.link_base("src/a.rs"), "AGENT");
+        assert_eq!(tab.link_base("./a.rs"), "AGENT");
+        assert_eq!(tab.link_base("/x/a.rs"), "SHELL");
+        assert_eq!(tab.link_base("~/a.rs"), "SHELL");
+        let alone = TabInfo {
+            shell_cwd: None,
+            ..tab
+        };
+        assert_eq!(alone.link_base("/x/a.rs"), "AGENT");
+    }
+
+    #[test]
+    fn copy_path_copies_the_spelling_that_exists_as_a_whole_path_else_the_text_as_written() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let mut r = Rig::with_cwd(1.0, dir.path());
+        light_up(&mut r, "a.txt b.txt");
+        r.frame();
+        pick_on(&mut r, 2, 0, "Copy path");
+        let a = dir.path().join("a.txt").to_string_lossy().into_owned();
+        until("the whole path", || {
+            r.clip.read_text().as_deref() == Some(a.as_str())
+        });
+        pick_on(&mut r, 10, 0, "Copy path");
+        until("the text as written", || {
+            r.clip.read_text().as_deref() == Some("b.txt")
+        });
     }
 
     #[test]
@@ -2703,6 +2888,7 @@ mod tests {
             id: "a",
             handle: &h,
             cwd: r.cwd.as_deref(),
+            shell_cwd: None,
             alive: true,
         };
         let all: Vec<TermMsg> = r.msgs.lock().unwrap().drain(..).collect();
@@ -2754,68 +2940,6 @@ mod tests {
         let m = &r.g.metrics;
         assert_eq!(item.top, f64::from(m.padding));
         assert_eq!(item.height, f64::from(m.cell_h));
-    }
-
-    /// A rig in `cwd` with thumbnails on whose tab has shown a file in `shown`, with `name` printed and lit through
-    /// that folder alone, and then the "no" from `cwd` run out. The line has a hit, so it is never scanned again.
-    fn lit_through_a_shown_folder_and_the_no_ran_out(cwd: &Path, shown: &Path, name: &str) -> Rig {
-        let mut r = Rig::with_cwd(1.0, cwd);
-        r.ui.set_thumbs(true);
-        let taught = shown.join("one.txt").to_string_lossy().to_string();
-        let inputs = r.ui.inputs();
-        {
-            let mut i = inputs.borrow_mut();
-            i.paths.link_ranges(&taught, r.cwd.as_deref(), "a", 0);
-            i.paths.advance(BATCH_MS);
-            let ask = i.paths.take_ask().expect("an ask");
-            let hit = PathHit {
-                kind: flare_term::path_open::PathKind::File,
-                abs: taught.clone(),
-            };
-            let hits = ask.paths.iter().map(|_| Some(hit.clone())).collect();
-            i.paths.answer(&ask, Some(hits), BATCH_MS);
-            i.paths
-                .link_ranges(&taught, r.cwd.as_deref(), "a", BATCH_MS);
-        }
-        light_up(&mut r, name);
-        // The "no" from `cwd` wakes nobody: another path's answer is what has the line looked at again.
-        r.handle.with_emu(|em| em.links_revisit());
-        r.frame();
-        r.tick(40);
-        r.pump();
-        let d = r.frame();
-        assert_eq!(d.links.len(), 1, "lit through the shown folder");
-        r.tick(flare_term::path_links::NO_TTL_MS + 1);
-        r
-    }
-
-    #[test]
-    fn resting_on_a_picture_found_through_a_shown_folder_shows_it_after_the_no_for_the_cwd_ran_out()
-    {
-        let cwd = tempfile::tempdir().unwrap();
-        let shown = tempfile::tempdir().unwrap();
-        png(&shown.path().join("two.png"), 6, 3);
-        let mut r =
-            lit_through_a_shown_folder_and_the_no_ran_out(cwd.path(), shown.path(), "two.png");
-        rest_on(&mut r, 2, 0);
-        let (caption, _) = last_thumb(&r).flatten().expect("the picture is up");
-        assert_eq!(caption, "two.png  6 x 3");
-    }
-
-    #[test]
-    fn a_click_on_a_path_found_through_a_shown_folder_opens_it_after_the_no_for_the_cwd_ran_out() {
-        let cwd = tempfile::tempdir().unwrap();
-        let shown = tempfile::tempdir().unwrap();
-        std::fs::write(shown.path().join("two.pdf"), "x").unwrap();
-        let mut r =
-            lit_through_a_shown_folder_and_the_no_ran_out(cwd.path(), shown.path(), "two.pdf");
-        r.click(2, 0);
-        until("the opener call", || !r.openers.records().is_empty());
-        let rec = r.openers.records();
-        assert!(
-            matches!(&rec[0], OpenedRecord::Open(p) if p.ends_with("two.pdf")),
-            "{rec:?}"
-        );
     }
 
     #[test]
@@ -2959,6 +3083,7 @@ mod tests {
             id: "a",
             handle: &h,
             cwd: r.cwd.as_deref(),
+            shell_cwd: None,
             alive: true,
         };
         r.ui.toggle_find(&tab);
@@ -3054,6 +3179,8 @@ mod tests {
                 abs: "C:\\evil.exe".into(),
                 text: "a.txt".into(),
                 base,
+                line: None,
+                alts: Vec::new(),
             }),
         });
         let rows = r.ui.menu_rows(false, "Ctrl+F", "");
@@ -3068,35 +3195,6 @@ mod tests {
             matches!(&rec[0], OpenedRecord::Open(p) if p.ends_with("a.txt") && !p.contains("evil")),
             "{rec:?}"
         );
-    }
-
-    #[test]
-    fn a_closed_tab_forgets_what_it_taught() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
-        let mut r = Rig::with_cwd(1.0, dir.path());
-        let inputs = r.ui.inputs();
-        {
-            // The tab shows a path in a folder that exists, so it teaches that folder.
-            let mut i = inputs.borrow_mut();
-            let hit = |p: &str| {
-                Some(PathHit {
-                    kind: flare_term::path_open::PathKind::File,
-                    abs: p.to_string(),
-                })
-            };
-            i.paths
-                .link_ranges("see C:\\d\\f.txt", Some("C:\\cwd"), "a", 0);
-            i.paths.advance(50);
-            let ask = i.paths.take_ask().expect("an ask");
-            let hits = ask.paths.iter().map(|p| hit(p)).collect();
-            i.paths.answer(&ask, Some(hits), 50);
-            i.paths
-                .link_ranges("see C:\\d\\f.txt and rel\\x.txt", Some("C:\\cwd"), "a", 60);
-        }
-        assert_eq!(inputs.borrow().paths.owners_kept(), 1);
-        r.ui.tab_closed("a");
-        assert_eq!(inputs.borrow().paths.owners_kept(), 0);
     }
 
     // ---- mouse ownership ----
@@ -3262,6 +3360,7 @@ mod tests {
             id: "b",
             handle: &h,
             cwd: None,
+            shell_cwd: None,
             alive: true,
         };
         assert_eq!(rows[0].label, "Copy");
@@ -3533,6 +3632,7 @@ mod tests {
             id: "a",
             handle: &h,
             cwd: None,
+            shell_cwd: None,
             alive: true,
         };
         r.ui.on_dropped(Some(&tab), Path::new("C:\\My Dir\\a.txt"));
@@ -3555,6 +3655,7 @@ mod tests {
             id: "a",
             handle: &h,
             cwd: None,
+            shell_cwd: None,
             alive: false,
         };
         r.ui.on_dropped(Some(&dead), Path::new("C:\\a.txt"));

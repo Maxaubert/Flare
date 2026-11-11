@@ -320,9 +320,9 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 180,
     },
     Scenario {
-        name: "pathLinks",
+        name: "markerLinks",
         group: "input_b",
-        run: input_b::path_links,
+        run: input_b::marker_links,
         limit_secs: 180,
     },
     Scenario {

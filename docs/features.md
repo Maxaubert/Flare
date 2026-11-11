@@ -291,19 +291,19 @@ are added as milestones land.
   Held by `a_printed_link_wears_the_link_ink_and_its_full_stop_does_not`, `an_unchanged_line_is_not_scanned_again`,
   `a_new_ink_scans_everything_again`, `a_burst_of_scrollback_is_not_scanned`, `an_osc8_label_wears_the_ink_and_opens_once_on_a_left_click`,
   `an_osc8_label_showing_another_host_opens_what_it_shows` and `any_other_button_opens_nothing`.
-- **Paths.** A path is a link only when it exists; the backend resolves and checks it again; a click
+- **Paths.** Since 2026-11-11 a path is a link only when a session writes it between the marks `⟦` and `⟧`
+  (section "File links by marker" below); Flare guesses no file path from screen text. The backend resolves
+  and checks it again on the click; a click
   opens only allowlisted types and reveals everything else in Explorer (O22, rule 134). A folder opens
   in Explorer; when an Explorer window already shows that folder, that window comes forward (restored if
   minimized) and no second Explorer starts, because the foreground lock could stop Explorer raising it itself
   (issue #55; `a_folder_already_showing_is_brought_forward_and_explorer_is_not_started`). A folder sitting in a
-  background Explorer tab brings its window forward without switching tab. The user's chosen folder handler is M9. Held by `a_path_is_a_link_only_if_it_exists_and_opens_by_the_allowlist`
-  and `a_path_menu_open_and_show_go_through_the_allowlist`. A path a program breaks at the window's
+  background Explorer tab brings its window forward without switching tab. The user's chosen folder handler is M9. Held by `a_path_is_a_link_only_between_marks_and_opens_by_the_allowlist`
+  and `a_path_menu_open_and_show_go_through_the_allowlist`. A web address a program breaks at the window's
   edge by hand (Claude Code writes each row on its own, so the next row is not marked wrapped) is
-  read across the break and is ONE link on both rows, for the paint, the click and the menu; a web
-  link never is, and an OSC 8 label cut that way stays one mark per row (owner 2026-10-21, PT #250,
-  core 0.44.2; `cells::by_hand`). Held by
-  `a_path_broken_by_hand_at_the_edge_is_one_link`, `a_web_link_is_never_carried_across_a_row_broken_by_hand`,
-  `an_osc8_label_cut_by_hand_is_a_mark_per_row` and e2e `pathLinks` (`path_cut_at_the_edge`).
+  read across the break and is ONE link on both rows (review #37, `cells::by_hand`); an OSC 8 label cut that
+  way stays one mark per row. Held by `a_url_broken_by_hand_at_the_edge_is_one_mark_to_the_whole_address` and
+  `an_osc8_label_cut_by_hand_is_a_mark_per_row`.
 - **Terminal menu.** Right click opens the menu for what was clicked: path rows, link rows, Copy with a
   selection, Paste, Find in scrollback, and Command help last while it is on (M7). No Close tab. A path
   to a picture or text file also gets "Show in side panel" after Open (Surfaces round 9), and a tab that runs
@@ -2352,3 +2352,73 @@ Spec `docs/superpowers/specs/2026-11-10-ask-agent-additions-design.md`, section 
   (Build ready). A session-only cookie (a sign-in without "stay signed in") ends when the last web panel closes or Flare quits, since the panel's
   browser ends then. Held by the hidden e2e `webLogins` (a site of its own on `127.0.0.1`; the page reads `document.cookie` itself) and the unit
   tests in `crates/flare-surfaces/src/web.rs`.
+
+## File links by marker, 2026-11-11
+
+Spec and plan: `docs/superpowers/specs/2026-11-11-file-link-markers.md`. Owner, 2026-11-11: "the link system we have is
+poor. many links dont work."
+
+- **A file link is a path between `⟦` and `⟧`.** A session writes the path (relative to its folder, or absolute)
+  between U+27E6 and U+27E7, optionally with `:line` or `:line:col`: `⟦C:\repo\src\main.rs:42⟧`. The whole span, marks
+  included, is one link. Nothing is statted before it lights: the session wrote it on purpose. A relative path is a link
+  only while the agent's or the tab's folder is known. Rule 266.
+- **Read exactly, over rows.** `flare_term::file_marks` reads to the end mark in the same row and up to 7 rows below
+  (at most 1,024 characters): a row the terminal wrapped joins with nothing dropped; a row Claude Code broke by hand
+  joins with its leading spaces (Claude Code's indent) and the last row's trailing blanks dropped. A second start mark
+  starts again; a blank row or no end mark is no link. A web address stops at a mark. Rule 267.
+- **No more path guessing.** A plain shell's output (`dir`, `git status`, a compiler error) has no file links, even for
+  names that exist. Web addresses (http and https) are still found in the text, also across a row broken by hand, and
+  OSC 8 links are as before. `paths.rs`, `path_links.rs` (the cache, the shown folders, the questions to a worker)
+  and the retry of a path that named nothing are gone; `path_open` (the allowlist, `open_term_path`, `StatGate`)
+  stays. macOS: the `file://` and escaped-space readers went with the guesser.
+- **The click.** A worker takes the first spelling that names something (as written, then with one space where a row
+  broke by hand: each break alone, then all of them) and goes the way a path click always went: a picture or text file
+  to the side panel with "Open previews in Flare" on, else the default app (allowlist), else Explorer. When nothing
+  is there the panel says "Flare found no such file" (a note in a closed panel, the header or the page's bar in an open
+  one). A text preview opens at the link's line with that line marked in the selection colour, a few lines below the
+  top; a markdown file with a line opens in Code for it. The right-click menu keeps Open, Show in side panel, Show in
+  Explorer (Finder on macOS) and Copy path; hover thumbnails work for a marked picture. Rule 268.
+- **The menu and the thumbnail try the same spellings.** Open, Show in side panel, Show in Explorer, Copy path and
+  the hover thumbnail act, on their worker, on the first spelling that names something, as the click does. A wide
+  character the terminal moved to the next row leaves the last column empty: that cell is no space of the path (a space
+  there is tried as a second spelling). Rule 270.
+- **A path in a table cell (2026-11-11, review).** Claude Code draws a markdown table with box borders and breaks a long
+  cell inside its column. A span whose start mark has a vertical border (`│`, `┃` or `║`) on each side is read in its
+  cell: each row stops at the cell's right border (blanks before it dropped) and goes on in the next row right of the
+  cell's left border, which that row must have at the same column (the table's bottom edge has a corner there: no
+  link). The link covers only the path's cells. Rule 271.
+- **Short paths, read from the session's folder (2026-11-11, review).** The note now asks for a path relative to the
+  session's working folder (`⟦app\src\favorites\favorites.ts:17⟧`), an absolute path only for a file outside it, and a
+  short marked path in a table. Every `UserPromptSubmit` hook sends the `cwd` of its input along with `panel.state`, and a
+  new `PostToolUse` hook of `EnterWorktree` and `ExitWorktree` (`flare-mcp --hook-context --folder`) does only that.
+  Flare keeps it per tab as the agent's folder (the latest wins; it goes when the agent leaves the tab, at a shell
+  prompt or when the tab closes) and reads a relative file link from it, else from the tab's own folder: the click, the
+  menu rows, the hover thumbnail and the lighting of a relative mark. A Flare that does not know the field ignores it.
+  Rule 272.
+- **A link that names nothing goes to no app (2026-11-11, owner report).** The menu's Open, Show in Explorer (Finder)
+  and Show in side panel now say "Flare found no such file" when no spelling of the link names anything, as the click
+  does; before, Open and Show in Explorer did nothing at all. No route hands such a path to an app. Rule 273.
+- **Copy path copies a path that exists, or exactly what was written (2026-11-11, owner report).** Copy path on every
+  file link copies, from a worker, the first spelling that names something as a whole path; when none does, the text
+  as written. A path in a table cell is copied without the table's borders or the cells beside it. Rule 274.
+- **The agent's folder reads relative links only (2026-11-11, review).** A path rooted with no drive (`\x`) and `~`
+  are read from the tab's own folder, as before. An agent folder no relative path can be read from (a network or
+  `\\?\` path) is not used: the tab's own folder is. Rule 275.
+- **`show_file` takes `line`.** The same scroll and mark as a click (`view.file`'s `line`, from 1).
+- **Every Claude session is told.** The Flare plugin's `SessionStart` hook (start, resume, clear and compact) runs
+  `flare-mcp --hook-context --session-start`, which prints, only inside a Flare tab, the note "You are running inside
+  Flare. When you mention a file in your reply, write its path between ⟦ and ⟧, ..." as
+  `additionalContext`. The MCP server's `instructions` end with the same note, so a session that skips the hook still
+  sees it. Codex and Antigravity are not told (no Flare plugin), but any program that prints marks gets links. Rule 269.
+- **Tests.** `file_marks::tests`, `link_scan::tests` (`a_plain_listing_has_no_file_links`,
+  `a_marked_path_is_a_file_link_with_its_line`), `emulator::tests` (`a_marked_path_broken_by_hand_and_indented_is_one_link`),
+  `term_ui::tests` (`a_click_on_a_marked_line_asks_for_the_preview_at_that_line`,
+  `a_click_tries_a_space_where_the_row_broke_when_the_joined_path_names_nothing`,
+  `a_click_on_a_marked_path_that_names_nothing_says_so_and_opens_nothing`), `appctl::tests`
+  (`a_preview_at_a_line_marks_that_line_and_a_later_one_without_marks_nothing`), `flare-mcp` (`hook::tests`, the
+  stdio test `the_session_start_hook_tells_a_flare_session_about_file_links_once`), `plugin::tests`
+  (`the_session_start_hook_tells_claude_about_file_links_on_every_start`,
+  `entering_or_leaving_a_worktree_tells_flare_the_sessions_folder`), `ctl_app::tests`
+  (`panel_state_carries_the_agents_folder_only_when_it_is_a_plain_absolute_path`), `appctl::tests`
+  (`a_relative_file_link_opens_under_the_agents_folder_not_the_shells`) and the hidden e2e `markerLinks` (a table cell,
+  and a relative mark read from the folder the real hook names), which replaces `pathLinks`.

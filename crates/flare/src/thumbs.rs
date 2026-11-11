@@ -16,7 +16,7 @@ use flare_surfaces::PanelKind;
 use flare_surfaces::preview::{self, classify_resolved, loadable};
 use flare_tabs::tip_place::{BoxF, TIP_GAP, TIP_MARGIN, TipSide, TipSpot, place_tip};
 use flare_term::link_scan::Piece;
-use flare_term::path_open::resolve_openable_file;
+use flare_term::path_open::{first_existing, resolve_openable_file};
 
 /// How long the pointer must rest on an image path.
 pub const DWELL_MS: u64 = 350;
@@ -258,6 +258,8 @@ pub struct ThumbJob {
     pub seq: u64,
     pub base: String,
     pub text: String,
+    /// The link's other spellings (a space where a row broke): the first of `text` and these that names something is read.
+    pub alts: Vec<String>,
 }
 
 /// Where an answer goes: the job's number and the picture, or None for anything refused, abandoned or broken.
@@ -325,7 +327,15 @@ impl ThumbWorker {
                 let stale = || current.load(Ordering::SeqCst) != seq;
                 // A picture that breaks the decoder costs one thumbnail, never the app.
                 let got = catch_unwind(AssertUnwindSafe(|| {
-                    load_thumb(&job.base, &job.text, &home, &cache, &stale)
+                    let text = if job.alts.is_empty() {
+                        job.text.clone()
+                    } else {
+                        let texts: Vec<String> = std::iter::once(job.text.clone())
+                            .chain(job.alts.iter().cloned())
+                            .collect();
+                        first_existing(&job.base, &texts, &home).unwrap_or_else(|| job.text.clone())
+                    };
+                    load_thumb(&job.base, &text, &home, &cache, &stale)
                 }))
                 .ok()
                 .flatten();
@@ -684,6 +694,7 @@ mod tests {
             seq,
             base: base.clone(),
             text: "p.png".into(),
+            alts: Vec::new(),
         };
         w.submit(job(1));
         let got = wait_answers(&answers, 1);
@@ -708,6 +719,23 @@ mod tests {
     }
 
     #[test]
+    fn a_picture_named_with_a_space_where_its_row_broke_is_found_by_that_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("My Pics")).unwrap();
+        png(&dir.path().join("My Pics").join("p.png"), 4, 4);
+        let answers = Arc::<Answers>::default();
+        let (mut w, base) = worker(dir.path(), &answers);
+        w.submit(ThumbJob {
+            seq: 1,
+            base,
+            text: "MyPics/p.png".into(),
+            alts: vec!["My Pics/p.png".into()],
+        });
+        let got = wait_answers(&answers, 1);
+        assert_eq!(got[0].1.as_ref().expect("a picture").name, "p.png");
+    }
+
+    #[test]
     fn a_job_nobody_wants_answers_nothing_to_show() {
         let dir = tempfile::tempdir().unwrap();
         png(&dir.path().join("p.png"), 4, 4);
@@ -719,6 +747,7 @@ mod tests {
             seq: 1,
             base,
             text: "p.png".into(),
+            alts: Vec::new(),
         });
         assert!(wait_answers(&answers, 1)[0].1.is_none());
     }
@@ -735,6 +764,7 @@ mod tests {
             seq,
             base: base.clone(),
             text: text.into(),
+            alts: Vec::new(),
         };
         w.submit(job(1, "a.png"));
         w.submit(job(2, "b.png"));
@@ -758,6 +788,7 @@ mod tests {
                 seq,
                 base: base.clone(),
                 text: text.into(),
+                alts: Vec::new(),
             });
             assert!(
                 wait_answers(&answers, seq as usize)[seq as usize - 1]

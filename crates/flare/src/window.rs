@@ -21,7 +21,6 @@ use flare_tabs::tabs_store::TabsStore;
 use flare_term::caret_hold::CaretPos;
 use flare_term::handle::TermHandle;
 use flare_term::keys::KeyEvent;
-use flare_term::path_open::FsStat;
 use flare_term::pty::PortableSpawner;
 use flare_term::session::RealShells;
 use flare_win::argv::{folders_from_argv, own_files};
@@ -1191,7 +1190,6 @@ pub fn run_window(
                 openers: Arc::clone(&backends.openers),
                 agent: None,
                 dbl: system_double_click(),
-                stat: Arc::new(FsStat),
                 metrics: {
                     let host = host.clone();
                     Rc::new(move || host.borrow().metrics())

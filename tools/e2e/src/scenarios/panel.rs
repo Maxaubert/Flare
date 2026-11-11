@@ -104,7 +104,8 @@ fn panel_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
     prompt(app)?;
     type_line(
         app,
-        "cls; Write-Host 'picture: panel-pic.png note: panel-note.txt'",
+        // The paths between the file-link marks a session writes (spec 2026-11-11): only marked paths are links.
+        "cls; $o = [char]0x27E6; $c = [char]0x27E7; Write-Host ('picture: ' + $o + 'panel-pic.png' + $c + ' note: ' + $o + 'panel-note.txt' + $c)",
     )?;
     let painted = ctx.until("both paths to wear the link colour", 8_000, &mut || {
         let t = path_texts(app);

@@ -1,21 +1,45 @@
 //! The link scanner over the viewport (Prism Terminal's termLinkPaint.ts, without the painting).
-//! Web links and known paths come from `PathLinks::link_ranges`, OSC 8 links from the per-cell
-//! hyperlinks of the buffer (decision D18). Only the viewport is scanned, one logical line at a time,
-//! and a line whose text, hyperlinks, ink and cwd are unchanged is not scanned again. No decoration
-//! is stored: the marks are rebuilt from the per-line cache on every call.
+//! Web links come from `links::find_links_in`, file links only from the marks a session writes around a path
+//! (`file_marks`, 2026-11-11: no file path is guessed any more), OSC 8 links from the per-cell hyperlinks of the
+//! buffer (decision D18). Only the viewport is scanned, one logical line at a time, and a line whose text,
+//! hyperlinks and ink are unchanged is not scanned again. No decoration is stored: the marks are rebuilt from the
+//! per-line cache on every call.
 
 use crate::cells::{BufferLike, LogicalLine, SCAN_WINDOW_ROWS, logical_line_win};
+use crate::file_marks::find_marks;
+use crate::links::find_links_in;
 use crate::osc8::is_web_link;
-use crate::path_links::{NO_TTL_MS, PathLinks};
+use crate::path_grammar::is_relative;
+use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LinkTarget {
     Web(String),
-    Path { text: String },
-    Osc8 { uri: String },
+    /// A path a session wrote between the marks (`file_marks`), with the line and column it named. `alts` are the
+    /// other spellings a click tries when `text` names nothing (a space where a row broke).
+    Path {
+        text: String,
+        line: Option<u32>,
+        col: Option<u32>,
+        alts: Vec<String>,
+    },
+    Osc8 {
+        uri: String,
+    },
+}
+
+impl LinkTarget {
+    /// A file link to `text` with no line (tests and the probes).
+    pub fn path(text: &str) -> Self {
+        Self::Path {
+            text: text.to_string(),
+            line: None,
+            col: None,
+            alts: Vec::new(),
+        }
+    }
 }
 
 /// The cells of a mark on one row. `row` is ABSOLUTE.
@@ -33,11 +57,8 @@ pub struct LinkMark {
 }
 
 pub struct LinkCtx<'a> {
-    pub paths: &'a mut PathLinks,
-    /// The tab id.
-    pub owner: &'a str,
+    /// The tab's folder: a relative path between marks is a link only when it is known.
     pub cwd: Option<&'a str>,
-    pub now_ms: u64,
     /// Changes when the link colour changes: everything is scanned again.
     pub ink_key: u32,
     /// The hyperlink on a cell (absolute row, column) as (id, uri).
@@ -48,11 +69,6 @@ type Link = Option<(String, String)>;
 
 pub struct LinkScanner {
     cache: HashMap<usize, (u64, Vec<LinkMark>)>,
-    waiting: HashSet<usize>,
-    /// Lines (by first row) where a path named nothing: the line's key, when that was learned, and the second looks
-    /// already taken. A file made after it was printed (a log a script starts writing) lights up once the "no"
-    /// has run out, with no new output on the line.
-    retry: HashMap<usize, (u64, u64, usize)>,
     hidden: bool,
     scanned: usize,
     /// A repaint was asked; the cache is dropped once, at the next scan (the frame).
@@ -70,8 +86,6 @@ impl LinkScanner {
     pub fn new() -> Self {
         Self {
             cache: HashMap::new(),
-            waiting: HashSet::new(),
-            retry: HashMap::new(),
             hidden: false,
             scanned: 0,
             repaint_pending: false,
@@ -98,28 +112,13 @@ impl LinkScanner {
         self.repaints
     }
 
-    /// A path answer arrived: the lines that were waiting for one are scanned again.
-    pub fn revisit(&mut self) {
-        for row in self.waiting.drain() {
-            self.cache.remove(&row);
-        }
-    }
-
-    /// When a line whose path named nothing is next due a look (the caller draws a frame then), if any is.
-    pub fn next_retry(&self) -> Option<u64> {
-        self.retry
-            .values()
-            .filter(|(_, _, tries)| *tries < RETRY_MAX)
-            .map(|(_, at, _)| at + RETRY_AFTER_MS + 1)
-            .min()
-    }
-
     /// Logical lines actually scanned so far.
     pub fn lines_scanned(&self) -> usize {
         self.scanned
     }
 
-    /// The marks on the logical lines overlapping absolute rows `first..=last`.
+    /// The marks on the logical lines overlapping absolute rows `first..=last`. `b` must hold the
+    /// `file_marks::MARK_ROWS` rows above and below them too, so a file link that starts above the view is whole.
     pub fn scan(
         &mut self,
         b: &dyn BufferLike,
@@ -133,8 +132,6 @@ impl LinkScanner {
         }
         if std::mem::take(&mut self.repaint_pending) {
             self.cache.clear();
-            self.waiting.clear();
-            self.retry.clear();
             self.repaints += 1;
         }
         let last = last.min(b.len() - 1);
@@ -145,7 +142,7 @@ impl LinkScanner {
         // Where the mark the last piece left for this one starts (it touched that piece's bottom edge).
         let mut carry: Option<(usize, usize)> = None;
         while y <= last {
-            // Across rows a program broke by hand too (`cells::by_hand`): a path it cut at the
+            // Across rows a program broke by hand too (`cells::by_hand`): a web address it cut at the
             // edge is read whole, and each row keeps its own piece of the mark.
             // A very long line is read in pieces of a window of rows, each from where the last ended.
             let ll = logical_line_win(b, cols, y, true, floor, SCAN_WINDOW_ROWS);
@@ -154,32 +151,13 @@ impl LinkScanner {
             let blank = ll.text_end == 0 && links.iter().all(Option::is_none);
             if blank {
                 carry = None;
-                self.waiting.remove(&ll.first);
-                self.retry.remove(&ll.first);
             } else {
                 let key = line_key(&ll, cols, &links, ctx);
-                let due = self.retry.get(&ll.first).is_some_and(|&(k, at, tries)| {
-                    k == key && tries < RETRY_MAX && ctx.now_ms > at + RETRY_AFTER_MS
-                });
                 let marks = match self.cache.remove(&ll.first) {
-                    Some((k, marks)) if k == key && !due => marks,
+                    Some((k, marks)) if k == key => marks,
                     _ => {
-                        self.waiting.remove(&ll.first);
                         self.scanned += 1;
-                        let marks = scan_line(&ll, cols, &links, ctx);
-                        let asked = ctx.paths.take_asked(ctx.owner);
-                        let denied = ctx.paths.take_denied(ctx.owner);
-                        if asked {
-                            self.waiting.insert(ll.first);
-                        }
-                        // A line that asks is armed too: a "yes" scans it again (and disarms it), a "no" does not, so
-                        // the line would never learn it was denied. The looks taken count across the answers.
-                        let prev = self.retry.remove(&ll.first).filter(|r| r.0 == key);
-                        let tries = prev.map_or(0, |r| r.2 + usize::from(due));
-                        if denied || asked {
-                            self.retry.insert(ll.first, (key, ctx.now_ms, tries));
-                        }
-                        marks
+                        scan_line(&ll, cols, &links)
                     }
                 };
                 // A piece cut from a longer line: a mark touching the cut edge is only half a link, left to
@@ -224,22 +202,51 @@ impl LinkScanner {
                 y
             };
         }
-        self.waiting.retain(|r| next.contains_key(r));
-        self.retry.retain(|r, _| next.contains_key(r));
         self.cache = next;
+        let files = file_links(b, cols, first, last, ctx.cwd);
+        if !files.is_empty() {
+            // The session marked these on purpose: a web address or a label under one gives way.
+            out.retain(|m| !files.iter().any(|f| overlaps(m, f)));
+            out.extend(files);
+            out.sort_by_key(|m| (m.pieces[0].row, m.pieces[0].col));
+        }
         out
     }
 }
 
-/// How many second looks a line gets whose path named nothing, one each time the "no" runs out (about a minute).
-const RETRY_MAX: usize = 4;
-
-/// How long after a line was denied (or asked) it is looked at again: the "no" has run out by then, with room for
-/// the answer's own trip.
-pub const RETRY_AFTER_MS: u64 = NO_TTL_MS + 1000;
-
 /// Rows a piece of a very long line starts back into the previous one.
 const CUT_OVERLAP_ROWS: usize = 6;
+
+/// The file links between marks on rows `first..=last`: a relative path only when the tab's folder is known.
+fn file_links(
+    b: &dyn BufferLike,
+    cols: usize,
+    first: usize,
+    last: usize,
+    cwd: Option<&str>,
+) -> Vec<LinkMark> {
+    find_marks(b, cols, first, last)
+        .into_iter()
+        .filter(|m| cwd.is_some() || !is_relative(&m.text))
+        .map(|m| LinkMark {
+            target: LinkTarget::Path {
+                text: m.text,
+                line: m.line,
+                col: m.col,
+                alts: m.alts,
+            },
+            pieces: m.pieces,
+        })
+        .collect()
+}
+
+fn overlaps(a: &LinkMark, b: &LinkMark) -> bool {
+    a.pieces.iter().any(|p| {
+        b.pieces
+            .iter()
+            .any(|q| p.row == q.row && p.col < q.col + q.width && q.col < p.col + p.width)
+    })
+}
 
 fn touches_top(m: &LinkMark, ll: &LogicalLine) -> bool {
     m.pieces.iter().any(|p| p.row == ll.first && p.col == 0)
@@ -271,7 +278,6 @@ fn line_key(ll: &LogicalLine, cols: usize, links: &[Link], ctx: &LinkCtx) -> u64
     ll.last.hash(&mut h);
     cols.hash(&mut h);
     ctx.ink_key.hash(&mut h);
-    ctx.cwd.hash(&mut h);
     ll.widths.hash(&mut h);
     ll.joins.hash(&mut h);
     links.hash(&mut h);
@@ -308,22 +314,16 @@ fn cell_range(ll: &LogicalLine, start: usize, end: usize) -> (usize, usize) {
     (s, e.max(s))
 }
 
-fn scan_line(ll: &LogicalLine, cols: usize, links: &[Link], ctx: &mut LinkCtx) -> Vec<LinkMark> {
+fn scan_line(ll: &LogicalLine, cols: usize, links: &[Link]) -> Vec<LinkMark> {
     let chars: Vec<char> = ll.text.chars().collect();
-    let ranges = ctx
-        .paths
-        .link_ranges_in(&ll.text, ctx.cwd, ctx.owner, ctx.now_ms, &ll.joins);
     let mut spans: Vec<(LinkMark, usize, usize)> = Vec::new();
-    for r in ranges {
+    for r in find_links_in(&ll.text, &ll.joins) {
         let (s, e) = cell_range(ll, r.start, r.end);
         let ps = pieces(ll, cols, s, e);
         if ps.is_empty() {
             continue;
         }
-        let target = match r.path {
-            Some(text) => LinkTarget::Path { text },
-            None => LinkTarget::Web(chars[r.start..r.end.min(chars.len())].iter().collect()),
-        };
+        let target = LinkTarget::Web(chars[r.start..r.end.min(chars.len())].iter().collect());
         spans.push((LinkMark { target, pieces: ps }, s, e));
     }
     let mut i = 0;
@@ -368,7 +368,7 @@ fn scan_line(ll: &LogicalLine, cols: usize, links: &[Link], ctx: &mut LinkCtx) -
 mod tests {
     use super::*;
     use crate::cells::{LineLike, ScratchCell};
-    use crate::path_open::{PathHit, PathKind};
+    use crate::path_grammar::native_text;
 
     struct Row {
         text: String,
@@ -422,22 +422,18 @@ mod tests {
     type Runs = Vec<(usize, usize, usize, &'static str, &'static str)>;
 
     struct H {
-        paths: PathLinks,
         scanner: LinkScanner,
         runs: Runs,
         ink: u32,
         cwd: Option<&'static str>,
-        now: u64,
     }
     impl H {
         fn new() -> Self {
             Self {
-                paths: PathLinks::new(),
                 scanner: LinkScanner::new(),
                 runs: Vec::new(),
                 ink: 1,
                 cwd: None,
-                now: 0,
             }
         }
         fn scan(&mut self, b: &Buf, cols: usize, first: usize, last: usize) -> Vec<LinkMark> {
@@ -448,10 +444,7 @@ mod tests {
                     .map(|(_, _, _, id, uri)| (id.to_string(), uri.to_string()))
             };
             let mut ctx = LinkCtx {
-                paths: &mut self.paths,
-                owner: "t1",
                 cwd: self.cwd,
-                now_ms: self.now,
                 ink_key: self.ink,
                 hyperlink: &f,
             };
@@ -602,172 +595,6 @@ mod tests {
         assert_eq!(h.scanner.lines_scanned(), 4);
     }
 
-    fn hit() -> PathHit {
-        PathHit {
-            kind: PathKind::File,
-            abs: "C:\\w\\src/main.rs".into(),
-        }
-    }
-
-    fn answer_all(h: &mut H) {
-        h.paths.advance(100);
-        while let Some(ask) = h.paths.take_ask() {
-            let hits = ask.paths.iter().map(|_| Some(hit())).collect();
-            h.paths.answer(&ask, Some(hits), 100);
-        }
-    }
-
-    #[test]
-    fn a_path_that_is_not_yet_known_is_asked_and_the_line_waits() {
-        let mut h = H::new();
-        h.cwd = Some("C:\\w");
-        let b = buf(&[("edit src/main.rs now", false)]);
-        assert!(h.scan(&b, 30, 0, 0).is_empty());
-        answer_all(&mut h);
-        h.scanner.revisit();
-        let m = h.scan(&b, 30, 0, 0);
-        assert_eq!(m.len(), 1);
-        assert_eq!(
-            m[0].target,
-            LinkTarget::Path {
-                text: "src/main.rs".into()
-            }
-        );
-    }
-
-    #[test]
-    fn a_path_broken_by_hand_is_one_mark_with_a_piece_per_row() {
-        let mut h = H::new();
-        h.cwd = Some("C:\\w");
-        let b = buf(&[("at C:\\t\\scra", false), ("tch\\a.exe", false)]);
-        h.scan(&b, 12, 1, 1);
-        answer_all(&mut h);
-        h.scanner.revisit();
-        // Scanned from its second row alone, the line still starts on the first.
-        let m = h.scan(&b, 12, 1, 1);
-        assert_eq!(m.len(), 1, "{m:?}");
-        assert_eq!(
-            m[0].target,
-            LinkTarget::Path {
-                text: "C:\\t\\scratch\\a.exe".into()
-            }
-        );
-        assert_eq!(
-            m[0].pieces,
-            vec![
-                Piece {
-                    row: 0,
-                    col: 3,
-                    width: 9
-                },
-                Piece {
-                    row: 1,
-                    col: 0,
-                    width: 9
-                }
-            ]
-        );
-    }
-
-    /// Answers every question in the queue at `now`: a path names a file when `exists` says so. Returns how many
-    /// paths were asked about.
-    fn answer_with(h: &mut H, now: u64, exists: impl Fn(&str) -> bool) -> usize {
-        h.paths.advance(now + 100);
-        let mut asked = 0;
-        while let Some(ask) = h.paths.take_ask() {
-            asked += ask.paths.len();
-            let hits = ask
-                .paths
-                .iter()
-                .map(|p| {
-                    exists(p).then(|| PathHit {
-                        kind: PathKind::File,
-                        abs: p.clone(),
-                    })
-                })
-                .collect();
-            h.paths.answer(&ask, Some(hits), now);
-        }
-        asked
-    }
-
-    /// The owner's rows (2026-10-24): Claude Code broke a long log path at the 144th column.
-    fn log_rows() -> (Buf, &'static str) {
-        const FULL: &str = "C:\\Users\\Admin\\AppData\\Local\\Temp\\claude\\C--Users-Admin-Documents-Claude-Github-Flare\\a08b44f9-b8a6-4ca0-9843-ea8471052f0e\\scratchpad\\caret\\stable-install.log";
-        let head = "Its log: C:\\Users\\Admin\\AppData\\Local\\Temp\\claude\\C--Users-Admin-Documents-Claude-Github-Flare\\a08b44f9-b8a6-4ca0-9843-ea8471052f0e\\scratchpad\\c";
-        assert_eq!(head.chars().count(), 144);
-        (
-            buf(&[(head, false), ("aret\\stable-install.log", false)]),
-            FULL,
-        )
-    }
-
-    #[test]
-    fn a_long_path_claude_broke_at_the_edge_is_one_link() {
-        let mut h = H::new();
-        h.cwd = Some("C:\\w");
-        let (b, full) = log_rows();
-        h.scan(&b, 144, 0, 1);
-        answer_with(&mut h, 0, |p| p == full);
-        h.scanner.revisit();
-        let m = h.scan(&b, 144, 0, 1);
-        assert_eq!(m.len(), 1, "{m:?}");
-        assert_eq!(m[0].target, LinkTarget::Path { text: full.into() });
-        assert_eq!(m[0].pieces.len(), 2);
-    }
-
-    #[test]
-    fn a_path_whose_file_appears_later_becomes_a_link_without_new_output() {
-        let mut h = H::new();
-        h.cwd = Some("C:\\w");
-        let (b, full) = log_rows();
-        // Printed before the file was made: it names nothing, and a "no" wakes nobody.
-        h.scan(&b, 144, 0, 1);
-        answer_with(&mut h, 0, |_| false);
-        assert!(h.scan(&b, 144, 0, 1).is_empty());
-        assert!(
-            h.scanner.next_retry().is_some(),
-            "the line is due a second look"
-        );
-        // The file exists now. Once the "no" has run out, the same rows are looked at again.
-        h.now = super::RETRY_AFTER_MS + 1;
-        assert!(
-            h.scan(&b, 144, 0, 1).is_empty(),
-            "asked again, not known yet"
-        );
-        let now = h.now;
-        answer_with(&mut h, now, |p| p == full);
-        h.scanner.revisit();
-        let m = h.scan(&b, 144, 0, 1);
-        assert_eq!(m.len(), 1, "{m:?}");
-        assert_eq!(m[0].target, LinkTarget::Path { text: full.into() });
-        assert!(
-            h.scanner.next_retry().is_none(),
-            "a found link needs no more looks"
-        );
-    }
-
-    #[test]
-    fn a_path_that_never_exists_is_looked_at_a_few_times_then_left() {
-        let mut h = H::new();
-        h.cwd = Some("C:\\w");
-        let b = buf(&[("see C:\\nowhere\\x.txt", false)]);
-        let mut looks = 0;
-        for round in 0..10 {
-            h.now = round * (super::RETRY_AFTER_MS + 1);
-            h.scan(&b, 40, 0, 0);
-            let now = h.now;
-            looks += answer_with(&mut h, now, |_| false);
-            h.scan(&b, 40, 0, 0);
-        }
-        assert_eq!(
-            looks,
-            1 + super::RETRY_MAX,
-            "the first look and the retries, then no more"
-        );
-        assert!(h.scanner.next_retry().is_none());
-    }
-
     /// Review #37: a URL Claude's Ink hard-wraps at the edge is one link to the whole address.
     #[test]
     fn a_url_broken_by_hand_at_the_edge_is_one_mark_to_the_whole_address() {
@@ -875,20 +702,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unchanged_waiting_line_is_scanned_again_only_after_revisit() {
-        let mut h = H::new();
-        h.cwd = Some("C:\\w");
-        let b = buf(&[("edit src/main.rs now", false)]);
-        h.scan(&b, 30, 0, 0);
-        answer_all(&mut h);
-        h.scan(&b, 30, 0, 0);
-        assert_eq!(h.scanner.lines_scanned(), 1);
-        h.scanner.revisit();
-        h.scan(&b, 30, 0, 0);
-        assert_eq!(h.scanner.lines_scanned(), 2);
-    }
-
-    #[test]
     fn osc8_runs_become_marks() {
         let mut h = H::new();
         h.runs.push((0, 2, 9, "1", "https://x.io/pr/165"));
@@ -971,5 +784,96 @@ mod tests {
         let m = h.scan(&b, 20, 0, 0);
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].target, LinkTarget::Web("https://a.io/xyz".into()));
+    }
+
+    #[test]
+    fn a_marked_path_is_a_file_link_with_its_line() {
+        let mut h = H::new();
+        let row = native_text("Saved \u{27E6}C:\\r\\src\\main.rs:42\u{27E7} now");
+        let b = buf(&[(row.as_str(), false)]);
+        let m = h.scan(&b, 40, 0, 0);
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert_eq!(
+            m[0].target,
+            LinkTarget::Path {
+                text: native_text("C:\\r\\src\\main.rs"),
+                line: Some(42),
+                col: None,
+                alts: Vec::new(),
+            }
+        );
+        assert_eq!((m[0].pieces[0].col, m[0].pieces[0].width), (6, 21));
+    }
+
+    #[test]
+    fn a_relative_marked_path_needs_the_tabs_folder() {
+        let mut h = H::new();
+        let b = buf(&[("\u{27E6}src\\main.rs\u{27E7}", false)]);
+        assert!(h.scan(&b, 30, 0, 0).is_empty());
+        h.cwd = Some("C:\\w");
+        h.scanner.repaint();
+        assert_eq!(
+            h.scan(&b, 30, 0, 0),
+            vec![LinkMark {
+                target: LinkTarget::path("src\\main.rs"),
+                pieces: vec![Piece {
+                    row: 0,
+                    col: 0,
+                    width: 13
+                }],
+            }]
+        );
+    }
+
+    #[test]
+    fn a_marked_path_that_starts_above_the_view_is_whole() {
+        let mut h = H::new();
+        let (top, rest) = (
+            native_text("see \u{27E6}C:\\a\\long"),
+            native_text("  \\b.txt\u{27E7} ok"),
+        );
+        let b = buf(&[(top.as_str(), false), (rest.as_str(), false)]);
+        let m = h.scan(&b, 16, 1, 1);
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert_eq!(
+            m[0].target,
+            LinkTarget::Path {
+                text: native_text("C:\\a\\long\\b.txt"),
+                line: None,
+                col: None,
+                alts: vec![native_text("C:\\a\\long \\b.txt")],
+            }
+        );
+        assert_eq!(m[0].pieces.len(), 2);
+    }
+
+    /// The anti-goal (spec 2026-11-11): a plain shell's output is no wall of guessed file links again.
+    #[test]
+    fn a_plain_listing_has_no_file_links() {
+        let mut h = H::new();
+        h.cwd = Some("C:\\w");
+        let b = buf(&[
+            (" Directory of C:\\w\\src", false),
+            ("11/11/2026  10:00     1,234 main.rs", false),
+            ("error: C:\\w\\src\\main.rs:4:2 expected", false),
+            ("see https://a.io/x", false),
+        ]);
+        let m = h.scan(&b, 40, 0, 3);
+        assert!(
+            m.iter().all(|k| matches!(k.target, LinkTarget::Web(_))),
+            "{m:?}"
+        );
+        assert_eq!(m.len(), 1);
+    }
+
+    #[test]
+    fn a_web_address_beside_a_marked_path_stays_a_web_link() {
+        let mut h = H::new();
+        let row = native_text("https://a.io/x\u{27E6}C:\\a.rs\u{27E7}");
+        let b = buf(&[(row.as_str(), false)]);
+        let m = h.scan(&b, 40, 0, 0);
+        assert_eq!(m.len(), 2, "{m:?}");
+        assert_eq!(m[0].target, LinkTarget::Web("https://a.io/x".into()));
+        assert_eq!(m[1].target, LinkTarget::path(&native_text("C:\\a.rs")));
     }
 }

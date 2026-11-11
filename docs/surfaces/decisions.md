@@ -1189,3 +1189,29 @@ Spec: `docs/superpowers/specs/2026-10-28-dns-rebinding-proxy.md`.
 - **The screenshot is drawn on in the window**, with the `image` crate on the look's PNG at its `scale`, once per look that has an arrow.
 - **Escape where it arrives** is the page's key filter while the page has the keys, and `on_key` while Flare's window has them (a click on
   the button leaves the keys there).
+
+## File links by marker (`feat/file-link-markers`, 2026-11-11)
+
+Spec and plan: `docs/superpowers/specs/2026-11-11-file-link-markers.md`. Research:
+`C:\Users\Admin\Documents\Claude\research\flare\2026-11-11-terminal-links-research.md`.
+
+- 2026-11-11, links: research first, then a spec, then the rethink (owner).
+- 2026-11-11, links: guessing stays only for web addresses (http and https); file-path guessing goes (owner). Rule 266.
+- 2026-11-11, links: a session sends a file link as a path between a start mark and an end mark, read exactly, also over
+  line breaks; Flare still never sets `FORCE_HYPERLINK` (rule 11) (owner). Rules 266 and 267.
+- 2026-11-11, links: a click does what a path click did (the panel for text and pictures, the default app, Explorer for
+  the rest) and the panel goes to the line the link names (owner). Rule 268.
+- 2026-11-11, links: the marks are `⟦` (U+27E6) and `⟧` (U+27E7): one cell wide, rare in real output, readable in a
+  terminal that knows nothing of them. Why: any rare pair would do; these read as brackets.
+- 2026-11-11, links: a space where a row broke by hand is not in the text; the click tries the path as written first,
+  then with one space at each break alone, then at all of them. Why: Claude Code drops the space it breaks a line at,
+  and only a stat can tell which spelling names the file; the menu's Copy path and Open use the spelling as written.
+- 2026-11-11, links: the missing-file words are "Flare found no such file" (the header or the page's bar of an open
+  panel) and "Flare found no such file: <path>" in a note titled "No such file" when no panel is open, the places a
+  refused "Show in side panel" speaks.
+- 2026-11-11, links: the line is marked with the panel's own text selection (a triple click's span), with three lines
+  above it at the top. A markdown file with a line opens in Code, where a line can be marked; the Compiled page has no
+  line numbers to go to.
+- 2026-11-11, links: the note to the session goes only to a session inside a Flare tab (the tab token is set), on
+  start, resume, clear and compact, and once more in the MCP server's `instructions`. Codex and Antigravity are not told
+  (no Flare plugin); any program that prints the marks gets links.

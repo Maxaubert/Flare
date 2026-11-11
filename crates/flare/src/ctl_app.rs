@@ -83,8 +83,11 @@ pub enum CtlOp {
     TabCwd {
         tab: String,
     },
+    /// `panel.state`. `cwd` is the folder the agent's Claude session works in, which its prompt and worktree hooks
+    /// send along (changes after review, 2026-11-11): vetted on the call thread, and only from the agent.
     PanelState {
         tab: String,
+        cwd: Option<String>,
     },
     PanelClose {
         tab: String,
@@ -95,6 +98,8 @@ pub enum CtlOp {
         kind: PanelKind,
         abs: String,
         title: Option<String>,
+        /// The line a text file opens at, marked (`view.file`'s `line`, from 1).
+        line: Option<u32>,
     },
     ShowText {
         tab: String,
@@ -1438,15 +1443,17 @@ impl AppDispatcher {
             return Err(CtlError::new(code::BAD_PARAMS, "that is not a usable path"));
         }
         let title = title_param(params)?;
-        if want == PanelKind::Text
-            && let Some(l) = params.get("line").filter(|l| !l.is_null())
-            && !l.as_u64().is_some_and(|n| n >= 1)
-        {
-            return Err(CtlError::new(
-                code::BAD_PARAMS,
-                "line must be a whole number from 1",
-            ));
-        }
+        let line = match params.get("line").filter(|l| !l.is_null()) {
+            Some(l) if want == PanelKind::Text => Some(
+                l.as_u64()
+                    .filter(|n| *n >= 1)
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or_else(|| {
+                        CtlError::new(code::BAD_PARAMS, "line must be a whole number from 1")
+                    })?,
+            ),
+            _ => None,
+        };
         // One deadline for the whole call: the folder question, the disk read and the show.
         let deadline = Instant::now() + UI_WAIT;
         // An absolute path needs no folder, so the UI thread is not asked for one.
@@ -1498,6 +1505,7 @@ impl AppDispatcher {
                 kind,
                 abs: real,
                 title,
+                line,
             },
             deadline,
         )
@@ -1835,6 +1843,20 @@ fn only_fields(params: &Value, allowed: &[&str], method: &str) -> Result<(), Ctl
         )),
         None => Ok(()),
     }
+}
+
+/// The longest agent folder taken, in bytes.
+const AGENT_FOLDER_MAX: usize = 4096;
+
+/// The `cwd` of a `panel.state` call: an absolute path of at most [`AGENT_FOLDER_MAX`] bytes with no control
+/// character, else None. Nothing is read from the disk: a link is resolved on a worker, as ever (rule 13).
+fn agent_folder(params: &Value) -> Option<String> {
+    let cwd = params.get("cwd")?.as_str()?;
+    let fine = !cwd.is_empty()
+        && cwd.len() <= AGENT_FOLDER_MAX
+        && !cwd.chars().any(char::is_control)
+        && std::path::Path::new(cwd).is_absolute();
+    fine.then(|| cwd.to_string())
 }
 
 fn str_param<'a>(params: &'a Value, key: &str) -> Result<Option<&'a str>, CtlError> {
@@ -2188,9 +2210,18 @@ impl Dispatcher for AppDispatcher {
                 };
                 self.ask(CtlOp::Tabs { own })
             }
-            Method::PanelState => self.ask(CtlOp::PanelState {
-                tab: Self::tab_of_call(ctx)?,
-            }),
+            Method::PanelState => {
+                // Only the agent's own hooks name its folder; anything odd is ignored, never an error, so a
+                // hook never fails over it.
+                let cwd = match ctx.grant {
+                    Grant::Agent { .. } => agent_folder(&params),
+                    _ => None,
+                };
+                self.ask(CtlOp::PanelState {
+                    tab: Self::tab_of_call(ctx)?,
+                    cwd,
+                })
+            }
             Method::PanelClose => self.ask(CtlOp::PanelClose {
                 tab: Self::tab_of_call(ctx)?,
             }),
@@ -3733,6 +3764,7 @@ mod tests {
                     kind,
                     abs,
                     title,
+                    ..
                 } => {
                     s.lock()
                         .unwrap()
@@ -3779,6 +3811,7 @@ mod tests {
                     kind,
                     abs,
                     title,
+                    ..
                 } => {
                     s.lock()
                         .unwrap()
@@ -3929,6 +3962,62 @@ mod tests {
         assert!(r.ops.lock().unwrap().is_empty());
     }
 
+    /// Spec 2026-11-11: `show_file`'s `line` reaches the panel, which opens the text there and marks it.
+    #[cfg(windows)]
+    #[test]
+    fn view_file_hands_its_line_to_the_panel() {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let got = lines.clone();
+        let r = rig(
+            move |op| match op {
+                CtlOp::ShowFile { line, .. } => {
+                    got.lock().unwrap().push(*line);
+                    Ok(json!({"panel": {"kind": "text"}}))
+                }
+                _ => Ok(json!({"cwd": "C:\\work"})),
+            },
+            false,
+            FILES,
+        );
+        let c = agent_in_tab();
+        for p in [
+            json!({"path": "C:\\work\\a.txt", "line": 42}),
+            json!({"path": "C:\\work\\a.txt"}),
+            json!({"path": "C:\\work\\a.txt", "line": null}),
+        ] {
+            r.d.call(&c, Method::ViewFile, p).unwrap();
+        }
+        assert_eq!(lines.lock().unwrap().as_slice(), [Some(42), None, None]);
+    }
+
+    /// The macOS half of `view_file_hands_its_line_to_the_panel`, with the Mac's path grammar (rule 1148).
+    #[cfg(not(windows))]
+    #[test]
+    fn view_file_hands_its_line_to_the_panel() {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let got = lines.clone();
+        let r = rig(
+            move |op| match op {
+                CtlOp::ShowFile { line, .. } => {
+                    got.lock().unwrap().push(*line);
+                    Ok(json!({"panel": {"kind": "text"}}))
+                }
+                _ => Ok(json!({"cwd": "/work"})),
+            },
+            false,
+            FILES_POSIX,
+        );
+        let c = agent_in_tab();
+        for p in [
+            json!({"path": "/work/a.txt", "line": 42}),
+            json!({"path": "/work/a.txt"}),
+            json!({"path": "/work/a.txt", "line": null}),
+        ] {
+            r.d.call(&c, Method::ViewFile, p).unwrap();
+        }
+        assert_eq!(lines.lock().unwrap().as_slice(), [Some(42), None, None]);
+    }
+
     #[test]
     fn view_text_is_capped_and_a_title_is_one_short_line() {
         let r = rig(ok_all, false, FILES);
@@ -4033,6 +4122,53 @@ mod tests {
         );
     }
 
+    /// Changes after review (2026-11-11): the agent's hooks send the session's folder with `panel.state`; only an
+    /// absolute folder with no control character reaches the UI thread, and only from the agent.
+    #[test]
+    fn panel_state_carries_the_agents_folder_only_when_it_is_a_plain_absolute_path() {
+        let folder = if cfg!(windows) {
+            "C:\\repo\\.claude\\worktrees\\x"
+        } else {
+            "/repo/.claude/worktrees/x"
+        };
+        let seen: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+        let got = seen.clone();
+        let r = rig(
+            move |op| {
+                if let CtlOp::PanelState { cwd, .. } = op {
+                    got.lock().unwrap().push(cwd.clone());
+                }
+                Ok(json!({"open": false}))
+            },
+            false,
+            FILES,
+        );
+        r.d.call(&agent_in_tab(), Method::PanelState, json!({"cwd": folder}))
+            .unwrap();
+        for odd in [
+            json!({}),
+            json!({"cwd": "app\\src"}),
+            json!({"cwd": ""}),
+            json!({"cwd": 3}),
+            json!({"cwd": format!("{folder}\n")}),
+            json!({"cwd": format!("{folder}{}", "a".repeat(AGENT_FOLDER_MAX))}),
+        ] {
+            // An odd folder is no error: the hook goes on as before.
+            r.d.call(&agent_in_tab(), Method::PanelState, odd).unwrap();
+        }
+        let cwds = seen.lock().unwrap().clone();
+        assert_eq!(cwds.len(), 7, "{cwds:?}");
+        assert_eq!(cwds[0].as_deref(), Some(folder));
+        assert!(cwds[1..].iter().all(Option::is_none), "{cwds:?}");
+        // The app's own UI names no agent folder.
+        let ui = ctx(Some("tab-1"), Grant::Ui);
+        if r.d
+            .call(&ui, Method::PanelState, json!({"cwd": folder}))
+            .is_ok()
+        {
+            assert_eq!(seen.lock().unwrap().last(), Some(&None));
+        }
+    }
     #[test]
     fn an_unanswered_call_times_out_and_a_stop_ends_the_wait_within_a_slice() {
         // Stop flag: the wait ends within one slice of it being set.
