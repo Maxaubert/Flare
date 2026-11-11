@@ -2145,6 +2145,23 @@ bundle with `FLARE_STAGE_APP` and `FLARE_STAGE_ROOT`) and `ui_tests::staged_flow
 `the_mac_restart_...`, `an_installed_mac_bundle_...`). An ad hoc signature changes per build, so macOS may ask for
 permissions again after an install. Source: Max, "always stage apps so they show as update here in the ui"
 (2026-11-11).
+1136. **Settings > Agents draws the Mark colours section (Agent working, finished and question colour, with its
+Save changes) only while the tab marks are Bar; with Ring it is left out, and Find does not offer its three rows.**
+The Ring mark (`MarkRing` in `crates/flare/ui/tabmark.slint`) is mono and draws with the tab name's ink, so the
+three colours changed nothing a Ring user could see on the tab. `page::agents::build` reads
+`env.look.agent_indicator()` as the indicator row does (`Minimal` is Bar, everything else Ring) through
+`mark_colours_drawn`; the page rebuilds on every look change, so the segmented control hides and re-shows the
+section live. `IndexEnv::mark_colours` drops the `colours` rows from the find index under Ring, and
+`SettingsCtl::sync_index` rebuilds the index (and the hits of a query in the field) when the indicator changes, so
+Find never leads to a hidden section. The one Ring surface that still wears the colours is the dots on the +N button
+of an overflowing strip (`tabs_ui` `Dot.colour` is the row's `mark_color`); a pick made under Bar stays in force
+there, and with no pick they follow the theme. Same on Windows and the Mac. Native:
+`crates/flare-settings/src/page/agents.rs`, `find.rs`, `find_state.rs`, `crates/flare/src/settings_ctl.rs`. Held by
+`ring_draws_no_mark_colours_section`, `bar_draws_the_mark_colours_with_their_save`,
+`switching_the_indicator_hides_and_reshows_the_mark_colours`, `the_mark_colour_rows_are_indexed_only_for_bar`,
+`a_new_index_redoes_the_hits_of_the_query_in_the_field` and
+`the_mark_colours_show_and_are_found_only_with_bar_and_follow_the_switch_live`. Source: Max, "these should be hidden
+if you use the ring style" (2026-11-11).
 1136. **macOS: a scenario types into a stand-in agent only after its pwsh has run a line, and a Ctrl+Tab goes out only
 after the last one landed.** Of the Mac E2E failures on main and PR runs from 2026-11-10 to 2026-11-11 (ci runs
 42917628472 to 42999224318), the most common was colourPicker's trio "a working stand-in agent is on the strip",
