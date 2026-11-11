@@ -1,15 +1,16 @@
 //! `flare-mcp.exe`: the stdio MCP server. stdout carries protocol messages only; nothing is logged.
 //! With `--hook-context` it is Claude Code's prompt hook instead, and with `--hook-context --session-start` its
-//! session start hook (`flare_mcp::hook`).
+//! session start hook, and with `--hook-context --folder` the hook that only tells Flare the session's folder
+//! (`flare_mcp::hook`).
 
 use std::io::{self, BufReader};
 
 fn main() {
     if std::env::args().nth(1).as_deref() == Some(flare_mcp::hook::HOOK_FLAG) {
-        if std::env::args().nth(2).as_deref() == Some(flare_mcp::hook::SESSION_START_FLAG) {
-            flare_mcp::hook::session_start_main();
-        } else {
-            flare_mcp::hook::hook_main();
+        match std::env::args().nth(2).as_deref() {
+            Some(flare_mcp::hook::SESSION_START_FLAG) => flare_mcp::hook::session_start_main(),
+            Some(flare_mcp::hook::FOLDER_FLAG) => flare_mcp::hook::hook_main(true),
+            _ => flare_mcp::hook::hook_main(false),
         }
         return;
     }

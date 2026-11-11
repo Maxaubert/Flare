@@ -849,7 +849,8 @@ fn marker_links_on(
             probe(app, "panel.state", Value::Null)["sel"]
         ),
     );
-    marker_cut_by_hand(ctx, app, cut)
+    marker_cut_by_hand(ctx, app, cut)?;
+    marker_links_review(ctx, app, notes)
 }
 
 /// BROKEN BY HAND AND INDENTED (the spec's screenshot, 2026-11-11): Claude Code cuts its own rows at the window's
@@ -893,6 +894,68 @@ fn marker_cut_by_hand(ctx: &mut Ctx, app: &mut App, cut: &Path) -> Result<(), St
         format!(
             "and a click on its second row shows the whole file in the panel and hands it to nobody ({:?})",
             opened(app)
+        ),
+    );
+    Ok(())
+}
+
+/// Changes after review (2026-11-11): a path in a table cell that Claude Code broke inside its column is one link
+/// with no border in it, and a relative path is read from the folder the session's hooks name (here the real
+/// `flare-mcp --hook-context --folder`, run in the tab with its token), not the shell's.
+fn marker_links_review(ctx: &mut Ctx, app: &mut App, notes: &Path) -> Result<(), String> {
+    let alpha = notes.parent().ok_or("the notes have a folder")?;
+    let shell_copy = alpha.join("app").join("pick.txt");
+    let agent_copy = alpha.join("wt").join("app").join("pick.txt");
+    for (file, body) in [(&shell_copy, "shell"), (&agent_copy, "one\ntwo\nthree")] {
+        let dir = file.parent().ok_or("the file has a folder")?;
+        fs::create_dir_all(dir).map_err(|e| format!("make {}: {e}", dir.display()))?;
+        fs::write(file, body).map_err(|e| format!("write {}: {e}", file.display()))?;
+    }
+
+    // The table: the cell's path goes on in the same column of the next row.
+    type_line(
+        app,
+        &format!(
+            "cls; {MARKS}; $v = [char]0x2502; Write-Host ($v + ' 4 ' + $v + ' ' + $o + 'C:\\tbl\\web-app\\  ' + $v + ' a ' + $v); Write-Host ($v + '   ' + $v + ' src\\fav.ts' + $c + '    ' + $v + ' b ' + $v)"
+        ),
+    )?;
+    let mut seen = String::new();
+    let one = ctx.until("the table cell link", 8_000, &mut || {
+        let links = file_links(app);
+        seen = format!("{links:?}");
+        links
+            .iter()
+            .any(|(p, _, rows)| p == "C:\\tbl\\web-app\\src\\fav.ts" && *rows == 2)
+    });
+    let texts = path_texts(app);
+    ctx.ok(
+        one && texts.iter().all(|t| !t.contains('\u{2502}')),
+        format!("a path broken inside a table cell is ONE link with no border in it ({seen}, {texts:?})"),
+    );
+    ctx.shot(app, "marker-links-table");
+
+    // The session's folder: the hook tells Flare, then a relative mark opens under it. The shell stays busy, as it
+    // is while a session runs: a shell prompt means the agent has left the tab, and its folder goes with it.
+    type_line(
+        app,
+        &format!(
+            "cls; '{{\"cwd\":\"' + (Resolve-Path wt).Path.Replace('\\', '\\\\') + '\"}}' | & $env:FLARE_MCP_EXE --hook-context --folder; {MARKS}; Write-Host ('pick ' + $o + 'app\\pick.txt' + $c); Start-Sleep -Seconds 30"
+        ),
+    )?;
+    ctx.until("the relative link", 8_000, &mut || {
+        file_links(app).iter().any(|(p, _, _)| p == "app\\pick.txt")
+    });
+    ctx.settle(50);
+    click_on(app, "app\\pick.txt", 2, Button::Left)?;
+    let shown = ctx.until("the agent's copy in the panel", 6_000, &mut || {
+        let s = probe(app, "panel.state", Value::Null);
+        s["kind"] == json!(2) && s["title"] == json!("pick.txt") && s["lines"] == json!(3)
+    });
+    ctx.ok(
+        shown,
+        format!(
+            "a relative mark opens the file under the folder the session's hook named, not the shell's ({})",
+            probe(app, "panel.state", Value::Null)
         ),
     );
     Ok(())

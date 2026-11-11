@@ -8,6 +8,11 @@
 //! prints the note on file links (`FILE_LINK_NOTE`) as the session's context, once per start, and asks Flare for
 //! nothing.
 //!
+//! With `--folder` after it, it is the `PostToolUse` hook of `EnterWorktree` and `ExitWorktree`: it only tells
+//! Flare the session's folder and prints nothing. Every run that calls Flare (the prompt hook and this one) sends
+//! the hook input's `cwd` along with `panel.state`, so Flare reads a relative file link from the folder the
+//! session works in (spec 2026-11-11, changes after review). A Flare that does not know the field ignores it.
+//!
 //! It must never slow a prompt or break one: outside Flare (no tab token) it returns at once, every call has a
 //! short timeout, and any failure prints nothing and exits 0. The title and address come from the web page, so
 //! they are cleaned and quoted between the page-content markers (`browser::page_block`), never written into
@@ -26,6 +31,10 @@ use crate::{Channel, FILE_LINK_NOTE, FlareChannel, TAB_TOKEN_VAR, browser};
 pub const HOOK_FLAG: &str = "--hook-context";
 /// The argument after [`HOOK_FLAG`] that makes it the `SessionStart` hook.
 pub const SESSION_START_FLAG: &str = "--session-start";
+/// The argument after [`HOOK_FLAG`] that makes it the hook that only tells Flare the session's folder.
+pub const FOLDER_FLAG: &str = "--folder";
+/// The longest folder sent to Flare, in bytes.
+pub const FOLDER_MAX: usize = 4096;
 /// How long the hook waits for Flare, for the connect and for the answer each. A prompt is never held longer.
 pub const HOOK_TIMEOUT: Duration = Duration::from_millis(1000);
 /// The most of the hook's input that is read (Claude Code sends the prompt along; only the session id is used).
@@ -159,6 +168,33 @@ fn session_of(input: &str) -> Option<String> {
     plain.then(|| id.to_string())
 }
 
+/// The session's working folder of the hook's input (`cwd`, which every Claude Code hook event carries): an
+/// absolute path of at most [`FOLDER_MAX`] bytes with no control character, else None.
+pub fn cwd_of(input: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(input).ok()?;
+    let cwd = value.get("cwd").and_then(Value::as_str)?;
+    let fine = !cwd.is_empty()
+        && cwd.len() <= FOLDER_MAX
+        && !cwd.chars().any(char::is_control)
+        && Path::new(cwd).is_absolute();
+    fine.then(|| cwd.to_string())
+}
+
+/// The `panel.state` params of a hook run: the session's folder when the input names one.
+fn state_params(input: &str) -> Value {
+    match cwd_of(input) {
+        Some(cwd) => json!({ "cwd": cwd }),
+        None => json!({}),
+    }
+}
+
+/// The `--folder` hook against `channel`: tells Flare the session's folder and nothing else. Prints nothing.
+pub fn run_folder_hook(input: &str, channel: &mut dyn Channel) {
+    if cwd_of(input).is_some() {
+        let _ = channel.call(Method::PanelState, state_params(input));
+    }
+}
+
 /// One run of the hook against `channel`, remembering in `dir`. Returns the line to print, if any. A failed
 /// call says nothing and remembers nothing, so the next prompt tries again.
 pub fn run_hook(
@@ -167,7 +203,7 @@ pub fn run_hook(
     channel: &mut dyn Channel,
     dir: &Path,
 ) -> Option<String> {
-    let state = channel.call(Method::PanelState, json!({})).ok()?;
+    let state = channel.call(Method::PanelState, state_params(input)).ok()?;
     let now = page_of(&state);
     let path = state_path(dir, &state_key(tab_token, session_of(input).as_deref()));
     let last = read_last(&path);
@@ -190,8 +226,9 @@ pub fn state_dir() -> PathBuf {
 /// stdin that never closes) could hold the prompt until Claude Code's own hook timeout kills the process.
 pub const HOOK_BUDGET: Duration = Duration::from_millis(2500);
 
-/// The hook as `main` runs it. Always exits 0: a hook that fails must not get in the prompt's way.
-pub fn hook_main() {
+/// The hook as `main` runs it. Always exits 0: a hook that fails must not get in the prompt's way. With
+/// `folder_only` it is the `--folder` hook: it tells Flare the folder and prints nothing.
+pub fn hook_main(folder_only: bool) {
     let Some(token) = std::env::var(TAB_TOKEN_VAR).ok().filter(|t| !t.is_empty()) else {
         return;
     };
@@ -202,7 +239,12 @@ pub fn hook_main() {
             let mut input = String::new();
             let _ = std::io::stdin().take(STDIN_MAX).read_to_string(&mut input);
             let mut channel = FlareChannel::from_env().with_timeout(HOOK_TIMEOUT);
-            let _ = tx.send(run_hook(&input, &token, &mut channel, &state_dir()));
+            if folder_only {
+                run_folder_hook(&input, &mut channel);
+                let _ = tx.send(None);
+            } else {
+                let _ = tx.send(run_hook(&input, &token, &mut channel, &state_dir()));
+            }
         });
     if spawned.is_err() {
         return;
@@ -356,11 +398,64 @@ mod tests {
         assert!(note.contains("between \u{27E6} and \u{27E7}"));
         assert!(note.contains(":line"));
         assert!(note.contains("Do not put the marks in code blocks, commands or files you write."));
+        // Short paths: relative to the session's folder, absolute only outside it, short in a table.
+        assert!(note.contains("relative to that folder"));
+        assert!(note.contains("an absolute path only for a file outside it"));
+        assert!(note.contains("In a table, keep a marked path short."));
         assert!(!note.contains('\u{2014}'));
-        // The example in it is a file link Flare reads, with its line.
+        // The example in it is a relative file link Flare reads, with its line.
         let start = note.rfind('\u{27E6}').unwrap();
         let end = note.rfind('\u{27E7}').unwrap();
-        assert!(note[start..end].ends_with(":42"));
+        let example = &note[start + '\u{27E6}'.len_utf8()..end];
+        assert!(example.ends_with(":17"), "{example}");
+        assert!(example.starts_with("app"), "{example}");
+    }
+
+    struct Record(Vec<(Method, Value)>);
+
+    impl Channel for Record {
+        fn call(&mut self, method: Method, params: Value) -> Result<Value, ChannelError> {
+            self.0.push((method, params));
+            Ok(json!({"open": false}))
+        }
+    }
+
+    #[test]
+    fn every_hook_that_calls_flare_carries_the_sessions_folder() {
+        let dir = tmp("folder");
+        let folder = if cfg!(windows) {
+            "C:\\repo\\.claude\\worktrees\\x"
+        } else {
+            "/Users/me/repo/.claude/worktrees/x"
+        };
+        let input =
+            json!({"session_id": "s-1", "cwd": folder, "hook_event_name": "UserPromptSubmit"})
+                .to_string();
+        let mut ch = Record(Vec::new());
+        assert_eq!(run_hook(&input, "secret", &mut ch, &dir), None);
+        assert_eq!(ch.0, vec![(Method::PanelState, json!({"cwd": folder}))]);
+        // The worktree hook: the folder alone, and nothing printed.
+        let mut ch = Record(Vec::new());
+        run_folder_hook(&input, &mut ch);
+        assert_eq!(ch.0, vec![(Method::PanelState, json!({"cwd": folder}))]);
+        // No folder, or an odd one: the prompt hook asks as before, the worktree hook asks nothing.
+        for odd in [
+            json!({"session_id": "s-1"}),
+            json!({"cwd": ""}),
+            json!({"cwd": "relative\\dir"}),
+            json!({"cwd": format!("{folder}\u{1b}[31m")}),
+            json!({"cwd": 7}),
+        ] {
+            let mut ch = Record(Vec::new());
+            let _ = run_hook(&odd.to_string(), "secret", &mut ch, &dir);
+            assert_eq!(ch.0, vec![(Method::PanelState, json!({}))], "{odd}");
+            let mut ch = Record(Vec::new());
+            run_folder_hook(&odd.to_string(), &mut ch);
+            assert!(ch.0.is_empty(), "{odd}");
+        }
+        let long = format!("{folder}{}", "a".repeat(FOLDER_MAX));
+        assert_eq!(cwd_of(&json!({ "cwd": long }).to_string()), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -635,7 +635,7 @@ mod tests {
     fn the_prompt_hook_runs_flare_mcp_by_its_placeholder_with_one_flag() {
         let value = hooks_value();
         let entries = mcp_hook_entries(&value);
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 3);
         let (_, matcher, hook) = entries
             .iter()
             .find(|e| e.0 == "UserPromptSubmit")
@@ -661,7 +661,7 @@ mod tests {
         assert!(hooks_commands_are_absolute(&with));
         let value: serde_json::Value = serde_json::from_str(&with).expect("json");
         let entries = mcp_hook_entries(&value);
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 3);
         assert!(entries.iter().all(|e| e.2["command"].as_str() == Some(exe)));
         assert_eq!(
             hook_entries(&value).len(),
@@ -701,7 +701,7 @@ mod tests {
         let text = std::fs::read_to_string(with.join("hooks").join("hooks.json")).expect("hooks"); // sync-ok: test fixture on a temp folder
         let value: serde_json::Value = serde_json::from_str(&text).expect("json");
         let entries = mcp_hook_entries(&value);
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 3);
         assert!(
             entries
                 .iter()
@@ -912,6 +912,32 @@ mod tests {
             serde_json::json!(["--hook-context", "--session-start"])
         );
         assert!(hook["timeout"].as_u64().expect("timeout") <= 5);
+    }
+
+    /// Changes after review (2026-11-11): entering or leaving a worktree tells Flare the session's new folder at once,
+    /// so a relative file link written after it is read from the worktree.
+    #[test]
+    fn entering_or_leaving_a_worktree_tells_flare_the_sessions_folder() {
+        let value = hooks_value();
+        let entries = mcp_hook_entries(&value);
+        let (_, matcher, hook) = entries
+            .iter()
+            .find(|e| e.0 == "PostToolUse")
+            .expect("the worktree hook");
+        assert_eq!(matcher.as_str(), "EnterWorktree|ExitWorktree");
+        assert_eq!(hook["command"].as_str(), Some(MCP_EXE_PLACEHOLDER));
+        assert_eq!(
+            hook["args"],
+            serde_json::json!(["--hook-context", "--folder"])
+        );
+        assert!(hook["timeout"].as_u64().expect("timeout") <= 5);
+        // The state hook of every tool is still the first group.
+        let first = &value["hooks"]["PostToolUse"][0];
+        assert_eq!(first["matcher"].as_str(), Some("*"));
+        assert_eq!(
+            first["hooks"][0]["command"].as_str(),
+            Some(SYSTEM_CMD_PLACEHOLDER)
+        );
     }
 
     #[test]

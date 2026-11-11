@@ -498,7 +498,13 @@ fn convo_state_summarises_the_tabs_own_conversation() {
     assert_eq!(v["changed"][0]["path"], json!("C:\\a\\y.rs"));
     assert_eq!(v["changed"][1]["edits"], json!(2));
     // panel.state reports the panel as a panel of its own kind.
-    let st = answer(&f, CtlOp::PanelState { tab: id.clone() });
+    let st = answer(
+        &f,
+        CtlOp::PanelState {
+            tab: id.clone(),
+            cwd: None,
+        },
+    );
     assert_eq!(st["panel"]["kind"], json!("changes"));
     // A tab that is not there is refused.
     let gone = ask(&f, CtlOp::ConvoState { tab: "nope".into() })

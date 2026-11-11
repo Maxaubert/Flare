@@ -121,8 +121,9 @@ pub struct TermDeps {
     pub right_click_reports: Rc<dyn Fn() -> bool>,
 }
 
-/// The front tab as M3's tab model keeps it. `cwd` is the tab's LOCAL folder after
-/// `folder_after_report`, never a raw OSC 9 report. There is no shell id here on purpose: quoting
+/// The front tab as M3's tab model keeps it. `cwd` is the folder a relative file link is read from: the folder
+/// the tab's agent works in while its hooks have named one (changes after review, 2026-11-11), else the tab's LOCAL
+/// folder after `folder_after_report`, never a raw OSC 9 report. There is no shell id here on purpose: quoting
 /// reads `handle.shell_id()`.
 pub struct TabInfo<'a> {
     pub id: &'a str,

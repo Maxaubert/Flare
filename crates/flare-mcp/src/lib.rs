@@ -298,12 +298,13 @@ fn call_decor_tool(name: &str, args: &Map<String, Value>, channel: &mut dyn Chan
 
 /// What every Claude session in Flare is told about file links (spec 2026-11-11): the `SessionStart` hook's
 /// context (`hook::session_start_output`) and the end of the server's `instructions`, so a session that skips the
-/// hook still sees it. Flare reads a path between these two marks exactly (`flare_term::file_marks`).
+/// hook still sees it. Flare reads a path between these two marks exactly (`flare_term::file_marks`), and a relative
+/// one from the folder the session's hooks report (changes after review, 2026-11-11).
 #[cfg(windows)]
-pub const FILE_LINK_NOTE: &str = "You are running inside Flare. When you mention a file in your reply, write its absolute path between \u{27E6} and \u{27E7}, with :line when a line matters, for example \u{27E6}C:\\repo\\src\\main.rs:42\u{27E7}. Flare turns it into a link. Do not put the marks in code blocks, commands or files you write.";
+pub const FILE_LINK_NOTE: &str = "You are running inside Flare. When you mention a file in your reply, write its path between \u{27E6} and \u{27E7}, with :line when a line matters. For a file inside your working folder, write the path relative to that folder, for example \u{27E6}app\\src\\favorites\\favorites.ts:17\u{27E7}, and an absolute path only for a file outside it. In a table, keep a marked path short. Flare turns it into a link. Do not put the marks in code blocks, commands or files you write.";
 /// The macOS form of the note: the same words with a POSIX example path.
 #[cfg(not(windows))]
-pub const FILE_LINK_NOTE: &str = "You are running inside Flare. When you mention a file in your reply, write its absolute path between \u{27E6} and \u{27E7}, with :line when a line matters, for example \u{27E6}/Users/me/repo/src/main.rs:42\u{27E7}. Flare turns it into a link. Do not put the marks in code blocks, commands or files you write.";
+pub const FILE_LINK_NOTE: &str = "You are running inside Flare. When you mention a file in your reply, write its path between \u{27E6} and \u{27E7}, with :line when a line matters. For a file inside your working folder, write the path relative to that folder, for example \u{27E6}app/src/favorites/favorites.ts:17\u{27E7}, and an absolute path only for a file outside it. In a table, keep a marked path short. Flare turns it into a link. Do not put the marks in code blocks, commands or files you write.";
 
 /// The `instructions` of the initialize reply: what the tools are for, then [`FILE_LINK_NOTE`].
 pub fn server_instructions() -> String {

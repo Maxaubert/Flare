@@ -689,7 +689,8 @@ enum Skel {
     Leaving(u64),
 }
 
-/// The front shell tab as owned pieces; `info` lends them to the terminal controller.
+/// The front shell tab as owned pieces; `info` lends them to the terminal controller. `cwd` is the folder a relative
+/// file link is read from: the agent's folder while its hooks have named one, else the tab's own folder.
 struct FrontTab {
     id: String,
     handle: Arc<TermHandle>,
@@ -3192,7 +3193,11 @@ impl AppCtl {
         Some(FrontTab {
             id: t.id.clone(),
             handle,
-            cwd: (!t.cwd.is_empty()).then(|| t.cwd.clone()),
+            cwd: self
+                .hub
+                .agent_folder(&t.id)
+                .map(str::to_string)
+                .or_else(|| (!t.cwd.is_empty()).then(|| t.cwd.clone())),
             alive,
         })
     }
@@ -3897,9 +3902,16 @@ impl AppCtl {
                     .ok_or_else(no_tab)?;
                 Ok(json!({"cwd": t.cwd}))
             }
-            CtlOp::PanelState { tab } => {
+            CtlOp::PanelState { tab, cwd } => {
                 if !self.is_shell_tab(&tab) {
                     return Err(no_tab());
+                }
+                // The agent's hooks name the folder its session works in: a relative file link is read from it.
+                if let Some(cwd) = cwd
+                    && self.hub.agent_folder(&tab) != Some(cwd.as_str())
+                {
+                    self.hub.set_agent_folder(&tab, &cwd);
+                    self.wake_term();
                 }
                 Ok(match self.panels.snap(&tab).filter(|s| s.open) {
                     Some(s) => {
@@ -7100,6 +7112,63 @@ mod tests {
         assert_eq!(f.openers.records(), [OpenedRecord::Open(want)]);
     }
 
+    /// Changes after review (2026-11-11): a relative file link is read from the folder the tab's agent works in
+    /// (its hooks send it with `panel.state`), not the shell's, when they differ (a worktree); with the agent gone it
+    /// is the shell's folder again.
+    #[test]
+    fn a_relative_file_link_opens_under_the_agents_folder_not_the_shells() {
+        let (f, h, _) = live(Opts::default());
+        f.prefs.set("flare.window.openPreviews", "0");
+        f.pump();
+        let shell = f.dir.path().join("repo");
+        let agent = shell.join(".claude").join("worktrees").join("x");
+        for d in [&shell, &agent] {
+            std::fs::create_dir_all(d.join("app")).unwrap(); // sync-ok: test code only, never the app
+            std::fs::write(d.join("app").join("a.txt"), "x").unwrap(); // sync-ok: test code only, never the app
+        }
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl
+            .borrow_mut()
+            .model_mut()
+            .set_cwd(&id, &shell.to_string_lossy());
+        let agent_dir = agent.to_string_lossy().into_owned();
+        ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::PanelState {
+                tab: id.clone(),
+                cwd: Some(agent_dir.clone()),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            f.ctl.borrow().hub().agent_folder(&id),
+            Some(agent_dir.as_str())
+        );
+        feed(&h, "\u{27E6}app\\a.txt\u{27E7}");
+        for _ in 0..8 {
+            f.ctl.borrow().decor_inputs().borrow_mut().decor(&h);
+            f.clock.set(f.clock.get() + 60);
+            f.ctl.borrow_mut().tick();
+            std::thread::sleep(Duration::from_millis(30));
+            f.pump();
+        }
+        f.ctl.borrow().decor_inputs().borrow_mut().decor(&h);
+        f.ptr(0, 0, cell_css(1, 0, false));
+        f.ptr(1, 0, cell_css(1, 0, false));
+        let t = Instant::now();
+        while f.openers.records().is_empty() && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let want = agent
+            .join("app")
+            .join("a.txt")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(f.openers.records(), [OpenedRecord::Open(want)]);
+        // The tab closing forgets it.
+        f.ctl.borrow_mut().hub_mut().on_closed(&id);
+        assert_eq!(f.ctl.borrow().hub().agent_folder(&id), None);
+    }
     // ---- the panels (Surfaces stage 1) --------------------------------------------------------
 
     /// Feeds `word` on its own row between the file-link marks, lets a few frames run, and left-clicks it. `row` is
@@ -8733,8 +8802,16 @@ two",
     fn panel_state_and_close_report_what_is_open() {
         let (f, _h, _) = live(Opts::default());
         let id = f.ctl.borrow().front_id().unwrap();
-        let state =
-            |f: &Fx| ctl_call(f, crate::ctl_app::CtlOp::PanelState { tab: id.clone() }).unwrap();
+        let state = |f: &Fx| {
+            ctl_call(
+                f,
+                crate::ctl_app::CtlOp::PanelState {
+                    tab: id.clone(),
+                    cwd: None,
+                },
+            )
+            .unwrap()
+        };
         assert_eq!(state(&f), serde_json::json!({"open": false}));
         let close = |f: &Fx| {
             ctl_call(f, crate::ctl_app::CtlOp::PanelClose { tab: id.clone() }).unwrap()["closed"]
@@ -8800,7 +8877,10 @@ two",
         for tab in [b.as_str(), "nope", "settings", ""] {
             for op in [
                 show_text_op(tab, "x", None),
-                crate::ctl_app::CtlOp::PanelState { tab: tab.into() },
+                crate::ctl_app::CtlOp::PanelState {
+                    tab: tab.into(),
+                    cwd: None,
+                },
                 crate::ctl_app::CtlOp::PanelClose { tab: tab.into() },
                 crate::ctl_app::CtlOp::TabCwd { tab: tab.into() },
             ] {
@@ -8900,7 +8980,14 @@ two",
         f.pump_until("the file's name", |f| {
             f.h.comp.get_panel_title().as_str() == "clicked.txt"
         });
-        let state = ctl_call(&f, crate::ctl_app::CtlOp::PanelState { tab: id.clone() }).unwrap();
+        let state = ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::PanelState {
+                tab: id.clone(),
+                cwd: None,
+            },
+        )
+        .unwrap();
         assert_eq!(state["panel"]["title"], "clicked.txt", "{state}");
         let ev = events.lock().unwrap().clone();
         assert_eq!(ev.last().unwrap().1["panel"]["title"], "clicked.txt");

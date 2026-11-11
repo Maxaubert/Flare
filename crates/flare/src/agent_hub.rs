@@ -221,6 +221,9 @@ pub struct AgentHub {
     /// Each tab's Claude session (a lower-case UUID): named by the turn's own hooks, or by the
     /// resume id of a restored tab; gone with the agent (N25).
     sessions: HashMap<String, String>,
+    /// Each tab's agent folder: the folder its Claude session works in, as its hooks last named it (`panel.state`
+    /// with `cwd`, changes after review 2026-11-11). A relative file link is read from it. Gone with the agent.
+    agent_folders: HashMap<String, String>,
     /// Tabs the process poll has answered for at least once (the e2e probe `agent.state` says so).
     polled: HashSet<String>,
     /// Tabs whose agent decor must go, and why, in the order it happened; the window takes them
@@ -246,6 +249,7 @@ impl AgentHub {
             order: Vec::new(),
             folders: HashMap::new(),
             sessions: HashMap::new(),
+            agent_folders: HashMap::new(),
             polled: HashSet::new(),
             decor_gone: Vec::new(),
             diag,
@@ -322,6 +326,7 @@ impl AgentHub {
         self.arms.insert(tab.to_string(), step.arm);
         if step.gone {
             self.sessions.remove(tab);
+            self.agent_folders.remove(tab);
             (self.deps.reports_off)(tab);
             self.decor_gone
                 .push((tab.to_string(), DecorGone::AgentLeft));
@@ -523,6 +528,7 @@ impl AgentHub {
         let now = self.now();
         self.note_tab(tab);
         self.folders.insert(tab.to_string(), cwd.to_string());
+        self.agent_folders.remove(tab);
         let resumed = valid_resume(resume);
         // A restored Claude tab already has its session: the resume id (only a UUID).
         let old = match resumed {
@@ -565,6 +571,7 @@ impl AgentHub {
         self.order.retain(|t| t != tab);
         self.folders.remove(tab);
         self.sessions.remove(tab);
+        self.agent_folders.remove(tab);
         self.polled.remove(tab);
         self.decor_gone.retain(|(t, _)| t != tab);
         self.diag.forget(tab, now);
@@ -756,6 +763,17 @@ impl AgentHub {
             return None;
         }
         self.sessions.get(tab).map(String::as_str)
+    }
+
+    /// The agent's hooks named the folder its session works in: the latest wins.
+    pub fn set_agent_folder(&mut self, tab: &str, folder: &str) {
+        self.agent_folders
+            .insert(tab.to_string(), folder.to_string());
+    }
+
+    /// The folder the tab's agent works in, while its hooks have named one and the agent has not left the tab.
+    pub fn agent_folder(&self, tab: &str) -> Option<&str> {
+        self.agent_folders.get(tab).map(String::as_str)
     }
 
     /// True once the process poll has answered for the tab (the first word is said once).
