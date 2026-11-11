@@ -141,6 +141,9 @@ impl Fx {
             std::fs::write(dir.path().join("tabs.json"), tabs_json(&saved)).unwrap(); // sync-ok: test code only, never the app
         }
         let prefs = PrefStore::memory();
+        // The strip along the top: these tests were written for it. Vertical is the default
+        // since 2026-11-11; a test of the default clears the key in its `prep`.
+        set_tab_layout(&prefs, TabLayout::Horizontal);
         prep(&prefs);
         let q: Queue = Arc::default();
         let post: Post = {

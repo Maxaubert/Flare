@@ -106,6 +106,26 @@ impl Drop for World {
     }
 }
 
+/// Stores one key in the closed profile's `settings.json` (a JSON object of strings), keeping every
+/// key already there. A file that is missing or not an object starts empty.
+pub fn store_setting(profile: &Path, key: &str, value: &str) -> Result<(), String> {
+    fs::create_dir_all(profile).map_err(|e| e.to_string())?;
+    let file = profile.join("settings.json");
+    let mut map = fs::read_to_string(&file)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    map.insert(key.to_string(), json!(value));
+    fs::write(&file, Value::Object(map).to_string()).map_err(|e| e.to_string())
+}
+
+/// Puts the tabs along the top in the closed profile. Vertical is the default since 2026-11-11; a
+/// scenario written for the strip says so with this before it launches.
+pub fn tabs_along_the_top(profile: &Path) -> Result<(), String> {
+    store_setting(profile, "flare.window.tabLayout", "horizontal")
+}
+
 /// Removes `root` recursively, retrying `REMOVE_RETRIES` times `REMOVE_WAIT` apart. True when it
 /// is gone at the end. A missing folder counts as gone.
 pub fn remove_with_retries(root: &Path) -> bool {
@@ -251,4 +271,34 @@ pub fn wait_for_agent_verdict_with(
 pub fn wait_for_agent_verdict(app: &mut App, tab: &str, timeout: Duration) -> bool {
     let mut probe = || app.session.probe("agent.state", json!({ "tab": tab }));
     wait_for_agent_verdict_with(&mut probe, timeout)
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn tabs_along_the_top_keeps_the_keys_already_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        tabs_along_the_top(&profile).unwrap();
+        let read = || -> Value {
+            serde_json::from_str(&fs::read_to_string(profile.join("settings.json")).unwrap())
+                .unwrap()
+        };
+        assert_eq!(read(), json!({ "flare.window.tabLayout": "horizontal" }));
+        fs::write(
+            profile.join("settings.json"),
+            r#"{"flare.term.fontPct":"130","flare.window.tabLayout":"vertical"}"#,
+        )
+        .unwrap();
+        tabs_along_the_top(&profile).unwrap();
+        assert_eq!(
+            read(),
+            json!({ "flare.term.fontPct": "130", "flare.window.tabLayout": "horizontal" })
+        );
+        fs::write(profile.join("settings.json"), "not json").unwrap();
+        store_setting(&profile, "flare.window.edges", "faint").unwrap();
+        assert_eq!(read(), json!({ "flare.window.edges": "faint" }));
+    }
 }

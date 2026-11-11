@@ -820,6 +820,13 @@ mod tests {
             written("prism.window.tabLayout", "vertical").as_deref(),
             Some("vertical")
         );
+        // Vertical is Flare's default (2026-11-11), so a Prism Terminal that chose horizontal must
+        // still carry that choice across.
+        assert_eq!(
+            written("prism.window.tabLayout", "horizontal").as_deref(),
+            Some("horizontal")
+        );
+        assert!(skipped("prism.window.tabLayout", "diagonal"));
         assert_eq!(
             written("prism.window.tabSwitch", "recent").as_deref(),
             Some("recent")

@@ -20,6 +20,7 @@ use flare_settings::agent_prefs::{
 };
 use flare_settings::kv::PrefStore;
 use flare_settings::look::{AgentIndicator, LookStore};
+use flare_settings::tab_layout::{TabLayout, set_tab_layout};
 use flare_settings::term_prefs::set_agent_keys;
 use flare_shells::list::ShellDef;
 use flare_tabs::restore::{NoSessions, SavedTab, SavedTabs, SessionLookup, tabs_json};
@@ -202,6 +203,9 @@ impl Fx {
             std::fs::write(dir.path().join("tabs.json"), tabs_json(&saved)).unwrap(); // sync-ok: test code only, never the app
         }
         let prefs = PrefStore::memory();
+        // The strip along the top: these tests were written for it. Vertical is the default
+        // since 2026-11-11; a test of the default clears the key in its `prep`.
+        set_tab_layout(&prefs, TabLayout::Horizontal);
         prep(&prefs);
         let q: Queue = Arc::default();
         let post: Post = {

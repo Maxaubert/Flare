@@ -1,6 +1,10 @@
 # Flare shell integration for zsh, loaded through ZDOTDIR. It hands ZDOTDIR straight back, so zsh
 # reads every later startup file (.zprofile, .zshrc, .zlogin) from the user's own folder, and it
 # sources the user's own .zshenv. The user's files are never changed.
+# A restored tab's resume (FLARE_RESUME_ID) is taken out of the environment before any startup file
+# runs, so nothing they start sees it; flare.zsh runs it at the first prompt.
+typeset -g __flare_resume="${FLARE_RESUME_ID-}"
+builtin unset FLARE_RESUME_ID
 if [[ -n "${FLARE_USER_ZDOTDIR+set}" ]]; then
   builtin export ZDOTDIR="$FLARE_USER_ZDOTDIR"
   builtin unset FLARE_USER_ZDOTDIR
