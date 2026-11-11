@@ -1,12 +1,13 @@
 //! TabLayout pref (Task 3): where the tab strip sits, horizontal along the top or the vertical sidebar.
-//! Key `flare.window.tabLayout`; words `horizontal` and `vertical`; `horizontal` until somebody chooses.
+//! Key `flare.window.tabLayout`; words `horizontal` and `vertical`; `vertical` until somebody chooses
+//! (Max, 2026-11-11: tabs down the side by default; a stored choice is kept).
 
 use crate::kv::{EnumPref, PrefStore, Subscription};
 
 const PREF: EnumPref = EnumPref {
     key: "flare.window.tabLayout",
     allowed: &["horizontal", "vertical"],
-    fallback: "horizontal",
+    fallback: "vertical",
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,8 +27,8 @@ impl TabLayout {
 
 pub fn tab_layout(s: &PrefStore) -> TabLayout {
     match PREF.get(s) {
-        "vertical" => TabLayout::Vertical,
-        _ => TabLayout::Horizontal,
+        "horizontal" => TabLayout::Horizontal,
+        _ => TabLayout::Vertical,
     }
 }
 
@@ -51,8 +52,15 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn tab_layout_is_horizontal_until_chosen() {
-        assert_eq!(tab_layout(&PrefStore::memory()), TabLayout::Horizontal);
+    fn tab_layout_is_vertical_until_chosen() {
+        assert_eq!(tab_layout(&PrefStore::memory()), TabLayout::Vertical);
+    }
+
+    #[test]
+    fn a_stored_horizontal_choice_is_kept() {
+        let s = PrefStore::memory();
+        s.set("flare.window.tabLayout", "horizontal");
+        assert_eq!(tab_layout(&s), TabLayout::Horizontal);
     }
 
     #[test]
@@ -69,14 +77,14 @@ mod tests {
     }
 
     #[test]
-    fn tab_layout_reads_unknown_as_horizontal_and_never_stores_one() {
+    fn tab_layout_reads_unknown_as_vertical_and_never_stores_one() {
         let s = PrefStore::memory();
         s.set("flare.window.tabLayout", "diagonal");
-        assert_eq!(tab_layout(&s), TabLayout::Horizontal);
+        assert_eq!(tab_layout(&s), TabLayout::Vertical);
         set_tab_layout_word(&s, "left");
         assert_eq!(
             s.get("flare.window.tabLayout"),
-            Some("horizontal".to_string())
+            Some("vertical".to_string())
         );
     }
 

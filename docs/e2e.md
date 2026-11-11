@@ -56,6 +56,18 @@ seconds. The exit code is 1 when any assertion failed.
   110 to 260 ms; the software leg and every other scenario are unaffected). It is the machine, not the app:
   the same build passes once the display is awake (found 2026-10-19 by running the gate at the older commit
   `39d8483`, which failed the same way). Wake the screen before a full run.
+- **Tab position.** The app's default is vertical since 2026-11-11 (rule 1130). A scenario written for the strip
+  sets `Launch { tabs_along_the_top: true, .. }`, which stores Horizontal in the profile just before the start
+  (`flare_e2e::world::tabs_along_the_top`). The ported scenarios that click tabs by their strip box, read the strip's
+  pixels or measure the window as Prism Terminal's horizontal layout drew it do: the strip and indicator groups,
+  spawn, agentHooks, agentDiag, backgroundWork, agentKeys, theme, titleBar, systemMenu, settingsPage, scrollbar,
+  selectionEdit and the other `input_b` link scenarios, termReplies, linkPaintStall, reviewKeys, the `settings_a`
+  and `settings_c` launches (options, settingsLook, colourPicker, seeThrough and their neighbours), closeAsk, the
+  agent launch scenarios, dpiMatrix and monitorMove, and verticalTabs before it picks Vertical (found by a full Mac
+  run with the new default, 2026-11-11: 61 scenarios failed, most of them on the `app.state` parse below). The
+  visual tour's `seed` writes Horizontal unless a cell names a layout. `verticalStart` checks that a fresh profile opens down the
+  side, and `settingsLive` starts there. `app.state` reads a vertical window's tabs with an empty box (their `rect`
+  is `null`), so a scenario that clicks tabs by their strip box needs the strip.
 - **Close races a timer.** `closeApp` waits up to 15 s for the app to exit, then kills it
   (`close_races_a_15_s_timer_then_kills`).
 - **One wait primitive.** `until(what, timeout, condition)` is the only wait with a timeout; there are no

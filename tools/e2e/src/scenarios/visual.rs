@@ -121,11 +121,14 @@ fn cfg() -> Cfg {
 
 // ---- small tools -----------------------------------------------------------------------------------
 
-/// Writes `settings.json` into a closed profile (a JSON object of strings).
+/// Writes `settings.json` into a closed profile (a JSON object of strings). The tour's shots sit
+/// beside Prism Terminal's, whose tabs are along the top, so the layout is Horizontal unless `pairs`
+/// name it (Flare's own default is vertical since 2026-11-11).
 fn seed(profile: &Path, pairs: &[(&str, &str)]) -> Result<(), String> {
     fs::create_dir_all(profile).map_err(|e| e.to_string())?;
-    let map: serde_json::Map<String, Value> = pairs
+    let map: serde_json::Map<String, Value> = [("flare.window.tabLayout", "horizontal")]
         .iter()
+        .chain(pairs.iter())
         .map(|(k, v)| ((*k).to_string(), json!(v)))
         .collect();
     fs::write(

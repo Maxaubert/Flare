@@ -44,6 +44,8 @@ per system: `helper` (or `helpers.windows`) for the Windows `.exe`, `helpers.mac
   blinks (`hop-blink`), Codex turns while it fades (`spin-fade`), Antigravity's rainbow flows along its arch
   (`rainbow-flow`), set with `agents.motion.set` when its background page starts. A tab's menu has "Agent motions",
   a panel with one picker per agent (kept in the plugin's store). Turning it off makes the icons still again; so does
-  Windows' "animation effects" switch.
+  Windows' "animation effects" switch, or "Reduce motion" on a Mac. On a Mac: copy the folder to
+  `~/Library/Application Support/Flare/plugins/agent-moves/`, or zip it (`cd sample-plugins && zip -r
+  agent-moves.zip agent-moves`) and use Settings > Plugins > "Install from file"; then turn it on there.
 
 The contract is `docs/surfaces/plugins.md`; the protocol 1 sample mod is `docs/surfaces/sample-mod/`.

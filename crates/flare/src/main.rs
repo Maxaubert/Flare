@@ -236,7 +236,7 @@ fn main() {
             }) => {
                 // The last-good guard of an installed copy (install when idle): counts this start of a new
                 // build, and puts the old one back after two early deaths.
-                appctl::staged_glue::guard_at_start(&argv, args.user_data_dir.as_deref());
+                appctl::staged_glue::guard_at_start(&argv, args.user_data_dir.as_deref(), args.e2e);
                 Some(window::Instance::start(profile, server_names, guard))
             }
             Err(message) => {

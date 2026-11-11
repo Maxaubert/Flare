@@ -19,6 +19,26 @@ Task 29 of the M9 plan). Anything not seen with the eyes says so.
 5. The Mac build is added to the same release afterwards by `.github/workflows/macos-app.yml`, when its signing
    secrets are set: `docs/releasing-macos.md`.
 
+## The secret the side-by-side run needs (2026-11-11)
+
+The side-by-side run downloads the latest Prism Terminal installer with `gh release download`. Since 2026-11-11 the
+Prism Terminal repository is `arkivert/PrismTerminal` and it is private, so the workflow's own `GITHUB_TOKEN` cannot
+read it ("release not found"). Owner decision 2026-11-11: a repository secret holds a token that can.
+
+- Name: `PRISM_RELEASE_TOKEN` (the Prism Terminal release token), a repository secret of this repository
+  (Settings > Secrets and variables > Actions).
+- Value: a fine-grained personal access token, resource owner `arkivert`, repository access only
+  `arkivert/PrismTerminal` (the Prism Terminal repository), permission Contents: Read-only. Nothing else.
+- Used by: the side-by-side step of `release.yml` and of `installer-e2e.yml`, and only that step (its `GH_TOKEN`).
+  No other step gets it, and nothing prints it.
+- Missing: that step fails (it does not skip) with one line, and a release then publishes nothing:
+  `PRISM_RELEASE_TOKEN is not set: add a fine-grained read-only token for arkivert/PrismTerminal as a repository secret (docs/shipping.md)` (Prism Terminal).
+- Dependabot pull requests get only Dependabot secrets, so an `installer-e2e` run on one fails the same way unless
+  the same token is also added as a Dependabot secret of the same name (the Prism Terminal token).
+- When the token expires, make a new one with the same settings and replace the secret's value.
+- Held by regression rule 1141 and `only_the_side_by_side_step_gets_the_neighbour_token_and_it_fails_without_it`
+  (`crates/flare/tests/release_files.rs`).
+
 ## Packing locally (installs nothing)
 
 ```
@@ -100,6 +120,35 @@ pwsh tools\stage-install.ps1 -Stable -Bin <TARGET>\release -Repo <checkout>
   Only files that differ are swapped. A second stage installs only once the first build is confirmed (20 s up).
   `install.json` in state `swapping` means a swap was cut off; the next start puts it back.
 - The Velopack path (public releases) is unchanged.
+
+### On the Mac (2026-11-11, rule 1132)
+
+For Max's ad hoc `/Applications/Flare.app`. Max runs Claude Code inside it, so **an agent never replaces that bundle**:
+only Max's click on "Build ready" does. Always stage a Mac build this way, so it shows as an update in the running app:
+
+```
+tools/release/mac/stage-install.sh
+```
+
+- It builds Flare.app with `tools/release/mac/make-app.sh` into a temp folder (ad hoc, or `FLARE_MAC_SIGN_IDENTITY`
+  when set; never notarized), copies it to `~/Library/Application Support/Flare/staged.tmp/Flare.app`, renames that to
+  `staged/` (the old stage's manifest goes first) and writes `staged/staged.json` last: the commit, `built_at` and the
+  sha256 of every file in the bundle by its path in it (`Contents/MacOS/Flare`), the Windows format. It never touches
+  `/Applications`.
+- `FLARE_STAGE_APP=<built Flare.app>` stages a bundle already built (no cargo); `FLARE_STAGE_ROOT=<folder>` stages
+  somewhere else (the tests use a temp one; a root in an `Applications` folder or a bundle is refused).
+- The app side: a `.app` in an `Applications` folder is an installed copy, ad hoc or Velopack's, with live updates on or
+  off. It polls `staged/staged.json` every 2 s; the chip shows once every hash matches. An `--e2e` run never looks at the
+  real root.
+- The click renames the running bundle to `Flare.app.old` beside it, renames `staged/Flare.app` in (one volume: a stage
+  on another volume than the app is refused and no chip shows), checks every hash in place, and restarts with
+  `open -n /Applications/Flare.app --args ... --after-pid <pid>`. `install.json` and `install.lock` live in
+  `~/Library/Application Support/Flare/`. `Flare.app.old` goes once the new build has been up 20 s (or quit cleanly);
+  two early deaths put it back. A swap taken back moves the new bundle back to `staged/`, so it stays on offer.
+- An ad hoc signature changes with every build, so macOS may ask again for permissions it gave Flare (microphone,
+  folders, accessibility) after an install. The bundle id (`com.flare.terminal`) stays the same.
+- First install: a build from before this feature cannot read the Mac stage. Max installs one build with it by hand
+  once; from then on every stage shows as "Build ready".
 
 ## SmartScreen
 
