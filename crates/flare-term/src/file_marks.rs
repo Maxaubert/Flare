@@ -88,13 +88,27 @@ pub fn find_marks(b: &dyn BufferLike, cols: usize, first: usize, last: usize) ->
         return out;
     }
     let last = last.min(b.len() - 1);
+    let lo = first.saturating_sub(MARK_ROWS - 1);
+    // Most screens hold no mark: one look through the reused scratch cell, with nothing copied, says so.
+    let mut scratch = ScratchCell::default();
+    let any = (lo..=last).any(|y| {
+        b.line(y).is_some_and(|line| {
+            (0..cols).any(|x| {
+                scratch.chars.clear();
+                line.load_cell(x, &mut scratch) && scratch.chars.starts_with(MARK_OPEN)
+            })
+        })
+    });
+    if !any {
+        return out;
+    }
     let mut rows = Rows {
         b,
         cols,
         got: HashMap::new(),
         scratch: ScratchCell::default(),
     };
-    let (mut y, mut x) = (first.saturating_sub(MARK_ROWS - 1), 0);
+    let (mut y, mut x) = (lo, 0);
     while y <= last {
         let open = rows
             .cells(y)
