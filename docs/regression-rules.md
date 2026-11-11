@@ -2041,3 +2041,14 @@ quit, so such a sign-in survives closing the last panel, where WebView2's may en
 `crates/flare-surfaces/src/web.rs`, `crates/flare/src/window.rs`. Held by
 `a_mac_run_moves_nothing_and_keeps_the_panel_under_its_profile` and the POSIX twins of main's folder tests. Source:
 main's #158 carried to the macOS port (2026-11-10).
+1126. **macOS: a pixel check never reads cell (0, 0) of a fresh shell, and a prompt in `grid.text` is not yet in the
+picture.** pwsh on a Mac prints its prompt about a second after the tab opens, and until then the block cursor
+(grey on the dark theme) covers cell (0, 0); Windows' ConPTY keeps it hidden there. The shell's bytes reach the emulator on
+its own thread, and the software grid paints them on the next frame poll (up to `FRAME_POLL`, 16 ms,
+later), so a scenario that waits for the prompt text and snaps at once can still get the empty grid: run 42917628472
+(main, 7a9ac8c9) waited for the prompt, did not time out (0.65 s from the window to the snapshot), and its
+`theme-dark` shot shows an empty grid with the cursor on (0, 0), read as `[187, 187, 187]` at grid origin + 6 px. The
+`theme` check reads the frame inside its padding and the rows in cell (last row, 0), and FAILs with the reason when
+that row holds text or the cursor (`ground_spots` in `tools/e2e/src/scenarios/chrome.rs`). Windows reads the same
+spots. Held by `the_spots_miss_cell_zero_where_the_cursor_sits`, `the_spots_scale_with_the_window` and
+`a_last_row_with_text_or_the_cursor_fails_loudly`. Source: main's first full CI run after the macOS port (2026-11-11).
