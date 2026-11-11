@@ -3990,7 +3990,7 @@ mod tests {
         assert_eq!(lines.lock().unwrap().as_slice(), [Some(42), None, None]);
     }
 
-    /// The macOS half of `view_file_hands_its_line_to_the_panel`, with the Mac's path grammar (rule 1145).
+    /// The macOS half of `view_file_hands_its_line_to_the_panel`, with the Mac's path grammar (rule 1148).
     #[cfg(not(windows))]
     #[test]
     fn view_file_hands_its_line_to_the_panel() {

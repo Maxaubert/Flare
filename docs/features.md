@@ -615,6 +615,9 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   cancel wins even after the last byte and leaves nothing (`cancel_wins_even_after_the_last_byte`). A failed
   download is said once in the window, and the chip offers again (`updateGuard_a_failed_download_shows_could_not_be_downloaded_once_and_the_chip_offers_again`).
   The app quits 400 ms after a successful hand-off; Velopack applies and restarts (`the_app_quits_400_ms_after_a_successful_handoff`).
+- **The installed version decides.** An installed app compares an offer with the version Velopack installed
+  (its manifest), and the update window shows that version as the current one; a dev build uses its own
+  (rule 1144, `an_offer_is_measured_against_the_installed_version_not_the_builds`).
 - **Preview.** `--preview-update` previews the window in the running app or in an unpackaged build, with the next
   minor version and the sample notes, and touches no network, file or process (`preview_version_is_the_next_minor`,
   `updateQuiet` in `tools/e2e`).
@@ -773,6 +776,13 @@ tag `v<version>` with no in-place replacement (D15), and the placeholder icon (D
 - **The pill and the tab mark in the window; the widget outside.** Outside, the widget shows what you say and lets you
   pick a Claude session by a click or a number from 1 to 9; Esc keeps it unsent. The checked send types into that tab
   and presses Enter once (N22 to N24). Inside the window dictation pastes at the cursor and never presses Enter.
+  The press's first key decides which window was in front, so a Flare tab in front gets the words with no picker
+  (rule 1142).
+- **"Sent to" means sent** (2026-11-11, rule 1142). The send waits until the words show in Claude's prompt (longer
+  for a long text, at most 3 s), presses Enter, and waits for the prompt to empty. Only then does the card say "Sent
+  to X". Words that never showed say "Not sent: the words did not show in X, copied"; words the Enter did not send say
+  "Typed into X, press Enter there". A text so long that the prompt box grows past the rows read still counts as
+  shown and is sent (rule 1143). After a refused start or the 5-minute cap the next press starts a recording.
 - **Words that cannot be sent are kept** (owner, 2026-10-23, "Yes, build it"). A finished transcript that ends unsent
   (no Claude session, Esc or the 30 s timeout on the picker, a refused send, a copy of the app that has closed) is
   copied to the clipboard and the note says so: "No Claude session, copied", "Not sent, copied", "Not sent: <why>,

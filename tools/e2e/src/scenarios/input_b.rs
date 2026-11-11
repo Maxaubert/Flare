@@ -19,6 +19,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flare_e2e_proto::{Button, PointerAction, Reply, Request};
+use flare_win::openers::REVEAL_LABEL;
 use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
@@ -657,8 +658,8 @@ fn selection_edit_on(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
 /// Spec 2026-11-11 (replaces PT's pathLinks, a deliberate difference): a file link is only a path a session writes
 /// between the marks `⟦` and `⟧`. A marked path broken over two rows by hand with an indent is ONE link; a marked
 /// path with a line opens the text in the panel at that line, marked; a click opens a file and a folder, reveals a
-/// script and never runs it; a right-click offers Open, Show in Explorer and Copy path; a plain `dir` listing shows
-/// no file links at all.
+/// script and never runs it; a right-click opens nothing and offers Open, Show in Explorer (Show in Finder on the
+/// Mac, rule 1147), Copy path with icons; a plain `dir` listing shows no file links at all.
 pub fn marker_links(ctx: &mut Ctx) -> Result<(), String> {
     let alpha = ctx.ensure_world().alpha.clone();
     let sign_off = alpha.join("docs").join("sign-off");
@@ -824,10 +825,25 @@ fn marker_links_on(
     ctx.ok(
         rows_menu.len() >= 3
             && rows_menu[0] == "Open"
-            && rows_menu.iter().any(|r| r == "Show in Explorer")
-            && rows_menu.iter().any(|r| r == "Copy path"),
-        format!("the menu offers Open, Show in Explorer and Copy path ({rows_menu:?})"),
+            && rows_menu[1] == REVEAL_LABEL
+            && rows_menu[2] == "Copy path",
+        format!("the menu leads with Open, {REVEAL_LABEL}, Copy path ({rows_menu:?})"),
     );
+    let icons = menu_icons(app);
+    ctx.ok(
+        !icons.is_empty() && icons.iter().all(|i| !i.is_empty()),
+        format!("and every row has its icon ({icons:?})"),
+    );
+    let revealed = click_menu_row(app, REVEAL_LABEL)
+        && ctx.until("the file revealed", 4_000, &mut || {
+            opened(app)
+                .iter()
+                .any(|(k, p)| k == "reveal" && same_path(p, &pdf_s))
+        });
+    ctx.ok(revealed, format!("{REVEAL_LABEL} shows the file"));
+
+    click_on(app, "docs/sign-off/rapport.pdf", 2, Button::Right)?;
+    let _ = menu_rows(ctx, app);
     let copied = click_menu_row(app, "Copy path")
         && ctx.until("the path on the clipboard", 4_000, &mut || {
             same_path(&clip_text(app), &pdf_s)

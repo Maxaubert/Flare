@@ -679,6 +679,10 @@ fn finish(sh: &Arc<Shared>, s: &Arc<Session>, code: Option<u32>) {
 /// it (the diagnostics log's `kill-stuck` crumb); this crate does not know the log.
 pub static KILL_STUCK_HOOK: std::sync::OnceLock<fn(u32, u64)> = std::sync::OnceLock::new();
 
+/// Told when a write to a shell is dropped (its child stopped reading) with the shell's pid and the write's
+/// length in bytes, never its bytes. The host sets it (the diagnostics log's `pty-write-dropped` crumb).
+pub static WRITE_DROP_HOOK: std::sync::OnceLock<fn(u32, usize)> = std::sync::OnceLock::new();
+
 /// Ends a session for good (the death is ours: no flush, no sink calls). Counted in `dying` until
 /// the process is gone and its threads are joined.
 fn kill_pty(sh: &Arc<Shared>, s: Arc<Session>) {
@@ -1081,6 +1085,9 @@ impl SessionManager {
             let pending = s.queued.load(Ordering::SeqCst);
             if pending > 0 && pending + data.len() > WRITE_BACKLOG_MAX {
                 log::warn!("pty {}: write dropped, the child is not reading", s.pid);
+                if let Some(hook) = WRITE_DROP_HOOK.get() {
+                    hook(s.pid, data.len());
+                }
                 return;
             }
             s.queued.fetch_add(data.len(), Ordering::SeqCst);

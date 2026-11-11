@@ -31,10 +31,12 @@ pub struct SendTab {
     pub copy: Option<String>,
 }
 
-/// Whether a tab may take dictated text, and the tab when it may.
+/// Whether a tab may take dictated text, and the tab when it may. After a send: `Ok` the words were sent,
+/// `Typed` they are in the tab's prompt but the Enter did not send them, `No` they were not typed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SendDecision {
     Ok(SendTab),
+    Typed(SendTab),
     No(String),
 }
 
@@ -68,8 +70,17 @@ pub struct OverlayRow {
 
 /// Long enough for any dictation; a paste this size is not a message (the same cap as the orchestrator's).
 pub const SEND_MAX: usize = 8000;
-/// The lone Enter follows the paste after this long, only if the same tab is still sendable.
+/// The lone Enter follows the paste after at least this long, only if the same tab is still sendable.
 pub const SEND_ENTER_MS: u64 = 300;
+/// How long the words may take to show in Claude's prompt: this, plus `WORDS_PER_CHAR_MS` a character, at
+/// most `WORDS_MAX_MS`. Claude takes in a long paste slowly, and an Enter before it has is lost.
+pub const WORDS_BASE_MS: u64 = 300;
+pub const WORDS_PER_CHAR_MS: u64 = 1;
+pub const WORDS_MAX_MS: u64 = 3000;
+/// How long the Enter may take to empty the prompt.
+pub const ENTER_TAKE_MS: u64 = 2000;
+/// How often the prompt is read while waiting.
+pub const PROMPT_POLL_MS: u64 = 50;
 /// Who the process check asks, as a refusal names it.
 pub const SYSTEM: &str = if cfg!(windows) { "Windows" } else { "macOS" };
 /// The picker shows nine rows at most (the digits 1 to 9).
@@ -81,13 +92,19 @@ pub trait SendHost {
     fn agent_under(&self, id: &str) -> Option<String>;
     /// Write to a tab's shell. False when nothing was written (the window could not take it).
     fn write(&self, id: &str, bytes: &str) -> bool;
-    /// Whether Claude's prompt box in this tab already holds unsent text (read off its screen): the Enter
-    /// that follows the words would send that draft with them. Unknown (no box to read) is `false`.
-    fn prompt_has_draft(&self, _id: &str) -> bool {
-        false
+    /// Whether Claude's prompt box in this tab holds unsent text (read off its screen): `None` when no box
+    /// can be read (then the send cannot watch its words land, and falls back to a timed Enter).
+    fn prompt_draft(&self, _id: &str) -> Option<bool> {
+        None
     }
     /// Run `f` after `ms` milliseconds. The real host sleeps on the send's worker, then calls `f`.
     fn later(&self, ms: u64, f: Box<dyn FnOnce() + '_>);
+    /// Wait `ms` milliseconds (on the send's worker).
+    fn pause(&self, ms: u64) {
+        self.later(ms, Box::new(|| {}));
+    }
+    /// A step of the send, for the diagnostics log: its name, the text's length or a wait in ms. Never the words.
+    fn stage(&self, _what: &str, _n: u64) {}
 }
 
 /// Whether the app may type into this tab at all: a Claude session that is not asking.
@@ -219,8 +236,13 @@ pub fn folder_tail(p: &str) -> String {
 }
 
 /// Types into a tab, checked. `decide` names the tab and its limits; then Windows is asked whether Claude runs there,
-/// `decide` is asked again (the same tab and session must win), the paste is written, and after `SEND_ENTER_MS` the Enter
-/// is written only if `decide` still names the same tab and session and Windows still says Claude runs there.
+/// `decide` is asked again (the same tab and session must win), the paste is written, and the Enter is written only
+/// if `decide` still names the same tab and session and Windows still says Claude runs there.
+///
+/// The answer is honest: with a prompt box to read, the send waits until the words show in it (a bound that grows
+/// with their length), then writes the Enter at least `SEND_ENTER_MS` after them, then waits until the prompt is
+/// empty. `Ok` only when it emptied; `Typed` when the words stayed there; `No` when they never showed. With no box
+/// to read, the Enter follows after `SEND_ENTER_MS` and a written Enter is `Ok`.
 pub fn type_checked(
     decide: &dyn Fn() -> SendDecision,
     text: &str,
@@ -248,40 +270,127 @@ pub fn type_checked(
         other => other,
     };
     // Claude reads a leading "!" as a shell command and "#" as a memory note: dictated words are neither.
+    let mut readable = false;
     let said = match said {
         SendDecision::Ok(t) if text.trim_start().starts_with(['!', '#']) => SendDecision::No(
             format!("{}: words that start with ! or # are not typed", t.label),
         ),
-        SendDecision::Ok(t) if host.prompt_has_draft(&t.id) => SendDecision::No(format!(
-            "{} has unsent text in its prompt: send or clear it first",
-            t.label
-        )),
+        SendDecision::Ok(t) => match host.prompt_draft(&t.id) {
+            Some(true) => SendDecision::No(format!(
+                "{} has unsent text in its prompt: send or clear it first",
+                t.label
+            )),
+            seen => {
+                readable = seen.is_some();
+                SendDecision::Ok(t)
+            }
+        },
         other => other,
     };
-    if let SendDecision::Ok(t) = &said {
-        let id = t.id.clone();
-        let session = t.session.clone();
-        // Words that never reached the shell get no Enter: an Enter alone would run what was already typed.
-        if !host.write(&id, &paste_of(text)) {
-            return SendDecision::No(format!("{} could not take the words: send again", t.label));
+    let t = match said {
+        SendDecision::Ok(t) => t,
+        other => {
+            host.stage("refused", 0);
+            return other;
         }
-        host.later(
-            SEND_ENTER_MS,
-            Box::new(move || {
-                // The same tab, the same session, and Windows still says Claude runs there: if Claude
-                // quit while the words were landing, the shell's line editor holds them, and an Enter
-                // now would run them as a command.
-                let ok = match decide() {
-                    SendDecision::Ok(still) => still.id == id && still.session == session,
-                    SendDecision::No(_) => false,
-                };
-                if ok && host.agent_under(&id).as_deref() == Some("claude") {
-                    let _ = host.write(&id, "\r");
-                }
-            }),
-        );
+    };
+    let len = text.chars().count() as u64;
+    host.stage(
+        if readable {
+            "checked"
+        } else {
+            "checked, no prompt to read"
+        },
+        len,
+    );
+    // Words that never reached the shell get no Enter: an Enter alone would run what was already typed.
+    if !host.write(&t.id, &paste_of(text)) {
+        host.stage("words refused", len);
+        return SendDecision::No(format!("{} could not take the words: send again", t.label));
     }
-    said
+    // The same tab, the same session, and Windows still says Claude runs there: if Claude quit while the words
+    // were landing, the shell's line editor holds them, and an Enter now would run them as a command.
+    let still_there = || {
+        let same = match decide() {
+            SendDecision::Ok(still) => still.id == t.id && still.session == t.session,
+            _ => false,
+        };
+        same && host.agent_under(&t.id).as_deref() == Some("claude")
+    };
+    let held_back = || {
+        host.stage("enter held back", 0);
+        SendDecision::No(format!("{} changed before the Enter", t.label))
+    };
+    if !readable {
+        host.pause(SEND_ENTER_MS);
+        if !still_there() {
+            return held_back();
+        }
+        if !host.write(&t.id, "\r") {
+            host.stage("enter refused", 0);
+            return SendDecision::Typed(t);
+        }
+        host.stage("enter written, unseen", SEND_ENTER_MS);
+        return SendDecision::Ok(t);
+    }
+    // The words show in the prompt first: an Enter before Claude has taken in the paste is lost.
+    let bound = (WORDS_BASE_MS + WORDS_PER_CHAR_MS * len).min(WORDS_MAX_MS);
+    let mut waited = 0;
+    // A box that was there before the paste and cannot be read after it grew past the rows read (a long line wraps
+    // over many): the words are in it, so it counts as shown, and the Enter still waits `SEND_ENTER_MS`.
+    let shown = loop {
+        host.pause(PROMPT_POLL_MS);
+        waited += PROMPT_POLL_MS;
+        match host.prompt_draft(&t.id) {
+            Some(true) => break Some("words shown"),
+            None => break Some("words shown, box past the screen"),
+            Some(false) => {}
+        }
+        if waited >= bound {
+            break None;
+        }
+    };
+    let Some(shown) = shown else {
+        host.stage("words not shown", waited);
+        return SendDecision::No(format!("the words did not show in {}", t.label));
+    };
+    host.stage(shown, waited);
+    if waited < SEND_ENTER_MS {
+        host.pause(SEND_ENTER_MS - waited);
+    }
+    if !still_there() {
+        return held_back();
+    }
+    if !host.write(&t.id, "\r") {
+        host.stage("enter refused", 0);
+        return SendDecision::Typed(t);
+    }
+    // The Enter took when the prompt is empty again (or its box has gone, the words with it).
+    let mut waited = 0;
+    let taken = loop {
+        host.pause(PROMPT_POLL_MS);
+        waited += PROMPT_POLL_MS;
+        let now = host.prompt_draft(&t.id);
+        if now == Some(false) {
+            break true;
+        }
+        if waited >= ENTER_TAKE_MS {
+            break now.is_none();
+        }
+    };
+    host.stage(
+        if taken {
+            "enter taken"
+        } else {
+            "enter not taken"
+        },
+        waited,
+    );
+    if taken {
+        SendDecision::Ok(t)
+    } else {
+        SendDecision::Typed(t)
+    }
 }
 
 /// The tabs as the list gets them: the orchestrator marked only when it is switched on and its Claude runs per Windows.
@@ -341,7 +450,10 @@ mod tests {
     /// A stand-in host: Windows says `agent`, writes are recorded, and `later` runs at once (recording its delay).
     #[derive(Default)]
     struct Fake {
-        draft: bool,
+        /// What each read of the prompt box says, in turn; the last one stays. Empty: no box to read.
+        reads: RefCell<Vec<Option<bool>>>,
+        /// The prompt reads true once the words are written, and false once an Enter is (a Claude that takes them).
+        claude_screen: bool,
         agent: Option<String>,
         /// What Windows says from the second question on (Claude quit in between).
         agent_then: Option<Option<String>>,
@@ -361,8 +473,17 @@ mod tests {
                 _ => self.agent.clone(),
             }
         }
-        fn prompt_has_draft(&self, _id: &str) -> bool {
-            self.draft
+        fn prompt_draft(&self, _id: &str) -> Option<bool> {
+            if self.claude_screen {
+                let w = self.written.borrow();
+                return Some(w.len() == 1);
+            }
+            let mut r = self.reads.borrow_mut();
+            match r.len() {
+                0 => None,
+                1 => r[0],
+                _ => r.remove(0),
+            }
         }
         fn write(&self, _id: &str, bytes: &str) -> bool {
             if self.refuse {
@@ -669,7 +790,7 @@ mod tests {
     fn type_checked_types_nothing_into_a_prompt_that_holds_an_unsent_draft() {
         let host = Fake {
             agent: Some("claude".into()),
-            draft: true,
+            reads: RefCell::new(vec![Some(true)]),
             ..Default::default()
         };
         let decide = || SendDecision::Ok(tab());
@@ -758,7 +879,8 @@ mod tests {
         let decide = || SendDecision::Ok(tab());
         assert_eq!(
             type_checked(&decide, "hello", &host),
-            SendDecision::Ok(tab())
+            SendDecision::No("Wind changed before the Enter".into()),
+            "never \"Sent\" for words that were not sent"
         );
         assert_eq!(
             *host.written.borrow(),
@@ -804,12 +926,116 @@ mod tests {
         };
         assert_eq!(
             type_checked(&decide, "hello", &host),
-            SendDecision::Ok(tab())
+            SendDecision::No("Wind changed before the Enter".into())
         );
         assert_eq!(
             *host.written.borrow(),
             vec!["\x1b[200~hello\x1b[201~".to_string()]
         );
+    }
+
+    #[test]
+    fn type_checked_says_sent_only_once_the_words_showed_and_the_enter_emptied_the_prompt() {
+        let host = Fake {
+            agent: Some("claude".into()),
+            claude_screen: true,
+            ..Default::default()
+        };
+        let decide = || SendDecision::Ok(tab());
+        assert_eq!(
+            type_checked(&decide, "hello", &host),
+            SendDecision::Ok(tab())
+        );
+        assert_eq!(
+            *host.written.borrow(),
+            vec!["\x1b[200~hello\x1b[201~".to_string(), "\r".to_string()]
+        );
+        // One read for the words, the rest of the 300 ms before the Enter, one read for the empty prompt.
+        assert_eq!(
+            *host.delays.borrow(),
+            vec![
+                PROMPT_POLL_MS,
+                SEND_ENTER_MS - PROMPT_POLL_MS,
+                PROMPT_POLL_MS
+            ]
+        );
+    }
+
+    #[test]
+    fn type_checked_presses_no_enter_when_the_words_never_show_in_the_prompt() {
+        let host = Fake {
+            agent: Some("claude".into()),
+            // The box is there and stays empty: the paste never reached Claude's prompt.
+            reads: RefCell::new(vec![Some(false)]),
+            ..Default::default()
+        };
+        let decide = || SendDecision::Ok(tab());
+        assert_eq!(
+            type_checked(&decide, "hello", &host),
+            SendDecision::No("the words did not show in Wind".into())
+        );
+        assert_eq!(
+            host.written.borrow().len(),
+            1,
+            "the words, and never an Enter"
+        );
+        // A short text waits the base bound: 300 ms + 1 ms a character, in 50 ms reads.
+        let waited: u64 = host.delays.borrow().iter().sum();
+        assert_eq!(waited, 350);
+    }
+
+    #[test]
+    fn type_checked_presses_enter_when_a_long_paste_grows_the_box_past_the_rows_read() {
+        let host = Fake {
+            agent: Some("claude".into()),
+            // Empty before; the paste wraps over so many rows that the box's top rule leaves the rows read;
+            // the Enter empties it and the box fits again.
+            reads: RefCell::new(vec![Some(false), None, Some(false)]),
+            ..Default::default()
+        };
+        let decide = || SendDecision::Ok(tab());
+        assert_eq!(
+            type_checked(&decide, &"a".repeat(700), &host),
+            SendDecision::Ok(tab())
+        );
+        assert_eq!(host.written.borrow().len(), 2, "the words and one Enter");
+        // The Enter still comes no sooner than 300 ms after the words.
+        let before_enter: u64 = host.delays.borrow().iter().take(2).sum();
+        assert_eq!(before_enter, SEND_ENTER_MS);
+    }
+    #[test]
+    fn type_checked_waits_longer_for_a_long_paste_but_never_past_three_seconds() {
+        let wait_for = |len: usize| {
+            let host = Fake {
+                agent: Some("claude".into()),
+                reads: RefCell::new(vec![Some(false)]),
+                ..Default::default()
+            };
+            let decide = || SendDecision::Ok(tab());
+            let _ = type_checked(&decide, &"a".repeat(len), &host);
+            let waited: u64 = host.delays.borrow().iter().sum();
+            waited
+        };
+        assert_eq!(wait_for(1000), 1300);
+        assert_eq!(wait_for(8000), WORDS_MAX_MS);
+    }
+
+    #[test]
+    fn type_checked_says_typed_not_sent_when_the_enter_leaves_the_words_in_the_prompt() {
+        let host = Fake {
+            agent: Some("claude".into()),
+            // Empty before, the words after, and they stay there.
+            reads: RefCell::new(vec![Some(false), Some(true)]),
+            ..Default::default()
+        };
+        let decide = || SendDecision::Ok(tab());
+        assert_eq!(
+            type_checked(&decide, "hello", &host),
+            SendDecision::Typed(tab())
+        );
+        assert_eq!(host.written.borrow().len(), 2, "the words and one Enter");
+        let after_enter: u64 = host.delays.borrow().iter().skip(2).sum();
+        assert_eq!(after_enter, ENTER_TAKE_MS);
     }
 
     #[test]

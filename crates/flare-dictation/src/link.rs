@@ -320,10 +320,13 @@ pub fn parse_to_service(line: &str) -> Option<ToService> {
             let r = m.get("res")?.as_object()?;
             if r.get("ok") == Some(&Value::Bool(true)) {
                 let target = tab_of(r.get("target")?)?;
-                Some(ToService::Sent {
-                    rid,
-                    res: SendDecision::Ok(target),
-                })
+                // `entered: false`: typed, but the Enter did not send it. An older copy says nothing: sent.
+                let res = if r.get("entered") == Some(&Value::Bool(false)) {
+                    SendDecision::Typed(target)
+                } else {
+                    SendDecision::Ok(target)
+                };
+                Some(ToService::Sent { rid, res })
             } else {
                 let reason = str_max(r.get("reason")?, 200)?;
                 Some(ToService::Sent {
@@ -388,6 +391,10 @@ pub fn encode_to_service(m: &ToService) -> String {
         ToService::Sent { rid, res } => {
             let res = match res {
                 SendDecision::Ok(t) => json!({"ok": true, "target": tab_json(t)}),
+                // An older service reads only `ok`: to it this is a send, as it always was.
+                SendDecision::Typed(t) => {
+                    json!({"ok": true, "target": tab_json(t), "entered": false})
+                }
                 SendDecision::No(r) => json!({"ok": false, "reason": r}),
             };
             json!({"t": "sent", "rid": rid, "res": res})

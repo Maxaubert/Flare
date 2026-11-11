@@ -6,8 +6,11 @@
 //!
 //! The inputs, all made by `.github/workflows/update-e2e.yml`:
 //!
-//! - `FLARE_PACKED_DIR`: a `Releases` folder with `Flare-win-Setup.exe` and the `0.0.1` and `0.0.2`
-//!   packages of a `live-updates` build.
+//! - `FLARE_PACKED_DIR`: a `Releases` folder with the `0.0.1` and `0.0.2` packages of a
+//!   `live-updates` build. Its `Flare-win-Setup.exe` installs 0.0.2 (vpk writes the setup of the
+//!   version it packs last), so the scenarios never run it.
+//! - `FLARE_SETUP_EXE`: the `Flare-win-Setup.exe` of the 0.0.1 pack, kept aside before 0.0.2 was
+//!   packed. It installs 0.0.1.
 //! - `FLARE_PACKED_BIG_DIR`: a folder whose `0.0.2` full package carries a 120 MB incompressible
 //!   filler (only the cancel scenario uses it).
 //!
@@ -253,10 +256,15 @@ fn until(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
     }
 }
 
-/// Runs the one-click setup silently into `inst`, then ends whatever it launched (the setup
+/// The setup that installs 0.0.1: `FLARE_SETUP_EXE`. The one in `FLARE_PACKED_DIR` installs 0.0.2.
+fn setup_exe() -> PathBuf {
+    env_dir("FLARE_SETUP_EXE")
+}
+
+/// Runs the 0.0.1 one-click setup silently into `inst`, then ends whatever it launched (the setup
 /// starts the app on the default profile; nothing of ours may stay running).
-fn install(releases: &Path, inst: &Path) {
-    let mut cmd = Command::new(releases.join("Flare-win-Setup.exe"));
+fn install(inst: &Path) {
+    let mut cmd = Command::new(setup_exe());
     cmd.arg("--silent")
         .arg("--installto")
         .arg(inst)
@@ -302,6 +310,46 @@ fn state(profile: &Path) -> Option<Value> {
 fn calls(profile: &Path) -> Option<Value> {
     let text = std::fs::read_to_string(profile.join("update-calls.json")).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+/// What a failed offer wait prints: the state, the calls (was there a check at all?) and the app's
+/// update crumbs from every diagnostics log under `root` (the sandbox: the profile and its Local).
+fn offer_report(root: &Path, profile: &Path) -> String {
+    let mut logs = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("diag.jsonl"))
+            {
+                logs.push(p);
+            }
+        }
+    }
+    let mut crumbs = Vec::new();
+    for log in &logs {
+        let text = std::fs::read_to_string(log).unwrap_or_default();
+        crumbs.extend(
+            text.lines()
+                .filter(|l| l.contains("update") || l.contains("first-run"))
+                .map(str::to_string),
+        );
+    }
+    let tail = crumbs.len().saturating_sub(40);
+    format!(
+        "state {:?}\ncalls {:?}\ndiag logs {:?}\nupdate crumbs:\n{}",
+        state(profile),
+        calls(profile),
+        logs,
+        crumbs[tail..].join("\n")
+    )
 }
 
 /// Writes the e2e command word and waits for the app to take it (it deletes the file).
@@ -409,6 +457,36 @@ fn the_install_scenarios_need_ci_or_an_explicit_local_opt_in() {
 }
 
 #[test]
+fn the_scenarios_install_the_0_0_1_setup_kept_aside_before_the_0_0_2_pack() {
+    // vpk writes `Flare-win-Setup.exe` for the version it packs, so the setup left in the
+    // `Releases` folder installs 0.0.2 and no offer could follow. The workflow copies the 0.0.1
+    // setup out after the 0.0.1 pack and before the 0.0.2 pack, and hands it over as
+    // `FLARE_SETUP_EXE`.
+    let yml = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/update-e2e.yml"),
+    )
+    .expect("update-e2e.yml");
+    let pack = yml.find("pack.ps1 -Version $v").expect("the pack loop");
+    let keep = yml
+        .find("if ($v -eq '0.0.1')")
+        .expect("the 0.0.1 setup is kept aside");
+    let handed = yml
+        .find("FLARE_SETUP_EXE=")
+        .expect("FLARE_SETUP_EXE is set");
+    assert!(
+        pack < keep && keep < handed,
+        "kept inside the loop, after the pack"
+    );
+    assert!(yml[keep..handed].contains("Flare-win-Setup.exe"));
+    let me = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/update_apply.rs"),
+    )
+    .expect("this file");
+    let install = me.find("fn install(inst: &Path)").expect("fn install");
+    assert!(me[install..].contains("Command::new(setup_exe())"));
+}
+
+#[test]
 fn deltas_are_removed_from_the_feed_and_everything_else_is_kept() {
     let json = r#"{"Assets":[
         {"PackageId":"Flare","Version":"0.0.2","Type":"Full","FileName":"Flare-0.0.2-full.nupkg"},
@@ -445,6 +523,28 @@ fn the_manifest_version_is_read_from_the_nuspec() {
     let text = "<package><metadata><id>Flare</id>\n<version> 0.0.2 </version></metadata></package>";
     assert_eq!(manifest_version(text).as_deref(), Some("0.0.2"));
     assert_eq!(manifest_version("<package/>"), None);
+}
+
+#[test]
+fn a_missing_offer_reports_the_calls_and_the_apps_update_crumbs() {
+    let dir = tempfile::tempdir().unwrap();
+    let profile = dir.path().join("p");
+    let logs = profile.join("logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    std::fs::write(
+        profile.join("update-calls.json"),
+        r#"{"checks":1,"installs":0}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        logs.join("diag.jsonl"),
+        "{\"a\":\"update-check\",\"offered\":false}\n{\"a\":\"settings-page\"}\n",
+    )
+    .unwrap();
+    let r = offer_report(dir.path(), &profile);
+    assert!(r.contains("\"checks\": Number(1)"), "{r}");
+    assert!(r.contains("\"offered\":false"), "{r}");
+    assert!(!r.contains("settings-page"), "{r}");
 }
 
 #[test]
@@ -495,7 +595,7 @@ fn an_offered_update_is_installed_and_the_app_restarts_on_its_profile() {
     let profile = sb.root.join("p");
     std::fs::create_dir_all(&profile).unwrap();
     let _reap = Reaper(vec![inst.clone(), profile.clone()]);
-    install(&releases, &inst);
+    install(&inst);
     assert_eq!(installed_version(&inst).as_deref(), Some("0.0.1"));
 
     let exe = inst.join("current").join("Flare.exe");
@@ -507,8 +607,8 @@ fn an_offered_update_is_installed_and_the_app_restarts_on_its_profile() {
         until(Duration::from_secs(60), || state(&profile).is_some_and(
             |s| { s["chip"] == true && s["version"] == "0.0.2" && s["mock"] == false }
         )),
-        "no real 0.0.2 offer: {:?}",
-        state(&profile)
+        "no real 0.0.2 offer: {}",
+        offer_report(&sb.root, &profile)
     );
     send(&profile, "open");
     assert!(until(Duration::from_secs(10), || state(&profile)
@@ -534,7 +634,7 @@ fn a_downloaded_package_is_never_applied_without_the_install_command() {
     std::fs::create_dir_all(&profile).unwrap();
     std::fs::create_dir_all(&empty_feed).unwrap();
     let _reap = Reaper(vec![inst.clone(), profile.clone()]);
-    install(&releases, &inst);
+    install(&inst);
     assert_eq!(installed_version(&inst).as_deref(), Some("0.0.1"));
 
     // The 0.0.2 full package is already in the install's packages folder before the launch.
@@ -572,14 +672,13 @@ fn cancel_leaves_nothing_and_a_second_install_still_works() {
     if !install_enabled() {
         return;
     }
-    let releases = env_dir("FLARE_PACKED_DIR");
     let big = env_dir("FLARE_PACKED_BIG_DIR");
     let sb = Sandbox::new();
     let inst = sb.root.join("inst");
     let profile = sb.root.join("p");
     std::fs::create_dir_all(&profile).unwrap();
     let _reap = Reaper(vec![inst.clone(), profile.clone()]);
-    install(&releases, &inst);
+    install(&inst);
     assert_eq!(installed_version(&inst).as_deref(), Some("0.0.1"));
 
     let server = Throttle::start(&big);
@@ -591,8 +690,9 @@ fn cancel_leaves_nothing_and_a_second_install_still_works() {
     assert!(
         until(Duration::from_secs(60), || state(&profile)
             .is_some_and(|s| s["chip"] == true && s["version"] == "0.0.2")),
-        "no 0.0.2 offer from the loopback feed: {:?}",
-        state(&profile)
+        "no 0.0.2 offer from the loopback feed: {}\nserved {:?}",
+        offer_report(&sb.root, &profile),
+        server.served()
     );
     send(&profile, "install");
     assert!(

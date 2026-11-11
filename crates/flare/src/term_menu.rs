@@ -5,6 +5,7 @@
 use crate::menus_ui::MenuRowData;
 use flare_term::link_target::TermPathAt;
 use flare_term::path_open::PathKind;
+use flare_win::openers::REVEAL_LABEL;
 
 /// Where the terminal's menu was opened and what lay under the pointer.
 pub struct TermMenuAt {
@@ -82,7 +83,7 @@ pub fn term_menu_rows(
             ));
         }
         rows.push(row(
-            "Show in Explorer",
+            REVEAL_LABEL,
             "",
             "menu-folder",
             TermMenuAct::OpenPath {
@@ -231,7 +232,7 @@ mod tests {
             labels(&folder),
             [
                 "Open folder",
-                "Show in Explorer",
+                REVEAL_LABEL,
                 "Copy path",
                 "Paste",
                 "Find in scrollback"
@@ -259,12 +260,7 @@ mod tests {
             let rows = term_menu_rows(&at("", None, Some(file_named(name))), false, FIND, HELP);
             assert_eq!(
                 labels(&rows)[..4],
-                [
-                    "Open",
-                    "Show in side panel",
-                    "Show in Explorer",
-                    "Copy path"
-                ],
+                ["Open", "Show in side panel", REVEAL_LABEL, "Copy path"],
                 "{name}"
             );
             let side = &rows[1];
@@ -350,6 +346,29 @@ mod tests {
         );
     }
 
+    /// Rule 1147: the reveal row names the file manager it opens, Finder on the Mac.
+    #[test]
+    fn the_reveal_row_names_the_os_file_manager() {
+        let want = if cfg!(target_os = "macos") {
+            "Show in Finder"
+        } else {
+            "Show in Explorer"
+        };
+        assert_eq!(REVEAL_LABEL, want);
+        let rows = term_menu_rows(&at("", None, Some(file_path())), false, FIND, HELP);
+        let reveal = rows
+            .iter()
+            .find(|r| {
+                r.act
+                    == TermMenuAct::OpenPath {
+                        path: file_path(),
+                        reveal: true,
+                    }
+            })
+            .unwrap();
+        assert_eq!(reveal.label, want);
+    }
+
     #[test]
     fn copy_path_of_every_file_link_is_left_to_the_worker_that_finds_the_one_that_exists() {
         let mut p = file_named("MyDocs\\a.pdf");
@@ -372,7 +391,7 @@ mod tests {
                 reveal: false
             }
         );
-        let reveal = rows.iter().find(|r| r.label == "Show in Explorer").unwrap();
+        let reveal = rows.iter().find(|r| r.label == REVEAL_LABEL).unwrap();
         assert_eq!(
             reveal.act,
             TermMenuAct::OpenPath {

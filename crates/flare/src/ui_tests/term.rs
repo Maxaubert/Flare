@@ -1798,12 +1798,15 @@ mod flow {
         assert!(!w.records().contains(&OpenedRecord::Open(b)));
         // The menu on a file link: open, show, copy the whole absolute path.
         w.right_click(2, 0);
-        let labels = w.menu_labels();
-        assert!(
-            labels.iter().any(|l| l == "Open")
-                && labels.iter().any(|l| l.starts_with("Show in "))
-                && labels.iter().any(|l| l == "Copy path"),
-            "{labels:?}"
+        assert_eq!(
+            w.menu_labels(),
+            [
+                "Open",
+                flare_win::openers::REVEAL_LABEL,
+                "Copy path",
+                "Paste",
+                "Find in scrollback"
+            ]
         );
         w.pick("Copy path");
         w.pump_until("the path copy", |w| {
@@ -1835,12 +1838,7 @@ mod flow {
             "Open on a script only reveals"
         );
         w.right_click(2, 0);
-        let show = w
-            .menu_labels()
-            .into_iter()
-            .find(|l| l == "Show in Explorer" || l == "Show in Finder")
-            .expect("the show row");
-        w.pick(&show);
+        w.pick(flare_win::openers::REVEAL_LABEL);
         w.pump_until("the show", |w| w.records().len() == 2);
         assert_eq!(w.records()[1], OpenedRecord::Reveal(a.clone()));
         assert!(
@@ -1860,7 +1858,7 @@ mod flow {
     /// path in the cell, as written (rules 273 and 274).
     #[test]
     fn a_table_cell_link_that_names_nothing_opens_nothing_and_copies_exactly_its_path() {
-        // The Windows paths as this platform writes them (`path_grammar::native_text`, rule 1145).
+        // The Windows paths as this platform writes them (`path_grammar::native_text`, rule 1148).
         let native = |s: &str| {
             if cfg!(windows) {
                 s.to_string()

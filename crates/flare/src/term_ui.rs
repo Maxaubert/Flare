@@ -2576,7 +2576,7 @@ mod tests {
             got[0].1 == "text" && got[0].2.contains("My Docs"),
             "{got:?}"
         );
-        pick(&mut r, "Show in Explorer");
+        pick(&mut r, flare_win::openers::REVEAL_LABEL);
         until("the reveal", || !r.openers.records().is_empty());
         let rec = r.openers.records();
         assert!(
@@ -2795,9 +2795,13 @@ mod tests {
         };
         r.click(4, 1);
         until("the click's word", || says(&r) == 1);
-        for (n, label) in ["Open", "Show in Explorer", "Show in side panel"]
-            .into_iter()
-            .enumerate()
+        for (n, label) in [
+            "Open",
+            flare_win::openers::REVEAL_LABEL,
+            "Show in side panel",
+        ]
+        .into_iter()
+        .enumerate()
         {
             pick_on(&mut r, 4, 1, label);
             until(label, || says(&r) == n + 2);

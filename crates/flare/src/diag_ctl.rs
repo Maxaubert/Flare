@@ -574,6 +574,20 @@ pub fn install_kill_hook() {
             &[("pid", Value::from(pid)), ("ms", Value::from(ms))],
         );
     });
+    // A child that stopped reading drops every write after the first: one crumb a second says so.
+    let _ = flare_term::session::WRITE_DROP_HOOK.set(|pid, len| {
+        static LAST: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+        let mut last = LAST.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = std::time::Instant::now();
+        if last.is_some_and(|t| now.duration_since(t) < Duration::from_secs(1)) {
+            return;
+        }
+        *last = Some(now);
+        crumb(
+            "pty-write-dropped",
+            &[("pid", Value::from(pid)), ("len", Value::from(len))],
+        );
+    });
 }
 
 #[cfg(test)]
@@ -987,12 +1001,19 @@ mod ",
         install_kill_hook();
         let hook = flare_term::session::KILL_STUCK_HOOK.get().expect("set");
         hook(77, 1500);
+        let dropped = flare_term::session::WRITE_DROP_HOOK.get().expect("set");
+        dropped(78, 4096);
+        dropped(78, 4096);
         ctl.log.flush();
         ctl.stop();
         let l = lines(dir.path());
         let c = l.iter().find(|x| x["a"] == "kill-stuck").expect("a crumb");
         assert_eq!(c["pid"], 77);
         assert_eq!(c["ms"], 1500);
+        let d: Vec<_> = l.iter().filter(|x| x["a"] == "pty-write-dropped").collect();
+        assert_eq!(d.len(), 1, "one crumb a second, however many drops");
+        assert_eq!(d[0]["pid"], 78);
+        assert_eq!(d[0]["len"], 4096);
     }
 
     #[test]
