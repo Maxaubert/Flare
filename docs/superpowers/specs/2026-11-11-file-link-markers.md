@@ -131,3 +131,51 @@ Checks before the PR: `cargo fmt`, clippy, the workspace tests, the hidden `mark
 
 The exact status sentence for a missing file, how the panel marks the line (the selection colour is a fine default),
 and the names of the new rules and tests.
+
+## Changes after review (2026-11-11)
+
+Owner feedback on PR #166, with a screenshot of a Claude Code table.
+
+### A path in a table cell
+
+Claude Code draws a markdown table with box borders and breaks a long cell inside its column:
+
+```
+│ 4  │ ⟦C:\Users\...\web-application-project\app\   │ 🔄  │
+│    │ src\app\favorites\favorites.ts⟧               │ now │
+```
+
+The reader read straight across the right border and the other cells, and went on at the next row's left border, so
+the link ran edge to edge on both rows with borders in its path. Now a span whose start mark has a vertical border
+(`│` U+2502, `┃` U+2503 or `║` U+2551) left of it and another right of it on the same row is in a table cell. When it
+does not end on its first row, each row's text stops at the first border right of where reading started (the blanks
+before it dropped; the piece ends at the last path cell), and the next row goes on at the first non-blank cell right of
+the border at the column of the cell's left border on the start row. A next row without a border there (the table's
+bottom edge has `┴` or `└`) is no link. A span that ends on its first row reads as before, and a border only left of the
+mark (a quote bar) is no table. Rule 271.
+
+### Short paths, relative to the session's folder
+
+Every link was long because the note asked for absolute paths. The owner chose paths relative to the session's folder.
+
+- The note (`FILE_LINK_NOTE`, both platforms, so also the server's `instructions`) now reads: "You are running inside
+  Flare. When you mention a file in your reply, write its path between ⟦ and ⟧, with :line when a line matters. For a
+  file inside your working folder, write the path relative to that folder, for example
+  ⟦app\src\favorites\favorites.ts:17⟧, and an absolute path only for a file outside it. In a table, keep a marked path
+  short. Flare turns it into a link. Do not put the marks in code blocks, commands or files you write." The macOS note
+  has `⟦app/src/favorites/favorites.ts:17⟧`.
+- Flare learns the session's real folder from its hooks: every Claude Code hook input has `cwd`. The prompt hook
+  (`flare-mcp --hook-context`) already calls `panel.state`; it now sends `{"cwd": ...}` as its params. A new
+  `PostToolUse` hook with matcher `EnterWorktree|ExitWorktree` runs `flare-mcp --hook-context --folder`, which sends only
+  that and prints nothing, so a worktree entered within a turn counts at once. A `cwd` that is not an absolute path of
+  at most 4,096 bytes with no control character is not sent. An older Flare ignores the param.
+- Flare takes the folder only from the agent's grant, vets it again on the call thread, and keeps it per tab as the
+  agent's folder: the latest wins; it goes when the agent leaves the tab (a shell prompt, an empty title, the poll), when
+  a new shell starts in the tab and when the tab closes.
+- A relative marked path is read from the agent's folder when known, else from the tab's own folder (the old base):
+  the click, the menu rows, the hover thumbnail and the lighting of a relative mark (still a link only while some folder
+  is known). Every stat stays on a worker (rule 34). Rule 272.
+- Tests: the hook carries `cwd` (`every_hook_that_calls_flare_carries_the_sessions_folder`), the plugin has the worktree
+  hook, Flare keeps only a plain absolute folder from the agent, a relative mark opens under the agent's folder and not
+  the shell's (`a_relative_file_link_opens_under_the_agents_folder_not_the_shells`), and the hidden e2e `markerLinks`
+  runs the real `flare-mcp --hook-context --folder` in the tab, then clicks a relative mark while the shell is busy.

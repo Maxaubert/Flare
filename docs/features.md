@@ -2325,10 +2325,10 @@ Spec `docs/superpowers/specs/2026-11-10-ask-agent-additions-design.md`, section 
 Spec and plan: `docs/superpowers/specs/2026-11-11-file-link-markers.md`. Owner, 2026-11-11: "the link system we have is
 poor. many links dont work."
 
-- **A file link is a path between `⟦` and `⟧`.** A session writes the absolute path (or one relative to the tab's folder)
+- **A file link is a path between `⟦` and `⟧`.** A session writes the path (relative to its folder, or absolute)
   between U+27E6 and U+27E7, optionally with `:line` or `:line:col`: `⟦C:\repo\src\main.rs:42⟧`. The whole span, marks
   included, is one link. Nothing is statted before it lights: the session wrote it on purpose. A relative path is a link
-  only while the tab's folder is known. Rule 266.
+  only while the agent's or the tab's folder is known. Rule 266.
 - **Read exactly, over rows.** `flare_term::file_marks` reads to the end mark in the same row and up to 7 rows below
   (at most 1,024 characters): a row the terminal wrapped joins with nothing dropped; a row Claude Code broke by hand
   joins with its leading spaces (Claude Code's indent) and the last row's trailing blanks dropped. A second start mark
@@ -2349,10 +2349,23 @@ poor. many links dont work."
   the hover thumbnail act, on their worker, on the first spelling that names something, as the click does. A wide
   character the terminal moved to the next row leaves the last column empty: that cell is no space of the path (a space
   there is tried as a second spelling). Rule 270.
+- **A path in a table cell (2026-11-11, review).** Claude Code draws a markdown table with box borders and breaks a long
+  cell inside its column. A span whose start mark has a vertical border (`│`, `┃` or `║`) on each side is read in its
+  cell: each row stops at the cell's right border (blanks before it dropped) and goes on in the next row right of the
+  cell's left border, which that row must have at the same column (the table's bottom edge has a corner there: no
+  link). The link covers only the path's cells. Rule 271.
+- **Short paths, read from the session's folder (2026-11-11, review).** The note now asks for a path relative to the
+  session's working folder (`⟦app\src\favorites\favorites.ts:17⟧`), an absolute path only for a file outside it, and a
+  short marked path in a table. Every `UserPromptSubmit` hook sends the `cwd` of its input along with `panel.state`, and a
+  new `PostToolUse` hook of `EnterWorktree` and `ExitWorktree` (`flare-mcp --hook-context --folder`) does only that.
+  Flare keeps it per tab as the agent's folder (the latest wins; it goes when the agent leaves the tab, at a shell
+  prompt or when the tab closes) and reads a relative file link from it, else from the tab's own folder: the click, the
+  menu rows, the hover thumbnail and the lighting of a relative mark. A Flare that does not know the field ignores it.
+  Rule 272.
 - **`show_file` takes `line`.** The same scroll and mark as a click (`view.file`'s `line`, from 1).
 - **Every Claude session is told.** The Flare plugin's `SessionStart` hook (start, resume, clear and compact) runs
   `flare-mcp --hook-context --session-start`, which prints, only inside a Flare tab, the note "You are running inside
-  Flare. When you mention a file in your reply, write its absolute path between ⟦ and ⟧, ..." as
+  Flare. When you mention a file in your reply, write its path between ⟦ and ⟧, ..." as
   `additionalContext`. The MCP server's `instructions` end with the same note, so a session that skips the hook still
   sees it. Codex and Antigravity are not told (no Flare plugin), but any program that prints marks gets links. Rule 269.
 - **Tests.** `file_marks::tests`, `link_scan::tests` (`a_plain_listing_has_no_file_links`,
@@ -2362,5 +2375,8 @@ poor. many links dont work."
   `a_click_on_a_marked_path_that_names_nothing_says_so_and_opens_nothing`), `appctl::tests`
   (`a_preview_at_a_line_marks_that_line_and_a_later_one_without_marks_nothing`), `flare-mcp` (`hook::tests`, the
   stdio test `the_session_start_hook_tells_a_flare_session_about_file_links_once`), `plugin::tests`
-  (`the_session_start_hook_tells_claude_about_file_links_on_every_start`) and the hidden e2e `markerLinks`, which replaces
-  `pathLinks`.
+  (`the_session_start_hook_tells_claude_about_file_links_on_every_start`,
+  `entering_or_leaving_a_worktree_tells_flare_the_sessions_folder`), `ctl_app::tests`
+  (`panel_state_carries_the_agents_folder_only_when_it_is_a_plain_absolute_path`), `appctl::tests`
+  (`a_relative_file_link_opens_under_the_agents_folder_not_the_shells`) and the hidden e2e `markerLinks` (a table cell,
+  and a relative mark read from the folder the real hook names), which replaces `pathLinks`.

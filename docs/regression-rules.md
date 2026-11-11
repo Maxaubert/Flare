@@ -773,7 +773,35 @@ empty (`LEADING_WIDE_CHAR_SPACER`, read as an empty cell of width 1) when a wide
 `copy_path_of_a_link_with_other_spellings_is_left_to_the_worker_that_finds_the_one_that_exists`,
 `a_picture_named_with_a_space_where_its_row_broke_is_found_by_that_spelling` and
 `a_marked_path_the_terminal_wrapped_before_a_wide_character_reads_with_no_space`.
-
+271. **A marked path in a table cell is read inside the cell.** Owner, 2026-11-11, with a screenshot: Claude Code draws a
+markdown table with box borders and breaks a long cell inside its column, and the reader read across the right border
+and the other cells, then went on at the left border of the next row, so the link ran edge to edge on both rows with
+borders in its path. A span whose start mark has a vertical border (`│`, `┃` or `║`) left of it and another right of it
+on the same row is in a table cell (`file_marks::table_cell`). When it does not end on that row, each row's text stops at
+the first border right of where reading started (the blanks before it dropped, the piece ends at the last path cell),
+and the next row goes on at the first non-blank cell right of the border at the column of the cell's left border on the
+start row; a next row with no border there (the table's bottom edge) is no link. A span that ends on its first row, and
+a border only left of the mark (a quote bar), read as before. Held by
+`a_path_in_a_table_cell_broken_by_hand_reads_only_inside_the_cell`, `a_path_over_three_rows_of_a_table_cell_is_one_link`,
+`a_table_cell_that_ends_at_the_tables_bottom_edge_is_no_link`, `a_border_only_left_of_the_mark_is_no_table` and the
+hidden e2e `markerLinks`.
+272. **A relative file link is read from the folder the session works in.** Owner, 2026-11-11: every link was long
+because the note asked for absolute paths. The note (`flare_mcp::FILE_LINK_NOTE`, both platforms, also the server's
+`instructions`) now asks for a path relative to the session's working folder, an absolute path only for a file outside
+it, and a short marked path in a table. The `UserPromptSubmit` hook (`flare-mcp --hook-context`) sends the `cwd` of its
+input as the optional `cwd` param of `panel.state`, and the `PostToolUse` hook of `EnterWorktree|ExitWorktree`
+(`--hook-context --folder`) sends only that and prints nothing; a `cwd` that is not an absolute path of at most 4,096
+bytes with no control character is not sent. Flare takes it only from the agent's grant, vets it again on the call
+thread (`ctl_app::agent_folder`; an odd one is ignored, never an error) and keeps it per tab
+(`AgentHub::agent_folder`): the latest wins, and it goes when the agent leaves the tab (a shell prompt, an empty title,
+the poll), when a new shell starts in the tab and when the tab closes. The front tab's link folder (`FrontTab::cwd`,
+`TabInfo::cwd`) is the agent's folder when known, else the tab's own: the click, the menu rows, the hover thumbnail and
+the lighting of a relative mark all read it, and every stat stays on a worker (rule 34). A Flare that does not know
+the param ignores it; an older `flare-mcp` sends none. Held by `every_hook_that_calls_flare_carries_the_sessions_folder`,
+`the_session_start_note_asks_for_paths_between_the_marks`,
+`entering_or_leaving_a_worktree_tells_flare_the_sessions_folder`,
+`panel_state_carries_the_agents_folder_only_when_it_is_a_plain_absolute_path`,
+`a_relative_file_link_opens_under_the_agents_folder_not_the_shells` and the hidden e2e `markerLinks`.
 ## macOS port
 
 The rules the macOS port stack added (PRs #121 to #140) are numbered from 1001 so they never clash with main: main's
