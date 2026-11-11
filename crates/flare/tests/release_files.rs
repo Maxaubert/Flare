@@ -1,7 +1,7 @@
 //! M9 Task 28: the release workflow and the release scripts (their shape, read as text).
 //!
 //! These tests read `.github/workflows/release.yml` and `tools/release/*.ps1` as text. They do not run
-//! them: the workflow runs on a Windows runner (Task 37 exercises the install), and the scripts need vpk.
+//! them: the workflow runs on a Windows runner, and the scripts need vpk.
 
 use std::fs;
 use std::path::PathBuf;
@@ -214,11 +214,9 @@ fn the_release_goes_to_this_repository_only() {
             "every github.com link names this repository"
         );
     }
-    // The one other repository named is the one the side-by-side test reads, in its missing-token error.
-    let rest = wf.replace(NEIGHBOUR_TOKEN_ERROR, "");
     for other in ["Maxaubert", "loftspace", "arkivert", "PrismTerminal"] {
         assert!(
-            !rest.contains(other),
+            !wf.contains(other),
             "no other repository in the workflow: {other}"
         );
     }
@@ -227,20 +225,15 @@ fn the_release_goes_to_this_repository_only() {
 }
 
 #[test]
-fn no_secret_other_than_the_github_token_and_the_neighbour_release_token() {
+fn no_secret_other_than_the_github_token() {
     let wf = read(WF);
-    assert_eq!(
-        wf.matches("secrets.").count(),
-        1,
-        "one repository secret: the neighbour's release token"
-    );
+    assert!(!wf.contains("secrets."), "no repository secret");
     let allowed = [
         "github.token",
         "github.repository",
         "github.sha",
         "steps.ver.outputs.version",
         "vars.FLARE_LIVE_UPDATES",
-        NEIGHBOUR_TOKEN_SECRET,
     ];
     for expr in wf.split("${{").skip(1) {
         let inner = expr.split("}}").next().unwrap_or("").trim();
@@ -248,64 +241,53 @@ fn no_secret_other_than_the_github_token_and_the_neighbour_release_token() {
     }
 }
 
-// ---- 2026-11-11: the neighbour's installer sits in a private repository (regression rule 1141) ----
+// ---- 2026-11-11: no side-by-side install with Prism Terminal (regression rule 1153) ----
 
-/// The secret the side-by-side step reads the neighbour's private releases with.
-const NEIGHBOUR_TOKEN_SECRET: &str = "secrets.FLARE_RELEASE_TOKEN";
-
-/// The one line a run prints when that secret is missing.
-const NEIGHBOUR_TOKEN_ERROR: &str = "::error::FLARE_RELEASE_TOKEN is not set: add a fine-grained read-only token for arkivert/PrismTerminal as a repository secret (docs/shipping.md)";
-
-/// The steps of a workflow, each from its `- ` line to the next one at the same indent.
-fn steps(wf: &str) -> Vec<&str> {
-    wf.split("\n      - ").skip(1).collect()
+/// Every workflow file, as (relative path, text).
+fn workflows() -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = fs::read_dir(root().join(".github/workflows"))
+        .expect("the workflows folder")
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "yml" || e == "yaml"))
+        .map(|p| {
+            let rel = format!(
+                ".github/workflows/{}",
+                p.file_name().unwrap().to_string_lossy()
+            );
+            let text = read(&rel);
+            (rel, text)
+        })
+        .collect();
+    out.sort();
+    out
 }
 
 #[test]
-fn only_the_side_by_side_step_gets_the_neighbour_token_and_it_fails_without_it() {
-    for path in [WF, ".github/workflows/installer-e2e.yml"] {
-        let wf = read(path).replace("\r\n", "\n");
-        let with_secret: Vec<&str> = steps(&wf)
-            .into_iter()
-            .filter(|s| s.contains("secrets."))
-            .collect();
-        assert_eq!(with_secret.len(), 1, "{path}: one step reads a secret");
-        let step = with_secret[0];
-        assert!(
-            step.contains(&format!("GH_TOKEN: ${{{{ {NEIGHBOUR_TOKEN_SECRET} }}}}")),
-            "{path}: the step's gh reads the neighbour token"
-        );
-        assert_eq!(
-            step.matches("secrets.").count(),
-            1,
-            "{path}: and nothing else"
-        );
-        let test = step
-            .find("cargo test -p flare-e2e --test side_by_side")
-            .unwrap_or_else(|| panic!("{path}: the secret goes to the side-by-side step"));
-        // A missing secret fails the step with one clear line, before the test runs; never a skip.
-        let check = step
-            .find("if (-not $env:GH_TOKEN)")
-            .unwrap_or_else(|| panic!("{path}: the step checks the token"));
-        let error = step
-            .find(NEIGHBOUR_TOKEN_ERROR)
-            .unwrap_or_else(|| panic!("{path}: the step names the missing secret"));
-        let exit = step[error..]
-            .find("exit 1")
-            .map(|i| error + i)
-            .unwrap_or_else(|| panic!("{path}: the step fails"));
-        assert!(check < error && error < exit && exit < test, "{path}");
-        assert!(
-            !step.contains("continue-on-error"),
-            "{path}: a failure counts"
-        );
-        // The token is never printed: the only use of it in the script is the empty check.
-        assert_eq!(
-            step.matches("GH_TOKEN").count(),
-            2,
-            "{path}: GH_TOKEN is set and checked, never echoed"
-        );
+fn no_workflow_downloads_the_reference_app_or_needs_a_token_for_it() {
+    // The owner removed the side-by-side check (2026-11-11): no CI step installs the reference app, reads
+    // its private repository or needs a token for it.
+    let wfs = workflows();
+    assert!(wfs.iter().any(|(p, _)| p == WF), "release.yml is read");
+    assert!(
+        !root().join(".github/workflows/installer-e2e.yml").exists(),
+        "installer-e2e.yml only ran the side-by-side test"
+    );
+    let repo = ["arkivert/", "Prism", "Terminal"].concat();
+    for (path, wf) in &wfs {
+        for word in [
+            repo.as_str(),
+            "FLARE_RELEASE_TOKEN",
+            "PRISM_RELEASE_TOKEN",
+            "side_by_side",
+        ] {
+            assert!(!wf.contains(word), "{path} names {word}");
+        }
     }
+    assert!(
+        !root().join("tools/e2e/tests/side_by_side.rs").exists(),
+        "the side-by-side test is gone"
+    );
 }
 
 #[test]
@@ -396,11 +378,7 @@ fn the_package_ships_the_mcp_server_beside_the_app_and_every_packing_workflow_bu
         read(VERIFY).contains("current/flare-mcp.exe"),
         "verify-pack.ps1 requires it in the portable zip"
     );
-    for wf in [
-        WF,
-        ".github/workflows/installer-e2e.yml",
-        ".github/workflows/update-e2e.yml",
-    ] {
+    for wf in [WF, ".github/workflows/update-e2e.yml"] {
         assert!(
             read(wf).contains("cargo build --release -p flare-mcp"),
             "{wf} builds the MCP server before it packs"
@@ -424,7 +402,7 @@ fn no_fake_binary_is_packed() {
 #[test]
 fn the_package_never_names_the_models_folder() {
     // O14: the models folder is %LOCALAPPDATA%\FlareDictation; the installer and the packer never touch it,
-    // so an uninstall keeps the downloaded models (M8 Task 33; M9's side-by-side test holds the folder).
+    // so an uninstall keeps the downloaded models (M8 Task 33).
     for rel in [PACK, VERIFY] {
         let text = read(rel);
         assert!(
