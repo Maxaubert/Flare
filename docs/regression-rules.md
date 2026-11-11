@@ -2052,6 +2052,21 @@ later), so a scenario that waits for the prompt text and snaps at once can still
 that row holds text or the cursor (`ground_spots` in `tools/e2e/src/scenarios/chrome.rs`). Windows reads the same
 spots. Held by `the_spots_miss_cell_zero_where_the_cursor_sits`, `the_spots_scale_with_the_window` and
 `a_last_row_with_text_or_the_cursor_fails_loudly`. Source: main's first full CI run after the macOS port (2026-11-11).
+1133. **macOS: a tab that hosted Claude comes back resumed after a quit or restart, as on Windows.** `tabs.json` keeps
+only the folder and `"agent": "claude"`; the restore finds the session id in Claude's store
+(`~/.claude/projects/<encode_cwd>/*.jsonl`, newest interactive first) and hands it to the spawn. `with_resume`
+built the resume only for pwsh, powershell and cmd, so a Mac zsh, bash or fish tab dropped the id and came back
+as a plain shell (Max, 2026-11-11: "claude doesnt auto resume on restart either"). Now those shells keep their
+plain login command line and get the id in `FLARE_RESUME_ID`; Flare's shell integration takes it out of the
+environment before the user's startup files run, and runs `claude --resume <id>` (or `codex resume --last`,
+`agy -c`) once those files have set PATH: zsh at the first prompt (`__flare_install` in `flare.zsh`, the id kept
+by the `.zshenv` shim), bash at the end of its `--rcfile`, fish in `flare.fish`. The script runs only an id of
+hex digits and dashes, quoted. Without the integration on disk a Mac tab still comes back as a plain shell.
+`crates/flare-shells/src/resume.rs`, `crates/flare-shells/src/macos/scripts/`. Held by
+`a_mac_shell_carries_the_resume_in_its_environment`, `a_restored_zsh_or_bash_tab_resumes_claude_through_the_login_shell`
+(a real `/bin/zsh -l -i` and `/bin/bash --rcfile`, the fake `claude` on the PATH only through the user's
+startup file), `a_shell_with_no_resume_starts_no_agent` and `a_mac_zsh_resume_carries_the_id_into_the_login_shell`.
+Source: Max's restart on the Mac (2026-11-11).
 1130. **A fresh profile has vertical tabs; a stored choice is kept.** Max asked for tabs down the side by default
 (2026-11-11). Native: `flare.window.tabLayout` falls back to `vertical` (`crates/flare-settings/src/tab_layout.rs`),
 the sidebar keeps its own defaults (open, 220 px), and nothing is stored until somebody picks, so a stored or
