@@ -22,6 +22,9 @@ windows-sys.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 flare-proc = { path = "../flare-proc" }
 libc.workspace = true
+# The Trash (a removed or replaced plugin folder, rule 1135).
+objc2.workspace = true
+objc2-foundation.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
