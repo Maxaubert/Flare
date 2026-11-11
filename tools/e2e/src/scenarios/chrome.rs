@@ -470,6 +470,59 @@ pub fn settings_page(ctx: &mut Ctx) -> Result<(), String> {
     Ok(())
 }
 
+/// Where the theme check reads the grid, in device pixels of the snapshot (rule 1126).
+#[derive(Debug, PartialEq)]
+struct GroundSpots {
+    /// Inside the frame's padding, above and left of cell (0, 0).
+    frame: (f64, f64),
+    /// The middle of cell (`row`, 0).
+    cell: (f64, f64),
+    /// The grid's last row: a fresh shell has written nothing there and its cursor is elsewhere.
+    row: usize,
+}
+
+/// The spots for a grid at css `grid` and scale `k`, from the `dpi.state` and `grid.text` answers.
+/// Never cell (0, 0), where the block cursor sits until the shell's prompt is painted. An Err (no
+/// geometry, or the last row holds text or the cursor) is the check's FAIL, never a skipped read.
+fn ground_spots(
+    grid: (f64, f64, f64, f64),
+    k: f64,
+    dims: &Value,
+    text: &Value,
+) -> Result<GroundSpots, String> {
+    let num = |v: &Value, key: &str| {
+        v[key]
+            .as_f64()
+            .filter(|n| *n > 0.0)
+            .ok_or_else(|| format!("no {key} in the probe"))
+    };
+    let pad = num(dims, "padding")?;
+    let (cell_w, cell_h) = (num(dims, "cell_w")?, num(dims, "cell_h")?);
+    let rows = num(text, "rows_n")? as usize;
+    let row = rows - 1;
+    let ink = text["rows"][row]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if !ink.is_empty() {
+        return Err(format!("the last row {row} holds text ({ink:?})"));
+    }
+    if text["cursor"]["row"].as_u64() == Some(row as u64) {
+        return Err(format!("the cursor is on the last row {row}"));
+    }
+    let (x0, y0) = (grid.0 * k, grid.1 * k);
+    let inset = (pad / 2.0).floor().max(1.0);
+    Ok(GroundSpots {
+        frame: (x0 + inset, y0 + inset),
+        cell: (
+            x0 + pad + (cell_w / 2.0).floor(),
+            y0 + pad + row as f64 * cell_h + (cell_h / 2.0).floor(),
+        ),
+        row,
+    })
+}
+
 /// PT: run.mjs:1082-1143. Dark is the default and the chrome paints the theme's ground; a light
 /// preset turns it light, and the strip follows.
 pub fn theme(ctx: &mut Ctx) -> Result<(), String> {
@@ -479,23 +532,6 @@ pub fn theme(ctx: &mut Ctx) -> Result<(), String> {
     })?;
     // The first tab is the precondition the port waits for; the checks below read it.
     let _one = first_tab(ctx, &mut app);
-    // macOS: pwsh starts later than the first frame, and until it prints the block cursor sits on the
-    // cell the frame check reads; wait for its prompt (Windows' ConPTY keeps the cursor hidden there).
-    #[cfg(target_os = "macos")]
-    {
-        let front = app
-            .session
-            .state()
-            .ok()
-            .and_then(|s| s.front)
-            .unwrap_or_default();
-        let _ = crate::world::wait_for_prompt(
-            &mut app,
-            &front,
-            crate::world::Shell::PowerShell,
-            crate::world::prompt_timeout(crate::world::Shell::PowerShell),
-        );
-    }
     let dark = probe(&mut app, "window.ground", Value::Null)["light"] == false;
     ctx.ok(dark, "the default theme is dark");
     let ground = ground_rgb(&mut app);
@@ -506,10 +542,28 @@ pub fn theme(ctx: &mut Ctx) -> Result<(), String> {
         strip == Some(ground),
         format!("the strip's empty space paints the theme's ground ({strip:?} vs {ground:?})"),
     );
-    let frame = rect(&mut app, "grid").and_then(|g| pixel(&mut app, g.0 * k + 6.0, g.1 * k + 6.0));
+    // Rule 1126: the frame is read in its padding and the rows on the last row, never on cell (0, 0),
+    // where the block cursor sits until the shell's prompt is painted. The picture can be a frame
+    // behind the grid the shell has written, so waiting for the prompt text never kept it off.
+    let dims = probe(&mut app, "dpi.state", Value::Null);
+    let text = probe(&mut app, "grid.text", Value::Null);
+    let spots = rect(&mut app, "grid")
+        .ok_or_else(|| "no grid rectangle".to_string())
+        .and_then(|g| ground_spots(g, k, &dims, &text));
+    let (pass, seen) = match spots {
+        Ok(s) => {
+            let frame = pixel(&mut app, s.frame.0, s.frame.1);
+            let row = pixel(&mut app, s.cell.0, s.cell.1);
+            (
+                frame == Some(ground) && row == Some(ground),
+                format!("frame {frame:?}, row {} {row:?}, vs {ground:?}", s.row),
+            )
+        }
+        Err(why) => (false, why),
+    };
     ctx.ok(
-        frame == Some(ground),
-        format!("the frame round the rows and the rows paint the ground ({frame:?})"),
+        pass,
+        format!("the frame round the rows and the rows paint the ground ({seen})"),
     );
     // DROPPED: "a strip under the last row" is xterm sizing its rows in a web view; Flare's grid
     // is drawn at its own size, so there is no strip under the last row to get wrong.
@@ -546,4 +600,60 @@ pub fn theme(ctx: &mut Ctx) -> Result<(), String> {
     );
     light.close();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(rows: &[&str], cursor_row: u64) -> Value {
+        json!({ "rows": rows, "rows_n": rows.len(), "cursor": { "row": cursor_row, "col": 0 } })
+    }
+
+    fn dims() -> Value {
+        json!({ "padding": 4, "cell_w": 8, "cell_h": 17 })
+    }
+
+    #[test]
+    fn the_spots_miss_cell_zero_where_the_cursor_sits() {
+        // The Mac run 42917628472: grid at css (0, 36), scale 1, the cursor on (0, 0), no prompt yet.
+        let s = ground_spots(
+            (0.0, 36.0, 1180.0, 744.0),
+            1.0,
+            &dims(),
+            &text(&["", "", ""], 0),
+        )
+        .unwrap();
+        assert_eq!(s.frame, (2.0, 38.0));
+        assert!(
+            s.frame.0 < 4.0 && s.frame.1 < 36.0 + 4.0,
+            "inside the padding"
+        );
+        assert_eq!(s.row, 2);
+        assert_eq!(s.cell, (4.0 + 4.0, 36.0 + 4.0 + 2.0 * 17.0 + 8.0));
+    }
+
+    #[test]
+    fn the_spots_scale_with_the_window() {
+        let d = json!({ "padding": 6, "cell_w": 12, "cell_h": 26 });
+        let s = ground_spots(
+            (10.0, 40.0, 800.0, 600.0),
+            1.5,
+            &d,
+            &text(&["PS C:\\>", ""], 0),
+        )
+        .unwrap();
+        assert_eq!(s.frame, (15.0 + 3.0, 60.0 + 3.0));
+        assert_eq!(s.cell, (15.0 + 6.0 + 6.0, 60.0 + 6.0 + 26.0 + 13.0));
+    }
+
+    #[test]
+    fn a_last_row_with_text_or_the_cursor_fails_loudly() {
+        let full = ground_spots((0.0, 0.0, 1.0, 1.0), 1.0, &dims(), &text(&["a", "b"], 0));
+        assert!(full.unwrap_err().contains("holds text"));
+        let cursor = ground_spots((0.0, 0.0, 1.0, 1.0), 1.0, &dims(), &text(&["a", ""], 1));
+        assert!(cursor.unwrap_err().contains("cursor"));
+        let none = ground_spots((0.0, 0.0, 1.0, 1.0), 1.0, &Value::Null, &text(&["", ""], 0));
+        assert!(none.is_err());
+    }
 }
