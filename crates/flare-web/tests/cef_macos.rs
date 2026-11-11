@@ -46,7 +46,12 @@ fn run_probe(scenario: &str) -> Run {
 
 /// The probe with `args` on its own command line (CEF must not take them).
 fn run_probe_with(scenario: &str, args: &[String]) -> Run {
-    let app = bundle_for(scenario);
+    run_probe_in(scenario, scenario, args, &[])
+}
+
+/// The probe of `scenario` from the bundle named `bundle_name`, with `env` set as well.
+fn run_probe_in(bundle_name: &str, scenario: &str, args: &[String], env: &[(&str, String)]) -> Run {
+    let app = bundle_for(bundle_name);
     let dir = app.parent().expect("the bundle has a folder").to_path_buf();
     let out = dir.join(format!("{scenario}.json"));
     let _ = std::fs::remove_file(&out);
@@ -58,6 +63,7 @@ fn run_probe_with(scenario: &str, args: &[String]) -> Run {
     let mut child = Command::new(bundle::exe_in(&app, NAME))
         .env("FLARE_WEB_PROBE_SCENARIO", scenario)
         .env("FLARE_WEB_PROBE_OUT", &out)
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -225,4 +231,61 @@ fn the_engine_takes_only_flares_switches_and_calls_no_one_on_its_own() {
     ];
     let run = run_probe_with("quiet", &args);
     assert_clean(&run, &["quiet.own-switches-only", "quiet.no-outside-calls"]);
+}
+
+/// Rule 1175: the web panel's profile is Flare's own folder on disk. A cookie with an expiry and a page's
+/// `localStorage` survive the engine's restart; a session cookie does not (it ends with the browser, as WebView2's).
+/// Two runs of the probe on one data folder and one port (storage is per origin, port included).
+#[test]
+fn a_kept_sign_in_and_stored_data_survive_an_engine_restart_and_a_session_cookie_does_not() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .expect("a free port");
+    let data = Path::new(env!("CARGO_TARGET_TMPDIR")).join("flare-web-persist-data");
+    let _ = std::fs::remove_dir_all(&data);
+    let env = [
+        ("FLARE_WEB_PROBE_DATA", data.to_string_lossy().into_owned()),
+        ("FLARE_WEB_PROBE_PORT", port.to_string()),
+    ];
+    let first = run_probe_in("persist", "persist-write", &[], &env);
+    assert_clean(&first, &["persist.write", "persist.own-folder"]);
+    let second = run_probe_in("persist", "persist-read", &[], &env);
+    let _ = std::fs::remove_dir_all(&data);
+    assert_clean(&second, &["persist.read"]);
+}
+
+/// Rules 1176 and 1178: the page follows the app's appearance and names a sane browser; every mini-app Flare writes
+/// (show_html, show_diagram, show_model on WebGL, show_audio, the markdown Compiled view) loads and paints windowless.
+#[test]
+fn mini_apps_load_and_paint_and_pages_follow_the_apps_appearance_on_cef() {
+    let run = run_probe("content");
+    assert_clean(
+        &run,
+        &[
+            "look.color-scheme",
+            "look.user-agent",
+            "mini.html",
+            "mini.diagram",
+            "mini.model",
+            "mini.audio",
+            "mini.markdown",
+        ],
+    );
+}
+
+/// Rules 1177 and 1179: a plugin's fill types into a sign-in form through `run_script` and stops on a page that
+/// moved; a plugin's bar and background page keep their seals in the web panel's host.
+#[test]
+fn a_plugins_fill_types_into_a_form_and_its_bar_and_background_page_stay_sealed_on_cef() {
+    let run = run_probe("plugins");
+    assert_clean(
+        &run,
+        &[
+            "fill.types",
+            "fill.moved",
+            "plugin.background",
+            "plugin.sealed",
+        ],
+    );
 }
