@@ -632,10 +632,9 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   never `reg.exe` (D3). Written only when packaged and not under `--e2e` (D5). Windows 11 shows the classic verb
   under "Show more options", not on the first menu. Test: `verb_keys`, `verb`, `verb_switch`, `registry` in flare-win.
 - **Two apps side by side.** Different app id, verb key, single-instance mutex and pipe, profile, plugin name,
-  hook signal and tab-id variable. `side_by_side::flare_runs_beside_the_neighbour_and_shares_nothing` runs on this
-  PC (Layer A); the real install of both runs on a clean CI runner (Layer B). Since 2026-11-11 Layer B downloads
-  the neighbour's installer from its private repository with the read-only `FLARE_RELEASE_TOKEN` secret, given to
-  that step alone; without the secret the step fails with one `::error::` line (rule 1141, `docs/shipping.md`).
+  hook signal and tab-id variable. Test: `every_flare_name_differs_from_prism_terminals` (`crates/flare/tests/names.rs`,
+  against `names.json`). The side-by-side install test (both apps installed on a CI runner) was removed on 2026-11-11 by
+  owner decision: no CI step downloads the reference app or needs a token for it (rule 1153, `docs/shipping.md`).
 - **The log.** `%APPDATA%\Flare\logs\diag.jsonl`, one JSON object per line, rotated at 2 MB into four old files,
   written by a thread that never blocks the UI (a queue of 2000 lines, dropped and counted when full). It holds
   no typed text, clipboard, audio or conversation, and `mark` carries no note (D12). Read it with `cargo diag`
@@ -698,7 +697,8 @@ tag `v<version>` with no in-place replacement (D15), and the placeholder icon (D
 
 - The out-of-process `diagLog` e2e belongs to M10. The dictation rows and the dictation engine files are M8,
   which this branch does not contain (the owner moved dictation to the end).
-- The installer is not yet run on a clean machine: Layer B and the real install of both apps run in CI.
+- The installer is not yet run on a clean machine: `update-e2e` installs Flare in CI. (The real install of both
+  apps side by side was removed on 2026-11-11, rule 1153.)
 - The e2e scenarios updateWindow, updateGuard and updateNotes are in-process here (Task 34), not run out of process.
 
 ### Numbers for the M9 PR (measured 2026-10-18 on this PC; release build unless said)
@@ -721,7 +721,7 @@ tag `v<version>` with no in-place replacement (D15), and the placeholder icon (D
   unchanged); the portable zip 17,174,711 bytes. Not re-packed for this PR.
 - **Release build time.** `cargo build --release -p flare` took 1 min 52 s here, rebuilding `slint` from source.
 - **Not measured in this run (honest gaps).** The usable-prompt time and the M8 comparisons (M8 is not on this
-  branch); the sampler and the stall watchdog on a real hang; the installer on a clean machine (CI, Layer B).
+  branch); the sampler and the stall watchdog on a real hang; the installer on a clean machine (CI).
 
 ## Parity sweep, the e2e and performance (M10), 2026-10-19
 
