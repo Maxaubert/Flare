@@ -43,6 +43,10 @@ pub const SAVE_DIR_PREF: &str = "savefile.default_directory";
 /// native print panel is never asked for (rule 1034).
 pub const PRINTING_PREF: &str = "printing.enabled";
 
+/// Whether a profile keeps session cookies (a sign-in without "stay signed in") across a restart: never, a disk
+/// profile included, as on Windows; they end with the CEF process, at the quit (rule 1125).
+pub const PERSIST_SESSION_COOKIES: i32 = 0;
+
 type Ready = Arc<Mutex<Option<Result<(), String>>>>;
 
 /// A profile, made; [`Context::ready`] says when its preferences are in.
@@ -133,7 +137,7 @@ impl Context {
             .unwrap_or_default();
         let settings = RequestContextSettings {
             cache_path: cache.as_str().into(),
-            persist_session_cookies: i32::from(p.cache.is_some()),
+            persist_session_cookies: PERSIST_SESSION_COOKIES,
             ..Default::default()
         };
         let ready: Ready = Arc::default();
@@ -172,5 +176,17 @@ impl Context {
             return pairs.join(";");
         }
         CefString::from(&v.string()).to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_profile_keeps_session_cookies_past_the_quit() {
+        // The settings themselves need CEF loaded (their strings are CEF's); `create` passes this value to every
+        // profile, the web panel's disk one included.
+        assert_eq!(PERSIST_SESSION_COOKIES, 0);
     }
 }
