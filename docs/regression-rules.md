@@ -2117,3 +2117,24 @@ words). The microphone keeps its entitlement and usage sentence; Input Monitorin
 `the_mac_key_hook_listens_only_posts_nothing_and_never_asks_by_itself` and
 `dictation_has_the_microphone_entitlement_with_its_usage_and_the_key_needs_no_entitlement`. Source: Max, dictation on
 and the hotkey doing nothing (2026-11-11).
+1138. **macOS: Flare.app carries its speech engine in `Contents/Frameworks/whisper`, signed with the app, and a missing
+engine is named in the diag log.** Max's mic Test got audio, but nothing was ever transcribed: every warm-up and pass
+logged `dictation-engine` with `reason: NoEngine` (owner, 2026-11-11). Root cause: phase 8 never put the engine of rule
+1084 into the bundle, and the app looked for it in `Contents/MacOS/whisper`, where a signed bundle cannot hold a
+folder with data in it. Now `make-app.sh` builds the pinned Metal engine (`tools/build-whisper-macos.sh`, cmake) and
+`flare-parakeet-host`; `release::engine_code` copies only the Mach-O files of the stamped folder, each matching its
+`.source` SHA-256, and refuses a file the stamp does not list; `bundle::build` puts them in `Contents/Frameworks/whisper`
+(code only, so `codesign --deep --strict` checks each as code), the MIT notice in `Contents/Resources`, the host in
+`Contents/MacOS` (a tool). `sign_bundle` signs each engine file as a library before the app: the hardened runtime and
+the team's identity, no entitlements (the libraries are the team's, so library validation passes and no
+`disable-library-validation` is needed; Metal's shaders are embedded, `GGML_METAL_EMBED_LIBRARY`). The app finds the
+folder with `engine::bundled_engine_dir` (a dev build outside a bundle looks beside itself, as Windows does), counts it
+only when its whisper-server is there (`engine_in`), and a `NoEngine` answer's detail names the folder looked in
+(`EngineConfig::bundled_at`). `pack.sh` checks the engine and the host inside the packages. Also: the Parakeet host
+ends with `_exit` on a Mac, because ggml-metal's static device list asserts at exit (b5130,
+`ggml-metal-device.m:1021`) and every clean `quit` died of SIGABRT. Held by
+`the_engine_is_copied_as_code_only_and_only_when_every_file_matches_its_stamp`,
+`the_engine_names_are_the_ones_the_app_starts`, `tests/bundled_engine.rs` (the layout, a Metal start with language
+`auto`, `NoEngine` naming the folder), `the_pack_checks_each_programs_role_ad_hoc_too` and the ignored
+`the_engine_inside_a_built_app_transcribes_with_language_auto` and `the_real_host_loads_the_mac_libraries_and_answers_a_pass`
+in `tests/metal_real.rs`. Source: Max, the mic test hears him and dictation transcribes nothing (2026-11-11).

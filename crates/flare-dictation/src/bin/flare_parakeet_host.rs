@@ -466,7 +466,23 @@ fn load(dir: &Path, model: &str, gpu: bool, threads: i32) -> Result<Loaded, Load
 }
 
 fn main() {
-    std::process::exit(run());
+    let code = run();
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    end(code)
+}
+
+/// Ends the process. On a Mac without the C++ exit handlers: the model is still loaded, and ggml-metal's static
+/// device list (b5130, `ggml-metal-device.m:1021`) asserts at exit that no residency set is left, so every clean
+/// `quit` died of SIGABRT with a crash report (rule 1138). Everything the host says was flushed above.
+#[cfg(target_os = "macos")]
+fn end(code: i32) -> ! {
+    // SAFETY: `_exit` ends the process at once; nothing runs after it and stdout was flushed.
+    unsafe { libc::_exit(code) }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn end(code: i32) -> ! {
+    std::process::exit(code)
 }
 
 fn run() -> i32 {

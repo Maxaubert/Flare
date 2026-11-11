@@ -17,7 +17,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use flare_dictation::catalog::{self, Runner};
-use flare_dictation::engine::{Engine, EngineConfig, EngineKind, TranscribeRequest};
+use flare_dictation::engine::{
+    bundled_engine_dir, engine_in, Engine, EngineConfig, EngineKind, TranscribeRequest,
+};
 use flare_dictation::job::Job;
 use sha2::{Digest, Sha256};
 
@@ -79,6 +81,55 @@ fn the_mac_engine_transcribes_the_pinned_tiny_model() {
     let info = engine.info();
     eprintln!(
         "the pass ran on {:?} (fell back: {})",
+        info.engine, info.gpu_fell_back
+    );
+    if std::env::var_os("FLARE_EXPECT_METAL").is_some_and(|v| v == "1") {
+        assert_eq!(info.engine, Some(EngineKind::Gpu), "Metal did not answer");
+        assert!(!info.gpu_fell_back);
+    }
+    engine.stop();
+}
+
+#[test]
+#[ignore = "needs a built Flare.app (FLARE_APP), the pinned tiny model and jfk.wav"]
+fn the_engine_inside_a_built_app_transcribes_with_language_auto() {
+    let app = std::env::var_os("FLARE_APP")
+        .map(PathBuf::from)
+        .expect("FLARE_APP: a built Flare.app");
+    let dir = bundled_engine_dir(&app.join("Contents/MacOS"));
+    assert!(engine_in(&dir), "no engine in {}", dir.display());
+    let model = from_env("FLARE_WHISPER_MODEL", "vendor/macos/models/ggml-tiny.bin");
+    let clip = from_env("FLARE_E2E_CLIP", "vendor/macos/clips/jfk.wav");
+    let tiny = catalog::model("tiny").expect("the tiny model");
+    assert_eq!(sha256_of(&model), tiny.sha256, "not the pinned tiny model");
+    let wav = std::fs::read(&clip).expect("the clip");
+    let found = dir.clone();
+    let mut cfg = EngineConfig::new(
+        Box::new(move || engine_in(&found).then(|| found.clone())),
+        Box::new(|| None),
+        Box::new(move |_| Some(model.clone())),
+    );
+    cfg.runner_for = Box::new(|_| Runner::Whisper);
+    cfg.idle = None;
+    cfg.bundled_at = Some(dir);
+    let engine = Engine::start(cfg, Arc::new(Job::new().expect("the reaper")));
+    let answer = engine
+        .transcribe(TranscribeRequest {
+            wav,
+            model_id: "tiny".into(),
+            language: String::new(),
+            final_: true,
+        })
+        .recv_timeout(Duration::from_secs(180))
+        .expect("the engine answers");
+    let text = answer
+        .text()
+        .unwrap_or_else(|| panic!("no text: {answer:?}"))
+        .to_lowercase();
+    assert!(text.contains("country"), "heard {text:?}");
+    let info = engine.info();
+    eprintln!(
+        "the bundled engine answered on {:?} (fell back: {}): {text:?}",
         info.engine, info.gpu_fell_back
     );
     if std::env::var_os("FLARE_EXPECT_METAL").is_some_and(|v| v == "1") {

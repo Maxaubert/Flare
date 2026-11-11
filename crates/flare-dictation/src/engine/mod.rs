@@ -41,6 +41,7 @@ use std::time::{Duration, Instant};
 
 use crate::catalog::Runner;
 use crate::job::Job;
+use flare_win::names::ENGINE_FOLDER;
 use host::Host;
 use parakeet::Pass;
 use queue::Queue;
@@ -71,6 +72,24 @@ pub const PARAKEET_CLI: &str = if cfg!(windows) {
 } else {
     "parakeet-cli"
 };
+
+/// The bundled engine's folder for the app whose executables are in `exe_dir`. On a Mac the app runs from
+/// `Flare.app/Contents/MacOS`, which may hold only signed code, so the engine (whisper-server, parakeet-cli and the
+/// libraries they find by `@loader_path`) is `Contents/Frameworks/whisper`, code only (rule 1138); a program run
+/// outside a bundle (a dev build) looks beside itself, as Windows always does (`<exe dir>/whisper`).
+pub fn bundled_engine_dir(exe_dir: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") && exe_dir.ends_with("Contents/MacOS") {
+        if let Some(contents) = exe_dir.parent() {
+            return contents.join("Frameworks").join(ENGINE_FOLDER);
+        }
+    }
+    exe_dir.join(ENGINE_FOLDER)
+}
+
+/// Whether `dir` holds an engine to start: its whisper-server is a file. A folder alone is not an engine.
+pub fn engine_in(dir: &Path) -> bool {
+    dir.join(WHISPER_SERVER).is_file()
+}
 
 /// Which engine folder answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +206,9 @@ pub struct EngineConfig {
     /// Which port the server is told to listen on; None asks Windows for a free one. A test seam.
     #[allow(clippy::type_complexity)]
     pub port: Option<Box<dyn Fn() -> std::io::Result<u16> + Send + Sync>>,
+    /// Where the bundled engine is looked for, named in a `NoEngine` answer's detail so the diag log says which
+    /// folder was empty (rule 1138). `None`: the answer has no detail.
+    pub bundled_at: Option<PathBuf>,
 }
 
 impl EngineConfig {
@@ -210,6 +232,7 @@ impl EngineConfig {
             threads: parakeet_threads(),
             command: None,
             port: None,
+            bundled_at: None,
         }
     }
 }
@@ -684,6 +707,18 @@ impl Inner {
         env
     }
 
+    /// `NoEngine`, with the folder looked in when the host named it.
+    fn no_engine(&self) -> TranscribeResult {
+        TranscribeResult::No {
+            reason: Reason::NoEngine,
+            detail: self
+                .cfg
+                .bundled_at
+                .as_ref()
+                .map(|dir| format!("no {WHISPER_SERVER} in {}", dir.display())),
+        }
+    }
+
     /// One pass: the whole decision of PT's `run`.
     fn run(&self, req: &TranscribeRequest) -> TranscribeResult {
         let mine = self.epoch.load(Ordering::SeqCst);
@@ -704,7 +739,7 @@ impl Inner {
         self.kill_phost();
 
         let Want::Dir(want_kind, want_dir) = self.pick() else {
-            return TranscribeResult::no(Reason::NoEngine);
+            return self.no_engine();
         };
         if stopped() {
             return stopped_result();
@@ -830,7 +865,7 @@ impl Inner {
             server.kill();
         }
         let Want::Dir(mut kind, dir) = self.pick() else {
-            return TranscribeResult::no(Reason::NoEngine);
+            return self.no_engine();
         };
         if stopped() {
             return stopped_result();

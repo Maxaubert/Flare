@@ -70,10 +70,14 @@ check_bundle() {
   local app="$1" what="$2"
   codesign --verify --deep --strict "$app"
   [ -x "$app/Contents/MacOS/UpdateMac" ] || { echo "$what: no UpdateMac" >&2; exit 1; }
+  # The speech engine (rule 1138): code only, in Contents/Frameworks/whisper.
+  for t in whisper-server parakeet-cli; do
+    [ -x "$app/Contents/Frameworks/whisper/$t" ] || { echo "$what: no engine ($t)" >&2; exit 1; }
+  done
   grep -q "<version>$VERSION</version>" "$app/Contents/Resources/sq.version" || { echo "$what: sq.version is not $VERSION" >&2; exit 1; }
   [ "$(readlink "$app/Contents/MacOS/sq.version")" = ../Resources/sq.version ] || { echo "$what: no sq.version link" >&2; exit 1; }
   # Each program's role, ad hoc too (rule 1052): the app's identifier and its three keys; the tools (Velopack's
-  # UpdateMac, flare-mcp) by their own identifier, under the hardened runtime, with no entitlements.
+  # UpdateMac, flare-mcp, flare-parakeet-host) by their own identifier, under the hardened runtime, with no entitlements.
   local info ents t
   info="$(codesign -d --verbose=2 "$app/Contents/MacOS/Flare" 2>&1)"
   ents="$(codesign -d --entitlements - --xml "$app/Contents/MacOS/Flare" 2>/dev/null)"
@@ -82,7 +86,7 @@ check_bundle() {
     grep -q "<key>com.apple.security.$k</key>" <<<"$ents" || { echo "$what: Flare has no $k" >&2; exit 1; }
   done
   [ "$(grep -o '<key>' <<<"$ents" | wc -l | tr -d ' ')" = 3 ] || { echo "$what: Flare has other entitlements" >&2; exit 1; }
-  for t in UpdateMac flare-mcp; do
+  for t in UpdateMac flare-mcp flare-parakeet-host; do
     info="$(codesign -d --verbose=2 "$app/Contents/MacOS/$t" 2>&1)"
     ents="$(codesign -d --entitlements - --xml "$app/Contents/MacOS/$t" 2>/dev/null)"
     grep -qx "Identifier=$BUNDLE_ID.$t" <<<"$info" || { echo "$what: $t is not $BUNDLE_ID.$t" >&2; exit 1; }
