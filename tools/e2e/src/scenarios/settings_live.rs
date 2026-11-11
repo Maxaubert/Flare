@@ -12,7 +12,7 @@
 use flare_e2e_proto::Request;
 use serde_json::{json, Value};
 
-use super::driver::{open_settings, pick_seg, settings_front};
+use super::driver::{goto_row, open_settings, pick_seg, row_is, settings_front};
 use crate::ctx::{App, Ctx, Launch};
 
 /// 225 percent (96 is 100 percent).
@@ -57,39 +57,41 @@ fn scale(app: &mut App) -> f64 {
         .unwrap_or(1.0)
 }
 
-/// The checks at one scale: the tabs move both ways and the edges change, Settings in front.
+/// The checks at one scale: the tabs move both ways and the edges change, Settings in front. The
+/// first round starts on a fresh profile, so down the side (the default since 2026-11-11); each round
+/// ends down the side again.
 fn round(ctx: &mut Ctx, app: &mut App, at: &str) {
     let opened = open_settings(ctx, app);
     ctx.ok(opened, format!("{at}: Settings is in front"));
     ctx.ok(
-        !vertical(app) && has_rect(app, "strip"),
-        format!("{at}: the tabs start along the top"),
+        vertical(app) && has_rect(app, "sidebar") && !has_rect(app, "strip"),
+        format!("{at}: the tabs start down the side"),
     );
 
-    // TAB POSITION: down the side, then along the top again, Settings in front throughout.
-    let picked = pick_seg(ctx, app, "tab-layout", &["vertical"]);
+    // TAB POSITION: along the top, then down the side again, Settings in front throughout.
+    let picked = pick_seg(ctx, app, "tab-layout", &["horizontal"]);
     ctx.ok(
         picked,
-        format!("{at}: Vertical is picked on the Tab position pill"),
+        format!("{at}: Horizontal is picked on the Tab position pill"),
     );
-    let side = ctx.until(&format!("{at}: the sidebar"), 4_000, &mut || {
-        vertical(app) && has_rect(app, "sidebar") && !has_rect(app, "strip")
-    });
-    let front = settings_front(app);
-    ctx.ok(
-        side && front,
-        format!("{at}: the tabs went down the side while Settings is still open (front {front})"),
-    );
-    let picked = pick_seg(ctx, app, "tab-layout", &["horizontal"]);
-    ctx.ok(picked, format!("{at}: Horizontal is picked again"));
     let top = ctx.until(&format!("{at}: the strip"), 4_000, &mut || {
         !vertical(app) && has_rect(app, "strip") && !has_rect(app, "sidebar")
     });
     let front = settings_front(app);
     ctx.ok(
         top && front,
+        format!("{at}: the tabs went along the top while Settings is still open (front {front})"),
+    );
+    let picked = pick_seg(ctx, app, "tab-layout", &["vertical"]);
+    ctx.ok(picked, format!("{at}: Vertical is picked again"));
+    let side = ctx.until(&format!("{at}: the sidebar"), 4_000, &mut || {
+        vertical(app) && has_rect(app, "sidebar") && !has_rect(app, "strip")
+    });
+    let front = settings_front(app);
+    ctx.ok(
+        side && front,
         format!(
-            "{at}: the tabs came back along the top while Settings is still open (front {front})"
+            "{at}: the tabs came back down the side while Settings is still open (front {front})"
         ),
     );
 
@@ -216,5 +218,61 @@ pub fn vertical_start(ctx: &mut Ctx) -> Result<(), String> {
         );
     }
     app.close();
+    fresh_profile_starts_vertical(ctx)
+}
+
+/// The second half of verticalStart (Max, 2026-11-11: vertical tabs by default): a profile with no
+/// settings at all opens with the tabs down the side, the sidebar open at 220 px, and stores nothing
+/// for the layout until somebody chooses.
+fn fresh_profile_starts_vertical(ctx: &mut Ctx) -> Result<(), String> {
+    let w = crate::world::World::new();
+    let mut app = ctx.launch_in(
+        &w,
+        Launch {
+            folders: vec![w.alpha.clone()],
+            renderer: Some("software"),
+            ..Launch::default()
+        },
+    )?;
+    let ready = ctx.until("fresh: the first tab", 15_000, &mut || {
+        probe(&mut app, "app.state", Value::Null)["tabs"]
+            .as_array()
+            .is_some_and(|t| !t.is_empty())
+    });
+    ctx.ok(ready, "fresh: a tab is open");
+    let side = probe(&mut app, "sidebar.state", Value::Null);
+    ctx.ok(
+        vertical(&mut app) && side["open"] == json!(true),
+        format!("fresh: the tabs are down the side and the sidebar is open ({side})"),
+    );
+    ctx.ok(
+        has_rect(&mut app, "sidebar") && !has_rect(&mut app, "strip"),
+        "fresh: the sidebar is drawn and there is no strip",
+    );
+    let width = probe(&mut app, "ui.rect", json!({ "name": "sidebar" }))["w"]
+        .as_f64()
+        .unwrap_or(0.0);
+    ctx.ok(
+        (width - 220.0).abs() < 1.0,
+        format!("fresh: the sidebar is 220 px wide ({width})"),
+    );
+    let on_row = goto_row(ctx, &mut app, "tab-layout");
+    let value = probe(&mut app, "settings.row", json!({ "id": "tab-layout" }))["value"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    ctx.ok(
+        on_row && row_is(&mut app, "tab-layout", &["vertical"]),
+        format!("fresh: Settings shows Vertical as the Tab position ({value})"),
+    );
+    app.close();
+    let stored = std::fs::read_to_string(w.profile.join("settings.json")).unwrap_or_default();
+    let layout = serde_json::from_str::<Value>(&stored)
+        .ok()
+        .and_then(|v| v.get("flare.window.tabLayout").cloned());
+    ctx.ok(
+        layout.is_none(),
+        format!("fresh: nothing is stored for the layout until somebody chooses ({layout:?})"),
+    );
     Ok(())
 }

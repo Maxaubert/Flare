@@ -19,6 +19,9 @@ pub mod edge_watch;
 pub mod eyedrop;
 pub mod eyedrop_math;
 #[cfg(target_os = "macos")]
+#[path = "macos/float_panel.rs"]
+pub mod float_panel;
+#[cfg(target_os = "macos")]
 #[path = "macos/glass.rs"]
 pub mod glass;
 pub mod material;
@@ -42,6 +45,7 @@ pub mod pasteboard;
 pub mod paths;
 pub mod pick;
 pub mod procs;
+pub mod scroll_phase;
 #[cfg(windows)]
 pub mod session_end;
 #[cfg(not(windows))]

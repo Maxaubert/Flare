@@ -30,11 +30,14 @@ pub struct IndexEntry {
 pub type PageNames = std::collections::HashMap<String, String>;
 
 /// What this PC draws: the GPU row needs an NVIDIA card, every dictation row needs the
-/// Dictation page to be wired (decision D6; M8 sets both).
+/// Dictation page to be wired (decision D6; M8 sets both), and the Mark colours rows need the Bar
+/// indicator (rule 1140: Ring hides the section, so Find must not lead to it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IndexEnv {
     pub nvidia: bool,
     pub dictation_wired: bool,
+    /// The Agents page draws its Mark colours section (`page::agents::mark_colours_drawn`).
+    pub mark_colours: bool,
 }
 
 /// Lower case, accents gone: NFD, then the combining marks U+0300 to U+036F removed, then
@@ -117,9 +120,12 @@ pub fn search_settings<'a>(
 }
 
 /// Whether a row is drawn on this PC: the GPU row only with NVIDIA, the dictation rows only on
-/// a wired Dictation page (decision D6).
+/// a wired Dictation page (decision D6), the Mark colours rows only with the Bar indicator.
 fn drawn(row: &RowDef, env: &IndexEnv) -> bool {
     if row.only_nvidia && !env.nvidia {
+        return false;
+    }
+    if row.section == "colours" && !env.mark_colours {
         return false;
     }
     if row.id.starts_with("dictation-") && !env.dictation_wired {
@@ -254,6 +260,7 @@ mod tests {
         let n = settings_index(&IndexEnv {
             nvidia: false,
             dictation_wired: true,
+            mark_colours: true,
         })
         .len();
         assert_eq!(n, 47);
@@ -261,6 +268,7 @@ mod tests {
             settings_index(&IndexEnv {
                 nvidia: false,
                 dictation_wired: true,
+                mark_colours: true,
             })
             .iter()
             .any(|e| e.id == "dictation-anywhere" && e.section == "From any app")
@@ -271,6 +279,7 @@ mod tests {
         settings_index(&IndexEnv {
             nvidia: true,
             dictation_wired: true,
+            mark_colours: true,
         })
     }
 
@@ -348,6 +357,7 @@ mod tests {
         let ids: Vec<String> = settings_index(&IndexEnv {
             nvidia: false,
             dictation_wired: true,
+            mark_colours: true,
         })
         .into_iter()
         .map(|e| e.id)
@@ -360,12 +370,54 @@ mod tests {
         assert_eq!(ids, expect);
     }
 
+    /// Rule 1140: the Mark colours section is hidden with Ring, so its rows leave the index.
+    #[test]
+    fn the_mark_colour_rows_are_indexed_only_for_bar() {
+        let colours = ["agent-color", "agent-done-color", "agent-question-color"];
+        let ids = |mark_colours: bool| -> Vec<String> {
+            settings_index(&IndexEnv {
+                nvidia: false,
+                dictation_wired: true,
+                mark_colours,
+            })
+            .into_iter()
+            .map(|e| e.id)
+            .collect()
+        };
+        let bar = ids(true);
+        let ring = ids(false);
+        for id in colours {
+            assert!(bar.iter().any(|i| i == id), "{id} is indexed with Bar");
+            assert!(
+                !ring.iter().any(|i| i == id),
+                "{id} is not indexed with Ring"
+            );
+        }
+        assert_eq!(bar.len(), ring.len() + 3);
+        let ring_index = settings_index(&IndexEnv {
+            nvidia: false,
+            dictation_wired: true,
+            mark_colours: false,
+        });
+        for query in ["mark colours", "agent working colour", "question colour"] {
+            let hits: Vec<&str> = search_settings(&ring_index, query, &page_names())
+                .iter()
+                .map(|e| e.id.as_str())
+                .collect();
+            assert!(
+                !hits.iter().any(|id| colours.contains(id)),
+                "{query}: no hidden row in {hits:?}"
+            );
+        }
+    }
+
     #[test]
     fn dictation_rows_are_indexed_only_when_the_page_is_wired() {
         let count = |nvidia: bool, wired: bool| {
             settings_index(&IndexEnv {
                 nvidia,
                 dictation_wired: wired,
+                mark_colours: true,
             })
             .iter()
             .filter(|e| e.id.starts_with("dictation-"))

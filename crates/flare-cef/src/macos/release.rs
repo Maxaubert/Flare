@@ -9,11 +9,14 @@
 //!   MacOS/Flare                                 the app (`target/release/flare`, renamed: CEF finds its helpers
 //!                                               as "<executable> Helper (X).app")
 //!   MacOS/flare-mcp                             the MCP server, found beside the app (`flare_agent::plugin`)
+//!   MacOS/flare-parakeet-host                   the resident Parakeet host (dictation; loads the engine's libraries)
 //!   Frameworks/Chromium Embedded Framework.framework
+//!   Frameworks/whisper                          the speech engine, code only (rule 1138): whisper-server,
+//!                                               parakeet-cli and their libraries (`tools/build-whisper-macos.sh`)
 //!   Frameworks/Flare Helper*.app                five helpers running `flare-cef-helper`
 //!   Resources/Flare.icns                        from build/icon-source.png (tools/make-icon.py's 1024 px render)
 //!   Resources/claude-plugin                     the Claude Code plugin template (found there by flare_agent)
-//!   Resources/LICENSE, THIRD-PARTY-NOTICES.md, CEF-CREDITS.html
+//!   Resources/LICENSE, THIRD-PARTY-NOTICES.md, CEF-CREDITS.html, LICENSE-whisper.cpp.txt
 //! ```
 
 use std::fs;
@@ -140,6 +143,9 @@ pub struct Inputs<'a> {
     pub bin_dir: &'a Path,
     /// The CEF folder (the framework, `CREDITS.html`).
     pub cef_dir: &'a Path,
+    /// The speech engine `tools/build-whisper-macos.sh` built (`vendor/macos/whisper`): its programs, libraries,
+    /// MIT notice and `.source` stamp.
+    pub engine_dir: &'a Path,
     /// Where `Flare.app` (and its icon and entitlements) are written.
     pub out_dir: &'a Path,
     pub version: &'a str,
@@ -155,11 +161,95 @@ fn need(p: PathBuf) -> Result<PathBuf, String> {
     }
 }
 
+/// The engine's programs, each of which must be in the folder: the names `flare_dictation::engine` starts.
+pub const ENGINE_PROGRAMS: [&str; 2] = ["whisper-server", "parakeet-cli"];
+
+/// The engine folder's name in `Contents/Frameworks` (`flare_win::names::ENGINE_FOLDER`).
+pub const ENGINE_FOLDER: &str = "whisper";
+
+/// The engine's MIT notice, in the engine folder and in `Contents/Resources`.
+pub const ENGINE_LICENSE: &str = "LICENSE-whisper.cpp.txt";
+
+/// The SHA-256 of a file, by `shasum` (part of macOS).
+fn sha256(p: &Path) -> Result<String, String> {
+    let out = Command::new("/usr/bin/shasum")
+        .args(["-a", "256"])
+        .arg(p)
+        .output()
+        .map_err(|e| format!("shasum {}: {e}", p.display()))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    match text.split_whitespace().next() {
+        Some(h) if out.status.success() && h.len() == 64 => Ok(h.to_string()),
+        _ => Err(format!("shasum {} failed", p.display())),
+    }
+}
+
+/// The engine's code, copied out of `engine` into `<out>/whisper` (replaced): every Mach-O the `.source` stamp lists,
+/// each hashing to what it says, and nothing else. `Contents/Frameworks` holds only code, so the notice and the stamp
+/// stay out of it (a data file there breaks `codesign --strict`). Fails when the stamp is missing, a listed file is
+/// missing or changed, a file of the folder is not listed, or a program is missing.
+pub fn engine_code(engine: &Path, out: &Path) -> Result<PathBuf, String> {
+    let stamp = engine.join(".source");
+    let text = fs::read_to_string(&stamp).map_err(|e| {
+        format!(
+            "{}: {e} (build the engine: bash tools/build-whisper-macos.sh vendor/macos/whisper)",
+            stamp.display()
+        )
+    })?;
+    let mut listed = Vec::new();
+    for line in text.lines().skip(1) {
+        let (hash, name) = line
+            .split_once("  ")
+            .ok_or_else(|| format!("{}: not a stamp line: {line:?}", stamp.display()))?;
+        if name.contains('/') || name.starts_with('.') {
+            return Err(format!(
+                "{}: a file outside the folder: {name:?}",
+                stamp.display()
+            ));
+        }
+        listed.push((hash.to_string(), name.to_string()));
+    }
+    let present: Vec<String> = fs::read_dir(engine)
+        .map_err(|e| format!("{}: {e}", engine.display()))?
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|n| n != ".source")
+        .collect();
+    for n in &present {
+        if !listed.iter().any(|(_, l)| l == n) {
+            return Err(format!("{}: {n} is not in the stamp", engine.display()));
+        }
+    }
+    for p in ENGINE_PROGRAMS {
+        if !listed.iter().any(|(_, l)| l == p) {
+            return Err(format!("{}: no {p}", engine.display()));
+        }
+    }
+    let to = out.join(ENGINE_FOLDER);
+    if to.exists() {
+        fs::remove_dir_all(&to).map_err(|e| format!("{}: {e}", to.display()))?;
+    }
+    fs::create_dir_all(&to).map_err(|e| format!("{}: {e}", to.display()))?;
+    for (hash, name) in &listed {
+        let from = engine.join(name);
+        if sha256(&from)? != *hash {
+            return Err(format!("{}: not the file the stamp lists", from.display()));
+        }
+        if crate::macos::sign::is_macho(&from) {
+            fs::copy(&from, to.join(name))
+                .map_err(|e| format!("{} to {}: {e}", from.display(), to.display()))?;
+        }
+    }
+    Ok(to)
+}
+
 /// Builds and signs `Flare.app`; its path. Fails when any part the app ships is missing.
 pub fn build(i: &Inputs<'_>) -> Result<PathBuf, String> {
     let main_exe = need(i.bin_dir.join("flare"))?;
     let helper = need(i.bin_dir.join("flare-cef-helper"))?;
     let mcp = need(i.bin_dir.join("flare-mcp"))?;
+    let host = need(i.bin_dir.join("flare-parakeet-host"))?;
+    let engine_license = need(i.engine_dir.join(ENGINE_LICENSE))?;
     let plugin = need(i.root.join("crates/flare-agent/claude-plugin"))?;
     need(plugin.join("hooks/hooks.json"))?;
     let license = need(i.root.join("LICENSE"))?;
@@ -168,6 +258,7 @@ pub fn build(i: &Inputs<'_>) -> Result<PathBuf, String> {
     let icon_src = need(i.root.join("build/icon-source.png"))?;
     fs::create_dir_all(i.out_dir).map_err(|e| format!("{}: {e}", i.out_dir.display()))?;
     let icns = make_icns(&icon_src, i.out_dir)?;
+    let engine = engine_code(i.engine_dir, &i.out_dir.join("engine"))?;
     let spec = BundleSpec {
         name: APP_NAME,
         identifier: BUNDLE_ID,
@@ -180,13 +271,15 @@ pub fn build(i: &Inputs<'_>) -> Result<PathBuf, String> {
         signing: i.signing.clone(),
         extras: Extras {
             icon: Some(&icns),
-            executables: vec![&mcp],
+            executables: vec![&mcp, &host],
             resources: vec![
                 (&plugin, "claude-plugin"),
                 (&license, "LICENSE"),
                 (&notices, "THIRD-PARTY-NOTICES.md"),
                 (&credits, "CEF-CREDITS.html"),
+                (&engine_license, ENGINE_LICENSE),
             ],
+            frameworks: vec![(&engine, ENGINE_FOLDER)],
             keys: app_keys(i.year),
         },
     };
@@ -247,6 +340,76 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&ok.stdout)
         );
+    }
+
+    /// A stamped engine folder as tools/build-whisper-macos.sh writes it: two programs and a library (copies of a
+    /// system Mach-O), the notice, and `.source` listing each file's SHA-256.
+    fn stamped_engine(dir: &Path) {
+        fs::create_dir_all(dir).expect("dir");
+        for n in ["whisper-server", "parakeet-cli", "libggml.0.dylib"] {
+            fs::copy("/usr/bin/true", dir.join(n)).expect("a Mach-O");
+        }
+        fs::write(dir.join(ENGINE_LICENSE), "MIT License").expect("notice");
+        let mut stamp = "927cfce34f31707e17f2bff35c349632fb9e2c3a\n".to_string();
+        let mut names = vec![
+            ENGINE_LICENSE,
+            "libggml.0.dylib",
+            "parakeet-cli",
+            "whisper-server",
+        ];
+        names.sort_unstable();
+        for n in names {
+            stamp.push_str(&format!("{}  {n}\n", sha256(&dir.join(n)).expect("hash")));
+        }
+        fs::write(dir.join(".source"), stamp).expect("stamp");
+    }
+
+    /// Rule 1138: the engine goes into `Contents/Frameworks/whisper` as code only, and only the stamped build does.
+    #[test]
+    fn the_engine_is_copied_as_code_only_and_only_when_every_file_matches_its_stamp() {
+        let tmp = std::env::temp_dir().join(format!("flare-engine-code-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let engine = tmp.join("whisper");
+        stamped_engine(&engine);
+        let out = engine_code(&engine, &tmp.join("out")).expect("copied");
+        let mut got: Vec<String> = fs::read_dir(&out)
+            .expect("out")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        got.sort();
+        assert_eq!(got, ["libggml.0.dylib", "parakeet-cli", "whisper-server"]);
+        assert_eq!(
+            out.file_name().and_then(|n| n.to_str()),
+            Some(ENGINE_FOLDER)
+        );
+        // A file the stamp does not list (a library planted beside an @loader_path rpath) is refused.
+        fs::copy("/usr/bin/true", engine.join("libplanted.dylib")).expect("planted");
+        let e = engine_code(&engine, &tmp.join("out")).expect_err("planted");
+        assert!(e.contains("libplanted.dylib"), "{e}");
+        fs::remove_file(engine.join("libplanted.dylib")).expect("rm");
+        // A changed program is refused.
+        fs::write(engine.join("whisper-server"), b"changed").expect("tamper");
+        let e = engine_code(&engine, &tmp.join("out")).expect_err("changed");
+        assert!(e.contains("whisper-server"), "{e}");
+        // No stamp: the engine was never built; the error says how to build it.
+        fs::remove_file(engine.join(".source")).expect("rm stamp");
+        let e = engine_code(&engine, &tmp.join("out")).expect_err("no stamp");
+        assert!(e.contains("build-whisper-macos.sh"), "{e}");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn the_engine_names_are_the_ones_the_app_starts() {
+        let names = include_str!("../../../flare-win/src/names.rs");
+        assert!(names.contains(&format!(
+            "pub const ENGINE_FOLDER: &str = \"{ENGINE_FOLDER}\";"
+        )));
+        let engine = include_str!("../../../flare-dictation/src/engine/mod.rs");
+        for p in ENGINE_PROGRAMS {
+            assert!(engine.contains(&format!("\"{p}\"")), "{p}");
+        }
+        assert!(engine.contains(".join(\"Frameworks\")"));
     }
 
     #[test]

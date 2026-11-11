@@ -257,6 +257,7 @@ fn start(ctx: &mut Ctx, renderer: &'static str, two_tabs: bool) -> Result<Option
         renderer: Some(renderer),
         folders,
         scale_dpi: Some(96),
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     if renderer == "gpu" {

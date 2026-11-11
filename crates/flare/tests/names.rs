@@ -101,9 +101,19 @@ const STOCK_ID_FILES: &[&str] = &[
     "crates/flare-theme/src/look.rs",
 ];
 
-/// `offends` for the line at `path` (relative, forward slashes), with the two narrow widenings.
+/// The two exact words a workflow may hold to read the reference app's private installer: the release
+/// token's secret name and the repository it reads (regression rule 1141). Spelled in pieces.
+fn release_token_words() -> [String; 2] {
+    [
+        ["PRI", "SM_RELEASE_TOKEN"].concat(),
+        ["arkivert/", "Pri", "smTerminal"].concat(),
+    ]
+}
+
+/// `offends` for the line at `path` (relative, forward slashes), with the three narrow widenings.
 /// (1) In `.md`, `.ps1` and `.yml` files a line naming "Prism Terminal" is prose about the reference
 /// app, the release workflow or the shipping notes. (2) The stock theme id literal in `STOCK_ID_FILES`.
+/// (3) In the workflows, the release token's secret name and the repository it reads.
 fn offends_at(path: &str, line: &str) -> bool {
     if !offends(line) {
         return false;
@@ -111,6 +121,12 @@ fn offends_at(path: &str, line: &str) -> bool {
     let prose = [".md", ".ps1", ".yml"].iter().any(|e| path.ends_with(e));
     if prose && line.contains("Prism Terminal") {
         return false;
+    }
+    if path.starts_with(".github/workflows/") && path.ends_with(".yml") {
+        let rest = release_token_words()
+            .iter()
+            .fold(line.to_string(), |l, w| l.replace(w.as_str(), ""));
+        return offends(&rest);
     }
     if STOCK_ID_FILES.contains(&path) {
         return offends(&line.replace("\"prism\"", ""));
@@ -257,6 +273,17 @@ fn the_widenings_are_narrow() {
     assert!(offends_at("crates/flare/src/a.rs", &line));
     let other = ["\"Pri", "sm\""].concat();
     assert!(offends_at("crates/flare-theme/src/preset.rs", &other));
+    // (3) the release token's name and its repository, in a workflow only, and nothing else on the line
+    let [token, repo] = release_token_words();
+    let secret = format!("GH_TOKEN: ${{{{ secrets.{token} }}}}");
+    assert!(!offends_at(".github/workflows/release.yml", &secret));
+    let error = format!("'::error::{token} is not set: a token for {repo}'");
+    assert!(!offends_at(".github/workflows/release.yml", &error));
+    assert!(offends_at("crates/flare/src/a.rs", &secret));
+    assert!(offends_at("tools/a.ps1", &error));
+    assert!(offends_at("docs/shipping.md", &error));
+    let more = format!("{secret} and {}", ["Pri", "sm alone"].concat());
+    assert!(offends_at(".github/workflows/release.yml", &more));
 }
 
 #[test]

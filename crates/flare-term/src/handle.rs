@@ -446,6 +446,16 @@ impl TermHandle {
     /// moved: no output follows such a scroll, so the window must ask for the redraw (the GPU
     /// path paints only on a request, M10 Task 70).
     pub fn wheel(&self, notches: i32, col: usize, row: usize) -> bool {
+        self.wheel_step(notches, false, col, row)
+    }
+
+    /// A macOS trackpad drag in whole lines (`lines` > 0 is up): the [`wheel`](Self::wheel) rules,
+    /// one line a line (rule 1129). True when the view itself moved.
+    pub fn wheel_lines(&self, lines: i32, col: usize, row: usize) -> bool {
+        self.wheel_step(lines, true, col, row)
+    }
+
+    fn wheel_step(&self, steps: i32, lines: bool, col: usize, row: usize) -> bool {
         let m = self.mode();
         let ctx = WheelContext {
             mouse: m.mouse,
@@ -454,7 +464,12 @@ impl TermHandle {
             alternate_scroll: m.alternate_scroll,
             app_cursor: m.app_cursor,
         };
-        match wheel_action(notches, &ctx, col, row) {
+        let action = if lines {
+            crate::wheel::wheel_lines_action(steps, &ctx, col, row)
+        } else {
+            wheel_action(steps, &ctx, col, row)
+        };
+        match action {
             WheelAction::ScrollView(n) => {
                 self.scroll_view(n);
                 true

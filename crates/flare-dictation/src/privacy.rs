@@ -226,6 +226,22 @@ mod tests {
             concat!("CGEvent", "SetFlags"),
             concat!("AXUIElement", "PostKeyboardEvent"),
         ];
+        // Rule 1137: the one ask for Input Monitoring lives in its own file, made on the person's act only; the
+        // hook (scanned above) never asks.
+        let ask_file = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("macos")
+            .join("listen_ask.rs")
+            .canonicalize()
+            .unwrap();
+        let ask = code_of(&ask_file);
+        assert_eq!(
+            ask.matches(concat!("unsafe { CGRequest", "ListenEventAccess() }"))
+                .count(),
+            1,
+            "one call to the request"
+        );
+        assert!(ask.contains("ASKED.swap(true"), "asked once per run");
         let mut all = Vec::new();
         files(&workspace().join("crates"), &["rs"], &mut all);
         let me = this_file().canonicalize().unwrap();
@@ -234,7 +250,11 @@ mod tests {
             .filter(|f| f.canonicalize().ok().as_ref() != Some(&me))
         {
             let code = code_of(f);
+            let is_ask = f.canonicalize().ok().as_ref() == Some(&ask_file);
             for b in banned {
+                if is_ask && b == concat!("CGRequest", "ListenEventAccess") {
+                    continue;
+                }
                 assert!(!code.contains(b), "{} uses {b}", f.display());
             }
         }

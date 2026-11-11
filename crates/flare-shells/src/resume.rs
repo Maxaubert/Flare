@@ -76,6 +76,13 @@ pub fn with_resume_prior(def: &ShellDef, resume: &str, prior: Option<&str>) -> L
             };
             (vec!["/K".to_string(), step], env)
         }
+        // The macOS shells: the command line stays the plain login shell, and Flare's shell integration
+        // runs the resume once the user's startup files have set PATH (`macos/scripts`). The id (or the
+        // marker) rides in the environment, so a Mac tab comes back resumed as a Windows one does.
+        "zsh" | "bash" | "fish" => (
+            def.args.clone(),
+            Some((RESUME_ENV.to_string(), resume.to_string())),
+        ),
         _ => (def.args.clone(), None),
     };
     Launch {
@@ -252,6 +259,37 @@ mod tests {
             ]
         );
         assert_eq!(r.env, None);
+    }
+
+    /// Rule 1133: a Mac tab that hosted Claude hands the id to its zsh, bash or fish, which the
+    /// integration turns into `claude --resume <id>`; the command line stays the plain login shell.
+    #[test]
+    fn a_mac_shell_carries_the_resume_in_its_environment() {
+        let zsh = def("zsh", "/bin/zsh", &["-l"]);
+        let bash = def("bash", "/bin/bash", &["--rcfile", "/si/bash/flare.bash"]);
+        let fish = def(
+            "fish",
+            "/opt/homebrew/bin/fish",
+            &["-l", "--init-command", "source '/si/fish/flare.fish'"],
+        );
+        for d in [zsh, bash, fish] {
+            for id in [A, "codex:last", "agy:last"] {
+                let r = with_resume(&d, id);
+                assert_eq!(r.exe, d.exe, "{}", d.id);
+                assert_eq!(
+                    r.args, d.args,
+                    "{}: the command line is the plain shell",
+                    d.id
+                );
+                assert_eq!(
+                    r.env,
+                    Some((RESUME_ENV.to_string(), id.to_string())),
+                    "{} {id}",
+                    d.id
+                );
+            }
+            assert_eq!(with_resume(&d, A).args, with_resume(&d, B).args);
+        }
     }
 
     #[test]

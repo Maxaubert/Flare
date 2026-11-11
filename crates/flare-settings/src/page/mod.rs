@@ -364,12 +364,32 @@ pub(crate) mod test_env {
         shells: Option<Vec<(String, String)>>,
         f: impl FnOnce(&PageEnv<'_>) -> R,
     ) -> R {
+        with_env_look(
+            version,
+            copyright,
+            diag,
+            diag_marked,
+            shells,
+            &LookStore::new(PrefStore::memory()),
+            f,
+        )
+    }
+
+    /// As `with_env_full`, over this look.
+    fn with_env_look<R>(
+        version: &str,
+        copyright: &str,
+        diag: DiagInfo,
+        diag_marked: bool,
+        shells: Option<Vec<(String, String)>>,
+        look: &LookStore,
+        f: impl FnOnce(&PageEnv<'_>) -> R,
+    ) -> R {
         let prefs = PrefStore::memory();
-        let look = LookStore::new(PrefStore::memory());
         let face_of: &dyn Fn(&str) -> String = &face;
         let env = PageEnv {
             prefs: &prefs,
-            look: &look,
+            look,
             shells,
             verb: VerbState::Busy,
             home: String::new(),
@@ -453,11 +473,29 @@ pub(crate) mod test_env {
             f,
         )
     }
+
+    /// As `with_env`, with the tab marks on Bar, so the Agents page draws its Mark colours.
+    pub(crate) fn with_env_bar<R>(f: impl FnOnce(&PageEnv<'_>) -> R) -> R {
+        let look = LookStore::new(PrefStore::memory());
+        look.set_agent_indicator(crate::look::AgentIndicator::Minimal);
+        with_env_look(
+            "0.0.0",
+            "",
+            DiagInfo {
+                verbose: false,
+                dir: String::new(),
+            },
+            false,
+            Some(vec![("pwsh".to_string(), "PowerShell".to_string())]),
+            &look,
+            f,
+        )
+    }
 }
 
 #[cfg(test)]
 mod cross_page_tests {
-    use super::test_env::with_env;
+    use super::test_env::{with_env, with_env_bar};
     use super::*;
     use crate::rows::{DICTATION_OPTIONS, ROW_ORDER, row};
     use std::collections::BTreeSet;
@@ -483,7 +521,8 @@ mod cross_page_tests {
 
     #[test]
     fn every_row_of_every_page_is_in_the_row_order_exactly_once() {
-        with_env(|env| {
+        // With Bar, so the Agents page draws its Mark colours (Ring hides them).
+        with_env_bar(|env| {
             let drawn: Vec<&str> = SIX
                 .iter()
                 .flat_map(|id| all_row_ids(&build_page(id, env, &NoDictation)))
@@ -501,28 +540,31 @@ mod cross_page_tests {
 
     #[test]
     fn the_drawn_order_inside_each_section_follows_the_tables() {
-        with_env(|env| {
-            for id in SIX {
-                let page = build_page(id, env, &NoDictation);
-                for section in &page.sections {
-                    let drawn: Vec<&str> = section
-                        .blocks
-                        .iter()
-                        .filter_map(|b| match b {
-                            BlockModel::Row(r) => Some(r.id),
-                            _ => None,
-                        })
-                        .collect();
-                    // The placeholder Dictation page draws none of the nine dictation rows.
-                    let expected: Vec<&str> = ROW_ORDER
-                        .iter()
-                        .copied()
-                        .filter(|rid| !DICTATION_OPTIONS.iter().any(|d| d.id == *rid))
-                        .filter(|rid| row(rid).is_some_and(|d| d.section == section.id))
-                        .collect();
-                    assert_eq!(drawn, expected, "section {} on page {id}", section.id);
-                }
+        with_env(check_drawn_order);
+        with_env_bar(check_drawn_order);
+    }
+
+    fn check_drawn_order(env: &PageEnv<'_>) {
+        for id in SIX {
+            let page = build_page(id, env, &NoDictation);
+            for section in &page.sections {
+                let drawn: Vec<&str> = section
+                    .blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        BlockModel::Row(r) => Some(r.id),
+                        _ => None,
+                    })
+                    .collect();
+                // The placeholder Dictation page draws none of the nine dictation rows.
+                let expected: Vec<&str> = ROW_ORDER
+                    .iter()
+                    .copied()
+                    .filter(|rid| !DICTATION_OPTIONS.iter().any(|d| d.id == *rid))
+                    .filter(|rid| row(rid).is_some_and(|d| d.section == section.id))
+                    .collect();
+                assert_eq!(drawn, expected, "section {} on page {id}", section.id);
             }
-        });
+        }
     }
 }

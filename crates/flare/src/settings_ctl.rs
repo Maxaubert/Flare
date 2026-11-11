@@ -176,6 +176,8 @@ pub struct SettingsCtl {
     me: Weak<RefCell<SettingsCtl>>,
     deps: SettingsDeps,
     find: FindState,
+    /// What the find index was built for; a change (the indicator) rebuilds it.
+    index_env: IndexEnv,
     page: &'static str,
     shells: Option<Vec<(String, String)>>,
     verb_state: VerbState,
@@ -635,6 +637,16 @@ impl VerbQueue {
     }
 }
 
+/// What the find index offers on this PC now: no GPU row (the GPU card is offered on its page
+/// only), the dictation rows when the page is wired, the Mark colours only for the Bar indicator.
+fn index_env_of(look: &flare_settings::look::LookStore) -> IndexEnv {
+    IndexEnv {
+        nvidia: false,
+        dictation_wired: crate::dictation_ctl::wired(),
+        mark_colours: flare_settings::page::agents::mark_colours_drawn(look.agent_indicator()),
+    }
+}
+
 /// Binds one callback of `SettingsBridge` to a method of the controller.
 macro_rules! on {
     ($app:expr, $rc:expr, $reg:ident, |$c:ident $(, $a:ident : $t:ty)*| $body:expr) => {{
@@ -657,18 +669,14 @@ impl SettingsCtl {
     pub fn new(app: &AppWindow, deps: SettingsDeps) -> Rc<RefCell<SettingsCtl>> {
         let dirty = Arc::new(AtomicBool::new(false));
         let subs = Self::subscribe(&deps, &dirty);
-        let find = FindState::new(
-            settings_index(&IndexEnv {
-                nvidia: false,
-                dictation_wired: crate::dictation_ctl::wired(),
-            }),
-            page_names(),
-        );
+        let index_env = index_env_of(&deps.look);
+        let find = FindState::new(settings_index(&index_env), page_names());
         Self::set_fonts(app, &deps);
         let ctl = SettingsCtl {
             weak: app.as_weak(),
             me: Weak::new(),
             find,
+            index_env,
             page: DEFAULT_PAGE,
             shells: None,
             verb_state: VerbState::Busy,
@@ -1245,6 +1253,16 @@ impl SettingsCtl {
         (WallLayout { clip_h, ..base }, full.full_h)
     }
 
+    /// Rebuilds the find index when what it was built for changed (rule 1140: the Mark colours
+    /// rows leave Find with Ring and come back with Bar), so Find never leads to a hidden section.
+    fn sync_index(&mut self) {
+        let env = index_env_of(&self.deps.look);
+        if env != self.index_env {
+            self.index_env = env;
+            self.find.set_index(settings_index(&env));
+        }
+    }
+
     /// Builds the page, lays it out and writes it into the bridge.
     pub fn rebuild(&mut self) {
         let Some(app) = self.weak.upgrade() else {
@@ -1253,6 +1271,7 @@ impl SettingsCtl {
         self.dirty.store(false, Ordering::SeqCst);
         self.stale = false;
         self.rebuilds += 1;
+        self.sync_index();
         let (frame_w, _) = self.frame_size(&app);
         let scale = Self::scale_of(&app);
         let model = self.page_model();
