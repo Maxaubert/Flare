@@ -221,10 +221,19 @@ fn search_now(app: &mut App) -> Value {
     probe(app, "settings.search", Value::Null)
 }
 
-/// Opens Settings from the title bar's cog, and waits until it is in front.
+/// Opens Settings from the title bar's cog, and waits until it is in front. A click that lands
+/// while the window is still laying out after its first resize (seen on the Mac runner with a fresh
+/// GPU window and the sidebar sliding in) is not taken as an answer: the cog is read and clicked once
+/// more before the wait that records.
 fn open_settings(ctx: &mut Ctx, app: &mut App) -> bool {
     if !click_rect(app, "cog") {
         return false;
+    }
+    let first = crate::until::wait_on(&mut crate::until::SystemClock::new(), 3_000, &mut || {
+        settings_front(app)
+    });
+    if !first && !settings_front(app) {
+        let _ = click_rect(app, "cog");
     }
     ctx.until("Settings is in front", 8_000, &mut || settings_front(app))
 }
