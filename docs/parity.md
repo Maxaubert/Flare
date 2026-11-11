@@ -1267,7 +1267,7 @@ O17's artwork arrived 2026-10-17 (the owner's own icon).
 - O35 (M9 D8): the vpk flags live in `tools/release/pack.ps1`: one-click, per-user, Start menu shortcut only, unsigned, win-x64. Test: `release_files` tests.
 - O36 (M9 D9): "packaged" means installed by Velopack (folder `current`, parent holds `Update.exe`, no `.portable` marker). Test: `is_packaged_wants_current_and_update_exe`.
 - O37 (M9 D10): auto-apply is off; the uninstall hook removes the two verb keys read from `verb_keys()`; `run()` is the first statement of `main`; under `--e2e` the hook touches only `Software\FlareE2E\`. Test: `bootstrap_turns_auto_apply_off`.
-- O38 (M9 D11): preview mode is `--preview-update` (also in an unpackaged build and under `--e2e`); live mode needs packaged, not e2e, and the feature. Test: `mode_table`.
+- O38 (M9 D11): preview mode is `--preview-update` (also in an unpackaged build that is not a macOS `.app` bundle, rule 1128, and under `--e2e`); live mode needs packaged, not e2e, and the feature. Test: `mode_table`.
 - O39 (M9 D12, O16 resolved): the native diagnostics kinds replace the page kinds (see `docs/diagnostics.md`); `mark` carries no note, so the log holds no typed text. Test: `a_mark_carries_no_note`.
 - O40 (M9 D13): the reader is the cargo alias `cargo diag`, with `--dir` and `--profile` in place of PT's `--app`. Test: `kinds_filter_and_n_limit`.
 - O41 (M9 D14, Q1 open): one-click setup with no licence page, as Velopack has none; the owner may ask for a licence screen later.
