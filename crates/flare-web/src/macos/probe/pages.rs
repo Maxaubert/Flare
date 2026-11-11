@@ -40,6 +40,15 @@ pub const POPUP: &str = r#"<!doctype html><html><head><meta charset="utf-8"><tit
 <script>if (window.opener) { window.opener.document.title = 'Opener seen'; }</script>
 </head><body><div id="x" onclick="window.close()"></div></body></html>"#;
 
+/// A link to an app inside a frame (rule 1171): the navigation wall lets a frame go anywhere, so only the browser's
+/// own launch of the app sees it. The frame fills the top left 400 by 200 CSS pixels, all of it the link.
+pub const APPLINK: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>App link</title>
+<style>html,body{margin:0} iframe{position:absolute;left:0;top:0;width:400px;height:200px;border:0}</style>
+</head><body><iframe src="/applink-inner"></iframe></body></html>"#;
+
+pub const APPLINK_INNER: &str = r#"<!doctype html><html><head><meta charset="utf-8"></head>
+<body style="margin:0"><a href="zoommtg://zoom.us/join?confno=123" style="display:block;width:400px;height:200px;background:#33cc33">join</a></body></html>"#;
+
 pub const PAGE2: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Page two</title></head><body><h1>Page two</h1></body></html>"#;
 
 /// A known colour in a known place.
@@ -330,6 +339,8 @@ fn route(path: &str) -> (&'static str, Vec<(&'static str, String)>, String) {
         "/" | "/main" => html(MAIN),
         "/page2" => html(PAGE2),
         "/popup" => html(POPUP),
+        "/applink" => html(APPLINK),
+        "/applink-inner" => html(APPLINK_INNER),
         "/paint" => html(PAINT),
         "/agent" => {
             let port = PORT.load(std::sync::atomic::Ordering::SeqCst);

@@ -2122,11 +2122,10 @@ loads only a web address or a `blob:` (`same_view_target_ok`; the wall then chec
 panel does not open is offered by `external_scheme` and told once (`AppLinks`, `AppLinkDedupe`) as on Windows;
 `shell_open` opens it with `NSWorkspace` and the very app LaunchServices names for its scheme
 (`openURLs:withApplicationAtURL:`), refused when that app is a terminal or script runner (`handler_ok`: Terminal takes
-`ssh:` and `x-man-page:`), and `url_handler_registered` asks the same question; the words say "this Mac". Different from
-Windows: a pop-up no click of the person's asked for is stopped by Chromium's own blocker before CEF asks
-(`on_before_popup` never runs), so nothing opens and `window.open` is null as on Windows, but it is not noted and the
-bar does not say "Pop-up blocked"; CEF tells nothing for a page's ignored `window.close()`, so there is no
-`web-close-ignored` line; Alloy has no password manager, so a pop-up offers no autofill (`PopupProbe::autofill` false).
+`ssh:` and `x-man-page:`), and `url_handler_registered` asks the same question; the words say "this Mac". A pop-up no click asked
+for is refused and noted as on Windows, and a page's `window.close()` is ignored and noted (rule 1170); a link to an
+app in a frame is asked about through the browser's launch (rule 1171). Different from Windows: Alloy has no password
+manager, so a pop-up offers no autofill (`PopupProbe::autofill` false).
 Native: `crates/flare-cef/src/macos/view.rs`, `crates/flare-web/src/macos/host.rs`, `crates/flare-win/src/shell_open.rs`,
 `crates/flare-win/src/macos/workspace.rs`, `crates/flare/src/app_ask.rs`. Held by the probe's `panel.external-schemes`,
 `panel.popup`, `panel.popup-closes-itself`, `panel.popup-strip-close`, `panel.popup-blocked` and `panel.notes`
@@ -2506,3 +2505,56 @@ draws an arrow on stays off on the Mac (rule 1124). Not under `--e2e`, where the
 shown), the `page_overlay` unit tests (device pixels to points, flipped or not; the glow's bands tiling the page's
 rectangle; an empty picture or no view refused; the tag's ink) and `the_tag_is_an_orange_pill_with_the_name_readable_on_it`
 (now also on macOS). Source: Max on his Mac (2026-11-11).
+1170. **macOS: a pop-up no click asked for is refused by Flare's rule, noted and said in the bar; a page's own
+`window.close()` closes only a pop-up.** Chromium's own pop-up blocker stopped such a request before CEF asked
+(`on_before_popup` never ran), so there was no `web-refused popup-blocked` note and no "Pop-up blocked" in the bar. The
+engine starts with `disable-popup-blocking` (`SWITCHES`), so every request reaches the view's `NewWindowRule`
+(`popup_plan` refuses it as `blocked`, `window.open` stays null; a mini-app's or a mod's page is refused by
+`refusing_rule`, and a view with no rule opens nothing). A script's `window.close()` reached CEF's default close and
+the panel's browser died behind a stale view: `LifeSpan::do_close` now lets a close through only for a pop-up (its
+own `window.close()` still closes it) or the owner's `View::close` (`owner_closing`), and otherwise cancels it and sends
+`ViewEvent::CloseIgnored`, which the host notes as `web-close-ignored` by site for every view, as WebView2's
+`WindowCloseRequested` does. A browser that still ends without the host closing it drops its view and the panel hears
+`Gone`, never a frozen picture. Native: `crates/flare-cef/src/macos/engine.rs`, `crates/flare-cef/src/macos/view.rs`,
+`crates/flare-web/src/macos/host.rs`. Held by the probe's `panel.popup-blocked` (the `blocked` note),
+`panel.window-close-ignored` (the page stays, the note comes) and `panel.notes` (`flare-web/tests/cef_macos.rs`), and
+`the_engine_is_started_with_its_quiet_switches_and_keeps_cefs_own_disabled_features`. Source: the browser parity audit
+(POP-01, POP-03, DIAG-01), 2026-11-11.
+1171. **macOS: a link to an app inside a frame is asked about ("Open an app?") as on Windows, never started by the
+browser.** The web panel's navigation wall lets a frame go anywhere, so a `zoommtg:` or `mailto:` link in a frame
+reached only the browser's own launch (`on_protocol_execution`), which refused it silently: no question, no note. Now
+every navigation of a view gets a request handler (a pass-through one when the view has no request wall), whose
+`on_protocol_execution` still refuses the launch and sends `ViewEvent::External` with the main frame's address; the
+host offers it to `AppLinks` for the web panel and its pop-ups (the same `AppLinkDedupe`, so one link is one question),
+and anything that is not an app link is noted `web-refused scheme` (and refused in the bar on the panel), as WebView2's
+`LaunchingExternalUriScheme` backstop (`ask_external_uris`) does. A mini-app's or a mod's page is told nothing new.
+Native: `crates/flare-cef/src/macos/view.rs`, `crates/flare-web/src/macos/host.rs`. Held by the probe's
+`panel.app-link-in-frame` (the person's click on a `zoommtg:` link in a frame: one `AppLink`, an `app-link` note, no
+refusal). Source: the browser parity audit (LINK-01), 2026-11-11.
+1172. **macOS: a certificate the browser does not trust shows Chromium's error page, is noted by site and is never
+overridden.** `on_certificate_error` answers 0 (CEF cancels the request): the load ends not ok with WebView2's status
+(`CERTIFICATE_IS_INVALID`, 5, through `web_error_status`), the page is Chromium's "Privacy error", the log has
+`web-cert cert-invalid` with sites only, and no request gets past the handshake. Native:
+`crates/flare-cef/src/macos/view.rs`, `crates/flare-web/src/macos/host.rs`. Held by the probe's `panel.cert`: an HTTPS
+server on loopback with a self-signed certificate made for the run by `/usr/bin/openssl req` (it listens on nothing;
+the server is rustls, `probe/tls.rs`) counts the requests that got through: none. Source: the browser parity audit
+(SEC-01), 2026-11-11.
+1173. **macOS: the page's scrollbars are overlay scrollbars, as WebView2's Fluent overlay style draws them on
+Windows.** Chromium on a Mac takes the scroller style from `+[NSScroller preferredScrollerStyle]` in the browser
+process; with a mouse attached and "Show scroll bars: Automatically" that is the classic bar, 15 px of every page's
+width. Before CEF starts, `scrollers::prefer_overlay` makes that method answer `NSScrollerStyleOverlay` for Flare's
+process (once), so every page (the web panel, mini-apps and mods, as on Windows) draws thin bars over itself that fade
+when it is still, and no page's DOM is touched (a page that styles its own scrollbars keeps them). Native:
+`crates/flare-cef/src/macos/scrollers.rs`, `crates/flare-cef/src/macos/engine.rs`. Held by the probe's
+`panel.overlay-scrollbars` (`innerWidth == clientWidth` on a page that scrolls; 15 without the fix on a Mac with a
+mouse) and `appkit_answers_the_overlay_style_once_flare_asked_for_it`. Source: the browser parity audit (NAV-10),
+2026-11-11.
+1174. **macOS: while the splitter is held, the page drawn in its box keeps its width and its edge moves, as WebView2's
+window does on Windows.** The hold (rule 230) kept the page's width, but the box drew the held picture with
+`image-fit: fill` across its new width, so the page looked stretched or squeezed and a click landed off what it was
+drawn on until the 120 ms settle. The live picture (`panel.slint`, `web-frame`) is now drawn at its own width from the
+box's left edge (a pixel or two off, rounding, still fills), cut at the box's edge when wider, so input maps 1:1;
+on release or the settle the page's next picture fills the box again. Windows draws no picture there (`web-live` is
+false), so nothing changes on Windows. Native: `crates/flare/ui/panel.slint`. Held by
+`a_page_drawn_off_screen_keeps_its_width_while_the_splitter_is_held` (`crates/flare/src/appctl/tests/web_tests.rs`,
+rendered pixels). Source: the browser parity audit (LC-09), 2026-11-11.
