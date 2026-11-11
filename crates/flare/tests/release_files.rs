@@ -251,10 +251,10 @@ fn no_secret_other_than_the_github_token_and_the_neighbour_release_token() {
 // ---- 2026-11-11: the neighbour's installer sits in a private repository (regression rule 1141) ----
 
 /// The secret the side-by-side step reads the neighbour's private releases with.
-const NEIGHBOUR_TOKEN_SECRET: &str = "secrets.PRISM_RELEASE_TOKEN";
+const NEIGHBOUR_TOKEN_SECRET: &str = "secrets.FLARE_RELEASE_TOKEN";
 
 /// The one line a run prints when that secret is missing.
-const NEIGHBOUR_TOKEN_ERROR: &str = "::error::PRISM_RELEASE_TOKEN is not set: add a fine-grained read-only token for arkivert/PrismTerminal as a repository secret (docs/shipping.md)";
+const NEIGHBOUR_TOKEN_ERROR: &str = "::error::FLARE_RELEASE_TOKEN is not set: add a fine-grained read-only token for arkivert/PrismTerminal as a repository secret (docs/shipping.md)";
 
 /// The steps of a workflow, each from its `- ` line to the next one at the same indent.
 fn steps(wf: &str) -> Vec<&str> {
