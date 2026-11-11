@@ -287,7 +287,11 @@ mod tests {
         let bin = tmp.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let log = tmp.path().join("agent.log");
-        for agent in ["claude", "codex", "agy"] {
+        // The fake agents are the programs the checked resume lines start (`RESUMES`), so the agent
+        // list stays in flare-agent's kinds: flare-shells cannot depend on flare-agent (flare-agent
+        // -> flare-win -> flare-shells would be a cycle).
+        for (_, line) in RESUMES {
+            let agent = line.split(' ').next().unwrap_or_default();
             let p = bin.join(agent);
             std::fs::write(
                 &p,
@@ -339,27 +343,28 @@ mod tests {
         std::fs::read_to_string(&log).unwrap_or_default()
     }
 
+    /// A Claude session id as a restored tab carries it.
+    const ID: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
+
+    /// Each resume a restored tab can carry (`FLARE_RESUME_ID`) and the command line it starts.
+    const RESUMES: [(&str, &str); 3] = [
+        (ID, "claude --resume 3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f"),
+        ("codex:last", "codex resume --last"),
+        ("agy:last", "agy -c"),
+    ];
+
     /// Rule 1133: a restored Mac tab that hosted Claude starts `claude --resume <id>` in its login
     /// shell, after the user's startup files have set PATH, and the id is out of the environment.
     #[test]
     fn a_restored_zsh_or_bash_tab_resumes_claude_through_the_login_shell() {
-        const ID: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
         for shell in ["/bin/zsh", "/bin/bash"] {
-            assert_eq!(
-                resume_in(shell, ID),
-                format!("claude --resume {ID}|env=unset\n"),
-                "{shell}"
-            );
-            assert_eq!(
-                resume_in(shell, "codex:last"),
-                "codex resume --last|env=unset\n",
-                "{shell}"
-            );
-            assert_eq!(
-                resume_in(shell, "agy:last"),
-                "agy -c|env=unset\n",
-                "{shell}"
-            );
+            for (id, line) in RESUMES {
+                assert_eq!(
+                    resume_in(shell, id),
+                    format!("{line}|env=unset\n"),
+                    "{shell}"
+                );
+            }
             // Anything that is not an id is never run.
             assert_eq!(resume_in(shell, "x; touch pwned"), "", "{shell}");
             assert_eq!(resume_in(shell, "--help"), "", "{shell}");

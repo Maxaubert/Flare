@@ -18,6 +18,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flare_e2e_proto::{Button, PointerAction, Reply, Request};
+use flare_win::openers::REVEAL_LABEL;
 use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
@@ -653,7 +654,8 @@ fn selection_edit_on(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
 
 /// PT: run.mjs:3545-3640. A printed path is a link only when it exists; a click opens a file
 /// (resolved against the shell folder) and a folder (the folder verb); a `.bat` is revealed, never
-/// run (DIFF-6); a right-click opens nothing and offers Open, Show in Explorer, Copy path with icons.
+/// run (DIFF-6); a right-click opens nothing and offers Open, Show in Explorer (Show in
+/// Finder on the Mac, rule 1147), Copy path with icons.
 pub fn path_links(ctx: &mut Ctx) -> Result<(), String> {
     let alpha = ctx.ensure_world().alpha.clone();
     let sign_off = alpha.join("docs").join("sign-off");
@@ -773,22 +775,22 @@ fn path_links_on(
     ctx.ok(
         rows_menu.len() >= 3
             && rows_menu[0] == "Open"
-            && rows_menu[1] == "Show in Explorer"
+            && rows_menu[1] == REVEAL_LABEL
             && rows_menu[2] == "Copy path",
-        format!("the menu leads with Open, Show in Explorer, Copy path ({rows_menu:?})"),
+        format!("the menu leads with Open, {REVEAL_LABEL}, Copy path ({rows_menu:?})"),
     );
     let icons = menu_icons(app);
     ctx.ok(
         !icons.is_empty() && icons.iter().all(|i| !i.is_empty()),
         format!("and every row has its icon ({icons:?})"),
     );
-    let revealed = click_menu_row(app, "Show in Explorer")
+    let revealed = click_menu_row(app, REVEAL_LABEL)
         && ctx.until("the file revealed", 4_000, &mut || {
             opened(app)
                 .iter()
                 .any(|(k, p)| k == "reveal" && same_path(p, &pdf_s))
         });
-    ctx.ok(revealed, "Show in Explorer shows the file");
+    ctx.ok(revealed, format!("{REVEAL_LABEL} shows the file"));
 
     click_on(app, "docs/sign-off/rapport.pdf", 2, Button::Right)?;
     let _ = menu_rows(ctx, app);
