@@ -53,18 +53,20 @@ fn input_box_up(rows: &[String]) -> bool {
 /// something after the `❯` mark. `false` when no box is on the screen to be read: the caller then cannot
 /// tell, and the send's other checks stand (review #27).
 pub fn prompt_has_draft(rows: &[String]) -> bool {
-    let Some(low) = rows.iter().rposition(|r| RULE.is_match(r)) else {
-        return false;
-    };
-    let Some(top) = rows[..low].iter().rposition(|r| RULE.is_match(r)) else {
-        return false;
-    };
-    rows[top + 1..low].iter().any(|r| {
+    prompt_draft(rows).unwrap_or(false)
+}
+
+/// [`prompt_has_draft`], telling "no box on the screen" (`None`) from an empty box (`Some(false)`): the
+/// dictation send watches its words land in the box and its Enter empty it, and can only when it is there.
+pub fn prompt_draft(rows: &[String]) -> Option<bool> {
+    let low = rows.iter().rposition(|r| RULE.is_match(r))?;
+    let top = rows[..low].iter().rposition(|r| RULE.is_match(r))?;
+    Some(rows[top + 1..low].iter().any(|r| {
         let body = r.trim_start_matches(['❯', '>']);
         !body
             .trim_matches(|c: char| c.is_whitespace() || c == '\u{a0}')
             .is_empty()
-    })
+    }))
 }
 
 /// The keys that settle a question: Enter, Esc, Ctrl+C, or exactly one digit 1 to 9.
@@ -243,6 +245,20 @@ mod tests {
         assert!(prompt_has_draft(&with("❯\u{a0}half a thought")));
         // No box on the screen: unknown, so no draft is claimed.
         assert!(!prompt_has_draft(&rows(&["PS C:\\w> npm test"])));
+    }
+
+    #[test]
+    fn prompt_draft_tells_no_box_from_an_empty_box_and_sees_a_long_paste() {
+        let dashes = "─".repeat(40);
+        let with = |input: &str| rows(&["● done", &dashes, input, &dashes, "  ⏵⏵ auto mode on"]);
+        assert_eq!(prompt_draft(&with("❯ ")), Some(false));
+        assert_eq!(prompt_draft(&with("❯ fix it")), Some(true));
+        // Claude shows a long paste as one line that names it.
+        assert_eq!(
+            prompt_draft(&with("❯ [Pasted text #3 +40 lines]")),
+            Some(true)
+        );
+        assert_eq!(prompt_draft(&rows(&["PS C:\\w> npm test"])), None);
     }
 
     #[test]

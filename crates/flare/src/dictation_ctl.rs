@@ -307,9 +307,9 @@ pub trait DictHost {
     fn paste(&self, session: &str, text: &str) -> PasteOutcome;
     /// Writes `text` as is to a tab's shell (the checked send's bracketed paste and its Enter).
     fn write_tab(&self, tab: &str, text: &str) -> bool;
-    /// Whether Claude's prompt box in this tab holds unsent text, read off its screen. Unknown is `false`.
-    fn prompt_has_draft(&self, _tab: &str) -> bool {
-        false
+    /// Whether Claude's prompt box in this tab holds unsent text, read off its screen. `None`: no box to read.
+    fn prompt_draft(&self, _tab: &str) -> Option<bool> {
+        None
     }
     /// This copy's tabs, as the send rules see them.
     fn send_tabs(&self) -> Vec<SendTab>;
@@ -530,10 +530,20 @@ impl ClientHost for Bridge {
             .unwrap_or(false)
     }
 
-    fn prompt_has_draft(&self, id: &str) -> bool {
+    fn prompt_draft(&self, id: &str) -> Option<bool> {
         let id = id.to_string();
-        self.call(move |d| d.host.prompt_has_draft(&id))
-            .unwrap_or(false)
+        self.call(move |d| d.host.prompt_draft(&id)).flatten()
+    }
+
+    fn stage(&self, what: &str, n: u64) {
+        // Through the window's host, like every other dictation crumb; never waits.
+        let what = what.to_string();
+        (self.post)(DictMsg::Call(Box::new(move |d| {
+            d.host.crumb(
+                "dictate-send",
+                &[("stage", json!(what)), ("n", Value::from(n))],
+            );
+        })));
     }
 
     fn paste(&self, text: &str) {
@@ -1469,28 +1479,7 @@ impl Dict {
                     self.widget = None;
                     self.host.widget(None);
                 }
-                SvcEffect::PastePage(text) => {
-                    // The tab that was in front when the recording began, not the one in front now. With none (or
-                    // one that closed) the words are kept; with none the service goes on to the list. A route that never
-                    // noted a front (no recording began here) takes the tab in front now.
-                    let session = self
-                        .rec_session
-                        .take()
-                        .or_else(|| self.host.front_session());
-                    let had = session.is_some();
-                    let fx = self.ctl_on(Event::Front(session));
-                    self.run(fx);
-                    self.paste_gone = false;
-                    let fx = self.ctl_on(Event::PasteFront(text.clone()));
-                    self.run(fx);
-                    if !had {
-                        self.svc_on(SvcEvent::Pasted(false));
-                    } else if self.paste_gone {
-                        self.svc_on(SvcEvent::PasteFailed);
-                    } else {
-                        self.svc_on(SvcEvent::Pasted(true));
-                    }
-                }
+                SvcEffect::PastePage(text) => self.paste_page(text, false),
                 SvcEffect::PasteCopy { pid, text } => {
                     let ok = self
                         .parts
@@ -1570,6 +1559,52 @@ impl Dict {
             });
         if spawned.is_err() {
             log::debug!("dictation: no thread for the hook's lines");
+        }
+    }
+
+    /// This copy's window was in front: paste at the tab that was in front when the recording began, not the one
+    /// in front now. A route that never noted a front (no recording began here, or the window was busy when it
+    /// began) takes the tab in front now. With none, it asks once more on the next turn (the window may have been
+    /// busy this one), and only then does the service go on to the list. A tab that closed keeps the words.
+    fn paste_page(&mut self, text: String, again: bool) {
+        let noted = self.rec_session.take();
+        let noted_any = noted.is_some();
+        let session = noted.or_else(|| self.host.front_session());
+        if session.is_none() && !again {
+            self.host.crumb(
+                "dictate-anywhere",
+                &[("paste", json!("no front tab yet, asking again"))],
+            );
+            (self.post)(DictMsg::Call(Box::new(move |d| d.paste_page(text, true))));
+            return;
+        }
+        if self.svc.is_none() {
+            // Switched off between the two turns: the words are still kept.
+            return self.keep_words(text);
+        }
+        let had = session.is_some();
+        self.host.crumb(
+            "dictate-anywhere",
+            &[
+                (
+                    "paste",
+                    json!(if had { "front tab" } else { "no front tab" }),
+                ),
+                ("noted", json!(noted_any)),
+                ("again", json!(again)),
+            ],
+        );
+        let fx = self.ctl_on(Event::Front(session));
+        self.run(fx);
+        self.paste_gone = false;
+        let fx = self.ctl_on(Event::PasteFront(text.clone()));
+        self.run(fx);
+        if !had {
+            self.svc_on(SvcEvent::Pasted(false));
+        } else if self.paste_gone {
+            self.svc_on(SvcEvent::PasteFailed);
+        } else {
+            self.svc_on(SvcEvent::Pasted(true));
         }
     }
 
@@ -1665,8 +1700,8 @@ impl Dict {
         }
     }
 
-    /// Types into one of this copy's tabs through the checked send, on a worker (it asks Windows, and waits
-    /// 300 ms before the Enter).
+    /// Types into one of this copy's tabs through the checked send, on a worker (it asks Windows, waits for the
+    /// words to show in the prompt, then for the Enter to empty it).
     fn send_local(&mut self, id: String, text: String) {
         let kept = text.clone();
         let handlers = dictation_answers(Arc::new(Bridge::new(
@@ -2825,18 +2860,11 @@ impl DictHost for AppHost {
         }
     }
 
-    fn prompt_has_draft(&self, tab: &str) -> bool {
-        let Some(rc) = self.ctl.upgrade() else {
-            return false;
-        };
-        let Ok(c) = rc.try_borrow() else {
-            return false;
-        };
-        c.handle_of(tab).is_some_and(|h| {
-            flare_agent::question::prompt_has_draft(
-                &h.typed_tail(flare_agent::indicator::SCREEN_TAIL_ROWS),
-            )
-        })
+    fn prompt_draft(&self, tab: &str) -> Option<bool> {
+        let rc = self.ctl.upgrade()?;
+        let c = rc.try_borrow().ok()?;
+        let h = c.handle_of(tab)?;
+        flare_agent::question::prompt_draft(&h.typed_tail(flare_agent::indicator::SCREEN_TAIL_ROWS))
     }
 
     fn send_tabs(&self) -> Vec<SendTab> {
@@ -3297,6 +3325,8 @@ mod tests {
         log: Log,
         now: Cell<f64>,
         front: RefCell<Option<String>>,
+        /// This many asks for the front tab find the window busy (no answer).
+        front_busy: Cell<u32>,
         timers: RefCell<HashMap<TimerKey, (u64, bool)>>,
         pastes: RefCell<Vec<(String, String)>>,
         paste_outcome: Cell<Option<PasteOutcome>>,
@@ -3314,6 +3344,7 @@ mod tests {
                 log,
                 now: Cell::new(1000.0),
                 front: RefCell::new(Some("t1".into())),
+                front_busy: Cell::new(0),
                 timers: RefCell::default(),
                 pastes: RefCell::default(),
                 paste_outcome: Cell::new(None),
@@ -3332,6 +3363,10 @@ mod tests {
             self.now.get()
         }
         fn front_session(&self) -> Option<String> {
+            if self.front_busy.get() > 0 {
+                self.front_busy.set(self.front_busy.get() - 1);
+                return None;
+            }
             self.front.borrow().clone()
         }
         fn paste(&self, session: &str, text: &str) -> PasteOutcome {
@@ -4081,6 +4116,22 @@ mod tests {
         r.d.apply_prefs();
         r.d.on_msg(DictMsg::Hook(HookEvent::Ready));
         assert!(r.d.e2e_route("typed words".into(), Some(4242)));
+        r.pump();
+        assert_eq!(r.host.pastes.borrow().len(), 1);
+        assert!(r.host.copies.borrow().is_empty());
+        assert_eq!(note_now(&r).as_deref(), Some("Typed into the tab in front"));
+    }
+
+    #[test]
+    fn a_route_to_this_copy_while_the_window_is_busy_pastes_into_the_front_tab_on_the_next_turn() {
+        let mut r = Rig::on_with_model(true);
+        r.set("flare.dictation.anywhere", "1");
+        r.d.apply_prefs();
+        r.d.on_msg(DictMsg::Hook(HookEvent::Ready));
+        // The window was busy when asked for its front tab: the words must not go to the list.
+        r.host.front_busy.set(1);
+        assert!(r.d.e2e_route("typed words".into(), Some(4242)));
+        assert!(r.host.pastes.borrow().is_empty(), "not on this turn");
         r.pump();
         assert_eq!(r.host.pastes.borrow().len(), 1);
         assert!(r.host.copies.borrow().is_empty());

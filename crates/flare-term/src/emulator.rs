@@ -2238,6 +2238,9 @@ mod tests {
         // typed text before a dim tail still counts
         let e = screen("\u{276f} half\x1b[2m a suggestion\x1b[0m");
         assert!(draft(&e));
+        // a long paste, shown as the line that names it, is a draft (the dictation send waits for it)
+        let e = screen("\u{276f} [Pasted text #3 +40 lines]\x1b[7m \x1b[0m");
+        assert!(draft(&e));
     }
 
     /// An ANSI-only theme draws the box rules in bright black or dim: the box must still be found (R3).

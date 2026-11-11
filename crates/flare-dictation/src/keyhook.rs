@@ -380,14 +380,53 @@ fn lock_active() -> MutexGuard<'static, Option<Active>> {
     ACTIVE.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// The process in front, from the foreground window or (when Windows names none, as it can for a moment
+/// while the shell's own windows take the keys) the foreground thread's active window. `root_pid` resolves a
+/// window to its root owner's process, so a popup, a child or an owned window counts as the app that owns it.
+/// `None` when neither names a window, or the window names no process.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn front_of<W: Copy>(
+    foreground: Option<W>,
+    active: Option<W>,
+    root_pid: impl Fn(W) -> u32,
+) -> Option<u32> {
+    let w = foreground.or(active)?;
+    let pid = root_pid(w);
+    (pid != 0).then_some(pid)
+}
+
 #[cfg(windows)]
 fn front_pid() -> Option<u32> {
-    // SAFETY: both calls take plain values and an out pointer to a local; no handle is kept.
-    unsafe {
-        let mut pid: u32 = 0;
-        GetWindowThreadProcessId(GetForegroundWindow(), &mut pid);
-        (pid != 0).then_some(pid)
-    }
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetGUIThreadInfo, GA_ROOTOWNER, GUITHREADINFO,
+    };
+    let some = |w: windows_sys::Win32::Foundation::HWND| (!w.is_null()).then_some(w);
+    // SAFETY: GetForegroundWindow takes nothing and returns a plain handle value.
+    let foreground = some(unsafe { GetForegroundWindow() });
+    let active = if foreground.is_some() {
+        None
+    } else {
+        // SAFETY: `info` is a local, zeroed and sized as the call requires; thread 0 is the foreground one.
+        unsafe {
+            let mut info: GUITHREADINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+            if GetGUIThreadInfo(0, &mut info) != 0 {
+                some(info.hwndActive)
+            } else {
+                None
+            }
+        }
+    };
+    front_of(foreground, active, |w| {
+        // SAFETY: both calls take a window handle value and an out pointer to a local; no handle is kept.
+        unsafe {
+            let root = GetAncestor(w, GA_ROOTOWNER);
+            let w = if root.is_null() { w } else { root };
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(w, &mut pid);
+            pid
+        }
+    })
 }
 
 #[cfg(windows)]
@@ -778,6 +817,26 @@ mod tests {
             code: code.to_string(),
             front: None,
         }
+    }
+
+    #[test]
+    fn the_front_names_the_app_that_owns_the_window_even_with_no_foreground_window() {
+        // Windows: 1 is Flare's main window, 2 a child (a web view) in it, 3 a popup it owns, 9 another app's.
+        const FLARE: u32 = 4242;
+        let root_pid = |w: u32| match w {
+            1..=3 => FLARE,
+            9 => 77,
+            _ => 0,
+        };
+        assert_eq!(front_of(Some(1), None, root_pid), Some(FLARE));
+        assert_eq!(front_of(Some(2), None, root_pid), Some(FLARE));
+        assert_eq!(front_of(Some(3), None, root_pid), Some(FLARE));
+        assert_eq!(front_of(Some(9), Some(1), root_pid), Some(77));
+        // No foreground window for a moment (the shell took the Win key): the active window still counts.
+        assert_eq!(front_of(None, Some(1), root_pid), Some(FLARE));
+        assert_eq!(front_of::<u32>(None, None, root_pid), None);
+        // A window that names no process is nobody in front.
+        assert_eq!(front_of(Some(5), None, root_pid), None);
     }
 
     #[test]
