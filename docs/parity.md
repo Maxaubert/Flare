@@ -1592,10 +1592,12 @@ Chromium's mock keychain, whose key is public, so their cookies and storage are 
 permissions (Windows uses DPAPI). Since phase 8 step 2 this is true of every build but the Developer ID app's real
 window, which keeps the key in a keychain item of its own (rule 1045).
 
+- [x] The agent's cursor (glide, ripple, name tag), the glow round the page while the agent uses it and the agent's arrow show over the web panel in click-through views that never take the keyboard (rule 1155). (macOS: agent_overlay_is_click_through_on_top_and_follows_the_view, device_pixels_from_the_top_left_become_points_in_a_flipped_or_plain_view, crates/flare-win/src/macos/page_overlay.rs)
+
 Not yet on the Mac (the next steps of phase 5, not ratchet lines): running the real Flare window with CEF needs Flare
 itself inside an app bundle with the framework and helpers (`Flare.app`, phase 8; a `cargo run` says the engine is not
 in its bundle), so the panel in the live window, the plugin bars' pictures under the terminal (their views run, the bar
-box does not draw them yet), the agent's cursor and border over the page, and the window's own e2e scenarios
+box does not draw them yet), and the window's own e2e scenarios
 (`tools/e2e` web, mini-app, live preview, agent web, fill) wait for the bundle and the CI macOS runner. The web panel's
 context menu (Windows shows the browser's) is not drawn yet: it is emptied and never shown natively. The input method's
 composition in the page needs Slint to hand over preedit text (the box gets the committed text as keys). Diagrams and

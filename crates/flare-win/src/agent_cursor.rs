@@ -1271,8 +1271,14 @@ fn label_mask(font_px: u32, h: u32, text: &str) -> (u32, Vec<u8>) {
     win::label_mask(font_px, h, text)
 }
 
-/// Non-Windows builds have no GDI: a tag of about the right width with no ink.
-#[cfg(not(windows))]
+/// macOS: the tag's text drawn by AppKit (`page_overlay::label_mask`).
+#[cfg(target_os = "macos")]
+fn label_mask(font_px: u32, h: u32, text: &str) -> (u32, Vec<u8>) {
+    crate::page_overlay::label_mask(font_px, h, text)
+}
+
+/// Other builds have no text drawing: a tag of about the right width with no ink.
+#[cfg(not(any(windows, target_os = "macos")))]
 fn label_mask(font_px: u32, h: u32, text: &str) -> (u32, Vec<u8>) {
     let w = (text.chars().count() as u32 * font_px * 3 / 5).max(1);
     (w, vec![0; (w * h) as usize])
@@ -1575,7 +1581,7 @@ mod tests {
         assert_eq!(tag_text(&"x".repeat(100)).len(), TAG_CHARS);
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn the_tag_is_an_orange_pill_with_the_name_readable_on_it() {
         for s in [1.0, 1.5, 2.25, 3.0] {
