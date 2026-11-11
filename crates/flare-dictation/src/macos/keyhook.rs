@@ -343,8 +343,17 @@ pub struct TapState {
     down: HashSet<u16>,
 }
 
-/// One tap event as at most one hook line. A binding modifier's change is its down or up; any other key going down
-/// while a binding key is held is `Other`, never which key; a key Carbon has taken (the picker's, Esc) is Carbon's.
+/// A modifier family the binding does not name is down in `flags` (Shift with Ctrl+Cmd). Caps Lock and Fn are not
+/// modifiers here.
+fn foreign_down(flags: u64, keys: &HashSet<u16>) -> bool {
+    (0..4).any(|i| flags & CG_FAMILY[i] != 0 && !FAMILIES[i].iter().any(|k| keys.contains(k)))
+}
+
+/// One tap event as the hook's lines (at most two). A binding modifier's change is its down or up; a binding
+/// modifier going down while a modifier the binding does not name is already down is followed by `Extra` (Karabiner's
+/// Cmd+Shift+S as Cmd+Ctrl+Shift+4 holds Shift before Ctrl, and the 4 never reaches a listen-only tap: the system
+/// takes it as the screenshot shortcut). Such a modifier going down while a binding key is held is `Extra`; any
+/// other key is `Other`; never which. A key Carbon has taken (the picker's, Esc) is Carbon's.
 pub fn on_tap(
     st: &mut TapState,
     kind: TapKind,
@@ -352,37 +361,57 @@ pub fn on_tap(
     flags: u64,
     keys: &HashSet<u16>,
     carbon: &[Reg],
-) -> Option<HookEvent> {
+) -> Vec<HookEvent> {
     match kind {
-        TapKind::KeyUp => None,
+        TapKind::KeyUp => Vec::new(),
         TapKind::KeyDown => {
             let mods = carbon_mods(flags);
             if carbon
                 .iter()
                 .any(|r| r.keycode == keycode && r.mods == mods)
             {
-                return None;
+                return Vec::new();
             }
-            (!st.down.is_empty()).then_some(HookEvent::Other)
+            (!st.down.is_empty())
+                .then_some(HookEvent::Other)
+                .into_iter()
+                .collect()
         }
         TapKind::Flags => {
             let vk = vk_of_mac_keycode(keycode).filter(|vk| family_of(*vk).is_some());
             match vk {
                 Some(vk) if keys.contains(&vk) => {
                     if side_down(vk, flags) {
-                        st.down.insert(vk).then(|| key_line(true, vk)).flatten()
+                        let mut out: Vec<HookEvent> = st
+                            .down
+                            .insert(vk)
+                            .then(|| key_line(true, vk))
+                            .flatten()
+                            .into_iter()
+                            .collect();
+                        if !out.is_empty() && foreign_down(flags, keys) {
+                            out.push(HookEvent::Extra);
+                        }
+                        out
                     } else {
-                        st.down.remove(&vk).then(|| key_line(false, vk)).flatten()
+                        st.down
+                            .remove(&vk)
+                            .then(|| key_line(false, vk))
+                            .flatten()
+                            .into_iter()
+                            .collect()
                     }
                 }
-                Some(vk) => {
-                    (side_down(vk, flags) && !st.down.is_empty()).then_some(HookEvent::Other)
-                }
+                Some(vk) => (side_down(vk, flags) && !st.down.is_empty())
+                    .then_some(HookEvent::Extra)
+                    .into_iter()
+                    .collect(),
                 // Caps Lock and Fn change the flags too: another key.
-                None if keycode == KC_CAPS || keycode == KC_FN => {
-                    (!st.down.is_empty()).then_some(HookEvent::Other)
-                }
-                None => None,
+                None if keycode == KC_CAPS || keycode == KC_FN => (!st.down.is_empty())
+                    .then_some(HookEvent::Other)
+                    .into_iter()
+                    .collect(),
+                None => Vec::new(),
             }
         }
     }
@@ -767,7 +796,7 @@ impl TapCtx<'_> {
 
 impl TapSink for TapCtx<'_> {
     fn event(&self, kind: TapKind, keycode: u16, flags: u64) {
-        let ev = on_tap(
+        let evs = on_tap(
             &mut self.state.borrow_mut(),
             kind,
             keycode,
@@ -775,7 +804,7 @@ impl TapSink for TapCtx<'_> {
             &self.keys.borrow(),
             &self.regs.borrow(),
         );
-        if let Some(ev) = ev {
+        for ev in evs {
             self.send(ev);
         }
     }
@@ -1584,7 +1613,7 @@ mod tests {
     fn tap_seq(keys: &HashSet<u16>, evs: &[(TapKind, u16, u64)], carbon: &[Reg]) -> Vec<HookEvent> {
         let mut st = TapState::default();
         evs.iter()
-            .filter_map(|(k, kc, f)| on_tap(&mut st, *k, *kc, *f, keys, carbon))
+            .flat_map(|(k, kc, f)| on_tap(&mut st, *k, *kc, *f, keys, carbon))
             .collect()
     }
 
@@ -1718,6 +1747,90 @@ mod tests {
         assert_eq!(chord[2], HookEvent::Other);
     }
 
+    /// Left Shift down, as the tap's flags say it.
+    const SHIFT_DOWN: u64 = 0x2_0000 | 0x0002;
+
+    #[test]
+    fn karabiners_cmd_ctrl_shift_4_for_cmd_shift_s_never_dictates_in_hold_or_toggle() {
+        let h = default_hotkey();
+        let keys = keys_of(&h);
+        let cmd = 0x10_0000 | 0x0008;
+        let all = CTRL_CMD_DOWN | SHIFT_DOWN;
+        // Cmd, Shift, then Karabiner's Ctrl and 4 (which the system may keep for the screenshot), then the ups.
+        let seq = [
+            (TapKind::Flags, 0x37, cmd),
+            (TapKind::Flags, 0x38, cmd | SHIFT_DOWN),
+            (TapKind::Flags, 0x3b, all),
+            (TapKind::Flags, 0x3b, cmd | SHIFT_DOWN),
+            (TapKind::Flags, 0x38, cmd),
+            (TapKind::Flags, 0x37, NONE),
+        ];
+        let lines = tap_seq(&keys, &seq, &[]);
+        assert_eq!(
+            lines,
+            vec![
+                key_line(true, VK_LWIN).unwrap(),
+                // Shift while Cmd is held, and Shift already down when Ctrl joins: never which key.
+                HookEvent::Extra,
+                key_line(true, VK_LCTRL).unwrap(),
+                HookEvent::Extra,
+                key_line(false, VK_LCTRL).unwrap(),
+                key_line(false, VK_LWIN).unwrap(),
+            ]
+        );
+        // All three flags arriving on one flagsChanged (Ctrl's) say the same.
+        let one = tap_seq(&keys, &[(TapKind::Flags, 0x3b, all)], &[]);
+        assert_eq!(
+            one,
+            vec![key_line(true, VK_LCTRL).unwrap(), HookEvent::Extra]
+        );
+        // Shift added to a held Ctrl+Cmd is a modifier too.
+        let late = tap_seq(
+            &keys,
+            &[
+                (TapKind::Flags, 0x3b, 0x4_0000 | 0x0001),
+                (TapKind::Flags, 0x37, CTRL_CMD_DOWN),
+                (TapKind::Flags, 0x38, all),
+            ],
+            &[],
+        );
+        assert_eq!(late[2], HookEvent::Extra);
+        for mode in [DictMode::Hold, DictMode::Toggle] {
+            let c = cfg(&h, mode);
+            let mut feed = KeyFeed::new();
+            let mut acts = Vec::new();
+            // The Extra comes with Ctrl's down; the ups come after the hold time.
+            let at = [0.0, 5.0, 10.0, 10.0, 400.0, 410.0];
+            for (i, (l, t)) in lines.iter().zip(at).enumerate() {
+                acts.extend(feed.feed(l, t, &c));
+                if i == 3 {
+                    acts.extend(feed.tick(220.0, &c));
+                }
+            }
+            assert!(acts.is_empty(), "{mode:?}: {acts:?}");
+        }
+        // Ctrl+Cmd alone: no Extra, and it still dictates.
+        let clean = tap_seq(
+            &keys,
+            &[
+                (TapKind::Flags, 0x3b, 0x4_0000 | 0x0001),
+                (TapKind::Flags, 0x37, CTRL_CMD_DOWN),
+            ],
+            &[],
+        );
+        assert!(!clean.contains(&HookEvent::Extra));
+        // Caps Lock on is no modifier.
+        let caps = tap_seq(
+            &keys,
+            &[
+                (TapKind::Flags, 0x3b, 0x4_0000 | 0x0001 | 0x1_0000),
+                (TapKind::Flags, 0x37, CTRL_CMD_DOWN | 0x1_0000),
+            ],
+            &[],
+        );
+        assert!(!caps.contains(&HookEvent::Extra), "{caps:?}");
+    }
+
     #[test]
     fn a_key_carbon_has_taken_is_carbons_and_not_another_key() {
         let keys = keys_of(&default_hotkey());
@@ -1779,7 +1892,7 @@ mod tests {
         assert!(sweep(&mut st, NONE).is_empty(), "said once");
         // An event with no side bits reads the family bit.
         let mut st = TapState::default();
-        assert!(on_tap(&mut st, TapKind::Flags, 0x3d, 0x8_0000, &keys, &[]).is_some());
+        assert!(!on_tap(&mut st, TapKind::Flags, 0x3d, 0x8_0000, &keys, &[]).is_empty());
     }
 
     #[test]
