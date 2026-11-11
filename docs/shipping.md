@@ -101,6 +101,35 @@ pwsh tools\stage-install.ps1 -Stable -Bin <TARGET>\release -Repo <checkout>
   `install.json` in state `swapping` means a swap was cut off; the next start puts it back.
 - The Velopack path (public releases) is unchanged.
 
+### On the Mac (2026-11-11, rule 1132)
+
+For Max's ad hoc `/Applications/Flare.app`. Max runs Claude Code inside it, so **an agent never replaces that bundle**:
+only Max's click on "Build ready" does. Always stage a Mac build this way, so it shows as an update in the running app:
+
+```
+tools/release/mac/stage-install.sh
+```
+
+- It builds Flare.app with `tools/release/mac/make-app.sh` into a temp folder (ad hoc, or `FLARE_MAC_SIGN_IDENTITY`
+  when set; never notarized), copies it to `~/Library/Application Support/Flare/staged.tmp/Flare.app`, renames that to
+  `staged/` (the old stage's manifest goes first) and writes `staged/staged.json` last: the commit, `built_at` and the
+  sha256 of every file in the bundle by its path in it (`Contents/MacOS/Flare`), the Windows format. It never touches
+  `/Applications`.
+- `FLARE_STAGE_APP=<built Flare.app>` stages a bundle already built (no cargo); `FLARE_STAGE_ROOT=<folder>` stages
+  somewhere else (the tests use a temp one; a root in an `Applications` folder or a bundle is refused).
+- The app side: a `.app` in an `Applications` folder is an installed copy, ad hoc or Velopack's, with live updates on or
+  off. It polls `staged/staged.json` every 2 s; the chip shows once every hash matches. An `--e2e` run never looks at the
+  real root.
+- The click renames the running bundle to `Flare.app.old` beside it, renames `staged/Flare.app` in (one volume: a stage
+  on another volume than the app is refused and no chip shows), checks every hash in place, and restarts with
+  `open -n /Applications/Flare.app --args ... --after-pid <pid>`. `install.json` and `install.lock` live in
+  `~/Library/Application Support/Flare/`. `Flare.app.old` goes once the new build has been up 20 s (or quit cleanly);
+  two early deaths put it back. A swap taken back moves the new bundle back to `staged/`, so it stays on offer.
+- An ad hoc signature changes with every build, so macOS may ask again for permissions it gave Flare (microphone,
+  folders, accessibility) after an install. The bundle id (`com.flare.terminal`) stays the same.
+- First install: a build from before this feature cannot read the Mac stage. Max installs one build with it by hand
+  once; from then on every stage shows as "Build ready".
+
 ## SmartScreen
 
 Flare is unsigned. Windows SmartScreen may warn on the first run of `Flare-win-Setup.exe` ("More info", then

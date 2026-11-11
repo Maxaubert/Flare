@@ -13,6 +13,7 @@ pub mod gpu;
 pub mod grid;
 pub mod hit;
 pub mod metrics;
+pub mod presentation;
 pub mod raster;
 pub mod sample;
 pub mod scene;
