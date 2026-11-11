@@ -85,7 +85,12 @@ fn make(start: Start, staged_first: bool) -> Fx {
 
 /// As `make`, with the temp install prepared by `prep`, which also says what the start found.
 fn make_with(prep: impl FnOnce(&Layout) -> Start) -> Fx {
-    let (dir, layout) = install_dir();
+    make_on(install_dir(), prep)
+}
+
+/// As `make_with`, over the install `inst` (a Windows `current\` or a macOS bundle).
+fn make_on(inst: (tempfile::TempDir, Layout), prep: impl FnOnce(&Layout) -> Start) -> Fx {
+    let (dir, layout) = inst;
     let start = prep(&layout);
     let q: Queue = Arc::default();
     let post: Post = {
@@ -595,5 +600,140 @@ fn a_new_build_not_yet_confirmed_can_be_replaced_and_the_one_it_ran_is_put_aside
         f.read("FlareStable.exe.old"),
         b"new exe",
         "the build it ran from is the one put aside"
+    );
+}
+
+/// macOS (rule 1132): `<tmp>/Applications/Flare.app` with an old build, the root `<tmp>/Support/Flare`.
+#[cfg(unix)]
+fn mac_install() -> (tempfile::TempDir, Layout) {
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("Applications").join("Flare.app");
+    let layout = Layout::from_bundle_exe(
+        &app.join("Contents").join("MacOS").join("Flare"),
+        &dir.path().join("Support").join("Flare"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(layout.exe().parent().unwrap()).unwrap();
+    std::fs::create_dir_all(layout.root()).unwrap();
+    std::fs::write(layout.exe(), b"old exe").unwrap();
+    (dir, layout)
+}
+
+/// What `tools/release/mac/stage-install.sh` writes: `staged/Flare.app`, then `staged/staged.json`.
+#[cfg(unix)]
+fn mac_stage(layout: &Layout) {
+    let b = layout.staged_files();
+    let mut files = BTreeMap::new();
+    for (name, bytes) in [
+        ("Contents/MacOS/Flare", b"new exe".as_slice()),
+        ("Contents/Info.plist", b"new plist".as_slice()),
+    ] {
+        let p = b.join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, bytes).unwrap();
+        files.insert(name.to_string(), staged::sha256_file(&p).unwrap());
+    }
+    let m = Manifest {
+        commit: "abc1234def".into(),
+        built_at: "2026-11-11T10:00:00Z".into(),
+        files,
+    };
+    std::fs::write(layout.manifest(), serde_json::to_string(&m).unwrap()).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_mac_bundle_shows_build_ready_and_a_click_swaps_the_whole_bundle_and_restarts_it() {
+    let f = make_on(mac_install(), |_| Start::Plain);
+    assert!(!f.app().get_staged_chip_shown());
+    mac_stage(&f.layout);
+    f.changed();
+    assert!(f.app().get_staged_chip_shown());
+    assert_eq!(f.app().get_staged_chip_label(), "Build ready");
+    assert_eq!(
+        f.app().get_staged_chip_tip(),
+        "Build abc1234: click to install and restart"
+    );
+    f.clock.set(1_000);
+    f.click_chip();
+    assert_eq!(f.phase(), Phase::Countdown { ends: 11_000 });
+    f.at(11_000);
+    let app = f.layout.bundle().unwrap().to_path_buf();
+    assert_eq!(
+        std::fs::read(app.join("Contents/MacOS/Flare")).unwrap(),
+        b"new exe"
+    );
+    assert_eq!(
+        std::fs::read(app.join("Contents/Info.plist")).unwrap(),
+        b"new plist"
+    );
+    assert_eq!(
+        std::fs::read(
+            f.layout
+                .current()
+                .join("Flare.app.old/Contents/MacOS/Flare")
+        )
+        .unwrap(),
+        b"old exe",
+        "the running bundle was renamed aside"
+    );
+    let r = f.restarts.borrow();
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].0, app.join("Contents").join("MacOS").join("Flare"));
+    assert_eq!(f.quits.get(), 1);
+    assert_eq!(
+        staged::read_marker(&f.layout).unwrap().state,
+        staged::MarkerState::Pending
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn the_mac_restart_opens_the_bundle_as_a_new_instance_with_the_arguments() {
+    let cmd = crate::appctl::staged_glue::restart_command(
+        Path::new("/Applications/Flare.app/Contents/MacOS/Flare"),
+        &["--after-pid".to_string(), "42".to_string()],
+    );
+    assert_eq!(cmd.get_program(), "/usr/bin/open");
+    let args: Vec<_> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        args,
+        [
+            "-n",
+            "/Applications/Flare.app",
+            "--args",
+            "--after-pid",
+            "42"
+        ]
+    );
+    let plain =
+        crate::appctl::staged_glue::restart_command(Path::new("/x/target/release/flare"), &[]);
+    assert_eq!(plain.get_program(), "/x/target/release/flare");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn an_installed_mac_bundle_has_a_layout_and_an_e2e_run_never_uses_the_real_root() {
+    use crate::appctl::staged_glue::installed_layout;
+    let exe = Path::new("/Applications/Flare.app/Contents/MacOS/Flare");
+    if std::env::var_os("FLARE_STAGE_ROOT").is_none() {
+        let l = installed_layout(exe, false).expect("an installed bundle");
+        assert!(
+            l.root().ends_with("Library/Application Support/Flare"),
+            "{}",
+            l.root().display()
+        );
+        assert_eq!(l.bundle(), Some(Path::new("/Applications/Flare.app")));
+        assert!(installed_layout(exe, true).is_none(), "e2e: no real root");
+    }
+    assert!(
+        installed_layout(
+            Path::new("/repo/target/mac-release/Flare.app/Contents/MacOS/Flare"),
+            false
+        )
+        .is_none()
     );
 }
