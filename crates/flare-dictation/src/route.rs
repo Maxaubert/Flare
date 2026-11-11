@@ -334,21 +334,25 @@ pub fn type_checked(
     // The words show in the prompt first: an Enter before Claude has taken in the paste is lost.
     let bound = (WORDS_BASE_MS + WORDS_PER_CHAR_MS * len).min(WORDS_MAX_MS);
     let mut waited = 0;
+    // A box that was there before the paste and cannot be read after it grew past the rows read (a long line wraps
+    // over many): the words are in it, so it counts as shown, and the Enter still waits `SEND_ENTER_MS`.
     let shown = loop {
         host.pause(PROMPT_POLL_MS);
         waited += PROMPT_POLL_MS;
-        if host.prompt_draft(&t.id) == Some(true) {
-            break true;
+        match host.prompt_draft(&t.id) {
+            Some(true) => break Some("words shown"),
+            None => break Some("words shown, box past the screen"),
+            Some(false) => {}
         }
         if waited >= bound {
-            break false;
+            break None;
         }
     };
-    if !shown {
+    let Some(shown) = shown else {
         host.stage("words not shown", waited);
         return SendDecision::No(format!("the words did not show in {}", t.label));
-    }
-    host.stage("words shown", waited);
+    };
+    host.stage(shown, waited);
     if waited < SEND_ENTER_MS {
         host.pause(SEND_ENTER_MS - waited);
     }
@@ -976,6 +980,25 @@ mod tests {
         assert_eq!(waited, 350);
     }
 
+    #[test]
+    fn type_checked_presses_enter_when_a_long_paste_grows_the_box_past_the_rows_read() {
+        let host = Fake {
+            agent: Some("claude".into()),
+            // Empty before; the paste wraps over so many rows that the box's top rule leaves the rows read;
+            // the Enter empties it and the box fits again.
+            reads: RefCell::new(vec![Some(false), None, Some(false)]),
+            ..Default::default()
+        };
+        let decide = || SendDecision::Ok(tab());
+        assert_eq!(
+            type_checked(&decide, &"a".repeat(700), &host),
+            SendDecision::Ok(tab())
+        );
+        assert_eq!(host.written.borrow().len(), 2, "the words and one Enter");
+        // The Enter still comes no sooner than 300 ms after the words.
+        let before_enter: u64 = host.delays.borrow().iter().take(2).sum();
+        assert_eq!(before_enter, SEND_ENTER_MS);
+    }
     #[test]
     fn type_checked_waits_longer_for_a_long_paste_but_never_past_three_seconds() {
         let wait_for = |len: usize| {

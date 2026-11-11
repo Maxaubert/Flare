@@ -2127,3 +2127,11 @@ link,controller}.rs`, `crates/flare/src/dictation_ctl.rs`, `crates/flare-agent/s
 `to_idle_makes_the_next_tap_a_start_and_still_swallows_the_held_chords_key_up`,
 `the_route_and_pick_crumbs_name_the_way_and_lengths_never_the_words` and `the_kill_hook_writes_a_crumb`. Source:
 owner report and the Stable diag log (2026-11-11).
+1133. **A dictation long enough to push Claude's prompt box past the rows read is still sent.** The box is read in the
+last 16 screen rows (`SCREEN_TAIL_ROWS`). A long one-line text pasted inline wraps over many rows, so in a narrow pane
+the box's top rule leaves those rows and `question::prompt_draft` reads `None`. A box that read empty before the paste
+and reads `None` after it grew with the words: `type_checked` counts them as shown (stage "words shown, box past the
+screen"), still writes the Enter no sooner than 300 ms after them, and watches the box empty as before. Only a box that
+stays empty for the whole bound is "the words did not show". Native: `crates/flare-dictation/src/route.rs`. Held by
+`type_checked_presses_enter_when_a_long_paste_grows_the_box_past_the_rows_read`. Source: review of rule 1132
+(2026-11-11).

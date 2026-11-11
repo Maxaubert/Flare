@@ -762,7 +762,8 @@ tag `v<version>` with no in-place replacement (D15), and the placeholder icon (D
 - **"Sent to" means sent** (2026-11-11, rule 1132). The send waits until the words show in Claude's prompt (longer
   for a long text, at most 3 s), presses Enter, and waits for the prompt to empty. Only then does the card say "Sent
   to X". Words that never showed say "Not sent: the words did not show in X, copied"; words the Enter did not send say
-  "Typed into X, press Enter there". After a refused start or the 5-minute cap the next press starts a recording.
+  "Typed into X, press Enter there". A text so long that the prompt box grows past the rows read still counts as
+  shown and is sent (rule 1133). After a refused start or the 5-minute cap the next press starts a recording.
 - **Words that cannot be sent are kept** (owner, 2026-10-23, "Yes, build it"). A finished transcript that ends unsent
   (no Claude session, Esc or the 30 s timeout on the picker, a refused send, a copy of the app that has closed) is
   copied to the clipboard and the note says so: "No Claude session, copied", "Not sent, copied", "Not sent: <why>,
