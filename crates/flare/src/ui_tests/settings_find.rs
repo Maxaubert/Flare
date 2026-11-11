@@ -208,7 +208,7 @@ fn drawn_rows(f: &Fx) -> Vec<String> {
 }
 
 /// The rows the index says this PC draws (no NVIDIA; the Dictation page is wired, M8 Task 24;
-/// the fixture's marks are Ring, so no Mark colours, rule 1136).
+/// the fixture's marks are Ring, so no Mark colours, rule 1140).
 fn index_ids() -> Vec<String> {
     settings_index(&IndexEnv {
         nvidia: false,
@@ -495,7 +495,7 @@ fn settings_opens_on_appearance_keeps_dictation_across_tab_switches_and_resets_o
 #[test]
 fn the_page_shows_the_tables_and_nothing_else() {
     let f = fx();
-    // Bar, so the Agents page draws its Mark colours too (Ring hides them, rule 1136).
+    // Bar, so the Agents page draws its Mark colours too (Ring hides them, rule 1140).
     f.b()
         .invoke_row_choose("agent-indicator".into(), "minimal".into());
     f.pump();
@@ -585,7 +585,7 @@ fn no_gpu_row_without_nvidia() {
 
 const COLOUR_ROWS: [&str; 3] = ["agent-color", "agent-done-color", "agent-question-color"];
 
-/// Rule 1136 (Max, 2026-11-11: "these should be hidden if you use the ring style"): with Ring the
+/// Rule 1140 (Max, 2026-11-11: "these should be hidden if you use the ring style"): with Ring the
 /// Agents page draws no Mark colours and Find does not offer them; the segmented control's Bar
 /// brings both back live, and Ring takes them away again.
 #[test]

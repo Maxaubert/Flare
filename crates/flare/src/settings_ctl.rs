@@ -1253,7 +1253,7 @@ impl SettingsCtl {
         (WallLayout { clip_h, ..base }, full.full_h)
     }
 
-    /// Rebuilds the find index when what it was built for changed (rule 1136: the Mark colours
+    /// Rebuilds the find index when what it was built for changed (rule 1140: the Mark colours
     /// rows leave Find with Ring and come back with Bar), so Find never leads to a hidden section.
     fn sync_index(&mut self) {
         let env = index_env_of(&self.deps.look);
