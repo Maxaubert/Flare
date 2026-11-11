@@ -148,32 +148,57 @@ fn zero() -> Calls {
 
 #[test]
 fn mode_table() {
-    for bits in 0u8..16 {
-        let (packaged, e2e, flag, live_feature) =
-            (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0, bits & 8 != 0);
-        let want = if flag || (!packaged && !e2e) {
+    for bits in 0u8..32 {
+        let (packaged, e2e, flag, live_feature, bundled) = (
+            bits & 1 != 0,
+            bits & 2 != 0,
+            bits & 4 != 0,
+            bits & 8 != 0,
+            bits & 16 != 0,
+        );
+        let want = if flag || (!packaged && !bundled && !e2e) {
             Mode::Preview
         } else if packaged && !e2e && !flag && live_feature {
             Mode::Live
         } else {
             Mode::Off
         };
-        assert_eq!(
-            mode_for(packaged, e2e, flag, live_feature),
-            want,
-            "{bits:04b}"
-        );
+        let got = mode_for(packaged, bundled, e2e, flag, live_feature);
+        assert_eq!(got, want, "{bits:05b}");
         if !live_feature {
-            assert_ne!(mode_for(packaged, e2e, flag, live_feature), Mode::Live);
+            assert_ne!(got, Mode::Live);
         }
     }
+}
+
+#[test]
+fn an_unpackaged_mac_bundle_is_off_and_the_rest_keep_d11() {
+    // Rule 1128: the ad hoc Flare.app (in a bundle, not Velopack's) shows no update chip.
+    for live in [false, true] {
+        assert_eq!(mode_for(false, true, false, false, live), Mode::Off);
+    }
+    // cargo run (no bundle) previews, as D11 says.
+    assert_eq!(mode_for(false, false, false, false, false), Mode::Preview);
+    // --preview-update previews everywhere, the ad hoc bundle and e2e included.
+    for (packaged, bundled, e2e) in [
+        (false, true, false),
+        (true, true, false),
+        (false, true, true),
+    ] {
+        assert_eq!(mode_for(packaged, bundled, e2e, true, true), Mode::Preview);
+    }
+    // A packaged Mac build (Velopack's bundle is a bundle too) goes live with the feature.
+    assert_eq!(mode_for(true, true, false, false, true), Mode::Live);
+    assert_eq!(mode_for(true, true, false, false, false), Mode::Off);
+    // e2e from a bundle stays off, as before.
+    assert_eq!(mode_for(false, true, true, false, true), Mode::Off);
 }
 
 #[test]
 fn a_default_build_has_no_live_mode() {
     const { assert!(!cfg!(feature = "live-updates")) };
     assert_eq!(
-        mode_for(true, false, false, cfg!(feature = "live-updates")),
+        mode_for(true, false, false, false, cfg!(feature = "live-updates")),
         Mode::Off
     );
 }

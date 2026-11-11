@@ -2067,3 +2067,103 @@ hex digits and dashes, quoted. Without the integration on disk a Mac tab still c
 (a real `/bin/zsh -l -i` and `/bin/bash --rcfile`, the fake `claude` on the PATH only through the user's
 startup file), `a_shell_with_no_resume_starts_no_agent` and `a_mac_zsh_resume_carries_the_id_into_the_login_shell`.
 Source: Max's restart on the Mac (2026-11-11).
+1130. **A fresh profile has vertical tabs; a stored choice is kept.** Max asked for tabs down the side by default
+(2026-11-11). Native: `flare.window.tabLayout` falls back to `vertical` (`crates/flare-settings/src/tab_layout.rs`),
+the sidebar keeps its own defaults (open, 220 px), and nothing is stored until somebody picks, so a stored or
+imported `horizontal` still wins. A test or e2e scenario written for the strip chooses Horizontal itself (the
+fixtures, the `--scene` setups, `flare_e2e::world::tabs_along_the_top`) instead of leaning on the default. Held by
+`tab_layout_is_vertical_until_chosen`, `a_stored_horizontal_choice_is_kept`,
+`a_fresh_profile_starts_vertical_with_the_sidebar_open_at_220` and the e2e `verticalStart`. Source: Max (2026-11-11);
+Prism Terminal's default is horizontal (lib/tabLayoutPrefs.ts).
+1127. **macOS: attention reads a question line in a picture at full breath, and linkPaintStall never names its file
+before the shell makes it.** Run 42953387295 (main, 34a6268a) failed two checks that pass on reruns. attention's "and it
+is visible there" (the question line on the tab in front) read 0 px, 0% of the foot: its `question-active` shot shows
+alpha in front with no line at its foot while the background shot a moment before showed it faint. The line breathes
+from full to nothing every 2 s and that check took one picture; rule 1119 had only sampled the background one. Both
+pictures are now `snap_full_breath` on a Mac (the app's own breath for the picture, read on the UI thread, at least
+0.85), so the check reads the line, not the phase. linkPaintStall's "the path tab A printed wears the link colour" typed
+`cls; Set-Content found-167.txt x; Write-Host 'made found-167.txt here'`: PSReadLine echoes the line before it runs,
+the painter asks whether `found-167.txt` exists, and an answer that comes before Set-Content made it is a "no" kept
+`NO_TTL_MS` (15 s), so the printed line lit only on the retry after 16 s and the 8 s wait missed it. On a Mac the
+command builds the name in the shell (`'found-' + '167.txt'`), so the first question about the file is the printed
+line's; a miss names whether the line is on screen, the ink and the links painted. The app is unchanged (the 15 s "no"
+is PT's). Windows keeps both old checks (rule 1119). Held by `the_mac_command_names_the_file_only_in_what_it_prints`.
+Source: Mac E2E in CI, run 42953387295 (2026-11-11).
+1131. **macOS: a text-presentation symbol draws from a text face, and only VS16 makes it a colour emoji.** Claude Code's
+message bullet U+23FA showed as Apple Color Emoji's blue tile on the Mac and as a plain circle on Windows (owner,
+2026-11-11). cosmic-text's macOS common fallback is `.SF NS`, Menlo, Apple Color Emoji, and of the ~900 faces on
+macOS 26 only STIX Two Math has U+23FA outside the emoji faces (Apple Symbols does not), so the emoji face won. The
+rasteriser now follows UTS #51 per cluster (`presentation::wants_emoji`): VS15 forces text, VS16 or a keycap forces
+emoji, otherwise Emoji_Presentation decides (a range table generated from Unicode 16.0 `emoji-data.txt`). A
+text-presentation cluster that landed on an emoji face is drawn from the user's stack, then `TEXT_SYMBOL_FAMILIES`
+(Apple Symbols, SF Mono, Menlo, .SF NS, Arial Unicode MS, STIX Two Math), when one of them has every glyph; an emoji
+cluster a text face took (Menlo has U+2764, so U+2764 U+FE0F drew as text) comes from `EMOJI_FAMILIES`. STIX Two Math
+moved from the lazy list to the end of the start-up fallbacks so it is there to be asked. Both lists are empty on
+Windows, whose output does not change. Native: `crates/flare-render/src/presentation.rs`, `raster.rs`,
+`macos/font_catalog.rs`. Held by `the_presentation_rule_follows_uts_51` and
+`a_text_presentation_symbol_draws_from_a_text_face_and_vs16_makes_it_an_emoji`. Source: macOS port (2026-11-11).
+1128. **macOS: a run from an `.app` bundle that Velopack did not make has updates off, so it shows no fake update
+chip.** D11 previews in an unpackaged build so `cargo run` shows the update flow, but the ad hoc
+`/Applications/Flare.app` that `tools/release/mac/make-app.sh` builds is unpackaged too (no `UpdateMac`, no
+`Contents/Resources/sq.version`), so it showed "Update 0.2.0" from the preview feed to a user who had installed it.
+`packaged::in_app_bundle` reads the path alone (`<X>.app/Contents/MacOS/<exe>`, no file probes); `Ship::from_parts`
+sets `bundled` from it on macOS only (always false on Windows), and `mode_for(packaged, bundled, e2e, flag, live)`
+previews only when `--preview-update` is given or the run is unpackaged, not bundled and not e2e. Unchanged: `cargo
+run` previews, `--preview-update` previews everywhere, a packaged Mac build goes Live with `live-updates`, an e2e run
+(which on a Mac runs from a bundle) stays Off as before, and Windows is as it was. Native:
+`crates/flare-win/src/packaged.rs`, `crates/flare-update/src/engine.rs`, `crates/flare/src/ship_ctl.rs`. Held by
+`in_app_bundle_reads_the_path_alone`, `mode_table`, `an_unpackaged_mac_bundle_is_off_and_the_rest_keep_d11` and
+`an_unpackaged_app_bundle_is_off_on_a_mac_only`. Source: Max, the installed ad hoc app showing an update chip
+1132. **macOS: a build an agent stages shows as "Build ready" in the running Flare.app, and only Max's click swaps the
+bundle.** Max runs Claude Code inside `/Applications/Flare.app`, so an agent never replaces that bundle; it runs
+`tools/release/mac/stage-install.sh`, which builds with `make-app.sh` into a temp folder and writes
+`~/Library/Application Support/Flare/staged.tmp/Flare.app`, renames it to `staged/` and writes `staged/staged.json` last
+(the Windows manifest; names relative to the bundle, `Contents/MacOS/Flare`). It never touches `/Applications`, and
+refuses a root in an `Applications` folder or a bundle. A `.app` in an `Applications` folder is an installed copy whatever
+the update mode (`Layout::from_bundle_exe`); an `--e2e` run never uses the real root. The swap journals `install.json`,
+renames the running bundle to `Flare.app.old`, renames the stage in (the stage must be on the bundle's volume, else
+`NotReady::OtherVolume` and no chip), checks every hash in place and puts everything back on any failure (the new bundle
+goes back to `staged/` while it is on offer). The restart is `open -n <bundle> --args ... --after-pid <pid>`; the
+start guard, the 20 s confirm (which deletes `Flare.app.old`) and the rollback after two early deaths are Windows'.
+`install.lock` is an `flock`. A record naming another bundle is left alone. Native: `crates/flare-update/src/staged.rs`,
+`crates/flare/src/appctl/staged_glue.rs`, `tools/release/mac/stage-install.sh`. Held by `staged::mac_tests` (layout,
+check, swap, a bad hash, a failed move, a crash at each step, confirm, rollback, take back and abandon, another
+bundle's record, the lock, the cross-volume refusal as a pure function), `stage_script::mac` (the real script on a fake
+bundle with `FLARE_STAGE_APP` and `FLARE_STAGE_ROOT`) and `ui_tests::staged_flows` (`a_mac_bundle_...`,
+`the_mac_restart_...`, `an_installed_mac_bundle_...`). An ad hoc signature changes per build, so macOS may ask for
+permissions again after an install. Source: Max, "always stage apps so they show as update here in the ui"
+(2026-11-11).
+1136. **macOS: a scenario types into a stand-in agent only after its pwsh has run a line, and a Ctrl+Tab goes out only
+after the last one landed.** Of the Mac E2E failures on main and PR runs from 2026-11-10 to 2026-11-11 (ci runs
+42917628472 to 42999224318), the most common was colourPicker's trio "a working stand-in agent is on the strip",
+"the working line is opaque" and "the red line is on screen" (3 runs: 42970917834 on main c789a5bb, 42973156632,
+42983045830). The scenario typed the hook line as soon as the nested pwsh of the stand-in (`/bin/zsh <dir>/claude`,
+rule 1109) showed its first prompt; on the runner that line can be lost, or kept without its Enter, so the hook never
+ran and the red line typed later ran glued to it. markStrip's "six tabs in the mockups' states" and the reduced-motion
+"the run is a full line and the question fully on" (42936130845) are the same lost hook line. `agent_proc::wait_ready`
+now types `Write-Host ('stand-in' + '-ready-' + 'n')` and waits for the printed answer on a row of its own, up to
+four tries of 4 s, each after a bare Enter so a half-taken line runs first; colourPicker, markStrip, indicators,
+agentHooks and agent_misc call it after starting the stand-in. themeEditorLive's "an Appearance picker left open is
+open again on return" (42932844893, 42999224318) sent the second Ctrl+Tab as soon as the picker shut, before the
+shell was in front; a Mac now waits for Settings to leave the front and to come back as well. Windows is unchanged:
+`wait_ready` returns at once and the Ctrl+Tab waits are as before (rule 1119). The other Mac misses of that window are
+held elsewhere: the frame's `[187, 187, 187]` by rule 1126, the theme's `0.0:1` by #162, attention and linkPaintStall
+by #163. Held by `the_ready_answer_is_the_printed_row_and_not_the_typed_line`. Source: Mac E2E in CI (2026-11-11).
+1129. **macOS: the terminal scrolls like Terminal.app, line for line with the fingers and no momentum after they
+lift.** Max (2026-11-11): "the scrolling in this app has inertia, I'd like it to be like it is in the normal terminal
+app where it scrolls line for line with no momentum". AppKit sends a trackpad scroll in phases (`NSEvent.phase` Began,
+Changed, Ended while the fingers are down) and then synthetic momentum events (`momentumPhase` not None, `phase` None);
+winit 0.30 folds both into one `TouchPhase`, so a momentum Changed reads as a finger Moved. The window's wheel arm reads
+the phases from `NSApp.currentEvent` (`flare_win::scroll_phase::current`, winit calls the handler from the view's
+`scrollWheel:`; winit's phase stands in when the current event is not the scroll). `WheelAccum::add_mac` then drops
+every momentum event, builds a drag's precise pixels into whole lines (one per cell height, `TermHandle::wheel_lines`:
+one line of view, one alternate-screen arrow or one mouse report a line, so vim and less get no momentum either), and
+resets the remainder when a gesture begins. A plain mouse wheel (both phases None) keeps its notches, three lines each;
+Cmd+wheel zoom keeps its notches too. Only the grid's path changes: a web panel (CEF) scrolls itself, with its momentum.
+Windows never reads the phase (`phase_from_winit` is `Wheel` off macOS). No setting. Native: `crates/flare/src/live.rs`,
+`crates/flare/src/window.rs`, `crates/flare-win/src/scroll_phase.rs`, `crates/flare-term/src/wheel.rs`. Held by
+`mac_scroll_moves_with_the_fingers_and_never_with_the_momentum`, `momentum_wins_and_each_finger_phase_is_read`,
+`a_line_step_is_one_line_everywhere_and_a_notch_stays_three`,
+`winits_phase_is_a_plain_wheel_off_the_mac_and_for_a_mouse` and `a_wheel_that_moves_the_view_asks_for_a_redraw`.
+Source: Max on his Mac (2026-11-11).
+1141. **The side-by-side run reads Prism Terminal's private installer with a read-only token, given to its step alone, and fails without it.** Prism Terminal moved to `arkivert/PrismTerminal` and became private (2026-11-11), so `gh release download` with the workflow's `GITHUB_TOKEN` answered "release not found". The side-by-side step of `release.yml` and `installer-e2e.yml` sets `GH_TOKEN` from the repository secret `PRISM_RELEASE_TOKEN` (a fine-grained token, Contents read on that one repository); no other step reads a secret. When the secret is missing the step prints one `::error::` line naming the secret, the repository and `docs/shipping.md`, and exits 1 before the test runs: never a skip, and the token is never printed. Native: the two workflow steps, `NEIGHBOUR_RELEASE_REPO` in `tools/e2e/tests/side_by_side.rs`. Held by `only_the_side_by_side_step_gets_the_neighbour_token_and_it_fails_without_it`, `no_secret_other_than_the_github_token_and_the_neighbour_release_token` and `the_release_goes_to_this_repository_only` (`crates/flare/tests/release_files.rs`), and the name scan's third widening (`the_widenings_are_narrow`, `crates/flare/tests/names.rs`). Source: owner decision 2026-11-11; `docs/shipping.md`.

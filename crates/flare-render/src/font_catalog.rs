@@ -23,7 +23,18 @@ pub struct FaceFile {
 #[path = "macos/font_catalog.rs"]
 mod macos;
 #[cfg(not(windows))]
-pub use macos::{DEFAULT_FAMILIES, FALLBACK_FAMILIES, LAZY_FALLBACK_FAMILIES, MONOSPACE_FAMILIES};
+pub use macos::{
+    DEFAULT_FAMILIES, EMOJI_FAMILIES, FALLBACK_FAMILIES, LAZY_FALLBACK_FAMILIES,
+    MONOSPACE_FAMILIES, TEXT_SYMBOL_FAMILIES,
+};
+
+/// None on Windows: its fallback order is left as it is, so a text-presentation character is
+/// never moved off the face cosmic-text picked.
+#[cfg(windows)]
+pub const TEXT_SYMBOL_FAMILIES: &[&str] = &[];
+/// None on Windows, for the same reason.
+#[cfg(windows)]
+pub const EMOJI_FAMILIES: &[&str] = &[];
 
 /// The families loaded at start-up next to the user's stack, in order of preference.
 #[cfg(windows)]

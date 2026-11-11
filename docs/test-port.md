@@ -106,7 +106,7 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-settings (`import/legacy`) | `src/renderer/src/lib/opacityMigration.test.ts` | port | one-time import of PT Opacity N into the alpha byte |
 | flare-settings (`import/legacy`) | `src/renderer/src/lib/seeThroughMigration.test.ts` | port | one-time import of PT switch and alpha into a see-through level |
 | flare-settings | `src/renderer/src/lib/sidebarPrefs.test.ts` | port | open or collapsed, width 150 to 420, initial 220, slide flag |
-| flare-settings | `src/renderer/src/lib/tabLayoutPrefs.test.ts` | port | horizontal default, unknown reads horizontal, listeners |
+| flare-settings | `src/renderer/src/lib/tabLayoutPrefs.test.ts` | port | vertical default in Flare (Max, 2026-11-11; PT: horizontal), unknown reads vertical, a stored horizontal is kept, listeners |
 | flare-settings | `src/renderer/src/lib/tabSwitchPrefs.test.ts` | port | In order default, unknown reads In order, listeners |
 | flare-shells | `core/main/shells.test.ts` | port | parseWslList, shellById, pwsh path discovery, System32 tool paths |
 | flare-shells | `core/main/termPrompt.test.ts` | port | OSC 9;9 prompt hook, cmd PROMPT, PS file style (test the emitted strings) |
