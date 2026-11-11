@@ -45,12 +45,12 @@ pub fn ink_of(ink: Option<DecorInk>) -> String {
     format!("#{:02x}{:02x}{:02x}", l.r, l.g, l.b)
 }
 
-/// The kind and the address of a link mark: `web` (the text is the address), `path` (the text as
-/// printed, resolved by the path worker) or `osc8` (the cell's hyperlink).
+/// The kind and the address of a link mark: `web` (the text is the address), `path` (the path a session
+/// wrote between the marks, rows joined) or `osc8` (the cell's hyperlink).
 pub fn describe(target: &LinkTarget) -> (&'static str, String) {
     match target {
         LinkTarget::Web(s) => ("web", s.clone()),
-        LinkTarget::Path { text } => ("path", text.clone()),
+        LinkTarget::Path { text, .. } => ("path", text.clone()),
         LinkTarget::Osc8 { uri } => ("osc8", uri.clone()),
     }
 }
@@ -69,10 +69,11 @@ fn term_selection(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     }))
 }
 
-/// `term.links`: `{ links: [ { kind, uri, text, pieces: [ { row, from, to } ] } ], ink, alt_screen }`.
+/// `term.links`: `{ links: [ { kind, uri, line, text, pieces: [ { row, from, to } ] } ], ink, alt_screen }`.
 /// One entry per link on the viewport (a link that wraps has one piece per row). `row` is a
 /// viewport row, `from` and `to` are the cells it covers (`to` exclusive), `text` is what those
-/// cells print, and `ink` is the colour the decoration paints the link cells with.
+/// cells print, `line` the line a file link named (null for none), and `ink` is the colour the
+/// decoration paints the link cells with.
 fn term_links(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     let h = ctx.front.clone().ok_or("no shell is in front")?;
     let inputs = ctx
@@ -115,7 +116,11 @@ fn term_links(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
                         json!({ "row": row, "from": p.col, "to": p.col + p.width })
                     })
                     .collect();
-                json!({ "kind": kind, "uri": uri, "text": text, "pieces": pieces })
+                let line = match &m.target {
+                    LinkTarget::Path { line, .. } => json!(line),
+                    _ => Value::Null,
+                };
+                json!({ "kind": kind, "uri": uri, "line": line, "text": text, "pieces": pieces })
             })
             .collect();
         json!({
@@ -158,9 +163,7 @@ mod tests {
             ("web", "https://a.io/x".to_string())
         );
         assert_eq!(
-            describe(&LinkTarget::Path {
-                text: "docs/a.pdf".into()
-            }),
+            describe(&LinkTarget::path("docs/a.pdf")),
             ("path", "docs/a.pdf".to_string())
         );
         assert_eq!(

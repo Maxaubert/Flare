@@ -4,6 +4,10 @@
 //! the hook's JSON with `additionalContext` naming the page. When the page has gone since, it says so once.
 //! Otherwise it prints nothing.
 //!
+//! With `--session-start` after it, it is the `SessionStart` hook instead (start, resume, clear and compact): it
+//! prints the note on file links (`FILE_LINK_NOTE`) as the session's context, once per start, and asks Flare for
+//! nothing.
+//!
 //! It must never slow a prompt or break one: outside Flare (no tab token) it returns at once, every call has a
 //! short timeout, and any failure prints nothing and exits 0. The title and address come from the web page, so
 //! they are cleaned and quoted between the page-content markers (`browser::page_block`), never written into
@@ -16,10 +20,12 @@ use std::time::Duration;
 use flare_ctl::Method;
 use serde_json::{Value, json};
 
-use crate::{Channel, FlareChannel, TAB_TOKEN_VAR, browser};
+use crate::{Channel, FILE_LINK_NOTE, FlareChannel, TAB_TOKEN_VAR, browser};
 
 /// The argument that runs the hook instead of the MCP server.
 pub const HOOK_FLAG: &str = "--hook-context";
+/// The argument after [`HOOK_FLAG`] that makes it the `SessionStart` hook.
+pub const SESSION_START_FLAG: &str = "--session-start";
 /// How long the hook waits for Flare, for the connect and for the answer each. A prompt is never held longer.
 pub const HOOK_TIMEOUT: Duration = Duration::from_millis(1000);
 /// The most of the hook's input that is read (Claude Code sends the prompt along; only the session id is used).
@@ -81,6 +87,32 @@ pub fn hook_output(context: &str) -> String {
         }
     })
     .to_string()
+}
+
+/// The `SessionStart` hook's whole stdout: the file-link note as the session's context (spec 2026-11-11).
+pub fn session_start_output() -> String {
+    json!({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": FILE_LINK_NOTE,
+        }
+    })
+    .to_string()
+}
+
+/// The `SessionStart` hook as `main` runs it: the note, only inside a Flare tab (its token is set), else
+/// nothing. Reads no input and calls no one, so it can never hold a session's start.
+pub fn session_start_main() {
+    if std::env::var(TAB_TOKEN_VAR)
+        .ok()
+        .is_none_or(|t| t.is_empty())
+    {
+        return;
+    }
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    let _ = writeln!(out, "{}", session_start_output());
+    let _ = out.flush();
 }
 
 /// The name of the state file of a tab and session: a hash, so the tab's secret is never written down.
@@ -308,6 +340,27 @@ mod tests {
         let mut ch = Answer(Some(Ok(web("Docs", "https://a.example/"))), Vec::new());
         assert!(run_hook(input, "secret", &mut ch, &dir).is_some());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_session_start_note_asks_for_paths_between_the_marks() {
+        let line = session_start_output();
+        assert!(!line.contains('\n'), "one line Claude Code reads");
+        let v: Value = serde_json::from_str(&line).expect("one JSON object");
+        assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SessionStart");
+        let note = v["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .expect("context");
+        assert_eq!(note, FILE_LINK_NOTE);
+        assert!(note.starts_with("You are running inside Flare."));
+        assert!(note.contains("between \u{27E6} and \u{27E7}"));
+        assert!(note.contains(":line"));
+        assert!(note.contains("Do not put the marks in code blocks, commands or files you write."));
+        assert!(!note.contains('\u{2014}'));
+        // The example in it is a file link Flare reads, with its line.
+        let start = note.rfind('\u{27E6}').unwrap();
+        let end = note.rfind('\u{27E7}').unwrap();
+        assert!(note[start..end].ends_with(":42"));
     }
 
     #[test]

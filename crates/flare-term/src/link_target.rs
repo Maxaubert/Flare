@@ -10,13 +10,16 @@ use crate::osc8::{is_web_link, osc8_target};
 use crate::path_open::PathKind;
 use crate::web_url::is_web_url;
 
-/// A path under the pointer that exists (D5): what the menu offers and a click opens.
+/// A file link under the pointer (D5, a path between marks since 2026-11-11): what the menu offers and a click
+/// opens. kind is what the text says (a trailing separator is a folder); nothing is statted for the menu.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TermPathAt {
     pub kind: PathKind,
     pub abs: String,
     pub text: String,
     pub base: String,
+    /// The line the link named, for the panel.
+    pub line: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,7 +60,7 @@ pub fn click_action(
                 LinkAction::Nothing
             }
         }
-        LinkTarget::Path { text } => match base {
+        LinkTarget::Path { text, .. } => match base {
             Some(base) => LinkAction::OpenPath {
                 base: base.to_string(),
                 text: text.clone(),
@@ -86,7 +89,7 @@ pub fn shown_link_over(line_text: &str, from: usize, to: usize) -> Option<String
 pub fn menu_link(t: &LinkTarget, shown: Option<&str>) -> String {
     match t {
         LinkTarget::Web(text) => text.clone(),
-        LinkTarget::Path { text } => text.clone(),
+        LinkTarget::Path { text, .. } => text.clone(),
         LinkTarget::Osc8 { uri } => osc8_target(uri, shown),
     }
 }
@@ -165,9 +168,8 @@ mod tests {
 
     #[test]
     fn a_path_click_hands_over_the_text_and_the_folder_it_was_found_from() {
-        let t = LinkTarget::Path {
-            text: "src\\a.rs".to_string(),
-        };
+        let t = LinkTarget::path("src\\a.rs");
+
         assert_eq!(
             click_action(&t, None, Some("C:\\r"), 0),
             LinkAction::OpenPath {
@@ -182,9 +184,7 @@ mod tests {
     fn no_link_needs_ctrl_today() {
         assert!(!link_click_needs_ctrl(&web("https://a.io/x")));
         assert!(!link_click_needs_ctrl(&osc8("https://a.io/x")));
-        assert!(!link_click_needs_ctrl(&LinkTarget::Path {
-            text: "a.rs".to_string()
-        }));
+        assert!(!link_click_needs_ctrl(&LinkTarget::path("a.rs")));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 {
-  "description": "Flare reads the agent state from these. Each runs hook.cmd, which prints one fixed OSC 777 line through terminalSequence. The command is a placeholder that Flare replaces with the absolute System32 cmd.exe when it installs the plugin; this template is never valid as-is. Exec form (args): no shell, so it runs the same with Git Bash or PowerShell, in a folder with spaces or brackets. UserPromptSubmit and Stop add +sid: the turn's Claude session id. One more UserPromptSubmit hook runs flare-mcp --hook-context, which tells Claude which web page the browser panel beside the tab shows; its placeholder becomes the absolute flare-mcp.exe, and the hook is left out when there is none.",
+  "description": "Flare reads the agent state from these. Each runs hook.cmd, which prints one fixed OSC 777 line through terminalSequence. The command is a placeholder that Flare replaces with the absolute System32 cmd.exe when it installs the plugin; this template is never valid as-is. Exec form (args): no shell, so it runs the same with Git Bash or PowerShell, in a folder with spaces or brackets. UserPromptSubmit and Stop add +sid: the turn's Claude session id. One more UserPromptSubmit hook runs flare-mcp --hook-context, which tells Claude which web page the browser panel beside the tab shows; its placeholder becomes the absolute flare-mcp.exe, and the hook is left out when there is none. The SessionStart hook (start, resume, clear and compact) runs flare-mcp --hook-context --session-start, which tells Claude to write file paths between the file-link marks Flare reads; it is left out the same way.",
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -28,6 +28,22 @@
             "command": "@@FLARE_MCP_EXE@@",
             "args": [
               "--hook-context"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_MCP_EXE@@",
+            "args": [
+              "--hook-context",
+              "--session-start"
             ],
             "timeout": 5
           }

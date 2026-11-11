@@ -280,6 +280,17 @@ impl TextSel {
         }
     }
 
+    /// A file link's line: the whole line with its line break, as a triple click picks it.
+    pub fn mark_line<L: AsRef<str>>(&mut self, lines: &[L], line: usize) {
+        *self = Self::default();
+        let Some(last) = lines.len().checked_sub(1) else {
+            return;
+        };
+        let (a, b) = line_span(lines, line.min(last));
+        self.anchor = Some(a);
+        self.head = Some(b);
+    }
+
     /// Shift with a key: the moving end goes to `to`; with no caret yet the selection starts at `from`.
     pub fn extend<L: AsRef<str>>(&mut self, lines: &[L], from: Pos, to: Pos) {
         if self.anchor.is_none() {
@@ -753,5 +764,17 @@ mod tests {
         sel.press(&lines, Pos::new(7, 9), 1, false);
         assert_eq!(sel.head(), Some(Pos::new(1, 1)));
         assert_eq!(text_of(&lines, (Pos::new(0, 1), Pos::new(9, 9))), "b\nc");
+    }
+
+    #[test]
+    fn mark_line_picks_the_whole_line_as_a_triple_click_does() {
+        let lines = ["one", "two", "three"];
+        let mut s = TextSel::default();
+        s.mark_line(&lines, 1);
+        assert_eq!(s.range(), Some((Pos::new(1, 0), Pos::new(2, 0))));
+        s.mark_line(&lines, 9);
+        assert_eq!(s.range(), Some((Pos::new(2, 0), Pos::new(2, 5))));
+        s.mark_line(&[] as &[&str], 0);
+        assert_eq!(s.range(), None);
     }
 }

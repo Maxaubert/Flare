@@ -225,6 +225,7 @@ fn open_panel(f: &Fx, kind: i32) {
             &id,
             flare_surfaces::PanelKind::Image,
             &path.to_string_lossy(),
+            None,
         );
         f.pump_until("the picture", |f| f.h.comp.get_panel_kind() == 1);
     } else {

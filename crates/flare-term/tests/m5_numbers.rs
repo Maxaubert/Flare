@@ -9,13 +9,12 @@ use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use flare_term::emulator::{DecorReq, Emulator};
 use flare_term::find::{CountJob, FindOpts, Finder};
-use flare_term::path_links::PathLinks;
 use flare_term::sel_text::selection_text;
 use flare_term::term_buf::TermBuf;
 
 fn line_text(i: usize) -> String {
     format!(
-        "{i:06} the quick brown fox jumps over the lazy dog https://example.com/item/{i} src/main.rs:{i}"
+        "{i:06} the quick brown fox jumps over the lazy dog https://example.com/item/{i} \u{27E6}C:\\w\\src\\main.rs:{i}\u{27E7}"
     )
 }
 
@@ -28,12 +27,9 @@ fn fill(emu: &mut Emulator, lines: usize) {
     let _ = emu.feed(s.as_bytes());
 }
 
-fn decor_once(emu: &mut Emulator, paths: &mut PathLinks, find_open: bool) -> usize {
+fn decor_once(emu: &mut Emulator, find_open: bool) -> usize {
     let mut req = DecorReq {
-        paths,
-        owner: "m5-numbers",
         cwd: None,
-        now_ms: 0,
         ink_key: 1,
         hover: None,
         find_open,
@@ -56,16 +52,15 @@ fn m5_decor_200x60_with_links_selection_and_find() {
     sel.update(Point::new(Line(5), Column(40)), Side::Right);
     emu.term_mut().selection = Some(sel);
     emu.find_set("example");
-    let mut paths = PathLinks::new();
 
     let t = Instant::now();
-    let painted = decor_once(&mut emu, &mut paths, true);
+    let painted = decor_once(&mut emu, true);
     let first = t.elapsed().as_secs_f64() * 1000.0;
 
     let calls = 200;
     let t = Instant::now();
     for _ in 0..calls {
-        let _ = decor_once(&mut emu, &mut paths, true);
+        let _ = decor_once(&mut emu, true);
     }
     let steady = t.elapsed().as_secs_f64() * 1000.0 / f64::from(calls);
     println!(
@@ -81,10 +76,9 @@ fn m5_link_scan_viewport_of_10000_lines_of_scrollback() {
     fill(&mut emu, 10_040);
     let history = emu.history_size();
     emu.scroll_view(i32::try_from(history).unwrap_or(i32::MAX));
-    let mut paths = PathLinks::new();
 
     let t = Instant::now();
-    let spans = decor_once(&mut emu, &mut paths, false);
+    let spans = decor_once(&mut emu, false);
     let cold = t.elapsed().as_secs_f64() * 1000.0;
     println!(
         "m5 link scan, viewport at the top of {history} lines of scrollback: first call {cold:.3} ms, \

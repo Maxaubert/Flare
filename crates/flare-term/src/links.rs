@@ -11,7 +11,7 @@ pub struct LinkSpan {
     pub end: usize,
 }
 
-/// The http(s) links in `text`. A link runs to the next space, quote or angle bracket; then
+/// The http(s) links in `text`. A link runs to the next space, quote, angle bracket or file-link mark (`file_marks`); then
 /// whatever belongs to the SENTENCE is given back: a full stop, comma, colon, etc. after it,
 /// and a closing bracket the link never opened.
 pub fn find_links(text: &str) -> Vec<LinkSpan> {
@@ -48,26 +48,6 @@ pub fn find_links(text: &str) -> Vec<LinkSpan> {
     out
 }
 
-/// The pieces of `text` (`len` chars) between the rows a program broke by hand
-/// (`cells::by_hand`), as [start, end) char offsets.
-pub fn segments_of(len: usize, joins: &[usize]) -> Vec<(usize, usize)> {
-    let mut out = Vec::with_capacity(joins.len() + 1);
-    let mut from = 0;
-    for &j in joins {
-        out.push((from, j));
-        from = j;
-    }
-    out.push((from, len));
-    out
-}
-
-/// The chars `start..end` of `text`.
-pub(crate) fn char_slice(text: &str, start: usize, end: usize) -> &str {
-    let at = |n: usize| text.char_indices().nth(n).map_or(text.len(), |(i, _)| i);
-    let (s, e) = (at(start), at(end.max(start)));
-    &text[s..e]
-}
-
 /// `find_links` over a logical line that holds rows the program broke by hand (`joins`, from
 /// `cells::by_hand`). Claude's Ink breaks its own lines at the window's edge and writes each row
 /// on its own, so a URL cut there is ONE link: it is read across the join like a path is, instead
@@ -78,8 +58,9 @@ pub fn find_links_in(text: &str, _joins: &[usize]) -> Vec<LinkSpan> {
     find_links(text)
 }
 
-static CANDIDATE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)https?://[^\s"'<>`]+"#).expect("static regex"));
+static CANDIDATE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)https?://[^\s"'<>`\x{27E6}\x{27E7}]+"#).expect("static regex")
+});
 static SCHEME_AND_HOST: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^https?://[^/?#]").expect("static regex"));
 
@@ -157,7 +138,6 @@ mod tests {
             ],
             "PR/123 + 4 must be PR/1234, never the truncated first row"
         );
-        assert_eq!(segments_of(5, &[2, 4]), vec![(0, 2), (2, 4), (4, 5)]);
     }
 
     #[test]
@@ -177,5 +157,13 @@ mod tests {
         let text = "日本 https://a.io/x";
         let l = find_links(text)[0];
         assert_eq!((l.start, l.end), (3, 3 + "https://a.io/x".chars().count()));
+    }
+
+    #[test]
+    fn find_links_stops_at_a_file_link_mark() {
+        assert_eq!(
+            found("https://a.io/x\u{27E6}C:\\a.rs\u{27E7} and \u{27E6}https://b.io/y\u{27E7}"),
+            vec!["https://a.io/x", "https://b.io/y"]
+        );
     }
 }

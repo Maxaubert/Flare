@@ -248,6 +248,9 @@ pub struct PanelCtl {
     titles: HashMap<String, String>,
     /// Where the reader was in the files of tabs that went behind, by tab.
     memory: HashMap<String, ViewMemory>,
+    /// The line a file link or `show_file` named, by tab, with the file it is in: once that file's text is read, the
+    /// view goes to the line and marks it (once).
+    goto: HashMap<String, (String, usize)>,
     /// A refused "Show in side panel" on a tab whose panel is open: its words sit in the header's second line until the
     /// tab shows something else (the panel itself is left as it was).
     refused: HashMap<String, String>,
@@ -373,6 +376,9 @@ pub fn human_bytes(n: usize) -> String {
     }
 }
 
+/// How many lines a file link's line has above it at the top of the view.
+const GOTO_ABOVE: usize = 3;
+
 impl PanelCtl {
     pub fn new(post: Post) -> Self {
         Self {
@@ -383,6 +389,7 @@ impl PanelCtl {
             titles: HashMap::new(),
             refused: HashMap::new(),
             memory: HashMap::new(),
+            goto: HashMap::new(),
             inline: HashMap::new(),
             inline_seq: 0,
             store: None,
@@ -512,8 +519,9 @@ impl PanelCtl {
         if kind.is_built() && !target_ok(&kind, target) {
             return false;
         }
-        // Whatever the tab shows now replaces a mini-app it had.
+        // Whatever the tab shows now replaces a mini-app it had, and a line an earlier show was to go to.
         self.drop_app(tab);
+        self.goto.remove(tab);
         // A file shown (again) opens in its default view, every time: a page that failed is tried again. The page of
         // another file goes; the same file's stays until its new page replaces it.
         self.fallback.remove(tab);
@@ -531,6 +539,34 @@ impl PanelCtl {
         self.inline.remove(tab);
         self.refused.remove(tab);
         self.panels.show(tab, kind, target)
+    }
+
+    /// `show`, and with `line` (from 1) the text view goes to that line and marks it once the file is read: a file
+    /// link's `:line`, `show_file`'s `line`. A markdown file with a line opens in Code, where a line can be marked.
+    pub fn show_at(&mut self, tab: &str, kind: PanelKind, target: &str, line: Option<u32>) -> bool {
+        let is_text = kind == PanelKind::Text;
+        if !self.show(tab, kind, target) {
+            return false;
+        }
+        if is_text {
+            self.go_to_line(tab, target, line);
+        }
+        true
+    }
+
+    /// The text file just shown on the tab (`show`, `show_titled`) opens at `line` (from 1), marked, once it is read.
+    /// A markdown file opens in Code for it, where a line can be marked. None or 0: no line.
+    pub fn go_to_line(&mut self, tab: &str, target: &str, line: Option<u32>) {
+        let Some(n) = line
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n > 0)
+        else {
+            return;
+        };
+        if preview::is_markdown(target) && self.apps_root.is_some() {
+            self.panels.set_view(tab, MdView::Code);
+        }
+        self.goto.insert(tab.to_string(), (target.to_string(), n));
     }
 
     /// A "Show in side panel" the file could not honour, on a tab whose panel is open: the panel is left as it was
@@ -766,6 +802,7 @@ impl PanelCtl {
     }
 
     pub fn forget(&mut self, tab: &str) {
+        self.goto.remove(tab);
         self.refused.remove(tab);
         self.memory.remove(tab);
         self.drop_app(tab);
@@ -1127,6 +1164,7 @@ impl PanelCtl {
                 self.push(app);
                 self.restore_top(app, top);
                 self.apply_memory(app);
+                self.apply_goto(app);
                 // The width may have moved while the wrap was on its way (a drag goes on while it is made).
                 self.live_wrap(app);
                 return false;
@@ -1137,7 +1175,31 @@ impl PanelCtl {
         }
         self.push(app);
         self.apply_memory(app);
+        self.apply_goto(app);
         false
+    }
+
+    /// The text that was just read is the file a link named a line of: the view goes to that line, with a few lines
+    /// above it, and the line is marked with the selection. Once: the reader may scroll on.
+    fn apply_goto(&mut self, app: &AppWindow) {
+        let Some(s) = self.shown.as_ref() else { return };
+        let Some((target, line)) = self.goto.get(&s.tab).cloned() else {
+            return;
+        };
+        if target != s.target {
+            return;
+        }
+        let Some(lines) = self.text_lines() else {
+            return;
+        };
+        self.goto.remove(&s.tab);
+        if lines.is_empty() {
+            return;
+        }
+        let line = line.min(lines.len());
+        self.sel.mark_line(&lines, line - 1);
+        self.restore_top(app, Some(line.saturating_sub(GOTO_ABOVE).max(1)));
+        self.push_sel(app);
     }
 
     /// Keeps the reader's place in the file on show (a text view's top line, a picture's real-size state) for the

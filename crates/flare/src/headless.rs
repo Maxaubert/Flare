@@ -54,7 +54,6 @@ use crate::{AppWindow, MarkMotion, SetKind, SettingsBridge};
 use flare_settings::pages::DEFAULT_PAGE;
 use flare_settings::window_colours::ACCENT;
 use flare_term::keys::KeyEvent;
-use flare_term::path_open::{PathKind, StatFn};
 
 /// The line the live tab types; its echo and its output both show it on screen.
 const ECHO_MARK: &str = "flare-m2-ok";
@@ -734,7 +733,8 @@ const PROMPT: &str = r"PS C:\Users\Admin\Documents\Claude\Github\Flare> ";
 const RUN_URL: &str = "https://github.com/Maxaubert/Flare/actions/runs/1";
 const README: &str = r"C:\Users\Admin\Documents\Claude\Github\Flare\README.md";
 
-/// The PowerShell session most scenes show: ten rows, the url on row 5, the path on row 6.
+/// The PowerShell session most scenes show: ten rows, the url on row 5, the path on row 6 (between the file-link marks a
+/// session writes, `file_marks`).
 fn term_rows() -> Vec<String> {
     vec![
         format!("{PROMPT}cargo nextest run"),
@@ -743,7 +743,7 @@ fn term_rows() -> Vec<String> {
         "warning: unused variable `x`".to_string(),
         r"    --> crates\flare\src\main.rs:12:9".to_string(),
         format!("    log at {RUN_URL}"),
-        format!("    source {README}"),
+        format!("    source \u{27E6}{README}\u{27E7}"),
         "     Summary [   0.412s] 213 tests run: 212 passed, 1 failed".to_string(),
         "error: test run failed".to_string(),
         PROMPT.to_string(),
@@ -778,27 +778,12 @@ fn term_text(name: &str, cols: usize) -> Vec<String> {
         "term-links" => vec![
             format!("{PROMPT}cargo nextest run"),
             format!("    log at {RUN_URL}"),
-            format!("    source {README}"),
+            format!("    source \u{27E6}{README}\u{27E7}"),
             // The url starts 20 cells from the right edge, so it wraps over two rows.
             format!("{}{RUN_URL}", " ".repeat(cols.saturating_sub(20))),
             PROMPT.to_string(),
         ],
         _ => term_rows(),
-    }
-}
-
-/// The path links' stat: the README and the Flare folder exist; nothing else does.
-struct SceneStat;
-
-impl StatFn for SceneStat {
-    fn kind(&self, abs: &str) -> Option<PathKind> {
-        if abs.eq_ignore_ascii_case(README) {
-            Some(PathKind::File)
-        } else if abs.eq_ignore_ascii_case(&github("Flare")) {
-            Some(PathKind::Dir)
-        } else {
-            None
-        }
     }
 }
 
@@ -969,7 +954,6 @@ impl Scene {
                     let host = host.clone();
                     Rc::new(move || host.borrow().metrics())
                 },
-                stat: Arc::new(SceneStat),
                 ..TermPorts::inert()
             },
         };

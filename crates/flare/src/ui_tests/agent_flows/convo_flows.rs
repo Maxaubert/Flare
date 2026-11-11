@@ -122,7 +122,7 @@ fn a_tab_with_a_session_and_no_panel_runs_nothing() {
     std::fs::write(&note, "hello").unwrap(); // sync-ok: test code only
     f.ctl
         .borrow_mut()
-        .show_preview(&id, PanelKind::Text, &note.to_string_lossy());
+        .show_preview(&id, PanelKind::Text, &note.to_string_lossy(), None);
     f.pump();
     assert_eq!(trackers(&f), 0);
 }
@@ -283,7 +283,7 @@ fn closing_the_panel_stops_the_tracker_and_reopening_starts_it_again() {
     std::fs::write(&note, "hello").unwrap(); // sync-ok: test code only
     f.ctl
         .borrow_mut()
-        .show_preview(&id, PanelKind::Text, &note.to_string_lossy());
+        .show_preview(&id, PanelKind::Text, &note.to_string_lossy(), None);
     f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
     assert_eq!(trackers(&f), 0);
     assert_eq!(f.h.comp.get_panel_convo_files().row_count(), 0);
@@ -380,7 +380,7 @@ fn a_path_answer_that_arrives_after_the_panel_changed_is_dropped() {
     f.h.comp.invoke_panel_convo_open(real_s.as_str().into());
     f.ctl
         .borrow_mut()
-        .show_preview(&id, PanelKind::Text, &other.to_string_lossy());
+        .show_preview(&id, PanelKind::Text, &other.to_string_lossy(), None);
     for _ in 0..15 {
         f.pump();
         std::thread::sleep(std::time::Duration::from_millis(20)); // sync-ok: test code only

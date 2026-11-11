@@ -175,6 +175,7 @@ mod tests {
             abs: "C:\\work\\notes.txt".to_string(),
             text: "notes.txt".to_string(),
             base: "C:\\work".to_string(),
+            line: None,
         }
     }
 
@@ -184,6 +185,7 @@ mod tests {
             abs: "C:\\work\\src".to_string(),
             text: "src".to_string(),
             base: "C:\\work".to_string(),
+            line: None,
         }
     }
 
@@ -238,6 +240,7 @@ mod tests {
             abs: format!(r"C:\work\{name}"),
             text: name.to_string(),
             base: r"C:\work".to_string(),
+            line: None,
         }
     }
 

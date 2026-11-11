@@ -635,12 +635,12 @@ mod tests {
     fn the_prompt_hook_runs_flare_mcp_by_its_placeholder_with_one_flag() {
         let value = hooks_value();
         let entries = mcp_hook_entries(&value);
-        assert_eq!(entries.len(), 1);
-        let (event, matcher, hook) = &entries[0];
-        assert_eq!(
-            (event.as_str(), matcher.as_str()),
-            ("UserPromptSubmit", "*")
-        );
+        assert_eq!(entries.len(), 2);
+        let (_, matcher, hook) = entries
+            .iter()
+            .find(|e| e.0 == "UserPromptSubmit")
+            .expect("the prompt hook");
+        assert_eq!(matcher.as_str(), "*");
         assert_eq!(hook["type"].as_str(), Some("command"));
         assert_eq!(hook["command"].as_str(), Some(MCP_EXE_PLACEHOLDER));
         assert_eq!(hook["args"], serde_json::json!(["--hook-context"]));
@@ -661,8 +661,8 @@ mod tests {
         assert!(hooks_commands_are_absolute(&with));
         let value: serde_json::Value = serde_json::from_str(&with).expect("json");
         let entries = mcp_hook_entries(&value);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].2["command"].as_str(), Some(exe));
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|e| e.2["command"].as_str() == Some(exe)));
         assert_eq!(
             hook_entries(&value).len(),
             25,
@@ -677,6 +677,10 @@ mod tests {
         assert!(!without.contains("@@") && !without.contains("\"--hook-context\""));
         let value: serde_json::Value = serde_json::from_str(&without).expect("json");
         assert!(mcp_hook_entries(&value).is_empty());
+        assert!(
+            value["hooks"].get("SessionStart").is_none(),
+            "its event goes with it"
+        );
         assert_eq!(
             value["hooks"]["UserPromptSubmit"].as_array().map(Vec::len),
             Some(1)
@@ -697,10 +701,11 @@ mod tests {
         let text = std::fs::read_to_string(with.join("hooks").join("hooks.json")).expect("hooks"); // sync-ok: test fixture on a temp folder
         let value: serde_json::Value = serde_json::from_str(&text).expect("json");
         let entries = mcp_hook_entries(&value);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            entries[0].2["command"].as_str(),
-            Some(exe.to_string_lossy().as_ref())
+        assert_eq!(entries.len(), 2);
+        assert!(
+            entries
+                .iter()
+                .all(|e| e.2["command"].as_str() == Some(exe.to_string_lossy().as_ref()))
         );
         let command = std::fs::read_to_string(with.join("commands").join("browser.md")) // sync-ok: test fixture on a temp folder
             .expect("the /browser command is installed");
@@ -880,11 +885,33 @@ mod tests {
     }
 
     #[test]
-    fn session_start_and_end_are_not_hooked() {
+    fn session_start_and_end_set_no_state() {
         let value = hooks_value();
         let hooks = value["hooks"].as_object().expect("hooks object");
-        assert!(!hooks.contains_key("SessionStart"));
         assert!(!hooks.contains_key("SessionEnd"));
+        assert!(
+            hook_entries(&value).iter().all(|e| e.0 != "SessionStart"),
+            "no state hook on a session's start"
+        );
+    }
+
+    /// Spec 2026-11-11: every start, resume, clear and compact tells Claude to write file paths between the marks.
+    #[test]
+    fn the_session_start_hook_tells_claude_about_file_links_on_every_start() {
+        let value = hooks_value();
+        let entries = mcp_hook_entries(&value);
+        let (_, matcher, hook) = entries
+            .iter()
+            .find(|e| e.0 == "SessionStart")
+            .expect("the session start hook");
+        let sources: Vec<&str> = matcher.split('|').collect();
+        assert_eq!(sources, ["startup", "resume", "clear", "compact"]);
+        assert_eq!(hook["command"].as_str(), Some(MCP_EXE_PLACEHOLDER));
+        assert_eq!(
+            hook["args"],
+            serde_json::json!(["--hook-context", "--session-start"])
+        );
+        assert!(hook["timeout"].as_u64().expect("timeout") <= 5);
     }
 
     #[test]

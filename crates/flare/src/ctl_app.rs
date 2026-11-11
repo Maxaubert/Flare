@@ -95,6 +95,8 @@ pub enum CtlOp {
         kind: PanelKind,
         abs: String,
         title: Option<String>,
+        /// The line a text file opens at, marked (`view.file`'s `line`, from 1).
+        line: Option<u32>,
     },
     ShowText {
         tab: String,
@@ -1438,15 +1440,17 @@ impl AppDispatcher {
             return Err(CtlError::new(code::BAD_PARAMS, "that is not a usable path"));
         }
         let title = title_param(params)?;
-        if want == PanelKind::Text
-            && let Some(l) = params.get("line").filter(|l| !l.is_null())
-            && !l.as_u64().is_some_and(|n| n >= 1)
-        {
-            return Err(CtlError::new(
-                code::BAD_PARAMS,
-                "line must be a whole number from 1",
-            ));
-        }
+        let line = match params.get("line").filter(|l| !l.is_null()) {
+            Some(l) if want == PanelKind::Text => Some(
+                l.as_u64()
+                    .filter(|n| *n >= 1)
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or_else(|| {
+                        CtlError::new(code::BAD_PARAMS, "line must be a whole number from 1")
+                    })?,
+            ),
+            _ => None,
+        };
         // One deadline for the whole call: the folder question, the disk read and the show.
         let deadline = Instant::now() + UI_WAIT;
         // An absolute path needs no folder, so the UI thread is not asked for one.
@@ -1498,6 +1502,7 @@ impl AppDispatcher {
                 kind,
                 abs: real,
                 title,
+                line,
             },
             deadline,
         )
@@ -3733,6 +3738,7 @@ mod tests {
                     kind,
                     abs,
                     title,
+                    ..
                 } => {
                     s.lock()
                         .unwrap()
@@ -3779,6 +3785,7 @@ mod tests {
                     kind,
                     abs,
                     title,
+                    ..
                 } => {
                     s.lock()
                         .unwrap()
@@ -3927,6 +3934,34 @@ mod tests {
             );
         }
         assert!(r.ops.lock().unwrap().is_empty());
+    }
+
+    /// Spec 2026-11-11: `show_file`'s `line` reaches the panel, which opens the text there and marks it.
+    #[cfg(windows)]
+    #[test]
+    fn view_file_hands_its_line_to_the_panel() {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let got = lines.clone();
+        let r = rig(
+            move |op| match op {
+                CtlOp::ShowFile { line, .. } => {
+                    got.lock().unwrap().push(*line);
+                    Ok(json!({"panel": {"kind": "text"}}))
+                }
+                _ => Ok(json!({"cwd": "C:\\work"})),
+            },
+            false,
+            FILES,
+        );
+        let c = agent_in_tab();
+        for p in [
+            json!({"path": "C:\\work\\a.txt", "line": 42}),
+            json!({"path": "C:\\work\\a.txt"}),
+            json!({"path": "C:\\work\\a.txt", "line": null}),
+        ] {
+            r.d.call(&c, Method::ViewFile, p).unwrap();
+        }
+        assert_eq!(lines.lock().unwrap().as_slice(), [Some(42), None, None]);
     }
 
     #[test]

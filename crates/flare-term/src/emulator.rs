@@ -25,14 +25,14 @@ use crate::cells::{
 };
 use crate::click_caret::{ClickGate, MouseTracking, arrow_keys, caret_click_allowed, caret_delta};
 use crate::dev_server::{ClearWatch, DevState, LocalServer, SCAN_GAP_MS, local_server_in};
+use crate::file_marks::MARK_ROWS;
 use crate::find::{CountJob, Dir, FindMatch, FindOpts, Finder, StepJob, index_of, scroll_to_show};
 use crate::grid_map::{snapshot_grid, snapshot_grid_into};
 use crate::link_scan::{LinkCtx, LinkMark, LinkScanner, LinkTarget, Piece};
-use crate::link_target::{TermPathAt, menu_link, shown_link_over};
+use crate::link_target::{menu_link, shown_link_over};
 use crate::links::find_links;
 use crate::osc8::is_web_link;
 use crate::osc52::{OSC52_MAX, Osc52, parse_osc52};
-use crate::path_links::{PathLinks, path_candidates_in};
 use crate::replies::{
     Ground, colour_query_replies, decrqm_reply, dsr_theme_reply, ground_mode, xtversion_reply,
 };
@@ -1305,20 +1305,12 @@ pub struct TermContext {
     pub link: Option<LinkMark>,
     /// What the menu copies and opens for `link` (an OSC 8 label that shows another address: that one).
     pub link_text: Option<String>,
-    pub path: Option<TermPathAt>,
 }
 
 impl Emulator {
     /// The marks on the viewport (D5). Only the logical lines on screen are scanned, and a line
     /// that did not change is not scanned again.
-    pub fn link_marks(
-        &mut self,
-        paths: &mut PathLinks,
-        owner: &str,
-        cwd: Option<&str>,
-        now_ms: u64,
-        ink_key: u32,
-    ) -> Vec<LinkMark> {
+    pub fn link_marks(&mut self, cwd: Option<&str>, ink_key: u32) -> Vec<LinkMark> {
         let cols = self.cols();
         let rows = self.view_rows();
         if cols == 0 || rows == 0 {
@@ -1329,8 +1321,14 @@ impl Emulator {
         let last = top + rows - 1;
         let hist = self.history_size();
         let term = &self.term;
-        // Extended over rows broken by hand too: the scan reads such a group whole.
-        let buf = TermBuf::window_in(term, top, last, true);
+        // Extended over rows broken by hand too: the scan reads such a group whole. A file link may start a few
+        // rows above the view or end a few below it (`file_marks::MARK_ROWS`).
+        let buf = TermBuf::window_in(
+            term,
+            top.saturating_sub(MARK_ROWS),
+            last.saturating_add(MARK_ROWS),
+            true,
+        );
         let hyperlink = |row: usize, col: usize| {
             if col >= cols {
                 return None;
@@ -1340,26 +1338,13 @@ impl Emulator {
                 .map(|h| (h.id().to_string(), h.uri().to_string()))
         };
         let mut ctx = LinkCtx {
-            paths,
-            owner,
             cwd,
-            now_ms,
             ink_key,
             hyperlink: &hyperlink,
         };
         let marks = self.links.scan(&buf, cols, top, last, &mut ctx);
         self.link_last = Some(marks.clone());
         marks
-    }
-
-    /// When a line whose path named nothing is due a second look (a frame then scans it again), if any is.
-    pub fn links_next_retry(&self) -> Option<u64> {
-        self.links.next_retry()
-    }
-
-    /// A path answer arrived: the lines that waited for it are scanned again.
-    pub fn links_revisit(&mut self) {
-        self.links.revisit();
     }
 
     /// Drops every cached scan.
@@ -1412,22 +1397,13 @@ impl Emulator {
         shown_link_over(&ll.text, from, to)
     }
 
-    /// What a right click lands on: the selection text, the link under the cell and, when there
-    /// is none and a folder is known, a path that exists. Nothing is statted here.
-    pub fn context_at(
-        &self,
-        row: usize,
-        col: usize,
-        paths: &mut PathLinks,
-        owner: &str,
-        cwd: Option<&str>,
-        now_ms: u64,
-    ) -> TermContext {
+    /// What a right click lands on: the selection text and the link under the cell. A file link (a path between
+    /// marks) comes with no menu text: the caller offers it as a path. Nothing is statted here.
+    pub fn context_at(&self, row: usize, col: usize) -> TermContext {
         let mut ctx = TermContext {
             selection: self.sel_text(),
             link: None,
             link_text: None,
-            path: None,
         };
         let cols = self.cols();
         if cols == 0 || row >= self.view_rows() {
@@ -1437,31 +1413,12 @@ impl Emulator {
         let mark = self
             .link_at_view(row, col)
             .or_else(|| self.plain_link_at(abs, col));
-        if let Some(m) = mark
-            && !matches!(m.target, LinkTarget::Path { .. })
-        {
-            let shown = self.shown_for(&m);
-            ctx.link_text = Some(menu_link(&m.target, shown.as_deref()));
+        if let Some(m) = mark {
+            if !matches!(m.target, LinkTarget::Path { .. }) {
+                let shown = self.shown_for(&m);
+                ctx.link_text = Some(menu_link(&m.target, shown.as_deref()));
+            }
             ctx.link = Some(m);
-            return ctx;
-        }
-        let Some(cwd) = cwd else { return ctx };
-        // Across rows a program broke by hand too (`cells::by_hand`), as the scan reads them.
-        let buf = TermBuf::window_in(&self.term, abs, abs, true);
-        let ll = logical_line_in(&buf, cols, abs, true);
-        let c = char_at_cell(&ll, cols, abs as i32, col as i32);
-        let candidates = path_candidates_in(&ll.text, None, &ll.joins);
-        if let Some((cand, f)) = paths
-            .paths_found(owner, cwd, candidates, now_ms)
-            .into_iter()
-            .find(|(p, _)| p.start <= c && c < p.end)
-        {
-            ctx.path = Some(TermPathAt {
-                kind: f.hit.kind,
-                abs: f.hit.abs,
-                text: cand.path,
-                base: f.base,
-            });
         }
         ctx
     }
@@ -1501,13 +1458,10 @@ impl Emulator {
     }
 }
 
-/// The inputs of one frame's decoration (Task 16d). `paths`, `owner`, `cwd`, `now_ms` and
-/// `ink_key` go to the link scan; `hover` is the viewport cell under the pointer.
+/// The inputs of one frame's decoration (Task 16d). `cwd` and `ink_key` go to the link scan; `hover` is the
+/// viewport cell under the pointer.
 pub struct DecorReq<'a> {
-    pub paths: &'a mut PathLinks,
-    pub owner: &'a str,
     pub cwd: Option<&'a str>,
-    pub now_ms: u64,
     pub ink_key: u32,
     pub hover: Option<(usize, usize)>,
     pub find_open: bool,
@@ -1518,7 +1472,7 @@ impl Emulator {
     /// Everything one frame paints over the grid, on viewport rows. The link marks come from
     /// `link_marks`, so a frame scans only the logical lines that changed.
     pub fn decor(&mut self, req: &mut DecorReq) -> Decor {
-        let marks = self.link_marks(&mut *req.paths, req.owner, req.cwd, req.now_ms, req.ink_key);
+        let marks = self.link_marks(req.cwd, req.ink_key);
         let top = self.viewport_top();
         let rows = self.view_rows();
         let cols = self.cols();
@@ -3359,7 +3313,7 @@ mod tests {
     }
 
     fn marks(e: &mut Emulator) -> Vec<LinkMark> {
-        e.link_marks(&mut PathLinks::new(), "t1", None, 0, 1)
+        e.link_marks(None, 1)
     }
 
     #[test]
@@ -3430,126 +3384,83 @@ mod tests {
         let mut e = Emulator::new(10, 4);
         e.feed(b"https://example.com/abc");
         marks(&mut e);
-        let c = e.context_at(1, 2, &mut PathLinks::new(), "t1", None, 0);
+        let c = e.context_at(1, 2);
         assert_eq!(c.link_text.as_deref(), Some("https://example.com/abc"));
-        assert!(c.link.is_some() && c.path.is_none());
+        assert!(c.link.is_some());
     }
 
-    fn primed(e: &mut Emulator) -> PathLinks {
-        let mut pl = PathLinks::new();
-        e.link_marks(&mut pl, "t1", Some("C:\\w"), 0, 1);
-        pl.advance(40);
-        if let Some(ask) = pl.take_ask() {
-            let hits = ask
-                .paths
-                .iter()
-                .map(|p| {
-                    Some(crate::path_open::PathHit {
-                        kind: crate::path_open::PathKind::File,
-                        abs: format!("C:\\w\\{p}"),
-                    })
-                })
-                .collect();
-            pl.answer(&ask, Some(hits), 50);
-        }
-        pl
-    }
-
+    /// The spec's case (2026-11-11): Claude Code cut a marked path at its own width and indented the rest.
     #[test]
-    fn context_over_a_path_that_exists_offers_it() {
-        let mut e = Emulator::new(40, 3);
-        e.feed(b"see a.txt here");
-        let mut pl = primed(&mut e);
-        let c = e.context_at(0, 5, &mut pl, "t1", Some("C:\\w"), 60);
-        assert!(c.link.is_none());
-        let p = c.path.expect("a path");
-        assert_eq!((p.text.as_str(), p.base.as_str()), ("a.txt", "C:\\w"));
-        let c = e.context_at(0, 1, &mut pl, "t1", Some("C:\\w"), 60);
-        assert!(c.link.is_none() && c.path.is_none());
-    }
-
-    // Owner, 2026-10-21 (PT #250, core 0.44.2): Claude Code breaks its own lines at the window's
-    // width and writes each row on its own, so the next row is never marked wrapped, and a long
-    // path became two pieces that each named nothing.
-    const CUT_EXE: &str = "C:\\t\\scratch\\a.exe";
-
-    /// Scans, answers every question with only `CUT_EXE` existing, and scans again.
-    fn cut_marks(e: &mut Emulator) -> (PathLinks, Vec<LinkMark>) {
-        let mut pl = PathLinks::new();
-        for round in 0..4u64 {
-            e.links_revisit();
-            e.link_marks(&mut pl, "t1", Some("C:\\w"), round * 50, 1);
-            pl.advance(round * 50 + 45);
-            while let Some(ask) = pl.take_ask() {
-                let hits = ask
-                    .paths
-                    .iter()
-                    .map(|p| {
-                        (p == CUT_EXE).then(|| crate::path_open::PathHit {
-                            kind: crate::path_open::PathKind::File,
-                            abs: p.clone(),
-                        })
-                    })
-                    .collect();
-                pl.answer(&ask, Some(hits), round * 50 + 46);
-            }
-        }
-        e.links_revisit();
-        let m = e.link_marks(&mut pl, "t1", Some("C:\\w"), 300, 1);
-        (pl, m)
-    }
-
-    fn cut_is_one_link(m: &[LinkMark]) {
-        let paths: Vec<&LinkMark> = m
-            .iter()
-            .filter(|m| matches!(m.target, LinkTarget::Path { .. }))
-            .collect();
-        assert_eq!(paths.len(), 1, "{m:?}");
+    fn a_marked_path_broken_by_hand_and_indented_is_one_link() {
+        let mut e = Emulator::new(14, 4);
+        e.feed("see \u{27E6}C:\\t\\scra\r\n  tch\\a.rs:7\u{27E7}".as_bytes());
+        let m = e.link_marks(None, 1);
+        assert_eq!(m.len(), 1, "{m:?}");
         assert_eq!(
-            paths[0].target,
+            m[0].target,
             LinkTarget::Path {
-                text: CUT_EXE.into()
+                text: "C:\\t\\scratch\\a.rs".into(),
+                line: Some(7),
+                col: None,
+                alts: vec!["C:\\t\\scra tch\\a.rs".into()],
             }
         );
         assert_eq!(
-            paths[0].pieces,
+            m[0].pieces,
             vec![
                 Piece {
                     row: 0,
-                    col: 3,
-                    width: 9
+                    col: 4,
+                    width: 10
                 },
                 Piece {
                     row: 1,
-                    col: 0,
-                    width: 9
+                    col: 2,
+                    width: 11
                 }
             ]
         );
+        // The right-click over either row lands on the same link, with no menu text: it is offered as a path.
+        for (row, col) in [(0, 6), (1, 4)] {
+            let c = e.context_at(row, col);
+            assert_eq!(c.link.map(|l| l.target), Some(m[0].target.clone()));
+            assert!(c.link_text.is_none());
+        }
     }
 
     #[test]
-    fn a_path_broken_by_hand_at_the_edge_is_one_link() {
-        let mut e = Emulator::new(12, 4);
-        // The first row exactly as wide as the window, then a new line: not wrapped.
-        e.feed(b"at C:\\t\\scra\r\ntch\\a.exe");
-        let (mut pl, m) = cut_marks(&mut e);
-        cut_is_one_link(&m);
-        // The right-click over its second row offers the whole file.
-        let c = e.context_at(1, 2, &mut pl, "t1", Some("C:\\w"), 300);
-        assert_eq!(c.path.map(|p| p.text).as_deref(), Some(CUT_EXE));
-        let c = e.context_at(0, 5, &mut pl, "t1", Some("C:\\w"), 300);
-        assert_eq!(c.path.map(|p| p.text).as_deref(), Some(CUT_EXE));
+    fn a_marked_path_on_the_alternate_screen_is_a_link() {
+        let mut e = Emulator::new(30, 4);
+        e.feed("\x1b[?1049h\x1b[Hsee \u{27E6}C:\\a\\b.txt\u{27E7}".as_bytes());
+        let m = e.link_marks(None, 1);
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert_eq!(m[0].target, LinkTarget::path("C:\\a\\b.txt"));
     }
 
     #[test]
-    fn a_path_broken_by_hand_on_the_alternate_screen_inks_each_row() {
-        let mut e = Emulator::new(12, 4);
-        e.feed(b"\x1b[?1049h\x1b[Hat C:\\t\\scra\r\ntch\\a.exe");
-        let (_, m) = cut_marks(&mut e);
-        cut_is_one_link(&m);
+    fn a_marked_path_that_starts_above_the_view_is_whole() {
+        let mut e = Emulator::new(16, 3);
+        e.feed("\u{27E6}C:\\a\\long\r\n  \\b.txt\u{27E7}\r\nx\r\ny\r\nz".as_bytes());
+        // Scrolled so the first row of the link is just above the view.
+        e.scroll_view(1);
+        let top = e.viewport_top();
+        let m = e.link_marks(None, 1);
+        let files: Vec<&LinkMark> = m
+            .iter()
+            .filter(|k| matches!(k.target, LinkTarget::Path { .. }))
+            .collect();
+        assert_eq!(files.len(), 1, "{m:?}");
+        assert_eq!(
+            files[0].target,
+            LinkTarget::Path {
+                text: "C:\\a\\long\\b.txt".into(),
+                line: None,
+                col: None,
+                alts: vec!["C:\\a\\long \\b.txt".into()],
+            }
+        );
+        assert_eq!(files[0].pieces[0].row + 1, top);
     }
-
     #[test]
     fn a_web_link_is_carried_across_a_row_broken_by_hand_review_37() {
         let mut e = Emulator::new(17, 4);
@@ -3564,22 +3475,11 @@ mod tests {
     }
 
     #[test]
-    fn context_over_an_unknown_path_offers_nothing_and_stats_nothing() {
-        let mut e = Emulator::new(40, 3);
-        e.feed(b"see a.txt here");
-        let mut pl = PathLinks::new();
-        let c = e.context_at(0, 5, &mut pl, "t1", Some("C:\\w"), 0);
-        assert!(c.path.is_none());
-        pl.advance(100);
-        assert!(pl.take_ask().is_none());
-    }
-
-    #[test]
     fn context_carries_the_selection() {
         let mut e = Emulator::new(40, 3);
         e.feed(b"hello world");
         e.sel_apply(sel(false, 0, 0, 0, 5));
-        let c = e.context_at(0, 1, &mut PathLinks::new(), "t1", None, 0);
+        let c = e.context_at(0, 1);
         assert_eq!(c.selection, "hello");
     }
 
@@ -3588,21 +3488,13 @@ mod tests {
         let mut e = Emulator::new(60, 3);
         e.feed(b"\x1b]8;;https://evil.io\x07see https://github.com/x\x1b]8;;\x07");
         marks(&mut e);
-        let c = e.context_at(0, 1, &mut PathLinks::new(), "t1", None, 0);
+        let c = e.context_at(0, 1);
         assert_eq!(c.link_text.as_deref(), Some("https://github.com/x"));
     }
 
-    fn decor_of(
-        e: &mut Emulator,
-        pl: &mut PathLinks,
-        hover: Option<(usize, usize)>,
-        find_open: bool,
-    ) -> Decor {
+    fn decor_of(e: &mut Emulator, hover: Option<(usize, usize)>, find_open: bool) -> Decor {
         e.decor(&mut DecorReq {
-            paths: pl,
-            owner: "t1",
             cwd: None,
-            now_ms: 0,
             ink_key: 1,
             hover,
             find_open,
@@ -3618,7 +3510,7 @@ mod tests {
         count_all(&mut e);
         e.find_next("alpha", true);
         e.sel_apply(sel(false, 0, 0, 0, 2));
-        let d = decor_of(&mut e, &mut PathLinks::new(), None, true);
+        let d = decor_of(&mut e, None, true);
         assert!(!d.selection.is_empty());
         assert!(!d.find.is_empty());
         assert!(!d.find_active.is_empty());
@@ -3632,9 +3524,9 @@ mod tests {
         e.find_set("alpha");
         count_all(&mut e);
         e.find_next("alpha", true);
-        let closed = decor_of(&mut e, &mut PathLinks::new(), None, false);
+        let closed = decor_of(&mut e, None, false);
         assert!(closed.find.is_empty() && closed.find_active.is_empty());
-        let open = decor_of(&mut e, &mut PathLinks::new(), None, true);
+        let open = decor_of(&mut e, None, true);
         assert!(!open.find.is_empty() && !open.find_active.is_empty());
     }
 
@@ -3648,7 +3540,7 @@ mod tests {
         e.scroll_view(3);
         let top = e.viewport_top();
         e.sel_apply(sel(false, top + 1, 0, top + 1, 2));
-        let d = decor_of(&mut e, &mut PathLinks::new(), None, false);
+        let d = decor_of(&mut e, None, false);
         assert_eq!(
             d.selection,
             vec![RowSpan {
@@ -3663,10 +3555,10 @@ mod tests {
     fn a_hovered_link_is_in_hover_too() {
         let mut e = Emulator::new(40, 3);
         e.feed(b"see https://a.io/x now");
-        let d = decor_of(&mut e, &mut PathLinks::new(), Some((0, 6)), false);
+        let d = decor_of(&mut e, Some((0, 6)), false);
         assert!(!d.links.is_empty());
         assert_eq!(d.hover, d.links);
-        let d = decor_of(&mut e, &mut PathLinks::new(), Some((0, 0)), false);
+        let d = decor_of(&mut e, Some((0, 0)), false);
         assert!(d.hover.is_empty());
     }
 
@@ -3676,12 +3568,11 @@ mod tests {
         for i in 0..10_200 {
             e.feed(format!("https://x.io/{i}\r\n").as_bytes());
         }
-        let mut pl = PathLinks::new();
-        decor_of(&mut e, &mut pl, None, false);
+        decor_of(&mut e, None, false);
         let first = e.lines_scanned();
         assert!(first <= 24, "the first frame scanned {first} lines");
         for _ in 0..9 {
-            decor_of(&mut e, &mut pl, None, false);
+            decor_of(&mut e, None, false);
         }
         assert_eq!(e.lines_scanned(), first);
     }

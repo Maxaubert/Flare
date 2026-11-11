@@ -297,6 +297,16 @@ pub fn path_kinds(
     results.into_inner().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The first of `texts` that names something from `cwd`, in order, with one unmetered stat each: a file link's
+/// spellings (as written, then with a space where a row broke). None when none does. Called on a worker only.
+pub fn first_existing(cwd: &str, texts: &[String], home: &str) -> Option<String> {
+    let gate = StatGate::unmetered(Arc::new(FsStat));
+    texts.iter().find_map(|t| {
+        let abs = resolve_term_path(cwd, t, home)?;
+        gate.kind(&abs).map(|_| t.clone())
+    })
+}
+
 /// A file a click may show inside the app: where the text names it, and the same file as the file
 /// system names it (links and 8.3 names resolved). Resolved again here, in the backend (rule 13), with
 /// one unmetered stat. None for a folder, a name that does not exist, a network path, and any file
@@ -1117,5 +1127,26 @@ mod tests {
                 let _ = tx.send(());
             }
         }
+    }
+
+    #[test]
+    fn first_existing_takes_the_first_spelling_that_names_something() {
+        let (_d, root) = tree();
+        let texts = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            first_existing(
+                &root,
+                &texts(&["docs/signoff/rapport.pdf", "docs/sign-off/rapport.pdf"]),
+                ""
+            )
+            .as_deref(),
+            Some("docs/sign-off/rapport.pdf")
+        );
+        assert_eq!(
+            first_existing(&root, &texts(&["run.bat", "docs"]), "").as_deref(),
+            Some("run.bat")
+        );
+        assert_eq!(first_existing(&root, &texts(&["nope.txt"]), ""), None);
+        assert_eq!(first_existing(&root, &[], ""), None);
     }
 }
