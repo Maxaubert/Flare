@@ -138,6 +138,7 @@ pub fn close_ask(ctx: &mut Ctx) -> Result<(), String> {
         renderer: Some("software"),
         folders: vec![alpha, beta],
         env: claude.env(),
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     let two = ctx.until("two tabs", 15_000, &mut || tab_count(&mut app) == 2);

@@ -277,6 +277,102 @@ mod tests {
         }
     }
 
+    /// Starts `shell` as a restored Flare tab does (the integration, `FLARE_RESUME_ID` in the
+    /// environment, a PATH without the agent) with "exit" on stdin, and answers what the fake agents
+    /// on the PATH that the user's own startup file adds were started with.
+    fn resume_in(shell: &str, id: &str) -> String {
+        let tmp = tempfile::tempdir().unwrap();
+        let si = tmp.path().join("si");
+        install(&si).unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = tmp.path().join("agent.log");
+        for agent in ["claude", "codex", "agy"] {
+            let p = bin.join(agent);
+            std::fs::write(
+                &p,
+                format!(
+                    "#!/bin/sh\nprintf '{agent} %s|env=%s\\n' \"$*\" \"${{FLARE_RESUME_ID-unset}}\" >> '{}'\n",
+                    log.display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // The agent is on the PATH only through the user's startup file, as a Mac's claude is.
+        let add = format!("PATH='{}':\"$PATH\"\n", bin.display());
+        std::fs::write(tmp.path().join(".zshrc"), &add).unwrap();
+        std::fs::write(tmp.path().join(".bash_profile"), &add).unwrap();
+        let (args, zdotdir): (Vec<String>, Option<PathBuf>) = match shell {
+            "/bin/zsh" => (vec!["-l".into(), "-i".into()], Some(si.join(ZSH_DIR))),
+            _ => {
+                let mut a = bash_args(&si);
+                a.push("-i".into());
+                (a, None)
+            }
+        };
+        let mut cmd = std::process::Command::new(shell);
+        cmd.args(&args)
+            .current_dir(tmp.path())
+            .env_clear()
+            .env("HOME", tmp.path())
+            .env("PATH", "/usr/bin:/bin")
+            .env("TERM", "dumb")
+            .env("BASH_SILENCE_DEPRECATION_WARNING", "1")
+            .env(crate::resume::RESUME_ENV, id)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if let Some(z) = zdotdir {
+            cmd.env("ZDOTDIR", z);
+        }
+        let mut child = cmd.spawn().unwrap();
+        child.stdin.take().unwrap().write_all(b"exit\n").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                panic!("{shell} did not exit");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        std::fs::read_to_string(&log).unwrap_or_default()
+    }
+
+    /// Rule 1133: a restored Mac tab that hosted Claude starts `claude --resume <id>` in its login
+    /// shell, after the user's startup files have set PATH, and the id is out of the environment.
+    #[test]
+    fn a_restored_zsh_or_bash_tab_resumes_claude_through_the_login_shell() {
+        const ID: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
+        for shell in ["/bin/zsh", "/bin/bash"] {
+            assert_eq!(
+                resume_in(shell, ID),
+                format!("claude --resume {ID}|env=unset\n"),
+                "{shell}"
+            );
+            assert_eq!(
+                resume_in(shell, "codex:last"),
+                "codex resume --last|env=unset\n",
+                "{shell}"
+            );
+            assert_eq!(
+                resume_in(shell, "agy:last"),
+                "agy -c|env=unset\n",
+                "{shell}"
+            );
+            // Anything that is not an id is never run.
+            assert_eq!(resume_in(shell, "x; touch pwned"), "", "{shell}");
+            assert_eq!(resume_in(shell, "--help"), "", "{shell}");
+        }
+    }
+
+    #[test]
+    fn a_shell_with_no_resume_starts_no_agent() {
+        for shell in ["/bin/zsh", "/bin/bash"] {
+            assert_eq!(resume_in(shell, ""), "", "{shell}");
+        }
+    }
+
     #[test]
     fn fish_sources_the_file_quoted() {
         let a = fish_args(Path::new("/Users/max/Library/Application Support/Flare/si"));

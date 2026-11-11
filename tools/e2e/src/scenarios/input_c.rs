@@ -310,6 +310,7 @@ pub fn term_replies(ctx: &mut Ctx) -> Result<(), String> {
     let mut app = ctx.launch(Launch {
         renderer: Some("software"),
         folders: vec![alpha.clone()],
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     ctx.until("the first tab", 15_000, &mut || tab_count(&mut app) == 1);

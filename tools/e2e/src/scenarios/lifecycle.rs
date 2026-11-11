@@ -82,6 +82,7 @@ pub fn spawn(ctx: &mut Ctx) -> Result<(), String> {
             "FLARE_E2E_PICK".to_string(),
             chosen.to_string_lossy().into_owned(),
         )],
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     let home = crate::world::user_home(ctx);

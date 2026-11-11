@@ -191,6 +191,8 @@ pub enum SvcEvent {
     Pick(String),
     /// The widget dismissed.
     Dismiss,
+    /// A click in another app while the picker is open (macOS): the same as Esc.
+    Away,
     /// The paste into the tab in front at the start found it gone: say so.
     PasteFailed,
     /// The answer to `AskTabs`: this copy's tabs and every linked copy's, merged (`route::merge_tabs`).
@@ -313,6 +315,16 @@ pub struct Service {
     last_front: Option<u32>,
     /// ... and at the press that started the recording.
     rec_front: Option<u32>,
+}
+
+/// Where heard text goes, as the crumb names it (never the words): `front tab` (this copy's window was in front),
+/// `other copy` (a linked copy's window), else `picker` (another app was in front: the list of sessions).
+pub fn route_name(front: Option<u32>, self_pid: u32, serving: bool) -> &'static str {
+    match front {
+        Some(p) if p == self_pid => "front tab",
+        Some(_) if serving => "other copy",
+        _ => "picker",
+    }
 }
 
 fn action_name(a: KeyAction) -> &'static str {
@@ -445,7 +457,7 @@ impl Service {
             }
             SvcEvent::Timer(TimerId::Pick) => {
                 if self.picking.is_some() {
-                    fx.push(SvcEffect::Crumb(json!({ "pick": "timeout" })));
+                    fx.push(SvcEffect::Crumb(json!({ "pick": "timed out" })));
                     let text = self.picking.as_ref().map(|p| p.text.clone());
                     self.end_pick(&mut fx);
                     self.unsent(&mut fx, text, "Not sent", Tone::Quiet);
@@ -455,7 +467,9 @@ impl Service {
             SvcEvent::Routed(r) => self.routed(&mut fx, r),
             SvcEvent::Pasted(ok) => {
                 if let Some(text) = self.pending_paste.take() {
-                    fx.push(SvcEffect::Crumb(json!({ "pasted": ok })));
+                    fx.push(SvcEffect::Crumb(
+                        json!({ "pasted": ok, "chars": text.chars().count() }),
+                    ));
                     if ok {
                         self.note(&mut fx, "Typed into the tab in front", Tone::Quiet);
                     } else {
@@ -464,6 +478,16 @@ impl Service {
                 }
             }
             SvcEvent::Pick(id) => self.choose(&mut fx, &id, "click"),
+            SvcEvent::Away => {
+                if self.picking.is_some() {
+                    fx.push(SvcEffect::Crumb(
+                        json!({ "pick": "cancelled", "by": "click away" }),
+                    ));
+                    let text = self.picking.as_ref().map(|p| p.text.clone());
+                    self.end_pick(&mut fx);
+                    self.unsent(&mut fx, text, "Not sent", Tone::Quiet);
+                }
+            }
             SvcEvent::Dismiss => {
                 if self.picking.is_some() {
                     fx.push(SvcEffect::Crumb(json!({ "pick": "dismissed" })));
@@ -476,14 +500,12 @@ impl Service {
             SvcEvent::Tabs(all) => self.on_tabs(&mut fx, all),
             SvcEvent::Sent(d, text) => {
                 self.outside = false;
-                let result = match &d {
-                    SendDecision::Ok(_) => "sent",
-                    SendDecision::Typed(_) => "typed",
-                    SendDecision::No(_) => "not sent",
-                };
-                fx.push(SvcEffect::Crumb(
-                    json!({ "send": result, "len": text.chars().count() }),
-                ));
+                // `sent`: the words and the Enter landed. `typed`: the words are in the prompt (sent or not).
+                fx.push(SvcEffect::Crumb(json!({
+                    "sent": matches!(d, SendDecision::Ok(_)),
+                    "chars": text.chars().count(),
+                    "typed": !matches!(d, SendDecision::No(_)),
+                })));
                 match d {
                     SendDecision::Ok(t) => {
                         fx.push(SvcEffect::Widget(OverlayState::Sent { to: t.label }));
@@ -710,7 +732,9 @@ impl Service {
         if self.picking.is_some() {
             match &h {
                 HookEvent::Esc => {
-                    fx.push(SvcEffect::Crumb(json!({ "pick": "esc" })));
+                    fx.push(SvcEffect::Crumb(
+                        json!({ "pick": "cancelled", "by": "esc" }),
+                    ));
                     let text = self.picking.as_ref().map(|p| p.text.clone());
                     self.end_pick(fx);
                     self.unsent(fx, text, "Not sent", Tone::Quiet);
@@ -914,33 +938,27 @@ impl Service {
             RouteResult::Text(t) => cap(t, TEXT_MAX),
         };
         // Which way the words go, and why: never the words, only their length.
-        let way = if front == Some(self.opts.self_pid) {
-            "page"
-        } else if front.is_some() && self.svc {
-            "copy"
-        } else {
-            "ask"
-        };
+        let way = route_name(front, self.opts.self_pid, self.svc);
         let mut crumb = self.front_crumb(front);
         crumb["route"] = json!(way);
-        crumb["len"] = json!(text.chars().count());
+        crumb["chars"] = json!(text.chars().count());
+        fx.push(SvcEffect::Crumb(crumb));
         match (way, front) {
             // This copy's window was in front: the words go to its front tab, at the cursor, never Enter.
-            ("page", _) => {
+            ("front tab", _) => {
                 // The note waits for the answer: with no shell in front the words go on to the list.
                 let older = self.pending_paste.replace(text.clone());
                 self.keep(fx, older, None);
                 fx.push(SvcEffect::PastePage(text));
             }
             // Another linked copy's window was in front: that copy pastes.
-            ("copy", Some(pid)) => {
+            ("other copy", Some(pid)) => {
                 let older = self.pending_paste.replace(text.clone());
                 self.keep(fx, older, None);
                 fx.push(SvcEffect::PasteCopy { pid, text });
             }
             _ => self.ask(fx, text),
         }
-        fx.push(SvcEffect::Crumb(crumb));
     }
 
     fn ask(&mut self, fx: &mut Vec<SvcEffect>, text: String) {
@@ -958,6 +976,7 @@ impl Service {
             Route::Lead(t) => self.send_to(fx, t.id, t.label, text),
             Route::Pick(list) => {
                 if list.is_empty() {
+                    fx.push(SvcEffect::Crumb(json!({ "pick": "no session" })));
                     return self.unsent_as(
                         fx,
                         Some(text),
@@ -967,9 +986,6 @@ impl Service {
                     );
                 }
                 let rows = pick_rows(&list);
-                fx.push(SvcEffect::Crumb(
-                    json!({ "pick": "shown", "rows": rows.len(), "tabs": all.len() }),
-                ));
                 let older = self.picking.as_ref().map(|p| p.text.clone());
                 self.end_pick(fx);
                 self.keep(fx, older, None);
@@ -977,6 +993,9 @@ impl Service {
                     text: text.clone(),
                     rows: rows.clone(),
                 });
+                fx.push(SvcEffect::Crumb(
+                    json!({ "pick": "shown", "rows": rows.len(), "tabs": all.len() }),
+                ));
                 fx.push(SvcEffect::SetTimer(TimerId::Pick, PICK_MS));
                 fx.push(SvcEffect::HookPick(true));
                 fx.push(SvcEffect::Widget(OverlayState::Pick { text, rows }));
@@ -1019,7 +1038,7 @@ impl Service {
         }
         let (rid, label, text) = (row.id.clone(), row.label.clone(), p.text.clone());
         fx.push(SvcEffect::Crumb(
-            json!({ "pick": "picked", "by": how, "id": rid }),
+            json!({ "pick": "picked", "row": row.n, "id": rid, "by": how }),
         ));
         self.end_pick(fx);
         self.send_to(fx, rid, label, text);
@@ -1519,7 +1538,7 @@ mod tests {
             .any(|e| matches!(e, SvcEffect::Widget(OverlayState::Sent { .. }))));
         assert!(has(
             &fx,
-            &SvcEffect::Crumb(json!({ "send": "typed", "len": 9 }))
+            &SvcEffect::Crumb(json!({ "sent": false, "chars": 9, "typed": true }))
         ));
     }
 
@@ -1542,11 +1561,11 @@ mod tests {
             })
             .collect();
         for want in [
-            json!({ "front": "other", "pid": 77, "route": "copy", "len": 12 }),
-            json!({ "pasted": false }),
+            json!({ "front": "other", "pid": 77, "route": "other copy", "chars": 12 }),
+            json!({ "pasted": false, "chars": 12 }),
             json!({ "pick": "shown", "rows": 1, "tabs": 1 }),
-            json!({ "pick": "picked", "by": "click", "id": "p1" }),
-            json!({ "send": "sent", "len": 12 }),
+            json!({ "pick": "picked", "row": 1, "id": "p1", "by": "click" }),
+            json!({ "sent": true, "chars": 12, "typed": true }),
         ] {
             assert!(crumbs.contains(&&want), "{want} in {crumbs:?}");
         }
@@ -1933,7 +1952,7 @@ mod tests {
             SvcEffect::Widget(OverlayState::Note { message, .. }) if message == "Typed into the tab in front")));
         // The copy is not connected after all: the list.
         let fx = hear(&mut s, Some(77), "hi");
-        assert!(matches!(fx[0], SvcEffect::PasteCopy { .. }));
+        assert!(fx.iter().any(|e| matches!(e, SvcEffect::PasteCopy { .. })));
         let fx = s.on(SvcEvent::Pasted(false), 22.0);
         assert!(has(&fx, &SvcEffect::AskTabs));
     }
@@ -2182,6 +2201,101 @@ mod tests {
         assert!(!s.picking());
     }
 
+    /// The crumbs of `fx`, as their JSON text.
+    fn crumbs_of(fx: &[SvcEffect]) -> Vec<String> {
+        fx.iter()
+            .filter_map(|e| match e {
+                SvcEffect::Crumb(v) => Some(v.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // ----- rule 1139: the route decision on the Mac (Flare in front or another app) -----
+
+    #[test]
+    fn the_route_is_named_by_the_app_in_front_at_the_press() {
+        // The Mac hook names the front app's process (NSWorkspace.frontmostApplication), as Windows names the
+        // foreground window's: this copy (pid 1) pastes into its front tab, any other app gets the picker.
+        assert_eq!(route_name(Some(1), 1, true), "front tab");
+        assert_eq!(route_name(Some(1), 1, false), "front tab");
+        assert_eq!(route_name(Some(4242), 1, false), "picker");
+        assert_eq!(route_name(Some(4242), 1, true), "other copy");
+        assert_eq!(route_name(None, 1, true), "picker");
+    }
+
+    #[test]
+    fn flare_in_front_pastes_and_another_app_in_front_opens_the_picker() {
+        let mut s = started();
+        let fx = hear(&mut s, Some(1), "hello");
+        assert!(has(&fx, &SvcEffect::PastePage("hello".into())));
+        assert!(crumbs_of(&fx)
+            .contains(&r#"{"front":"self","route":"front tab","chars":5}"#.to_string()));
+        // Another app in front (Safari, say), alone with no link: the list of sessions, then the picker.
+        let mut s = started();
+        let fx = hear(&mut s, Some(4242), "hello");
+        assert!(has(&fx, &SvcEffect::AskTabs));
+        assert!(!fx.iter().any(|e| matches!(e, SvcEffect::PastePage(_))));
+        assert!(crumbs_of(&fx)
+            .contains(&r#"{"front":"other","pid":4242,"route":"picker","chars":5}"#.to_string()));
+        let fx = s.on(SvcEvent::Tabs(vec![tab(|_| {})]), 21.0);
+        assert!(s.picking());
+        assert_eq!(rows_of(&fx).len(), 1);
+        assert!(crumbs_of(&fx).contains(&r#"{"pick":"shown","rows":1,"tabs":1}"#.to_string()));
+    }
+
+    #[test]
+    fn the_picker_logs_shown_picked_and_sent_with_counts_never_the_words() {
+        let mut s = serving();
+        let fx = open_picker(&mut s, vec![tab(|_| {}), tab(|t| t.id = "p2".into())]);
+        assert!(crumbs_of(&fx).contains(&r#"{"pick":"shown","rows":2,"tabs":2}"#.to_string()));
+        let fx = s.on(SvcEvent::Hook(HookEvent::Digit(2)), 30.0);
+        assert!(has(
+            &fx,
+            &SvcEffect::SendLocal {
+                id: "p2".into(),
+                text: "send this".into()
+            }
+        ));
+        assert!(crumbs_of(&fx)
+            .contains(&r#"{"pick":"picked","row":2,"id":"p2","by":"digit"}"#.to_string()));
+        let fx = s.on(
+            SvcEvent::Sent(
+                SendDecision::Ok(tab(|t| t.id = "p2".into())),
+                "send this".into(),
+            ),
+            31.0,
+        );
+        assert!(crumbs_of(&fx).contains(&r#"{"sent":true,"chars":9,"typed":true}"#.to_string()));
+        for c in crumbs_of(&fx) {
+            assert!(!c.contains("send this"), "{c}");
+        }
+    }
+
+    #[test]
+    fn a_click_in_another_app_cancels_the_picker_like_esc_and_keeps_the_words() {
+        let mut s = serving();
+        open_picker(&mut s, vec![tab(|_| {})]);
+        let fx = s.on(SvcEvent::Away, 30.0);
+        assert!(has(&fx, &SvcEffect::HookPick(false)));
+        assert!(has(&fx, &copy("send this", plain("Not sent", Tone::Quiet))));
+        assert!(crumbs_of(&fx).contains(&r#"{"pick":"cancelled","by":"click away"}"#.to_string()));
+        assert!(!s.picking());
+        // With no picker open a click away is nothing.
+        assert!(s.on(SvcEvent::Away, 31.0).is_empty());
+    }
+
+    #[test]
+    fn esc_and_the_timeout_are_logged_as_cancels() {
+        let mut s = serving();
+        open_picker(&mut s, vec![tab(|_| {})]);
+        let fx = s.on(SvcEvent::Hook(HookEvent::Esc), 30.0);
+        assert!(crumbs_of(&fx).contains(&r#"{"pick":"cancelled","by":"esc"}"#.to_string()));
+        open_picker(&mut s, vec![tab(|_| {})]);
+        let fx = s.on(SvcEvent::Timer(TimerId::Pick), 40.0);
+        assert!(crumbs_of(&fx).contains(&r#"{"pick":"timed out"}"#.to_string()));
+    }
+
     #[test]
     fn thirty_seconds_without_a_pick_says_not_sent() {
         let mut s = serving();
@@ -2411,7 +2525,7 @@ mod tests {
     fn switching_off_during_a_paste_round_trip_opens_no_picker_after() {
         let mut s = serving();
         let fx = hear(&mut s, Some(77), "hi");
-        assert!(matches!(fx[0], SvcEffect::PasteCopy { .. }));
+        assert!(fx.iter().any(|e| matches!(e, SvcEffect::PasteCopy { .. })));
         s.on(SvcEvent::Config(off_cfg()), 21.0);
         let fx = s.on(SvcEvent::Pasted(false), 22.0);
         assert!(!s.picking());
@@ -2616,11 +2730,18 @@ mod tests {
             "{crumbs:?}"
         );
         assert!(crumbs.iter().all(|c| !c.contains("secret")), "{crumbs:?}");
+        // The route's crumb carries the window in front, the way and a count, never the words.
+        assert!(
+            crumbs
+                .iter()
+                .any(|c| c == r#"{"front":"other","pid":5,"route":"other copy","chars":15}"#),
+            "{crumbs:?}"
+        );
         // A crumb names only what happened (a key action, a hook state, a role, the way the words went and
         // their length), never anything typed.
         let fields = [
-            "key", "refused", "hook", "role", "front", "pid", "route", "len", "pick", "rows",
-            "tabs", "by", "id", "pasted", "send", "stop", "phase",
+            "key", "refused", "hook", "role", "front", "pid", "route", "chars", "pick", "rows",
+            "tabs", "by", "row", "id", "pasted", "sent", "typed", "stop", "phase",
         ];
         for c in &crumbs {
             let v: Value = serde_json::from_str(c).unwrap();
@@ -2704,7 +2825,10 @@ mod tests {
         let a = dictation_answers(h.clone());
         assert_eq!(
             a.send("p1", "hi"),
-            SendDecision::No("no Claude is running in Wind (checked with Windows)".into())
+            SendDecision::No(format!(
+                "no Claude is running in Wind (checked with {})",
+                crate::route::SYSTEM
+            ))
         );
         assert!(h.written.lock().unwrap().is_empty());
     }

@@ -586,6 +586,34 @@ mod tests {
         entitlements(role).iter().map(|e| e.key).collect()
     }
 
+    /// Rule 1137: dictation on a hardened Mac needs the microphone entitlement AND its usage sentence in the app's
+    /// `Info.plist` (without both the system refuses or records silence), and the dictation key needs nothing
+    /// signed: Input Monitoring is a TCC grant with no entitlement and no usage key, asked for at run time.
+    #[test]
+    fn dictation_has_the_microphone_entitlement_with_its_usage_and_the_key_needs_no_entitlement() {
+        let mic = entitlements(Role::App)
+            .into_iter()
+            .find(|e| e.key == "com.apple.security.device.audio-input")
+            .expect("the app has the microphone");
+        assert_eq!(mic.usage_key, Some("NSMicrophoneUsageDescription"));
+        let plist = crate::macos::release::app_keys("2026");
+        let usage = plist
+            .iter()
+            .find(|(k, _)| *k == "NSMicrophoneUsageDescription")
+            .map(|(_, v)| v.clone())
+            .expect("the usage sentence is in Info.plist");
+        assert!(usage.contains("dictation"), "{usage}");
+        let xml = entitlements_plist(Role::App).unwrap();
+        assert!(xml.contains("<key>com.apple.security.device.audio-input</key>"));
+        for e in entitlements(Role::App) {
+            assert!(
+                !e.key.contains("input-monitoring") && !e.key.contains("listen"),
+                "no entitlement exists for Input Monitoring: {}",
+                e.key
+            );
+        }
+    }
+
     #[test]
     fn each_program_carries_chromiums_keys_for_it_plus_the_terminals_and_never_the_broad_ones() {
         assert_eq!(
