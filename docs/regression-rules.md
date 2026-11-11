@@ -2318,3 +2318,31 @@ screen"), still writes the Enter no sooner than 300 ms after them, and watches t
 stays empty for the whole bound is "the words did not show". Native: `crates/flare-dictation/src/route.rs`. Held by
 `type_checked_presses_enter_when_a_long_paste_grows_the_box_past_the_rows_read`. Source: review of rule 1142
 (2026-11-11).
+1142. **The update e2e installs 0.0.1 from the setup kept aside after the 0.0.1 pack, never from the `Releases`
+folder.** vpk writes `Flare-win-Setup.exe` for the version it packs, so the 0.0.2 pack overwrites the 0.0.1 setup and
+the one left in `Releases` installs 0.0.2: every install scenario of `update_apply` then failed its first check
+(`installed_version == 0.0.1`, left `0.0.2`), on every update-e2e run since the job was added (run 39113290734,
+2026-10-18, to run 42986938206). `.github/workflows/update-e2e.yml` copies the setup out right after the 0.0.1 pack
+and hands it over as `FLARE_SETUP_EXE`; `install` in `tools/e2e/tests/update_apply.rs` runs only that one. Held by
+`the_scenarios_install_the_0_0_1_setup_kept_aside_before_the_0_0_2_pack`. Source: the update-e2e logs of #163 and
+#166 (2026-11-11).
+1143. **Under `--e2e` the update controller writes `update-calls.json` before `update-state.json`.** The tests wait on
+the state and then read the calls. With the state written first, a reader could see the new state beside the calls
+of the push before it: `a_real_shaped_offer_is_refused_before_any_request` saw `idle` and the refusal notice with
+`installs 0` (the calls written when the download began), check job of run 42986938340 (2026-11-11). Both files
+of a push come from one snapshot, so the calls written first are never older than the state a test sees
+(`e2e_writes` in `crates/flare/src/update_ctl.rs`). Held by `the_e2e_calls_file_is_written_before_the_state_file`.
+Source: the check job of #167 (2026-11-11).
+1144. **An update offer is measured against the version Velopack installed, not the build's own version.** The engine
+drops a find that is not newer than its current version. It was handed `CARGO_PKG_VERSION` (the workspace's 0.1.0),
+while Velopack compares with its manifest (`sq.version`). update-e2e packs one exe as 0.0.1 and 0.0.2: Velopack found
+0.0.2 over the installed 0.0.1, and the engine then dropped it as older than 0.1.0, so no chip ever showed
+(`no real 0.0.2 offer`, job 130475061549, 2026-11-11, and every run since 2026-10-18). `choose_feed` now records
+`VelopackFeed::installed_version` in `FeedChoice::installed`, and `window.rs` builds the engine and the update window
+from `FeedChoice::current_version` (the installed version, else the build's). A release packs the Cargo version, so
+a shipped app sees no change. The engine logs a find that is not newer, and `update_apply` prints the calls and the
+app's update crumbs when no offer comes. Native: `crates/flare/src/ship_ctl.rs`, `crates/flare/src/window.rs`,
+`crates/flare-update/src/velopack_feed.rs`, `crates/flare-update/src/engine.rs`. Held by
+`an_offer_is_measured_against_the_installed_version_not_the_builds` and
+`a_missing_offer_reports_the_calls_and_the_apps_update_crumbs`. Source: the update-e2e log of #173 (2026-11-11).
+1147. **macOS: the path menu's reveal row says "Show in Finder" and shows the file selected in Finder.** A right-click on a printed path offered "Show in Explorer" on the Mac too. The label is one constant, `REVEAL_LABEL` in `crates/flare-win/src/openers.rs`: "Show in Finder" on macOS, "Show in Explorer" elsewhere, and the menu, its tests and the pathLinks E2E all read it, so no test names one OS's label. The row's action is unchanged: `OpenMode::Reveal` goes to `explorer_reveal`, which on the Mac is `NSWorkspace activateFileViewerSelectingURLs` (`crates/flare-win/src/macos/workspace.rs`), never `open` and never a run. Native: `crates/flare/src/term_menu.rs`. Held by `the_reveal_row_names_the_os_file_manager`, `the_menu_fits_what_was_clicked` and `open_path_rows_carry_the_path_and_the_mode` (`crates/flare/src/term_menu.rs`), `the_menu_fits_what_was_clicked_and_copies_exactly` (`crates/flare/src/ui_tests/term.rs`), and the pathLinks E2E (`tools/e2e/src/scenarios/input_b.rs`). Source: Max on his Mac (2026-11-11).

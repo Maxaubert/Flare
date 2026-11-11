@@ -1804,7 +1804,7 @@ mod flow {
             w.menu_labels(),
             [
                 "Open",
-                "Show in Explorer",
+                flare_win::openers::REVEAL_LABEL,
                 "Copy path",
                 "Paste",
                 "Find in scrollback"
@@ -1885,7 +1885,7 @@ mod flow {
             "Open on a script only reveals"
         );
         w.right_click(2, 0);
-        w.pick("Show in Explorer");
+        w.pick(flare_win::openers::REVEAL_LABEL);
         w.pump_until("the show", |w| w.records().len() == 2);
         assert_eq!(w.records()[1], OpenedRecord::Reveal(a.clone()));
         assert!(

@@ -64,13 +64,21 @@ jobs:
           $notes = "$env:RUNNER_TEMP\notes.md"
           "- Add a thing`n- Fix a thing" | Set-Content -NoNewline -Encoding utf8 -LiteralPath $notes
           $exe = "target-update/release/flare.exe"
+          # vpk writes Flare-win-Setup.exe for the version it packs, so the 0.0.2 pack overwrites the
+          # 0.0.1 setup. The scenarios install 0.0.1: keep its setup aside before 0.0.2 is packed.
+          $setupDir = "$env:RUNNER_TEMP\Setup-0.0.1"
+          New-Item -ItemType Directory -Force -Path $setupDir | Out-Null
           foreach ($v in '0.0.1', '0.0.2') {
             ./tools/release/pack.ps1 -Version $v -Exe $exe -Notes $notes -Out "$env:RUNNER_TEMP\Releases"
             if ($LASTEXITCODE -ne 0) { throw "pack $v failed" }
+            if ($v -eq '0.0.1') {
+              Copy-Item -LiteralPath "$env:RUNNER_TEMP\Releases\Flare-win-Setup.exe" -Destination "$setupDir\Flare-win-Setup.exe"
+            }
           }
           ./tools/release/verify-pack.ps1 -Out "$env:RUNNER_TEMP\Releases" -Version 0.0.2
           if ($LASTEXITCODE -ne 0) { throw "verify-pack failed" }
           "FLARE_PACKED_DIR=$env:RUNNER_TEMP\Releases" >> $env:GITHUB_ENV
+          "FLARE_SETUP_EXE=$setupDir\Flare-win-Setup.exe" >> $env:GITHUB_ENV
 
       - name: Pack a big 0.0.2 for the cancel case (120 MB of incompressible filler)
         shell: pwsh
