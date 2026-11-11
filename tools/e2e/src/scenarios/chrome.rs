@@ -135,6 +135,7 @@ fn sysmenu_count(app: &mut App) -> u64 {
 pub fn system_menu(ctx: &mut Ctx) -> Result<(), String> {
     let mut app = ctx.launch(Launch {
         renderer: Some("software"),
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     if !first_tab(ctx, &mut app) {
@@ -412,6 +413,7 @@ fn rail_rect(app: &mut App, id: &str) -> Option<(f64, f64, f64, f64)> {
 pub fn settings_page(ctx: &mut Ctx) -> Result<(), String> {
     let mut app = ctx.launch(Launch {
         renderer: Some("software"),
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     let one = first_tab(ctx, &mut app);

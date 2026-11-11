@@ -470,6 +470,7 @@ fn launch_on(ctx: &mut Ctx, folders: Vec<PathBuf>) -> Result<App, String> {
     ctx.launch(Launch {
         renderer: Some("software"),
         folders,
+        tabs_along_the_top: true,
         ..Launch::default()
     })
 }

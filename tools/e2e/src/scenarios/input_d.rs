@@ -310,6 +310,7 @@ pub fn link_paint_stall(ctx: &mut Ctx) -> Result<(), String> {
     let opts = Launch {
         renderer: Some("software"),
         folders: vec![alpha, beta],
+        tabs_along_the_top: true,
         ..Launch::default()
     };
     with_app(ctx, opts, link_paint_stall_run)
@@ -415,6 +416,7 @@ pub fn review_keys(ctx: &mut Ctx) -> Result<(), String> {
     let opts = Launch {
         renderer: Some("software"),
         folders: vec![alpha, beta],
+        tabs_along_the_top: true,
         ..Launch::default()
     };
     with_app(ctx, opts, review_keys_run)

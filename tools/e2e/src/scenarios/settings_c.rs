@@ -452,6 +452,7 @@ fn launch_settings(
         folders: vec![alpha],
         renderer: None,
         scale_dpi: scale,
+        tabs_along_the_top: true,
         ..Launch::default()
     })?;
     ctx.until("a tab open", 15_000, &mut || !tabs_of(&mut app).is_empty());
