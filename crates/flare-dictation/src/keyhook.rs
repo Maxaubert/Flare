@@ -781,6 +781,45 @@ fn send_key(vk: u16, up: bool) {
 pub mod mac;
 #[cfg(not(windows))]
 pub use mac::{is_busy, take_lock, KeyHook};
+/// The one call that asks macOS for Input Monitoring (rule 1137); the hook never asks by itself (rule 1077).
+#[cfg(not(windows))]
+#[path = "macos/listen_ask.rs"]
+mod listen_ask;
+
+/// Settings' words while dictating from any app waits on Input Monitoring (macOS only).
+#[cfg(not(windows))]
+pub use mac::INPUT_MONITORING;
+
+/// Asks the system for what "Dictate from any app" needs with this binding, once per run, when it is missing.
+/// Call it only on the person's own act (switching dictation on, pressing the key). Windows: never asks (the hook
+/// needs nothing). macOS: a modifier binding without Input Monitoring asks for it (the system's dialog, once).
+/// True when it asked now.
+pub fn ask_for_anywhere(h: &crate::hotkey::Hotkey) -> bool {
+    needs_input_monitoring(anywhere_problem(h)) && ask_now()
+}
+
+/// Whether `problem` (from [`anywhere_problem`]) is the missing Input Monitoring.
+pub fn needs_input_monitoring(problem: Option<&str>) -> bool {
+    #[cfg(windows)]
+    {
+        let _ = problem;
+        false
+    }
+    #[cfg(not(windows))]
+    {
+        problem == Some(mac::INPUT_MONITORING)
+    }
+}
+
+#[cfg(windows)]
+fn ask_now() -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+fn ask_now() -> bool {
+    listen_ask::ask_once()
+}
 
 /// What stops "Dictate from any app" for this binding on this system, in Settings' words, or None. Windows: always
 /// None (the hook needs no permission). macOS: a modifier key without Input Monitoring, or a key a Mac lacks.

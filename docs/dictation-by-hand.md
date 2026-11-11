@@ -47,10 +47,10 @@ Set the dictation key to Right Alt in Settings > Dictation for checks 1 and 2 (t
    go to the text arriving. **Pass when:** Parakeet takes about 0.72 to 0.86 s on CPU and 0.76 to 0.78 s on GPU, and
    Whisper Base about 0.9 s (Prism Terminal's numbers, docs/two-apps.md). Record what you saw in the PR description.
 
-9. **A long text, and Flare in front (rule 1132).** Dictate from another app for about a minute (a long text that
+9. **A long text, and Flare in front (rule 1145).** Dictate from another app for about a minute (a long text that
    Claude shows as "[Pasted text #N]"), pick a Claude tab. **Pass when:** the card says "Sent to" that tab only after
    Claude has started on it; if the prompt still holds the words, the card says "Typed into X, press Enter there"
-   instead. Then click a Flare Claude tab so Flare is in front, press Ctrl+Win, speak, press Ctrl+Win again.
+   instead. Then click a Flare Claude tab so Flare is in front, press Ctrl+Win (Ctrl+Cmd on a Mac), speak, press it again.
    **Pass when:** the words are typed at that tab's cursor with no picker. After a 5-minute recording that the cap
    stopped, one press starts a new recording.
 

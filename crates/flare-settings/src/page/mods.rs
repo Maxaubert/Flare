@@ -87,8 +87,18 @@ pub const TITLE: &str = "Plugins";
 pub const SWITCH_PREFIX: &str = "mod:";
 /// The id of a card's info button: it opens the plugin's details sheet.
 pub const INFO_BUTTON: &str = "info";
+/// Where a removed plugin's folder goes, as the system names it: the Recycle Bin, or a Mac's Trash (rule 1135).
+pub const BIN: &str = if cfg!(target_os = "macos") {
+    "Trash"
+} else {
+    "Recycle Bin"
+};
 /// The tooltip of a card's trash button.
-pub const REMOVE_TIP: &str = "Remove (to the Recycle Bin)";
+pub const REMOVE_TIP: &str = if cfg!(target_os = "macos") {
+    "Remove (to the Trash)"
+} else {
+    "Remove (to the Recycle Bin)"
+};
 /// The tooltip (and the screen reader's name) of a card's info button.
 pub const INFO_TIP: &str = "Details and permissions";
 /// The row that installs a plugin from a file, and the one with the address field.

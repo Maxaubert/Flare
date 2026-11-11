@@ -309,6 +309,10 @@ fn the_working_colour_follows_the_theme_until_changed_and_its_picker_is_named_at
     // colour.slint from `root.label`; the label and the popover's name are what Rust hands over, and
     // both are asserted here (Slint's accessible tree is not readable from a headless test).
     f.page("agents");
+    // The Mark colours are drawn with Bar only (rule 1140); the fresh indicator is Ring.
+    f.b()
+        .invoke_row_choose("agent-indicator".into(), "minimal".into());
+    f.pump();
     let row = f.row("agent-color").expect("the working colour row");
     assert_eq!(row.label, "Agent working colour");
     assert!(!row.reset, "it follows the theme, so no Reset is offered");

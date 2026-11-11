@@ -81,6 +81,8 @@ pub const WORDS_MAX_MS: u64 = 3000;
 pub const ENTER_TAKE_MS: u64 = 2000;
 /// How often the prompt is read while waiting.
 pub const PROMPT_POLL_MS: u64 = 50;
+/// Who the process check asks, as a refusal names it.
+pub const SYSTEM: &str = if cfg!(windows) { "Windows" } else { "macOS" };
 /// The picker shows nine rows at most (the digits 1 to 9).
 const PICK_MAX: usize = 9;
 
@@ -249,7 +251,7 @@ pub fn type_checked(
     let said = match decide() {
         SendDecision::Ok(t) if host.agent_under(&t.id).as_deref() != Some("claude") => {
             SendDecision::No(format!(
-                "no Claude is running in {} (checked with Windows)",
+                "no Claude is running in {} (checked with {SYSTEM})",
                 t.label
             ))
         }
@@ -837,7 +839,9 @@ mod tests {
         let decide = || SendDecision::Ok(tab());
         assert_eq!(
             type_checked(&decide, "hello", &host),
-            SendDecision::No("no Claude is running in Wind (checked with Windows)".into())
+            SendDecision::No(format!(
+                "no Claude is running in Wind (checked with {SYSTEM})"
+            ))
         );
         assert!(host.written.borrow().is_empty());
     }

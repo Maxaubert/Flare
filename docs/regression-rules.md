@@ -576,7 +576,7 @@ the 30 s timeout on the picker, a refused or failed checked send, a copy of the 
 dismissed, a new recording that replaces words still waiting, a newer text over an older one, and switching dictation
 off with words waiting copy them too, with no note. "Cancelled", "Heard nothing", a paste and a successful send copy
 nothing; a send whose words are in the prompt but whose Enter did not send them copies nothing either ("Typed into X,
-press Enter there", rule 1132). A copy that fails puts the plain note back only while the exact "copied" note is still showing; a silent copy that
+press Enter there", rule 1145). A copy that fails puts the plain note back only while the exact "copied" note is still showing; a silent copy that
 fails says "Words could not be copied" when nothing else is on screen. A paste into this copy's front tab with no shell
 in front (Settings, an empty window) goes on to the list and copies, never claiming "Typed into the tab in front"
 (`SvcEffect::PastePage` is answered with `Pasted`); words another copy routes here with no shell in front are copied by
@@ -1645,7 +1645,8 @@ key-up and "another key", so it is a LISTEN-ONLY `CGEventTap` on the hook thread
 says nothing, holds no lock, re-reads the permission every 500 ms, and the window reads the key itself; the "Dictate
 from any app" row's sub names System Settings > Privacy & Security > Input Monitoring. Nothing is ever posted or typed
 (no `CGEventPost`, no Accessibility: the Windows build types only into Flare's own tabs), and no code calls
-`CGRequestListenEventAccess`, `IOHIDRequestAccess` or `AXIsProcessTrustedWithOptions` (scan). Held by
+`IOHIDRequestAccess` or `AXIsProcessTrustedWithOptions`, and `CGRequestListenEventAccess` only in
+`macos/listen_ask.rs` on the person's own act, never from the hook (rule 1137; scan). Held by
 `a_chord_registers_says_ready_and_reports_its_keys_with_the_app_in_front`,
 `a_modifier_key_waits_silently_for_input_monitoring_and_asks_for_nothing`,
 `the_settings_problem_names_input_monitoring_only_for_a_modifier_key_without_it`,
@@ -2053,6 +2054,41 @@ later), so a scenario that waits for the prompt text and snaps at once can still
 that row holds text or the cursor (`ground_spots` in `tools/e2e/src/scenarios/chrome.rs`). Windows reads the same
 spots. Held by `the_spots_miss_cell_zero_where_the_cursor_sits`, `the_spots_scale_with_the_window` and
 `a_last_row_with_text_or_the_cursor_fails_loudly`. Source: main's first full CI run after the macOS port (2026-11-11).
+1135. **macOS: a removed or replaced plugin folder goes to the Trash, and "Reduce motion" stills the agent icons.**
+Plugin Remove (and the copy an Update replaces) handed the folder to `flare_mods::install::recycle`, which on a Mac
+was a refusal ("not built on this platform yet"), so Remove failed with the folder left in place and an update left
+the old copy in `plugins/.staging`. It now moves the folder with `NSFileManager trashItemAtURL:` on the install
+worker; Settings says "Remove (to the Trash)" and "Its folder is in the Trash." (`BIN` and `REMOVE_TIP` in
+`flare-settings/src/page/mods.rs`). And `flare_win::motion::animations_enabled` answered "animate" on every Mac, so
+System Settings > Accessibility > Display > Reduce motion never stilled the `agent-moves` sample's icon motions, the
+marks or the slides; it now reads `NSWorkspace accessibilityDisplayShouldReduceMotion` (any thread), as Windows reads
+its "Animation effects" switch. The app-level plugin tests stub the bin with a delete, so they never saw the refusal.
+Held by `mac_remove_moves_the_plugin_folder_to_the_trash` (`flare-mods/src/install.rs`, the real Trash, taken back
+out) and `mac_reduce_motion_decides` (`flare-win/src/motion.rs`). Source: porting the `agent-moves` sample to the
+Mac (2026-11-11).
+1133. **macOS: a tab that hosted Claude comes back resumed after a quit or restart, as on Windows.** `tabs.json` keeps
+only the folder and `"agent": "claude"`; the restore finds the session id in Claude's store
+(`~/.claude/projects/<encode_cwd>/*.jsonl`, newest interactive first) and hands it to the spawn. `with_resume`
+built the resume only for pwsh, powershell and cmd, so a Mac zsh, bash or fish tab dropped the id and came back
+as a plain shell (Max, 2026-11-11: "claude doesnt auto resume on restart either"). Now those shells keep their
+plain login command line and get the id in `FLARE_RESUME_ID`; Flare's shell integration takes it out of the
+environment before the user's startup files run, and runs `claude --resume <id>` (or `codex resume --last`,
+`agy -c`) once those files have set PATH: zsh at the first prompt (`__flare_install` in `flare.zsh`, the id kept
+by the `.zshenv` shim), bash at the end of its `--rcfile`, fish in `flare.fish`. The script runs only an id of
+hex digits and dashes, quoted. Without the integration on disk a Mac tab still comes back as a plain shell.
+`crates/flare-shells/src/resume.rs`, `crates/flare-shells/src/macos/scripts/`. Held by
+`a_mac_shell_carries_the_resume_in_its_environment`, `a_restored_zsh_or_bash_tab_resumes_claude_through_the_login_shell`
+(a real `/bin/zsh -l -i` and `/bin/bash --rcfile`, the fake `claude` on the PATH only through the user's
+startup file), `a_shell_with_no_resume_starts_no_agent` and `a_mac_zsh_resume_carries_the_id_into_the_login_shell`.
+Source: Max's restart on the Mac (2026-11-11).
+1130. **A fresh profile has vertical tabs; a stored choice is kept.** Max asked for tabs down the side by default
+(2026-11-11). Native: `flare.window.tabLayout` falls back to `vertical` (`crates/flare-settings/src/tab_layout.rs`),
+the sidebar keeps its own defaults (open, 220 px), and nothing is stored until somebody picks, so a stored or
+imported `horizontal` still wins. A test or e2e scenario written for the strip chooses Horizontal itself (the
+fixtures, the `--scene` setups, `flare_e2e::world::tabs_along_the_top`) instead of leaning on the default. Held by
+`tab_layout_is_vertical_until_chosen`, `a_stored_horizontal_choice_is_kept`,
+`a_fresh_profile_starts_vertical_with_the_sidebar_open_at_220` and the e2e `verticalStart`. Source: Max (2026-11-11);
+Prism Terminal's default is horizontal (lib/tabLayoutPrefs.ts).
 1127. **macOS: attention reads a question line in a picture at full breath, and linkPaintStall never names its file
 before the shell makes it.** Run 42953387295 (main, 34a6268a) failed two checks that pass on reruns. attention's "and it
 is visible there" (the question line on the tab in front) read 0 px, 0% of the foot: its `question-active` shot shows
@@ -2092,15 +2128,164 @@ run` previews, `--preview-update` previews everywhere, a packaged Mac build goes
 `crates/flare-win/src/packaged.rs`, `crates/flare-update/src/engine.rs`, `crates/flare/src/ship_ctl.rs`. Held by
 `in_app_bundle_reads_the_path_alone`, `mode_table`, `an_unpackaged_mac_bundle_is_off_and_the_rest_keep_d11` and
 `an_unpackaged_app_bundle_is_off_on_a_mac_only`. Source: Max, the installed ad hoc app showing an update chip
+1132. **macOS: a build an agent stages shows as "Build ready" in the running Flare.app, and only Max's click swaps the
+bundle.** Max runs Claude Code inside `/Applications/Flare.app`, so an agent never replaces that bundle; it runs
+`tools/release/mac/stage-install.sh`, which builds with `make-app.sh` into a temp folder and writes
+`~/Library/Application Support/Flare/staged.tmp/Flare.app`, renames it to `staged/` and writes `staged/staged.json` last
+(the Windows manifest; names relative to the bundle, `Contents/MacOS/Flare`). It never touches `/Applications`, and
+refuses a root in an `Applications` folder or a bundle. A `.app` in an `Applications` folder is an installed copy whatever
+the update mode (`Layout::from_bundle_exe`); an `--e2e` run never uses the real root. The swap journals `install.json`,
+renames the running bundle to `Flare.app.old`, renames the stage in (the stage must be on the bundle's volume, else
+`NotReady::OtherVolume` and no chip), checks every hash in place and puts everything back on any failure (the new bundle
+goes back to `staged/` while it is on offer). The restart is `open -n <bundle> --args ... --after-pid <pid>`; the
+start guard, the 20 s confirm (which deletes `Flare.app.old`) and the rollback after two early deaths are Windows'.
+`install.lock` is an `flock`. A record naming another bundle is left alone. Native: `crates/flare-update/src/staged.rs`,
+`crates/flare/src/appctl/staged_glue.rs`, `tools/release/mac/stage-install.sh`. Held by `staged::mac_tests` (layout,
+check, swap, a bad hash, a failed move, a crash at each step, confirm, rollback, take back and abandon, another
+bundle's record, the lock, the cross-volume refusal as a pure function), `stage_script::mac` (the real script on a fake
+bundle with `FLARE_STAGE_APP` and `FLARE_STAGE_ROOT`) and `ui_tests::staged_flows` (`a_mac_bundle_...`,
+`the_mac_restart_...`, `an_installed_mac_bundle_...`). An ad hoc signature changes per build, so macOS may ask for
+permissions again after an install. Source: Max, "always stage apps so they show as update here in the ui"
 (2026-11-11).
-1132. **Dictation from another app says "Sent" only when the words were sent, its key never gets out of step, and the
+1137. **macOS: the default dictation key Ctrl+Cmd works in Flare's window, and a missing Input Monitoring is asked for
+and logged, never silence.** Max switched dictation on (Large v3 Turbo downloaded) and the key did nothing, with not
+one dictation line in the diag log (owner, 2026-11-11). Root cause: macOS' winit (`flagsChanged:`) queues a modifier's
+`KeyboardInput` BEFORE the new `ModifiersChanged`, so a modifier's press never carried its own flag: Cmd down after
+Ctrl carried ctrl only, Ctrl down after Cmd carried meta only, and the chord of modifiers, which wants both flags on its down, never matched. Without Input Monitoring the hook waits
+silently (rule 1077) and the window is the only reader, so nothing ever happened. `keymap::with_own_modifier` now sets a
+modifier key's own flag on its press and clears it on its release (what Windows' winit already reports), inside
+`key_event_from_parts`, and the e2e's `event_from_chord` builds the same event. Second: nothing asked for Input Monitoring, so dictating from another app stayed off for good.
+`keyhook::ask_for_anywhere` calls `CGRequestListenEventAccess` once per run (`macos/listen_ask.rs`, on a worker) on the
+person's act only: switching "Use dictation" or "Dictate from any app" on, or pressing the key in the window, while the
+binding needs Input Monitoring it lacks; the hook still never asks. Third: the diag log now shows it: `dictation-on`
+(the key as the Mac names it, the mode, anywhere, the problem, the model) once per change of the preferences,
+`dictation-key` (`start`/`stop`/`cancel`, `from: window`) for each action (the hook's key from another app was
+already `dictate-anywhere` with `key`), `dictation-ask` when the system was asked,
+and `dictation-engine` (`pass` or `warm`, ok, the reason and detail of a failure, a character count and never the
+words). The microphone keeps its entitlement and usage sentence; Input Monitoring has neither. Native:
+`crates/flare/src/keymap.rs`, `crates/flare/src/dictation_ctl.rs`, `crates/flare-dictation/src/keyhook.rs`,
+`crates/flare-dictation/src/macos/listen_ask.rs`. Held by
+`a_modifier_key_carries_its_own_flag_so_ctrl_cmd_dictates_with_the_macs_late_modifier_state`,
+`a_modifier_key_alone_is_a_key_event_so_a_held_ctrl_can_be_let_go`,
+`the_window_key_logs_its_start_asks_once_for_anywhere_and_the_engine_answer_is_logged`,
+`the_mac_key_hook_listens_only_posts_nothing_and_never_asks_by_itself` and
+`dictation_has_the_microphone_entitlement_with_its_usage_and_the_key_needs_no_entitlement`. Source: Max, dictation on
+and the hotkey doing nothing (2026-11-11).
+1138. **macOS: Flare.app carries its speech engine in `Contents/Frameworks/whisper`, signed with the app, and a missing
+engine is named in the diag log.** Max's mic Test got audio, but nothing was ever transcribed: every warm-up and pass
+logged `dictation-engine` with `reason: NoEngine` (owner, 2026-11-11). Root cause: phase 8 never put the engine of rule
+1084 into the bundle, and the app looked for it in `Contents/MacOS/whisper`, where a signed bundle cannot hold a
+folder with data in it. Now `make-app.sh` builds the pinned Metal engine (`tools/build-whisper-macos.sh`, cmake) and
+`flare-parakeet-host`; `release::engine_code` copies only the Mach-O files of the stamped folder, each matching its
+`.source` SHA-256, and refuses a file the stamp does not list; `bundle::build` puts them in `Contents/Frameworks/whisper`
+(code only, so `codesign --deep --strict` checks each as code), the MIT notice in `Contents/Resources`, the host in
+`Contents/MacOS` (a tool). `sign_bundle` signs each engine file as a library before the app: the hardened runtime and
+the team's identity, no entitlements (the libraries are the team's, so library validation passes and no
+`disable-library-validation` is needed; Metal's shaders are embedded, `GGML_METAL_EMBED_LIBRARY`). The app finds the
+folder with `engine::bundled_engine_dir` (a dev build outside a bundle looks beside itself, as Windows does), counts it
+only when its whisper-server is there (`engine_in`), and a `NoEngine` answer's detail names the folder looked in
+(`EngineConfig::bundled_at`). `pack.sh` checks the engine and the host inside the packages. Also: the Parakeet host
+ends with `_exit` on a Mac, because ggml-metal's static device list asserts at exit (b5130,
+`ggml-metal-device.m:1021`) and every clean `quit` died of SIGABRT. Held by
+`the_engine_is_copied_as_code_only_and_only_when_every_file_matches_its_stamp`,
+`the_engine_names_are_the_ones_the_app_starts`, `tests/bundled_engine.rs` (the layout, a Metal start with language
+`auto`, `NoEngine` naming the folder), `the_pack_checks_each_programs_role_ad_hoc_too` and the ignored
+`the_engine_inside_a_built_app_transcribes_with_language_auto` and `the_real_host_loads_the_mac_libraries_and_answers_a_pass`
+in `tests/metal_real.rs`. Source: Max, the mic test hears him and dictation transcribes nothing (2026-11-11).
+1139. **macOS: dictating from another app ends in the session picker, a floating panel that never activates Flare,
+and the picked session gets the words in the background.** Max held Ctrl+Cmd in another app, spoke and let go: the
+words were transcribed (`dictation-engine` pass ok, 604 characters) and then nothing happened, no paste and no window
+(owner, 2026-11-11: "it can't paste. It doesn't recognize that there's a window in front and that it needs to bring up
+the secondary window"). Root cause: the route was right (the hook named the other app's process, the service asked for
+the tabs and opened the picker: the next press logged `pick: not sent`), but the widget window's macOS half was a stub
+(`dictation_widget::win`, "phase 7 of the port plan"): the window never got a handle (`hwnd_of` read only Win32), was
+never placed, shown, styled or made to catch clicks, so it stayed parked at -32000 and the picker waited unseen for
+30 s. Now `flare_win::float_panel` is the Mac half: the same Slint card in the same winit window, at the status-window
+level on every Space and over full-screen apps, shown with `orderFrontRegardless` (never made key), AppKit's
+non-activating-panel switch so a click on a row reaches the card while the other app stays in front (should a system
+lack it and the click activate Flare, the app that was in front gets the focus back), clicks passing through except
+while picking, placed in points at the bottom centre of the visible frame of the screen under the pointer. The digits
+1 to 9 and Esc pick and cancel through the hook's Carbon hot keys (no focus needed, as on Windows); a click in another
+app cancels the picker like Esc (a global mouse monitor, no permission) and the words are kept on the clipboard, as on
+Esc and the 30 s timeout. The pick types into that tab's shell as one bracketed paste and the Enter, through the
+checked send (which watches the words land and the Enter empty the prompt, rule 1145), without bringing Flare forward. The diag log (`dictate-anywhere`) now says the route
+(`front tab`, `other copy`, `picker`) with a character count, the picker shown (rows), the row picked (its number and
+tab id), the send (sent, typed but not entered, or refused, a count) and a cancel (`esc`, `click away`, `timed out`), never the words. A
+process-check refusal names macOS, not Windows. Native: `crates/flare-win/src/macos/float_panel.rs`,
+`crates/flare/src/dictation_widget.rs`, `crates/flare-dictation/src/service.rs`, `crates/flare/src/dictation_ctl.rs`.
+Held by `the_route_is_named_by_the_app_in_front_at_the_press`,
+`flare_in_front_pastes_and_another_app_in_front_opens_the_picker`,
+`the_picker_logs_shown_picked_and_sent_with_counts_never_the_words`,
+`a_click_in_another_app_cancels_the_picker_like_esc_and_keeps_the_words` and `esc_and_the_timeout_are_logged_as_cancels`
+(service), `heard_with_another_app_in_front_the_picked_session_gets_the_words_in_its_pty` and
+`a_click_away_from_the_picker_types_nothing_and_keeps_the_words` (dictation_ctl),
+`the_panel_floats_never_activates_and_catches_clicks_only_while_picking`,
+`hiding_while_picking_ends_the_click_away_watch` and `a_row_click_leaves_the_app_in_front_or_gives_it_the_focus_back`
+(ui_tests/dictation_widget.rs, a stand-in window), and
+`dictation_panel_floats_never_activates_and_is_placed_in_top_left_points` (crates/flare-win/tests/appkit.rs, a window
+never shown). Source: Max, dictating from another app transcribes but never pastes or shows the session list
+(2026-11-11).
+1140. **Settings > Agents draws the Mark colours section (Agent working, finished and question colour, with its
+Save changes) only while the tab marks are Bar; with Ring it is left out, and Find does not offer its three rows.**
+The Ring mark (`MarkRing` in `crates/flare/ui/tabmark.slint`) is mono and draws with the tab name's ink, so the
+three colours changed nothing a Ring user could see on the tab. `page::agents::build` reads
+`env.look.agent_indicator()` as the indicator row does (`Minimal` is Bar, everything else Ring) through
+`mark_colours_drawn`; the page rebuilds on every look change, so the segmented control hides and re-shows the
+section live. `IndexEnv::mark_colours` drops the `colours` rows from the find index under Ring, and
+`SettingsCtl::sync_index` rebuilds the index (and the hits of a query in the field) when the indicator changes, so
+Find never leads to a hidden section. The one Ring surface that still wears the colours is the dots on the +N button
+of an overflowing strip (`tabs_ui` `Dot.colour` is the row's `mark_color`); a pick made under Bar stays in force
+there, and with no pick they follow the theme. Same on Windows and the Mac. Native:
+`crates/flare-settings/src/page/agents.rs`, `find.rs`, `find_state.rs`, `crates/flare/src/settings_ctl.rs`. Held by
+`ring_draws_no_mark_colours_section`, `bar_draws_the_mark_colours_with_their_save`,
+`switching_the_indicator_hides_and_reshows_the_mark_colours`, `the_mark_colour_rows_are_indexed_only_for_bar`,
+`a_new_index_redoes_the_hits_of_the_query_in_the_field` and
+`the_mark_colours_show_and_are_found_only_with_bar_and_follow_the_switch_live`. Source: Max, "these should be hidden
+if you use the ring style" (2026-11-11).
+1136. **macOS: a scenario types into a stand-in agent only after its pwsh has run a line, and a Ctrl+Tab goes out only
+after the last one landed.** Of the Mac E2E failures on main and PR runs from 2026-11-10 to 2026-11-11 (ci runs
+42917628472 to 42999224318), the most common was colourPicker's trio "a working stand-in agent is on the strip",
+"the working line is opaque" and "the red line is on screen" (3 runs: 42970917834 on main c789a5bb, 42973156632,
+42983045830). The scenario typed the hook line as soon as the nested pwsh of the stand-in (`/bin/zsh <dir>/claude`,
+rule 1109) showed its first prompt; on the runner that line can be lost, or kept without its Enter, so the hook never
+ran and the red line typed later ran glued to it. markStrip's "six tabs in the mockups' states" and the reduced-motion
+"the run is a full line and the question fully on" (42936130845) are the same lost hook line. `agent_proc::wait_ready`
+now types `Write-Host ('stand-in' + '-ready-' + 'n')` and waits for the printed answer on a row of its own, up to
+four tries of 4 s, each after a bare Enter so a half-taken line runs first; colourPicker, markStrip, indicators,
+agentHooks and agent_misc call it after starting the stand-in. themeEditorLive's "an Appearance picker left open is
+open again on return" (42932844893, 42999224318) sent the second Ctrl+Tab as soon as the picker shut, before the
+shell was in front; a Mac now waits for Settings to leave the front and to come back as well. Windows is unchanged:
+`wait_ready` returns at once and the Ctrl+Tab waits are as before (rule 1119). The other Mac misses of that window are
+held elsewhere: the frame's `[187, 187, 187]` by rule 1126, the theme's `0.0:1` by #162, attention and linkPaintStall
+by #163. Held by `the_ready_answer_is_the_printed_row_and_not_the_typed_line`. Source: Mac E2E in CI (2026-11-11).
+1129. **macOS: the terminal scrolls like Terminal.app, line for line with the fingers and no momentum after they
+lift.** Max (2026-11-11): "the scrolling in this app has inertia, I'd like it to be like it is in the normal terminal
+app where it scrolls line for line with no momentum". AppKit sends a trackpad scroll in phases (`NSEvent.phase` Began,
+Changed, Ended while the fingers are down) and then synthetic momentum events (`momentumPhase` not None, `phase` None);
+winit 0.30 folds both into one `TouchPhase`, so a momentum Changed reads as a finger Moved. The window's wheel arm reads
+the phases from `NSApp.currentEvent` (`flare_win::scroll_phase::current`, winit calls the handler from the view's
+`scrollWheel:`; winit's phase stands in when the current event is not the scroll). `WheelAccum::add_mac` then drops
+every momentum event, builds a drag's precise pixels into whole lines (one per cell height, `TermHandle::wheel_lines`:
+one line of view, one alternate-screen arrow or one mouse report a line, so vim and less get no momentum either), and
+resets the remainder when a gesture begins. A plain mouse wheel (both phases None) keeps its notches, three lines each;
+Cmd+wheel zoom keeps its notches too. Only the grid's path changes: a web panel (CEF) scrolls itself, with its momentum.
+Windows never reads the phase (`phase_from_winit` is `Wheel` off macOS). No setting. Native: `crates/flare/src/live.rs`,
+`crates/flare/src/window.rs`, `crates/flare-win/src/scroll_phase.rs`, `crates/flare-term/src/wheel.rs`. Held by
+`mac_scroll_moves_with_the_fingers_and_never_with_the_momentum`, `momentum_wins_and_each_finger_phase_is_read`,
+`a_line_step_is_one_line_everywhere_and_a_notch_stays_three`,
+`winits_phase_is_a_plain_wheel_off_the_mac_and_for_a_mouse` and `a_wheel_that_moves_the_view_asks_for_a_redraw`.
+Source: Max on his Mac (2026-11-11).
+1141. **The side-by-side run reads Prism Terminal's private installer with a read-only token, given to its step alone, and fails without it.** Prism Terminal moved to `arkivert/PrismTerminal` and became private (2026-11-11), so `gh release download` with the workflow's `GITHUB_TOKEN` answered "release not found". The side-by-side step of `release.yml` and `installer-e2e.yml` sets `GH_TOKEN` from the repository secret `PRISM_RELEASE_TOKEN` (a fine-grained token, Contents read on that one repository); no other step reads a secret. When the secret is missing the step prints one `::error::` line naming the secret, the repository and `docs/shipping.md`, and exits 1 before the test runs: never a skip, and the token is never printed. Native: the two workflow steps, `NEIGHBOUR_RELEASE_REPO` in `tools/e2e/tests/side_by_side.rs`. Held by `only_the_side_by_side_step_gets_the_neighbour_token_and_it_fails_without_it`, `no_secret_other_than_the_github_token_and_the_neighbour_release_token` and `the_release_goes_to_this_repository_only` (`crates/flare/tests/release_files.rs`), and the name scan's third widening (`the_widenings_are_narrow`, `crates/flare/tests/names.rs`). Source: owner decision 2026-11-11; `docs/shipping.md`.
+1145. **Dictation from another app says "Sent" only when the words were sent, its key never gets out of step, and the
 Flare window in front at the press is found.** Owner report (Flare Stable, toggle mode, Ctrl+Win, 2026-11-11): every
 stop asked which session with Flare's tab in front; a card said "Sent to web-application-project" and the words never
 arrived; a press after a recording did nothing and the next started a recording nobody wanted. (1) The front: the
 chord's FIRST key-down names the window in front; a later down of the same chord (Win after Ctrl, when the shell's own
 windows may be in front or none is) only fills in a front the first could not name (`Service::on_hook`). The hook reads
 the foreground window, or with none the foreground thread's active window, and resolves it to its root owner
-(`keyhook::front_of`). With this copy in front and no tab noted at the press (the window was busy), the paste asks the
+(`keyhook::front_of`); on macOS the hook names the front app's process
+(`NSWorkspace.frontmostApplication`, rule 1139), which a Cmd press does not change, so the first down's front is the
+same there. With this copy in front and no tab noted at the press (the window was busy), the paste asks the
 window once more on the next turn before it goes to the list (`Dict::paste_page`). (2) The send: `type_checked` reads
 Claude's prompt box (`question::prompt_draft`, `None` when no box is on screen). With a box, it waits until the words
 show there (300 ms + 1 ms a character, at most 3 s), writes the Enter no sooner than 300 ms after them, and waits up to
@@ -2127,11 +2312,11 @@ link,controller}.rs`, `crates/flare/src/dictation_ctl.rs`, `crates/flare-agent/s
 `to_idle_makes_the_next_tap_a_start_and_still_swallows_the_held_chords_key_up`,
 `the_route_and_pick_crumbs_name_the_way_and_lengths_never_the_words` and `the_kill_hook_writes_a_crumb`. Source:
 owner report and the Stable diag log (2026-11-11).
-1133. **A dictation long enough to push Claude's prompt box past the rows read is still sent.** The box is read in the
+1146. **A dictation long enough to push Claude's prompt box past the rows read is still sent.** The box is read in the
 last 16 screen rows (`SCREEN_TAIL_ROWS`). A long one-line text pasted inline wraps over many rows, so in a narrow pane
 the box's top rule leaves those rows and `question::prompt_draft` reads `None`. A box that read empty before the paste
 and reads `None` after it grew with the words: `type_checked` counts them as shown (stage "words shown, box past the
 screen"), still writes the Enter no sooner than 300 ms after them, and watches the box empty as before. Only a box that
 stays empty for the whole bound is "the words did not show". Native: `crates/flare-dictation/src/route.rs`. Held by
-`type_checked_presses_enter_when_a_long_paste_grows_the_box_past_the_rows_read`. Source: review of rule 1132
+`type_checked_presses_enter_when_a_long_paste_grows_the_box_past_the_rows_read`. Source: review of rule 1145
 (2026-11-11).

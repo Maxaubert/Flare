@@ -489,10 +489,38 @@ pub fn recycle(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// macOS: phase 6 of the port plan (the Trash through NSFileManager). Refused until then.
-#[cfg(not(windows))]
+/// macOS: moves `path` to the Trash (`NSFileManager trashItemAtURL:`), silently, so a removed plugin or the copy
+/// an update replaced can be put back from the Trash as on Windows from the Recycle Bin (regression rule 1135). A
+/// failure is a sentence.
+#[cfg(target_os = "macos")]
+pub fn recycle(path: &Path) -> Result<(), String> {
+    trash(path).map(|_| ())
+}
+
+/// The Trash move behind [`recycle`], answering where the item went (the tests take it back out of the Trash).
+#[cfg(target_os = "macos")]
+pub fn trash(path: &Path) -> Result<Option<std::path::PathBuf>, String> {
+    use objc2_foundation::{NSFileManager, NSURL};
+    let url = NSURL::from_file_path(path).ok_or_else(|| {
+        "it could not be moved to the Trash: the path is not a file path".to_string()
+    })?;
+    let mut went: Option<objc2::rc::Retained<NSURL>> = None;
+    // sync-ok: one Trash move on the install worker, the same place Windows' SHFileOperationW runs
+    NSFileManager::defaultManager()
+        .trashItemAtURL_resultingItemURL_error(&url, Some(&mut went))
+        .map_err(|e| {
+            format!(
+                "it could not be moved to the Trash: {}",
+                e.localizedDescription()
+            )
+        })?;
+    Ok(went.and_then(|u| u.to_file_path()))
+}
+
+/// Neither Windows nor macOS: no bin to move to, so refused (the caller keeps the folder and says so).
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn recycle(_path: &Path) -> Result<(), String> {
-    Err("it could not be moved to the Trash: not built on this platform yet".to_string())
+    Err("it could not be moved to the Trash: not built on this platform".to_string())
 }
 
 /// Deletes `path` for good (a folder or a file); one that is not there is fine.
@@ -839,5 +867,37 @@ mod tests {
         clean_staging(dir.path());
         assert!(!dir.path().join(STAGING).exists());
         clean_staging(dir.path());
+    }
+
+    /// Rule 1135: on a Mac a removed plugin goes to the Trash, the real one, with its files; the test takes it back
+    /// out of the Trash so nothing is left there. A path that is not there is a sentence, never a panic.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_remove_moves_the_plugin_folder_to_the_trash() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = dir.path().join("plugins");
+        let id = format!("trash-test-{}", std::process::id());
+        let folder = plugins.join(&id);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("plugin.json"), b"{}").unwrap();
+        let went = std::cell::RefCell::new(None);
+        remove(&plugins, &id, &|p: &Path| {
+            *went.borrow_mut() = trash(p)?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(!folder.exists(), "the folder left the plugins folder");
+        let went = went.into_inner().expect("the Trash says where it went");
+        assert!(
+            went.join("plugin.json").is_file(),
+            "the folder is in the Trash with its files: {went:?}"
+        );
+        fs::remove_dir_all(&went).unwrap();
+        // The app's own recycle: a missing path is refused with a sentence.
+        let why = recycle(&plugins.join("not-there")).unwrap_err();
+        assert!(
+            why.starts_with("it could not be moved to the Trash"),
+            "{why}"
+        );
     }
 }

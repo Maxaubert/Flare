@@ -699,7 +699,7 @@ fn every_card_is_one_row_with_update_info_and_remove_and_a_branded_one_draws_its
                 ),
                 (
                     "remove".into(),
-                    "Remove (to the Recycle Bin)".into(),
+                    flare_settings::page::mods::REMOVE_TIP.into(),
                     false,
                     false
                 ),

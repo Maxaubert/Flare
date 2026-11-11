@@ -40,8 +40,8 @@ use flare_dictation::controller::{
 use flare_dictation::cues::Cue;
 use flare_dictation::engine::{Engine, EngineConfig, Reason, TranscribeRequest, TranscribeResult};
 use flare_dictation::hotkey::{
-    HOST_TICK_MS, Hotkey, KeyChord, KeyConfig, KeyEvt, KeyState, Phase as KeyPhase,
-    parse_hotkey_from_event, reduce_key, usable_hotkey_here,
+    HOST_TICK_MS, Hotkey, KeyAction, KeyChord, KeyConfig, KeyEvt, KeyState, Phase as KeyPhase,
+    format_hotkey_here, parse_hotkey_from_event, reduce_key, usable_hotkey_here,
 };
 use flare_dictation::job::Job;
 use flare_dictation::keyfeed::HookEvent;
@@ -186,6 +186,8 @@ pub enum DictMsg {
     Pick(String),
     /// The widget dismissed (Task 26).
     Dismiss,
+    /// A click in another app while the picker is open (macOS, rule 1139).
+    Away,
     /// Words kept on the clipboard: whether the copy took. A failure puts `fallback` back on the widget while
     /// `shown` is still on it; with no `fallback` it says the words could not be copied.
     Copied {
@@ -319,6 +321,11 @@ pub trait DictHost {
     fn swallow_alt_up(&self);
     /// A diag crumb.
     fn crumb(&self, name: &str, fields: &[(&str, Value)]);
+    /// The dictation key was pressed in the window: asks the system once for what dictating from any app with
+    /// `hotkey` needs, when it is missing (macOS: Input Monitoring). True when it asked. The default asks nothing.
+    fn ask_for_anywhere(&self, _hotkey: &Hotkey) -> bool {
+        false
+    }
     /// The pill or the mark has something new to draw.
     fn view_changed(&self) {}
     /// The widget's face (Task 26 draws it); `None` hides it.
@@ -656,6 +663,15 @@ pub fn w3c_code(code: &str) -> &str {
     }
 }
 
+/// A key action's name in the diag log.
+fn key_action_name(a: KeyAction) -> &'static str {
+    match a {
+        KeyAction::Start => "start",
+        KeyAction::Stop => "stop",
+        KeyAction::Cancel => "cancel",
+    }
+}
+
 fn phase_of(p: Phase) -> (bool, bool) {
     (p == Phase::Listening, p == Phase::Transcribing)
 }
@@ -720,9 +736,35 @@ impl Dict {
         }
         let kv = Rc::clone(&self.kv);
         let p = read_prefs(&*kv, &[]);
+        let changed = self.prefs != p;
         self.prefs = p.clone();
         if p.enabled {
             self.bring_up();
+        }
+        if changed && p.enabled {
+            // Rule 1137: what the key is and what stops it from any app, once per change of the preferences.
+            let problem = if p.anywhere {
+                flare_dictation::keyhook::anywhere_problem(&p.hotkey)
+            } else {
+                None
+            };
+            self.host.crumb(
+                "dictation-on",
+                &[
+                    ("hotkey", json!(format_hotkey_here(&p.hotkey))),
+                    (
+                        "mode",
+                        json!(if p.mode == flare_dictation::hotkey::DictMode::Toggle {
+                            "toggle"
+                        } else {
+                            "hold"
+                        }),
+                    ),
+                    ("anywhere", json!(p.anywhere)),
+                    ("problem", json!(problem)),
+                    ("model", json!(p.model)),
+                ],
+            );
         }
         let fx = self.ctl_on(Event::Prefs(p.clone()));
         self.run(fx);
@@ -912,10 +954,50 @@ impl Dict {
                 .set_timer(TimerKey::WindowKey, HOST_TICK_MS, false);
         }
         if let Some(a) = out.action {
+            // Rule 1137: the key is seen, so a dead key and a key never seen tell apart in the diag log.
+            self.host.crumb(
+                "dictation-key",
+                &[
+                    ("action", json!(key_action_name(a))),
+                    ("from", json!("window")),
+                ],
+            );
+            if a == KeyAction::Start
+                && self.prefs.anywhere
+                && self.host.ask_for_anywhere(&self.prefs.hotkey)
+            {
+                self.host.crumb(
+                    "dictation-ask",
+                    &[("permission", json!("input-monitoring"))],
+                );
+            }
             let fx = self.ctl_on(Event::Key(a));
             self.run(fx);
         }
         out.swallow
+    }
+
+    /// The engine's answer in the diag log (rule 1137): whether it started and heard, or why not. Never the words.
+    fn engine_crumb(&self, what: &str, r: &TranscribeResult) {
+        match r {
+            TranscribeResult::Ok(text) => self.host.crumb(
+                "dictation-engine",
+                &[
+                    ("what", json!(what)),
+                    ("ok", json!(true)),
+                    ("chars", json!(text.chars().count())),
+                ],
+            ),
+            TranscribeResult::No { reason, detail } => self.host.crumb(
+                "dictation-engine",
+                &[
+                    ("what", json!(what)),
+                    ("ok", json!(false)),
+                    ("reason", json!(format!("{reason:?}"))),
+                    ("detail", json!(detail)),
+                ],
+            ),
+        }
     }
 
     // ---- timers ----
@@ -937,8 +1019,20 @@ impl Dict {
                 if !model.is_empty() && self.ctl.auto_warm() {
                     let lang = language_for(&model, &self.prefs.language);
                     if let Some(p) = self.parts.as_mut() {
-                        // The answer is nobody's: the warm-up is the point.
-                        drop(p.warm(&model, lang));
+                        // The warm-up is the point; its answer only goes to the diag log (rule 1137).
+                        let rx = p.warm(&model, lang);
+                        let post = Arc::clone(&self.post);
+                        std::thread::Builder::new()
+                            .name("flare-dictation-warm".into())
+                            .spawn(move || {
+                                // sync-ok: a worker waits for the warm-up's answer; the UI thread never does
+                                if let Ok(r) = rx.recv() {
+                                    post(DictMsg::Call(Box::new(move |d: &mut Dict| {
+                                        d.engine_crumb("warm", &r)
+                                    })));
+                                }
+                            })
+                            .ok();
                     }
                 }
             }
@@ -971,6 +1065,7 @@ impl Dict {
             DictMsg::Frames { epoch } => self.on_frames(epoch),
             DictMsg::MicLost { epoch, why } => self.on_mic_lost(epoch, why),
             DictMsg::Heard { id, result } => {
+                self.engine_crumb("pass", &result);
                 let fx = self.ctl_on(Event::Heard { id, result });
                 self.run(fx);
             }
@@ -998,6 +1093,7 @@ impl Dict {
             DictMsg::Paste { session, text } => self.paste(&session, &text),
             DictMsg::Pick(id) => self.svc_on(SvcEvent::Pick(id)),
             DictMsg::Dismiss => self.svc_on(SvcEvent::Dismiss),
+            DictMsg::Away => self.svc_on(SvcEvent::Away),
             DictMsg::Copied {
                 ok,
                 shown,
@@ -1836,6 +1932,12 @@ pub fn widget_pick(id: String) {
     make_post()(DictMsg::Pick(id));
 }
 
+/// A click in another app while the picker is open (macOS, rule 1139): the same as Esc, on the next turn of the
+/// event loop.
+pub fn widget_away() {
+    make_post()(DictMsg::Away);
+}
+
 /// The model store: the process's one store, made at startup by [install] and kept for the life of the process, so
 /// the page's model cards work while dictation is off and a download still running can be cancelled (F1, F2).
 pub fn store() -> Option<Store> {
@@ -2361,7 +2463,25 @@ pub fn page_switch(row: &str, on: bool) -> bool {
         page_left();
     }
     page_put(i, if v { "1" } else { "0" });
+    if on && (row == "dictation-enabled" || row == "dictation-anywhere") {
+        ask_for_anywhere_now();
+    }
     true
+}
+
+/// The person switched dictation (or "Dictate from any app") on: with both on and a binding that needs a permission
+/// it lacks (a Mac modifier key without Input Monitoring), the system is asked once, and a crumb says so (rule 1137).
+fn ask_for_anywhere_now() {
+    let p = read_prefs(
+        &|k| prefs::KEYS.iter().position(|x| *x == k).and_then(page_get),
+        &[],
+    );
+    if p.enabled && p.anywhere && flare_dictation::keyhook::ask_for_anywhere(&p.hotkey) {
+        crate::diag_ctl::crumb(
+            "dictation-ask",
+            &[("permission", json!("input-monitoring"))],
+        );
+    }
 }
 
 /// A choice of the page (the mode, the microphone, the language).
@@ -2901,6 +3021,10 @@ impl DictHost for AppHost {
         crate::diag_ctl::crumb(name, fields);
     }
 
+    fn ask_for_anywhere(&self, hotkey: &Hotkey) -> bool {
+        flare_dictation::keyhook::ask_for_anywhere(hotkey)
+    }
+
     fn view_changed(&self) {
         if let Some(app) = self.app.upgrade() {
             push_pill(&app, &view());
@@ -2997,7 +3121,10 @@ impl RealCfg {
         let dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
         let engine_dir = flare_win::seam::var_os(names::SEAM_WHISPER_DIR)
             .filter(|v| !v.is_empty())
-            .map_or_else(|| dir.join(names::ENGINE_FOLDER), PathBuf::from);
+            .map_or_else(
+                || flare_dictation::engine::bundled_engine_dir(&dir),
+                PathBuf::from,
+            );
         let host_exe = Some(dir.join(names::PARAKEET_HOST_EXE));
         let seam_link = match (g.env(names::SEAM_DICT_PIPE), g.env(names::SEAM_DICT_KEY)) {
             (Some(pipe), Some(key)) if !pipe.is_empty() => hex32(&key).map(|k| (pipe, k)),
@@ -3070,8 +3197,9 @@ impl RealParts {
         let for_gpu = store.clone();
         let for_model = store.clone();
         let cpu = cfg.engine_dir.clone();
+        // A folder without its whisper-server is no engine (rule 1138): the answer is then NoEngine naming the folder.
         let mut ec = EngineConfig::new(
-            Box::new(move || cpu.is_dir().then(|| cpu.clone())),
+            Box::new(move || flare_dictation::engine::engine_in(&cpu).then(|| cpu.clone())),
             Box::new(move || for_gpu.gpu_engine_dir()),
             Box::new(move |id| for_model.model_path(id)),
         );
@@ -3082,6 +3210,7 @@ impl RealParts {
             ec.cuda_cache = Some(cfg.root.join("cuda-cache"));
         }
         ec.parakeet_host = cfg.host_exe.clone().filter(|p| p.is_file());
+        ec.bundled_at = Some(cfg.engine_dir.clone());
         let engine = Engine::start(ec, Arc::new(job));
         // The first switch-on reads or makes the link key: one 64-byte file.
         let link = if cfg.e2e {
@@ -3336,6 +3465,9 @@ mod tests {
         copies: RefCell<Vec<String>>,
         copy_ok: Cell<bool>,
         faces: RefCell<Option<OverlayState>>,
+        /// What was written into a tab's shell (its PTY): (tab, bytes).
+        writes: RefCell<Vec<(String, String)>>,
+        asks: Cell<u32>,
     }
 
     impl FakeHost {
@@ -3354,6 +3486,8 @@ mod tests {
                 copies: RefCell::default(),
                 copy_ok: Cell::new(true),
                 faces: RefCell::default(),
+                writes: RefCell::default(),
+                asks: Cell::new(0),
             })
         }
     }
@@ -3378,7 +3512,10 @@ mod tests {
                 .push((session.to_string(), text.to_string()));
             PasteOutcome::Done
         }
-        fn write_tab(&self, _tab: &str, _text: &str) -> bool {
+        fn write_tab(&self, tab: &str, text: &str) -> bool {
+            self.writes
+                .borrow_mut()
+                .push((tab.to_string(), text.to_string()));
             true
         }
         fn send_tabs(&self) -> Vec<SendTab> {
@@ -3403,6 +3540,11 @@ mod tests {
         }
         fn widget(&self, face: Option<&OverlayState>) {
             *self.faces.borrow_mut() = face.cloned();
+        }
+        fn ask_for_anywhere(&self, _hotkey: &Hotkey) -> bool {
+            // The system asks once per run; later presses ask nothing.
+            self.asks.set(self.asks.get() + 1);
+            self.asks.get() == 1
         }
     }
 
@@ -3654,6 +3796,60 @@ mod tests {
             shift: false,
             meta: false,
         }
+    }
+
+    /// Rule 1137: the dictation key pressed in the window leaves a trail in the diag log (the preferences it runs
+    /// with, the key seen, the engine's answer) and asks once for what dictating from any app needs.
+    #[test]
+    fn the_window_key_logs_its_start_asks_once_for_anywhere_and_the_engine_answer_is_logged() {
+        let mut r = Rig::on_with_model(false);
+        let crumbs = |r: &Rig, name: &str| {
+            r.host
+                .crumbs
+                .borrow()
+                .iter()
+                .filter(|c| c.starts_with(&format!("{name} ")))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let on = crumbs(&r, "dictation-on");
+        assert_eq!(on.len(), 1, "switching on says what the key is: {on:?}");
+        assert!(on[0].contains("\"anywhere\", Bool(true)"), "{on:?}");
+        r.at(2000.0);
+        assert!(r.key("AltRight", false));
+        r.at(2000.0 + HOST_TICK_MS as f64);
+        r.d.on_timer(TimerKey::WindowKey);
+        let keys = crumbs(&r, "dictation-key");
+        assert_eq!(keys.len(), 1, "{keys:?}");
+        assert!(keys[0].contains("String(\"start\")") && keys[0].contains("String(\"window\")"));
+        assert_eq!(r.host.asks.get(), 1, "the press asks for the permission");
+        assert_eq!(crumbs(&r, "dictation-ask").len(), 1);
+        r.key("AltRight", true);
+        // A second press asks the host again, which asks the system nothing more: no second ask crumb.
+        r.at(5000.0);
+        r.key("AltRight", false);
+        r.at(5000.0 + HOST_TICK_MS as f64);
+        r.d.on_timer(TimerKey::WindowKey);
+        assert_eq!(crumbs(&r, "dictation-ask").len(), 1);
+        // The engine's answer, failed or heard, is logged without the words.
+        r.d.on_msg(DictMsg::Heard {
+            id: 999,
+            result: TranscribeResult::No {
+                reason: Reason::NoEngine,
+                detail: Some("no server".into()),
+            },
+        });
+        r.d.on_msg(DictMsg::Heard {
+            id: 1000,
+            result: TranscribeResult::Ok("secret words".into()),
+        });
+        let eng = crumbs(&r, "dictation-engine");
+        assert_eq!(eng.len(), 2, "{eng:?}");
+        assert!(eng[0].contains("NoEngine") && eng[0].contains("Bool(false)"));
+        assert!(eng[1].contains("Bool(true)") && !eng[1].contains("secret"));
+        // The same preferences again say nothing new.
+        r.d.apply_prefs();
+        assert_eq!(crumbs(&r, "dictation-on").len(), 1);
     }
 
     #[test]
@@ -4018,6 +4214,120 @@ mod tests {
             Some(OverlayState::Note { message, .. }) => Some(message.clone()),
             _ => None,
         }
+    }
+
+    /// A Claude tab the picker can list.
+    fn claude_tab(id: &str, label: &str) -> SendTab {
+        SendTab {
+            id: id.into(),
+            tab: id.into(),
+            label: label.into(),
+            cwd: "/Users/me/src".into(),
+            agent: Some("claude".into()),
+            state: None,
+            orchestrator: false,
+            session: Some(format!("{id}-session")),
+            copy: None,
+        }
+    }
+
+    /// Rule 1139: heard with another app in front (Safari, pid 777, not this copy's 4242), the words open the
+    /// session picker; the session picked gets them in its shell as one bracketed paste, then the Enter, in the
+    /// background (no paste at the front tab), and the trail says so with counts only.
+    #[test]
+    fn heard_with_another_app_in_front_the_picked_session_gets_the_words_in_its_pty() {
+        let mut r = Rig::on_with_model(true);
+        r.set("flare.dictation.anywhere", "1");
+        r.d.apply_prefs();
+        r.d.on_msg(DictMsg::Hook(HookEvent::Ready));
+        *r.host.tabs.borrow_mut() = vec![claude_tab("t1", "Wind"), claude_tab("t2", "Web")];
+        assert!(r.d.e2e_route("check the build".into(), Some(777)));
+        r.pump();
+        let rows = match &*r.host.faces.borrow() {
+            Some(OverlayState::Pick { rows, .. }) => rows.clone(),
+            other => panic!("no picker: {other:?}"),
+        };
+        assert_eq!(
+            rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["t1", "t2"]
+        );
+        assert!(
+            r.host.pastes.borrow().is_empty(),
+            "nothing goes to the front tab"
+        );
+        // A click on the second row (the widget posts it).
+        r.d.on_msg(DictMsg::Pick("t2".into()));
+        let end = Instant::now() + Duration::from_secs(5);
+        while !r.host.writes.borrow().iter().any(|(_, b)| b == "\r") {
+            r.pump();
+            assert!(
+                Instant::now() < end,
+                "no Enter: {:?}",
+                r.host.writes.borrow()
+            );
+        }
+        let writes = r.host.writes.borrow().clone();
+        assert_eq!(
+            writes,
+            [
+                (
+                    "t2".to_string(),
+                    "\u{1b}[200~check the build\u{1b}[201~".to_string()
+                ),
+                ("t2".to_string(), "\r".to_string()),
+            ]
+        );
+        assert!(r.host.pastes.borrow().is_empty());
+        let end = Instant::now() + Duration::from_secs(5);
+        while !matches!(&*r.host.faces.borrow(), Some(OverlayState::Sent { .. })) {
+            r.pump();
+            assert!(Instant::now() < end, "never said sent");
+        }
+        let trail: Vec<String> = r
+            .host
+            .crumbs
+            .borrow()
+            .iter()
+            .filter(|c| c.starts_with("dictate-anywhere "))
+            .cloned()
+            .collect();
+        for want in [
+            r#"("route", String("picker")), ("chars", Number(15))"#,
+            r#"("pick", String("shown")), ("rows", Number(2))"#,
+            r#"("pick", String("picked")), ("row", Number(2)), ("id", String("t2"))"#,
+            r#"("sent", Bool(true)), ("chars", Number(15))"#,
+        ] {
+            assert!(
+                trail.iter().any(|c| c.contains(want)),
+                "{want} not in {trail:?}"
+            );
+        }
+        assert!(
+            trail.iter().all(|c| !c.contains("check the build")),
+            "{trail:?}"
+        );
+    }
+
+    /// Rule 1139: a click in another app while the picker is open cancels it like Esc: nothing is typed and the
+    /// words are kept on the clipboard.
+    #[test]
+    fn a_click_away_from_the_picker_types_nothing_and_keeps_the_words() {
+        let mut r = Rig::on_with_model(true);
+        r.set("flare.dictation.anywhere", "1");
+        r.d.apply_prefs();
+        r.d.on_msg(DictMsg::Hook(HookEvent::Ready));
+        *r.host.tabs.borrow_mut() = vec![claude_tab("t1", "Wind")];
+        assert!(r.d.e2e_route("keep me".into(), Some(777)));
+        r.pump();
+        assert!(matches!(
+            &*r.host.faces.borrow(),
+            Some(OverlayState::Pick { .. })
+        ));
+        r.d.on_msg(DictMsg::Away);
+        r.pump();
+        assert!(r.host.writes.borrow().is_empty());
+        assert_eq!(*r.host.copies.borrow(), ["keep me"]);
+        assert_eq!(note_now(&r).as_deref(), Some("Not sent, copied"));
     }
 
     #[test]

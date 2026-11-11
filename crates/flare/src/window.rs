@@ -37,7 +37,7 @@ use flare_win::window_state::{Area, MIN_WINDOW, Observed, WindowState, WindowSta
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::winit_030::winit::dpi::{PhysicalPosition, PhysicalSize};
 use slint::winit_030::winit::event::{
-    ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent,
+    ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
 };
 use slint::winit_030::winit::keyboard::ModifiersState;
 use slint::winit_030::winit::window::WindowLevel;
@@ -57,7 +57,9 @@ use crate::font_ctl::FontCtl;
 use crate::host::{GridHost, GridPainter};
 use crate::ime::{CaretFollower, ime_area};
 use crate::keymap::{key_event_from_parts, reserved_for_slint};
-use crate::live::{LiveSource, WheelAccum, WheelGate, cell_at, wheel_is_terminals};
+use crate::live::{
+    LiveSource, ScrollPhase, WheelAccum, WheelGate, WheelStep, cell_at, wheel_is_terminals,
+};
 use crate::look_ctl::LookCtl;
 use crate::material_ctl::{SlintWake, WindowMaterial};
 use crate::memory::process_memory;
@@ -1980,14 +1982,9 @@ pub(crate) struct KeyPath {
     pub wheel_accum: RefCell<WheelAccum>,
 }
 
-/// One wheel turn as the window or the e2e glue receives it.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum WheelDelta {
-    /// Wheel lines (a mouse notch is 1.0; a smooth touchpad sends fractions).
-    Lines(f32),
-    /// Touchpad pixels, physical.
-    Pixels(f64),
-}
+/// One wheel turn as the window or the e2e glue receives it: wheel lines (a mouse notch is 1.0, a
+/// smooth touchpad sends fractions) or physical touchpad pixels.
+pub(crate) type WheelDelta = crate::live::ScrollDelta;
 
 impl KeyPath {
     /// Whether a point (css px) is the terminal's to scroll: the one gate the real wheel and the e2e
@@ -2016,9 +2013,13 @@ impl KeyPath {
     /// the e2e glue shares: the gate, the notches (whole ones, the remainder kept), Ctrl zooms, else
     /// the front shell scrolls at the cell under the pointer (the grid's own origin, not a repeated
     /// layout) and the GPU path is woken.
+    ///
+    /// On macOS `phase` filters it first (rule 1129): momentum moves nothing, and a trackpad drag
+    /// moves one line per cell height, as in Terminal.app. Off macOS the phase is never read.
     pub(crate) fn wheel(
         &self,
         delta: WheelDelta,
+        phase: ScrollPhase,
         cursor_phys: (f64, f64),
         ctrl: bool,
     ) -> EventResult {
@@ -2037,9 +2038,19 @@ impl KeyPath {
             let h = self.host.borrow();
             (h.metrics(), h.dims())
         };
-        let notches = match delta {
-            WheelDelta::Lines(l) => self.wheel_accum.borrow_mut().add_lines(l),
-            WheelDelta::Pixels(px) => self.wheel_accum.borrow_mut().add(px, m.cell_h),
+        let step = if cfg!(target_os = "macos") {
+            self.wheel_accum
+                .borrow_mut()
+                .add_mac(delta, phase, m.cell_h, ctrl)
+        } else {
+            let _ = phase;
+            WheelStep::Notches(match delta {
+                WheelDelta::Lines(l) => self.wheel_accum.borrow_mut().add_lines(l),
+                WheelDelta::Pixels(px) => self.wheel_accum.borrow_mut().add(px, m.cell_h),
+            })
+        };
+        let notches = match step {
+            WheelStep::Notches(n) | WheelStep::Lines(n) => n,
         };
         // Ctrl+wheel zooms the tab in front, one pixel a notch, never saved (Task 27).
         if ctrl {
@@ -2056,7 +2067,11 @@ impl KeyPath {
                 f64::from(app.get_grid_top()) * k,
             );
             let (col, row) = cell_at(x, y, origin, &m, cols, rows);
-            if handle.wheel(notches, col, row) {
+            let moved = match step {
+                WheelStep::Notches(n) => handle.wheel(n, col, row),
+                WheelStep::Lines(n) => handle.wheel_lines(n, col, row),
+            };
+            if moved {
                 app.window().request_redraw();
             }
         }
@@ -2648,15 +2663,16 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                     None => EventResult::Propagate,
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } => {
+            WindowEvent::MouseWheel { delta, phase, .. } => {
                 let delta = match delta {
                     MouseScrollDelta::LineDelta(_, y) => WheelDelta::Lines(*y),
                     MouseScrollDelta::PixelDelta(p) => WheelDelta::Pixels(p.y),
                 };
+                let phase = wheel_phase(delta, *phase);
                 let mut os = crate::keymap::app_key_os();
                 kp.with_ctl(&mut |c| os = c.key_os());
                 let zoom = crate::keymap::zoom_wheel_held(os, mods.get());
-                kp.wheel(delta, cursor.get(), zoom)
+                kp.wheel(delta, phase, cursor.get(), zoom)
             }
             _ => EventResult::Propagate,
         }
@@ -2664,9 +2680,56 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
     kp_out
 }
 
+/// A wheel event's gesture phase (rule 1129). On macOS it is read from the NSEvent AppKit is
+/// dispatching, since winit's `TouchPhase` cannot tell momentum from a finger move; if that event is
+/// not the scroll, winit's phase stands in. Off macOS every event is a plain wheel.
+fn wheel_phase(delta: WheelDelta, winit_phase: TouchPhase) -> ScrollPhase {
+    #[cfg(target_os = "macos")]
+    if let Some(p) = flare_win::scroll_phase::current() {
+        return p;
+    }
+    phase_from_winit(cfg!(target_os = "macos"), delta, winit_phase)
+}
+
+/// Pure: winit's phase as a [`ScrollPhase`], the fallback when the NSEvent is not at hand. Off macOS,
+/// and for a line delta (a mouse wheel), it is `Wheel`, so the Windows path never changes.
+fn phase_from_winit(mac: bool, delta: WheelDelta, winit_phase: TouchPhase) -> ScrollPhase {
+    if !mac || matches!(delta, WheelDelta::Lines(_)) {
+        return ScrollPhase::Wheel;
+    }
+    match winit_phase {
+        TouchPhase::Started => ScrollPhase::Began,
+        TouchPhase::Moved => ScrollPhase::Changed,
+        TouchPhase::Ended | TouchPhase::Cancelled => ScrollPhase::Ended,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Rule 1129: off macOS, and for a mouse wheel, the phase is always a plain wheel.
+    #[test]
+    fn winits_phase_is_a_plain_wheel_off_the_mac_and_for_a_mouse() {
+        for p in [TouchPhase::Started, TouchPhase::Moved, TouchPhase::Ended] {
+            assert_eq!(
+                phase_from_winit(false, WheelDelta::Pixels(10.0), p),
+                ScrollPhase::Wheel
+            );
+            assert_eq!(
+                phase_from_winit(true, WheelDelta::Lines(1.0), p),
+                ScrollPhase::Wheel
+            );
+        }
+        assert_eq!(
+            phase_from_winit(true, WheelDelta::Pixels(1.0), TouchPhase::Started),
+            ScrollPhase::Began
+        );
+        assert_eq!(
+            phase_from_winit(true, WheelDelta::Pixels(1.0), TouchPhase::Moved),
+            ScrollPhase::Changed
+        );
+    }
 
     // Rule 1117: the system's answer wins; without one Slint's state stands.
     #[test]
@@ -2780,8 +2843,13 @@ mod tests {
         let from = src.find("pub(crate) fn wheel(").expect("the shared wheel");
         let body = &src[from..from + src[from..].find("\n    }\n").expect("end")];
         let call = body
-            .find("if handle.wheel(notches, col, row) {")
+            .find("WheelStep::Notches(n) => handle.wheel(n, col, row),")
             .expect("the wheel's answer is used");
+        assert!(
+            body[call..].contains("WheelStep::Lines(n) => handle.wheel_lines(n, col, row),"),
+            "a Mac trackpad's lines are used too (rule 1129)"
+        );
+        assert!(body[call..].contains("if moved {"), "the answer decides");
         assert!(
             body[call..].contains("app.window().request_redraw();"),
             "the wheel asks for a redraw"

@@ -29,6 +29,25 @@ pub struct WheelContext {
 
 /// `notches` > 0 is wheel up. `col` and `row` are the cell under the pointer.
 pub fn wheel_action(notches: i32, ctx: &WheelContext, col: usize, row: usize) -> WheelAction {
+    step_action(notches, WHEEL_LINES_PER_NOTCH, ctx, col, row)
+}
+
+/// A trackpad drag on macOS, in whole lines (`lines` > 0 is up), as Terminal.app scrolls
+/// (rule 1129): the view moves `lines` lines, the alternate screen gets one arrow a line, and a
+/// program that owns the mouse one wheel report a line.
+pub fn wheel_lines_action(lines: i32, ctx: &WheelContext, col: usize, row: usize) -> WheelAction {
+    step_action(lines, 1, ctx, col, row)
+}
+
+/// `steps` wheel steps of `lines_per_step` lines each: one mouse report a step, `lines_per_step`
+/// arrows a step on the alternate screen, `lines_per_step` lines of view a step.
+fn step_action(
+    notches: i32,
+    lines_per_step: i32,
+    ctx: &WheelContext,
+    col: usize,
+    row: usize,
+) -> WheelAction {
     if notches == 0 {
         return WheelAction::None;
     }
@@ -59,14 +78,43 @@ pub fn wheel_action(notches: i32, ctx: &WheelContext, col: usize, row: usize) ->
             (true, true) => "\x1bOA",
             (false, true) => "\x1bOB",
         };
-        return WheelAction::Bytes(letter.repeat(3 * count).into_bytes());
+        return WheelAction::Bytes(letter.repeat(lines_per_step as usize * count).into_bytes());
     }
-    WheelAction::ScrollView(notches * WHEEL_LINES_PER_NOTCH)
+    WheelAction::ScrollView(notches * lines_per_step)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Rule 1129: a Mac trackpad drag moves one line a line: the view, the alternate screen's
+    // arrows and a mouse program's reports; a notch stays three lines.
+    #[test]
+    fn a_line_step_is_one_line_everywhere_and_a_notch_stays_three() {
+        assert_eq!(
+            wheel_lines_action(2, &ctx(), 0, 0),
+            WheelAction::ScrollView(2)
+        );
+        assert_eq!(wheel_lines_action(0, &ctx(), 0, 0), WheelAction::None);
+        assert_eq!(wheel_action(1, &ctx(), 0, 0), WheelAction::ScrollView(3));
+        let alt = WheelContext {
+            alt_screen: true,
+            ..ctx()
+        };
+        assert_eq!(
+            wheel_lines_action(-2, &alt, 0, 0),
+            WheelAction::Bytes(b"\x1b[B\x1b[B".to_vec())
+        );
+        let sgr = WheelContext {
+            mouse: MouseTracking::Vt200,
+            sgr_mouse: true,
+            ..ctx()
+        };
+        assert_eq!(
+            wheel_lines_action(2, &sgr, 4, 1),
+            WheelAction::Bytes(b"\x1b[<64;5;2M\x1b[<64;5;2M".to_vec())
+        );
+    }
 
     fn ctx() -> WheelContext {
         WheelContext {
