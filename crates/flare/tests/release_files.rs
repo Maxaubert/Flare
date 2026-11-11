@@ -214,9 +214,11 @@ fn the_release_goes_to_this_repository_only() {
             "every github.com link names this repository"
         );
     }
+    // The one other repository named is the one the side-by-side test reads, in its missing-token error.
+    let rest = wf.replace(NEIGHBOUR_TOKEN_ERROR, "");
     for other in ["Maxaubert", "loftspace", "arkivert", "PrismTerminal"] {
         assert!(
-            !wf.contains(other),
+            !rest.contains(other),
             "no other repository in the workflow: {other}"
         );
     }
@@ -225,19 +227,84 @@ fn the_release_goes_to_this_repository_only() {
 }
 
 #[test]
-fn no_secret_other_than_the_github_token() {
+fn no_secret_other_than_the_github_token_and_the_neighbour_release_token() {
     let wf = read(WF);
-    assert!(!wf.contains("secrets."), "no repository secret");
+    assert_eq!(
+        wf.matches("secrets.").count(),
+        1,
+        "one repository secret: the neighbour's release token"
+    );
     let allowed = [
         "github.token",
         "github.repository",
         "github.sha",
         "steps.ver.outputs.version",
         "vars.FLARE_LIVE_UPDATES",
+        NEIGHBOUR_TOKEN_SECRET,
     ];
     for expr in wf.split("${{").skip(1) {
         let inner = expr.split("}}").next().unwrap_or("").trim();
         assert!(allowed.contains(&inner), "unexpected expression: {inner}");
+    }
+}
+
+// ---- 2026-11-11: the neighbour's installer sits in a private repository (regression rule 1127) ----
+
+/// The secret the side-by-side step reads the neighbour's private releases with.
+const NEIGHBOUR_TOKEN_SECRET: &str = "secrets.PRISM_RELEASE_TOKEN";
+
+/// The one line a run prints when that secret is missing.
+const NEIGHBOUR_TOKEN_ERROR: &str = "::error::PRISM_RELEASE_TOKEN is not set: add a fine-grained read-only token for arkivert/PrismTerminal as a repository secret (docs/shipping.md)";
+
+/// The steps of a workflow, each from its `- ` line to the next one at the same indent.
+fn steps(wf: &str) -> Vec<&str> {
+    wf.split("\n      - ").skip(1).collect()
+}
+
+#[test]
+fn only_the_side_by_side_step_gets_the_neighbour_token_and_it_fails_without_it() {
+    for path in [WF, ".github/workflows/installer-e2e.yml"] {
+        let wf = read(path).replace("\r\n", "\n");
+        let with_secret: Vec<&str> = steps(&wf)
+            .into_iter()
+            .filter(|s| s.contains("secrets."))
+            .collect();
+        assert_eq!(with_secret.len(), 1, "{path}: one step reads a secret");
+        let step = with_secret[0];
+        assert!(
+            step.contains(&format!("GH_TOKEN: ${{{{ {NEIGHBOUR_TOKEN_SECRET} }}}}")),
+            "{path}: the step's gh reads the neighbour token"
+        );
+        assert_eq!(
+            step.matches("secrets.").count(),
+            1,
+            "{path}: and nothing else"
+        );
+        let test = step
+            .find("cargo test -p flare-e2e --test side_by_side")
+            .unwrap_or_else(|| panic!("{path}: the secret goes to the side-by-side step"));
+        // A missing secret fails the step with one clear line, before the test runs; never a skip.
+        let check = step
+            .find("if (-not $env:GH_TOKEN)")
+            .unwrap_or_else(|| panic!("{path}: the step checks the token"));
+        let error = step
+            .find(NEIGHBOUR_TOKEN_ERROR)
+            .unwrap_or_else(|| panic!("{path}: the step names the missing secret"));
+        let exit = step[error..]
+            .find("exit 1")
+            .map(|i| error + i)
+            .unwrap_or_else(|| panic!("{path}: the step fails"));
+        assert!(check < error && error < exit && exit < test, "{path}");
+        assert!(
+            !step.contains("continue-on-error"),
+            "{path}: a failure counts"
+        );
+        // The token is never printed: the only use of it in the script is the empty check.
+        assert_eq!(
+            step.matches("GH_TOKEN").count(),
+            2,
+            "{path}: GH_TOKEN is set and checked, never echoed"
+        );
     }
 }
 

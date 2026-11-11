@@ -626,7 +626,9 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   under "Show more options", not on the first menu. Test: `verb_keys`, `verb`, `verb_switch`, `registry` in flare-win.
 - **Two apps side by side.** Different app id, verb key, single-instance mutex and pipe, profile, plugin name,
   hook signal and tab-id variable. `side_by_side::flare_runs_beside_the_neighbour_and_shares_nothing` runs on this
-  PC (Layer A); the real install of both runs on a clean CI runner (Layer B).
+  PC (Layer A); the real install of both runs on a clean CI runner (Layer B). Since 2026-11-11 Layer B downloads
+  the neighbour's installer from its private repository with the read-only `PRISM_RELEASE_TOKEN` secret, given to
+  that step alone; without the secret the step fails with one `::error::` line (rule 1127, `docs/shipping.md`).
 - **The log.** `%APPDATA%\Flare\logs\diag.jsonl`, one JSON object per line, rotated at 2 MB into four old files,
   written by a thread that never blocks the UI (a queue of 2000 lines, dropped and counted when full). It holds
   no typed text, clipboard, audio or conversation, and `mark` carries no note (D12). Read it with `cargo diag`

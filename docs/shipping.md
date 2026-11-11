@@ -19,6 +19,26 @@ Task 29 of the M9 plan). Anything not seen with the eyes says so.
 5. The Mac build is added to the same release afterwards by `.github/workflows/macos-app.yml`, when its signing
    secrets are set: `docs/releasing-macos.md`.
 
+## The secret the side-by-side run needs (2026-11-11)
+
+The side-by-side run downloads the latest Prism Terminal installer with `gh release download`. Since 2026-11-11 the
+Prism Terminal repository is `arkivert/PrismTerminal` and it is private, so the workflow's own `GITHUB_TOKEN` cannot
+read it ("release not found"). Owner decision 2026-11-11: a repository secret holds a token that can.
+
+- Name: `PRISM_RELEASE_TOKEN` (the Prism Terminal release token), a repository secret of this repository
+  (Settings > Secrets and variables > Actions).
+- Value: a fine-grained personal access token, resource owner `arkivert`, repository access only
+  `arkivert/PrismTerminal` (the Prism Terminal repository), permission Contents: Read-only. Nothing else.
+- Used by: the side-by-side step of `release.yml` and of `installer-e2e.yml`, and only that step (its `GH_TOKEN`).
+  No other step gets it, and nothing prints it.
+- Missing: that step fails (it does not skip) with one line, and a release then publishes nothing:
+  `PRISM_RELEASE_TOKEN is not set: add a fine-grained read-only token for arkivert/PrismTerminal as a repository secret (docs/shipping.md)` (Prism Terminal).
+- Dependabot pull requests get only Dependabot secrets, so an `installer-e2e` run on one fails the same way unless
+  the same token is also added as a Dependabot secret of the same name (the Prism Terminal token).
+- When the token expires, make a new one with the same settings and replace the secret's value.
+- Held by regression rule 1127 and `only_the_side_by_side_step_gets_the_neighbour_token_and_it_fails_without_it`
+  (`crates/flare/tests/release_files.rs`).
+
 ## Packing locally (installs nothing)
 
 ```
