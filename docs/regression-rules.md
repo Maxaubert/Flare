@@ -2079,3 +2079,16 @@ moved from the lazy list to the end of the start-up fallbacks so it is there to 
 Windows, whose output does not change. Native: `crates/flare-render/src/presentation.rs`, `raster.rs`,
 `macos/font_catalog.rs`. Held by `the_presentation_rule_follows_uts_51` and
 `a_text_presentation_symbol_draws_from_a_text_face_and_vs16_makes_it_an_emoji`. Source: macOS port (2026-11-11).
+1128. **macOS: a run from an `.app` bundle that Velopack did not make has updates off, so it shows no fake update
+chip.** D11 previews in an unpackaged build so `cargo run` shows the update flow, but the ad hoc
+`/Applications/Flare.app` that `tools/release/mac/make-app.sh` builds is unpackaged too (no `UpdateMac`, no
+`Contents/Resources/sq.version`), so it showed "Update 0.2.0" from the preview feed to a user who had installed it.
+`packaged::in_app_bundle` reads the path alone (`<X>.app/Contents/MacOS/<exe>`, no file probes); `Ship::from_parts`
+sets `bundled` from it on macOS only (always false on Windows), and `mode_for(packaged, bundled, e2e, flag, live)`
+previews only when `--preview-update` is given or the run is unpackaged, not bundled and not e2e. Unchanged: `cargo
+run` previews, `--preview-update` previews everywhere, a packaged Mac build goes Live with `live-updates`, an e2e run
+(which on a Mac runs from a bundle) stays Off as before, and Windows is as it was. Native:
+`crates/flare-win/src/packaged.rs`, `crates/flare-update/src/engine.rs`, `crates/flare/src/ship_ctl.rs`. Held by
+`in_app_bundle_reads_the_path_alone`, `mode_table`, `an_unpackaged_mac_bundle_is_off_and_the_rest_keep_d11` and
+`an_unpackaged_app_bundle_is_off_on_a_mac_only`. Source: Max, the installed ad hoc app showing an update chip
+(2026-11-11).

@@ -169,6 +169,9 @@ pub fn set_aumid() {}
 #[allow(dead_code)] // `preview` and `exe` are read by the `live-updates` build and the tests
 pub struct Ship {
     pub packaged: bool,
+    /// macOS: the exe sits in some `.app` bundle (Velopack's or an ad hoc one), by its path alone.
+    /// Always false on Windows (rule 1128).
+    pub bundled: bool,
     pub e2e: bool,
     pub preview: bool,
     pub exe: PathBuf,
@@ -203,6 +206,7 @@ impl Ship {
         verb_root: Option<&str>,
         verb_exe_seam: Option<&str>,
     ) -> Ship {
+        let bundled = cfg!(target_os = "macos") && packaged::in_app_bundle(&exe);
         let sandbox_root = if e2e { hook_root(e2e, verb_root) } else { None };
         let sandboxed = sandbox_root.is_some();
         let root = sandbox_root.unwrap_or_else(|| DEFAULT_CLASSES_ROOT.to_string());
@@ -215,11 +219,12 @@ impl Ship {
         };
         Ship {
             packaged,
+            bundled,
             e2e,
             preview,
             exe,
             verb_exe,
-            mode: mode_for(packaged, e2e, preview, live_feature),
+            mode: mode_for(packaged, bundled, e2e, preview, live_feature),
             root,
             sandboxed,
         }
@@ -298,7 +303,7 @@ pub fn choose_feed(ship: &Ship, env: &dyn Fn(&str) -> Option<String>) -> FeedCho
             if let Ok(feed) = feed {
                 return FeedChoice {
                     feed: Arc::new(feed),
-                    mode: mode_for(ship.packaged, false, ship.preview, true),
+                    mode: mode_for(ship.packaged, ship.bundled, false, ship.preview, true),
                     preset_offer: None,
                 };
             }
@@ -666,8 +671,34 @@ mod tests {
         for bits in 0u8..16 {
             let (p, e, f, l) = (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0, bits & 8 != 0);
             let s = ship(p, e, f, l, None);
-            assert_eq!(s.mode, mode_for(p, e, f, l), "{bits:04b}");
+            assert!(!s.bundled);
+            assert_eq!(s.mode, mode_for(p, false, e, f, l), "{bits:04b}");
         }
+    }
+
+    fn mac_ship(exe: &str, e2e: bool, preview: bool, live: bool) -> Ship {
+        Ship::from_parts(PathBuf::from(exe), false, e2e, preview, live, None, None)
+    }
+
+    #[test]
+    fn an_unpackaged_app_bundle_is_off_on_a_mac_only() {
+        // Rule 1128: the ad hoc /Applications/Flare.app shows no fake update chip.
+        let app = "/Applications/Flare.app/Contents/MacOS/Flare";
+        let s = mac_ship(app, false, false, true);
+        assert_eq!(s.bundled, cfg!(target_os = "macos"));
+        let want = if cfg!(target_os = "macos") {
+            Mode::Off
+        } else {
+            Mode::Preview
+        };
+        assert_eq!(s.mode, want);
+        // --preview-update still previews from the bundle; e2e from the bundle stays off.
+        assert_eq!(mac_ship(app, false, true, true).mode, Mode::Preview);
+        assert_eq!(mac_ship(app, true, false, true).mode, Mode::Off);
+        // cargo run still previews.
+        let dev = mac_ship("/Users/me/Flare/target/debug/flare", false, false, true);
+        assert!(!dev.bundled);
+        assert_eq!(dev.mode, Mode::Preview);
     }
 
     #[test]
