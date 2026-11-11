@@ -13,7 +13,8 @@
 //!
 //! The walls are the Windows ones, decided by [`crate::walls`]: the web panel goes to http, https and about:blank, a
 //! page's new window loads in the same view, a download waits for the person's yes, permissions are denied, a
-//! script dialog is answered at once and never shown; a mini-app runs in the apps' private profile with its folder
+//! script dialog, a file chooser and the right-click menu are put in front of the person on the window
+//! ([`crate::asks`]), and F12 or Cmd+Option+I opens DevTools; a mini-app runs in the apps' private profile with its folder
 //! served on its own host and every other request refused (a dead proxy behind that, the WebRTC policy and the
 //! peer-connection script in front); a mod's or plugin's page is sealed as its kind says ([`crate::seal`]). CEF
 //! cannot be started again in a process once it was shut down, so the engine stays up from the first view to the end
@@ -28,7 +29,8 @@ use flare_cef::macos::context::{Context, Profile};
 use flare_cef::macos::engine::{Engine, EngineConfig, Schedule};
 use flare_cef::macos::view::{
     Answer, Button, Downloads, EventSink, Key, KeyKind, Made, NavRule, NewWindow, NewWindowRule,
-    NewWindows, Options, PopupSpec, RequestRule, View, ViewEvent, ViewSize, Wake, Walls, WindowAsk,
+    NewWindows, Options, PopupSpec, Reply, RequestRule, View, ViewEvent, ViewSize, Wake, Walls,
+    WindowAsk,
 };
 use flare_cef::status::{self, flags};
 use flare_surfaces::app::AppSpec;
@@ -39,6 +41,7 @@ use flare_surfaces::web::{
     site_of, web_error_name,
 };
 
+use crate::asks::{AskKey, Asker, Sheets, page_origin};
 use crate::backend::{
     ControllerProbe, ImeInput, KeyFilter, KeyInput, KeyPress, Mods, Nav, NoteKind, Pointer,
     PointerAct, PointerButton, PopupProbe, Sink, Slot, ViewFrame, ViewSink, WebBackend, WebEvent,
@@ -372,6 +375,7 @@ impl PopupRule {
                         new_window_rule: Some(popup_rule(Arc::clone(self))),
                         // A pop-up's downloads are cancelled at once, as on Windows.
                         downloads: Downloads::Cancel,
+                        ..Walls::default()
                     },
                     events,
                     frame_rate: 60,
@@ -434,7 +438,13 @@ pub struct WebHost {
     started: HashMap<Slot, (u64, String, String)>,
     /// The frame serial: every new picture of a page or a pop-up takes the next one.
     serial: u64,
+    /// Puts the web panel's asks in front of the person (sheets on the window; none in a test).
+    asker: Box<dyn Asker>,
+    /// The person's replies, for the host's next turn.
+    replies: Replies,
 }
+
+type Replies = Arc<Mutex<Vec<(AskKey, Reply)>>>;
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -477,6 +487,14 @@ pub fn key_press_of(k: &KeyInput) -> KeyPress {
         down: k.down,
         repeat: k.repeat,
     }
+}
+
+/// The keys that open DevTools on a Mac: F12 and Cmd+Option+I (Chrome's and Safari's), pressed (not held).
+pub fn dev_tools_chord(k: &KeyInput) -> bool {
+    let m = k.mods;
+    let f12 = k.vk == 0x7B && !m.cmd && !m.ctrl && !m.alt && !m.shift;
+    let inspect = k.vk == 0x49 && m.cmd && m.alt && !m.ctrl && !m.shift;
+    k.down && !k.repeat && (f12 || inspect)
 }
 
 /// The character AppKit gives a key that types nothing (`NSEvent.characters`): Backspace is DEL, Forward Delete,
@@ -554,6 +572,28 @@ impl WebHost {
             },
             started: HashMap::new(),
             serial: 0,
+            asker: Sheets::for_view(cfg.parent),
+            replies: Arc::default(),
+        }
+    }
+
+    /// Who puts the web panel's asks in front of the person (the tests' own, which shows nothing).
+    pub fn set_asker(&mut self, asker: Box<dyn Asker>) {
+        self.asker = asker;
+    }
+
+    /// The person's replies go to their views.
+    fn take_replies(&mut self) {
+        let replies = std::mem::take(&mut *lock(&self.replies));
+        for (key, reply) in replies {
+            if let Some(v) = self
+                .views
+                .get(&key.slot)
+                .filter(|v| v.generation == key.generation)
+                .and_then(|v| v.live.as_ref())
+            {
+                v.view.reply(key.id, reply);
+            }
         }
     }
 
@@ -859,6 +899,10 @@ impl WebHost {
                 Some(DownloadWall::Cancel) => Downloads::Cancel,
                 _ => Downloads::Ask,
             },
+            // The plain web panel is the person's browser: its dialogs, file choosers and menu are shown
+            // and its DevTools open, as WebView2's. A mini-app or a plugin keeps its seal.
+            asks: app.is_none(),
+            dev_tools: app.is_none(),
         };
         let inbox = Arc::clone(&self.inbox);
         let (s2, generation) = (slot.clone(), v.generation);
@@ -905,6 +949,7 @@ impl WebHost {
         self.close_popups(Some(slot));
         self.started.remove(slot);
         lock(&self.links.seen).remove(slot);
+        self.asker.withdraw(&|k: &AskKey| k.slot == *slot);
         if let Some(v) = self.views.remove(slot) {
             let held: Vec<u64> = self
                 .downloads
@@ -1181,6 +1226,29 @@ impl WebHost {
                 sink.send(|tab| WebEvent::Gone { tab, why })
             }
             ViewEvent::Dialog { kind } => log::debug!("a page's {kind} was answered, not shown"),
+            ViewEvent::Ask { id, ask } => {
+                let Some(v) = self.views.get(slot) else {
+                    return;
+                };
+                let key = AskKey {
+                    slot: slot.clone(),
+                    generation: v.generation,
+                    id,
+                };
+                let page = page_origin(v.bounds, self.scale);
+                let (replies, wake, k) = (Arc::clone(&self.replies), self.wake(), key.clone());
+                let done = Box::new(move |r: Reply| {
+                    lock(&replies).push((k, r));
+                    wake();
+                });
+                self.asker.ask(key, ask, page, done);
+            }
+            ViewEvent::AskGone { id } => {
+                let generation = self.views.get(slot).map(|v| v.generation);
+                self.asker.withdraw(&|k: &AskKey| {
+                    k.slot == *slot && Some(k.generation) == generation && k.id == id
+                });
+            }
             ViewEvent::Cdp { id, result } => match self.calls.remove(&id) {
                 Some(Call::Agent { slot: s, id }) => {
                     (self.sink)(WebEvent::Cdp {
@@ -1624,6 +1692,7 @@ impl WebBackend for WebHost {
         self.make_waiting();
         self.arm();
         self.flush();
+        self.take_replies();
         self.take_popups();
     }
 
@@ -1837,6 +1906,11 @@ impl WebBackend for WebHost {
             return;
         }
         let Some(v) = self.front(slot) else { return };
+        // DevTools, as WebView2's F12 and Ctrl+Shift+I: the view's walls decide (the web panel only).
+        if dev_tools_chord(&k) {
+            v.show_dev_tools();
+            return;
+        }
         let mut modifiers = mod_flags(k.mods);
         if k.repeat {
             modifiers |= flags::IS_REPEAT;
@@ -1956,6 +2030,40 @@ mod tests {
             ..k
         };
         assert!(!key_press_of(&k).ctrl, "the real Ctrl is the page's");
+    }
+
+    #[test]
+    fn f12_and_cmd_option_i_open_devtools_and_nothing_else_does() {
+        let k = |vk: u32, cmd: bool, alt: bool, shift: bool| KeyInput {
+            down: true,
+            repeat: false,
+            vk,
+            mac_code: 0,
+            text: String::new(),
+            mods: Mods {
+                shift,
+                ctrl: false,
+                alt,
+                cmd,
+            },
+        };
+        assert!(dev_tools_chord(&k(0x7B, false, false, false)), "F12");
+        assert!(dev_tools_chord(&k(0x49, true, true, false)), "Cmd+Option+I");
+        assert!(
+            !dev_tools_chord(&k(0x49, true, false, false)),
+            "Cmd+I is the page's"
+        );
+        assert!(!dev_tools_chord(&k(0x49, true, true, true)));
+        assert!(
+            !dev_tools_chord(&k(0x7B, false, false, true)),
+            "Shift+F12 is the page's"
+        );
+        let mut up = k(0x7B, false, false, false);
+        up.down = false;
+        assert!(!dev_tools_chord(&up), "the key's release opens nothing");
+        let mut held = k(0x7B, false, false, false);
+        held.repeat = true;
+        assert!(!dev_tools_chord(&held), "a held F12 opens it once");
     }
 
     #[test]

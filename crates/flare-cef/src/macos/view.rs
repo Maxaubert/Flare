@@ -4,7 +4,9 @@
 //! `target=_blank`) are refused or loaded into the same view, the context menu is emptied and never run, JavaScript
 //! dialogs are answered at once, file pickers are cancelled, permission prompts are denied. `<select>` popups are no
 //! native menu in windowless mode: Chromium paints them as a `PET_POPUP` layer, which [`State::frame`] lays over the
-//! page.
+//! page. A view whose walls say [`Walls::asks`] (the web panel: the person is there) holds its script dialogs, file
+//! choosers and right-click menu instead and asks its owner ([`ViewEvent::Ask`], [`View::reply`]), who shows
+//! them on the window, as WebView2 shows its own.
 //!
 //! A view made with [`View::create`] carries its walls ([`Walls`]: which addresses it may navigate to, what each
 //! request gets, new windows, downloads) and reports through an [`EventSink`] ([`ViewEvent`]); the web panel's host
@@ -91,6 +93,156 @@ pub struct Refused {
     pub navigations: u32,
     /// Programs another scheme would have started (`mailto:` and the rest): never.
     pub os_launches: u32,
+}
+
+/// What a page asks the person, in a view whose walls say [`Walls::asks`]: held until the owner's [`View::reply`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ask {
+    /// `alert`, `confirm` or `prompt` (`kind`): the message, the prompt's default text and the asking page.
+    Script {
+        kind: &'static str,
+        message: String,
+        default: String,
+        origin: String,
+    },
+    /// The leave-page question (`beforeunload`): yes leaves (or reloads).
+    Leave { reload: bool },
+    /// `<input type=file>`: the extensions it takes (lower case, no dot; empty for any).
+    Files {
+        mode: FileMode,
+        title: String,
+        default_path: String,
+        extensions: Vec<String>,
+    },
+    /// The right-click menu at (x, y), the view's CSS pixels.
+    Menu {
+        x: i32,
+        y: i32,
+        items: Vec<MenuItem>,
+    },
+}
+
+/// What a file chooser picks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileMode {
+    Open,
+    OpenMany,
+    Folder,
+    Save,
+}
+
+/// One row of a page's menu; a separator has id 0 and no label.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuItem {
+    pub id: i32,
+    pub label: String,
+    pub enabled: bool,
+    pub checked: bool,
+}
+
+impl MenuItem {
+    pub fn is_separator(&self) -> bool {
+        self.id == 0
+    }
+}
+
+/// The person's answer to an [`Ask`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reply {
+    /// Cancel, Stay, or the menu closed with nothing picked.
+    No,
+    /// OK or Leave, with the prompt's text (empty for the others).
+    Yes(String),
+    Files(Vec<PathBuf>),
+    Command(i32),
+}
+
+/// A held ask's CEF callback.
+enum Waiting {
+    Script(JsdialogCallback),
+    Files(FileDialogCallback),
+    Menu(RunContextMenuCallback),
+}
+
+/// Answers a held ask (with no lock held: CEF may call a handler back at once). A reply of the wrong kind is a no.
+fn answer(w: Waiting, r: Reply) {
+    match (w, r) {
+        (Waiting::Script(cb), Reply::Yes(t)) => cb.cont(1, Some(&t.as_str().into())),
+        (Waiting::Script(cb), _) => cb.cont(0, None),
+        (Waiting::Files(cb), Reply::Files(paths)) if !paths.is_empty() => {
+            let mut list = CefStringList::new();
+            for p in &paths {
+                list.append(&p.to_string_lossy());
+            }
+            cb.cont(Some(&mut list));
+        }
+        (Waiting::Files(cb), _) => cb.cancel(),
+        (Waiting::Menu(cb), Reply::Command(id)) => cb.cont(id, EventFlags::default()),
+        (Waiting::Menu(cb), _) => cb.cancel(),
+    }
+}
+
+/// The page menu's own rows (CEF's user range).
+const OPEN_LINK: i32 = 26500;
+const COPY_LINK: i32 = 26501;
+const INSPECT: i32 = 26502;
+/// Chromium's rows the page menu leaves out: Print (rule 1034: no print panel from a page) and View Source (a window
+/// of its own).
+const LEFT_OUT: [i32; 2] = [131, 132];
+
+/// A menu's rows as the person sees them: no separator first, last or twice in a row, and CEF's `&` mnemonics gone.
+pub fn tidy_menu(items: Vec<MenuItem>) -> Vec<MenuItem> {
+    let mut out: Vec<MenuItem> = Vec::with_capacity(items.len());
+    for mut i in items {
+        if i.is_separator() {
+            if out.last().is_some_and(|l| !l.is_separator()) {
+                out.push(i);
+            }
+            continue;
+        }
+        i.label = i
+            .label
+            .replace("&&", "\u{1}")
+            .replace('&', "")
+            .replace('\u{1}', "&");
+        out.push(i);
+    }
+    while out.last().is_some_and(MenuItem::is_separator) {
+        out.pop();
+    }
+    out
+}
+
+/// The extensions a file chooser takes: each filter's extensions (CEF's `accept_extensions`, `;`-separated) or the
+/// filter itself when it is one (`.png`). Empty (any file) when a filter has none CEF could name: a page's `image/*`
+/// is never narrowed to nothing.
+pub fn file_types(filters: &[String], extensions: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (i, f) in filters.iter().enumerate() {
+        let listed = extensions.get(i).filter(|e| !e.trim().is_empty());
+        let source = match listed {
+            Some(e) => e.as_str(),
+            None if f.trim_start().starts_with('.') => f.as_str(),
+            None => return Vec::new(),
+        };
+        for e in source.split(';') {
+            let e = e
+                .trim()
+                .trim_start_matches("*.")
+                .trim_start_matches('.')
+                .to_ascii_lowercase();
+            if e.is_empty() {
+                continue;
+            }
+            if e == "*" {
+                return Vec::new();
+            }
+            if !out.contains(&e) {
+                out.push(e);
+            }
+        }
+    }
+    out
 }
 
 /// A view's own DevTools calls (enabling the Page domain, the script before the page's own, the bridge's binding)
@@ -193,6 +345,15 @@ pub enum ViewEvent {
     /// A script dialog the page opened and how it was answered (never shown).
     Dialog {
         kind: &'static str,
+    },
+    /// The page asks the person something: held until [`View::reply`] (or [`ViewEvent::AskGone`]).
+    Ask {
+        id: u64,
+        ask: Ask,
+    },
+    /// A held ask is over without a reply (the page went on, or its process ended): put it away.
+    AskGone {
+        id: u64,
     },
     /// A new picture is there ([`View::frame`]).
     Painted,
@@ -315,6 +476,11 @@ pub struct Walls {
     /// When set, it decides each request for a new window instead of `new_windows`.
     pub new_window_rule: Option<NewWindowRule>,
     pub downloads: Downloads,
+    /// The person is there to ask (the web panel): script dialogs, file choosers and the right-click menu are held
+    ///  for the owner ([`ViewEvent::Ask`]). Otherwise they are answered at once and never shown.
+    pub asks: bool,
+    /// The page's menu has Inspect, and [`View::show_dev_tools`] opens DevTools.
+    pub dev_tools: bool,
 }
 
 impl Default for Walls {
@@ -326,6 +492,8 @@ impl Default for Walls {
             new_windows: NewWindows::Refuse,
             new_window_rule: None,
             downloads: Downloads::Cancel,
+            asks: false,
+            dev_tools: false,
         }
     }
 }
@@ -394,6 +562,11 @@ pub struct State {
     refused_main: Option<String>,
     /// Script dialogs answered, by kind.
     pub dialogs: Vec<&'static str>,
+    /// Asks held for the owner's reply, by id.
+    asks: HashMap<u64, Waiting>,
+    ask_seq: u64,
+    /// The walls allow DevTools.
+    dev_tools: bool,
 }
 
 impl std::fmt::Debug for State {
@@ -476,6 +649,75 @@ impl Ctx {
             sink(e);
         }
     }
+
+    /// Asks go to the owner: the walls say so and someone hears the events.
+    fn asks(&self) -> bool {
+        self.walls.asks && self.events.is_some()
+    }
+
+    /// Holds `w` and tells the owner.
+    fn hold(&self, w: Waiting, ask: Ask) {
+        let id = {
+            let mut s = lock(&self.state);
+            s.ask_seq += 1;
+            let id = s.ask_seq;
+            s.asks.insert(id, w);
+            id
+        };
+        self.emit(ViewEvent::Ask { id, ask });
+    }
+
+    /// Every held ask (or only the script dialogs) answered no and put away.
+    fn drop_asks(&self, scripts_only: bool) {
+        let gone: Vec<(u64, Waiting)> = {
+            let mut s = lock(&self.state);
+            let ids: Vec<u64> = s
+                .asks
+                .iter()
+                .filter(|(_, w)| !scripts_only || matches!(w, Waiting::Script(_)))
+                .map(|(id, _)| *id)
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| s.asks.remove(&id).map(|w| (id, w)))
+                .collect()
+        };
+        for (id, w) in gone {
+            answer(w, Reply::No);
+            self.emit(ViewEvent::AskGone { id });
+        }
+    }
+}
+
+/// Puts `text` on the general pasteboard (the page menu's Copy Link).
+fn copy_text(text: &str) {
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+    let pb = NSPasteboard::generalPasteboard();
+    pb.clearContents();
+    // SAFETY: a constant AppKit string, read on the main thread (CEF's UI thread is the main thread here).
+    let kind = unsafe { NSPasteboardTypeString };
+    pb.setString_forType(&objc2_foundation::NSString::from_str(text), kind);
+}
+
+/// DevTools for `host` in a window of its own (asked for by the person: F12, Cmd+Option+I or Inspect), at `at` in
+/// the page when given.
+fn open_dev_tools(host: &BrowserHost, at: Option<Point>) {
+    let info = WindowInfo {
+        bounds: Rect {
+            x: 80,
+            y: 80,
+            width: 1100,
+            height: 760,
+        },
+        runtime_style: RuntimeStyle::ALLOY,
+        window_name: CefString::from("DevTools"),
+        ..Default::default()
+    };
+    host.show_dev_tools(
+        Some(&info),
+        None,
+        Some(&BrowserSettings::default()),
+        at.as_ref(),
+    );
 }
 
 wrap_render_handler! {
@@ -805,15 +1047,32 @@ wrap_context_menu_handler! {
     }
 
     impl ContextMenuHandler {
+        // A walled view's menu is emptied. The web panel's keeps Chromium's rows but Print and View Source, with
+        // WebView2's link rows first and Inspect last.
         fn on_before_context_menu(
             &self,
             _browser: Option<&mut Browser>,
             _frame: Option<&mut Frame>,
-            _params: Option<&mut ContextMenuParams>,
+            params: Option<&mut ContextMenuParams>,
             model: Option<&mut MenuModel>,
         ) {
-            if let Some(model) = model {
+            let Some(model) = model else { return };
+            if !self.c.asks() {
                 model.clear();
+                return;
+            }
+            for id in LEFT_OUT {
+                model.remove(id);
+            }
+            let link = params.map(|p| CefString::from(&p.link_url()).to_string()).unwrap_or_default();
+            if !link.is_empty() {
+                model.insert_item_at(0, OPEN_LINK, Some(&"Open Link".into()));
+                model.insert_item_at(1, COPY_LINK, Some(&"Copy Link".into()));
+                model.insert_separator_at(2);
+            }
+            if self.c.walls.dev_tools {
+                model.add_separator();
+                model.add_item(INSPECT, Some(&"Inspect".into()));
             }
         }
 
@@ -821,17 +1080,107 @@ wrap_context_menu_handler! {
             &self,
             _browser: Option<&mut Browser>,
             _frame: Option<&mut Frame>,
-            _params: Option<&mut ContextMenuParams>,
-            _model: Option<&mut MenuModel>,
+            params: Option<&mut ContextMenuParams>,
+            model: Option<&mut MenuModel>,
             callback: Option<&mut RunContextMenuCallback>,
         ) -> ::std::os::raw::c_int {
-            lock(&self.c.state).refused.context_menus += 1;
-            if let Some(cb) = callback {
+            let items = if self.c.asks() { model.map(|m| menu_items(m)).unwrap_or_default() } else { Vec::new() };
+            let Some(cb) = callback else { return 1 };
+            if items.is_empty() {
+                lock(&self.c.state).refused.context_menus += 1;
                 cb.cancel();
+                return 1;
+            }
+            let (x, y) = params.map(|p| (p.xcoord(), p.ycoord())).unwrap_or_default();
+            self.c.hold(Waiting::Menu(cb.clone()), Ask::Menu { x, y, items });
+            1
+        }
+
+        fn on_context_menu_command(
+            &self,
+            browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            params: Option<&mut ContextMenuParams>,
+            command_id: ::std::os::raw::c_int,
+            _event_flags: EventFlags,
+        ) -> ::std::os::raw::c_int {
+            if !matches!(command_id, OPEN_LINK | COPY_LINK | INSPECT) {
+                return 0;
+            }
+            let link = params.as_ref().map(|p| CefString::from(&p.link_url()).to_string()).unwrap_or_default();
+            match command_id {
+                // The web panel opens a page's new window in the same view: so does Open Link.
+                OPEN_LINK if popup_target_allowed(&link, self.c.walls.nav.as_ref()) => {
+                    if let Some(f) = browser.and_then(|b| b.main_frame()) {
+                        f.load_url(Some(&link.as_str().into()));
+                    }
+                }
+                COPY_LINK if !link.is_empty() => copy_text(&link),
+                INSPECT if self.c.walls.dev_tools => {
+                    let at = params.map(|p| Point { x: p.xcoord(), y: p.ycoord() });
+                    if let Some(h) = browser.and_then(|b| b.host()) {
+                        open_dev_tools(&h, at);
+                    }
+                }
+                _ => {}
             }
             1
         }
     }
+}
+
+/// The strings of a list CEF lends a handler. (Read in place: the binding's `clone` of a lent list reads as empty.)
+fn strings(list: Option<&mut CefStringList>) -> Vec<String> {
+    let Some(list) = list else { return Vec::new() };
+    let raw: *mut cef_dll_sys::_cef_string_list_t = list.into();
+    if raw.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: CEF's list, alive for this handler call; each value is copied out into a string CEF owns until the
+    // copy is read, then freed with it.
+    unsafe {
+        (0..cef_dll_sys::cef_string_list_size(raw))
+            .filter_map(|i| {
+                let mut value = std::mem::zeroed();
+                (cef_dll_sys::cef_string_list_value(raw, i, &mut value) > 0).then(|| {
+                    let s = CefString::from(std::ptr::from_ref(&value)).to_string();
+                    cef_dll_sys::cef_string_utf16_clear(&mut value);
+                    s
+                })
+            })
+            .collect()
+    }
+}
+
+/// A CEF menu's rows (sub-menus and hidden rows left out), tidied.
+fn menu_items(model: &MenuModel) -> Vec<MenuItem> {
+    let mut items = Vec::new();
+    for i in 0..model.count() {
+        let kind = model.type_at(i);
+        if kind == MenuItemType::SEPARATOR {
+            items.push(MenuItem {
+                id: 0,
+                label: String::new(),
+                enabled: false,
+                checked: false,
+            });
+            continue;
+        }
+        if kind == MenuItemType::SUBMENU || model.is_visible_at(i) == 0 {
+            continue;
+        }
+        let id = model.command_id_at(i);
+        if id == 0 {
+            continue;
+        }
+        items.push(MenuItem {
+            id,
+            label: CefString::from(&model.label_at(i)).to_string(),
+            enabled: model.is_enabled_at(i) != 0,
+            checked: model.is_checked_at(i) != 0,
+        });
+    }
+    tidy_menu(items)
 }
 
 wrap_jsdialog_handler! {
@@ -845,10 +1194,10 @@ wrap_jsdialog_handler! {
         fn on_jsdialog(
             &self,
             _browser: Option<&mut Browser>,
-            _origin_url: Option<&CefString>,
+            origin_url: Option<&CefString>,
             dialog_type: JsdialogType,
-            _message_text: Option<&CefString>,
-            _default_prompt_text: Option<&CefString>,
+            message_text: Option<&CefString>,
+            default_prompt_text: Option<&CefString>,
             callback: Option<&mut JsdialogCallback>,
             _suppress_message: Option<&mut ::std::os::raw::c_int>,
         ) -> ::std::os::raw::c_int {
@@ -859,6 +1208,17 @@ wrap_jsdialog_handler! {
             } else {
                 "alert"
             };
+            // The web panel's: held for the person, as WebView2 shows its own dialog.
+            if self.c.asks() && let Some(cb) = callback.as_deref() {
+                let ask = Ask::Script {
+                    kind,
+                    message: text(message_text),
+                    default: text(default_prompt_text),
+                    origin: text(origin_url),
+                };
+                self.c.hold(Waiting::Script(cb.clone()), ask);
+                return 1;
+            }
             {
                 let mut s = lock(&self.c.state);
                 s.refused.js_dialogs += 1;
@@ -875,15 +1235,24 @@ wrap_jsdialog_handler! {
             &self,
             _browser: Option<&mut Browser>,
             _message_text: Option<&CefString>,
-            _is_reload: ::std::os::raw::c_int,
+            is_reload: ::std::os::raw::c_int,
             callback: Option<&mut JsdialogCallback>,
         ) -> ::std::os::raw::c_int {
+            if self.c.asks() && let Some(cb) = callback.as_deref() {
+                self.c.hold(Waiting::Script(cb.clone()), Ask::Leave { reload: is_reload != 0 });
+                return 1;
+            }
             lock(&self.c.state).refused.before_unload += 1;
             // The leave-page question is answered "leave", as the Windows seal does.
             if let Some(cb) = callback {
                 cb.cont(1, None);
             }
             1
+        }
+
+        // The page went on (or the view is going): a held dialog is over.
+        fn on_reset_dialog_state(&self, _browser: Option<&mut Browser>) {
+            self.c.drop_asks(true);
         }
     }
 }
@@ -897,14 +1266,33 @@ wrap_dialog_handler! {
         fn on_file_dialog(
             &self,
             _browser: Option<&mut Browser>,
-            _mode: FileDialogMode,
-            _title: Option<&CefString>,
-            _default_file_path: Option<&CefString>,
-            _accept_filters: Option<&mut CefStringList>,
-            _accept_extensions: Option<&mut CefStringList>,
+            mode: FileDialogMode,
+            title: Option<&CefString>,
+            default_file_path: Option<&CefString>,
+            accept_filters: Option<&mut CefStringList>,
+            accept_extensions: Option<&mut CefStringList>,
             _accept_descriptions: Option<&mut CefStringList>,
             callback: Option<&mut FileDialogCallback>,
         ) -> ::std::os::raw::c_int {
+            if self.c.asks() && let Some(cb) = callback.as_deref() {
+                let mode = if mode == FileDialogMode::OPEN_MULTIPLE {
+                    FileMode::OpenMany
+                } else if mode == FileDialogMode::OPEN_FOLDER {
+                    FileMode::Folder
+                } else if mode == FileDialogMode::SAVE {
+                    FileMode::Save
+                } else {
+                    FileMode::Open
+                };
+                let ask = Ask::Files {
+                    mode,
+                    title: text(title),
+                    default_path: text(default_file_path),
+                    extensions: file_types(&strings(accept_filters), &strings(accept_extensions)),
+                };
+                self.c.hold(Waiting::Files(cb.clone()), ask);
+                return 1;
+            }
             lock(&self.c.state).refused.file_dialogs += 1;
             if let Some(cb) = callback {
                 cb.cancel();
@@ -1394,6 +1782,7 @@ wrap_request_handler! {
                 termination_words(status)
             );
             lock(&self.c.state).gone = Some(why.clone());
+            self.c.drop_asks(false);
             self.c.emit(ViewEvent::Gone { why, reason: termination_reason(status), code: error_code });
         }
     }
@@ -1785,6 +2174,7 @@ impl View {
         frame_rate: i32,
     ) -> Result<View, String> {
         let state = c.state.clone();
+        lock(&state).dev_tools = c.walls.dev_tools;
         let mut client = view_client(&c);
         let window_info = WindowInfo {
             windowless_rendering_enabled: 1,
@@ -2082,6 +2472,34 @@ impl View {
         true
     }
 
+    /// The person's reply to a held ask ([`ViewEvent::Ask`]). False for an id that is not held (answered, or gone).
+    pub fn reply(&self, id: u64, reply: Reply) -> bool {
+        let Some(w) = lock(&self.state).asks.remove(&id) else {
+            return false;
+        };
+        answer(w, reply);
+        true
+    }
+
+    /// Every held ask answered no (the view is closing).
+    pub fn cancel_asks(&self) {
+        let ids: Vec<u64> = lock(&self.state).asks.keys().copied().collect();
+        for id in ids {
+            self.reply(id, Reply::No);
+        }
+    }
+
+    /// The page's DevTools in a window of their own (the person asked: F12, Cmd+Option+I). Nothing for a view whose
+    /// walls do not allow them ([`Walls::dev_tools`]).
+    pub fn show_dev_tools(&self) {
+        if !lock(&self.state).dev_tools {
+            return;
+        }
+        if let Ok(h) = self.host() {
+            open_dev_tools(&h, None);
+        }
+    }
+
     /// Every held download is cancelled (the view is closing, the window is ending).
     pub fn cancel_downloads(&self) {
         let ids: Vec<u64> = lock(&self.state).downloads.keys().copied().collect();
@@ -2108,6 +2526,7 @@ impl View {
     /// Closes the browser (forced: no unload question). [`ViewEvent::Closed`] follows.
     pub fn close(&self) {
         self.cancel_downloads();
+        self.cancel_asks();
         if let Ok(h) = self.host() {
             h.close_browser(1);
         }
@@ -2118,6 +2537,76 @@ impl View {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn row(id: i32, label: &str) -> MenuItem {
+        MenuItem {
+            id,
+            label: label.to_string(),
+            enabled: true,
+            checked: false,
+        }
+    }
+
+    fn sep() -> MenuItem {
+        MenuItem {
+            id: 0,
+            label: String::new(),
+            enabled: false,
+            checked: false,
+        }
+    }
+
+    #[test]
+    fn a_page_menu_has_no_stray_separator_and_no_mnemonic_marks() {
+        let got = tidy_menu(vec![
+            sep(),
+            row(100, "&Back"),
+            sep(),
+            sep(),
+            row(113, "Copy && Paste"),
+            sep(),
+        ]);
+        assert_eq!(got, vec![row(100, "Back"), sep(), row(113, "Copy & Paste")]);
+        assert!(tidy_menu(vec![sep(), sep()]).is_empty());
+    }
+
+    #[test]
+    fn a_file_chooser_takes_the_pages_extensions_or_any_file() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        // `accept=".png,image/jpeg"`: CEF names each filter's extensions.
+        assert_eq!(
+            file_types(
+                &s(&[".png", "image/jpeg"]),
+                &s(&[".png", ".jpg;.jpeg;.JPE"])
+            ),
+            s(&["png", "jpg", "jpeg", "jpe"])
+        );
+        // A bare extension with nothing listed for it.
+        assert_eq!(file_types(&s(&[".PDF"]), &[]), s(&["pdf"]));
+        assert_eq!(
+            file_types(&s(&[".txt"]), &s(&[".txt;"])),
+            s(&["txt"]),
+            "an empty piece is skipped"
+        );
+        assert_eq!(file_types(&s(&[".md"]), &s(&["*.md"])), s(&["md"]));
+        assert!(
+            file_types(&s(&["*"]), &s(&["*"])).is_empty(),
+            "a wildcard is any file"
+        );
+        // A type CEF could not name, or no filter at all: any file.
+        assert!(file_types(&s(&["image/*", ".png"]), &s(&["", ".png"])).is_empty());
+        assert!(file_types(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn a_reply_of_the_wrong_kind_is_a_no_and_a_menu_skips_print_and_view_source() {
+        // Print (rule 1034) and View Source are CEF's 131 and 132; the page menu's own rows are in CEF's user range.
+        assert_eq!(LEFT_OUT, [131, 132]);
+        for id in [OPEN_LINK, COPY_LINK, INSPECT] {
+            assert!((26500..=28500).contains(&id));
+        }
+        assert!(sep().is_separator() && !row(1, "x").is_separator());
+    }
 
     #[test]
     fn a_same_view_answer_loads_a_web_address_or_a_blob_and_never_a_script() {

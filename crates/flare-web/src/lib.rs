@@ -4,6 +4,10 @@
 //! phase 5); `fake` is a stand-in with no browser for the panel logic's tests; `backend` is the trait and the events
 //! between them and the window.
 
+/// What the web panel's page asks the person, as sheets and a menu on the Mac window.
+#[cfg(target_os = "macos")]
+#[path = "macos/asks.rs"]
+pub mod asks;
 pub mod backend;
 /// The web host tests' browser process (macOS: run inside a dev bundle by `tests/cef_macos.rs`).
 #[cfg(target_os = "macos")]
