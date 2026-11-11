@@ -3084,7 +3084,10 @@ impl RealCfg {
         let dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
         let engine_dir = flare_win::seam::var_os(names::SEAM_WHISPER_DIR)
             .filter(|v| !v.is_empty())
-            .map_or_else(|| dir.join(names::ENGINE_FOLDER), PathBuf::from);
+            .map_or_else(
+                || flare_dictation::engine::bundled_engine_dir(&dir),
+                PathBuf::from,
+            );
         let host_exe = Some(dir.join(names::PARAKEET_HOST_EXE));
         let seam_link = match (g.env(names::SEAM_DICT_PIPE), g.env(names::SEAM_DICT_KEY)) {
             (Some(pipe), Some(key)) if !pipe.is_empty() => hex32(&key).map(|k| (pipe, k)),
@@ -3157,8 +3160,9 @@ impl RealParts {
         let for_gpu = store.clone();
         let for_model = store.clone();
         let cpu = cfg.engine_dir.clone();
+        // A folder without its whisper-server is no engine (rule 1138): the answer is then NoEngine naming the folder.
         let mut ec = EngineConfig::new(
-            Box::new(move || cpu.is_dir().then(|| cpu.clone())),
+            Box::new(move || flare_dictation::engine::engine_in(&cpu).then(|| cpu.clone())),
             Box::new(move || for_gpu.gpu_engine_dir()),
             Box::new(move |id| for_model.model_path(id)),
         );
@@ -3169,6 +3173,7 @@ impl RealParts {
             ec.cuda_cache = Some(cfg.root.join("cuda-cache"));
         }
         ec.parakeet_host = cfg.host_exe.clone().filter(|p| p.is_file());
+        ec.bundled_at = Some(cfg.engine_dir.clone());
         let engine = Engine::start(ec, Arc::new(job));
         // The first switch-on reads or makes the link key: one 64-byte file.
         let link = if cfg.e2e {

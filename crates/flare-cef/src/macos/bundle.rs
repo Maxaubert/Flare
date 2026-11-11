@@ -61,6 +61,10 @@ pub struct Extras<'a> {
     /// Files and folders copied into `Contents/Resources` under the given name (never into `Contents/MacOS`, which
     /// holds only code: a folder there breaks the seal).
     pub resources: Vec<(&'a Path, &'a str)>,
+    /// Folders of code only (programs and the libraries they find by `@loader_path`) copied into
+    /// `Contents/Frameworks` under the given name: the speech engine (rule 1138). Each Mach-O in one is signed as a
+    /// library before the app, and `codesign --deep` checks each as code. A data file there breaks `--strict`.
+    pub frameworks: Vec<(&'a Path, &'a str)>,
     /// More keys for the app's `Info.plist` (key, its XML value).
     pub keys: Vec<(&'static str, String)>,
 }
@@ -272,6 +276,9 @@ pub fn build(spec: &BundleSpec<'_>) -> Result<PathBuf, String> {
         copy_any(res, &contents.join("Resources").join(name))?;
     }
     let frameworks = contents.join("Frameworks");
+    for (dir, name) in &spec.extras.frameworks {
+        copy_any(dir, &frameworks.join(name))?;
+    }
     let fw = frameworks.join(FRAMEWORK);
     clone_dir(&src_fw, &fw)?;
     for suffix in HELPER_SUFFIXES {

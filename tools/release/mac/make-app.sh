@@ -15,7 +15,8 @@
 # Velopack (rules 1043 and 1046): a release does not ship this app. pack.sh packs it with vpk, which adds its updater;
 # the bundle is signed again by role after that (flare-mac-app as vpk's codesign), notarized and checked inside the
 # packages. A release runs this script with FLARE_NOTARIZE=0, then pack.sh (docs/releasing-macos.md).
-# Other settings: FLARE_MAC_TEAM (WV7BY8CUM8), FLARE_MAC_OUT (target/mac-release), FLARE_FEATURES (cargo features of
+# The speech engine is built from source (tools/build-whisper-macos.sh, needs cmake) unless FLARE_WHISPER_DIR names
+# a built one. Other settings: FLARE_MAC_TEAM (WV7BY8CUM8), FLARE_MAC_OUT (target/mac-release), FLARE_FEATURES (cargo features of
 # the flare crate, e.g. live-updates), FLARE_NOTARIZE=0 (sign only), FLARE_SKIP_BUILD=1 (use target/release as it is),
 # FLARE_BUILD_ONLY=1 (build the programs and stop: CI, before the signing keychain exists),
 # FLARE_BUNDLE_VERSION (the bundle's version instead of the workspace's: the throwaway test packs only).
@@ -48,6 +49,15 @@ if [ "${FLARE_SKIP_BUILD:-0}" != 1 ]; then
   (cd "$ROOT" && cargo build --release --locked -p flare ${features[@]+"${features[@]}"})
   (cd "$ROOT" && cargo build --release --locked -p flare-mcp)
   (cd "$ROOT" && cargo build --release --locked -p flare-cef --bin flare-cef-helper --bin flare-mac-app)
+  (cd "$ROOT" && cargo build --release --locked -p flare-dictation --bin flare-parakeet-host)
+fi
+
+# The speech engine (rule 1138): whisper-server and parakeet-cli with Metal, built from the one pinned whisper.cpp
+# commit into vendor/macos/whisper (gitignored; reused while every file matches its stamp, else rebuilt). It goes into
+# Contents/Frameworks/whisper, signed with the app. Needs cmake (brew install cmake). FLARE_WHISPER_DIR: another build.
+if [ -z "${FLARE_WHISPER_DIR:-}" ]; then
+  command -v cmake >/dev/null || { echo "the speech engine needs cmake: brew install cmake" >&2; exit 1; }
+  bash "$ROOT/tools/build-whisper-macos.sh" "$ROOT/vendor/macos/whisper"
 fi
 
 # CI builds first and makes the signing keychain only after (rule 1050): the key is in reach for the signing only.

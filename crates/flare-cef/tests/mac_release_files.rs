@@ -277,7 +277,7 @@ fn the_pack_checks_each_programs_role_ad_hoc_too() {
     let pack = read("tools/release/mac/pack.sh");
     let check = &pack[pack.find("check_bundle() {").unwrap()..];
     for needed in [
-        "for t in UpdateMac flare-mcp; do",
+        "for t in UpdateMac flare-mcp flare-parakeet-host; do",
         "Identifier=$BUNDLE_ID.$t",
         "flags=[^ ]*runtime",
         "carries entitlements",
