@@ -834,7 +834,8 @@ fn marker_links_on(
     ctx.ok(copied, "Copy path copies it whole and absolute");
 
     // The line: the text opens in the panel at line 30, marked.
-    click_on(app, "marker-notes.txt", 2, Button::Left)?;
+    // The absolute path is long and may wrap: the click lands on its first character, after the start mark.
+    click_on(app, ", notes ", 9, Button::Left)?;
     let at_line = ctx.until("the notes at their line", 6_000, &mut || {
         let s = probe(app, "panel.state", Value::Null);
         s["kind"] == json!(2)
