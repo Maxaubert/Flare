@@ -598,6 +598,9 @@ pub fn colour_picker(ctx: &mut Ctx) -> Result<(), String> {
                     .is_some_and(|tabs| tabs.iter().any(|t| t["present"] == true))
             },
         );
+        // Rule 1136: the stand-in's pwsh has run a line before the hook line goes in, or the hook line
+        // (and the red line after it) can be lost.
+        crate::standins::agent_proc::wait_ready(&mut app);
     }
     type_line(&mut app, &say("working"));
     let working = ctx.until("the stand-in agent to work", 12_000, &mut || {
