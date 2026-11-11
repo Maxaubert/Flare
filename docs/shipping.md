@@ -25,14 +25,14 @@ The side-by-side run downloads the latest Prism Terminal installer with `gh rele
 Prism Terminal repository is `arkivert/PrismTerminal` and it is private, so the workflow's own `GITHUB_TOKEN` cannot
 read it ("release not found"). Owner decision 2026-11-11: a repository secret holds a token that can.
 
-- Name: `PRISM_RELEASE_TOKEN` (the Prism Terminal release token), a repository secret of this repository
+- Name: `FLARE_RELEASE_TOKEN` (Flare CI's read-only token for the Prism Terminal installer), a repository secret of this repository
   (Settings > Secrets and variables > Actions).
 - Value: a fine-grained personal access token, resource owner `arkivert`, repository access only
   `arkivert/PrismTerminal` (the Prism Terminal repository), permission Contents: Read-only. Nothing else.
 - Used by: the side-by-side step of `release.yml` and of `installer-e2e.yml`, and only that step (its `GH_TOKEN`).
   No other step gets it, and nothing prints it.
 - Missing: that step fails (it does not skip) with one line, and a release then publishes nothing:
-  `PRISM_RELEASE_TOKEN is not set: add a fine-grained read-only token for arkivert/PrismTerminal as a repository secret (docs/shipping.md)` (Prism Terminal).
+  `FLARE_RELEASE_TOKEN is not set: add a fine-grained read-only token for arkivert/PrismTerminal as a repository secret (docs/shipping.md)` (Prism Terminal).
 - Dependabot pull requests get only Dependabot secrets, so an `installer-e2e` run on one fails the same way unless
   the same token is also added as a Dependabot secret of the same name (the Prism Terminal token).
 - When the token expires, make a new one with the same settings and replace the secret's value.
