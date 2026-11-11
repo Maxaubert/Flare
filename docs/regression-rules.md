@@ -2224,7 +2224,7 @@ Held by `the_route_is_named_by_the_app_in_front_at_the_press`,
 `dictation_panel_floats_never_activates_and_is_placed_in_top_left_points` (crates/flare-win/tests/appkit.rs, a window
 never shown). Source: Max, dictating from another app transcribes but never pastes or shows the session list
 (2026-11-11).
-1136. **Settings > Agents draws the Mark colours section (Agent working, finished and question colour, with its
+1140. **Settings > Agents draws the Mark colours section (Agent working, finished and question colour, with its
 Save changes) only while the tab marks are Bar; with Ring it is left out, and Find does not offer its three rows.**
 The Ring mark (`MarkRing` in `crates/flare/ui/tabmark.slint`) is mono and draws with the tab name's ink, so the
 three colours changed nothing a Ring user could see on the tab. `page::agents::build` reads
