@@ -202,6 +202,22 @@ fn link_coloured(app: &mut App, needle: &str) -> bool {
             .any(|m| m["text"].as_str().is_some_and(|t| t.contains(needle)))
 }
 
+/// Why `needle` wears no link colour on the front tab: whether `line` is on screen, the ink, and the links
+/// that are painted (a FAIL says which of the three it was).
+fn not_lit_reason(app: &mut App, line: &str, needle: &str) -> String {
+    let shown = text(app).contains(line);
+    let (links, ink) = front_links(app);
+    let texts: Vec<&str> = links.iter().filter_map(|m| m["text"].as_str()).collect();
+    format!(
+        " (not within 8 s: {line:?} {}, ink {ink:?}, links {texts:?}, none reads {needle:?})",
+        if shown {
+            "is on screen"
+        } else {
+            "is NOT on screen"
+        }
+    )
+}
+
 /// True when the front tab paints the web link of one of the first `within` lines of the output
 /// (`https://e.x/n<k>`, k <= within) in the link colour: the oldest lines, painted after the wheel
 /// brought them into view.
@@ -299,6 +315,48 @@ pub(super) fn worst_stall(lines: &[flare_diag::reader::Line], from: i64) -> u64 
         .max()
         .unwrap_or(0)
 }
+/// What the longest stall line at or after `from` says beyond its length: its kind, when it came (ms after
+/// `from`), and what was in flight, the crumbs before it or the first frames of its stack, so a FAIL names
+/// the work that held the window.
+pub(super) fn stall_reason(lines: &[flare_diag::reader::Line], from: i64) -> String {
+    let worst = lines
+        .iter()
+        .filter(|l| l.ms >= from)
+        .filter(|l| {
+            matches!(
+                l.raw.get("k").and_then(Value::as_str),
+                Some("main-lag" | "frame-slow" | "ui-stack")
+            )
+        })
+        .max_by_key(|l| l.raw.get("ms").and_then(Value::as_u64).unwrap_or(0));
+    let Some(l) = worst else {
+        return String::new();
+    };
+    let field = |k: &str| l.raw.get(k).map(Value::to_string).unwrap_or_default();
+    let stack: String = l
+        .raw
+        .get("stack")
+        .and_then(Value::as_str)
+        .map(|s| s.lines().take(8).collect::<Vec<_>>().join(" | "))
+        .unwrap_or_default();
+    let mut out = format!(
+        " ({} at +{} ms, inflight {}, crumbs {}, stack {stack:?})",
+        field("k"),
+        l.ms - from,
+        field("inflight"),
+        field("crumbs"),
+    );
+    out.truncate(1200);
+    out
+}
+
+/// linkPaintStall's tab A command as PT typed it: the typed line itself names `found-167.txt` before the
+/// file exists (Windows, as it was).
+const MADE_NAMED: &str = "cls; Set-Content found-167.txt x; Write-Host 'made found-167.txt here'";
+/// The same command with the name built in the shell, so only the printed line names the file (macOS, rule 1127).
+const MADE_UNNAMED: &str =
+    "cls; Set-Content ('found-' + '167.txt') x; Write-Host ('made found-' + '167.txt here')";
+
 /// PT: run.mjs:3669-3762. Tab B prints 10,000 lines with a web link on each; tab A's found path
 /// wears the link colour; no frame gap of 200 ms or more while it lights up, and none on a theme
 /// switch; B's oldest lines are painted within 10 s of scrolling back to them.
@@ -347,14 +405,26 @@ fn link_paint_stall_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     let (ax, ay) = centre_of(app, "tab:0").unwrap_or((0.0, 0.0));
     app.session.click(ax, ay)?;
     let _ = wait_prompt(app);
-    type_line(
-        app,
-        "cls; Set-Content found-167.txt x; Write-Host 'made found-167.txt here'",
-    )?;
+    // macOS (rule 1127): the typed line must not name the file. PSReadLine echoes it before it runs, the
+    // painter asks whether `found-167.txt` exists, and an answer that comes before Set-Content has made the
+    // file is a "no" kept for NO_TTL_MS (15 s): the printed line then waits out the "no" (16 s) and the 8 s
+    // check missed it. The name is built in the shell, so the first question about it is the printed line's.
+    let made = if cfg!(target_os = "macos") {
+        MADE_UNNAMED
+    } else {
+        MADE_NAMED
+    };
+    type_line(app, made)?;
     // PT: run.mjs:3697
+    let lit = wait(8_000, &mut || link_coloured(app, "found-167.txt"));
+    let why = if lit {
+        String::new()
+    } else {
+        not_lit_reason(app, "made found-167.txt here", "found-167.txt")
+    };
     ctx.ok(
-        wait(8_000, &mut || link_coloured(app, "found-167.txt")),
-        "the path tab A printed wears the link colour",
+        lit,
+        format!("the path tab A printed wears the link colour{why}"),
     );
     pause(5_000);
     let after_find = frames_max(app);
@@ -375,13 +445,16 @@ fn link_paint_stall_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     pause(2_000);
     let back = pick_theme(ctx, app, "pt-default");
     pause(3_000);
-    let worst = worst_stall(
-        &flare_diag::reader::read_lines(&crate::world::logs_dir(&profile)),
-        from,
-    );
+    let lines = flare_diag::reader::read_lines(&crate::world::logs_dir(&profile));
+    let worst = worst_stall(&lines, from);
+    let why = if worst < 200 {
+        String::new()
+    } else {
+        stall_reason(&lines, from)
+    };
     ctx.ok(
         picked && back && worst < 200,
-        format!("a theme switch with 10,000 lines in a tab holds the window under 200 ms (longest {worst} ms)"),
+        format!("a theme switch with 10,000 lines in a tab holds the window under 200 ms (longest {worst} ms){why}"),
     );
     // PT: run.mjs:3714-3715. Back to tab B, then the wheel over its 10,000 lines.
     let (bx, by) = centre_of(app, "tab:1").unwrap_or((0.0, 0.0));
@@ -707,6 +780,33 @@ mod tests {
         raw.insert("k".into(), json!(k));
         raw.insert("ms".into(), json!(len));
         Line { ms, raw }
+    }
+
+    fn names(text: &str) -> Vec<String> {
+        flare_term::path_links::path_candidates(text)
+            .into_iter()
+            .map(|c| c.path)
+            .collect()
+    }
+
+    // Rule 1127: the typed line must not ask about the file before the shell makes it, and what it prints must.
+    #[test]
+    fn the_mac_command_names_the_file_only_in_what_it_prints() {
+        assert!(names(MADE_NAMED).iter().any(|p| p == "found-167.txt"));
+        assert!(!names(MADE_UNNAMED).iter().any(|p| p.contains("found-167")));
+        assert_eq!(names("made found-167.txt here"), vec!["found-167.txt"]);
+    }
+
+    #[test]
+    fn a_stall_reason_names_the_longest_line_and_its_work() {
+        let mut slow = line(120, "frame-slow", 586);
+        slow.raw
+            .insert("crumbs".into(), json!([{ "a": "theme", "ago": 3 }]));
+        let lines = vec![line(10, "main-lag", 900), line(110, "main-lag", 250), slow];
+        let why = stall_reason(&lines, 100);
+        assert!(why.contains("\"frame-slow\" at +20 ms"), "{why}");
+        assert!(why.contains("theme"), "{why}");
+        assert_eq!(stall_reason(&lines, 121), "");
     }
 
     #[test]

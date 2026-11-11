@@ -2052,6 +2052,33 @@ later), so a scenario that waits for the prompt text and snaps at once can still
 that row holds text or the cursor (`ground_spots` in `tools/e2e/src/scenarios/chrome.rs`). Windows reads the same
 spots. Held by `the_spots_miss_cell_zero_where_the_cursor_sits`, `the_spots_scale_with_the_window` and
 `a_last_row_with_text_or_the_cursor_fails_loudly`. Source: main's first full CI run after the macOS port (2026-11-11).
+1127. **macOS: attention reads a question line in a picture at full breath, and linkPaintStall never names its file
+before the shell makes it.** Run 42953387295 (main, 34a6268a) failed two checks that pass on reruns. attention's "and it
+is visible there" (the question line on the tab in front) read 0 px, 0% of the foot: its `question-active` shot shows
+alpha in front with no line at its foot while the background shot a moment before showed it faint. The line breathes
+from full to nothing every 2 s and that check took one picture; rule 1119 had only sampled the background one. Both
+pictures are now `snap_full_breath` on a Mac (the app's own breath for the picture, read on the UI thread, at least
+0.85), so the check reads the line, not the phase. linkPaintStall's "the path tab A printed wears the link colour" typed
+`cls; Set-Content found-167.txt x; Write-Host 'made found-167.txt here'`: PSReadLine echoes the line before it runs,
+the painter asks whether `found-167.txt` exists, and an answer that comes before Set-Content made it is a "no" kept
+`NO_TTL_MS` (15 s), so the printed line lit only on the retry after 16 s and the 8 s wait missed it. On a Mac the
+command builds the name in the shell (`'found-' + '167.txt'`), so the first question about the file is the printed
+line's; a miss names whether the line is on screen, the ink and the links painted. The app is unchanged (the 15 s "no"
+is PT's). Windows keeps both old checks (rule 1119). Held by `the_mac_command_names_the_file_only_in_what_it_prints`.
+Source: Mac E2E in CI, run 42953387295 (2026-11-11).
+1131. **macOS: a text-presentation symbol draws from a text face, and only VS16 makes it a colour emoji.** Claude Code's
+message bullet U+23FA showed as Apple Color Emoji's blue tile on the Mac and as a plain circle on Windows (owner,
+2026-11-11). cosmic-text's macOS common fallback is `.SF NS`, Menlo, Apple Color Emoji, and of the ~900 faces on
+macOS 26 only STIX Two Math has U+23FA outside the emoji faces (Apple Symbols does not), so the emoji face won. The
+rasteriser now follows UTS #51 per cluster (`presentation::wants_emoji`): VS15 forces text, VS16 or a keycap forces
+emoji, otherwise Emoji_Presentation decides (a range table generated from Unicode 16.0 `emoji-data.txt`). A
+text-presentation cluster that landed on an emoji face is drawn from the user's stack, then `TEXT_SYMBOL_FAMILIES`
+(Apple Symbols, SF Mono, Menlo, .SF NS, Arial Unicode MS, STIX Two Math), when one of them has every glyph; an emoji
+cluster a text face took (Menlo has U+2764, so U+2764 U+FE0F drew as text) comes from `EMOJI_FAMILIES`. STIX Two Math
+moved from the lazy list to the end of the start-up fallbacks so it is there to be asked. Both lists are empty on
+Windows, whose output does not change. Native: `crates/flare-render/src/presentation.rs`, `raster.rs`,
+`macos/font_catalog.rs`. Held by `the_presentation_rule_follows_uts_51` and
+`a_text_presentation_symbol_draws_from_a_text_face_and_vs16_makes_it_an_emoji`. Source: macOS port (2026-11-11).
 1128. **macOS: a run from an `.app` bundle that Velopack did not make has updates off, so it shows no fake update
 chip.** D11 previews in an unpackaged build so `cargo run` shows the update flow, but the ad hoc
 `/Applications/Flare.app` that `tools/release/mac/make-app.sh` builds is unpackaged too (no `UpdateMac`, no

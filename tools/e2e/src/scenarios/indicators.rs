@@ -528,8 +528,19 @@ pub fn attention(ctx: &mut Ctx) -> Result<(), String> {
     let k = scale(&mut app);
     park_pointer(&mut app);
     hold(ctx, 200);
+    // A question's line breathes from full to nothing and back every two seconds, so a picture taken at any
+    // instant can catch it at its faintest (the Mac runner did, at 0 px, on the background tab and then on the
+    // tab in front; rules 1119 and 1127). On a Mac the picture is one the app says shows the full breath
+    // (`snap_full_breath`, the strength read on the UI thread straight after the picture), so the check reads
+    // the line and not the phase. Windows looks once, as before.
     let line = |ctx: &mut Ctx, app: &mut App, name: &str, i: usize| -> (usize, f32) {
-        let (Some(r), Some(s)) = (tab_rect(app, i), snap(ctx, app, name)) else {
+        let r = tab_rect(app, i);
+        let s = if cfg!(target_os = "macos") {
+            snap_full_breath(ctx, app, name)
+        } else {
+            snap(ctx, app, name)
+        };
+        let (Some(r), Some(s)) = (r, s) else {
             return (0, 0.0);
         };
         let ground = ground_of(&s, k, r);
@@ -538,23 +549,8 @@ pub fn attention(ctx: &mut Ctx) -> Result<(), String> {
             covered(&foot_row(&s, k, r), ground, 12),
         )
     };
-    // A question's line breathes: a picture at its faintest shows no line, so it is looked at over a breath (up
-    // to six pictures, 250 ms apart) and the clearest counts (the Mac runner caught it at 0 px once; rule 1119).
-    // Windows looks once, as before.
     let want = thick_rows(3.0, k);
-    let tries = if cfg!(target_os = "macos") { 6 } else { 1 };
-    let mut best = (0usize, 0.0f32);
-    for attempt in 0..tries {
-        let got = line(ctx, &mut app, "question", 0);
-        if (got.0 == want && got.1 > best.1) || (best.0 != want && got.0 > best.0) {
-            best = got;
-        }
-        if (best.0 == want && best.1 > 0.9) || attempt + 1 == tries {
-            break;
-        }
-        hold(ctx, 250);
-    }
-    let (thick, share) = best;
+    let (thick, share) = line(ctx, &mut app, "question", 0);
     let m0 = mark(&mut app, 0);
     ctx.ok(
         m0["kind"] == json!("line") && thick == want && share > 0.9,
