@@ -2111,3 +2111,9 @@ later), so a scenario that waits for the prompt text and snaps at once can still
 that row holds text or the cursor (`ground_spots` in `tools/e2e/src/scenarios/chrome.rs`). Windows reads the same
 spots. Held by `the_spots_miss_cell_zero_where_the_cursor_sits`, `the_spots_scale_with_the_window` and
 `a_last_row_with_text_or_the_cursor_fails_loudly`. Source: main's first full CI run after the macOS port (2026-11-11).
+1127. **A unit test that writes a Windows path for a file link writes it through `path_grammar::native_text`.** A
+`C:\...` path is relative on macOS (rule 227), so a marked `C:\...` with no tab folder is rightly no link there, and the
+six marked-path tests in `link_scan` and `emulator` found none on the Mac runner (run 42983045830, PR 166). The helper
+keeps the text on Windows and writes `/C/` for `C:\` and `/` for every `\` elsewhere, the same length, so piece
+widths hold on both. Held by `native_test_text_is_an_absolute_path_of_the_same_length` and the
+`a_marked_path_*` tests. Source: PR 166's macos check (2026-11-11).

@@ -368,6 +368,7 @@ fn scan_line(ll: &LogicalLine, cols: usize, links: &[Link]) -> Vec<LinkMark> {
 mod tests {
     use super::*;
     use crate::cells::{LineLike, ScratchCell};
+    use crate::path_grammar::native_text;
 
     struct Row {
         text: String,
@@ -788,13 +789,14 @@ mod tests {
     #[test]
     fn a_marked_path_is_a_file_link_with_its_line() {
         let mut h = H::new();
-        let b = buf(&[("Saved \u{27E6}C:\\r\\src\\main.rs:42\u{27E7} now", false)]);
+        let row = native_text("Saved \u{27E6}C:\\r\\src\\main.rs:42\u{27E7} now");
+        let b = buf(&[(row.as_str(), false)]);
         let m = h.scan(&b, 40, 0, 0);
         assert_eq!(m.len(), 1, "{m:?}");
         assert_eq!(
             m[0].target,
             LinkTarget::Path {
-                text: "C:\\r\\src\\main.rs".into(),
+                text: native_text("C:\\r\\src\\main.rs"),
                 line: Some(42),
                 col: None,
                 alts: Vec::new(),
@@ -826,19 +828,20 @@ mod tests {
     #[test]
     fn a_marked_path_that_starts_above_the_view_is_whole() {
         let mut h = H::new();
-        let b = buf(&[
-            ("see \u{27E6}C:\\a\\long", false),
-            ("  \\b.txt\u{27E7} ok", false),
-        ]);
+        let (top, rest) = (
+            native_text("see \u{27E6}C:\\a\\long"),
+            native_text("  \\b.txt\u{27E7} ok"),
+        );
+        let b = buf(&[(top.as_str(), false), (rest.as_str(), false)]);
         let m = h.scan(&b, 16, 1, 1);
         assert_eq!(m.len(), 1, "{m:?}");
         assert_eq!(
             m[0].target,
             LinkTarget::Path {
-                text: "C:\\a\\long\\b.txt".into(),
+                text: native_text("C:\\a\\long\\b.txt"),
                 line: None,
                 col: None,
-                alts: vec!["C:\\a\\long \\b.txt".into()],
+                alts: vec![native_text("C:\\a\\long \\b.txt")],
             }
         );
         assert_eq!(m[0].pieces.len(), 2);
@@ -866,10 +869,11 @@ mod tests {
     #[test]
     fn a_web_address_beside_a_marked_path_stays_a_web_link() {
         let mut h = H::new();
-        let b = buf(&[("https://a.io/x\u{27E6}C:\\a.rs\u{27E7}", false)]);
+        let row = native_text("https://a.io/x\u{27E6}C:\\a.rs\u{27E7}");
+        let b = buf(&[(row.as_str(), false)]);
         let m = h.scan(&b, 40, 0, 0);
         assert_eq!(m.len(), 2, "{m:?}");
         assert_eq!(m[0].target, LinkTarget::Web("https://a.io/x".into()));
-        assert_eq!(m[1].target, LinkTarget::path("C:\\a.rs"));
+        assert_eq!(m[1].target, LinkTarget::path(&native_text("C:\\a.rs")));
     }
 }

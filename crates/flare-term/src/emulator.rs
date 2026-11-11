@@ -1678,6 +1678,7 @@ fn visible_pieces(m: FindMatch, cols: usize, top: usize, rows: usize) -> Vec<Row
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::path_grammar::native_text;
     use flare_render::grid::CellFlags;
     use std::time::Duration;
 
@@ -3393,16 +3394,16 @@ mod tests {
     #[test]
     fn a_marked_path_broken_by_hand_and_indented_is_one_link() {
         let mut e = Emulator::new(14, 4);
-        e.feed("see \u{27E6}C:\\t\\scra\r\n  tch\\a.rs:7\u{27E7}".as_bytes());
+        e.feed(native_text("see \u{27E6}C:\\t\\scra\r\n  tch\\a.rs:7\u{27E7}").as_bytes());
         let m = e.link_marks(None, 1);
         assert_eq!(m.len(), 1, "{m:?}");
         assert_eq!(
             m[0].target,
             LinkTarget::Path {
-                text: "C:\\t\\scratch\\a.rs".into(),
+                text: native_text("C:\\t\\scratch\\a.rs"),
                 line: Some(7),
                 col: None,
-                alts: vec!["C:\\t\\scra tch\\a.rs".into()],
+                alts: vec![native_text("C:\\t\\scra tch\\a.rs")],
             }
         );
         assert_eq!(
@@ -3431,16 +3432,16 @@ mod tests {
     #[test]
     fn a_marked_path_on_the_alternate_screen_is_a_link() {
         let mut e = Emulator::new(30, 4);
-        e.feed("\x1b[?1049h\x1b[Hsee \u{27E6}C:\\a\\b.txt\u{27E7}".as_bytes());
+        e.feed(native_text("\x1b[?1049h\x1b[Hsee \u{27E6}C:\\a\\b.txt\u{27E7}").as_bytes());
         let m = e.link_marks(None, 1);
         assert_eq!(m.len(), 1, "{m:?}");
-        assert_eq!(m[0].target, LinkTarget::path("C:\\a\\b.txt"));
+        assert_eq!(m[0].target, LinkTarget::path(&native_text("C:\\a\\b.txt")));
     }
 
     #[test]
     fn a_marked_path_that_starts_above_the_view_is_whole() {
         let mut e = Emulator::new(16, 3);
-        e.feed("\u{27E6}C:\\a\\long\r\n  \\b.txt\u{27E7}\r\nx\r\ny\r\nz".as_bytes());
+        e.feed(native_text("\u{27E6}C:\\a\\long\r\n  \\b.txt\u{27E7}\r\nx\r\ny\r\nz").as_bytes());
         // Scrolled so the first row of the link is just above the view.
         e.scroll_view(1);
         let top = e.viewport_top();
@@ -3453,10 +3454,10 @@ mod tests {
         assert_eq!(
             files[0].target,
             LinkTarget::Path {
-                text: "C:\\a\\long\\b.txt".into(),
+                text: native_text("C:\\a\\long\\b.txt"),
                 line: None,
                 col: None,
-                alts: vec!["C:\\a\\long \\b.txt".into()],
+                alts: vec![native_text("C:\\a\\long \\b.txt")],
             }
         );
         assert_eq!(files[0].pieces[0].row + 1, top);

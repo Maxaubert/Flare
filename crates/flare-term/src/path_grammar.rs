@@ -18,3 +18,28 @@ mod native;
 mod native;
 
 pub use native::{is_relative, resolve_term_path, volume_key};
+
+/// Test text with Windows paths, as this platform writes them: as given on Windows; elsewhere `C:\` is `/C/` and
+/// every `\` a `/`, so a `C:\...` path is absolute on macOS too and keeps its length (piece widths stay the same).
+/// Only for text whose backslashes are all path separators.
+#[cfg(test)]
+pub(crate) fn native_text(s: &str) -> String {
+    if cfg!(windows) {
+        s.to_string()
+    } else {
+        s.replace("C:\\", "/C/").replace('\\', "/")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_test_text_is_an_absolute_path_of_the_same_length() {
+        let s = "see C:\\t\\scra tch\\a.rs:7";
+        let n = native_text(s);
+        assert_eq!(n.chars().count(), s.chars().count());
+        assert!(!is_relative(n.trim_start_matches("see ")));
+    }
+}
