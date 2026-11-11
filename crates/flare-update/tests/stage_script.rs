@@ -1,5 +1,7 @@
 //! `tools/stage-install.ps1` writes a stage the app accepts (install when idle, 2026-10-29). Runs the real script
 //! against a temp install and a temp bin folder; the real installs are never named. Skipped when `pwsh` is missing.
+//! macOS (rule 1132): `tools/release/mac/stage-install.sh` against a fake built bundle (`FLARE_STAGE_APP`, so no
+//! cargo build) and a temp root (`FLARE_STAGE_ROOT`); `~/Library/Application Support/Flare` is never named.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -115,4 +117,125 @@ fn the_stage_script_refuses_a_folder_that_is_no_install_and_a_missing_build() {
     let out = stage(shell, &root, &bin, "Flare.exe");
     assert!(!out.status.success(), "no build: refused");
     assert!(!root.join("staged").join("staged.json").exists());
+}
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use super::*;
+
+    /// Runs the Mac stage script on `app` into `root`. Nothing is built and the real root is never named.
+    fn stage_mac(root: &Path, app: &Path) -> std::process::Output {
+        let script = repo_root()
+            .join("tools")
+            .join("release")
+            .join("mac")
+            .join("stage-install.sh");
+        Command::new("/bin/bash")
+            .arg(&script)
+            .env("FLARE_STAGE_ROOT", root)
+            .env("FLARE_STAGE_APP", app)
+            .env("FLARE_STAGE_REPO", repo_root())
+            .env_remove("FLARE_MAC_SIGN_IDENTITY")
+            .output()
+            .expect("the script runs")
+    }
+
+    fn fake_bundle(app: &Path, exe: &str) {
+        for (name, body) in [
+            ("Contents/MacOS/Flare", exe),
+            ("Contents/MacOS/flare-mcp", "mcp"),
+            ("Contents/Info.plist", "plist"),
+            (
+                "Contents/Frameworks/Chromium Embedded Framework.framework/lib \"q\".dylib",
+                "lib",
+            ),
+        ] {
+            let p = app.join(name);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        }
+    }
+
+    fn say(out: &std::process::Output) -> String {
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    }
+
+    #[test]
+    fn the_mac_stage_script_writes_a_bundle_stage_the_app_accepts_and_a_second_replaces_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Support").join("Flare");
+        let built = dir.path().join("build").join("Flare.app");
+        fake_bundle(&built, "exe one");
+        // The installed copy the app would run: the script must never touch it.
+        let installed = dir.path().join("Applications").join("Flare.app");
+        fake_bundle(&installed, "installed");
+
+        let out = stage_mac(&root, &built);
+        assert!(out.status.success(), "{}", say(&out));
+        let layout = Layout::mac(&root, &installed, "Flare");
+        let m = staged::check(&layout).expect("the app accepts the stage");
+        assert!(m.files.contains_key("Contents/MacOS/Flare"));
+        assert!(m.files.contains_key("Contents/Info.plist"));
+        assert!(
+            m.files.keys().any(|k| k.ends_with("lib \"q\".dylib")),
+            "a name with a space and quotes survives the JSON: {:?}",
+            m.files.keys()
+        );
+        assert!(m.commit.len() >= 7);
+        assert!(!m.built_at.is_empty());
+        assert_eq!(
+            std::fs::read(root.join("staged/Flare.app/Contents/MacOS/Flare")).unwrap(),
+            b"exe one"
+        );
+        assert!(
+            !root.join("staged.tmp").exists(),
+            "the temp stage was renamed in"
+        );
+        assert_eq!(
+            std::fs::read(installed.join("Contents/MacOS/Flare")).unwrap(),
+            b"installed",
+            "staging never touches the installed bundle"
+        );
+        assert!(
+            !dir.path()
+                .join("Applications")
+                .join("Flare.app.old")
+                .exists()
+        );
+
+        // A second stage replaces the first.
+        std::fs::write(built.join("Contents/MacOS/Flare"), "exe two").unwrap();
+        std::fs::remove_file(built.join("Contents/Info.plist")).unwrap();
+        let out = stage_mac(&root, &built);
+        assert!(out.status.success(), "{}", say(&out));
+        let m2 = staged::check(&layout).expect("the second stage");
+        assert_ne!(m.signature(), m2.signature());
+        assert!(!m2.files.contains_key("Contents/Info.plist"));
+        assert!(!root.join("staged/Flare.app/Contents/Info.plist").exists());
+    }
+
+    #[test]
+    fn the_mac_stage_script_refuses_a_missing_bundle_and_an_applications_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Support").join("Flare");
+        let out = stage_mac(&root, &dir.path().join("nothing").join("Flare.app"));
+        assert!(!out.status.success(), "no bundle: refused");
+        assert!(!root.join("staged").join("staged.json").exists());
+
+        let built = dir.path().join("build").join("Flare.app");
+        fake_bundle(&built, "exe");
+        for bad in [
+            dir.path().join("Applications"),
+            dir.path().join("Applications").join("Flare.app"),
+            dir.path().join("x").join("Flare.app").join("Contents"),
+        ] {
+            let out = stage_mac(&bad, &built);
+            assert!(!out.status.success(), "{} refused", bad.display());
+            assert!(!bad.join("staged").exists());
+        }
+    }
 }
