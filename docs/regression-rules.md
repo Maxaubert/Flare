@@ -2052,3 +2052,17 @@ later), so a scenario that waits for the prompt text and snaps at once can still
 that row holds text or the cursor (`ground_spots` in `tools/e2e/src/scenarios/chrome.rs`). Windows reads the same
 spots. Held by `the_spots_miss_cell_zero_where_the_cursor_sits`, `the_spots_scale_with_the_window` and
 `a_last_row_with_text_or_the_cursor_fails_loudly`. Source: main's first full CI run after the macOS port (2026-11-11).
+1127. **macOS: attention reads a question line in a picture at full breath, and linkPaintStall never names its file
+before the shell makes it.** Run 42953387295 (main, 34a6268a) failed two checks that pass on reruns. attention's "and it
+is visible there" (the question line on the tab in front) read 0 px, 0% of the foot: its `question-active` shot shows
+alpha in front with no line at its foot while the background shot a moment before showed it faint. The line breathes
+from full to nothing every 2 s and that check took one picture; rule 1119 had only sampled the background one. Both
+pictures are now `snap_full_breath` on a Mac (the app's own breath for the picture, read on the UI thread, at least
+0.85), so the check reads the line, not the phase. linkPaintStall's "the path tab A printed wears the link colour" typed
+`cls; Set-Content found-167.txt x; Write-Host 'made found-167.txt here'`: PSReadLine echoes the line before it runs,
+the painter asks whether `found-167.txt` exists, and an answer that comes before Set-Content made it is a "no" kept
+`NO_TTL_MS` (15 s), so the printed line lit only on the retry after 16 s and the 8 s wait missed it. On a Mac the
+command builds the name in the shell (`'found-' + '167.txt'`), so the first question about the file is the printed
+line's; a miss names whether the line is on screen, the ink and the links painted. The app is unchanged (the 15 s "no"
+is PT's). Windows keeps both old checks (rule 1119). Held by `the_mac_command_names_the_file_only_in_what_it_prints`.
+Source: Mac E2E in CI, run 42953387295 (2026-11-11).

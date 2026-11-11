@@ -202,6 +202,22 @@ fn link_coloured(app: &mut App, needle: &str) -> bool {
             .any(|m| m["text"].as_str().is_some_and(|t| t.contains(needle)))
 }
 
+/// Why `needle` wears no link colour on the front tab: whether `line` is on screen, the ink, and the links
+/// that are painted (a FAIL says which of the three it was).
+fn not_lit_reason(app: &mut App, line: &str, needle: &str) -> String {
+    let shown = text(app).contains(line);
+    let (links, ink) = front_links(app);
+    let texts: Vec<&str> = links.iter().filter_map(|m| m["text"].as_str()).collect();
+    format!(
+        " (not within 8 s: {line:?} {}, ink {ink:?}, links {texts:?}, none reads {needle:?})",
+        if shown {
+            "is on screen"
+        } else {
+            "is NOT on screen"
+        }
+    )
+}
+
 /// True when the front tab paints the web link of one of the first `within` lines of the output
 /// (`https://e.x/n<k>`, k <= within) in the link colour: the oldest lines, painted after the wheel
 /// brought them into view.
@@ -299,6 +315,13 @@ pub(super) fn worst_stall(lines: &[flare_diag::reader::Line], from: i64) -> u64 
         .max()
         .unwrap_or(0)
 }
+/// linkPaintStall's tab A command as PT typed it: the typed line itself names `found-167.txt` before the
+/// file exists (Windows, as it was).
+const MADE_NAMED: &str = "cls; Set-Content found-167.txt x; Write-Host 'made found-167.txt here'";
+/// The same command with the name built in the shell, so only the printed line names the file (macOS, rule 1127).
+const MADE_UNNAMED: &str =
+    "cls; Set-Content ('found-' + '167.txt') x; Write-Host ('made found-' + '167.txt here')";
+
 /// PT: run.mjs:3669-3762. Tab B prints 10,000 lines with a web link on each; tab A's found path
 /// wears the link colour; no frame gap of 200 ms or more while it lights up, and none on a theme
 /// switch; B's oldest lines are painted within 10 s of scrolling back to them.
@@ -347,14 +370,26 @@ fn link_paint_stall_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     let (ax, ay) = centre_of(app, "tab:0").unwrap_or((0.0, 0.0));
     app.session.click(ax, ay)?;
     let _ = wait_prompt(app);
-    type_line(
-        app,
-        "cls; Set-Content found-167.txt x; Write-Host 'made found-167.txt here'",
-    )?;
+    // macOS (rule 1127): the typed line must not name the file. PSReadLine echoes it before it runs, the
+    // painter asks whether `found-167.txt` exists, and an answer that comes before Set-Content has made the
+    // file is a "no" kept for NO_TTL_MS (15 s): the printed line then waits out the "no" (16 s) and the 8 s
+    // check missed it. The name is built in the shell, so the first question about it is the printed line's.
+    let made = if cfg!(target_os = "macos") {
+        MADE_UNNAMED
+    } else {
+        MADE_NAMED
+    };
+    type_line(app, made)?;
     // PT: run.mjs:3697
+    let lit = wait(8_000, &mut || link_coloured(app, "found-167.txt"));
+    let why = if lit {
+        String::new()
+    } else {
+        not_lit_reason(app, "made found-167.txt here", "found-167.txt")
+    };
     ctx.ok(
-        wait(8_000, &mut || link_coloured(app, "found-167.txt")),
-        "the path tab A printed wears the link colour",
+        lit,
+        format!("the path tab A printed wears the link colour{why}"),
     );
     pause(5_000);
     let after_find = frames_max(app);
@@ -707,6 +742,21 @@ mod tests {
         raw.insert("k".into(), json!(k));
         raw.insert("ms".into(), json!(len));
         Line { ms, raw }
+    }
+
+    fn names(text: &str) -> Vec<String> {
+        flare_term::path_links::path_candidates(text)
+            .into_iter()
+            .map(|c| c.path)
+            .collect()
+    }
+
+    // Rule 1127: the typed line must not ask about the file before the shell makes it, and what it prints must.
+    #[test]
+    fn the_mac_command_names_the_file_only_in_what_it_prints() {
+        assert!(names(MADE_NAMED).iter().any(|p| p == "found-167.txt"));
+        assert!(!names(MADE_UNNAMED).iter().any(|p| p.contains("found-167")));
+        assert_eq!(names("made found-167.txt here"), vec!["found-167.txt"]);
     }
 
     #[test]
