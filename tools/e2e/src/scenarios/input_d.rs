@@ -315,6 +315,41 @@ pub(super) fn worst_stall(lines: &[flare_diag::reader::Line], from: i64) -> u64 
         .max()
         .unwrap_or(0)
 }
+/// What the longest stall line at or after `from` says beyond its length: its kind, when it came (ms after
+/// `from`), and what was in flight, the crumbs before it or the first frames of its stack, so a FAIL names
+/// the work that held the window.
+pub(super) fn stall_reason(lines: &[flare_diag::reader::Line], from: i64) -> String {
+    let worst = lines
+        .iter()
+        .filter(|l| l.ms >= from)
+        .filter(|l| {
+            matches!(
+                l.raw.get("k").and_then(Value::as_str),
+                Some("main-lag" | "frame-slow" | "ui-stack")
+            )
+        })
+        .max_by_key(|l| l.raw.get("ms").and_then(Value::as_u64).unwrap_or(0));
+    let Some(l) = worst else {
+        return String::new();
+    };
+    let field = |k: &str| l.raw.get(k).map(Value::to_string).unwrap_or_default();
+    let stack: String = l
+        .raw
+        .get("stack")
+        .and_then(Value::as_str)
+        .map(|s| s.lines().take(8).collect::<Vec<_>>().join(" | "))
+        .unwrap_or_default();
+    let mut out = format!(
+        " ({} at +{} ms, inflight {}, crumbs {}, stack {stack:?})",
+        field("k"),
+        l.ms - from,
+        field("inflight"),
+        field("crumbs"),
+    );
+    out.truncate(1200);
+    out
+}
+
 /// linkPaintStall's tab A command as PT typed it: the typed line itself names `found-167.txt` before the
 /// file exists (Windows, as it was).
 const MADE_NAMED: &str = "cls; Set-Content found-167.txt x; Write-Host 'made found-167.txt here'";
@@ -410,13 +445,16 @@ fn link_paint_stall_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     pause(2_000);
     let back = pick_theme(ctx, app, "pt-default");
     pause(3_000);
-    let worst = worst_stall(
-        &flare_diag::reader::read_lines(&crate::world::logs_dir(&profile)),
-        from,
-    );
+    let lines = flare_diag::reader::read_lines(&crate::world::logs_dir(&profile));
+    let worst = worst_stall(&lines, from);
+    let why = if worst < 200 {
+        String::new()
+    } else {
+        stall_reason(&lines, from)
+    };
     ctx.ok(
         picked && back && worst < 200,
-        format!("a theme switch with 10,000 lines in a tab holds the window under 200 ms (longest {worst} ms)"),
+        format!("a theme switch with 10,000 lines in a tab holds the window under 200 ms (longest {worst} ms){why}"),
     );
     // PT: run.mjs:3714-3715. Back to tab B, then the wheel over its 10,000 lines.
     let (bx, by) = centre_of(app, "tab:1").unwrap_or((0.0, 0.0));
@@ -757,6 +795,18 @@ mod tests {
         assert!(names(MADE_NAMED).iter().any(|p| p == "found-167.txt"));
         assert!(!names(MADE_UNNAMED).iter().any(|p| p.contains("found-167")));
         assert_eq!(names("made found-167.txt here"), vec!["found-167.txt"]);
+    }
+
+    #[test]
+    fn a_stall_reason_names_the_longest_line_and_its_work() {
+        let mut slow = line(120, "frame-slow", 586);
+        slow.raw
+            .insert("crumbs".into(), json!([{ "a": "theme", "ago": 3 }]));
+        let lines = vec![line(10, "main-lag", 900), line(110, "main-lag", 250), slow];
+        let why = stall_reason(&lines, 100);
+        assert!(why.contains("\"frame-slow\" at +20 ms"), "{why}");
+        assert!(why.contains("theme"), "{why}");
+        assert_eq!(stall_reason(&lines, 121), "");
     }
 
     #[test]
