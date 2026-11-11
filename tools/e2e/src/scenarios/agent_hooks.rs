@@ -367,6 +367,8 @@ fn start_stand_in(ctx: &mut Ctx, app: &mut App, profile: &Path, i: usize) -> Res
     let cmd = agent_proc::command(profile)?;
     at(app, i, &cmd);
     pause(ctx, agent_proc::SETTLE_MS);
+    // Rule 1136: a Mac waits for the stand-in's pwsh to run a line before the hook line goes in.
+    agent_proc::wait_ready(app);
     at(app, i, IDLE);
     pause(ctx, 2_500);
     Ok(())

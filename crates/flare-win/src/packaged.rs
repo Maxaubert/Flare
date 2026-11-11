@@ -29,18 +29,32 @@ pub fn install_root(exe: &Path) -> Option<PathBuf> {
 /// The `.app` that `exe` is the program of, when it is a bundle `vpk pack` made: `exe` in
 /// `<X>.app/Contents/MacOS` with `UpdateMac` beside it and `Contents/Resources/sq.version`.
 pub fn bundle_root(exe: &Path) -> Option<PathBuf> {
+    let app = app_of(exe)?;
     let macos = exe.parent()?;
     let contents = macos.parent()?;
-    let app = contents.parent()?;
-    let named = macos.file_name()? == "MacOS"
-        && contents.file_name()? == "Contents"
-        && app.extension()? == "app";
     // sync-ok: startup-only existence probes of two marker files
-    (named
-        && exe.file_name()? != "UpdateMac"
+    (exe.file_name()? != "UpdateMac"
         && macos.join("UpdateMac").is_file()
         && contents.join("Resources").join("sq.version").is_file())
     .then(|| app.to_path_buf())
+}
+
+/// True when `exe` is the program of some `.app` bundle by its path alone (`<X>.app/Contents/MacOS/<exe>`),
+/// Velopack's or not. Looks at names only and touches no file (rule 1128).
+pub fn in_app_bundle(exe: &Path) -> bool {
+    app_of(exe).is_some()
+}
+
+/// The `<X>.app` of `exe` when its path is `<X>.app/Contents/MacOS/<exe>` (names only).
+fn app_of(exe: &Path) -> Option<&Path> {
+    exe.file_name()?;
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    (macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && app.extension()? == "app")
+        .then_some(app)
 }
 
 fn windows_root(exe: &Path) -> Option<PathBuf> {
@@ -153,5 +167,35 @@ mod tests {
         fs::create_dir_all(&plain).unwrap();
         fs::write(plain.join("UpdateMac"), b"x").unwrap();
         assert_eq!(bundle_root(&plain.join("Flare")), None);
+    }
+
+    #[test]
+    fn in_app_bundle_reads_the_path_alone() {
+        // Rule 1128: an ad hoc bundle (no UpdateMac, no sq.version, nothing on disk) is in a bundle.
+        assert!(in_app_bundle(Path::new(
+            "/Applications/Flare.app/Contents/MacOS/Flare"
+        )));
+        assert!(in_app_bundle(Path::new(
+            "/tmp/x/Other.app/Contents/MacOS/flare"
+        )));
+        assert!(!is_packaged(Path::new(
+            "/Applications/Flare.app/Contents/MacOS/Flare"
+        )));
+        // cargo run, a plain folder, the wrong level, a folder that is not an app.
+        for p in [
+            "/Users/me/Flare/target/debug/flare",
+            "/Applications/Flare.app/Contents/Resources/Flare",
+            "/Applications/Flare.app/Contents/MacOS",
+            "/Applications/Flare/Contents/MacOS/Flare",
+            "/Applications/Flare.app/Other/MacOS/Flare",
+            r"C:\Flare\current\Flare.exe",
+            "Flare",
+            "",
+        ] {
+            assert!(!in_app_bundle(Path::new(p)), "{p}");
+        }
+        // A real Velopack bundle is in a bundle too.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(in_app_bundle(&bundle(dir.path(), true, true)));
     }
 }

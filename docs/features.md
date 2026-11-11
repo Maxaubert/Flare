@@ -626,7 +626,9 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   under "Show more options", not on the first menu. Test: `verb_keys`, `verb`, `verb_switch`, `registry` in flare-win.
 - **Two apps side by side.** Different app id, verb key, single-instance mutex and pipe, profile, plugin name,
   hook signal and tab-id variable. `side_by_side::flare_runs_beside_the_neighbour_and_shares_nothing` runs on this
-  PC (Layer A); the real install of both runs on a clean CI runner (Layer B).
+  PC (Layer A); the real install of both runs on a clean CI runner (Layer B). Since 2026-11-11 Layer B downloads
+  the neighbour's installer from its private repository with the read-only `PRISM_RELEASE_TOKEN` secret, given to
+  that step alone; without the secret the step fails with one `::error::` line (rule 1141, `docs/shipping.md`).
 - **The log.** `%APPDATA%\Flare\logs\diag.jsonl`, one JSON object per line, rotated at 2 MB into four old files,
   written by a thread that never blocks the UI (a queue of 2000 lines, dropped and counted when full). It holds
   no typed text, clipboard, audio or conversation, and `mark` carries no note (D12). Read it with `cargo diag`
@@ -2131,6 +2133,13 @@ only when the person clicks "Build ready". How to stage: `docs/shipping.md`, "In
   20 s and at a clean quit, the chip and toast boxes), and the offscreen e2e `clickInstall` (a temp install in the world;
   a click under a stand-in Claude asks and Escape keeps the build; idle, nothing installs; a click installs; the new
   process answers on the same pipe, parked, its tab back, confirmed after 20 s). The chip's box is `ui.rect staged-chip`.
+- **macOS (2026-11-11, rule 1132).** The unit is the whole bundle: `tools/release/mac/stage-install.sh` stages
+  `~/Library/Application Support/Flare/staged/Flare.app` and `staged.json` (names relative to the bundle); a `.app` in an
+  `Applications` folder is an installed copy (`Layout::from_bundle_exe`), ad hoc or not; the swap renames the running
+  bundle to `Flare.app.old`, renames the stage in (same volume, else `NotReady::OtherVolume`) and checks the hashes in
+  place; the restart is `open -n <bundle>`; the watch polls the manifest every 2 s. How to stage: `docs/shipping.md`.
+  Tests: `staged::mac_tests`, `stage_script::mac`, and the `a_mac_bundle_...` and `the_mac_restart_...` cases in
+  `ui_tests::staged_flows`.
 - **Not covered.** A new exe that crashes before `main` reaches the guard is still counted only when started again by
   hand; nothing restarts it on its own (the same holds for a swap cut off while the exe itself was half copied: the next
   start by hand of that exe may not run, and `<name>.old` is then the way back). Files removed from `claude-plugin\` in a

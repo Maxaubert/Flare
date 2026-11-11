@@ -4,11 +4,12 @@
 use crate::blend::blend_premul;
 use crate::fallback;
 use crate::font_catalog::{
-    FALLBACK_FAMILIES, LAZY_FALLBACK_FAMILIES, MONOSPACE_FAMILIES, database_for, files_for_family,
-    installed_faces,
+    EMOJI_FAMILIES, FALLBACK_FAMILIES, LAZY_FALLBACK_FAMILIES, MONOSPACE_FAMILIES,
+    TEXT_SYMBOL_FAMILIES, database_for, files_for_family, installed_faces,
 };
 use crate::glyph::{GlyphBitmap, GlyphKey, GlyphKind, GlyphMemory, GlyphSource};
 use crate::metrics::{BASE_FONT_PX, FontUnits, cell_metrics_at, font_px_for};
+use crate::presentation;
 use crate::shapes;
 use cosmic_text::{
     Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, SwashContent,
@@ -323,6 +324,38 @@ impl Rasterizer {
             }
         }
         let run = buffer.layout_runs().next()?;
+        // Presentation (UTS #51), the way Terminal.app, kitty and Ghostty pick: a text-presentation
+        // character (U+23FA, U+2764 without VS16) that cosmic-text's common fallback sent to the
+        // colour emoji face is drawn from a text face when one has it, and an emoji asked for with
+        // VS16 that a text face took (Menlo has U+2764) comes from the emoji face. macOS only:
+        // Windows has no such lists, so its glyphs stay as cosmic-text picks them.
+        let from_emoji_face = run
+            .glyphs
+            .iter()
+            .any(|g| is_emoji_face(&self.fs, g.font_id));
+        let wants_emoji = presentation::wants_emoji(&key.text);
+        if wants_emoji && !from_emoji_face {
+            for &name in EMOJI_FAMILIES {
+                if let Some(images) = self.own_images(&key.text, key, name) {
+                    return compose(&images);
+                }
+            }
+        }
+        if !TEXT_SYMBOL_FAMILIES.is_empty() && !wants_emoji && from_emoji_face {
+            let text: String = key.text.chars().filter(|&c| !is_variation(c)).collect();
+            let families: Vec<String> = self
+                .stack
+                .iter()
+                .cloned()
+                .chain(TEXT_SYMBOL_FAMILIES.iter().map(|f| (*f).to_string()))
+                .filter(|f| !f.contains("Emoji"))
+                .collect();
+            for name in families {
+                if let Some(images) = self.own_images(&text, key, &name) {
+                    return compose(&images);
+                }
+            }
+        }
 
         // Every glyph of the first run, with its physical position and rasterised image.
         let mut images: Vec<(i32, i32, SwashImage)> = Vec::new();
@@ -338,6 +371,65 @@ impl Rasterizer {
         }
         compose(&images)
     }
+
+    /// `text` shaped in `name` alone: the images of its glyphs when that loaded family has every
+    /// one of them, else None.
+    fn own_images(
+        &mut self,
+        text: &str,
+        key: &GlyphKey,
+        name: &str,
+    ) -> Option<Vec<(i32, i32, SwashImage)>> {
+        if !has_family(&self.fs, name) {
+            return None;
+        }
+        let px = font_px_for(self.base_px, self.scale);
+        let mut attrs = Attrs::new().family(Family::Name(name));
+        if key.bold {
+            attrs = attrs.weight(Weight::BOLD);
+        }
+        if key.italic {
+            attrs = attrs.style(Style::Italic);
+        }
+        let mut buffer = Buffer::new_empty(Metrics::new(px, px));
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(&mut self.fs, false);
+        let run = buffer.layout_runs().next()?;
+        let own =
+            run.glyphs.iter().all(|g| {
+                g.glyph_id != 0
+                    && self.fs.db().face(g.font_id).is_some_and(|f| {
+                        f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name))
+                    })
+            });
+        if !own {
+            return None;
+        }
+        let mut images: Vec<(i32, i32, SwashImage)> = Vec::new();
+        for glyph in run.glyphs.iter() {
+            let physical = glyph.physical((0.0, 0.0), 1.0);
+            if let Some(image) = self
+                .swash
+                .get_image(&mut self.fs, physical.cache_key)
+                .clone()
+            {
+                images.push((physical.x, physical.y, image));
+            }
+        }
+        Some(images)
+    }
+}
+
+/// A colour emoji face (Apple Color Emoji), told by its PostScript name as cosmic-text does.
+fn is_emoji_face(fs: &FontSystem, id: cosmic_text::fontdb::ID) -> bool {
+    fs.db()
+        .face(id)
+        .is_some_and(|f| f.post_script_name.contains("Emoji"))
+}
+
+/// VS15 or VS16, dropped before a text face shapes the cluster.
+fn is_variation(c: char) -> bool {
+    matches!(c, '\u{FE0E}' | '\u{FE0F}')
 }
 
 impl Rasterizer {
@@ -346,47 +438,10 @@ impl Rasterizer {
     /// drawings (a star for a Powerline cap). Like Prism Terminal's stack, it is looked up in the
     /// stack's own faces in order; where none has it, the cell stays blank.
     fn rasterize_private_use(&mut self, key: &GlyphKey) -> Option<GlyphBitmap> {
-        let px = font_px_for(self.base_px, self.scale);
         for name in self.stack.clone() {
-            if !has_family(&self.fs, &name) {
-                continue;
+            if let Some(images) = self.own_images(&key.text, key, &name) {
+                return compose(&images);
             }
-            let mut attrs = Attrs::new().family(Family::Name(&name));
-            if key.bold {
-                attrs = attrs.weight(Weight::BOLD);
-            }
-            if key.italic {
-                attrs = attrs.style(Style::Italic);
-            }
-            let mut buffer = Buffer::new_empty(Metrics::new(px, px));
-            buffer.set_text(&key.text, &attrs, Shaping::Advanced, None);
-            buffer.shape_until_scroll(&mut self.fs, false);
-            let Some(run) = buffer.layout_runs().next() else {
-                continue;
-            };
-            let own = run.glyphs.iter().all(|g| {
-                g.glyph_id != 0
-                    && self.fs.db().face(g.font_id).is_some_and(|f| {
-                        f.families
-                            .iter()
-                            .any(|(n, _)| n.eq_ignore_ascii_case(&name))
-                    })
-            });
-            if !own {
-                continue;
-            }
-            let mut images: Vec<(i32, i32, SwashImage)> = Vec::new();
-            for glyph in run.glyphs.iter() {
-                let physical = glyph.physical((0.0, 0.0), 1.0);
-                if let Some(image) = self
-                    .swash
-                    .get_image(&mut self.fs, physical.cache_key)
-                    .clone()
-                {
-                    images.push((physical.x, physical.y, image));
-                }
-            }
-            return compose(&images);
         }
         None
     }
@@ -753,6 +808,33 @@ mod tests {
         fs.db()
             .faces()
             .any(|f| f.families.iter().any(|(n, _)| n == name))
+    }
+
+    /// Rule 1131: U+23FA (Claude Code's bullet) and other text-presentation characters draw from a
+    /// text face on macOS, and turn into the colour emoji only with VS16 or when they are emoji by
+    /// default.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_text_presentation_symbol_draws_from_a_text_face_and_vs16_makes_it_an_emoji() {
+        if !installed("Apple Color Emoji") {
+            eprintln!("skipped: no Apple Color Emoji on this machine");
+            return;
+        }
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        for text in ["\u{23FA}", "\u{2764}", "\u{25B6}", "\u{23FA}\u{FE0E}"] {
+            let g = glyph_settled(&mut r, &key(text)).expect(text);
+            assert_eq!(g.kind, GlyphKind::Mask, "{text:?} came from a colour face");
+            assert!(g.data.iter().any(|&a| a > 0), "{text:?} drew nothing");
+        }
+        for text in [
+            "\u{23FA}\u{FE0F}",
+            "\u{2764}\u{FE0F}",
+            "\u{1F600}",
+            "\u{2B50}",
+        ] {
+            let g = glyph_settled(&mut r, &key(text)).expect(text);
+            assert_eq!(g.kind, GlyphKind::Color, "{text:?} is an emoji");
+        }
     }
 
     #[test]
