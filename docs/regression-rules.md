@@ -2490,6 +2490,16 @@ six marked-path tests in `link_scan` and `emulator` found none on the Mac runner
 keeps the text on Windows and writes `/C/` for `C:\` and `/` for every `\` elsewhere, the same length, so piece
 widths hold on both. Held by `native_test_text_is_an_absolute_path_of_the_same_length` and the
 `a_marked_path_*` tests. Source: PR 166's macos check (2026-11-11).
+1153. **Under `--e2e` the window's motion follows `FLARE_E2E_REDUCED_MOTION` alone, never the OS switch.** Since rule
+1135 a Mac reads System Settings > Accessibility > Display > Reduce motion, and GitHub's macOS runner has it on, so
+every Mac E2E run saw a still window: attention's question line did not breathe and its finished line did not flow,
+indicatorStyles' rainbow stood still and minimising had no moving mark to pause, Settings search flashed no found row
+(the flash is skipped under reduced motion), and verticalTabs' sidebar snapped open with the terminal already narrow
+(880 vs 1100 px) instead of sliding (run 43054686157 on main 794a9a28). `e2e::animations_enabled` now answers, under
+`--e2e`, "animate" unless the seam is `1`, and asks the OS only without `--e2e`, so the scenarios run the same on any
+runner and a scenario that wants still still says so. A real user's Reduce motion and Animation effects are honoured
+as before. Native: `crates/flare/src/e2e.rs`. Held by `under_e2e_motion_follows_the_seam_and_never_the_os` and the
+attention, indicatorStyles, settingsSearch and verticalTabs scenarios on the Mac. Source: Mac CI on main (2026-11-11).
 1152. **macOS: the web panel's host asks for its own turn whenever CEF's handlers leave it something, and keeps
 turning while a view waits for CEF.** Max's web panel stayed dark (account.apple.com, then example.com: "did not finish
 loading", no title, `browser_look` "not ready"), while the engine tests all passed. The window pumps the host

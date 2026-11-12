@@ -221,10 +221,19 @@ fn search_now(app: &mut App) -> Value {
     probe(app, "settings.search", Value::Null)
 }
 
-/// Opens Settings from the title bar's cog, and waits until it is in front.
+/// Opens Settings from the title bar's cog, and waits until it is in front. A click that lands
+/// while the window is still laying out after its first resize (seen on the Mac runner with a fresh
+/// GPU window and the sidebar sliding in) is not taken as an answer: the cog is read and clicked once
+/// more before the wait that records.
 fn open_settings(ctx: &mut Ctx, app: &mut App) -> bool {
     if !click_rect(app, "cog") {
         return false;
+    }
+    let first = crate::until::wait_on(&mut crate::until::SystemClock::new(), 3_000, &mut || {
+        settings_front(app)
+    });
+    if !first && !settings_front(app) {
+        let _ = click_rect(app, "cog");
     }
     ctx.until("Settings is in front", 8_000, &mut || settings_front(app))
 }
@@ -273,13 +282,16 @@ fn focus_find(app: &mut App) -> bool {
     }
 }
 
-/// The Settings test starts with one tab open on the alpha folder (PT: `args: [w.alpha]`).
+/// The Settings test starts with one tab open on the alpha folder (PT: `args: [w.alpha]`). The marks
+/// are Bar, so every row of the catalogue is drawn and found, the Mark colours' three included
+/// (Ring, the default, leaves that section out: rule 1140).
 fn launch_with_tab(ctx: &mut Ctx) -> Result<App, String> {
     let alpha = ctx.ensure_world().alpha.clone();
     ctx.launch(Launch {
         folders: vec![alpha],
         renderer: Some("software"),
         tabs_along_the_top: true,
+        marks_as_bar: true,
         ..Launch::default()
     })
 }
