@@ -126,10 +126,13 @@ quotes, as the tab's own words (what runs in a tab can set its title). Rust:
 
 ## The details sheet
 
-The card's info button opens the plugin's details sheet: its logo, name, `version · author`, description, a
-two-column grid of tiles, one per permission its manifest asks for, then its facts (its program, its homepage). The card itself lists no permission, so its switch turned ON opens this sheet for a mod that asks for
-anything or names a maker; the sheet's **Turn on** then approves exactly what the sheet lists (the hub refuses a sheet
-drawn before the manifest changed). Only a mod with nothing to approve goes on from the card; off always goes at once.
+The card's **Details** button opens the plugin's details sheet: its logo, name, `version · author`, description, a
+two-column grid of tiles, one per permission its manifest asks for, then its facts (its program, its homepage). The
+card's switch alone turns a plugin on, with no sheet (Max, 2026-11-12: "when you turn on plugins have it just be
+flipping the switch, dont show the details panel with the turn on button, the user can get there by clicking details
+if they wanna"; rule 1188): the switch approves what the sheet would list at that moment, the same record the sheet's
+**Turn on** makes, and the hub refuses either if the manifest changed in between. Off always goes at once. Details
+was an info icon until 2026-11-12, and is a worded button now so it is seen.
 The sheet has no warning text and no button that opens the panel (2026-11-08): the Access tile says Full control in
 amber, and a plugin that wants its panel opened offers its own item. The box is never taller than the window less 24 px above and below: the
 description and the grid scroll (the wheel, the arrow and page keys) between the header and the foot. Each

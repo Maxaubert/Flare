@@ -1614,29 +1614,22 @@ impl SettingsCtl {
             return;
         }
         // A mod's switch is the mods controller's: it turns the mod on or off in memory at once, saves the
-        // switch on a worker and tells the page to draw again. The card shows no permission, so turning one on that
-        // asks for anything (or names a maker) opens its details sheet instead, whose "Turn on" approves what the
-        // sheet lists; the switch stays off until then. Only a mod with nothing to approve goes on from the card.
+        // switch on a worker and tells the page to draw again. The switch alone turns a plugin on, with what its
+        // details sheet lists now (its permissions, its maker and homepage) as the approval, the same record the
+        // sheet's "Turn on" makes; no sheet opens (Max, 2026-11-12: "when you turn on plugins have it just be
+        // flipping the switch"). The card's Details button opens the sheet for whoever wants to look first.
         if let Event::Switch { row, on } = &ev
             && let Some(id) = row.strip_prefix(flare_settings::page::mods::SWITCH_PREFIX)
         {
-            let id = id.to_string();
             let Some(m) = self.mods.clone() else {
                 return;
             };
-            if !*on {
-                m.set_enabled(&id, false, flare_mods::hub::Shown::default());
-                return;
-            }
-            let lists = m
-                .sheet(&id)
-                .is_some_and(|s| s.shown != flare_mods::hub::Shown::default());
-            if lists {
-                self.open_sheet(&id);
-                self.refresh_if_visible();
+            let shown = if *on {
+                m.sheet(id).map(|s| s.shown).unwrap_or_default()
             } else {
-                m.set_enabled(&id, true, flare_mods::hub::Shown::default());
-            }
+                flare_mods::hub::Shown::default()
+            };
+            m.set_enabled(id, *on, shown);
             return;
         }
         if matches!(&ev, Event::Switch { row, .. } if row == "diag-verbose") {

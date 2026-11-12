@@ -85,8 +85,10 @@ pub const FOLDER_ROW: &str = "plugins-folder";
 pub const TITLE: &str = "Plugins";
 /// The prefix of a mod's row (then the mod's id): the card's one row.
 pub const SWITCH_PREFIX: &str = "mod:";
-/// The id of a card's info button: it opens the plugin's details sheet.
+/// The id of a card's Details button: it opens the plugin's details sheet.
 pub const INFO_BUTTON: &str = "info";
+/// The words on a card's Details button.
+pub const DETAILS: &str = "Details";
 /// Where a removed plugin's folder goes, as the system names it: the Recycle Bin, or a Mac's Trash (rule 1135).
 pub const BIN: &str = if cfg!(target_os = "macos") {
     "Trash"
@@ -99,7 +101,7 @@ pub const REMOVE_TIP: &str = if cfg!(target_os = "macos") {
 } else {
     "Remove (to the Recycle Bin)"
 };
-/// The tooltip (and the screen reader's name) of a card's info button.
+/// The tooltip of a card's Details button.
 pub const INFO_TIP: &str = "Details and permissions";
 /// The row that installs a plugin from a file, and the one with the address field.
 pub const INSTALL_ROW: &str = "plugins-install";
@@ -279,8 +281,8 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
     );
     sections.push(section("mods", String::new(), top));
 
-    // One card per mod, one row: its logo, name and version, the description, the switch, Update, the info button
-    // (the details sheet: what it may do, who made it, the person's choices) and Remove. The card has no heading: its
+    // One card per mod, one row: its logo, name and version, the description, the switch, Update, Details (the
+    // details sheet: what it may do, who made it, the person's choices) and Remove. The card has no heading: its
     // row names it.
     for m in &info.mods {
         let switch_id = intern(format!("{SWITCH_PREFIX}{}", m.id));
@@ -312,9 +314,11 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
             off: info.installing,
             ..Button::default()
         });
+        // Details opens the details sheet, the only way to it: the switch turns the plugin on by itself (Max,
+        // 2026-11-12). A worded button, so it is seen, where an icon alone was missed.
         switch.buttons.push(Button {
             id: INFO_BUTTON,
-            icon: "info",
+            label: DETAILS.to_string(),
             tip: INFO_TIP.to_string(),
             ..Button::default()
         });
@@ -433,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn every_card_is_one_row_with_update_info_and_remove_and_no_heading() {
+    fn every_card_is_one_row_with_update_details_and_remove_and_no_heading() {
         for m in [notes(false), todo(true)] {
             with_env_mods(info(vec![m.clone()]), |env| {
                 let page = build(env);
@@ -459,11 +463,11 @@ mod tests {
                     b,
                     [
                         ("update", "Update", ""),
-                        (INFO_BUTTON, "", "info"),
+                        (INFO_BUTTON, DETAILS, ""),
                         ("remove", "", "trash")
                     ]
                 );
-                // The icon buttons say what they are; the info button is never drawn as a warning.
+                // The buttons say what they are; none is drawn as a warning.
                 assert_eq!(sw.buttons[1].tip, INFO_TIP);
                 assert_eq!(sw.buttons[2].tip, REMOVE_TIP);
                 assert!(sw.buttons.iter().all(|b| !b.warn));
@@ -662,7 +666,7 @@ mod tests {
                 !url.buttons[0].off,
                 "an empty address is answered with a sentence"
             );
-            // Every card's row has Update, the info button and Remove.
+            // Every card's row has Update, Details and Remove.
             let sw = row_of(&page, "mod:notes").unwrap();
             let b: Vec<&str> = sw.buttons.iter().map(|b| b.id).collect();
             assert_eq!(b, ["update", INFO_BUTTON, "remove"]);

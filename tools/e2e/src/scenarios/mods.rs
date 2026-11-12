@@ -7,7 +7,7 @@
 //! (the page's own `fetch` of an outside address is checked to be blocked, against nothing that listens), no
 //! real window gets input, and the window is parked off the screen like every scenario.
 //!
-//! It holds: the page lists the sample (name, version, off; its info button opens the details sheet with a tile per
+//! It holds: the page lists the sample (name, version, off; its Details button opens the details sheet with a tile per
 //! permission) and the broken folder with
 //! its reason; the switch turns the mod on (its token and its tool appear, `mods.json` holds the switch and
 //! no token); `flare-mcp`'s `tools/list` offers `mod_notes_append_note`; `tools/call` opens the mod's panel in
@@ -127,7 +127,8 @@ fn sheet(app: &mut App) -> Value {
     probe(app, "plugin.sheet", Value::Null)
 }
 
-/// Presses a card's info button: the second from the row's right end (16 in, the trash 32 wide, a gap of 10).
+/// Presses a card's Details button: the second from the row's right end (16 in, the trash 32 wide, a gap of 10), so
+/// 16 px in from its right edge.
 fn click_info(app: &mut App, id: &str) -> bool {
     let r = row(app, id);
     let rect = &r["rect"];
@@ -147,50 +148,24 @@ fn click_info(app: &mut App, id: &str) -> bool {
         .is_ok()
 }
 
-/// Turns a mod on as the person does: its card lists no permission, so its switch opens the details sheet (the mod
-/// stays off), and the sheet's Turn on approves what the sheet lists. Escape then closes the sheet.
-fn turn_on_via_sheet(ctx: &mut Ctx, app: &mut App, id: &str, mod_id: &str) -> bool {
+/// Turns a mod on as the person does: its card's switch alone turns it on, with what its details sheet would list as
+/// the approval, and no sheet opens (Max, 2026-11-12: "when you turn on plugins have it just be flipping the switch").
+fn turn_on_by_switch(ctx: &mut Ctx, app: &mut App, id: &str, mod_id: &str) -> bool {
     if !click_row(app, id) {
         return false;
     }
-    let up = ctx.until("the sheet the switch opens", 5_000, &mut || {
-        let s = sheet(app);
-        s["open"] == json!(true) && s["can_turn_on"] == json!(true)
+    let on = ctx.until("the switch to turn the mod on", 10_000, &mut || {
+        mods_state(app)["mods"]
+            .as_array()
+            .and_then(|m| m.iter().find(|m| m["id"] == json!(mod_id)))
+            .is_some_and(|m| m["enabled"] == json!(true))
     });
-    let still_off = mods_state(app)["mods"]
-        .as_array()
-        .and_then(|m| m.iter().find(|m| m["id"] == json!(mod_id)))
-        .is_some_and(|m| m["enabled"] == json!(false));
+    let no_sheet = sheet(app)["open"] == json!(false);
     ctx.ok(
-        up && still_off,
-        "the card's switch opens the details sheet with Turn on, and the mod stays off until it is pressed",
+        on && no_sheet,
+        "the card's switch turns the mod on by itself, and no details sheet opens",
     );
-    let s = sheet(app);
-    let b = &s["turn_on"];
-    let (Some(x), Some(y), Some(w), Some(h)) = (
-        b["x"].as_f64(),
-        b["y"].as_f64(),
-        b["w"].as_f64(),
-        b["h"].as_f64(),
-    ) else {
-        return false;
-    };
-    if w <= 0.0
-        || app
-            .session
-            .click((x + w / 2.0) as f32, (y + h / 2.0) as f32)
-            .is_err()
-    {
-        return false;
-    }
-    let taken = ctx.until("Turn on to be taken", 10_000, &mut || {
-        sheet(app)["can_turn_on"] == json!(false)
-    });
-    let _ = app.session.key("Escape");
-    let shut = ctx.until("the sheet to close", 3_000, &mut || {
-        sheet(app)["open"] == json!(false)
-    });
-    taken && shut
+    on && no_sheet
 }
 
 /// The middle of the switch of the open sheet's tile `i`.
@@ -287,8 +262,11 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
         sw["label"] == json!("Notes 1.0.0") && sw["on"] == json!(false),
         format!("its name and version, and the switch is off ({sw})"),
     );
-    // The card's info button opens the details sheet: what it may do, a tile per permission, before it is on.
-    ctx.ok(click_info(app, "mod:notes"), "the info button is pressed");
+    // The card's Details button opens the details sheet: what it may do, a tile per permission, before it is on.
+    ctx.ok(
+        click_info(app, "mod:notes"),
+        "the Details button is pressed",
+    );
     let up = ctx.until("the details sheet", 5_000, &mut || {
         sheet(app)["open"] == json!(true)
     });
@@ -341,9 +319,9 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
         ),
     );
 
-    // ---- the person turns it on: the switch, then Turn on on the sheet ----
-    let turned = turn_on_via_sheet(ctx, app, "mod:notes", "notes");
-    ctx.ok(turned, "Turn on on the sheet is pressed");
+    // ---- the person turns it on: the switch alone ----
+    let turned = turn_on_by_switch(ctx, app, "mod:notes", "notes");
+    ctx.ok(turned, "the switch is pressed");
     let on = ctx.until("the mod to be on", 10_000, &mut || {
         let s = mods_state(app);
         s["mods"][0]["enabled"] == json!(true)
@@ -610,8 +588,8 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
         format!("a call to the tool is refused ({text})"),
     );
     // Turned on again for the restart check.
-    let turned = turn_on_via_sheet(ctx, app, "mod:notes", "notes");
-    ctx.ok(turned, "the switch and Turn on are pressed a third time");
+    let turned = turn_on_by_switch(ctx, app, "mod:notes", "notes");
+    ctx.ok(turned, "the switch is pressed a third time");
     let again = ctx.until("the mod to be on again", 10_000, &mut || {
         mods_state(app)["tools"] == json!(["mod_notes_append_note"])
     });
@@ -625,7 +603,7 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
     // with the switch; on gives it back.
     ctx.ok(
         click_info(app, "mod:notes"),
-        "the info button is pressed again",
+        "the Details button is pressed again",
     );
     let up = ctx.until("the details sheet", 5_000, &mut || {
         sheet(app)["open"] == json!(true)
@@ -732,11 +710,8 @@ fn second_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Resul
         format!("the Mods page says it needs to be switched on again ({say})"),
     );
     // Switching it on approves the new list.
-    let turned = turn_on_via_sheet(ctx, app, "mod:notes", "notes");
-    ctx.ok(
-        turned,
-        "the switch and Turn on are pressed to allow the new list",
-    );
+    let turned = turn_on_by_switch(ctx, app, "mod:notes", "notes");
+    ctx.ok(turned, "the switch is pressed to allow the new list");
     let back = ctx.until("the mod to be on with the new list", 10_000, &mut || {
         let s = mods_state(app);
         s["mods"][0]["enabled"] == json!(true)
