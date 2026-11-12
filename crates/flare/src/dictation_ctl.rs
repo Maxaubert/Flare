@@ -41,7 +41,7 @@ use flare_dictation::cues::Cue;
 use flare_dictation::engine::{Engine, EngineConfig, Reason, TranscribeRequest, TranscribeResult};
 use flare_dictation::hotkey::{
     HOST_TICK_MS, Hotkey, KeyAction, KeyChord, KeyConfig, KeyEvt, KeyState, Phase as KeyPhase,
-    format_hotkey_here, parse_hotkey_from_event, reduce_key, usable_hotkey_here,
+    extra_cancel, format_hotkey_here, parse_hotkey_from_event, reduce_key, usable_hotkey_here,
 };
 use flare_dictation::job::Job;
 use flare_dictation::keyfeed::HookEvent;
@@ -946,6 +946,18 @@ impl Dict {
             hold_ms: None,
         };
         let out = reduce_key(&self.key, &evt, &cfg);
+        if let Some(kind) = extra_cancel(&self.key, &out.state, &evt, &cfg) {
+            // A chord with something more held (Cmd+Ctrl+Shift+4, Ctrl+Win+Left) is not dictation: say so,
+            // by kind only, never the key.
+            self.host.crumb(
+                "dictation-key",
+                &[
+                    ("cancel", json!("extra")),
+                    ("kind", json!(kind)),
+                    ("from", json!("window")),
+                ],
+            );
+        }
         self.key = out.state;
         self.host.clear_timer(TimerKey::WindowKey);
         // The solo-hold rule needs a clock: nothing else happens while a key is simply held down.
@@ -1622,7 +1634,13 @@ impl Dict {
                     };
                     let fields: Vec<(&str, Value)> =
                         owned.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
-                    self.host.crumb("dictate-anywhere", &fields);
+                    // A press the hook's keys cancelled is the key's story, told where the window's is.
+                    let tag = if owned.iter().any(|(k, _)| k == "cancel") {
+                        "dictation-key"
+                    } else {
+                        "dictate-anywhere"
+                    };
+                    self.host.crumb(tag, &fields);
                 }
                 SvcEffect::SetTimer(id, ms) => {
                     let key = svc_timer(id);
@@ -3796,6 +3814,52 @@ mod tests {
             shift: false,
             meta: false,
         }
+    }
+
+    /// A press that dies to an extra modifier or key (Karabiner's Cmd+Ctrl+Shift+4 for Cmd+Shift+S) says so in the
+    /// diag log, by kind only, never the key.
+    #[test]
+    fn a_window_press_cancelled_by_an_extra_key_or_modifier_logs_its_kind_only() {
+        let mut r = Rig::on_with_model(false);
+        let cancels = |r: &Rig| {
+            r.host
+                .crumbs
+                .borrow()
+                .iter()
+                .filter(|c| c.starts_with("dictation-key ") && c.contains("cancel"))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        r.at(2000.0);
+        assert!(r.key("AltRight", false));
+        r.at(2050.0);
+        assert!(!r.key("KeyQ", false), "the key is the app's");
+        r.at(2000.0 + HOST_TICK_MS as f64);
+        r.d.on_timer(TimerKey::WindowKey);
+        r.key("AltRight", true);
+        let c = cancels(&r);
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert!(c[0].contains("String(\"key\")") && c[0].contains("String(\"window\")"));
+        assert!(!c[0].contains("KeyQ"), "{c:?}");
+        // Right Alt with Shift already held: no press at all, told as a modifier.
+        r.at(4000.0);
+        let mut ev = KeyEvent::new("", "AltRight");
+        ev.pressed = true;
+        ev.alt = true;
+        ev.shift = true;
+        let front = r.host.front.borrow().clone();
+        assert!(!r.d.on_key(&ev, false, front));
+        let c = cancels(&r);
+        assert_eq!(c.len(), 2, "{c:?}");
+        assert!(c[1].contains("String(\"modifier\")"), "{c:?}");
+        assert!(
+            !r.host
+                .crumbs
+                .borrow()
+                .iter()
+                .any(|c| c.contains("String(\"start\")")),
+            "nothing started"
+        );
     }
 
     /// Rule 1137: the dictation key pressed in the window leaves a trail in the diag log (the preferences it runs
