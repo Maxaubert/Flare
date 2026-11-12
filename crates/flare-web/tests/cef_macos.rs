@@ -113,6 +113,16 @@ fn assert_clean(run: &Run, want: &[&str]) {
     assert_eq!(r["cef_app_protocol"], true, "{r:#}");
     assert_eq!(r["shutdown"], true, "{r:#}");
     let checks = r["checks"].as_array().expect("checks");
+    for c in checks
+        .iter()
+        .filter(|c| c["evidence"]["skipped"].is_string())
+    {
+        eprintln!(
+            "{}: part skipped: {}",
+            c["id"].as_str().unwrap_or("?"),
+            c["evidence"]["skipped"].as_str().unwrap_or("")
+        );
+    }
     let failed: Vec<&Value> = checks.iter().filter(|c| c["ok"] != true).collect();
     assert!(failed.is_empty(), "failed checks: {failed:#?}");
     let ran: Vec<&str> = checks.iter().filter_map(|c| c["id"].as_str()).collect();
@@ -181,6 +191,7 @@ fn a_web_panel_turned_as_the_window_turns_loads_and_paints_and_again_after_the_l
         &[
             "app-loop.open",
             "app-loop.navigate",
+            "app-loop.idle-turns",
             "app-loop.nav-id",
             "app-loop.reopen",
             "app-loop.one-engine",

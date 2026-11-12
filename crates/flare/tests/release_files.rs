@@ -241,7 +241,7 @@ fn no_secret_other_than_the_github_token() {
     }
 }
 
-// ---- 2026-11-11: no side-by-side install with Prism Terminal (regression rule 1153) ----
+// ---- 2026-11-11: no side-by-side install with Prism Terminal (regression rule 1183) ----
 
 /// Every workflow file, as (relative path, text).
 fn workflows() -> Vec<(String, String)> {

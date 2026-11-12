@@ -123,8 +123,9 @@ jobs:
             [ "$(shasum -a 256 "$m.part" | cut -d' ' -f1)" = "$sha" ]
             mv "$m.part" "$m"
           fi
+      # The built-app pass needs a Flare.app from make-app.sh (FLARE_APP), which this job does not build: run by hand.
       - name: A real pass on the Mac's engine
-        run: cargo nextest run -p flare-dictation --test metal_real --run-ignored only --no-fail-fast
+        run: cargo nextest run -p flare-dictation --test metal_real --run-ignored only --no-fail-fast -E 'not test(the_engine_inside_a_built_app_transcribes_with_language_auto)'
       - name: Deny
         run: cargo deny check
 

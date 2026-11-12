@@ -104,7 +104,7 @@ const STOCK_ID_FILES: &[&str] = &[
 /// `offends` for the line at `path` (relative, forward slashes), with the two narrow widenings.
 /// (1) In `.md`, `.ps1` and `.yml` files a line naming "Prism Terminal" is prose about the reference
 /// app, the release workflow or the shipping notes. (2) The stock theme id literal in `STOCK_ID_FILES`.
-/// No workflow may name the reference app's repository or a token for it (regression rule 1153).
+/// No workflow may name the reference app's repository or a token for it (regression rule 1183).
 fn offends_at(path: &str, line: &str) -> bool {
     if !offends(line) {
         return false;

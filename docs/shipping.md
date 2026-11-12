@@ -23,7 +23,7 @@ Task 29 of the M9 plan). Anything not seen with the eyes says so.
 Owner decision 2026-11-11: the side-by-side check is gone. It installed Flare beside Prism Terminal on the CI runner
 and downloaded the Prism Terminal installer from its private repository with a token. Prism Terminal is deprecated.
 No workflow downloads Prism Terminal, and the release needs no repository secret for it. The `installer-e2e`
-workflow ran only that check, so it is removed too. Held by regression rule 1153 and
+workflow ran only that check, so it is removed too. Held by regression rule 1183 and
 `no_workflow_downloads_the_reference_app_or_needs_a_token_for_it` (`crates/flare/tests/release_files.rs`).
 
 ## Packing locally (installs nothing)

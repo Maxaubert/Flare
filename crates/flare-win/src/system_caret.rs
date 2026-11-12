@@ -120,8 +120,8 @@ pub fn apply(hwnd: isize, ops: &[CaretOp]) {
 /// macOS: false, on purpose. The Mac has no system caret to make: Zoom's "follow keyboard focus"
 /// and VoiceOver read the insertion point from the accessibility tree (the focused element's
 /// `AXSelectedTextRange` and `AXBoundsForRange`), so the Mac counterpart is an accessibility element
-/// for the terminal, part of the accessibility work, not of this module. With no focus reported the
-/// plan never asks for a call.
+/// for the terminal: `crate::ax_terminal` (rule 1187), fed the same cell from `place_ime`. With no
+/// focus reported here the plan never asks for a call.
 #[cfg(not(windows))]
 pub fn has_focus(_hwnd: isize) -> bool {
     false
