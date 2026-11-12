@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flare Machines picks</title>
+<style>
+:root{
+  --bg:#1a1a1a;--chrome:#141414;--panel:#212121;--line:#2c2c2c;--edge:#363636;
+  --ink:#ece9e4;--ink-2:#b3aea7;--ink-3:#8a857e;--accent:#ff8a2b;--ok:#9fd67a;--warn:#ffb454;--bad:#ff615a;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:#0e0e0e;color:var(--ink);font:15px/1.45 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}
+::selection{background:#ff8a2b55}
+.wrap{max-width:1180px;margin:0 auto;padding:28px 16px 120px}
+h1{font-size:26px;font-weight:600;margin:0 0 4px}
+.lede{color:var(--ink-2);margin:0 0 28px}
+h2{font-size:19px;font-weight:600;margin:40px 0 14px;display:flex;align-items:baseline;gap:12px}
+h2 small{font-size:13px;color:var(--ink-3);font-weight:400}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(520px,1fr));gap:14px}
+.opt{position:relative;background:var(--bg);border:1px solid #2a2a2a;border-radius:12px;padding:38px 16px 18px;cursor:pointer;transition:border-color .15s,box-shadow .15s}
+.opt:hover{border-color:#4a4a4a}
+.opt.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 10px 30px -14px #ff8a2b66}
+.opt .lab{position:absolute;top:10px;left:14px;font-size:12px;font-weight:700;color:var(--ink-3);letter-spacing:.04em}
+.opt.sel .lab{color:var(--accent)}
+.opt .lab span{font-weight:400;margin-left:8px;letter-spacing:0}
+.opt:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+svg.l{flex:none}
+.apple{color:#d9d9d9}.win{color:#5fb2f2}
+/* tabs */
+.strip{display:flex;height:42px;background:var(--chrome);border:1px solid #232323;border-radius:8px;overflow:hidden}
+.tab{display:flex;align-items:center;gap:8px;padding:0 12px 0 14px;color:var(--ink-2);border-right:1px solid #222;font-size:14px;position:relative;white-space:nowrap}
+.tab.on{background:var(--bg);color:var(--ink)}
+.tab.on::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:var(--accent)}
+.x{color:var(--ink-3);margin-left:2px;font-size:13px}
+.ring{width:12px;height:12px;border-radius:50%;border:2px solid var(--accent);border-right-color:transparent;flex:none}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--warn);flex:none}
+.chip{display:grid;place-items:center;width:20px;height:20px;border-radius:5px;background:#2b2b2b}
+.ringwrap{position:relative;width:20px;height:20px;display:grid;place-items:center;flex:none}
+.ringwrap::after{content:"";position:absolute;inset:0;border-radius:50%;border:2px solid var(--accent);border-right-color:transparent}
+.ringwrap.q::after{border-color:var(--warn)}
+.corner{position:absolute;top:5px;left:5px}
+.uline{position:absolute;left:10px;right:10px;bottom:0;height:2px;border-radius:2px;background:#5a5a5a}
+/* menu */
+.menu{background:#232323;border:1px solid var(--edge);border-radius:10px;padding:6px;width:320px;box-shadow:0 16px 40px -14px #000d}
+.mi{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:7px;font-size:14px;color:var(--ink)}
+.mi.hl{background:#2f2f2f}.mi .k{margin-left:auto;color:var(--ink-3);font-size:12px}
+.mi svg.g{color:var(--ink-2)}
+.sep{height:1px;background:#303030;margin:6px 4px}
+.mh{display:flex;align-items:center;gap:8px;color:var(--ink-2);font-size:12.5px;font-weight:600;padding:8px 10px 4px}
+.seg{display:flex;gap:4px;background:#1b1b1b;border-radius:8px;padding:3px;margin:2px 2px 6px}
+.seg div{flex:1;display:flex;align-items:center;justify-content:center;gap:7px;padding:6px 8px;border-radius:6px;font-size:13px;color:var(--ink-2)}
+.seg .on{background:#323232;color:var(--ink)}
+.flyrow{display:flex;gap:6px;align-items:flex-start}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:6px;width:440px}
+.two .col{background:#1e1e1e;border-radius:8px;padding:4px}
+.chev{margin-left:auto;color:var(--ink-3)}
+/* rows */
+.group{background:var(--panel);border:1px solid var(--line);border-radius:10px}
+.row{display:flex;align-items:center;gap:14px;padding:14px 16px}
+.row+.row{border-top:1px solid var(--line)}
+.ic{width:40px;height:40px;border-radius:8px;background:#2a2a2a;display:grid;place-items:center;flex:none}
+.name{font-size:16px;font-weight:500}
+.sp{flex:1}
+.st{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--ok);font-weight:500}
+.st i{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px #9fd67a22}
+.dim{color:var(--ink-3);font-size:13px;font-variant-numeric:tabular-nums}
+.mono{font-family:"Cascadia Mono",Consolas,monospace;font-size:12.5px;color:var(--ink-2)}
+.btn{font:inherit;font-size:13.5px;color:var(--ink);background:#2c2c2c;border:1px solid #3a3a3a;border-radius:8px;padding:6px 13px;white-space:nowrap}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#1a1206;font-weight:600}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--ink-2)}
+.more{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;color:var(--ink-2)}
+.pill{display:inline-flex;align-items:center;gap:7px;background:#9fd67a14;border:1px solid #9fd67a33;color:var(--ok);border-radius:999px;padding:3px 10px;font-size:12.5px;font-weight:500}
+.tiles{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.tile.add{border-style:dashed;align-items:center;justify-content:center;color:var(--ink-2);min-height:140px}
+.tbl{width:100%;border-collapse:collapse;font-size:13.5px}
+.tbl th{text-align:left;color:var(--ink-3);font-weight:500;font-size:12px;padding:8px 12px;border-bottom:1px solid var(--line)}
+.tbl td{padding:12px;border-bottom:1px solid var(--line)}
+.tbl tr:last-child td{border-bottom:0}
+.field,.sel{font:inherit;font-size:14px;color:var(--ink);background:#181818;border:1px solid #3a3a3a;border-radius:8px;padding:8px 12px}
+.sel{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.err{font-size:13px;color:#ffb3ae;display:flex;align-items:center;gap:8px}
+.err i{width:8px;height:8px;border-radius:50%;background:var(--bad)}
+.steps{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--ink-2)}
+.steps .s{display:flex;align-items:center;gap:6px}
+.steps .ok{color:var(--ok)}.steps .bad{color:var(--bad)}
+.dd{position:relative}
+.ddmenu{margin-top:6px;background:#232323;border:1px solid var(--edge);border-radius:10px;padding:6px;width:280px}
+/* bar */
+.bar{position:fixed;left:0;right:0;bottom:0;background:#161616ee;backdrop-filter:blur(8px);border-top:1px solid #2a2a2a;padding:12px 16px}
+.bar .in{max-width:1180px;margin:0 auto;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.bar code{font-family:"Cascadia Mono",Consolas,monospace;font-size:14px;color:var(--ink);background:#222;border-radius:6px;padding:6px 10px}
+.bar .note{color:var(--ink-3);font-size:13px}
+@media (max-width:620px){.grid{grid-template-columns:1fr}.menu,.two{width:100%}.two{grid-template-columns:1fr}.tiles{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+<defs>
+<symbol id="apple" viewBox="0 0 24 24"><path fill="currentColor" d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></symbol>
+<symbol id="win" viewBox="0 0 24 24"><path fill="currentColor" d="M0 0h11.377v11.372H0zm12.623 0H24v11.372H12.623zM0 12.623h11.377V24H0zm12.623 0H24V24H12.623z"/></symbol>
+<symbol id="term" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12 15h5"/></symbol>
+<symbol id="folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+<symbol id="hist" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></symbol>
+<symbol id="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></symbol>
+<symbol id="down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="dots" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></symbol>
+<symbol id="plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></symbol>
+<symbol id="xx" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+<symbol id="claude" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></symbol>
+</defs>
+</svg>
+
+<div class="wrap">
+<h1>Pick one of each</h1>
+<p class="lede">Click a version in each part. Your picks show in the bar at the bottom. The tab marks use the Apple and Windows logos instead of a text tag.</p>
+
+<!-- PART 1: TAB -->
+<h2>1. Remote tab <small>a tab running on the Mac, seen on the PC</small></h2>
+<div class="grid" data-part="Tab">
+  <div class="opt" tabindex="0" data-v="A"><div class="lab">A<span>logo before the name</span></div>
+    <div class="strip">
+      <div class="tab on"><span class="ring"></span><svg class="l apple" width="13" height="13"><use href="#apple"/></svg>Flare<span class="x">×</span></div>
+      <div class="tab"><span class="dot"></span><svg class="l apple" width="13" height="13"><use href="#apple"/></svg>makro-site<span class="x">×</span></div>
+      <div class="tab">PowerShell<span class="x">×</span></div>
+    </div></div>
+  <div class="opt" tabindex="0" data-v="B"><div class="lab">B<span>logo after the name, dim</span></div>
+    <div class="strip">
+      <div class="tab on"><span class="ring"></span>Flare<svg class="l" width="12" height="12" style="color:#8f8f8f"><use href="#apple"/></svg><span class="x">×</span></div>
+      <div class="tab"><span class="dot"></span>makro-site<svg class="l" width="12" height="12" style="color:#8f8f8f"><use href="#apple"/></svg><span class="x">×</span></div>
+      <div class="tab">PowerShell<span class="x">×</span></div>
+    </div></div>
+  <div class="opt" tabindex="0" data-v="C"><div class="lab">C<span>logo in a small square</span></div>
+    <div class="strip">
+      <div class="tab on"><span class="chip"><svg class="l apple" width="12" height="12"><use href="#apple"/></svg></span>Flare<span class="ring" style="margin-left:2px"></span><span class="x">×</span></div>
+      <div class="tab"><span class="chip"><svg class="l apple" width="12" height="12"><use href="#apple"/></svg></span>makro-site<span class="dot"></span><span class="x">×</span></div>
+      <div class="tab">PowerShell<span class="x">×</span></div>
+    </div></div>
+  <div class="opt" tabindex="0" data-v="D"><div class="lab">D<span>the status ring goes round the logo</span></div>
+    <div class="strip">
+      <div class="tab on"><span class="ringwrap"><svg class="l apple" width="11" height="11"><use href="#apple"/></svg></span>Flare<span class="x">×</span></div>
+      <div class="tab"><span class="ringwrap q"><svg class="l apple" width="11" height="11"><use href="#apple"/></svg></span>makro-site<span class="x">×</span></div>
+      <div class="tab">PowerShell<span class="x">×</span></div>
+    </div></div>
+  <div class="opt" tabindex="0" data-v="E"><div class="lab">E<span>logo in the corner, line under the tab</span></div>
+    <div class="strip">
+      <div class="tab on" style="padding-left:20px"><svg class="l apple corner" width="9" height="9"><use href="#apple"/></svg><span class="ring"></span>Flare<span class="x">×</span><span class="uline" style="background:#bdbdbd55"></span></div>
+      <div class="tab" style="padding-left:20px"><svg class="l apple corner" width="9" height="9"><use href="#apple"/></svg><span class="dot"></span>makro-site<span class="x">×</span><span class="uline" style="background:#bdbdbd33"></span></div>
+      <div class="tab">PowerShell<span class="x">×</span></div>
+    </div></div>
+</div>
+
+<!-- PART 2: MENU -->
+<h2>2. The + menu <small>starting a session on the Mac</small></h2>
+<div class="grid" data-part="Menu">
+  <div class="opt" tabindex="0" data-v="A"><div class="lab">A<span>a section under the Mac's logo</span></div>
+    <div class="menu">
+      <div class="mi"><svg class="g" width="17" height="17"><use href="#term"/></svg>PowerShell<span class="k">Ctrl+T</span></div>
+      <div class="mi"><svg class="g" width="17" height="17"><use href="#term"/></svg>Command Prompt</div>
+      <div class="sep"></div>
+      <div class="mh"><svg class="apple" width="13" height="13"><use href="#apple"/></svg>Mac Mini</div>
+      <div class="mi hl"><svg class="g" width="17" height="17"><use href="#claude"/></svg>Claude in a folder…</div>
+      <div class="mi"><svg class="g" width="17" height="17"><use href="#hist"/></svg>Resume a session…</div>
+      <div class="mi"><svg class="g" width="17" height="17"><use href="#term"/></svg>Shell</div>
+    </div></div>
+  <div class="opt" tabindex="0" data-v="B"><div class="lab">B<span>one row that opens a side menu</span></div>
+    <div class="flyrow">
+      <div class="menu" style="width:230px">
+        <div class="mi"><svg class="g" width="17" height="17"><use href="#term"/></svg>PowerShell<span class="k">Ctrl+T</span></div>
+        <div class="mi"><svg class="g" width="17" height="17"><use href="#term"/></svg>Command Prompt</div>
+        <div class="sep"></div>
+        <div class="mi hl"><svg class="apple" width="15" height="15"><use href="#apple"/></svg>Mac Mini<svg class="chev" width="14" height="14"><use href="#chev"/></svg></div>
+      </div>
+      <div class="menu" style="width:200px;margin-top:70px">
+        <div class="mi hl"><svg class="g" width="17" height="17"><use href="#claude"/></svg>Claude…</div>
+        <div class="mi"><svg class="g" width="17" height="17"><use href="#hist"/></svg>Resume…</div>
+        <div class="mi"><svg class="g" width="17" height="17"><use href="#term"/></svg>Shell</div>
+      </div>
+    </div></div>
+  <div class="opt" tabindex="0" data-v="C"><div class="lab">C<span>pick the machine at the top</span></div>
+    <div class="menu">
+      <div class="seg"><div><svg class="win" width="12" height="12"><use href="#win"/></svg>This PC</div><div class="on"><svg class="apple" width="13" height="13"><use href="#apple"/></svg>Mac Mini</div></div>
+      <div class="mi hl"><svg class="g" width="17" height="17"><use href="#claude"/></svg>Claude in a folder…</div>
+      <div class="mi"><svg class="g" width="17" height="17"><use href="#hist"/></svg>Resume a session…</div>
+      <div class="mi"><svg class="g" width="17" height="17"><use href="#term"/></svg>zsh</div>
+    </div></div>
+  <div class="opt" tabindex="0" data-v="D"><div class="lab">D<span>two columns, this PC and the Mac</span></div>
+    <div class="menu two">
+      <div class="col">
+        <div class="mh"><svg class="win" width="11" height="11"><use href="#win"/></svg>This PC</div>
+        <div class="mi"><svg class="g" width="16" height="16"><use href="#term"/></svg>PowerShell</div>
+        <div class="mi"><svg class="g" width="16" height="16"><use href="#term"/></svg>Command Prompt</div>
+      </div>
+      <div class="col">
+        <div class="mh"><svg class="apple" width="12" height="12"><use href="#apple"/></svg>Mac Mini</div>
+        <div class="mi hl"><svg class="g" width="16" height="16"><use href="#claude"/></svg>Claude…</div>
+        <div class="mi"><svg class="g" width="16" height="16"><use href="#hist"/></svg>Resume…</div>
+        <div class="mi"><svg class="g" width="16" height="16"><use href="#term"/></svg>Shell</div>
+      </div>
+    </div></div>
+  <div class="opt" tabindex="0" data-v="E"><div class="lab">E<span>flat list, the logo marks each Mac row</span></div>
+    <div class="menu">
+      <div class="mi"><svg class="g" width="17" height="17"><use href="#term"/></svg>PowerShell<span class="k">Ctrl+T</span></div>
+      <div class="mi"><svg class="g" width="17" height="17"><use href="#term"/></svg>Command Prompt</div>
+      <div class="sep"></div>
+      <div class="mi hl"><svg class="apple" width="15" height="15"><use href="#apple"/></svg>Claude on Mac Mini…</div>
+      <div class="mi"><svg class="apple" width="15" height="15"><use href="#apple"/></svg>Resume on Mac Mini…</div>
+      <div class="mi"><svg class="apple" width="15" height="15"><use href="#apple"/></svg>Shell on Mac Mini</div>
+    </div></div>
+</div>
+
+<!-- PART 3: LINKED ROW -->
+<h2>3. A linked machine <small>Settings &gt; Machines</small></h2>
+<div class="grid" data-part="Machine">
+  <div class="opt" tabindex="0" data-v="A"><div class="lab">A<span>name, status, two buttons</span></div>
+    <div class="group"><div class="row">
+      <div class="ic"><svg class="apple" width="20" height="20"><use href="#apple"/></svg></div>
+      <div class="name">Mac Mini</div><span class="st"><i></i>Linked</span><div class="sp"></div>
+      <button class="btn">Test</button><button class="btn ghost">Remove</button>
+    </div></div></div>
+  <div class="opt" tabindex="0" data-v="B"><div class="lab">B<span>status pill, the rest in a ⋯ menu</span></div>
+    <div class="group"><div class="row">
+      <svg class="apple" width="20" height="20"><use href="#apple"/></svg>
+      <div class="name">Mac Mini</div><div class="sp"></div>
+      <span class="pill"><i style="width:7px;height:7px;border-radius:50%;background:var(--ok)"></i>Linked · 11 ms</span>
+      <div class="more"><svg width="18" height="18"><use href="#dots"/></svg></div>
+    </div></div></div>
+  <div class="opt" tabindex="0" data-v="C"><div class="lab">C<span>tiles, with an empty tile to add</span></div>
+    <div class="tiles">
+      <div class="tile"><div style="display:flex;align-items:center;gap:10px"><svg class="apple" width="22" height="22"><use href="#apple"/></svg><div class="name">Mac Mini</div></div>
+        <span class="st"><i></i>Linked</span>
+        <div style="display:flex;gap:6px"><button class="btn">Test</button><button class="btn ghost">Remove</button></div></div>
+      <div class="tile add"><svg width="22" height="22"><use href="#plus"/></svg>Add a machine</div>
+    </div></div>
+  <div class="opt" tabindex="0" data-v="D"><div class="lab">D<span>a table</span></div>
+    <div class="group"><table class="tbl">
+      <tr><th>Machine</th><th>SSH host</th><th>Flare</th><th>Status</th><th></th></tr>
+      <tr><td><span style="display:inline-flex;gap:8px;align-items:center"><svg class="apple" width="15" height="15"><use href="#apple"/></svg>Mac Mini</span></td><td class="mono">mac</td><td class="dim">0.1.0</td><td><span class="st"><i></i>Linked</span></td><td style="text-align:right"><svg width="16" height="16" style="color:var(--ink-2)"><use href="#dots"/></svg></td></tr>
+    </table></div></div>
+  <div class="opt" tabindex="0" data-v="E"><div class="lab">E<span>name left, host and status right</span></div>
+    <div class="group"><div class="row">
+      <div class="ic"><svg class="apple" width="20" height="20"><use href="#apple"/></svg></div>
+      <div class="name">Mac Mini</div><div class="sp"></div>
+      <span class="mono">mac</span><span class="st"><i></i></span>
+      <div class="more"><svg width="18" height="18"><use href="#dots"/></svg></div>
+    </div></div></div>
+</div>
+
+<!-- PART 4: ADD -->
+<h2>4. Adding a machine <small>shown with a failed test</small></h2>
+<div class="grid" data-part="Add">
+  <div class="opt" tabindex="0" data-v="A"><div class="lab">A<span>one line: host, name, Add</span></div>
+    <div class="group"><div class="row" style="flex-wrap:wrap">
+      <div class="sel" style="width:170px">studio<svg width="14" height="14" style="color:var(--ink-2)"><use href="#down"/></svg></div>
+      <input class="field" value="Studio" style="width:150px" aria-label="Name">
+      <div class="sp"></div><button class="btn pri">Add</button>
+      <div class="err" style="width:100%"><i></i>Flare there is 0.0.9, here 0.1.0. Update it there.</div>
+    </div></div></div>
+  <div class="opt" tabindex="0" data-v="B"><div class="lab">B<span>a button that opens the form</span></div>
+    <div class="group">
+      <div class="row"><svg width="18" height="18" style="color:var(--ink-2)"><use href="#plus"/></svg><div class="name" style="font-size:15px">Add a machine</div></div>
+      <div class="row" style="flex-wrap:wrap;background:#1d1d1d;border-radius:0 0 10px 10px">
+        <div class="sel" style="width:170px">studio<svg width="14" height="14" style="color:var(--ink-2)"><use href="#down"/></svg></div>
+        <input class="field" value="Studio" style="width:140px" aria-label="Name">
+        <div class="sp"></div><button class="btn ghost">Cancel</button><button class="btn pri">Add</button>
+        <div class="err" style="width:100%"><i></i>Flare there is 0.0.9, here 0.1.0. Update it there.</div>
+      </div>
+    </div></div>
+  <div class="opt" tabindex="0" data-v="C"><div class="lab">C<span>your SSH hosts listed, one click to link</span></div>
+    <div class="group">
+      <div class="row"><span class="mono" style="font-size:14px;color:var(--ink)">studio</span><div class="sp"></div><span class="err"><i></i>Flare 0.0.9 there</span><button class="btn">Link</button></div>
+      <div class="row"><span class="mono" style="font-size:14px;color:var(--ink)">nas</span><div class="sp"></div><span class="dim">no Flare</span><button class="btn" disabled style="opacity:.5">Link</button></div>
+      <div class="row"><span class="mono" style="font-size:14px;color:var(--ink)">laptop</span><div class="sp"></div><button class="btn">Link</button></div>
+    </div></div>
+  <div class="opt" tabindex="0" data-v="D"><div class="lab">D<span>the checks shown as steps</span></div>
+    <div class="group"><div class="row" style="flex-wrap:wrap;gap:12px">
+      <div class="sel" style="width:170px">studio<svg width="14" height="14" style="color:var(--ink-2)"><use href="#down"/></svg></div>
+      <button class="btn pri">Link</button>
+      <div class="steps" style="width:100%">
+        <span class="s ok"><svg width="14" height="14"><use href="#check"/></svg>SSH</span><span class="dim">›</span>
+        <span class="s ok"><svg width="14" height="14"><use href="#check"/></svg>Flare found</span><span class="dim">›</span>
+        <span class="s bad"><svg width="14" height="14"><use href="#xx"/></svg>Version 0.0.9, needs 0.1.0</span>
+      </div>
+    </div></div></div>
+  <div class="opt" tabindex="0" data-v="E"><div class="lab">E<span>a "Link a host" drop-down</span></div>
+    <div class="dd">
+      <button class="btn" style="display:inline-flex;gap:8px;align-items:center"><svg width="15" height="15"><use href="#plus"/></svg>Link a host<svg width="14" height="14"><use href="#down"/></svg></button>
+      <div class="ddmenu">
+        <div class="mi hl"><span class="mono" style="color:var(--ink)">studio</span><span class="k" style="color:#ffb3ae">0.0.9</span></div>
+        <div class="mi"><span class="mono" style="color:var(--ink)">laptop</span></div>
+        <div class="mi" style="opacity:.5"><span class="mono">nas</span><span class="k">no Flare</span></div>
+      </div>
+    </div></div>
+</div>
+</div>
+
+<div class="bar"><div class="in">
+  <span>Your picks:</span><code id="out">Tab ? · Menu ? · Machine ? · Add ?</code>
+  <button class="btn" id="copy">Copy</button>
+  <span class="note">Paste them back to Claude, or just type them.</span>
+</div></div>
+
+<script>
+const picks = {Tab:'?',Menu:'?',Machine:'?',Add:'?'};
+const out = document.getElementById('out');
+function show(){ out.textContent = Object.entries(picks).map(([k,v])=>k+' '+v).join(' · '); }
+document.querySelectorAll('.grid').forEach(g=>{
+  g.querySelectorAll('.opt').forEach(o=>{
+    const pick=()=>{ g.querySelectorAll('.opt').forEach(x=>x.classList.remove('sel')); o.classList.add('sel'); picks[g.dataset.part]=o.dataset.v; show(); };
+    o.addEventListener('click',pick);
+    o.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();pick();} });
+  });
+});
+document.getElementById('copy').addEventListener('click',()=>{ try{ navigator.clipboard.writeText(out.textContent); }catch(e){} });
+</script>
+</body>
+</html>
