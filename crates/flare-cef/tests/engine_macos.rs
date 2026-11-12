@@ -39,6 +39,8 @@ struct Run {
     /// On-screen windows of the bundle's processes seen while it ran.
     shown: Vec<screen::Shown>,
     status: Option<i32>,
+    /// The last lines the probe (and CEF in it) wrote to stderr: the evidence when it does not exit 0.
+    stderr_tail: String,
 }
 
 fn run_probe(test: &str, scenario: &str) -> Run {
@@ -46,6 +48,8 @@ fn run_probe(test: &str, scenario: &str) -> Run {
     let dir = app.parent().expect("the bundle has a folder").to_path_buf();
     let out = dir.join(format!("{scenario}.json"));
     let _ = std::fs::remove_file(&out);
+    let err_path = dir.join(format!("{scenario}.stderr"));
+    let err_file = std::fs::File::create(&err_path).expect("the probe's stderr file");
     let before = screen::windows_named(NAME);
     assert!(
         before.is_empty(),
@@ -56,7 +60,7 @@ fn run_probe(test: &str, scenario: &str) -> Run {
         .env("FLARE_CEF_PROBE_OUT", &out)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(err_file))
         .spawn()
         .expect("the probe starts");
     let mut shown = Vec::new();
@@ -76,10 +80,14 @@ fn run_probe(test: &str, scenario: &str) -> Run {
     shown.extend(screen::windows_named(NAME));
     let text = std::fs::read_to_string(&out).unwrap_or_default();
     let report: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    let err = std::fs::read_to_string(&err_path).unwrap_or_default();
+    let lines: Vec<&str> = err.lines().collect();
+    let stderr_tail = lines[lines.len().saturating_sub(40)..].join("\n");
     Run {
         report,
         shown,
         status,
+        stderr_tail,
     }
 }
 
@@ -87,7 +95,12 @@ fn run_probe(test: &str, scenario: &str) -> Run {
 fn assert_clean(run: &Run) {
     let r = &run.report;
     assert!(r.get("fatal").is_none(), "the probe failed: {r:#}");
-    assert_eq!(run.status, Some(0), "the probe exits 0: {r:#}");
+    assert_eq!(
+        run.status,
+        Some(0),
+        "the probe exits 0: {r:#}\nits stderr ends:\n{}",
+        run.stderr_tail
+    );
     assert!(
         run.shown.is_empty(),
         "no window of the bundle ever on screen: {:?}",

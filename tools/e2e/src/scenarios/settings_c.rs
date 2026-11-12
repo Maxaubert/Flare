@@ -1155,6 +1155,9 @@ pub fn colour_picker(ctx: &mut Ctx) -> Result<(), String> {
 /// measured against it, off the snapshot. And with an Accent colour picked, the Agent working
 /// indicator's field shows that accent, not the theme's.
 pub fn picked_ground(ctx: &mut Ctx) -> Result<(), String> {
+    // The working colour is a Mark colours row, drawn only with Bar (rule 1140).
+    let profile = ctx.ensure_world().profile.clone();
+    seed_prefs(&profile, &[("flare.term.agentIndicator", "minimal")])?;
     let mut app = launch_settings(
         ctx,
         &[],
