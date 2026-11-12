@@ -192,7 +192,7 @@ const RUN_LOCK: &str = ".flare-run.lock";
 /// A run's hold on its own folder: taken when the folder is first made, kept until the run ends.
 struct RunLock {
     root: PathBuf,
-    held: Mutex<Option<std::fs::File>>,
+    held: Mutex<Option<std::fs::File>>, // sync-ok: a type, no call
 }
 
 impl RunLock {
@@ -211,6 +211,7 @@ impl RunLock {
         }
         // sync-ok: a worker makes the run's folder and its lock file, never the UI thread
         std::fs::create_dir_all(&self.root)?;
+        // sync-ok: a worker opens the run's lock file, never the UI thread
         let f = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -422,6 +423,7 @@ pub fn remove_later(dir: PathBuf) {
 /// The folders of earlier runs under `parent` that are older than `age` and whose run is gone (left by a crash):
 /// removed. A run still alive keeps its folder, however old (rule 1191). A cleanup thread.
 pub fn sweep_old(parent: &Path, age: Duration) {
+    // sync-ok: a cleanup thread of its own lists the earlier runs
     let Ok(rd) = std::fs::read_dir(parent) else {
         return;
     };
