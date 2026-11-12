@@ -5,6 +5,7 @@ pub mod bundle;
 pub mod context;
 pub mod engine;
 pub mod helper;
+pub mod helpers;
 pub mod keychain;
 pub mod panels;
 pub mod probe;

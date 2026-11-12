@@ -1164,6 +1164,10 @@ impl WebCtl {
         if let Some(mut b) = self.backend.take() {
             b.close_all();
         }
+        // The Mac's engine is the process's and outlives an idle host: it shuts down here even with no host left
+        // (rule 1156).
+        #[cfg(target_os = "macos")]
+        flare_web::host::end_engine();
         self.shown_tab = None;
         self.phase = Phase::Hidden;
         self.still = None;

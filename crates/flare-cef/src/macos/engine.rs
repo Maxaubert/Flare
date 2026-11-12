@@ -4,7 +4,7 @@
 //! (`do_message_loop_work`) from its own loop; nothing here runs `[NSApp run]`.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use cef::library_loader::LibraryLoader;
 use cef::*;
@@ -14,7 +14,7 @@ use objc2_app_kit::{NSApplication, NSEventMask};
 use objc2_core_foundation::{CFRunLoop, kCFRunLoopDefaultMode};
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode};
 
-use crate::macos::app;
+use crate::macos::{app, helpers};
 use crate::pin::FRAMEWORK;
 
 /// The switches every Flare browser process starts with, and why. They are the only switches CEF takes:
@@ -171,22 +171,33 @@ pub struct EngineConfig {
     pub net_log: Option<PathBuf>,
 }
 
-/// CEF, started. Dropping it does not stop CEF: call [`Engine::shutdown`] after every browser closed.
+/// CEF, started. Dropping it does not stop CEF: call [`Engine::shutdown`] after every browser closed. A drop without
+/// it keeps the framework loaded (CEF still runs in the process, rule 1156).
 pub struct Engine {
     loader: Option<LibraryLoader>,
     pub app: Retained<NSApplication>,
     profile_key_note: Option<String>,
+    /// The GPU and utility helpers' ends ([`helpers`]), none when the kernel gave no queue.
+    helpers: Option<helpers::Watcher>,
+    helper_exits: Arc<Mutex<Vec<helpers::HelperExit>>>,
 }
 
 wrap_browser_process_handler! {
     struct Process {
         schedule: Option<Schedule>,
+        hint: Option<helpers::Hint>,
     }
 
     impl BrowserProcessHandler {
         fn on_schedule_message_pump_work(&self, delay_ms: i64) {
             if let Some(s) = &self.schedule {
                 s(delay_ms.max(0));
+            }
+        }
+
+        fn on_before_child_process_launch(&self, _command_line: Option<&mut CommandLine>) {
+            if let Some(h) = &self.hint {
+                h.launching();
             }
         }
     }
@@ -197,11 +208,12 @@ wrap_app! {
         schedule: Option<Schedule>,
         net_log: Option<String>,
         keychain: Keychain,
+        hint: Option<helpers::Hint>,
     }
 
     impl App {
         fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
-            Some(Process::new(self.schedule.clone()))
+            Some(Process::new(self.schedule.clone(), self.hint.clone()))
         }
 
         fn on_before_command_line_processing(
@@ -309,7 +321,18 @@ impl Engine {
             .map(|p| p.to_string_lossy().into_owned());
         // The signature is read only for the real window: a test or a probe never looks at the keychain.
         let keychain = keychain_for(cfg.adopt_app, cfg.adopt_app && signed_by_flares_team());
-        let mut cef_app = FlareApp::new(cfg.schedule.clone(), net_log, keychain);
+        // A GPU or utility helper that fails is queued for the owner ([`Engine::helper_exits`]) and the owner is
+        // asked for a turn, as CEF asks.
+        let helper_exits: Arc<Mutex<Vec<helpers::HelperExit>>> = Arc::default();
+        let (exits, schedule) = (Arc::clone(&helper_exits), cfg.schedule.clone());
+        let watcher = helpers::Watcher::start(Arc::new(move |e| {
+            exits.lock().unwrap_or_else(|e| e.into_inner()).push(e);
+            if let Some(s) = &schedule {
+                s(0);
+            }
+        }));
+        let hint = watcher.as_ref().map(helpers::Watcher::hint);
+        let mut cef_app = FlareApp::new(cfg.schedule.clone(), net_log, keychain, hint);
         // A browser process: CEF answers -1 (a child process type would run and exit here).
         let code = execute_process(
             Some(args.as_main_args()),
@@ -371,6 +394,8 @@ impl Engine {
             loader: Some(loader),
             app,
             profile_key_note,
+            helpers: watcher,
+            helper_exits,
         })
     }
 
@@ -417,10 +442,30 @@ impl Engine {
         }
     }
 
+    /// The GPU and utility helpers that failed since the last call (Chromium starts them again by itself).
+    pub fn helper_exits(&self) -> Vec<helpers::HelperExit> {
+        std::mem::take(&mut *self.helper_exits.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
     /// Stops CEF (every browser must be closed) and unloads the framework.
     pub fn shutdown(mut self) {
+        // The helpers CEF ends now are not failures.
+        if let Some(w) = &self.helpers {
+            w.ending();
+        }
         shutdown();
+        drop(self.helpers.take());
         drop(self.loader.take());
+    }
+}
+
+impl Drop for Engine {
+    /// Without [`Engine::shutdown`] CEF is still initialized: the framework stays loaded (unloading it under a live
+    /// CEF is what the idle web host did, rule 1156).
+    fn drop(&mut self) {
+        if let Some(loader) = self.loader.take() {
+            std::mem::forget(loader);
+        }
     }
 }
 
