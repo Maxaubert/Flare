@@ -29,6 +29,8 @@ struct HostState {
     closed: Vec<String>,
     /// The host's state word of each tab (remote sessions PR 4); None: an older host with no remote.status.
     states: Option<HashMap<String, String>>,
+    /// A passing refusal of `remote.status` (the host's UI wait timed out, a rate refusal), while set.
+    status_refusal: Option<&'static str>,
 }
 
 #[derive(Clone, Default)]
@@ -108,6 +110,9 @@ impl FakeHost {
                 Ok(json!({"closed": true}))
             }
             Method::RemoteStatus => {
+                if let Some(c) = st.status_refusal {
+                    return Err(CtlError::new(c, "not now"));
+                }
                 let states = st
                     .states
                     .as_ref()
@@ -771,4 +776,41 @@ fn an_older_host_without_remote_status_keeps_the_link_and_is_asked_once() {
     );
     assert_eq!(r.live.link(), LinkState::Live);
     assert_eq!(r.live.take_status(), None);
+}
+
+/// Rule 298: only `unknown_method` stops the status polls. A passing refusal (the host's UI wait timed out, a rate
+/// refusal) is asked again at the next poll, so a question the host shows later still reaches the viewer.
+#[test]
+fn a_passing_status_refusal_keeps_the_polls_and_a_later_question_still_arrives() {
+    let host = FakeHost::default();
+    {
+        let mut st = lk(&host);
+        st.states = Some(HashMap::new());
+        st.status_refusal = Some(code::TIMEOUT);
+    }
+    let r = rig_with(host, None);
+    r.live_on();
+    wait_for("the status asked again after a refusal", || {
+        r.host.calls("remote.status") >= 3
+    });
+    {
+        let mut st = lk(&r.host);
+        st.status_refusal = Some(code::RATE_LIMITED);
+    }
+    let polls = r.host.calls("remote.status");
+    wait_for("the status asked again after a rate refusal", || {
+        r.host.calls("remote.status") > polls + 2
+    });
+    {
+        let mut st = lk(&r.host);
+        st.status_refusal = None;
+        st.states
+            .as_mut()
+            .unwrap()
+            .insert("h1".into(), "question".into());
+    }
+    wait_for("the later question", || {
+        r.live.take_status().is_some_and(|s| s.state == "question")
+    });
+    assert_eq!(r.host.calls("remote.attach"), 1, "the link never broke");
 }

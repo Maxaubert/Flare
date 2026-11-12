@@ -607,7 +607,7 @@ impl AgentHub {
     }
 
     /// A remote tab's host said what its agent does (remote sessions PR 4, rule 294): the question's words, the
-    /// session, and one state word. Only a word that differs from the last one applied moves a mark, so a status read
+    /// session, and one state word. The word last applied is skipped while the marks still show it, so a status read
     /// again after a reconnect raises nothing; done and failed are never copied (`Indicator::remote_mark`).
     pub fn on_remote_status(&mut self, tab: &str, st: &flare_term::remote_pty::HostStatus) {
         if !self.remote.contains(tab) {
@@ -639,7 +639,9 @@ impl AgentHub {
                     .push((tab.to_string(), DecorGone::SessionChanged));
             }
         }
-        if self.remote_said.get(tab) == Some(&st.state) {
+        // The same word again is skipped only while the marks still show it: a mark this end took down on its own (an
+        // answer key read the box gone) is raised again by the host's next word (rule 298).
+        if self.remote_said.get(tab) == Some(&st.state) && self.remote_marks_show(tab, &st.state) {
             return;
         }
         let Some(mark) = crate::remote_status::mark_of(st) else {
@@ -654,6 +656,18 @@ impl AgentHub {
         });
         self.ind.remote_mark(now, tab, mark, kind);
         self.settle(now);
+    }
+
+    /// Whether the remote tab's marks still show the host word `state`: work and a question as their own mark, any
+    /// other word as neither.
+    fn remote_marks_show(&self, tab: &str, state: &str) -> bool {
+        let working = self.ind.working_ids().contains(tab);
+        let asking = self.ind.question_ids().contains(tab);
+        match state {
+            "working" => working && !asking,
+            "question" => asking && !working,
+            _ => !working && !asking,
+        }
     }
 
     /// PT `forget`: every record of the tab goes, and its question watch with it.
@@ -2226,5 +2240,47 @@ mod tests {
         // A local tab is the hub's own business.
         r.hub.on_remote_status("b", &st("working", None));
         assert!(!r.hub.working("b"));
+    }
+
+    /// Rule 298: an answer key here reads the mirrored box gone and takes the question down while the host's last word
+    /// is still `question`. The host's next question (new words, no `working` seen between) raises the mark again.
+    #[test]
+    fn a_remote_question_answered_here_is_raised_again_by_the_hosts_next_question() {
+        use flare_term::remote_pty::HostStatus;
+        let st = |question: &str| HostStatus {
+            state: "question".into(),
+            agent: Some("claude".into()),
+            session: None,
+            question: Some(question.into()),
+            failed: None,
+        };
+        let mut r = Rig::new();
+        r.open("b", None);
+        r.open_remote("r");
+        r.hub.set_looking(Some("b"), true);
+        r.hub.on_remote_status("r", &st("Allow the edit?"));
+        assert_eq!(r.hub.question_tabs(), ["r"]);
+        r.push_remote(&paint(&box_rows()));
+        r.ev(HostEvent::AnswerKey {
+            id: "r".into(),
+            key: "\r".into(),
+        });
+        r.push_remote(b"\x1b[H\x1b[Jok");
+        r.advance(2_500);
+        r.advance(100);
+        assert!(
+            r.hub.question_tabs().is_empty(),
+            "the answer key took the question down here"
+        );
+        r.hub.on_remote_status("r", &st("Allow the command?"));
+        assert_eq!(
+            r.hub.question_tabs(),
+            ["r"],
+            "the host's next question is shown"
+        );
+        assert_eq!(
+            r.hub.question_text("r").as_deref(),
+            Some("Allow the command?")
+        );
     }
 }

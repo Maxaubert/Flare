@@ -1105,6 +1105,21 @@ entry once by its number, so a poll sent again after a reconnect adds nothing tw
 `the_wire_form_carries_numbers_and_no_path`, `remote_convo_sends_the_hosts_transcript_as_numbered_entries_and_no_path`
 and `read_last_until_stops_at_the_byte_it_is_given_and_drops_a_line_cut_there`. Source: remote sessions PR 4
 (2026-11-12).
+298. **A remote tab's status is never lost to a passing refusal, a host that looked, or a mark taken down here.** Three
+holes in rule 294, each one a question or an end of work that rang on neither machine (rule 295 keeps the host quiet for
+a followed tab). (a) Only `unknown_method` (an older host) turns the `remote.status` polls off for the link; any other
+refusal (the host's 10 s UI wait timed out, a busy or rate refusal) is logged and the next poll asks again. (b) A host
+whose window is focused on the tab raises no done mark of its own and says `idle` straight after `working`, so the
+viewer takes `idle` as it takes `done`: it raises its own Finished mark when it showed the tab working or asking and
+nobody here looks, and nothing otherwise. (c) The hub skips the word it applied last only while the tab's marks still
+show it: an answer key here that read the mirrored box gone took the question down with the host's word still
+`question`, and the host's next question (new words, no `working` seen between two polls) raises it again. Native:
+`crates/flare/src/remote_link.rs` (`poll_status`), `crates/flare-agent/src/indicator.rs` (`remote_mark`),
+`crates/flare/src/agent_hub.rs` (`on_remote_status`, `remote_marks_show`). Held by
+`a_passing_status_refusal_keeps_the_polls_and_a_later_question_still_arrives`,
+`a_remote_idle_after_work_shown_here_raises_the_viewers_own_finished_mark` and
+`a_remote_question_answered_here_is_raised_again_by_the_hosts_next_question`. Source: review of remote sessions PR 4
+(2026-11-12).
 
 ## macOS port
 

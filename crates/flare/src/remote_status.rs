@@ -54,7 +54,8 @@ pub struct StatusPoll {
     every: Duration,
     next: Option<Instant>,
     last: Option<HostStatus>,
-    /// The host has no `remote.status` (an older Flare): not asked again on this link.
+    /// The host has no `remote.status` (an older Flare, `unknown_method`): not asked again on this link. Any other
+    /// refusal leaves the polls on (rule 298).
     off: bool,
 }
 

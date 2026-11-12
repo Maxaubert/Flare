@@ -719,8 +719,9 @@ impl Worker {
     }
 
     /// The host's status of the tab, every `status_every` (remote sessions PR 4, rule 294): a change is handed to the
-    /// window and wakes it. A host with no `remote.status` (an older Flare) is asked no more on this link; a broken link
-    /// ends the polls as any call's does.
+    /// window and wakes it. A host with no `remote.status` (an older Flare, `unknown_method`) is asked no more on this
+    /// link; any other refusal (a host UI wait that timed out, a busy or rate refusal) is passing and the next poll asks
+    /// again (rule 298). A broken link ends the polls as any call's does.
     fn poll_status(&mut self, link: &mut dyn Link, tab: &str) -> Result<(), LinkError> {
         if !self.status.due(Instant::now()) {
             return Ok(());
@@ -735,12 +736,16 @@ impl Worker {
                 }
                 Ok(())
             }
+            Err(LinkError::Refused(e)) if e.code == code::UNKNOWN_METHOD => {
+                log::info!("remote.status unknown to the host, not asked again on this link");
+                self.status.off();
+                Ok(())
+            }
             Err(LinkError::Refused(e)) => {
                 log::info!(
-                    "remote.status refused, not asked again on this link: {}",
+                    "remote.status refused, asked again at the next poll: {}",
                     e.code
                 );
-                self.status.off();
                 Ok(())
             }
             Err(e) => Err(e),

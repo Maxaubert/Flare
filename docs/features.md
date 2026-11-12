@@ -2517,8 +2517,10 @@ viewer", section 5 `remote.status` and `remote.convo`).
   a tab (working, question, done, failed, idle), the agent, its session and the question's words. A remote tab shows
   work and a question as the host says them, with the host's words in its question notification. Finished and Failed
   are this machine's own: raised only when it showed the tab working and nobody here looked, cleared by looking here,
-  and never raised again by a status read after a reconnect (rule 294). An older host without `remote.status` keeps
-  working, without the words. Held by `remote_status::tests`, `remote_link::tests`, `agent_hub::tests`,
+  and never raised again by a status read after a reconnect (rule 294). A host whose window looks at the tab goes from
+  working straight to idle, and that idle is still an end of the work here; a passing refusal of `remote.status` (the
+  host busy for a moment) never stops the polls, and a question taken down here by an answer key comes back with the
+  host's next question (rule 298). An older host without `remote.status` keeps working, without the words. Held by `remote_status::tests`, `remote_link::tests`, `agent_hub::tests`,
   `indicator::tests` and `ui_tests::agent_flows::remote_flows`.
 - **One notification per question.** A question in a tab followed from the other machine is announced there, never
   also on the host (rule 295). Held by `remote_flows::a_question_in_a_followed_tab_is_the_viewers_to_notify`.
