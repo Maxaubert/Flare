@@ -49,7 +49,9 @@ mod plugin_look;
 mod plugin_safe;
 mod plugin_sessions;
 mod plugin_ui;
+mod remote_host;
 mod scrollbar;
+mod serve_remote;
 mod sessions;
 mod settings_ctl;
 mod settings_scene;
@@ -106,6 +108,12 @@ fn main() {
     };
 
     startup_trace::mark(startup_trace::Phase::Args);
+
+    // `--serve-remote` (remote sessions PR 2): the host end of a remote link, before anything else starts. It takes no
+    // single-instance lock, opens no window and sets up no e2e (rule 283); stdout is the link's alone (rule 277).
+    if args.serve_remote {
+        std::process::exit(serve_remote::run(args.user_data_dir.as_deref()));
+    }
 
     if args.probe_backend
         || args.screenshot.is_some()
@@ -385,6 +393,30 @@ fn message_box(title: &str, message: &str) {
 #[cfg(not(windows))]
 #[allow(dead_code)]
 fn message_box(_title: &str, _message: &str) {}
+
+#[cfg(test)]
+mod serve_order_tests {
+    /// Rule 283: the serve branch comes before the e2e set-up, the instance code and the window, so a serve process
+    /// can never take the lock, start a window or be mistaken for a launch.
+    #[test]
+    fn serve_remote_branches_before_the_lock_the_e2e_and_the_window() {
+        let src = include_str!("main.rs");
+        let at = |s: &str| src.find(s).unwrap_or_else(|| panic!("{s} is in main.rs"));
+        let serve = at("if args.serve_remote {");
+        for later in [
+            "e2e::init(args.e2e)",
+            "startup::launch(&profile",
+            "window::run_window(",
+            "backend::select_backend_with(",
+            "conpty::verify_bundled()",
+        ] {
+            assert!(
+                serve < at(later),
+                "the serve branch must come before {later}"
+            );
+        }
+    }
+}
 
 #[cfg(test)]
 mod fatal_tests {

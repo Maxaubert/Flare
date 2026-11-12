@@ -13,7 +13,7 @@ use alacritty_terminal::sync::FairMutex;
 use flare_agent::reveal::{self, RevealState};
 use flare_render::decor::Decor;
 use flare_shells::env::PluginEnv;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Instant;
 
@@ -40,6 +40,39 @@ const STOPS_KEPT: usize = 64;
 pub enum PluginInput<'a> {
     Paste(&'a str),
     Enter,
+}
+
+/// What a remote viewer typed on a host tab (remote sessions PR 2, rule 279): the second typed path beside the plugin's,
+/// never raw bytes. A key goes through the same encoder a local key does, with this tab's modes; a text holds no
+/// control character (one that does is dropped); a paste is sanitised and goes the way a local paste goes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoteIntent {
+    Key(KeyEvent),
+    Text(String),
+    Paste(String),
+}
+
+/// Who typed last in a tab: this machine (the person, dictation, a plugin) or a remote viewer. The size of a tab follows
+/// the last typist (rule 282).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Typist {
+    Local,
+    Remote,
+}
+
+const TYPIST_NONE: u8 = 0;
+const TYPIST_LOCAL: u8 = 1;
+const TYPIST_REMOTE: u8 = 2;
+
+/// A tab's screen and the history above it as text, with the number of the tail's next byte (`remote.snapshot`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteSnapshot {
+    /// The tail's number when the text was read: `remote.output {since: seq}` goes on from here.
+    pub seq: u64,
+    pub cols: usize,
+    pub rows: usize,
+    /// Clear, home, then the lines joined by CR LF: what a fresh emulator is fed to show the same text.
+    pub data: Vec<u8>,
 }
 
 fn epoch_ms() -> i64 {
@@ -79,6 +112,8 @@ struct Shared {
     clock: Mutex<Option<Clock>>,
     /// Where the cursor stood at the end of each parsed slice, for the IME caret hold.
     cursor_log: Mutex<Vec<CursorStop>>,
+    /// Who typed last (`TYPIST_*`), read by the tab host's size owner (rule 282).
+    typist: AtomicU8,
 }
 
 impl Shared {
@@ -146,6 +181,17 @@ impl Shared {
 
     /// Typing: `Typed` is queued and the next output queues a fresh `Output` after it.
     fn mark_typed(&self) {
+        self.mark_typed_by(Typist::Local);
+    }
+
+    fn mark_typed_by(&self, by: Typist) {
+        self.typist.store(
+            match by {
+                Typist::Local => TYPIST_LOCAL,
+                Typist::Remote => TYPIST_REMOTE,
+            },
+            Ordering::SeqCst,
+        );
         *lk(&self.last_typed) = Some(Instant::now());
         let mut evs = lk(&self.events);
         evs.push(TermEvent::Typed);
@@ -306,6 +352,7 @@ impl TermHandle {
             reveal: Mutex::new(None),
             clock: Mutex::new(None),
             cursor_log: Mutex::new(Vec::new()),
+            typist: AtomicU8::new(TYPIST_NONE),
         });
         Arc::new(Self { sh, emu })
     }
@@ -484,6 +531,10 @@ impl TermHandle {
 
     /// Encodes the key, snaps the view to the bottom, writes, and marks typing.
     pub fn send_key(&self, ev: &KeyEvent) -> bool {
+        self.key_by(ev, Typist::Local)
+    }
+
+    fn key_by(&self, ev: &KeyEvent, by: Typist) -> bool {
         let app_cursor = self.mode().app_cursor;
         let Some(bytes) = crate::key_encode::encode_key(ev, app_cursor) else {
             return false;
@@ -491,7 +542,7 @@ impl TermHandle {
         self.sh.finish_reveal();
         self.sh.snap_to_bottom();
         self.sh.mgr.write(&self.sh.id, &bytes);
-        self.sh.mark_typed();
+        self.sh.mark_typed_by(by);
         let data = String::from_utf8_lossy(&bytes);
         if flare_agent::question::answers_question(&data) {
             lk(&self.sh.events).push(TermEvent::AnswerKey(data.into_owned()));
@@ -501,13 +552,17 @@ impl TermHandle {
 
     /// IME commit or dictation text: sent as is, counts as typing.
     pub fn send_text(&self, text: &str) {
+        self.text_by(text, Typist::Local);
+    }
+
+    fn text_by(&self, text: &str, by: Typist) {
         if text.is_empty() {
             return;
         }
         self.sh.finish_reveal();
         self.sh.snap_to_bottom();
         self.sh.mgr.write(&self.sh.id, text.as_bytes());
-        self.sh.mark_typed();
+        self.sh.mark_typed_by(by);
     }
 
     /// A paste the caller already sanitised; bracketed only when the program asked.
@@ -528,6 +583,10 @@ impl TermHandle {
     }
 
     fn write_paste(&self, text: &str, bracketed: bool) {
+        self.paste_by(text, bracketed, Typist::Local);
+    }
+
+    fn paste_by(&self, text: &str, bracketed: bool, by: Typist) {
         if text.is_empty() {
             return;
         }
@@ -535,7 +594,67 @@ impl TermHandle {
         self.sh.finish_reveal();
         self.sh.snap_to_bottom();
         self.sh.mgr.write(&self.sh.id, &bytes);
-        self.sh.mark_typed();
+        self.sh.mark_typed_by(by);
+    }
+
+    /// A remote viewer's typing (remote sessions PR 2, rule 279): the second deliberate exception to rule 2 beside
+    /// `plugin_input`, called only by the host's `remote.input` handler. Each intent goes the way the same thing typed
+    /// here goes: a key through `encode_key` with this tab's modes (and its answer key, so a question is answered as a
+    /// local key answers it), a text as committed text, a paste sanitised again (rule 1) and bracketed when the program
+    /// asked. A text with a control character is dropped (the link checked it already). Counts as typing by the remote
+    /// typist. Returns how many intents wrote something.
+    pub fn remote_input(&self, intents: &[RemoteIntent]) -> usize {
+        let mut wrote = 0;
+        for i in intents {
+            let ok = match i {
+                RemoteIntent::Key(ev) => self.key_by(ev, Typist::Remote),
+                RemoteIntent::Text(t) if !t.is_empty() && !t.chars().any(char::is_control) => {
+                    self.text_by(t, Typist::Remote);
+                    true
+                }
+                RemoteIntent::Text(_) => false,
+                RemoteIntent::Paste(p) => {
+                    let clean = flare_shells::paste::sanitize_paste(p);
+                    let ok = !clean.is_empty();
+                    if ok {
+                        self.paste_by(&clean, self.mode().bracketed_paste, Typist::Remote);
+                    }
+                    ok
+                }
+            };
+            wrote += usize::from(ok);
+        }
+        wrote
+    }
+
+    /// Who typed in this tab last, or None before anyone did (the size owner of rule 282).
+    pub fn last_typist(&self) -> Option<Typist> {
+        match self.sh.typist.load(Ordering::SeqCst) {
+            TYPIST_LOCAL => Some(Typist::Local),
+            TYPIST_REMOTE => Some(Typist::Remote),
+            _ => None,
+        }
+    }
+
+    /// The tab's screen and up to `lines` lines of history above it as text, with the number the session's output tail
+    /// had reached when it was read (`remote.snapshot`). Read while no batch is being parsed, so the text holds every
+    /// byte before `seq` and none after. None when the session has no tail. Waits for one batch: a control channel
+    /// worker's call, never the UI thread's (rule 34). Colours and styles are not kept: it is the text a reconnect shows.
+    pub fn remote_snapshot(&self, lines: usize) -> Option<RemoteSnapshot> {
+        self.sh.mgr.with_tail_still(&self.sh.id, |seq| {
+            let e = self.emu.lock();
+            let text = e.text_tail(lines.max(1));
+            let (cols, rows) = (e.cols(), e.rows());
+            drop(e);
+            let mut data = b"\x1b[H\x1b[2J\x1b[3J".to_vec();
+            data.extend_from_slice(text.join("\r\n").as_bytes());
+            RemoteSnapshot {
+                seq,
+                cols,
+                rows,
+                data,
+            }
+        })
     }
 
     /// A plugin's typing (plugins phase 5, rule 2's plugin exception): the one way a caller outside Flare's own
@@ -777,6 +896,73 @@ mod tests {
 
     fn key_a() -> KeyEvent {
         KeyEvent::new("a", "KeyA").text("a")
+    }
+
+    // Remote sessions PR 2: typing from a remote viewer, the output tail and the snapshot.
+
+    /// Rule 279: a remote viewer's intents go the typed way: a key through the encoder, a text as committed, a paste
+    /// sanitised (the escape that would end a bracketed paste is gone); a text with a control character is dropped.
+    #[test]
+    fn remote_input_types_keys_text_and_a_sanitised_paste() {
+        let t = T::started();
+        let n = t.h.remote_input(&[
+            RemoteIntent::Text("echo hi".into()),
+            RemoteIntent::Key(KeyEvent::new("Enter", "Enter")),
+            RemoteIntent::Key(KeyEvent::new("c", "KeyC").text("c").ctrl()),
+            RemoteIntent::Paste("a\x1b[201~b".into()),
+            RemoteIntent::Text("bad\r".into()),
+            RemoteIntent::Paste("\x1b".into()),
+        ]);
+        assert_eq!(n, 4);
+        wait_until("the writes", || t.fake().written().len() >= 16);
+        let w = String::from_utf8_lossy(&t.fake().written()).into_owned();
+        assert_eq!(w, "echo hi\r\u{3}a[201~b");
+        assert_eq!(t.h.last_typist(), Some(Typist::Remote));
+        assert!(t.has(&TermEvent::Typed));
+        // A local key after it makes this machine the last typist again.
+        assert!(t.h.send_key(&key_a()));
+        assert_eq!(t.h.last_typist(), Some(Typist::Local));
+    }
+
+    #[test]
+    fn nobody_is_the_typist_before_anyone_types() {
+        let t = T::started();
+        assert_eq!(t.h.last_typist(), None);
+        t.h.send_text("x");
+        assert_eq!(t.h.last_typist(), Some(Typist::Local));
+    }
+
+    /// Rule 281: the tail numbers what the tab printed after the follow began, in the order the tab saw it, and a
+    /// snapshot taken between two batches holds the bytes before its number and none after.
+    #[test]
+    fn the_output_tail_follows_the_tab_and_a_snapshot_meets_it_without_a_byte_twice() {
+        let t = T::started();
+        let mgr = Arc::clone(&t.h.sh.mgr);
+        t.fake().feed(b"before\r\n");
+        wait_until("before", || t.text().contains("before"));
+        let tail = mgr
+            .subscribe_tail("a")
+            .expect("a running session has a tail");
+        assert!(
+            tail.same(&mgr.subscribe_tail("a").unwrap()),
+            "one tail a tab"
+        );
+        let start = tail.end();
+        t.fake().feed(b"one\r\n");
+        wait_until("one in the tail", || tail.end() > start);
+        let snap = t.h.remote_snapshot(100).expect("a snapshot");
+        assert!(String::from_utf8_lossy(&snap.data).contains("one"));
+        assert_eq!(snap.seq, tail.end());
+        assert_eq!((snap.cols, snap.rows), (80, 24));
+        t.fake().feed(b"two\r\n");
+        wait_until("two in the tail", || tail.end() > snap.seq);
+        let after = tail.read(snap.seq, 1 << 20);
+        assert_eq!(after.data, b"two\r\n");
+        assert!(!after.gap);
+        // From the follow's start: exactly what came since, once.
+        let all = tail.read(start, 1 << 20);
+        assert_eq!(all.data, b"one\r\ntwo\r\n");
+        assert!(mgr.subscribe_tail("nobody").is_none());
     }
 
     // The resume reveal.

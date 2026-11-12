@@ -101,6 +101,26 @@ pub enum Method {
     /// machine and their Flare version. Only a connection that came in on `flare --serve-remote`'s own stdio may
     /// send it, and it is what gives that connection the remote grant; on the pipe it is `forbidden`.
     RemoteHello,
+    /// A new tab on the host in a host folder, with an optional Claude session to resume (remote sessions PR 2).
+    RemoteOpen,
+    /// One host folder's names, bounded (the folder picker of a later PR).
+    RemoteLs,
+    /// The host's shell tabs: id, folder, title, the agent's state word and session.
+    RemoteTabs,
+    /// Starts following a host tab's output: its size and the sequence number its output has reached.
+    RemoteAttach,
+    /// Stops following a host tab. Never ends its session (rule 280).
+    RemoteDetach,
+    /// Typing on a host tab as a list of typed intents (key, text, paste), never raw bytes (rule 279).
+    RemoteInput,
+    /// The viewer's size for a host tab: the host tab takes it and its window stops refitting it (rule 282).
+    RemoteResize,
+    /// A host tab's output since a sequence number, polled (rule 281).
+    RemoteOutput,
+    /// A host tab's screen and scrollback tail as text, for a viewer whose `since` fell out of the ring.
+    RemoteSnapshot,
+    /// Closes a host tab the way a person's close does: an agent at work asks first (rule 48).
+    RemoteClose,
 }
 
 /// What a method belongs to, which decides which grants may call it.
@@ -198,7 +218,7 @@ impl Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 47] = [
+    pub const ALL: [Method; 57] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -246,6 +266,16 @@ impl Method {
         Method::ModsTools,
         Method::ModsCall,
         Method::RemoteHello,
+        Method::RemoteOpen,
+        Method::RemoteLs,
+        Method::RemoteTabs,
+        Method::RemoteAttach,
+        Method::RemoteDetach,
+        Method::RemoteInput,
+        Method::RemoteResize,
+        Method::RemoteOutput,
+        Method::RemoteSnapshot,
+        Method::RemoteClose,
     ];
 
     /// The wire name.
@@ -298,6 +328,16 @@ impl Method {
             Method::ModsTools => "mods.tools",
             Method::ModsCall => "mods.call",
             Method::RemoteHello => "remote.hello",
+            Method::RemoteOpen => "remote.open",
+            Method::RemoteLs => "remote.ls",
+            Method::RemoteTabs => "remote.tabs",
+            Method::RemoteAttach => "remote.attach",
+            Method::RemoteDetach => "remote.detach",
+            Method::RemoteInput => "remote.input",
+            Method::RemoteResize => "remote.resize",
+            Method::RemoteOutput => "remote.output",
+            Method::RemoteSnapshot => "remote.snapshot",
+            Method::RemoteClose => "remote.close",
         }
     }
 
@@ -344,7 +384,17 @@ impl Method {
             Method::ToolsRespond => Namespace::Tools,
             Method::ModsTools | Method::ModsCall => Namespace::AgentTools,
             Method::ShellInput | Method::SettingsSet | Method::ModsEnable => Namespace::Ui,
-            Method::RemoteHello => Namespace::Remote,
+            Method::RemoteHello
+            | Method::RemoteOpen
+            | Method::RemoteLs
+            | Method::RemoteTabs
+            | Method::RemoteAttach
+            | Method::RemoteDetach
+            | Method::RemoteInput
+            | Method::RemoteResize
+            | Method::RemoteOutput
+            | Method::RemoteSnapshot
+            | Method::RemoteClose => Namespace::Remote,
         }
     }
 
@@ -366,8 +416,11 @@ impl Method {
             // The mod's page has 30 s to answer (`flare_mods::hub::CALL_TIMEOUT`); the channel lets the
             // handler run a little longer, so the answer is the app's own, with the mod's name in it.
             Namespace::AgentTools if self == Method::ModsCall => MOD_CALL_TIMEOUT,
-            // A remote link's short calls (`remote.hello` now; the polls of later PRs) get the default. The long ones
-            // (`remote.open`, `remote.ls`, `remote.fetch`, remote sessions PR 2) get `REMOTE_CALL` when they come.
+            // The host starts a shell or reads a folder before it answers: `REMOTE_CALL` (`remote.fetch` joins them in a
+            // later PR). A remote link's short calls (the hello, the polls, typing) get the default.
+            Namespace::Remote if matches!(self, Method::RemoteOpen | Method::RemoteLs) => {
+                REMOTE_CALL
+            }
             Namespace::Remote => DEFAULT_TIMEOUT,
             _ => DEFAULT_TIMEOUT,
         }
@@ -456,7 +509,7 @@ mod tests {
 
     #[test]
     fn every_method_and_namespace_is_listed_once() {
-        assert_eq!(Method::ALL.len(), 47);
+        assert_eq!(Method::ALL.len(), 57);
         assert_eq!(Namespace::ALL.len(), 19);
         for (i, ns) in Namespace::ALL.iter().enumerate() {
             assert!(!Namespace::ALL[..i].contains(ns), "{ns:?} twice");
@@ -473,6 +526,24 @@ mod tests {
         assert_eq!(Method::RemoteHello.timeout(), DEFAULT_TIMEOUT);
         assert!(REMOTE_CALL > DEFAULT_TIMEOUT);
         assert_eq!(Namespace::Remote.permission(), None);
+        // The host starts a shell or reads a folder before it answers; the polls and typing are short.
+        for m in [Method::RemoteOpen, Method::RemoteLs] {
+            assert_eq!(m.timeout(), REMOTE_CALL, "{}", m.name());
+        }
+        for m in [
+            Method::RemoteTabs,
+            Method::RemoteAttach,
+            Method::RemoteDetach,
+            Method::RemoteInput,
+            Method::RemoteResize,
+            Method::RemoteOutput,
+            Method::RemoteSnapshot,
+            Method::RemoteClose,
+        ] {
+            assert_eq!(m.timeout(), DEFAULT_TIMEOUT, "{}", m.name());
+            assert_eq!(m.namespace(), Namespace::Remote, "{}", m.name());
+            assert_eq!(Method::parse(m.name()), Some(m));
+        }
     }
 
     #[test]

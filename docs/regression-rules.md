@@ -888,7 +888,67 @@ viewer's `Client::remote_hello` checks the answer the same way, its own version 
 mismatch. Native: `crates/flare-ctl/src/proto.rs` (`REMOTE_PROTOCOL`), `session.rs` (`remote_mismatch`,
 `handle_remote_hello`), `client.rs`. Held by `a_remote_protocol_mismatch_refuses_with_one_line_naming_both_versions` and
 `a_remote_hello_answer_of_another_version_is_refused_naming_both`. Source: remote sessions PR 1 (2026-11-12).
-## macOS port
+279. **`remote.input` is a typed intent path: a deliberate, documented exception to rule 2, called from one place.** A
+remote viewer types on a host tab, so bytes from another machine reach a shell; they come only as typed intents, never
+as raw bytes. An intent is a key (`key`, `code`, `text`, modifiers: encoded on the host by `encode_key` with the tab's
+own modes, as a local key is), a committed text (no control character at all: an Enter or a Ctrl+C is a key), or a
+paste (sanitised again on the host by `sanitize_paste` and bracketed when the program asked, rule 1). The worker checks
+the whole call first (1 to 1024 intents, at most 64 KB of text, key names and key text short and free of control
+characters, 50 calls a second on a tab) and types nothing of a call that fails. The one caller is
+`ctl_app::AppDispatcher::remote_call` through `CtlOp::RemoteInput` into `TermHandle::remote_input`; the agent grant has
+no way here (S3). Native: `crates/flare-ctl/src/remote.rs` (`parse_intents`), `crates/flare-term/src/handle.rs`
+(`remote_input`), `crates/flare/src/ctl_app.rs`, `appctl/remote_glue.rs`. Held by
+`remote_input_intents_round_trip_as_keys_text_and_pastes`, `remote_input_refuses_control_characters_in_text_and_keys`,
+`remote_input_is_capped_at_64_kb_and_1024_intents_a_call`, `remote_input_types_keys_text_and_a_sanitised_paste` and
+`remote_input_is_checked_and_rate_limited_before_the_window_types_it`. Source: remote sessions PR 2 (2026-11-12).
+280. **A remote detach or a dead link never kills a host session.** The session belongs to the host (owner decision):
+`remote.detach` only stops following the tab, and a link that drops (the serve process's stdin closes, its pipe
+connection closes, `client_gone`) only removes that connection from the tab's followers; when the last follower goes,
+the tab's size goes back to the window (`CtlOp::RemoteRelease`, `TabHost::take_size_back`) and nothing else happens.
+Only `remote.close` ends a tab, and it goes through `request_close` like a person's close (rule 48). Rules 27 and 28
+stay for quit. Native: `crates/flare/src/remote_host.rs` (`unfollow`, `gone`), `ctl_app.rs` (`client_gone`,
+`remote.detach`), `appctl/remote_glue.rs`. Held by `a_remote_detach_or_a_dropped_link_never_closes_the_tab`,
+`a_tab_is_followed_until_its_last_connection_detaches_or_goes` and `taking_the_size_back_never_kills_the_shell`.
+Source: remote sessions PR 2 (2026-11-12).
+281. **The output ring has a cap and never blocks the UI sink.** A followed tab's output is numbered (a `u64` that only
+goes up) and kept in a ring of 4 MiB (`TAIL_CAP`); older bytes drop off, and a `since` older than the ring answers
+`gap: true` and the bytes from the oldest kept, never a silent skip. The ring is fed in `Session::deliver` after the
+tab's own sink, under the session's `dest` lock, so the tab sees each batch first and in order and the push only takes
+the ring's own short lock; the polls (`remote.output`) and the snapshot run on the control channel's workers and never
+on the UI thread (rule 34). A snapshot is read under the same `dest` lock (`with_tail_still`), so it holds exactly the
+bytes before its `seq`. Native: `crates/flare-term/src/tail.rs`, `session.rs` (`subscribe_tail`, `with_tail_still`),
+`handle.rs` (`remote_snapshot`). Held by `the_ring_wraps_at_its_cap_and_an_old_since_is_a_gap`,
+`the_sequence_only_goes_up`, `the_output_tail_follows_the_tab_and_a_snapshot_meets_it_without_a_byte_twice` and
+`remote_output_reads_the_followed_tail_and_never_asks_the_window`. Source: remote sessions PR 2 (2026-11-12).
+282. **A remote resize sets the size owner; the window's refits skip remote-owned tabs until a local key.** The live
+terminal has one size, the last typist's (owner decision). `remote.resize` (clamped, never refused) makes the remote
+viewer the tab's size owner (`TabHost::remote_resize`); `refit_all`, `set_dims` and `activate` pass that tab by. A key,
+text or paste typed on this machine (`Typist::Local`, read in `TabHost::drain_events`) gives the size back to the
+window; remote typing (`Typist::Remote`) keeps it. Native: `crates/flare/src/tab_host.rs` (`SizeOwner`,
+`remote_resize`, `take_size_back`), `crates/flare-term/src/handle.rs` (`last_typist`). Held by
+`a_remote_resize_owns_the_size_until_a_key_is_typed_here` and `remote_resize_is_clamped_on_the_worker`. Source:
+remote sessions PR 2 (2026-11-12).
+283. **Serve mode takes no single-instance lock and opens no window.** `flare --serve-remote` is started by ssh, often
+while the person's Flare runs: it must never hand its folders over, take the lock, park a window or set up the e2e.
+`main.rs` branches to `serve_remote::run` right after the arguments are parsed, before `e2e::init`, the instance code,
+the backend and the window; the GPU prewarm skips it; `--serve-remote` takes `--user-data-dir` and no folder or other
+mode. Native: `crates/flare/src/main.rs`, `config.rs`, `backend.rs` (`prewarm_plan`), `serve_remote.rs`. Held by
+`serve_remote_branches_before_the_lock_the_e2e_and_the_window`, `serve_remote_is_a_mode_of_its_own` and, as a
+process, `tests/serve_remote.rs`. Source: remote sessions PR 2 (2026-11-12).
+284. **The bridge grant comes only from the bridge key and reaches only the relayed `remote.*` methods.** The serve
+process relays a remote link to the running Flare over its pipe, so the pipe needs one grant that reaches `remote.*`;
+it is new (`Grant::Bridge`), not the remote grant (rule 276 stays: the remote grant never rides the pipe). It is issued
+for one token, the bridge key: a fresh secret the running Flare writes into its profile at every start (owner-only, by a
+rename), compared in constant time; never for "no token" (an agent grant of `bridge` is `internal`). It enters `hello`
+and `remote.*` but `remote.hello`, and nothing else: no `tabs.list`, no shell input, setting, mod, browser or eval.
+A process of the same user that can read the profile can also run `flare --serve-remote` itself, so the key adds no
+reach beyond what the serve process already has. Native: `crates/flare-ctl/src/grant.rs`, `session.rs` (`pipe_grant`),
+`crates/flare/src/remote_host.rs`, `ctl_app.rs` (`resolve_token`), `serve_remote.rs`. Held by
+`bridge_grant_reaches_the_remote_methods_but_the_greeting_and_nothing_else`,
+`the_bridge_grant_comes_only_from_its_key_and_reaches_only_the_relayed_methods`,
+`the_bridge_key_is_the_bridge_grant_and_remote_methods_need_a_remote_host`, `only_this_runs_key_is_the_bridge_key`,
+`a_wrong_key_is_no_bridge` and `the_bridge_relays_remote_calls_and_refuses_everything_else`. Source: remote sessions
+PR 2 (2026-11-12).## macOS port
 
 The rules the macOS port stack added (PRs #121 to #140) are numbered from 1001 so they never clash with main: main's
 numbering continues below 1000. When the stack merges, this block is renumbered into the main sequence, or kept as it

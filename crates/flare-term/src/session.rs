@@ -224,6 +224,9 @@ struct Session {
     /// Bytes sent to the writer thread and not yet written (bounds the queue).
     queued: Arc<AtomicUsize>,
     threads: Mutex<Threads>,
+    /// The output tail a remote viewer polls (remote sessions PR 2): set by the first `subscribe_tail`, then fed every
+    /// batch after the sink, under `dest` (rule 281). None until someone follows the session.
+    tail: Mutex<Option<crate::tail::TailHandle>>,
 }
 
 /// The most bytes queued for a child that has stopped reading; past it a write is dropped.
@@ -261,7 +264,19 @@ impl Session {
                         self.answer_from_grid(&bytes);
                     }
                 }
-                Dest::Sink { id, sink } => sink.data(id, bytes),
+                Dest::Sink { id, sink } => {
+                    // The tail is fed after the sink, still under `dest`: the tab sees each batch first and in order,
+                    // and the ring's own lock is the only thing the push waits on (rule 281).
+                    let tail = lk(&self.tail).clone();
+                    match tail {
+                        Some(t) => {
+                            let copy = bytes.clone();
+                            sink.data(id, bytes);
+                            t.push(&copy);
+                        }
+                        None => sink.data(id, bytes),
+                    }
+                }
             }
         }
     }
@@ -578,6 +593,7 @@ fn launch(sh: &Arc<Shared>, f: Fresh<'_>) -> Result<Arc<Session>, String> {
         writer_tx: Mutex::new(Some(tx)),
         queued: Arc::clone(&queued),
         threads: Mutex::new(Threads::default()),
+        tail: Mutex::new(None),
     });
     let spawn_err = |e: std::io::Error| {
         s.stop_io();
@@ -665,7 +681,12 @@ fn finish(sh: &Arc<Shared>, s: &Arc<Session>, code: Option<u32>) {
                 }
                 Dest::Sink { id, sink } => {
                     if let Some(b) = rest {
+                        let tail = lk(&s.tail).clone();
+                        let copy = tail.as_ref().map(|_| b.clone());
                         sink.data(id, b);
+                        if let (Some(t), Some(c)) = (tail, copy) {
+                            t.push(&c);
+                        }
                     }
                     sink.exit(id, code);
                     let (id, tok) = (id.clone(), s.token);
@@ -1299,6 +1320,30 @@ impl SessionManager {
         #[cfg(not(windows))]
         let gone = gone && crate::pty::finish_reapers(timeout.saturating_sub(t0.elapsed()));
         gone
+    }
+
+    /// The output tail of the tab's session, made on the first call and the same one after (remote sessions PR 2):
+    /// every batch delivered from now on is numbered and kept, the last `TAIL_CAP` bytes of it (rule 281). None when
+    /// the tab has no running session. Any thread.
+    pub fn subscribe_tail(&self, id: &str) -> Option<crate::tail::TailHandle> {
+        let s = lk(&self.sh.st).sessions.get(id).cloned()?;
+        let mut tail = lk(&s.tail);
+        Some(
+            tail.get_or_insert_with(|| crate::tail::TailHandle::new(crate::tail::TAIL_CAP))
+                .clone(),
+        )
+    }
+
+    /// Runs `f` while no batch of the tab's output is being delivered, with the number its tail has reached: what `f`
+    /// reads of the tab's screen then holds exactly the bytes before that number, so a snapshot and a later
+    /// `remote.output {since}` meet without a byte twice or a byte lost. None when the tab has no running session or
+    /// no tail. Waits for a batch being parsed, so never call it on the UI thread (rule 34): it is for the control
+    /// channel's workers.
+    pub fn with_tail_still<R>(&self, id: &str, f: impl FnOnce(u64) -> R) -> Option<R> {
+        let s = lk(&self.sh.st).sessions.get(id).cloned()?;
+        let _dest = lk(&s.dest); // sync-ok: a control channel worker waits for one batch, never the UI thread
+        let end = lk(&s.tail).as_ref()?.end();
+        Some(f(end))
     }
 
     /// Bumped once per chunk read from any shell; only goes up.

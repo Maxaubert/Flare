@@ -187,6 +187,7 @@ mod bar_glue;
 mod install_glue;
 mod mods_glue;
 mod plugins_glue;
+mod remote_glue;
 mod sessions_glue;
 pub mod staged_glue;
 mod surfaces7;
@@ -641,6 +642,8 @@ pub struct AppCtl {
     /// Where control channel events go (None: no channel, in tests and headless runs).
     ctl_events: Option<CtlEvents>,
     ctl_info: Option<CtlInfo>,
+    /// Remote sessions (PR 2): the tabs remote viewers follow. None when this run serves none (tests, headless).
+    remote_host: Option<Arc<crate::remote_host::RemoteHost>>,
     /// The staged build of an installed copy (install when idle); None for any other run.
     staged: Option<staged_glue::StagedState>,
 }
@@ -1120,6 +1123,7 @@ impl AppCtl {
             panel_front_seen: None,
             ctl_events: None,
             ctl_info: None,
+            remote_host: None,
             mods: None,
             staged: None,
         };
@@ -2682,6 +2686,10 @@ impl AppCtl {
         self.dev_forget(id);
         self.s7.notifier.forget(id);
         self.web.close_tab(id);
+        // A remote viewer that followed it hears `no_tab` from now (remote sessions PR 2).
+        if let Some(r) = &self.remote_host {
+            r.forget_tab(id);
+        }
     }
 
     fn toggle_settings(&mut self) {
@@ -4125,6 +4133,14 @@ impl AppCtl {
             CtlOp::MotionClear { plugin, agent } => self.ctl_motion_clear(plugin, agent),
             // The address of a page to fill (the `fill` permission), applied in `ask_glue`.
             CtlOp::FillPage { tab } => self.ctl_fill_page(&tab),
+            // Remote sessions (PR 2): checked on the worker, applied in `remote_glue`.
+            op @ (CtlOp::RemoteOpen { .. }
+            | CtlOp::RemoteTabs
+            | CtlOp::RemoteAttach { .. }
+            | CtlOp::RemoteInput { .. }
+            | CtlOp::RemoteResize { .. }
+            | CtlOp::RemoteRelease { .. }
+            | CtlOp::RemoteClose { .. }) => self.ctl_remote(op),
             // Answered by the browser's message, never here (see `ctl_browser`), or by the person (`ask_glue`).
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }

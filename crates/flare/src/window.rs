@@ -1270,6 +1270,19 @@ pub fn run_window(
         let mut owner_events = None;
         if let Some(instance) = &ctl_instance {
             let tabs = Arc::clone(&ctl_mgr);
+            // Remote sessions (PR 2): a fresh bridge key in the profile, for `flare --serve-remote` (rule 284). Without it
+            // written, this run serves no remote sessions.
+            let remote = crate::remote_host::RemoteHost::new();
+            let remote = match crate::remote_host::write_bridge_key(&inst.profile.dir, remote.key())
+            {
+                Ok(()) => Some(remote),
+                Err(e) => {
+                    log::warn!(
+                        "the remote bridge key could not be written; no remote sessions this run: {e}"
+                    );
+                    None
+                }
+            };
             match crate::ctl_app::CtlServer::start(
                 &instance.pipe,
                 Arc::clone(&post),
@@ -1298,8 +1311,12 @@ pub fn run_window(
                     }
                 },
                 Some(Arc::clone(&mods_hub)),
+                remote.clone(),
             ) {
                 Ok(server) => {
+                    if let Some(r) = remote {
+                        rc.borrow_mut().set_remote_host(r);
+                    }
                     mods_dispatcher = Some(server.dispatcher());
                     owner_events = Some(server.owner_events());
                     rc.borrow_mut().set_ctl(

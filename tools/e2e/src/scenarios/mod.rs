@@ -63,6 +63,7 @@ pub mod mods;
 pub mod panel;
 pub mod panel_split;
 pub mod quit_stress;
+pub mod remote;
 pub mod settings_a;
 pub mod settings_b;
 pub mod settings_c;
@@ -599,6 +600,12 @@ pub const ALL: &[Scenario] = &[
         name: "mcpRoundTrip",
         group: "ctl",
         run: ctl::mcp_round_trip,
+        limit_secs: 240,
+    },
+    Scenario {
+        name: "remoteLoopback",
+        group: "ctl",
+        run: remote::remote_loopback,
         limit_secs: 240,
     },
     Scenario {

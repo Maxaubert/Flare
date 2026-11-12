@@ -58,6 +58,8 @@ live-updates = ["flare-update/live-updates"]
 [dev-dependencies]
 # The agent's side of the control channel, for the end-to-end channel tests (appctl/tests/ctl_socket_tests.rs).
 flare-mcp = { path = "../flare-mcp" }
+# The in-memory wire pair, for the serve bridge's loopback tests (serve_remote.rs).
+flare-ctl = { path = "../flare-ctl", features = ["testing"] }
 tempfile.workspace = true
 zip.workspace = true
 sha2.workspace = true
