@@ -57,6 +57,33 @@ fn no_prism_and_no_em_dash_in_the_resource() {
     assert!(!text.contains('\u{2014}'));
 }
 
+/// Rule 1182: the app icon has its own sources, one per platform (2026-11-12). Windows' .ico (the exe, the
+/// installer and the taskbar) is rendered from assets/icon/app-windows.svg; the Mac's is the Icon Composer icon
+/// assets/icon/app-macos.icon, compiled by actool (flare-cef's macos::release). The in-app mark,
+/// assets/icon/flare-color.svg, is neither and stays.
+#[test]
+fn each_platform_app_icon_has_its_own_source_and_the_in_app_mark_stays() {
+    let icon = root().join("assets").join("icon");
+    for f in [
+        "app-windows.svg",
+        "app-macos.icon/icon.json",
+        "app-macos.icon/Assets/flame.svg",
+        "app-macos.icon/Assets/golden-flame.svg",
+        "flare-color.svg",
+    ] {
+        assert!(icon.join(f).exists(), "assets/icon/{f} is missing");
+    }
+    let make = fs::read_to_string(root().join("tools").join("make-icon.py")).expect("make-icon.py");
+    assert!(make.contains("SVG = ROOT / 'assets' / 'icon' / 'app-windows.svg'"));
+    let mac = fs::read_to_string(root().join("crates/flare-cef/src/macos/release.rs"))
+        .expect("release.rs");
+    assert!(mac.contains("pub const APP_ICON_SOURCE: &str = \"assets/icon/app-macos.icon\";"));
+    let bundle =
+        fs::read_to_string(root().join("crates/flare-cef/src/macos/bundle.rs")).expect("bundle.rs");
+    assert!(bundle.contains("\"CFBundleIconName\""));
+    assert!(bundle.contains("\"CFBundleIconFile\""));
+}
+
 #[test]
 fn the_ico_has_19_frames_in_pt_order() {
     let data = fs::read(root().join("build").join("icon.ico")).expect("build/icon.ico exists");

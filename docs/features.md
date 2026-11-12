@@ -655,6 +655,10 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   pixels, the ink size, the gold inside the orange, at 100 and 225 percent) and
   `the_color_mark_is_the_artworks_two_paths_and_gradients` (the paths, stops and direction are the SVG's), the e2e
   `lifecycle` (`start.state` reports the two tones).
+  2026-11-12: the app icon got its own sources, one per platform (rule 1182): Windows' `.ico` from
+  `assets/icon/app-windows.svg` (a gold flame on a dark rounded square), the Mac's from the Icon Composer icon
+  `assets/icon/app-macos.icon` (Liquid Glass, compiled by `actool` into `Assets.car` plus a fallback `Flare.icns`).
+  `flare-color.svg` stays the in-app mark.
 - **Taskbar identity per profile.** 2026-10-22 (owner: the stable copy showed the installed Flare's old icon on
   the taskbar): a run with its own `--user-data-dir` has its own taskbar identity,
   `com.flare.terminal.p<16 hex>`, the FNV-1a 64 hash of the lowercased profile path (`/` as `\`, trailing
