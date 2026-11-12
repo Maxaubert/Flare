@@ -2552,3 +2552,38 @@ draws an arrow on stays off on the Mac (rule 1124). Not under `--e2e`, where the
 shown), the `page_overlay` unit tests (device pixels to points, flipped or not; the glow's bands tiling the page's
 rectangle; an empty picture or no view refused; the tag's ink) and `the_tag_is_an_orange_pill_with_the_name_readable_on_it`
 (now also on macOS). Source: Max on his Mac (2026-11-11).
+1175. **macOS: the web panel's profile is Flare's own folder, and keeps across a restart what WebView2 keeps.** A cookie
+with an expiry and a page's `localStorage` come back after the engine shut down and started again on the same data
+folder; a session cookie does not (`PERSIST_SESSION_COOKIES` is 0 for every profile, rule 1125); the cookie and storage
+files are under the host's data folder, nowhere else. Native: `crates/flare-cef/src/macos/context.rs`,
+`crates/flare-cef/src/macos/engine.rs`. Held by
+`a_kept_sign_in_and_stored_data_survive_an_engine_restart_and_a_session_cookie_does_not` (`crates/flare-web/tests/cef_macos.rs`,
+probe scenarios `persist-write` and `persist-read`, `crates/flare-web/src/macos/probe/parity.rs`). Source: browser parity
+gap PROF-01 (2026-11-11).
+1176. **macOS: a page's `prefers-color-scheme` is the app's appearance and follows it; the user agent is a desktop
+Chrome's on a Mac.** Windowless CEF reads `NSApp`'s effective appearance (the system's unless the app sets one) and
+follows a change, as WebView2's follows Windows'; nothing in Flare sets a scheme or a user agent on either platform.
+The user agent starts `Mozilla/5.0 (Macintosh; Intel Mac OS X`, names `Chrome/<major>` and `Safari/537.36`, has no
+`Headless` or `CEF`, and `navigator.webdriver` is false. Held by `look.color-scheme` and `look.user-agent` in
+`mini_apps_load_and_paint_and_pages_follow_the_apps_appearance_on_cef` (`crates/flare-web/tests/cef_macos.rs`). Source:
+browser parity gap PROF-03 (2026-11-11).
+1177. **macOS: a plugin's fill types into a sign-in form through `run_script` and stops on a page that moved.**
+`flare_mods::fill::fill_script`, run as `web_ctl` runs it (CDP `Runtime.evaluate`, by value), types the user name, the
+password and the code, fires `input` and `change`, and answers kinds of field only; on another site (scheme, host or
+port) it answers `{ok:false, why:'moved'}` and types nothing. Held by `fill.types` and `fill.moved` in
+`a_plugins_fill_types_into_a_form_and_its_bar_and_background_page_stay_sealed_on_cef` (`crates/flare-web/tests/cef_macos.rs`).
+Source: browser parity gap PLG-01 (2026-11-11).
+1178. **macOS: every mini-app Flare writes loads and paints in a windowless view.** `show_html` (the page behind its
+policy), `show_diagram` (the bundled Mermaid draws an svg), `show_model` (WebGL 2 is there windowless; the viewer reads
+the model and draws it), `show_audio` (the track beside the page loads and plays after the person's click; a page's
+autoplay with sound waits for a gesture, Chromium's default) and the markdown Compiled view (no script). Each page is
+written by the same `flare_surfaces` functions `ctl_app.rs` and `panel_ctl.rs` use. Held by `mini.html`, `mini.diagram`,
+`mini.model`, `mini.audio` and `mini.markdown` in `mini_apps_load_and_paint_and_pages_follow_the_apps_appearance_on_cef`
+(`crates/flare-web/tests/cef_macos.rs`). Source: browser parity gap MINI-01 (2026-11-11).
+1179. **macOS: a plugin's bar and background page keep their seals in the web panel's host.** The background page
+opens hidden in its plugin's own profile and talks over its bridge; a right click on the bar reaches the page but shows
+no menu; Cmd+R, Cmd+=, Cmd+F and Cmd+P reach the page as keys and do nothing of the browser's (no reload, zoom, find or
+print); a download is cancelled before it starts and a dialog answered unseen, on both (`seal::plugin_seal`). Held by
+`plugin.background` and `plugin.sealed` in
+`a_plugins_fill_types_into_a_form_and_its_bar_and_background_page_stay_sealed_on_cef` (`crates/flare-web/tests/cef_macos.rs`).
+Source: browser parity gap PLG-03 (2026-11-11).

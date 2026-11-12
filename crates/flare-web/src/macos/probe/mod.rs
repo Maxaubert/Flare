@@ -14,6 +14,8 @@
 //!   filter is asked about.
 //! - `app-loop`: the web panel turned the real window's way (pumped only when told, rule 1152), and opened again in
 //!   a new host after the last one closed.
+//! - `persist-write`, `persist-read`, `content`, `plugins`: the browser's parity with Windows (`parity.rs`): what a
+//!   profile keeps over a restart, the look, the mini-apps' content, a plugin's fill and its sealed pages.
 //!
 //! Every report carries the window server's count of this process's on-screen windows at the start and the end,
 //! the activation policy and whether the app ever became active.
@@ -21,6 +23,7 @@
 mod agent;
 mod observers;
 mod pages;
+mod parity;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -1937,8 +1940,14 @@ pub fn main() -> i32 {
             return 2;
         }
     };
-    let data = std::env::temp_dir().join(format!("flare-web-probe-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&data);
+    // The persistence check's two runs share a folder the test names (and removes); every other run has its own.
+    let kept = std::env::var_os("FLARE_WEB_PROBE_DATA").map(PathBuf::from);
+    let data = kept.clone().unwrap_or_else(|| {
+        std::env::temp_dir().join(format!("flare-web-probe-{}", std::process::id()))
+    });
+    if kept.is_none() {
+        let _ = std::fs::remove_dir_all(&data);
+    }
     let t = Instant::now();
     let r = match scenario.as_str() {
         "panel" => panel(&mut rep, &data),
@@ -1946,6 +1955,10 @@ pub fn main() -> i32 {
         "agent" => agent::run(&mut rep, &data),
         "quiet" => quiet(&mut rep, &data),
         "app-loop" => app_loop(&mut rep, &data),
+        "persist-write" => parity::persist_write(&mut rep, &data),
+        "persist-read" => parity::persist_read(&mut rep, &data),
+        "content" => parity::content(&mut rep, &data),
+        "plugins" => parity::plugins(&mut rep, &data),
         other => Err(format!("no scenario {other:?}")),
     };
     if let Err(e) = r {
@@ -1969,6 +1982,8 @@ pub fn main() -> i32 {
     rep.set("windows_at_end", json!(screen::windows_of_self()));
     rep.set("shutdown", json!(true));
     write(&rep);
-    let _ = std::fs::remove_dir_all(&data);
+    if kept.is_none() {
+        let _ = std::fs::remove_dir_all(&data);
+    }
     0
 }
