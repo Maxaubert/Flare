@@ -782,19 +782,57 @@ impl SignalStrip {
     }
 }
 
-/// A remote snapshot is text: whatever escape sequence it holds beyond its own clear and home is taken out, so a
-/// snapshot can never raise a mark or set a title on this machine (rule 289). Line breaks stay.
+/// Pure: the end of a snapshot that puts the cursor back where the host's is (rule 293). The snapshot's last line is
+/// the host screen's bottom row, so the cursor goes to the start of that line, up to the cursor's row and right to its
+/// column. Moves relative to the bottom hold on a viewer of another height too.
+pub fn snapshot_cursor(rows: usize, line: i32, col: usize) -> Vec<u8> {
+    let line = usize::try_from(line)
+        .unwrap_or(0)
+        .min(rows.saturating_sub(1));
+    let up = rows.saturating_sub(1) - line;
+    let mut out = b"\r".to_vec();
+    if up > 0 {
+        out.extend_from_slice(format!("\x1b[{up}A").as_bytes());
+    }
+    if col > 0 {
+        out.extend_from_slice(format!("\x1b[{col}C").as_bytes());
+    }
+    out
+}
+
+/// The length of a cursor move up or right (`ESC [ n A`, `ESC [ n C`) at the start of `s`, if one is there.
+fn cursor_move(s: &[char]) -> Option<usize> {
+    if s.get(1) != Some(&'[') {
+        return None;
+    }
+    let digits = s[2..].iter().take_while(|c| c.is_ascii_digit()).count();
+    let fin = *s.get(2 + digits)?;
+    (digits > 0 && digits <= 5 && (fin == 'A' || fin == 'C')).then_some(3 + digits)
+}
+
+/// A remote snapshot is text: whatever escape sequence it holds beyond its own clear and home and the cursor moves up
+/// and right that put the cursor back (rule 293) is taken out, so a snapshot can never raise a mark or set a title on
+/// this machine (rule 289). Line breaks stay.
 pub fn plain_snapshot(data: &[u8]) -> Vec<u8> {
     const HEAD: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
     let body = data.strip_prefix(HEAD).unwrap_or(data);
     let mut out = HEAD.to_vec();
-    let text = String::from_utf8_lossy(body);
-    out.extend(
-        text.chars()
-            .filter(|c| *c == '\r' || *c == '\n' || !c.is_control())
-            .collect::<String>()
-            .as_bytes(),
-    );
+    let chars: Vec<char> = String::from_utf8_lossy(body).chars().collect();
+    let mut kept = String::with_capacity(chars.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(n) = (c == '\x1b').then(|| cursor_move(&chars[i..])).flatten() {
+            kept.extend(&chars[i..i + n]);
+            i += n;
+            continue;
+        }
+        if c == '\r' || c == '\n' || !c.is_control() {
+            kept.push(c);
+        }
+        i += 1;
+    }
+    out.extend_from_slice(kept.as_bytes());
     out
 }
 
@@ -1041,6 +1079,19 @@ mod tests {
     fn a_snapshot_is_text_with_no_sequence_of_its_own() {
         let snap = plain_snapshot(b"\x1b[H\x1b[2J\x1b[3Jone\r\ntwo\x1b]777;state=done\x07");
         assert_eq!(snap, b"\x1b[H\x1b[2J\x1b[3Jone\r\ntwo]777;state=done");
+    }
+
+    /// Rule 293: the moves up and right that put the cursor back stay; any other sequence still loses its ESC.
+    #[test]
+    fn a_snapshot_keeps_only_the_cursor_moves_up_and_right() {
+        let end = snapshot_cursor(24, 1, 15);
+        assert_eq!(end, b"\r\x1b[22A\x1b[15C");
+        assert_eq!(snapshot_cursor(24, 23, 0), b"\r");
+        let mut data = b"\x1b[H\x1b[2J\x1b[3Jone\x1b[5B\x1b[2;3H\x1b[A".to_vec();
+        data.extend_from_slice(&end);
+        let mut want = b"\x1b[H\x1b[2J\x1b[3Jone[5B[2;3H[A".to_vec();
+        want.extend_from_slice(&end);
+        assert_eq!(plain_snapshot(&data), want);
     }
 
     #[test]

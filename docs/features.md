@@ -2494,6 +2494,11 @@ viewer").
   the tab closes the session on the host (asking first there, as any close); quitting Flare only lets go, and the
   session goes on. `tabs.json` keeps the host's tab, so after a restart the tab attaches to the same session and shows
   its screen (rule 288). Held by `remote_link::tests`, `restore::remote_tests` and the e2e `remoteViewer`.
+- **The host's screen, cursor and pastes.** A tab that starts from the host's screen puts its cursor where the host's
+  is, so what is typed next lands in the same place on both (rule 293). A paste in a remote tab always goes to the
+  host as one paste, and the host brackets it as its shell asked, so a pasted line never runs before Enter (rule 292).
+  Held by `handle::tests::a_snapshot_puts_the_viewers_cursor_where_the_hosts_is` and
+  `handle::tests::a_paste_on_a_remote_tab_crosses_as_one_paste_whatever_the_local_mode`.
 - **Replays raise nothing.** The host's screen and what a reconnect catches up on never raise Finished, Question or a
   working mark here; live output still does (rule 289). Held by
   `agent_hub::tests::a_remote_tabs_replay_raises_no_mark_and_live_output_does`.

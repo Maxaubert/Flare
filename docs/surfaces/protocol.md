@@ -917,8 +917,9 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   the oldest kept, and the viewer asks for `remote.snapshot`. Answered on the worker, never the UI thread. `no_tab`
   when no connection follows the tab (send `remote.attach` first). Polled in short calls: events are lossy and never
   sent to a link.
-- `remote.snapshot {tab}` -> `{tab, seq, cols, rows, data}`. The tab's screen and up to 1000 lines of history above it
-  as text (base64: clear, home, the lines joined by CR LF; no colours), read while no batch of output is being parsed,
+- `remote.snapshot {tab}` -> `{tab, seq, cols, rows, data}`. The tab's whole screen and history above it, 1000 lines
+  at most, as text (base64: clear, home, the lines joined by CR LF, then CR and the cursor moves up and right that put
+  the cursor where the host's is, rule 293; no colours and no modes), read while no batch of output is being parsed,
   so it holds every byte before `seq` and none after: `remote.output {since: seq}` goes on from it with no byte twice.
   On the worker.
 - `remote.close {tab}` -> `{tab, closed}`. Closes the tab the way a person's close does: an agent at work asks first

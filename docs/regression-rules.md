@@ -1029,6 +1029,23 @@ makes no `ShellTokens`), and the windows-only kill answer to ConPTY's opening qu
 writer (it would read as keys). Native: `crates/flare-term/src/session.rs`. Held by
 `a_remote_tab_never_starts_a_local_shell_or_takes_a_spare_and_carries_no_token` and
 `the_quit_detaches_a_remote_tab_and_a_close_closes_it`. Source: remote sessions PR 3 (2026-11-12).
+292. **A paste on a remote tab always crosses as one paste.** A snapshot is text and carries none of the host's modes,
+so after a restore or a gap the viewer's emulator may not know the host's shell asked for bracketed paste. A paste
+framed by that stale mode went out unbracketed, `decode_typing` cut it into text and Enter keys, and the host shell ran
+the first line at once. `TermHandle::paste` frames every paste on a remote tab, so the link sends one `Paste` intent
+and the host brackets it with its own mode (rule 279); `paste_unsent` frames its one line too. Native:
+`crates/flare-term/src/handle.rs` (`paste`, `paste_unsent`). Held by
+`a_paste_on_a_remote_tab_crosses_as_one_paste_whatever_the_local_mode`. Source: review of remote sessions PR 3
+(2026-11-12).
+293. **A remote snapshot puts the viewer's cursor where the host's is.** Every byte after a snapshot is relative to the
+host's cursor. The snapshot trimmed trailing blank lines and spaces, so the viewer's cursor sat at the end of the last
+text (one column left of a `% ` prompt), and the echo and any relative redraw of a TUI landed on the wrong cells.
+`remote_snapshot` now sends the whole screen (blank rows below the prompt included) with history above it, so its last
+line is the screen's bottom row, then `snapshot_cursor`: CR, a move up and a move right to the host's cursor.
+`plain_snapshot` keeps those two moves (`ESC [ n A`, `ESC [ n C`) and nothing else, so rule 289 holds. Native:
+`crates/flare-term/src/handle.rs` (`remote_snapshot`), `remote_pty.rs` (`snapshot_cursor`, `plain_snapshot`). Held by
+`a_snapshot_puts_the_viewers_cursor_where_the_hosts_is` and `a_snapshot_keeps_only_the_cursor_moves_up_and_right`.
+Source: review of remote sessions PR 3 (2026-11-12).
 
 ## macOS port
 

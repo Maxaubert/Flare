@@ -717,6 +717,7 @@ mod tests {
             env: vec![],
             cols: 80,
             rows: 24,
+            remote: None,
         };
         let t = std::time::Instant::now();
         assert!(PortablePty::spawn(&spec).is_err());

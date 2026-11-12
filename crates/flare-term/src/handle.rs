@@ -571,21 +571,27 @@ impl TermHandle {
         self.sh.mark_typed_by(by);
     }
 
-    /// A paste the caller already sanitised; bracketed only when the program asked.
+    /// A paste the caller already sanitised; bracketed only when the program asked. On a remote tab it is always
+    /// framed: the link sends it as one paste and the host brackets it with its own mode (rule 279). This emulator's
+    /// mode is no guide there, since a snapshot carries none of the host's modes (rule 292).
     pub fn paste(&self, text: &str) {
-        self.write_paste(text, self.mode().bracketed_paste);
+        self.write_paste(text, self.mode().bracketed_paste || self.is_remote());
     }
 
     /// A sanitised paste that must wait at the prompt for the person to send ("Ask agent", #33). Bracketed when the
     /// program asked; when it did not, a CR inside the text would submit that line, so the text goes as one line and
-    /// no CR is written at all.
+    /// no CR is written at all. On a remote tab the one line is framed too, so it still crosses as one paste.
     pub fn paste_unsent(&self, text: &str) {
         let bracketed = self.mode().bracketed_paste;
         if bracketed {
             self.write_paste(text, true);
         } else {
-            self.write_paste(&flare_shells::paste::one_line(text), false);
+            self.write_paste(&flare_shells::paste::one_line(text), self.is_remote());
         }
+    }
+
+    fn is_remote(&self) -> bool {
+        self.sh.mgr.is_remote(&self.sh.id)
     }
 
     fn write_paste(&self, text: &str, bracketed: bool) {
@@ -652,12 +658,18 @@ impl TermHandle {
         self.sh.mgr.with_tail_still(&self.sh.id, |seq| {
             let mut e = self.emu.lock();
             let evs = e.release_sync();
-            let text = e.text_tail(lines.max(1));
             let (cols, rows) = (e.cols(), e.rows());
+            // The whole screen, blank rows below the prompt included, and history above it: the last line written is
+            // the screen's bottom row, so the cursor can be put back where the host's is (rule 293).
+            let top = -(e.history_size() as i32);
+            let start = (rows as i32 - lines.max(rows) as i32).max(top);
+            let text: Vec<String> = (start..rows as i32).map(|l| e.row_text(l)).collect();
+            let (line, col) = e.cursor();
             drop(e);
             self.sh.handle(evs);
             let mut data = b"\x1b[H\x1b[2J\x1b[3J".to_vec();
             data.extend_from_slice(text.join("\r\n").as_bytes());
+            data.extend_from_slice(&crate::remote_pty::snapshot_cursor(rows, line, col));
             RemoteSnapshot {
                 seq,
                 cols,
@@ -998,6 +1010,73 @@ mod tests {
             tail.read(snap.seq, 1 << 20).data,
             b" and the rest\x1b[?2026l"
         );
+    }
+
+    /// Rule 293: a snapshot puts the viewer's cursor where the host's is, a space after the prompt and a cursor moved
+    /// into the middle of the screen alike, so the bytes that follow land on the same cells on both.
+    #[test]
+    fn a_snapshot_puts_the_viewers_cursor_where_the_hosts_is() {
+        let t = T::started();
+        let _tail = t.h.sh.mgr.subscribe_tail("a").expect("a tail");
+        let viewer_after = |snap: &RemoteSnapshot, rows: usize| {
+            let mut v = Emulator::new(80, rows);
+            v.feed(&crate::remote_pty::plain_snapshot(&snap.data));
+            v
+        };
+        t.fake().feed(b"one\r\nmax@mac proj % ");
+        wait_until("the prompt", || t.text().contains("proj %"));
+        let host = t.h.emu.lock().cursor();
+        assert_eq!(host, (1, 15));
+        let snap = t.h.remote_snapshot(100).expect("a snapshot");
+        for rows in [24, 30] {
+            let mut v = viewer_after(&snap, rows);
+            assert_eq!(v.cursor(), host, "a viewer {rows} rows high");
+            v.feed(b"ls");
+            assert_eq!(v.row_text(1), "max@mac proj % ls");
+        }
+        t.fake().feed(b"\x1b[10;20H");
+        wait_until("the move", || t.h.emu.lock().cursor() == (9, 19));
+        let snap = t.h.remote_snapshot(100).expect("a snapshot");
+        assert_eq!(viewer_after(&snap, 24).cursor(), (9, 19));
+    }
+
+    /// Rule 292: a paste on a remote tab crosses as one paste even when this emulator never saw the host ask for
+    /// bracketed paste (a snapshot carries no mode), so the host brackets it with its own mode and no line runs early.
+    #[test]
+    fn a_paste_on_a_remote_tab_crosses_as_one_paste_whatever_the_local_mode() {
+        let remote = crate::fake::FakeRemote::new();
+        let sp = Arc::new(crate::pty::RoutingSpawner {
+            local: FakeSpawner::new(),
+            remote: remote.clone(),
+        });
+        let mgr = SessionManager::new(sp, FakeShells::new(), SessionOptions::default());
+        let h = TermHandle::new("r", mgr, 80, 24);
+        h.start(StartOptions {
+            remote: Some(crate::remote_pty::RemoteSpec {
+                machine: "mac".into(),
+                folder: "/Users/max/proj".into(),
+                live: crate::remote_pty::RemoteLive::default(),
+            }),
+            ..start_opts()
+        });
+        wait_until("the remote session", || h.sh.mgr.is_remote("r"));
+        let io = remote.made()[0].1.clone();
+        let sent = || {
+            let mut got = Vec::new();
+            let end = Instant::now() + Duration::from_secs(3);
+            while got.is_empty() && Instant::now() < end {
+                got.extend(io.take_outgoing(Duration::from_millis(20)).intents);
+            }
+            got
+        };
+        assert!(!h.mode().bracketed_paste);
+        h.paste("rm -rf build\nmake");
+        assert_eq!(
+            sent(),
+            vec![RemoteIntent::Paste("rm -rf build\rmake".into())]
+        );
+        h.paste_unsent("one\ntwo");
+        assert_eq!(sent(), vec![RemoteIntent::Paste("one two".into())]);
     }
 
     // The resume reveal.
