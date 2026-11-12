@@ -754,7 +754,282 @@ mod mac {
         );
     }
 
+    /// The terminal element as a tracker reads it (rule 1187), on a window that is never shown. AppKit's
+    /// accessibility server reads an `NSAccessibilityElement` subclass through the NSAccessibility protocol getters
+    /// (`accessibilityRole`, `accessibilitySelectedTextRange`, `accessibilityFrameForRange:` and so on, each allowed
+    /// by `isAccessibilitySelectorAllowed:`), as it reads AccessKit's nodes; the probe calls the same getters. The
+    /// legacy `accessibilityAttributeValue:` of an NSAccessibilityElement answers only its stored properties, so it
+    /// is not what is checked here.
+    mod ax_terminal_tests {
+        use super::{mtm, window};
+        use flare_win::ax_caret::{AxCell, AxEvent};
+        use flare_win::ax_terminal::{self, AxFrame};
+        use objc2::rc::Retained;
+        use objc2::runtime::{AnyObject, Sel};
+        use objc2::{ClassType, MainThreadOnly, define_class, msg_send, sel};
+        use objc2_app_kit::{NSResponder, NSView};
+        use objc2_foundation::{NSArray, NSObject, NSPoint, NSRange, NSRect, NSSize, NSString};
+
+        fn focused_of(view: &NSView) -> Option<Retained<AnyObject>> {
+            // SAFETY: NSView's accessibilityFocusedUIElement, on the main thread.
+            unsafe { msg_send![view, accessibilityFocusedUIElement] }
+        }
+
+        fn children_of(view: &NSView) -> Vec<Retained<AnyObject>> {
+            // SAFETY: NSView's accessibilityChildren, on the main thread.
+            let a: Option<Retained<NSArray>> = unsafe { msg_send![view, accessibilityChildren] };
+            a.map(|a| a.to_vec()).unwrap_or_default()
+        }
+
+        fn same(a: &AnyObject, b: &AnyObject) -> bool {
+            std::ptr::eq(a, b)
+        }
+
+        fn allowed(el: &AnyObject, s: Sel) -> bool {
+            // SAFETY: the NSAccessibility gate the server asks before each getter.
+            unsafe { msg_send![el, isAccessibilitySelectorAllowed: s] }
+        }
+
+        fn string(el: &AnyObject, s: Sel) -> Option<String> {
+            // SAFETY: an NSAccessibility getter answering an NSString (or nil), on the main thread.
+            let r: Option<Retained<AnyObject>> = unsafe { msg_send![el, performSelector: s] };
+            r.and_then(|r| r.downcast_ref::<NSString>().map(|s| s.to_string()))
+        }
+
+        fn is_focused(el: &AnyObject) -> bool {
+            // SAFETY: the NSAccessibility getter, on the main thread.
+            unsafe { msg_send![el, isAccessibilityFocused] }
+        }
+
+        fn selected(el: &AnyObject) -> NSRange {
+            // SAFETY: the NSAccessibility getter, on the main thread.
+            unsafe { msg_send![el, accessibilitySelectedTextRange] }
+        }
+
+        fn bounds(el: &AnyObject, r: NSRange) -> NSRect {
+            // SAFETY: the NSAccessibility getter behind AXBoundsForRange, on the main thread.
+            unsafe { msg_send![el, accessibilityFrameForRange: r] }
+        }
+
+        const CELL: AxCell = AxCell {
+            x: 80,
+            y: 120,
+            w: 20,
+            h: 40,
+        };
+        const GRID: AxCell = AxCell {
+            x: 20,
+            y: 80,
+            w: 1600,
+            h: 1000,
+        };
+
+        fn frame(cell: AxCell, line: &str, col: usize) -> AxFrame {
+            AxFrame {
+                cell,
+                grid: GRID,
+                line: line.to_string(),
+                col,
+            }
+        }
+
+        /// Where a cell of device pixels from the content view's top left is on the screen, worked out from the
+        /// content view's own frame on the screen (y up), not from the module's flip.
+        fn expected(view: &NSView, c: AxCell) -> NSRect {
+            let w = view.window().expect("window");
+            let s = w.backingScaleFactor();
+            let on_screen = w.convertRectToScreen(view.frame());
+            let top = on_screen.origin.y + on_screen.size.height;
+            NSRect::new(
+                NSPoint::new(
+                    on_screen.origin.x + f64::from(c.x) / s,
+                    top - f64::from(c.y + c.h) / s,
+                ),
+                NSSize::new(f64::from(c.w) / s, f64::from(c.h) / s),
+            )
+        }
+
+        pub fn the_terminal_is_the_focused_text_area_with_the_cursor_cell_on_the_screen() {
+            let mtm = mtm();
+            let (w, handle) = window(mtm);
+            let view = w.contentView().expect("content");
+            // The window has the keys and the terminal holds them: the element claims the focus once.
+            assert_eq!(
+                ax_terminal::sync(handle, true, Some(frame(CELL, "$ ls", 4))),
+                vec![AxEvent::FocusGained]
+            );
+            let el = ax_terminal::element(handle).expect("the element");
+            let el: &AnyObject = &el;
+            assert!(
+                (*view)
+                    .class()
+                    .name()
+                    .to_string_lossy()
+                    .starts_with("FlareAXTerminalOf"),
+                "the view is hooked"
+            );
+            let f = focused_of(&view).expect("a focused element");
+            assert!(same(&f, el), "the view's focused element is the terminal");
+            assert!(
+                children_of(&view).iter().any(|c| same(c, el)),
+                "a child of the view"
+            );
+            for s in [
+                sel!(accessibilityRole),
+                sel!(accessibilityParent),
+                sel!(accessibilityFrame),
+                sel!(isAccessibilityFocused),
+                sel!(accessibilityValue),
+                sel!(accessibilityNumberOfCharacters),
+                sel!(accessibilitySelectedTextRange),
+                sel!(accessibilityFrameForRange:),
+                sel!(accessibilityStringForRange:),
+                sel!(accessibilityLineForIndex:),
+                sel!(accessibilityRangeForLine:),
+            ] {
+                assert!(allowed(el, s), "{s:?} is allowed");
+            }
+            assert_eq!(
+                string(el, sel!(accessibilityRole)).as_deref(),
+                Some("AXTextArea")
+            );
+            assert!(string(el, sel!(accessibilityRoleDescription)).is_some_and(|d| !d.is_empty()));
+            assert_eq!(
+                string(el, sel!(accessibilityLabel)).as_deref(),
+                Some(ax_terminal::LABEL)
+            );
+            // SAFETY: the NSAccessibility getter, on the main thread.
+            let parent: Option<Retained<AnyObject>> = unsafe { msg_send![el, accessibilityParent] };
+            assert!(
+                parent.is_some_and(|p| std::ptr::eq(&*p, Retained::as_ptr(&view).cast())),
+                "its parent is the view"
+            );
+            assert!(is_focused(el));
+            assert_eq!(
+                string(el, sel!(accessibilityValue)).as_deref(),
+                Some("$ ls")
+            );
+            // SAFETY: the NSAccessibility getter, on the main thread.
+            let n: isize = unsafe { msg_send![el, accessibilityNumberOfCharacters] };
+            assert_eq!(n, 4);
+            assert_eq!(selected(el), NSRange::new(4, 0), "the cursor, zero length");
+            assert_eq!(
+                bounds(el, NSRange::new(4, 0)),
+                expected(&view, CELL),
+                "the cursor's cell on the screen"
+            );
+            // SAFETY: the NSAccessibility getter, on the main thread.
+            let fr: NSRect = unsafe { msg_send![el, accessibilityFrame] };
+            assert_eq!(fr, expected(&view, GRID), "the element's frame is the grid");
+            // SAFETY: the NSAccessibility getter, on the main thread.
+            let sub: Option<Retained<NSString>> =
+                unsafe { msg_send![el, accessibilityStringForRange: NSRange::new(2, 2)] };
+            assert_eq!(sub.map(|s| s.to_string()).as_deref(), Some("ls"));
+
+            // A frame that leaves the cursor posts nothing; a move posts once and moves the bounds.
+            assert!(ax_terminal::sync(handle, true, Some(frame(CELL, "$ ls", 4))).is_empty());
+            let next = AxCell { x: 100, ..CELL };
+            assert_eq!(
+                ax_terminal::sync(handle, true, Some(frame(next, "$ ls ", 5))),
+                vec![AxEvent::CaretMoved]
+            );
+            assert_eq!(selected(el), NSRange::new(5, 0));
+            assert_eq!(bounds(el, NSRange::new(5, 0)), expected(&view, next));
+
+            // A field, the panel or a menu takes the keys with no frame yet: the probe says so at once.
+            ax_terminal::set_keys_probe(|| false);
+            let f = focused_of(&view);
+            assert!(
+                !f.as_deref().is_some_and(|f| same(f, el)),
+                "a field has the focus"
+            );
+            assert!(!is_focused(el));
+            ax_terminal::set_keys_probe(|| true);
+
+            // The window loses the keyboard: the focus is given up once.
+            assert_eq!(ax_terminal::focus(handle, false), vec![AxEvent::FocusLost]);
+            assert!(ax_terminal::sync(handle, false, Some(frame(CELL, "$", 1))).is_empty());
+            let f = focused_of(&view);
+            assert!(!f.as_deref().is_some_and(|f| same(f, el)));
+            // No terminal in front (Settings): nothing to claim even with the keys.
+            assert!(ax_terminal::sync(handle, true, None).is_empty());
+            // Hooking again keeps the one subclass.
+            let cls = (*view).class();
+            ax_terminal::sync(handle, true, Some(frame(CELL, "$", 1)));
+            assert!(std::ptr::eq((*view).class(), cls));
+            assert!(!w.isVisible(), "the test window must never show");
+        }
+
+        define_class!(
+            // SAFETY: NSView may be subclassed; no instance variables, no Drop.
+            #[unsafe(super(NSView, NSResponder, NSObject))]
+            #[thread_kind = MainThreadOnly]
+            #[name = "FlareTestAXToolkitView"]
+            struct ToolkitView;
+
+            impl ToolkitView {
+                /// What a toolkit's own tree (AccessKit's, Slint's) answers: one child, and a focus of its own.
+                #[unsafe(method_id(accessibilityChildren))]
+                fn children(&self) -> Option<Retained<NSArray>> {
+                    Some(NSArray::from_retained_slice(&[toolkit_child()]))
+                }
+
+                #[unsafe(method_id(accessibilityFocusedUIElement))]
+                fn focus(&self) -> Option<Retained<AnyObject>> {
+                    Some(toolkit_child())
+                }
+            }
+        );
+
+        fn toolkit_child() -> Retained<AnyObject> {
+            thread_local! {
+                static CHILD: Retained<NSObject> = NSObject::new();
+            }
+            CHILD.with(|c| Retained::into_super(c.clone()))
+        }
+
+        pub fn a_toolkits_own_tree_keeps_its_children_and_its_focus_when_the_terminal_has_none() {
+            let mtm = mtm();
+            let (w, _) = window(mtm);
+            let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1000.0, 640.0));
+            // SAFETY: NSView's designated initializer on a fresh instance of the test subclass.
+            let tk: Retained<ToolkitView> =
+                unsafe { msg_send![ToolkitView::alloc(mtm), initWithFrame: rect] };
+            let tk: Retained<NSView> = Retained::into_super(tk);
+            w.setContentView(Some(&tk));
+            let handle = Retained::as_ptr(&tk) as isize;
+            assert_eq!(
+                ToolkitView::class().name().to_str().ok(),
+                Some("FlareTestAXToolkitView")
+            );
+            // The terminal does not have the keys: the toolkit's focus stands, and its child is still there.
+            assert!(ax_terminal::sync(handle, false, Some(frame(CELL, "$", 1))).is_empty());
+            let child = toolkit_child();
+            let f = focused_of(&tk).expect("the toolkit's focus");
+            assert!(same(&f, &child));
+            let el = ax_terminal::element(handle).expect("the element");
+            let kids = children_of(&tk);
+            assert_eq!(kids.len(), 2, "the toolkit's child and the terminal");
+            assert!(same(&kids[0], &child));
+            assert!(same(&kids[1], &el));
+            // The terminal takes the keys: it is the focus; giving them up hands the focus back.
+            assert_eq!(ax_terminal::focus(handle, true), vec![AxEvent::FocusGained]);
+            assert!(same(&focused_of(&tk).expect("focus"), &el));
+            assert_eq!(ax_terminal::focus(handle, false), vec![AxEvent::FocusLost]);
+            assert!(same(&focused_of(&tk).expect("focus"), &child));
+            assert!(!w.isVisible(), "the test window must never show");
+        }
+    }
+
     pub const TESTS: &[(&str, fn())] = &[
+        (
+            "ax_terminal_is_the_focused_text_area_with_the_cursor_cell_on_the_screen",
+            ax_terminal_tests::the_terminal_is_the_focused_text_area_with_the_cursor_cell_on_the_screen,
+        ),
+        (
+            "ax_terminal_keeps_a_toolkits_own_tree_and_focus_when_the_terminal_has_none",
+            ax_terminal_tests::a_toolkits_own_tree_keeps_its_children_and_its_focus_when_the_terminal_has_none,
+        ),
         (
             "open_in_service_turns_finders_files_into_one_tab_request",
             open_in_tests::the_service_turns_finders_files_into_one_tab_request,
