@@ -110,6 +110,7 @@ pub fn caret_is_hollow(chrome_focus: bool, find_focus: bool, menu_open: bool) ->
 /// Whether the terminal holds the keyboard inside the window, for accessibility (rule 1187): no popup, dialog or
 /// field does (the hollow caret), and neither the side panel nor its page. The window having the keyboard is the
 /// caller's part.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn terminal_has_keys(hollow: bool, panel_focus: bool, page_focus: bool) -> bool {
     !(hollow || panel_focus || page_focus)
 }
