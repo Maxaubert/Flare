@@ -2531,7 +2531,7 @@ Native: `crates/flare-web/src/macos/host.rs`, `crates/flare-cef/src/macos/view.r
 `a_web_panel_turned_as_the_window_turns_loads_and_paints_and_again_after_the_last_closed`
 (`crates/flare-web/tests/cef_macos.rs`; without the fix its reopen check fails, nothing loads). Source: Max on his Mac
 ("the flare browser is just dark", 2026-11-11).
-1153. **No CI step downloads Prism Terminal or needs a token for it.** Owner decision 2026-11-11 (Prism Terminal is deprecated): the side-by-side check that installed Flare beside Prism Terminal on the runner is removed, with its test (`tools/e2e/tests/side_by_side.rs`), its workflow (`installer-e2e.yml`, which ran only that test) and its step in `release.yml`. No workflow names `arkivert/PrismTerminal`, `FLARE_RELEASE_TOKEN` or `PRISM_RELEASE_TOKEN`, and `release.yml` reads no repository secret, so a release never waits on a token. Native: `.github/workflows/release.yml`. Held by `no_workflow_downloads_the_reference_app_or_needs_a_token_for_it`, `no_secret_other_than_the_github_token` and `the_release_goes_to_this_repository_only` (`crates/flare/tests/release_files.rs`). Source: owner decision 2026-11-11; `docs/shipping.md`.
+1183. **No CI step downloads Prism Terminal or needs a token for it.** Owner decision 2026-11-11 (Prism Terminal is deprecated): the side-by-side check that installed Flare beside Prism Terminal on the runner is removed, with its test (`tools/e2e/tests/side_by_side.rs`), its workflow (`installer-e2e.yml`, which ran only that test) and its step in `release.yml`. No workflow names `arkivert/PrismTerminal`, `FLARE_RELEASE_TOKEN` or `PRISM_RELEASE_TOKEN`, and `release.yml` reads no repository secret, so a release never waits on a token. Native: `.github/workflows/release.yml`. Held by `no_workflow_downloads_the_reference_app_or_needs_a_token_for_it`, `no_secret_other_than_the_github_token` and `the_release_goes_to_this_repository_only` (`crates/flare/tests/release_files.rs`). Source: owner decision 2026-11-11; `docs/shipping.md`.
 1155. **macOS: the agent's cursor, the glow round the page and the agent's arrow show over the web panel, and never take
 a click or the keyboard.** Max on his Mac: "it works but its missing teh overlay effect when claude is using it and its
 missing the visible cursor when claude is moving aorund on the page". On Windows each picture is a layered popup owned
@@ -2793,3 +2793,14 @@ on release or the settle the page's next picture fills the box again. Windows dr
 false), so nothing changes on Windows. Native: `crates/flare/ui/panel.slint`. Held by
 `a_page_drawn_off_screen_keeps_its_width_while_the_splitter_is_held` (`crates/flare/src/appctl/tests/web_tests.rs`,
 rendered pixels). Source: the browser parity audit (LC-09), 2026-11-11.
+1184. **On a CI runner a check waits for what it tests, and skips a part only when the runner truly lacks the
+hardware.** Main eede2a8b went red twice on GitHub's macOS VM while the PR runs passed. `mini.audio` (rule 1178) saw
+`play()` take the click but `currentTime` stay at 0, because the VM has no audio output device: the probe now polls the
+clock for up to 5 s and, only when it still has not moved and `system_profiler SPAudioDataType` lists no output device,
+passes with `skipped` and the reason in the report (`cef_macos.rs` prints it); load, paint, the 2 s track and `play()`
+are still required, and a Mac with an output device must still play. promptLayout read the last line once, right
+after `ready` (the prompt after the echo had not come yet): it now waits for that prompt before resizing and gives the
+redraw after the resize 5 s, failing on a prompt that stays broken. Native:
+`crates/flare-web/src/macos/probe/parity.rs`, `tools/e2e/src/scenarios/lifecycle.rs`. Held by
+`mini_apps_load_and_paint_and_pages_follow_the_apps_appearance_on_cef` and the promptLayout scenario. Source: CI run
+43147800100 on main (2026-11-12).

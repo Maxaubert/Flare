@@ -773,6 +773,22 @@ fn wait_redraw_over(ctx: &mut Ctx, app: &mut App, tab: &str) -> bool {
     )
 }
 
+/// The last line of the tab's text that is not blank, without its trailing spaces.
+fn last_line(app: &mut App, tab: &str) -> String {
+    rows_text(app, tab)
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_default()
+        .trim_end()
+        .to_string()
+}
+
+/// The whole PowerShell prompt in the alpha folder.
+fn prompt_is_last(line: &str) -> bool {
+    line.starts_with("PS ") && line.ends_with("alpha>")
+}
+
 /// A prompt survives the window getting narrower and wider again (ConPTY sends nothing on a
 /// resize). PT: run.mjs:8107-8128.
 pub fn prompt_layout(ctx: &mut Ctx) -> Result<(), String> {
@@ -796,6 +812,11 @@ pub fn prompt_layout(ctx: &mut Ctx) -> Result<(), String> {
     ctx.until("the echo", 15_000, &mut || {
         rows_text(&mut app, &front).contains("ready")
     });
+    // The prompt after the echo comes a moment after `ready`: the resize starts from a whole prompt, or a loaded
+    // runner reads `ready` as the last line (main eede2a8b, rule 1184).
+    ctx.until("the prompt after the echo", 15_000, &mut || {
+        prompt_is_last(&last_line(&mut app, &front))
+    });
 
     let start_w = grid_width(&mut app).unwrap_or(0.0);
     app.session.call(&Request::Resize { w: 620.0, h: 600.0 })?;
@@ -811,15 +832,18 @@ pub fn prompt_layout(ctx: &mut Ctx) -> Result<(), String> {
         grid_width(&mut app).is_some_and(|w| w > narrow_w + 100.0)
     });
 
-    let last = rows_text(&mut app, &front)
-        .lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or_default()
-        .trim_end()
-        .to_string();
+    // The shell redraws its prompt for the new width on its own time: a few seconds for it, never a pass on a
+    // prompt that stays broken.
+    let end = Instant::now() + Duration::from_secs(5);
+    let last = loop {
+        let last = last_line(&mut app, &front);
+        if prompt_is_last(&last) || Instant::now() > end {
+            break last;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
     ctx.ok(
-        last.starts_with("PS ") && last.ends_with("alpha>"),
+        prompt_is_last(&last),
         format!("the prompt is whole after a narrow-then-wide resize (\"{last}\")"),
     );
     type_line(&mut app, "echo after-$(1+1)")?;

@@ -83,6 +83,11 @@ pub const INVENTORY: &[(&str, &str)] = &[
     ("flare-web/src/macos/probe/mod.rs", "Web panel"),
     ("flare-web/src/macos/probe/observers.rs", "Web panel"),
     ("flare-web/src/macos/probe/pages.rs", "Web panel"),
+    // The host tests' parity and certificate checks (#192, #193): the probe's own loopback servers, one plain and one
+    // HTTPS with a certificate made for the run. Test-only, run by `tests/cef_macos.rs` in the dev bundle; the app
+    // never calls the probe, so nothing here is reached from Flare itself.
+    ("flare-web/src/macos/probe/parity.rs", "Web panel"),
+    ("flare-web/src/macos/probe/tls.rs", "Web panel"),
     // The plugin fill API and brand (2026-10-28, 2026-11-08): string work on addresses, no request. The fill's site
     // check builds an `https://` address from a login's host to compare it with the page's; the details sheet and a
     // plugin's question show a homepage's or an install address's host.
