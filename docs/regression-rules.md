@@ -337,6 +337,30 @@ reducer only through the test seam (`DictLine` lines and `DictRoute`), and every
 does. Native: `dictation_ctl.rs` (`e2e: bool` in the options, `e2e_line`), `service.rs` (`HookStart` never emitted under
 the flag). Held by `the_hook_is_never_started_under_e2e` and `the_hook_starts_with_the_bindings_keys_and_mask_and_only_once`
 (the second for the normal path). Source: globalDictKey.ts; src/main/index.ts E2E (N16).
+1151. **A chord of modifiers dictates only when exactly its modifiers are down and no other key goes down while it
+decides.** Owner report (Mac, Toggle, Ctrl+Cmd, 2026-11-11): Cmd+Shift+S, which Karabiner turns into Cmd+Ctrl+Shift+4
+(the region screenshot), also started a dictation, and the next one stopped it and pasted. Root cause: the reducer
+already matched exactly, but the hooks report only the binding's own keys, so the key feed never knew Shift was down
+when Ctrl joined Cmd, and the 4 never reaches a listen-only tap (the system takes the screenshot shortcut): the press
+was a clean Ctrl+Cmd tap. Now a hook says `Extra` (never which key) when a binding key goes down while a modifier the
+binding does not name is already down (Mac: the event's flags; Windows: `GetAsyncKeyState`, `extra_after`, the AltGr
+Ctrl excused), and when such a modifier goes down while a binding key is held (it said `Other` before). The feed reads
+`Extra` as another key: a press still deciding (Hold before the hold time, Toggle before the release) is dropped with
+no start, toggle, stop or paste, and a toggle's stopping tap with it stops nothing. A key after a Hold has begun keeps
+the recording, as before. Such a cancel is logged as `dictation-key` with `cancel: extra`, `kind` `modifier` or `key`
+and `from` `window` or `hook`, never the key (`hotkey::extra_cancel`). Same on Windows (Ctrl+Win with Shift+S).
+Native: `crates/flare-dictation/src/{hotkey,keyfeed,keyhook,service}.rs`, `crates/flare-dictation/src/macos/keyhook.rs`,
+`crates/flare/src/dictation_ctl.rs`. Held by `ctrl_cmd_inside_a_karabiner_screenshot_chord_never_dictates_hold_or_toggle`,
+`the_three_flags_in_one_event_are_no_match_and_a_shift_added_later_cancels`,
+`ctrl_cmd_alone_still_starts_and_stops_in_hold_and_toggle`,
+`ctrl_cmd_then_a_letter_cancels_in_hold_and_toggle_and_a_toggles_stopping_tap_too`,
+`a_key_after_a_hold_has_begun_keeps_the_recording_as_on_windows`,
+`a_cancel_by_an_extra_modifier_or_key_is_told_by_kind_only`,
+`a_modifier_the_binding_does_not_name_cancels_a_ctrl_win_press_in_hold_and_toggle`,
+`karabiners_cmd_ctrl_shift_4_for_cmd_shift_s_never_dictates_in_hold_or_toggle`,
+`ctrl_win_with_shift_already_held_or_added_says_a_modifier_and_never_dictates`,
+`ctrl_win_with_an_extra_modifier_from_the_hook_starts_nothing_and_logs_the_kind` and
+`a_window_press_cancelled_by_an_extra_key_or_modifier_logs_its_kind_only`. Source: Max on his Mac (2026-11-11).
 
 ## Surfaces: the control channel (stage 2)
 
