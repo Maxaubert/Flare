@@ -40,6 +40,9 @@ pub mod open_in;
 pub mod openers;
 pub mod os_build;
 #[cfg(target_os = "macos")]
+#[path = "macos/page_overlay.rs"]
+pub mod page_overlay;
+#[cfg(target_os = "macos")]
 #[path = "macos/pasteboard.rs"]
 pub mod pasteboard;
 pub mod paths;

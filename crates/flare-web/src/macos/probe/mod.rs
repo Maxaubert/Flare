@@ -12,6 +12,8 @@
 //! - `agent`: the real `agent_job` drives a web panel through `WebBackend::cdp` (`agent.rs`): look, click, type,
 //!   press, scroll, the frames, wait, navigate and state, eval and its runaway, a download, whose keys the window's
 //!   filter is asked about.
+//! - `app-loop`: the web panel turned the real window's way (pumped only when told, rule 1152), and opened again in
+//!   a new host after the last one closed.
 //!
 //! Every report carries the window server's count of this process's on-screen windows at the start and the end,
 //! the activation policy and whether the app ever became active.
@@ -24,6 +26,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -75,11 +78,17 @@ impl Report {
 
 /// The host and every event it reported, handled the way the window handles them (`Runtime` and `Pump` go back to
 /// the host).
+/// How many `WebEvent::Pump`s the scenarios took in (the app-loop scenario's evidence).
+static PUMPS: AtomicU64 = AtomicU64::new(0);
+
 struct H {
     host: WebHost,
     queue: Arc<Mutex<Vec<WebEvent>>>,
     seen: Vec<WebEvent>,
     script_seq: u64,
+    /// Turn the way the real window does: the run loop's own turn (winit's), and CEF's work and the host's pump
+    /// only when CEF asked for a turn (`WebEvent::Pump`). Off: every turn pumps the engine and the host.
+    app_loop: bool,
 }
 
 fn ev_text(e: &WebEvent) -> String {
@@ -126,7 +135,15 @@ fn ev_text(e: &WebEvent) -> String {
 
 impl H {
     fn new(data: &Path, virtual_hosts: Vec<(String, PathBuf)>) -> H {
-        let queue: Arc<Mutex<Vec<WebEvent>>> = Arc::default();
+        H::with_queue(data, virtual_hosts, Arc::default())
+    }
+
+    /// A host whose events go into `queue`: the window's own post, which outlives every host it makes.
+    fn with_queue(
+        data: &Path,
+        virtual_hosts: Vec<(String, PathBuf)>,
+        queue: Arc<Mutex<Vec<WebEvent>>>,
+    ) -> H {
         let q = Arc::clone(&queue);
         let host = WebHost::new(HostConfig {
             parent: 0,
@@ -142,11 +159,18 @@ impl H {
             queue,
             seen: Vec::new(),
             script_seq: 0,
+            app_loop: false,
         }
     }
 
     fn turn(&mut self) {
-        self.host.turn_headless();
+        if self.app_loop {
+            if let Some(mtm) = MainThreadMarker::new() {
+                flare_cef::macos::engine::shared_run_loop_turn(mtm);
+            }
+        } else {
+            self.host.turn_headless();
+        }
         loop {
             let batch: Vec<WebEvent> =
                 std::mem::take(&mut *self.queue.lock().unwrap_or_else(|e| e.into_inner()));
@@ -156,7 +180,10 @@ impl H {
             for e in batch {
                 match e {
                     WebEvent::Runtime(r) => self.host.runtime_checked(r),
-                    WebEvent::Pump => self.host.pump(),
+                    WebEvent::Pump => {
+                        PUMPS.fetch_add(1, Ordering::Relaxed);
+                        self.host.pump()
+                    }
                     other => self.seen.push(other),
                 }
             }
@@ -1069,6 +1096,87 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The real window's way of turning (`app_loop`): AppKit's run loop turns on its own (winit's), and the host is
+/// pumped only when a `WebEvent::Pump` comes, from CEF asking or from the host's own wake. Every other scenario
+/// pumps on every turn, which hid a host that was never told to take in what CEF's handlers queued: on Max's Mac
+/// the web panel stayed dark, no browser made, nothing loaded (rule 1152). Then the window's other habit: the last
+/// panel closes, the host goes (`web_ctl`'s `drop_idle_backend`, as on Windows), and the next panel makes a new one
+/// in the CEF the first started (CEF starts once per process).
+fn app_loop(rep: &mut Report, data: &Path) -> Result<(), String> {
+    let srv = pages::start()?;
+    let main = srv.url("/main");
+    let queue: Arc<Mutex<Vec<WebEvent>>> = Arc::default();
+    let px_of = |f: &ViewFrame| {
+        let i = ((100 * f.width + 240) * 4) as usize;
+        f.bgra.get(i..i + 4).map(|p| (p[2], p[1], p[0], p[3]))
+    };
+    let blue = Some((0x33, 0x66, 0xcc, 0xff));
+    // The first painted pixel of the page's blue box, waited for up to 10 s.
+    let painted = |h: &mut H, slot: &Slot| {
+        let t = Instant::now();
+        let mut px = None;
+        while t.elapsed() < Duration::from_secs(10) && px != blue {
+            h.wait(50);
+            px = h.host.frame(slot).as_ref().and_then(px_of);
+        }
+        px
+    };
+    let mut first = H::with_queue(data, Vec::new(), Arc::clone(&queue));
+    first.app_loop = true;
+    first.host.set_scale(2.0);
+    let slot = Slot::panel("t1");
+    let pumps = PUMPS.load(Ordering::Relaxed);
+    let from = first.mark();
+    first.host.open("t1", &main, BOUNDS, true);
+    let ready = first
+        .until(
+            from,
+            20_000,
+            |e| matches!(e, WebEvent::Ready { tab } if tab == "t1"),
+        )
+        .is_some();
+    let loaded = first.opened(from, "t1", "Main");
+    let px = painted(&mut first, &slot);
+    rep.check(
+        "app-loop.open",
+        ready && loaded && px == blue,
+        "turned as the window turns, a panel is made, navigates, loads and paints",
+        json!({"pixel": format!("{px:?}"), "pumps": PUMPS.load(Ordering::Relaxed) - pumps,
+               "events": first.since(from)}),
+    );
+    let from = first.mark();
+    first.host.navigate("t1", &srv.url("/page2"));
+    let moved = first.opened(from, "t1", "Page two");
+    rep.check(
+        "app-loop.navigate",
+        moved,
+        "a later navigation loads too",
+        json!({"events": first.since(from)}),
+    );
+    // The last panel closes: the window closes its view and lets the host go (no close_all: the window lives on).
+    first.host.close("t1");
+    first.wait(300);
+    drop(first);
+    let mut second = H::with_queue(data, Vec::new(), Arc::clone(&queue));
+    second.app_loop = true;
+    second.host.set_scale(2.0);
+    let slot = Slot::panel("t2");
+    let from = second.mark();
+    second.host.open("t2", &main, BOUNDS, true);
+    let loaded = second.opened(from, "t2", "Main");
+    let px = painted(&mut second, &slot);
+    rep.check(
+        "app-loop.reopen",
+        loaded && px == blue,
+        "a panel opened after the last one closed (a new host, the same CEF) loads and paints",
+        json!({"pixel": format!("{px:?}"), "events": second.since(0), "pumps": PUMPS.load(Ordering::Relaxed), "controllers": second.host.controllers()}),
+    );
+    second.host.close("t2");
+    second.wait(300);
+    second.host.close_all();
+    Ok(())
+}
+
 /// The dual-stack server's log as one line per connection: the peer and the request line, or `TLS` for a
 /// ClientHello (an https or wss attempt, whose binary text spreads over several log lines).
 fn hit_summary(lines: &[String]) -> Vec<String> {
@@ -1837,6 +1945,7 @@ pub fn main() -> i32 {
         "walls" => walls(&mut rep, &data),
         "agent" => agent::run(&mut rep, &data),
         "quiet" => quiet(&mut rep, &data),
+        "app-loop" => app_loop(&mut rep, &data),
         other => Err(format!("no scenario {other:?}")),
     };
     if let Err(e) = r {

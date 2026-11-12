@@ -13,31 +13,18 @@ Task 29 of the M9 plan). Anything not seen with the eyes says so.
    --workspace --all-targets -- -D warnings`, `cargo nextest run --workspace`, `cargo deny check`. Then the
    release build, the release notes (GitHub's generated notes through `tools/release/notes.ps1`), the download of
    the previous release (so the pack can make a delta), `tools/release/pack.ps1`, `tools/release/verify-pack.ps1`,
-   the side-by-side run (Flare installed for real beside Prism Terminal on the clean runner), and the publish
-   (`vpk upload github --publish`, tag `v<version>`).
+   and the publish (`vpk upload github --publish`, tag `v<version>`).
 4. The updater inside the app is compiled out until the repository is public: `docs/updater-flip.md`.
 5. The Mac build is added to the same release afterwards by `.github/workflows/macos-app.yml`, when its signing
    secrets are set: `docs/releasing-macos.md`.
 
-## The secret the side-by-side run needs (2026-11-11)
+## No side-by-side run (2026-11-11)
 
-The side-by-side run downloads the latest Prism Terminal installer with `gh release download`. Since 2026-11-11 the
-Prism Terminal repository is `arkivert/PrismTerminal` and it is private, so the workflow's own `GITHUB_TOKEN` cannot
-read it ("release not found"). Owner decision 2026-11-11: a repository secret holds a token that can.
-
-- Name: `PRISM_RELEASE_TOKEN` (the Prism Terminal release token), a repository secret of this repository
-  (Settings > Secrets and variables > Actions).
-- Value: a fine-grained personal access token, resource owner `arkivert`, repository access only
-  `arkivert/PrismTerminal` (the Prism Terminal repository), permission Contents: Read-only. Nothing else.
-- Used by: the side-by-side step of `release.yml` and of `installer-e2e.yml`, and only that step (its `GH_TOKEN`).
-  No other step gets it, and nothing prints it.
-- Missing: that step fails (it does not skip) with one line, and a release then publishes nothing:
-  `PRISM_RELEASE_TOKEN is not set: add a fine-grained read-only token for arkivert/PrismTerminal as a repository secret (docs/shipping.md)` (Prism Terminal).
-- Dependabot pull requests get only Dependabot secrets, so an `installer-e2e` run on one fails the same way unless
-  the same token is also added as a Dependabot secret of the same name (the Prism Terminal token).
-- When the token expires, make a new one with the same settings and replace the secret's value.
-- Held by regression rule 1141 and `only_the_side_by_side_step_gets_the_neighbour_token_and_it_fails_without_it`
-  (`crates/flare/tests/release_files.rs`).
+Owner decision 2026-11-11: the side-by-side check is gone. It installed Flare beside Prism Terminal on the CI runner
+and downloaded the Prism Terminal installer from its private repository with a token. Prism Terminal is deprecated.
+No workflow downloads Prism Terminal, and the release needs no repository secret for it. The `installer-e2e`
+workflow ran only that check, so it is removed too. Held by regression rule 1153 and
+`no_workflow_downloads_the_reference_app_or_needs_a_token_for_it` (`crates/flare/tests/release_files.rs`).
 
 ## Packing locally (installs nothing)
 
