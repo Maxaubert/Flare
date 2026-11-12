@@ -10,6 +10,8 @@
 //!   implements.
 //! - `client`: the client library, over any wire.
 //! - `text`: words from outside made safe for a model (one copy for both sides).
+//! - `stdio`: a [`framing::Wire`] over two byte streams, for a remote link (`ssh <host> flare --serve-remote`, remote
+//!   sessions): the serve process's own stdio, or the ssh child's. The only path to the remote grant (rule 276).
 //! - `pipe`: the endpoint, one API on both systems. Windows (`pipe.rs`): the named pipe, its
 //!   owner-only descriptor, the accept loop, `connect`. macOS (`uds.rs`): a Unix socket in a 0700
 //!   per-user folder, mode 0600, the peer's uid and pid checked on both ends (rule 1012). Any other
@@ -33,16 +35,18 @@ pub mod pipe;
 pub mod pipe;
 pub mod proto;
 pub mod session;
+pub mod stdio;
 pub mod text;
 #[cfg(windows)]
 mod winid;
 
-pub use client::{Client, ClientError, HelloInfo, HelloParams};
+pub use client::{Client, ClientError, HelloInfo, HelloParams, RemoteHelloInfo, RemoteHelloParams};
 pub use grant::{Grant, Permission};
 pub use method::{Method, Namespace};
 pub use pipe::{
     ENV_PIPE, PipeEnd, Server, connect, connect_default, connect_to_server, default_pipe_name,
     pipe_name,
 };
-pub use proto::{CtlError, Event, MAX_LINE, PROTOCOL, code};
-pub use session::{CallContext, CancelFlag, Dispatcher, ServerConfig};
+pub use proto::{CtlError, Event, MAX_LINE, PROTOCOL, REMOTE_PROTOCOL, code};
+pub use session::{CallContext, CancelFlag, ConnOrigin, Dispatcher, ServerConfig, serve_stdio};
+pub use stdio::StdioWire;

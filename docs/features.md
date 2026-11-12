@@ -2429,3 +2429,18 @@ poor. many links dont work."
   (`panel_state_carries_the_agents_folder_only_when_it_is_a_plain_absolute_path`), `appctl::tests`
   (`a_relative_file_link_opens_under_the_agents_folder_not_the_shells`) and the hidden e2e `markerLinks` (a table cell,
   and a relative mark read from the folder the real hook names), which replaces `pathLinks`.
+
+## Remote sessions, PR 1: the stdio wire, the remote grant and remote.hello, 2026-11-12
+
+Library and docs only: nothing a person sees changes yet. Spec `docs/superpowers/specs/2026-11-12-remote-sessions-design.md`,
+plan `docs/superpowers/plans/2026-11-12-remote-sessions.md` (PR 1). Contract: `docs/surfaces/protocol.md` (section 1
+"Remote link", section 4, `remote.hello`).
+
+- **A wire over stdio.** `flare_ctl::StdioWire` speaks the control protocol over two byte streams: the ssh child's
+  (`from_child`, the viewer) or the serve process's own stdin and stdout (`from_process`, binary, the host). A reader
+  thread fills a 1 MB queue and the probe never waits. Held by the `stdio::tests`.
+- **The remote grant.** A new `remote` grant, given only to `flare --serve-remote`'s own stdio after `remote.hello`,
+  reaches the `remote.*` methods and nothing else; the pipe never gives it. Rule 276.
+- **remote.hello.** Both ends say their remote protocol, machine and Flare version; a mismatch is refused with one line
+  naming both (`remote protocol 1 here, 2 there`). A login banner before the first message is skipped. Rules 277, 278.
+- **For other crates' tests.** The `testing` feature of `flare-ctl` opens `framing::testwire` (an in-memory wire pair).

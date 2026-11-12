@@ -172,9 +172,10 @@ pub fn write_line(wire: &impl Wire, line: &[u8], cap: usize) -> io::Result<()> {
     wire.write_all(line)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub mod testwire {
-    //! An in-memory wire for tests: two queues, one per direction.
+    //! An in-memory wire for tests: two queues, one per direction. Other crates reach it with the `testing`
+    //! feature (remote sessions: a loopback link without ssh).
     use super::*;
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};

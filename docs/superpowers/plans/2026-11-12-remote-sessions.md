@@ -1,7 +1,7 @@
 # Remote sessions: implementation plan (2026-11-12)
 
 Spec: `docs/superpowers/specs/2026-11-12-remote-sessions-design.md`.
-Status: approved 2026-11-12; building.
+Status: approved 2026-11-12; building. PR 1 built on `feat/remote-1` (2026-11-12, not merged); PR 2 next.
 
 Seven PRs, in order. Each one ships alone and passes its own tests. Only PR 7 needs an approved mockup.
 Rule numbers below are "R-new-N". Number them after the last rule in `docs/regression-rules.md` when you write them.
@@ -54,6 +54,24 @@ Rule numbers below are "R-new-N". Number them after the last rule in `docs/regre
 - R-new-1: Remote grant exists only on the serve stdio path and never reaches the Ui namespace (extends S3, rules 186 to 188).
 - R-new-2: stdout of the serve process carries only protocol lines.
 - R-new-3: remote protocol mismatch refuses with one line naming both versions.
+
+**Built (2026-11-12, `feat/remote-1`).** Rules R-new-1 to R-new-3 are rules 276 to 278. Where the build differs from
+the lines above:
+- The origin lives on `Shared`, not on `ServerConfig`: `Shared::new` (every pipe server) is always `ConnOrigin::Pipe`
+  and only `Shared::new_stdio` (with `serve_stdio`) is `Stdio`, so no pipe server can be configured into the remote
+  grant. `ServerConfig::stdio()` holds the stdio limits (one client, the 30 s hello) and `ServerConfig.machine` the name
+  `remote.hello` answers.
+- There is no `Permission::Remote`: `Namespace::Remote.permission()` is `None`, so no `mod.json` can ask for it, and
+  the remote grant's `permissions` is `["remote"]`.
+- On the pipe `remote.hello` is `forbidden` before and after `hello`; on a remote link `hello` is `forbidden`. A token or
+  agent grant that resolves to `remote` is refused like `ui`.
+- `StdioWire::from_process()` and `from_child()` return `io::Result` (the reader thread can fail to start, and a GUI
+  process may have no stdio handles). "Binary mode" is a duplicate of the std handle read and written as a plain file:
+  Rust never puts a handle in CRT text mode, so there is no `_setmode` to call.
+- Banner resync is on both ends: the serve side skips lines that are no request until `remote.hello` is answered, and
+  `Client::remote_hello` skips up to 200 lines that are no message.
+- `REMOTE_CALL` (60 s) is defined; `remote.hello` takes the default 15 s and the long methods take `REMOTE_CALL` when
+  PR 2 adds them.
 
 **Depends on.** Nothing. **UI.** No.
 
@@ -315,5 +333,14 @@ Early spikes (do in PR 1 and 2 before more code):
 2. Mac: can Flare start from an SSH session of the logged-in user?
 3. `LOCAL_PEERPID` for a child of sshd.
 If a spike fails, change PR 5 (hidden start) and write down the limit.
+
+Spike status after PR 1 (2026-11-12): none of the three can be proven without a real ssh session, and the PR 1 work ran
+no ssh to any real machine (tests use OS pipes and in-memory wires only). What PR 1 does prove: the protocol, grant and
+banner handling over real OS pipes (`a_remote_hello_round_trips_over_os_pipes_after_a_banner`). Spike 1 is the first
+step of PR 2: `StdioWire::from_process` returns an `io::Result`, and with no stdin or stdout handle (what a
+`windows_subsystem = "windows"` build would see if sshd's handles were not inherited) duplicating the handle is
+expected to fail rather than hang. That is not tested yet: PR 2 tests it with a child it starts itself, and a by-hand
+run over real ssh confirms it. Spikes 2 and 3 stay
+for the by-hand list (`docs/remote-sessions-manual-checks.md`, PR 6).
 
 Open risks tracked across PRs: closed enum arrays (`Method::ALL`, `Namespace::ALL`, `Permission::ALL`) and their exhaustive tests; event lossiness (solved by polling and sequence numbers); stuck-handler cap of 32 on slow links (short polls only); two writers on one session; version skew between machines (refuse with one line); `tabs.changed` is reserved and unsent, so the viewer polls `remote.tabs` and `remote.status`.

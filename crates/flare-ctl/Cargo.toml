@@ -5,6 +5,10 @@ edition = "2024"
 license.workspace = true
 publish = false
 
+[features]
+# `framing::testwire` (an in-memory wire pair) for other crates' tests.
+testing = []
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

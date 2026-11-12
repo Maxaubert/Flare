@@ -18,7 +18,9 @@ for the agent's own tab; plugins phase 3 lets a plugin that holds `tabs` name an
 `tabs.list`; plugins phase 4 adds `sidebar.set` and `actions.set` (a plugin's sections and actions) and click scope;
 plugins phase 5 adds `session.read`, `tabs.input`, `storage.get` and `storage.set`; plugins phase 6 adds `bar.show`,
 `bar.hide` and `view.audio`; the 3D viewer (issue #36) adds `view.model`; the agent motions (2026-10-26) add `agents.motion.set` and `agents.motion.clear`; the `fill` permission (2026-10-28) adds
-`browser.fill`, `browser.fill.page` and `secret.ask`, and the `tool` event to a plugin's helper. Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
+`browser.fill`, `browser.fill.page` and `secret.ask`, and the `tool` event to a plugin's helper. Remote sessions PR 1
+(2026-11-12) adds the remote link in `flare-ctl` only: the stdio transport, the `remote` grant and `remote.hello` (section
+1 "Remote link", section 4, section 5 `remote.hello`); Flare does not serve it yet (PR 2 adds `flare --serve-remote`). Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
 
@@ -93,6 +95,24 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
   - **Reading**: `recv` with `MSG_DONTWAIT` is the probe; writes block, and a stop shuts the socket down
     (`shutdown(SHUT_RDWR)`, the `CancelIoEx` of the Mac). `SO_NOSIGPIPE` keeps a write to a gone client an
     error.
+- **Remote link** (remote sessions, 2026-11-12, `crates/flare-ctl/src/stdio.rs`; design
+  `../superpowers/specs/2026-11-12-remote-sessions-design.md`). The viewing Flare runs `ssh <host> <flare> --serve-remote`
+  (host and user as separate argv items, never a shell string, and never a token on the command line) and speaks this
+  protocol over the child's stdin and stdout, with the same framing. No port, no listener: who may connect is whoever
+  ssh lets in as the user. The serve process has **one** connection, its own stdio (`Shared::new_stdio`,
+  `serve_stdio`, `ServerConfig::stdio()`: one client, a 30 s first hello). It is the only path to the `remote` grant
+  (section 4, rule 276); a pipe server (`Shared::new`) can never be made one, whatever its config says.
+  - **Reading**: `StdioWire` has a reader thread that does the blocking `read` into a queue of at most 1 MB (past it
+    the thread waits for the line reader, so a fast peer never grows memory); the probe drains the queue and never
+    waits. Writes are whole lines, locked and flushed.
+  - **Binary**: the serve process reads and writes duplicates of its own stdin and stdout handles as plain files
+    (`ReadFile` and `WriteFile` on Windows: no console decoding, no newline translation); a child's pipes are binary
+    already.
+  - **Stdout carries only protocol lines** (rule 277). Logs go to stderr, which ssh carries apart.
+  - **A banner is skipped.** A login banner or a shell's greeting may come before the first message. Until
+    `remote.hello` is answered, the serve side skips a line that is no request, and the viewer's `remote_hello` skips
+    lines that are no message (at most 200), so both resync on the first real one. After the hello the framing is
+    strict as everywhere.
 
 ## 2. Framing
 
@@ -113,7 +133,9 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
 
 ## 3. Connection life
 
-1. The client connects and sends `hello` within **10 s**, or the server closes it.
+1. The client connects and sends `hello` within **10 s**, or the server closes it. On a remote link the greeting is
+   `remote.hello` instead, within **30 s**; a remote link that says `hello`, and a pipe client that says
+   `remote.hello`, is answered `forbidden` (stays).
 2. Any other method before `hello` answers `hello_required`; the connection stays open.
 3. After `hello`, requests run through the **order of checks** below.
 4. The connection ends when either side closes, on an error marked "closes" in section 6, or when the
@@ -145,7 +167,10 @@ finishes; its answer has no reader.
    app's current agent grant, so the user's `eval` switch is live without a reconnect. **A grant of
    kind `ui` from the app is never accepted over the pipe**: a token resolving to `ui` answers
    `unauthorized` (closes), an agent grant of `ui` answers `internal`. Belt and braces for S3: the
-   library, not only the app, keeps the `ui` namespace off the pipe.
+   library, not only the app, keeps the `ui` namespace off the pipe. **The same for `remote`** (rule 276): a token
+   resolving to `remote` answers `unauthorized` (closes), an agent grant of `remote` answers `internal`. A remote
+   link asks the app for its grant again (`Dispatcher::remote_grant`): anything but `remote` answers `internal`, none
+   at all `unavailable`.
 6. Grant allows the method? No: `forbidden` (stays). The reason text names the rule. A method in the
    `ui` namespace is refused here whatever the grant says.
 7. Run the method with its **timeout**: 15 s, 60 s for every `browser.*` method (and for `view.html`, `view.diagram` and `view.model`), and 40 s for `mods.call`. The app's own
@@ -169,7 +194,7 @@ can wait on them inside its quit cap.
 |---|---|
 | Line size | 16 MB |
 | Clients | 64 at once. The 65th is accepted, sent `too_many_clients` (null id), and closed. |
-| First hello | 10 s |
+| First hello | 10 s (30 s for `remote.hello` on a remote link) |
 | Request timeout | 15 s; 60 s for `browser.*`; 40 s for `mods.call` |
 | Rate | 100/s, burst 200, per connection |
 | Queued events per connection | 256, then the oldest is dropped |
@@ -184,13 +209,19 @@ environment).
 
 ## 4. Grants (who may call what)
 
-Three kinds. A grant is decided at `hello` and re-read on every request (check 4).
+Four kinds. A grant is decided at `hello` (or `remote.hello`) and re-read on every request (check 4).
 
 | Grant | Who | How it is issued |
 |---|---|---|
 | `agent` | Claude Code through `flare-mcp`, any MCP client, anything with no token | `hello` without a token |
 | `mod` | A mod's helper or page | `hello` with the mod's token; the grant is the mod manifest's permissions |
 | `ui` | The app's own code | **in process only**, never over the pipe. No token can mean `ui`. |
+| `remote` | The other machine's Flare on a remote link (remote sessions) | `remote.hello` on `flare --serve-remote`'s own stdio **only**: never on the pipe, never from a token, never for "no token" (rule 276). Its `permissions` are `["remote"]`, a name no `mod.json` can ask for. |
+
+The `remote` grant enters the `remote.*` methods and **nothing else**: not `hello` or `tabs.list`, no shell input
+(`shell.input`, `tabs.input`), no setting, no mod, no browser, no eval, no session. It names no other tab. No pipe grant,
+whatever it holds, enters `remote.*` (`remote_grant_cannot_reach_ui_or_browser`, `remote_grant_never_on_the_pipe`,
+`a_live_pipe_client_cannot_get_the_remote_grant`).
 
 Permissions of a `mod` grant: `panel`, `view`, `browser`, `eval`, `convo`, `tools`. The `agent` grant
 holds `panel`, `view`, `browser` and `convo`, plus `eval` only when the user has turned `browser_eval`
@@ -237,6 +268,7 @@ so without `tabs` it can name none (`forbidden`) and with it, it must name one (
 | `tools.respond` | no | `tools` | yes |
 | `mods.tools`, `mods.call` | yes | **no** | yes |
 | `shell.input`, `settings.set`, `mods.enable` | **no** | **no** | yes |
+| `remote.hello` (the `remote` grant's only row: it is **no** in every other one) | **no** | **no** (no permission opens it) | yes |
 
 **Rule S3** is the last row and the `agent` column: the agent can show content and drive its panel
 browser. It cannot type into a shell (neither `shell.input` nor a plugin's `tabs.input`), change settings, enable
@@ -778,6 +810,28 @@ the mod and the tool), and `tool_error` (the page answered with an `error`: the 
 
 Reserved names. Every grant answers `forbidden` ("is for the app's own interface only").
 
+### remote.hello (remote sessions PR 1, 2026-11-12)
+
+The first message of a remote link (section 1), in place of `hello`. Only a remote link may send it: on the pipe it is
+`forbidden`, before or after `hello`. Params: `remote_protocol` (number, required, this end's
+`REMOTE_PROTOCOL`, now 1), `machine` (string, required, this end's name, at most 256 characters and no control
+character), `flare_version` (string, required).
+
+Result (the same shape, the other end's, plus the methods the `remote` grant may call):
+
+```json
+{"remote_protocol": 1, "machine": "Mac-mini", "flare_version": "0.4.0", "capabilities": ["remote.hello"]}
+```
+
+The version is checked first, so a peer whose other params differ still gets the refusal: on a mismatch the answer is
+`unsupported_protocol` (closes) with exactly one line that names both versions, the answering side's first:
+`remote protocol 1 here, 2 there` (rule 278). The viewer's client checks the answer the same way and reports the same
+line with its own version first. A remote link is sent no events (it polls). Errors: `bad_params` (a param missing or
+of the wrong type, a machine name too long or with a control character; the link may greet again),
+`unsupported_protocol` (closes), `unavailable` (this Flare serves no remote sessions), `internal` (the app handed the
+link a grant other than `remote`), `already_hello`. Timeout: 15 s, like every short `remote.*` call; the long ones that
+come later (`remote.open`, `remote.ls`, `remote.fetch`) get 60 s (`REMOTE_CALL`).
+
 ## 6. Errors
 
 | Code | Meaning | Closes? |
@@ -787,7 +841,7 @@ Reserved names. Every grant answers `forbidden` ("is for the app's own interface
 | `too_large` | line passed 16 MB | yes |
 | `too_many_clients` | server is at 64 clients | yes |
 | `unauthorized` | token unknown or mod disabled | yes |
-| `unsupported_protocol` | `hello.protocol` is not 1 | yes |
+| `unsupported_protocol` | `hello.protocol` is not 1, or `remote.hello.remote_protocol` is not this end's (one line naming both versions) | yes |
 | `unknown_method` | not a method of the protocol | no |
 | `forbidden` | the grant does not allow it (S3, S5, S4) | no |
 | `hello_required` | first request was not `hello` | no |
@@ -841,6 +895,10 @@ says `events: false` gets none. Its token dies when the plugin is turned off, an
 a client ignores what it does not know. Anything else (renaming, removing, changing meaning, tightening
 a grant for an existing method) is v2, and a v2 server still answers a `protocol: 1` hello with v1
 behaviour or `unsupported_protocol`.
+
+The remote link has a version of its own, `remote_protocol` (`REMOTE_PROTOCOL` in `proto.rs`, now 1), said by both
+ends in `remote.hello`. The two machines may run different Flare builds, so it is raised whenever a `remote.*` method
+changes in a way an older peer would misread, and a mismatch is refused, never guessed around (rule 278).
 
 ## 9. MCP server (`flare-mcp`)
 

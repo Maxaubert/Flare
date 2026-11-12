@@ -19,11 +19,19 @@ struct Fake;
 
 impl Dispatcher for Fake {
     fn resolve_token(&self, token: &str) -> Option<Grant> {
+        // A bug on the app side the library must catch: a token that resolves to the remote grant.
+        if token == "remote" {
+            return Some(Grant::Remote);
+        }
         (token == "good").then(|| Grant::Mod {
             id: "m".into(),
             permissions: vec![Permission::View],
             plugin: false,
         })
+    }
+    /// An app that serves remote sessions: the pipe must still never hand out the remote grant.
+    fn remote_grant(&self, _origin: flare_ctl::ConnOrigin) -> Option<Grant> {
+        Some(Grant::Remote)
     }
     fn resolve_tab_token(&self, tab_token: &str) -> Option<String> {
         (tab_token == "tok1").then(|| "t1".to_string())
@@ -143,6 +151,48 @@ fn remote_errors_and_grants_travel_over_the_pipe() {
     }
     // The connection is still good after both.
     assert!(c.call(Method::PanelState, json!({}), WAIT).is_ok());
+    server.stop();
+}
+
+/// Rule 276 over a real pipe: even on an app that serves remote sessions, a pipe client cannot get the remote grant,
+/// by `remote.hello` before or after `hello`, or by a token that resolves to it.
+#[test]
+fn a_live_pipe_client_cannot_get_the_remote_grant() {
+    // Even with the stdio limits: a pipe server is a pipe server.
+    let (server, name) = start(ServerConfig {
+        max_clients: 8,
+        ..ServerConfig::stdio()
+    });
+    let refused = |r: Result<flare_ctl::RemoteHelloInfo, ClientError>| match r {
+        Err(ClientError::Remote(e)) => assert_eq!(e.code, code::FORBIDDEN),
+        other => panic!("{other:?}"),
+    };
+    let params = flare_ctl::RemoteHelloParams {
+        machine: "viewer".into(),
+        flare_version: "1".into(),
+    };
+    let mut c = connect(&name, WAIT).unwrap();
+    refused(c.remote_hello(&params, WAIT));
+    let mut c = hello(&name, Some("tok1"), None);
+    refused(c.remote_hello(&params, WAIT));
+    match c.call(Method::RemoteHello, json!({}), WAIT) {
+        Err(ClientError::Remote(e)) => assert_eq!(e.code, code::FORBIDDEN),
+        other => panic!("{other:?}"),
+    }
+    let mut t = connect(&name, WAIT).unwrap();
+    match t.hello(
+        &HelloParams {
+            client: "test".into(),
+            version: "1".into(),
+            token: Some("remote".into()),
+            tab_token: None,
+            no_events: false,
+        },
+        WAIT,
+    ) {
+        Err(ClientError::Remote(e)) => assert_eq!(e.code, code::UNAUTHORIZED),
+        other => panic!("{other:?}"),
+    }
     server.stop();
 }
 

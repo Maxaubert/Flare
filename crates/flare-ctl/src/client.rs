@@ -10,9 +10,10 @@ use serde_json::{Value, json};
 use crate::framing::{LineReader, ReadError, Wire, write_line};
 use crate::method::Method;
 use crate::proto::{
-    CtlError, Event, Incoming, MAX_LINE, PROTOCOL, Request, parse_incoming, to_line,
+    CtlError, Event, Incoming, MAX_LINE, PROTOCOL, REMOTE_PROTOCOL, Request, code, parse_incoming,
+    to_line,
 };
-use crate::session::CancelFlag;
+use crate::session::{CancelFlag, remote_mismatch};
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -107,6 +108,27 @@ impl HelloInfo {
     }
 }
 
+/// What `remote.hello` sends: this end's machine and Flare version (the remote protocol is [`REMOTE_PROTOCOL`]).
+#[derive(Clone, Debug, Default)]
+pub struct RemoteHelloParams {
+    pub machine: String,
+    pub flare_version: String,
+}
+
+/// What `remote.hello` answered: the other end's remote protocol, machine, Flare version and methods.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemoteHelloInfo {
+    pub remote_protocol: u32,
+    pub machine: String,
+    pub flare_version: String,
+    pub capabilities: Vec<String>,
+    pub raw: Value,
+}
+
+/// Lines that are no message a link may carry before the `remote.hello` answer (a login banner, a shell's greeting)
+/// before the client gives up on it.
+const MAX_NOISE_LINES: usize = 200;
+
 pub struct Client<W: Wire> {
     wire: W,
     reader: LineReader,
@@ -154,6 +176,48 @@ impl<W: Wire> Client<W> {
         HelloInfo::from_value(v)
     }
 
+    /// Says `remote.hello` on a remote link (the ssh child's stdio). Must be the first call. Lines before the answer
+    /// that are no message (a login banner, a shell's greeting) are skipped. A peer of another remote protocol is
+    /// [`ClientError::Remote`] with `unsupported_protocol` and the one line that names both versions (rule 278),
+    /// whichever end noticed.
+    pub fn remote_hello(
+        &mut self,
+        h: &RemoteHelloParams,
+        timeout: Duration,
+    ) -> Result<RemoteHelloInfo, ClientError> {
+        let params = json!({
+            "remote_protocol": REMOTE_PROTOCOL,
+            "machine": h.machine,
+            "flare_version": h.flare_version,
+        });
+        let v = self.exchange(Method::RemoteHello.name(), params, timeout, true)?;
+        let theirs = v["remote_protocol"].as_u64().ok_or_else(|| {
+            ClientError::Protocol("remote.hello answer has no remote_protocol".into())
+        })?;
+        if theirs != u64::from(REMOTE_PROTOCOL) {
+            return Err(ClientError::Remote(CtlError::new(
+                code::UNSUPPORTED_PROTOCOL,
+                remote_mismatch(u64::from(REMOTE_PROTOCOL), theirs),
+            )));
+        }
+        let strings = |v: &Value| -> Vec<String> {
+            v.as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|s| s.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        Ok(RemoteHelloInfo {
+            remote_protocol: REMOTE_PROTOCOL,
+            machine: v["machine"].as_str().unwrap_or_default().into(),
+            flare_version: v["flare_version"].as_str().unwrap_or_default().into(),
+            capabilities: strings(&v["capabilities"]),
+            raw: v,
+        })
+    }
+
     /// Calls a method and waits for its answer.
     pub fn call(
         &mut self,
@@ -171,6 +235,19 @@ impl<W: Wire> Client<W> {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, ClientError> {
+        self.exchange(method, params, timeout, false)
+    }
+
+    /// One request and its answer. With `skip_noise`, lines that are no message are skipped (up to
+    /// [`MAX_NOISE_LINES`]) instead of failing the call: only `remote.hello` asks for it.
+    fn exchange(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        skip_noise: bool,
+    ) -> Result<Value, ClientError> {
+        let mut noise = 0usize;
         let id = self.next_id;
         self.next_id += 1;
         let line = to_line(&Request::new(id, method, params));
@@ -201,7 +278,15 @@ impl<W: Wire> Client<W> {
                 .reader
                 .read_line(&self.wire, Some(deadline), self.stop.as_atomic())
                 .map_err(read_error)?;
-            match parse_incoming(&line).map_err(ClientError::Protocol)? {
+            let incoming = match parse_incoming(&line) {
+                Ok(i) => i,
+                Err(_) if skip_noise && noise < MAX_NOISE_LINES => {
+                    noise += 1;
+                    continue;
+                }
+                Err(e) => return Err(ClientError::Protocol(e)),
+            };
+            match incoming {
                 Incoming::Event(e) => {
                     // A client that never takes them must not grow without bound.
                     if self.events.len() >= EVENTS_KEPT {
@@ -435,6 +520,73 @@ mod tests {
         let mut cl = Client::new(c);
         assert!(matches!(
             cl.call(Method::PanelState, json!({}), Duration::from_secs(2)),
+            Err(ClientError::Protocol(_))
+        ));
+    }
+
+    #[test]
+    fn remote_hello_skips_a_banner_before_the_answer() {
+        let (s, c) = pair();
+        serve_script(
+            s,
+            vec![format!(
+                "Welcome to the Mac mini\n\nLast login: Thu Nov 12\r\n{{oops\n{}",
+                r#"{"id":1,"result":{"remote_protocol":1,"machine":"mini","flare_version":"0.4.0","capabilities":["remote.hello"]}}"#
+            )],
+        );
+        let mut cl = Client::new(c);
+        let info = cl
+            .remote_hello(
+                &RemoteHelloParams {
+                    machine: "pc".into(),
+                    flare_version: "0.4.0".into(),
+                },
+                Duration::from_secs(2),
+            )
+            .unwrap();
+        assert_eq!(info.remote_protocol, REMOTE_PROTOCOL);
+        assert_eq!(info.machine, "mini");
+        assert_eq!(info.flare_version, "0.4.0");
+        assert!(info.capabilities.iter().any(|c| c == "remote.hello"));
+    }
+
+    /// Rule 278 from the viewer's side: a host that answered with another remote protocol is refused with the one
+    /// line, this side's version first.
+    #[test]
+    fn a_remote_hello_answer_of_another_version_is_refused_naming_both() {
+        let (s, c) = pair();
+        serve_script(
+            s,
+            vec![
+                r#"{"id":1,"result":{"remote_protocol":5,"machine":"m","flare_version":"9"}}"#
+                    .into(),
+            ],
+        );
+        let mut cl = Client::new(c);
+        match cl.remote_hello(&RemoteHelloParams::default(), Duration::from_secs(2)) {
+            Err(ClientError::Remote(e)) => {
+                assert_eq!(e.code, code::UNSUPPORTED_PROTOCOL);
+                assert_eq!(e.message, "remote protocol 1 here, 5 there");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Only `remote.hello` skips noise: an ordinary call still fails on a line that is no message.
+    #[test]
+    fn noise_is_skipped_only_for_remote_hello_and_only_so_much() {
+        let (s, c) = pair();
+        serve_script(s, vec!["banner".into()]);
+        let mut cl = Client::new(c);
+        assert!(matches!(
+            cl.call(Method::PanelState, json!({}), Duration::from_secs(2)),
+            Err(ClientError::Protocol(_))
+        ));
+        let (s, c) = pair();
+        serve_script(s, vec!["noise\n".repeat(MAX_NOISE_LINES + 1)]);
+        let mut cl = Client::new(c);
+        assert!(matches!(
+            cl.remote_hello(&RemoteHelloParams::default(), Duration::from_secs(2)),
             Err(ClientError::Protocol(_))
         ));
     }

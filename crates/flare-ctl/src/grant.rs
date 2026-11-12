@@ -6,6 +6,9 @@
 //! A **mod** grant is exactly the permissions its manifest declared and the user accepted (S5), plus its own store.
 //! The **ui** grant is the app's own code, called in-process; it is never issued over the pipe, so
 //! no token can mean ui.
+//! The **remote** grant is the other machine's Flare on a remote link (remote sessions, 2026-11-12): it is issued
+//! only to a connection that came in on `flare --serve-remote`'s own stdio and said `remote.hello`, never on the
+//! pipe, never from a token and never for "no token" (rule 276). It enters the `remote` namespace and nothing else.
 
 use crate::method::{Method, Namespace};
 use crate::proto::{CtlError, code};
@@ -113,6 +116,9 @@ pub enum Grant {
     },
     /// The app's own UI, in-process only.
     Ui,
+    /// The other machine's Flare on a remote link: the serve stdio path only (rule 276). It holds no permission a
+    /// mod could ask for, and reaches the `remote.*` methods only: no shell input, setting, mod, browser or eval.
+    Remote,
 }
 
 impl Grant {
@@ -126,6 +132,7 @@ impl Grant {
             Grant::Agent { .. } => "agent",
             Grant::Mod { .. } => "mod",
             Grant::Ui => "ui",
+            Grant::Remote => "remote",
         }
     }
 
@@ -145,6 +152,8 @@ impl Grant {
                 .map(|p| p.name())
                 .chain(["ui"])
                 .collect(),
+            // Not a manifest permission: a name for the `remote` namespace, which no mod can ask for.
+            Grant::Remote => vec!["remote"],
         }
     }
 
@@ -155,7 +164,7 @@ impl Grant {
     pub fn may_act_on_any_tab(&self) -> bool {
         match self {
             Grant::Ui => true,
-            Grant::Agent { .. } => false,
+            Grant::Agent { .. } | Grant::Remote => false,
             Grant::Mod { permissions, .. } => permissions.contains(&Permission::Tabs),
         }
     }
@@ -166,6 +175,7 @@ impl Grant {
             Grant::Ui => true,
             Grant::Agent { eval } => *eval,
             Grant::Mod { permissions, .. } => permissions.contains(&Permission::Eval),
+            Grant::Remote => false,
         };
         self.may_enter(method.namespace()) && (method != Method::BrowserEval || eval_ok)
     }
@@ -176,11 +186,16 @@ impl Grant {
         use Namespace as N;
         match self {
             Grant::Ui => true,
+            // A remote link reaches its own namespace and nothing else: not even `hello` or `tabs.list`, so nothing the
+            // pipe offers rides on it (rule 276).
+            Grant::Remote => ns == N::Remote,
             // `hello` and `tabs.list` are open to every connection; the rest depends on the grant.
             _ if matches!(ns, N::Hello | N::Tabs) => true,
             // Nothing in the Ui namespace (shell input, settings, mod management) is reachable
             // over the pipe by anyone, whatever they hold.
             _ if ns == N::Ui => false,
+            // A remote link's methods are the remote grant's only, whatever a pipe caller holds.
+            _ if ns == N::Remote => false,
             Grant::Agent { .. } => match ns {
                 // Decorating is for the caller's own tab only: the dispatcher holds it to that.
                 N::Panel | N::View | N::Convo | N::Decor | N::Browser => true,
@@ -200,7 +215,7 @@ impl Grant {
                 | N::Storage
                 | N::Agents
                 | N::Fill => false,
-                N::Hello | N::Tabs | N::Ui => unreachable!("handled above"),
+                N::Hello | N::Tabs | N::Ui | N::Remote => unreachable!("handled above"),
             },
             Grant::Mod {
                 permissions,
@@ -325,7 +340,12 @@ mod tests {
     #[test]
     fn nothing_over_the_pipe_reaches_the_ui_namespace() {
         let all = Permission::ALL;
-        for g in [Grant::agent(), Grant::Agent { eval: true }, mod_with(&all)] {
+        for g in [
+            Grant::agent(),
+            Grant::Agent { eval: true },
+            mod_with(&all),
+            Grant::Remote,
+        ] {
             for m in Method::ALL {
                 if m.namespace() == Namespace::Ui {
                     assert!(!g.may_call(m), "{} {}", g.kind(), m.name());
@@ -511,6 +531,8 @@ mod tests {
             assert_eq!(Permission::parse(p.name()), Some(p));
         }
         assert_eq!(Permission::parse("root"), None);
+        // The remote grant's name is no manifest permission: a mod.json cannot ask for it.
+        assert_eq!(Permission::parse("remote"), None);
         assert_eq!(Permission::ALL.len(), 17);
         assert_eq!(Permission::parse("fill"), Some(P::Fill));
         assert_eq!(Permission::parse("agent-looks"), Some(P::AgentLooks));
@@ -542,12 +564,23 @@ mod tests {
             v1_mod_with(&[]),
             v1_mod_with(&all),
             Grant::Ui,
+            Grant::Remote,
         ];
         for g in grants {
             let names = g.permission_names();
             for m in Method::ALL {
                 let need = match m.namespace() {
-                    Namespace::Hello | Namespace::Tabs => continue,
+                    // Open to every pipe grant; the remote grant never says either.
+                    Namespace::Hello | Namespace::Tabs => {
+                        assert_eq!(
+                            g.may_call(m),
+                            g != Grant::Remote,
+                            "{} {}",
+                            g.kind(),
+                            m.name()
+                        );
+                        continue;
+                    }
                     Namespace::Panel => "panel",
                     Namespace::View => "view",
                     Namespace::Browser if m == Method::BrowserEval => "eval",
@@ -585,6 +618,23 @@ mod tests {
                         continue;
                     }
                     Namespace::Ui => "ui",
+                    // The remote link and the app reach it; no manifest permission stands for it.
+                    Namespace::Remote => {
+                        assert_eq!(
+                            g.may_call(m),
+                            matches!(g, Grant::Remote | Grant::Ui),
+                            "{} {}",
+                            g.kind(),
+                            m.name()
+                        );
+                        assert_eq!(
+                            names.contains(&"remote"),
+                            g == Grant::Remote,
+                            "{}",
+                            g.kind()
+                        );
+                        continue;
+                    }
                 };
                 assert_eq!(
                     g.may_call(m),
@@ -606,7 +656,7 @@ mod tests {
                 let g = mod_with(&[p]);
                 let want = match ns {
                     Namespace::Hello | Namespace::Tabs | Namespace::Storage => true,
-                    Namespace::AgentTools | Namespace::Ui => false,
+                    Namespace::AgentTools | Namespace::Ui | Namespace::Remote => false,
                     _ => ns.permission() == Some(p),
                 };
                 assert_eq!(g.may_enter(ns), want, "{ns:?} with {}", p.name());
@@ -658,7 +708,7 @@ mod tests {
     #[test]
     fn the_widest_plugin_still_cannot_reach_the_ui_or_the_agents_tools() {
         let all = mod_with(&Permission::ALL);
-        for ns in [Namespace::Ui, Namespace::AgentTools] {
+        for ns in [Namespace::Ui, Namespace::AgentTools, Namespace::Remote] {
             assert!(!all.may_enter(ns), "{ns:?}");
         }
         let none = mod_with(&[]);
@@ -685,6 +735,7 @@ mod tests {
                 Namespace::Storage,
                 Namespace::Agents,
                 Namespace::Fill,
+                Namespace::Remote,
             ] {
                 assert!(!g.may_enter(ns), "{ns:?}");
             }
@@ -750,6 +801,55 @@ mod tests {
         }
         assert!(!mod_with(&[P::Browser]).may_call(Method::BrowserFill));
         assert!(!Grant::agent().permission_names().contains(&"fill"));
+    }
+
+    /// Rule 276: the remote grant reaches its own `remote.*` methods and nothing else. No shell input (neither
+    /// `shell.input` nor a plugin's `tabs.input`), no setting, no mod, no browser, no eval, not even `hello` or
+    /// `tabs.list`; it names no other tab and no pipe grant reaches its methods.
+    #[test]
+    fn remote_grant_cannot_reach_ui_or_browser() {
+        let g = Grant::Remote;
+        for m in Method::ALL {
+            assert_eq!(
+                g.may_call(m),
+                m.namespace() == Namespace::Remote,
+                "{}",
+                m.name()
+            );
+        }
+        for m in [
+            Method::ShellInput,
+            Method::TabsInput,
+            Method::SettingsSet,
+            Method::ModsEnable,
+            Method::BrowserOpen,
+            Method::BrowserEval,
+            Method::BrowserFill,
+            Method::SessionRead,
+            Method::Hello,
+            Method::TabsList,
+        ] {
+            assert_eq!(
+                g.check(m).unwrap_err().code,
+                code::FORBIDDEN,
+                "{}",
+                m.name()
+            );
+        }
+        assert!(g.check(Method::RemoteHello).is_ok());
+        assert!(!g.may_act_on_any_tab());
+        assert_eq!(g.kind(), "remote");
+        assert_eq!(g.permission_names(), ["remote"]);
+        for other in [
+            Grant::agent(),
+            Grant::Agent { eval: true },
+            mod_with(&Permission::ALL),
+            v1_mod_with(&Permission::ALL),
+        ] {
+            assert!(!other.may_enter(Namespace::Remote), "{}", other.kind());
+            assert!(!other.may_call(Method::RemoteHello), "{}", other.kind());
+        }
+        assert!(Grant::Ui.may_call(Method::RemoteHello));
     }
 
     #[test]
