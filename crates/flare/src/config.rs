@@ -420,6 +420,8 @@ mod tests {
     /// profile is untouched, and a launch would open nothing of them.
     #[test]
     fn open_on_reads_its_values_and_leaves_no_folder_to_open() {
+        // An absolute path on this system, so it is kept as it is.
+        const UDD: &str = if cfg!(windows) { "C:\\p" } else { "/p" };
         let id = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
         let args = parse_args(
             &a(&[
@@ -429,7 +431,7 @@ mod tests {
                 "/Users/max/proj",
                 "--resume",
                 id,
-                "--user-data-dir=C:\\p",
+                &format!("--user-data-dir={UDD}"),
             ]),
             None,
         )
@@ -443,7 +445,7 @@ mod tests {
             })
         );
         assert!(args.positional.is_empty());
-        assert_eq!(args.user_data_dir, Some(PathBuf::from("C:\\p")));
+        assert_eq!(args.user_data_dir, Some(PathBuf::from(UDD)));
         // The machine's value is never a folder, even one that exists here: it is a name machines.json is asked for.
         let args = parse_args(&a(&["--on", "C:\\Windows", "open", "C:\\w"]), None).unwrap();
         assert_eq!(args.open_on.unwrap().machine, "C:\\Windows");

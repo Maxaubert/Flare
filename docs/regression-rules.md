@@ -1160,6 +1160,23 @@ background colour's look flag. Native: `crates/flare/src/hidden_start.rs`, `crat
 `a_background_launch_that_meets_a_running_flare_raises_and_opens_nothing` and the e2e `remoteOpen`. Source: remote
 sessions PR 5 (2026-11-12).
 
+302. **A Mac `--start-hidden` run is held clear from its first window, and its first raise lets go of all of it.** Amends
+rule 301 for macOS. A Mac draws nothing for a window on no screen, so the park puts it on the main screen at alpha 0
+(rule 1109). `--start-hidden` therefore installs the e2e's whole Mac park before the first window is made, as `--e2e`
+does (`keep_windows_off_screen`: no constraint to a screen, born clear, kept clear against Slint's reveal on the first
+GPU frame), not App Nap's hold alone; without it the window showed as a strip at a screen edge, then at full alpha on
+the host's screen. The hold is one flag (`window_park::HELD`) that an `--e2e` run never clears. The first raise calls
+`window_park::unpark` before the window moves: the flag clears, so every stand-in passes on what it is asked and AppKit
+constrains frames again; the app is a regular app (a Dock icon); every live window gets back the alpha and click
+pass-through its own code last asked while held (opaque and taking clicks when it asked nothing); and the main window
+is opaque, takes clicks and has its shadow. A park that comes after the raise parks nothing. Native:
+`crates/flare/src/main.rs`, `crates/flare/src/window.rs` (`unpark_background`),
+`crates/flare-win/src/macos/window_park.rs` (`unpark`, `Wanted`). Held by
+`a_background_start_on_a_mac_is_born_clear_and_its_raise_undoes_the_mac_park` and, in macOS CI,
+`a_held_park_keeps_windows_clear_and_a_released_one_passes_the_ask_on`,
+`a_window_gets_back_its_last_ask_and_opaque_with_clicks_when_it_asked_nothing` and
+`off_the_main_thread_nothing_is_touched`. Source: the review of remote sessions PR 5 (2026-11-12).
+
 ## macOS port
 
 The rules the macOS port stack added (PRs #121 to #140) are numbered from 1001 so they never clash with main: main's

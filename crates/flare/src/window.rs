@@ -381,9 +381,13 @@ pub fn background_raised_style(current: u32) -> u32 {
     (current & !(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)) | WS_EX_APPWINDOW
 }
 
-/// A `--start-hidden` window's first raise (rule 301): off the parking spot to its saved place (else near the primary
-/// screen's corner), with its normal style and its taskbar button back, so the raise that follows brings it forward.
+/// A `--start-hidden` window's first raise (rules 301, 302): off the parking spot to its saved place (else near the
+/// primary screen's corner), with its normal style and its taskbar button back, so the raise that follows brings it
+/// forward. On a Mac the park lets go first: a regular app again, the window opaque and taking clicks.
 fn unpark_background(app: &AppWindow, home: Option<(i32, i32)>) {
+    // Without a handle yet (0) the park still lets go, so the park timer that finds it later parks nothing.
+    #[cfg(target_os = "macos")]
+    flare_win::window_park::unpark(native_view_of(app).unwrap_or(0));
     #[cfg(windows)]
     if let Some(h) = hwnd_of(app) {
         let hwnd = h as *mut std::ffi::c_void;
@@ -3318,6 +3322,45 @@ mod tests {
         assert_ne!(raised & WS_EX_APPWINDOW, 0);
         // The window's other style bits are kept.
         assert_eq!(background_raised_style(parked | 0x10) & 0x10, 0x10);
+    }
+
+    /// Rule 302: on a Mac a `--start-hidden` run is held clear and off-screen-able from its first window, like the
+    /// e2e's, and its first raise lets go of the whole Mac park (the Mac code itself runs in macOS CI only).
+    #[test]
+    fn a_background_start_on_a_mac_is_born_clear_and_its_raise_undoes_the_mac_park() {
+        let main = include_str!("main.rs").replace("\r\n", "\n");
+        let from = main
+            .find("if window::parked_start(args.e2e, args.start_hidden) {")
+            .expect("main holds the Mac park for every parked start, not for --e2e alone");
+        let to = main[from..].find("\n    }\n").expect("the block ends") + from;
+        let block = &main[from..to];
+        assert!(block.contains("flare_win::window_park::keep_windows_off_screen();"));
+        assert!(block.contains("flare_win::window_park::hold_off_app_nap();"));
+        assert!(main[..from].ends_with("#[cfg(target_os = \"macos\")]\n    "));
+
+        let win = include_str!("window.rs").replace("\r\n", "\n");
+        let from = win
+            .find("fn unpark_background(")
+            .expect("unpark_background exists");
+        let to = win[from..].find("\n}\n").expect("it ends") + from;
+        assert!(
+            win[from..to].contains("flare_win::window_park::unpark("),
+            "the first raise lets go of the Mac park"
+        );
+
+        let mac = include_str!("../../flare-win/src/macos/window_park.rs").replace("\r\n", "\n");
+        let from = mac.find("pub fn unpark(").expect("the Mac park can let go");
+        let to = mac[from..].find("\n}\n").expect("it ends") + from;
+        let unpark = &mac[from..to];
+        for undo in [
+            "HELD.store(false",
+            "NSApplicationActivationPolicy::Regular",
+            "setAlphaValue(1.0)",
+            "setIgnoresMouseEvents(false)",
+            "setHasShadow(true)",
+        ] {
+            assert!(unpark.contains(undo), "unpark does `{undo}`");
+        }
     }
 
     #[test]

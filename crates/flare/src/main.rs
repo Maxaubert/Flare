@@ -225,16 +225,12 @@ fn main() {
     }
 
     e2e::init(args.e2e);
-    // macOS: an --e2e window is never pulled onto a screen, from its first order-in (rule 1107).
+    // macOS: an --e2e window and a `--start-hidden` one (remote sessions PR 5, rules 1107, 301, 302) are never pulled
+    // onto a screen and are born clear and click-through, from their first order-in, and kept from App Nap, so a hidden
+    // host's live shells keep running while nobody looks. A `--start-hidden` run lets go of all of it at its first raise.
     #[cfg(target_os = "macos")]
-    if args.e2e {
+    if window::parked_start(args.e2e, args.start_hidden) {
         flare_win::window_park::keep_windows_off_screen();
-        flare_win::window_park::hold_off_app_nap();
-    }
-    // macOS `--start-hidden` (remote sessions PR 5, rule 301): parked like the e2e's window and kept from App Nap, so its
-    // live shells keep running while nobody looks; it may come on a screen when it is raised later.
-    #[cfg(target_os = "macos")]
-    if args.start_hidden && !args.e2e {
         flare_win::window_park::hold_off_app_nap();
     }
     // Single instance: a second launch hands its folders to the first and exits 0. The lock and
