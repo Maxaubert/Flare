@@ -2464,5 +2464,10 @@ Plan `docs/superpowers/plans/2026-11-12-remote-sessions.md` (PR 2). Contract: `d
   ring) and `remote.close` (asks first like any close, rule 48). A detach or a dropped link never ends a session
   (rule 280). Held by the `ctl_app::tests` `remote_*` tests, `tab_host::tests`, `flare_term::tail::tests` and the
   `handle::tests` `remote_*` tests.
+- **A snapshot holds a half-drawn frame; a slow call holds up nothing.** A snapshot taken inside an open synchronized
+  update (DEC 2026) lets the update go first, so the bytes it kept back are in the text (rule 285). The bridge sends
+  attach, detach, typing, resize and close in turn on one connection and every other call on a pooled one, so a slow
+  folder read or open never holds up typing or the polls; a call whose turn comes after its time is answered `timeout`
+  and never sent, and a timeout no longer drops the connection that follows the tabs (rule 286).
 - **Not yet.** The viewer tab, reconnect and the Mac/PC tag (PR 3), status and conversation (PR 4), the hidden start of a
   host Flare that is not running (PR 5). A snapshot is plain text (no colours).

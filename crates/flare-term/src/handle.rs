@@ -640,12 +640,16 @@ impl TermHandle {
     /// had reached when it was read (`remote.snapshot`). Read while no batch is being parsed, so the text holds every
     /// byte before `seq` and none after. None when the session has no tail. Waits for one batch: a control channel
     /// worker's call, never the UI thread's (rule 34). Colours and styles are not kept: it is the text a reconnect shows.
+    /// An open synchronized update (DEC 2026) is let go first: its bytes are before `seq` but not yet on the grid, so
+    /// without that the viewer would never get them (rule 285).
     pub fn remote_snapshot(&self, lines: usize) -> Option<RemoteSnapshot> {
         self.sh.mgr.with_tail_still(&self.sh.id, |seq| {
-            let e = self.emu.lock();
+            let mut e = self.emu.lock();
+            let evs = e.release_sync();
             let text = e.text_tail(lines.max(1));
             let (cols, rows) = (e.cols(), e.rows());
             drop(e);
+            self.sh.handle(evs);
             let mut data = b"\x1b[H\x1b[2J\x1b[3J".to_vec();
             data.extend_from_slice(text.join("\r\n").as_bytes());
             RemoteSnapshot {
@@ -963,6 +967,31 @@ mod tests {
         let all = tail.read(start, 1 << 20);
         assert_eq!(all.data, b"one\r\ntwo\r\n");
         assert!(mgr.subscribe_tail("nobody").is_none());
+    }
+
+    /// Rule 285: a snapshot taken while a synchronized update (DEC 2026) is still open holds the bytes the update kept
+    /// back, so the viewer that polls from its `seq` loses no part of the frame.
+    #[test]
+    fn a_snapshot_inside_an_open_synchronized_update_holds_the_bytes_it_kept_back() {
+        let t = T::started();
+        let mgr = Arc::clone(&t.h.sh.mgr);
+        let tail = mgr.subscribe_tail("a").expect("a tail");
+        let start = tail.end();
+        t.fake().feed(b"\x1b[?2026hhalf a frame");
+        wait_until("the first half in the tail", || tail.end() > start);
+        let snap = t.h.remote_snapshot(100).expect("a snapshot");
+        assert_eq!(snap.seq, tail.end());
+        assert!(
+            String::from_utf8_lossy(&snap.data).contains("half a frame"),
+            "the snapshot lost the bytes the update kept back"
+        );
+        assert_eq!(t.h.emu.lock().sync_deadline(), None);
+        t.fake().feed(b" and the rest\x1b[?2026l");
+        wait_until("the rest", || t.text().contains("and the rest"));
+        assert_eq!(
+            tail.read(snap.seq, 1 << 20).data,
+            b" and the rest\x1b[?2026l"
+        );
     }
 
     // The resume reveal.

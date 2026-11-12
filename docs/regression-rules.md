@@ -948,7 +948,29 @@ reach beyond what the serve process already has. Native: `crates/flare-ctl/src/g
 `the_bridge_grant_comes_only_from_its_key_and_reaches_only_the_relayed_methods`,
 `the_bridge_key_is_the_bridge_grant_and_remote_methods_need_a_remote_host`, `only_this_runs_key_is_the_bridge_key`,
 `a_wrong_key_is_no_bridge` and `the_bridge_relays_remote_calls_and_refuses_everything_else`. Source: remote sessions
-PR 2 (2026-11-12).## macOS port
+PR 2 (2026-11-12).
+285. **A remote snapshot lets an open synchronized update go before it reads the screen.** Bytes inside an open DEC
+2026 update are in the tail before the snapshot's `seq` but not yet on the grid: the emulator holds them until the
+update ends or its deadline. Read as they were, they were in neither the snapshot nor a later `remote.output {since:
+seq}`, so a frame split over two batches lost its first half on the viewer. `remote_snapshot` calls
+`Emulator::release_sync` under the emulator lock (inside `with_tail_still`) before it reads the text and hands the
+replies the update held to the tab as delivery does. Native: `crates/flare-term/src/emulator.rs` (`release_sync`),
+`handle.rs` (`remote_snapshot`). Held by
+`a_snapshot_inside_an_open_synchronized_update_holds_the_bytes_it_kept_back`. Source: review of remote sessions PR 2
+(2026-11-12).
+286. **The bridge never holds one call behind another past its time, and a timeout never drops the follows.** The
+serve process relayed every call on one connection under one lock for the whole round trip: a 40 s folder read held
+typing and the polls, a call answered `timeout` to the viewer was still typed later, and a timeout dropped the
+connection, so the running Flare unfollowed every tab. Now the calls that follow or change a tab (attach, detach,
+input, resize, close) go in turn on one anchor connection, and every other call on an idle pooled connection or a new
+one. A call's time (`method.timeout()` less the 2 s margin) counts from when the link handed it over, its wait for its
+turn included; a call whose turn comes after it is answered `timeout` and never sent. A timeout keeps its connection
+(a late answer is skipped by its id). Native: `crates/flare/src/serve_remote.rs` (`relay`, `relay_on_anchor`, `send`,
+`on_anchor`). Held by `a_slow_open_never_holds_up_typing_or_the_polls` and
+`a_call_late_for_its_turn_is_never_sent_and_a_timeout_keeps_the_anchor`. Source: review of remote sessions PR 2
+(2026-11-12).
+
+## macOS port
 
 The rules the macOS port stack added (PRs #121 to #140) are numbered from 1001 so they never clash with main: main's
 numbering continues below 1000. When the stack merges, this block is renumbered into the main sequence, or kept as it

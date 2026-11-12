@@ -11,8 +11,8 @@
 //! Stdout carries only protocol lines (rule 277): `StdioWire::from_process` is its one writer, and logs go to stderr.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use flare_ctl::framing::Wire;
 use flare_ctl::{
@@ -33,15 +33,64 @@ pub type Connect<W> = Box<dyn Fn() -> Result<Client<W>, ClientError> + Send + Sy
 pub type KeyOf = Box<dyn Fn() -> Option<String> + Send + Sync>;
 
 /// The serve process's dispatcher: the remote grant for its own link, every `remote.*` call but the hello relayed.
+///
+/// Two ways up to the running Flare (rule 286). The anchor connection carries the calls that follow a tab or change it
+/// (`on_anchor`), one at a time and in turn: the running Flare keys a follow by its connection, so this one is never
+/// dropped for a slow call. Every other call (the polls, the snapshot, the tab list, a folder read, an open) takes an
+/// idle pooled connection or a new one, so a slow folder read never holds up typing or the output polls. A call's
+/// time counts from when the link handed it over, its wait for its turn included: a call whose turn comes after its
+/// time is answered `timeout` and never sent, so nothing is typed late.
 pub struct BridgeDispatcher<W: Wire + Send + 'static> {
     connect: Connect<W>,
     key_of: KeyOf,
-    /// One connection to the running Flare, opened at the first relayed call and again after it broke.
-    upstream: Mutex<Option<Client<W>>>,
+    /// How long a relayed call may take, its wait for its turn included (tests shorten it).
+    budget: fn(Method) -> Duration,
+    lanes: Mutex<Lanes<W>>,
+    /// Signalled when the anchor connection is free again.
+    turn: Condvar,
 }
+
+/// The bridge's connections to the running Flare.
+struct Lanes<W: Wire> {
+    /// The connection that follows tabs, opened at its first call and again after it broke.
+    anchor: Option<Client<W>>,
+    /// A call is using the anchor connection.
+    anchor_busy: bool,
+    /// Pooled connections no call is using (they follow nothing).
+    idle: Vec<Client<W>>,
+    /// The link closed: a connection coming back from a call is dropped, not kept.
+    closed: bool,
+}
+
+/// At most this many pooled connections are kept between calls.
+const IDLE_KEPT: usize = 4;
 
 fn unavailable(msg: impl Into<String>) -> CtlError {
     CtlError::new(code::UNAVAILABLE, msg)
+}
+
+fn late(method: Method) -> CtlError {
+    CtlError::new(
+        code::TIMEOUT,
+        format!("Flare did not answer {} in time", method.name()),
+    )
+}
+
+/// What a relayed call may take: its link's time less the margin.
+fn default_budget(method: Method) -> Duration {
+    method.timeout().saturating_sub(RELAY_MARGIN)
+}
+
+/// Whether a relayed call rides the anchor connection: the calls that follow a tab or change it, in turn.
+fn on_anchor(m: Method) -> bool {
+    matches!(
+        m,
+        Method::RemoteAttach
+            | Method::RemoteDetach
+            | Method::RemoteInput
+            | Method::RemoteResize
+            | Method::RemoteClose
+    )
 }
 
 /// Whether a relayed call may be sent again on a fresh connection when the first one broke: the calls that change
@@ -59,17 +108,48 @@ fn may_retry(m: Method) -> bool {
     )
 }
 
+/// The anchor connection's turn, held by one call; given back (and the next call woken) when it ends, a panic too.
+struct AnchorTurn<'a, W: Wire + Send + 'static> {
+    d: &'a BridgeDispatcher<W>,
+    conn: Option<Client<W>>,
+}
+
+impl<W: Wire + Send + 'static> Drop for AnchorTurn<'_, W> {
+    fn drop(&mut self) {
+        let mut st = self.d.lk();
+        st.anchor_busy = false;
+        if !st.closed {
+            st.anchor = self.conn.take();
+        }
+        drop(st);
+        self.d.turn.notify_one();
+    }
+}
+
 impl<W: Wire + Send + 'static> BridgeDispatcher<W> {
     pub fn new(connect: Connect<W>, key_of: KeyOf) -> Self {
         Self {
             connect,
             key_of,
-            upstream: Mutex::new(None),
+            budget: default_budget,
+            lanes: Mutex::new(Lanes {
+                anchor: None,
+                anchor_busy: false,
+                idle: Vec::new(),
+                closed: false,
+            }),
+            turn: Condvar::new(),
         }
     }
 
-    fn lk(&self) -> MutexGuard<'_, Option<Client<W>>> {
-        self.upstream.lock().unwrap_or_else(|e| e.into_inner())
+    #[cfg(test)]
+    fn with_budget(mut self, budget: fn(Method) -> Duration) -> Self {
+        self.budget = budget;
+        self
+    }
+
+    fn lk(&self) -> MutexGuard<'_, Lanes<W>> {
+        self.lanes.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// A connection that said `hello` with the bridge key and was given the bridge grant.
@@ -105,43 +185,97 @@ impl<W: Wire + Send + 'static> BridgeDispatcher<W> {
         Ok(c)
     }
 
-    /// Relays one call. A connection that broke is opened again; a call that changes nothing is sent once more on it.
+    /// Relays one call by `deadline`, on the anchor connection or a pooled one.
     fn relay(&self, method: Method, params: Value) -> Result<Value, CtlError> {
-        let wait = method.timeout().saturating_sub(RELAY_MARGIN);
-        let mut up = self.lk();
-        for attempt in 0..2 {
-            if up.is_none() {
-                *up = Some(self.open()?);
+        let deadline = Instant::now() + (self.budget)(method);
+        if on_anchor(method) {
+            self.relay_on_anchor(method, params, deadline)
+        } else {
+            let conn = self.lk().idle.pop();
+            let (r, back) = self.send(conn, method, params, deadline);
+            if let Some(c) = back {
+                let mut st = self.lk();
+                if !st.closed && st.idle.len() < IDLE_KEPT {
+                    st.idle.push(c);
+                }
             }
-            let c = up.as_mut().expect("just opened");
-            match c.call(method, params.clone(), wait) {
-                Ok(v) => return Ok(v),
+            r
+        }
+    }
+
+    /// Waits for the anchor connection's turn until `deadline`; a call whose turn comes too late is never sent.
+    fn relay_on_anchor(
+        &self,
+        method: Method,
+        params: Value,
+        deadline: Instant,
+    ) -> Result<Value, CtlError> {
+        let st = self.lk();
+        let left = deadline.saturating_duration_since(Instant::now());
+        let (mut st, _) = self
+            .turn
+            .wait_timeout_while(st, left, |s| s.anchor_busy) // sync-ok: a link worker waits for its turn, capped by its own time
+            .unwrap_or_else(|e| e.into_inner());
+        if st.anchor_busy {
+            return Err(late(method));
+        }
+        st.anchor_busy = true;
+        let conn = st.anchor.take();
+        drop(st);
+        let mut turn = AnchorTurn {
+            d: self,
+            conn: None,
+        };
+        let (r, back) = self.send(conn, method, params, deadline);
+        turn.conn = back;
+        drop(turn);
+        r
+    }
+
+    /// Sends one call on `conn` (or a new connection), within `deadline`. Returns the answer and the connection to keep:
+    /// None when it broke or the running Flare closed it. A call that timed out keeps its connection: a late answer is
+    /// skipped by its id, and dropping the anchor would stop every tab it follows.
+    fn send(
+        &self,
+        conn: Option<Client<W>>,
+        method: Method,
+        params: Value,
+        deadline: Instant,
+    ) -> (Result<Value, CtlError>, Option<Client<W>>) {
+        let mut conn = conn;
+        for attempt in 0..2 {
+            let mut c = match conn.take() {
+                Some(c) => c,
+                None => match self.open() {
+                    Ok(c) => c,
+                    Err(e) => return (Err(e), None),
+                },
+            };
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return (Err(late(method)), Some(c));
+            }
+            match c.call(method, params.clone(), left) {
+                Ok(v) => return (Ok(v), Some(c)),
                 // The running Flare's own answer, error or not, is the link's.
                 Err(ClientError::Remote(e)) => {
-                    if code::closes_client(&e.code) {
-                        *up = None;
-                    }
-                    return Err(e);
+                    let keep = (!code::closes_client(&e.code)).then_some(c);
+                    return (Err(e), keep);
                 }
-                Err(ClientError::Timeout) => {
-                    // A late answer would arrive out of turn on this connection: start a fresh one next time.
-                    *up = None;
-                    return Err(CtlError::new(
-                        code::TIMEOUT,
-                        format!("Flare did not answer {} in time", method.name()),
-                    ));
-                }
+                Err(ClientError::Timeout) => return (Err(late(method)), Some(c)),
                 Err(e) => {
-                    *up = None;
                     if attempt == 0 && may_retry(method) {
                         log::info!("serve-remote: the pipe broke ({e}); connecting again");
                         continue;
                     }
-                    return Err(unavailable(format!("the running Flare went away: {e}")));
+                    return (
+                        Err(unavailable(format!("the running Flare went away: {e}"))),
+                        None,
+                    );
                 }
             }
         }
-        Err(unavailable("the running Flare went away"))
+        (Err(unavailable("the running Flare went away")), None)
     }
 }
 
@@ -181,7 +315,10 @@ impl<W: Wire + Send + 'static> Dispatcher for BridgeDispatcher<W> {
     /// The link closed: the bridge's connection goes too, so the running Flare hears the viewer is gone (its tabs stop
     /// being followed and take the window's size again; their shells go on, rule 280).
     fn client_gone(&self, _ctx: &CallContext) {
-        self.lk().take();
+        let mut st = self.lk();
+        st.closed = true;
+        st.anchor = None;
+        st.idle.clear();
     }
 }
 
@@ -256,12 +393,16 @@ mod tests {
         ops: Arc<Mutex<Vec<String>>>,
         next: AtomicU64,
         up: Arc<AtomicBool>,
+        /// While above 0, the window answers `remote.open` and `remote.attach` this many ms late (on its own thread).
+        slow_ms: Arc<AtomicU64>,
     }
 
     impl Host {
         fn new() -> Arc<Host> {
             let ops = Arc::new(Mutex::new(Vec::new()));
             let seen = ops.clone();
+            let slow_ms = Arc::new(AtomicU64::new(0));
+            let slow = slow_ms.clone();
             let post: Post = Arc::new(move |m: UiMsg| {
                 let UiMsg::Ctl(boxed) = m else {
                     return;
@@ -269,12 +410,26 @@ mod tests {
                 seen.lock().unwrap().push(format!("{boxed:?}"));
                 let req = boxed.0;
                 let answer = match &req.op {
+                    CtlOp::RemoteOpen { .. } => Ok(json!({"tab": "t2"})),
                     CtlOp::RemoteTabs => Ok(json!({"tabs": [{"tab": "t1", "cwd": "C:\\w"}]})),
                     CtlOp::RemoteAttach { tab, .. } => {
                         Ok(json!({"tab": tab, "cols": 80, "rows": 24, "seq": 0}))
                     }
                     _ => Err(CtlError::new(code::NO_TAB, "that tab is closed")),
                 };
+                let late = slow.load(Ordering::SeqCst);
+                if late > 0
+                    && matches!(
+                        req.op,
+                        CtlOp::RemoteOpen { .. } | CtlOp::RemoteAttach { .. }
+                    )
+                {
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(late));
+                        let _ = req.reply.send(answer);
+                    });
+                    return;
+                }
                 let _ = req.reply.send(answer);
             });
             let d = AppDispatcher::new(
@@ -290,6 +445,7 @@ mod tests {
                 ops,
                 next: AtomicU64::new(1),
                 up: Arc::new(AtomicBool::new(true)),
+                slow_ms,
             })
         }
 
@@ -476,5 +632,107 @@ mod tests {
             WAIT,
         )
         .expect("remote.hello over OS pipes");
+    }
+
+    fn remote_ctx() -> CallContext {
+        CallContext {
+            conn: 1,
+            client: "viewer".into(),
+            client_version: "9".into(),
+            grant: Grant::Remote,
+            tab: None,
+            cancel: flare_ctl::session::CancelFlag::default(),
+        }
+    }
+
+    fn bridge_to(host: &Arc<Host>) -> BridgeDispatcher<MemWire> {
+        let h = host.clone();
+        BridgeDispatcher::new(
+            Box::new(move || h.connect()),
+            Box::new(|| Some(KEY.to_string())),
+        )
+    }
+
+    fn seen(host: &Host, what: &str) -> bool {
+        host.ops.lock().unwrap().iter().any(|o| o.contains(what))
+    }
+
+    fn wait_for(what: &str, ok: impl Fn() -> bool) {
+        let end = Instant::now() + WAIT;
+        while !ok() {
+            assert!(Instant::now() < end, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Rule 286: a slow `remote.open` (or folder read) holds no lock the other calls need: the polls and typing are
+    /// answered while it runs.
+    #[test]
+    fn a_slow_open_never_holds_up_typing_or_the_polls() {
+        let host = Host::new();
+        host.slow_ms.store(3000, Ordering::SeqCst);
+        let bridge = Arc::new(bridge_to(&host));
+        let b = bridge.clone();
+        let here = std::env::temp_dir().to_string_lossy().into_owned();
+        let open = std::thread::spawn(move || {
+            b.call(&remote_ctx(), Method::RemoteOpen, json!({"folder": here}))
+        });
+        wait_for("the open to reach the window", || seen(&host, "RemoteOpen"));
+        let t0 = Instant::now();
+        let tabs = bridge
+            .call(&remote_ctx(), Method::RemoteTabs, json!({}))
+            .expect("remote.tabs");
+        assert_eq!(tabs["tabs"][0]["tab"], "t1");
+        let typed = bridge.call(
+            &remote_ctx(),
+            Method::RemoteInput,
+            json!({"tab": "t1", "intents": [{"text": "x"}]}),
+        );
+        assert_eq!(code_of(typed.map_err(ClientError::Remote)), code::NO_TAB);
+        assert!(
+            t0.elapsed() < Duration::from_millis(2000),
+            "the calls waited {:?} behind the open",
+            t0.elapsed()
+        );
+        assert_eq!(open.join().unwrap().expect("remote.open")["tab"], "t2");
+    }
+
+    /// Rule 286: a call whose turn on the anchor connection comes after its own time is answered `timeout` and never
+    /// sent, and a call that timed out keeps the anchor connection (the running Flare keys its follows by it).
+    #[test]
+    fn a_call_late_for_its_turn_is_never_sent_and_a_timeout_keeps_the_anchor() {
+        let host = Host::new();
+        host.slow_ms.store(2500, Ordering::SeqCst);
+        let bridge = Arc::new(bridge_to(&host).with_budget(|m| match m {
+            Method::RemoteInput => Duration::from_millis(200),
+            _ => Duration::from_millis(1000),
+        }));
+        let b = bridge.clone();
+        let attach = std::thread::spawn(move || {
+            b.call(&remote_ctx(), Method::RemoteAttach, json!({"tab": "t1"}))
+        });
+        wait_for("the attach to reach the window", || {
+            seen(&host, "RemoteAttach")
+        });
+        let opened = host.next.load(Ordering::SeqCst);
+        let typed = bridge.call(
+            &remote_ctx(),
+            Method::RemoteInput,
+            json!({"tab": "t1", "intents": [{"text": "x"}]}),
+        );
+        assert_eq!(code_of(typed.map_err(ClientError::Remote)), code::TIMEOUT);
+        assert_eq!(
+            code_of(attach.join().unwrap().map_err(ClientError::Remote)),
+            code::TIMEOUT
+        );
+        // The attach's late answer comes and goes; the typing never reached the window.
+        std::thread::sleep(Duration::from_millis(2000));
+        assert!(!seen(&host, "RemoteInput"), "a late call was typed");
+        // The next anchor call rides the same connection: none was dropped or opened again.
+        host.slow_ms.store(0, Ordering::SeqCst);
+        bridge
+            .call(&remote_ctx(), Method::RemoteDetach, json!({"tab": "t1"}))
+            .expect("remote.detach");
+        assert_eq!(host.next.load(Ordering::SeqCst), opened);
     }
 }

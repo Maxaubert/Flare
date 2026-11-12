@@ -123,11 +123,15 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     `hello` there with the **bridge key** (`token`), and the running Flare gives it the `bridge` grant (section 4, rule
     284). The key is a fresh 256-bit secret the running Flare writes into its profile at every start
     (`remote-bridge.key`, written whole by a rename, owner-only), so a key of an earlier run is refused (`unauthorized`),
-    and the bridge reports `unavailable` ("Flare is not running on this machine"). One pipe connection per serve process,
-    opened at the first relayed call; one that broke is opened again, and a call that changes nothing (`remote.ls`,
-    `tabs`, `attach`, `detach`, `resize`, `output`, `snapshot`) is sent once more on it. Typing, opening and closing are
-    never sent twice. When the link closes the bridge's pipe connection closes too, and the running Flare stops
-    following that viewer's tabs (their shells go on, rule 280). With no Flare running, `remote.hello` still answers
+    and the bridge reports `unavailable` ("Flare is not running on this machine"). The calls that follow or change a tab
+    (`attach`, `detach`, `input`, `resize`, `close`) go in turn on one **anchor** pipe connection, the one the running
+    Flare keys the follows by; every other call (`output`, `snapshot`, `tabs`, `ls`, `open`) takes an idle pooled
+    connection or a new one, so a slow folder read never holds up typing or the polls (rule 286). A call's time counts
+    from when the link handed it over, its wait for its turn included: a call whose turn comes too late is answered
+    `timeout` and never sent, and a timeout keeps its connection. A connection that broke is opened again, and a call
+    that changes nothing (`remote.ls`, `tabs`, `attach`, `detach`, `resize`, `output`, `snapshot`) is sent once more on
+    it. Typing, opening and closing are never sent twice. When the link closes the bridge's pipe connections close
+    too, and the running Flare stops following that viewer's tabs (their shells go on, rule 280). With no Flare running, `remote.hello` still answers
     and every relayed call is `unavailable` (remote sessions PR 5 starts one hidden).
 
 ## 2. Framing
