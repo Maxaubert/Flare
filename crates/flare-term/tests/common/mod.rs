@@ -18,6 +18,27 @@ use flare_term::pty::{PortableSpawner, PtyProcess, PtySpawner, SpawnSpec};
 type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
 type Events = Arc<Mutex<Vec<TermEvent>>>;
 
+/// Prints the crate's warnings (a shell that could not start says why) on stderr, which the test
+/// harness shows when a test fails. Safe to call from every test: only the first call installs it.
+pub fn log_warnings() {
+    struct Stderr;
+    impl log::Log for Stderr {
+        fn enabled(&self, m: &log::Metadata<'_>) -> bool {
+            m.level() <= log::Level::Warn
+        }
+        fn log(&self, r: &log::Record<'_>) {
+            if self.enabled(r.metadata()) {
+                eprintln!("[{}] {}", r.level(), r.args());
+            }
+        }
+        fn flush(&self) {}
+    }
+    static LOGGER: Stderr = Stderr;
+    if log::set_logger(&LOGGER).is_ok() {
+        log::set_max_level(log::LevelFilter::Warn);
+    }
+}
+
 /// A shell running in a real pseudo console, with its emulator and output reader.
 pub struct Rig {
     pub emu: Arc<FairMutex<Emulator>>,

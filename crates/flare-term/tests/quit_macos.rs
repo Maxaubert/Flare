@@ -77,6 +77,7 @@ fn sh() -> ShellDef {
 }
 
 fn manager(def: ShellDef) -> (Arc<SessionManager>, Arc<Sink>) {
+    common::log_warnings();
     let mgr = SessionManager::new(
         Arc::new(PortableSpawner),
         FakeShells::with(vec![def]),

@@ -81,8 +81,74 @@ pub struct PortablePty {
     waiter: Option<JoinHandle<()>>,
 }
 
+/// How often a start that failed for a passing reason is tried again, and the pause before each try.
+const SPAWN_RETRY_MS: [u64; 3] = [20, 80, 250];
+
+/// Pure: whether a start that failed with this OS error may work a moment later. A loaded machine
+/// can refuse a fork (EAGAIN), a pty or a descriptor (EMFILE, ENFILE, ENXIO, EBUSY, EIO), or the new
+/// session its terminal (EPERM from setsid or TIOCSCTTY while a dying shell's session lets go of the
+/// pty). A missing program or folder (ENOENT, ENOTDIR, EACCES, ENOEXEC) never comes right by waiting.
+pub fn spawn_error_is_transient(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind as K;
+    if let Some(code) = e.raw_os_error() {
+        // The POSIX numbers below 35 are the same on macOS and Linux.
+        const EPERM: i32 = 1;
+        const EINTR: i32 = 4;
+        const EIO: i32 = 5;
+        const ENXIO: i32 = 6;
+        const EAGAIN: i32 = 35;
+        const EAGAIN_LINUX: i32 = 11;
+        const ENOMEM: i32 = 12;
+        const EBUSY: i32 = 16;
+        const ENFILE: i32 = 23;
+        const EMFILE: i32 = 24;
+        if cfg!(windows) {
+            return false;
+        }
+        return matches!(
+            code,
+            EPERM | EINTR | EIO | ENXIO | ENOMEM | EBUSY | ENFILE | EMFILE
+        ) || (cfg!(target_os = "macos") && code == EAGAIN)
+            || (cfg!(target_os = "linux") && code == EAGAIN_LINUX);
+    }
+    matches!(e.kind(), K::WouldBlock | K::Interrupted | K::OutOfMemory)
+}
+
+/// Whether any error in the chain portable-pty returned is a passing OS refusal.
+fn anyhow_is_transient(e: &anyhow::Error) -> bool {
+    e.chain()
+        .filter_map(|c| c.downcast_ref::<std::io::Error>())
+        .any(spawn_error_is_transient)
+}
+
 impl PortablePty {
+    /// Opens a pty and starts the program in it. A start the OS refused for a passing reason (see
+    /// `spawn_error_is_transient`) is tried again after a short pause, up to three times: a busy
+    /// machine must not leave a tab without its shell. BLOCKING: callers run it on a worker thread.
     pub fn spawn(spec: &SpawnSpec) -> Result<Self, String> {
+        let mut pauses = SPAWN_RETRY_MS.iter();
+        loop {
+            match Self::spawn_once(spec) {
+                Ok(p) => return Ok(p),
+                Err((e, transient)) => match pauses.next() {
+                    Some(ms) if transient => {
+                        log::warn!(
+                            "starting {} failed ({e}); trying again in {ms} ms",
+                            spec.exe
+                        );
+                        // sync-ok: a worker thread's start, after the OS refused it for a passing reason
+                        std::thread::sleep(std::time::Duration::from_millis(*ms));
+                    }
+                    _ => return Err(e),
+                },
+            }
+        }
+    }
+
+    /// One try: the error text, and whether it may pass. Only the pty and the start itself are
+    /// tried again; once the program runs, a later failure is final (a second try would leave it behind).
+    fn spawn_once(spec: &SpawnSpec) -> Result<Self, (String, bool)> {
+        let fail = |e: anyhow::Error| (e.to_string(), anyhow_is_transient(&e));
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: spec.rows,
@@ -90,7 +156,7 @@ impl PortablePty {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(fail)?;
         let mut cmd = CommandBuilder::new(&spec.exe);
         cmd.args(&spec.args);
         // portable-pty starts from the process and registry environment; Flare passes its own exactly.
@@ -99,7 +165,7 @@ impl PortablePty {
             cmd.env(k, v);
         }
         cmd.cwd(&spec.cwd);
-        let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+        let mut child = pair.slave.spawn_command(cmd).map_err(fail)?;
         let pid = child.process_id().unwrap_or(0);
         // Every shell joins the kill-on-close job: nothing outlives the process that started it.
         #[cfg(windows)]
@@ -110,8 +176,14 @@ impl PortablePty {
         // the tab records which session that is.
         #[cfg(not(windows))]
         let tab = macos::Tab::of(pid, pair.master.as_raw_fd());
-        let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| (e.to_string(), false))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| (e.to_string(), false))?;
         let exit = Arc::new(Mutex::new(ExitState::default()));
         let exit_w = Arc::clone(&exit);
         let waiter = std::thread::Builder::new()
@@ -128,7 +200,7 @@ impl PortablePty {
                     cb(code);
                 }
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| (e.to_string(), false))?;
         // The slave handle is no longer needed here; the child holds its own.
         drop(pair.slave);
         Ok(PortablePty {
@@ -578,6 +650,39 @@ mod tests {
     use super::*;
     #[cfg(windows)]
     use std::time::{Duration, Instant};
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_busy_machine_is_tried_again_a_missing_program_is_not() {
+        let os = std::io::Error::from_raw_os_error;
+        let eagain = if cfg!(target_os = "macos") { 35 } else { 11 };
+        for code in [1, 4, 5, 6, 12, 16, 23, 24, eagain] {
+            assert!(spawn_error_is_transient(&os(code)), "errno {code}");
+        }
+        // ENOENT, EACCES, ENOTDIR, ENOEXEC.
+        for code in [2, 13, 20, 8] {
+            assert!(!spawn_error_is_transient(&os(code)), "errno {code}");
+        }
+        let wrapped = anyhow::Error::from(os(eagain)).context("spawn");
+        assert!(anyhow_is_transient(&wrapped));
+        assert!(!anyhow_is_transient(&anyhow::anyhow!("no such program")));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_missing_program_fails_at_once_without_retries() {
+        let spec = SpawnSpec {
+            exe: "/nonexistent/flare-no-such-shell".into(),
+            args: vec![],
+            cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+            env: vec![],
+            cols: 80,
+            rows: 24,
+        };
+        let t = std::time::Instant::now();
+        assert!(PortablePty::spawn(&spec).is_err());
+        assert!(t.elapsed() < std::time::Duration::from_millis(SPAWN_RETRY_MS[0]));
+    }
 
     #[test]
     fn descendants_of_walks_the_tree_and_survives_a_cycle() {

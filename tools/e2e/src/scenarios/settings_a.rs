@@ -266,6 +266,25 @@ fn resize(app: &mut App, w: f32, h: f32) -> bool {
     app.session.call(&Request::Resize { w, h }).is_ok()
 }
 
+/// Sets the window's client size and waits until the window is laid out at the new width. The resize
+/// is asked of the OS and lands a little later (a fresh GPU window on the Mac runner took a while): a
+/// click read off the old size, such as the cog's at the old right edge, misses (CI run 43280904565,
+/// the key capture's Settings never opened). True when the width arrived.
+fn resize_settled(ctx: &mut Ctx, app: &mut App, w: f32, h: f32) -> bool {
+    if !resize(app, w, h) {
+        return false;
+    }
+    ctx.until(
+        &format!("the window to be {w} css px wide"),
+        5_000,
+        &mut || {
+            let d = probe(app, "dpi.state", Value::Null);
+            let k = d["scale"].as_f64().unwrap_or(1.0);
+            d["client_w_px"].as_f64() == Some((f64::from(w) * k).round())
+        },
+    )
+}
+
 /// Gives the find field the keyboard, as PT's `find.focus()` does: a click in the field's box
 /// (`settings.find_rect`). Where the field is folded (the narrow frame) there is no box to click,
 /// and Ctrl+F is the terminal's find bar, not Settings', so the result is false.
@@ -549,7 +568,7 @@ pub fn options(ctx: &mut Ctx) -> Result<(), String> {
 pub fn settings_look(ctx: &mut Ctx) -> Result<(), String> {
     let mut app = launch_with_tab(ctx)?;
     ctx.until("one tab open", 15_000, &mut || tabs(&mut app) == 1);
-    resize(&mut app, 1600.0, 1000.0);
+    resize_settled(ctx, &mut app, 1600.0, 1000.0);
     if !open_settings(ctx, &mut app) {
         ctx.ok(false, "the cog opens Settings");
         app.close();
@@ -714,7 +733,7 @@ pub fn seeded_dictation_app(ctx: &mut Ctx) -> Option<(World, App)> {
         )
         .ok()?;
     ctx.until("one tab open", 15_000, &mut || tabs(&mut app) == 1);
-    resize(&mut app, 1600.0, 1000.0);
+    resize_settled(ctx, &mut app, 1600.0, 1000.0);
     Some((w, app))
 }
 
@@ -738,7 +757,7 @@ fn warning_subtext(ctx: &mut Ctx) -> Option<f64> {
 pub fn settings_search(ctx: &mut Ctx) -> Result<(), String> {
     let mut app = launch_with_tab(ctx)?;
     ctx.until("one tab open", 15_000, &mut || tabs(&mut app) == 1);
-    resize(&mut app, 1600.0, 1000.0);
+    resize_settled(ctx, &mut app, 1600.0, 1000.0);
     // The index: every row of the catalogue that is findable on this PC (the NVIDIA-only row is not
     // indexed here; the Dictation page is wired, M8 Task 24, so its rows are).
     let cat = probe(&mut app, "settings.rows", json!({ "catalogue": true }));
