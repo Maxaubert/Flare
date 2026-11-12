@@ -1,6 +1,6 @@
 # Every merge to main is a release when it carries a new version (D15).
 # Gates first, then vpk pack and its verification, then the release v<version> on this (private)
-# repository. No step downloads another product or reads a repository secret (regression rule 1153). A version that is already released
+# repository. No step downloads another product or reads a repository secret (regression rule 1183). A version that is already released
 # publishes nothing and says so, without failing. The updater inside the app is switched off until
 # the repository is public (docs/updater-flip.md); FLARE_LIVE_UPDATES=on builds it in.
 name: release

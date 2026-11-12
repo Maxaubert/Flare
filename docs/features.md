@@ -637,7 +637,7 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
 - **Two apps side by side.** Different app id, verb key, single-instance mutex and pipe, profile, plugin name,
   hook signal and tab-id variable. Test: `every_flare_name_differs_from_prism_terminals` (`crates/flare/tests/names.rs`,
   against `names.json`). The side-by-side install test (both apps installed on a CI runner) was removed on 2026-11-11 by
-  owner decision: no CI step downloads the reference app or needs a token for it (rule 1153, `docs/shipping.md`).
+  owner decision: no CI step downloads the reference app or needs a token for it (rule 1183, `docs/shipping.md`).
 - **The log.** `%APPDATA%\Flare\logs\diag.jsonl`, one JSON object per line, rotated at 2 MB into four old files,
   written by a thread that never blocks the UI (a queue of 2000 lines, dropped and counted when full). It holds
   no typed text, clipboard, audio or conversation, and `mark` carries no note (D12). Read it with `cargo diag`
@@ -701,7 +701,7 @@ tag `v<version>` with no in-place replacement (D15), and the placeholder icon (D
 - The out-of-process `diagLog` e2e belongs to M10. The dictation rows and the dictation engine files are M8,
   which this branch does not contain (the owner moved dictation to the end).
 - The installer is not yet run on a clean machine: `update-e2e` installs Flare in CI. (The real install of both
-  apps side by side was removed on 2026-11-11, rule 1153.)
+  apps side by side was removed on 2026-11-11, rule 1183.)
 - The e2e scenarios updateWindow, updateGuard and updateNotes are in-process here (Task 34), not run out of process.
 
 ### Numbers for the M9 PR (measured 2026-10-18 on this PC; release build unless said)
