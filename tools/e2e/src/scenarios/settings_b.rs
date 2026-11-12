@@ -1154,7 +1154,15 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
 /// nothing and offers no Reset; the editor takes the keyboard, Escape closes the editor and then
 /// the picker alone; saving keeps the agent colour and forgets the picked background.
 pub fn review_settings(ctx: &mut Ctx) -> Result<(), String> {
-    let mut app = launch_alpha(ctx)?;
+    // The marks are Bar: the agent colours walked below live in Mark colours, which Ring (the
+    // default) leaves out (rule 1140).
+    let alpha = ctx.ensure_world().alpha.clone();
+    let mut app = ctx.launch(Launch {
+        folders: vec![alpha],
+        renderer: Some("software"),
+        marks_as_bar: true,
+        ..Launch::default()
+    })?;
     if !start_appearance(ctx, &mut app) {
         ctx.ok(false, "the cog opens Settings on the Appearance page");
         app.close();

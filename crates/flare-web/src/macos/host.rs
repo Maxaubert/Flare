@@ -1206,10 +1206,27 @@ impl WebHost {
         let page_log = app.is_none();
         let note = |note: WebNote| sink.send(|tab| WebEvent::Note { tab, note });
         match e {
-            ViewEvent::Armed(_)
-            | ViewEvent::SetupAnswered
-            | ViewEvent::Closed
-            | ViewEvent::DownloadEnded { .. } => {}
+            ViewEvent::Armed(_) | ViewEvent::SetupAnswered | ViewEvent::DownloadEnded { .. } => {}
+            // The page's own `window.close()` closes nothing (rule 1170): noted by site, as on Windows.
+            ViewEvent::CloseIgnored { url } => note(WebNote::new(NoteKind::CloseIgnored, &url, "")),
+            // A browser this host did not close ended (a close of the view's own is never delivered: its slot no
+            // longer holds it): the view goes and the panel hears it is gone, never a frozen picture.
+            ViewEvent::Closed => {
+                self.drop_view(slot);
+                self.closing.retain(|v| !v.state().closed);
+                sink.send(|tab| WebEvent::Gone {
+                    tab,
+                    why: "the page closed".to_string(),
+                });
+            }
+            // The browser's own launch of a program (a link to an app in a frame) is the backstop of the web
+            // panel's app links (rule 1171), as WebView2's `LaunchingExternalUriScheme` is on Windows.
+            ViewEvent::External { url, from } => {
+                if page_log && !self.links.offer(slot, &url, &from) {
+                    note(WebNote::new(NoteKind::NavRefused, &url, &from).detail("scheme"));
+                    sink.send(|tab| WebEvent::Refused { tab, url });
+                }
+            }
             ViewEvent::Painted => {
                 self.serial += 1;
                 let serial = self.serial;
@@ -1571,7 +1588,8 @@ impl WebHost {
                 url,
                 from,
                 main: true,
-            } => {
+            }
+            | ViewEvent::External { url, from } => {
                 if !self.links.offer(&slot, &url, &from) {
                     note(WebNote::new(NoteKind::NavRefused, &url, &from).detail("scheme"));
                 }

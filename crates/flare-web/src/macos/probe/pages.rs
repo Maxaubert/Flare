@@ -40,6 +40,15 @@ pub const POPUP: &str = r#"<!doctype html><html><head><meta charset="utf-8"><tit
 <script>if (window.opener) { window.opener.document.title = 'Opener seen'; }</script>
 </head><body><div id="x" onclick="window.close()"></div></body></html>"#;
 
+/// A link to an app inside a frame (rule 1171): the navigation wall lets a frame go anywhere, so only the browser's
+/// own launch of the app sees it. The frame fills the top left 400 by 200 CSS pixels, all of it the link.
+pub const APPLINK: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>App link</title>
+<style>html,body{margin:0} iframe{position:absolute;left:0;top:0;width:400px;height:200px;border:0}</style>
+</head><body><iframe src="/applink-inner"></iframe></body></html>"#;
+
+pub const APPLINK_INNER: &str = r#"<!doctype html><html><head><meta charset="utf-8"></head>
+<body style="margin:0"><a href="zoommtg://zoom.us/join?confno=123" style="display:block;width:400px;height:200px;background:#33cc33">join</a></body></html>"#;
+
 pub const PAGE2: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Page two</title></head><body><h1>Page two</h1></body></html>"#;
 
 /// A known colour in a known place.
@@ -256,6 +265,15 @@ document.getElementById('c').addEventListener('click', function (e) { if (e.isTr
 </script>
 </body></html>"##;
 
+/// A sign-in form for a plugin's fill (`flare_mods::fill::fill_script`): a user name, a password and a one-time code
+/// field by their `autocomplete` tokens, every `input` and `change` logged into `window.__ev`.
+pub const LOGIN: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Sign in</title></head><body>
+<form><input id="u" name="user" autocomplete="username"><input id="p" type="password" autocomplete="current-password">
+<input id="c" name="otp" autocomplete="one-time-code"></form>
+<script>window.__ev = [];
+['input', 'change'].forEach(function (t) { document.addEventListener(t, function (e) { window.__ev.push(t + ':' + e.target.id); }, true); });
+</script></body></html>"#;
+
 /// The second mini-app's page: a shared worker and a dedicated worker, both running [`cross_app_worker`].
 pub const CROSS_APP_PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>App B</title></head><body>B
 <script>
@@ -295,7 +313,13 @@ self.onmessage = function () {{ run().then(function (o) {{ self.postMessage(o); 
 }
 
 pub fn start() -> Result<Server, String> {
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| format!("bind: {e}"))?;
+    start_on(0)
+}
+
+/// The server on `port` (0: any free one). A page's storage is its origin's, port included, so the two runs of the
+/// persistence check serve their page on the same port.
+pub fn start_on(port: u16) -> Result<Server, String> {
+    let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("bind: {e}"))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     PORT.store(port, std::sync::atomic::Ordering::SeqCst);
     let log = Arc::new(Mutex::new(Vec::new()));
@@ -330,6 +354,8 @@ fn route(path: &str) -> (&'static str, Vec<(&'static str, String)>, String) {
         "/" | "/main" => html(MAIN),
         "/page2" => html(PAGE2),
         "/popup" => html(POPUP),
+        "/applink" => html(APPLINK),
+        "/applink-inner" => html(APPLINK_INNER),
         "/paint" => html(PAINT),
         "/agent" => {
             let port = PORT.load(std::sync::atomic::Ordering::SeqCst);
@@ -339,6 +365,7 @@ fn route(path: &str) -> (&'static str, Vec<(&'static str, String)>, String) {
         "/cross" => html(&frame("cross frame", "x", "Cross")),
         "/slow" => html(SLOW),
         "/pickers" => html(PICKERS),
+        "/login" => html(LOGIN),
         "/literals" => {
             let (lan, name) = lan_and_name();
             html(&literals(&lan, &name, "lit-ctl"))

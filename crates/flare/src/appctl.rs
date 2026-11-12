@@ -81,7 +81,7 @@ use crate::agent_hub::{AgentHub, HubDeps, e2e_sonara_post, sonara_post};
 use crate::chords::{self, ChordTarget, Dispatch};
 use crate::convo_ctl::{ConvoCtl, ConvoMsg, ConvoMsgBox, Want};
 use crate::ctl_app::{CtlOp, CtlRequestBox};
-use crate::font_ctl::{FontCtl, effective_px};
+use crate::font_ctl::FontCtl;
 use crate::help_ctl::{HelpCtl, next_open_seq};
 use crate::mark_colours::{UiMarks, current_palette, indicator_of, picks_from, ui_marks};
 use crate::menus_ui::{
@@ -109,7 +109,6 @@ use crate::{
     AppWindow, HelpBridge, MarkMotion, MenuRow, OverflowRow, Place, SettingsBridge, StripGeom,
     TabRow,
 };
-use flare_theme::fonts::zoom_step;
 
 /// Everything a worker thread can say to the UI thread. WHY a message and not
 /// `slint::invoke_from_event_loop` closures: the headless platform has no event loop proxy, and an
@@ -1914,7 +1913,7 @@ impl AppCtl {
             }
             self.source_id = want_id;
             (self.deps.set_grid_source)(want.map(|w| w.1));
-            // The tab in front may wear its own zoom.
+            // Every tab shares one size; a no-op unless the font settings moved meanwhile.
             self.apply_font();
         }
 
@@ -4843,83 +4842,58 @@ impl AppCtl {
         self.apply_font();
     }
 
-    /// The face and size in force for the tab in front (its own zoom, else the settings). A change of
-    /// the cell grid refits every open tab, visible or not, through the resize path (Task 27).
+    /// The face and size in force: the settings' size moved by the one zoom every tab shares. A
+    /// change of the cell grid refits every open tab, visible or not, through the resize path, so
+    /// every shell reflows to the shared size (Task 27, rule 1154).
     pub fn apply_font(&mut self) {
-        let front = self.model.active_shell().map(|t| t.id.clone());
-        let ov = front.and_then(|id| self.deps.host.font_override(&id));
         let Some(f) = self.font.as_mut() else { return };
-        if let Some((cols, rows)) = f.apply(ov)
+        if let Some((cols, rows)) = f.apply()
             && cols >= 2
             && rows >= 1
         {
             self.grid_dims = (cols, rows);
-            let front = self.front_id();
-            if ov.is_some() {
-                // The front tab wears its own zoom: only it takes this grid.
-                self.deps.host.set_dims(cols, rows, front.as_deref());
-            } else {
-                // The settings' size: every tab without a zoom of its own follows.
-                self.deps.host.refit_unzoomed(cols, rows);
-            }
+            self.deps.host.refit_all(cols, rows);
         }
         if let Some(app) = self.app() {
             app.window().request_redraw();
         }
     }
 
-    /// Ctrl+wheel over the grid: the tab in front zooms one pixel per notch (never saved). False when
-    /// there is no shell in front to zoom.
+    /// Ctrl+wheel (Cmd+wheel on the Mac) over the grid: one pixel per notch on the zoom every tab
+    /// shares (never saved). Every open tab takes the new size. False when there is no shell in
+    /// front to zoom from.
     pub fn zoom_front(&mut self, delta_y: f64) -> bool {
-        let Some(id) = self.model.active_shell().map(|t| t.id.clone()) else {
+        if self.model.active_shell().is_none() || delta_y == 0.0 || !delta_y.is_finite() {
             return false;
-        };
+        }
         let Some(f) = self.font.as_mut() else {
             return false;
         };
-        if delta_y == 0.0 || !delta_y.is_finite() {
-            return false;
-        }
-        let ov = self.deps.host.font_override(&id);
-        let next = zoom_step(
-            effective_px(ov, f.pct()),
-            if delta_y > 0.0 { 1 } else { -1 },
-        );
-        self.deps.host.set_font_override(&id, Some(next));
-        // The front tab only: the others keep their size until they come to the front.
-        if let Some((cols, rows)) = f.apply(Some(next))
-            && cols >= 2
-            && rows >= 1
-        {
-            self.on_grid_dims(cols, rows);
-        }
-        if let Some(app) = self.app() {
-            app.window().request_redraw();
-        }
+        f.zoom_by(if delta_y > 0.0 { 1 } else { -1 });
+        self.apply_font();
         true
     }
 
     /// macOS Cmd+plus, Cmd+minus (one size up or down, as a wheel notch with the modifier) and Cmd+0
-    /// (the tab in front back to the settings' size). False when there is no shell in front.
+    /// (every tab back to the settings' size). False when there is no shell in front.
     pub fn zoom_front_step(&mut self, step: i32) -> bool {
         if step != 0 {
             return self.zoom_front(f64::from(step));
         }
-        let Some(id) = self.model.active_shell().map(|t| t.id.clone()) else {
+        if self.model.active_shell().is_none() {
+            return false;
+        }
+        let Some(f) = self.font.as_mut() else {
             return false;
         };
-        self.deps.host.set_font_override(&id, None);
-        if let Some(f) = self.font.as_mut()
-            && let Some((cols, rows)) = f.apply(None)
-            && cols >= 2
-            && rows >= 1
-        {
-            self.on_grid_dims(cols, rows);
-        }
-        if let Some(app) = self.app() {
-            app.window().request_redraw();
-        }
+        f.reset_zoom();
+        self.apply_font();
         true
+    }
+
+    /// The shared zoom in pixels on top of the settings' size (0: none, or no font controller).
+    pub fn font_zoom(&self) -> i32 {
+        self.font.as_ref().map_or(0, FontCtl::zoom)
     }
 
     /// Folders from a second launch: raise the window, then each folder is a new tab.
@@ -5943,7 +5917,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_wheel_zooms_the_front_tab_only_and_a_switch_wears_each_tabs_own_size() {
+    fn a_zoom_in_one_tab_sizes_every_tab_and_a_new_tab_opens_at_it() {
         use crate::host::{GridHost, GridPainter};
         use flare_render::glyph::FakeGlyphs;
         use flare_settings::look::LookStore;
@@ -5963,21 +5937,36 @@ mod tests {
         let b = f.ctl.borrow().front_id().unwrap();
         assert!(f.ctl.borrow_mut().zoom_front(1.0));
         assert!(f.ctl.borrow_mut().zoom_front(1.0));
-        assert_eq!(f.ctl.borrow().deps.host.font_override(&b), Some(15));
+        assert_eq!(f.ctl.borrow().font_zoom(), 2);
         let zoomed = f.ctl.borrow().grid_dims;
         assert_ne!(zoomed, base, "the grid follows the zoom");
-        // Switching to the other tab wears the settings' size again; back to b wears its zoom.
+        // Tab A wears the same zoom: a switch keeps the grid.
         let rows = f.ctl.borrow().model.state.tabs.len();
         assert!(rows >= 2);
         let a = f.ctl.borrow().model.state.tabs[rows - 2].id.clone();
         f.ctl.borrow_mut().model.pick(&a);
         f.ctl.borrow_mut().refresh();
-        assert_eq!(f.ctl.borrow().grid_dims, base);
+        assert_eq!(f.ctl.borrow().grid_dims, zoomed, "tab A shares B's zoom");
+        // A zoom out in A reaches B too.
+        assert!(f.ctl.borrow_mut().zoom_front(-1.0));
+        let one_up = f.ctl.borrow().grid_dims;
+        assert_ne!(one_up, zoomed);
         f.ctl.borrow_mut().model.pick(&b);
         f.ctl.borrow_mut().refresh();
-        assert_eq!(f.ctl.borrow().grid_dims, zoomed);
+        assert_eq!(f.ctl.borrow().grid_dims, one_up, "B follows A's zoom");
+        assert_eq!(f.ctl.borrow().font_zoom(), 1);
+        // A new tab opens at the shared size.
+        f.ctl.borrow_mut().new_tab();
+        f.ctl.borrow_mut().refresh();
+        assert_eq!(
+            f.ctl.borrow().grid_dims,
+            one_up,
+            "a new tab inherits the zoom"
+        );
+        assert_eq!(f.ctl.borrow().font_zoom(), 1);
         // Nothing of it is stored.
         assert_eq!(f.prefs.get("flare.term.fontPct"), None);
+        assert_eq!(f.prefs.get("flare.term.zoom"), None);
     }
 
     #[test]
@@ -6397,7 +6386,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zoom_never_resizes_the_other_shells_and_a_switch_keeps_each_zoomed_size() {
+    fn a_zoom_resizes_every_shell_hidden_ones_included_and_a_reset_brings_all_back() {
         use crate::host::{GridHost, GridPainter};
         use flare_render::glyph::FakeGlyphs;
         use flare_settings::look::LookStore;
@@ -6411,8 +6400,8 @@ mod tests {
         f.ctl
             .borrow_mut()
             .set_font_ctl(FontCtl::new(LookStore::new(f.prefs.clone()), grid));
-        let a = f.ctl.borrow_mut().open_folder("C:\\za");
-        let b = f.ctl.borrow_mut().open_folder("C:\\zb");
+        f.ctl.borrow_mut().open_folder("C:\\za");
+        f.ctl.borrow_mut().open_folder("C:\\zb");
         f.wait_made("C:\\za");
         f.wait_made("C:\\zb");
         let size_of = |cwd: &str| {
@@ -6425,27 +6414,30 @@ mod tests {
         let settle = || std::thread::sleep(Duration::from_millis(150));
         settle();
         let base = size_of("C:\\za");
+        assert_eq!(size_of("C:\\zb"), base);
+        // B is in front; its zoom reaches A's PTY in the background, so A's shell reflows.
         assert!(f.ctl.borrow_mut().zoom_front(1.0));
         assert!(f.ctl.borrow_mut().zoom_front(1.0));
         settle();
         let zoomed = size_of("C:\\zb");
-        assert_ne!(zoomed, base, "the front tab follows its zoom");
-        assert_eq!(size_of("C:\\za"), base, "a background shell is not touched");
-        // Back to A: B, now in the background, keeps its zoomed grid.
-        f.ctl.borrow_mut().model.pick(&a);
-        f.ctl.borrow_mut().refresh();
-        settle();
-        assert_eq!(size_of("C:\\za"), base);
+        assert_ne!(zoomed, base, "the front tab follows the zoom");
         assert_eq!(
-            size_of("C:\\zb"),
+            size_of("C:\\za"),
             zoomed,
-            "no reflow of a hidden zoomed shell"
+            "the background shell is resized too"
         );
-        f.ctl.borrow_mut().model.pick(&b);
-        f.ctl.borrow_mut().refresh();
+        // A tab opened now is spawned at the shared size.
+        f.ctl.borrow_mut().open_folder("C:\\zc");
+        f.wait_made("C:\\zc");
         settle();
-        assert_eq!(size_of("C:\\zb"), zoomed);
-        assert_eq!(size_of("C:\\za"), base, "the unzoomed shell keeps its size");
+        assert_eq!(size_of("C:\\zc"), zoomed, "a new shell starts at the zoom");
+        // The reset brings every shell back to the settings' size.
+        assert!(f.ctl.borrow_mut().zoom_front_step(0));
+        settle();
+        assert_eq!(f.ctl.borrow().font_zoom(), 0);
+        for cwd in ["C:\\za", "C:\\zb", "C:\\zc"] {
+            assert_eq!(size_of(cwd), base, "{cwd} is back at the settings' size");
+        }
     }
 
     #[test]
@@ -6901,7 +6893,7 @@ mod tests {
     }
 
     #[test]
-    fn on_the_mac_cmd_zoom_keys_size_the_front_tab_and_cmd_0_resets_it() {
+    fn on_the_mac_cmd_zoom_keys_size_every_tab_and_cmd_0_resets_them() {
         use crate::host::{GridHost, GridPainter};
         use flare_render::glyph::FakeGlyphs;
         use flare_settings::look::LookStore;

@@ -12,6 +12,7 @@ pub mod probe;
 pub mod profile_key;
 pub mod release;
 pub mod screen;
+pub mod scrollers;
 pub mod sign;
 pub mod view;
 pub mod vpk;

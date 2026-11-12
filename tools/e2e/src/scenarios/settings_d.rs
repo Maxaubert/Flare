@@ -498,12 +498,14 @@ fn code6(s: &str) -> String {
         .to_lowercase()
 }
 
-/// Launches the app on the alpha folder, with the software renderer.
+/// Launches the app on the alpha folder, with the software renderer and the marks as Bar: themeCards'
+/// Reset check picks the agent colour, a Mark colours row that Ring (the default) leaves out (rule 1140).
 fn launch_one(ctx: &mut Ctx) -> Result<App, String> {
     let alpha = ctx.ensure_world().alpha.clone();
     ctx.launch(Launch {
         folders: vec![alpha],
         renderer: Some("software"),
+        marks_as_bar: true,
         ..Launch::default()
     })
 }

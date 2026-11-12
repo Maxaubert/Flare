@@ -202,6 +202,18 @@ pub enum ViewEvent {
     SetupAnswered,
     /// The browser is gone for good (after [`View::close`]).
     Closed,
+    /// The page's own `window.close()` was ignored: only the owner closes a view that is not a pop-up (WebView2's
+    /// `WindowCloseRequested`, which closes nothing by itself). `url` is the main frame's address.
+    CloseIgnored {
+        url: String,
+    },
+    /// A navigation to a scheme that would start a program (a link to an app in a frame, which the navigation wall
+    /// lets through) reached the browser's own launch, which never starts it: the address and the main frame's
+    /// address (WebView2's `LaunchingExternalUriScheme`).
+    External {
+        url: String,
+        from: String,
+    },
 }
 
 /// May a popup or a new-tab request load `url` into this view's main frame? Only a web address, and only
@@ -392,6 +404,8 @@ pub struct State {
     pub fullscreen: bool,
     pub gone: Option<String>,
     pub closed: bool,
+    /// The owner closes the view ([`View::close`]): the close goes through.
+    owner_closing: bool,
     /// The bridge's binding name, when the view has one.
     binding: Option<String>,
     /// The first page's load has not ended yet: the blank page is still in the history.
@@ -796,6 +810,20 @@ wrap_life_span_handler! {
             if let Some(f) = take_made(slot) {
                 f(Some(View { browser: b.clone(), state: self.c.state.clone(), _observer: None }));
             }
+        }
+
+        // CEF asks before a browser closes: the owner's close goes through, and a pop-up's own `window.close()`
+        // closes it; any other view ignores its page's `window.close()` (told, for the log), as WebView2 does.
+        fn do_close(&self, browser: Option<&mut Browser>) -> ::std::os::raw::c_int {
+            if self.c.made.is_some() || lock(&self.c.state).owner_closing {
+                return 0;
+            }
+            let url = browser
+                .and_then(|b| b.main_frame())
+                .map(|f| CefString::from(&f.url()).to_string())
+                .unwrap_or_default();
+            self.c.emit(ViewEvent::CloseIgnored { url });
+            1
         }
 
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
@@ -1223,6 +1251,7 @@ wrap_resource_request_handler! {
     pub struct Wall {
         rule: RequestRule,
         state: Option<Shared>,
+        events: Option<EventSink>,
     }
 
     impl ResourceRequestHandler {
@@ -1254,12 +1283,12 @@ wrap_resource_request_handler! {
             served(answer)
         }
 
-        // A scheme that would start a program (`mailto:`, `zoommtg:`): never.
+        // A scheme that would start a program (`mailto:`, `zoommtg:`): never; the view's owner is told.
         fn on_protocol_execution(
             &self,
-            _browser: Option<&mut Browser>,
+            browser: Option<&mut Browser>,
             _frame: Option<&mut Frame>,
-            _request: Option<&mut Request>,
+            request: Option<&mut Request>,
             allow_os_execution: Option<&mut ::std::os::raw::c_int>,
         ) {
             if let Some(a) = allow_os_execution {
@@ -1268,13 +1297,21 @@ wrap_resource_request_handler! {
             if let Some(s) = &self.state {
                 lock(s).refused.os_launches += 1;
             }
+            if let Some(sink) = &self.events {
+                let url = request.map(|r| CefString::from(&r.url()).to_string()).unwrap_or_default();
+                let from = browser
+                    .and_then(|b| b.main_frame())
+                    .map(|f| CefString::from(&f.url()).to_string())
+                    .unwrap_or_default();
+                sink(ViewEvent::External { url, from });
+            }
         }
     }
 }
 
 /// The request wall for a request context (requests of no browser, such as a service worker's).
 pub fn context_wall(rule: RequestRule) -> ResourceRequestHandler {
-    Wall::new(rule, None)
+    Wall::new(rule, None, None)
 }
 
 wrap_request_handler! {
@@ -1381,13 +1418,19 @@ wrap_request_handler! {
             _browser: Option<&mut Browser>,
             _frame: Option<&mut Frame>,
             _request: Option<&mut Request>,
-            _is_navigation: ::std::os::raw::c_int,
+            is_navigation: ::std::os::raw::c_int,
             _is_download: ::std::os::raw::c_int,
             _request_initiator: Option<&CefString>,
             _disable_default_handling: Option<&mut ::std::os::raw::c_int>,
         ) -> Option<ResourceRequestHandler> {
-            let rule = self.c.walls.requests.clone()?;
-            Some(Wall::new(rule, Some(self.c.state.clone())))
+            // With no request wall, a navigation still gets one that lets every request through: its launch of a
+            // program is where the owner hears of a link to an app in a frame.
+            let rule = match self.c.walls.requests.clone() {
+                Some(rule) => rule,
+                None if is_navigation != 0 => Arc::new(|_: &str| Answer::Pass),
+                None => return None,
+            };
+            Some(Wall::new(rule, Some(self.c.state.clone()), self.c.events.clone()))
         }
 
         fn on_render_process_terminated(
@@ -2116,6 +2159,7 @@ impl View {
     /// Closes the browser (forced: no unload question). [`ViewEvent::Closed`] follows.
     pub fn close(&self) {
         self.cancel_downloads();
+        lock(&self.state).owner_closing = true;
         if let Ok(h) = self.host() {
             h.close_browser(1);
         }

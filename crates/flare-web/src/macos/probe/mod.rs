@@ -14,6 +14,8 @@
 //!   filter is asked about.
 //! - `app-loop`: the web panel turned the real window's way (pumped only when told, rule 1152), and opened again in
 //!   a new host after the last one closed.
+//! - `persist-write`, `persist-read`, `content`, `plugins`: the browser's parity with Windows (`parity.rs`): what a
+//!   profile keeps over a restart, the look, the mini-apps' content, a plugin's fill and its sealed pages.
 //!
 //! Every report carries the window server's count of this process's on-screen windows at the start and the end,
 //! the activation policy and whether the app ever became active.
@@ -21,6 +23,8 @@
 mod agent;
 mod observers;
 mod pages;
+mod parity;
+mod tls;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -648,8 +652,8 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
         "the strip's Close (close_popup) closes the pop-up on top and the page shows again",
         json!({"events": h.since(from)}),
     );
-    // No click of the person's: Chromium's own blocker stops it before CEF asks (no `on_before_popup`, so no note
-    // as on Windows, rule 1123); nothing opens and the page's window.open answers null.
+    // No click of the person's: Chromium's own blocker is off, so the request reaches Flare's rule, which refuses it
+    // as on Windows (rule 1170): noted `blocked` (the bar's "Pop-up blocked"), nothing opens, window.open is null.
     let from = h.mark();
     let blocked = h.script(
         tab,
@@ -660,12 +664,92 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
     rep.check(
         "panel.popup-blocked",
         blocked.as_deref() == Ok("true")
+            && ev
+                .iter()
+                .any(|e| e == "Note t1 Popup 127.0.0.1 127.0.0.1 blocked")
             && !ev.iter().any(|e| e.starts_with("Popups"))
             && h.host
                 .probe_view(&slot)
                 .is_some_and(|p| p.popups.is_empty()),
-        "a pop-up no click of the person's asked for opens nothing (window.open is null)",
+        "a pop-up no click of the person's asked for opens nothing (window.open is null) and is noted blocked, \
+         which the bar says as Pop-up blocked",
         json!({"events": ev, "result": format!("{blocked:?}")}),
+    );
+    // A page's own window.close() closes nothing but a pop-up (rule 1172): a new panel (a history of one page, so
+    // Chromium lets its script ask) stays, and the log notes it by site.
+    let from = h.mark();
+    h.host.open("t2", &main, BOUNDS, false);
+    let t2_up = h.opened(from, "t2", "Main");
+    let from = h.mark();
+    let asked = h.script("t2", "window.close(); history.length");
+    h.wait(1_000);
+    let still = h.script("t2", "document.title");
+    let ev = h.since(from);
+    rep.check(
+        "panel.window-close-ignored",
+        t2_up
+            && asked.is_ok()
+            && still.as_deref() == Ok("\"Main\"")
+            && ev.iter().any(|e| e == "Note t2 CloseIgnored 127.0.0.1  ")
+            && !ev.iter().any(|e| e.starts_with("Gone t2")),
+        "the page's window.close() leaves the panel's page in place and is noted (web-close-ignored)",
+        json!({"events": ev, "asked": format!("{asked:?}"), "title": format!("{still:?}")}),
+    );
+    h.host.close("t2");
+    h.wait(300);
+    // A link to an app in a frame, clicked by the person (rule 1171): the browser's own launch is the backstop that
+    // asks about it, as WebView2's launch event does; nothing starts and nothing loads.
+    let from = h.mark();
+    h.host.navigate(tab, &srv.url("/applink"));
+    h.opened(from, tab, "App link");
+    h.wait(500);
+    let from = h.mark();
+    h.click(&slot, 200.0, 200.0);
+    let asked = h
+        .until(
+            from,
+            5_000,
+            |e| matches!(e, WebEvent::AppLink { scheme, site, .. } if scheme == "zoommtg" && site == "127.0.0.1"),
+        )
+        .is_some();
+    h.wait(500);
+    let ev = h.since(from);
+    rep.check(
+        "panel.app-link-in-frame",
+        asked
+            && ev
+                .iter()
+                .filter(|e| e.starts_with("AppLink t1 zoommtg"))
+                .count()
+                == 1
+            && ev
+                .iter()
+                .any(|e| e.starts_with("Note t1 NavRefused ") && e.ends_with(" app-link"))
+            && !ev.iter().any(|e| e.starts_with("Refused t1")),
+        "a link to an app in a frame is asked about once (AppLink, noted app-link), never started by the browser",
+        json!({"events": ev, "os_launch_requests": h.host.refused(&slot).map(|r| r.os_launches)}),
+    );
+    // A certificate the browser does not trust (rule 1172): Chromium's error page, the load ends not ok with
+    // WebView2's status, the log notes it by site, and no override lets a request through.
+    let tls = tls::start(&data.join("tls"))?;
+    let from = h.mark();
+    h.host.navigate(tab, &tls.url("/"));
+    let failed = h.until(from, 10_000, |e| {
+        matches!(e, WebEvent::Loaded { ok: false, .. })
+    });
+    h.wait(500);
+    let ev = h.since(from);
+    rep.check(
+        "panel.cert",
+        matches!(&failed, Some(WebEvent::Loaded { status, .. }) if status == "5")
+            && ev
+                .iter()
+                .any(|e| e.starts_with("Note t1 Cert 127.0.0.1 ") && e.ends_with(" cert-invalid"))
+            && ev.iter().any(|e| e == "Title t1 Privacy error")
+            && tls.served.load(Ordering::SeqCst) == 0,
+        "a self-signed certificate ends the load not ok (CERTIFICATE_IS_INVALID, 5) on Chromium's error page, is noted \
+         web-cert by site, and no request gets past the handshake",
+        json!({"events": ev, "served": tls.served.load(Ordering::SeqCst)}),
     );
     let closed_port = std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
@@ -686,6 +770,20 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
     let from = h.mark();
     h.host.navigate(tab, &main);
     h.opened(from, tab, "Main");
+    // Overlay scrollbars, as WebView2's Fluent overlay style (rule 1173): the page scrolls and its bar takes no
+    // width from it.
+    let bars = h.eval(
+        tab,
+        "({scrolls: document.documentElement.scrollHeight > innerHeight, \
+          taken: innerWidth - document.documentElement.clientWidth})",
+    );
+    rep.check(
+        "panel.overlay-scrollbars",
+        bars.as_ref()
+            .is_ok_and(|v| v["scrolls"] == true && v["taken"] == 0),
+        "a page that scrolls draws its scrollbar over itself: no width taken (innerWidth == clientWidth)",
+        json!({"result": format!("{bars:?}")}),
+    );
 
     // ---- script dialogs and permissions, never shown
     let dialogs = h.script(tab, "[alert('a'), confirm('b'), prompt('c')]");
@@ -1073,9 +1171,12 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
             && has_note(NoteKind::Permission, "")
             && has_note(NoteKind::Popup, "panel")
             && has_note(NoteKind::Process, "render")
+            && has_note(NoteKind::Popup, "blocked")
+            && has_note(NoteKind::Cert, "cert-invalid")
+            && notes.iter().any(|n| n.starts_with("Note t2 CloseIgnored "))
             && !notes.iter().any(|n| n.contains("http://") || n.contains("/main")),
-        "the diagnostics notes come as on Windows (web-nav, an app link, a failed load, a denied permission, a pop-up, \
-         a page process) and carry sites, never an address",
+        "the diagnostics notes come as on Windows (web-nav, an app link, a failed load, a denied permission, a pop-up \
+         and a blocked one, a page process, a certificate, an ignored window.close) and carry sites, never an address",
         json!({"notes": notes}),
     );
     h.host.close(tab);
@@ -2009,8 +2110,14 @@ pub fn main() -> i32 {
             return 2;
         }
     };
-    let data = std::env::temp_dir().join(format!("flare-web-probe-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&data);
+    // The persistence check's two runs share a folder the test names (and removes); every other run has its own.
+    let kept = std::env::var_os("FLARE_WEB_PROBE_DATA").map(PathBuf::from);
+    let data = kept.clone().unwrap_or_else(|| {
+        std::env::temp_dir().join(format!("flare-web-probe-{}", std::process::id()))
+    });
+    if kept.is_none() {
+        let _ = std::fs::remove_dir_all(&data);
+    }
     let t = Instant::now();
     let r = match scenario.as_str() {
         "panel" => panel(&mut rep, &data),
@@ -2018,6 +2125,10 @@ pub fn main() -> i32 {
         "agent" => agent::run(&mut rep, &data),
         "quiet" => quiet(&mut rep, &data),
         "app-loop" => app_loop(&mut rep, &data),
+        "persist-write" => parity::persist_write(&mut rep, &data),
+        "persist-read" => parity::persist_read(&mut rep, &data),
+        "content" => parity::content(&mut rep, &data),
+        "plugins" => parity::plugins(&mut rep, &data),
         other => Err(format!("no scenario {other:?}")),
     };
     if let Err(e) = r {
@@ -2041,6 +2152,8 @@ pub fn main() -> i32 {
     rep.set("windows_at_end", json!(screen::windows_of_self()));
     rep.set("shutdown", json!(true));
     write(&rep);
-    let _ = std::fs::remove_dir_all(&data);
+    if kept.is_none() {
+        let _ = std::fs::remove_dir_all(&data);
+    }
     0
 }

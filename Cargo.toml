@@ -96,6 +96,8 @@ objc2-core-foundation = "=0.3.2"
 velopack = "=1.2.161"
 embed-resource = "=3.0.11"
 ureq = "=3.4.2"
+# The web host probe's HTTPS server with a self-signed certificate (macOS tests only); the same rustls ureq uses.
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std"] }
 libloading = "=0.8.9"
 # The web panel's browser (Surfaces stage 3): the WebView2 COM bindings. 0.39.1 (2026-03-11) is well over two
 # weeks old. Its sys crate links Microsoft's STATIC loader, so no WebView2Loader.dll ships beside flare.exe.
