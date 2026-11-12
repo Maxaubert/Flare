@@ -12,6 +12,7 @@ flare-shells = { path = "../flare-shells" }
 flare-agent = { path = "../flare-agent" }
 alacritty_terminal.workspace = true
 portable-pty.workspace = true
+anyhow.workspace = true
 regex.workspace = true
 memchr.workspace = true
 base64.workspace = true

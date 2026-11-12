@@ -78,6 +78,8 @@ pub struct OutputBatcher {
     last_push: Option<Instant>,
     /// Whether the output so far leaves a line half drawn (rule 1189).
     scan: RedrawScan,
+    /// How long a held half-drawn chunk waits for the pty to go quiet (`REDRAW_SETTLE`).
+    settle: Duration,
 }
 
 impl OutputBatcher {
@@ -91,7 +93,15 @@ impl OutputBatcher {
             isolated: false,
             last_push: None,
             scan: RedrawScan::default(),
+            settle: REDRAW_SETTLE,
         }
+    }
+
+    /// The same batcher with another settle time (a test seam: the session's tests stretch it so a
+    /// loaded runner's scheduling cannot pass for a quiet pty).
+    pub fn with_settle(mut self, settle: Duration) -> Self {
+        self.settle = settle;
+        self
     }
 
     /// Appends; the first push after a take sets first_at = now. A push that starts a batch more
@@ -135,7 +145,7 @@ impl OutputBatcher {
                 return Some(Duration::ZERO);
             }
             let quiet = now.saturating_duration_since(self.last_push.unwrap_or(first));
-            return Some(REDRAW_SETTLE.saturating_sub(quiet).min(window_left));
+            return Some(self.settle.saturating_sub(quiet).min(window_left));
         }
         Some(window_left)
     }
