@@ -1,10 +1,15 @@
 //! OutputBatcher: coalesces pty output into one write per window (8 ms), or at once when a
-//! full megabyte is waiting, so a flood never queues a million tiny updates.
+//! full megabyte is waiting, so a flood never queues a million tiny updates. A lone chunk (a
+//! typed key's echo) leaves at once, unless it leaves a line half drawn (rule 1189).
 
 use std::time::{Duration, Instant};
 
 /// Output coalesces for this long after the first byte of a batch.
 pub const BATCH_WINDOW: Duration = Duration::from_millis(8);
+/// A lone chunk that leaves a line half drawn waits until the pty has been quiet this long (or the
+/// window ends), so the rest of the redraw joins it (rule 1189). Node's inquirer writes its erase
+/// and its text 0.1 to 0.2 ms apart (measured 2026-11-12, `bw login` on the dev Mac).
+pub const REDRAW_SETTLE: Duration = Duration::from_millis(2);
 /// A batch this full is due at once, whatever the time.
 pub const BATCH_MAX_BYTES: usize = 1024 * 1024;
 
@@ -69,6 +74,10 @@ pub struct OutputBatcher {
     last_take: Option<Instant>,
     /// The batch in hand began as an isolated chunk: it is due at once (a keystroke's echo).
     isolated: bool,
+    /// When the last chunk arrived.
+    last_push: Option<Instant>,
+    /// Whether the output so far leaves a line half drawn (rule 1189).
+    scan: RedrawScan,
 }
 
 impl OutputBatcher {
@@ -80,6 +89,8 @@ impl OutputBatcher {
             first_at: None,
             last_take: None,
             isolated: false,
+            last_push: None,
+            scan: RedrawScan::default(),
         }
     }
 
@@ -95,6 +106,14 @@ impl OutputBatcher {
                 .is_some_and(|t| now.saturating_duration_since(t) > self.window);
         }
         self.buf.extend_from_slice(data);
+        self.scan.feed(data);
+        self.last_push = Some(now);
+    }
+
+    /// Whether the pump should look again after this push: a held lone chunk may be due now that
+    /// the rest of its redraw came (rule 1189).
+    pub fn holds_a_half_drawn_line(&self) -> bool {
+        self.isolated && !self.buf.is_empty()
     }
 
     /// None when empty; Some(ZERO) when due (now - first_at >= window, or buf.len() >= max_bytes); else the time left.
@@ -103,11 +122,22 @@ impl OutputBatcher {
         if self.buf.is_empty() {
             return None;
         }
-        if self.isolated || self.buf.len() >= self.max_bytes {
+        if self.buf.len() >= self.max_bytes {
             return Some(Duration::ZERO);
         }
-        let elapsed = now.saturating_duration_since(first);
-        Some(self.window.saturating_sub(elapsed))
+        let window_left = self
+            .window
+            .saturating_sub(now.saturating_duration_since(first));
+        if self.isolated {
+            // An echo leaves at once. A redraw that has only erased its line so far, or hidden the
+            // caret, waits for the pty to go quiet, so no frame shows the blank line (rule 1189).
+            if !self.scan.half_drawn() {
+                return Some(Duration::ZERO);
+            }
+            let quiet = now.saturating_duration_since(self.last_push.unwrap_or(first));
+            return Some(REDRAW_SETTLE.saturating_sub(quiet).min(window_left));
+        }
+        Some(window_left)
     }
 
     /// The whole buffer when due_in == Some(ZERO), else None. Resets.
@@ -142,6 +172,95 @@ impl OutputBatcher {
 
     pub fn is_empty(&self) -> bool {
         self.buf.is_empty()
+    }
+}
+
+/// Follows the output's escape sequences just far enough to tell whether it leaves a line half
+/// drawn (rule 1189): the caret hidden (`CSI ? 25 l`), something erased (`CSI K`, `CSI J`,
+/// `CSI X`) with no text written since, or a sequence cut in the middle. Kept across batches,
+/// because a hidden caret stays hidden until shown.
+#[derive(Clone, Debug, Default)]
+struct RedrawScan {
+    state: ScanState,
+    params: Vec<u8>,
+    caret_hidden: bool,
+    erased: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ScanState {
+    #[default]
+    Ground,
+    Esc,
+    EscInter,
+    Csi,
+    Str,
+    StrEsc,
+}
+
+/// The longest CSI parameter string kept; longer ones are not caret or erase sequences.
+const SCAN_PARAMS_MAX: usize = 32;
+
+impl RedrawScan {
+    fn feed(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.step(b);
+        }
+    }
+
+    fn step(&mut self, b: u8) {
+        use ScanState::*;
+        self.state = match (self.state, b) {
+            (Str, 0x07) => Ground,
+            (Str, 0x1b) => StrEsc,
+            (Str, _) => Str,
+            (StrEsc, b'\\') => Ground,
+            (StrEsc, _) => Str,
+            (_, 0x1b) => Esc,
+            (Ground, b) => {
+                if b >= 0x20 && b != 0x7f {
+                    self.erased = false;
+                }
+                Ground
+            }
+            (Esc, b'[') => {
+                self.params.clear();
+                Csi
+            }
+            (Esc, b']' | b'P' | b'_' | b'^' | b'X') => Str,
+            (Esc | EscInter, 0x20..=0x2f) => EscInter,
+            (Esc | EscInter, _) => Ground,
+            (Csi, 0x30..=0x3f) => {
+                if self.params.len() < SCAN_PARAMS_MAX {
+                    self.params.push(b);
+                }
+                Csi
+            }
+            (Csi, 0x20..=0x2f) => Csi,
+            (Csi, 0x40..=0x7e) => {
+                self.csi(b);
+                Ground
+            }
+            (Csi, _) => Csi,
+        };
+    }
+
+    fn csi(&mut self, fin: u8) {
+        match fin {
+            b'K' | b'J' | b'X' => self.erased = true,
+            b'h' | b'l' => {
+                if let Some(modes) = self.params.strip_prefix(b"?")
+                    && modes.split(|c| *c == b';').any(|m| m == b"25")
+                {
+                    self.caret_hidden = fin == b'l';
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn half_drawn(&self) -> bool {
+        self.caret_hidden || self.erased || self.state != ScanState::Ground
     }
 }
 
@@ -291,5 +410,161 @@ mod tests {
             b.due_in(t0 + Duration::from_millis(3)),
             Some(Duration::from_millis(5))
         );
+    }
+
+    // Rule 1189: `bw login` (Node inquirer 8.2.6) redraws its prompt line on every key in four
+    // writes, captured under a pty on the dev Mac (2026-11-12): erase, text, move left, move right.
+    const PROMPT: &[u8] = b"\x1b[32m?\x1b[39m \x1b[1mEmail address:\x1b[22m\x1b[0m \x1b[0m";
+
+    fn inquirer_key(typed: &str) -> Vec<Vec<u8>> {
+        let n = 17 + typed.len();
+        let mut text = PROMPT.to_vec();
+        text.extend_from_slice(typed.as_bytes());
+        vec![
+            b"\x1b[2K\x1b[G".to_vec(),
+            text,
+            format!("\x1b[{n}D").into_bytes(),
+            format!("\x1b[{n}C").into_bytes(),
+        ]
+    }
+
+    /// Pushes timed chunks and polls the batcher as the pump would (every 50 us). Feeds each
+    /// delivered batch to a terminal and returns what each presented frame showed: the prompt
+    /// row's text, the caret's column and whether the caret was visible.
+    fn present(chunks: &[(u64, Vec<u8>)], until_us: u64) -> Vec<(String, usize, bool)> {
+        let t0 = Instant::now();
+        let at = |us: u64| t0 + Duration::from_micros(us);
+        let mut b = OutputBatcher::new(BATCH_WINDOW, BATCH_MAX_BYTES);
+        let mut e = crate::emulator::Emulator::new(80, 5);
+        // The prompt was drawn long ago.
+        b.push(&[PROMPT, b"\x1b[17D\x1b[17C"].concat(), t0);
+        e.feed(&b.take_due(at(10_000)).unwrap());
+        let mut frames = Vec::new();
+        let mut next = 0;
+        let mut us = 500_000;
+        while us <= 500_000 + until_us {
+            while next < chunks.len() && 500_000 + chunks[next].0 <= us {
+                b.push(&chunks[next].1, at(us));
+                next += 1;
+            }
+            if let Some(batch) = b.take_due(at(us)) {
+                e.feed(&batch);
+                let m = e.mode();
+                frames.push((e.row_text(0), e.cursor().1, m.cursor_visible));
+            }
+            us += 50;
+        }
+        frames
+    }
+
+    #[test]
+    fn an_inquirer_redraw_presents_no_blank_line() {
+        // The writes land 100 to 200 us apart, as measured; no frame shows the erased line.
+        let key = inquirer_key("a");
+        let chunks: Vec<(u64, Vec<u8>)> = [0, 150, 170, 180].into_iter().zip(key).collect();
+        let frames = present(&chunks, 30_000);
+        assert!(!frames.is_empty());
+        for (row, col, shown) in &frames {
+            assert_eq!(row, "? Email address: a", "a frame showed {row:?}");
+            assert_eq!(*col, 18);
+            assert!(*shown);
+        }
+    }
+
+    #[test]
+    fn a_slow_redraw_still_presents_no_blank_line() {
+        // A busy machine: 1.5 ms between the erase and the text, still inside the settle time.
+        let key = inquirer_key("ab");
+        let chunks: Vec<(u64, Vec<u8>)> = [0, 1_500, 1_600, 1_700].into_iter().zip(key).collect();
+        for (row, ..) in present(&chunks, 30_000) {
+            assert_eq!(row, "? Email address: ab");
+        }
+    }
+
+    #[test]
+    fn a_hidden_caret_holds_a_lone_redraw_until_shown() {
+        let chunks = vec![
+            (0, b"\x1b[?25l\x1b[2K\x1b[G".to_vec()),
+            (300, PROMPT.to_vec()),
+            (600, b"x\x1b[?25h".to_vec()),
+        ];
+        let frames = present(&chunks, 30_000);
+        assert_eq!(frames.len(), 1, "{frames:?}");
+        assert_eq!(frames[0], ("? Email address: x".into(), 18, true));
+    }
+
+    #[test]
+    fn a_half_drawn_line_waits_at_most_the_window() {
+        // A program that erases and then goes quiet is still shown: after the settle time, and
+        // never later than the window.
+        let t0 = Instant::now();
+        let mut b = OutputBatcher::new(BATCH_WINDOW, BATCH_MAX_BYTES);
+        b.push(b"x", t0);
+        b.take_due(t0 + BATCH_WINDOW).unwrap();
+        let t1 = t0 + Duration::from_millis(500);
+        b.push(b"\x1b[2K", t1);
+        assert!(b.holds_a_half_drawn_line());
+        assert_eq!(b.due_in(t1), Some(REDRAW_SETTLE));
+        assert_eq!(b.take_due(t1 + REDRAW_SETTLE), Some(b"\x1b[2K".to_vec()));
+        // A caret hidden for good: every lone chunk waits for quiet, but each push restarts it
+        // only up to the window.
+        let t2 = t1 + Duration::from_millis(500);
+        b.push(b"\x1b[?25l", t2);
+        for k in 1..=7 {
+            b.push(b".", t2 + Duration::from_millis(k));
+        }
+        assert_eq!(
+            b.due_in(t2 + Duration::from_millis(7)),
+            Some(Duration::from_millis(1)),
+            "capped by the window"
+        );
+        assert!(b.take_due(t2 + BATCH_WINDOW).is_some());
+    }
+
+    #[test]
+    fn a_plain_echo_still_leaves_at_once() {
+        // zsh's echoes, captured on the dev Mac (2026-11-12): a letter, a retyped word, a backspace.
+        for echo in [&b"l"[..], b"\x08ls", b"\x08\x08l \x08", b"\x1b[D", b"\r\n"] {
+            let t0 = Instant::now();
+            let mut b = OutputBatcher::new(BATCH_WINDOW, BATCH_MAX_BYTES);
+            b.push(b"prompt", t0);
+            b.take_due(t0 + BATCH_WINDOW).unwrap();
+            let t1 = t0 + Duration::from_millis(500);
+            b.push(echo, t1);
+            assert_eq!(b.due_in(t1), Some(Duration::ZERO), "{echo:?}");
+        }
+    }
+
+    #[test]
+    fn the_scan_follows_caret_erase_and_cut_sequences() {
+        let half = |bytes: &[u8]| {
+            let mut s = RedrawScan::default();
+            s.feed(bytes);
+            s.half_drawn()
+        };
+        assert!(!half(b"plain text"));
+        assert!(half(b"\x1b[K"));
+        assert!(half(b"\x1b[2J"));
+        assert!(half(b"\x1b[5X"));
+        assert!(!half(b"\x1b[2Kback"));
+        assert!(half(b"\x1b[?25l"));
+        assert!(half(b"\x1b[?1049;25l"));
+        assert!(!half(b"\x1b[?25l\x1b[?25h"));
+        assert!(!half(b"\x1b[?251l"));
+        assert!(!half(b"\x1b[25l"), "not the private mode");
+        assert!(half(b"\x1b["), "cut in the middle");
+        assert!(half(b"\x1b]0;title"), "an unfinished title");
+        assert!(!half(b"\x1b]0;title\x07"));
+        assert!(!half(b"\x1b]0;title\x1b\\"));
+        assert!(!half(b"\x1b7\x1b8"));
+        assert!(!half(b"\x1b(B"));
+        assert!(!half("\u{e9}".as_bytes()), "UTF-8 text");
+        // The caret stays hidden across batches until it is shown.
+        let mut s = RedrawScan::default();
+        s.feed(b"\x1b[?25l");
+        s.feed(b"more text");
+        assert!(s.half_drawn());
+        s.feed(b"\x1b[?25h");
+        assert!(!s.half_drawn());
     }
 }

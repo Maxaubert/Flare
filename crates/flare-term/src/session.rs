@@ -423,8 +423,10 @@ fn reader_loop(
         st.batcher.push(&buf[..n], now);
         st.last_read = now;
         let big = st.batcher.len() >= BATCH_MAX_BYTES;
+        // A held lone chunk may be due now that the rest of its redraw came (rule 1189).
+        let held = st.batcher.holds_a_half_drawn_line();
         drop(st);
-        if was_empty || big {
+        if was_empty || big || held {
             s.pump_cv.notify_one();
         }
         // Sustained output reads bigger pieces (up to 1 MiB); a short read goes back to 64 KiB. The
@@ -2413,6 +2415,69 @@ mod tests {
             "the echo waited {:?}",
             t0.elapsed()
         );
+    }
+
+    /// Feeds `echo` after a quiet spell, `n` times, and returns how long each took to reach the sink, sorted (ms).
+    fn echo_latencies(chunks: &[&[u8]], gap: Duration, n: usize) -> (Vec<f64>, Vec<Ev>) {
+        let sp = FakeSpawner::new();
+        let m = mgr(&sp);
+        let rec = Arc::new(RecSink::default());
+        assert!(m.spawn("a", "C:\\x", Some("pwsh"), rec.clone(), None, None));
+        let f = Arc::clone(&sp.made()[0]);
+        f.feed(b"prompt");
+        assert!(wait_until(|| rec.bytes() == b"prompt"));
+        let whole: Vec<u8> = chunks.concat();
+        let mut lat = Vec::new();
+        for _ in 0..n {
+            std::thread::sleep(Duration::from_millis(30));
+            let before = rec.bytes().len();
+            let t0 = Instant::now();
+            for (i, c) in chunks.iter().enumerate() {
+                if i > 0 {
+                    std::thread::sleep(gap);
+                }
+                f.feed(c);
+            }
+            let end = Instant::now() + Duration::from_secs(3);
+            while rec.bytes().len() < before + whole.len() && Instant::now() < end {
+                std::hint::spin_loop();
+            }
+            lat.push(t0.elapsed().as_secs_f64() * 1000.0);
+        }
+        lat.sort_by(|a, b| a.total_cmp(b));
+        (lat, rec.events())
+    }
+
+    #[test]
+    fn a_single_echo_still_reaches_the_sink_within_the_budget() {
+        // Rule 1189 holds back only a redraw that leaves its line half drawn: a shell's echo
+        // leaves as fast as before (measured on the dev Mac 2026-11-12: p50 and p90 the same
+        // before and after the change, well under a millisecond).
+        let (lat, _) = echo_latencies(&[b"x"], Duration::ZERO, 40);
+        let (p50, p90) = (lat[lat.len() / 2], lat[lat.len() * 9 / 10]);
+        println!("lone echo to sink: p50 {p50:.3} ms, p90 {p90:.3} ms");
+        assert!(p50 < 4.0, "the echo waited {p50:.3} ms (p50)");
+    }
+
+    #[test]
+    fn a_prompt_redraw_reaches_the_sink_whole() {
+        // Rule 1189: inquirer's erase and its text, written apart, arrive in one delivery.
+        let erase: &[u8] = b"\x1b[2K\x1b[G";
+        let text: &[u8] = b"\x1b[32m?\x1b[39m Email address: a";
+        let (lat, events) = echo_latencies(&[erase, text], Duration::from_micros(200), 20);
+        let (p50, p90) = (lat[lat.len() / 2], lat[lat.len() * 9 / 10]);
+        println!("prompt redraw to sink: p50 {p50:.3} ms, p90 {p90:.3} ms");
+        // Before the fix every one of the 20 ended on the erased line; a loaded runner may oversleep the
+        // 0.2 ms gap past the 2 ms settle once or twice, so a few are allowed.
+        let blank = events
+            .iter()
+            .filter(|e| matches!(e, Ev::Data(_, b) if b.ends_with(erase)))
+            .count();
+        assert!(
+            blank <= 2,
+            "{blank} of 20 deliveries ended on the erased line"
+        );
+        assert!(p50 < 5.0, "the redraw waited {p50:.3} ms (p50)");
     }
 
     #[test]
