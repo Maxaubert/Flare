@@ -1,7 +1,7 @@
 # Remote sessions: implementation plan (2026-11-12)
 
 Spec: `docs/superpowers/specs/2026-11-12-remote-sessions-design.md`.
-Status: approved 2026-11-12; building. PR 1 built on `feat/remote-1` (2026-11-12, not merged); PR 2 built on `feat/remote-2` (2026-11-12, stacked on PR 1, not merged); PR 3 built on `feat/remote-3` (2026-11-12, stacked on PR 2, not merged); PR 4 built on `feat/remote-4` (2026-11-12, stacked on PR 3, not merged); PR 5 next.
+Status: approved 2026-11-12; building. PR 1 built on `feat/remote-1` (2026-11-12, not merged); PR 2 built on `feat/remote-2` (2026-11-12, stacked on PR 1, not merged); PR 3 built on `feat/remote-3` (2026-11-12, stacked on PR 2, not merged); PR 4 built on `feat/remote-4` (2026-11-12, stacked on PR 3, not merged); PR 5 built on `feat/remote-5` (2026-11-12, stacked on PR 4, not merged); PR 6 next.
 
 Seven PRs, in order. Each one ships alone and passes its own tests. Only PR 7 needs an approved mockup.
 Rule numbers below are "R-new-N". Number them after the last rule in `docs/regression-rules.md` when you write them.
@@ -342,6 +342,50 @@ Where the build differs from the lines above:
 - R-new-20: `--on` and other flag values never reach path parsing.
 - R-new-21: session listing reads only the head of each transcript on a worker.
 
+**Built (2026-11-12, `feat/remote-5`, stacked on `feat/remote-4`).** Rules R-new-18 to R-new-20 are rules 299 to 301;
+R-new-21 was not written (no session listing, below). Where the build differs from the lines above:
+- **No resume list.** The owner's PR 7 picks drop the past-sessions list from the + menu (the person resumes Claude in
+  the remote shell), and this PR's task is "command, agent tool, hidden start". So `remote.sessions`,
+  `claude_session_list` and `ClaudeSessionSummary` are not built; `--resume <id>` and the tool's `resume` take an id the
+  caller already has, and the host checks it with `valid_resume` at `remote.open` (PR 2).
+- **One method, `open.remote` (`Method::OpenRemoteSession`), in a new `Namespace::Open`** (`ALL` 19 to 20, `Method::ALL`
+  59 to 60). The agent grant enters it; no permission opens it (no mod), and the remote and bridge grants never do. There
+  is no `RemoteOpenLocal` and no `cli` permission: `flare open` says `hello` with no token, which is the agent grant, so
+  the command reaches exactly what the agent's tool reaches. Params `{machine, folder, resume?, front?}`; the command
+  sends `front: true`, the agent's tool leaves it out, so an agent's open never takes the front tab (and the keys)
+  from the person. Answered `{tab, machine, folder}` at once; the tab's link worker connects. `remote.open` now carries
+  `resume` (`RemoteSpec.resume`).
+- **`--start-hidden`, not `--background`.** `--background <colour>` is already the look flag. `--start-hidden` is a
+  normal launch born parked (the e2e's window attributes, `select_backend_with(.., parked)`) and parked again by the same
+  timer (`park_e2e_window_when_ready`), with nothing else of the e2e; its parked place is never saved; its first raise
+  (`unpark_background`) gives back the normal style, the taskbar button and the saved place. A `--start-hidden` launch
+  that meets a running Flare hands over nothing and raises nothing (`handoff`). macOS also gets `hold_off_app_nap`.
+- **Where the start happens.** `flare_ctl::Dispatcher::remote_ready`, asked by the library after `remote.hello`'s
+  version check and grant and before its answer; the bridge's `hidden_start::ensure_running` starts
+  `<exe> --start-hidden [--user-data-dir] [--e2e]` detached (out of ssh's job where allowed, its own process group on a
+  Mac) and waits 60 s for the pipe. `host_not_ready` (new code) answers the hello in one line; the link stays open. The
+  viewer's hello wait is 90 s (`HELLO_WAIT`). `flare --serve-remote --no-start` (new) never starts one: the process
+  tests use it.
+- **Windows session 0.** sshd runs a login in session 0, where no window is ever seen and the single-instance lock is
+  not the desktop's: a Flare started there could never be raised. So a serve process in session 0 starts nothing and
+  answers `host_not_ready` ("open Flare there once"); the PC as a host needs Flare running in the person's session.
+- **`machines.rs`** holds the registry `remote_link.rs` had (`Machine`, `parse_machines`, `read_machines`), plus
+  `MachinesPort` (`list`, `get`), `FileMachines` with an atomic `save` (`flare_settings::atomic::write_atomic`) for PR 7,
+  and `unknown_machine`'s one line.
+- **Tests.** Unit: `flare_ctl` `grant::tests::the_agent_may_open_a_remote_session_but_never_type_into_one` (and the
+  table tests), `method::tests`, `session::tests::a_host_that_is_not_ready_refuses_the_hello_in_one_line_and_takes_another`;
+  `flare` `config::tests` (`open_on_*`, `start_hidden_*`), `main` (branch order), `cli_open::tests`, `hidden_start::tests`
+  (running, started, never up, no desktop), `serve_remote::tests::the_hello_waits_for_a_flare_here_and_a_host_that_cannot_start_one_says_so`,
+  `ctl_app::tests::open_remote_names_a_known_machine_and_opens_a_tab_the_agent_cannot_type_into`, `machines::tests`,
+  `window::tests::a_background_start_is_parked_like_the_e2e_and_its_raise_undoes_the_style`,
+  `appctl::tests::a_background_launch_that_meets_a_running_flare_raises_and_opens_nothing`; `flare-mcp`
+  `open_remote_session_checks_its_arguments_and_routes_to_open_remote`. ui_tests:
+  `term::flow::an_agents_remote_open_stays_behind_the_tab_in_front`. E2E: `remoteOpen`.
+- **Known limits.** The hidden start over a real ssh login is not proven (no ssh to a real machine): whether a Mac's sshd
+  login of the person at the screen can start the app (an accessory app until raised; whether the raise brings it to the
+  Dock) and whether a Windows host refuses as designed are on the by-hand list. The e2e proves the chain on one PC: the
+  command, the agent grant, the serve process's start of a `--start-hidden --e2e` host, its park and no focus.
+
 **Depends on.** PR 4. **UI.** No (the folder picker UI is in PR 7). The agent and command paths pass a folder string.
 
 ---
@@ -473,5 +517,13 @@ by-hand list: that a Mac host's IOKit assertion holds its idle sleep off for a s
 after (the code compiles in the macOS CI job only), and that a Windows host's `SetThreadExecutionState` keeps it awake
 past its sleep timer while the viewer is on the other machine (`powercfg /requests` should list Flare while a followed
 tab works).
+
+Spike status after PR 5 (2026-11-12): still no ssh to any real machine. Spike 2 (can Flare start from an ssh session of
+the logged-in user) cannot be proven here; the build tries the start on a Mac and answers `host_not_ready` when the pipe
+never opens in 60 s, and on Windows it refuses in session 0 (sshd's logins) before trying, since a Flare there could
+never be seen or raised. `remoteOpen` proves the rest of the chain on one PC (command, agent grant, the serve process's
+hidden start, the park, no focus change). Left for the by-hand list: a Mac host started over ssh (does `open`-less
+start of the binary reach the window server; does the accessory app get its Dock icon when raised), a PC host reached
+over sshd with Flare closed (the one-line refusal), and whether `CREATE_BREAKAWAY_FROM_JOB` is allowed by sshd's job.
 
 Open risks tracked across PRs: closed enum arrays (`Method::ALL`, `Namespace::ALL`, `Permission::ALL`) and their exhaustive tests; event lossiness (solved by polling and sequence numbers); stuck-handler cap of 32 on slow links (short polls only); two writers on one session; version skew between machines (refuse with one line); `tabs.changed` is reserved and unsent, so the viewer polls `remote.tabs` and `remote.status`.

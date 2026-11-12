@@ -229,6 +229,7 @@ fn rig_with(host: FakeHost, host_tab: Option<&str>) -> Rig {
         remote: Some(RemoteSpec {
             machine: "mac".into(),
             folder: "/Users/max/proj".into(),
+            resume: None,
             live: live.clone(),
         }),
     };
@@ -724,6 +725,7 @@ fn the_hosts_status_of_the_tab_reaches_the_window_on_change_and_wakes_it() {
         remote: Some(RemoteSpec {
             machine: "mac".into(),
             folder: "/Users/max/proj".into(),
+            resume: None,
             live: live.clone(),
         }),
     };

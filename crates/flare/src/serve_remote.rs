@@ -5,8 +5,10 @@
 //! here before the e2e set-up and the instance code. It answers the link's `remote.hello` itself (the remote grant
 //! comes from its own stdio, rule 276) and relays every other `remote.*` call to the Flare that runs on this machine
 //! under the same profile, over that Flare's pipe, as the bridge: `hello` with the bridge key the running Flare wrote
-//! into the profile (rule 284). When no Flare runs, the hello still answers and every relayed call is `unavailable`
-//! (PR 5 starts one hidden instead).
+//! into the profile (rule 284). When no Flare runs, the hello first starts one hidden (`flare --start-hidden`, PR 5,
+//! rule 301) and waits for its pipe; where none can be started (Windows session 0, a pipe that never opens) the hello
+//! is `host_not_ready` with one line. With `--no-start` the hello answers at once and every relayed call is
+//! `unavailable`.
 //!
 //! Stdout carries only protocol lines (rule 277): `StdioWire::from_process` is its one writer, and logs go to stderr.
 
@@ -29,6 +31,8 @@ const RELAY_MARGIN: Duration = Duration::from_secs(2);
 
 /// Opens a connection to the running Flare (the real one: its pipe; a test: an in-memory wire).
 pub type Connect<W> = Box<dyn Fn() -> Result<Client<W>, ClientError> + Send + Sync>;
+/// Makes sure a Flare runs on this machine before the link's hello is answered (the real one: `hidden_start`).
+pub type ReadyCheck = Box<dyn Fn() -> Result<(), CtlError> + Send + Sync>;
 /// Reads the bridge key the running Flare wrote (the real one: the profile's file).
 pub type KeyOf = Box<dyn Fn() -> Option<String> + Send + Sync>;
 
@@ -48,6 +52,8 @@ pub struct BridgeDispatcher<W: Wire + Send + 'static> {
     lanes: Mutex<Lanes<W>>,
     /// Signalled when the anchor connection is free again.
     turn: Condvar,
+    /// Asked before the hello is answered: a Flare runs here, or is started hidden (remote sessions PR 5).
+    ready: ReadyCheck,
 }
 
 /// The bridge's connections to the running Flare.
@@ -141,7 +147,15 @@ impl<W: Wire + Send + 'static> BridgeDispatcher<W> {
                 closed: false,
             }),
             turn: Condvar::new(),
+            ready: Box::new(|| Ok(())),
         }
+    }
+
+    /// Asks `ready` before every hello is answered (the real serve process: start this machine's Flare hidden when none
+    /// runs).
+    pub fn with_ready(mut self, ready: ReadyCheck) -> Self {
+        self.ready = ready;
+        self
     }
 
     #[cfg(test)]
@@ -304,6 +318,12 @@ impl<W: Wire + Send + 'static> Dispatcher for BridgeDispatcher<W> {
         (origin == ConnOrigin::Stdio).then_some(Grant::Remote)
     }
 
+    /// Remote sessions PR 5: before the hello is answered a Flare runs on this machine, started hidden when none did
+    /// (rule 301); when none can be, the hello is `host_not_ready` with one line.
+    fn remote_ready(&self) -> Result<(), CtlError> {
+        (self.ready)()
+    }
+
     fn call(&self, ctx: &CallContext, method: Method, params: Value) -> Result<Value, CtlError> {
         if ctx.grant != Grant::Remote || method == Method::RemoteHello {
             return Err(CtlError::new(
@@ -338,8 +358,10 @@ pub fn profile_and_pipe(user_data_dir: Option<&Path>) -> (PathBuf, Option<String
 }
 
 /// Runs the serve process until the link closes. The exit code: 0 when the link ended, 2 when this process has no
-/// stdio to serve (a start with no stdin or stdout handle, which ssh never makes).
-pub fn run(user_data_dir: Option<&Path>) -> i32 {
+/// stdio to serve (a start with no stdin or stdout handle, which ssh never makes). With `e2e` (a test's loopback) a
+/// Flare it starts hidden is a test app too; without `may_start` (`--no-start`, the process tests) none is started and
+/// with no Flare running the relay is `unavailable`, as before PR 5.
+pub fn run(user_data_dir: Option<&Path>, e2e: bool, may_start: bool) -> i32 {
     let wire = match flare_ctl::StdioWire::from_process() {
         Ok(w) => w,
         Err(e) => {
@@ -353,6 +375,23 @@ pub fn run(user_data_dir: Option<&Path>) -> i32 {
         "serve-remote: relaying to the Flare of {}",
         profile.display()
     );
+    let starter = crate::hidden_start::SystemStarter {
+        pipe: pipe.clone(),
+        user_data_dir: user_data_dir.map(Path::to_path_buf),
+        e2e,
+    };
+    let ready: ReadyCheck = Box::new(move || {
+        if !may_start {
+            return Ok(());
+        }
+        let r = crate::hidden_start::ensure_running(
+            &starter,
+            crate::hidden_start::PIPE_WAIT,
+            crate::hidden_start::PIPE_POLL,
+        )?;
+        log::info!("serve-remote: the Flare here is {r:?}");
+        Ok(())
+    });
     let connect: Connect<flare_ctl::PipeEnd> = Box::new(move || {
         let pipe = pipe
             .clone()
@@ -360,7 +399,7 @@ pub fn run(user_data_dir: Option<&Path>) -> i32 {
         flare_ctl::connect(&pipe, CONNECT_WAIT)
     });
     let key_of: KeyOf = Box::new(move || crate::remote_host::read_bridge_key(&profile));
-    let dispatcher = Arc::new(BridgeDispatcher::new(connect, key_of));
+    let dispatcher = Arc::new(BridgeDispatcher::new(connect, key_of).with_ready(ready));
     let shared = flare_ctl::session::Shared::new_stdio(
         dispatcher,
         ServerConfig {
@@ -570,6 +609,51 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+        c.wire().close();
+        t.join().unwrap();
+    }
+
+    /// Remote sessions PR 5 (rule 301): the hello waits for the bridge's ready check (a hidden start of this machine's
+    /// Flare), once per hello; a host that cannot get one answers `host_not_ready` in one line and relays nothing.
+    #[test]
+    fn the_hello_waits_for_a_flare_here_and_a_host_that_cannot_start_one_says_so() {
+        let host = Host::new();
+        let h = host.clone();
+        let asked = Arc::new(AtomicU64::new(0));
+        let a = asked.clone();
+        let bridge = BridgeDispatcher::new(
+            Box::new(move || h.connect()),
+            Box::new(|| Some(KEY.to_string())),
+        )
+        .with_ready(Box::new(move || {
+            a.fetch_add(1, Ordering::SeqCst);
+            Err(CtlError::new(
+                code::HOST_NOT_READY,
+                crate::hidden_start::NO_DESKTOP,
+            ))
+        }));
+        let shared = Shared::new_stdio(Arc::new(bridge), ServerConfig::stdio());
+        let (server_end, viewer) = pair();
+        let t = std::thread::spawn(move || {
+            flare_ctl::serve_stdio(&server_end, &shared);
+            server_end.close();
+        });
+        let mut c = Client::new(viewer);
+        match c.remote_hello(
+            &RemoteHelloParams {
+                machine: "viewer".into(),
+                flare_version: "9".into(),
+            },
+            WAIT,
+        ) {
+            Err(ClientError::Remote(e)) => {
+                assert_eq!(e.code, code::HOST_NOT_READY);
+                assert_eq!(e.message, crate::hidden_start::NO_DESKTOP);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert!(host.ops.lock().unwrap().is_empty());
         c.wire().close();
         t.join().unwrap();
     }

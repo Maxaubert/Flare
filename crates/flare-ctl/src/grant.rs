@@ -2,7 +2,8 @@
 //!
 //! Three kinds. The **agent** grant is what a caller with no token gets (Claude Code through
 //! `flare-mcp`): it can show content, drive its own tab's browser panel and put a badge or a progress
-//! chip on its own tab, and nothing else (rule S3): it never types into a shell, reads a session or keeps a store.
+//! chip on its own tab, and open a tab that shows a session on another machine (`open.remote`, rule 299), and nothing
+//! else (rule S3): it never types into a shell, that tab's included, reads a session or keeps a store.
 //! A **mod** grant is exactly the permissions its manifest declared and the user accepted (S5), plus its own store.
 //! The **ui** grant is the app's own code, called in-process; it is never issued over the pipe, so
 //! no token can mean ui.
@@ -215,6 +216,10 @@ impl Grant {
                 N::Tools => false,
                 // Listing and calling the mods' tools is the agent's job.
                 N::AgentTools => true,
+                // Opening a tab that shows a session on another machine: the agent may, with no prompt (owner
+                // decision, remote sessions PR 5). The tab it opens takes no typing from it: `remote.*`, `shell.input`
+                // and `tabs.input` stay closed to it (rule 299).
+                N::Open => true,
                 // The plugin surfaces and a plugin's store are a plugin's; reading a session is not the agent's, and
                 // typing into a shell is never the agent's (rules 2 and 188).
                 // How agent icons move is a plugin's choice (`agent-looks`), never the agent's own. Filling a login
@@ -316,6 +321,7 @@ mod tests {
             Method::TabsProgressClear,
             Method::ViewAudio,
             Method::ViewModel,
+            Method::OpenRemoteSession,
         ] {
             assert!(g.may_call(m), "agent should call {}", m.name());
         }
@@ -630,6 +636,17 @@ mod tests {
                         continue;
                     }
                     Namespace::Ui => "ui",
+                    // The agent and the app open a remote session; no permission name stands for it.
+                    Namespace::Open => {
+                        assert_eq!(
+                            g.may_call(m),
+                            matches!(g, Grant::Agent { .. } | Grant::Ui),
+                            "{} {}",
+                            g.kind(),
+                            m.name()
+                        );
+                        continue;
+                    }
                     // The remote link and the app reach it; no manifest permission stands for it.
                     Namespace::Remote => {
                         assert_eq!(
@@ -668,7 +685,9 @@ mod tests {
                 let g = mod_with(&[p]);
                 let want = match ns {
                     Namespace::Hello | Namespace::Tabs | Namespace::Storage => true,
-                    Namespace::AgentTools | Namespace::Ui | Namespace::Remote => false,
+                    Namespace::AgentTools | Namespace::Ui | Namespace::Remote | Namespace::Open => {
+                        false
+                    }
                     _ => ns.permission() == Some(p),
                 };
                 assert_eq!(g.may_enter(ns), want, "{ns:?} with {}", p.name());
@@ -720,7 +739,12 @@ mod tests {
     #[test]
     fn the_widest_plugin_still_cannot_reach_the_ui_or_the_agents_tools() {
         let all = mod_with(&Permission::ALL);
-        for ns in [Namespace::Ui, Namespace::AgentTools, Namespace::Remote] {
+        for ns in [
+            Namespace::Ui,
+            Namespace::AgentTools,
+            Namespace::Remote,
+            Namespace::Open,
+        ] {
             assert!(!all.may_enter(ns), "{ns:?}");
         }
         let none = mod_with(&[]);
@@ -894,6 +918,40 @@ mod tests {
         assert_eq!(g.permission_names(), ["remote"]);
         // The remote link's own grant still never reaches `hello`.
         assert!(!Grant::Remote.may_call(Method::Hello));
+    }
+
+    /// Rule 299 (amends S3, rule 188): the agent may open a session on another machine, with no prompt, and may not
+    /// type into it or any other tab: no `remote.*` (the input, the attach, the output), no `shell.input`, no
+    /// `tabs.input`. No mod, remote link or bridge opens one.
+    #[test]
+    fn the_agent_may_open_a_remote_session_but_never_type_into_one() {
+        for g in [Grant::agent(), Grant::Agent { eval: true }] {
+            assert!(g.check(Method::OpenRemoteSession).is_ok());
+            for m in [
+                Method::RemoteInput,
+                Method::RemoteAttach,
+                Method::RemoteOutput,
+                Method::RemoteOpen,
+                Method::ShellInput,
+                Method::TabsInput,
+            ] {
+                assert_eq!(
+                    g.check(m).unwrap_err().code,
+                    code::FORBIDDEN,
+                    "{}",
+                    m.name()
+                );
+            }
+        }
+        for g in [
+            mod_with(&Permission::ALL),
+            v1_mod_with(&Permission::ALL),
+            Grant::Remote,
+            Grant::Bridge,
+        ] {
+            assert!(!g.may_call(Method::OpenRemoteSession), "{}", g.kind());
+        }
+        assert!(Grant::Ui.may_call(Method::OpenRemoteSession));
     }
 
     #[test]

@@ -127,6 +127,10 @@ pub enum Method {
     /// What is said in a host tab's Claude session, as numbered entries after a number (remote sessions PR 4, rule
     /// 297). The host finds and reads the transcript; no host path crosses the link.
     RemoteConvo,
+    /// Opens a tab in this Flare that shows a session on another machine (remote sessions PR 5): a machine named in
+    /// `machines.json`, a folder there and an optional Claude session to resume. The agent's (owner decision: no
+    /// prompt) and the `flare open --on` command's. The opened tab takes no typing from either (rule 299).
+    OpenRemoteSession,
 }
 
 /// What a method belongs to, which decides which grants may call it.
@@ -168,11 +172,14 @@ pub enum Namespace {
     /// A remote link's methods (`remote.*`, remote sessions): only the remote grant, which only the serve stdio path
     /// issues, enters it. No permission opens it, so no mod or plugin can ask for it.
     Remote,
+    /// What a caller opens in this Flare for the person (`open.remote`, remote sessions PR 5): the agent's and the
+    /// app's. No permission opens it, so no mod or plugin reaches it, and neither does a remote link or the bridge.
+    Open,
 }
 
 impl Namespace {
     /// Every namespace.
-    pub const ALL: [Namespace; 19] = [
+    pub const ALL: [Namespace; 20] = [
         Namespace::Hello,
         Namespace::Tabs,
         Namespace::Decor,
@@ -192,6 +199,7 @@ impl Namespace {
         Namespace::Agents,
         Namespace::Fill,
         Namespace::Remote,
+        Namespace::Open,
     ];
 
     /// The one permission that opens this namespace to a plugin. `None` for the open ones (`hello`, `tabs.list`), for a
@@ -204,7 +212,8 @@ impl Namespace {
             | Namespace::AgentTools
             | Namespace::Ui
             | Namespace::Storage
-            | Namespace::Remote => None,
+            | Namespace::Remote
+            | Namespace::Open => None,
             Namespace::Decor => Some(Permission::Decorate),
             Namespace::Panel => Some(Permission::Panel),
             Namespace::View => Some(Permission::View),
@@ -224,7 +233,7 @@ impl Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 59] = [
+    pub const ALL: [Method; 60] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -284,6 +293,7 @@ impl Method {
         Method::RemoteClose,
         Method::RemoteStatus,
         Method::RemoteConvo,
+        Method::OpenRemoteSession,
     ];
 
     /// The wire name.
@@ -348,6 +358,7 @@ impl Method {
             Method::RemoteClose => "remote.close",
             Method::RemoteStatus => "remote.status",
             Method::RemoteConvo => "remote.convo",
+            Method::OpenRemoteSession => "open.remote",
         }
     }
 
@@ -407,6 +418,7 @@ impl Method {
             | Method::RemoteClose
             | Method::RemoteStatus
             | Method::RemoteConvo => Namespace::Remote,
+            Method::OpenRemoteSession => Namespace::Open,
         }
     }
 
@@ -478,6 +490,7 @@ mod tests {
                 Namespace::Agents => prefix == "agents",
                 Namespace::Fill => matches!(prefix, "browser" | "secret"),
                 Namespace::Remote => prefix == "remote",
+                Namespace::Open => prefix == "open",
             };
             assert!(ok, "{} is filed under the wrong namespace", m.name());
         }
@@ -521,8 +534,8 @@ mod tests {
 
     #[test]
     fn every_method_and_namespace_is_listed_once() {
-        assert_eq!(Method::ALL.len(), 59);
-        assert_eq!(Namespace::ALL.len(), 19);
+        assert_eq!(Method::ALL.len(), 60);
+        assert_eq!(Namespace::ALL.len(), 20);
         for (i, ns) in Namespace::ALL.iter().enumerate() {
             assert!(!Namespace::ALL[..i].contains(ns), "{ns:?} twice");
         }
@@ -558,6 +571,19 @@ mod tests {
             assert_eq!(m.namespace(), Namespace::Remote, "{}", m.name());
             assert_eq!(Method::parse(m.name()), Some(m));
         }
+    }
+
+    /// Remote sessions PR 5: opening a remote tab is answered as soon as the tab is there (its link connects on its own
+    /// worker), so it takes the default time; it is no `remote.*` method and no permission opens it.
+    #[test]
+    fn open_remote_is_a_short_call_of_its_own_namespace() {
+        assert_eq!(
+            Method::parse("open.remote"),
+            Some(Method::OpenRemoteSession)
+        );
+        assert_eq!(Method::OpenRemoteSession.namespace(), Namespace::Open);
+        assert_eq!(Method::OpenRemoteSession.timeout(), DEFAULT_TIMEOUT);
+        assert_eq!(Namespace::Open.permission(), None);
     }
 
     #[test]

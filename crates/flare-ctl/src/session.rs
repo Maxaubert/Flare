@@ -68,6 +68,14 @@ pub trait Dispatcher: Send + Sync + 'static {
         None
     }
 
+    /// Whether this end of a remote link can serve it now, asked once a `remote.hello` passed its version check and
+    /// its grant, before it is answered (remote sessions PR 5). The serve process makes sure a Flare runs on this
+    /// machine here, and starts one hidden when none does; it may take a while (the viewer waits for the hello). An
+    /// error (`host_not_ready` with one line) is the hello's answer, and the link stays open for another try.
+    fn remote_ready(&self) -> Result<(), CtlError> {
+        Ok(())
+    }
+
     /// Runs one request. The grant was checked; `params` is an object. Anything but `hello`.
     ///
     /// Runs on its own thread and may still be running, or start, after `Server::stop`: it must
@@ -665,6 +673,7 @@ fn handle_remote_hello(
         ));
     };
     let grant = remote_grant(shared)?;
+    shared.dispatcher.remote_ready()?;
     let caps = shared.dispatcher.capabilities();
     let names: Vec<&str> = Method::ALL
         .into_iter()
@@ -997,6 +1006,8 @@ mod tests {
         pub remote_agent: AtomicBool,
         /// A bug on the app side: the agent grant is the bridge grant.
         pub bridge_agent: AtomicBool,
+        /// The host has no running Flare and cannot start one: `remote_ready` refuses.
+        pub not_ready: AtomicBool,
     }
 
     impl Dispatcher for Fake {
@@ -1038,6 +1049,15 @@ mod tests {
             self.serves_remote
                 .load(Ordering::SeqCst)
                 .then_some(Grant::Remote)
+        }
+        fn remote_ready(&self) -> Result<(), CtlError> {
+            if self.not_ready.load(Ordering::SeqCst) {
+                return Err(CtlError::new(
+                    code::HOST_NOT_READY,
+                    "Flare is not running on this machine and could not be started",
+                ));
+            }
+            Ok(())
         }
         fn resolve_tab_token(&self, tab_token: &str) -> Option<String> {
             match tab_token {
@@ -1767,6 +1787,24 @@ mod tests {
         assert_eq!(v["result"]["capabilities"], json!(remote));
         // A second greeting is refused like a second hello.
         assert_eq!(code_of(&r.remote_hello("")), code::ALREADY_HELLO);
+        r.finish();
+    }
+
+    /// Remote sessions PR 5: a host that cannot get a Flare running answers the hello `host_not_ready` with one line,
+    /// gives no grant, and keeps the link open: a later `remote.hello` is answered once the host is ready.
+    #[test]
+    fn a_host_that_is_not_ready_refuses_the_hello_in_one_line_and_takes_another() {
+        let mut r = stdio_rig();
+        r.fake.not_ready.store(true, Ordering::SeqCst);
+        let v = r.remote_hello("");
+        assert_eq!(code_of(&v), code::HOST_NOT_READY);
+        assert!(!v["error"]["message"].as_str().unwrap().contains('\n'));
+        assert_eq!(
+            code_of(&r.ask(r#"{"id":2,"method":"remote.tabs","params":{}}"#)),
+            code::HELLO_REQUIRED
+        );
+        r.fake.not_ready.store(false, Ordering::SeqCst);
+        assert_eq!(r.remote_hello("")["result"]["machine"], "host-a");
         r.finish();
     }
 

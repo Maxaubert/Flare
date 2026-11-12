@@ -193,6 +193,7 @@ mod tests {
             "clear_tab_badge",
             "set_tab_progress",
             "clear_tab_progress",
+            "open_remote_session",
         ];
         for id in ["notes", "a-b-c", "zzz"] {
             let name = tool_name(id, "show_image");

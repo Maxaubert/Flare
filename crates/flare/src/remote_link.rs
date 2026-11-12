@@ -109,72 +109,10 @@ impl<W: Wire> Drop for ClientLink<W> {
 
 // ---- machines ----
 
-/// A machine a remote tab can run on, as `machines.json` in the profile names it (hand-edited until PR 7's page):
-/// `{"machines":[{"id":"mac","name":"Mac Mini","kind":"mac","ssh":"mac-mini","user":"max","flare":"/Applications/..."}]}`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Machine {
-    pub id: String,
-    pub name: String,
-    /// `mac` or `pc`; anything else is no kind and reads as a Mac's shell (rule 40, never written back).
-    pub kind: Option<Os>,
-    /// The ssh host (an alias of `~/.ssh/config` or a name).
-    pub ssh: String,
-    pub user: Option<String>,
-    /// Flare's executable on the host; `flare` (on the host's PATH) when not given.
-    pub flare: String,
-}
-
-/// A word that goes to ssh as one argv item: printable, no space, never read as an option.
-fn argv_word(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 255
-        && !s.starts_with('-')
-        && s.chars().all(|c| c.is_ascii_graphic())
-}
-
-/// Pure: the machines a `machines.json` names. A machine whose id, host or user is not a plain word is left out.
-pub fn parse_machines(raw: &str) -> Vec<Machine> {
-    let Ok(v) = serde_json::from_str::<Value>(raw) else {
-        return Vec::new();
-    };
-    let Some(list) = v.get("machines").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    let s = |m: &Value, k: &str| m.get(k).and_then(Value::as_str).map(str::to_string);
-    list.iter()
-        .filter_map(|m| {
-            let id = s(m, "id").filter(|i| argv_word(i))?;
-            let ssh = s(m, "ssh").filter(|h| argv_word(h))?;
-            let user = match m.get("user") {
-                None | Some(Value::Null) => None,
-                Some(_) => Some(s(m, "user").filter(|u| argv_word(u))?),
-            };
-            Some(Machine {
-                name: s(m, "name")
-                    .filter(|n| !n.trim().is_empty())
-                    .unwrap_or_else(|| id.clone()),
-                kind: s(m, "kind").as_deref().and_then(Os::parse),
-                flare: s(m, "flare")
-                    .filter(|f| !f.trim().is_empty())
-                    .unwrap_or_else(|| "flare".to_string()),
-                id,
-                ssh,
-                user,
-            })
-        })
-        .collect()
-}
-
-/// `machines.json` in the profile. BLOCKING (a file read): a worker's call.
-pub fn machines_file(profile: &Path) -> PathBuf {
-    profile.join("machines.json")
-}
-
-pub fn read_machines(path: &Path) -> Vec<Machine> {
-    std::fs::read_to_string(path) // sync-ok: the tab's link worker or a test, never the UI thread
-        .map(|raw| parse_machines(&raw))
-        .unwrap_or_default()
-}
+// The registry is `crate::machines` (PR 5); the link reads it to build ssh's argv.
+#[cfg(test)]
+pub use crate::machines::parse_machines;
+pub use crate::machines::{Machine, argv_word, machines_file, read_machines};
 
 /// Pure: the command the host's login shell runs (rule 290: no token, no environment). A Mac's sh gets the path in
 /// single quotes; a PC's cmd in double quotes, with no `&&` and nothing cmd would expand. None for a path that cannot
@@ -229,8 +167,9 @@ pub fn ssh_argv(ssh: &str, m: &Machine) -> Option<Vec<String>> {
     Some(argv)
 }
 
-/// How long `remote.hello` may take once the link is up (the host may start its Flare first, PR 5).
-const HELLO_WAIT: Duration = Duration::from_secs(30);
+/// How long `remote.hello` may take once the link is up: the host may start its Flare hidden first and wait up to
+/// `hidden_start::PIPE_WAIT` (60 s) for its channel (remote sessions PR 5), with time left for a slow login shell.
+pub const HELLO_WAIT: Duration = Duration::from_secs(90);
 
 /// The real connector: ssh to the machine `machines.json` names, or, under `--e2e`, the loopback command the scenario
 /// gives (`FLARE_E2E_REMOTE_COMMAND`, a JSON list: an argv).
@@ -516,6 +455,16 @@ struct Worker {
     status: crate::remote_status::StatusPoll,
 }
 
+/// Pure: `remote.open`'s params for a tab: the host folder, and the session to resume there when one was asked for
+/// (the host checks it again with `valid_resume`).
+pub fn open_params(spec: &RemoteSpec) -> Value {
+    let mut p = json!({"folder": spec.folder});
+    if let Some(r) = &spec.resume {
+        p["resume"] = json!(r);
+    }
+    p
+}
+
 fn b64(v: &Value) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD
         .decode(v["data"].as_str().unwrap_or_default())
@@ -613,7 +562,7 @@ impl Worker {
             Some(t) => t,
             None => match link.call(
                 Method::RemoteOpen,
-                json!({"folder": self.spec.folder}),
+                open_params(&self.spec),
                 self.t.long_call,
             ) {
                 Ok(v) => match v["tab"].as_str() {

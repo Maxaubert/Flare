@@ -106,8 +106,25 @@ pub struct Args {
     /// `--serve-remote` (remote sessions PR 2): the host end of a remote link on this process's own stdio, run by ssh.
     /// Headless: no window, no single-instance lock (rule 283).
     pub serve_remote: bool,
+    /// `--no-start` (with `--serve-remote` only, remote sessions PR 5): the serve process never starts a Flare hidden;
+    /// with none running its relay is `unavailable`. The process tests use it.
+    pub no_start: bool,
+    /// `--start-hidden` (remote sessions PR 5): a normal launch whose window is parked off every screen with the e2e's
+    /// park code and never takes the focus (rule 301). The serve process and `flare open` start one when no Flare runs.
+    pub start_hidden: bool,
+    /// `flare open --on <machine> <folder> [--resume <id>]` (remote sessions PR 5): ask the running Flare (started
+    /// with `--start-hidden` when none runs) to open a tab that shows a session on that machine, then exit.
+    pub open_on: Option<OpenOn>,
     /// Bare arguments (folders or files), in order.
     pub positional: Vec<String>,
+}
+
+/// What `flare open --on` asks for: the machine's id in `machines.json`, a folder on it, a session to resume there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenOn {
+    pub machine: String,
+    pub folder: String,
+    pub resume: Option<String>,
 }
 
 /// Flags: --renderer gpu|software, --screenshot <path>, --scale <f32> (default 1.0, allowed
@@ -140,8 +157,15 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
         settings_open: SettingsOpen::None,
         look: LookOverrides::default(),
         serve_remote: false,
+        no_start: false,
+        start_hidden: false,
+        open_on: None,
         positional: Vec::new(),
     };
+    // `--on` and `--resume` take values: read here, so a value never reaches the positional list or the hand-off's
+    // path parsing (rule 300).
+    let mut on: Option<String> = None;
+    let mut resume: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         let flag = args[i].as_str();
@@ -181,6 +205,10 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
             }
             "--instance-probe" => out.instance_probe = true,
             "--serve-remote" => out.serve_remote = true,
+            "--no-start" => out.no_start = true,
+            "--start-hidden" => out.start_hidden = true,
+            "--on" => on = Some(value(args, &mut i, flag)?.to_string()),
+            "--resume" => resume = Some(value(args, &mut i, flag)?.to_string()),
             "--preview-update" => out.preview_update = true,
             "--scene" => out.scene = Some(value(args, &mut i, flag)?.to_string()),
             "--live-tabs" => {
@@ -268,19 +296,29 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
         }
         i += 1;
     }
+    let other_mode = out.scene.is_some()
+        || out.screenshot.is_some()
+        || out.live_screenshot.is_some()
+        || out.bench_frames.is_some()
+        || out.instance_probe
+        || out.live_tabs.is_some();
     // A serve process is a bridge and nothing else: it opens no folder and draws nothing (rule 283).
     if out.serve_remote
-        && (!out.positional.is_empty()
-            || out.scene.is_some()
-            || out.screenshot.is_some()
-            || out.live_screenshot.is_some()
-            || out.bench_frames.is_some()
-            || out.instance_probe
-            || out.live_tabs.is_some())
+        && (!out.positional.is_empty() || other_mode || out.start_hidden || on.is_some())
     {
         return Err(
             "--serve-remote takes no folder and no other mode; only --user-data-dir".to_string(),
         );
+    }
+    if out.no_start && !out.serve_remote {
+        return Err("--no-start goes with --serve-remote only".to_string());
+    }
+    if out.start_hidden && other_mode {
+        return Err("--start-hidden is a launch of the app; it takes no other mode".to_string());
+    }
+    out.open_on = open_on(on, resume, &mut out.positional)?;
+    if out.open_on.is_some() && (other_mode || out.start_hidden) {
+        return Err("flare open --on takes no other mode; only --user-data-dir".to_string());
     }
     if out.live_shell.is_some() && out.live_screenshot.is_none() {
         return Err("--live-shell needs --live-screenshot <path>".to_string());
@@ -297,6 +335,43 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
         (None, None) => RendererChoice::Gpu,
     };
     Ok(out)
+}
+
+/// `flare open --on <machine> <folder> [--resume <id>]`: with `--on`, the bare words must be `open` and one folder
+/// (a path on that machine, never statted here), and they are taken out of `positional` so no launch opens them. Without
+/// `--on` a word `open` is a folder like any other, and `--resume` alone is refused.
+fn open_on(
+    on: Option<String>,
+    resume: Option<String>,
+    positional: &mut Vec<String>,
+) -> Result<Option<OpenOn>, String> {
+    let Some(machine) = on else {
+        if resume.is_some() {
+            return Err("--resume goes with flare open --on <machine> <folder>".to_string());
+        }
+        return Ok(None);
+    };
+    const USAGE: &str = "use: flare open --on <machine> <folder> [--resume <session id>]";
+    if !crate::machines::argv_word(&machine) {
+        return Err(format!(
+            "--on needs a machine's id from machines.json, not '{machine}'; {USAGE}"
+        ));
+    }
+    let folder = match positional.as_slice() {
+        [verb, folder] if verb == "open" && !folder.trim().is_empty() => folder.clone(),
+        _ => return Err(USAGE.to_string()),
+    };
+    if let Some(r) = &resume
+        && flare_agent::resume::valid_resume(Some(r)).is_none()
+    {
+        return Err(format!("--resume needs a session id, not '{r}'"));
+    }
+    positional.clear();
+    Ok(Some(OpenOn {
+        machine,
+        folder,
+        resume,
+    }))
 }
 
 /// The value after `flag`; advances `i` past it.
@@ -339,6 +414,79 @@ mod tests {
 
     fn a(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Rule 300: `--on` and `--resume` values are read as values, never as folders: the positional list is empty, the
+    /// profile is untouched, and a launch would open nothing of them.
+    #[test]
+    fn open_on_reads_its_values_and_leaves_no_folder_to_open() {
+        let id = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
+        let args = parse_args(
+            &a(&[
+                "open",
+                "--on",
+                "mac",
+                "/Users/max/proj",
+                "--resume",
+                id,
+                "--user-data-dir=C:\\p",
+            ]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            args.open_on,
+            Some(OpenOn {
+                machine: "mac".into(),
+                folder: "/Users/max/proj".into(),
+                resume: Some(id.into()),
+            })
+        );
+        assert!(args.positional.is_empty());
+        assert_eq!(args.user_data_dir, Some(PathBuf::from("C:\\p")));
+        // The machine's value is never a folder, even one that exists here: it is a name machines.json is asked for.
+        let args = parse_args(&a(&["--on", "C:\\Windows", "open", "C:\\w"]), None).unwrap();
+        assert_eq!(args.open_on.unwrap().machine, "C:\\Windows");
+        assert!(args.positional.is_empty());
+        // Without --on, `open` is a folder like any other.
+        let plain = parse_args(&a(&["open"]), None).unwrap();
+        assert_eq!(plain.positional, ["open"]);
+        assert_eq!(plain.open_on, None);
+    }
+
+    #[test]
+    fn open_on_refuses_what_it_cannot_use_with_its_usage() {
+        for bad in [
+            &["--on", "mac"][..],
+            &["--on", "mac", "open"],
+            &["--on", "mac", "show", "/p"],
+            &["--on", "mac", "open", "/p", "/q"],
+            &["--on", "-x", "open", "/p"],
+            &["--on", "mac", "open", "/p", "--resume", "x; rm"],
+            &["--resume", "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f"],
+            &["--on", "mac", "open", "/p", "--start-hidden"],
+            &["--on", "mac", "open", "/p", "--scene", "strip"],
+            &["--on", "mac"],
+        ] {
+            assert!(parse_args(&a(bad), None).is_err(), "{bad:?}");
+        }
+        let e = parse_args(&a(&["--on", "mac", "open"]), None).unwrap_err();
+        assert!(e.contains("flare open --on"), "{e}");
+    }
+
+    #[test]
+    fn start_hidden_is_a_launch_and_no_start_goes_with_serve_only() {
+        let args = parse_args(&a(&["--start-hidden", "--user-data-dir=C:\\p"]), None).unwrap();
+        assert!(args.start_hidden && !args.e2e);
+        assert!(args.positional.is_empty());
+        assert!(parse_args(&a(&["--start-hidden", "--scene", "strip"]), None).is_err());
+        assert!(parse_args(&a(&["--serve-remote", "--start-hidden"]), None).is_err());
+        assert!(
+            parse_args(&a(&["--serve-remote", "--no-start"]), None)
+                .unwrap()
+                .no_start
+        );
+        assert!(parse_args(&a(&["--no-start"]), None).is_err());
     }
 
     #[test]

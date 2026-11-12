@@ -362,6 +362,17 @@ notification and B's none (rule 295); then A shows its own finished mark. A quit
 the restored tab attaches, B's status still says `done`, and after 4 s A shows no finished mark and no notification
 (rule 294).
 
+`remoteOpen` (`tools/e2e/src/scenarios/remote.rs`, remote sessions PR 5, Windows only for now) launches only A, with
+`machines.json` (machine `loop`) in its profile and `FLARE_E2E_REMOTE_COMMAND` set to `flare --serve-remote
+--user-data-dir=<B's profile> --e2e`; B is not running. It runs `flare open --on loop <B's folder>
+--user-data-dir=<A's profile>` with `CREATE_NO_WINDOW` and reads its one line and exit code 0. The serve process finds
+no Flare for B and starts `flare --start-hidden --user-data-dir=<B's profile> --e2e` (`--e2e` passed on, so B is a test
+app with its hook, on the hidden desktop it inherits from A). The scenario waits for B's prompt in A's front tab, connects
+to B's hook by its profile, checks `window.park` (off every screen, no-activate, not in front, rule 301) and that B
+holds the session, types `echo remote-open-5` into A (the only text it sends) and reads it once each. It asks B to quit
+and reaps B by its profile at the end. `crates/flare/tests/serve_remote.rs` runs every serve process with `--no-start`,
+so no unit test ever starts a Flare hidden.
+
 ## Agent browser scenarios (Surfaces stage 4)
 
 `convoPanels` (`tools/e2e/src/scenarios/convo.rs`, Surfaces stage 6) needs no WebView2. It launches with `CLAUDE_CONFIG_DIR` at a folder of its own and a synthetic transcript. One command line in the shell stands in for Claude: it prints the hook line with a session id, waits for a flag file, prints a second session, and never returns to the prompt (a prompt takes the agent and its session back, and a `working` hook would make the close ask a question). It opens Changes with `panel.open`, clicks the first file row (`ui.rect convo-file-0`), appends lines to the transcript, checks that `panel.open` kind `tasks` is refused (the Tasks panel was removed 2026-10-26) and reads the `convo.state` probe, at 100 and 225 percent (42 checks).

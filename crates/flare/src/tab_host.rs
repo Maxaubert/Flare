@@ -562,6 +562,7 @@ mod tests {
             flare_term::remote_pty::RemoteSpec {
                 machine: "mac".into(),
                 folder: "/Users/max/proj".into(),
+                resume: None,
                 live: flare_term::remote_pty::RemoteLive::default(),
             },
         );

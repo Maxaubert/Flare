@@ -723,8 +723,9 @@ fn mcp_on(
                 "clear_tab_badge",
                 "set_tab_progress",
                 "clear_tab_progress",
+                "open_remote_session",
             ],
-        format!("tools/list names the eight show tools, the ten browser tools and the four tab tools ({names:?})"),
+        format!("tools/list names the eight show tools, the ten browser tools, the four tab tools and the remote session tool ({names:?})"),
     );
     ctx.ok(
         replies

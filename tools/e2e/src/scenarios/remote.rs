@@ -385,6 +385,125 @@ fn viewer_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> 
     Ok(())
 }
 
+// ---- remote sessions PR 5: `remoteOpen`, `flare open --on` and the host's hidden start ----
+
+/// `remoteOpen`: Flare A (the viewer) runs; Flare B (the host) does not. `flare open --on loop <folder>` (the command,
+/// run here with no window) asks A for a tab on machine `loop`, which `machines.json` in A's profile names and whose
+/// link is a loopback `flare --serve-remote` of B's profile (never ssh). The serve process finds no Flare for B and
+/// starts one with `--start-hidden` (and `--e2e`, so it is a test app with its hook), waits for its pipe and answers the
+/// hello. The tab shows B's prompt on A; B runs, parked off every screen, not in front and no-activate (rule 301), and
+/// holds the session. Both on the hidden desktop: B is A's grandchild and inherits it.
+pub fn remote_open(ctx: &mut Ctx) -> Result<(), String> {
+    let hw = ctx.new_world();
+    let world = ctx.new_world();
+    std::fs::create_dir_all(&world.profile).map_err(|e| e.to_string())?;
+    std::fs::write(
+        world.profile.join("machines.json"),
+        json!({"machines": [{"id": "loop", "name": "Loopback", "kind": "pc", "ssh": "loop"}]})
+            .to_string(),
+    )
+    .map_err(|e| e.to_string())?;
+    let exe = ctx.exe.clone();
+    let cmd = json!([
+        exe.to_string_lossy(),
+        "--serve-remote",
+        format!("--user-data-dir={}", hw.profile.display()),
+        "--e2e",
+    ]);
+    let mut a = ctx.launch_in(
+        &world,
+        Launch {
+            env: vec![(
+                concat!("FLARE_E2E", "_REMOTE_COMMAND").to_string(),
+                cmd.to_string(),
+            )],
+            ..Launch::default()
+        },
+    )?;
+    let r = open_on(ctx, &mut a, &exe, &world, &hw);
+    let quit = a.close();
+    // B was started by the serve process, not by this harness: it is asked to quit, then reaped by its profile.
+    if let Ok(mut b) = crate::session::Session::connect(&hw.profile, Duration::from_secs(2)) {
+        let _ = b.call(&Request::Quit { force: true });
+    }
+    let t = std::time::Instant::now();
+    ctx.until("the hidden host to quit", 15_000, &mut || {
+        t.elapsed() > Duration::from_secs(1)
+            && crate::session::Session::connect(&hw.profile, Duration::from_millis(200)).is_err()
+    });
+    crate::proc::reap_by_profile(&hw.profile);
+    ctx.ok(quit, "the viewer quits");
+    r
+}
+
+fn open_on(
+    ctx: &mut Ctx,
+    a: &mut App,
+    exe: &Path,
+    world: &crate::world::World,
+    hw: &crate::world::World,
+) -> Result<(), String> {
+    prompt(a)?;
+    ctx.ok(
+        crate::session::Session::connect(&hw.profile, Duration::from_millis(500)).is_err(),
+        "no Flare runs for the host's profile before the command",
+    );
+    let folder = hw.alpha.to_string_lossy().into_owned();
+    let mut cmd = Command::new(exe);
+    cmd.args([
+        "open".to_string(),
+        "--on".to_string(),
+        "loop".to_string(),
+        folder.clone(),
+        format!("--user-data-dir={}", world.profile.display()),
+    ])
+    .envs(world.env())
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let out = cmd.output().map_err(|e| format!("run flare open: {e}"))?;
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
+    ctx.ok(
+        out.status.success() && said.contains("Opened a tab on loop"),
+        format!(
+            "flare open --on answers and exits 0 ({:?}: {said:?} {:?})",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    );
+    // The serve process starts the host hidden and waits for it; the tab then shows the host's prompt.
+    front_rows_until(ctx, a, "the hidden host's prompt in the remote tab", |t| {
+        t.contains("PS ")
+    })?;
+    let mut b = crate::session::Session::connect(&hw.profile, Duration::from_secs(20))
+        .map_err(|e| format!("the hidden host's hook: {e}"))?;
+    b.hello()?;
+    let park = b.probe_str("window.park")?;
+    ctx.ok(
+        crate::ctx::park_problems(&park).is_empty(),
+        format!("the hidden host's window is parked, no-activate and not in front ({park})"),
+    );
+    let tabs = b.state()?.tabs.len();
+    ctx.ok(
+        tabs >= 1,
+        format!("the host holds the session ({tabs} tabs)"),
+    );
+    type_line(a, &format!("echo {OPEN_MARK}"))?;
+    let t = front_rows_until(ctx, a, "typing reaches the hidden host", |t| {
+        t.matches(OPEN_MARK).count() >= 2
+    })?;
+    ctx.ok(
+        t.matches(OPEN_MARK).count() == 2,
+        "the command and its output show once each on the viewer",
+    );
+    Ok(())
+}
+
+/// What is typed into the tab `remoteOpen` opens. Written here in full: nothing else is sent to the host's shell.
+const OPEN_MARK: &str = "remote-open-5";
+
 // ---- remote sessions PR 4: `remoteStatus`, the host's agent marks on the viewer ----
 
 /// "Notify me when an agent asks" on (it is off by default), stored in the profile before the launch.

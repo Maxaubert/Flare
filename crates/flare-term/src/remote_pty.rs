@@ -167,6 +167,9 @@ pub struct RemoteSpec {
     pub machine: String,
     /// The folder on the host the session works in: a host path, never statted or opened here.
     pub folder: String,
+    /// The Claude session to resume in the host's new tab (remote sessions PR 5): sent with `remote.open` only, so a
+    /// tab that already has its host tab never starts it again.
+    pub resume: Option<String>,
     /// The tab's live state (the host's id of the tab, the output reached).
     pub live: RemoteLive,
 }
