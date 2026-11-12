@@ -49,6 +49,18 @@ pub const APPLINK: &str = r#"<!doctype html><html><head><meta charset="utf-8"><t
 pub const APPLINK_INNER: &str = r#"<!doctype html><html><head><meta charset="utf-8"></head>
 <body style="margin:0"><a href="zoommtg://zoom.us/join?confno=123" style="display:block;width:400px;height:200px;background:#33cc33">join</a></body></html>"#;
 
+/// What a page asks the person (rules 1165 to 1169): a file input (`.txt` only, several), a link to right-click, and
+/// the leave-page question once the person has used the page.
+pub const ASKS: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Asks</title>
+<style>html,body{margin:0} #f{position:absolute;left:20px;top:20px;width:240px;height:40px}
+#l{position:absolute;left:20px;top:100px;width:200px;height:40px;display:block;background:#eee}</style>
+<script>window.__files = '';
+window.addEventListener('beforeunload', function (e) { e.preventDefault(); e.returnValue = ''; });</script>
+</head><body>
+<input id="f" type="file" accept=".txt" multiple onchange="window.__files = Array.from(this.files).map(function (f) { return f.name; }).join(',')">
+<a id="l" href="/page2">a link</a>
+</body></html>"#;
+
 pub const PAGE2: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Page two</title></head><body><h1>Page two</h1></body></html>"#;
 
 /// A known colour in a known place.
@@ -366,6 +378,7 @@ fn route(path: &str) -> (&'static str, Vec<(&'static str, String)>, String) {
         "/slow" => html(SLOW),
         "/pickers" => html(PICKERS),
         "/login" => html(LOGIN),
+        "/asks" => html(ASKS),
         "/literals" => {
             let (lan, name) = lan_and_name();
             html(&literals(&lan, &name, "lit-ctl"))

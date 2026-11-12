@@ -109,7 +109,9 @@ pub fn pty_key(os: KeyOs, ev: &KeyEvent, option_as_meta: bool) -> PtyKey {
     }
 }
 
-/// Keys Slint keeps for itself: F12 (the debug overlay). Every chord is `AppCtl`'s.
+/// Keys Slint keeps for itself: F12. Every chord is `AppCtl`'s. Slint hands F12 to the focused scope first: while
+/// the web panel's page has the keyboard its key scope takes it and the page opens DevTools (on the Mac the host
+/// catches it, rule 1168; on Windows WebView2's own window has the key), and elsewhere it toggles the debug overlay.
 pub fn reserved_for_slint(code: &str) -> bool {
     code == "F12"
 }

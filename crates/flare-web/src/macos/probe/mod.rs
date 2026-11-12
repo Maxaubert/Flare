@@ -41,11 +41,42 @@ use flare_surfaces::web::PhysRect;
 use objc2::MainThreadMarker;
 use serde_json::{Value, json};
 
+use crate::asks::{AskKey, Asker, Done};
 use crate::backend::{
     ImeInput, KeyInput, Mods, Nav, NoteKind, Pointer, PointerAct, PointerButton, Slot, ViewFrame,
     WebBackend, WebEvent,
 };
 use crate::host::{HostConfig, WebHost, installed_runtime};
+use flare_cef::macos::view::{Ask, FileMode, Reply};
+
+/// The tests' asker: it shows nothing, notes each ask and answers as the person would (a `"no"` script dialog is
+/// cancelled, a prompt gets `typed`, a file chooser `file`, a menu its Open Link).
+struct StubAsker {
+    asks: Arc<Mutex<Vec<Ask>>>,
+    file: PathBuf,
+}
+
+impl Asker for StubAsker {
+    fn ask(&mut self, _key: AskKey, ask: Ask, _page: (f64, f64), done: Done) {
+        let reply = match &ask {
+            Ask::Script { message, .. } if message == "no" => Reply::No,
+            Ask::Script { kind, .. } if *kind == "prompt" => Reply::Yes("typed".to_string()),
+            Ask::Script { .. } | Ask::Leave { .. } => Reply::Yes(String::new()),
+            Ask::Files { .. } => Reply::Files(vec![self.file.clone()]),
+            Ask::Menu { items, .. } => items
+                .iter()
+                .find(|i| i.label == "Open Link")
+                .map_or(Reply::No, |i| Reply::Command(i.id)),
+        };
+        self.asks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(ask);
+        done(reply);
+    }
+
+    fn withdraw(&mut self, _gone: &dyn Fn(&AskKey) -> bool) {}
+}
 
 /// The view's rectangle: 983 by 700 CSS pixels at 2x.
 const BOUNDS: PhysRect = PhysRect {
@@ -785,14 +816,125 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
         json!({"result": format!("{bars:?}")}),
     );
 
-    // ---- script dialogs and permissions, never shown
-    let dialogs = h.script(tab, "[alert('a'), confirm('b'), prompt('c')]");
+    // ---- what the page asks the person (rules 1165 to 1169): held by the view, put in front of the person by the
+    // asker (the tests' own, which shows nothing and answers as the person would), answered with the reply
+    let asks: Arc<Mutex<Vec<Ask>>> = Arc::default();
+    let picked = data.join("probe.txt");
+    std::fs::write(&picked, "picked").map_err(|e| e.to_string())?;
+    h.host.set_asker(Box::new(StubAsker {
+        asks: Arc::clone(&asks),
+        file: picked,
+    }));
+    let taken = |asks: &Arc<Mutex<Vec<Ask>>>| {
+        std::mem::take(&mut *asks.lock().unwrap_or_else(|e| e.into_inner()))
+    };
+    let dialogs = h.script(
+        tab,
+        "[alert('a'), confirm('b'), prompt('c', 'd'), confirm('no'), prompt('no', 'x')]",
+    );
+    let asked = taken(&asks);
+    let kinds: Vec<String> = asked
+        .iter()
+        .map(|a| match a {
+            Ask::Script {
+                kind,
+                message,
+                default,
+                ..
+            } => format!("{kind}:{message}:{default}"),
+            other => format!("{other:?}"),
+        })
+        .collect();
     rep.check(
         "panel.dialogs",
-        dialogs.as_deref() == Ok("[null,false,null]"),
-        "alert returns, confirm is false, prompt is null: answered by the host, no dialog",
-        json!({"result": format!("{dialogs:?}"), "refused": format!("{:?}", h.host.refused(&slot))}),
+        dialogs.as_deref() == Ok(r#"[null,true,"typed",false,null]"#)
+            && kinds == ["alert:a:", "confirm:b:", "prompt:c:d", "confirm:no:", "prompt:no:x"]
+            && h.host.refused(&slot).is_some_and(|r| r.js_dialogs == 0)
+            && screen::windows_of_self() == 0,
+        "alert, confirm and prompt wait for the person's answer and return it (OK, Cancel, the typed text), as WebView2's own dialogs",
+        json!({"result": format!("{dialogs:?}"), "asked": kinds, "refused": format!("{:?}", h.host.refused(&slot))}),
     );
+    let from = h.mark();
+    h.host.navigate(tab, &srv.url("/asks"));
+    let on_asks = h.opened(from, tab, "Asks");
+    h.wait(200);
+    h.host.focus(tab);
+    h.click(&slot, 140.0, 40.0);
+    let end = Instant::now() + Duration::from_secs(5);
+    let mut files = Ok(Value::Null);
+    while Instant::now() < end {
+        files = h.eval(tab, "window.__files");
+        if files.as_ref().is_ok_and(|v| v != "") {
+            break;
+        }
+        h.wait(100);
+    }
+    let asked = taken(&asks);
+    let chooser = asked.iter().find_map(|a| match a {
+        Ask::Files {
+            mode, extensions, ..
+        } => Some((*mode, extensions.clone())),
+        _ => None,
+    });
+    rep.check(
+        "panel.file-chooser",
+        on_asks
+            && files.as_ref().is_ok_and(|v| v == "probe.txt")
+            && chooser == Some((FileMode::OpenMany, vec!["txt".to_string()]))
+            && screen::windows_of_self() == 0,
+        "a file input's click asks for files (several, .txt only, as its accept says) and the page gets the file picked",
+        json!({"on_page": on_asks, "files": format!("{files:?}"), "asked": format!("{asked:?}")}),
+    );
+    let from = h.mark();
+    for act in [
+        PointerAct::Move,
+        PointerAct::Down(PointerButton::Right, 1),
+        PointerAct::Up(PointerButton::Right, 1),
+    ] {
+        h.host.pointer(
+            &slot,
+            Pointer {
+                x: 240.0,
+                y: 240.0,
+                act,
+                mods: Mods::default(),
+            },
+        );
+        h.wait(30);
+    }
+    let left = h.opened(from, tab, "Page two");
+    let asked = taken(&asks);
+    let labels: Vec<String> = asked
+        .iter()
+        .find_map(|a| match a {
+            Ask::Menu { items, .. } => Some(items.iter().map(|i| i.label.clone()).collect()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let menu_at = asked.iter().find_map(|a| match a {
+        Ask::Menu { x, y, .. } => Some((*x, *y)),
+        _ => None,
+    });
+    let has = |l: &str| labels.iter().any(|x| x == l);
+    rep.check(
+        "panel.context-menu",
+        has("Open Link") && has("Copy Link") && has("Back") && has("Inspect")
+            && !labels.iter().any(|l| l.starts_with("Print") || l.contains("ource"))
+            && menu_at == Some((120, 120))
+            && left
+            && screen::windows_of_self() == 0,
+        "a right-click on a link asks with Chromium's menu (no Print, no View Source), WebView2's link rows and Inspect, where the click was; Open Link loads it in the panel",
+        json!({"labels": labels, "at": format!("{menu_at:?}"), "opened": left}),
+    );
+    rep.check(
+        "panel.leave-page",
+        asked.iter().any(|a| matches!(a, Ask::Leave { reload: false })) && left,
+        "a page that asks before it is left (beforeunload, after the person used it) waits for Leave",
+        json!({"asked": format!("{asked:?}")}),
+    );
+    let from = h.mark();
+    h.host.navigate(tab, &main);
+    h.opened(from, tab, "Main");
     let perms = h.eval(
         tab,
         "(async () => { const o = {};\

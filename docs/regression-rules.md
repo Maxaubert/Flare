@@ -2551,6 +2551,56 @@ draws an arrow on stays off on the Mac (rule 1124). Not under `--e2e`, where the
 shown), the `page_overlay` unit tests (device pixels to points, flipped or not; the glow's bands tiling the page's
 rectangle; an empty picture or no view refused; the tag's ink) and `the_tag_is_an_orange_pill_with_the_name_readable_on_it`
 (now also on macOS). Source: Max on his Mac (2026-11-11).
+1165. **macOS: the web panel's script dialogs and leave-page question wait for the person, on a sheet of the window.**
+Windows shows WebView2's own `alert`, `confirm`, `prompt` and `beforeunload` dialogs for the plain web panel
+(`SetAreDefaultScriptDialogsEnabled(seal.script_dialogs)`); the Mac answered every one at once (`alert` returned,
+`confirm` false, `prompt` null, leave). Now a view whose walls say `asks` (the plain web panel only:
+`Walls::asks = app.is_none()`) holds the callback and sends `ViewEvent::Ask`; the host hands it to its asker
+(`crate::asks::Sheets`: an `NSAlert` sheet, "<host> says", OK and Cancel, a text field for a prompt; "Leave site?" or
+"Reload site?"), and the reply comes back through the host's queue on its next turn (`View::reply`, called with no lock
+held). A held dialog is answered no and its sheet closed when CEF resets the dialog state (the page went on), the page's
+process ends or the view closes. A mini-app's, a mod's and a plugin's views and the web panel's pop-ups keep the seal:
+answered at once, never shown. Native: `crates/flare-cef/src/macos/view.rs`, `crates/flare-web/src/macos/asks.rs`,
+`crates/flare-web/src/macos/host.rs`. Held by `panel.dialogs` and `panel.leave-page` in
+`the_web_panel_on_cef_navigates_draws_takes_input_and_holds_its_walls_with_no_window` (`crates/flare-web/tests/cef_macos.rs`)
+and `walls.plugin-bar` (a bar's dialogs still answered). Source: Max, "make sure it's porting all browser features"
+(2026-11-11), gap NAT-06.
+1166. **macOS: a file input in the web panel opens a file panel as a sheet of the window.** It was cancelled at once (no
+upload possible). Now the view holds the chooser and asks with its mode (one file, several, a folder, a save), the
+page's title and default path, and the extensions its `accept` names (CEF's `accept_extensions`, or the filter itself;
+none, meaning any file, when a type has none CEF could name); the asker runs an `NSOpenPanel` (or `NSSavePanel`) sheet
+and the page gets the paths picked, or the cancel. Mini-apps and plugins keep the cancel. Native:
+`crates/flare-cef/src/macos/view.rs` (`file_types`), `crates/flare-web/src/macos/asks.rs`. Held by `panel.file-chooser`
+(the page's input gets the file, `.txt` only, several) and `a_file_chooser_takes_the_pages_extensions_or_any_file`.
+Source: gap NAT-07 (2026-11-11). The colour input stays off (rule 1034, an owner decision); a `<select>` list is the
+`PET_POPUP` layer laid over the page, as before.
+1167. **macOS: a right-click in the web panel shows the page's menu as a native menu where the click was.** It was
+emptied and never run. Now the plain web panel keeps Chromium's rows (Back, Forward, Reload, Undo, Cut, Copy, Paste,
+Select All and the spelling rows as Chromium gives them) without Print (rule 1034) and View Source (a window of its own),
+with WebView2's Open Link and Copy Link first on a link (Open Link loads it in the panel, as the panel's new windows do;
+Copy Link puts it on the pasteboard) and Inspect last. The host's asker shows it as an `NSMenu` at the click (the page's
+box in points from the content view's top left, plus the click), after the host's turn (the menu's tracking loop never
+runs inside the pump), and the row picked goes back as the menu's command, or a cancel. Mini-apps, mods and plugins keep
+the empty menu. Native: `crates/flare-cef/src/macos/view.rs`, `crates/flare-web/src/macos/asks.rs`. Held by
+`panel.context-menu` and `a_page_menu_has_no_stray_separator_and_no_mnemonic_marks`. Source: gap NAT-01 (2026-11-11).
+1168. **macOS: F12, Cmd+Option+I and the menu's Inspect open the web panel's DevTools in a window of their own.** On
+Windows WebView2's DevTools are on for the web panel and off for every sealed view (`seal.dev_tools`). Now the host
+catches F12 and Cmd+Option+I (a press, not a repeat, after the app's own chords) and the view opens CEF's DevTools in a
+window of their own (the person asked for it), only when its walls say `dev_tools` (the plain web panel); the menu's
+Inspect opens them at the click. F12 reaches the page only while its key scope has the keyboard; elsewhere Slint's
+debug overlay keeps it (`keymap::reserved_for_slint`). No test opens DevTools (the screen rule). Native:
+`crates/flare-web/src/macos/host.rs` (`dev_tools_chord`), `crates/flare-cef/src/macos/view.rs`. Held by
+`f12_and_cmd_option_i_open_devtools_and_nothing_else_does` and `panel.context-menu` (Inspect is in the menu). Source:
+gap NAT-04 (2026-11-11).
+1169. **macOS: nothing the page asks ever comes on screen in a test, and a list CEF lends a handler is read in place.**
+A host with no window (parent 0) answers every ask no at once (`asks::NoWindow`), and the probe puts in an asker of its
+own that shows nothing (`WebHost::set_asker`); the web panel's host is given the window's content view on the Mac
+(`web_ctl::production_factory`, `native_view_of`), the HWND on Windows as before. A list CEF lends a handler (a file
+chooser's `accept_filters`, `accept_extensions`) is read in place (`view::strings`): the binding's `clone` of a lent
+list reads as empty, which made every chooser take any file. Native: `crates/flare-web/src/macos/asks.rs`,
+`crates/flare-cef/src/macos/view.rs`, `crates/flare/src/web_ctl.rs`. Held by
+`without_a_window_every_ask_is_answered_no_at_once` (`crates/flare-web/src/macos/asks.rs`) and `panel.file-chooser`.
+Source: gap NAT-07 work (2026-11-11).
 1156. **macOS: CEF is the process's, started once by the first web host and shut down once at quit; an idle host
 never takes it down or unloads it.** The window lets its host go when the last panel, background page and bar are
 gone (`web_ctl`'s `drop_idle_backend`, as on Windows, whose environment goes with its last view). On the Mac that
