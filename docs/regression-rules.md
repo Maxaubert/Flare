@@ -36,7 +36,7 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 23. **The panel paints the ground once.** Two translucent coats made a darker strip. Native: the grid is painted in one pass over the background, the glyph layer uses the ground as cursor-accent so a block cursor is never a hole; measure the strip under the last row. Source: regression-rules.md panel-paints-ground (#6).
 24. **While the room animates the terminal keeps its columns and fits once at the end.** Native: hold the size during a sidebar slide, fit after it. Source: core/renderer/lib/fitHold.ts; two-apps.md.
 25. **Tab switch keeps each grid alive.** Native: each tab keeps its grid and scrollback while hidden, only the visible grid is drawn, hiding never kills a shell, output keeps being parsed. Source: TerminalPanel.tsx detach comment.
-26. **Ctrl+scroll zoom is per session and never saved.** Native: a per-tab font override of 7 to 64 px in the tab model, wheel handler non-passive, never sent to the program. Source: TerminalPanel.tsx zoomSession.
+26. **Ctrl+scroll zoom is never saved.** Native: 7 to 64 px, wheel handler non-passive, never sent to the program. It was per session (PT's zoomSession); since rule 1154 it is one zoom every tab shares. Source: TerminalPanel.tsx zoomSession.
 
 ## Processes, lifetime, quit
 
@@ -571,7 +571,7 @@ jam the pipe. Native: `appctl.rs` (`finish`, `set_handoff_stop`), `single_instan
 `read_message_within`). Held by `the_end_of_life_stops_the_handoff_server_before_anything_slow`,
 `a_stopped_server_refuses_a_handoff`, `a_big_handoff_is_split_under_the_caps_and_loses_no_argument` and
 `a_stalled_client_does_not_jam_the_server`. Source: general review 2026-10-23 (app-1, app-5, platform-5); rule 32.
-221. **A zoom resizes one tab.** Ctrl+wheel zoom, and a switch between a zoomed and an unzoomed tab, refit only the tabs
+221. **Replaced by rule 1154 (2026-11-11).** Was: a zoom resizes one tab. Ctrl+wheel zoom, and a switch between a zoomed and an unzoomed tab, refit only the tabs
 that wear the settings' size. A tab with a zoom of its own keeps its grid until it comes to the front, so no hidden shell
 is reflowed. Native: `tab_host.rs` (`refit_unzoomed`), `appctl.rs` (`apply_font`). Held by
 `a_zoom_never_resizes_the_other_shells_and_a_switch_keeps_each_zoomed_size`. Source: general review 2026-10-23 (render-2).
@@ -2490,6 +2490,18 @@ six marked-path tests in `link_scan` and `emulator` found none on the Mac runner
 keeps the text on Windows and writes `/C/` for `C:\` and `/` for every `\` elsewhere, the same length, so piece
 widths hold on both. Held by `native_test_text_is_an_absolute_path_of_the_same_length` and the
 `a_marked_path_*` tests. Source: PR 166's macos check (2026-11-11).
+1154. **One zoom for every tab.** Ctrl+wheel (Cmd+wheel on the Mac) and the Mac zoom keys move one app-wide zoom,
+a pixel offset on the settings' size, held in `FontCtl` (`crates/flare/src/font_ctl.rs`) for the run and never saved
+(no tabs.json field, no pref). A zoom in any tab sizes every tab: `AppCtl::apply_font` (`crates/flare/src/appctl.rs`)
+refits every open tab through `TabHost::refit_all`, hidden ones included, so their PTYs are resized and the shells
+reflow; a new tab spawns at the shared size, and Cmd+0 resets the zoom for all. A settings size change keeps the zoom
+on top of the new base. The browser panel's page zoom is separate. Windows and the Mac share the code. Replaces rule
+221; rule 26 keeps the range and the never-saved part. Held by
+`a_zoom_in_one_tab_sizes_every_tab_and_a_new_tab_opens_at_it`,
+`a_zoom_resizes_every_shell_hidden_ones_included_and_a_reset_brings_all_back`,
+`on_the_mac_cmd_zoom_keys_size_every_tab_and_cmd_0_resets_them` and `the_zoom_is_one_offset_on_the_settings_size`.
+Source: Max (2026-11-11): "Flare sessions have independent zoom levels when I Cmd+scroll. Make it so they all share
+the zoom level when I zoom in or out dynamically."
 1153. **Under `--e2e` the window's motion follows `FLARE_E2E_REDUCED_MOTION` alone, never the OS switch.** Since rule
 1135 a Mac reads System Settings > Accessibility > Display > Reduce motion, and GitHub's macOS runner has it on, so
 every Mac E2E run saw a still window: attention's question line did not breathe and its finished line did not flow,

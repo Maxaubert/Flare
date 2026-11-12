@@ -1,9 +1,10 @@
-//! Font size and family apply, per-tab zoom (Task 27).
+//! Font size and family apply, and the one zoom every tab shares (Task 27, rule 1154).
 //!
-//! The size and family live in the look store; a tab may zoom itself with Ctrl+wheel. The zoom is
-//! held per tab in memory and never saved. A change of pixel size or face reaches the grid, and the
-//! new `cols x rows` goes to every open tab through the refit hook (the same resize path as a window
-//! resize).
+//! The size and family live in the look store. Ctrl+wheel (Cmd+wheel on the Mac) and the Mac zoom
+//! keys move one app-wide zoom, held in memory as a pixel offset on the settings' size and never
+//! saved. Every tab draws at the same size, so a zoom in any tab reaches the grid, and the new
+//! `cols x rows` goes to every open tab, hidden ones included, through the refit path (the same
+//! resize path as a window resize). New tabs open at the shared size.
 
 #![allow(dead_code)] // wired by the window and the tab switch (the orchestrator)
 
@@ -13,15 +14,21 @@ use flare_theme::fonts::{base_font_px, font_families, zoom_step};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// The pixel size a tab draws at: its own zoom, else the base size of the chosen percent.
-pub fn effective_px(override_px: Option<i32>, base_pct: u32) -> i32 {
-    override_px.unwrap_or_else(|| base_font_px(base_pct))
+/// The pixel size every tab draws at: the base size of the chosen percent moved by the shared zoom
+/// (pixels, may be negative), kept within the zoom range (7 to 64). No zoom is the base size as is.
+pub fn effective_px(zoom: i32, base_pct: u32) -> i32 {
+    let base = base_font_px(base_pct);
+    if zoom == 0 {
+        base
+    } else {
+        zoom_step(base, zoom)
+    }
 }
 
 /// What a wheel notch did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WheelAction {
-    /// The tab zoomed to this many pixels.
+    /// Every tab zoomed to this many pixels.
     Zoomed(i32),
     /// Not ours: the program or the scrollback keeps it.
     PassThrough,
@@ -34,6 +41,8 @@ pub struct FontCtl {
     /// `--font` and `--font-pct` for this run (decision D13); they write nothing.
     font_id: Option<String>,
     font_pct: Option<u32>,
+    /// The shared zoom, in pixels on top of the settings' size. In memory only, for this run.
+    zoom: i32,
 }
 
 impl FontCtl {
@@ -44,6 +53,7 @@ impl FontCtl {
             refit: None,
             font_id: None,
             font_pct: None,
+            zoom: 0,
         }
     }
 
@@ -65,10 +75,35 @@ impl FontCtl {
         self
     }
 
-    /// Gives the grid the face and size in force for the active tab. A no-op when neither changed.
-    /// Returns the new `(cols, rows)` when the grid changed (every tab has been refitted then).
-    pub fn apply(&mut self, active_override: Option<i32>) -> Option<(usize, usize)> {
-        let px = effective_px(active_override, self.pct());
+    /// The shared zoom in pixels on top of the settings' size (0: none).
+    pub fn zoom(&self) -> i32 {
+        self.zoom
+    }
+
+    /// The pixel size every tab draws at now.
+    pub fn px(&self) -> i32 {
+        effective_px(self.zoom, self.pct())
+    }
+
+    /// Moves the shared zoom one pixel per step (up is positive), within 7 to 64 px. Returns the
+    /// new size. Nothing is stored.
+    pub fn zoom_by(&mut self, step: i32) -> i32 {
+        let base = base_font_px(self.pct());
+        let next = zoom_step(self.px(), step.signum());
+        self.zoom = next - base;
+        next
+    }
+
+    /// Back to the settings' size (Cmd+0).
+    pub fn reset_zoom(&mut self) {
+        self.zoom = 0;
+    }
+
+    /// Gives the grid the face and size in force (shared by every tab). A no-op when neither
+    /// changed. Returns the new `(cols, rows)` when the grid changed (every tab has been refitted
+    /// then).
+    pub fn apply(&mut self) -> Option<(usize, usize)> {
+        let px = self.px();
         let id = self
             .font_id
             .as_deref()
@@ -87,21 +122,14 @@ impl FontCtl {
         Some(dims)
     }
 
-    /// Ctrl+wheel up zooms in one pixel, down out one; the result is the tab's override (never
-    /// stored). Without Ctrl the notch is not ours.
-    pub fn wheel(
-        &mut self,
-        ctrl: bool,
-        delta_y: f64,
-        active_override: &mut Option<i32>,
-    ) -> WheelAction {
+    /// Ctrl+wheel up zooms every tab in one pixel, down out one (never stored). Without Ctrl the
+    /// notch is not ours.
+    pub fn wheel(&mut self, ctrl: bool, delta_y: f64) -> WheelAction {
         if !ctrl || delta_y == 0.0 || !delta_y.is_finite() {
             return WheelAction::PassThrough;
         }
-        let current = effective_px(*active_override, self.pct());
-        let next = zoom_step(current, if delta_y > 0.0 { 1 } else { -1 });
-        *active_override = Some(next);
-        self.apply(*active_override);
+        let next = self.zoom_by(if delta_y > 0.0 { 1 } else { -1 });
+        self.apply();
         WheelAction::Zoomed(next)
     }
 }
@@ -173,37 +201,37 @@ mod tests {
     #[test]
     fn a_plain_wheel_stays_with_the_program_or_the_scrollback() {
         let mut r = rig();
-        let mut ov = None;
-        assert_eq!(r.ctl.wheel(false, -1.0, &mut ov), WheelAction::PassThrough);
-        assert_eq!(ov, None);
-        assert_eq!(r.ctl.wheel(false, 3.0, &mut ov), WheelAction::PassThrough);
-        assert_eq!(ov, None);
+        assert_eq!(r.ctl.wheel(false, -1.0), WheelAction::PassThrough);
+        assert_eq!(r.ctl.wheel(false, 3.0), WheelAction::PassThrough);
+        assert_eq!(r.ctl.zoom(), 0);
     }
 
     #[test]
     fn ctrl_wheel_up_zooms_in_one_notch_down_zooms_out() {
         let mut r = rig();
-        let mut ov = None;
-        assert_eq!(r.ctl.wheel(true, 1.0, &mut ov), WheelAction::Zoomed(14));
-        assert_eq!(ov, Some(14));
-        assert_eq!(r.ctl.wheel(true, -1.0, &mut ov), WheelAction::Zoomed(13));
-        assert_eq!(r.ctl.wheel(true, -1.0, &mut ov), WheelAction::Zoomed(12));
-        let mut fresh = None;
-        assert_eq!(r.ctl.wheel(true, -1.0, &mut fresh), WheelAction::Zoomed(12));
+        assert_eq!(r.ctl.wheel(true, 1.0), WheelAction::Zoomed(14));
+        assert_eq!(r.ctl.zoom(), 1);
+        assert_eq!(r.ctl.wheel(true, -1.0), WheelAction::Zoomed(13));
+        assert_eq!(r.ctl.wheel(true, -1.0), WheelAction::Zoomed(12));
+        assert_eq!(r.ctl.zoom(), -1);
+        r.ctl.reset_zoom();
+        assert_eq!(r.ctl.px(), 13);
     }
 
     #[test]
     fn zoom_stops_at_7_and_64() {
         let mut r = rig();
-        let mut ov = None;
         for _ in 0..100 {
-            r.ctl.wheel(true, -1.0, &mut ov);
+            r.ctl.wheel(true, -1.0);
         }
-        assert_eq!(ov, Some(7));
+        assert_eq!(r.ctl.px(), 7);
+        // At the floor one notch up is one pixel up, not a climb out of a debt.
+        assert_eq!(r.ctl.wheel(true, 1.0), WheelAction::Zoomed(8));
         for _ in 0..100 {
-            r.ctl.wheel(true, 1.0, &mut ov);
+            r.ctl.wheel(true, 1.0);
         }
-        assert_eq!(ov, Some(64));
+        assert_eq!(r.ctl.px(), 64);
+        assert_eq!(r.ctl.wheel(true, -1.0), WheelAction::Zoomed(63));
     }
 
     #[test]
@@ -216,9 +244,8 @@ mod tests {
             r.prefs.get("flare.term.fontPct"),
             r.prefs.get("flare.term.zoom"),
         );
-        let mut ov = None;
-        r.ctl.wheel(true, 1.0, &mut ov);
-        r.ctl.wheel(true, 1.0, &mut ov);
+        r.ctl.wheel(true, 1.0);
+        r.ctl.wheel(true, 1.0);
         assert_eq!(
             (
                 r.store.font_pct(),
@@ -232,26 +259,29 @@ mod tests {
     }
 
     #[test]
-    fn the_override_is_per_tab() {
+    fn the_zoom_is_one_offset_on_the_settings_size() {
         let mut r = rig();
-        r.ctl.apply(None);
-        let at13 = r.refits.borrow().len();
-        let (a, b) = (Some(20), None);
-        let grown = r.ctl.apply(a);
-        assert!(grown.is_some(), "tab A at 20 changes the grid");
-        let back = r.ctl.apply(b);
-        assert!(back.is_some(), "tab B at 13 changes it back");
-        assert_eq!(r.refits.borrow().len(), at13 + 2);
-        assert!(r.ctl.apply(b).is_none(), "an unchanged tab is a no-op");
+        r.ctl.apply();
+        r.ctl.zoom_by(1);
+        r.ctl.zoom_by(1);
+        assert_eq!(r.ctl.px(), 15);
+        let grown = r.ctl.apply();
+        assert!(grown.is_some(), "the zoom changes the grid");
+        assert!(r.ctl.apply().is_none(), "an unchanged size is a no-op");
+        // A settings size change keeps the zoom on top of the new base.
+        r.store.set_font_pct(200);
+        assert_eq!(r.ctl.px(), base_font_px(200) + 2);
+        r.ctl.reset_zoom();
+        assert_eq!(r.ctl.px(), base_font_px(200));
     }
 
     #[test]
     fn a_size_change_refits_every_open_tab() {
         let mut r = rig();
-        r.ctl.apply(None);
+        r.ctl.apply();
         r.refits.borrow_mut().clear();
         r.store.set_font_pct(200);
-        let dims = r.ctl.apply(None).expect("the grid changes");
+        let dims = r.ctl.apply().expect("the grid changes");
         // One call to the hook, which fans out to every tab (TabHost::refit_all).
         assert_eq!(*r.refits.borrow(), vec![dims]);
     }
@@ -259,10 +289,10 @@ mod tests {
     #[test]
     fn changing_the_family_changes_the_grid_face_and_refits() {
         let mut r = rig();
-        r.ctl.apply(None);
+        r.ctl.apply();
         r.refits.borrow_mut().clear();
         r.store.set_font_id("consolas");
-        r.ctl.apply(None);
+        r.ctl.apply();
         assert_eq!(
             r.families.borrow().first().map(String::as_str),
             Some("Consolas")
@@ -275,7 +305,7 @@ mod tests {
     fn a_missing_face_falls_through_quietly() {
         let mut r = rig();
         r.store.set_font_id("iosevka");
-        r.ctl.apply(None);
+        r.ctl.apply();
         let f = r.families.borrow();
         assert!(!f.is_empty(), "a stack is still given");
         assert!(f.len() > 1, "a tail of fallbacks follows the missing face");
