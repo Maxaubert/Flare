@@ -1,0 +1,36 @@
+{
+  "fill": {
+    "solid": "srgb:0.06,0.06,0.06,1.0"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "flame.svg",
+          "name": "flame"
+        }
+      ],
+      "translucency": {
+        "enabled": true,
+        "value": 0.5
+      }
+    },
+    {
+      "layers": [
+        {
+          "image-name": "golden-flame.svg",
+          "name": "golden-flame"
+        }
+      ],
+      "translucency": {
+        "enabled": true,
+        "value": 0.5
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

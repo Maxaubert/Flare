@@ -1620,7 +1620,7 @@ sign}`), under `target/mac-release`.
 
 - [x] The app bundle: `Flare.app` for Apple Silicon, macOS 15+, id `com.flare.terminal` (Windows' AppUserModelID), the
   workspace version, the developer-tools category, the microphone's reason; `Contents/MacOS/Flare` and `flare-mcp`, the
-  CEF framework and its five helpers, `Flare.icns` from `build/icon-source.png`, the Claude plugin, the licenses and
+  CEF framework and its five helpers, `Assets.car` and `Flare.icns` compiled by actool from `assets/icon/app-macos.icon` (rule 1182), the Claude plugin, the licenses and
   CEF's credits in `Resources`. Stands in for the Velopack staging folder. (macOS:
   the_app_plist_names_the_app_its_version_its_mac_its_category_and_why_it_wants_the_mic,
   a_mac_app_bundle_finds_the_plugin_in_its_resources_first, crates/flare-cef/src/macos/release.rs,

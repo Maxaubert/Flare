@@ -54,8 +54,13 @@ pub struct BundleSpec<'a> {
 /// What `Flare.app` holds beyond a dev bundle.
 #[derive(Default)]
 pub struct Extras<'a> {
-    /// The `.icns`, copied to `Contents/Resources/<name>.icns` and named by `CFBundleIconFile`.
+    /// The `.icns`, copied to `Contents/Resources/<name>.icns` and named by `CFBundleIconFile`: the icon macOS
+    /// before 26 shows.
     pub icon: Option<&'a Path>,
+    /// The compiled asset catalog (`actool`'s `Assets.car`, holding the Icon Composer icon named `<name>`), copied to
+    /// `Contents/Resources/Assets.car` and named by `CFBundleIconName`: the Liquid Glass icon macOS 26 and later
+    /// show.
+    pub icon_catalog: Option<&'a Path>,
     /// More programs for `Contents/MacOS` (by their file name), signed as [`Role::Tool`] with `<identifier>.<name>`.
     pub executables: Vec<&'a Path>,
     /// Files and folders copied into `Contents/Resources` under the given name (never into `Contents/MacOS`, which
@@ -68,6 +73,9 @@ pub struct Extras<'a> {
     /// More keys for the app's `Info.plist` (key, its XML value).
     pub keys: Vec<(&'static str, String)>,
 }
+
+/// The compiled asset catalog's name in `Contents/Resources` (the name macOS looks for).
+pub const ASSET_CATALOG: &str = "Assets.car";
 
 /// The helper app's name for a suffix: `Flare Helper (GPU)`.
 pub fn helper_name(name: &str, suffix: &str) -> String {
@@ -247,6 +255,12 @@ pub fn build(spec: &BundleSpec<'_>) -> Result<PathBuf, String> {
             format!("<string>{}</string>", xml(spec.name)),
         ));
     }
+    if spec.extras.icon_catalog.is_some() {
+        keys.push((
+            "CFBundleIconName",
+            format!("<string>{}</string>", xml(spec.name)),
+        ));
+    }
     app_skeleton(
         &app,
         spec.name,
@@ -268,6 +282,9 @@ pub fn build(spec: &BundleSpec<'_>) -> Result<PathBuf, String> {
                 .join("Resources")
                 .join(format!("{}.icns", spec.name)),
         )?;
+    }
+    if let Some(car) = spec.extras.icon_catalog {
+        copy_any(car, &contents.join("Resources").join(ASSET_CATALOG))?;
     }
     for exe in &spec.extras.executables {
         copy_any(exe, &contents.join("MacOS").join(file_name(exe)?))?;

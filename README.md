@@ -124,7 +124,7 @@ Development tools in `tools/`, never shipped in the installer:
 - `tools/pt-shot/pt-settings.mjs`: Playwright (from Prism's `node_modules`) takes Prism Terminal's
   Settings screenshots for the comparison (M7).
 - `tools/settings-matrix`: PowerShell scripts that take Flare's Settings screenshots beside Prism
-- `tools/make-icon.py`: builds the icon files (`build/icon.ico`, `build/icon-source.png`, `docs/assets/flare-icon.png`) from the owner's artwork, `assets/icon/flare-color.svg`. Regenerate with `python tools/make-icon.py` (needs ImageMagick, whose SVG reader is librsvg); `python -I tools/test_make_icon.py` checks it.
+- `tools/make-icon.py`: builds the icon files (`build/icon.ico`, `build/icon-source.png`, `docs/assets/flare-icon.png`) from the owner's Windows app icon, `assets/icon/app-windows.svg`. Regenerate with `python tools/make-icon.py` (needs `rsvg-convert` or an ImageMagick whose SVG reader is librsvg). The Mac app icon is `assets/icon/app-macos.icon`, compiled by `actool` when the bundle is built; `python -I tools/test_make_icon.py` checks it.
   Terminal's at every display scaling and compose them (M7).
 
 ## Release
