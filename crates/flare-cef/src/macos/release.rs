@@ -14,7 +14,9 @@
 //!   Frameworks/whisper                          the speech engine, code only (rule 1138): whisper-server,
 //!                                               parakeet-cli and their libraries (`tools/build-whisper-macos.sh`)
 //!   Frameworks/Flare Helper*.app                five helpers running `flare-cef-helper`
-//!   Resources/Flare.icns                        from build/icon-source.png (tools/make-icon.py's 1024 px render)
+//!   Resources/Assets.car                        the Liquid Glass app icon (macOS 26+), and
+//!   Resources/Flare.icns                        its flat fallback (macOS 15), both compiled by `actool` from the
+//!                                               owner's Icon Composer icon, assets/icon/app-macos.icon
 //!   Resources/claude-plugin                     the Claude Code plugin template (found there by flare_agent)
 //!   Resources/LICENSE, THIRD-PARTY-NOTICES.md, CEF-CREDITS.html, LICENSE-whisper.cpp.txt
 //! ```
@@ -80,19 +82,91 @@ pub fn app_keys(year: &str) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// The `.iconset` names `iconutil` wants and each one's pixel size.
-pub const ICONSET: [(&str, u32); 10] = [
-    ("icon_16x16.png", 16),
-    ("icon_16x16@2x.png", 32),
-    ("icon_32x32.png", 32),
-    ("icon_32x32@2x.png", 64),
-    ("icon_128x128.png", 128),
-    ("icon_128x128@2x.png", 256),
-    ("icon_256x256.png", 256),
-    ("icon_256x256@2x.png", 512),
-    ("icon_512x512.png", 512),
-    ("icon_512x512@2x.png", 1024),
-];
+/// The Mac app icon's source, from the repository root: the owner's Icon Composer icon (2026-11-12). It is the Mac's
+/// own design; Windows' icon is assets/icon/app-windows.svg (tools/make-icon.py), and assets/icon/flare-color.svg
+/// stays the in-app mark.
+pub const APP_ICON_SOURCE: &str = "assets/icon/app-macos.icon";
+
+/// The files `actool` writes for the app icon named [`APP_NAME`]: the asset catalog and the `.icns`.
+pub fn app_icon_outputs(dir: &Path) -> (PathBuf, PathBuf) {
+    (
+        dir.join(bundle::ASSET_CATALOG),
+        dir.join(format!("{APP_NAME}.icns")),
+    )
+}
+
+/// The `actool` arguments that compile `<dir>/<APP_NAME>.icon` into `<dir>/compiled`: an `Assets.car` holding the
+/// Liquid Glass icon for macOS 26 and later and a `<APP_NAME>.icns` for the older macOS Flare runs on.
+pub fn actool_args(dir: &Path) -> Vec<std::ffi::OsString> {
+    let mut a: Vec<std::ffi::OsString> = vec!["actool".into()];
+    a.push(dir.join(format!("{APP_NAME}.icon")).into());
+    a.push("--compile".into());
+    a.push(dir.join("compiled").into());
+    for s in [
+        "--platform",
+        "macosx",
+        "--target-device",
+        "mac",
+        "--minimum-deployment-target",
+        MIN_MACOS,
+        "--app-icon",
+        APP_NAME,
+        "--output-partial-info-plist",
+    ] {
+        a.push(s.into());
+    }
+    a.push(dir.join("partial-info.plist").into());
+    for s in [
+        "--errors",
+        "--warnings",
+        "--output-format",
+        "human-readable-text",
+    ] {
+        a.push(s.into());
+    }
+    a
+}
+
+/// Compiles the Icon Composer icon `source` (a `.icon` folder) with `xcrun actool` (Xcode 26 or later, headless)
+/// under `<out_dir>/app-icon`; the asset catalog and the `.icns`. actool names the icon after the folder, so the
+/// folder is copied in as `<APP_NAME>.icon` first.
+pub fn compile_app_icon(source: &Path, out_dir: &Path) -> Result<(PathBuf, PathBuf), String> {
+    if !source.join("icon.json").exists() {
+        return Err(format!(
+            "{}: not an Icon Composer icon (no icon.json)",
+            source.display()
+        ));
+    }
+    let dir = out_dir.join("app-icon");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("compiled")).map_err(|e| format!("{}: {e}", dir.display()))?;
+    copy_dir(source, &dir.join(format!("{APP_NAME}.icon")))?;
+    run(Command::new("/usr/bin/xcrun").args(actool_args(&dir))).map_err(|e| {
+        format!("{e} (the Mac app icon needs Xcode 26 or later: xcrun actool --version)")
+    })?;
+    let (car, icns) = app_icon_outputs(&dir.join("compiled"));
+    for f in [&car, &icns] {
+        if !f.exists() {
+            return Err(format!("actool wrote no {}", f.display()));
+        }
+    }
+    Ok((car, icns))
+}
+
+/// Copies a folder of plain files and folders.
+fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
+    fs::create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
+    for e in fs::read_dir(from).map_err(|e| format!("{}: {e}", from.display()))? {
+        let e = e.map_err(|e| e.to_string())?;
+        let (f, t) = (e.path(), to.join(e.file_name()));
+        if f.is_dir() {
+            copy_dir(&f, &t)?;
+        } else {
+            fs::copy(&f, &t).map_err(|e| format!("{} to {}: {e}", f.display(), t.display()))?;
+        }
+    }
+    Ok(())
+}
 
 fn run(cmd: &mut Command) -> Result<(), String> {
     let out = cmd.output().map_err(|e| format!("{cmd:?}: {e}"))?;
@@ -106,38 +180,9 @@ fn run(cmd: &mut Command) -> Result<(), String> {
     }
 }
 
-/// Makes `<out_dir>/Flare.icns` from a 1024 px PNG with `sips` and `iconutil` (both part of macOS); its path.
-pub fn make_icns(source_png: &Path, out_dir: &Path) -> Result<PathBuf, String> {
-    let set = out_dir.join(format!("{APP_NAME}.iconset"));
-    let _ = fs::remove_dir_all(&set);
-    fs::create_dir_all(&set).map_err(|e| format!("{}: {e}", set.display()))?;
-    for (name, px) in ICONSET {
-        run(Command::new("/usr/bin/sips")
-            .args([
-                "-s",
-                "format",
-                "png",
-                "-z",
-                &px.to_string(),
-                &px.to_string(),
-            ])
-            .arg(source_png)
-            .arg("--out")
-            .arg(set.join(name)))?;
-    }
-    let icns = out_dir.join(format!("{APP_NAME}.icns"));
-    run(Command::new("/usr/bin/iconutil")
-        .args(["-c", "icns"])
-        .arg(&set)
-        .arg("-o")
-        .arg(&icns))?;
-    let _ = fs::remove_dir_all(&set);
-    Ok(icns)
-}
-
 /// Where the parts of a release come from.
 pub struct Inputs<'a> {
-    /// The repository root (resources, the icon source).
+    /// The repository root (resources, the app icon's source).
     pub root: &'a Path,
     /// The folder with the release programs: `flare`, `flare-mcp`, `flare-cef-helper`.
     pub bin_dir: &'a Path,
@@ -255,9 +300,9 @@ pub fn build(i: &Inputs<'_>) -> Result<PathBuf, String> {
     let license = need(i.root.join("LICENSE"))?;
     let notices = need(i.root.join("THIRD-PARTY-NOTICES.md"))?;
     let credits = need(i.cef_dir.join("CREDITS.html"))?;
-    let icon_src = need(i.root.join("build/icon-source.png"))?;
+    let icon_src = need(i.root.join(APP_ICON_SOURCE))?;
     fs::create_dir_all(i.out_dir).map_err(|e| format!("{}: {e}", i.out_dir.display()))?;
-    let icns = make_icns(&icon_src, i.out_dir)?;
+    let (car, icns) = compile_app_icon(&icon_src, i.out_dir)?;
     let engine = engine_code(i.engine_dir, &i.out_dir.join("engine"))?;
     let spec = BundleSpec {
         name: APP_NAME,
@@ -271,6 +316,7 @@ pub fn build(i: &Inputs<'_>) -> Result<PathBuf, String> {
         signing: i.signing.clone(),
         extras: Extras {
             icon: Some(&icns),
+            icon_catalog: Some(&car),
             executables: vec![&mcp, &host],
             resources: vec![
                 (&plugin, "claude-plugin"),
@@ -420,18 +466,65 @@ mod tests {
         assert_eq!(MIN_MACOS, "15.0");
     }
 
+    /// The Mac app icon is compiled from the owner's Icon Composer icon, never from the Windows SVG or the in-app
+    /// mark, and the bundle names it by both keys (rule 1182).
     #[test]
-    fn the_iconset_has_every_size_iconutil_asks_for() {
-        assert_eq!(ICONSET.len(), 10);
-        for (name, px) in ICONSET {
-            let base: u32 = name
-                .trim_start_matches("icon_")
-                .split('x')
-                .next()
-                .and_then(|n| n.parse().ok())
-                .expect("a size");
-            let want = if name.contains("@2x") { base * 2 } else { base };
-            assert_eq!(px, want, "{name}");
+    fn the_mac_app_icon_is_the_icon_composer_icon_compiled_by_actool() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let src = root.join(APP_ICON_SOURCE);
+        let json = fs::read_to_string(src.join("icon.json")).expect("icon.json");
+        assert!(json.contains("\"macOS\""), "{json}");
+        for layer in ["flame.svg", "golden-flame.svg"] {
+            assert!(json.contains(layer), "{layer}");
+            assert!(src.join("Assets").join(layer).exists(), "{layer}");
         }
+        let args: Vec<String> = actool_args(Path::new("/x"))
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let joined = args.join(" ");
+        for want in [
+            "actool /x/Flare.icon --compile /x/compiled",
+            "--platform macosx",
+            "--minimum-deployment-target 15.0",
+            "--app-icon Flare",
+        ] {
+            assert!(joined.contains(want), "{want}: {joined}");
+        }
+        let (car, icns) = app_icon_outputs(Path::new("/x"));
+        assert_eq!(car, Path::new("/x/Assets.car"));
+        assert_eq!(icns, Path::new("/x/Flare.icns"));
+        let keys = app_keys("2026");
+        let mut with_icon = keys.clone();
+        with_icon.push(("CFBundleIconFile", "<string>Flare</string>".into()));
+        with_icon.push(("CFBundleIconName", "<string>Flare</string>".into()));
+        let p = bundle::info_plist(APP_NAME, BUNDLE_ID, "1.2.3", false, false, &with_icon);
+        assert!(
+            p.contains("<key>CFBundleIconName</key>\n  <string>Flare</string>"),
+            "{p}"
+        );
+    }
+
+    /// actool really compiles the icon (Xcode 26 on this Mac and on the macos-26 release runner): an asset catalog
+    /// and an `.icns` come out. Skipped where actool cannot run.
+    #[test]
+    fn actool_compiles_the_app_icon_into_a_catalog_and_an_icns() {
+        let ok = Command::new("/usr/bin/xcrun")
+            .args(["actool", "--version"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !ok {
+            eprintln!("no actool here: skipped");
+            return;
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let tmp = std::env::temp_dir().join(format!("flare-app-icon-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let (car, icns) = compile_app_icon(&root.join(APP_ICON_SOURCE), &tmp).expect("compiled");
+        assert!(fs::metadata(&car).expect("car").len() > 1000);
+        let head = fs::read(&icns).expect("icns");
+        assert_eq!(&head[..4], b"icns");
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

@@ -1,4 +1,9 @@
-"""Build Flare's icon files from the owner's artwork, assets/icon/flare-color.svg.
+"""Build Flare's Windows app icon files from the owner's artwork, assets/icon/app-windows.svg.
+
+The app icon has its own sources (2026-11-12): app-windows.svg here for Windows, and the Icon Composer
+icon assets/icon/app-macos.icon for the Mac, which flare-mac-app compiles with actool
+(crates/flare-cef/src/macos/release.rs). assets/icon/flare-color.svg stays the in-app mark and is
+not read here.
 
 Writes build/icon-source.png (1024 px), build/icon.ico (19 frames, the sizes Windows asks for
 between 100% and 300% scaling) and docs/assets/flare-icon.png (256 px). The app's exe reads
@@ -6,11 +11,12 @@ build/icon.ico through crates/flare/build.rs, so the exe, the taskbar and the Ex
 all show the same artwork.
 
 Every frame is rendered straight from the SVG at its own size, never by shrinking another
-bitmap, so the 16 px frame is as sharp as the vector allows. The rasteriser is ImageMagick
-(its SVG reader is librsvg). The artwork is used as it is: the outside of the rounded square
-stays transparent, with no badge and no outline.
+bitmap, so the 16 px frame is as sharp as the vector allows. The rasteriser is librsvg:
+`rsvg-convert` when it is on PATH (Homebrew's ImageMagick has no librsvg and its own reader
+draws the artwork's gradient fills as nothing), else ImageMagick, whose Windows build reads SVG
+with librsvg. The artwork is used as it is: the outside of the rounded square stays transparent.
 
-Run: python -I tools/make-icon.py   (needs ImageMagick 7, `magick`, on PATH)
+Run: python tools/make-icon.py   (needs rsvg-convert or ImageMagick 7, `magick`, on PATH)
 """
 
 import os
@@ -22,7 +28,7 @@ from pathlib import Path
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
-SVG = ROOT / 'assets' / 'icon' / 'flare-color.svg'
+SVG = ROOT / 'assets' / 'icon' / 'app-windows.svg'
 SOURCE = ROOT / 'build' / 'icon-source.png'
 OUT = ROOT / 'build' / 'icon.ico'
 README = ROOT / 'docs' / 'assets' / 'flare-icon.png'
@@ -46,17 +52,19 @@ def render(px: int, out: Path) -> None:
     earlier way) rounds 10 of the 19 sizes one pixel short, and a `-resize` back to the size
     then blurred them (M9 Task 41), so nothing here resizes: a size that comes out wrong fails.
     """
-    subprocess.run(
-        [
+    rsvg = os.environ.get('RSVG_CONVERT') or shutil.which('rsvg-convert')
+    if rsvg:
+        cmd = [rsvg, '-w', str(px), '-h', str(px), '-f', 'png', '-o', str(out), str(SVG)]
+    else:
+        cmd = [
             magick(),
             '-background', 'none',
             '-size', f'{px}x{px}',
             str(SVG),
             '-depth', '8',
             f'PNG32:{out}',
-        ],
-        check=True,
-    )
+        ]
+    subprocess.run(cmd, check=True)
     got = Image.open(out).size
     if got != (px, px):
         raise SystemExit(f'the SVG rendered at {got}, not {px}x{px}')

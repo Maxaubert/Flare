@@ -2793,3 +2793,14 @@ on release or the settle the page's next picture fills the box again. Windows dr
 false), so nothing changes on Windows. Native: `crates/flare/ui/panel.slint`. Held by
 `a_page_drawn_off_screen_keeps_its_width_while_the_splitter_is_held` (`crates/flare/src/appctl/tests/web_tests.rs`,
 rendered pixels). Source: the browser parity audit (LC-09), 2026-11-11.
+1182. **The app icon has one source per platform; the in-app mark is not it.** Windows' `.ico` (the exe resource, the
+taskbar and window icon, Velopack's `Setup.exe` and `Update.exe`) is rendered by `tools/make-icon.py` from
+`assets/icon/app-windows.svg` with librsvg (`rsvg-convert` first: Homebrew's ImageMagick has no librsvg and its own
+SVG reader draws the gradient fills as nothing). The Mac's is the owner's Icon Composer icon
+`assets/icon/app-macos.icon`, compiled by `xcrun actool` (Xcode 26, headless) into `Contents/Resources/Assets.car`
+(`CFBundleIconName`, the Liquid Glass icon of macOS 26+) and `Flare.icns` (`CFBundleIconFile`, macOS 15).
+`assets/icon/flare-color.svg` stays the in-app mark (the start screen, the settings rainbow, the chrome probe) and
+feeds neither. Held by `each_platform_app_icon_has_its_own_source_and_the_in_app_mark_stays`
+(`crates/flare/tests/ship_text.rs`), `the_mac_app_icon_is_the_icon_composer_icon_compiled_by_actool` and
+`actool_compiles_the_app_icon_into_a_catalog_and_an_icns` (`crates/flare-cef/src/macos/release.rs`) and
+`tools/test_make_icon.py`. Source: the owner's new app icons, 2026-11-12.
