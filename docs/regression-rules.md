@@ -140,7 +140,7 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 106. **Explorer verbs are per user, via argument vectors, on folders and the folder background, never on files, never from a dev or test build.** A dev build once pointed the installed app's verb at a throwaway binary. Native: registry writes gated by `packaged && !test_flag` on every write including the Settings toggle, plus a writes counter the test asserts is zero. Source: src/main/shellVerb.ts; verbSwitch.ts.
 107. **The one stored fact for the verb is the NO; the label is read by its REG_SZ type; the uninstaller removes every key.** Native: an off-marker file in the profile; parse `reg query` output for the REG_SZ column, not "(Default)"; one Rust constant of keys checked by a test that reads the installer script. Source: verbSwitch.ts; shellVerb.ts readLabel; shellVerbParity.test.
 108. **The verb label (open decision O4).** Prism Terminal's label does not name the app ("Open terminal here"); the Flare brief says "Open in Flare". Native: the label is one constant in `flare-win`, chosen before the verb is written; relabel an installed verb at launch only when its key points at this exe and the label is readable REG_SZ text. Source: shellVerb.ts VERB_LABEL (#27).
-109. **Both apps install side by side with Flare's own names.** Native: different app id, verb key, single-instance lock, profile, plugin name, hook signal and tab-id variable; `tools/e2e/tests/side_by_side.rs` proves no clash (Layer A on every run, Layer B on a clean CI runner). Source: design spec; roadmap.
+109. **Both apps install side by side with Flare's own names.** Native: different app id, verb key, single-instance lock, profile, plugin name, hook signal and tab-id variable; `tools/e2e/tests/side_by_side.rs` proves no clash (Layer A on every run, Layer B on a clean CI runner). Source: design spec; roadmap. Retired 2026-11-11: the owner removed the side-by-side check. (Flare's own names stay held by `every_flare_name_differs_from_prism_terminals`, `crates/flare/tests/names.rs`.)
 110. **The diagnostics log holds no typed text, clipboard, audio, screen text, title text or conversation.** Native: the writer accepts typed kinds and fields; opaque channels are summarised by size (`string:n`, `bytes:n`); a test that a marker string never reaches the file. A web page is kept as its site only (rule 247): never its address, path, query, title, cookies or form data, and `url`, `uri`, `query`, `cookie` and `path` are text keys the scan in `crates/flare-diag/tests/neutral.rs` refuses on any diagnostics line. Source: core/shared/diagSummary.ts; agentDiag.ts header; PRIVACY.md.
 111. **Diagnostics writes are asynchronous; the quit flush is the one allowed synchronous write; a logger never throws.** Native: a background thread owns the file, the UI thread enqueues, errors are counted and the first becomes one `logger-error`. Source: core/main/diagLog.ts.
 112. **Rotation at 2 MB keeping four files; errors are gated once per 10 s with a repeats count and 10 lines per kind per 10 s; observed-only panics.** Native: rename with retry, never drop lines because a rename failed; same gate for panics, render errors and frame spikes; a panic hook logs then lets the default behaviour run. Source: diagLog.ts; diagGate.ts; crashHooks.ts.
@@ -337,6 +337,30 @@ reducer only through the test seam (`DictLine` lines and `DictRoute`), and every
 does. Native: `dictation_ctl.rs` (`e2e: bool` in the options, `e2e_line`), `service.rs` (`HookStart` never emitted under
 the flag). Held by `the_hook_is_never_started_under_e2e` and `the_hook_starts_with_the_bindings_keys_and_mask_and_only_once`
 (the second for the normal path). Source: globalDictKey.ts; src/main/index.ts E2E (N16).
+1151. **A chord of modifiers dictates only when exactly its modifiers are down and no other key goes down while it
+decides.** Owner report (Mac, Toggle, Ctrl+Cmd, 2026-11-11): Cmd+Shift+S, which Karabiner turns into Cmd+Ctrl+Shift+4
+(the region screenshot), also started a dictation, and the next one stopped it and pasted. Root cause: the reducer
+already matched exactly, but the hooks report only the binding's own keys, so the key feed never knew Shift was down
+when Ctrl joined Cmd, and the 4 never reaches a listen-only tap (the system takes the screenshot shortcut): the press
+was a clean Ctrl+Cmd tap. Now a hook says `Extra` (never which key) when a binding key goes down while a modifier the
+binding does not name is already down (Mac: the event's flags; Windows: `GetAsyncKeyState`, `extra_after`, the AltGr
+Ctrl excused), and when such a modifier goes down while a binding key is held (it said `Other` before). The feed reads
+`Extra` as another key: a press still deciding (Hold before the hold time, Toggle before the release) is dropped with
+no start, toggle, stop or paste, and a toggle's stopping tap with it stops nothing. A key after a Hold has begun keeps
+the recording, as before. Such a cancel is logged as `dictation-key` with `cancel: extra`, `kind` `modifier` or `key`
+and `from` `window` or `hook`, never the key (`hotkey::extra_cancel`). Same on Windows (Ctrl+Win with Shift+S).
+Native: `crates/flare-dictation/src/{hotkey,keyfeed,keyhook,service}.rs`, `crates/flare-dictation/src/macos/keyhook.rs`,
+`crates/flare/src/dictation_ctl.rs`. Held by `ctrl_cmd_inside_a_karabiner_screenshot_chord_never_dictates_hold_or_toggle`,
+`the_three_flags_in_one_event_are_no_match_and_a_shift_added_later_cancels`,
+`ctrl_cmd_alone_still_starts_and_stops_in_hold_and_toggle`,
+`ctrl_cmd_then_a_letter_cancels_in_hold_and_toggle_and_a_toggles_stopping_tap_too`,
+`a_key_after_a_hold_has_begun_keeps_the_recording_as_on_windows`,
+`a_cancel_by_an_extra_modifier_or_key_is_told_by_kind_only`,
+`a_modifier_the_binding_does_not_name_cancels_a_ctrl_win_press_in_hold_and_toggle`,
+`karabiners_cmd_ctrl_shift_4_for_cmd_shift_s_never_dictates_in_hold_or_toggle`,
+`ctrl_win_with_shift_already_held_or_added_says_a_modifier_and_never_dictates`,
+`ctrl_win_with_an_extra_modifier_from_the_hook_starts_nothing_and_logs_the_kind` and
+`a_window_press_cancelled_by_an_extra_key_or_modifier_logs_its_kind_only`. Source: Max on his Mac (2026-11-11).
 
 ## Surfaces: the control channel (stage 2)
 
@@ -2389,7 +2413,7 @@ Windows never reads the phase (`phase_from_winit` is `Wheel` off macOS). No sett
 `a_line_step_is_one_line_everywhere_and_a_notch_stays_three`,
 `winits_phase_is_a_plain_wheel_off_the_mac_and_for_a_mouse` and `a_wheel_that_moves_the_view_asks_for_a_redraw`.
 Source: Max on his Mac (2026-11-11).
-1141. **The side-by-side run reads Prism Terminal's private installer with a read-only token, given to its step alone, and fails without it.** Prism Terminal moved to `arkivert/PrismTerminal` and became private (2026-11-11), so `gh release download` with the workflow's `GITHUB_TOKEN` answered "release not found". The side-by-side step of `release.yml` and `installer-e2e.yml` sets `GH_TOKEN` from the repository secret `FLARE_RELEASE_TOKEN` (a fine-grained token, Contents read on that one repository); no other step reads a secret. When the secret is missing the step prints one `::error::` line naming the secret, the repository and `docs/shipping.md`, and exits 1 before the test runs: never a skip, and the token is never printed. Native: the two workflow steps, `NEIGHBOUR_RELEASE_REPO` in `tools/e2e/tests/side_by_side.rs`. Held by `only_the_side_by_side_step_gets_the_neighbour_token_and_it_fails_without_it`, `no_secret_other_than_the_github_token_and_the_neighbour_release_token` and `the_release_goes_to_this_repository_only` (`crates/flare/tests/release_files.rs`), and the name scan's third widening (`the_widenings_are_narrow`, `crates/flare/tests/names.rs`). Source: owner decision 2026-11-11; `docs/shipping.md`.
+1141. **The side-by-side run reads Prism Terminal's private installer with a read-only token, given to its step alone, and fails without it.** Prism Terminal moved to `arkivert/PrismTerminal` and became private (2026-11-11), so `gh release download` with the workflow's `GITHUB_TOKEN` answered "release not found". The side-by-side step of `release.yml` and `installer-e2e.yml` sets `GH_TOKEN` from the repository secret `FLARE_RELEASE_TOKEN` (a fine-grained token, Contents read on that one repository); no other step reads a secret. When the secret is missing the step prints one `::error::` line naming the secret, the repository and `docs/shipping.md`, and exits 1 before the test runs: never a skip, and the token is never printed. Native: the two workflow steps, `NEIGHBOUR_RELEASE_REPO` in `tools/e2e/tests/side_by_side.rs`. Held by `only_the_side_by_side_step_gets_the_neighbour_token_and_it_fails_without_it`, `no_secret_other_than_the_github_token_and_the_neighbour_release_token` and `the_release_goes_to_this_repository_only` (`crates/flare/tests/release_files.rs`), and the name scan's third widening (`the_widenings_are_narrow`, `crates/flare/tests/names.rs`). Source: owner decision 2026-11-11; `docs/shipping.md`. Retired 2026-11-11: the owner removed the side-by-side check.
 1149. **Dictation from another app says "Sent" only when the words were sent, its key never gets out of step, and the
 Flare window in front at the press is found.** Owner report (Flare Stable, toggle mode, Ctrl+Win, 2026-11-11): every
 stop asked which session with Flare's tab in front; a card said "Sent to web-application-project" and the words never
@@ -2478,3 +2502,53 @@ on top of the new base. The browser panel's page zoom is separate. Windows and t
 `on_the_mac_cmd_zoom_keys_size_every_tab_and_cmd_0_resets_them` and `the_zoom_is_one_offset_on_the_settings_size`.
 Source: Max (2026-11-11): "Flare sessions have independent zoom levels when I Cmd+scroll. Make it so they all share
 the zoom level when I zoom in or out dynamically."
+1153. **Under `--e2e` the window's motion follows `FLARE_E2E_REDUCED_MOTION` alone, never the OS switch.** Since rule
+1135 a Mac reads System Settings > Accessibility > Display > Reduce motion, and GitHub's macOS runner has it on, so
+every Mac E2E run saw a still window: attention's question line did not breathe and its finished line did not flow,
+indicatorStyles' rainbow stood still and minimising had no moving mark to pause, Settings search flashed no found row
+(the flash is skipped under reduced motion), and verticalTabs' sidebar snapped open with the terminal already narrow
+(880 vs 1100 px) instead of sliding (run 43054686157 on main 794a9a28). `e2e::animations_enabled` now answers, under
+`--e2e`, "animate" unless the seam is `1`, and asks the OS only without `--e2e`, so the scenarios run the same on any
+runner and a scenario that wants still still says so. A real user's Reduce motion and Animation effects are honoured
+as before. Native: `crates/flare/src/e2e.rs`. Held by `under_e2e_motion_follows_the_seam_and_never_the_os` and the
+attention, indicatorStyles, settingsSearch and verticalTabs scenarios on the Mac. Source: Mac CI on main (2026-11-11).
+1152. **macOS: the web panel's host asks for its own turn whenever CEF's handlers leave it something, and keeps
+turning while a view waits for CEF.** Max's web panel stayed dark (account.apple.com, then example.com: "did not finish
+loading", no title, `browser_look` "not ready"), while the engine tests all passed. The window pumps the host
+(`WebBackend::pump`) only on `WebEvent::Pump`, which came only when CEF asked for its own work
+(`on_schedule_message_pump_work`); in the real window CEF's main-thread tasks run in AppKit's run loop, so CEF asks
+rarely, and what its handlers set (a profile initialized, a view's setup answered, a load, a paint) sat until a turn
+that never came: no browser made, no navigation, nothing painted. Always so after the last panel closed: `web_ctl`
+drops the host (`drop_idle_backend`) and the next panel makes a new one in the CEF the first started, whose turns CEF
+never asks for (Max's Flare had two `flare-cef-pump` threads; its profile had no `Cookies` and no cache: no request
+was ever made). Signing, entitlements and the keychain were ruled out: the same probe loads and paints ad hoc, signed
+with the Developer ID, and as `com.flare.terminal` with Flare's own keychain item. Now every view's and pop-up's
+event and the profile's `on_request_context_initialized` wake the host through its scheduler (`WebHost::wake`, one
+pump at a time), a setup answer is a `ViewEvent::SetupAnswered`, and while a view waits for its profile or its setup
+the host turns again every 20 ms (`retry_while_waiting`). The engine tests pumped on every turn and hid it: the
+`app-loop` probe scenario turns the window's way (`run_loop_turn`, pumps only when told) and reopens in a new host.
+Native: `crates/flare-web/src/macos/host.rs`, `crates/flare-cef/src/macos/view.rs`,
+`crates/flare-cef/src/macos/context.rs`, `crates/flare-cef/src/macos/engine.rs`. Held by
+`a_web_panel_turned_as_the_window_turns_loads_and_paints_and_again_after_the_last_closed`
+(`crates/flare-web/tests/cef_macos.rs`; without the fix its reopen check fails, nothing loads). Source: Max on his Mac
+("the flare browser is just dark", 2026-11-11).
+1153. **No CI step downloads Prism Terminal or needs a token for it.** Owner decision 2026-11-11 (Prism Terminal is deprecated): the side-by-side check that installed Flare beside Prism Terminal on the runner is removed, with its test (`tools/e2e/tests/side_by_side.rs`), its workflow (`installer-e2e.yml`, which ran only that test) and its step in `release.yml`. No workflow names `arkivert/PrismTerminal`, `FLARE_RELEASE_TOKEN` or `PRISM_RELEASE_TOKEN`, and `release.yml` reads no repository secret, so a release never waits on a token. Native: `.github/workflows/release.yml`. Held by `no_workflow_downloads_the_reference_app_or_needs_a_token_for_it`, `no_secret_other_than_the_github_token` and `the_release_goes_to_this_repository_only` (`crates/flare/tests/release_files.rs`). Source: owner decision 2026-11-11; `docs/shipping.md`.
+1155. **macOS: the agent's cursor, the glow round the page and the agent's arrow show over the web panel, and never take
+a click or the keyboard.** Max on his Mac: "it works but its missing teh overlay effect when claude is using it and its
+missing the visible cursor when claude is moving aorund on the page". On Windows each picture is a layered popup owned
+by Flare's window (`CursorWindow`, `GlowWindow`, `ArrowWindow`); on the Mac `window.rs` never set a real shell, so the
+recording stand-ins `WebCtl` starts with drew nothing, and the tag's name had no ink (no GDI). Now the Mac gives
+`WebCtl` its own shells (`flare_win::page_overlay`): each picture is an `OverlayView` (a view class of its own) in
+the window's content view, raised over every other subview on each frame, its layer's contents the same premultiplied
+BGRA bitmap Windows draws (`compose_cursor`, `edge_glow`, `compose_arrow`, at the window's backing scale), placed in
+points from the device pixels `WebCtl` gives (the content view's top left is the origin, the Mac has no HWND), faded
+by its alpha value and hidden when `WebCtl` hides it, so the glide, the ripple, the hold, the fade, Reduce motion and
+the band layout are the shared code's. The view answers nil to `hitTest:` and refuses first responder (both
+`acceptsFirstResponder` and `becomeFirstResponder`), so every click, move and scroll goes to the window's own view and
+the person can take over at any time. The tag's text is drawn by AppKit (the system font, semibold). The pad the person
+draws an arrow on stays off on the Mac (rule 1124). Not under `--e2e`, where the recording stand-ins stay. Native:
+`crates/flare-win/src/macos/page_overlay.rs`, `crates/flare/src/window.rs`. Held by
+`agent_overlay_is_click_through_on_top_and_follows_the_view` (`crates/flare-win/tests/appkit.rs`, a window never
+shown), the `page_overlay` unit tests (device pixels to points, flipped or not; the glow's bands tiling the page's
+rectangle; an empty picture or no view refused; the tag's ink) and `the_tag_is_an_orange_pill_with_the_name_readable_on_it`
+(now also on macOS). Source: Max on his Mac (2026-11-11).

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use cef::*;
 
-use crate::macos::view::{RequestRule, context_wall};
+use crate::macos::view::{RequestRule, Wake, context_wall};
 
 /// What a profile is made with.
 #[derive(Clone, Default)]
@@ -28,6 +28,9 @@ pub struct Profile {
     /// Where Chromium keeps a download's bytes while it is held for the person's yes (its default download
     /// folder): Flare's own staging folder, never `~/Downloads` (rule 1031). None leaves Chromium's default.
     pub staging: Option<PathBuf>,
+    /// Called once CEF initialized the profile ([`Context::ready`] has its answer): the owner's turn that makes the
+    /// views waiting for it (rule 1152).
+    pub wake: Option<Wake>,
 }
 
 /// The WebRTC preference and its sealed value (Chromium's `prefs::kWebRTCIPHandlingPolicy`).
@@ -110,6 +113,9 @@ wrap_request_context_handler! {
                 None => Err("CEF initialized no profile".to_string()),
             };
             *self.ready.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+            if let Some(w) = &self.profile.wake {
+                w();
+            }
         }
 
         fn resource_request_handler(

@@ -28,7 +28,7 @@ use flare_cef::macos::context::{Context, Profile};
 use flare_cef::macos::engine::{Engine, EngineConfig, Schedule};
 use flare_cef::macos::view::{
     Answer, Button, Downloads, EventSink, Key, KeyKind, Made, NavRule, NewWindow, NewWindowRule,
-    NewWindows, Options, PopupSpec, RequestRule, View, ViewEvent, ViewSize, Walls, WindowAsk,
+    NewWindows, Options, PopupSpec, RequestRule, View, ViewEvent, ViewSize, Wake, Walls, WindowAsk,
 };
 use flare_cef::status::{self, flags};
 use flare_surfaces::app::AppSpec;
@@ -47,6 +47,9 @@ use crate::backend::{
 use crate::popups::PopupBook;
 use crate::seal::{DownloadWall, plugin_seal};
 use crate::walls::{self, BINDING, DEAD_PROXY, Decision, Kind, NO_BYPASS};
+
+/// How soon the host turns again while a view waits for CEF ([`WebHost::retry_while_waiting`]).
+const WAITING_TURN: Duration = Duration::from_millis(20);
 
 /// The longest message a mod's page may post when its plugin has no budget (the Windows host's).
 const MAX_PAGE_MESSAGE: usize = 4 * 1024 * 1024;
@@ -294,6 +297,7 @@ pub fn permission_kinds(permissions: u32, media: u32) -> Vec<i32> {
 struct PopupRule {
     slot: Slot,
     sink: Sink,
+    wake: Wake,
     book: Book,
     inbox: PopupInbox,
     links: AppLinks,
@@ -349,9 +353,10 @@ impl PopupRule {
                 let blank = uri.trim().is_empty() || uri.trim().eq_ignore_ascii_case("about:blank");
                 let site = site_of(if blank { from } else { uri });
                 let id = lock(&self.book).ask(&self.slot, site);
-                let inbox = Arc::clone(&self.inbox);
+                let (inbox, wake) = (Arc::clone(&self.inbox), Arc::clone(&self.wake));
                 let events: EventSink = Arc::new(move |event| {
                     lock(&inbox).push_back(PopupIn::Event { id, event });
+                    wake();
                 });
                 let (inbox, wake) = (Arc::clone(&self.inbox), Arc::clone(&self.sink));
                 let made: Made = Box::new(move |view| {
@@ -682,6 +687,7 @@ impl WebHost {
             proxy,
             webrtc_sealed: kind.proxied(),
             wall: self.request_rule(app),
+            wake: Some(self.wake()),
         };
         let ctx = Context::create(profile)?;
         self.contexts.insert(key.clone(), ctx);
@@ -734,6 +740,39 @@ impl WebHost {
         }))
     }
 
+    /// A turn of this host soon, asked from any thread: what CEF's handlers queue or set (a view's events, its
+    /// setup's answers, a profile made ready) is only taken in by [`WebBackend::pump`]. CEF asks for turns only for
+    /// its own work, and in the real window that work mostly runs in AppKit's run loop without asking, so without
+    /// this a view waited for a turn that never came: no browser, no navigation, a dark panel (rule 1152). Through
+    /// the scheduler, so a burst (60 paints a second) is one pump at a time. Before the engine: nothing to wake.
+    fn wake(&self) -> Wake {
+        match &self.scheduler {
+            Some(s) => {
+                let schedule = s.schedule();
+                Arc::new(move || schedule(0))
+            }
+            None => Arc::new(|| {}),
+        }
+    }
+
+    /// While a view waits for CEF (its profile not yet initialized, its setup not yet answered), another turn in
+    /// [`WAITING_TURN`]: the handlers that end the wait wake the host ([`WebHost::wake`]), and this is the backstop
+    /// for a wait whose end comes with no handler call and no turn CEF asks for (rule 1152; seen with a second host
+    /// in one CEF: the profile's initialization ran only in a turn of CEF's work that nothing asked for).
+    fn retry_while_waiting(&self) {
+        let Some(s) = &self.scheduler else { return };
+        if !matches!(self.engine, EngineState::Ready(_)) {
+            return;
+        }
+        let waiting = self
+            .views
+            .values()
+            .any(|v| v.live.as_ref().is_none_or(|l| !l.armed));
+        if waiting {
+            (s.schedule())(i64::try_from(WAITING_TURN.as_millis()).unwrap_or(20));
+        }
+    }
+
     /// Makes the browsers of every view waiting for one whose profile is ready.
     fn make_waiting(&mut self) {
         if !matches!(self.engine, EngineState::Ready(_)) {
@@ -748,9 +787,11 @@ impl WebHost {
         for slot in waiting {
             self.make_browser(&slot);
         }
+        self.retry_while_waiting();
     }
 
     fn make_browser(&mut self, slot: &Slot) {
+        let wake = self.wake();
         let Some(v) = self.views.get(slot) else {
             return;
         };
@@ -778,6 +819,7 @@ impl WebHost {
             popup_rule(Arc::new(PopupRule {
                 slot: slot.clone(),
                 sink: Arc::clone(&self.sink),
+                wake: self.wake(),
                 book: Arc::clone(&self.book),
                 inbox: Arc::clone(&self.popup_inbox),
                 links: self.links.clone(),
@@ -822,6 +864,7 @@ impl WebHost {
         let (s2, generation) = (slot.clone(), v.generation);
         let events: EventSink = Arc::new(move |e| {
             lock(&inbox).push_back((s2.clone(), generation, e));
+            wake();
         });
         let module = app.as_ref().is_some_and(|a| a.module.is_some());
         let opts = Options {
@@ -1004,7 +1047,10 @@ impl WebHost {
         let page_log = app.is_none();
         let note = |note: WebNote| sink.send(|tab| WebEvent::Note { tab, note });
         match e {
-            ViewEvent::Armed(_) | ViewEvent::Closed | ViewEvent::DownloadEnded { .. } => {}
+            ViewEvent::Armed(_)
+            | ViewEvent::SetupAnswered
+            | ViewEvent::Closed
+            | ViewEvent::DownloadEnded { .. } => {}
             ViewEvent::Painted => {
                 self.serial += 1;
                 let serial = self.serial;

@@ -60,17 +60,27 @@ pub fn global() -> &'static E2eFlag {
     FLAG.get_or_init(|| E2eFlag::new(false))
 }
 
-/// Whether the window's animations run. FLARE_E2E_REDUCED_MOTION=1 turns them off under --e2e
-/// only; otherwise the OS setting decides, as before.
+/// Whether the window's animations run. Without --e2e the OS setting decides (Windows' "Animation
+/// effects", a Mac's "Reduce motion"). Under --e2e the OS is not read: the window animates unless
+/// FLARE_E2E_REDUCED_MOTION=1 asks for still, so a runner whose OS reduces motion (GitHub's macOS
+/// images do) sees the same motion as any other (rule 1153).
 pub fn animations_enabled() -> bool {
-    if global()
-        .env(&["FLARE_E2E", "_REDUCED_MOTION"].concat())
-        .as_deref()
-        == Some("1")
-    {
-        return false;
+    let flag = global();
+    animations_from(
+        flag.on(),
+        flag.env(&["FLARE_E2E", "_REDUCED_MOTION"].concat())
+            .as_deref(),
+        flare_win::motion::animations_enabled,
+    )
+}
+
+/// Pure rule of [`animations_enabled`]: under --e2e only the seam decides (still when it is "1"),
+/// otherwise `os` is asked.
+fn animations_from(e2e: bool, seam: Option<&str>, os: impl FnOnce() -> bool) -> bool {
+    if e2e {
+        return seam != Some("1");
     }
-    flare_win::motion::animations_enabled()
+    os()
 }
 
 #[cfg(test)]
@@ -86,6 +96,25 @@ mod tests {
         assert_eq!(E2eFlag::new(true).env(&name).as_deref(), Some("yes"));
         assert!(!E2eFlag::new(false).on());
         assert!(E2eFlag::new(true).on());
+    }
+
+    #[test]
+    fn under_e2e_motion_follows_the_seam_and_never_the_os() {
+        let os_still = || false;
+        let os_moves = || true;
+        // Without --e2e the OS decides, whatever the seam says.
+        assert!(!animations_from(false, None, os_still));
+        assert!(animations_from(false, None, os_moves));
+        assert!(animations_from(false, Some("1"), os_moves));
+        // Under --e2e a Reduce motion on the runner is not read: the window animates.
+        assert!(animations_from(true, None, os_still));
+        assert!(animations_from(true, Some("0"), os_still));
+        // And a scenario that asks for still gets it.
+        assert!(!animations_from(true, Some("1"), os_moves));
+        // The OS is never even asked under --e2e.
+        assert!(animations_from(true, None, || unreachable!(
+            "the OS is read under --e2e"
+        )));
     }
 
     #[test]

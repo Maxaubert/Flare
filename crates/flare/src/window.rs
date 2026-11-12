@@ -1769,6 +1769,26 @@ pub fn run_window(
             // the HWND below).
             #[cfg(target_os = "macos")]
             c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(0));
+            // macOS (rule 1155): the agent's cursor, the glow round the page and the agent's arrow are click-through
+            // views over the content view, found when first drawn (the window has its view by then), so they need
+            // no handle now. The pad is never shown: "Draw arrow" is not offered on the Mac (rule 1124).
+            #[cfg(target_os = "macos")]
+            {
+                use flare_win::page_overlay::{OverlayCursor, OverlayGlow, ViewSource};
+                let weak = app.as_weak();
+                let source: ViewSource = std::rc::Rc::new(move || {
+                    let app = weak.upgrade()?;
+                    let view = native_view_of(&app)?;
+                    Some((view, f64::from(app.window().scale_factor())))
+                });
+                c.set_agent_border(Box::new(OverlayGlow::new(source.clone())));
+                c.set_agent_cursor(Box::new(OverlayCursor::new(source.clone())));
+                c.set_agent_arrows(
+                    Box::new(OverlayCursor::new(source.clone())),
+                    Box::new(OverlayCursor::new(source)),
+                    Box::new(flare_win::agent_cursor::RecordPad),
+                );
+            }
         }
         // macOS: no pad catches the mouse over the page and the pointer is not read yet, so "Draw arrow" is not
         // offered (rule 1124); the agent's arrow still points and its look still carries it.
@@ -1793,7 +1813,7 @@ pub fn run_window(
                     c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
                     // The agent's cursor and the border round the page while it works: windows owned
                     // by this one (under --e2e the recording stand-ins WebCtl starts with stay).
-                    // macOS: phase 5 of the port plan; the recording stand-ins stay until then.
+                    // macOS has its own views, set up without a handle above (rule 1155).
                     #[cfg(windows)]
                     {
                         c.set_agent_border(Box::new(flare_win::agent_cursor::GlowWindow::new(

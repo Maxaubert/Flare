@@ -1045,7 +1045,7 @@ Lines added at e5848cb (Prism Terminal's dictation as it is on main at that comm
 - [x] Uninstall deletes the two HKCU verb keys (installer.nsh customUnInstall; shellVerbParity.test). RESOLVED in M9 (D10: the Velopack uninstall hook removes the keys read from verb_keys(); verb_keys tests)
 - [ ] Shipped beside the app: icon, whisper-server.exe and parakeet-cli.exe with DLLs, the flare-status plugin, conpty.dll and OpenConsole.exe (electron-builder.yml extraResources).
 - [x] Release workflow: a push to main with a new version publishes `v<version>`; an existing version publishes nothing and does not fail; a same-version push replaces that release's installer; gates first (.github/workflows/release.yml). DECISION: Flare CI per spec and tag scheme. RESOLVED in M9 (D15: the same-version push is NOT ported, the reason is D15; release_files::the_gates_run_before_the_pack)
-- [x] Both apps installed side by side: no shared lock, profile, verb, plugin or signal (e2e in M9). (M9: Layer A, flare-e2e side_by_side::flare_runs_beside_the_neighbour_and_shares_nothing, run on this PC; Layer B runs in CI only)
+- [x] Both apps installed side by side: no shared lock, profile, verb, plugin or signal (e2e in M9). (M9: the side-by-side e2e test; retired 2026-11-11 by owner decision, rule 1153. The names stay checked by every_flare_name_differs_from_prism_terminals.)
 
 ### Explorer verbs
 
@@ -1193,7 +1193,7 @@ Lines added at e5848cb (Prism Terminal's dictation as it is on main at that comm
 - [x] **N34** The e2e `dictateTwoCopies` scenario (run.mjs 3261, 10 assertions). (M8 e2e: dictateTwoCopies, tools/e2e/src/scenarios/anywhere.rs)
 - [x] exitClosesTab (8086): Ctrl+W closes the focused shell's tab; `exit` ends its tab; the other tab comes to the front. (M10 e2e: exitClosesTab, tools/e2e/src/scenarios/lifecycle.rs)
 - [x] promptLayout (8107): after a narrow then wide resize the prompt is whole and typing lands where the prompt is. (M10 e2e: promptLayout, tools/e2e/src/scenarios/lifecycle.rs)
-- [x] Installer side by side (M9): both apps installed; no shared lock, profile, verb, plugin or signal. (M9: Layer A passes on this PC; Layer B runs in CI only)
+- [x] Installer side by side (M9): both apps installed; no shared lock, profile, verb, plugin or signal. (M9; the side-by-side test was retired 2026-11-11 by owner decision, rule 1153.)
 
 ## Decisions (2026-10-17)
 
@@ -1592,10 +1592,12 @@ Chromium's mock keychain, whose key is public, so their cookies and storage are 
 permissions (Windows uses DPAPI). Since phase 8 step 2 this is true of every build but the Developer ID app's real
 window, which keeps the key in a keychain item of its own (rule 1045).
 
+- [x] The agent's cursor (glide, ripple, name tag), the glow round the page while the agent uses it and the agent's arrow show over the web panel in click-through views that never take the keyboard (rule 1155). (macOS: agent_overlay_is_click_through_on_top_and_follows_the_view, device_pixels_from_the_top_left_become_points_in_a_flipped_or_plain_view, crates/flare-win/src/macos/page_overlay.rs)
+
 Not yet on the Mac (the next steps of phase 5, not ratchet lines): running the real Flare window with CEF needs Flare
 itself inside an app bundle with the framework and helpers (`Flare.app`, phase 8; a `cargo run` says the engine is not
 in its bundle), so the panel in the live window, the plugin bars' pictures under the terminal (their views run, the bar
-box does not draw them yet), the agent's cursor and border over the page, and the window's own e2e scenarios
+box does not draw them yet), and the window's own e2e scenarios
 (`tools/e2e` web, mini-app, live preview, agent web, fill) wait for the bundle and the CI macOS runner. The web panel's
 context menu (Windows shows the browser's) is not drawn yet: it is emptied and never shown natively. The input method's
 composition in the page needs Slint to hand over preedit text (the box gets the committed text as keys). Diagrams and

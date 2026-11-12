@@ -13,7 +13,7 @@
 
 // Off Windows the hook is `macos/keyhook.rs` (port phase 7); some of the Windows half's imports go unused there.
 #![cfg_attr(not(windows), allow(unused_imports))]
-use crate::keyfeed::{code_of_vk, HookEvent};
+use crate::keyfeed::{code_of_vk, vk_of_code, HookEvent};
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -292,7 +292,13 @@ pub fn decide_with(
             return (Some(HookEvent::Esc), true, send_mask);
         }
         if !s.down.is_empty() {
-            return (Some(HookEvent::Other), false, send_mask);
+            // Shift or Alt added to a held Ctrl+Win is a modifier, said as one (never which).
+            let ev = if is_plain_binding_key(vk) {
+                HookEvent::Other
+            } else {
+                HookEvent::Extra
+            };
+            return (Some(ev), false, send_mask);
         }
     } else {
         let was = s.swallowed.remove(&vk);
@@ -304,6 +310,28 @@ pub fn decide_with(
         }
     }
     (None, false, send_mask)
+}
+
+/// The line a binding of modifiers only needs right after one of its keys' first down: `Extra` when a modifier the
+/// binding does not name is already physically down (Shift held, then Ctrl+Win), so the chord is not alone. The
+/// hook sends it after the down; `decide_with` has already updated `s`.
+pub fn extra_after(
+    ev: &Option<HookEvent>,
+    s: &HookState,
+    keys: &HashSet<u16>,
+    is_down: &dyn Fn(u16) -> bool,
+) -> Option<HookEvent> {
+    let Some(HookEvent::Key {
+        down: true, code, ..
+    }) = ev
+    else {
+        return None;
+    };
+    if keys.iter().any(|k| is_plain_binding_key(*k)) || !keys.contains(&vk_of_code(code)?) {
+        return None;
+    }
+    let alt_held = s.down.iter().any(|k| matches!(*k, VK_RMENU | VK_MENU));
+    foreign_modifier_down(keys, is_down, true, alt_held).then_some(HookEvent::Extra)
 }
 
 /// The keys the hook holds down although the system says they are up: a key-up an elevated window or the
@@ -475,6 +503,7 @@ unsafe extern "system" fn hook_proc(n: i32, w: WPARAM, l: LPARAM) -> LRESULT {
                 },
                 &system_key_down,
             );
+            let extra = extra_after(&ev, &a.state, &keys, &system_key_down);
             drop(keys);
             if let Some(mut ev) = ev {
                 if let HookEvent::Key {
@@ -484,6 +513,9 @@ unsafe extern "system" fn hook_proc(n: i32, w: WPARAM, l: LPARAM) -> LRESULT {
                     *front = front_pid();
                 }
                 let _ = a.tx.send(ev);
+            }
+            if let Some(extra) = extra {
+                let _ = a.tx.send(extra);
             }
             (swallow, send_mask)
         });
@@ -1030,6 +1062,71 @@ mod tests {
         let (e, swallow, _) = decide(0x31, true, &mut s, &k, true, false);
         // A plain binding key is Flare's while the binding is held, even one that is also a picker key.
         assert_eq!((e, swallow), (Some(key_ev(true, "Digit1")), true));
+    }
+
+    #[test]
+    fn ctrl_win_with_shift_already_held_or_added_says_a_modifier_and_never_dictates() {
+        use crate::hotkey::{default_hotkey, DictMode, KeyAction, KeyConfig};
+        use crate::keyfeed::{keys_for, KeyFeed};
+        let k: HashSet<u16> = keys_for(&default_hotkey()).unwrap().into_iter().collect();
+        let shift = |vk| vk == VK_SHIFT || vk == VK_LSHIFT;
+        let none = |_| false;
+        // Win+Shift+S with Ctrl: Win down, Shift down (a modifier while Win is held), Ctrl down (Shift already
+        // held), then S (another key).
+        let mut s = HookState::default();
+        let mut lines = Vec::new();
+        for (vk, held) in [
+            (LWIN, &none as &dyn Fn(u16) -> bool),
+            (VK_LSHIFT, &shift),
+            (LCTRL, &shift),
+            (0x53, &shift),
+        ] {
+            let (e, _, _) = decide_with(vk, true, &mut s, &k, flags(false, false), held);
+            let extra = extra_after(&e, &s, &k, held);
+            lines.extend(e);
+            lines.extend(extra);
+        }
+        assert_eq!(
+            lines,
+            vec![
+                key_ev(true, "MetaLeft"),
+                HookEvent::Extra,
+                key_ev(true, "ControlLeft"),
+                HookEvent::Extra,
+                HookEvent::Other,
+            ]
+        );
+        for mode in [DictMode::Hold, DictMode::Toggle] {
+            let c = KeyConfig {
+                hotkey: default_hotkey(),
+                mode,
+                hold_ms: None,
+            };
+            let mut f = KeyFeed::new();
+            let mut acts: Vec<KeyAction> = Vec::new();
+            for (i, l) in lines.iter().enumerate() {
+                acts.extend(f.feed(l, i as f64, &c));
+            }
+            acts.extend(f.tick(250.0, &c));
+            acts.extend(f.feed(&key_ev(false, "ControlLeft"), 300.0, &c));
+            acts.extend(f.feed(&key_ev(false, "MetaLeft"), 310.0, &c));
+            assert!(acts.is_empty(), "{mode:?}: {acts:?}");
+        }
+        // Ctrl+Win alone: no extra line.
+        let mut s = HookState::default();
+        let (e, _, _) = decide_with(LCTRL, true, &mut s, &k, flags(false, false), &none);
+        assert_eq!(extra_after(&e, &s, &k, &none), None);
+        // A plain-key binding (F9) never gets one: its modifiers are matched exactly elsewhere.
+        let f9 = keys(&[0x78]);
+        let mut s = HookState::default();
+        let (e, _, _) = decide_with(0x78, true, &mut s, &f9, flags(false, false), &shift);
+        assert_eq!(extra_after(&e, &s, &f9, &shift), None);
+        // Right Alt on an AltGr layout: the injected Ctrl is the Alt's, not an extra modifier.
+        let ralt = keys(&[RALT]);
+        let altgr = |vk| vk == VK_CTRL || vk == VK_LCTRL;
+        let mut s = HookState::default();
+        let (e, _, _) = decide_with(RALT, true, &mut s, &ralt, flags(false, false), &altgr);
+        assert_eq!(extra_after(&e, &s, &ralt, &altgr), None);
     }
 
     fn flags(pick: bool, rec: bool) -> Flags {

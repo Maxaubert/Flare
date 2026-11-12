@@ -196,6 +196,10 @@ pub enum ViewEvent {
     },
     /// A new picture is there ([`View::frame`]).
     Painted,
+    /// One of the view's own setup calls answered: the owner's next turn ([`View::poll`]) may navigate. Sent so
+    /// an owner that turns only when told (the real window: CEF's work runs in AppKit's run loop, and CEF does
+    /// not ask for a turn of its own for this) is told (rule 1152).
+    SetupAnswered,
     /// The browser is gone for good (after [`View::close`]).
     Closed,
 }
@@ -220,6 +224,9 @@ pub fn same_view_target_ok(url: &str) -> bool {
 
 /// Where a view's events go.
 pub type EventSink = Arc<dyn Fn(ViewEvent) + Send + Sync>;
+/// Asks the owner for a turn (the web panel's host: a `WebEvent::Pump` soon). Called from CEF's threads when
+/// something the owner only sees in its turn has changed (rule 1152).
+pub type Wake = Arc<dyn Fn() + Send + Sync>;
 /// May a frame navigate to this address? (`url`, whether it is the main frame, the address of the page it
 /// leaves.)
 pub type NavRule = Arc<dyn Fn(&str, bool, &str) -> bool + Send + Sync>;
@@ -1460,17 +1467,20 @@ wrap_dev_tools_message_observer! {
                 return;
             }
             let answer = if success != 0 { Ok(body) } else { Err(cdp_error(&body)) };
-            let to_owner = {
+            let (to_owner, setup) = {
                 let mut s = lock(&self.c.state);
-                if s.setup.contains(&message_id) || self.c.events.is_none() {
+                let setup = s.setup.contains(&message_id);
+                if setup || self.c.events.is_none() {
                     s.cdp.insert(message_id, answer.clone());
-                    false
+                    (false, setup)
                 } else {
-                    true
+                    (true, false)
                 }
             };
             if to_owner && let Ok(id) = u64::try_from(message_id) {
                 self.c.emit(ViewEvent::Cdp { id, result: answer });
+            } else if setup {
+                self.c.emit(ViewEvent::SetupAnswered);
             }
         }
 
