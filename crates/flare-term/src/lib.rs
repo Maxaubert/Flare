@@ -26,6 +26,7 @@ pub mod osc8;
 pub mod path_grammar;
 pub mod path_open;
 pub mod pty;
+pub mod remote_pty;
 pub mod replies;
 pub mod resize;
 pub mod scan;

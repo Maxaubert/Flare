@@ -18,6 +18,10 @@ pub struct SpawnSpec {
     pub env: Vec<(String, String)>,
     pub cols: u16,
     pub rows: u16,
+    /// Some for a remote tab (remote sessions PR 3): the shell runs on another machine and the session owns a
+    /// `RemotePty`, never a local pty (rule 287). `exe`, `args` and `env` are then empty: nothing of this machine's
+    /// environment crosses the link (rule 290).
+    pub remote: Option<crate::remote_pty::RemoteSpec>,
 }
 
 pub trait PtyProcess: Send {
@@ -38,10 +42,41 @@ pub trait PtyProcess: Send {
     fn foreground_pid(&self) -> Option<u32> {
         None
     }
+    /// Lets go of the process without ending what lives elsewhere: the quit of this Flare. A local pty is killed (its
+    /// shell never outlives Flare, rule 28); a remote tab's pty detaches and the host's session goes on (rule 288).
+    fn leave(&mut self) {
+        self.kill();
+    }
 }
 
 pub trait PtySpawner: Send + Sync {
     fn spawn(&self, spec: &SpawnSpec) -> Result<Box<dyn PtyProcess>, String>;
+}
+
+/// Picks the spawner by the spec (remote sessions PR 3): a remote tab's spec goes to `remote`, every other to `local`.
+/// The one place the two meet, so a remote spec can never start a local shell (rule 287).
+pub struct RoutingSpawner {
+    pub local: Arc<dyn PtySpawner>,
+    pub remote: Arc<dyn PtySpawner>,
+}
+
+impl PtySpawner for RoutingSpawner {
+    fn spawn(&self, spec: &SpawnSpec) -> Result<Box<dyn PtyProcess>, String> {
+        if spec.remote.is_some() {
+            self.remote.spawn(spec)
+        } else {
+            self.local.spawn(spec)
+        }
+    }
+}
+
+/// The remote spawner of a Flare with no remote link (the headless scenes): every remote spec is refused.
+pub struct NoRemote;
+
+impl PtySpawner for NoRemote {
+    fn spawn(&self, _spec: &SpawnSpec) -> Result<Box<dyn PtyProcess>, String> {
+        Err("This Flare has no remote link.".to_string())
+    }
 }
 
 /// Loads the bundled ConPTY first, then spawns through portable-pty.
@@ -49,6 +84,10 @@ pub struct PortableSpawner;
 
 impl PtySpawner for PortableSpawner {
     fn spawn(&self, spec: &SpawnSpec) -> Result<Box<dyn PtyProcess>, String> {
+        // A remote tab's shell is never started here (rule 287).
+        if spec.remote.is_some() {
+            return Err("A remote tab has no local shell.".to_string());
+        }
         #[cfg(windows)]
         crate::conpty::load_bundled().map_err(|e| e.to_string())?;
         if !std::path::Path::new(&spec.cwd).is_dir() {
@@ -848,6 +887,7 @@ mod tests {
             env,
             cols: 80,
             rows: 24,
+            remote: None,
         }
     }
 

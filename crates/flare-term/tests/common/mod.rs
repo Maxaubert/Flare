@@ -107,6 +107,7 @@ impl Rig {
             env: env.unwrap_or_else(|| std::env::vars().collect()),
             cols,
             rows,
+            remote: None,
         };
         let mut pty = PortableSpawner
             .spawn(&spec)

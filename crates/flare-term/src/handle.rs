@@ -91,6 +91,9 @@ pub struct StartOptions {
     pub shell_id: Option<String>,
     pub resume: Option<String>,
     pub plugin: Option<PluginEnv>,
+    /// Some for a remote tab (remote sessions PR 3): the session is the host's, shown through a `RemotePty`. The
+    /// shell, the resume and the plugin are then the host's business and are not used here.
+    pub remote: Option<crate::remote_pty::RemoteSpec>,
 }
 
 type Waker = Arc<dyn Fn() + Send + Sync>;
@@ -164,7 +167,7 @@ impl Shared {
     fn handle(&self, evs: Vec<TermEvent>) {
         for ev in evs {
             match ev {
-                TermEvent::Reply(b) => self.mgr.write(&self.id, &b),
+                TermEvent::Reply(b) => self.mgr.write_reply(&self.id, &b),
                 TermEvent::Bell => {
                     let now = self.t0.elapsed().as_millis() as u64;
                     let mut last = lk(&self.last_bell);
@@ -404,14 +407,17 @@ impl TermHandle {
             .spawn(move || {
                 let sink: Arc<dyn SessionSink> = Arc::new(Sink(Arc::downgrade(&sh)));
                 let ok = reserved
-                    && sh.mgr.spawn_reserved(
-                        &sh.id,
-                        &opts.root,
-                        opts.shell_id.as_deref(),
-                        sink,
-                        opts.resume.as_deref(),
-                        opts.plugin.as_ref(),
-                    );
+                    && match opts.remote {
+                        Some(remote) => sh.mgr.spawn_remote_reserved(&sh.id, remote, sink),
+                        None => sh.mgr.spawn_reserved(
+                            &sh.id,
+                            &opts.root,
+                            opts.shell_id.as_deref(),
+                            sink,
+                            opts.resume.as_deref(),
+                            opts.plugin.as_ref(),
+                        ),
+                    };
                 if ok {
                     lk(&sh.events).push(TermEvent::Started);
                     // After a spawn resolves, the real size is sent once more.

@@ -181,6 +181,7 @@ fn start_shell_tab(shell_id: Option<&str>) -> Live {
         shell_id: shell_id.map(str::to_string),
         resume: None,
         plugin: None,
+        remote: None,
     });
     Live { mgr, handle }
 }
@@ -414,6 +415,7 @@ fn saved(cwds: &[String], active: usize) -> SavedTabs {
             .map(|cwd| SavedTab {
                 cwd: cwd.clone(),
                 agent: None,
+                remote: None,
             })
             .collect(),
         active,
@@ -567,6 +569,7 @@ fn mark_tab(folder: &str, agent: Option<AgentKind>) -> SavedTab {
     SavedTab {
         cwd: github(folder),
         agent,
+        remote: None,
     }
 }
 

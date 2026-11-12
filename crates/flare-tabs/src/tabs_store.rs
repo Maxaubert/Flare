@@ -79,6 +79,7 @@ mod tests {
         SavedTab {
             cwd: cwd.into(),
             agent: None,
+            remote: None,
         }
     }
 
@@ -157,6 +158,7 @@ mod tests {
                 SavedTab {
                     cwd: "C:\\b".into(),
                     agent: Some(AgentKind::Codex),
+                    remote: None,
                 },
             ],
             active: 1,

@@ -196,6 +196,7 @@ impl Fx {
                     .map(|(cwd, agent)| SavedTab {
                         cwd: (*cwd).to_string(),
                         agent: *agent,
+                        remote: None,
                     })
                     .collect(),
                 active: 0,

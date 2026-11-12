@@ -675,6 +675,10 @@ mod flow {
         dir: tempfile::TempDir,
         prefs: PrefStore,
         scale: f32,
+        /// The remote side of the spawner (remote sessions PR 3): a remote tab's link end.
+        remote: Arc<flare_term::fake::FakeRemote>,
+        /// The handle the grid shows now (the window's set_grid_source).
+        slot: Rc<RefCell<Option<Arc<TermHandle>>>>,
     }
 
     fn ctrl(key: &str, code: &str) -> KeyEvent {
@@ -724,6 +728,7 @@ mod flow {
                 tabs: vec![SavedTab {
                     cwd: work_s.clone(),
                     agent: None,
+                    remote: None,
                 }],
                 active: 0,
             };
@@ -748,7 +753,17 @@ mod flow {
                 }]),
                 None => FakeShells::new(),
             };
-            let tab_host = TabHost::new(sp.clone(), shells, prefs.clone(), waker, None);
+            let remote = flare_term::fake::FakeRemote::new();
+            let tab_host = TabHost::new(
+                Arc::new(flare_term::pty::RoutingSpawner {
+                    local: sp.clone(),
+                    remote: remote.clone(),
+                }),
+                shells,
+                prefs.clone(),
+                waker,
+                None,
+            );
             let clip = Arc::new(MemoryClipboard::new());
             let openers = Arc::new(RecordingOpeners::new());
             let agent = Rc::new(TestAgent(Cell::new(None)));
@@ -907,6 +922,8 @@ mod flow {
                 dir,
                 prefs: prefs.clone(),
                 scale,
+                remote,
+                slot,
             };
             // The first render lays the window out, which tells the grid its size.
             let _ = wx.h.render();
@@ -1159,6 +1176,15 @@ mod flow {
 
         fn ctrl_c(&self) -> KeyOutcome {
             self.key(ctrl("c", "KeyC"))
+        }
+
+        /// A key typed into the tab the grid shows now (the window glue's way), not the first tab's.
+        fn key_front(&self, ev: KeyEvent) {
+            if self.ctl.borrow_mut().on_key(&ev) == KeyOutcome::Pty {
+                let front = self.slot.borrow().clone().expect("a tab in front");
+                front.send_key(&ev);
+            }
+            self.pump();
         }
 
         // ---- reads ----------------------------------------------------------------------------
@@ -2572,5 +2598,54 @@ mod flow {
             other_cols >= 1,
             "at least one scale changes the column count, or this proves nothing about O23"
         );
+    }
+
+    /// Remote sessions PR 3: a remote tab with a fake link, in front. The host's output is drawn in the grid, and what
+    /// is typed there reaches the link as keys and text, never the local shell (rule 279).
+    #[test]
+    fn a_remote_tab_shows_the_hosts_output_and_takes_typing() {
+        let w = Wx::new(1.0);
+        let before = w.written();
+        let id = w.ctl.borrow_mut().open_remote("mac", "/Users/max/proj");
+        w.pump_until("the remote pty", |w| !w.remote.made().is_empty());
+        let io = w.remote.made()[0].1.clone();
+        let front = || w.slot.borrow().clone().expect("a tab in front");
+        w.pump_until("the remote tab in front", |w| {
+            w.ctl.borrow().model().active().map(|t| t.id.clone()) == Some(id.clone())
+                && w.slot.borrow().as_ref().is_some_and(|h| h.id() == id)
+        });
+        assert!(w.ctl.borrow().model().remote_of(&id).is_some());
+        io.push_output(b"hello from the host\r\n");
+        w.pump_until("the host's text", |_| {
+            front()
+                .screen_tail(5)
+                .join("\n")
+                .contains("hello from the host")
+        });
+        let f = w.frame();
+        let (x, y, cw, ch) = w.cell_rect(0, 0);
+        assert!(
+            f.count_where(x, y, x + 5 * cw, y + ch, |p| p != GROUND) > 0,
+            "the host's text is drawn"
+        );
+        w.key_front(KeyEvent::new("l", "KeyL").text("l"));
+        w.key_front(KeyEvent::new("s", "KeyS").text("s"));
+        w.key_front(KeyEvent::new("Enter", "Enter"));
+        let mut typed = Vec::new();
+        let t = Instant::now();
+        while typed.len() < 3 && t.elapsed() < Duration::from_secs(5) {
+            typed.extend(io.take_outgoing(Duration::from_millis(20)).intents);
+            w.pump();
+        }
+        use flare_term::handle::RemoteIntent;
+        assert_eq!(
+            typed,
+            vec![
+                RemoteIntent::Text("l".into()),
+                RemoteIntent::Text("s".into()),
+                RemoteIntent::Key(KeyEvent::new("Enter", "Enter")),
+            ]
+        );
+        assert_eq!(w.quiet(), before, "nothing reached the local shell");
     }
 }

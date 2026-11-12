@@ -43,6 +43,9 @@ use std::time::{Duration, Instant};
 const QUESTION_SETTLE_MS: u64 = 150;
 /// A warm look after a shell really started.
 const START_LOOK_MS: u64 = 300;
+/// How long the output a remote tab shows as it attaches (the host's screen, then what it missed) is not scored as
+/// work (rule 289).
+const REMOTE_ATTACH_QUIET_MS: u64 = 3000;
 /// Sonara's connect, write and read each get this long (PT: 1500 ms).
 const SONARA_TIMEOUT: Duration = Duration::from_millis(1500);
 
@@ -116,13 +119,18 @@ impl PollCtl for PollWorker {
     }
 }
 
-/// The indicator's Screen over the live handles.
+/// The indicator's Screen over the live handles. A remote tab's screen is the host's, partly a replay: it reads as
+/// blank, so nothing on it raises a question or a background mark here (rule 289).
 struct HandleScreen<'a> {
     handle: &'a dyn Fn(&str) -> Option<Arc<TermHandle>>,
+    blind: &'a HashSet<String>,
 }
 
 impl Screen for HandleScreen<'_> {
     fn tail(&self, tab: &str, rows: usize) -> Vec<String> {
+        if self.blind.contains(tab) {
+            return Vec::new();
+        }
         (self.handle)(tab)
             .map(|h| h.screen_tail(rows))
             .unwrap_or_default()
@@ -229,6 +237,9 @@ pub struct AgentHub {
     /// Tabs whose agent decor must go, and why, in the order it happened; the window takes them
     /// ([`AgentHub::take_decor_gone`]). A closed tab is not here: the window clears it on close.
     decor_gone: Vec<(String, DecorGone)>,
+    /// Remote tabs (remote sessions PR 3): their processes are the host's, so the poll is blind to them, and their
+    /// screen is not read for a question (the host's question text crosses the link as words in PR 4).
+    remote: HashSet<String>,
     diag: AgentDiag,
     poll: Option<Box<dyn PollCtl>>,
     tx: Sender<PollMsg>,
@@ -252,6 +263,7 @@ impl AgentHub {
             agent_folders: HashMap::new(),
             polled: HashSet::new(),
             decor_gone: Vec::new(),
+            remote: HashSet::new(),
             diag,
             poll: None,
             tx,
@@ -338,11 +350,12 @@ impl AgentHub {
         }
     }
 
-    /// True for a tab whose shell hides its processes from the poll (a WSL distro).
+    /// True for a tab whose shell hides its processes from the poll (a WSL distro, a remote tab).
     fn poll_blind(&self, tab: &str) -> bool {
-        (self.deps.handle)(tab)
-            .and_then(|h| h.shell_id())
-            .is_some_and(|s| s.to_ascii_lowercase().starts_with("wsl"))
+        self.remote.contains(tab)
+            || (self.deps.handle)(tab)
+                .and_then(|h| h.shell_id())
+                .is_some_and(|s| s.to_ascii_lowercase().starts_with("wsl"))
     }
 
     fn run_effects(&self, effects: Vec<Effect>) {
@@ -367,6 +380,7 @@ impl AgentHub {
     fn ind_handle(&mut self, now: u64, ev: Event) {
         let screen = HandleScreen {
             handle: &*self.deps.handle,
+            blind: &self.remote,
         };
         let effects = self.ind.handle(now, ev, &screen);
         self.run_effects(effects);
@@ -492,10 +506,13 @@ impl AgentHub {
                 }
                 HostEvent::Output { id } => {
                     self.ind_handle(now, Event::Output { tab: id.clone() });
-                    self.watches
-                        .entry(id.clone())
-                        .or_insert_with(|| QuestionWatch::new(QUESTION_SETTLE_MS))
-                        .on_output(now);
+                    // A remote tab's screen is the host's: its question is not read here (PR 4 sends its words).
+                    if !self.remote.contains(id) {
+                        self.watches
+                            .entry(id.clone())
+                            .or_insert_with(|| QuestionWatch::new(QUESTION_SETTLE_MS))
+                            .on_output(now);
+                    }
                 }
                 HostEvent::Typed { id } => self.ind.activity.mark_touched(id, now),
                 HostEvent::AnswerKey { id, key } => {
@@ -559,9 +576,30 @@ impl AgentHub {
         }
     }
 
+    /// A remote tab (remote sessions PR 3), right after `on_spawned`: the poll is blind to it (its processes are the
+    /// host's), its screen is not read for a question, and what it shows when it attaches (a new one or a restored one)
+    /// is not new work (rules 38, 289): it counts as touched, as a resumed tab does, and the first output it shows
+    /// (the snapshot it attaches with) is not scored as work.
+    pub fn on_remote_tab(&mut self, tab: &str) {
+        let now = self.now();
+        self.note_tab(tab);
+        self.remote.insert(tab.to_string());
+        if let Some(mut w) = self.watches.remove(tab) {
+            w.dispose();
+        }
+        self.ind.activity.mark_touched(tab, now);
+        self.ind.activity.suppress(tab, now, REMOTE_ATTACH_QUIET_MS);
+    }
+
+    /// Whether the hub knows `tab` as a remote tab.
+    pub fn is_remote(&self, tab: &str) -> bool {
+        self.remote.contains(tab)
+    }
+
     /// PT `forget`: every record of the tab goes, and its question watch with it.
     pub fn on_closed(&mut self, tab: &str) {
         let now = self.now();
+        self.remote.remove(tab);
         self.ind.forget(tab);
         self.arms.remove(tab);
         if let Some(mut w) = self.watches.remove(tab) {
@@ -668,6 +706,7 @@ impl AgentHub {
         let now = self.now();
         let screen = HandleScreen {
             handle: &*self.deps.handle,
+            blind: &self.remote,
         };
         let effects = self.ind.tick(now, &screen);
         self.run_effects(effects);
@@ -1020,6 +1059,7 @@ mod tests {
         rec: Rc<Rec>,
         handle_calls: Rc<Cell<usize>>,
         no_token: Rc<RefCell<HashSet<String>>>,
+        remote: Arc<flare_term::fake::FakeRemote>,
     }
 
     fn sw() -> Switches {
@@ -1067,7 +1107,12 @@ mod tests {
             } else {
                 FakeShells::new()
             };
-            let mut host = TabHost::new(sp.clone(), shells, prefs.clone(), waker, None);
+            let remote = flare_term::fake::FakeRemote::new();
+            let spawner = Arc::new(flare_term::pty::RoutingSpawner {
+                local: sp.clone(),
+                remote: remote.clone(),
+            });
+            let mut host = TabHost::new(spawner, shells, prefs.clone(), waker, None);
             host.set_dims(200, 60, None);
             let mgr = host.manager();
             let host = Rc::new(RefCell::new(host));
@@ -1118,6 +1163,41 @@ mod tests {
                 rec,
                 handle_calls,
                 no_token,
+                remote,
+            }
+        }
+
+        /// A remote tab, as the window opens one (remote sessions PR 3).
+        fn open_remote(&mut self, id: &str) {
+            self.host.borrow_mut().spawn_remote(
+                id,
+                flare_term::remote_pty::RemoteSpec {
+                    machine: "mac".into(),
+                    folder: "/Users/max/proj".into(),
+                    live: flare_term::remote_pty::RemoteLive::default(),
+                },
+            );
+            self.hub.on_spawned(id, "/Users/max/proj", None);
+            self.hub.on_remote_tab(id);
+            wait("the remote spawn", || {
+                self.host.borrow().manager().is_remote(id)
+            });
+        }
+
+        /// What the link pushes into a remote tab, pumped until its Output was handled.
+        fn push_remote(&mut self, bytes: &[u8]) {
+            let io = self.remote.made().last().expect("a remote tab").1.clone();
+            io.push_output(bytes);
+            let t = Instant::now();
+            loop {
+                let evs = self.host.borrow().drain_events();
+                let got = evs.iter().any(|e| matches!(e, HostEvent::Output { .. }));
+                self.hub.on_host_events(&evs);
+                if got {
+                    return;
+                }
+                assert!(t.elapsed() < Duration::from_secs(3), "no output event");
+                std::thread::sleep(Duration::from_millis(5));
             }
         }
 
@@ -2001,5 +2081,40 @@ mod tests {
         r.open("a", None);
         r.ev(HostEvent::Started { id: "a".into() });
         assert_eq!(*r.rec.soons.borrow(), vec![300]);
+    }
+
+    /// Rule 289: a remote tab's attach shows the host's screen (a snapshot, here with a question box on it) and what it
+    /// missed (a catch-up whose signals were taken out): neither raises Finished or Question, nothing is posted, and the
+    /// poll is never asked about the tab. Live output still marks it.
+    #[test]
+    fn a_remote_tabs_replay_raises_no_mark_and_live_output_does() {
+        let mut r = Rig::new();
+        r.open("b", None);
+        r.open_remote("r");
+        r.hub.set_looking(Some("b"), true);
+        r.title("r", CLAUDE_TITLE);
+        assert!(r.hub.is_remote("r") && r.hub.poll_blind("r"));
+        let shot = [
+            &b"\x1b[H\x1b[2J\x1b[3J"[..],
+            box_rows().join("\r\n").as_bytes(),
+        ]
+        .concat();
+        r.push_remote(&flare_term::remote_pty::plain_snapshot(&shot));
+        let mut strip = flare_term::remote_pty::SignalStrip::new();
+        let caught = strip.feed(&[osc("working"), osc("done")].concat(), true);
+        r.push_remote(&[caught, b"caught up".to_vec()].concat());
+        for _ in 0..40 {
+            r.advance(250);
+            r.pump();
+        }
+        assert!(r.hub.indicator().done_ids().is_empty(), "no Finished");
+        assert!(r.hub.question_tabs().is_empty(), "no Question");
+        assert!(!r.hub.question_up("r"));
+        assert!(r.posts.lock().unwrap().is_empty(), "nothing posted");
+        assert!(!r.rec.agains.borrow().iter().any(|t| t == "r"));
+        r.push_remote(&osc("working"));
+        r.pump_until("r working", |h| h.working("r"));
+        r.hub.on_closed("r");
+        assert!(!r.hub.is_remote("r"));
     }
 }

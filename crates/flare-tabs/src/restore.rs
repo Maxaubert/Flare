@@ -3,7 +3,7 @@
 //! Sources: PT/src/main/{tabsStore,planRestore}.ts, PT/src/renderer/src/lib/restorePlan.ts.
 //! The restore never types into a shell: a resume travels as the startup command (`Spawn::resume`).
 
-use crate::tabs::{Pending, Tab, TabKind, TabState};
+use crate::tabs::{MachineTag, Pending, Tab, TabKind, TabState};
 use flare_agent::kinds::{AGY_RESUME, AgentKind, CODEX_RESUME};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -15,11 +15,66 @@ use std::time::{Duration, Instant};
 /// their resumes, at the next launch: review #11).
 pub const MAX_TABS: usize = 500;
 
+/// The longest machine id or host tab id a saved remote tab keeps.
+const REMOTE_ID_MAX: usize = 128;
+
 /// One saved tab: its folder and the resumable agent it hosted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SavedTab {
     pub cwd: String,
     pub agent: Option<AgentKind>,
+    /// Some for a remote tab (remote sessions PR 3): `cwd` is then the host's folder and `agent` is None (the host
+    /// owns the session and its resume).
+    pub remote: Option<SavedRemote>,
+}
+
+/// A remote tab as `tabs.json` keeps it: `remote: {machine, host_tab, last_seq}`.
+#[derive(Clone, Debug, Eq)]
+pub struct SavedRemote {
+    /// The machine's id in `machines.json`.
+    pub machine: String,
+    /// The host's id of the tab, once the host opened it: the restore attaches to it again (rule 288). None: the host
+    /// never answered, and the restore opens a new one in the folder.
+    pub host_tab: Option<String>,
+    /// The host's output number the tab had read.
+    pub last_seq: u64,
+}
+
+/// `last_seq` is no reason to write `tabs.json` again (it moves with every poll): it is written whenever the file is.
+impl PartialEq for SavedRemote {
+    fn eq(&self, other: &Self) -> bool {
+        self.machine == other.machine && self.host_tab == other.host_tab
+    }
+}
+
+/// An id the file may hold: printable, short, no space or control character.
+fn remote_id(v: Option<&Value>) -> Option<String> {
+    let s = v?.as_str()?;
+    let ok = !s.is_empty()
+        && s.len() <= REMOTE_ID_MAX
+        && s.chars()
+            .all(|c| c.is_ascii_graphic() || (!c.is_ascii() && !c.is_control()));
+    ok.then(|| s.to_string())
+}
+
+/// The `remote` object of a saved tab; anything not shaped right reads as None (rule 40), so the tab comes back as
+/// a local one in that folder if the folder is here, and is dropped if it is not.
+fn parse_remote(v: Option<&Value>) -> Option<SavedRemote> {
+    let o = v?.as_object()?;
+    let machine = remote_id(o.get("machine"))?;
+    let host_tab = match o.get("host_tab") {
+        None | Some(Value::Null) => None,
+        Some(t) => Some(remote_id(Some(t))?),
+    };
+    let last_seq = match o.get("last_seq") {
+        None | Some(Value::Null) => 0,
+        Some(n) => n.as_u64()?,
+    };
+    Some(SavedRemote {
+        machine,
+        host_tab,
+        last_seq,
+    })
 }
 
 /// The strip as `tabs.json` holds it.
@@ -44,13 +99,17 @@ pub fn parse_tabs(raw: &str) -> SavedTabs {
             if cwd.is_empty() {
                 return None;
             }
+            let remote = parse_remote(e.get("remote"));
+            // The host owns a remote tab's session: no agent of this machine resumes it.
             let agent = e
                 .get("agent")
                 .and_then(Value::as_str)
-                .and_then(AgentKind::parse);
+                .and_then(AgentKind::parse)
+                .filter(|_| remote.is_none());
             Some(SavedTab {
                 cwd: cwd.to_string(),
                 agent,
+                remote,
             })
         })
         .take(MAX_TABS)
@@ -63,20 +122,35 @@ pub fn parse_tabs(raw: &str) -> SavedTabs {
     SavedTabs { tabs, active }
 }
 
-/// `{"tabs":[{"cwd":..,"agent":..}],"active":n}`; the agent key is left out for a plain shell.
+/// `{"tabs":[{"cwd":..,"agent":..}],"active":n}`; the agent key is left out for a plain shell. A remote tab is
+/// `{"cwd":..,"remote":{"machine":..,"host_tab":..,"last_seq":n}}` (`host_tab` left out until the host answered).
 pub fn tabs_json(s: &SavedTabs) -> String {
     // Written by hand: the key order (cwd, then agent; tabs, then active) is part of the file shape.
     let quote = |t: &str| Value::String(t.to_string()).to_string();
     let tabs: Vec<String> = s
         .tabs
         .iter()
-        .map(|t| match t.agent {
-            Some(a) => format!(
+        .map(|t| match (&t.remote, t.agent) {
+            (Some(r), _) => {
+                let host = r
+                    .host_tab
+                    .as_deref()
+                    .map(|h| format!(r#","host_tab":{}"#, quote(h)))
+                    .unwrap_or_default();
+                format!(
+                    r#"{{"cwd":{},"remote":{{"machine":{}{},"last_seq":{}}}}}"#,
+                    quote(&t.cwd),
+                    quote(&r.machine),
+                    host,
+                    r.last_seq
+                )
+            }
+            (None, Some(a)) => format!(
                 r#"{{"cwd":{},"agent":{}}}"#,
                 quote(&t.cwd),
                 quote(a.as_str())
             ),
-            None => format!(r#"{{"cwd":{}}}"#, quote(&t.cwd)),
+            (None, None) => format!(r#"{{"cwd":{}}}"#, quote(&t.cwd)),
         })
         .collect();
     format!(r#"{{"tabs":[{}],"active":{}}}"#, tabs.join(","), s.active)
@@ -88,6 +162,8 @@ pub struct RestoredTab {
     pub cwd: String,
     pub resume: Option<String>,
     pub from: Option<usize>,
+    /// Some for a remote tab: it attaches to its host session again (rule 288).
+    pub remote: Option<SavedRemote>,
 }
 
 /// What the restore decided.
@@ -134,14 +210,17 @@ pub fn plan_restore(
     let mut active = 0usize;
     let mut taken: HashMap<String, usize> = HashMap::new();
     for (i, t) in saved.tabs.iter().enumerate() {
-        if t.cwd.is_empty() || is_unsafe_restore_folder(&t.cwd) || !exists(&t.cwd) {
+        // A remote tab's folder is the host's: it is never statted here, and a path that would reach this machine's
+        // network (a UNC path) is never used here either, since nothing here opens it (rule 287).
+        let here = t.remote.is_none();
+        if t.cwd.is_empty() || has_control(&t.cwd) || (here && !local_folder_ok(&t.cwd, exists)) {
             continue;
         }
         if i == saved.active {
             active = tabs.len();
         }
         let mut resume = None;
-        match t.agent {
+        match t.agent.filter(|_| here) {
             Some(AgentKind::Codex) => resume = Some(CODEX_RESUME.to_string()),
             Some(AgentKind::Agy) => resume = Some(AGY_RESUME.to_string()),
             Some(AgentKind::Claude) => {
@@ -157,10 +236,20 @@ pub fn plan_restore(
             cwd: t.cwd.clone(),
             resume,
             from: Some(i),
+            remote: t.remote.clone(),
         });
     }
     let active = active.min(tabs.len().saturating_sub(1));
     Restored { tabs, active }
+}
+
+fn has_control(cwd: &str) -> bool {
+    flare_shells::cwd::has_control(cwd)
+}
+
+/// A local folder the restore may use: safe (no UNC, rule above) and there.
+fn local_folder_ok(cwd: &str, exists: &dyn Fn(&str) -> bool) -> bool {
+    !is_unsafe_restore_folder(cwd) && exists(cwd)
 }
 
 /// Folders handed over by the launch join AFTER the restored tabs; the last is then in front.
@@ -173,6 +262,7 @@ pub fn with_launch_folders(plan: &mut Restored, folders: &[String]) {
             cwd: f.clone(),
             resume: None,
             from: None,
+            remote: None,
         });
     }
     plan.active = plan.tabs.len() - 1;
@@ -206,7 +296,12 @@ pub fn resolve_restore_within(
     let mut asked = 0usize;
     let mut seen = std::collections::HashSet::new();
     for t in &saved.tabs {
-        if t.cwd.is_empty() || is_unsafe_restore_folder(&t.cwd) || !seen.insert(t.cwd.clone()) {
+        // A remote tab's folder is the host's: never statted here.
+        if t.remote.is_some()
+            || t.cwd.is_empty()
+            || is_unsafe_restore_folder(&t.cwd)
+            || !seen.insert(t.cwd.clone())
+        {
             continue;
         }
         let (is_dir, tx, cwd) = (Arc::clone(&is_dir), tx.clone(), t.cwd.clone());
@@ -261,6 +356,7 @@ pub fn peek_state(saved: &SavedTabs, new_id: &mut dyn FnMut() -> String) -> Boot
             } else {
                 Pending::Shell
             }),
+            remote: t.remote.as_ref().map(|r| MachineTag::of_id(&r.machine)),
         });
     }
     let active_id = if slots.is_empty() {
@@ -280,6 +376,8 @@ pub struct Spawn {
     pub id: String,
     pub cwd: String,
     pub resume: Option<String>,
+    /// Some for a remote tab: it attaches to its host session again and is not new work (rule 288).
+    pub remote: Option<SavedRemote>,
 }
 
 /// The settled strip and the shells to start.
@@ -342,6 +440,7 @@ pub fn settle_restore_from(
                     kind: TabKind::Shell,
                     cwd: rt.cwd.clone(),
                     pending: None,
+                    remote: rt.remote.as_ref().map(|r| MachineTag::of_id(&r.machine)),
                 });
                 id
             }
@@ -354,8 +453,18 @@ pub fn settle_restore_from(
             id,
             cwd: rt.cwd.clone(),
             resume: rt.resume.clone(),
+            remote: rt.remote.clone(),
         });
     }
+    let remote_of: HashMap<&str, Option<MachineTag>> = spawn
+        .iter()
+        .map(|s| {
+            (
+                s.id.as_str(),
+                s.remote.as_ref().map(|r| MachineTag::of_id(&r.machine)),
+            )
+        })
+        .collect();
     let mut tabs: Vec<Tab> = Vec::new();
     for t in &s.tabs {
         if t.pending.is_none() {
@@ -364,6 +473,7 @@ pub fn settle_restore_from(
             tabs.push(Tab {
                 cwd: cwd.clone(),
                 pending: None,
+                remote: remote_of.get(t.id.as_str()).cloned().flatten(),
                 ..t.clone()
             });
         }
@@ -417,6 +527,7 @@ mod tests {
         SavedTab {
             cwd: cwd.into(),
             agent,
+            remote: None,
         }
     }
     fn rt(cwd: &str, resume: Option<&str>, from: Option<usize>) -> RestoredTab {
@@ -424,6 +535,7 @@ mod tests {
             cwd: cwd.into(),
             resume: resume.map(String::from),
             from,
+            remote: None,
         }
     }
     fn no_sessions(_: &str) -> Vec<String> {
@@ -821,12 +933,14 @@ mod tests {
                 Spawn {
                     id: "t1".into(),
                     cwd: "C:\\a".into(),
-                    resume: Some("sess-1".into())
+                    resume: Some("sess-1".into()),
+                    remote: None,
                 },
                 Spawn {
                     id: "t3".into(),
                     cwd: "C:\\c".into(),
-                    resume: None
+                    resume: None,
+                    remote: None,
                 },
             ]
         );
@@ -852,7 +966,8 @@ mod tests {
             &Spawn {
                 id: "new".into(),
                 cwd: "D:\\handed".into(),
-                resume: None
+                resume: None,
+                remote: None,
             }
         );
     }
@@ -866,6 +981,7 @@ mod tests {
             kind: TabKind::Shell,
             cwd: "C:\\x".into(),
             pending: None,
+            remote: None,
         });
         state.active_id = Some("mine".into());
         let r = Restored {
@@ -966,6 +1082,7 @@ mod tests {
             .map(|i| SavedTab {
                 cwd: format!(r"C:\w{i}"),
                 agent: None,
+                remote: None,
             })
             .collect();
         let json = tabs_json(&SavedTabs { tabs, active: 119 });
@@ -1040,5 +1157,136 @@ mod tests {
         let cwds: Vec<&str> = r.tabs.iter().map(|t| t.cwd.as_str()).collect();
         assert_eq!(cwds, vec![spaced.as_str(), "/"]);
         assert_eq!(r.active, 1, "the front tab still points at /");
+    }
+}
+
+/// Remote sessions PR 3: a remote tab in `tabs.json` and through the restore.
+#[cfg(test)]
+mod remote_tests {
+    use super::*;
+    use crate::tabs::Os;
+
+    fn remote_tab(cwd: &str, host_tab: Option<&str>, seq: u64) -> SavedTab {
+        SavedTab {
+            cwd: cwd.into(),
+            agent: None,
+            remote: Some(SavedRemote {
+                machine: "mac".into(),
+                host_tab: host_tab.map(str::to_string),
+                last_seq: seq,
+            }),
+        }
+    }
+
+    fn local(cwd: &str) -> SavedTab {
+        SavedTab {
+            cwd: cwd.into(),
+            agent: Some(AgentKind::Claude),
+            remote: None,
+        }
+    }
+
+    #[test]
+    fn a_remote_tab_round_trips_through_tabs_json_beside_a_local_one() {
+        let saved = SavedTabs {
+            tabs: vec![
+                local(r"C:\a"),
+                remote_tab("/Users/max/proj", Some("t19-3"), 4096),
+                remote_tab("/Users/max/new", None, 0),
+            ],
+            active: 1,
+        };
+        let json = tabs_json(&saved);
+        assert!(
+            json.contains(
+                r#"{"cwd":"/Users/max/proj","remote":{"machine":"mac","host_tab":"t19-3","last_seq":4096}}"#
+            ),
+            "{json}"
+        );
+        assert!(
+            json.contains(r#"{"cwd":"C:\\a","agent":"claude"}"#),
+            "{json}"
+        );
+        let back = parse_tabs(&json);
+        assert_eq!(back, saved);
+        assert_eq!(back.tabs[1].remote.as_ref().unwrap().last_seq, 4096);
+        assert_eq!(back.tabs[2].remote.as_ref().unwrap().host_tab, None);
+    }
+
+    /// Rule 40: a `remote` that is not shaped right reads as a local tab; an agent saved beside a remote never resumes.
+    #[test]
+    fn a_broken_remote_reads_as_local_and_a_remote_never_resumes_an_agent() {
+        for bad in [
+            r#"{"machine":""}"#,
+            r#"{"machine":3}"#,
+            r#"{"machine":"mac","host_tab":5}"#,
+            r#"{"machine":"mac","last_seq":-1}"#,
+            r#"{"machine":"a b"}"#,
+            r#""mac""#,
+        ] {
+            let raw = format!(r#"{{"tabs":[{{"cwd":"C:\\x","remote":{bad}}}],"active":0}}"#);
+            let s = parse_tabs(&raw);
+            assert_eq!(s.tabs.len(), 1, "{bad}");
+            assert_eq!(s.tabs[0].remote, None, "{bad}");
+        }
+        let raw = r#"{"tabs":[{"cwd":"/p","agent":"claude","remote":{"machine":"mac","host_tab":"t1"}}],"active":0}"#;
+        let s = parse_tabs(raw);
+        assert_eq!(s.tabs[0].agent, None);
+        assert_eq!(s.tabs[0].remote.as_ref().unwrap().last_seq, 0);
+        assert_eq!(Os::parse("linux"), None);
+        assert_eq!(Os::parse("mac"), Some(Os::Mac));
+    }
+
+    /// `last_seq` moving is no reason to write the file again.
+    #[test]
+    fn only_the_machine_and_the_host_tab_make_a_saved_remote_differ() {
+        let a = remote_tab("/p", Some("t1"), 10);
+        let b = remote_tab("/p", Some("t1"), 99);
+        assert_eq!(a, b);
+        assert_ne!(a, remote_tab("/p", Some("t2"), 10));
+    }
+
+    /// Rules 287, 288: the restore never stats a remote tab's folder, keeps it whatever this machine has at that path,
+    /// and hands it back with its host tab to attach to, not as a resume.
+    #[test]
+    fn the_restore_keeps_a_remote_tab_without_a_stat_and_attaches_it() {
+        let saved = SavedTabs {
+            tabs: vec![
+                remote_tab("/Users/max/proj", Some("t7"), 5),
+                local(r"C:\gone"),
+            ],
+            active: 0,
+        };
+        let statted = std::sync::Mutex::new(Vec::<String>::new());
+        let r = plan_restore(
+            &saved,
+            &|p| {
+                statted.lock().unwrap().push(p.to_string());
+                false
+            },
+            &|_| vec!["5a1d0c2e-1111-4222-8333-94445555a666".into()],
+        );
+        assert_eq!(*statted.lock().unwrap(), vec![r"C:\gone".to_string()]);
+        assert_eq!(r.tabs.len(), 1);
+        assert_eq!(r.tabs[0].resume, None);
+        assert_eq!(
+            r.tabs[0].remote.as_ref().and_then(|x| x.host_tab.clone()),
+            Some("t7".into())
+        );
+        let mut k = 0;
+        let boot = peek_state(&saved, &mut || {
+            k += 1;
+            format!("s{k}")
+        });
+        let mut n = 0;
+        let settled = settle_restore(&boot.state, &boot.slots, &r, &mut || {
+            n += 1;
+            format!("x{n}")
+        });
+        assert_eq!(settled.spawn.len(), 1);
+        assert!(settled.spawn[0].remote.is_some());
+        let tab = &settled.state.tabs[0];
+        assert_eq!(tab.kind, TabKind::Shell);
+        assert_eq!(tab.remote.as_ref().map(|m| m.id.as_str()), Some("mac"));
     }
 }

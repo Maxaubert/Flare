@@ -132,6 +132,9 @@ pub struct TabInfo<'a> {
     pub cwd: Option<&'a str>,
     pub shell_cwd: Option<&'a str>,
     pub alive: bool,
+    /// A remote tab (remote sessions PR 3): its file links name files of the host, never of this machine, so none is
+    /// opened, previewed or offered here, and a file dropped on it is not typed (its path is this machine's).
+    pub remote: bool,
 }
 
 impl TabInfo<'_> {
@@ -388,6 +391,9 @@ struct ThumbState {
 
 /// The image link at a cell now, from the marks of the last frame.
 fn thumb_at(tab: &TabInfo, cell: (usize, usize)) -> Option<ThumbAt> {
+    if tab.remote {
+        return None;
+    }
     let (mark, top) = tab
         .handle
         .with_emu_quiet(|em| (em.link_at_view(cell.0, cell.1), em.viewport_top()));
@@ -425,6 +431,9 @@ fn marked_path_at(target: &LinkTarget, tab: &TabInfo, home: &str) -> Option<Term
     else {
         return None;
     };
+    if tab.remote {
+        return None;
+    }
     let base = tab.link_base(text).to_string();
     let kind = if text.ends_with(['\\', '/']) {
         PathKind::Dir
@@ -1212,6 +1221,8 @@ impl TermUi {
         };
         match click_action(&mark.target, shown.as_deref(), Some(base), 0) {
             LinkAction::OpenUrl(u) => self.open_link(&u),
+            // A remote tab's file link names a file of the host: never opened here (PR 6 fetches it over the link).
+            LinkAction::OpenPath { .. } if tab.remote => {}
             LinkAction::OpenPath { base, text } => {
                 let LinkTarget::Path { line, alts, .. } = &mark.target else {
                     return;
@@ -1467,7 +1478,8 @@ impl TermUi {
 
     /// A file dropped on the terminal area. Buffered only while the front tab is live.
     pub fn on_dropped(&mut self, tab: Option<&TabInfo>, path: &Path) {
-        if tab.is_some_and(|t| t.alive) {
+        // A path of this machine means nothing to a remote tab's shell (PR 6 copies the file over first).
+        if tab.is_some_and(|t| t.alive && !t.remote) {
             self.drops.push(path, self.now());
         }
     }
@@ -1977,6 +1989,7 @@ mod tests {
                 cwd: self.cwd.as_deref(),
                 shell_cwd: None,
                 alive: true,
+                remote: false,
             };
             let e = PointerIn {
                 kind,
@@ -2031,6 +2044,7 @@ mod tests {
                 cwd: self.cwd.as_deref(),
                 shell_cwd: None,
                 alive: true,
+                remote: false,
             };
             self.ui.tick(Some(&tab), &self.g)
         }
@@ -2047,6 +2061,7 @@ mod tests {
                 cwd: self.cwd.as_deref(),
                 shell_cwd: None,
                 alive: true,
+                remote: false,
             };
             let has = self.ui.has_selection(&tab);
             let agent_here = self.agent.armed("a").is_some();
@@ -2078,6 +2093,7 @@ mod tests {
                 cwd: self.cwd.as_deref(),
                 shell_cwd: None,
                 alive: true,
+                remote: false,
             };
             for m in all {
                 self.ui.on_msg(Some(&tab), m);
@@ -2096,6 +2112,7 @@ mod tests {
                 cwd: self.cwd.as_deref(),
                 shell_cwd: None,
                 alive: true,
+                remote: false,
             };
             self.ui.find_edited(&tab, q);
         }
@@ -2108,6 +2125,7 @@ mod tests {
                 cwd: self.cwd.as_deref(),
                 shell_cwd: None,
                 alive: true,
+                remote: false,
             };
             f(&mut self.ui, &tab)
         }
@@ -2821,6 +2839,7 @@ mod tests {
             cwd: Some("AGENT"),
             shell_cwd: Some("SHELL"),
             alive: true,
+            remote: false,
         };
         assert_eq!(tab.link_base("src/a.rs"), "AGENT");
         assert_eq!(tab.link_base("./a.rs"), "AGENT");
@@ -2890,6 +2909,7 @@ mod tests {
             cwd: r.cwd.as_deref(),
             shell_cwd: None,
             alive: true,
+            remote: false,
         };
         let all: Vec<TermMsg> = r.msgs.lock().unwrap().drain(..).collect();
         for m in all {
@@ -3085,6 +3105,7 @@ mod tests {
             cwd: r.cwd.as_deref(),
             shell_cwd: None,
             alive: true,
+            remote: false,
         };
         r.ui.toggle_find(&tab);
         assert_eq!(last_thumb(&r), Some(None), "Find");
@@ -3362,6 +3383,7 @@ mod tests {
             cwd: None,
             shell_cwd: None,
             alive: true,
+            remote: false,
         };
         assert_eq!(rows[0].label, "Copy");
         r.ui.on_menu_pick(Some(&other), 0);
@@ -3634,6 +3656,7 @@ mod tests {
             cwd: None,
             shell_cwd: None,
             alive: true,
+            remote: false,
         };
         r.ui.on_dropped(Some(&tab), Path::new("C:\\My Dir\\a.txt"));
         let t = r.tick(10);
@@ -3657,6 +3680,7 @@ mod tests {
             cwd: None,
             shell_cwd: None,
             alive: false,
+            remote: false,
         };
         r.ui.on_dropped(Some(&dead), Path::new("C:\\a.txt"));
         r.ui.on_dropped(None, Path::new("C:\\b.txt"));

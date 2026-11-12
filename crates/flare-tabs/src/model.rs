@@ -3,11 +3,14 @@
 //! Source: PT App.tsx (state, openTab, closeNow, the mru effect, commitWalk, next-tab, jump-tab,
 //! settings cases, the tabsChanged effect). One object the UI thread owns; the glue calls it.
 
-use crate::restore::{Restored, SavedTab, SavedTabs, Spawn, peek_state, settle_restore_from};
+use crate::restore::{
+    Restored, SavedRemote, SavedTab, SavedTabs, Spawn, peek_state, settle_restore_from,
+};
 use crate::tab_mru::{Walk, start_walk, step_walk, sync_mru, touch_mru, walk_holds, walk_target};
-use crate::tabs::{self, Pending, SETTINGS_ID, Tab, TabKind, TabState};
+use crate::tabs::{self, MachineTag, Pending, SETTINGS_ID, Tab, TabKind, TabState};
 use flare_agent::kinds::AgentKind;
 use flare_settings::tab_switch::TabSwitch;
+use flare_term::remote_pty::RemoteLive;
 use std::collections::{HashMap, HashSet};
 
 /// The window's tab list, the used list, the Ctrl walk, the restore flag and the agents.
@@ -22,6 +25,9 @@ pub struct TabModel {
     clock_ms: u64,
     restore_done: bool,
     agents: HashMap<String, AgentKind>,
+    /// Each remote tab's live state (remote sessions PR 3): the host's id of the tab and the output it read, which
+    /// `tabs.json` keeps so a restart attaches to the same session (rule 288).
+    remotes: HashMap<String, RemoteLive>,
 }
 
 fn make_id(clock_ms: u64, seq: &mut u64) -> String {
@@ -41,6 +47,7 @@ impl TabModel {
             clock_ms,
             restore_done: false,
             agents: HashMap::new(),
+            remotes: HashMap::new(),
         }
     }
 
@@ -99,12 +106,45 @@ impl TabModel {
         id
     }
 
+    /// A new remote tab on `machine` in the host's folder `cwd` (rule 287), its live state `live`.
+    pub fn open_remote_tab(&mut self, machine: MachineTag, cwd: &str, live: RemoteLive) -> String {
+        let id = self.new_id();
+        self.state = tabs::add_remote_tab(&self.state, &id, cwd, machine);
+        self.remotes.insert(id.clone(), live);
+        self.after_change();
+        id
+    }
+
+    /// The live state of a remote tab (a restored one gets its own here).
+    pub fn set_remote_live(&mut self, id: &str, live: RemoteLive) {
+        self.remotes.insert(id.to_string(), live);
+    }
+
+    pub fn remote_live(&self, id: &str) -> Option<&RemoteLive> {
+        self.remotes.get(id)
+    }
+
+    /// Whether any tab is a remote tab.
+    pub fn has_remote_tabs(&self) -> bool {
+        !self.remotes.is_empty()
+    }
+
+    /// The machine a tab runs on, for a remote tab.
+    pub fn remote_of(&self, id: &str) -> Option<&MachineTag> {
+        self.state
+            .tabs
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.remote.as_ref())
+    }
+
     pub fn close(&mut self, id: &str) -> bool {
         if !self.state.tabs.iter().any(|t| t.id == id) {
             return false;
         }
         self.state = tabs::close_tab(&self.state, id);
         self.agents.remove(id);
+        self.remotes.remove(id);
         self.after_change();
         true
     }
@@ -258,9 +298,25 @@ impl TabModel {
         SavedTabs {
             tabs: shells
                 .iter()
-                .map(|t| SavedTab {
-                    cwd: t.cwd.clone(),
-                    agent: self.agent_kind(&t.id),
+                .map(|t| match &t.remote {
+                    // The host owns a remote tab's session: no agent of this machine is saved for it.
+                    Some(m) => {
+                        let live = self.remotes.get(&t.id);
+                        SavedTab {
+                            cwd: t.cwd.clone(),
+                            agent: None,
+                            remote: Some(SavedRemote {
+                                machine: m.id.clone(),
+                                host_tab: live.and_then(RemoteLive::host_tab),
+                                last_seq: live.map_or(0, RemoteLive::seq),
+                            }),
+                        }
+                    }
+                    None => SavedTab {
+                        cwd: t.cwd.clone(),
+                        agent: self.agent_kind(&t.id),
+                        remote: None,
+                    },
                 })
                 .collect(),
             active,
@@ -394,11 +450,13 @@ mod tests {
             vec![
                 SavedTab {
                     cwd: r"C:\a".into(),
-                    agent: None
+                    agent: None,
+                    remote: None,
                 },
                 SavedTab {
                     cwd: r"C:\b".into(),
-                    agent: Some(AgentKind::Claude)
+                    agent: Some(AgentKind::Claude),
+                    remote: None,
                 },
             ]
         );
@@ -437,10 +495,12 @@ mod tests {
                 SavedTab {
                     cwd: r"C:\a".into(),
                     agent: Some(AgentKind::Claude),
+                    remote: None,
                 },
                 SavedTab {
                     cwd: r"C:\b".into(),
                     agent: None,
+                    remote: None,
                 },
             ],
             active: 1,
@@ -457,11 +517,13 @@ mod tests {
                     cwd: r"C:\a".into(),
                     resume: Some("s1".into()),
                     from: Some(0),
+                    remote: None,
                 },
                 RestoredTab {
                     cwd: r"C:\b".into(),
                     resume: None,
                     from: Some(1),
+                    remote: None,
                 },
             ],
             active: 1,
@@ -481,6 +543,7 @@ mod tests {
             tabs: vec![SavedTab {
                 cwd: r"C:\a".into(),
                 agent: None,
+                remote: None,
             }],
             active: 0,
         };
@@ -491,6 +554,7 @@ mod tests {
                 cwd: r"C:\a".into(),
                 resume: None,
                 from: Some(0),
+                remote: None,
             }],
             active: 0,
         });
@@ -506,5 +570,36 @@ mod tests {
         let mut m = TabModel::empty(7);
         let ids: HashSet<String> = (0..1000).map(|_| m.new_id()).collect();
         assert_eq!(ids.len(), 1000);
+    }
+}
+
+/// Remote sessions PR 3: a remote tab in the model and in what it saves.
+#[cfg(test)]
+mod remote_tests {
+    use super::*;
+
+    /// Rule 288: a remote tab saves its machine, its host tab and the output it read (never an agent of this machine),
+    /// and the save follows the live state the link writes.
+    #[test]
+    fn a_remote_tab_saves_its_host_tab_and_the_output_read() {
+        let mut m = TabModel::empty(1);
+        m.open_tab(r"C:\a");
+        m.set_agent(&m.state.tabs[0].id.clone(), Some(AgentKind::Claude));
+        let live = RemoteLive::new(None, 0);
+        let id = m.open_remote_tab(MachineTag::of_id("mac"), "/Users/max/p", live.clone());
+        m.set_agent(&id, Some(AgentKind::Claude));
+        assert_eq!(m.remote_of(&id).map(|t| t.id.as_str()), Some("mac"));
+        let s = m.saved();
+        assert_eq!(s.tabs[1].agent, None);
+        assert_eq!(s.tabs[1].remote.as_ref().unwrap().host_tab, None);
+        live.set_host_tab("t9");
+        live.set_seq(77);
+        let s = m.saved();
+        let r = s.tabs[1].remote.as_ref().unwrap();
+        assert_eq!((r.host_tab.as_deref(), r.last_seq), (Some("t9"), 77));
+        assert_eq!(s.tabs[0].agent, Some(AgentKind::Claude));
+        assert_eq!(s.active, 1);
+        assert!(m.close(&id));
+        assert!(m.remote_live(&id).is_none());
     }
 }

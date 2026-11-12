@@ -201,10 +201,31 @@ impl TabHost {
             shell_id: shell_id.clone(),
             resume: valid.map(str::to_string),
             plugin: self.plugin_env(),
+            remote: None,
         });
         self.handles.insert(id.to_string(), handle);
         self.order.push(id.to_string());
         self.shell_ids.insert(id.to_string(), shell_id);
+    }
+
+    /// A remote tab (remote sessions PR 3, rule 287): a handle at the current grid size whose session is the host's,
+    /// shown through a `RemotePty`. The folder is the host's: it is not remembered among this machine's folders, and
+    /// no shell, resume or plugin of this machine is named (rules 290, 291).
+    pub fn spawn_remote(&mut self, id: &str, spec: flare_term::remote_pty::RemoteSpec) {
+        if self.handles.contains_key(id) {
+            return;
+        }
+        let (cols, rows) = self.dims;
+        let handle = TermHandle::new(id, Arc::clone(&self.mgr), cols, rows);
+        handle.set_waker(Arc::clone(&self.waker));
+        handle.start(StartOptions {
+            root: spec.folder.clone(),
+            remote: Some(spec),
+            ..StartOptions::default()
+        });
+        self.handles.insert(id.to_string(), handle);
+        self.order.push(id.to_string());
+        self.shell_ids.insert(id.to_string(), None);
     }
 
     pub fn handle(&self, id: &str) -> Option<Arc<TermHandle>> {
@@ -401,11 +422,9 @@ impl TabHost {
             .collect()
     }
 
-    /// Kills every handle and every spare, then waits (3 s cap) for the shells to be gone.
+    /// Kills every local shell and every spare, lets go of every remote tab (its host session goes on, rule 288), then
+    /// waits (3 s cap) for the shells to be gone. `kill_all` does both, so no tab is killed one by one here.
     pub fn shutdown(&mut self) -> bool {
-        for h in self.handles.values() {
-            h.kill();
-        }
         self.handles.clear();
         self.order.clear();
         self.shell_ids.clear();
@@ -519,6 +538,42 @@ mod tests {
         assert_eq!(h.handle("t1").unwrap().size(), (90, 25));
         assert!(!sp.made()[0].killed());
         assert!(h.handle("t1").is_some());
+    }
+
+    /// Rules 287, 288, 291: a remote tab runs over the spawner's remote side, never a local shell or a spare; its host
+    /// folder is not remembered among this machine's folders; the quit lets go of its session and never closes it.
+    #[test]
+    fn a_remote_tab_never_starts_a_local_shell_and_the_quit_leaves_its_session() {
+        let sp = FakeSpawner::new();
+        let remote = flare_term::fake::FakeRemote::new();
+        let prefs = PrefStore::memory();
+        let mut h = TabHost::new(
+            Arc::new(flare_term::pty::RoutingSpawner {
+                local: sp.clone(),
+                remote: remote.clone(),
+            }),
+            FakeShells::new(),
+            prefs.clone(),
+            Arc::new(|| {}),
+            None,
+        );
+        h.spawn_remote(
+            "r1",
+            flare_term::remote_pty::RemoteSpec {
+                machine: "mac".into(),
+                folder: "/Users/max/proj".into(),
+                live: flare_term::remote_pty::RemoteLive::default(),
+            },
+        );
+        wait_until("the remote pty", || remote.made().len() == 1);
+        assert!(sp.made().is_empty());
+        assert!(recent_roots(&prefs).is_empty());
+        assert!(h.handle("r1").is_some());
+        assert!(h.shutdown());
+        assert_eq!(
+            remote.made()[0].1.leaving(),
+            Some(flare_term::remote_pty::Leaving::Detach)
+        );
     }
 
     #[test]

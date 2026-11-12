@@ -969,6 +969,66 @@ turn included; a call whose turn comes after it is answered `timeout` and never 
 `on_anchor`). Held by `a_slow_open_never_holds_up_typing_or_the_polls` and
 `a_call_late_for_its_turn_is_never_sent_and_a_timeout_keeps_the_anchor`. Source: review of remote sessions PR 2
 (2026-11-12).
+287. **A remote tab is a `TabKind::Shell` with a `remote` field; it owns a `RemotePty`, never a local pty.** Amends rule
+45: a tab is still one shell and one folder, but a remote tab's shell and folder are the host's. `Tab.remote:
+Option<MachineTag>` marks it, so every `kind == Shell` site keeps working, and the sites that would act on this
+machine's files or processes skip it: no file link of a remote tab is opened, previewed or offered (`TabInfo.remote`),
+a file dropped on it is not typed, its `localhost` gets no live-preview chip, its folder is never statted at restore
+and never joins the recent folders, `cd` does nothing, and `live_pids` leaves it out (its pid is 0, no process here).
+The spec decides the pty in one place, `RoutingSpawner` (`SpawnSpec.remote`); `PortableSpawner` refuses a remote spec.
+Typing reaches the link as intents (`decode_typing` turns the bytes the tab wrote back into keys, text and pastes, and
+drops what is no typing); the emulator's answers stay here (`SessionManager::write_reply`). Native:
+`crates/flare-term/src/pty.rs`, `remote_pty.rs`, `session.rs` (`spawn_remote_reserved`), `crates/flare-tabs/src/tabs.rs`,
+`crates/flare/src/tab_host.rs` (`spawn_remote`), `term_ui.rs`, `appctl/surfaces7.rs`. Held by
+`a_remote_tab_never_starts_a_local_shell_or_takes_a_spare_and_carries_no_token`,
+`typing_reaches_the_link_as_intents_and_replies_stay_here`, `decoded_typing_encodes_to_the_same_bytes_on_the_host`,
+`mouse_focus_and_string_sequences_are_never_sent`,
+`a_remote_tab_never_starts_a_local_shell_and_the_quit_leaves_its_session` and
+`a_remote_tab_shows_the_hosts_output_and_takes_typing`. Source: remote sessions PR 3 (2026-11-12).
+288. **A viewer's disconnect, quit or restart never ends the host session; the restore attaches again and is not new
+work.** Rules 37 and 38 for a remote tab. Closing the tab (`kill`) sends `remote.close`, which asks on the host as any
+close does (rule 48), and is still taken to the host when the link was down. The quit (`kill_all`, through
+`PtyProcess::leave`) and a dropped pty only send `remote.detach`; a broken link only waits (1 s, doubling to 30 s) and
+attaches again from the output number it read, no byte twice. `tabs.json` keeps a remote tab as `remote: {machine,
+host_tab, last_seq}` (no agent: the host owns the resume); `last_seq` alone is no reason to write the file. The restore
+never stats the host's folder, attaches to `host_tab` (a new tab only when the host never answered), starts from
+`remote.snapshot` since this machine's screen is empty, and counts as touched (`AgentHub::on_remote_tab`). A host tab
+that is gone ends the tab as a shell that exits. A shape it does not know reads as a local tab (rule 40). Native:
+`crates/flare-term/src/remote_pty.rs` (`Leaving`), `session.rs` (`end_pty`), `crates/flare-tabs/src/restore.rs`
+(`SavedRemote`), `model.rs`, `crates/flare/src/remote_link.rs`, `appctl.rs` (`restored`, `start_remote`). Held by
+`the_quit_detaches_a_remote_tab_and_a_close_closes_it`, `a_close_ends_the_host_session_and_a_leave_only_detaches`,
+`a_dead_link_never_holds_a_close`, `a_reconnect_goes_on_from_the_number_read_with_no_byte_twice`,
+`a_gap_after_a_reconnect_takes_a_snapshot`, `a_restored_tab_attaches_to_its_host_tab_and_opens_none`,
+`a_host_tab_that_is_gone_ends_the_tab`, `a_remote_tab_round_trips_through_tabs_json_beside_a_local_one`,
+`the_restore_keeps_a_remote_tab_without_a_stat_and_attaches_it`, `a_remote_tab_saves_its_host_tab_and_the_output_read`
+and the e2e `remoteViewer`. Source: remote sessions PR 3 (2026-11-12).
+289. **Replayed output never raises an agent mark.** What a remote tab shows as it attaches is the past: the snapshot is
+plain text (`plain_snapshot` takes every sequence out of it), and what a reconnect catches up on has the agent's
+signals (OSC 777, OSC 7501) taken out (`SignalStrip`, which keeps a signal cut across the end of the replay out whole).
+The hub reads a remote tab's screen as blank (no question box or background work is read off a replayed screen), keeps
+no question watch for it, is blind to it in the process poll, and does not score its first 3 s of output as work. Live
+output keeps its signals. The host's own state crosses the link as words in PR 4 (`remote.status`). Native:
+`crates/flare-term/src/remote_pty.rs` (`SignalStrip`, `plain_snapshot`), `crates/flare/src/remote_link.rs`
+(`catch_up`), `agent_hub.rs` (`on_remote_tab`, `HandleScreen`). Held by `signals_are_taken_out_of_replayed_output_only`,
+`a_snapshot_is_text_with_no_sequence_of_its_own`, `a_catch_up_carries_no_agent_signal_and_live_output_does` and
+`a_remote_tabs_replay_raises_no_mark_and_live_output_does`. Source: remote sessions PR 3 (2026-11-12).
+290. **No token and no environment cross the link.** A remote tab's spec has no command line, no environment and no
+`FLARE_TAB_TOKEN` (its session's control secret is empty, which no lookup matches); the host starts its shell with its
+own `pty_env` (rule 12). The link is `ssh -o BatchMode=yes -T [-l user] -- <host> <command>`, every part an argv item
+of its own and the host and user checked to be plain words that cannot be read as an option; the command is the host's
+Flare path quoted for its login shell (single quotes for a Mac's sh, double quotes for a PC's cmd, no `&&`, a path that
+cmd would expand refused) and `--serve-remote`, nothing else. ssh is started by its absolute path (rule 1) with no
+console window. Native: `crates/flare-term/src/session.rs` (`spawn_remote_reserved`), `crates/flare/src/remote_link.rs`
+(`ssh_argv`, `remote_command`, `SshConnector`). Held by
+`a_remote_tab_never_starts_a_local_shell_or_takes_a_spare_and_carries_no_token`,
+`the_ssh_command_is_argv_items_quoted_for_the_hosts_shell` and
+`machines_json_keeps_good_machines_and_reads_an_unknown_kind_as_none`. Source: remote sessions PR 3 (2026-11-12).
+291. **A remote spawn never uses a warm spare and never mints a `FLARE_TAB_TOKEN`.** A spare is a local shell with a
+local secret; a remote tab adopts none and makes none (`spawn_remote_reserved` reads no shell list, takes no spare and
+makes no `ShellTokens`), and the windows-only kill answer to ConPTY's opening questions is never sent to a remote tab's
+writer (it would read as keys). Native: `crates/flare-term/src/session.rs`. Held by
+`a_remote_tab_never_starts_a_local_shell_or_takes_a_spare_and_carries_no_token` and
+`the_quit_detaches_a_remote_tab_and_a_close_closes_it`. Source: remote sessions PR 3 (2026-11-12).
 
 ## macOS port
 

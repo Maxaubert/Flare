@@ -136,7 +136,9 @@ impl AppCtl {
     /// news. One lock on the emulator, which reads its own screen at most every 40 ms (see `Emulator::dev_state`); a
     /// comparison of counters here.
     pub(super) fn dev_read(&mut self, tab: &str) {
-        if !dev_preview(&self.prefs) {
+        // A remote tab's `localhost` is the host's, not this machine's: no live preview chip for it (remote sessions
+        // PR 3).
+        if !dev_preview(&self.prefs) || self.model.remote_of(tab).is_some() {
             return;
         }
         let Some(handle) = self.deps.host.handle(tab) else {

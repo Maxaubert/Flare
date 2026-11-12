@@ -50,6 +50,7 @@ mod plugin_safe;
 mod plugin_sessions;
 mod plugin_ui;
 mod remote_host;
+mod remote_link;
 mod scrollbar;
 mod serve_remote;
 mod sessions;

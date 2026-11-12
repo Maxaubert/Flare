@@ -227,6 +227,9 @@ struct Session {
     /// The output tail a remote viewer polls (remote sessions PR 2): set by the first `subscribe_tail`, then fed every
     /// batch after the sink, under `dest` (rule 281). None until someone follows the session.
     tail: Mutex<Option<crate::tail::TailHandle>>,
+    /// A remote tab's session (remote sessions PR 3): its pty is a `RemotePty`, its pid is no process of this machine,
+    /// and the answers its emulator makes stay here (the host's emulator answers the program).
+    remote: bool,
 }
 
 /// The most bytes queued for a child that has stopped reading; past it a write is dropped.
@@ -552,6 +555,9 @@ struct Fresh<'a> {
     dest: Dest,
 }
 
+/// The shell id a remote tab's session reports: no shell of this machine.
+pub const REMOTE_SHELL_ID: &str = "remote";
+
 /// Starts the process and its three threads. Holds no manager lock while it spawns.
 fn launch(sh: &Arc<Shared>, f: Fresh<'_>) -> Result<Arc<Session>, String> {
     let mut proc = sh.spawner.spawn(f.spec)?;
@@ -594,6 +600,7 @@ fn launch(sh: &Arc<Shared>, f: Fresh<'_>) -> Result<Arc<Session>, String> {
         queued: Arc::clone(&queued),
         threads: Mutex::new(Threads::default()),
         tail: Mutex::new(None),
+        remote: f.spec.remote.is_some(),
     });
     let spawn_err = |e: std::io::Error| {
         s.stop_io();
@@ -715,6 +722,12 @@ pub static WRITE_DROP_HOOK: std::sync::OnceLock<fn(u32, usize)> = std::sync::Onc
 /// Ends a session for good (the death is ours: no flush, no sink calls). Counted in `dying` until
 /// the process is gone and its threads are joined.
 fn kill_pty(sh: &Arc<Shared>, s: Arc<Session>) {
+    end_pty(sh, s, false);
+}
+
+/// `kill_pty`, or with `leave` the quit's way: the pty lets go (`PtyProcess::leave`), which for a local shell is the
+/// same kill and for a remote tab a detach that leaves the host's session running (rule 288).
+fn end_pty(sh: &Arc<Shared>, s: Arc<Session>, leave: bool) {
     if s.killed.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -730,15 +743,22 @@ fn kill_pty(sh: &Arc<Shared>, s: Arc<Session>) {
             // the pseudo console linger 1.5 to 3 s, so the quit wait runs out. The shell is dying,
             // so answer both ourselves (measured 2026-10-17: close 3 s -> under 10 ms). Windows only: a
             // macOS pty asks nothing, and the bytes would reach a program that ignores SIGHUP as input.
+            // Never for a remote tab: its writer would read the answers as keys, and no pseudo console is waiting.
             #[cfg(windows)]
-            if let Some(tx) = lk(&s2.writer_tx).take() {
+            if let Some(tx) = lk(&s2.writer_tx).take()
+                && !s2.remote
+            {
                 let _ = tx.send(b"\x1b[1;1R\x1b[?1;2c".to_vec());
             }
             #[cfg(not(windows))]
             drop(lk(&s2.writer_tx).take());
             let proc = lk(&s2.proc).take();
             if let Some(mut p) = proc {
-                p.kill();
+                if leave {
+                    p.leave();
+                } else {
+                    p.kill();
+                }
                 let t0 = Instant::now();
                 let mut poller = ExitPoller::new();
                 let mut told = false;
@@ -850,6 +870,7 @@ impl SessionManager {
             env,
             cols: size.0.min(u16::MAX as usize) as u16,
             rows: size.1.min(u16::MAX as usize) as u16,
+            remote: None,
         }
     }
 
@@ -982,6 +1003,71 @@ impl SessionManager {
         }
         if s.reported.load(Ordering::SeqCst) {
             // The shell already ended and its exit went to the sink: nothing to register.
+            return true;
+        }
+        st.sessions.insert(id.to_string(), Arc::clone(&s));
+        let want = st.desired.get(id).copied().filter(|w| *w != size);
+        drop(st);
+        if let Some((c, r)) = want {
+            self.apply_resize(&s, id, c, r);
+        }
+        true
+    }
+
+    /// `spawn_reserved` for a remote tab (remote sessions PR 3): the session owns a `RemotePty` the spawner's remote
+    /// side makes (rule 287). No shell list, no warm spare (rule 291), no tab id or control secret and no environment
+    /// (rules 290, 291): the host starts its own shell with its own. The spawner only starts the link's worker, so this
+    /// does not wait on the other machine. Returns whether the tab now has a session.
+    pub fn spawn_remote_reserved(
+        &self,
+        id: &str,
+        remote: crate::remote_pty::RemoteSpec,
+        sink: Arc<dyn SessionSink>,
+    ) -> bool {
+        let _guard = PendingGuard { sh: &self.sh, id };
+        let _starting = StartGuard::new(&self.sh);
+        let size = {
+            let st = lk(&self.sh.st);
+            if st.killed_pending.contains(id) {
+                return false;
+            }
+            Self::size_for(&st, id)
+        };
+        let spec = SpawnSpec {
+            exe: String::new(),
+            args: Vec::new(),
+            cwd: remote.folder.clone(),
+            env: Vec::new(),
+            cols: size.0.min(u16::MAX as usize) as u16,
+            rows: size.1.min(u16::MAX as usize) as u16,
+            remote: Some(remote),
+        };
+        let fresh = Fresh {
+            spec: &spec,
+            def_id: REMOTE_SHELL_ID,
+            plugin_key: String::new(),
+            tab_token: String::new(),
+            ctl_token: String::new(),
+            warm_key: None,
+            dest: Dest::Sink {
+                id: id.to_string(),
+                sink,
+            },
+        };
+        let s = match launch(&self.sh, fresh) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("could not start the remote tab: {e}");
+                return false;
+            }
+        };
+        let mut st = lk(&self.sh.st);
+        if st.killed_pending.contains(id) {
+            drop(st);
+            kill_pty(&self.sh, s);
+            return false;
+        }
+        if s.reported.load(Ordering::SeqCst) {
             return true;
         }
         st.sessions.insert(id.to_string(), Arc::clone(&s));
@@ -1126,6 +1212,21 @@ impl SessionManager {
         }
     }
 
+    /// The emulator's answer to a question the program asked (a cursor report, the device attributes, a colour): written
+    /// as `write` does, except to a remote tab, whose host emulator answers its program itself. A remote tab's answers
+    /// would reach the host late and as keys.
+    pub fn write_reply(&self, id: &str, data: &[u8]) {
+        let remote = lk(&self.sh.st).sessions.get(id).is_some_and(|s| s.remote);
+        if !remote {
+            self.write(id, data);
+        }
+    }
+
+    /// Whether the tab's session is a remote tab's.
+    pub fn is_remote(&self, id: &str) -> bool {
+        lk(&self.sh.st).sessions.get(id).is_some_and(|s| s.remote)
+    }
+
     /// The id of the shell definition the running session was spawned with.
     pub fn shell_of(&self, id: &str) -> Option<String> {
         lk(&self.sh.st).sessions.get(id).map(|s| s.def_id.clone())
@@ -1142,7 +1243,9 @@ impl SessionManager {
     /// Writes the cd line for that session's shell. Never counts as typing (decision O1).
     pub fn cd(&self, id: &str, path: &str) -> bool {
         let s = lk(&self.sh.st).sessions.get(id).cloned();
-        let Some(s) = s else { return false };
+        let Some(s) = s.filter(|s| !s.remote) else {
+            return false;
+        };
         let Some(line) = cd_command(Some(&s.def_id), path) else {
             return false;
         };
@@ -1212,7 +1315,8 @@ impl SessionManager {
         }
     }
 
-    /// Every session and every warm spare.
+    /// Every session and every warm spare: the quit. A remote tab lets go of its host session and leaves it running
+    /// (rule 288); every local shell is killed.
     pub fn kill_all(&self) {
         let all: Vec<Arc<Session>> = {
             let mut st = lk(&self.sh.st);
@@ -1225,7 +1329,7 @@ impl SessionManager {
             v
         };
         for s in all {
-            kill_pty(&self.sh, s);
+            end_pty(&self.sh, s, true);
         }
     }
 
@@ -1257,10 +1361,13 @@ impl SessionManager {
         lk(&s.proc).as_ref()?.foreground_pid()
     }
 
+    /// Each tab's shell process. A remote tab has none on this machine and is left out, so nothing here (the agent poll,
+    /// the memory watch) ever reads a process of this machine as a remote tab's.
     pub fn live_pids(&self) -> Vec<(String, u32)> {
         let st = lk(&self.sh.st);
         st.sessions
             .iter()
+            .filter(|(_, s)| !s.remote)
             .map(|(id, s)| (id.clone(), s.pid))
             .collect()
     }
@@ -2709,5 +2816,147 @@ mod tests {
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].0, "a");
         assert!(rec.events().is_empty());
+    }
+}
+
+/// Remote sessions PR 3: a remote tab's session in the manager.
+#[cfg(test)]
+mod remote_tests {
+    use super::*;
+    use crate::fake::{FakeRemote, FakeShells, FakeSpawner};
+    use crate::pty::RoutingSpawner;
+    use crate::remote_pty::{Leaving, RemoteLive, RemoteSpec};
+
+    struct NullSink;
+    impl SessionSink for NullSink {
+        fn data(&self, _: &str, _: Vec<u8>) {}
+        fn exit(&self, _: &str, _: Option<u32>) {}
+    }
+
+    fn rig() -> (Arc<SessionManager>, Arc<FakeSpawner>, Arc<FakeRemote>) {
+        let local = FakeSpawner::new();
+        let remote = FakeRemote::new();
+        let spawner = Arc::new(RoutingSpawner {
+            local: local.clone(),
+            remote: remote.clone(),
+        });
+        let opts = SessionOptions {
+            ctl: Some(CtlInstance {
+                pipe: "\\\\.\\pipe\\flare-ctl-test".into(),
+                pid: 7,
+                mcp_exe: None,
+            }),
+            base_env: Some(vec![("SECRET_HERE".into(), "x".into())]),
+            ..SessionOptions::default()
+        };
+        (
+            SessionManager::new(spawner, FakeShells::new(), opts),
+            local,
+            remote,
+        )
+    }
+
+    fn spec(machine: &str) -> RemoteSpec {
+        RemoteSpec {
+            machine: machine.into(),
+            folder: "/Users/max/proj".into(),
+            live: RemoteLive::default(),
+        }
+    }
+
+    fn spawn_remote(m: &SessionManager, id: &str) -> bool {
+        assert!(m.reserve(id));
+        m.spawn_remote_reserved(id, spec("mac"), Arc::new(NullSink))
+    }
+
+    fn wait_until(f: impl Fn() -> bool) -> bool {
+        let end = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < end {
+            if f() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        f()
+    }
+
+    /// Rules 287, 290, 291: a remote tab owns a remote pty, never a local shell or a warm spare, and carries no token,
+    /// no environment and no command line of this machine.
+    #[test]
+    fn a_remote_tab_never_starts_a_local_shell_or_takes_a_spare_and_carries_no_token() {
+        let (m, local, remote) = rig();
+        m.prewarm("/Users/max/proj", Some("pwsh"), None);
+        assert_eq!(local.made().len(), 1, "the spare");
+        assert!(spawn_remote(&m, "r1"));
+        assert_eq!(local.made().len(), 1, "no local shell, the spare not taken");
+        let made = remote.made();
+        assert_eq!(made.len(), 1);
+        let s = &made[0].0;
+        assert!(
+            s.exe.is_empty() && s.args.is_empty() && s.env.is_empty(),
+            "{s:?}"
+        );
+        assert_eq!(s.cwd, "/Users/max/proj");
+        assert_eq!(s.remote.as_ref().unwrap().machine, "mac");
+        assert_eq!(m.ctl_token("r1").as_deref(), Some(""));
+        assert_eq!(m.tab_for_ctl_token(""), None);
+        assert_eq!(m.shell_of("r1").as_deref(), Some(REMOTE_SHELL_ID));
+        assert!(m.is_remote("r1"));
+        assert!(m.live_pids().iter().all(|(id, _)| id != "r1"));
+        assert!(!m.cd("r1", "/tmp"));
+    }
+
+    /// Rule 279: typing goes as intents, and the emulator's answers never leave this machine.
+    #[test]
+    fn typing_reaches_the_link_as_intents_and_replies_stay_here() {
+        let (m, _local, remote) = rig();
+        assert!(spawn_remote(&m, "r1"));
+        let io = remote.made()[0].1.clone();
+        m.write_reply("r1", b"\x1b[1;1R\x1b[?1;2c");
+        m.write("r1", b"ls\r");
+        let mut got = Vec::new();
+        let end = Instant::now() + Duration::from_secs(3);
+        while got.len() < 2 && Instant::now() < end {
+            got.extend(io.take_outgoing(Duration::from_millis(20)).intents);
+        }
+        assert_eq!(
+            got,
+            vec![
+                crate::handle::RemoteIntent::Text("ls".into()),
+                crate::handle::RemoteIntent::Key(crate::keys::KeyEvent::new("Enter", "Enter")),
+            ]
+        );
+    }
+
+    /// Rule 288: the quit detaches a remote tab and kills a local shell; closing the tab closes the session.
+    #[test]
+    fn the_quit_detaches_a_remote_tab_and_a_close_closes_it() {
+        let (m, local, remote) = rig();
+        assert!(spawn_remote(&m, "r1"));
+        assert!(spawn_remote(&m, "r2"));
+        assert!(m.spawn("l1", "C:\\x", Some("pwsh"), Arc::new(NullSink), None, None));
+        m.kill("r1");
+        m.kill_all();
+        let t = Instant::now();
+        assert!(m.shells_gone(Duration::from_secs(3)));
+        assert!(
+            t.elapsed() < Duration::from_secs(1),
+            "a remote tab never holds the quit"
+        );
+        let made = remote.made();
+        assert_eq!(made[0].1.leaving(), Some(Leaving::Close));
+        assert_eq!(made[1].1.leaving(), Some(Leaving::Detach));
+        assert!(local.made()[0].killed());
+    }
+
+    /// The host session ended: the tab hears the exit as a local shell's.
+    #[test]
+    fn a_finished_remote_session_is_an_exit() {
+        let (m, _local, remote) = rig();
+        assert!(spawn_remote(&m, "r1"));
+        let io = remote.made()[0].1.clone();
+        io.push_output(b"bye\r\n");
+        io.finish(Some(0));
+        assert!(wait_until(|| !m.is_remote("r1")));
     }
 }

@@ -299,6 +299,32 @@ impl PtySpawner for FakeSpawner {
     }
 }
 
+/// The remote side of a spawner for tests (remote sessions PR 3): each remote spec gets a real `RemotePty` over a
+/// `RemoteIo` the test plays the link on (it takes the typing and pushes the output).
+#[derive(Default)]
+pub struct FakeRemote {
+    made: Mutex<Vec<(SpawnSpec, Arc<crate::remote_pty::RemoteIo>)>>,
+}
+
+impl FakeRemote {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Each spec spawned and its link's end, in order.
+    pub fn made(&self) -> Vec<(SpawnSpec, Arc<crate::remote_pty::RemoteIo>)> {
+        lk(&self.made).clone()
+    }
+}
+
+impl PtySpawner for FakeRemote {
+    fn spawn(&self, spec: &SpawnSpec) -> Result<Box<dyn PtyProcess>, String> {
+        let io = crate::remote_pty::RemoteIo::new();
+        lk(&self.made).push((spec.clone(), Arc::clone(&io)));
+        Ok(Box::new(crate::remote_pty::RemotePty::new(io)))
+    }
+}
+
 type Gate = Arc<(Mutex<bool>, Condvar)>;
 
 /// A shell list for tests.

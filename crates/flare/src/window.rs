@@ -1027,8 +1027,24 @@ pub fn run_window(
         // Shells are told about the channel only once its server is really serving (set below): a server
         // that failed to start leaves no tab with a secret and a pipe name someone else might own.
         let ctl_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // A remote tab's pty goes to the link (remote sessions PR 3); every other spec starts a local shell. Under
+        // --e2e a scenario may join the link to a loopback `flare --serve-remote` of another profile instead of ssh.
+        let remote_spawner = crate::remote_link::RemoteSpawner::new(
+            Arc::new(crate::remote_link::SshConnector::new(
+                &inst.profile.dir,
+                crate::remote_link::e2e_loopback(
+                    e2e::global()
+                        .env(&["FLARE_E2E", "_REMOTE_COMMAND"].concat())
+                        .as_deref(),
+                ),
+            )),
+            crate::remote_link::Timing::default(),
+        );
         let tab_host = TabHost::with_options(
-            Arc::new(PortableSpawner),
+            Arc::new(flare_term::pty::RoutingSpawner {
+                local: Arc::new(PortableSpawner),
+                remote: Arc::new(remote_spawner),
+            }),
             Arc::new(RealShells),
             prefs.clone(),
             waker,

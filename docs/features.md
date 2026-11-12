@@ -2471,3 +2471,32 @@ Plan `docs/superpowers/plans/2026-11-12-remote-sessions.md` (PR 2). Contract: `d
   and never sent, and a timeout no longer drops the connection that follows the tabs (rule 286).
 - **Not yet.** The viewer tab, reconnect and the Mac/PC tag (PR 3), status and conversation (PR 4), the hidden start of a
   host Flare that is not running (PR 5). A snapshot is plain text (no colours).
+
+## Remote sessions, PR 3: the viewer tab, reconnect and restore, 2026-11-12
+
+A Flare can now show a tab that runs on another machine. There is no menu or command to open one yet (PR 5 and PR 7):
+the machine is hand-written in the profile's `machines.json`, and only the e2e opens a tab. Plan
+`docs/superpowers/plans/2026-11-12-remote-sessions.md` (PR 3). Contract: `docs/surfaces/protocol.md` (section 1 "The
+viewer").
+
+- **A remote tab.** A shell tab whose session is the host's (`Tab.remote`, rule 287). It draws the host's output like a
+  local shell (the same batcher, emulator, scrollback and OSC parsing) through a `RemotePty`, and what is typed in it
+  goes to the host as keys, text and pastes, never raw bytes; the emulator's answers to the program stay here. Its
+  file links are not opened, a file dropped on it is not typed, its `localhost` shows no Preview chip and its folder
+  never joins the recent folders. Held by `remote_pty::tests`, `session::remote_tests` and
+  `ui_tests::term::flow::a_remote_tab_shows_the_hosts_output_and_takes_typing`.
+- **The link.** One `ssh -o BatchMode=yes -T -- <host> '<flare>' --serve-remote` per remote tab, no console window, no
+  token and no environment on the line (rule 290); `machines.json` names each machine's id, name, kind (`mac` or
+  `pc`), ssh host, user and Flare path. Output is polled every 30 ms while it flows and up to 250 ms apart when idle;
+  typing is sent at once, batched; sizes are coalesced. Held by `remote_link::tests`.
+- **Reconnect and restore.** A broken link is tried again after 1 s, then 2, 4 and up to 30 s, and the tab goes on from
+  the output it read, no line twice; a tab that fell out of the host's ring starts again from the host's screen. Closing
+  the tab closes the session on the host (asking first there, as any close); quitting Flare only lets go, and the
+  session goes on. `tabs.json` keeps the host's tab, so after a restart the tab attaches to the same session and shows
+  its screen (rule 288). Held by `remote_link::tests`, `restore::remote_tests` and the e2e `remoteViewer`.
+- **Replays raise nothing.** The host's screen and what a reconnect catches up on never raise Finished, Question or a
+  working mark here; live output still does (rule 289). Held by
+  `agent_hub::tests::a_remote_tabs_replay_raises_no_mark_and_live_output_does`.
+- **Not yet.** Opening a remote tab from the + menu, a command or an agent (PR 5, PR 7), the host's status words and the
+  conversation view (PR 4), file links and file drops over the link (PR 6), the Mac/PC logo on the tab (PR 7). Typing
+  while the link is down is not kept, and a remote tab shows no colours after a reconnect from a snapshot.
