@@ -834,14 +834,12 @@ pub fn prompt_layout(ctx: &mut Ctx) -> Result<(), String> {
 
     // The shell redraws its prompt for the new width on its own time: a few seconds for it, never a pass on a
     // prompt that stays broken.
-    let end = Instant::now() + Duration::from_secs(5);
-    let last = loop {
-        let last = last_line(&mut app, &front);
-        if prompt_is_last(&last) || Instant::now() > end {
-            break last;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
+    // A miss is the check's answer below, so `poll`, not `until`: it records no timeout of its own.
+    let mut last = String::new();
+    ctx.poll(5_000, &mut || {
+        last = last_line(&mut app, &front);
+        prompt_is_last(&last)
+    });
     ctx.ok(
         prompt_is_last(&last),
         format!("the prompt is whole after a narrow-then-wide resize (\"{last}\")"),

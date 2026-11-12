@@ -2804,3 +2804,23 @@ redraw after the resize 5 s, failing on a prompt that stays broken. Native:
 `crates/flare-web/src/macos/probe/parity.rs`, `tools/e2e/src/scenarios/lifecycle.rs`. Held by
 `mini_apps_load_and_paint_and_pages_follow_the_apps_appearance_on_cef` and the promptLayout scenario. Source: CI run
 43147800100 on main (2026-11-12).
+1185. **macOS: while CEF has a browser, the web host keeps a turn of CEF's work at most 33 ms away.** CI's macOS VM
+failed `app-loop.open` twice (run 43165739212, run 43168171020): the panel loaded (`Title`, `Loaded ok`) but never
+painted in 10 s, and once its next navigation got only as far as `Loading` for 20 s; the next host's view then loaded
+and painted at once. CEF's main-thread tasks run only in `do_message_loop_work` (a probe that never called it loaded
+nothing), and CEF asks for that turn (`on_schedule_message_pump_work`) only when a task is posted: in a probe run all
+152 asks were delay 0, none for its delayed work, so its timers (the windowless view's frame clock, a navigation's
+later steps) ran only when some other ask came. A fast Mac's traffic of asks hid it; a slow or busy Mac stalls, until
+another view's turns (`retry_while_waiting`) drain it. `WebHost::keep_turning` now schedules a turn 1000/30 ms after
+every pump while the host has a view or a browser closing, as CEF's own external-pump sample does
+(`MainMessageLoopExternalPump`, `kMaxTimerDelay`); with no panel there are no turns. Native:
+`crates/flare-web/src/macos/host.rs`. Held by the probe's `app-loop.idle-turns` (a quiet page gets at least 30 turns
+in 2 s: about 64 with it, 9 without) beside `app-loop.open` and `app-loop.navigate`. Source: CI run 43168171020 on
+fix/main-ci-green-2 (2026-11-12).
+1186. **macOS: a helper is known only once its arguments say what it is.** The helper watcher (rule 1158) marked every
+child it saw as looked at before reading its arguments, so a child read before its exec (still this process's
+arguments) or before they could be read was taken for good as no helper, and its crash never became a note:
+`a_helper_that_crashes_is_reported_...` failed about one run in two on a Mac mini, and `app-loop.gpu-note` now and
+then. A child that is not yet a helper is read again at the next look. Native: `crates/flare-cef/src/macos/helpers.rs`.
+Held by `a_helper_that_crashes_is_reported_and_one_that_exits_cleanly_or_at_shutdown_is_not` (12 of 12 after) and
+`app-loop.gpu-note`. Source: fix/main-ci-green-2 (2026-11-12).

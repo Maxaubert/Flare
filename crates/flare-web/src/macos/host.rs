@@ -59,6 +59,10 @@ use crate::walls::{self, BINDING, DEAD_PROXY, Decision, Kind, NO_BYPASS};
 /// How soon the host turns again while a view waits for CEF ([`WebHost::retry_while_waiting`]).
 const WAITING_TURN: Duration = Duration::from_millis(20);
 
+/// The longest CEF waits for a turn of its work while it has a browser ([`WebHost::keep_turning`]): CEF's own
+/// external pump sample (cefclient's `MainMessageLoopExternalPump`, `kMaxTimerDelay`) never waits longer.
+const CEF_BACKSTOP: Duration = Duration::from_millis(1000 / 30);
+
 /// The longest message a mod's page may post when its plugin has no budget (the Windows host's).
 const MAX_PAGE_MESSAGE: usize = 4 * 1024 * 1024;
 
@@ -912,6 +916,23 @@ impl WebHost {
             .any(|v| v.live.as_ref().is_none_or(|l| !l.armed));
         if waiting {
             (s.schedule())(i64::try_from(WAITING_TURN.as_millis()).unwrap_or(20));
+        }
+    }
+
+    /// CEF's next turn at most [`CEF_BACKSTOP`] away while it has a browser of this host (or one still closing).
+    /// CEF asks for a turn (`on_schedule_message_pump_work`) when a task is posted to its main thread, but never for
+    /// its delayed work (a probe of 152 asks saw only delay 0): its timers (the windowless view's frame clock, a
+    /// navigation's later steps) ran only in a turn something else happened to ask for. On a slow Mac (GitHub's 3-core
+    /// VM; Max's busy one) a page loaded, then never painted and its next navigation never committed, until another
+    /// view's turns came (rule 1185). CEF's own sample keeps such a turn too.
+    fn keep_turning(&self) {
+        let Some(s) = self.scheduler() else { return };
+        let closing = match &self.engine {
+            EngineState::Ready(cef) => !cef.closing.borrow().is_empty(),
+            _ => false,
+        };
+        if !self.views.is_empty() || !self.closing.is_empty() || closing {
+            (s.schedule())(i64::try_from(CEF_BACKSTOP.as_millis()).unwrap_or(33));
         }
     }
 
@@ -1884,6 +1905,7 @@ impl WebBackend for WebHost {
         self.flush();
         self.take_replies();
         self.take_popups();
+        self.keep_turning();
     }
 
     fn runtime_checked(&mut self, result: Result<String, String>) {
