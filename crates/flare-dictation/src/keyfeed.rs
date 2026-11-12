@@ -3,7 +3,10 @@
 //! mask rule (N14), and the feed that keeps the modifier flags the hook reports and turns every
 //! down, up, "another key", Esc and tick into the reducer's events (N16).
 
-use crate::hotkey::{reduce_key, Hotkey, KeyAction, KeyChord, KeyConfig, KeyEvt, KeyState, Phase};
+use crate::hotkey::{
+    extra_cancel, reduce_key, Hotkey, KeyAction, KeyChord, KeyConfig, KeyEvt, KeyState, Phase,
+    EXTRA_MODIFIER,
+};
 use std::collections::HashSet;
 
 /// One line of the hook's output, or a key event the hook has already decoded.
@@ -17,6 +20,9 @@ pub enum HookEvent {
     },
     /// Another key went down while a binding key is held (its identity is never reported).
     Other,
+    /// A modifier the binding does not name is down: it went down while a binding key is held, or it was
+    /// already down when a binding key went down (Shift before Ctrl+Cmd). Never which one.
+    Extra,
     /// A digit 1 to 9 while the picker is open.
     Digit(u8),
     /// Escape while the picker is open, or as a key of the binding.
@@ -124,6 +130,7 @@ pub fn parse_helper_line(line: &str) -> Option<HookEvent> {
         "failed" => return Some(HookEvent::Failed),
         "waiting" => return Some(HookEvent::Waiting),
         "o" => return Some(HookEvent::Other),
+        "m" => return Some(HookEvent::Extra),
         "x" => return Some(HookEvent::Esc),
         _ => {}
     }
@@ -179,6 +186,8 @@ pub fn parse_helper_line(line: &str) -> Option<HookEvent> {
 pub struct KeyFeed {
     state: KeyState,
     held: HashSet<String>,
+    /// The last event cost a press to another key or modifier: `"key"` or `"modifier"` (for the diag log).
+    cancel: Option<&'static str>,
 }
 
 impl KeyFeed {
@@ -186,6 +195,7 @@ impl KeyFeed {
         KeyFeed {
             state: KeyState::initial(),
             held: HashSet::new(),
+            cancel: None,
         }
     }
 
@@ -207,15 +217,21 @@ impl KeyFeed {
 
     fn run(&mut self, evt: KeyEvt, c: &KeyConfig) -> Option<KeyAction> {
         let r = reduce_key(&self.state, &evt, c);
+        self.cancel = extra_cancel(&self.state, &r.state, &evt, c);
         self.state = r.state;
         r.action
     }
 
     /// One hook line's event, at the host's clock. Digits and lines that are not keys do nothing here.
     pub fn feed(&mut self, e: &HookEvent, at: f64, c: &KeyConfig) -> Option<KeyAction> {
+        self.cancel = None;
         match e {
             HookEvent::Other => {
                 let chord = self.chord("Other", false, at);
+                self.run(KeyEvt::Down(chord), c)
+            }
+            HookEvent::Extra => {
+                let chord = self.chord(EXTRA_MODIFIER, false, at);
                 self.run(KeyEvt::Down(chord), c)
             }
             HookEvent::Esc => {
@@ -240,6 +256,12 @@ impl KeyFeed {
             }
             HookEvent::Digit(_) | HookEvent::Ready | HookEvent::Failed | HookEvent::Waiting => None,
         }
+    }
+
+    /// Whether the last event fed cancelled a press because another key or modifier was down: `"key"` or
+    /// `"modifier"`, never which. Taken once.
+    pub fn take_cancel(&mut self) -> Option<&'static str> {
+        self.cancel.take()
     }
 
     /// The host's tick, one a little after the hold time is up (the reducer decides on it).
@@ -271,6 +293,7 @@ impl KeyFeed {
     pub fn reset(&mut self) {
         self.state = KeyState::initial();
         self.held.clear();
+        self.cancel = None;
     }
 }
 
@@ -434,5 +457,43 @@ mod tests {
         assert_eq!(f.feed(&key(true, "F9"), 0.0, &c), Some(KeyAction::Start));
         f.feed(&key(false, "F9"), 50.0, &c);
         assert_eq!(f.feed(&HookEvent::Esc, 400.0, &c), Some(KeyAction::Cancel));
+    }
+
+    #[test]
+    fn a_modifier_the_binding_does_not_name_cancels_a_ctrl_win_press_in_hold_and_toggle() {
+        // The hook's lines for Cmd+Shift+S as Karabiner's Cmd+Ctrl+Shift+4 (Ctrl+Win+Shift+S on Windows):
+        // Win down, Ctrl down, then "a modifier the binding does not name is down"; the S or 4 may never come.
+        for mode in [DictMode::Hold, DictMode::Toggle] {
+            let c = cfg(default_hotkey(), mode);
+            let mut f = KeyFeed::new();
+            assert_eq!(f.feed(&key(true, "MetaLeft"), 0.0, &c), None);
+            assert_eq!(f.take_cancel(), None);
+            assert_eq!(f.feed(&key(true, "ControlLeft"), 10.0, &c), None);
+            assert_eq!(f.feed(&HookEvent::Extra, 10.0, &c), None);
+            assert_eq!(f.take_cancel(), Some("modifier"));
+            assert_eq!(f.take_cancel(), None, "taken once");
+            assert!(!f.arming() && !f.listening(), "{mode:?}");
+            assert_eq!(f.tick(220.0, &c), None);
+            assert_eq!(f.feed(&key(false, "ControlLeft"), 300.0, &c), None);
+            assert_eq!(f.feed(&key(false, "MetaLeft"), 310.0, &c), None);
+            // Ctrl+Win alone afterwards still works.
+            f.feed(&key(true, "ControlLeft"), 2000.0, &c);
+            f.feed(&key(true, "MetaLeft"), 2010.0, &c);
+            let started = if mode == DictMode::Hold {
+                f.tick(2220.0, &c)
+            } else {
+                f.feed(&key(false, "MetaLeft"), 2100.0, &c)
+            };
+            assert_eq!(started, Some(KeyAction::Start), "{mode:?}");
+        }
+        // Another key is a key.
+        let c = cfg(default_hotkey(), DictMode::Toggle);
+        let mut f = KeyFeed::new();
+        f.feed(&key(true, "ControlLeft"), 0.0, &c);
+        f.feed(&key(true, "MetaLeft"), 10.0, &c);
+        f.feed(&HookEvent::Other, 30.0, &c);
+        assert_eq!(f.take_cancel(), Some("key"));
+        assert_eq!(f.feed(&key(false, "MetaLeft"), 100.0, &c), None);
+        assert_eq!(parse_helper_line("m"), Some(HookEvent::Extra));
     }
 }

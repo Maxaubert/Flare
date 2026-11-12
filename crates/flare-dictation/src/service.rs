@@ -793,6 +793,13 @@ impl Service {
             }
         }
         let a = self.feed.feed(&h, now, &self.key_config());
+        if let Some(kind) = self.feed.take_cancel() {
+            // Ctrl+Cmd inside Cmd+Ctrl+Shift+4 (a region screenshot) is not dictation: say why nothing
+            // happened, by kind only.
+            fx.push(SvcEffect::Crumb(
+                json!({ "cancel": "extra", "kind": kind, "from": "hook" }),
+            ));
+        }
         self.act(fx, a);
         self.clear_tick(fx);
         if self.feed.arming() {
@@ -1427,6 +1434,34 @@ mod tests {
             level: 0.0,
             starting: false,
         })
+    }
+
+    #[test]
+    fn ctrl_win_with_an_extra_modifier_from_the_hook_starts_nothing_and_logs_the_kind() {
+        let mut s = Service::new(opts(false, true));
+        s.start();
+        s.on(
+            SvcEvent::Config(cfg(default_hotkey(), DictMode::Toggle)),
+            0.0,
+        );
+        s.on(SvcEvent::Hook(HookEvent::Ready), 1.0);
+        let k = |down: bool, code: &str| {
+            SvcEvent::Hook(HookEvent::Key {
+                down,
+                code: code.into(),
+                front: down.then_some(1),
+            })
+        };
+        let mut fx = s.on(k(true, "MetaLeft"), 10.0);
+        fx.extend(s.on(k(true, "ControlLeft"), 20.0));
+        fx.extend(s.on(SvcEvent::Hook(HookEvent::Extra), 20.0));
+        assert!(has(
+            &fx,
+            &SvcEffect::Crumb(json!({ "cancel": "extra", "kind": "modifier", "from": "hook" }))
+        ));
+        fx.extend(s.on(k(false, "ControlLeft"), 100.0));
+        fx.extend(s.on(k(false, "MetaLeft"), 110.0));
+        assert!(!started_ctl(&fx), "{fx:?}");
     }
 
     #[test]

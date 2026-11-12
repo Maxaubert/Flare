@@ -153,6 +153,17 @@ fn the_web_panel_on_cef_navigates_draws_takes_input_and_holds_its_walls_with_no_
     );
 }
 
+/// Rule 1152: the window pumps the host only when told (CEF's own work runs in AppKit's run loop), and drops it
+/// when the last panel closes; a panel must still load and paint, the first and the one after.
+#[test]
+fn a_web_panel_turned_as_the_window_turns_loads_and_paints_and_again_after_the_last_closed() {
+    let run = run_probe("app-loop");
+    assert_clean(
+        &run,
+        &["app-loop.open", "app-loop.navigate", "app-loop.reopen"],
+    );
+}
+
 #[test]
 fn mini_apps_mods_and_plugin_views_on_cef_keep_their_walls_against_the_network_observers() {
     let run = run_probe("walls");

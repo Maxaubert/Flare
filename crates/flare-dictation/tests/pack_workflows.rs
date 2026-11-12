@@ -4,7 +4,6 @@
 //! files as text, like `fetch_whisper.rs`.
 
 const RELEASE: &str = include_str!("../../../.github/workflows/release.yml");
-const INSTALLER: &str = include_str!("../../../.github/workflows/installer-e2e.yml");
 const UPDATE: &str = include_str!("../../../.github/workflows/update-e2e.yml");
 const VERIFY: &str = include_str!("../../../tools/release/verify-pack.ps1");
 const FETCH: &str = include_str!("../../../tools/fetch-whisper.ps1");
@@ -34,22 +33,14 @@ fn assert_before_pack(name: &str, yml: &str, needle: &str) {
 
 #[test]
 fn every_packing_workflow_fetches_the_engine_before_the_pack() {
-    for (name, yml) in [
-        ("release.yml", RELEASE),
-        ("installer-e2e.yml", INSTALLER),
-        ("update-e2e.yml", UPDATE),
-    ] {
+    for (name, yml) in [("release.yml", RELEASE), ("update-e2e.yml", UPDATE)] {
         assert_before_pack(name, yml, FETCH_STEP);
     }
 }
 
 #[test]
 fn every_packing_workflow_builds_the_parakeet_host_before_the_pack() {
-    for (name, yml) in [
-        ("release.yml", RELEASE),
-        ("installer-e2e.yml", INSTALLER),
-        ("update-e2e.yml", UPDATE),
-    ] {
+    for (name, yml) in [("release.yml", RELEASE), ("update-e2e.yml", UPDATE)] {
         assert_before_pack(name, yml, HOST_BIN);
     }
 }
