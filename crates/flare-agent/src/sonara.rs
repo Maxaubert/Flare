@@ -6,7 +6,7 @@
 //! the `FLARE_TAB_ID` its shell carries.
 //!
 //! Only to 127.0.0.1, only when Sonara wrote its `runtime.json` (its home is `SONARA_HOME`, else
-//! `%LOCALAPPDATA%\Sonara`). No Sonara: nothing is sent and nothing fails. Every failure is quiet; the
+//! `%LOCALAPPDATA%\Sonara`, on the Mac `~/Library/Application Support/Sonara`). No Sonara: nothing is sent and nothing fails. Every failure is quiet; the
 //! caller gets false. The request is hand-written HTTP/1.1 over `std::net`, with no HTTP dependency
 //! (decision D9). The calls block, so they run on a worker thread.
 
@@ -25,14 +25,29 @@ const LOOPBACK: Ipv4Addr = Ipv4Addr::LOCALHOST;
 /// The most of the status line that is read.
 const STATUS_LIMIT: usize = 1024;
 
-/// `SONARA_HOME`, else `%LOCALAPPDATA%\Sonara`, else None. `env` is how the test injects variables.
+/// `SONARA_HOME`, else Sonara's own home on this platform, else None. `env` is how the test injects
+/// variables.
 pub fn sonara_home(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
     if let Some(home) = env("SONARA_HOME").filter(|h| !h.is_empty()) {
         return Some(PathBuf::from(home));
     }
+    platform_home(env)
+}
+
+/// Windows: `%LOCALAPPDATA%\Sonara`.
+#[cfg(not(target_os = "macos"))]
+fn platform_home(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
     env("LOCALAPPDATA")
         .filter(|l| !l.is_empty())
         .map(|local| PathBuf::from(local).join("Sonara"))
+}
+
+/// The Mac: `~/Library/Application Support/Sonara`, where Sonara 0.38.0 and later keep their home.
+#[cfg(target_os = "macos")]
+fn platform_home(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    env("HOME")
+        .filter(|h| !h.is_empty())
+        .map(|h| PathBuf::from(h).join("Library/Application Support/Sonara"))
 }
 
 /// The port and token Sonara wrote in its `runtime.json`.
@@ -257,6 +272,28 @@ mod tests {
         ShownQuestion::Text(s.to_string())
     }
 
+    /// On the Mac Sonara's home is `~/Library/Application Support/Sonara` (Sonara 0.38.0): Flare looked
+    /// in `%LOCALAPPDATA%` only, never found it, and Sonara did not follow the questions on screen
+    /// (2026-11-12).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn on_the_mac_sonara_is_found_in_application_support() {
+        let both = |k: &str| match k {
+            "SONARA_HOME" => Some("/s".to_string()),
+            "HOME" => Some("/Users/u".to_string()),
+            _ => None,
+        };
+        assert_eq!(sonara_home(&both), Some(PathBuf::from("/s")));
+        let home_only = |k: &str| (k == "HOME").then(|| "/Users/u".to_string());
+        assert_eq!(
+            sonara_home(&home_only),
+            Some(PathBuf::from("/Users/u/Library/Application Support/Sonara"))
+        );
+        let none = |_: &str| None;
+        assert_eq!(sonara_home(&none), None);
+    }
+
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn home_is_sonara_home_else_localappdata_sonara_else_none() {
         let both = |k: &str| match k {
