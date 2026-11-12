@@ -2922,5 +2922,7 @@ after (dev Mac 2026-11-12). DEC 2026 synchronized output was already honoured by
 `a_slow_redraw_still_presents_no_blank_line`, `a_hidden_caret_holds_a_lone_redraw_until_shown`,
 `a_half_drawn_line_waits_at_most_the_window`, `a_plain_echo_still_leaves_at_once`,
 `the_scan_follows_caret_erase_and_cut_sequences` (`batcher`), `a_single_echo_still_reaches_the_sink_within_the_budget`
-and `a_prompt_redraw_reaches_the_sink_whole` (`session`). Number 1188 was left for a parallel PR. Source: Max,
-2026-11-12.
+and `a_prompt_redraw_reaches_the_sink_whole` (`session`). That session test runs on real threads with the settle
+stretched to 25 ms (`SessionOptions::redraw_settle`), so a loaded CI runner that stalls a thread past 2 ms cannot
+split the pair (macOS CI run 43258287798 split 3 of 20 at the real 2 ms); the real 2 ms is held on a fake clock
+by the `batcher` tests. Number 1188 was left for a parallel PR. Source: Max, 2026-11-12.

@@ -1176,15 +1176,30 @@ pub fn picked_ground(ctx: &mut Ctx) -> Result<(), String> {
         Shell::PowerShell,
         prompt_timeout(Shell::PowerShell),
     );
-    type_line(&mut app, "cls");
-    ctx.until("the screen to clear", 6_000, &mut || {
+    // A second line on screen first, so "one row left" can only mean the clear has happened: a
+    // lone prompt before `cls` ran, or a blank grid between its erase and the next prompt, matched
+    // the old "at most one row" wait, and the row below found no prompt to measure (0.0:1, CI run
+    // 43258287798).
+    type_line(&mut app, "'flare-mark'");
+    ctx.until("the mark to print", 6_000, &mut || {
         probe(&mut app, "grid.text", Value::Null)["rows"]
             .as_array()
             .is_some_and(|r| {
                 r.iter()
-                    .filter(|l| l.as_str().is_some_and(|s| !s.trim().is_empty()))
-                    .count()
-                    <= 1
+                    .any(|l| l.as_str().map(str::trim) == Some("flare-mark"))
+            })
+    });
+    type_line(&mut app, "cls");
+    ctx.until("the screen to clear to a fresh prompt", 6_000, &mut || {
+        probe(&mut app, "grid.text", Value::Null)["rows"]
+            .as_array()
+            .is_some_and(|r| {
+                let lines: Vec<&str> = r
+                    .iter()
+                    .filter_map(|l| l.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .collect();
+                lines.len() == 1 && lines[0].trim_start().starts_with("PS ")
             })
     });
     let before = row_ink(ctx, &mut app, "before", &|l| {

@@ -5,7 +5,9 @@
 //! banner until a tab adopts it. Nothing here waits on the caller's thread except `spawn` and
 //! `prewarm`, which say so.
 
-use crate::batcher::{BATCH_MAX_BYTES, BATCH_WINDOW, OutputBatcher, READ_MIN, ReadSizer};
+use crate::batcher::{
+    BATCH_MAX_BYTES, BATCH_WINDOW, OutputBatcher, READ_MIN, REDRAW_SETTLE, ReadSizer,
+};
 use crate::exit_poll::{ExitPoller, PollStep};
 use crate::pty::{PtyProcess, PtySpawner, SpawnSpec};
 use crate::spare_opening::{OPENING_CURSOR_REPLY, Opening, scan_opening};
@@ -63,6 +65,8 @@ pub struct SessionOptions {
     pub resize_retry_delay: Duration,
     pub resize_retries: u32,
     pub batch_window: Duration,
+    /// How long a lone chunk that leaves a line half drawn waits for the pty to go quiet (rule 1189).
+    pub redraw_settle: Duration,
     pub warm_max: usize,
     pub warm_banner_cap: usize,
     pub exit_grace: Duration,
@@ -133,6 +137,7 @@ impl Default for SessionOptions {
             resize_retry_delay: Duration::from_millis(300),
             resize_retries: 5,
             batch_window: BATCH_WINDOW,
+            redraw_settle: REDRAW_SETTLE,
             warm_max: 2,
             warm_banner_cap: 65_536,
             exit_grace: Duration::from_millis(100),
@@ -561,7 +566,8 @@ fn launch(sh: &Arc<Shared>, f: Fresh<'_>) -> Result<Arc<Session>, String> {
         reported: AtomicBool::new(false),
         proc: Mutex::new(Some(proc)),
         state: Mutex::new(IoState {
-            batcher: OutputBatcher::new(sh.opts.batch_window, BATCH_MAX_BYTES),
+            batcher: OutputBatcher::new(sh.opts.batch_window, BATCH_MAX_BYTES)
+                .with_settle(sh.opts.redraw_settle),
             stop: false,
             last_read: Instant::now(),
         }),
@@ -2417,10 +2423,17 @@ mod tests {
         );
     }
 
-    /// Feeds `echo` after a quiet spell, `n` times, and returns how long each took to reach the sink, sorted (ms).
-    fn echo_latencies(chunks: &[&[u8]], gap: Duration, n: usize) -> (Vec<f64>, Vec<Ev>) {
+    /// Feeds `chunks` (`gap` apart) after a quiet spell longer than the window, `n` times, and returns
+    /// how long each took to reach the sink, sorted (ms).
+    fn echo_latencies(
+        opts: SessionOptions,
+        chunks: &[&[u8]],
+        gap: Duration,
+        n: usize,
+    ) -> (Vec<f64>, Vec<Ev>) {
+        let quiet = opts.batch_window + Duration::from_millis(30);
         let sp = FakeSpawner::new();
-        let m = mgr(&sp);
+        let m = mgr_with(&sp, FakeShells::new(), opts);
         let rec = Arc::new(RecSink::default());
         assert!(m.spawn("a", "C:\\x", Some("pwsh"), rec.clone(), None, None));
         let f = Arc::clone(&sp.made()[0]);
@@ -2429,7 +2442,7 @@ mod tests {
         let whole: Vec<u8> = chunks.concat();
         let mut lat = Vec::new();
         for _ in 0..n {
-            std::thread::sleep(Duration::from_millis(30));
+            std::thread::sleep(quiet);
             let before = rec.bytes().len();
             let t0 = Instant::now();
             for (i, c) in chunks.iter().enumerate() {
@@ -2452,8 +2465,8 @@ mod tests {
     fn a_single_echo_still_reaches_the_sink_within_the_budget() {
         // Rule 1189 holds back only a redraw that leaves its line half drawn: a shell's echo
         // leaves as fast as before (measured on the dev Mac 2026-11-12: p50 and p90 the same
-        // before and after the change, well under a millisecond).
-        let (lat, _) = echo_latencies(&[b"x"], Duration::ZERO, 40);
+        // before and after the change, well under a millisecond). The real window and settle time.
+        let (lat, _) = echo_latencies(fast(), &[b"x"], Duration::ZERO, 40);
         let (p50, p90) = (lat[lat.len() / 2], lat[lat.len() * 9 / 10]);
         println!("lone echo to sink: p50 {p50:.3} ms, p90 {p90:.3} ms");
         assert!(p50 < 4.0, "the echo waited {p50:.3} ms (p50)");
@@ -2461,23 +2474,36 @@ mod tests {
 
     #[test]
     fn a_prompt_redraw_reaches_the_sink_whole() {
-        // Rule 1189: inquirer's erase and its text, written apart, arrive in one delivery.
+        // Rule 1189: inquirer's erase and its text, written apart, arrive in one delivery, and leave
+        // as soon as the text lands (the reader wakes the pump). The batcher's own tests hold the real
+        // 2 ms settle against inquirer's measured timing on a fake clock; this one holds the session's
+        // wiring on real threads, so the settle is stretched to 25 ms: a busy CI runner that stalls
+        // the writer or the reader thread past 2 ms is not a quiet pty (CI run 43258287798 split 3 of
+        // 20 on a macOS VM).
+        let settle = Duration::from_millis(25);
+        let window = Duration::from_millis(100);
+        let opts = SessionOptions {
+            batch_window: window,
+            redraw_settle: settle,
+            ..fast()
+        };
         let erase: &[u8] = b"\x1b[2K\x1b[G";
         let text: &[u8] = b"\x1b[32m?\x1b[39m Email address: a";
-        let (lat, events) = echo_latencies(&[erase, text], Duration::from_micros(200), 20);
+        let (lat, events) = echo_latencies(opts, &[erase, text], Duration::from_micros(200), 12);
         let (p50, p90) = (lat[lat.len() / 2], lat[lat.len() * 9 / 10]);
         println!("prompt redraw to sink: p50 {p50:.3} ms, p90 {p90:.3} ms");
-        // Before the fix every one of the 20 ended on the erased line; a loaded runner may oversleep the
-        // 0.2 ms gap past the 2 ms settle once or twice, so a few are allowed.
+        // Before the fix every delivery ended on the erased line.
         let blank = events
             .iter()
             .filter(|e| matches!(e, Ev::Data(_, b) if b.ends_with(erase)))
             .count();
+        assert_eq!(blank, 0, "{blank} deliveries ended on the erased line");
+        // The text completes the line, so the pair leaves as the text lands, not after the settle.
+        let settle_ms = settle.as_secs_f64() * 1000.0;
         assert!(
-            blank <= 2,
-            "{blank} of 20 deliveries ended on the erased line"
+            p50 < settle_ms,
+            "the whole line still waited {p50:.3} ms (p50)"
         );
-        assert!(p50 < 5.0, "the redraw waited {p50:.3} ms (p50)");
     }
 
     #[test]
@@ -2494,14 +2520,18 @@ mod tests {
         let rec = Arc::new(RecSink::default());
         assert!(m.spawn("a", "C:\\x", Some("pwsh"), rec.clone(), None, None));
         let f = Arc::clone(&sp.made()[0]);
+        // The reader counts a read before it pushes it, so a flush can land between the two: flush
+        // until the bytes come (the 30 s window means only a flush can deliver them).
         f.feed(b"abc");
-        assert!(wait_until(|| m.output_ticks() >= 1));
-        m.flush_output("a");
-        assert_eq!(rec.bytes(), b"abc");
+        assert!(wait_until(|| {
+            m.flush_output("a");
+            rec.bytes() == b"abc"
+        }));
         f.feed(b"d");
-        assert!(wait_until(|| m.output_ticks() >= 2));
-        m.flush_output("a");
-        assert_eq!(rec.bytes(), b"abcd");
+        assert!(wait_until(|| {
+            m.flush_output("a");
+            rec.bytes() == b"abcd"
+        }));
     }
 
     #[test]
