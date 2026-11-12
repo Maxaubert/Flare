@@ -2793,6 +2793,50 @@ on release or the settle the page's next picture fills the box again. Windows dr
 false), so nothing changes on Windows. Native: `crates/flare/ui/panel.slint`. Held by
 `a_page_drawn_off_screen_keeps_its_width_while_the_splitter_is_held` (`crates/flare/src/appctl/tests/web_tests.rs`,
 rendered pixels). Source: the browser parity audit (LC-09), 2026-11-11.
+1182. **The app icon has one source per platform; the in-app mark is not it.** Windows' `.ico` (the exe resource, the
+taskbar and window icon, Velopack's `Setup.exe` and `Update.exe`) is rendered by `tools/make-icon.py` from
+`assets/icon/app-windows.svg` with librsvg (`rsvg-convert` first: Homebrew's ImageMagick has no librsvg and its own
+SVG reader draws the gradient fills as nothing). The Mac's is the owner's Icon Composer icon
+`assets/icon/app-macos.icon`, compiled by `xcrun actool` (Xcode 26, headless) into `Contents/Resources/Assets.car`
+(`CFBundleIconName`, the Liquid Glass icon of macOS 26+) and `Flare.icns` (`CFBundleIconFile`, macOS 15).
+`assets/icon/flare-color.svg` stays the in-app mark (the start screen, the settings rainbow, the chrome probe) and
+feeds neither. Held by `each_platform_app_icon_has_its_own_source_and_the_in_app_mark_stays`
+(`crates/flare/tests/ship_text.rs`), `the_mac_app_icon_is_the_icon_composer_icon_compiled_by_actool` and
+`actool_compiles_the_app_icon_into_a_catalog_and_an_icns` (`crates/flare-cef/src/macos/release.rs`) and
+`tools/test_make_icon.py`. Source: the owner's new app icons, 2026-11-12.
+1181. **Slint's GPU renderer keeps its GPU pipelines from one frame to the next; a frame never compiles them again.**
+Max on his Mac: the UI, the caret in Claude Code and the tab icons "flicker very quickly, consistently". Sampled in his
+running Flare (2026-11-12, `sample`, read only): about 80 % of the main thread was drawing (Slint's `CADisplayLink`
+frames), 78 % of that inside wgpu's `create_render_pipeline` (naga to MSL, a Metal compile), 45 to 50 % CPU for hours.
+Cause: with a rendering notifier installed (Flare's, for the grid) Slint's femtovg renderer flushes its clear on its
+own before `BeforeRendering`, and femtovg 0.27.0 dropped at the end of every flush each pipeline that flush did not use,
+so the clear-only flush left one and every frame built all the others again. Frames run while any tab's mark moves
+(a working or asking agent, nearly always on Max's machine), so every one of them overran the display's refresh. An
+idle window with nothing moving already asked for no frame (now held by a test). Now Flare uses a patched femtovg
+(`third_party/femtovg`, `[patch.crates-io]`): a pipeline goes only after 240 flushes in a row left it unused. Windows has
+the same double flush and gains the same. Not proved on screen: whether this alone ends the flicker Max sees (the
+headless frames are pixel-identical with and without the rebuilds); if it remains, record the screen next. Native:
+`third_party/femtovg/src/renderer/wgpu.rs`, `Cargo.toml`. Held by `a_clear_only_flush_keeps_the_pipelines_of_the_frame_before`
+(`crates/flare-render/tests/femtovg_pipelines.rs`; on upstream femtovg the second frame starts with one pipeline) and
+`an_idle_window_asks_for_no_frame` (`crates/flare/src/headless.rs`). Source: Max on his Mac, 2026-11-12.
+1180. **macOS: Flare never smooths, eases or animates the terminal's scroll; a glide comes from a mouse utility, and
+the cure is that utility's per-app rule for Flare, not a Flare setting.** Max (2026-11-12): "it scrolls like a browser
+and not line by line", in plain shell tabs too, on the build with rule 1129. His Mac has no trackpad: a Razer Basilisk
+V3 Pro through LinearMouse 0.12, whose `scrolling.smoothed.vertical` scheme (easeInOut, response 0.45, inertia 0.6) is
+on for every app, with one app scheme for `com.apple.Terminal` that turns smoothing off and scrolls 3 lines a notch
+(`~/.config/linearmouse/linearmouse.json`). LinearMouse's `SmoothedScrollingEngine` turns each notch into a run of small
+precise scroll events with trackpad phases (`CGScrollPhase`, then `CGMomentumScrollPhase` for the inertia), so every
+app but Terminal glides. Flare reads them as rule 1129 says: the inertia (momentum) moves nothing, the eased part moves
+one line per cell height of pixels, whole lines only, and the view jumps to them in the next frame. There is no
+animated offset, easing, velocity scaling or kinetic scroll anywhere in the grid's path (`WheelAccum::add_mac`,
+`TermHandle::wheel_lines`, the renderer). Checked 2026-11-12: on a real winit 0.30.13 view, `scroll_phase::current`
+reads a finger Changed, Ended and two momentum events correctly when AppKit dispatches them (so rule 1129 holds in the
+shipped path), and CEF's `do_message_loop_work` with the external pump dispatched none of 40 queued AppKit events (no
+nested loop steals the scroll from winit). The fix for line-by-line scrolling is a LinearMouse app scheme for
+`com.flare.terminal` that matches the Terminal one (smoothing off, distance 3); Flare adds no "Smooth scrolling" setting,
+since it has no smoothing to turn off. Held by `mac_scroll_moves_with_the_fingers_and_never_with_the_momentum`,
+`momentum_wins_and_each_finger_phase_is_read` and `a_line_step_is_one_line_everywhere_and_a_notch_stays_three`.
+Source: Max on his Mac (2026-11-12); the Mac setup notes (mouse, LinearMouse).
 1184. **On a CI runner a check waits for what it tests, and skips a part only when the runner truly lacks the
 hardware.** Main eede2a8b went red twice on GitHub's macOS VM while the PR runs passed. `mini.audio` (rule 1178) saw
 `play()` take the click but `currentTime` stay at 0, because the VM has no audio output device: the probe now polls the
@@ -2865,3 +2909,18 @@ was an info icon), and its Turn on still approves what it lists. Same on Windows
 `every_card_is_one_row_with_update_details_and_remove_and_a_branded_one_draws_its_logo` (`ui_tests::settings_mods`),
 `every_card_is_one_row_with_update_details_and_remove_and_no_heading` (`flare_settings::page::mods`),
 and the e2e `modsSample` (`turn_on_by_switch`).
+1189. **A prompt that redraws its line on every key does not flicker (Windows and macOS).** A lone chunk of output
+(a typed key's echo) still reaches the grid at once, but one that leaves the line half drawn waits until the pty has
+been quiet for 2 ms (`REDRAW_SETTLE`), never longer than the 8 ms window (rule 31): the caret hidden (`CSI ? 25 l`),
+something erased (`CSI K`, `CSI J`, `CSI X`) with no text written since, or a sequence cut in the middle. `bw login`
+(Node inquirer 8.2.6) writes each redraw as four writes 0.1 to 0.2 ms apart (`CSI 2K CSI G`, the prompt and the
+text, `CSI nD`, `CSI nC`); the erase left alone, so every key showed a blank line with the caret at column 0 for
+one window. Plain shell echoes (zsh: `l`, `\b ls`, `\b\bl \b`) are unchanged: about 0.04 ms to the sink before and
+after (dev Mac 2026-11-12). DEC 2026 synchronized output was already honoured by the grid. Native:
+`crates/flare-term/src/batcher.rs` (`RedrawScan`, `OutputBatcher::due_in`), `crates/flare-term/src/session.rs`
+(`reader_loop` wakes the pump on each push to a held chunk). Held by `an_inquirer_redraw_presents_no_blank_line`,
+`a_slow_redraw_still_presents_no_blank_line`, `a_hidden_caret_holds_a_lone_redraw_until_shown`,
+`a_half_drawn_line_waits_at_most_the_window`, `a_plain_echo_still_leaves_at_once`,
+`the_scan_follows_caret_erase_and_cut_sequences` (`batcher`), `a_single_echo_still_reaches_the_sink_within_the_budget`
+and `a_prompt_redraw_reaches_the_sink_whole` (`session`). Number 1188 was left for a parallel PR. Source: Max,
+2026-11-12.

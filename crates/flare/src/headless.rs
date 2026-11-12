@@ -1931,6 +1931,48 @@ mod tests {
         }
     }
 
+    /// An idle window settles (regression rule 1181): once a scene with nothing moving has drawn, a
+    /// second of frames asks for no redraw at all, so the live window would present nothing new.
+    #[test]
+    fn an_idle_window_asks_for_no_frame() {
+        for name in ["theme-sample", "sidebar-open"] {
+            let argv: Vec<String> = [
+                "--scene",
+                name,
+                "--size",
+                "1000x640",
+                "--renderer",
+                "software",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            let args = parse_args(&argv, None).expect("the arguments parse");
+            let (saved, prep) = setup(name);
+            let scene =
+                Scene::build_with(&args, saved, prep, false, false).expect("the scene builds");
+            scene.stage(name).expect("the scene stages");
+            // Settle: whatever the restore started (a slide, a fade) has a second to end.
+            for _ in 0..60 {
+                scene.advance(16);
+                scene.pump();
+                scene.win.draw_if_needed(|_| {});
+            }
+            let mut asked = 0;
+            for _ in 0..60 {
+                scene.advance(16);
+                scene.pump();
+                if scene.win.draw_if_needed(|_| {}) {
+                    asked += 1;
+                }
+            }
+            assert_eq!(
+                asked, 0,
+                "{name}: an idle window asked for {asked} of 60 frames"
+            );
+        }
+    }
+
     /// The straight RGB of device pixel (x, y).
     fn rgb(scene: &Scene, pixels: &[u8], x: usize, y: usize) -> [u8; 3] {
         let p = (y * scene.phys.0 as usize + x) * 4;
