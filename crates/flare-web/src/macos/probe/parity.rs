@@ -203,6 +203,30 @@ fn write(data: &Path, seq: u64, files: &[(&str, &[u8])]) -> Result<AppSpec, Stri
 }
 
 /// A silent two-second track (8 kHz, 16 bit, mono): it plays without a sound on the machine running the test.
+/// How many audio output devices this Mac has, from `system_profiler SPAudioDataType` (each device with output
+/// channels says `coreaudio_device_output`); `None` when the tool could not answer, which never counts as none.
+fn audio_output_devices() -> Option<usize> {
+    let out = std::process::Command::new("/usr/sbin/system_profiler")
+        .args(["SPAudioDataType", "-json"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let groups = v["SPAudioDataType"].as_array()?;
+    Some(
+        groups
+            .iter()
+            .filter_map(|g| g["_items"].as_array())
+            .flatten()
+            .filter(|d| d["coreaudio_device_output"].as_u64().is_some_and(|c| c > 0))
+            .count(),
+    )
+}
+
 fn silent_wav() -> Vec<u8> {
     let samples = 16_000u32;
     let bytes = samples * 2;
@@ -449,10 +473,25 @@ pub fn content(rep: &mut Report, data: &Path) -> Result<(), String> {
              return a.play().then(function () { return 'playing'; }, function (e) { return 'refused ' + e.name; }); })()",
         )
         .unwrap_or(Value::Null);
-    h.wait(800);
-    let t = h
-        .eval("a4", "document.getElementById('a').currentTime")
-        .unwrap_or(Value::Null);
+    // The clock moves as the output device takes the sound, so a loaded runner gets up to 5 s for it.
+    let end = Instant::now() + Duration::from_secs(5);
+    let t = loop {
+        h.wait(250);
+        let t = h
+            .eval("a4", "document.getElementById('a').currentTime")
+            .unwrap_or(Value::Null);
+        if t.as_f64().is_some_and(|t| t > 0.2) || Instant::now() > end {
+            break t;
+        }
+    };
+    let moved = t.as_f64().is_some_and(|t| t > 0.2);
+    // A Mac with no audio output at all (GitHub's macOS VMs) never moves the clock: only then is the time check
+    // skipped, with the reason in the report. Everything else (load, paint, the 2 s track, play() taking the click)
+    // is still required, and a Mac that has an output device must still play.
+    let output = if moved { None } else { audio_output_devices() };
+    let skipped = (!moved && output == Some(0)).then_some(
+        "no audio output device on this Mac (system_profiler SPAudioDataType lists none)",
+    );
     rep.check(
         "mini.audio",
         opened
@@ -462,9 +501,10 @@ pub fn content(rep: &mut Report, data: &Path) -> Result<(), String> {
                 .as_f64()
                 .is_some_and(|d| (d - 2.0).abs() < 0.1)
             && play == "playing"
-            && t.as_f64().is_some_and(|t| t > 0.2),
+            && (moved || skipped.is_some()),
         "show_audio: the player loads the track beside it (2 s), paints, and plays once the person clicked (currentTime moves)",
-        json!({"opened": opened, "size": size, "colours": n, "loaded": loaded, "autoplay": auto, "play": play, "time": t}),
+        json!({"opened": opened, "size": size, "colours": n, "loaded": loaded, "autoplay": auto, "play": play, "time": t,
+               "output_devices": output, "skipped": skipped}),
     );
     h.host.close("a4");
     h.wait(200);

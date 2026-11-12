@@ -1045,7 +1045,7 @@ Lines added at e5848cb (Prism Terminal's dictation as it is on main at that comm
 - [x] Uninstall deletes the two HKCU verb keys (installer.nsh customUnInstall; shellVerbParity.test). RESOLVED in M9 (D10: the Velopack uninstall hook removes the keys read from verb_keys(); verb_keys tests)
 - [ ] Shipped beside the app: icon, whisper-server.exe and parakeet-cli.exe with DLLs, the flare-status plugin, conpty.dll and OpenConsole.exe (electron-builder.yml extraResources).
 - [x] Release workflow: a push to main with a new version publishes `v<version>`; an existing version publishes nothing and does not fail; a same-version push replaces that release's installer; gates first (.github/workflows/release.yml). DECISION: Flare CI per spec and tag scheme. RESOLVED in M9 (D15: the same-version push is NOT ported, the reason is D15; release_files::the_gates_run_before_the_pack)
-- [x] Both apps installed side by side: no shared lock, profile, verb, plugin or signal (e2e in M9). (M9: the side-by-side e2e test; retired 2026-11-11 by owner decision, rule 1153. The names stay checked by every_flare_name_differs_from_prism_terminals.)
+- [x] Both apps installed side by side: no shared lock, profile, verb, plugin or signal (e2e in M9). (M9: the side-by-side e2e test; retired 2026-11-11 by owner decision, rule 1183. The names stay checked by every_flare_name_differs_from_prism_terminals.)
 
 ### Explorer verbs
 
@@ -1193,7 +1193,7 @@ Lines added at e5848cb (Prism Terminal's dictation as it is on main at that comm
 - [x] **N34** The e2e `dictateTwoCopies` scenario (run.mjs 3261, 10 assertions). (M8 e2e: dictateTwoCopies, tools/e2e/src/scenarios/anywhere.rs)
 - [x] exitClosesTab (8086): Ctrl+W closes the focused shell's tab; `exit` ends its tab; the other tab comes to the front. (M10 e2e: exitClosesTab, tools/e2e/src/scenarios/lifecycle.rs)
 - [x] promptLayout (8107): after a narrow then wide resize the prompt is whole and typing lands where the prompt is. (M10 e2e: promptLayout, tools/e2e/src/scenarios/lifecycle.rs)
-- [x] Installer side by side (M9): both apps installed; no shared lock, profile, verb, plugin or signal. (M9; the side-by-side test was retired 2026-11-11 by owner decision, rule 1153.)
+- [x] Installer side by side (M9): both apps installed; no shared lock, profile, verb, plugin or signal. (M9; the side-by-side test was retired 2026-11-11 by owner decision, rule 1183.)
 
 ## Decisions (2026-10-17)
 
