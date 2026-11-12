@@ -17,6 +17,7 @@ wants to start such sessions from a menu, a command or an agent. "Our own cloud 
 | Where a session lives | On the machine that runs it, owned by that machine's Flare. The other side only views and types. A dropped link or a sleeping viewer never kills it; the viewer reconnects. **(owner)** |
 | Both screens | A remote session is a tab on both machines at once; either can type. **(owner)** |
 | Ways to start one | New-tab menu "New tab on Mac/PC" with a folder picker; a terminal command (`flare open --on mac <folder>`); an agent tool; resuming one of that machine's past Claude sessions. All four. **(owner)** |
+| The + menu | One row per linked machine, with that system's logo and the machine's name (for example the Apple logo and "Mac Mini"). It opens a shell tab on that machine, with no submenu: Max starts or resumes Claude from that shell himself. **(owner, 2026-11-12 mockup)** |
 | Direction | Both ways, one design and one code path. Built and tested PC to Mac first, then Mac to PC. **(owner)** |
 | Size | The live terminal has one size: the machine you typed on last sets it. **(owner)** |
 | The other screen | Shows Flare's own conversation view (`flare-convo`), fitted to its window, instead of a squeezed terminal; a click or a key takes over the live terminal at that window's size. **(owner, after asking why one size)** |
