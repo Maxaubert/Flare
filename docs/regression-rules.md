@@ -2487,3 +2487,22 @@ Native: `crates/flare-web/src/macos/host.rs`, `crates/flare-cef/src/macos/view.r
 (`crates/flare-web/tests/cef_macos.rs`; without the fix its reopen check fails, nothing loads). Source: Max on his Mac
 ("the flare browser is just dark", 2026-11-11).
 1153. **No CI step downloads Prism Terminal or needs a token for it.** Owner decision 2026-11-11 (Prism Terminal is deprecated): the side-by-side check that installed Flare beside Prism Terminal on the runner is removed, with its test (`tools/e2e/tests/side_by_side.rs`), its workflow (`installer-e2e.yml`, which ran only that test) and its step in `release.yml`. No workflow names `arkivert/PrismTerminal`, `FLARE_RELEASE_TOKEN` or `PRISM_RELEASE_TOKEN`, and `release.yml` reads no repository secret, so a release never waits on a token. Native: `.github/workflows/release.yml`. Held by `no_workflow_downloads_the_reference_app_or_needs_a_token_for_it`, `no_secret_other_than_the_github_token` and `the_release_goes_to_this_repository_only` (`crates/flare/tests/release_files.rs`). Source: owner decision 2026-11-11; `docs/shipping.md`.
+1155. **macOS: the agent's cursor, the glow round the page and the agent's arrow show over the web panel, and never take
+a click or the keyboard.** Max on his Mac: "it works but its missing teh overlay effect when claude is using it and its
+missing the visible cursor when claude is moving aorund on the page". On Windows each picture is a layered popup owned
+by Flare's window (`CursorWindow`, `GlowWindow`, `ArrowWindow`); on the Mac `window.rs` never set a real shell, so the
+recording stand-ins `WebCtl` starts with drew nothing, and the tag's name had no ink (no GDI). Now the Mac gives
+`WebCtl` its own shells (`flare_win::page_overlay`): each picture is an `OverlayView` (a view class of its own) in
+the window's content view, raised over every other subview on each frame, its layer's contents the same premultiplied
+BGRA bitmap Windows draws (`compose_cursor`, `edge_glow`, `compose_arrow`, at the window's backing scale), placed in
+points from the device pixels `WebCtl` gives (the content view's top left is the origin, the Mac has no HWND), faded
+by its alpha value and hidden when `WebCtl` hides it, so the glide, the ripple, the hold, the fade, Reduce motion and
+the band layout are the shared code's. The view answers nil to `hitTest:` and refuses first responder (both
+`acceptsFirstResponder` and `becomeFirstResponder`), so every click, move and scroll goes to the window's own view and
+the person can take over at any time. The tag's text is drawn by AppKit (the system font, semibold). The pad the person
+draws an arrow on stays off on the Mac (rule 1124). Not under `--e2e`, where the recording stand-ins stay. Native:
+`crates/flare-win/src/macos/page_overlay.rs`, `crates/flare/src/window.rs`. Held by
+`agent_overlay_is_click_through_on_top_and_follows_the_view` (`crates/flare-win/tests/appkit.rs`, a window never
+shown), the `page_overlay` unit tests (device pixels to points, flipped or not; the glow's bands tiling the page's
+rectangle; an empty picture or no view refused; the tag's ink) and `the_tag_is_an_orange_pill_with_the_name_readable_on_it`
+(now also on macOS). Source: Max on his Mac (2026-11-11).

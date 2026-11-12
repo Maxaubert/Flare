@@ -634,6 +634,126 @@ mod mac {
         assert!(!float_panel::prepare(0));
     }
 
+    /// Rule 1155: the agent's cursor and the glow over the web panel are views above everything in the content
+    /// view that never take a click or the keyboard, placed in points from device pixels, raised again over a view
+    /// added later, following the view's height, and gone with a hide. On a window that is never ordered in.
+    fn the_agent_overlay_is_click_through_on_top_and_follows_the_view() {
+        use flare_win::agent_cursor::{CursorShell, GlowShell, compose_cursor, edge_glow};
+        use flare_win::page_overlay::{OverlayCursor, OverlayGlow};
+        use std::rc::Rc;
+        let mtm = mtm();
+        let (w, h) = window(mtm);
+        let content = w.contentView().expect("content");
+        content.setWantsLayer(true);
+        let source: Rc<dyn Fn() -> Option<(isize, f64)>> = Rc::new(move || Some((h, 2.0)));
+        let mut cursor = OverlayCursor::new(source.clone());
+        let bmp = compose_cursor(2.0, "Claude", &[]);
+        // The tip at (400, 300) device pixels from the content's top left, at 2x.
+        assert!(cursor.show_at(400, 300, &bmp, 255));
+        let ov_h = cursor.0.view_handle().expect("made on the first show");
+        // SAFETY: the overlay view the shell owns, alive while the shell is, read on the main thread.
+        let ov: &NSView = unsafe { &*(ov_h as *const NSView) };
+        // SAFETY: a read of the view tree on the main thread.
+        let parent = unsafe { ov.superview() }.expect("in the content view");
+        assert!(std::ptr::eq(&*parent, &*content));
+        let last = content.subviews().lastObject().expect("a subview");
+        assert!(
+            std::ptr::eq(&*last, ov),
+            "above everything in the content view"
+        );
+        // Placed in points: the content view is not flipped (y up), 640 points high.
+        let f = ov.frame();
+        let (bw, bh) = (f64::from(bmp.w) / 2.0, f64::from(bmp.h) / 2.0);
+        assert_eq!(f.size, NSSize::new(bw, bh));
+        assert_eq!(f.origin.x, f64::from(400 - bmp.tip.0) / 2.0);
+        assert_eq!(f.origin.y, 640.0 - f64::from(300 - bmp.tip.1) / 2.0 - bh);
+        // Click-through: a hit test at the cursor's middle finds the content view, never the overlay.
+        let mid = NSPoint::new(f.origin.x + bw / 2.0, f.origin.y + bh / 2.0);
+        let hit = content.hitTest(mid).expect("the content view is hit");
+        assert!(std::ptr::eq(&*hit, &*content), "the page keeps the mouse");
+        assert!(!ov.acceptsFirstResponder(), "never the keyboard's");
+        w.makeFirstResponder(Some(ov));
+        let first = w.firstResponder();
+        assert!(
+            first.is_none_or(|r| !std::ptr::eq(
+                Retained::as_ptr(&r).cast::<u8>(),
+                (ov as *const NSView).cast::<u8>()
+            )),
+            "the overlay refuses the focus"
+        );
+        // A fade changes only the opacity; the picture is on its layer at the window's scale.
+        assert!(cursor.set_alpha(128));
+        assert!((ov.alphaValue() - 128.0 / 255.0).abs() < 1e-9);
+        assert_eq!(ov.frame(), f);
+        let layer: Option<Retained<objc2::runtime::AnyObject>> =
+            // SAFETY: NSView's layer getter on the main thread.
+            unsafe { objc2::msg_send![ov, layer] };
+        let layer = layer.expect("layer-backed");
+        // SAFETY: CALayer getters on the view's own layer.
+        let (has_contents, scale): (bool, f64) = unsafe {
+            let c: *const objc2::runtime::AnyObject = objc2::msg_send![&*layer, contents];
+            (!c.is_null(), objc2::msg_send![&*layer, contentsScale])
+        };
+        assert!(has_contents && scale == 2.0);
+        // A view added later goes above it; the next frame raises the overlay again.
+        let later = NSView::initWithFrame(mtm.alloc(), content.bounds());
+        content.addSubview(&later);
+        assert!(cursor.show_at(402, 300, &bmp, 255));
+        let last = content.subviews().lastObject().expect("a subview");
+        assert!(std::ptr::eq(&*last, ov), "raised over the later view");
+        // The window grows: the same device pixels from the top left land at the new height's top.
+        w.setContentSize(NSSize::new(1000.0, 800.0));
+        assert!(cursor.show_at(402, 300, &bmp, 255));
+        assert_eq!(
+            ov.frame().origin.y,
+            800.0 - f64::from(300 - bmp.tip.1) / 2.0 - bh
+        );
+        cursor.hide();
+        assert!(ov.isHidden() && !cursor.0.is_shown());
+        assert!(!cursor.set_alpha(10), "nothing shown");
+        // The glow: one click-through view per band, covering the page's rectangle in points.
+        let mut glow = OverlayGlow::new(source);
+        let g = edge_glow(800, 600, 2.0);
+        assert!(glow.show_at(100, 80, &g, 200));
+        let mut views = Vec::new();
+        for part in &glow.parts[..g.bands.len()] {
+            // SAFETY: as above.
+            let v: &NSView = unsafe { &*(part.view_handle().expect("a band") as *const NSView) };
+            assert!(!v.isHidden() && (v.alphaValue() - 200.0 / 255.0).abs() < 1e-9);
+            views.push(v.frame());
+        }
+        let left = views.iter().map(|f| f.origin.x).fold(f64::MAX, f64::min);
+        let right = views
+            .iter()
+            .map(|f| f.origin.x + f.size.width)
+            .fold(0.0, f64::max);
+        let bottom = views.iter().map(|f| f.origin.y).fold(f64::MAX, f64::min);
+        let top = views
+            .iter()
+            .map(|f| f.origin.y + f.size.height)
+            .fold(0.0, f64::max);
+        assert_eq!((left, right), (50.0, 450.0));
+        assert_eq!((top, bottom), (800.0 - 40.0, 800.0 - 340.0));
+        let inside = content
+            .hitTest(NSPoint::new(52.0, 760.0 - 2.0))
+            .expect("hit");
+        assert!(
+            std::ptr::eq(&*inside, &*content),
+            "the glow never takes a click"
+        );
+        glow.hide();
+        assert!(!w.isVisible(), "the test window must never show");
+        drop(cursor);
+        drop(glow);
+        assert!(
+            content
+                .subviews()
+                .iter()
+                .all(|v| std::ptr::eq(&*v, &*later)),
+            "the overlays leave with their shells"
+        );
+    }
+
     pub const TESTS: &[(&str, fn())] = &[
         (
             "open_in_service_turns_finders_files_into_one_tab_request",
@@ -686,6 +806,10 @@ mod mac {
         (
             "dictation_panel_floats_never_activates_and_is_placed_in_top_left_points",
             the_dictation_panel_floats_never_activates_and_is_placed_in_top_left_points,
+        ),
+        (
+            "agent_overlay_is_click_through_on_top_and_follows_the_view",
+            the_agent_overlay_is_click_through_on_top_and_follows_the_view,
         ),
     ];
 }
