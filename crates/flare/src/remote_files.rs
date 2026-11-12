@@ -184,9 +184,63 @@ pub struct PutAnswer {
     pub host_path: Option<PathBuf>,
 }
 
+/// The lock file in a run's folder. The run holds it locked for as long as it lives, so another Flare's sweep never takes
+/// a live run's folder, however long ago it last changed (rule 1191). The system lets go of it when the run ends, a
+/// crash too.
+const RUN_LOCK: &str = ".flare-run.lock";
+
+/// A run's hold on its own folder: taken when the folder is first made, kept until the run ends.
+struct RunLock {
+    root: PathBuf,
+    held: Mutex<Option<std::fs::File>>,
+}
+
+impl RunLock {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            held: Mutex::new(None),
+        }
+    }
+
+    /// Makes the run's folder and locks its lock file, once. A worker (never the UI thread, rule 34).
+    fn hold(&self) -> std::io::Result<()> {
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        if held.is_some() {
+            return Ok(());
+        }
+        // sync-ok: a worker makes the run's folder and its lock file, never the UI thread
+        std::fs::create_dir_all(&self.root)?;
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join(RUN_LOCK))?;
+        f.try_lock().map_err(std::io::Error::other)?;
+        *held = Some(f);
+        Ok(())
+    }
+}
+
+/// Whether the run that owns `dir` is still alive: its lock file is locked by someone else. A folder without one (an
+/// older Flare's) is judged by its age alone; a lock file that cannot be looked at counts as alive.
+fn run_alive(dir: &Path) -> bool {
+    // sync-ok: a cleanup thread of its own
+    let f = match std::fs::OpenOptions::new()
+        .read(true)
+        .open(dir.join(RUN_LOCK))
+    {
+        Ok(f) => f,
+        Err(e) => return e.kind() != std::io::ErrorKind::NotFound,
+    };
+    // A lock taken here is let go when `f` drops, before the folder is removed.
+    f.try_lock().is_err()
+}
+
 /// The files viewers copy to this host, per tab, in the run's own folder under the temp folder.
 pub struct Uploads {
     root: PathBuf,
+    lock: RunLock,
     parts: Mutex<HashMap<(String, String), Part>>,
     /// The tabs a file was copied to: only their folders are removed when they close.
     made: Mutex<std::collections::HashSet<String>>,
@@ -199,6 +253,7 @@ impl Uploads {
     /// Uploads under `root` (the run's folder: `<temp>/flare-remote/<run>`). Nothing is made until a file comes.
     pub fn new(root: PathBuf) -> Self {
         Self {
+            lock: RunLock::new(root.clone()),
             root,
             parts: Mutex::new(HashMap::new()),
             made: Mutex::new(std::collections::HashSet::new()),
@@ -253,6 +308,7 @@ impl Uploads {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(tab.to_string());
+            self.lock.hold().map_err(io)?;
             // sync-ok: the control channel's worker makes the tab's upload folder, never the UI thread
             std::fs::create_dir_all(&dir).map_err(io)?;
             let clean = put_name(name);
@@ -363,7 +419,8 @@ pub fn remove_later(dir: PathBuf) {
         });
 }
 
-/// The folders of earlier runs under `parent` that are older than `age` (left by a crash): removed. A cleanup thread.
+/// The folders of earlier runs under `parent` that are older than `age` and whose run is gone (left by a crash):
+/// removed. A run still alive keeps its folder, however old (rule 1191). A cleanup thread.
 pub fn sweep_old(parent: &Path, age: Duration) {
     let Ok(rd) = std::fs::read_dir(parent) else {
         return;
@@ -376,7 +433,7 @@ pub fn sweep_old(parent: &Path, age: Duration) {
             .ok()
             .and_then(|t| now.duration_since(t).ok())
             .is_some_and(|d| d > age);
-        if old && e.path().is_dir() {
+        if old && e.path().is_dir() && !run_alive(&e.path()) {
             let _ = std::fs::remove_dir_all(e.path()); // sync-ok: a cleanup thread of its own
         }
     }
@@ -399,6 +456,7 @@ pub fn sweep_leftovers_later() {
 /// The viewer's copies of fetched files: `<temp>/flare-remote-copies/<run>/<tab>/<name>`.
 pub struct Copies {
     root: PathBuf,
+    lock: RunLock,
     /// The tabs a copy was kept for: only their folders are removed when they close.
     used: Mutex<std::collections::HashSet<String>>,
 }
@@ -406,6 +464,7 @@ pub struct Copies {
 impl Copies {
     pub fn new(root: PathBuf) -> Self {
         Self {
+            lock: RunLock::new(root.clone()),
             root,
             used: Mutex::new(std::collections::HashSet::new()),
         }
@@ -445,6 +504,7 @@ impl Copies {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(tab.to_string());
+        self.lock.hold()?;
         std::fs::create_dir_all(&dir)?; // sync-ok: a worker writes the fetched copy, never the UI thread
         let name = put_name(name);
         let tmp = dir.join(format!("{name}{PART}"));
@@ -685,6 +745,36 @@ mod tests {
         std::fs::create_dir_all(parent.join("fresh")).unwrap();
         sweep_old(&parent, LEFTOVER_AGE);
         assert!(parent.join("fresh").exists());
+    }
+
+    /// Rule 1191: a run that is still alive keeps its folders, however long ago they last changed; once the run is gone
+    /// (here: dropped, as a run that ends or crashes lets go of its lock) its old folders are swept.
+    #[test]
+    fn a_live_runs_folders_are_never_swept_however_old_and_a_gone_runs_are() {
+        let root = tempfile::tempdir().unwrap();
+        let ups = root.path().join("flare-remote");
+        let cps = root.path().join("flare-remote-copies");
+        let up = Uploads::new(ups.join("runA"));
+        let shot = up
+            .put("t3", "shot.png", 0, 1, b"png")
+            .unwrap()
+            .host_path
+            .unwrap();
+        let c = Copies::new(cps.join("runA"));
+        let (dir, name) = c.save("t3", "notes.md", b"x").unwrap();
+        // A folder an older Flare (or a crash before any lock) left: judged by its age alone.
+        std::fs::create_dir_all(ups.join("runOld").join("t1")).unwrap();
+        std::thread::sleep(Duration::from_millis(30)); // sync-ok: test code only, never the app
+        sweep_old(&ups, Duration::from_millis(10));
+        sweep_old(&cps, Duration::from_millis(10));
+        assert!(shot.exists(), "the live run's upload is kept");
+        assert!(dir.join(&name).exists(), "the live run's copy is kept");
+        assert!(!ups.join("runOld").exists(), "a lockless leftover goes");
+        drop(up);
+        drop(c);
+        sweep_old(&ups, Duration::from_millis(10));
+        sweep_old(&cps, Duration::from_millis(10));
+        assert!(!ups.join("runA").exists() && !cps.join("runA").exists());
     }
 
     #[test]

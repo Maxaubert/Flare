@@ -2590,6 +2590,15 @@ and Mac can make: `docs/remote-sessions-manual-checks.md`.
   `remote_link::tests::a_put_copies_the_files_then_pastes_the_hosts_quoted_paths_as_one_paste`,
   `term_ui::tests::a_drop_on_a_remote_tab_is_never_typed_and_goes_to_the_app_to_copy`,
   `ui_tests::term::flow::an_image_pasted_on_a_remote_tab_goes_to_the_host_as_a_png` and the e2e `remoteFiles`.
+- **A remote paste chooses as a local one.** Ctrl+Shift+V (plain) on a remote tab pastes the text only and copies
+  nothing to the host. An Excel or Word copy (text plus a picture) pasted at a plain prompt pastes its text; the picture
+  goes to the host only when an agent runs in the tab or there is no text (rule 1190). Held by
+  `clip_flow::tests::a_remote_paste_copies_files_or_an_image_only_where_a_local_paste_would_use_them` and
+  `term_ui::tests::a_remote_tab_pastes_the_text_of_an_excel_copy_and_a_plain_paste_never_copies_to_the_host`.
+- **A live run's copied files stay.** Each run locks a file in its own `flare-remote` and `flare-remote-copies` folder
+  while it lives, so another Flare starting on that machine sweeps only the folders of runs that are gone and a day
+  old, never a running one's (rule 1191). Held by
+  `remote_files::tests::a_live_runs_folders_are_never_swept_however_old_and_a_gone_runs_are`.
 - **The ssh command for each kind of host.** A Mac's command is quoted for sh, a PC's for cmd (no `&&`, nothing cmd
   expands), from separate argv items with no secret (rule 305). Held by
   `remote_link::tests::the_remote_command_table_quotes_each_hosts_shell`.

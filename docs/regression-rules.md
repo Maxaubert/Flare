@@ -3308,3 +3308,22 @@ and `a_prompt_redraw_reaches_the_sink_whole` (`session`). That session test runs
 stretched to 25 ms (`SessionOptions::redraw_settle`), so a loaded CI runner that stalls a thread past 2 ms cannot
 split the pair (macOS CI run 43258287798 split 3 of 20 at the real 2 ms); the real 2 ms is held on a fake clock
 by the `batcher` tests. Number 1188 was left for a parallel PR. Source: Max, 2026-11-12.
+1190. **A paste on a remote tab chooses as a local tab's paste does.** Rule 304's upload ran before the paste's own
+choice and ignored its mode and the agent: a plain paste (Ctrl+Shift+V) with files or a picture on the clipboard copied
+them to the host, and an Excel or Word copy (text plus a bitmap) pasted at a plain prompt sent a `pasted-image-<ms>.png`
+to the host and typed its path, where a local tab pastes the text. Now a plain paste never copies to the host; a normal
+one copies files whenever there are some, and a picture only where a local paste would send the image key (an agent is
+armed, or there is no text). Native: `crates/flare/src/clip_flow.rs` (`remote_upload`),
+`crates/flare/src/term_ui.rs`. Held by
+`clip_flow::tests::a_remote_paste_copies_files_or_an_image_only_where_a_local_paste_would_use_them` and
+`term_ui::tests::a_remote_tab_pastes_the_text_of_an_excel_copy_and_a_plain_paste_never_copies_to_the_host`. Source:
+review of remote sessions PR 6 (2026-11-12).
+1191. **The leftover sweep never takes a live run's folder.** Rule 304's sweep judged a run folder under
+`<temp>/flare-remote` and `<temp>/flare-remote-copies` by its own mtime, which changes only when a tab folder in it comes
+or goes. So any new Flare process on the machine removed the uploads and fetched copies of another Flare still running,
+once that run had made no new tab folder for a day. Each run now locks `.flare-run.lock` in its run folder when it first
+makes it and holds it for its life (the system lets go when it ends or crashes); the sweep skips a folder whose lock
+file is locked, or cannot be looked at, and judges a folder with none by age alone. Native:
+`crates/flare/src/remote_files.rs` (`RunLock`, `run_alive`, `sweep_old`). Held by
+`remote_files::tests::a_live_runs_folders_are_never_swept_however_old_and_a_gone_runs_are`. Source: review of remote
+sessions PR 6 (2026-11-12).

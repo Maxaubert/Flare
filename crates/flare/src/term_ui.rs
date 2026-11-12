@@ -46,7 +46,7 @@ use flare_win::dblclick::DoubleClick;
 use crate::badge::{BadgeClock, BadgePhase};
 use crate::clip_flow::{
     AppCopyAdapter, LatestCopier, PasteAction, PasteMode, PasteReq, copy_async, is_small_copy,
-    paste_action, read_async,
+    paste_action, read_async, remote_upload,
 };
 use crate::drop_flow::{DROP_QUIET_MS, DropBatcher, type_dropped};
 use crate::term_menu::{TermMenuAct, TermMenuAt, TermMenuRow, term_menu_rows};
@@ -1479,8 +1479,11 @@ impl TermUi {
                     return;
                 }
                 // A remote tab's shell reads neither this machine's files nor its clipboard: copied files and an
-                // image go to the host first, then their host paths are pasted (rule 304). Text pastes as text.
-                if t.remote && (!state.files.is_empty() || state.image) {
+                // image go to the host first, then their host paths are pasted (rule 304). Text pastes as text, and
+                // the choice is a local tab's: Plain is text only, and an image beside text at a plain prompt is
+                // the text (rule 1190).
+                let agent = self.deps.agent.armed(t.id);
+                if t.remote && remote_upload(&state, req.mode, agent) {
                     (self.deps.post)(TermMsg::RemoteUpload {
                         tab: t.id.to_string(),
                         files: state.files,
@@ -1489,7 +1492,7 @@ impl TermUi {
                     return;
                 }
                 let shell = t.handle.shell_id().map(|s| path_shell_of(Some(s.as_str())));
-                match paste_action(&state, req.mode, shell, self.deps.agent.armed(t.id)) {
+                match paste_action(&state, req.mode, shell, agent) {
                     PasteAction::ImageKey(k) => t.handle.send_text(k),
                     PasteAction::Text(text) => t.handle.paste(&text),
                     PasteAction::Nothing => {}
@@ -3849,6 +3852,53 @@ mod tests {
         );
         thread::sleep(Duration::from_millis(30));
         assert!(r.written().is_empty(), "no path and no image key typed");
+    }
+
+    /// Rule 1190: a remote tab chooses as a local tab does. An Excel copy (text plus a bitmap) pasted at a plain prompt
+    /// pastes its text, Normal or Plain, and a Plain paste of copied files is their text only: nothing is copied to the
+    /// host. With an agent armed the picture still goes to the host.
+    #[test]
+    fn a_remote_tab_pastes_the_text_of_an_excel_copy_and_a_plain_paste_never_copies_to_the_host() {
+        let mut r = Rig::new(1.0);
+        r.remote = true;
+        let excel = ClipboardState {
+            files: Vec::new(),
+            text: "a\tb".into(),
+            image: true,
+        };
+        let files = ClipboardState {
+            files: vec!["C:\\x.txt".into()],
+            text: "c".into(),
+            image: false,
+        };
+        for (mode, state) in [
+            (PasteMode::Normal, excel.clone()),
+            (PasteMode::Plain, excel.clone()),
+            (PasteMode::Plain, files),
+        ] {
+            let req = PasteReq {
+                tab: "a".into(),
+                mode,
+            };
+            r.with_tab(|ui, t| ui.on_msg(Some(t), TermMsg::Clip(req, state)));
+        }
+        let uploads = |r: &Rig| {
+            r.msgs
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|m| matches!(m, TermMsg::RemoteUpload { .. }))
+                .count()
+        };
+        assert_eq!(uploads(&r), 0, "nothing copied to the host");
+        assert_eq!(r.wait_written(7), b"a\tba\tbc");
+        r.agent.0.set(Some(AgentKind::Claude));
+        let req = PasteReq {
+            tab: "a".into(),
+            mode: PasteMode::Normal,
+        };
+        r.with_tab(|ui, t| ui.on_msg(Some(t), TermMsg::Clip(req, excel)));
+        assert_eq!(uploads(&r), 1, "an armed agent gets the picture");
     }
 
     // ---- OSC 52 and the program's own copy ----
