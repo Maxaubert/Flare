@@ -329,6 +329,9 @@ pub enum CtlOp {
     RemoteClose {
         tab: String,
     },
+    /// `remote.status` (remote sessions PR 4): every shell tab as the host's own marks say it (rule 294). Answered with
+    /// `{tabs}`; the worker numbers it.
+    RemoteStatus,
 }
 
 /// Where `browser.navigate` sends the page.
@@ -394,6 +397,7 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::RemoteResize { .. } => "CtlOp::RemoteResize",
             CtlOp::RemoteRelease { .. } => "CtlOp::RemoteRelease",
             CtlOp::RemoteClose { .. } => "CtlOp::RemoteClose",
+            CtlOp::RemoteStatus => "CtlOp::RemoteStatus",
         })
     }
 }
@@ -2434,10 +2438,74 @@ impl AppDispatcher {
                 let tab = remote_tab(params)?;
                 self.ask(CtlOp::RemoteClose { tab })
             }
+            Method::RemoteStatus => {
+                // Rule 294: host-derived words only; the window says them, this thread numbers them.
+                only_fields(params, &[], "remote.status")?;
+                let v = self.ask(CtlOp::RemoteStatus)?;
+                let tabs = v.get("tabs").cloned().unwrap_or_else(|| json!([]));
+                let seq = host.status_seq(&tabs);
+                Ok(json!({"tabs": tabs, "seq": seq}))
+            }
+            Method::RemoteConvo => self.remote_convo(host, params),
             _ => Err(CtlError::new(code::INTERNAL, "not a remote method")),
         }
     }
+
+    /// `remote.convo {tab, since?}` (remote sessions PR 4, rule 297): the followed tab's Claude session as numbered
+    /// entries after `since`. The window names the session, the folder and this host's Claude folder; the transcript
+    /// is found and read here, on the call's worker (rule 34). No host path is in the answer.
+    fn remote_convo(
+        &self,
+        host: &Arc<crate::remote_host::RemoteHost>,
+        params: &Value,
+    ) -> Result<Value, CtlError> {
+        only_fields(params, &["tab", "since"], "remote.convo")?;
+        let tab = remote_tab(params)?;
+        let since = count_param(params, "since", false)?.unwrap_or(0);
+        if !host.is_followed(&tab) {
+            return Err(CtlError::new(
+                code::NO_TAB,
+                "that tab is not followed: send remote.attach first",
+            ));
+        }
+        self.spend_surface(
+            format!("remote.convo:{tab}"),
+            REMOTE_CONVO_RATE,
+            "remote.convo calls on one tab",
+        )?;
+        let at = self.ask(CtlOp::SessionOf { tab: tab.clone() })?;
+        let (Some(session), Some(folder), Some(dir)) = (
+            at["session"].as_str(),
+            at["folder"].as_str(),
+            at["claude_dir"].as_str(),
+        ) else {
+            return Ok(host.convo().none(&tab, since).to_json(&tab));
+        };
+        let dir = std::path::Path::new(dir);
+        let Some(mut path) = flare_convo::transcript_path_in(dir, folder, session) else {
+            return Ok(host.convo().none(&tab, since).to_json(&tab));
+        };
+        // sync-ok: the control channel's worker asks the disk, never the UI thread
+        if !path.is_file()
+            && let Some(other) = flare_convo::find_transcript_in(dir, session)
+        {
+            path = other;
+        }
+        let answer = host
+            .convo()
+            .read(&tab, session, &path, since)
+            .map_err(|e| {
+                CtlError::new(
+                    code::UNAVAILABLE,
+                    format!("the session's transcript could not be read: {e}"),
+                )
+            })?;
+        Ok(answer.to_json(&tab))
+    }
 }
+
+/// `remote.convo` calls one tab takes a second (a viewer polls it every second or two).
+pub const REMOTE_CONVO_RATE: f64 = 10.0;
 
 impl Dispatcher for AppDispatcher {
     /// A mod's token (stage 8): the grant of exactly its permissions while it is on, nothing once it is off.
@@ -2761,7 +2829,9 @@ impl Dispatcher for AppDispatcher {
             | Method::RemoteResize
             | Method::RemoteOutput
             | Method::RemoteSnapshot
-            | Method::RemoteClose => self.remote_call(ctx, method, &params),
+            | Method::RemoteClose
+            | Method::RemoteStatus
+            | Method::RemoteConvo => self.remote_call(ctx, method, &params),
             Method::ViewText => {
                 let tab = Self::tab_of_call(ctx)?;
                 let text = str_param(&params, "text")?
@@ -5843,6 +5913,120 @@ mod tests {
                 json!({"tab": "t1", "cols": "80", "rows": 24})
             )),
             code::BAD_PARAMS
+        );
+    }
+
+    // Remote sessions PR 4: `remote.status` and `remote.convo`.
+
+    /// Rule 294: the window says its tabs' words; the worker numbers them, and the number stays while nothing changed.
+    #[test]
+    fn remote_status_is_the_windows_words_numbered_on_the_worker() {
+        let words = Arc::new(Mutex::new("working"));
+        let w2 = Arc::clone(&words);
+        let r = rig(
+            move |op| match op {
+                CtlOp::RemoteStatus => Ok(
+                    json!({"tabs": [{"tab": "t1", "state": *w2.lock().unwrap(), "kind": "claude"}]}),
+                ),
+                _ => Ok(json!({})),
+            },
+            false,
+            &[],
+        );
+        let d =
+            r.d.with_remote(crate::remote_host::RemoteHost::with_key("k".into()));
+        let a = d.call(&bridge(1), Method::RemoteStatus, json!({})).unwrap();
+        assert_eq!(a["tabs"][0]["state"], "working");
+        let b = d.call(&bridge(1), Method::RemoteStatus, json!({})).unwrap();
+        assert_eq!(a["seq"], b["seq"], "nothing changed, the same number");
+        *words.lock().unwrap() = "question";
+        let c = d.call(&bridge(1), Method::RemoteStatus, json!({})).unwrap();
+        assert!(c["seq"].as_u64() > a["seq"].as_u64());
+        assert_eq!(
+            code_of(d.call(&bridge(1), Method::RemoteStatus, json!({"tab": "t1"}))),
+            code::BAD_PARAMS
+        );
+        assert!(
+            r.ops
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|o| o == "CtlOp::RemoteStatus")
+        );
+    }
+
+    /// Rule 297: the host finds the tab's transcript with its own Claude folder and sends numbered entries, never a
+    /// path; a tab nobody follows is `no_tab`, and a tab with no session has no words.
+    #[test]
+    fn remote_convo_sends_the_hosts_transcript_as_numbered_entries_and_no_path() {
+        const SID: &str = "33333333-3333-4333-8333-333333333333";
+        let claude = tempfile::tempdir().unwrap();
+        let folder = if cfg!(windows) {
+            "C:\\Users\\max\\proj"
+        } else {
+            "/Users/max/proj"
+        };
+        let path = flare_convo::transcript_path_in(claude.path(), folder, SID).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n",
+                json!({"type": "user", "message": {"role": "user", "content": "Fix the build"}})
+            ),
+        )
+        .unwrap();
+        let dir = claude.path().to_string_lossy().into_owned();
+        let session = Arc::new(Mutex::new(Some(SID)));
+        let s2 = Arc::clone(&session);
+        let r = rig(
+            move |op| match op {
+                CtlOp::SessionOf { .. } => {
+                    Ok(json!({"session": *s2.lock().unwrap(), "folder": folder, "claude_dir": dir}))
+                }
+                _ => Ok(json!({})),
+            },
+            false,
+            &[],
+        );
+        let host = crate::remote_host::RemoteHost::with_key("k".into());
+        let d = r.d.with_remote(Arc::clone(&host));
+        assert_eq!(
+            code_of(d.call(&bridge(1), Method::RemoteConvo, json!({"tab": "t1"}))),
+            code::NO_TAB
+        );
+        a_followed_tab(&host, "t1", 1);
+        let v = d
+            .call(
+                &bridge(1),
+                Method::RemoteConvo,
+                json!({"tab": "t1", "since": 0}),
+            )
+            .unwrap();
+        assert_eq!(v["entries"][0]["seq"], 1);
+        assert_eq!(v["entries"][0]["text"], "Fix the build");
+        assert_eq!(v["reset"], false);
+        let wire = v.to_string();
+        assert!(!wire.contains(SID) && !wire.contains("jsonl") && !wire.contains("proj"));
+        let again = d
+            .call(
+                &bridge(1),
+                Method::RemoteConvo,
+                json!({"tab": "t1", "since": 1}),
+            )
+            .unwrap();
+        assert_eq!(again["entries"], json!([]));
+        *session.lock().unwrap() = None;
+        let none = d
+            .call(
+                &bridge(1),
+                Method::RemoteConvo,
+                json!({"tab": "t1", "since": 1}),
+            )
+            .unwrap();
+        assert_eq!(
+            (none["entries"].clone(), none["reset"].clone()),
+            (json!([]), json!(true))
         );
     }
 }

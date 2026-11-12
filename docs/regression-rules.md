@@ -1046,6 +1046,65 @@ line is the screen's bottom row, then `snapshot_cursor`: CR, a move up and a mov
 `crates/flare-term/src/handle.rs` (`remote_snapshot`), `remote_pty.rs` (`snapshot_cursor`, `plain_snapshot`). Held by
 `a_snapshot_puts_the_viewers_cursor_where_the_hosts_is` and `a_snapshot_keeps_only_the_cursor_moves_up_and_right`.
 Source: review of remote sessions PR 3 (2026-11-12).
+294. **Remote status is host-derived words only; done and failed hold on the viewer's own looking.** A remote tab's
+processes and screen are the host's (rule 289), so the host says what its own marks say: `remote.status` answers each
+shell tab with one state word (`question`, `failed`, `working`, `done`, `idle`, in that order of weight), the agent,
+its session, the folder, the title, the question's words and the failure's kind, and nothing it read from a file. The
+viewer's link polls it every 1.5 s (at once after each attach) and hands the window its own tab's entry when it
+changed; the hub applies a word only when it differs from the last one applied. Work and a question are shown as the
+host says them (the tab holds an agent). A finished or failed turn is never copied: when the host stops working, the
+viewer raises its own Finished or Failed mark only if it showed the tab working or asking and nobody here looks at it,
+and its own looking holds and clears it (rule 61). So a status read again after a reconnect raises nothing twice, and
+a host `done` the viewer never saw working raises nothing. A word the viewer does not know is no news (rule 40); a
+host with no `remote.status` keeps its link and is not asked again on it. Native: `crates/flare-ctl/src/remote.rs`
+(`TabState`), `crates/flare/src/appctl/remote_glue.rs` (`remote_status_tabs`, `sync_remote_status`),
+`crates/flare/src/remote_status.rs`, `crates/flare/src/remote_link.rs` (`poll_status`), `agent_hub.rs`
+(`on_remote_status`), `crates/flare-agent/src/indicator.rs` (`remote_mark`). Held by
+`a_tabs_status_word_follows_the_weight_of_its_marks`, `the_status_number_grows_only_when_the_status_changes`,
+`remote_status_is_the_windows_words_numbered_on_the_worker`, `remote_status_says_the_windows_own_marks_as_words`,
+`each_host_state_word_maps_to_one_mark_and_an_unknown_word_to_none`,
+`a_status_answer_is_read_for_the_one_host_tab_and_only_as_words`,
+`the_poll_is_due_every_period_and_hands_on_only_a_change`,
+`the_hosts_status_of_the_tab_reaches_the_window_on_change_and_wakes_it`,
+`an_older_host_without_remote_status_keeps_the_link_and_is_asked_once`,
+`a_remote_status_shows_work_and_questions_and_its_end_is_never_copied_twice` and
+`a_remote_tabs_host_status_marks_it_and_a_reconnect_raises_nothing_twice`. Source: remote sessions PR 4 (2026-11-12).
+295. **One notification per question across both machines.** A question in a tab a remote viewer follows is announced on
+the viewer: its hub holds the question mark (live OSC 777, or the host's status) with the host's words for it, and the
+viewer's notifier shows it once per episode as for any tab (rule 206). The host's notifier leaves out every tab a
+remote viewer follows, so the same question never rings on both machines; a tab nobody follows notifies on the host as
+before, and the host's strip still shows the mark. Native: `crates/flare/src/appctl/surfaces7.rs` (`notify_update`),
+`agent_hub.rs` (`question_text` of a remote tab). Held by `a_question_in_a_followed_tab_is_the_viewers_to_notify` and
+`a_remote_tabs_host_status_marks_it_and_a_reconnect_raises_nothing_twice`. Source: remote sessions PR 4 (2026-11-12).
+296. **The host holds sleep only while a remote-followed session works, and lets go on every exit path.** Owner
+decision 2026-11-12: the machine that runs a remote session stays awake while it works, and sleeps as usual once all
+are idle. The window holds one `Hold` while any tab a remote viewer follows has an agent at work (`working` and an
+agent in it), checked at every refresh, attach and release; it lets go when the work stops, when the last viewer
+detaches or its link drops (the release), and when the window ends (the hold is dropped with it). Holds are counted, so
+the system is asked once on the first and once after the last. Windows: one long-lived thread calls
+`SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` and `SetThreadExecutionState(ES_CONTINUOUS)` (the state
+is per thread and ends with it); macOS: one IOKit `PreventUserIdleSystemSleep` assertion, released after the last hold
+and by the system when the process ends. Only system sleep is held: the display still sleeps and the screen still
+locks. Under `--e2e` a counter stands in. Native: `crates/flare-win/src/keep_awake.rs`, `macos/keep_awake.rs`,
+`crates/flare/src/appctl/remote_glue.rs` (`sync_keep_awake`). Held by
+`the_system_is_held_from_the_first_hold_to_the_last_drop`, `the_fake_counts_holds_and_a_drop_lets_go`,
+`the_system_keep_awake_takes_and_lets_go_without_waiting` and
+`a_followed_tab_holds_the_host_awake_while_it_works_and_lets_go_after`. Source: remote sessions PR 4 (2026-11-12).
+297. **Conversation entries cross the link as numbered `Entry` values; no host path does.** `remote.convo {tab, since}`
+answers the followed tab's Claude session as entries (role, text, tool, time) the host numbers from 1 per tab. The host
+finds the transcript from the tab's session and folder with its own Claude folder, so a Mac's project slug and a PC's
+are each read on their own machine; it reads the last 200 entries once (`said::read_last_until`, up to the byte its
+tail then follows from, so no line is read twice or skipped) and then what is written after them, on the call's
+worker. `reset` tells the viewer to start over when the transcript was cut or rewritten, the session changed, its
+number fell behind the 200 kept, or the number is one this host never gave. The viewer (`ConvoMirror`) takes each
+entry once by its number, so a poll sent again after a reconnect adds nothing twice. Native:
+`crates/flare/src/remote_convo.rs`, `crates/flare/src/ctl_app.rs` (`remote_convo`), `crates/flare-convo/src/said.rs`
+(`read_last_until`). Held by `the_host_numbers_the_backfill_then_each_new_entry_once`,
+`a_reconnect_with_since_adds_no_entry_twice_on_the_viewer`, `a_cut_transcript_resets_the_viewer_and_the_numbers_go_on`,
+`another_session_or_a_number_this_host_never_gave_is_a_reset`, `a_viewer_behind_the_kept_window_starts_over_from_it`,
+`the_wire_form_carries_numbers_and_no_path`, `remote_convo_sends_the_hosts_transcript_as_numbered_entries_and_no_path`
+and `read_last_until_stops_at_the_byte_it_is_given_and_drops_a_line_cut_there`. Source: remote sessions PR 4
+(2026-11-12).
 
 ## macOS port
 

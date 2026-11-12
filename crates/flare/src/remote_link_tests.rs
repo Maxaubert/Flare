@@ -27,6 +27,8 @@ struct HostState {
     epoch: u64,
     refuse: bool,
     closed: Vec<String>,
+    /// The host's state word of each tab (remote sessions PR 4); None: an older host with no remote.status.
+    states: Option<HashMap<String, String>>,
 }
 
 #[derive(Clone, Default)]
@@ -105,6 +107,17 @@ impl FakeHost {
                 st.closed.push(tab);
                 Ok(json!({"closed": true}))
             }
+            Method::RemoteStatus => {
+                let states = st
+                    .states
+                    .as_ref()
+                    .ok_or_else(|| CtlError::new(code::UNKNOWN_METHOD, "an older host"))?;
+                let tabs: Vec<Value> = states
+                    .iter()
+                    .map(|(t, s)| json!({"tab": t, "state": s, "kind": "claude"}))
+                    .collect();
+                Ok(json!({"tabs": tabs, "seq": 1}))
+            }
             _ => Err(CtlError::new(code::FORBIDDEN, "not here")),
         }
     }
@@ -179,6 +192,7 @@ fn fast() -> Timing {
         call: Duration::from_secs(5),
         long_call: Duration::from_secs(5),
         end_call: Duration::from_secs(1),
+        status_every: Duration::from_millis(10),
     }
 }
 
@@ -672,4 +686,89 @@ fn the_link_speaks_the_remote_protocol_over_a_stdio_wire() {
     link.client.wire().close();
     drop(link);
     served.join().unwrap(); // sync-ok: test code only, never the app
+}
+
+// ---- remote sessions PR 4: the host's status of the tab ----
+
+/// Rule 294: the link polls `remote.status`, hands the window a change of its own host tab's words and wakes it; the
+/// same words again are no news, and a reconnect hands them on once more (the hub applies only a new word).
+#[test]
+fn the_hosts_status_of_the_tab_reaches_the_window_on_change_and_wakes_it() {
+    let host = FakeHost::default();
+    lk(&host).states = Some(HashMap::new());
+    let woke = Arc::new(AtomicU64::new(0));
+    let w2 = Arc::clone(&woke);
+    let live = flare_term::remote_pty::RemoteLive::new(None, 0);
+    let sp = RemoteSpawner::new(
+        Arc::new(FakeConnector {
+            host: host.clone(),
+            conns: AtomicU64::new(1),
+        }),
+        fast(),
+    )
+    .with_wake(Arc::new(move || {
+        w2.fetch_add(1, Ordering::SeqCst);
+    }));
+    let spec = SpawnSpec {
+        exe: String::new(),
+        args: Vec::new(),
+        cwd: "/Users/max/proj".into(),
+        env: Vec::new(),
+        cols: 80,
+        rows: 24,
+        remote: Some(RemoteSpec {
+            machine: "mac".into(),
+            folder: "/Users/max/proj".into(),
+            live: live.clone(),
+        }),
+    };
+    let _pty = sp.spawn(&spec).unwrap();
+    wait_for("the link", || live.link() == LinkState::Live);
+    lk(&host)
+        .states
+        .as_mut()
+        .unwrap()
+        .insert("h1".into(), "working".into());
+    wait_for("the working status", || {
+        live.take_status().is_some_and(|s| s.state == "working")
+    });
+    assert!(woke.load(Ordering::SeqCst) >= 1, "the window was woken");
+    // Polled again with nothing changed: no news.
+    let polls = host.calls("remote.status");
+    wait_for("more polls", || host.calls("remote.status") > polls + 3);
+    assert_eq!(live.take_status(), None);
+    lk(&host)
+        .states
+        .as_mut()
+        .unwrap()
+        .insert("h1".into(), "question".into());
+    wait_for("the question status", || {
+        live.take_status().is_some_and(|s| s.state == "question")
+    });
+    // A reconnect: the first answer after the attach is handed on again.
+    host.cut();
+    wait_for("the status after the reconnect", || {
+        live.take_status().is_some_and(|s| s.state == "question")
+    });
+    assert_eq!(host.calls("remote.attach"), 2);
+}
+
+/// A host with no `remote.status` (an older Flare) keeps its link: the tab shows its output and the status is not
+/// asked again on that link.
+#[test]
+fn an_older_host_without_remote_status_keeps_the_link_and_is_asked_once() {
+    let r = rig();
+    r.live_on();
+    r.host.print("h1", b"still here\r\n");
+    wait_for("the output", || r.text().contains("still here"));
+    wait_for("the status asked", || r.host.calls("remote.status") >= 1);
+    let polls = r.host.calls("remote.output");
+    wait_for("more polls", || r.host.calls("remote.output") > polls + 3);
+    assert_eq!(
+        r.host.calls("remote.status"),
+        1,
+        "asked once, refused, not again"
+    );
+    assert_eq!(r.live.link(), LinkState::Live);
+    assert_eq!(r.live.take_status(), None);
 }

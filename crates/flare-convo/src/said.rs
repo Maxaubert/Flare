@@ -200,13 +200,20 @@ pub fn entries_of(line: &str) -> Vec<Entry> {
 /// The last `max` entries of the transcript at `path`, oldest first, read from at most its last [`READ_BYTES`] (a line
 /// cut by that start is dropped). A transcript that is not there has none. Runs on a worker.
 pub fn read_last(path: &Path, max: usize) -> std::io::Result<Vec<Entry>> {
+    read_last_until(path, max, u64::MAX)
+}
+
+/// [`read_last`] of the transcript as far as byte `end` (or its end, when shorter): what a remote host numbers before
+/// it follows the transcript from `end` on (remote sessions PR 4), so no line is read twice or skipped between the two.
+/// A line that `end` cuts is not a whole one and gives no entry. Runs on a worker.
+pub fn read_last_until(path: &Path, max: usize, end: u64) -> std::io::Result<Vec<Entry>> {
     let opened = File::open(path); // sync-ok: runs on the control channel's worker
     let mut file = match opened {
         Ok(f) => f,
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
-    let len = file.metadata()?.len(); // sync-ok: runs on the control channel's worker
+    let len = file.metadata()?.len().min(end); // sync-ok: runs on the control channel's worker
     let start = len.saturating_sub(READ_BYTES);
     file.seek(SeekFrom::Start(start))?; // sync-ok: runs on the control channel's worker
     let mut bytes = Vec::new();

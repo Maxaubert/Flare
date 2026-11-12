@@ -362,7 +362,12 @@ impl AppCtl {
 
     /// Looks at the questions the hub holds and shows the notifications the rules allow.
     pub(super) fn notify_update(&mut self) {
-        let tabs = self.hub.question_tabs();
+        let mut tabs = self.hub.question_tabs();
+        // Rule 295: a tab a remote viewer follows asks on the viewer's screen; this host says nothing of it, so one
+        // question is one notification across both machines.
+        if let Some(host) = &self.remote_host {
+            tabs.retain(|t| !host.is_followed(t));
+        }
         if tabs.is_empty() && self.s7.notifier.is_idle() {
             return;
         }

@@ -69,6 +69,24 @@ struct LiveInner {
     host_tab: Mutex<Option<String>>,
     seq: AtomicU64,
     state: AtomicU8,
+    /// The host's newest status of the tab that the window has not taken yet (remote sessions PR 4).
+    status: Mutex<Option<HostStatus>>,
+}
+
+/// What the host says of a remote tab (`remote.status`, remote sessions PR 4, rule 294): words its own marks give, never
+/// a mark to copy. The viewer's hub turns them into its own marks.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HostStatus {
+    /// `working`, `question`, `done`, `failed` or `idle` (`flare_ctl::remote::TabState`).
+    pub state: String,
+    /// The agent the host found in the tab (`claude`, `codex`, `agy`), if any.
+    pub agent: Option<String>,
+    /// The tab's Claude session (a lower-case UUID), if the host knows one.
+    pub session: Option<String>,
+    /// The words of the question the host's screen shows, while it asks.
+    pub question: Option<String>,
+    /// The kind of the failure, while it failed.
+    pub failed: Option<String>,
 }
 
 /// What a remote tab has reached, shared by its link (which writes it) and the window (which saves it in `tabs.json`):
@@ -110,6 +128,16 @@ impl RemoteLive {
 
     pub fn set_link(&self, s: LinkState) {
         self.0.state.store(s.code(), Ordering::SeqCst);
+    }
+
+    /// The link heard a new status of the tab from the host (it keeps only the newest until the window takes it).
+    pub fn set_status(&self, s: HostStatus) {
+        *lk(&self.0.status) = Some(s);
+    }
+
+    /// The host's status the window has not taken yet, taken (the UI thread, at each wake).
+    pub fn take_status(&self) -> Option<HostStatus> {
+        lk(&self.0.status).take()
     }
 }
 

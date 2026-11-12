@@ -240,6 +240,10 @@ pub struct AgentHub {
     /// Remote tabs (remote sessions PR 3): their processes are the host's, so the poll is blind to them, and their
     /// screen is not read for a question (the host's question text crosses the link as words in PR 4).
     remote: HashSet<String>,
+    /// The state word a remote tab's host said last, as applied (remote sessions PR 4): only a new word moves a mark.
+    remote_said: HashMap<String, String>,
+    /// The words of a remote tab's question, as its host read them off its screen (rule 294).
+    remote_question: HashMap<String, String>,
     diag: AgentDiag,
     poll: Option<Box<dyn PollCtl>>,
     tx: Sender<PollMsg>,
@@ -264,6 +268,8 @@ impl AgentHub {
             polled: HashSet::new(),
             decor_gone: Vec::new(),
             remote: HashSet::new(),
+            remote_said: HashMap::new(),
+            remote_question: HashMap::new(),
             diag,
             poll: None,
             tx,
@@ -417,6 +423,10 @@ impl AgentHub {
 
     /// The text of the question the tab's agent shows on screen, when the widget is up and the screen was read.
     pub fn question_text(&self, tab: &str) -> Option<String> {
+        // A remote tab's screen is the host's: its question's words are the ones the host read (rule 294).
+        if self.remote.contains(tab) {
+            return self.remote_question.get(tab).cloned();
+        }
         match self.watches.get(tab)?.current()? {
             ShownQuestion::Text(t) => Some(t.clone()),
             ShownQuestion::Review => None,
@@ -596,10 +606,62 @@ impl AgentHub {
         self.remote.contains(tab)
     }
 
+    /// A remote tab's host said what its agent does (remote sessions PR 4, rule 294): the question's words, the
+    /// session, and one state word. Only a word that differs from the last one applied moves a mark, so a status read
+    /// again after a reconnect raises nothing; done and failed are never copied (`Indicator::remote_mark`).
+    pub fn on_remote_status(&mut self, tab: &str, st: &flare_term::remote_pty::HostStatus) {
+        if !self.remote.contains(tab) {
+            return;
+        }
+        let now = self.now();
+        let question = st
+            .question
+            .as_deref()
+            .filter(|q| !q.trim().is_empty())
+            .map(str::to_string);
+        let asked_before = self.remote_question.get(tab).cloned();
+        match &question {
+            Some(q) => {
+                self.remote_question.insert(tab.to_string(), q.clone());
+            }
+            None => {
+                self.remote_question.remove(tab);
+            }
+        }
+        if asked_before != question {
+            // The notifier reads the words: a change is worth a look.
+            self.changed = true;
+        }
+        if let Some(s) = st.session.as_deref().filter(|s| is_session_id(s)) {
+            let old = self.sessions.insert(tab.to_string(), s.to_string());
+            if old.is_some_and(|o| o != s) {
+                self.decor_gone
+                    .push((tab.to_string(), DecorGone::SessionChanged));
+            }
+        }
+        if self.remote_said.get(tab) == Some(&st.state) {
+            return;
+        }
+        let Some(mark) = crate::remote_status::mark_of(st) else {
+            return;
+        };
+        self.remote_said.insert(tab.to_string(), st.state.clone());
+        let kind = st.agent.as_deref().and_then(|k| match k {
+            "claude" => Some(DetectedAgent::Claude),
+            "codex" => Some(DetectedAgent::Codex),
+            "agy" => Some(DetectedAgent::Agy),
+            _ => None,
+        });
+        self.ind.remote_mark(now, tab, mark, kind);
+        self.settle(now);
+    }
+
     /// PT `forget`: every record of the tab goes, and its question watch with it.
     pub fn on_closed(&mut self, tab: &str) {
         let now = self.now();
         self.remote.remove(tab);
+        self.remote_said.remove(tab);
+        self.remote_question.remove(tab);
         self.ind.forget(tab);
         self.arms.remove(tab);
         if let Some(mut w) = self.watches.remove(tab) {
@@ -2116,5 +2178,53 @@ mod tests {
         r.pump_until("r working", |h| h.working("r"));
         r.hub.on_closed("r");
         assert!(!r.hub.is_remote("r"));
+    }
+
+    /// Rule 294: a remote tab's host status gives it the work and question marks, the question's words and the session;
+    /// the end of its work is this viewer's own Finished mark, raised once, and the same status read again after a
+    /// reconnect raises nothing. A local tab takes no host status.
+    #[test]
+    fn a_remote_tabs_host_status_marks_it_and_a_reconnect_raises_nothing_twice() {
+        use flare_term::remote_pty::HostStatus;
+        const SID: &str = "44444444-4444-4444-8444-444444444444";
+        let st = |state: &str, question: Option<&str>| HostStatus {
+            state: state.into(),
+            agent: Some("claude".into()),
+            session: Some(SID.into()),
+            question: question.map(str::to_string),
+            failed: None,
+        };
+        let mut r = Rig::new();
+        r.open("b", None);
+        r.open_remote("r");
+        r.hub.set_looking(Some("b"), true);
+        r.hub.on_remote_status("r", &st("working", None));
+        assert!(r.hub.working("r") && r.hub.agent_here("r"));
+        assert_eq!(r.hub.claude_session("r"), Some(SID));
+        assert_eq!(r.hub.working_count(), 1);
+        r.hub
+            .on_remote_status("r", &st("question", Some("Overwrite main.rs?")));
+        assert_eq!(r.hub.question_tabs(), ["r"]);
+        assert_eq!(
+            r.hub.question_text("r").as_deref(),
+            Some("Overwrite main.rs?")
+        );
+        r.hub.on_remote_status("r", &st("working", None));
+        assert_eq!(r.hub.question_text("r"), None);
+        r.hub.on_remote_status("r", &st("done", None));
+        assert!(r.hub.indicator().done_ids().contains("r"));
+        assert!(!r.hub.working("r"));
+        // The person looks at it here: the mark goes. The link drops and attaches again and the host still says done.
+        r.hub.set_looking(Some("r"), true);
+        r.hub.set_looking(Some("b"), true);
+        assert!(!r.hub.indicator().done_ids().contains("r"));
+        r.hub.on_remote_status("r", &st("done", None));
+        assert!(
+            !r.hub.indicator().done_ids().contains("r"),
+            "a reconnect does not raise done again"
+        );
+        // A local tab is the hub's own business.
+        r.hub.on_remote_status("b", &st("working", None));
+        assert!(!r.hub.working("b"));
     }
 }

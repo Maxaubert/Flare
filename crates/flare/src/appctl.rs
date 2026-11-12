@@ -644,6 +644,10 @@ pub struct AppCtl {
     ctl_info: Option<CtlInfo>,
     /// Remote sessions (PR 2): the tabs remote viewers follow. None when this run serves none (tests, headless).
     remote_host: Option<Arc<crate::remote_host::RemoteHost>>,
+    /// Remote sessions (PR 4): what holds the system awake while a remote session works, and the hold while it does
+    /// (rule 296). None in a run that serves none.
+    keep_awake: Option<Arc<dyn flare_win::keep_awake::KeepAwake>>,
+    awake_hold: Option<flare_win::keep_awake::Hold>,
     /// The staged build of an installed copy (install when idle); None for any other run.
     staged: Option<staged_glue::StagedState>,
 }
@@ -1126,6 +1130,8 @@ impl AppCtl {
             ctl_events: None,
             ctl_info: None,
             remote_host: None,
+            keep_awake: None,
+            awake_hold: None,
             mods: None,
             staged: None,
         };
@@ -1935,6 +1941,8 @@ impl AppCtl {
         // The panel of the tab in front, and the previews switch the terminal reads.
         self.sync_panels(&app);
         self.notify_update();
+        // Remote sessions PR 4: a followed tab that works holds the system awake (rule 296).
+        self.sync_keep_awake();
         self.term
             .set_previews(flare_settings::term_prefs::open_previews(&self.prefs));
         let thumbs_on = flare_settings::term_prefs::hover_thumbs(&self.prefs);
@@ -4194,7 +4202,8 @@ impl AppCtl {
             | CtlOp::RemoteInput { .. }
             | CtlOp::RemoteResize { .. }
             | CtlOp::RemoteRelease { .. }
-            | CtlOp::RemoteClose { .. }) => self.ctl_remote(op),
+            | CtlOp::RemoteClose { .. }
+            | CtlOp::RemoteStatus) => self.ctl_remote(op),
             // Answered by the browser's message, never here (see `ctl_browser`), or by the person (`ask_glue`).
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }
@@ -5462,6 +5471,8 @@ impl AppCtl {
         let mut terminal_news = false;
         self.sync_hub();
         self.hub.on_host_events(&events);
+        // A remote tab's link brought the host's status of it (remote sessions PR 4, rule 294).
+        self.sync_remote_status();
         self.hub.drain_poll();
         if self.hub.take_changed() {
             self.sync_model_agents();

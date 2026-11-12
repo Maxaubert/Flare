@@ -105,6 +105,8 @@ fn may_retry(m: Method) -> bool {
             | Method::RemoteResize
             | Method::RemoteOutput
             | Method::RemoteSnapshot
+            | Method::RemoteStatus
+            | Method::RemoteConvo
     )
 }
 

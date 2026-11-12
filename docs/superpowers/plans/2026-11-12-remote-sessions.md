@@ -1,7 +1,7 @@
 # Remote sessions: implementation plan (2026-11-12)
 
 Spec: `docs/superpowers/specs/2026-11-12-remote-sessions-design.md`.
-Status: approved 2026-11-12; building. PR 1 built on `feat/remote-1` (2026-11-12, not merged); PR 2 built on `feat/remote-2` (2026-11-12, stacked on PR 1, not merged); PR 3 built on `feat/remote-3` (2026-11-12, stacked on PR 2, not merged); PR 4 next.
+Status: approved 2026-11-12; building. PR 1 built on `feat/remote-1` (2026-11-12, not merged); PR 2 built on `feat/remote-2` (2026-11-12, stacked on PR 1, not merged); PR 3 built on `feat/remote-3` (2026-11-12, stacked on PR 2, not merged); PR 4 built on `feat/remote-4` (2026-11-12, stacked on PR 3, not merged); PR 5 next.
 
 Seven PRs, in order. Each one ships alone and passes its own tests. Only PR 7 needs an approved mockup.
 Rule numbers below are "R-new-N". Number them after the last rule in `docs/regression-rules.md` when you write them.
@@ -263,6 +263,46 @@ Where the build differs from the lines above:
 - R-new-16: the host holds sleep only while a remote-attached session works. Release on every exit path.
 - R-new-17: conversation entries cross the link as `Entry` values with a sequence. No host paths.
 
+**Built (2026-11-12, `feat/remote-4`, stacked on `feat/remote-3`).** Rules R-new-14 to R-new-17 are rules 294 to 297.
+Where the build differs from the lines above:
+- **`remote.status`** answers `{tabs: [{tab, state, kind, session, folder, title, working_for?, question_text?,
+  failed?}], seq}` for every shell tab, from `tab_facts` and the hub (`remote_glue::remote_status_tabs`); `kind` is the
+  agent, the failure's kind is `failed`. One word a tab in the order of weight `question`, `failed`, `working`, `done`,
+  `idle` (`flare_ctl::remote::TabState`). `seq` is the host's number of the answer (`RemoteHost::status_seq`): it grows
+  when the answer changes, so it moves every poll while a tab works (`working_for`).
+- **The viewer's poll** runs on the tab's link worker, between the output polls, every 1.5 s (`Timing::status_every`)
+  and at once after each attach (`remote_status::StatusPoll`). A change of its own tab's entry goes into the tab's
+  `RemoteLive` (`HostStatus`) and wakes the window (`RemoteSpawner::with_wake`); `AppCtl::sync_remote_status` hands it to
+  `AgentHub::on_remote_status`. A host that refuses `remote.status` (a PR 3 build) keeps its link and is not asked again
+  on it.
+- **"Remote override"** is `Indicator::remote_mark` (`RemoteMark`): working and question are set as said (the tab gets an
+  agent, the host's kind or Claude). Done and failed are never copied: when the host's word leaves working or question,
+  the viewer raises its own Finished or Failed mark only if it showed the tab busy and nobody here looks (held and
+  cleared by its own looking, rule 61); idle raises nothing. The hub applies a word only when it differs from the last
+  one applied, so a status read again after a reconnect raises nothing. The question's words come from the status
+  (`question_text` of a remote tab), so the viewer's toast carries them. `working_for` is not used on the viewer yet.
+- **One toast.** The viewer's notifier is unchanged (one per episode); the host's `notify_update` leaves out every tab a
+  remote viewer follows (`RemoteHost::is_followed`).
+- **Keep-awake** is `flare_win::keep_awake` (`KeepAwake`, `Hold`, `SystemAwake`, `FakeAwake`): a counted hold, one
+  thread on Windows (`SetThreadExecutionState`, declared from kernel32 rather than a new windows-sys feature), one
+  IOKit assertion on macOS. `AppCtl::sync_keep_awake` holds while any followed tab is working with an agent, checked at
+  every refresh, attach and release. Under `--e2e` the fake stands in.
+- **`remote.convo {tab, since?}`** answers `{tab, entries: [{seq, role, text, tool?, at?}], reset, to}` for a followed
+  tab. The host keeps a feed per tab (`remote_convo::ConvoFeeds` in the `RemoteHost`), not a `Follower` thread: the last
+  200 entries read once (`said::read_last_until`, new, up to the byte a `Tail` then follows from) and the tail read at
+  each call on the worker, so nothing runs while nobody asks. Numbers go on across a rewrite or a session change
+  (`floor`), and `reset` says when the viewer must start over. The viewer's side is `ConvoMirror` (dedupe by number);
+  nothing polls it yet: PR 7's fitted conversation view does.
+- **Tests.** Unit: `flare_ctl::remote::tests` (`TabState`), `method::tests`, `flare_convo` `said` (`read_last_until`),
+  `indicator::tests` (`remote_mark`), `keep_awake::tests`, `remote_status::tests`, `remote_convo::tests`,
+  `remote_host::tests`, `remote_link::tests` (the status poll, an older host), `ctl_app::tests` (`remote_status_*`,
+  `remote_convo_*`), `agent_hub::tests` (`a_remote_tabs_host_status_marks_it_and_a_reconnect_raises_nothing_twice`).
+  ui_tests: `agent_flows::remote_flows` (keep-awake, the host's toast, the status words). E2E: `remoteStatus`.
+- **Known limits.** The keep-awake and the IOKit assertion are not proven on real hardware (no real ssh, no sleep
+  timer waited out): the unit tests hold the counting and the Windows call; the Mac code only compiles in CI. A host
+  that says `idle` while the viewer's live signals say `working` (an agent the host's poll has not found yet) takes the
+  viewer's work mark down until the next live signal or status.
+
 **Depends on.** PR 3. **UI.** No new screens. The fitted conversation view is deferred to PR 7 (new UI).
 
 ---
@@ -426,5 +466,12 @@ and the ssh command line is held by a table test (argv items, sh and cmd quoting
 left for the by-hand list: that Windows OpenSSH's `ssh.exe` started with no console (`CREATE_NO_WINDOW`) and
 `BatchMode=yes` runs the remote command with clean stdio both ways; that a Mac's login shell and a PC's `cmd` run the
 quoted command as built (paths with spaces); and how long a real ssh takes to come up, which the 30 s hello wait assumes.
+
+Spike status after PR 4 (2026-11-12): still no ssh to any real machine. `remoteStatus` runs the status, the question
+toast and the reconnect over the same loopback as `remoteViewer`. Not proven without real hardware and left for the
+by-hand list: that a Mac host's IOKit assertion holds its idle sleep off for a session started over ssh and lets go
+after (the code compiles in the macOS CI job only), and that a Windows host's `SetThreadExecutionState` keeps it awake
+past its sleep timer while the viewer is on the other machine (`powercfg /requests` should list Flare while a followed
+tab works).
 
 Open risks tracked across PRs: closed enum arrays (`Method::ALL`, `Namespace::ALL`, `Permission::ALL`) and their exhaustive tests; event lossiness (solved by polling and sequence numbers); stuck-handler cap of 32 on slow links (short polls only); two writers on one session; version skew between machines (refuse with one line); `tabs.changed` is reserved and unsent, so the viewer polls `remote.tabs` and `remote.status`.

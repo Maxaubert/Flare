@@ -32,6 +32,62 @@ pub const OUTPUT_MAX: usize = 1024 * 1024;
 pub const LS_MAX: usize = 500;
 /// The most lines of history and screen `remote.snapshot` sends.
 pub const SNAPSHOT_LINES: usize = 1000;
+/// The most entries one `remote.convo` answers, and the most the host keeps numbered for a tab (the last ones).
+pub const CONVO_MAX: usize = 200;
+/// The longest question text `remote.status` carries, in characters.
+pub const QUESTION_MAX: usize = 500;
+
+/// What a host tab's agent is doing, as `remote.status` says it (rule 294): one word, from the host's own marks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabState {
+    Working,
+    Question,
+    Done,
+    Failed,
+    Idle,
+}
+
+impl TabState {
+    /// Every state, in the order of weight [`TabState::of`] reads them.
+    pub const ALL: [TabState; 5] = [
+        TabState::Question,
+        TabState::Failed,
+        TabState::Working,
+        TabState::Done,
+        TabState::Idle,
+    ];
+
+    /// The word on the wire.
+    pub fn word(self) -> &'static str {
+        match self {
+            TabState::Working => "working",
+            TabState::Question => "question",
+            TabState::Done => "done",
+            TabState::Failed => "failed",
+            TabState::Idle => "idle",
+        }
+    }
+
+    /// The state a word names. An unknown word is none (a newer host's word reads as no news, rule 40).
+    pub fn parse(word: &str) -> Option<TabState> {
+        TabState::ALL.into_iter().find(|s| s.word() == word)
+    }
+
+    /// The one word for a tab's marks: a question weighs most, then a failure, then work, then a finished turn.
+    pub fn of(question: bool, failed: bool, working: bool, done: bool) -> TabState {
+        if question {
+            TabState::Question
+        } else if failed {
+            TabState::Failed
+        } else if working {
+            TabState::Working
+        } else if done {
+            TabState::Done
+        } else {
+            TabState::Idle
+        }
+    }
+}
 
 /// One key press as the viewer's window reported it (the fields of `flare_term::keys::KeyEvent`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -231,6 +287,22 @@ mod tests {
 
     fn parsed(v: Value) -> Result<Vec<Intent>, CtlError> {
         parse_intents(Some(&v))
+    }
+
+    /// Rule 294: one word a tab, read from the host's marks in their order of weight; a word round-trips, and a word
+    /// this end does not know is no state.
+    #[test]
+    fn a_tabs_status_word_follows_the_weight_of_its_marks() {
+        assert_eq!(TabState::of(false, false, false, false), TabState::Idle);
+        assert_eq!(TabState::of(false, false, false, true), TabState::Done);
+        assert_eq!(TabState::of(false, false, true, true), TabState::Working);
+        assert_eq!(TabState::of(false, true, true, true), TabState::Failed);
+        assert_eq!(TabState::of(true, true, true, true), TabState::Question);
+        for s in TabState::ALL {
+            assert_eq!(TabState::parse(s.word()), Some(s));
+        }
+        assert_eq!(TabState::parse("blocked"), None);
+        assert_eq!(TabState::parse(""), None);
     }
 
     #[test]

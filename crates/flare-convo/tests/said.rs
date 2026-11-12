@@ -146,6 +146,31 @@ fn read_last_gives_the_last_two_hundred_entries_oldest_first() {
     assert_eq!(read_last(&path, 3).unwrap().len(), 3);
 }
 
+/// Remote sessions PR 4: the host numbers what was said before a byte and follows the transcript from that byte on, so
+/// the read stops there; a line that byte cuts gives no entry.
+#[test]
+fn read_last_until_stops_at_the_byte_it_is_given_and_drops_a_line_cut_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.jsonl");
+    let first = format!("{}\n{}\n", user("one"), reply("two"));
+    append(&path, &first);
+    append(&path, &format!("{}\n", user("three")));
+    let end = first.len() as u64;
+    let got = flare_convo::said::read_last_until(&path, READ_LAST, end).unwrap();
+    assert_eq!(
+        texts(&got),
+        [
+            ("user", "one".into(), None),
+            ("assistant", "two".into(), None)
+        ]
+    );
+    let cut = flare_convo::said::read_last_until(&path, READ_LAST, end + 5).unwrap();
+    assert_eq!(cut.len(), 2, "the half line after the byte is no entry");
+    let all = flare_convo::said::read_last_until(&path, READ_LAST, u64::MAX).unwrap();
+    assert_eq!(all, read_last(&path, READ_LAST).unwrap());
+    assert_eq!(all.len(), 3);
+}
+
 #[test]
 fn read_last_reads_only_the_end_of_a_big_transcript_and_drops_the_line_it_cut() {
     let dir = tempfile::tempdir().unwrap();

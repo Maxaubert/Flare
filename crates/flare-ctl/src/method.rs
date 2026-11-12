@@ -121,6 +121,12 @@ pub enum Method {
     RemoteSnapshot,
     /// Closes a host tab the way a person's close does: an agent at work asks first (rule 48).
     RemoteClose,
+    /// The host's tabs as the host's own agent marks say them: a state word, the agent, its session, folder, title and
+    /// the question's words (remote sessions PR 4, rule 294). Polled by the viewer every second or two.
+    RemoteStatus,
+    /// What is said in a host tab's Claude session, as numbered entries after a number (remote sessions PR 4, rule
+    /// 297). The host finds and reads the transcript; no host path crosses the link.
+    RemoteConvo,
 }
 
 /// What a method belongs to, which decides which grants may call it.
@@ -218,7 +224,7 @@ impl Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 57] = [
+    pub const ALL: [Method; 59] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -276,6 +282,8 @@ impl Method {
         Method::RemoteOutput,
         Method::RemoteSnapshot,
         Method::RemoteClose,
+        Method::RemoteStatus,
+        Method::RemoteConvo,
     ];
 
     /// The wire name.
@@ -338,6 +346,8 @@ impl Method {
             Method::RemoteOutput => "remote.output",
             Method::RemoteSnapshot => "remote.snapshot",
             Method::RemoteClose => "remote.close",
+            Method::RemoteStatus => "remote.status",
+            Method::RemoteConvo => "remote.convo",
         }
     }
 
@@ -394,7 +404,9 @@ impl Method {
             | Method::RemoteResize
             | Method::RemoteOutput
             | Method::RemoteSnapshot
-            | Method::RemoteClose => Namespace::Remote,
+            | Method::RemoteClose
+            | Method::RemoteStatus
+            | Method::RemoteConvo => Namespace::Remote,
         }
     }
 
@@ -509,7 +521,7 @@ mod tests {
 
     #[test]
     fn every_method_and_namespace_is_listed_once() {
-        assert_eq!(Method::ALL.len(), 57);
+        assert_eq!(Method::ALL.len(), 59);
         assert_eq!(Namespace::ALL.len(), 19);
         for (i, ns) in Namespace::ALL.iter().enumerate() {
             assert!(!Namespace::ALL[..i].contains(ns), "{ns:?} twice");
@@ -539,6 +551,8 @@ mod tests {
             Method::RemoteOutput,
             Method::RemoteSnapshot,
             Method::RemoteClose,
+            Method::RemoteStatus,
+            Method::RemoteConvo,
         ] {
             assert_eq!(m.timeout(), DEFAULT_TIMEOUT, "{}", m.name());
             assert_eq!(m.namespace(), Namespace::Remote, "{}", m.name());
