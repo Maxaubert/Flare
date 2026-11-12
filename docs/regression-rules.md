@@ -2848,3 +2848,19 @@ reading are follow-ups). Native: `crates/flare-win/src/macos/ax_terminal.rs`, `c
 `ax_terminal_is_the_focused_text_area_with_the_cursor_cell_on_the_screen` and
 `ax_terminal_keeps_a_toolkits_own_tree_and_focus_when_the_terminal_has_none` (`crates/flare-win/tests/appkit.rs`, a
 window that is never shown). Source: issue #201 (2026-11-12).
+
+1189. **A prompt that redraws its line on every key does not flicker (Windows and macOS).** A lone chunk of output
+(a typed key's echo) still reaches the grid at once, but one that leaves the line half drawn waits until the pty has
+been quiet for 2 ms (`REDRAW_SETTLE`), never longer than the 8 ms window (rule 31): the caret hidden (`CSI ? 25 l`),
+something erased (`CSI K`, `CSI J`, `CSI X`) with no text written since, or a sequence cut in the middle. `bw login`
+(Node inquirer 8.2.6) writes each redraw as four writes 0.1 to 0.2 ms apart (`CSI 2K CSI G`, the prompt and the
+text, `CSI nD`, `CSI nC`); the erase left alone, so every key showed a blank line with the caret at column 0 for
+one window. Plain shell echoes (zsh: `l`, `\b ls`, `\b\bl \b`) are unchanged: about 0.04 ms to the sink before and
+after (dev Mac 2026-11-12). DEC 2026 synchronized output was already honoured by the grid. Native:
+`crates/flare-term/src/batcher.rs` (`RedrawScan`, `OutputBatcher::due_in`), `crates/flare-term/src/session.rs`
+(`reader_loop` wakes the pump on each push to a held chunk). Held by `an_inquirer_redraw_presents_no_blank_line`,
+`a_slow_redraw_still_presents_no_blank_line`, `a_hidden_caret_holds_a_lone_redraw_until_shown`,
+`a_half_drawn_line_waits_at_most_the_window`, `a_plain_echo_still_leaves_at_once`,
+`the_scan_follows_caret_erase_and_cut_sequences` (`batcher`), `a_single_echo_still_reaches_the_sink_within_the_budget`
+and `a_prompt_redraw_reaches_the_sink_whole` (`session`). Number 1188 was left for a parallel PR. Source: Max,
+2026-11-12.
