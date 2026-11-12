@@ -15,6 +15,7 @@ log.workspace = true
 rfd.workspace = true
 raw-window-handle.workspace = true
 uuid.workspace = true
+base64.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true

@@ -1,0 +1,709 @@
+//! Files across a remote link (remote sessions PR 6): a file link on a remote tab fetched from the host, and a dropped
+//! file or a pasted image copied to the host.
+//!
+//! **The host's side.** `remote.fetch` reads one chunk of a file a followed tab's link names (rule 303): the path is
+//! resolved on the host from the tab's own folder, as a click there would, and is sent only when the file, as the file
+//! system names it (links followed), lies in the tab's folder or the host's temp folder. Anything else (missing, a
+//! folder, a device, a share, a link out of those folders, too big) is `not_found` or `too_large`, so a probe learns
+//! nothing more. `remote.put` writes one chunk of a viewer's file into the tab's own upload folder on the host
+//! (`<temp>/flare-remote/<run>/<tab>`), under a name the host cleans (`put_name`) and makes unique; the last chunk
+//! answers the host path and that path quoted for the tab's shell, which the viewer pastes (rule 304). The upload
+//! folder goes when the tab closes, and a run's folders left by a crash go a day later.
+//!
+//! **The viewer's side.** A fetched file is kept as a copy in this machine's temp folder (`<temp>/flare-remote-copies/
+//! <run>/<tab>`), shown in the side panel when it is a picture or a text file and opened like any clicked file
+//! otherwise (the click allowlist: a program is never run, rule 14). The copies go when the tab closes.
+//!
+//! Everything here touches the disk: the control channel's worker and the link's worker call it, never the UI thread
+//! (rule 34).
+
+use std::collections::HashMap;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, SystemTime};
+
+use flare_ctl::remote::{
+    FILE_CHUNK, FILE_CHUNKS_MAX, FILE_MAX, chunks_of, is_device_name, put_name,
+};
+use flare_ctl::{CtlError, code};
+
+fn not_found() -> CtlError {
+    CtlError::new(
+        code::NOT_FOUND,
+        "the host has no such file in the tab's folder or its temp folder",
+    )
+}
+
+fn bad(msg: impl Into<String>) -> CtlError {
+    CtlError::new(code::BAD_PARAMS, msg)
+}
+
+/// The run's own name for its folders: fresh at every start, so two runs (or a restarted host whose tab ids begin
+/// again at 1) never share one. No secret: a separate token.
+pub fn run_name() -> String {
+    flare_term::session::new_ctl_token()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(12)
+        .collect()
+}
+
+/// A tab id as a folder name: only letters, digits, `-` and `_` (Flare's own ids are; anything else is refused).
+fn tab_folder(tab: &str) -> Result<&str, CtlError> {
+    if tab.is_empty()
+        || tab.len() > 64
+        || !tab
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(bad("tab is the id of one of the host's tabs"));
+    }
+    Ok(tab)
+}
+
+/// The file system's own name for a path (links followed), without Windows' `\\?\` prefix. None when it names nothing.
+fn real(p: &Path) -> Option<PathBuf> {
+    // sync-ok: the control channel's worker resolves a fetched path, never the UI thread
+    let c = std::fs::canonicalize(p).ok()?;
+    let s = c.to_string_lossy();
+    Some(match s.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest),
+        _ => c,
+    })
+}
+
+/// Whether `p` is a network path (`\\server\share`, `\\?\UNC\..`): never read for a link (rule 14).
+fn is_share(p: &Path) -> bool {
+    let s = p.to_string_lossy();
+    s.starts_with(r"\\") || s.starts_with("//")
+}
+
+/// `remote.fetch`'s path check (rule 303): `text` as a click on the host reads it (relative to the tab's `folder`, `~`
+/// from `home`), then the file as the file system names it, which must be a plain file inside the tab's folder or
+/// `temp` (each as the file system names it, so `..` and a link out of them are refused), and no device or share.
+/// `not_found` for anything else.
+pub fn resolve_fetch(
+    folder: &str,
+    text: &str,
+    home: &str,
+    temp: &Path,
+) -> Result<PathBuf, CtlError> {
+    if text.is_empty() || text.len() > 4096 || text.chars().any(char::is_control) {
+        return Err(bad("path is a file's path on the host"));
+    }
+    let abs = flare_term::path_open::resolve_term_path(folder, text, home).ok_or_else(not_found)?;
+    let abs = PathBuf::from(abs);
+    if is_share(&abs) {
+        return Err(not_found());
+    }
+    let name = abs
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if name.is_empty() || is_device_name(&name) {
+        return Err(not_found());
+    }
+    let file = real(&abs).ok_or_else(not_found)?;
+    if is_share(&file) {
+        return Err(not_found());
+    }
+    // sync-ok: the control channel's worker stats the fetched file, never the UI thread
+    if !std::fs::metadata(&file).is_ok_and(|m| m.is_file()) {
+        return Err(not_found());
+    }
+    let inside = |root: &Path| real(root).is_some_and(|r| file.starts_with(&r) && file != r);
+    if folder.is_empty() || !(inside(Path::new(folder)) || inside(temp)) {
+        return Err(not_found());
+    }
+    Ok(file)
+}
+
+/// One chunk of a fetched file, as `remote.fetch` answers it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct FetchChunk {
+    pub name: String,
+    pub size: u64,
+    pub chunk: u32,
+    pub chunks: u32,
+    pub data: Vec<u8>,
+}
+
+/// Reads chunk `chunk` of `file` (checked by [`resolve_fetch`]). A file over `FILE_MAX` is `too_large`; a chunk past
+/// the end is `bad_params`.
+pub fn read_chunk(file: &Path, chunk: u32) -> Result<FetchChunk, CtlError> {
+    let gone = |_| not_found();
+    // sync-ok: the control channel's worker reads the fetched file, never the UI thread
+    let mut f = std::fs::File::open(file).map_err(gone)?;
+    let size = f.metadata().map_err(gone)?.len();
+    if size > FILE_MAX {
+        return Err(CtlError::new(
+            code::TOO_LARGE,
+            format!(
+                "that file is over {} MB: open it on the host",
+                FILE_MAX / (1024 * 1024)
+            ),
+        ));
+    }
+    let chunks = chunks_of(size);
+    if chunk >= chunks {
+        return Err(bad(format!("that file has {chunks} chunks")));
+    }
+    let at = u64::from(chunk) * FILE_CHUNK as u64;
+    f.seek(SeekFrom::Start(at)).map_err(gone)?;
+    let want = (size - at).min(FILE_CHUNK as u64) as usize;
+    let mut data = vec![0u8; want];
+    f.read_exact(&mut data).map_err(gone)?;
+    Ok(FetchChunk {
+        name: file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        size,
+        chunk,
+        chunks,
+        data,
+    })
+}
+
+/// One file being written by `remote.put`.
+struct Part {
+    next: u32,
+    chunks: u32,
+    bytes: u64,
+    part: PathBuf,
+    done: PathBuf,
+}
+
+/// What a `remote.put` chunk answers.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PutAnswer {
+    /// The name the host keeps the file under: the next chunks name it.
+    pub name: String,
+    /// The host path, once the last chunk is in.
+    pub host_path: Option<PathBuf>,
+}
+
+/// The files viewers copy to this host, per tab, in the run's own folder under the temp folder.
+pub struct Uploads {
+    root: PathBuf,
+    parts: Mutex<HashMap<(String, String), Part>>,
+    /// The tabs a file was copied to: only their folders are removed when they close.
+    made: Mutex<std::collections::HashSet<String>>,
+}
+
+/// The suffix of a file still being written.
+const PART: &str = ".flare-part";
+
+impl Uploads {
+    /// Uploads under `root` (the run's folder: `<temp>/flare-remote/<run>`). Nothing is made until a file comes.
+    pub fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            parts: Mutex::new(HashMap::new()),
+            made: Mutex::new(std::collections::HashSet::new()),
+        }
+    }
+
+    fn lk(&self) -> MutexGuard<'_, HashMap<(String, String), Part>> {
+        self.parts.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A tab's upload folder.
+    pub fn folder(&self, tab: &str) -> PathBuf {
+        self.root.join(tab)
+    }
+
+    /// Takes chunk `chunk` of `chunks` of a file. Chunk 0 names the file (`name`, cleaned and made unique in the tab's
+    /// folder); the next chunks name it as the answer to chunk 0 did, in order. The last chunk puts the file in place
+    /// and answers its path. Over `FILE_MAX` in all, or a chunk out of turn, drops the file and is `bad_params` or
+    /// `too_large`.
+    pub fn put(
+        &self,
+        tab: &str,
+        name: &str,
+        chunk: u32,
+        chunks: u32,
+        data: &[u8],
+    ) -> Result<PutAnswer, CtlError> {
+        let tab = tab_folder(tab)?;
+        if chunks == 0 || chunks > FILE_CHUNKS_MAX {
+            return Err(CtlError::new(
+                code::TOO_LARGE,
+                format!("a file is at most {} MB here", FILE_MAX / (1024 * 1024)),
+            ));
+        }
+        if chunk >= chunks {
+            return Err(bad("chunk is less than chunks"));
+        }
+        if data.len() > FILE_CHUNK {
+            return Err(bad(format!("a chunk is at most {} KB", FILE_CHUNK / 1024)));
+        }
+        let io = |e: std::io::Error| {
+            CtlError::new(
+                code::UNAVAILABLE,
+                format!("the file could not be written on the host: {e}"),
+            )
+        };
+        let dir = self.folder(tab);
+        let mut parts = self.lk();
+        let key;
+        if chunk == 0 {
+            self.made
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(tab.to_string());
+            // sync-ok: the control channel's worker makes the tab's upload folder, never the UI thread
+            std::fs::create_dir_all(&dir).map_err(io)?;
+            let clean = put_name(name);
+            let kept = unique_name(&dir, &clean, |n| {
+                parts.contains_key(&(tab.to_string(), n.to_string()))
+            });
+            let done = dir.join(&kept);
+            let part = dir.join(format!("{kept}{PART}"));
+            // sync-ok: the control channel's worker writes the uploaded chunk, never the UI thread
+            let mut f = std::fs::File::create(&part).map_err(io)?;
+            f.write_all(data).map_err(io)?;
+            key = (tab.to_string(), kept.clone());
+            parts.insert(
+                key.clone(),
+                Part {
+                    next: 1,
+                    chunks,
+                    bytes: data.len() as u64,
+                    part,
+                    done,
+                },
+            );
+        } else {
+            key = (tab.to_string(), name.to_string());
+            let p = parts
+                .get_mut(&key)
+                .ok_or_else(|| bad("no file of that name is being copied to that tab"))?;
+            if p.next != chunk || p.chunks != chunks {
+                let p = parts.remove(&key).expect("checked above");
+                let _ = std::fs::remove_file(&p.part); // sync-ok: the control channel's worker
+                return Err(bad("a chunk came out of turn: send the file again"));
+            }
+            p.bytes += data.len() as u64;
+            if p.bytes > FILE_MAX {
+                let p = parts.remove(&key).expect("checked above");
+                let _ = std::fs::remove_file(&p.part); // sync-ok: the control channel's worker
+                return Err(CtlError::new(code::TOO_LARGE, "that file is too big"));
+            }
+            // sync-ok: the control channel's worker appends the uploaded chunk, never the UI thread
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&p.part)
+                .map_err(io)?;
+            f.write_all(data).map_err(io)?;
+            p.next += 1;
+        }
+        let p = parts.get(&key).expect("kept above");
+        if p.next < p.chunks {
+            return Ok(PutAnswer {
+                name: key.1,
+                host_path: None,
+            });
+        }
+        let p = parts.remove(&key).expect("kept above");
+        // sync-ok: the control channel's worker puts the finished file in place, never the UI thread
+        std::fs::rename(&p.part, &p.done).map_err(io)?;
+        Ok(PutAnswer {
+            name: key.1,
+            host_path: Some(p.done),
+        })
+    }
+
+    /// The tab closed: its unfinished files are dropped, and its folder is handed back to be removed off the UI
+    /// thread.
+    pub fn forget(&self, tab: &str) -> Option<PathBuf> {
+        self.lk().retain(|(t, _), _| t != tab);
+        let had = self
+            .made
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(tab);
+        had.then(|| tab_folder(tab).ok().map(|t| self.folder(t)))
+            .flatten()
+    }
+
+    /// The run's folder (tests).
+    #[cfg(test)]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+/// `name`, or `stem-2.ext`, `stem-3.ext` and so on: the first that is neither on disk in `dir` nor `taken`.
+fn unique_name(dir: &Path, name: &str, taken: impl Fn(&str) -> bool) -> String {
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name, ""),
+    };
+    let free = |n: &str| {
+        // sync-ok: the control channel's worker looks for a free name, never the UI thread
+        !taken(n) && !dir.join(n).exists() && !dir.join(format!("{n}{PART}")).exists()
+    };
+    if free(name) {
+        return name.to_string();
+    }
+    (2..)
+        .map(|i| format!("{stem}-{i}{ext}"))
+        .find(|n| free(n))
+        .expect("an unbounded search finds a free name")
+}
+
+/// Removes a folder and everything in it, on a thread of its own (never the UI thread, rule 34).
+pub fn remove_later(dir: PathBuf) {
+    let _ = std::thread::Builder::new()
+        .name("flare-remote-files-cleanup".into())
+        .spawn(move || {
+            let _ = std::fs::remove_dir_all(&dir); // sync-ok: a cleanup thread of its own
+        });
+}
+
+/// The folders of earlier runs under `parent` that are older than `age` (left by a crash): removed. A cleanup thread.
+pub fn sweep_old(parent: &Path, age: Duration) {
+    let Ok(rd) = std::fs::read_dir(parent) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for e in rd.flatten() {
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|d| d > age);
+        if old && e.path().is_dir() {
+            let _ = std::fs::remove_dir_all(e.path()); // sync-ok: a cleanup thread of its own
+        }
+    }
+}
+
+/// How long a run's leftover folders are kept before a later run removes them.
+pub const LEFTOVER_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Starts the sweep of leftover folders under the temp folder's `flare-remote` and `flare-remote-copies` on a thread.
+pub fn sweep_leftovers_later() {
+    let _ = std::thread::Builder::new()
+        .name("flare-remote-files-sweep".into())
+        .spawn(|| {
+            let temp = std::env::temp_dir();
+            sweep_old(&temp.join("flare-remote"), LEFTOVER_AGE);
+            sweep_old(&temp.join("flare-remote-copies"), LEFTOVER_AGE);
+        });
+}
+
+/// The viewer's copies of fetched files: `<temp>/flare-remote-copies/<run>/<tab>/<name>`.
+pub struct Copies {
+    root: PathBuf,
+    /// The tabs a copy was kept for: only their folders are removed when they close.
+    used: Mutex<std::collections::HashSet<String>>,
+}
+
+impl Copies {
+    pub fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            used: Mutex::new(std::collections::HashSet::new()),
+        }
+    }
+
+    /// A closed tab's folder of copies, when it has one (removed off the UI thread by the caller).
+    pub fn forget(&self, tab: &str) -> Option<PathBuf> {
+        let had = self
+            .used
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(tab);
+        had.then(|| self.folder(tab)).flatten()
+    }
+
+    /// The real one, in this run's folder.
+    pub fn in_temp() -> Self {
+        Self::new(
+            std::env::temp_dir()
+                .join("flare-remote-copies")
+                .join(run_name()),
+        )
+    }
+
+    /// A tab's folder of copies (`None` for a tab id that is no folder name).
+    pub fn folder(&self, tab: &str) -> Option<PathBuf> {
+        tab_folder(tab).ok().map(|t| self.root.join(t))
+    }
+
+    /// Writes a fetched file as a copy in the tab's folder, under the host's name cleaned as an upload's is (rule
+    /// 304's `put_name`), replacing an earlier copy of that name: the folder and the plain name of the copy. A worker.
+    pub fn save(&self, tab: &str, name: &str, data: &[u8]) -> std::io::Result<(PathBuf, String)> {
+        let dir = self
+            .folder(tab)
+            .ok_or_else(|| std::io::Error::other("not a tab id"))?;
+        self.used
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(tab.to_string());
+        std::fs::create_dir_all(&dir)?; // sync-ok: a worker writes the fetched copy, never the UI thread
+        let name = put_name(name);
+        let tmp = dir.join(format!("{name}{PART}"));
+        std::fs::write(&tmp, data)?; // sync-ok: a worker writes the fetched copy, never the UI thread
+        std::fs::rename(&tmp, dir.join(&name))?; // sync-ok: a worker, the copy put in place whole
+        Ok((dir, name))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(p: &Path, bytes: &[u8]) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, bytes).unwrap();
+    }
+
+    struct Dirs {
+        _all: tempfile::TempDir,
+        folder: PathBuf,
+        temp: PathBuf,
+        outside: PathBuf,
+    }
+
+    fn dirs() -> Dirs {
+        let all = tempfile::tempdir().unwrap();
+        let root = real(all.path()).unwrap();
+        let folder = root.join("proj");
+        let temp = root.join("tmp");
+        let outside = root.join("secret");
+        for d in [&folder, &temp, &outside] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        write(&folder.join("notes.md"), b"# notes");
+        write(&folder.join("src").join("main.rs"), b"fn main() {}");
+        write(&temp.join("shot.png"), b"\x89PNG");
+        write(&outside.join("key.txt"), b"secret");
+        Dirs {
+            _all: all,
+            folder,
+            temp,
+            outside,
+        }
+    }
+
+    fn s(p: &Path) -> String {
+        p.to_string_lossy().into_owned()
+    }
+
+    fn code_of(r: Result<PathBuf, CtlError>) -> String {
+        r.map(|p| format!("ok {}", p.display()))
+            .unwrap_or_else(|e| e.code)
+    }
+
+    /// Rule 303: a fetched path is read from the tab's folder as a click there reads it, and only a plain file in the
+    /// tab's folder or the host's temp folder is sent.
+    #[test]
+    fn a_fetch_reads_the_tabs_folder_and_the_temp_folder_and_nothing_else() {
+        let d = dirs();
+        let (folder, temp) = (s(&d.folder), d.temp.clone());
+        let ok = |text: &str| resolve_fetch(&folder, text, "", &temp).unwrap();
+        assert_eq!(ok("notes.md"), d.folder.join("notes.md"));
+        assert_eq!(ok("src/main.rs"), d.folder.join("src").join("main.rs"));
+        assert_eq!(
+            ok(&s(&d.folder.join("notes.md"))),
+            d.folder.join("notes.md")
+        );
+        assert_eq!(ok(&s(&d.temp.join("shot.png"))), d.temp.join("shot.png"));
+        let refused = |text: &str| code_of(resolve_fetch(&folder, text, "", &temp));
+        // Outside both, by an absolute path or by `..`.
+        assert_eq!(refused(&s(&d.outside.join("key.txt"))), code::NOT_FOUND);
+        assert_eq!(refused("../secret/key.txt"), code::NOT_FOUND);
+        assert_eq!(refused("src/../../secret/key.txt"), code::NOT_FOUND);
+        // Missing, a folder, the folder itself.
+        assert_eq!(refused("gone.txt"), code::NOT_FOUND);
+        assert_eq!(refused("src"), code::NOT_FOUND);
+        assert_eq!(refused(&folder), code::NOT_FOUND);
+        // Not a path at all.
+        assert_eq!(refused(""), code::BAD_PARAMS);
+        assert_eq!(refused("a\nb"), code::BAD_PARAMS);
+        // No folder for the tab: nothing relative, and nothing outside temp.
+        assert_eq!(
+            code_of(resolve_fetch("", &s(&d.folder.join("notes.md")), "", &temp)),
+            code::NOT_FOUND
+        );
+    }
+
+    /// Rule 303: a link inside the tab's folder that points out of it is read as the file system names it, and refused.
+    #[test]
+    fn a_link_out_of_the_tabs_folder_is_refused() {
+        let d = dirs();
+        let link = d.folder.join("escape.txt");
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(d.outside.join("key.txt"), &link).is_ok();
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(d.outside.join("key.txt"), &link).is_ok();
+        if !made {
+            // Windows without the right to make links: nothing to test here.
+            return;
+        }
+        assert_eq!(
+            code_of(resolve_fetch(&s(&d.folder), "escape.txt", "", &d.temp)),
+            code::NOT_FOUND
+        );
+    }
+
+    /// Rule 303: Windows' device names and network paths are never read, whatever folder they seem to be in.
+    #[test]
+    fn device_names_and_shares_are_never_fetched() {
+        let d = dirs();
+        let folder = s(&d.folder);
+        for text in ["NUL", "con.txt", "COM1", "aux.log", "src/LPT1.txt"] {
+            assert_eq!(
+                code_of(resolve_fetch(&folder, text, "", &d.temp)),
+                code::NOT_FOUND,
+                "{text}"
+            );
+        }
+        for text in [r"\\server\share\x.txt", "//server/share/x.txt"] {
+            assert_eq!(
+                code_of(resolve_fetch(&folder, text, "", &d.temp)),
+                code::NOT_FOUND,
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fetched_file_is_read_in_chunks_that_join_up_and_a_big_one_is_refused() {
+        let d = dirs();
+        let big: Vec<u8> = (0..(FILE_CHUNK * 2 + 10))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let p = d.folder.join("big.bin");
+        write(&p, &big);
+        let first = read_chunk(&p, 0).unwrap();
+        assert_eq!(
+            (first.name.as_str(), first.size, first.chunks),
+            ("big.bin", big.len() as u64, 3)
+        );
+        let mut all = first.data;
+        for c in 1..3 {
+            all.extend(read_chunk(&p, c).unwrap().data);
+        }
+        assert_eq!(all, big);
+        assert_eq!(read_chunk(&p, 3).unwrap_err().code, code::BAD_PARAMS);
+        let empty = d.folder.join("empty.txt");
+        write(&empty, b"");
+        let e = read_chunk(&empty, 0).unwrap();
+        assert_eq!((e.chunks, e.data.len()), (1, 0));
+        let huge = d.folder.join("huge.bin");
+        let f = std::fs::File::create(&huge).unwrap();
+        f.set_len(FILE_MAX + 1).unwrap();
+        drop(f);
+        assert_eq!(read_chunk(&huge, 0).unwrap_err().code, code::TOO_LARGE);
+    }
+
+    /// Rule 304: an upload is written into the tab's own folder under a clean, unique name, whole once its last chunk is
+    /// in; a chunk out of turn drops it.
+    #[test]
+    fn an_upload_lands_whole_in_the_tabs_folder_under_a_clean_unique_name() {
+        let root = tempfile::tempdir().unwrap();
+        let up = Uploads::new(root.path().join("run"));
+        let one = up.put("t1", "shot.png", 0, 1, b"png").unwrap();
+        let path = one.host_path.clone().unwrap();
+        assert_eq!(path, up.root().join("t1").join("shot.png"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"png");
+        // The same name again is a new file, never the old one overwritten.
+        let two = up.put("t1", "shot.png", 0, 1, b"two").unwrap();
+        assert_eq!(two.name, "shot-2.png");
+        assert_eq!(std::fs::read(&path).unwrap(), b"png");
+        // A name with a folder in it and characters a shell acts on stays in the tab's folder, cleaned.
+        let a = up.put("t1", "..\\..\\evil%.txt", 0, 2, b"ab").unwrap();
+        assert_eq!((a.name.as_str(), a.host_path.as_ref()), ("evil_.txt", None));
+        assert!(
+            !up.root().join("t1").join("evil_.txt").exists(),
+            "not in place before its last chunk"
+        );
+        let b = up.put("t1", &a.name, 1, 2, b"cd").unwrap();
+        assert_eq!(std::fs::read(b.host_path.unwrap()).unwrap(), b"abcd");
+        // Out of turn: the file is dropped and must be sent again.
+        let c = up.put("t1", "x.bin", 0, 3, b"1").unwrap();
+        assert_eq!(
+            up.put("t1", &c.name, 2, 3, b"3").unwrap_err().code,
+            code::BAD_PARAMS
+        );
+        assert_eq!(
+            up.put("t1", &c.name, 1, 3, b"2").unwrap_err().code,
+            code::BAD_PARAMS
+        );
+        assert!(!up.root().join("t1").join("x.bin.flare-part").exists());
+        // Caps and bad tabs.
+        assert_eq!(
+            up.put("t1", "y", 0, FILE_CHUNKS_MAX + 1, b"")
+                .unwrap_err()
+                .code,
+            code::TOO_LARGE
+        );
+        assert_eq!(
+            up.put("t1", "y", 0, 1, &vec![0; FILE_CHUNK + 1])
+                .unwrap_err()
+                .code,
+            code::BAD_PARAMS
+        );
+        assert_eq!(
+            up.put("../t1", "y", 0, 1, b"").unwrap_err().code,
+            code::BAD_PARAMS
+        );
+        assert_eq!(
+            up.put("t1", "y", 1, 1, b"").unwrap_err().code,
+            code::BAD_PARAMS
+        );
+    }
+
+    /// Rule 304: a closed tab's upload folder goes, and an earlier run's leftovers go after a day.
+    #[test]
+    fn a_closed_tabs_uploads_are_removed_and_old_runs_are_swept() {
+        let root = tempfile::tempdir().unwrap();
+        let up = Uploads::new(root.path().join("run"));
+        up.put("t1", "a.txt", 0, 1, b"a").unwrap();
+        let half = up.put("t1", "b.txt", 0, 2, b"b").unwrap();
+        let dir = up.forget("t1").unwrap();
+        assert_eq!(dir, up.root().join("t1"));
+        assert_eq!(
+            up.put("t1", &half.name, 1, 2, b"c").unwrap_err().code,
+            code::BAD_PARAMS
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(up.forget("../x").is_none());
+        // The sweep removes what is older than its age and keeps the rest.
+        let parent = root.path().join("sweep");
+        std::fs::create_dir_all(parent.join("old")).unwrap();
+        std::fs::create_dir_all(parent.join("new")).unwrap();
+        std::thread::sleep(Duration::from_millis(30)); // sync-ok: test code only, never the app
+        sweep_old(&parent, Duration::from_millis(10));
+        assert!(!parent.join("old").exists() && !parent.join("new").exists());
+        std::fs::create_dir_all(parent.join("fresh")).unwrap();
+        sweep_old(&parent, LEFTOVER_AGE);
+        assert!(parent.join("fresh").exists());
+    }
+
+    #[test]
+    fn a_fetched_copy_is_kept_per_tab_under_a_clean_name() {
+        let root = tempfile::tempdir().unwrap();
+        let c = Copies::new(root.path().join("run"));
+        let (dir, name) = c.save("t3", "notes.md", b"one").unwrap();
+        assert_eq!(
+            (dir.clone(), name.as_str()),
+            (root.path().join("run").join("t3"), "notes.md")
+        );
+        let (_, again) = c.save("t3", "notes.md", b"two").unwrap();
+        assert_eq!(std::fs::read(dir.join(again)).unwrap(), b"two");
+        let (_, odd) = c.save("t3", "a%b.txt", b"x").unwrap();
+        assert_eq!(odd, "a_b.txt");
+        assert!(c.save("../t3", "x", b"").is_err());
+        // Only a tab that kept a copy has a folder to remove when it closes.
+        assert_eq!(c.forget("t9"), None);
+        assert_eq!(c.forget("t3"), Some(dir));
+        assert_eq!(c.forget("t3"), None);
+    }
+}

@@ -94,6 +94,26 @@ pub enum TermMsg {
         seq: u64,
         thumb: Option<Arc<Thumb>>,
     },
+    /// A click on a file link in a remote tab (remote sessions PR 6, rule 303): its spellings, which name a file of
+    /// the host and never one of this machine. The app has the tab's link fetch it.
+    RemoteLink {
+        tab: String,
+        texts: Vec<String>,
+        line: Option<u32>,
+    },
+    /// Files dropped on a remote tab, or copied files or an image pasted there (rule 304): the app copies them to
+    /// the host first and pastes their host paths. `files` are this machine's paths; `image` is the clipboard's image.
+    RemoteUpload {
+        tab: String,
+        files: Vec<String>,
+        image: bool,
+    },
+    /// A remote tab's file work did not get done (the link is down, the host refused, the file is too big): one line
+    /// for the person, said where a refused preview is.
+    RemoteFileRefused {
+        tab: String,
+        text: String,
+    },
 }
 
 /// Puts the hover thumbnail on the window (Some), or takes it down (None).
@@ -133,7 +153,8 @@ pub struct TabInfo<'a> {
     pub shell_cwd: Option<&'a str>,
     pub alive: bool,
     /// A remote tab (remote sessions PR 3): its file links name files of the host, never of this machine, so none is
-    /// opened, previewed or offered here, and a file dropped on it is not typed (its path is this machine's).
+    /// resolved, opened, previewed or offered here (a click asks the tab's link to fetch it, PR 6), and a file dropped
+    /// on it is not typed (its path is this machine's; the app copies it to the host first, PR 6).
     pub remote: bool,
 }
 
@@ -416,7 +437,11 @@ fn thumb_of(tab: &TabInfo, mark: LinkMark, top: usize) -> Option<ThumbAt> {
 
 /// What the panel may show `text` as, and the file as the file system names it: a picture or a text file on the click
 /// allowlist (rules 13 and 14). Runs on a worker (one stat).
-fn previewable(base: &str, text: &str, home: &str) -> Option<(flare_surfaces::PanelKind, String)> {
+pub(crate) fn previewable(
+    base: &str,
+    text: &str,
+    home: &str,
+) -> Option<(flare_surfaces::PanelKind, String)> {
     let (abs, real) = resolve_openable_file(base, text, home)?;
     let kind = flare_surfaces::preview::classify_resolved(&abs, &real)?;
     flare_surfaces::preview::loadable(&real, &kind).then_some((kind, real))
@@ -1221,8 +1246,18 @@ impl TermUi {
         };
         match click_action(&mark.target, shown.as_deref(), Some(base), 0) {
             LinkAction::OpenUrl(u) => self.open_link(&u),
-            // A remote tab's file link names a file of the host: never opened here (PR 6 fetches it over the link).
-            LinkAction::OpenPath { .. } if tab.remote => {}
+            // A remote tab's file link names a file of the host: never resolved or opened here; the app has the tab's
+            // link fetch it (rule 303).
+            LinkAction::OpenPath { text, .. } if tab.remote => {
+                let LinkTarget::Path { line, alts, .. } = &mark.target else {
+                    return;
+                };
+                (self.deps.post)(TermMsg::RemoteLink {
+                    tab: tab.id.to_string(),
+                    texts: std::iter::once(text).chain(alts.iter().cloned()).collect(),
+                    line: *line,
+                });
+            }
             LinkAction::OpenPath { base, text } => {
                 let LinkTarget::Path { line, alts, .. } = &mark.target else {
                     return;
@@ -1443,6 +1478,16 @@ impl TermUi {
                 if t.id != req.tab || !t.alive {
                     return;
                 }
+                // A remote tab's shell reads neither this machine's files nor its clipboard: copied files and an
+                // image go to the host first, then their host paths are pasted (rule 304). Text pastes as text.
+                if t.remote && (!state.files.is_empty() || state.image) {
+                    (self.deps.post)(TermMsg::RemoteUpload {
+                        tab: t.id.to_string(),
+                        files: state.files,
+                        image: state.image,
+                    });
+                    return;
+                }
                 let shell = t.handle.shell_id().map(|s| path_shell_of(Some(s.as_str())));
                 match paste_action(&state, req.mode, shell, self.deps.agent.armed(t.id)) {
                     PasteAction::ImageKey(k) => t.handle.send_text(k),
@@ -1471,15 +1516,18 @@ impl TermUi {
             // The app shows it (AppCtl::on_msg takes this before it gets here).
             TermMsg::Preview { .. }
             | TermMsg::PreviewRefused { .. }
-            | TermMsg::NoSuchFile { .. } => {}
+            | TermMsg::NoSuchFile { .. }
+            | TermMsg::RemoteLink { .. }
+            | TermMsg::RemoteUpload { .. }
+            | TermMsg::RemoteFileRefused { .. } => {}
             TermMsg::Thumb { seq, thumb } => self.thumb_arrived(tab, seq, thumb),
         }
     }
 
-    /// A file dropped on the terminal area. Buffered only while the front tab is live.
+    /// A file dropped on the terminal area. Buffered only while the front tab is live. On a remote tab the batch is
+    /// copied to the host first (rule 304): a path of this machine means nothing to its shell.
     pub fn on_dropped(&mut self, tab: Option<&TabInfo>, path: &Path) {
-        // A path of this machine means nothing to a remote tab's shell (PR 6 copies the file over first).
-        if tab.is_some_and(|t| t.alive && !t.remote) {
+        if tab.is_some_and(|t| t.alive) {
             self.drops.push(path, self.now());
         }
     }
@@ -1667,7 +1715,16 @@ impl TermUi {
 
         if let Some(paths) = self.drops.take_ready(now) {
             if let Some(t) = tab.filter(|t| t.alive) {
-                type_dropped(t.handle, &paths);
+                if t.remote {
+                    // Never this machine's paths typed into the host's shell: the files go over first (rule 304).
+                    (self.deps.post)(TermMsg::RemoteUpload {
+                        tab: t.id.to_string(),
+                        files: paths,
+                        image: false,
+                    });
+                } else {
+                    type_dropped(t.handle, &paths);
+                }
                 out.focus_terminal = true;
             }
         } else if self.drops.is_pending() {
@@ -1821,6 +1878,8 @@ mod tests {
         rcr: Rc<Cell<bool>>,
         g: GridGeom,
         cwd: Option<String>,
+        /// The tab is a remote one (remote sessions PR 6).
+        remote: bool,
         _sp: Arc<FakeSpawner>,
     }
 
@@ -1928,6 +1987,7 @@ mod tests {
                     window: (800, 600),
                 },
                 cwd,
+                remote: false,
                 _sp: sp,
             };
             rig.ui.tab_changed(Some("a"));
@@ -1989,7 +2049,7 @@ mod tests {
                 cwd: self.cwd.as_deref(),
                 shell_cwd: None,
                 alive: true,
-                remote: false,
+                remote: self.remote,
             };
             let e = PointerIn {
                 kind,
@@ -2044,7 +2104,7 @@ mod tests {
                 cwd: self.cwd.as_deref(),
                 shell_cwd: None,
                 alive: true,
-                remote: false,
+                remote: self.remote,
             };
             self.ui.tick(Some(&tab), &self.g)
         }
@@ -2061,7 +2121,7 @@ mod tests {
                 cwd: self.cwd.as_deref(),
                 shell_cwd: None,
                 alive: true,
-                remote: false,
+                remote: self.remote,
             };
             let has = self.ui.has_selection(&tab);
             let agent_here = self.agent.armed("a").is_some();
@@ -2093,7 +2153,7 @@ mod tests {
                 cwd: self.cwd.as_deref(),
                 shell_cwd: None,
                 alive: true,
-                remote: false,
+                remote: self.remote,
             };
             for m in all {
                 self.ui.on_msg(Some(&tab), m);
@@ -2112,7 +2172,7 @@ mod tests {
                 cwd: self.cwd.as_deref(),
                 shell_cwd: None,
                 alive: true,
-                remote: false,
+                remote: self.remote,
             };
             self.ui.find_edited(&tab, q);
         }
@@ -2125,7 +2185,7 @@ mod tests {
                 cwd: self.cwd.as_deref(),
                 shell_cwd: None,
                 alive: true,
-                remote: false,
+                remote: self.remote,
             };
             f(&mut self.ui, &tab)
         }
@@ -2500,6 +2560,34 @@ mod tests {
                 .iter()
                 .any(|s| s.row == 1 && s.col == 0 && s.width == 7),
             "the session marked it on purpose: no stat before it lights"
+        );
+    }
+
+    /// Rule 303: on a remote tab a click on a file link names a file of the host: it is never resolved or opened here,
+    /// even when this machine has a file of that name; its spellings go to the app for the tab's link to fetch.
+    #[test]
+    fn a_click_on_a_remote_tabs_file_link_asks_the_link_and_opens_nothing_here() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let mut r = Rig::with_cwd(1.0, dir.path());
+        r.remote = true;
+        light_up(&mut r, "a.txt");
+        r.frame();
+        r.click(2, 0);
+        let got = r.msgs.lock().unwrap().iter().find_map(|m| match m {
+            TermMsg::RemoteLink { tab, texts, .. } => Some((tab.clone(), texts.clone())),
+            _ => None,
+        });
+        assert_eq!(got, Some(("a".to_string(), vec!["a.txt".to_string()])));
+        thread::sleep(Duration::from_millis(50));
+        assert!(r.openers.records().is_empty(), "nothing opened here");
+        assert!(
+            !r.msgs
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| matches!(m, TermMsg::Preview { .. } | TermMsg::NoSuchFile { .. })),
+            "this machine's file is never previewed"
         );
     }
 
@@ -3687,6 +3775,80 @@ mod tests {
         r.tick(100);
         thread::sleep(Duration::from_millis(30));
         assert!(r.written().is_empty());
+    }
+
+    /// Rule 304: a drop on a remote tab is never typed (this machine's paths mean nothing to the host's shell): the
+    /// batch goes to the app as files to copy to the host first.
+    #[test]
+    fn a_drop_on_a_remote_tab_is_never_typed_and_goes_to_the_app_to_copy() {
+        let mut r = Rig::new(1.0);
+        r.remote = true;
+        r.with_tab(|ui, t| {
+            ui.on_dropped(Some(t), Path::new("C:\\My Dir\\a.txt"));
+            ui.on_dropped(Some(t), Path::new("C:\\b.png"));
+        });
+        r.tick(100);
+        let got: Vec<(String, Vec<String>, bool)> = r
+            .msgs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|m| match m {
+                TermMsg::RemoteUpload { tab, files, image } => {
+                    Some((tab.clone(), files.clone(), *image))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [(
+                "a".to_string(),
+                vec!["C:\\My Dir\\a.txt".to_string(), "C:\\b.png".to_string()],
+                false
+            )]
+        );
+        thread::sleep(Duration::from_millis(30));
+        assert!(r.written().is_empty(), "nothing typed into the pty");
+    }
+
+    /// Rule 304: on a remote tab copied files and an image are not pasted here (no local path, no image key): they go
+    /// to the app to copy to the host. Text still pastes as text.
+    #[test]
+    fn a_paste_of_files_or_an_image_on_a_remote_tab_goes_to_the_app_to_copy() {
+        let mut r = Rig::new(1.0);
+        r.remote = true;
+        let req = PasteReq {
+            tab: "a".into(),
+            mode: PasteMode::Normal,
+        };
+        let state = ClipboardState {
+            files: vec!["C:\\x.txt".into()],
+            text: String::new(),
+            image: true,
+        };
+        r.with_tab(|ui, t| ui.on_msg(Some(t), TermMsg::Clip(req.clone(), state)));
+        let image_only = ClipboardState {
+            image: true,
+            ..ClipboardState::default()
+        };
+        r.with_tab(|ui, t| ui.on_msg(Some(t), TermMsg::Clip(req.clone(), image_only)));
+        let got: Vec<(Vec<String>, bool)> = r
+            .msgs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|m| match m {
+                TermMsg::RemoteUpload { files, image, .. } => Some((files.clone(), *image)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [(vec!["C:\\x.txt".to_string()], true), (Vec::new(), true)]
+        );
+        thread::sleep(Duration::from_millis(30));
+        assert!(r.written().is_empty(), "no path and no image key typed");
     }
 
     // ---- OSC 52 and the program's own copy ----

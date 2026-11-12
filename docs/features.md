@@ -2564,3 +2564,34 @@ not running. Plan `docs/superpowers/plans/2026-11-12-remote-sessions.md` (PR 5).
 - **Not yet.** The past-sessions list (`remote.sessions`) is not built: the owner's PR 7 picks drop it from the +
   menu, and `--resume` takes an id. Whether a Mac's sshd login can start the app hidden, and a raise of a hidden Mac
   window on a real screen, are on the by-hand list.
+
+## Remote sessions, PR 6: file links, image paste and file drop across the link, 2026-11-12
+
+A remote tab's files now cross the link both ways, and both directions (a PC viewing a Mac, a Mac viewing a PC) use
+the same code. Plan `docs/superpowers/plans/2026-11-12-remote-sessions.md` (PR 6). Contract:
+`docs/surfaces/protocol.md` (section 1 "The viewer", section 5 `remote.fetch` and `remote.put`). Checks only a real PC
+and Mac can make: `docs/remote-sessions-manual-checks.md`.
+
+- **File links from the other machine.** A click on a file link in a remote tab asks the tab's link for the host's
+  file (`remote.fetch`), never a file of this machine. The host reads it only from the tab's folder or its own temp
+  folder, as the file system names it (no `..` or link out, no device, no share), at most 32 MB (rule 303). A copy is
+  kept in this machine's temp folder: a picture or a text file shows in the side panel; anything else opens the way a
+  clicked file opens (a program is shown in Explorer or Finder, never run). A link the host has no file for says "No
+  such file" as a local one does. The copies go when the tab closes. Held by `remote_files::tests`,
+  `remote_link::tests::a_file_link_is_fetched_by_the_first_spelling_the_host_has_in_chunks`,
+  `term_ui::tests::a_click_on_a_remote_tabs_file_link_asks_the_link_and_opens_nothing_here`,
+  `ui_tests::term::flow::a_remote_file_link_is_fetched_by_the_link_and_shown_from_a_copy_in_the_panel` and the e2e
+  `remoteFiles`.
+- **Drop and paste of files and pictures.** A file dropped on a remote tab, copied files pasted there, and a picture
+  pasted there (as a PNG) are copied to the tab's own folder in the host's temp folder first (`remote.put`, at most
+  32 MB a file), under a clean name; the host's path, quoted for the host's shell, is then pasted as one paste. This
+  machine's path is never typed into the host's shell, and no image key is sent (the host's Claude cannot read this
+  machine's clipboard) (rule 304). Folders are refused with one line in the panel. Held by `remote_files::tests`,
+  `remote_link::tests::a_put_copies_the_files_then_pastes_the_hosts_quoted_paths_as_one_paste`,
+  `term_ui::tests::a_drop_on_a_remote_tab_is_never_typed_and_goes_to_the_app_to_copy`,
+  `ui_tests::term::flow::an_image_pasted_on_a_remote_tab_goes_to_the_host_as_a_png` and the e2e `remoteFiles`.
+- **The ssh command for each kind of host.** A Mac's command is quoted for sh, a PC's for cmd (no `&&`, nothing cmd
+  expands), from separate argv items with no secret (rule 305). Held by
+  `remote_link::tests::the_remote_command_table_quotes_each_hosts_shell`.
+- **Not yet.** A Mac's TIFF-only clipboard picture is not copied (the image reader has no TIFF decoder; screenshots put
+  a PNG there too). A dropped folder is not copied. Real ssh between the PC and the Mac is on the by-hand list.

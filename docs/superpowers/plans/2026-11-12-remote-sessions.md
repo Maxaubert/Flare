@@ -1,7 +1,7 @@
 # Remote sessions: implementation plan (2026-11-12)
 
 Spec: `docs/superpowers/specs/2026-11-12-remote-sessions-design.md`.
-Status: approved 2026-11-12; building. PR 1 built on `feat/remote-1` (2026-11-12, not merged); PR 2 built on `feat/remote-2` (2026-11-12, stacked on PR 1, not merged); PR 3 built on `feat/remote-3` (2026-11-12, stacked on PR 2, not merged); PR 4 built on `feat/remote-4` (2026-11-12, stacked on PR 3, not merged); PR 5 built on `feat/remote-5` (2026-11-12, stacked on PR 4, not merged); PR 6 next.
+Status: approved 2026-11-12; building. PR 1 built on `feat/remote-1` (2026-11-12, not merged); PR 2 built on `feat/remote-2` (2026-11-12, stacked on PR 1, not merged); PR 3 built on `feat/remote-3` (2026-11-12, stacked on PR 2, not merged); PR 4 built on `feat/remote-4` (2026-11-12, stacked on PR 3, not merged); PR 5 built on `feat/remote-5` (2026-11-12, stacked on PR 4, not merged); PR 6 built on `feat/remote-6` (2026-11-12, stacked on PR 5, not merged); PR 7 next (its mockup picks are in).
 
 Seven PRs, in order. Each one ships alone and passes its own tests. Only PR 7 needs an approved mockup.
 Rule numbers below are "R-new-N". Number them after the last rule in `docs/regression-rules.md` when you write them.
@@ -420,7 +420,41 @@ R-new-21 was not written (no session listing, below). Where the build differs fr
 - R-new-23: paste and drop of files and images copy to a host temp folder and paste a quoted host path.
 - R-new-24: the ssh command line is built per host OS from separate argv items and has no secrets.
 
-**Depends on.** PR 5. **UI.** Reuses the existing side panel. No new screens.
+**Built (2026-11-12, `feat/remote-6`, stacked on `feat/remote-5`).** Rules R-new-22 to R-new-24 are rules 303 to 305.
+Where the build differs from the lines above:
+- **`remote.fetch {tab, path, chunk?}`** answers `{tab, name, size, chunk, chunks, data}`: no `max_bytes` and no
+  `mime` (the viewer classifies the copy by its name as a click does; the cap is the host's, 32 MiB, `too_large`).
+  The tab must be followed; its folder comes from the window (`CtlOp::SessionOf`); the path is resolved with the
+  click's own `resolve_term_path` from that folder and checked by `remote_files::resolve_fetch` on the worker (the
+  file's real name inside the tab's folder or the host's temp folder, no device name, no share; `not_found`
+  otherwise).
+- **`remote.put {tab, name, chunk, chunks, data}`** answers `{tab, name, done, host_path?, paste?}`. Chunk 0's answer
+  names the file as kept (`put_name`, then `-2`, `-3` when taken), and the next chunks send that name. The upload
+  folder is per tab and per run, `<temp>/flare-remote/<run>/<tab>` (a host tab's id can come again after a restart),
+  removed when the tab closes; a crashed run's folders go a day later. **The host quotes the path** (`paste`, with
+  `quote_path` for the tab's own shell), not the viewer: the viewer does not know the host's shell (its `MachineTag`
+  kind is unknown until PR 7), the host does. The viewer pastes the joined answers as one `paste` intent, sanitised
+  again on the host (rule 1).
+- **No `Link` in the window.** File work goes to the tab's link worker as an `Errand` (`flare_term::remote_pty`,
+  `RemoteLive::send_errand`), done between the typing and the output poll, so a dropped file's path is pasted after
+  what was typed before it; work asked while the link is down or after the session ended is refused at once.
+- **Images.** `ClipboardPort::read_image` (new): Windows reads the registered PNG format, else `CF_DIB`/`CF_DIBV5` as a
+  `.bmp` (`bmp_of_dib`), made a PNG with the `image` crate; macOS reads the pasteboard's PNG (`read_png`), and a
+  TIFF-only picture is refused (no TIFF decoder). Copied files pasted on a remote tab go the same way as a drop.
+- **`handle.rs` is unchanged.** The routing is above the handle: `TermUi` posts `TermMsg::RemoteLink` (a click) and
+  `TermMsg::RemoteUpload` (a drop, or a paste of files or a picture) for a remote tab, and
+  `appctl/remote_files_glue.rs` hands them to the link. Text still pastes through `TermHandle::paste` (rule 292).
+- **The command builder** was built in PR 3; this PR adds its full table test and rule 305.
+- **Tests.** Unit: `flare_ctl::remote::tests` (`put_name`, chunks), `method::tests`, `remote_files::tests`,
+  `remote_link::tests` (fetch, put, caps, the link down, the command table), `ctl_app::tests` (`remote_fetch_*`,
+  `remote_put_*`), `serve_remote::tests` (fetch retried, put never), `term_ui::tests` (a remote click, drop and paste),
+  `remote_files_glue::tests`, `remote_pty::tests` (errands), `clipboard_port::tests` (`bmp_of_dib`, the stand-in's
+  image) and, in macOS CI, `pasteboard::tests`. ui_tests: `term::flow::a_remote_file_link_*`,
+  `a_file_dropped_on_a_remote_tab_*`, `an_image_pasted_on_a_remote_tab_*`. E2E: `remoteFiles`.
+- **Known limits.** "Both directions" on one PC is the same code with the profiles' roles swapped, so no swapped copy of
+  every remote scenario was added; the Mac to PC direction over real ssh is on the by-hand list
+  (`docs/remote-sessions-manual-checks.md`, new). A dropped folder is not copied. The e2e has no clipboard-image
+  request, so the image paste is held by the ui test only.
 
 ---
 
@@ -525,5 +559,12 @@ never be seen or raised. `remoteOpen` proves the rest of the chain on one PC (co
 hidden start, the park, no focus change). Left for the by-hand list: a Mac host started over ssh (does `open`-less
 start of the binary reach the window server; does the accessory app get its Dock icon when raised), a PC host reached
 over sshd with Flare closed (the one-line refusal), and whether `CREATE_BREAKAWAY_FROM_JOB` is allowed by sshd's job.
+
+Spike status after PR 6 (2026-11-12): still no ssh to any real machine. Spike 3 (`LOCAL_PEERPID` and the per-user
+socket for a serve process started by sshd on the Mac) cannot be proven without one: the serve child has no
+`FLARE_CTL_PID`, so it takes the plain-name path, and the check is on the by-hand list. `remoteFiles` proves the file
+path on one PC (a click fetched from the host into the viewer's panel, a drop copied to the host's upload folder and
+its host path pasted). The by-hand list now exists: `docs/remote-sessions-manual-checks.md` (every spike and every
+real-hardware check of PRs 1 to 6, in both directions).
 
 Open risks tracked across PRs: closed enum arrays (`Method::ALL`, `Namespace::ALL`, `Permission::ALL`) and their exhaustive tests; event lossiness (solved by polling and sequence numbers); stuck-handler cap of 32 on slow links (short polls only); two writers on one session; version skew between machines (refuse with one line); `tabs.changed` is reserved and unsent, so the viewer polls `remote.tabs` and `remote.status`.

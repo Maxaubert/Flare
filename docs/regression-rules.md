@@ -1177,6 +1177,65 @@ is opaque, takes clicks and has its shadow. A park that comes after the raise pa
 `a_window_gets_back_its_last_ask_and_opaque_with_clicks_when_it_asked_nothing` and
 `off_the_main_thread_nothing_is_touched`. Source: the review of remote sessions PR 5 (2026-11-12).
 
+303. **A remote path is never opened as a local path; a host file comes through `remote.fetch` and the host's
+allowlist.** Extends S2 (rule 187) and rules 157, 266 to 275 for a remote tab. A click on a file link in a remote tab is
+never resolved, statted, previewed or opened on the viewer (its text names a file of the host): the viewer hands its
+spellings to the tab's link, which asks `remote.fetch` for each in turn. The host resolves the path as a click there
+would (relative to its folder of the tab, `~` from its home) and reads it only when the file, as its file system names
+it (links followed, `..` resolved), is a plain file inside the tab's folder or the host's temp folder, with no device
+name and no network path; anything else is `not_found`, and a file over 32 MiB `too_large`. It is read in 256 KiB
+chunks on the call's worker, and the viewer checks each chunk is of the same file. The viewer keeps the bytes as a copy
+in its own temp folder (`flare-remote-copies/<run>/<tab>`, removed when the tab closes) and shows the copy in the side
+panel when it is a picture or a text file, or opens it as a clicked file of this machine otherwise (the click
+allowlist, so a program is revealed and never run, rule 14). File work asked while the link is down, or after the tab's
+session ended, is refused at once, never held. Native: `crates/flare/src/remote_files.rs` (`resolve_fetch`,
+`read_chunk`, `Copies`), `crates/flare/src/ctl_app.rs` (`remote_fetch`), `crates/flare/src/remote_link.rs`
+(`fetch_file`, the worker's errands), `crates/flare-term/src/remote_pty.rs` (`Errand`), `crates/flare/src/term_ui.rs`
+(`click_link`), `crates/flare/src/appctl/remote_files_glue.rs` (`remote_fetch_link`). Held by
+`a_fetch_reads_the_tabs_folder_and_the_temp_folder_and_nothing_else`, `a_link_out_of_the_tabs_folder_is_refused`,
+`device_names_and_shares_are_never_fetched`, `a_fetched_file_is_read_in_chunks_that_join_up_and_a_big_one_is_refused`,
+`remote_fetch_reads_only_the_followed_tabs_folder_in_chunks`,
+`a_file_link_is_fetched_by_the_first_spelling_the_host_has_in_chunks`,
+`file_work_asked_while_the_link_is_down_or_ended_is_refused_at_once`,
+`errands_wait_in_order_and_none_is_lost_when_the_link_ends`,
+`a_click_on_a_remote_tabs_file_link_asks_the_link_and_opens_nothing_here`,
+`a_remote_file_link_is_fetched_by_the_link_and_shown_from_a_copy_in_the_panel`,
+`a_remote_file_link_the_host_does_not_have_is_said_in_the_panel` and the e2e `remoteFiles`. Source: remote sessions
+PR 6 (2026-11-12); owner decision "a link to a file on the other machine is fetched over SSH and shown in the side
+panel; Open saves a copy and opens it locally".
+304. **A paste or drop of files or a picture on a remote tab copies them to a host temp folder and pastes a quoted host
+path.** A file dropped on a remote tab, copied files pasted there and a clipboard picture pasted there are never typed
+as this machine's paths, and no image key is sent (the host's program would read the host's clipboard). The viewer
+reads the files (only files, at most 32 MiB each; a picture is sent as a PNG, a bitmap made one) on a worker and the
+tab's link copies each with `remote.put` into the tab's own upload folder on the host (`<temp>/flare-remote/<run>/<tab>`,
+removed when the tab closes; a crashed run's folders go a day later). The host cleans the name (`put_name`: last part
+only, letters, digits, space and `-_.()+,`, no device name, at most 100 bytes) and makes it unique, writes the file
+whole before it is in place, and answers its path quoted for the tab's own shell (`quote_path`); the link then pastes
+those paths as one `paste` intent, sanitised on the host as any paste (rule 1, rule 292). A put chunk is never sent
+twice. Native: `crates/flare-ctl/src/remote.rs` (`put_name`, `FILE_*`), `crates/flare/src/remote_files.rs`
+(`Uploads`), `crates/flare/src/ctl_app.rs` (`remote_put`), `crates/flare/src/remote_link.rs` (`put_files`),
+`crates/flare/src/term_ui.rs` (`on_dropped`, the drop flush, `TermMsg::Clip`),
+`crates/flare/src/appctl/remote_files_glue.rs` (`remote_upload`, `png_of`), `crates/flare-win/src/clipboard_port.rs`
+(`read_image`, `bmp_of_dib`), `crates/flare-win/src/macos/pasteboard.rs` (`read_png`). Held by
+`a_put_name_is_its_last_part_with_nothing_a_shell_acts_on`, `an_upload_lands_whole_in_the_tabs_folder_under_a_clean_unique_name`,
+`a_closed_tabs_uploads_are_removed_and_old_runs_are_swept`,
+`remote_put_lands_in_the_tabs_upload_folder_and_answers_a_quoted_path`,
+`a_put_copies_the_files_then_pastes_the_hosts_quoted_paths_as_one_paste`, `a_file_over_the_cap_is_never_sent`,
+`a_broken_pipe_is_opened_again_for_a_call_that_changes_nothing`,
+`a_drop_on_a_remote_tab_is_never_typed_and_goes_to_the_app_to_copy`,
+`a_paste_of_files_or_an_image_on_a_remote_tab_goes_to_the_app_to_copy`,
+`a_file_dropped_on_a_remote_tab_goes_to_its_link_and_is_never_typed_here`,
+`an_image_pasted_on_a_remote_tab_goes_to_the_host_as_a_png`, `a_pasted_image_goes_as_a_png`,
+`a_dib_becomes_a_bmp_file_with_its_pixels_where_the_header_says` and the e2e `remoteFiles`. Source: remote sessions
+PR 6 (2026-11-12); the design's "copied to a per-session temp folder on the host first, then the host path is pasted".
+305. **The ssh command line is built per host OS from separate argv items and carries no secret.** Amends rule 290 with
+the full table: a Mac's (and an unknown kind's) login shell gets the Flare path in single quotes (nothing expands
+there, a `'` written `'\''`); a PC's cmd gets it in double quotes with no `&&`, and a path holding `%`, `!`, `^` or `"`
+(which cmd still acts on inside quotes) or a control character builds no command at all. Host and user are argv items
+of their own that cannot be read as an option. Native: `crates/flare/src/remote_link.rs` (`remote_command`,
+`ssh_argv`). Held by `the_remote_command_table_quotes_each_hosts_shell` and
+`the_ssh_command_is_argv_items_quoted_for_the_hosts_shell`. Source: remote sessions PR 6 (2026-11-12).
+
 ## macOS port
 
 The rules the macOS port stack added (PRs #121 to #140) are numbered from 1001 so they never clash with main: main's

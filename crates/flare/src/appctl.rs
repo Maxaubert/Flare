@@ -187,6 +187,7 @@ mod bar_glue;
 mod install_glue;
 mod mods_glue;
 mod plugins_glue;
+mod remote_files_glue;
 mod remote_glue;
 mod sessions_glue;
 pub mod staged_glue;
@@ -220,6 +221,9 @@ impl std::fmt::Debug for TermMsgBox {
             TermMsg::Preview { .. } => "TermMsg::Preview",
             TermMsg::PreviewRefused { .. } => "TermMsg::PreviewRefused",
             TermMsg::Thumb { .. } => "TermMsg::Thumb",
+            TermMsg::RemoteLink { .. } => "TermMsg::RemoteLink",
+            TermMsg::RemoteUpload { .. } => "TermMsg::RemoteUpload",
+            TermMsg::RemoteFileRefused { .. } => "TermMsg::RemoteFileRefused",
         })
     }
 }
@@ -648,6 +652,8 @@ pub struct AppCtl {
     /// (rule 296). None in a run that serves none.
     keep_awake: Option<Arc<dyn flare_win::keep_awake::KeepAwake>>,
     awake_hold: Option<flare_win::keep_awake::Hold>,
+    /// Remote sessions (PR 6): this run's copies of the host files remote tabs' links fetched (rule 303).
+    remote_copies: Arc<crate::remote_files::Copies>,
     /// The staged build of an installed copy (install when idle); None for any other run.
     staged: Option<staged_glue::StagedState>,
 }
@@ -1131,6 +1137,7 @@ impl AppCtl {
             ctl_info: None,
             remote_host: None,
             keep_awake: None,
+            remote_copies: Arc::new(crate::remote_files::Copies::in_temp()),
             awake_hold: None,
             mods: None,
             staged: None,
@@ -2766,6 +2773,8 @@ impl AppCtl {
         if let Some(r) = &self.remote_host {
             r.forget_tab(id);
         }
+        // Remote sessions PR 6: this run's copies of the host files the tab fetched.
+        self.forget_remote_copies(id);
     }
 
     fn toggle_settings(&mut self) {
@@ -5473,6 +5482,15 @@ impl AppCtl {
                     "Flare found no such file",
                     "No such file",
                 );
+            }
+            UiMsg::Term(TermMsgBox(TermMsg::RemoteLink { tab, texts, line })) => {
+                self.remote_fetch_link(&tab, texts, line);
+            }
+            UiMsg::Term(TermMsgBox(TermMsg::RemoteUpload { tab, files, image })) => {
+                self.remote_upload(&tab, files, image);
+            }
+            UiMsg::Term(TermMsgBox(TermMsg::RemoteFileRefused { tab, text })) => {
+                self.say_in_panel(&tab, &text, &text, "Not done on the other machine");
             }
             UiMsg::Term(TermMsgBox(m)) => {
                 let front = self.front_tab();

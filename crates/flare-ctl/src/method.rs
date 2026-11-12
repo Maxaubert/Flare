@@ -127,6 +127,12 @@ pub enum Method {
     /// What is said in a host tab's Claude session, as numbered entries after a number (remote sessions PR 4, rule
     /// 297). The host finds and reads the transcript; no host path crosses the link.
     RemoteConvo,
+    /// One chunk of a file a host tab's link names (remote sessions PR 6, rule 303): read on the host from the tab's
+    /// folder or the host's temp folder only, by the path as the host resolves it.
+    RemoteFetch,
+    /// One chunk of a file the viewer copies to the host (a dropped file, a pasted image; remote sessions PR 6, rule
+    /// 304): written into the tab's own upload folder on the host, under a name the host cleans.
+    RemotePut,
     /// Opens a tab in this Flare that shows a session on another machine (remote sessions PR 5): a machine named in
     /// `machines.json`, a folder there and an optional Claude session to resume. The agent's (owner decision: no
     /// prompt) and the `flare open --on` command's. The opened tab takes no typing from either (rule 299).
@@ -233,7 +239,7 @@ impl Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 60] = [
+    pub const ALL: [Method; 62] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -293,6 +299,8 @@ impl Method {
         Method::RemoteClose,
         Method::RemoteStatus,
         Method::RemoteConvo,
+        Method::RemoteFetch,
+        Method::RemotePut,
         Method::OpenRemoteSession,
     ];
 
@@ -358,6 +366,8 @@ impl Method {
             Method::RemoteClose => "remote.close",
             Method::RemoteStatus => "remote.status",
             Method::RemoteConvo => "remote.convo",
+            Method::RemoteFetch => "remote.fetch",
+            Method::RemotePut => "remote.put",
             Method::OpenRemoteSession => "open.remote",
         }
     }
@@ -417,7 +427,9 @@ impl Method {
             | Method::RemoteSnapshot
             | Method::RemoteClose
             | Method::RemoteStatus
-            | Method::RemoteConvo => Namespace::Remote,
+            | Method::RemoteConvo
+            | Method::RemoteFetch
+            | Method::RemotePut => Namespace::Remote,
             Method::OpenRemoteSession => Namespace::Open,
         }
     }
@@ -440,9 +452,14 @@ impl Method {
             // The mod's page has 30 s to answer (`flare_mods::hub::CALL_TIMEOUT`); the channel lets the
             // handler run a little longer, so the answer is the app's own, with the mod's name in it.
             Namespace::AgentTools if self == Method::ModsCall => MOD_CALL_TIMEOUT,
-            // The host starts a shell or reads a folder before it answers: `REMOTE_CALL` (`remote.fetch` joins them in a
-            // later PR). A remote link's short calls (the hello, the polls, typing) get the default.
-            Namespace::Remote if matches!(self, Method::RemoteOpen | Method::RemoteLs) => {
+            // The host starts a shell, reads a folder or moves a file's chunk before it answers: `REMOTE_CALL`. A remote
+            // link's short calls (the hello, the polls, typing) get the default.
+            Namespace::Remote
+                if matches!(
+                    self,
+                    Method::RemoteOpen | Method::RemoteLs | Method::RemoteFetch | Method::RemotePut
+                ) =>
+            {
                 REMOTE_CALL
             }
             Namespace::Remote => DEFAULT_TIMEOUT,
@@ -534,7 +551,7 @@ mod tests {
 
     #[test]
     fn every_method_and_namespace_is_listed_once() {
-        assert_eq!(Method::ALL.len(), 60);
+        assert_eq!(Method::ALL.len(), 62);
         assert_eq!(Namespace::ALL.len(), 20);
         for (i, ns) in Namespace::ALL.iter().enumerate() {
             assert!(!Namespace::ALL[..i].contains(ns), "{ns:?} twice");
@@ -552,7 +569,12 @@ mod tests {
         assert!(REMOTE_CALL > DEFAULT_TIMEOUT);
         assert_eq!(Namespace::Remote.permission(), None);
         // The host starts a shell or reads a folder before it answers; the polls and typing are short.
-        for m in [Method::RemoteOpen, Method::RemoteLs] {
+        for m in [
+            Method::RemoteOpen,
+            Method::RemoteLs,
+            Method::RemoteFetch,
+            Method::RemotePut,
+        ] {
             assert_eq!(m.timeout(), REMOTE_CALL, "{}", m.name());
         }
         for m in [
