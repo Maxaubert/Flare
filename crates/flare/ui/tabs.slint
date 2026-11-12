@@ -52,18 +52,35 @@ export component TabEnd inherits Rectangle {
     in property <int> mark-state: 0;
     in property <color> ink;
     in property <bool> row-hover: false;
+    // A remote tab's machine (remote sessions PR 7, owner pick Horizontal 4): its system's logo after the ring and
+    // before the X. 1 a Mac, 2 a PC; anything else draws none.
+    in property <int> machine: 0;
     out property <bool> hovered: xta.has-hover;
     callback closed();
     callback menu(length, length);
 
     property <bool> has-ring: root.loading || root.mark-state != 0;
+    property <bool> has-logo: root.machine == 1 || root.machine == 2;
+    property <length> logo-w: root.has-logo ? 12px + 3px : 0px;
+    property <length> ring-w: root.has-ring ? root.box + 2px : 0px;
     property <length> xw: root.has-ring ? ((root.row-hover || xta.has-hover) ? root.box : 0px) : root.box;
     animate xw {
         duration: Motion.d(150ms);
         easing: cubic-bezier(0.16, 1, 0.3, 1);
     }
-    width: root.has-ring ? root.box + (root.xw > 0.5px ? 2px : 0px) + root.xw : root.box;
+    width: root.has-ring ? root.box + (root.xw > 0.5px ? 2px : 0px) + root.logo-w + root.xw : root.logo-w + root.box;
     height: root.box;
+
+    if root.has-logo : Path {
+        x: root.ring-w;
+        y: Px.snap((root.box - 12px) / 2);
+        width: 12px;
+        height: 12px;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.machine == 1 ? Glyphs.logo-mac : Glyphs.logo-pc;
+        fill: root.ink.with-alpha(0.7);
+    }
 
     if root.loading : LoadingRing {
         x: 0px;
@@ -79,7 +96,7 @@ export component TabEnd inherits Rectangle {
     }
 
     Rectangle {
-        x: root.has-ring ? root.box + 2px : 0px;
+        x: root.ring-w + root.logo-w;
         y: 0px;
         width: root.xw;
         height: root.box;
@@ -269,6 +286,7 @@ export component TabStrip inherits Rectangle {
             mark-state: row.mark-kind == 1 ? row.mark-state : 0;
             ink: tab.ink;
             row-hover: tab.hov;
+            machine: row.machine;
             closed => { root.closed(row.id); }
             menu(mx, my) => { root.tab-menu(row.id, mx, my); }
         }

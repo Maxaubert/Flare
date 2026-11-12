@@ -28,7 +28,9 @@ use flare_ctl::remote::{
     FILE_CHUNK, FILE_CHUNKS_MAX, FILE_MAX, Intent, KeyIntent, MAX_INPUT_BYTES, MAX_INTENTS,
     OUTPUT_MAX, chunks_of, intents_json,
 };
-use flare_ctl::{Client, ClientError, CtlError, Method, RemoteHelloParams, StdioWire, code};
+use flare_ctl::{
+    Client, ClientError, CtlError, Method, RemoteHelloInfo, RemoteHelloParams, StdioWire, code,
+};
 use flare_tabs::tabs::Os;
 use flare_term::handle::RemoteIntent;
 use flare_term::pty::{PtyProcess, PtySpawner, SpawnSpec};
@@ -139,7 +141,7 @@ pub fn remote_command(kind: Option<Os>, flare: &str) -> Option<String> {
 }
 
 /// This machine's ssh: by its absolute path (rule 1).
-fn ssh_exe() -> String {
+pub(crate) fn ssh_exe() -> String {
     #[cfg(windows)]
     {
         let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
@@ -219,45 +221,62 @@ fn this_machine() -> String {
     .unwrap_or_else(|| "viewer".to_string())
 }
 
+/// BLOCKING (it starts the link and waits for `remote.hello`): the link `argv` names, said hello to. A worker's call.
+fn start_link(argv: &[String]) -> Result<(ClientLink<StdioWire>, RemoteHelloInfo), LinkError> {
+    let (exe, args) = argv
+        .split_first()
+        .ok_or_else(|| LinkError::Down("an empty link command".into()))?;
+    let mut cmd = std::process::Command::new(exe); // sync-ok: the tab's link worker starts ssh, never the UI thread
+    cmd.args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // No console window, ever (tests never take the screen; nor does a link).
+        cmd.creation_flags(0x0800_0000);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| LinkError::Down(format!("could not start the link: {e}")))?;
+    let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        let _ = child.kill();
+        return Err(LinkError::Down("the link has no stdio".into()));
+    };
+    let wire = match StdioWire::from_child(stdin, stdout) {
+        Ok(w) => w,
+        Err(e) => {
+            let _ = child.kill();
+            return Err(LinkError::Down(format!("a wire over the link: {e}")));
+        }
+    };
+    let mut link = ClientLink::new(Client::new(wire), Some(child));
+    let info = hello_info(&mut link.client)?;
+    Ok((link, info))
+}
+
 impl Connector for SshConnector {
     fn connect(&self, machine: &str) -> Result<Box<dyn Link>, LinkError> {
-        let argv = self.argv(machine)?;
-        let (exe, args) = argv
-            .split_first()
-            .ok_or_else(|| LinkError::Down("an empty link command".into()))?;
-        let mut cmd = std::process::Command::new(exe); // sync-ok: the tab's link worker starts ssh, never the UI thread
-        cmd.args(args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // No console window, ever (tests never take the screen; nor does a link).
-            cmd.creation_flags(0x0800_0000);
-        }
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| LinkError::Down(format!("could not start the link: {e}")))?;
-        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
-            let _ = child.kill();
-            return Err(LinkError::Down("the link has no stdio".into()));
-        };
-        let wire = match StdioWire::from_child(stdin, stdout) {
-            Ok(w) => w,
-            Err(e) => {
-                let _ = child.kill();
-                return Err(LinkError::Down(format!("a wire over the link: {e}")));
-            }
-        };
-        let mut link = ClientLink::new(Client::new(wire), Some(child));
-        hello(&mut link.client)?;
+        let (link, _) = start_link(&self.argv(machine)?)?;
         Ok(Box::new(link))
     }
 }
 
-/// `remote.hello` over a fresh client.
+/// BLOCKING: the link `argv` names (ssh, or the e2e's loopback) started, said hello to and let go: what the host
+/// answered (Settings > Machines checks a link with it, remote sessions PR 7). The ssh child ends with the link.
+pub fn hello_over(argv: &[String]) -> Result<RemoteHelloInfo, LinkError> {
+    start_link(argv).map(|(_, info)| info)
+}
+
+/// `remote.hello` over a fresh client (the tests' links).
+#[cfg(test)]
 pub fn hello<W: Wire>(c: &mut Client<W>) -> Result<(), LinkError> {
+    hello_info(c).map(|_| ())
+}
+
+/// `remote.hello` over a fresh client, and what the host answered.
+pub fn hello_info<W: Wire>(c: &mut Client<W>) -> Result<RemoteHelloInfo, LinkError> {
     c.remote_hello(
         &RemoteHelloParams {
             machine: this_machine(),
@@ -265,7 +284,6 @@ pub fn hello<W: Wire>(c: &mut Client<W>) -> Result<(), LinkError> {
         },
         HELLO_WAIT,
     )
-    .map(|_| ())
     .map_err(of_client)
 }
 
@@ -545,6 +563,9 @@ impl PtySpawner for RemoteSpawner {
             told: false,
             wake: self.wake.clone(),
             status: crate::remote_status::StatusPoll::new(self.timing.status_every),
+            convo: crate::remote_convo::ConvoMirror::new(),
+            convo_next: None,
+            convo_off: false,
         };
         std::thread::Builder::new()
             .name("flare-remote-link".into())
@@ -576,6 +597,33 @@ struct Worker {
     wake: Option<Wake>,
     /// The `remote.status` polls of this tab (remote sessions PR 4).
     status: crate::remote_status::StatusPoll,
+    /// The tab's conversation as the host numbered it (remote sessions PR 7, rule 297), polled only while the window
+    /// wants it: when the next poll is due, and whether the host has no `remote.convo` (an older Flare).
+    convo: crate::remote_convo::ConvoMirror,
+    convo_next: Option<Instant>,
+    convo_off: bool,
+}
+
+/// The most characters of one entry the fitted view shows (a long answer is cut, the view is for a glance).
+pub const CONVO_LINE_MAX: usize = 4000;
+
+/// Pure: the fitted view's lines of a mirrored conversation (remote sessions PR 7): who said it, the words (cut at
+/// [`CONVO_LINE_MAX`] characters) and a tool's name.
+pub fn convo_lines(m: &crate::remote_convo::ConvoMirror) -> Vec<flare_term::remote_pty::ConvoLine> {
+    use flare_convo::said::Role;
+    m.entries()
+        .iter()
+        .map(|(_, e)| flare_term::remote_pty::ConvoLine {
+            role: match e.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::Tool => "tool",
+            }
+            .to_string(),
+            text: e.text.chars().take(CONVO_LINE_MAX).collect(),
+            tool: e.tool.clone(),
+        })
+        .collect()
 }
 
 /// Pure: `remote.open`'s params for a tab: the host folder, and the session to resume there when one was asked for
@@ -839,6 +887,42 @@ impl Worker {
         }
     }
 
+    /// The tab's conversation, every `status_every` while the window wants it (remote sessions PR 7): `remote.convo`
+    /// from the last number held, each entry taken once (rule 297); a change goes to the window and wakes it. A host
+    /// with no `remote.convo` is asked no more on this link; any other refusal (no session there yet) is asked again
+    /// at the next poll.
+    fn poll_convo(&mut self, link: &mut dyn Link, tab: &str) -> Result<(), LinkError> {
+        let now = Instant::now();
+        if self.convo_off
+            || !self.spec.live.convo_wanted()
+            || self.convo_next.is_some_and(|n| now < n)
+        {
+            return Ok(());
+        }
+        self.convo_next = Some(now + self.t.status_every);
+        match link.call(
+            Method::RemoteConvo,
+            json!({"tab": tab, "since": self.convo.since()}),
+            self.t.call,
+        ) {
+            Ok(v) => {
+                if self.convo.apply(&v) {
+                    self.spec.live.set_convo(convo_lines(&self.convo));
+                    if let Some(w) = &self.wake {
+                        w();
+                    }
+                }
+                Ok(())
+            }
+            Err(LinkError::Refused(e)) if e.code == code::UNKNOWN_METHOD => {
+                self.convo_off = true;
+                Ok(())
+            }
+            Err(LinkError::Refused(e)) if e.code != code::NO_TAB => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// One piece of file work (remote sessions PR 6). The asker is always told; a broken link is handed back as the
     /// call's error, so the link is tried again as for any call.
     fn errand(&mut self, link: &mut dyn Link, tab: &str, e: Errand) -> Result<(), LinkError> {
@@ -967,6 +1051,21 @@ impl Worker {
                 Err(e) => return self.failed(e),
             }
             if let Err(e) = self.poll_status(link, tab) {
+                return self.failed(e);
+            }
+            // A click or a key took the live terminal back on this screen (remote sessions PR 7): this tab's size goes
+            // again, so the host's refits leave it to this window (rule 282, the last typist sets the size).
+            if self.spec.live.take_retake()
+                && let Some((cols, rows)) = self.size
+                && let Err(e) = link.call(
+                    Method::RemoteResize,
+                    json!({"tab": tab, "cols": cols, "rows": rows}),
+                    self.t.call,
+                )
+            {
+                return self.failed(e);
+            }
+            if let Err(e) = self.poll_convo(link, tab) {
                 return self.failed(e);
             }
             idle = if busy {

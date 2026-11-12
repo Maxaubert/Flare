@@ -207,6 +207,7 @@ mod tests {
             agent_key_labels: String::new(),
             face_of,
             mods: None,
+            machines: None,
         };
         f(&env)
     }

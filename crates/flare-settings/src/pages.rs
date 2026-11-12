@@ -11,8 +11,8 @@ pub struct PageDef {
     pub end: bool,
 }
 
-/// The seven pages, in the rail's order.
-pub const PAGES: [PageDef; 7] = [
+/// The eight pages, in the rail's order. Machines (remote sessions PR 7) follows Plugins.
+pub const PAGES: [PageDef; 8] = [
     PageDef {
         id: "appearance",
         label: "Appearance",
@@ -41,6 +41,12 @@ pub const PAGES: [PageDef; 7] = [
         id: "mods",
         label: "Plugins",
         icon: "chip",
+        end: false,
+    },
+    PageDef {
+        id: "machines",
+        label: "Machines",
+        icon: "machines",
         end: false,
     },
     PageDef {
@@ -99,6 +105,7 @@ mod tests {
                 "agents",
                 "dictation",
                 "mods",
+                "machines",
                 "diagnostics",
                 "about"
             ]

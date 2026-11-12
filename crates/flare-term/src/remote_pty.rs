@@ -73,6 +73,21 @@ struct LiveInner {
     status: Mutex<Option<HostStatus>>,
     /// File work for the link, in the order asked (remote sessions PR 6).
     errands: Mutex<VecDeque<Errand>>,
+    /// Remote sessions PR 7, the fitted conversation view: the window wants the conversation polled, what the link
+    /// mirrored of it (with a number that grows with each change), and the window asks for its size to be sent again
+    /// (a click or a key took the live terminal back).
+    convo_want: std::sync::atomic::AtomicBool,
+    convo: Mutex<(u64, Vec<ConvoLine>)>,
+    retake: std::sync::atomic::AtomicBool,
+}
+
+/// One line of a remote tab's fitted conversation view (remote sessions PR 7): who said it (`user`, `assistant`,
+/// `tool`), the words, and the tool's name for a tool's line. Words only: no host path rides on it (rule 297).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConvoLine {
+    pub role: String,
+    pub text: String,
+    pub tool: Option<String>,
 }
 
 /// A file of the host the link fetched for a click on a file link (remote sessions PR 6, rule 303): the host's name
@@ -138,6 +153,9 @@ pub struct HostStatus {
     pub question: Option<String>,
     /// The kind of the failure, while it failed.
     pub failed: Option<String>,
+    /// The host's own window sizes the tab now: someone typed there last (remote sessions PR 7, rule 282). This
+    /// screen then shows the fitted conversation view instead of a terminal at the other window's size.
+    pub host_sized: bool,
 }
 
 /// What a remote tab has reached, shared by its link (which writes it) and the window (which saves it in `tabs.json`):
@@ -206,6 +224,44 @@ impl RemoteLive {
     /// The errands asked since the last take (the link's worker).
     pub fn take_errands(&self) -> Vec<Errand> {
         lk(&self.0.errands).drain(..).collect()
+    }
+
+    /// The window wants the conversation (the fitted view is up, or may come up): the link polls `remote.convo` while
+    /// this is on, and only then.
+    pub fn want_convo(&self, on: bool) {
+        self.0.convo_want.store(on, Ordering::SeqCst);
+    }
+
+    pub fn convo_wanted(&self) -> bool {
+        self.0.convo_want.load(Ordering::SeqCst)
+    }
+
+    /// The link mirrored a change of the conversation.
+    pub fn set_convo(&self, lines: Vec<ConvoLine>) {
+        let mut c = lk(&self.0.convo);
+        c.0 += 1;
+        c.1 = lines;
+    }
+
+    /// The conversation as last mirrored, and its number (0: nothing yet).
+    pub fn convo(&self) -> (u64, Vec<ConvoLine>) {
+        lk(&self.0.convo).clone()
+    }
+
+    /// The number of the last change of the conversation (0: nothing yet).
+    pub fn convo_version(&self) -> u64 {
+        lk(&self.0.convo).0
+    }
+
+    /// The live terminal was taken back here: the link sends this tab's size again, so this window sizes it (rule
+    /// 282, the last typist sets the size).
+    pub fn retake_size(&self) {
+        self.0.retake.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the window asked for the size to be sent again since the last take (the link's worker).
+    pub fn take_retake(&self) -> bool {
+        self.0.retake.swap(false, Ordering::SeqCst)
     }
 
     /// The link ends: no errand is taken any more, and the ones still waiting are handed back to be failed. Under the
@@ -1215,6 +1271,30 @@ mod tests {
 
     /// Remote sessions PR 6: file work waits for the link in the order asked; once the link ends, what still waits is
     /// handed back to be failed and anything asked later is failed at once, so no asker waits forever.
+    /// Remote sessions PR 7: the conversation the link mirrors is numbered by change, asked for only while wanted, and a
+    /// takeover's size is asked once.
+    #[test]
+    fn the_mirrored_conversation_counts_its_changes_and_a_retake_is_taken_once() {
+        let live = RemoteLive::default();
+        assert!(!live.convo_wanted());
+        assert_eq!(live.convo(), (0, Vec::new()));
+        live.want_convo(true);
+        assert!(live.convo_wanted());
+        let line = ConvoLine {
+            role: "user".into(),
+            text: "hi".into(),
+            tool: None,
+        };
+        live.set_convo(vec![line.clone()]);
+        live.set_convo(vec![line.clone(), line.clone()]);
+        assert_eq!(live.convo_version(), 2);
+        assert_eq!(live.convo().1.len(), 2);
+        assert!(!live.take_retake());
+        live.retake_size();
+        assert!(live.clone().take_retake(), "the link's clone sees it");
+        assert!(!live.take_retake(), "taken once");
+    }
+
     #[test]
     fn errands_wait_in_order_and_none_is_lost_when_the_link_ends() {
         let live = RemoteLive::default();

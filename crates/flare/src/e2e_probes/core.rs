@@ -246,6 +246,13 @@ fn app_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
                 "cwd": cwd,
                 "front": row.active,
                 "kind": kind_name(row),
+                // Remote sessions PR 7: the logo the tab wears (`mac`, `pc`, `remote` of a system not known, or none).
+                "machine": match row.machine {
+                    1 => "mac",
+                    2 => "pc",
+                    3 => "remote",
+                    _ => "",
+                },
                 "mark": {
                     "state": mark_state_name(row.mark_state),
                     "motion": mark_motion_name(row.mark_kind),

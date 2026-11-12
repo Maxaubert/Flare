@@ -6,6 +6,7 @@
 pub mod agents;
 pub mod appearance;
 pub mod dictation;
+pub mod machines;
 pub mod misc;
 pub mod mods;
 pub mod terminal;
@@ -134,6 +135,11 @@ pub enum BlockModel {
     },
     SlintBadge,
     Note(String),
+    /// The Machines page's table (remote sessions PR 7): its heading row, one linked machine, and the add form open in
+    /// the add row's place.
+    MachineHead,
+    Machine(machines::MachineRow),
+    MachineAdd(machines::AddBlock),
 }
 
 /// The Save changes action in a section heading (Mark colours).
@@ -209,6 +215,8 @@ pub struct PageEnv<'a> {
     pub face_of: &'a dyn Fn(&str) -> String,
     /// What the Mods page shows (Surfaces stage 8); `None` builds it empty.
     pub mods: Option<&'a mods::ModsInfo>,
+    /// What the Machines page shows (remote sessions PR 7); `None` builds it with no machine.
+    pub machines: Option<&'a machines::MachinesInfo>,
 }
 
 /// The Dictation page's content. The app's provider (`flare`'s `dictation_page`, M8 Task 24) fills it.
@@ -280,8 +288,7 @@ pub(crate) fn switch_row(def: &RowDef, on: bool) -> RowModel {
 }
 
 /// Options from (id, name) pairs, in the UI font.
-#[allow(dead_code)]
-pub(crate) fn opts(pairs: &[(&str, &str)]) -> Vec<Opt> {
+pub fn opts(pairs: &[(&str, &str)]) -> Vec<Opt> {
     pairs
         .iter()
         .map(|(id, name)| Opt {
@@ -339,6 +346,7 @@ pub fn build_page(id: &str, env: &PageEnv<'_>, dictation: &dyn DictationPage) ->
         "agents" => agents::build(env),
         "dictation" => misc::build_dictation(env, dictation),
         "mods" => mods::build(env),
+        "machines" => machines::build(env),
         "diagnostics" => misc::build_diagnostics(env),
         "about" => misc::build_about(env),
         _ => appearance::build(env),
@@ -409,6 +417,7 @@ pub(crate) mod test_env {
             agent_key_labels: String::new(),
             face_of,
             mods: None,
+            machines: None,
         };
         f(&env)
     }
@@ -443,6 +452,45 @@ pub(crate) mod test_env {
             agent_key_labels: String::new(),
             face_of,
             mods: Some(&info),
+            machines: None,
+        };
+        f(&env)
+    }
+
+    /// A page environment that holds this Machines page content.
+    pub(crate) fn with_env_machines<R>(
+        info: machines::MachinesInfo,
+        f: impl FnOnce(&PageEnv<'_>) -> R,
+    ) -> R {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(PrefStore::memory());
+        let face_of: &dyn Fn(&str) -> String = &face;
+        let env = PageEnv {
+            prefs: &prefs,
+            look: &look,
+            shells: None,
+            verb: VerbState::Busy,
+            home: String::new(),
+            version: "0.0.0".to_string(),
+            copyright: String::new(),
+            glass: GlassSupport::Ok,
+            diag: DiagInfo {
+                verbose: false,
+                dir: String::new(),
+            },
+            diag_marked: false,
+            nvidia: false,
+            dictation_wired: false,
+            theme_colours: ThemeColours {
+                accent: String::new(),
+                background: String::new(),
+                secondary: String::new(),
+            },
+            agent_colours: [String::new(), String::new(), String::new()],
+            agent_key_labels: String::new(),
+            face_of,
+            mods: None,
+            machines: Some(&info),
         };
         f(&env)
     }
@@ -500,11 +548,12 @@ mod cross_page_tests {
     use crate::rows::{DICTATION_OPTIONS, ROW_ORDER, row};
     use std::collections::BTreeSet;
 
-    const SIX: [&str; 6] = [
+    const SIX: [&str; 7] = [
         "appearance",
         "terminal",
         "agents",
         "dictation",
+        "machines",
         "diagnostics",
         "about",
     ];

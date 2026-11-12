@@ -2208,6 +2208,7 @@ mod tests {
             session: Some(SID.into()),
             question: question.map(str::to_string),
             failed: None,
+            host_sized: false,
         };
         let mut r = Rig::new();
         r.open("b", None);
@@ -2254,6 +2255,7 @@ mod tests {
             session: None,
             question: Some(question.into()),
             failed: None,
+            host_sized: false,
         };
         let mut r = Rig::new();
         r.open("b", None);

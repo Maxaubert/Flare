@@ -56,6 +56,9 @@ pub struct RowData {
     pub need: Option<MarkRole>,
     /// 0 shell, 1 claude, 2 codex, 3 agy (the tab icon).
     pub agent: i32,
+    /// The machine a remote tab runs on (remote sessions PR 7): 0 this one, 1 a Mac, 2 a PC, 3 a machine of a system
+    /// not known. A Mac or a PC draws its logo (vertical: before the folder; horizontal: before the end).
+    pub machine: i32,
     /// How the icon moves (`IconMotion::code`): a working agent's pick ([`wear_motions`] fills it), else 0 still.
     pub motion: i32,
     /// 0 none, 1 working, 2 question, 3 finished, 4 failed.
@@ -247,6 +250,11 @@ pub fn build_view(inp: &ViewInput) -> View {
             inp.agent.failed_kinds.get(&tab.id).map(String::as_str),
         )
         .unwrap_or_default();
+        // A remote tab's tooltip names its machine first (remote sessions PR 7).
+        let tip = match &tab.remote {
+            Some(m) if !tip.is_empty() => format!("{}: {tip}", m.name),
+            _ => tip,
+        };
         rows.push(RowData {
             id: tab.id.clone(),
             label: labels[i].clone(),
@@ -272,6 +280,7 @@ pub fn build_view(inp: &ViewInput) -> View {
                 IconKind::Agy => 3,
                 IconKind::Shell | IconKind::Settings => 0,
             },
+            machine: machine_int(tab.remote.as_ref()),
             motion: 0,
             mark_state: look.state.map_or(0, state_int),
             mark_kind: match look.mark.place {
@@ -399,6 +408,16 @@ pub fn decorate_with(
     }
 }
 
+/// The row's machine: 0 this one, 1 a Mac, 2 a PC, 3 a remote machine of a system not known.
+pub fn machine_int(remote: Option<&flare_tabs::tabs::MachineTag>) -> i32 {
+    match remote.map(|m| m.kind) {
+        None => 0,
+        Some(Some(flare_tabs::tabs::Os::Mac)) => 1,
+        Some(Some(flare_tabs::tabs::Os::Pc)) => 2,
+        Some(None) => 3,
+    }
+}
+
 /// 1 working, 2 question, 3 finished, 4 failed.
 fn state_int(s: MarkState) -> i32 {
     match s {
@@ -454,6 +473,7 @@ pub fn to_slint_row(row: &RowData) -> crate::TabRow {
         mark_state: row.mark_state,
         mark_rainbow: row.mark_rainbow,
         agent: row.agent,
+        machine: row.machine,
         motion: row.motion,
         failed_tip: "".into(),
         chip1_cmd: row.chips.chip1.0.as_str().into(),
@@ -1184,6 +1204,7 @@ mod tests {
             carried: false,
             need: None,
             agent: 0,
+            machine: 0,
             motion: 0,
             mark_state: 0,
             mark_kind: 0,
@@ -1192,6 +1213,75 @@ mod tests {
             chips: RowChips::default(),
             hover: Vec::new(),
         }
+    }
+
+    /// Remote sessions PR 7: a remote tab's row names its machine's system (its logo) and its tooltip its machine; a
+    /// local tab has none.
+    #[test]
+    fn a_remote_tabs_row_carries_its_machines_logo_and_name() {
+        use flare_tabs::tabs::{MachineTag, Os};
+        let tag = |kind| MachineTag {
+            id: "m".into(),
+            name: "Mac Mini".into(),
+            kind,
+        };
+        assert_eq!(machine_int(None), 0);
+        assert_eq!(machine_int(Some(&tag(Some(Os::Mac)))), 1);
+        assert_eq!(machine_int(Some(&tag(Some(Os::Pc)))), 2);
+        assert_eq!(machine_int(Some(&tag(None))), 3);
+        let mut m = TabModel::empty(0);
+        m.open_tab(r"C:\w\local");
+        m.open_remote_tab(
+            tag(Some(Os::Mac)),
+            "/Users/max/flare",
+            flare_term::remote_pty::RemoteLive::default(),
+        );
+        let offsets = HashMap::new();
+        let none = HashSet::new();
+        let black = slint::Color::from_rgb_u8(0, 0, 0);
+        let marks = crate::mark_colours::UiMarks {
+            working: black,
+            finished: black,
+            question: black,
+            failed: black,
+            rainbow: Vec::new(),
+            ink: black,
+        };
+        let agent = AgentRows {
+            sets: TabSets {
+                agents: &none,
+                working: &none,
+                question: &none,
+                failed: &none,
+                done: &none,
+            },
+            sw: Switches {
+                indicator: flare_agent::tab_mark::Indicator::Ring,
+                done_on: true,
+                question_on: true,
+                failed_on: true,
+                rainbow: true,
+            },
+            marks: &marks,
+            kinds: HashMap::new(),
+            failed_kinds: HashMap::new(),
+            loading: HashSet::new(),
+        };
+        let view = build_view(&ViewInput {
+            model: &m,
+            home: r"C:\Users\Admin",
+            query: "",
+            strip_phys: 1000,
+            scale: 1.0,
+            needs: &HashMap::new(),
+            offsets: &offsets,
+            carried: None,
+            agent: &agent,
+        });
+        assert_eq!(view.rows[0].machine, 0);
+        assert_eq!(view.rows[1].machine, 1);
+        assert_eq!(view.rows[1].tip, "Mac Mini: /Users/max/flare");
+        assert_eq!(to_slint_row(&view.rows[1]).machine, 1);
     }
 
     /// Owner decision 2026-10-26: a working agent's tab wears its agent's pick; a tab that does not work, a shell, the

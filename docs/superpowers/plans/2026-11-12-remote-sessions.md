@@ -1,7 +1,7 @@
 # Remote sessions: implementation plan (2026-11-12)
 
 Spec: `docs/superpowers/specs/2026-11-12-remote-sessions-design.md`.
-Status: approved 2026-11-12; building. PR 1 built on `feat/remote-1` (2026-11-12, not merged); PR 2 built on `feat/remote-2` (2026-11-12, stacked on PR 1, not merged); PR 3 built on `feat/remote-3` (2026-11-12, stacked on PR 2, not merged); PR 4 built on `feat/remote-4` (2026-11-12, stacked on PR 3, not merged); PR 5 built on `feat/remote-5` (2026-11-12, stacked on PR 4, not merged); PR 6 built on `feat/remote-6` (2026-11-12, stacked on PR 5, not merged); PR 7 next (its mockup picks are in).
+Status: approved 2026-11-12; building. PR 1 built on `feat/remote-1` (2026-11-12, not merged); PR 2 built on `feat/remote-2` (2026-11-12, stacked on PR 1, not merged); PR 3 built on `feat/remote-3` (2026-11-12, stacked on PR 2, not merged); PR 4 built on `feat/remote-4` (2026-11-12, stacked on PR 3, not merged); PR 5 built on `feat/remote-5` (2026-11-12, stacked on PR 4, not merged); PR 6 built on `feat/remote-6` (2026-11-12, stacked on PR 5, not merged); PR 7 built on `feat/remote-7` (2026-11-12, stacked on PR 6, not merged). All seven PRs are built; none is merged.
 
 Seven PRs, in order. Each one ships alone and passes its own tests. Only PR 7 needs an approved mockup.
 Rule numbers below are "R-new-N". Number them after the last rule in `docs/regression-rules.md` when you write them.
@@ -499,6 +499,51 @@ Where the build differs from the lines above:
 - R-new-26: the folder browser lists host paths only and never touches the OS dialog.
 - R-new-27: machines are stored atomically. Unknown values read as default (rules 36, 40).
 
+**Built (2026-11-12, `feat/remote-7`, stacked on `feat/remote-6`).** Rules R-new-25 and R-new-27 are rules 1192 and 1194
+(numbered after main's last rule, 1189, and the PR 6 fixes 1190 and 1191); the fitted view's rule is 1193; R-new-26 was
+dropped with the folder browser. Where the build differs from the lines above (the owner's picks win):
+- **Settings > Machines** is `flare_settings::page::machines` (data: a table heading, one `BlockModel::Machine` a
+  machine, the add row or `BlockModel::MachineAdd` in its place) drawn by `ui/settings/machines.slint`, with its door to
+  the disk and the links in `crates/flare/src/machines_page.rs` (`MachinesPage`, `MachinesIo`; `RealMachinesIo` in the
+  window, `SceneMachinesIo` in the settings scene, a fake in the tests). No `MachinesInfo.ssh_hosts: Vec<SshHost>`: the
+  hosts are plain names. The ⋯ menu and the host drop-down reuse the Settings Select menu. The rail icon and the add
+  row's plus are Flare's own icons (`icons::FLARE_ICONS`), since `SETTING_ICONS` is Prism Terminal's fixed set. The add
+  row is in the row tables (`machines-add`), so Find a setting reaches the page.
+- **`test_link`** is `remote_link::hello_over` (a link that says `remote.hello` and ends). The hello's answer now carries
+  the host's `os` (`mac`, `pc`, `other`), which the page saves as the machine's `kind`. Adding a machine tries Flare on
+  the host's PATH, then `/Applications/Flare.app/Contents/MacOS/flare`, double-quoted until the host says its system;
+  a refusal stops the search. A version refusal's red line says which side to update from the two protocol numbers
+  (`machines::failure_line`); the refusal names protocols, not Flare versions, so the line names protocols too. Every
+  machine is checked once a run when the page first opens; Test checks it again.
+- **The + menu** is the folder menu (the strip's + right-click and the sidebar's New tab arrow): one row per machine
+  after the folders (`menus_ui::MACHINE_ROW` marks its pick), which opens a shell tab with `remote.open {folder: "~"}`;
+  the host reads a lone `~` as its home folder (the viewer does not know it). The window reads `machines.json` once at
+  start on a worker (`UiMsg::Machines`) and again after every save of the page.
+- **Tab logos** are `TabRow.machine` (0 local, 1 Mac, 2 PC, 3 a remote machine of a system not known, which draws no
+  logo); the vertical card draws it before the folder, the strip's `TabEnd` after the ring and before the ×; the
+  tooltip starts with the machine's name. A restored tab takes its machine's name and kind once the machines are read
+  (`AppCtl::tag_remote_tabs`).
+- **"Hide here only"** is `TabHost::leave` and `SessionManager::leave` (the quit's detach for one tab).
+- **The fitted conversation view** is on the viewer's remote tab only (as the plan says), not on the host's own tab.
+  `remote.status` says who sizes each tab (`sized`); while the host does and the tab has a session, the link polls
+  `remote.convo` into its `ConvoMirror` and hands the lines to the window (`RemoteLive`'s conversation); a click or a
+  key takes the terminal back (`RemoteLive::retake_size`: the link sends `remote.resize` again) and the key goes on to
+  the tab. `ui/remote_convo.slint` draws it over the terminal.
+- **Tests.** Unit: `flare_settings` (`page::machines::tests`, the page, row, find and icon tables), `flare_ctl`
+  (`session` and `client`: `os`), `flare_term::remote_pty::tests` (the conversation state), `flare` `machines::tests`,
+  `machines_page::tests`, `ssh_config::tests`, `menus_ui::tests`, `tabs_ui::tests`, `remote_status::tests`,
+  `ctl_app::tests::remote_open_reads_a_lone_tilde_as_the_hosts_home`, `config::tests`. ui_tests:
+  `settings_machines::*` (the page at 100 and 225 percent, the table, the menu, the form and its red line),
+  `remote_convo::*` (fitted at three widths and two scales, the click), `term::flow::a_machines_row_in_the_plus_menu_*`,
+  `hide_here_only_*`, `a_remote_tab_the_host_sizes_shows_its_conversation_*`. Scene: `--scene settings --settings-page
+  machines`. E2E: `remoteUi` (the + menu's machine row opens a tab on the loopback host with its logo; Hide here only
+  leaves the host's session).
+- **Known limits.** No real ssh was run: adding a machine over a real ssh (a Mac's login shell running
+  `"flare" --serve-remote` and the Mac app's path, a PC's cmd), the page's first checks taking as long as a real
+  login, and a key on the host taking the size back while the viewer shows the terminal are on the by-hand list. The
+  host's own tab shows no fitted view while a viewer sizes it. A machine reached as another user, or with Flare
+  elsewhere, still needs a hand edit of `machines.json` (the form has no user or path field, as picked).
+
 **Depends on.** PRs 5 and 6. **UI.** Yes, all of it. Needs the approved mockup first.
 
 ---
@@ -566,5 +611,11 @@ socket for a serve process started by sshd on the Mac) cannot be proven without 
 path on one PC (a click fetched from the host into the viewer's panel, a drop copied to the host's upload folder and
 its host path pasted). The by-hand list now exists: `docs/remote-sessions-manual-checks.md` (every spike and every
 real-hardware check of PRs 1 to 6, in both directions).
+
+Spike status after PR 7 (2026-11-12): still no ssh to any real machine. Settings > Machines checks and adds machines
+over the same loopback the other scenarios use (`remoteUi`, and the page's tests over an in-memory stand-in). Not
+proven without real hardware and left for the by-hand list: that `ssh <host> "flare" --serve-remote` finds Flare on a
+Mac's or a PC's login PATH (and the Mac app's path when it does not), that `~/.ssh/config` hosts with an `Include` read
+as ssh reads them, and how long the page's first checks take over a real login.
 
 Open risks tracked across PRs: closed enum arrays (`Method::ALL`, `Namespace::ALL`, `Permission::ALL`) and their exhaustive tests; event lossiness (solved by polling and sequence numbers); stuck-handler cap of 32 on slow links (short polls only); two writers on one session; version skew between machines (refuse with one line); `tabs.changed` is reserved and unsent, so the viewer polls `remote.tabs` and `remote.status`.

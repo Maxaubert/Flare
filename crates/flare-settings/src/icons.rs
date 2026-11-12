@@ -143,10 +143,18 @@ pub fn button_icon_path(name: &str) -> Option<&'static str> {
         .or_else(|| icon_path(name))
 }
 
+/// Flare's own icons beyond Prism Terminal's set, same 24 unit stroke paths: the Machines page's rail icon (a screen
+/// on its stand) and the plus of its "Add a machine" row (remote sessions PR 7).
+pub const FLARE_ICONS: &[(&str, &str)] = &[
+    ("machines", "M3 5h18v11H3zM12 16v4M8 20h8"),
+    ("plus", "M12 5v14M5 12h14"),
+];
+
 /// The path data of a named icon, or `None` when the name is not in the set.
 pub fn icon_path(name: &str) -> Option<&'static str> {
     SETTING_ICONS
         .iter()
+        .chain(FLARE_ICONS.iter())
         .find(|(icon, _)| *icon == name)
         .map(|(_, path)| *path)
 }
@@ -304,6 +312,20 @@ mod tests {
         assert_eq!(icon_path("nope"), None);
         assert!(is_setting_icon("warn"));
         assert!(is_setting_icon("appearance"));
+    }
+
+    /// Flare's own icons are found like the set's, never take a name of the set, and hold only path characters.
+    #[test]
+    fn flare_icons_add_to_the_set_without_shadowing_it() {
+        for (name, path) in FLARE_ICONS {
+            assert!(!SETTING_ICONS.iter().any(|(n, _)| n == name), "{name}");
+            assert_eq!(icon_path(name), Some(*path));
+            assert!(
+                path.chars()
+                    .all(|c| "MmLlHhVvCcSsQqTtAaZz0123456789 .,-".contains(c))
+            );
+        }
+        assert!(is_setting_icon("machines") && is_setting_icon("plus"));
     }
 
     #[test]

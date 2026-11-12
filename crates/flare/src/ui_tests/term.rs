@@ -2846,4 +2846,185 @@ mod flow {
             "nothing typed in front reached the remote session"
         );
     }
+
+    fn mac_mini() -> crate::machines::Machine {
+        crate::machines::Machine {
+            id: "mac".into(),
+            name: "Mac Mini".into(),
+            kind: Some(flare_tabs::tabs::Os::Mac),
+            ssh: "mini".into(),
+            user: None,
+            flare: "flare".into(),
+        }
+    }
+
+    /// The index of the open menu's row with these words.
+    fn menu_row(w: &Wx, label: &str) -> Option<usize> {
+        let rows = w.h.comp.get_menu_rows();
+        (0..rows.row_count()).find(|&i| rows.row_data(i).is_some_and(|r| r.label == label))
+    }
+
+    /// Remote sessions PR 7 (owner pick): the + menu has one row per linked machine, its logo and its name; its pick
+    /// opens a shell tab on that machine in the host's home folder, and the tab wears the machine's logo and name.
+    #[test]
+    fn a_machines_row_in_the_plus_menu_opens_a_shell_there_wearing_its_logo() {
+        use crate::menus_ui::{GLYPH_LOGO_MAC, glyph_path};
+        let w = Wx::new(1.0);
+        w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![mac_mini()]));
+        w.h.comp.invoke_plus_menu(10.0, 10.0);
+        let i = menu_row(&w, "Mac Mini").expect("the machine's row");
+        let row = w.h.comp.get_menu_rows().row_data(i).unwrap();
+        assert_eq!(row.icon.as_str(), glyph_path(GLYPH_LOGO_MAC));
+        assert!(row.filled_icon);
+        assert_eq!(row.trailing_icon.as_str(), "", "no pin on a machine");
+        w.h.comp.invoke_menu_picked(i as i32);
+        w.pump_until("the remote pty", |w| !w.remote.made().is_empty());
+        let spec = w.remote.made()[0].0.remote.clone().expect("a remote spec");
+        assert_eq!(spec.machine, "mac");
+        assert_eq!(spec.folder, crate::machines::HOST_HOME);
+        let id = w
+            .ctl
+            .borrow()
+            .model()
+            .active()
+            .map(|t| t.id.clone())
+            .unwrap();
+        let tag = w.ctl.borrow().model().remote_of(&id).cloned().unwrap();
+        assert_eq!(tag.name, "Mac Mini");
+        assert_eq!(tag.kind, Some(flare_tabs::tabs::Os::Mac));
+        w.pump();
+        let rows = w.h.comp.get_tab_rows();
+        let r = (0..rows.row_count())
+            .filter_map(|i| rows.row_data(i))
+            .find(|r| r.id == id.as_str())
+            .unwrap();
+        assert_eq!(r.machine, 1, "the Apple logo on the tab");
+        assert!(r.tip.starts_with("Mac Mini: "), "{}", r.tip);
+        assert!(
+            (0..rows.row_count())
+                .filter_map(|i| rows.row_data(i))
+                .filter(|r| r.id != id.as_str())
+                .all(|r| r.machine == 0),
+            "a local tab wears no logo"
+        );
+    }
+
+    /// Rule 1192: a remote tab's menu has "Hide here only" after Close tab; it lets go here and the host session goes on
+    /// (`remote.detach`), where Close ends it everywhere (`remote.close`). A local tab has no such row.
+    #[test]
+    fn hide_here_only_detaches_and_close_ends_the_session_everywhere() {
+        use flare_term::remote_pty::Leaving;
+        let w = Wx::new(1.0);
+        let local = w
+            .ctl
+            .borrow()
+            .model()
+            .active()
+            .map(|t| t.id.clone())
+            .unwrap();
+        w.h.comp.invoke_tab_menu(local.as_str().into(), 10.0, 10.0);
+        assert_eq!(menu_row(&w, crate::menus_ui::HIDE_HERE), None);
+        let (hide, _) = remote_in_front(&w);
+        let close = w
+            .ctl
+            .borrow_mut()
+            .open_remote("mac", "/Users/max/two", None, true);
+        w.pump_until("two remote ptys", |w| w.remote.made().len() == 2);
+        w.h.comp.invoke_tab_menu(hide.as_str().into(), 10.0, 10.0);
+        let i = menu_row(&w, crate::menus_ui::HIDE_HERE).expect("Hide here only");
+        assert_eq!(i, 1, "right after Close tab");
+        w.h.comp.invoke_menu_picked(i as i32);
+        w.pump();
+        assert!(
+            w.ctl.borrow().model().remote_of(&hide).is_none(),
+            "gone here"
+        );
+        let io0 = w.remote.made()[0].1.clone();
+        w.pump_until("the detach", |_| io0.leaving().is_some());
+        assert_eq!(io0.leaving(), Some(Leaving::Detach));
+        w.h.comp.invoke_tab_menu(close.as_str().into(), 10.0, 10.0);
+        let c = menu_row(&w, "Close tab").unwrap();
+        w.h.comp.invoke_menu_picked(c as i32);
+        w.pump();
+        let io1 = w.remote.made()[1].1.clone();
+        w.pump_until("the close", |_| io1.leaving().is_some());
+        assert_eq!(io1.leaving(), Some(Leaving::Close));
+    }
+
+    /// Rule 1193: while the host's window sizes a remote tab that has a Claude session, this screen shows the session's
+    /// conversation fitted to its width (the link polls it only then); a key takes the live terminal back, sends this
+    /// window's size again and goes on to the tab.
+    #[test]
+    fn a_remote_tab_the_host_sizes_shows_its_conversation_until_a_key_takes_it_back() {
+        use flare_term::remote_pty::{ConvoLine, HostStatus};
+        const SID: &str = "55555555-5555-4555-8555-555555555555";
+        let w = Wx::new(1.0);
+        let (id, live) = remote_in_front(&w);
+        let host = |sized: bool| HostStatus {
+            state: "idle".into(),
+            agent: Some("claude".into()),
+            session: Some(SID.into()),
+            host_sized: sized,
+            ..HostStatus::default()
+        };
+        // This viewer sizes it: the terminal, and no conversation is asked for.
+        live.set_status(host(false));
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        assert!(!live.convo_wanted());
+        assert!(!w.h.comp.get_rconvo_open());
+        // Someone typed on the host: the link is asked for the conversation; the view shows once it came.
+        live.set_status(host(true));
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        assert!(live.convo_wanted());
+        assert!(!w.h.comp.get_rconvo_open(), "nothing to show yet");
+        let line = |role: &str, text: &str| ConvoLine {
+            role: role.into(),
+            text: text.into(),
+            tool: None,
+        };
+        live.set_convo(vec![
+            line("user", "Fix the build"),
+            line("assistant", "Done: the test passes now."),
+        ]);
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        assert!(w.h.comp.get_rconvo_open());
+        let lines = w.h.comp.get_rconvo_lines();
+        assert_eq!(lines.row_count(), 2);
+        assert_eq!(
+            lines.row_data(1).unwrap().text.as_str(),
+            "Done: the test passes now."
+        );
+        // Another tab in front shows its own terminal; back here, the view again.
+        let local = w.ctl.borrow().model().state.tabs[0].id.clone();
+        w.ctl.borrow_mut().model_mut().pick(&local);
+        w.ctl.borrow_mut().refresh();
+        assert!(!w.h.comp.get_rconvo_open());
+        w.ctl.borrow_mut().model_mut().pick(&id);
+        w.ctl.borrow_mut().refresh();
+        assert!(w.h.comp.get_rconvo_open());
+        // A key: the terminal is back, its size goes again, the polls stop, and the key reaches the tab.
+        assert!(!live.take_retake());
+        w.key_front(KeyEvent::new("y", "KeyY").text("y"));
+        w.pump();
+        assert!(!w.h.comp.get_rconvo_open());
+        assert!(live.take_retake(), "this window's size is sent again");
+        assert!(!live.convo_wanted());
+        let io = w.remote.made()[0].1.clone();
+        let mut typed = Vec::new();
+        w.pump_until("the key on the tab", |_| {
+            typed.extend(io.take_outgoing(Duration::from_millis(20)).intents);
+            !typed.is_empty()
+        });
+        // The host now says this viewer sizes it; when someone types there again, the view comes back.
+        live.set_status(host(false));
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        assert!(!w.h.comp.get_rconvo_open());
+        live.set_status(host(true));
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        assert!(w.h.comp.get_rconvo_open());
+        // A click on it is the same takeover.
+        w.h.comp.invoke_rconvo_take_over();
+        assert!(!w.h.comp.get_rconvo_open());
+        assert!(live.take_retake());
+    }
 }

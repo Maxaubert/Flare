@@ -28,7 +28,9 @@ viewer"), with no new method; remote sessions PR 4 (2026-11-12) adds `remote.sta
 "remote.*") and the viewer's status poll (section 1 "The viewer"); remote sessions PR 5 (2026-11-12) adds `open.remote`
 (the agent's and `flare open --on`'s, section 5 `open.remote`), the serve process's hidden start and the
 `host_not_ready` answer to `remote.hello` (section 1 "The serve process"); remote sessions PR 6 (2026-11-12) adds
-`remote.fetch` and `remote.put` (section 5 "remote.*") and the viewer's file work (section 1 "The viewer"). Each method below says which stage owns its behaviour;
+`remote.fetch` and `remote.put` (section 5 "remote.*") and the viewer's file work (section 1 "The viewer"); remote sessions
+PR 7 (2026-11-12) adds `os` to `remote.hello`'s answer, `sized` to `remote.status`'s tabs and `~` (the host's home) to
+`remote.open`, and the viewer's conversation poll and size takeover (section 1 "The viewer", section 5). Each method below says which stage owns its behaviour;
 the names, params and grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
@@ -169,7 +171,14 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     click on a file link is `remote.fetch` of each spelling in turn until the host has one (then every chunk, each of
     the same size and count); a drop or a paste of files or an image is `remote.put` of each file, then one
     `remote.input` with a `paste` of the host's `paste` answers joined by a space. File work asked while the link is
-    down, or after the tab's session ended, is refused at once. A call that fails
+    down, or after the tab's session ended, is refused at once. Remote sessions PR 7: after the status poll, a
+    `remote.resize` with the tab's last size when a click or a key took the live terminal back on this screen (rule
+    1193), and, only while the window wants the tab's fitted conversation view, a `remote.convo {tab, since}` poll every
+    1.5 s whose new entries (each taken once by its number) are handed to the window. Settings > Machines checks a
+    machine with a link of its own that says `remote.hello` and ends (`hello_over`): its `flare_version` and `os` are
+    shown and saved; a new machine's Flare is looked for as `"flare"` (the PATH) and then as
+    `"/Applications/Flare.app/Contents/MacOS/flare"`, double-quoted (the same words in sh and cmd) until the host says its
+    system. A call that fails
     with `no_tab` ends the tab as a shell that exits; any other broken
     call drops the link, and the worker tries again after 1 s, doubling to 30 s. Closing the tab sends `remote.close`
     (on a fresh link if the old one is down); the quit and a dropped tab send `remote.detach` (rule 288). Under `--e2e`
@@ -892,8 +901,12 @@ character), `flare_version` (string, required).
 Result (the same shape, the other end's, plus the methods the `remote` grant may call):
 
 ```json
-{"remote_protocol": 1, "machine": "Mac-mini", "flare_version": "0.4.0", "capabilities": ["remote.hello"]}
+{"remote_protocol": 1, "machine": "Mac-mini", "flare_version": "0.4.0", "os": "mac", "capabilities": ["remote.hello"]}
 ```
+
+`os` (remote sessions PR 7) is the answering side's system, `mac`, `pc` or `other`; a viewer reads a missing or unknown
+word as no system (rule 40). Settings > Machines saves it as the machine's `kind`: its logo, and how the host's login
+shell is quoted.
 
 The version is checked first, so a peer whose other params differ still gets the refusal: on a mismatch the answer is
 `unsupported_protocol` (closes) with exactly one line that names both versions, the answering side's first:
@@ -917,8 +930,10 @@ call's worker, unknown params are `bad_params`, and a tab is named by its public
 shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
 
 - `remote.open {folder, resume?}` -> `{tab, session}`. `folder` is an absolute host path with no control character,
-  asked of the disk on the worker (`bad_params`, `not_found`); `resume` must pass `valid_resume` (`bad_params`). The
-  window opens a tab there the way a new tab opens, resuming that session. 60 s.
+  asked of the disk on the worker (`bad_params`, `not_found`), or `~` alone: the host's home folder (remote sessions
+  PR 7, the + menu's shell on a machine, whose home the viewer does not know; `~/x` is still `bad_params`); `resume`
+  must pass `valid_resume` (`bad_params`). The window opens a tab there the way a new tab opens, resuming that
+  session. 60 s.
 - `remote.ls {path?}` -> `{path, entries: [{name, dir}], truncated}`. One host folder (default: the host's home),
   read on the worker: folders first, then by name, at most 500 entries, names with a control character left out.
   Host paths only. `not_found` when it cannot be read. 60 s.
@@ -953,15 +968,18 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   On the worker.
 - `remote.close {tab}` -> `{tab, closed}`. Closes the tab the way a person's close does: an agent at work asks first
   in the host's window (rule 48), and `closed` is false until the person there answers.
-- `remote.status {}` -> `{tabs: [{tab, state, kind, session, folder, title, working_for?, question_text?, failed?}],
-  seq}` (remote sessions PR 4, rule 294). Every shell tab of the host in strip order, as the host's own marks say it:
+- `remote.status {}` -> `{tabs: [{tab, state, kind, session, folder, title, sized, working_for?, question_text?,
+  failed?}], seq}` (remote sessions PR 4, rule 294; `sized` PR 7, rule 1193). Every shell tab of the host in strip order, as the host's own marks say it:
   `state` is one word, `question`, `failed`, `working`, `done` or `idle`, in that order of weight
   (`flare_ctl::remote::TabState`); `kind` the agent the host found (`claude`, `codex`, `agy`, or null); `session` its
   Claude session; `working_for` the milliseconds it has worked (only while `working`); `question_text` the words of
   the question the host's screen shows (only while `question`, at most 500 characters); `failed` the failure's kind
   (only while `failed`). Words only: no host file is read for it and the viewer copies no mark from it (it shows work
   and a question as said, and raises its own Finished or Failed mark only when the work it showed stops while nobody
-  there looks). `seq` grows when the answer differs from the last one (while a tab works its `working_for` does).
+  there looks). `sized` says who sets the tab's one live size now (rule 282): `host` once someone typed in the host's
+  window, `viewer` while the remote viewer that sent `remote.resize` does; the other screen shows its fitted
+  conversation view (rule 1193). `seq` grows when the answer differs from the last one (while a tab works its
+  `working_for` does).
   Polled by the viewer every 1.5 s; a short call, sent once more after a broken pipe connection.
 - `remote.convo {tab, since?}` -> `{tab, entries: [{seq, role, text, tool?, at?}], reset, to}` (remote sessions PR 4,
   rule 297). What is said in the followed tab's Claude session (`no_tab` when no connection follows it), as entries
@@ -972,8 +990,9 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   means drop what you hold and take these: the transcript was cut or rewritten, the tab's session changed, `since` fell
   behind the 200 kept, the tab has no session any more (no entries), or `since` is a number this host never gave (it
   started again). `to` is the last number given. The viewer takes each entry once by its number, so a poll sent again
-  after a reconnect adds nothing twice. 10 calls a second a tab. Its view (the fitted conversation) is remote
-  sessions PR 7's.
+  after a reconnect adds nothing twice. 10 calls a second a tab. The viewer polls it only while its fitted
+  conversation view stands for the tab (remote sessions PR 7, rule 1193: the host sizes the tab and it has a
+  session), every 1.5 s between the output polls; a host with no `remote.convo` is not asked again on that link.
 - `remote.fetch {tab, path, chunk?}` -> `{tab, name, size, chunk, chunks, data}` (remote sessions PR 6, rule 303). One
   chunk (256 KiB, base64) of a file a followed tab's file link names (`no_tab` when no connection follows it). `path`
   is read as a click on the host reads it: relative to the folder the host's window has for the tab, `~` from the

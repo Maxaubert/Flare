@@ -2604,3 +2604,40 @@ and Mac can make: `docs/remote-sessions-manual-checks.md`.
   `remote_link::tests::the_remote_command_table_quotes_each_hosts_shell`.
 - **Not yet.** A Mac's TIFF-only clipboard picture is not copied (the image reader has no TIFF decoder; screenshots put
   a PNG there too). A dropped folder is not copied. Real ssh between the PC and the Mac is on the by-hand list.
+## Remote sessions, PR 7: Settings > Machines, the + menu's machines, tab logos and the fitted conversation, 2026-11-12
+
+The remote sessions get their screens, as the owner picked them in the 2026-11-12 mockups
+(`docs/superpowers/specs/remote-sessions-mockups/`). Plan `docs/superpowers/plans/2026-11-12-remote-sessions.md` (PR 7).
+Contract: `docs/surfaces/protocol.md` (`remote.hello`'s `os`, `remote.status`'s `sized`, `remote.open`'s `~`).
+
+- **Settings > Machines.** A page after Plugins with no subtext anywhere. Linked machines are a table: the machine's
+  logo (Apple for a Mac, Windows for a PC) and name, its SSH host, the Flare version it said, its status ("Linked" with
+  a green dot, or "Not linked" with the reason as the tooltip), and a ⋯ menu with Test and Remove. "+ Add a machine"
+  opens a form in its place: an SSH host drop-down (the plain hosts of `~/.ssh/config` and its `Include`s), a Name
+  field, Cancel and Add. Add checks the link first (Flare on the host's PATH, then the Mac app's) and saves only a
+  machine that answered; a failed check is one red line under the form (for example "Flare there speaks remote
+  protocol 0, here 1. Update it there."). Every machine is checked once a run when the page opens. Find a setting finds
+  it ("ssh", "add a machine"). Rule 1194. Held by `ui_tests::settings_machines::*`, `machines_page::tests`,
+  `ssh_config::tests`, `machines::tests` and the `flare-settings` page tests.
+- **The + menu.** One row per linked machine after the folders, its logo and its name; a pick opens a shell tab on
+  that machine in its home folder (`remote.open {folder: "~"}`), where Claude is started or resumed by hand. No
+  submenu. Held by `menus_ui::tests::each_linked_machine_is_one_row_after_the_folders_with_its_logo_and_name`,
+  `ui_tests::term::flow::a_machines_row_in_the_plus_menu_opens_a_shell_there_wearing_its_logo` and the e2e `remoteUi`.
+- **Tab logos.** A remote tab wears its machine's logo: in vertical tabs before the folder path on the card's second
+  line (Clawd stays in the pane), in horizontal tabs at the right after the status ring and before the ×. Its tooltip
+  names the machine. A restored tab takes the logo once the machines are read. Held by
+  `tabs_ui::tests::a_remote_tabs_row_carries_its_machines_logo_and_name`.
+- **Hide here only.** A remote tab's right-click menu has "Hide here only" after "Close tab": the tab goes from this
+  window and the session goes on on its machine. Close still ends it everywhere and asks first while an agent works
+  (rule 1192). Held by `ui_tests::term::flow::hide_here_only_detaches_and_close_ends_the_session_everywhere` and the
+  e2e `remoteUi`.
+- **The fitted conversation view.** While the other machine sizes a remote tab (someone typed there last) and the tab
+  has a Claude session, this screen shows the conversation wrapped to its own width instead of a terminal at the other
+  window's size, with "Live on <machine>. Click or type to take the terminal here." above it. A click or a key brings
+  the live terminal back at this window's size; the key goes on to the tab (rule 1193). Held by
+  `ui_tests::term::flow::a_remote_tab_the_host_sizes_shows_its_conversation_until_a_key_takes_it_back` and
+  `ui_tests::remote_convo::*`.
+- **Not yet.** The host's own window shows no fitted view while a viewer sizes the tab (the plan puts the view on the
+  remote tab, so the host's tab keeps its terminal at the viewer's size until a key there). Adding a machine reached
+  as a user other than the one in `~/.ssh/config`, or with Flare elsewhere than on the PATH or in `/Applications`,
+  still needs a hand edit of `machines.json`. Real ssh between the PC and the Mac is on the by-hand list.

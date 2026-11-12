@@ -433,7 +433,7 @@ pub const DIAGNOSTICS_OPTIONS: [RowDef; 3] = [
 ];
 
 /// This app's own rows, in draw order (section by section, as the pages draw them).
-pub const APP_OPTIONS: [RowDef; 20] = [
+pub const APP_OPTIONS: [RowDef; 21] = [
     RowDef {
         id: "tab-layout",
         label: "Tab position",
@@ -685,6 +685,21 @@ pub const APP_OPTIONS: [RowDef; 20] = [
         source: Source::App,
         only_nvidia: false,
     },
+    // Remote sessions PR 7: the Machines page's add row. Its words are for Find; the page draws no subtext (owner
+    // pick, 2026-11-12), and a press opens the add form in its place.
+    RowDef {
+        id: "machines-add",
+        label: "Add a machine",
+        sub: "Link a computer you reach over SSH.",
+        section: "machines",
+        page: "machines",
+        icon: "plus",
+        keywords: "remote ssh mac pc host computer link session other machine",
+        keys: &[],
+        kind: RowKind::Action,
+        source: Source::App,
+        only_nvidia: false,
+    },
     RowDef {
         id: "app-version",
         label: "Version",
@@ -700,8 +715,8 @@ pub const APP_OPTIONS: [RowDef; 20] = [
     },
 ];
 
-/// The 47 row ids in draw order (Appendix C, the `#` column).
-pub const ROW_ORDER: [&str; 48] = [
+/// The row ids in draw order (Appendix C, the `#` column), with Flare's own rows where their pages draw them.
+pub const ROW_ORDER: [&str; 49] = [
     "tab-layout",
     "tab-switch",
     "window-edges",
@@ -746,6 +761,7 @@ pub const ROW_ORDER: [&str; 48] = [
     "dictation-model",
     "dictation-gpu",
     "dictation-anywhere",
+    "machines-add",
     "diag-verbose",
     "diag-folder",
     "diag-mark",
@@ -814,14 +830,14 @@ mod tests {
     #[test]
     fn the_tables_name_the_46_rows_in_row_order() {
         let ids: Vec<&str> = table_order().iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 48);
+        assert_eq!(ids.len(), 49);
         let mut sorted_tables = ids.clone();
         sorted_tables.sort_unstable();
         let mut sorted_order: Vec<&str> = ROW_ORDER.to_vec();
         sorted_order.sort_unstable();
         assert_eq!(sorted_tables, sorted_order);
         let distinct: BTreeSet<&str> = ROW_ORDER.iter().copied().collect();
-        assert_eq!(distinct.len(), 48);
+        assert_eq!(distinct.len(), 49);
         let drawn: Vec<&str> = all_rows().map(|r| r.id).collect();
         assert_eq!(drawn, ROW_ORDER.to_vec());
     }
@@ -950,10 +966,11 @@ mod tests {
                 "dev-preview=flare.window.devPreview",
                 "taskbar-badge=flare.window.taskbarBadge",
                 "notify-ask=flare.window.notifyAsk",
+                "machines-add=",
                 "app-version=",
             ]
         );
-        assert_eq!(app.len(), 20);
+        assert_eq!(app.len(), 21);
     }
 
     #[test]
@@ -1053,7 +1070,8 @@ mod tests {
             );
             assert!(
                 [
-                    "window", "opening", "keys", "links", "theme", "marks", "notify", "about"
+                    "window", "opening", "keys", "links", "theme", "marks", "notify", "machines",
+                    "about"
                 ]
                 .contains(&r.section),
                 "{} section {}",

@@ -259,6 +259,7 @@ mod tests {
             agent_key_labels: "Ctrl+S, Ctrl+Tab".to_string(),
             face_of: face,
             mods: None,
+            machines: None,
         }
     }
 

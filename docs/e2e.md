@@ -382,6 +382,13 @@ the file at B's path holds the PNG's bytes (rule 304). No Enter is pressed after
 are the same both ways round; the Mac to PC direction is on the by-hand list
 (`docs/remote-sessions-manual-checks.md`).
 
+`remoteUi` (`tools/e2e/src/scenarios/remote.rs`, remote sessions PR 7, Windows only for now) runs B as `remoteViewer`
+does, and A with tabs along the top, a folder of its own and `machines.json` naming one machine (`loop`, "Loopback",
+kind `pc`) that `FLARE_E2E_REMOTE_COMMAND` joins to B. A right-click on A's + lists "Loopback" as the menu's last row
+with the Windows logo; a click on it opens a tab on B (one more tab there) whose prompt shows in A, and A's new tab
+wears the PC logo (`app.state`'s `machine`) and a tooltip that starts with "Loopback: ". A right-click on that tab and
+"Hide here only" take it from A while B keeps its session (rule 1192). Nothing is typed into either shell.
+
 ## Agent browser scenarios (Surfaces stage 4)
 
 `convoPanels` (`tools/e2e/src/scenarios/convo.rs`, Surfaces stage 6) needs no WebView2. It launches with `CLAUDE_CONFIG_DIR` at a folder of its own and a synthetic transcript. One command line in the shell stands in for Claude: it prints the hook line with a session id, waits for a flag file, prints a second session, and never returns to the prompt (a prompt takes the agent and its session back, and a `working` hook would make the close ask a question). It opens Changes with `panel.open`, clicks the first file row (`ui.rect convo-file-0`), appends lines to the transcript, checks that `panel.open` kind `tasks` is refused (the Tasks panel was removed 2026-10-26) and reads the `convo.state` probe, at 100 and 225 percent (42 checks).

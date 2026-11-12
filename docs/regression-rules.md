@@ -1236,6 +1236,49 @@ of their own that cannot be read as an option. Native: `crates/flare/src/remote_
 `ssh_argv`). Held by `the_remote_command_table_quotes_each_hosts_shell` and
 `the_ssh_command_is_argv_items_quoted_for_the_hosts_shell`. Source: remote sessions PR 6 (2026-11-12).
 
+The UI rules of remote sessions PR 7 are numbered after main's last rule (1189) and the PR 6 fixes (1190, 1191). The
+plan's R-new-26 (the folder browser) was dropped with the browser itself: the owner's + menu opens a shell on the
+machine and nothing else.
+
+1192. **"Close" on a remote tab ends the session everywhere and asks as any close does; "Hide here only" never ends
+it.** Owner decision: closing a remote tab is closing the tab, on both machines (`remote.close`, which asks first in the
+host's window while an agent works there, rule 48). The remote tab's right-click menu adds "Hide here only" right
+after "Close tab": the tab goes from this window and its pty lets go the quit's way (`remote.detach`, rule 288), so its
+session goes on on its machine and nothing asks. A local tab has no such row. Native:
+`crates/flare/src/appctl/remote_glue.rs` (`hide_remote`), `crates/flare/src/tab_host.rs` (`TabHost::leave`),
+`crates/flare-term/src/session.rs` (`SessionManager::leave`), `crates/flare/src/menus_ui.rs` (`HIDE_HERE`). Held by
+`ui_tests::term::flow::hide_here_only_detaches_and_close_ends_the_session_everywhere` and the e2e `remoteUi`. Source:
+remote sessions PR 7 (2026-11-12), plan R-new-25.
+1193. **While the other machine sizes a remote tab, this screen shows its conversation fitted to the window, never a
+terminal at the other window's size; a click or a key takes the terminal back.** The live terminal has one size, the
+last typist's (rule 282). The host's `remote.status` says who that is (`sized`: `host` or `viewer`). While the host
+sizes a remote tab that has a Claude session there, the viewer's link polls `remote.convo` (only then) and the tab in
+front shows the conversation, wrapped to this window's width, newest at the foot, under one line that names the
+machine. A click on it, or any key, takes the terminal back: the view goes, the link sends this tab's size again
+(`remote.resize`, so this window sizes it), the polls stop, and the key goes on to the tab. The view comes back only
+when the host says it sizes the tab again after saying this viewer did. A host that does not say `sized` (an older
+Flare) is read as the viewer sizing it, so the terminal stays. Words only cross the link (rule 297). Native:
+`crates/flare/src/appctl/remote_glue.rs` (`RemoteConvoView`, `sync_remote_convo`, `remote_convo_take_over`),
+`crates/flare/src/remote_link.rs` (`poll_convo`, the retake), `crates/flare-term/src/remote_pty.rs` (`RemoteLive`'s
+conversation and retake), `crates/flare/ui/remote_convo.slint`. Held by
+`ui_tests::term::flow::a_remote_tab_the_host_sizes_shows_its_conversation_until_a_key_takes_it_back`,
+`ui_tests::remote_convo::*` (fitted at three widths and two scales) and `remote_status::tests` (`sized`). Source: remote
+sessions PR 7 (2026-11-12), owner decision "the other screen".
+1194. **Machines are saved whole and at once, only a machine that answered is added, and nothing read from the ssh
+config reaches ssh as an option.** Settings > Machines writes `machines.json` with a temp file and a rename (rule 36),
+on a worker, and reads a `kind` it does not know as none, never written back as a guess (rule 40). Adding a machine
+checks its link first (`remote.hello` over its own ssh command, the e2e's loopback in a test, never a real ssh) and
+saves nothing when no Flare answered or the protocols differ; the failure is one red line under the form that says what
+to do (`Flare there speaks remote protocol 0, here 1. Update it there.`). The form's hosts are the plain `Host` names of
+`~/.ssh/config` and its `Include`s: a pattern, a negation, a `Match` block and any name that is not one plain argv word
+(a space, a leading `-`) are left out (rule 305). The host's own `remote.hello` says its system (`os`), which picks the
+logo and the login shell's quoting. Native: `crates/flare/src/machines.rs`, `crates/flare/src/machines_page.rs`,
+`crates/flare/src/ssh_config.rs`, `crates/flare-settings/src/page/machines.rs`. Held by
+`machines::tests::a_saved_list_reads_back_the_same_and_leaves_no_temp_file`,
+`machines::tests::an_unknown_kind_reads_as_none_and_is_written_as_none`,
+`machines_page::tests::a_failed_add_saves_nothing_and_shows_one_line_under_the_form`, `ssh_config::tests::*` and
+`ui_tests::settings_machines::*`. Source: remote sessions PR 7 (2026-11-12), plan R-new-27.
+
 ## macOS port
 
 The rules the macOS port stack added (PRs #121 to #140) are numbered from 1001 so they never clash with main: main's
