@@ -107,6 +107,13 @@ pub fn caret_is_hollow(chrome_focus: bool, find_focus: bool, menu_open: bool) ->
     chrome_focus || find_focus || menu_open
 }
 
+/// Whether the terminal holds the keyboard inside the window, for accessibility (rule 1187): no popup, dialog or
+/// field does (the hollow caret), and neither the side panel nor its page. The window having the keyboard is the
+/// caller's part.
+pub fn terminal_has_keys(hollow: bool, panel_focus: bool, page_focus: bool) -> bool {
+    !(hollow || panel_focus || page_focus)
+}
+
 /// What decides whether a wheel turn belongs to the terminal in front.
 #[derive(Debug, Clone, Copy)]
 pub struct WheelGate {
@@ -408,6 +415,17 @@ mod tests {
         assert_eq!(w.add_lines(-2.0), -2);
         assert_eq!(w.add(30.0, 16), 0);
         assert_eq!(w.add_lines(0.0), 0);
+    }
+
+    #[test]
+    fn the_terminal_has_the_keys_only_when_no_field_panel_or_page_does() {
+        assert!(terminal_has_keys(false, false, false));
+        assert!(
+            !terminal_has_keys(true, false, false),
+            "a field, dialog or menu"
+        );
+        assert!(!terminal_has_keys(false, true, false), "the side panel");
+        assert!(!terminal_has_keys(false, false, true), "the panel's page");
     }
 
     #[test]

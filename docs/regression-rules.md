@@ -2824,3 +2824,27 @@ arguments) or before they could be read was taken for good as no helper, and its
 then. A child that is not yet a helper is read again at the next look. Native: `crates/flare-cef/src/macos/helpers.rs`.
 Held by `a_helper_that_crashes_is_reported_and_one_that_exits_cleanly_or_at_shutdown_is_not` (12 of 12 after) and
 `app-loop.gpu-note`. Source: fix/main-ci-green-2 (2026-11-12).
+1187. **macOS: the terminal is a focused text area whose cursor accessibility can read.** Magnifiers could not follow
+typing on the Mac (issue #201, Wind for Mac #567): the app's `AXFocusedUIElement` was empty while the terminal had the
+keyboard, because the tree held only Slint's controls (AccessKit) and nothing for the grid. The window's view now gets
+one more dynamic subclass on top of AccessKit's (no instance variables, the state in a thread-local) that adds a
+terminal element, an `NSAccessibilityElement` with the role `AXTextArea`, to the view's children and answers
+`accessibilityFocusedUIElement` with it while the terminal holds the keyboard: the window has it and no field, dialog,
+menu, side panel or panel page does (`live::terminal_has_keys`, read again when a tracker asks). Otherwise the class
+below (AccessKit's Slint tree) answers, so a field keeps its own focus. The element's `AXSelectedTextRange` is the
+cursor (zero length) on its value, the cursor's line, and `AXBoundsForRange` (`accessibilityFrameForRange:`) is the
+cell `place_ime` gives the IME, in Cocoa screen space through the view and its window (every display and backing
+scale); its frame is the grid. A focus change posts `AXFocusedUIElementChanged`, a new cell `AXSelectedTextChanged`,
+once per change, never per frame. The value is the cursor's line only for now (whole-screen text and VoiceOver
+reading are follow-ups). Native: `crates/flare-win/src/macos/ax_terminal.rs`, `crates/flare-win/src/ax_caret.rs`,
+`crates/flare/src/window.rs` (`place_ime`, `handle_focus`). Held by
+`the_focus_is_claimed_only_with_the_keyboard_and_a_cell`,
+`a_frame_that_leaves_the_cell_posts_nothing_and_a_move_posts_once`,
+`losing_the_keyboard_or_the_terminal_gives_the_focus_up_once`, `a_cell_becomes_points_in_a_plain_or_flipped_view`,
+`a_bad_scale_places_at_one_and_an_empty_cell_is_one_pixel`,
+`the_text_is_the_cursor_line_and_the_index_counts_utf16`,
+`a_range_is_cells_beside_the_cursor_and_the_insertion_point_is_its_cell` (`ax_caret`),
+`the_terminal_has_the_keys_only_when_no_field_panel_or_page_does` (`live`), and the AppKit probes
+`ax_terminal_is_the_focused_text_area_with_the_cursor_cell_on_the_screen` and
+`ax_terminal_keeps_a_toolkits_own_tree_and_focus_when_the_terminal_has_none` (`crates/flare-win/tests/appkit.rs`, a
+window that is never shown). Source: issue #201 (2026-11-12).

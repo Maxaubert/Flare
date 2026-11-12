@@ -5,6 +5,10 @@
 
 pub mod agent_cursor;
 pub mod argv;
+pub mod ax_caret;
+#[cfg(target_os = "macos")]
+#[path = "macos/ax_terminal.rs"]
+pub mod ax_terminal;
 #[cfg(target_os = "macos")]
 #[path = "macos/chrome.rs"]
 pub mod chrome;

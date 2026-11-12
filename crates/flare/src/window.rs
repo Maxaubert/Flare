@@ -2256,6 +2256,10 @@ pub(crate) fn e2e_drops_native_focus(mac: bool, e2e: bool) -> bool {
 pub(crate) fn handle_focus(kp: &KeyPath, on: bool) {
     if let Some(app) = kp.app.upgrade() {
         system_caret(&app, |p| p.focus(on));
+        #[cfg(target_os = "macos")]
+        if let Some(view) = native_view_of(&app) {
+            flare_win::ax_terminal::focus(view, on && terminal_has_keys(&app));
+        }
     }
     if on {
         // Coming back to the window is a look at the tab in front.
@@ -2306,6 +2310,9 @@ fn place_ime(
     last_dims: &Cell<(usize, usize)>,
 ) {
     let Some(handle) = front.borrow().clone() else {
+        // No terminal in front (Settings, the start screen): accessibility has no text cursor to follow.
+        #[cfg(target_os = "macos")]
+        ax_terminal_sync(app, None);
         return;
     };
     let dims = host.dims();
@@ -2366,6 +2373,72 @@ fn place_ime(
             PhysicalSize::new(area.w, area.h),
         );
     });
+    // macOS: the same cell is the accessibility text cursor (issue #201, rule 1187), so Zoom, VoiceOver and Wind
+    // follow typing. The cursor's line is its text.
+    #[cfg(target_os = "macos")]
+    {
+        let line =
+            handle.with_emu_quiet(|e| e.row_text(held.line.clamp(0, i64::from(i32::MAX)) as i32));
+        let m = host.metrics();
+        let to_i32 =
+            |v: usize, by: u32| (v as i64 * i64::from(by)).clamp(0, i64::from(i32::MAX)) as i32;
+        ax_terminal_sync(
+            app,
+            Some(flare_win::ax_terminal::AxFrame {
+                cell: flare_win::ax_caret::AxCell {
+                    x: area.x,
+                    y: area.y,
+                    w: area.w as i32,
+                    h: area.h as i32,
+                },
+                grid: flare_win::ax_caret::AxCell {
+                    x: origin.0,
+                    y: origin.1,
+                    w: to_i32(dims.0, m.cell_w),
+                    h: to_i32(dims.1, m.cell_h),
+                },
+                line,
+                col: held.x.max(0) as usize,
+            }),
+        );
+    }
+}
+
+/// macOS: whether the terminal holds the keyboard inside the window (no field, dialog, menu, panel or page does).
+#[cfg(target_os = "macos")]
+fn terminal_has_keys(app: &AppWindow) -> bool {
+    let hollow = crate::live::caret_is_hollow(
+        app.get_chrome_has_focus(),
+        app.get_find_input_focused(),
+        app.get_menu_open(),
+    );
+    crate::live::terminal_has_keys(
+        hollow,
+        app.get_panel_has_focus(),
+        app.get_panel_web_focused(),
+    )
+}
+
+/// macOS: tells the terminal's accessibility element (`flare_win::ax_terminal`) the frame: whether the terminal
+/// holds the keyboard (the window has it and no field, panel or menu does) and what it shows (None with no terminal
+/// in front). The first call hooks the window's view and gives the element a live probe of the keys, so a tracker
+/// that asks between frames is told right.
+#[cfg(target_os = "macos")]
+fn ax_terminal_sync(app: &AppWindow, frame: Option<flare_win::ax_terminal::AxFrame>) {
+    let Some(view) = native_view_of(app) else {
+        return;
+    };
+    let window_keys = app
+        .window()
+        .with_winit_window(|w| w.has_focus())
+        .unwrap_or(false);
+    flare_win::ax_terminal::sync(view, window_keys && terminal_has_keys(app), frame);
+    if !flare_win::ax_terminal::has_keys_probe() {
+        let weak = app.as_weak();
+        flare_win::ax_terminal::set_keys_probe(move || {
+            weak.upgrade().is_some_and(|a| terminal_has_keys(&a))
+        });
+    }
 }
 
 /// One winit filter. It only converts: keys go to `AppCtl::on_key`, and the pointer, the files and
