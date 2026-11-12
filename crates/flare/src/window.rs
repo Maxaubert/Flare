@@ -2073,7 +2073,7 @@ impl KeyPath {
         let notches = match step {
             WheelStep::Notches(n) | WheelStep::Lines(n) => n,
         };
-        // Ctrl+wheel zooms the tab in front, one pixel a notch, never saved (Task 27).
+        // Ctrl+wheel (Cmd on the Mac) zooms every tab at once, a pixel a notch, unsaved (rule 1154).
         if ctrl {
             for _ in 0..notches.unsigned_abs().min(64) {
                 self.with_ctl(&mut |c| {

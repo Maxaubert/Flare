@@ -18,10 +18,15 @@
 //! served on its own host and every other request refused (a dead proxy behind that, the WebRTC policy and the
 //! peer-connection script in front); a mod's or plugin's page is sealed as its kind says ([`crate::seal`]). CEF
 //! cannot be started again in a process once it was shut down, so the engine stays up from the first view to the end
-//! of the window (Windows lets its environment go with the last view).
+//! of the window (Windows lets its environment go with the last view): it is the process's ([`Cef`]), started by the
+//! first host and adopted by every later one (the window lets an idle host go and makes a new one for the next
+//! panel), and shut down once, by [`WebBackend::close_all`] or [`end_engine`] at quit (rule 1156).
 
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -96,21 +101,30 @@ pub struct HostConfig {
     pub limits: Option<Arc<flare_mods::limit::Limits>>,
 }
 
-/// CEF's turns: a thread that waits for the earliest turn CEF asked for and then tells the window.
+/// CEF's turns: a thread that waits for the earliest turn CEF asked for and then tells the window (the host that
+/// holds the engine now, [`Scheduler::point_to`]). It ends when the scheduler is dropped (rule 1157).
 struct Scheduler {
     due: Arc<(Mutex<Option<Instant>>, Condvar)>,
+    sink: Arc<Mutex<Sink>>,
+    stop: Arc<AtomicBool>,
 }
 
 impl Scheduler {
     fn start(sink: Sink) -> Scheduler {
         let due: Arc<(Mutex<Option<Instant>>, Condvar)> = Arc::default();
-        let d = Arc::clone(&due);
+        let sink = Arc::new(Mutex::new(sink));
+        let stop: Arc<AtomicBool> = Arc::default();
+        let (d, to, end) = (Arc::clone(&due), Arc::clone(&sink), Arc::clone(&stop));
         let _ = std::thread::Builder::new()
             .name("flare-cef-pump".into())
             .spawn(move || {
                 let (m, cv) = &*d;
                 let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
                 loop {
+                    // Read under the lock `Drop` takes before it wakes this thread: never missed.
+                    if end.load(Ordering::SeqCst) {
+                        return;
+                    }
                     match *g {
                         // sync-ok: the pump scheduler's own thread waits for the next turn, never the UI thread
                         None => g = cv.wait(g).unwrap_or_else(|e| e.into_inner()),
@@ -119,6 +133,7 @@ impl Scheduler {
                             if at <= now {
                                 *g = None;
                                 drop(g);
+                                let sink = Arc::clone(&*lock(&to));
                                 sink(WebEvent::Pump);
                                 g = m.lock().unwrap_or_else(|e| e.into_inner());
                             } else {
@@ -132,7 +147,12 @@ impl Scheduler {
                     }
                 }
             });
-        Scheduler { due }
+        Scheduler { due, sink, stop }
+    }
+
+    /// The turns go to this host from now on (a new host adopted the engine).
+    fn point_to(&self, sink: &Sink) {
+        *lock(&self.sink) = Arc::clone(sink);
     }
 
     fn schedule(&self) -> Schedule {
@@ -149,11 +169,98 @@ impl Scheduler {
     }
 }
 
+impl Drop for Scheduler {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let (m, cv) = &*self.due;
+        let _g = lock(m);
+        cv.notify_all();
+    }
+}
+
+/// The process's CEF (rule 1156): CEF starts once in a process and cannot start again after it shut down, so the
+/// engine, its turns and the browsers still closing outlive any one host. On the main thread only, as CEF is.
+struct Cef {
+    engine: Engine,
+    scheduler: Scheduler,
+    /// Browsers a host that went away had closed and CEF has not finished closing: their last turns come from the
+    /// next host or from the shutdown.
+    closing: RefCell<Vec<View>>,
+}
+
+impl std::ops::Deref for Cef {
+    type Target = Engine;
+    fn deref(&self) -> &Engine {
+        &self.engine
+    }
+}
+
+enum ProcessCef {
+    None,
+    Up(Rc<Cef>),
+    /// Shut down: nothing opens again in this process.
+    Ended,
+}
+
+thread_local! {
+    static CEF: RefCell<ProcessCef> = const { RefCell::new(ProcessCef::None) };
+}
+
+static ENGINE_STARTS: AtomicUsize = AtomicUsize::new(0);
+static ENGINE_SHUTDOWNS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many times this process started CEF (`Engine::start`) and shut it down: at most once each (the tests).
+pub fn engine_starts() -> (usize, usize) {
+    (
+        ENGINE_STARTS.load(Ordering::SeqCst),
+        ENGINE_SHUTDOWNS.load(Ordering::SeqCst),
+    )
+}
+
+/// The window is ending: the process's CEF shuts down if it is up, after the browsers still closing finished (the
+/// cookies and the profiles on disk are written then). For the quit with no host left (the last panel closed and
+/// the window let its host go); [`WebBackend::close_all`] ends it too. Nothing opens again afterwards.
+pub fn end_engine() {
+    let Some(taken) = CEF
+        .try_with(|c| std::mem::replace(&mut *c.borrow_mut(), ProcessCef::Ended))
+        .ok()
+    else {
+        return;
+    };
+    let ProcessCef::Up(cef) = taken else {
+        return;
+    };
+    let Ok(Cef {
+        engine,
+        scheduler,
+        closing,
+    }) = Rc::try_unwrap(cef)
+    else {
+        log::warn!(
+            "the web engine is still in use at the end: left running until the process ends"
+        );
+        return;
+    };
+    let closing = closing.into_inner();
+    // CEF closes a browser asynchronously: its last turns, then the engine goes.
+    let end = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < end && closing.iter().any(|v| !v.state().closed) {
+        engine.pump();
+        // sync-ok: the window is ending; CEF closes its browsers asynchronously, bounded to 3 s
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    drop(closing);
+    engine.pump_for(50);
+    drop(scheduler);
+    engine.shutdown();
+    ENGINE_SHUTDOWNS.fetch_add(1, Ordering::SeqCst);
+}
+
 enum EngineState {
     None,
     /// The runtime question is out (`WebEvent::Runtime`).
     Checking,
-    Ready(Engine),
+    Ready(Rc<Cef>),
     /// The runtime is missing or CEF would not start: every view fails with this.
     Failed(String),
     /// `close_all` shut it down: nothing opens again in this process.
@@ -411,7 +518,6 @@ pub struct WebHost {
     without_webrtc_script: bool,
     limits: Option<Arc<flare_mods::limit::Limits>>,
     engine: EngineState,
-    scheduler: Option<Scheduler>,
     views: HashMap<Slot, Slotted>,
     /// Views closed and not yet gone (CEF closes a browser asynchronously).
     closing: Vec<View>,
@@ -548,7 +654,6 @@ impl WebHost {
             without_webrtc_script: cfg.without_webrtc_script,
             limits: cfg.limits,
             engine: EngineState::None,
-            scheduler: None,
             views: HashMap::new(),
             closing: Vec::new(),
             generations: HashMap::new(),
@@ -786,7 +891,7 @@ impl WebHost {
     /// this a view waited for a turn that never came: no browser, no navigation, a dark panel (rule 1152). Through
     /// the scheduler, so a burst (60 paints a second) is one pump at a time. Before the engine: nothing to wake.
     fn wake(&self) -> Wake {
-        match &self.scheduler {
+        match self.scheduler() {
             Some(s) => {
                 let schedule = s.schedule();
                 Arc::new(move || schedule(0))
@@ -800,16 +905,70 @@ impl WebHost {
     /// for a wait whose end comes with no handler call and no turn CEF asks for (rule 1152; seen with a second host
     /// in one CEF: the profile's initialization ran only in a turn of CEF's work that nothing asked for).
     fn retry_while_waiting(&self) {
-        let Some(s) = &self.scheduler else { return };
-        if !matches!(self.engine, EngineState::Ready(_)) {
-            return;
-        }
+        let Some(s) = self.scheduler() else { return };
         let waiting = self
             .views
             .values()
             .any(|v| v.live.as_ref().is_none_or(|l| !l.armed));
         if waiting {
             (s.schedule())(i64::try_from(WAITING_TURN.as_millis()).unwrap_or(20));
+        }
+    }
+
+    /// The first host's start of the process's CEF ([`Cef`]): once per process.
+    fn start_engine(&self, result: Result<String, String>) -> Result<Rc<Cef>, String> {
+        let version = result?;
+        let scheduler = Scheduler::start(Arc::clone(&self.sink));
+        // What a run that ended early left in the staging folder is no one's download any more.
+        let staging = walls::download_staging(&self.data_dir);
+        // sync-ok: the engine starts once; the staging folder holds only unanswered downloads' parts
+        let _ = std::fs::remove_dir_all(&staging);
+        let cfg = EngineConfig {
+            root_cache: self.data_dir.clone(),
+            log_file: None,
+            schedule: Some(scheduler.schedule()),
+            adopt_app: true,
+            net_log: self.net_log.clone(),
+        };
+        ENGINE_STARTS.fetch_add(1, Ordering::SeqCst);
+        let engine = Engine::start(&cfg)?;
+        log::info!("the web engine started: {version}");
+        if let Some(note) = engine.profile_key_note() {
+            log::warn!("{note}");
+        }
+        let cef = Rc::new(Cef {
+            engine,
+            scheduler,
+            closing: RefCell::default(),
+        });
+        CEF.with(|c| *c.borrow_mut() = ProcessCef::Up(Rc::clone(&cef)));
+        Ok(cef)
+    }
+
+    fn scheduler(&self) -> Option<&Scheduler> {
+        match &self.engine {
+            EngineState::Ready(cef) => Some(&cef.scheduler),
+            _ => None,
+        }
+    }
+
+    /// A GPU or utility helper failed (rule 1158). Chromium starts it again, so it is a note on every live view and
+    /// a line in the log, as the Windows host's `Failure::Recovers`; no page ends.
+    fn helper_failed(&self, gone: &flare_cef::macos::helpers::HelperExit) {
+        log::info!(
+            "a browser helper ended ({} {}, {} {}); Chromium starts it again",
+            gone.kind,
+            gone.service,
+            gone.reason(),
+            gone.code()
+        );
+        for (slot, v) in &self.views {
+            let Some(l) = &v.live else { continue };
+            let note = WebNote::new(NoteKind::Process, &l.view.url(), "")
+                .detail(gone.kind)
+                .failure(gone.reason(), gone.code());
+            self.view_sink(slot)
+                .send(|tab| WebEvent::Note { tab, note });
         }
     }
 
@@ -1092,10 +1251,27 @@ impl WebHost {
         let page_log = app.is_none();
         let note = |note: WebNote| sink.send(|tab| WebEvent::Note { tab, note });
         match e {
-            ViewEvent::Armed(_)
-            | ViewEvent::SetupAnswered
-            | ViewEvent::Closed
-            | ViewEvent::DownloadEnded { .. } => {}
+            ViewEvent::Armed(_) | ViewEvent::SetupAnswered | ViewEvent::DownloadEnded { .. } => {}
+            // The page's own `window.close()` closes nothing (rule 1170): noted by site, as on Windows.
+            ViewEvent::CloseIgnored { url } => note(WebNote::new(NoteKind::CloseIgnored, &url, "")),
+            // A browser this host did not close ended (a close of the view's own is never delivered: its slot no
+            // longer holds it): the view goes and the panel hears it is gone, never a frozen picture.
+            ViewEvent::Closed => {
+                self.drop_view(slot);
+                self.closing.retain(|v| !v.state().closed);
+                sink.send(|tab| WebEvent::Gone {
+                    tab,
+                    why: "the page closed".to_string(),
+                });
+            }
+            // The browser's own launch of a program (a link to an app in a frame) is the backstop of the web
+            // panel's app links (rule 1171), as WebView2's `LaunchingExternalUriScheme` is on Windows.
+            ViewEvent::External { url, from } => {
+                if page_log && !self.links.offer(slot, &url, &from) {
+                    note(WebNote::new(NoteKind::NavRefused, &url, &from).detail("scheme"));
+                    sink.send(|tab| WebEvent::Refused { tab, url });
+                }
+            }
             ViewEvent::Painted => {
                 self.serial += 1;
                 let serial = self.serial;
@@ -1480,7 +1656,8 @@ impl WebHost {
                 url,
                 from,
                 main: true,
-            } => {
+            }
+            | ViewEvent::External { url, from } => {
                 if !self.links.offer(&slot, &url, &from) {
                     note(WebNote::new(NoteKind::NavRefused, &url, &from).detail("scheme"));
                 }
@@ -1648,19 +1825,11 @@ impl WebBackend for WebHost {
         }
         self.downloads.clear();
         self.calls.clear();
-        if let EngineState::Ready(engine) = std::mem::replace(&mut self.engine, EngineState::Ended)
-        {
-            // CEF closes a browser asynchronously: its last turns, then the engine goes.
-            let end = Instant::now() + Duration::from_secs(3);
-            while Instant::now() < end && self.closing.iter().any(|v| !v.state().closed) {
-                engine.pump();
-                // sync-ok: the window is ending; CEF closes its browsers asynchronously, bounded to 3 s
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            self.closing.clear();
+        if let EngineState::Ready(cef) = std::mem::replace(&mut self.engine, EngineState::Ended) {
+            cef.closing.borrow_mut().append(&mut self.closing);
             self.contexts.clear();
-            engine.pump_for(50);
-            engine.shutdown();
+            drop(cef);
+            end_engine();
         }
         lock(&self.inbox).clear();
     }
@@ -1688,6 +1857,10 @@ impl WebBackend for WebHost {
     fn pump(&mut self) {
         if let EngineState::Ready(e) = &self.engine {
             e.work();
+            e.closing.borrow_mut().retain(|v| !v.state().closed);
+            for gone in e.helper_exits() {
+                self.helper_failed(&gone);
+            }
         }
         self.make_waiting();
         self.arm();
@@ -1700,30 +1873,19 @@ impl WebBackend for WebHost {
         if !matches!(self.engine, EngineState::Checking) {
             return;
         }
-        let started = result.and_then(|version| {
-            let scheduler = Scheduler::start(Arc::clone(&self.sink));
-            // What a run that ended early left in the staging folder is no one's download any more.
-            let staging = walls::download_staging(&self.data_dir);
-            // sync-ok: the engine starts once; the staging folder holds only unanswered downloads' parts
-            let _ = std::fs::remove_dir_all(&staging);
-            let cfg = EngineConfig {
-                root_cache: self.data_dir.clone(),
-                log_file: None,
-                schedule: Some(scheduler.schedule()),
-                adopt_app: true,
-                net_log: self.net_log.clone(),
-            };
-            let engine = Engine::start(&cfg)?;
-            log::info!("the web engine started: {version}");
-            if let Some(note) = engine.profile_key_note() {
-                log::warn!("{note}");
-            }
-            self.scheduler = Some(scheduler);
-            Ok(engine)
+        // The engine an earlier host started: adopted, never started again (rule 1156).
+        let process = CEF.with(|c| match &*c.borrow() {
+            ProcessCef::None => None,
+            ProcessCef::Up(cef) => Some(Ok(Rc::clone(cef))),
+            ProcessCef::Ended => Some(Err("the web engine has shut down".to_string())),
         });
+        let started = match process {
+            Some(adopted) => adopted.inspect(|cef| cef.scheduler.point_to(&self.sink)),
+            None => self.start_engine(result),
+        };
         match started {
-            Ok(engine) => {
-                self.engine = EngineState::Ready(engine);
+            Ok(cef) => {
+                self.engine = EngineState::Ready(cef);
                 self.make_waiting();
             }
             Err(why) => {
@@ -1978,6 +2140,21 @@ impl Drop for WebHost {
         for v in self.views.values() {
             if let Some(l) = &v.live {
                 l.view.cancel_downloads();
+            }
+        }
+        // The engine stays (rule 1156): what this host closed, or leaves open, finishes closing in its turns.
+        if let EngineState::Ready(cef) = &self.engine {
+            let mut closing = cef.closing.borrow_mut();
+            closing.append(&mut self.closing);
+            for (_, v) in self.views.drain() {
+                if let Some(l) = v.live {
+                    l.view.close();
+                    closing.push(l.view);
+                }
+            }
+            for (_, p) in self.popup_views.drain() {
+                p.view.close();
+                closing.push(p.view);
             }
         }
     }

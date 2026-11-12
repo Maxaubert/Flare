@@ -12,3 +12,21 @@ threads-required = "num-cpus"
 [[profile.default.overrides]]
 filter = 'package(flare-term) & (test(snapshot_holds_the_lock_under_1_ms) | test(reading_a_huge_screen_full_of_addresses_stays_cheap) | test(a_100_mb_flood_keeps_snapshots_fast_and_arrives_complete))'
 threads-required = "num-cpus"
+
+# The Mac CEF engine probes start a whole Chromium (browser, GPU, network and renderer processes) and shut it down.
+# Beside the whole suite on a three-core macOS runner the paint probe took 26 s instead of 6 to 13 and its process
+# exited 2 during the engine's shutdown, after every check had passed (run 43054686157, main 794a9a28); alone it passes every
+# time. The two short probes (paint, cdp: about 5 s each alone) take every slot, so they measure the engine, not the
+# neighbours; the 40 s runaway probe keeps sharing. A failure now prints the probe's stderr.
+[[profile.default.overrides]]
+filter = 'package(flare-cef) & binary(engine_macos) & (test(a_windowless_page_paints) | test(the_devtools_methods))'
+threads-required = "num-cpus"
+
+# The CEF probe tests each start a browser with its helpers (GPU, network, renderers); side by side they starve each
+# other and time out (rule 1159). They run one at a time.
+[test-groups]
+cef-probe = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = '(package(flare-web) & binary(cef_macos)) | (package(flare-cef) & binary(engine_macos)) | (package(flare-cef) & test(/helpers::tests/))'
+test-group = 'cef-probe'

@@ -2566,6 +2566,69 @@ fn a_held_splitter_moves_the_pages_edge_but_never_its_width_until_it_is_let_go()
     }
 }
 
+/// macOS (CEF): the page drawn in its box keeps its width while the splitter is held, as WebView2's window does, its
+/// edge moving with the splitter; the picture is never stretched across the box, so a click lands where it is drawn.
+/// Let go, the page's new picture fills the box again (rule 1174).
+#[test]
+fn a_page_drawn_off_screen_keeps_its_width_while_the_splitter_is_held() {
+    let blue = |p: [u8; 4]| crate::ui_harness::Frame::near(p, [0x33, 0x66, 0xcc, 0xff], 2);
+    let paint = |slot: &Slot, w: i32, h: i32, serial: u64| {
+        fake(slot).state.borrow_mut().frame = Some(flare_web::ViewFrame {
+            width: w as u32,
+            height: h as u32,
+            bgra: std::sync::Arc::new([0xcc, 0x66, 0x33, 0xff].repeat((w * h) as usize)),
+            serial,
+        });
+        fake(slot).say(WebEvent::Pump);
+    };
+    let width_drawn = |f: &Fx| {
+        let r = drawn(f);
+        let frame = f.h.render();
+        let y = (r.y + r.h / 2) as u32;
+        frame
+            .bbox_where(0, y, frame.w, y + 1, blue)
+            .map(|(x0, _, x1, _)| (x0 as i32, x1 as i32 - x0 as i32 + 1))
+    };
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    let r0 = drawn(&f);
+    paint(&slot, r0.w, r0.h, 1);
+    f.pump();
+    assert!(f.h.comp.get_panel_web_live());
+    assert_eq!(width_drawn(&f), Some((r0.x, r0.w)), "it fills its box");
+    let (w0, page) = take_splitter(&f);
+    // Wider: the edge moves to the splitter, the picture keeps its width and leaves the rest of the box empty.
+    splitter_to(&f, w0 + 60.0);
+    let held = drawn(&f);
+    assert_ne!(held.w, page);
+    assert_eq!(last_bounds(&slot, &id).map(|r| r.w), Some(page));
+    paint(&slot, page, held.h, 2);
+    f.pump();
+    assert_eq!(width_drawn(&f), Some((held.x, page)), "held at its width");
+    // Narrower than it began: the picture is cut at the box's edge, never squeezed.
+    splitter_to(&f, w0 - 60.0);
+    let narrow = drawn(&f);
+    assert!(narrow.w < page);
+    f.pump();
+    assert_eq!(
+        width_drawn(&f),
+        Some((narrow.x, narrow.w)),
+        "cut, not squeezed"
+    );
+    // Let go: the page takes the box's width and its next picture fills it.
+    f.h.comp.invoke_end_splitter();
+    f.h.advance(0);
+    f.pump();
+    let fit = drawn(&f);
+    assert_eq!(last_bounds(&slot, &id), Some(fit));
+    paint(&slot, fit.w, fit.h, 3);
+    f.pump();
+    assert_eq!(width_drawn(&f), Some((fit.x, fit.w)), "fills again");
+    let _ = id;
+}
+
 #[test]
 fn a_pause_in_a_splitter_drag_fits_the_page_once_and_the_next_step_holds_again() {
     let (f, _h, _) = live(Opts::default());

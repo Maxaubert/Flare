@@ -36,7 +36,7 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 23. **The panel paints the ground once.** Two translucent coats made a darker strip. Native: the grid is painted in one pass over the background, the glyph layer uses the ground as cursor-accent so a block cursor is never a hole; measure the strip under the last row. Source: regression-rules.md panel-paints-ground (#6).
 24. **While the room animates the terminal keeps its columns and fits once at the end.** Native: hold the size during a sidebar slide, fit after it. Source: core/renderer/lib/fitHold.ts; two-apps.md.
 25. **Tab switch keeps each grid alive.** Native: each tab keeps its grid and scrollback while hidden, only the visible grid is drawn, hiding never kills a shell, output keeps being parsed. Source: TerminalPanel.tsx detach comment.
-26. **Ctrl+scroll zoom is per session and never saved.** Native: a per-tab font override of 7 to 64 px in the tab model, wheel handler non-passive, never sent to the program. Source: TerminalPanel.tsx zoomSession.
+26. **Ctrl+scroll zoom is never saved.** Native: 7 to 64 px, wheel handler non-passive, never sent to the program. It was per session (PT's zoomSession); since rule 1154 it is one zoom every tab shares. Source: TerminalPanel.tsx zoomSession.
 
 ## Processes, lifetime, quit
 
@@ -337,6 +337,30 @@ reducer only through the test seam (`DictLine` lines and `DictRoute`), and every
 does. Native: `dictation_ctl.rs` (`e2e: bool` in the options, `e2e_line`), `service.rs` (`HookStart` never emitted under
 the flag). Held by `the_hook_is_never_started_under_e2e` and `the_hook_starts_with_the_bindings_keys_and_mask_and_only_once`
 (the second for the normal path). Source: globalDictKey.ts; src/main/index.ts E2E (N16).
+1151. **A chord of modifiers dictates only when exactly its modifiers are down and no other key goes down while it
+decides.** Owner report (Mac, Toggle, Ctrl+Cmd, 2026-11-11): Cmd+Shift+S, which Karabiner turns into Cmd+Ctrl+Shift+4
+(the region screenshot), also started a dictation, and the next one stopped it and pasted. Root cause: the reducer
+already matched exactly, but the hooks report only the binding's own keys, so the key feed never knew Shift was down
+when Ctrl joined Cmd, and the 4 never reaches a listen-only tap (the system takes the screenshot shortcut): the press
+was a clean Ctrl+Cmd tap. Now a hook says `Extra` (never which key) when a binding key goes down while a modifier the
+binding does not name is already down (Mac: the event's flags; Windows: `GetAsyncKeyState`, `extra_after`, the AltGr
+Ctrl excused), and when such a modifier goes down while a binding key is held (it said `Other` before). The feed reads
+`Extra` as another key: a press still deciding (Hold before the hold time, Toggle before the release) is dropped with
+no start, toggle, stop or paste, and a toggle's stopping tap with it stops nothing. A key after a Hold has begun keeps
+the recording, as before. Such a cancel is logged as `dictation-key` with `cancel: extra`, `kind` `modifier` or `key`
+and `from` `window` or `hook`, never the key (`hotkey::extra_cancel`). Same on Windows (Ctrl+Win with Shift+S).
+Native: `crates/flare-dictation/src/{hotkey,keyfeed,keyhook,service}.rs`, `crates/flare-dictation/src/macos/keyhook.rs`,
+`crates/flare/src/dictation_ctl.rs`. Held by `ctrl_cmd_inside_a_karabiner_screenshot_chord_never_dictates_hold_or_toggle`,
+`the_three_flags_in_one_event_are_no_match_and_a_shift_added_later_cancels`,
+`ctrl_cmd_alone_still_starts_and_stops_in_hold_and_toggle`,
+`ctrl_cmd_then_a_letter_cancels_in_hold_and_toggle_and_a_toggles_stopping_tap_too`,
+`a_key_after_a_hold_has_begun_keeps_the_recording_as_on_windows`,
+`a_cancel_by_an_extra_modifier_or_key_is_told_by_kind_only`,
+`a_modifier_the_binding_does_not_name_cancels_a_ctrl_win_press_in_hold_and_toggle`,
+`karabiners_cmd_ctrl_shift_4_for_cmd_shift_s_never_dictates_in_hold_or_toggle`,
+`ctrl_win_with_shift_already_held_or_added_says_a_modifier_and_never_dictates`,
+`ctrl_win_with_an_extra_modifier_from_the_hook_starts_nothing_and_logs_the_kind` and
+`a_window_press_cancelled_by_an_extra_key_or_modifier_logs_its_kind_only`. Source: Max on his Mac (2026-11-11).
 
 ## Surfaces: the control channel (stage 2)
 
@@ -547,7 +571,7 @@ jam the pipe. Native: `appctl.rs` (`finish`, `set_handoff_stop`), `single_instan
 `read_message_within`). Held by `the_end_of_life_stops_the_handoff_server_before_anything_slow`,
 `a_stopped_server_refuses_a_handoff`, `a_big_handoff_is_split_under_the_caps_and_loses_no_argument` and
 `a_stalled_client_does_not_jam_the_server`. Source: general review 2026-10-23 (app-1, app-5, platform-5); rule 32.
-221. **A zoom resizes one tab.** Ctrl+wheel zoom, and a switch between a zoomed and an unzoomed tab, refit only the tabs
+221. **Replaced by rule 1154 (2026-11-11).** Was: a zoom resizes one tab. Ctrl+wheel zoom, and a switch between a zoomed and an unzoomed tab, refit only the tabs
 that wear the settings' size. A tab with a zoom of its own keeps its grid until it comes to the front, so no hidden shell
 is reflowed. Native: `tab_host.rs` (`refit_unzoomed`), `appctl.rs` (`apply_font`). Held by
 `a_zoom_never_resizes_the_other_shells_and_a_switch_keeps_each_zoomed_size`. Source: general review 2026-10-23 (render-2).
@@ -2122,11 +2146,10 @@ loads only a web address or a `blob:` (`same_view_target_ok`; the wall then chec
 panel does not open is offered by `external_scheme` and told once (`AppLinks`, `AppLinkDedupe`) as on Windows;
 `shell_open` opens it with `NSWorkspace` and the very app LaunchServices names for its scheme
 (`openURLs:withApplicationAtURL:`), refused when that app is a terminal or script runner (`handler_ok`: Terminal takes
-`ssh:` and `x-man-page:`), and `url_handler_registered` asks the same question; the words say "this Mac". Different from
-Windows: a pop-up no click of the person's asked for is stopped by Chromium's own blocker before CEF asks
-(`on_before_popup` never runs), so nothing opens and `window.open` is null as on Windows, but it is not noted and the
-bar does not say "Pop-up blocked"; CEF tells nothing for a page's ignored `window.close()`, so there is no
-`web-close-ignored` line; Alloy has no password manager, so a pop-up offers no autofill (`PopupProbe::autofill` false).
+`ssh:` and `x-man-page:`), and `url_handler_registered` asks the same question; the words say "this Mac". A pop-up no click asked
+for is refused and noted as on Windows, and a page's `window.close()` is ignored and noted (rule 1170); a link to an
+app in a frame is asked about through the browser's launch (rule 1171). Different from Windows: Alloy has no password
+manager, so a pop-up offers no autofill (`PopupProbe::autofill` false).
 Native: `crates/flare-cef/src/macos/view.rs`, `crates/flare-web/src/macos/host.rs`, `crates/flare-win/src/shell_open.rs`,
 `crates/flare-win/src/macos/workspace.rs`, `crates/flare/src/app_ask.rs`. Held by the probe's `panel.external-schemes`,
 `panel.popup`, `panel.popup-closes-itself`, `panel.popup-strip-close`, `panel.popup-blocked` and `panel.notes`
@@ -2466,6 +2489,28 @@ six marked-path tests in `link_scan` and `emulator` found none on the Mac runner
 keeps the text on Windows and writes `/C/` for `C:\` and `/` for every `\` elsewhere, the same length, so piece
 widths hold on both. Held by `native_test_text_is_an_absolute_path_of_the_same_length` and the
 `a_marked_path_*` tests. Source: PR 166's macos check (2026-11-11).
+1154. **One zoom for every tab.** Ctrl+wheel (Cmd+wheel on the Mac) and the Mac zoom keys move one app-wide zoom,
+a pixel offset on the settings' size, held in `FontCtl` (`crates/flare/src/font_ctl.rs`) for the run and never saved
+(no tabs.json field, no pref). A zoom in any tab sizes every tab: `AppCtl::apply_font` (`crates/flare/src/appctl.rs`)
+refits every open tab through `TabHost::refit_all`, hidden ones included, so their PTYs are resized and the shells
+reflow; a new tab spawns at the shared size, and Cmd+0 resets the zoom for all. A settings size change keeps the zoom
+on top of the new base. The browser panel's page zoom is separate. Windows and the Mac share the code. Replaces rule
+221; rule 26 keeps the range and the never-saved part. Held by
+`a_zoom_in_one_tab_sizes_every_tab_and_a_new_tab_opens_at_it`,
+`a_zoom_resizes_every_shell_hidden_ones_included_and_a_reset_brings_all_back`,
+`on_the_mac_cmd_zoom_keys_size_every_tab_and_cmd_0_resets_them` and `the_zoom_is_one_offset_on_the_settings_size`.
+Source: Max (2026-11-11): "Flare sessions have independent zoom levels when I Cmd+scroll. Make it so they all share
+the zoom level when I zoom in or out dynamically."
+1153. **Under `--e2e` the window's motion follows `FLARE_E2E_REDUCED_MOTION` alone, never the OS switch.** Since rule
+1135 a Mac reads System Settings > Accessibility > Display > Reduce motion, and GitHub's macOS runner has it on, so
+every Mac E2E run saw a still window: attention's question line did not breathe and its finished line did not flow,
+indicatorStyles' rainbow stood still and minimising had no moving mark to pause, Settings search flashed no found row
+(the flash is skipped under reduced motion), and verticalTabs' sidebar snapped open with the terminal already narrow
+(880 vs 1100 px) instead of sliding (run 43054686157 on main 794a9a28). `e2e::animations_enabled` now answers, under
+`--e2e`, "animate" unless the seam is `1`, and asks the OS only without `--e2e`, so the scenarios run the same on any
+runner and a scenario that wants still still says so. A real user's Reduce motion and Animation effects are honoured
+as before. Native: `crates/flare/src/e2e.rs`. Held by `under_e2e_motion_follows_the_seam_and_never_the_os` and the
+attention, indicatorStyles, settingsSearch and verticalTabs scenarios on the Mac. Source: Mac CI on main (2026-11-11).
 1152. **macOS: the web panel's host asks for its own turn whenever CEF's handlers leave it something, and keeps
 turning while a view waits for CEF.** Max's web panel stayed dark (account.apple.com, then example.com: "did not finish
 loading", no title, `browser_look` "not ready"), while the engine tests all passed. The window pumps the host
@@ -2556,3 +2601,133 @@ list reads as empty, which made every chooser take any file. Native: `crates/fla
 `crates/flare-cef/src/macos/view.rs`, `crates/flare/src/web_ctl.rs`. Held by
 `without_a_window_every_ask_is_answered_no_at_once` (`crates/flare-web/src/macos/asks.rs`) and `panel.file-chooser`.
 Source: gap NAT-07 work (2026-11-11).
+1156. **macOS: CEF is the process's, started once by the first web host and shut down once at quit; an idle host
+never takes it down or unloads it.** The window lets its host go when the last panel, background page and bar are
+gone (`web_ctl`'s `drop_idle_backend`, as on Windows, whose environment goes with its last view). On the Mac that
+dropped the `Engine`, whose `LibraryLoader` unloaded the CEF framework while CEF was still initialized; the next panel
+made a new host that ran `Engine::start` (`cef_initialize`) a second time in the same process, and the quit, with no
+host left, never ran `CefShutdown`, so the cookies and profiles were not flushed. Now the engine, its scheduler and the
+browsers still closing live in a holder of the main thread's (`Cef` in `host.rs`): a later host adopts it (the
+scheduler's turns go to the newest host's sink), a dropped host hands over what it was closing (and closes what it
+left open), `WebBackend::close_all` and `end_engine` (called by `web_ctl`'s `close_all` at quit even with no host)
+pump until those browsers closed and shut CEF down once. An `Engine` dropped without `shutdown` keeps the framework
+loaded. The quit still closes every view first and answers waiting `browser.*` calls `UNAVAILABLE` "Flare is closing"
+(rule 28). Windows is unchanged. Native: `crates/flare-web/src/macos/host.rs`, `crates/flare-cef/src/macos/engine.rs`,
+`crates/flare/src/web_ctl.rs`. Held by the `app-loop.one-engine` and `app-loop.quit-after-idle` checks of
+`a_web_panel_turned_as_the_window_turns_loads_and_paints_and_again_after_the_last_closed`
+(`crates/flare-web/tests/cef_macos.rs`: the second host never calls `Engine::start`, the quit with no host shuts
+down exactly once). Source: browser parity audit, gaps LC-02 and LC-06 (2026-11-11).
+1157. **macOS: the web engine's pump thread ends with its scheduler.** `flare-cef-pump` waited forever, so every
+dropped host left one behind (Max's Flare had two). The scheduler is now the process's (rule 1156), and its `Drop`
+sets a stop flag under the lock the thread waits on and wakes it, so the thread ends at the shutdown. Native:
+`crates/flare-web/src/macos/host.rs`. Held by the `app-loop` probe scenario (the shutdown drops the scheduler before
+`CefShutdown`). Source: browser parity audit, gap LC-02 (2026-11-11).
+1158. **macOS: a GPU or utility helper that fails is a `Process` note on every live view and a line in the log, and
+nothing more.** Windows notes every `ProcessFailed` kind and only logs the GPU and utility ones (`Failure::Recovers`:
+the browser starts them again). CEF has no callback for any helper but a renderer, so the browser process watches its
+own children (`flare_cef::macos::helpers`): after each `on_before_child_process_launch` (and at the start) it looks at
+its children for 2 s, knows a helper by its `--type=` switch (`gpu-process` is `gpu`, `utility` is `utility`, a
+renderer is left to `on_render_process_terminated`), and waits for its end with `EVFILT_PROC` `NOTE_EXIT` and the wait
+status. A signal is `crashed`, a non-zero exit `unexpected`; a clean exit (a utility that finished) and every end during
+the shutdown are not reported. The note's detail is the Windows word (`gpu`, `utility`) and it carries the reason and
+the signal or exit code; no page ends. Windows' browser-process loss (restart the environment) does not apply: CEF runs
+inside Flare's own process. Native: `crates/flare-cef/src/macos/helpers.rs`, `crates/flare-cef/src/macos/engine.rs`,
+`crates/flare-web/src/macos/host.rs`. Held by `a_helper_that_crashes_is_reported_and_one_that_exits_cleanly_or_at_shutdown_is_not`
+and the other `helpers` unit tests, and the `app-loop.gpu-note` check (the probe kills its own GPU helper). Source:
+browser parity audit, gap LC-05 (2026-11-11).
+1159. **macOS: `browser_navigate` and `open_page` answer on their own navigation's number when the host is turned the
+window's way.** `web_ctl` binds a waiting call to the first `Loading` after it and answers on the `Loaded` with the same
+`nav`; on the Mac that needs the host's own turns (rule 1152), without which no `Loading` or `Loaded` came at all. The
+`app-loop` scenario checks that the `Loaded` of a navigation carries the number its `Loading` gave and that an earlier
+navigation had another. The CEF probe tests run one at a time (`.config/nextest.toml`): each starts a browser with its
+helpers, and side by side they starved each other. Native: `crates/flare-web/src/macos/host.rs`,
+`crates/flare-cef/src/macos/view.rs`. Held by the `app-loop.nav-id` check (`crates/flare-web/tests/cef_macos.rs`).
+Source: browser parity audit, gap AG-05 (2026-11-11).
+1175. **macOS: the web panel's profile is Flare's own folder, and keeps across a restart what WebView2 keeps.** A cookie
+with an expiry and a page's `localStorage` come back after the engine shut down and started again on the same data
+folder; a session cookie does not (`PERSIST_SESSION_COOKIES` is 0 for every profile, rule 1125); the cookie and storage
+files are under the host's data folder, nowhere else. Native: `crates/flare-cef/src/macos/context.rs`,
+`crates/flare-cef/src/macos/engine.rs`. Held by
+`a_kept_sign_in_and_stored_data_survive_an_engine_restart_and_a_session_cookie_does_not` (`crates/flare-web/tests/cef_macos.rs`,
+probe scenarios `persist-write` and `persist-read`, `crates/flare-web/src/macos/probe/parity.rs`). Source: browser parity
+gap PROF-01 (2026-11-11).
+1176. **macOS: a page's `prefers-color-scheme` is the app's appearance and follows it; the user agent is a desktop
+Chrome's on a Mac.** Windowless CEF reads `NSApp`'s effective appearance (the system's unless the app sets one) and
+follows a change, as WebView2's follows Windows'; nothing in Flare sets a scheme or a user agent on either platform.
+The user agent starts `Mozilla/5.0 (Macintosh; Intel Mac OS X`, names `Chrome/<major>` and `Safari/537.36`, has no
+`Headless` or `CEF`, and `navigator.webdriver` is false. Held by `look.color-scheme` and `look.user-agent` in
+`mini_apps_load_and_paint_and_pages_follow_the_apps_appearance_on_cef` (`crates/flare-web/tests/cef_macos.rs`). Source:
+browser parity gap PROF-03 (2026-11-11).
+1177. **macOS: a plugin's fill types into a sign-in form through `run_script` and stops on a page that moved.**
+`flare_mods::fill::fill_script`, run as `web_ctl` runs it (CDP `Runtime.evaluate`, by value), types the user name, the
+password and the code, fires `input` and `change`, and answers kinds of field only; on another site (scheme, host or
+port) it answers `{ok:false, why:'moved'}` and types nothing. Held by `fill.types` and `fill.moved` in
+`a_plugins_fill_types_into_a_form_and_its_bar_and_background_page_stay_sealed_on_cef` (`crates/flare-web/tests/cef_macos.rs`).
+Source: browser parity gap PLG-01 (2026-11-11).
+1178. **macOS: every mini-app Flare writes loads and paints in a windowless view.** `show_html` (the page behind its
+policy), `show_diagram` (the bundled Mermaid draws an svg), `show_model` (WebGL 2 is there windowless; the viewer reads
+the model and draws it), `show_audio` (the track beside the page loads and plays after the person's click; a page's
+autoplay with sound waits for a gesture, Chromium's default) and the markdown Compiled view (no script). Each page is
+written by the same `flare_surfaces` functions `ctl_app.rs` and `panel_ctl.rs` use. Held by `mini.html`, `mini.diagram`,
+`mini.model`, `mini.audio` and `mini.markdown` in `mini_apps_load_and_paint_and_pages_follow_the_apps_appearance_on_cef`
+(`crates/flare-web/tests/cef_macos.rs`). Source: browser parity gap MINI-01 (2026-11-11).
+1179. **macOS: a plugin's bar and background page keep their seals in the web panel's host.** The background page
+opens hidden in its plugin's own profile and talks over its bridge; a right click on the bar reaches the page but shows
+no menu; Cmd+R, Cmd+=, Cmd+F and Cmd+P reach the page as keys and do nothing of the browser's (no reload, zoom, find or
+print); a download is cancelled before it starts and a dialog answered unseen, on both (`seal::plugin_seal`). Held by
+`plugin.background` and `plugin.sealed` in
+`a_plugins_fill_types_into_a_form_and_its_bar_and_background_page_stay_sealed_on_cef` (`crates/flare-web/tests/cef_macos.rs`).
+Source: browser parity gap PLG-03 (2026-11-11).
+1170. **macOS: a pop-up no click asked for is refused by Flare's rule, noted and said in the bar; a page's own
+`window.close()` closes only a pop-up.** Chromium's own pop-up blocker stopped such a request before CEF asked
+(`on_before_popup` never ran), so there was no `web-refused popup-blocked` note and no "Pop-up blocked" in the bar. The
+engine starts with `disable-popup-blocking` (`SWITCHES`), so every request reaches the view's `NewWindowRule`
+(`popup_plan` refuses it as `blocked`, `window.open` stays null; a mini-app's or a mod's page is refused by
+`refusing_rule`, and a view with no rule opens nothing). A script's `window.close()` reached CEF's default close and
+the panel's browser died behind a stale view: `LifeSpan::do_close` now lets a close through only for a pop-up (its
+own `window.close()` still closes it) or the owner's `View::close` (`owner_closing`), and otherwise cancels it and sends
+`ViewEvent::CloseIgnored`, which the host notes as `web-close-ignored` by site for every view, as WebView2's
+`WindowCloseRequested` does. A browser that still ends without the host closing it drops its view and the panel hears
+`Gone`, never a frozen picture. Native: `crates/flare-cef/src/macos/engine.rs`, `crates/flare-cef/src/macos/view.rs`,
+`crates/flare-web/src/macos/host.rs`. Held by the probe's `panel.popup-blocked` (the `blocked` note),
+`panel.window-close-ignored` (the page stays, the note comes) and `panel.notes` (`flare-web/tests/cef_macos.rs`), and
+`the_engine_is_started_with_its_quiet_switches_and_keeps_cefs_own_disabled_features`. Source: the browser parity audit
+(POP-01, POP-03, DIAG-01), 2026-11-11.
+1171. **macOS: a link to an app inside a frame is asked about ("Open an app?") as on Windows, never started by the
+browser.** The web panel's navigation wall lets a frame go anywhere, so a `zoommtg:` or `mailto:` link in a frame
+reached only the browser's own launch (`on_protocol_execution`), which refused it silently: no question, no note. Now
+every navigation of a view gets a request handler (a pass-through one when the view has no request wall), whose
+`on_protocol_execution` still refuses the launch and sends `ViewEvent::External` with the main frame's address; the
+host offers it to `AppLinks` for the web panel and its pop-ups (the same `AppLinkDedupe`, so one link is one question),
+and anything that is not an app link is noted `web-refused scheme` (and refused in the bar on the panel), as WebView2's
+`LaunchingExternalUriScheme` backstop (`ask_external_uris`) does. A mini-app's or a mod's page is told nothing new.
+Native: `crates/flare-cef/src/macos/view.rs`, `crates/flare-web/src/macos/host.rs`. Held by the probe's
+`panel.app-link-in-frame` (the person's click on a `zoommtg:` link in a frame: one `AppLink`, an `app-link` note, no
+refusal). Source: the browser parity audit (LINK-01), 2026-11-11.
+1172. **macOS: a certificate the browser does not trust shows Chromium's error page, is noted by site and is never
+overridden.** `on_certificate_error` answers 0 (CEF cancels the request): the load ends not ok with WebView2's status
+(`CERTIFICATE_IS_INVALID`, 5, through `web_error_status`), the page is Chromium's "Privacy error", the log has
+`web-cert cert-invalid` with sites only, and no request gets past the handshake. Native:
+`crates/flare-cef/src/macos/view.rs`, `crates/flare-web/src/macos/host.rs`. Held by the probe's `panel.cert`: an HTTPS
+server on loopback with a self-signed certificate made for the run by `/usr/bin/openssl req` (it listens on nothing;
+the server is rustls, `probe/tls.rs`) counts the requests that got through: none. Source: the browser parity audit
+(SEC-01), 2026-11-11.
+1173. **macOS: the page's scrollbars are overlay scrollbars, as WebView2's Fluent overlay style draws them on
+Windows.** Chromium on a Mac takes the scroller style from `+[NSScroller preferredScrollerStyle]` in the browser
+process; with a mouse attached and "Show scroll bars: Automatically" that is the classic bar, 15 px of every page's
+width. Before CEF starts, `scrollers::prefer_overlay` makes that method answer `NSScrollerStyleOverlay` for Flare's
+process (once), so every page (the web panel, mini-apps and mods, as on Windows) draws thin bars over itself that fade
+when it is still, and no page's DOM is touched (a page that styles its own scrollbars keeps them). Native:
+`crates/flare-cef/src/macos/scrollers.rs`, `crates/flare-cef/src/macos/engine.rs`. Held by the probe's
+`panel.overlay-scrollbars` (`innerWidth == clientWidth` on a page that scrolls; 15 without the fix on a Mac with a
+mouse) and `appkit_answers_the_overlay_style_once_flare_asked_for_it`. Source: the browser parity audit (NAV-10),
+2026-11-11.
+1174. **macOS: while the splitter is held, the page drawn in its box keeps its width and its edge moves, as WebView2's
+window does on Windows.** The hold (rule 230) kept the page's width, but the box drew the held picture with
+`image-fit: fill` across its new width, so the page looked stretched or squeezed and a click landed off what it was
+drawn on until the 120 ms settle. The live picture (`panel.slint`, `web-frame`) is now drawn at its own width from the
+box's left edge (a pixel or two off, rounding, still fills), cut at the box's edge when wider, so input maps 1:1;
+on release or the settle the page's next picture fills the box again. Windows draws no picture there (`web-live` is
+false), so nothing changes on Windows. Native: `crates/flare/ui/panel.slint`. Held by
+`a_page_drawn_off_screen_keeps_its_width_while_the_splitter_is_held` (`crates/flare/src/appctl/tests/web_tests.rs`,
+rendered pixels). Source: the browser parity audit (LC-09), 2026-11-11.
