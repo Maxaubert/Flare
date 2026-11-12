@@ -2793,3 +2793,21 @@ on release or the settle the page's next picture fills the box again. Windows dr
 false), so nothing changes on Windows. Native: `crates/flare/ui/panel.slint`. Held by
 `a_page_drawn_off_screen_keeps_its_width_while_the_splitter_is_held` (`crates/flare/src/appctl/tests/web_tests.rs`,
 rendered pixels). Source: the browser parity audit (LC-09), 2026-11-11.
+1180. **macOS: Flare never smooths, eases or animates the terminal's scroll; a glide comes from a mouse utility, and
+the cure is that utility's per-app rule for Flare, not a Flare setting.** Max (2026-11-12): "it scrolls like a browser
+and not line by line", in plain shell tabs too, on the build with rule 1129. His Mac has no trackpad: a Razer Basilisk
+V3 Pro through LinearMouse 0.12, whose `scrolling.smoothed.vertical` scheme (easeInOut, response 0.45, inertia 0.6) is
+on for every app, with one app scheme for `com.apple.Terminal` that turns smoothing off and scrolls 3 lines a notch
+(`~/.config/linearmouse/linearmouse.json`). LinearMouse's `SmoothedScrollingEngine` turns each notch into a run of small
+precise scroll events with trackpad phases (`CGScrollPhase`, then `CGMomentumScrollPhase` for the inertia), so every
+app but Terminal glides. Flare reads them as rule 1129 says: the inertia (momentum) moves nothing, the eased part moves
+one line per cell height of pixels, whole lines only, and the view jumps to them in the next frame. There is no
+animated offset, easing, velocity scaling or kinetic scroll anywhere in the grid's path (`WheelAccum::add_mac`,
+`TermHandle::wheel_lines`, the renderer). Checked 2026-11-12: on a real winit 0.30.13 view, `scroll_phase::current`
+reads a finger Changed, Ended and two momentum events correctly when AppKit dispatches them (so rule 1129 holds in the
+shipped path), and CEF's `do_message_loop_work` with the external pump dispatched none of 40 queued AppKit events (no
+nested loop steals the scroll from winit). The fix for line-by-line scrolling is a LinearMouse app scheme for
+`com.flare.terminal` that matches the Terminal one (smoothing off, distance 3); Flare adds no "Smooth scrolling" setting,
+since it has no smoothing to turn off. Held by `mac_scroll_moves_with_the_fingers_and_never_with_the_momentum`,
+`momentum_wins_and_each_finger_phase_is_read` and `a_line_step_is_one_line_everywhere_and_a_notch_stays_three`.
+Source: Max on his Mac (2026-11-12); the Mac setup notes (mouse, LinearMouse).
