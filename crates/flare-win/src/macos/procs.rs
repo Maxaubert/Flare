@@ -138,7 +138,10 @@ mod tests {
                     || c.contains("flare_win")
             })
             .expect("snapshot");
-            if rows.iter().any(|r| r.ppid == me) || std::time::Instant::now() > end {
+            // The sleep once it has exec'd: read between sh's fork and the exec it still has sh's command line.
+            if rows.iter().any(|r| r.ppid == me && r.cmd == "/bin/sleep 8")
+                || std::time::Instant::now() > end
+            {
                 break rows;
             }
             std::thread::sleep(std::time::Duration::from_millis(20)); // sync-ok: test code on the test thread only

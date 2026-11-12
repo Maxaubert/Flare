@@ -2531,7 +2531,7 @@ Native: `crates/flare-web/src/macos/host.rs`, `crates/flare-cef/src/macos/view.r
 `a_web_panel_turned_as_the_window_turns_loads_and_paints_and_again_after_the_last_closed`
 (`crates/flare-web/tests/cef_macos.rs`; without the fix its reopen check fails, nothing loads). Source: Max on his Mac
 ("the flare browser is just dark", 2026-11-11).
-1153. **No CI step downloads Prism Terminal or needs a token for it.** Owner decision 2026-11-11 (Prism Terminal is deprecated): the side-by-side check that installed Flare beside Prism Terminal on the runner is removed, with its test (`tools/e2e/tests/side_by_side.rs`), its workflow (`installer-e2e.yml`, which ran only that test) and its step in `release.yml`. No workflow names `arkivert/PrismTerminal`, `FLARE_RELEASE_TOKEN` or `PRISM_RELEASE_TOKEN`, and `release.yml` reads no repository secret, so a release never waits on a token. Native: `.github/workflows/release.yml`. Held by `no_workflow_downloads_the_reference_app_or_needs_a_token_for_it`, `no_secret_other_than_the_github_token` and `the_release_goes_to_this_repository_only` (`crates/flare/tests/release_files.rs`). Source: owner decision 2026-11-11; `docs/shipping.md`.
+1183. **No CI step downloads Prism Terminal or needs a token for it.** Owner decision 2026-11-11 (Prism Terminal is deprecated): the side-by-side check that installed Flare beside Prism Terminal on the runner is removed, with its test (`tools/e2e/tests/side_by_side.rs`), its workflow (`installer-e2e.yml`, which ran only that test) and its step in `release.yml`. No workflow names `arkivert/PrismTerminal`, `FLARE_RELEASE_TOKEN` or `PRISM_RELEASE_TOKEN`, and `release.yml` reads no repository secret, so a release never waits on a token. Native: `.github/workflows/release.yml`. Held by `no_workflow_downloads_the_reference_app_or_needs_a_token_for_it`, `no_secret_other_than_the_github_token` and `the_release_goes_to_this_repository_only` (`crates/flare/tests/release_files.rs`). Source: owner decision 2026-11-11; `docs/shipping.md`.
 1155. **macOS: the agent's cursor, the glow round the page and the agent's arrow show over the web panel, and never take
 a click or the keyboard.** Max on his Mac: "it works but its missing teh overlay effect when claude is using it and its
 missing the visible cursor when claude is moving aorund on the page". On Windows each picture is a layered popup owned
@@ -2811,3 +2811,58 @@ nested loop steals the scroll from winit). The fix for line-by-line scrolling is
 since it has no smoothing to turn off. Held by `mac_scroll_moves_with_the_fingers_and_never_with_the_momentum`,
 `momentum_wins_and_each_finger_phase_is_read` and `a_line_step_is_one_line_everywhere_and_a_notch_stays_three`.
 Source: Max on his Mac (2026-11-12); the Mac setup notes (mouse, LinearMouse).
+1184. **On a CI runner a check waits for what it tests, and skips a part only when the runner truly lacks the
+hardware.** Main eede2a8b went red twice on GitHub's macOS VM while the PR runs passed. `mini.audio` (rule 1178) saw
+`play()` take the click but `currentTime` stay at 0, because the VM has no audio output device: the probe now polls the
+clock for up to 5 s and, only when it still has not moved and `system_profiler SPAudioDataType` lists no output device,
+passes with `skipped` and the reason in the report (`cef_macos.rs` prints it); load, paint, the 2 s track and `play()`
+are still required, and a Mac with an output device must still play. promptLayout read the last line once, right
+after `ready` (the prompt after the echo had not come yet): it now waits for that prompt before resizing and gives the
+redraw after the resize 5 s, failing on a prompt that stays broken. Native:
+`crates/flare-web/src/macos/probe/parity.rs`, `tools/e2e/src/scenarios/lifecycle.rs`. Held by
+`mini_apps_load_and_paint_and_pages_follow_the_apps_appearance_on_cef` and the promptLayout scenario. Source: CI run
+43147800100 on main (2026-11-12).
+1185. **macOS: while CEF has a browser, the web host keeps a turn of CEF's work at most 33 ms away.** CI's macOS VM
+failed `app-loop.open` twice (run 43165739212, run 43168171020): the panel loaded (`Title`, `Loaded ok`) but never
+painted in 10 s, and once its next navigation got only as far as `Loading` for 20 s; the next host's view then loaded
+and painted at once. CEF's main-thread tasks run only in `do_message_loop_work` (a probe that never called it loaded
+nothing), and CEF asks for that turn (`on_schedule_message_pump_work`) only when a task is posted: in a probe run all
+152 asks were delay 0, none for its delayed work, so its timers (the windowless view's frame clock, a navigation's
+later steps) ran only when some other ask came. A fast Mac's traffic of asks hid it; a slow or busy Mac stalls, until
+another view's turns (`retry_while_waiting`) drain it. `WebHost::keep_turning` now schedules a turn 1000/30 ms after
+every pump while the host has a view or a browser closing, as CEF's own external-pump sample does
+(`MainMessageLoopExternalPump`, `kMaxTimerDelay`); with no panel there are no turns. Native:
+`crates/flare-web/src/macos/host.rs`. Held by the probe's `app-loop.idle-turns` (a quiet page gets at least 30 turns
+in 2 s: about 64 with it, 9 without) beside `app-loop.open` and `app-loop.navigate`. Source: CI run 43168171020 on
+fix/main-ci-green-2 (2026-11-12).
+1186. **macOS: a helper is known only once its arguments say what it is.** The helper watcher (rule 1158) marked every
+child it saw as looked at before reading its arguments, so a child read before its exec (still this process's
+arguments) or before they could be read was taken for good as no helper, and its crash never became a note:
+`a_helper_that_crashes_is_reported_...` failed about one run in two on a Mac mini, and `app-loop.gpu-note` now and
+then. A child that is not yet a helper is read again at the next look. Native: `crates/flare-cef/src/macos/helpers.rs`.
+Held by `a_helper_that_crashes_is_reported_and_one_that_exits_cleanly_or_at_shutdown_is_not` (12 of 12 after) and
+`app-loop.gpu-note`. Source: fix/main-ci-green-2 (2026-11-12).
+1187. **macOS: the terminal is a focused text area whose cursor accessibility can read.** Magnifiers could not follow
+typing on the Mac (issue #201, Wind for Mac #567): the app's `AXFocusedUIElement` was empty while the terminal had the
+keyboard, because the tree held only Slint's controls (AccessKit) and nothing for the grid. The window's view now gets
+one more dynamic subclass on top of AccessKit's (no instance variables, the state in a thread-local) that adds a
+terminal element, an `NSAccessibilityElement` with the role `AXTextArea`, to the view's children and answers
+`accessibilityFocusedUIElement` with it while the terminal holds the keyboard: the window has it and no field, dialog,
+menu, side panel or panel page does (`live::terminal_has_keys`, read again when a tracker asks). Otherwise the class
+below (AccessKit's Slint tree) answers, so a field keeps its own focus. The element's `AXSelectedTextRange` is the
+cursor (zero length) on its value, the cursor's line, and `AXBoundsForRange` (`accessibilityFrameForRange:`) is the
+cell `place_ime` gives the IME, in Cocoa screen space through the view and its window (every display and backing
+scale); its frame is the grid. A focus change posts `AXFocusedUIElementChanged`, a new cell `AXSelectedTextChanged`,
+once per change, never per frame. The value is the cursor's line only for now (whole-screen text and VoiceOver
+reading are follow-ups). Native: `crates/flare-win/src/macos/ax_terminal.rs`, `crates/flare-win/src/ax_caret.rs`,
+`crates/flare/src/window.rs` (`place_ime`, `handle_focus`). Held by
+`the_focus_is_claimed_only_with_the_keyboard_and_a_cell`,
+`a_frame_that_leaves_the_cell_posts_nothing_and_a_move_posts_once`,
+`losing_the_keyboard_or_the_terminal_gives_the_focus_up_once`, `a_cell_becomes_points_in_a_plain_or_flipped_view`,
+`a_bad_scale_places_at_one_and_an_empty_cell_is_one_pixel`,
+`the_text_is_the_cursor_line_and_the_index_counts_utf16`,
+`a_range_is_cells_beside_the_cursor_and_the_insertion_point_is_its_cell` (`ax_caret`),
+`the_terminal_has_the_keys_only_when_no_field_panel_or_page_does` (`live`), and the AppKit probes
+`ax_terminal_is_the_focused_text_area_with_the_cursor_cell_on_the_screen` and
+`ax_terminal_keeps_a_toolkits_own_tree_and_focus_when_the_terminal_has_none` (`crates/flare-win/tests/appkit.rs`, a
+window that is never shown). Source: issue #201 (2026-11-12).

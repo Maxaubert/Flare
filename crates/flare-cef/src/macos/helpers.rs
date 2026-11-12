@@ -248,12 +248,15 @@ fn watch(kq: &Kq, ending: &AtomicBool, on_exit: &(dyn Fn(HelperExit) + Send + Sy
             let now = children();
             known.retain(|p| now.contains(p));
             for pid in now {
-                if !known.insert(pid) {
+                if known.contains(&pid) {
                     continue;
                 }
+                // A child read before its exec still has this process's arguments (or none yet): it stays unknown
+                // and is read again at the next look, never taken for good as no helper.
                 let Some(kind) = args_of(pid).as_deref().and_then(kind_of) else {
                     continue;
                 };
+                known.insert(pid);
                 let ev = libc::kevent {
                     ident: pid as usize,
                     filter: libc::EVFILT_PROC,

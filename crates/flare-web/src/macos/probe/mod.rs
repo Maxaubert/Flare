@@ -1613,6 +1613,19 @@ fn app_loop(rep: &mut Report, data: &Path) -> Result<(), String> {
         json!({"pixel": format!("{px:?}"), "pumps": PUMPS.load(Ordering::Relaxed) - pumps,
                "events": first.since(from)}),
     );
+    // CEF never asks for a turn for its delayed work (its timers): while a view lives the host keeps a turn of
+    // its own at most 33 ms away, so an idle page still gets its turns (rule 1185). Without it a page on a slow Mac
+    // loaded and never painted, and its next navigation never committed.
+    // 2 s of a quiet page: about 60 turns with it, 15 from CEF's own asks without (a Mac mini, 2026-11-12).
+    let before = PUMPS.load(Ordering::Relaxed);
+    first.wait(2_000);
+    let idle = PUMPS.load(Ordering::Relaxed) - before;
+    rep.check(
+        "app-loop.idle-turns",
+        idle >= 30,
+        "while a view lives the host turns CEF on its own clock, never only when CEF asked",
+        json!({"pumps_in_2s": idle}),
+    );
     let from = first.mark();
     first.host.navigate("t1", &srv.url("/page2"));
     let moved = first.opened(from, "t1", "Page two");
