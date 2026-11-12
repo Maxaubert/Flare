@@ -21,7 +21,7 @@ use crate::pin::FRAMEWORK;
 /// `command_line_args_disabled` keeps the process's own command line out (rule 1030), so a switch on Flare's command
 /// line (`--remote-debugging-port`, `--no-sandbox`, `--proxy-server`, `--disable-web-security`) never reaches
 /// Chromium. Added in [`FlareApp`]'s `on_before_command_line_processing`, which CEF still asks.
-pub const SWITCHES: [(&str, &str); 8] = [
+pub const SWITCHES: [(&str, &str); 9] = [
     // Chromium's cookie and password encryption asks the login keychain for its key: an ad-hoc signed build (a dev
     // bundle, a test bundle) would be asked again after every rebuild, a system prompt on the person's screen. So
     // such a build uses the mock keychain, which never asks but whose key is a fixed, public one: what a profile on
@@ -44,6 +44,10 @@ pub const SWITCHES: [(&str, &str); 8] = [
     ("disable-features", DISABLED_FEATURES),
     // No hyperlink-auditing pings (`<a ping>`).
     ("no-pings", ""),
+    // Chromium's own pop-up blocker would stop a pop-up no click asked for before CEF asks Flare: every request
+    // reaches the view's new-window rule instead, which refuses it as on Windows (`popup_plan`, the bar's "Pop-up
+    // blocked" and the `web-refused` note, rule 1170). A view without a rule still opens nothing.
+    ("disable-popup-blocking", ""),
 ];
 
 /// The component updater's options: its server is the dead address sealed pages use (`127.0.0.1:9`, where
@@ -295,6 +299,8 @@ impl Engine {
             app::install(mtm)?
         };
         app::ensure_protocols(&app);
+        // Overlay scrollbars in every page, as WebView2's Fluent overlay style on Windows (rule 1173).
+        crate::macos::scrollers::prefer_overlay();
 
         let args = args::Args::new();
         let net_log = cfg
@@ -431,6 +437,7 @@ mod tests {
             "disable-background-networking",
             "disable-features",
             "use-mock-keychain",
+            "disable-popup-blocking",
         ] {
             assert!(names.contains(&n), "{n}");
         }
