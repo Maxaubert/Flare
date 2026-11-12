@@ -113,8 +113,6 @@ pub struct TabHost {
     /// Where the Claude plugin lives, found once at startup. None: no shell's environment is
     /// touched.
     plugin_dir: Option<String>,
-    /// Ctrl+wheel zoom per tab, in pixels. Never saved (`tabs.json` is unchanged).
-    font_override: HashMap<String, i32>,
 }
 
 impl TabHost {
@@ -153,7 +151,6 @@ impl TabHost {
             waker,
             prefs,
             plugin_dir,
-            font_override: HashMap::new(),
         }
     }
 
@@ -215,28 +212,11 @@ impl TabHost {
         self.mgr.kill(id);
         self.order.retain(|x| x != id);
         self.shell_ids.remove(id);
-        self.font_override.remove(id);
     }
 
-    /// The tab's own zoom in pixels, if it has one.
-    pub fn font_override(&self, id: &str) -> Option<i32> {
-        self.font_override.get(id).copied()
-    }
-
-    /// Sets or clears the tab's own zoom. Held in memory only.
-    pub fn set_font_override(&mut self, id: &str, px: Option<i32>) {
-        match px {
-            Some(px) => {
-                self.font_override.insert(id.to_string(), px);
-            }
-            None => {
-                self.font_override.remove(id);
-            }
-        }
-    }
-
-    /// A size or family change: every open tab, visible or not, takes the new grid size through
-    /// the same resize path as a window resize.
+    /// A size or family change, or the shared zoom (rule 1154): every open tab, visible or not,
+    /// takes the new grid size through the same resize path as a window resize, so each shell
+    /// reflows.
     pub fn refit_all(&mut self, cols: usize, rows: usize) {
         if cols < 2 || rows < 1 {
             return;
@@ -244,25 +224,6 @@ impl TabHost {
         self.dims = (cols, rows);
         self.mgr.resize("", cols, rows);
         for id in &self.order {
-            if let Some(h) = self.handles.get(id) {
-                h.resize(cols, rows);
-            }
-        }
-    }
-
-    /// A settings font change or a tab switch: every open tab that wears the settings' size takes
-    /// the new grid. A tab with a zoom of its own keeps its grid (it refits when it comes to the
-    /// front), so a zoom never reflows the other shells.
-    pub fn refit_unzoomed(&mut self, cols: usize, rows: usize) {
-        if cols < 2 || rows < 1 {
-            return;
-        }
-        self.dims = (cols, rows);
-        self.mgr.resize("", cols, rows);
-        for id in &self.order {
-            if self.font_override.contains_key(id) {
-                continue;
-            }
             if let Some(h) = self.handles.get(id) {
                 h.resize(cols, rows);
             }
@@ -542,17 +503,6 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(150));
         assert_eq!(h.dims(), (100, 30));
         assert!(sp.made().iter().all(|m| m.size() == (100, 30)));
-    }
-    #[test]
-    fn the_font_override_is_per_tab_and_dies_with_the_tab() {
-        let (mut h, sp, _p) = host();
-        h.spawn("a", "C:\\a", None);
-        made(&sp, 1);
-        h.set_font_override("a", Some(20));
-        assert_eq!(h.font_override("a"), Some(20));
-        assert_eq!(h.font_override("b"), None);
-        h.kill("a");
-        assert_eq!(h.font_override("a"), None);
     }
 
     #[test]

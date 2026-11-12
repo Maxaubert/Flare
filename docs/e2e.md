@@ -144,6 +144,10 @@ Every `FLARE_E2E_*` read goes through `e2e::global().env(..)`, which returns not
 a stray variable in the owner's environment cannot change the real app. No source file reads such a
 variable directly (`no_source_file_reads_an_e2e_variable_directly`).
 
+Motion under `--e2e` follows `FLARE_E2E_REDUCED_MOTION` alone: `1` stills the window, anything else animates, and
+the OS switch (Windows' Animation effects, a Mac's Reduce motion) is never read, so a runner that reduces motion
+runs the same scenarios as one that does not (`e2e::animations_enabled`, rule 1153).
+
 ## macOS E2E (CI only, rules 1103 to 1122)
 
 The same harness and scenario table drive the Mac build, on GitHub's macOS runners only (the `e2e-macos` job in
@@ -204,6 +208,9 @@ release build went from about 9 minutes from scratch to about 5. Batch several f
 - **Gates** (rule 1105) live in `tools/e2e/src/scenarios/mac_gate.rs`, each with its reason; a gated scenario is never
   started and never a pass. A filter that matches only gated scenarios runs nothing and fails (rule 1122), and the hand
   run's filter is split into words, never globbed, and may not hold a flag.
+- **Motion** (rule 1153): GitHub's macOS runner has Reduce motion on, and the app honours it since rule 1135; under
+  `--e2e` the OS switch is not read, so the marks breathe and flow, Settings flashes a found row and the sidebar
+  slides unless a scenario sets `FLARE_E2E_REDUCED_MOTION=1`.
 - **Mac-only waits**: where the Mac runner needed a scenario to wait for something (a hover fade, a prompt redraw, the
   process poll, a breathing mark), the wait is a condition under `cfg!(target_os = "macos")`; the Windows path of every
   scenario is as it was, and the Windows suite still runs on the owner's PC. On failure the job uploads `e2e-macos`: the log, the shots and the worlds' logs.

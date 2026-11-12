@@ -20,9 +20,13 @@ flare-cef = { path = "../flare-cef" }
 libc.workspace = true
 serde_json.workspace = true
 objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-app-kit.workspace = true
+block2.workspace = true
+dispatch2.workspace = true
+rustls.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 
 # The web host tests' browser process and its CEF helper, run inside a dev bundle (macOS only; on Windows they only
 # say so).

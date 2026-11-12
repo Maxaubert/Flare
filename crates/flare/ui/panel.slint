@@ -1070,8 +1070,12 @@ export component PanelSlot inherits Rectangle {
                     source: root.web-still;
                     image-fit: fill;
                 }
+                // The page's picture at its own width: while the splitter is held the page keeps its width (rule 230)
+                // and its edge moves, as WebView2's window does on Windows, so the picture is never stretched across
+                // the box and a click lands where it is drawn (rule 1174). A pixel or two off (rounding) still fills.
                 if root.web-live && !root.web-has-still: Image {
-                    width: parent.width;
+                    x: 0px;
+                    width: abs(root.web-frame.width * 1phx - parent.width) > 2phx ? root.web-frame.width * 1phx : parent.width;
                     height: parent.height;
                     source: root.web-frame;
                     image-fit: fill;

@@ -14,6 +14,8 @@
 //!   filter is asked about.
 //! - `app-loop`: the web panel turned the real window's way (pumped only when told, rule 1152), and opened again in
 //!   a new host after the last one closed.
+//! - `persist-write`, `persist-read`, `content`, `plugins`: the browser's parity with Windows (`parity.rs`): what a
+//!   profile keeps over a restart, the look, the mini-apps' content, a plugin's fill and its sealed pages.
 //!
 //! Every report carries the window server's count of this process's on-screen windows at the start and the end,
 //! the activation policy and whether the app ever became active.
@@ -21,6 +23,8 @@
 mod agent;
 mod observers;
 mod pages;
+mod parity;
+mod tls;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -37,11 +41,42 @@ use flare_surfaces::web::PhysRect;
 use objc2::MainThreadMarker;
 use serde_json::{Value, json};
 
+use crate::asks::{AskKey, Asker, Done};
 use crate::backend::{
     ImeInput, KeyInput, Mods, Nav, NoteKind, Pointer, PointerAct, PointerButton, Slot, ViewFrame,
     WebBackend, WebEvent,
 };
 use crate::host::{HostConfig, WebHost, installed_runtime};
+use flare_cef::macos::view::{Ask, FileMode, Reply};
+
+/// The tests' asker: it shows nothing, notes each ask and answers as the person would (a `"no"` script dialog is
+/// cancelled, a prompt gets `typed`, a file chooser `file`, a menu its Open Link).
+struct StubAsker {
+    asks: Arc<Mutex<Vec<Ask>>>,
+    file: PathBuf,
+}
+
+impl Asker for StubAsker {
+    fn ask(&mut self, _key: AskKey, ask: Ask, _page: (f64, f64), done: Done) {
+        let reply = match &ask {
+            Ask::Script { message, .. } if message == "no" => Reply::No,
+            Ask::Script { kind, .. } if *kind == "prompt" => Reply::Yes("typed".to_string()),
+            Ask::Script { .. } | Ask::Leave { .. } => Reply::Yes(String::new()),
+            Ask::Files { .. } => Reply::Files(vec![self.file.clone()]),
+            Ask::Menu { items, .. } => items
+                .iter()
+                .find(|i| i.label == "Open Link")
+                .map_or(Reply::No, |i| Reply::Command(i.id)),
+        };
+        self.asks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(ask);
+        done(reply);
+    }
+
+    fn withdraw(&mut self, _gone: &dyn Fn(&AskKey) -> bool) {}
+}
 
 /// The view's rectangle: 983 by 700 CSS pixels at 2x.
 const BOUNDS: PhysRect = PhysRect {
@@ -686,8 +721,8 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
         "the strip's Close (close_popup) closes the pop-up on top and the page shows again",
         json!({"events": h.since(from)}),
     );
-    // No click of the person's: Chromium's own blocker stops it before CEF asks (no `on_before_popup`, so no note
-    // as on Windows, rule 1123); nothing opens and the page's window.open answers null.
+    // No click of the person's: Chromium's own blocker is off, so the request reaches Flare's rule, which refuses it
+    // as on Windows (rule 1170): noted `blocked` (the bar's "Pop-up blocked"), nothing opens, window.open is null.
     let from = h.mark();
     let blocked = h.script(
         tab,
@@ -698,12 +733,92 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
     rep.check(
         "panel.popup-blocked",
         blocked.as_deref() == Ok("true")
+            && ev
+                .iter()
+                .any(|e| e == "Note t1 Popup 127.0.0.1 127.0.0.1 blocked")
             && !ev.iter().any(|e| e.starts_with("Popups"))
             && h.host
                 .probe_view(&slot)
                 .is_some_and(|p| p.popups.is_empty()),
-        "a pop-up no click of the person's asked for opens nothing (window.open is null)",
+        "a pop-up no click of the person's asked for opens nothing (window.open is null) and is noted blocked, \
+         which the bar says as Pop-up blocked",
         json!({"events": ev, "result": format!("{blocked:?}")}),
+    );
+    // A page's own window.close() closes nothing but a pop-up (rule 1172): a new panel (a history of one page, so
+    // Chromium lets its script ask) stays, and the log notes it by site.
+    let from = h.mark();
+    h.host.open("t2", &main, BOUNDS, false);
+    let t2_up = h.opened(from, "t2", "Main");
+    let from = h.mark();
+    let asked = h.script("t2", "window.close(); history.length");
+    h.wait(1_000);
+    let still = h.script("t2", "document.title");
+    let ev = h.since(from);
+    rep.check(
+        "panel.window-close-ignored",
+        t2_up
+            && asked.is_ok()
+            && still.as_deref() == Ok("\"Main\"")
+            && ev.iter().any(|e| e == "Note t2 CloseIgnored 127.0.0.1  ")
+            && !ev.iter().any(|e| e.starts_with("Gone t2")),
+        "the page's window.close() leaves the panel's page in place and is noted (web-close-ignored)",
+        json!({"events": ev, "asked": format!("{asked:?}"), "title": format!("{still:?}")}),
+    );
+    h.host.close("t2");
+    h.wait(300);
+    // A link to an app in a frame, clicked by the person (rule 1171): the browser's own launch is the backstop that
+    // asks about it, as WebView2's launch event does; nothing starts and nothing loads.
+    let from = h.mark();
+    h.host.navigate(tab, &srv.url("/applink"));
+    h.opened(from, tab, "App link");
+    h.wait(500);
+    let from = h.mark();
+    h.click(&slot, 200.0, 200.0);
+    let asked = h
+        .until(
+            from,
+            5_000,
+            |e| matches!(e, WebEvent::AppLink { scheme, site, .. } if scheme == "zoommtg" && site == "127.0.0.1"),
+        )
+        .is_some();
+    h.wait(500);
+    let ev = h.since(from);
+    rep.check(
+        "panel.app-link-in-frame",
+        asked
+            && ev
+                .iter()
+                .filter(|e| e.starts_with("AppLink t1 zoommtg"))
+                .count()
+                == 1
+            && ev
+                .iter()
+                .any(|e| e.starts_with("Note t1 NavRefused ") && e.ends_with(" app-link"))
+            && !ev.iter().any(|e| e.starts_with("Refused t1")),
+        "a link to an app in a frame is asked about once (AppLink, noted app-link), never started by the browser",
+        json!({"events": ev, "os_launch_requests": h.host.refused(&slot).map(|r| r.os_launches)}),
+    );
+    // A certificate the browser does not trust (rule 1172): Chromium's error page, the load ends not ok with
+    // WebView2's status, the log notes it by site, and no override lets a request through.
+    let tls = tls::start(&data.join("tls"))?;
+    let from = h.mark();
+    h.host.navigate(tab, &tls.url("/"));
+    let failed = h.until(from, 10_000, |e| {
+        matches!(e, WebEvent::Loaded { ok: false, .. })
+    });
+    h.wait(500);
+    let ev = h.since(from);
+    rep.check(
+        "panel.cert",
+        matches!(&failed, Some(WebEvent::Loaded { status, .. }) if status == "5")
+            && ev
+                .iter()
+                .any(|e| e.starts_with("Note t1 Cert 127.0.0.1 ") && e.ends_with(" cert-invalid"))
+            && ev.iter().any(|e| e == "Title t1 Privacy error")
+            && tls.served.load(Ordering::SeqCst) == 0,
+        "a self-signed certificate ends the load not ok (CERTIFICATE_IS_INVALID, 5) on Chromium's error page, is noted \
+         web-cert by site, and no request gets past the handshake",
+        json!({"events": ev, "served": tls.served.load(Ordering::SeqCst)}),
     );
     let closed_port = std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
@@ -724,15 +839,140 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
     let from = h.mark();
     h.host.navigate(tab, &main);
     h.opened(from, tab, "Main");
+    // Overlay scrollbars, as WebView2's Fluent overlay style (rule 1173): the page scrolls and its bar takes no
+    // width from it.
+    let bars = h.eval(
+        tab,
+        "({scrolls: document.documentElement.scrollHeight > innerHeight, \
+          taken: innerWidth - document.documentElement.clientWidth})",
+    );
+    rep.check(
+        "panel.overlay-scrollbars",
+        bars.as_ref()
+            .is_ok_and(|v| v["scrolls"] == true && v["taken"] == 0),
+        "a page that scrolls draws its scrollbar over itself: no width taken (innerWidth == clientWidth)",
+        json!({"result": format!("{bars:?}")}),
+    );
 
-    // ---- script dialogs and permissions, never shown
-    let dialogs = h.script(tab, "[alert('a'), confirm('b'), prompt('c')]");
+    // ---- what the page asks the person (rules 1165 to 1169): held by the view, put in front of the person by the
+    // asker (the tests' own, which shows nothing and answers as the person would), answered with the reply
+    let asks: Arc<Mutex<Vec<Ask>>> = Arc::default();
+    let picked = data.join("probe.txt");
+    std::fs::write(&picked, "picked").map_err(|e| e.to_string())?;
+    h.host.set_asker(Box::new(StubAsker {
+        asks: Arc::clone(&asks),
+        file: picked,
+    }));
+    let taken = |asks: &Arc<Mutex<Vec<Ask>>>| {
+        std::mem::take(&mut *asks.lock().unwrap_or_else(|e| e.into_inner()))
+    };
+    let dialogs = h.script(
+        tab,
+        "[alert('a'), confirm('b'), prompt('c', 'd'), confirm('no'), prompt('no', 'x')]",
+    );
+    let asked = taken(&asks);
+    let kinds: Vec<String> = asked
+        .iter()
+        .map(|a| match a {
+            Ask::Script {
+                kind,
+                message,
+                default,
+                ..
+            } => format!("{kind}:{message}:{default}"),
+            other => format!("{other:?}"),
+        })
+        .collect();
     rep.check(
         "panel.dialogs",
-        dialogs.as_deref() == Ok("[null,false,null]"),
-        "alert returns, confirm is false, prompt is null: answered by the host, no dialog",
-        json!({"result": format!("{dialogs:?}"), "refused": format!("{:?}", h.host.refused(&slot))}),
+        dialogs.as_deref() == Ok(r#"[null,true,"typed",false,null]"#)
+            && kinds == ["alert:a:", "confirm:b:", "prompt:c:d", "confirm:no:", "prompt:no:x"]
+            && h.host.refused(&slot).is_some_and(|r| r.js_dialogs == 0)
+            && screen::windows_of_self() == 0,
+        "alert, confirm and prompt wait for the person's answer and return it (OK, Cancel, the typed text), as WebView2's own dialogs",
+        json!({"result": format!("{dialogs:?}"), "asked": kinds, "refused": format!("{:?}", h.host.refused(&slot))}),
     );
+    let from = h.mark();
+    h.host.navigate(tab, &srv.url("/asks"));
+    let on_asks = h.opened(from, tab, "Asks");
+    h.wait(200);
+    h.host.focus(tab);
+    h.click(&slot, 140.0, 40.0);
+    let end = Instant::now() + Duration::from_secs(5);
+    let mut files = Ok(Value::Null);
+    while Instant::now() < end {
+        files = h.eval(tab, "window.__files");
+        if files.as_ref().is_ok_and(|v| v != "") {
+            break;
+        }
+        h.wait(100);
+    }
+    let asked = taken(&asks);
+    let chooser = asked.iter().find_map(|a| match a {
+        Ask::Files {
+            mode, extensions, ..
+        } => Some((*mode, extensions.clone())),
+        _ => None,
+    });
+    rep.check(
+        "panel.file-chooser",
+        on_asks
+            && files.as_ref().is_ok_and(|v| v == "probe.txt")
+            && chooser == Some((FileMode::OpenMany, vec!["txt".to_string()]))
+            && screen::windows_of_self() == 0,
+        "a file input's click asks for files (several, .txt only, as its accept says) and the page gets the file picked",
+        json!({"on_page": on_asks, "files": format!("{files:?}"), "asked": format!("{asked:?}")}),
+    );
+    let from = h.mark();
+    for act in [
+        PointerAct::Move,
+        PointerAct::Down(PointerButton::Right, 1),
+        PointerAct::Up(PointerButton::Right, 1),
+    ] {
+        h.host.pointer(
+            &slot,
+            Pointer {
+                x: 240.0,
+                y: 240.0,
+                act,
+                mods: Mods::default(),
+            },
+        );
+        h.wait(30);
+    }
+    let left = h.opened(from, tab, "Page two");
+    let asked = taken(&asks);
+    let labels: Vec<String> = asked
+        .iter()
+        .find_map(|a| match a {
+            Ask::Menu { items, .. } => Some(items.iter().map(|i| i.label.clone()).collect()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let menu_at = asked.iter().find_map(|a| match a {
+        Ask::Menu { x, y, .. } => Some((*x, *y)),
+        _ => None,
+    });
+    let has = |l: &str| labels.iter().any(|x| x == l);
+    rep.check(
+        "panel.context-menu",
+        has("Open Link") && has("Copy Link") && has("Back") && has("Inspect")
+            && !labels.iter().any(|l| l.starts_with("Print") || l.contains("ource"))
+            && menu_at == Some((120, 120))
+            && left
+            && screen::windows_of_self() == 0,
+        "a right-click on a link asks with Chromium's menu (no Print, no View Source), WebView2's link rows and Inspect, where the click was; Open Link loads it in the panel",
+        json!({"labels": labels, "at": format!("{menu_at:?}"), "opened": left}),
+    );
+    rep.check(
+        "panel.leave-page",
+        asked.iter().any(|a| matches!(a, Ask::Leave { reload: false })) && left,
+        "a page that asks before it is left (beforeunload, after the person used it) waits for Leave",
+        json!({"asked": format!("{asked:?}")}),
+    );
+    let from = h.mark();
+    h.host.navigate(tab, &main);
+    h.opened(from, tab, "Main");
     let perms = h.eval(
         tab,
         "(async () => { const o = {};\
@@ -1299,9 +1539,12 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
             && has_note(NoteKind::Permission, "")
             && has_note(NoteKind::Popup, "panel")
             && has_note(NoteKind::Process, "render")
+            && has_note(NoteKind::Popup, "blocked")
+            && has_note(NoteKind::Cert, "cert-invalid")
+            && notes.iter().any(|n| n.starts_with("Note t2 CloseIgnored "))
             && !notes.iter().any(|n| n.contains("http://") || n.contains("/main")),
-        "the diagnostics notes come as on Windows (web-nav, an app link, a failed load, a denied permission, a pop-up, \
-         a page process) and carry sites, never an address",
+        "the diagnostics notes come as on Windows (web-nav, an app link, a failed load, a denied permission, a pop-up \
+         and a blocked one, a page process, a certificate, an ignored window.close) and carry sites, never an address",
         json!({"notes": notes}),
     );
     h.host.close(tab);
@@ -1379,6 +1622,41 @@ fn app_loop(rep: &mut Report, data: &Path) -> Result<(), String> {
         "a later navigation loads too",
         json!({"events": first.since(from)}),
     );
+    // `browser_navigate` and `open_page` answer on the navigation's own number: the Loaded that ends it carries the
+    // number its Loading gave, and a navigation before it had another (rule 1159).
+    let navs = |kind: &str| -> Vec<(u64, String)> {
+        first
+            .seen
+            .iter()
+            .filter_map(|e| match e {
+                WebEvent::Loading { tab, url, nav } if tab == "t1" && kind == "Loading" => {
+                    Some((*nav, url.clone()))
+                }
+                WebEvent::Loaded {
+                    tab,
+                    url,
+                    nav,
+                    ok: true,
+                    ..
+                } if tab == "t1" && kind == "Loaded" => Some((*nav, url.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    let (loading, loaded) = (navs("Loading"), navs("Loaded"));
+    let page2 = srv.url("/page2");
+    let own = loaded
+        .iter()
+        .find(|(_, u)| *u == page2)
+        .is_some_and(|(n, _)| loading.iter().any(|(m, u)| m == n && *u == page2));
+    let first_nav = loading.iter().find(|(_, u)| *u == main).map(|(n, _)| *n);
+    let page2_nav = loading.iter().find(|(_, u)| *u == page2).map(|(n, _)| *n);
+    rep.check(
+        "app-loop.nav-id",
+        own && first_nav.is_some() && first_nav != page2_nav,
+        "turned as the window turns, a navigation ends on the number it began with, not an earlier one's",
+        json!({"loading": format!("{loading:?}"), "loaded": format!("{loaded:?}")}),
+    );
     // The last panel closes: the window closes its view and lets the host go (no close_all: the window lives on).
     first.host.close("t1");
     first.wait(300);
@@ -1397,9 +1675,46 @@ fn app_loop(rep: &mut Report, data: &Path) -> Result<(), String> {
         "a panel opened after the last one closed (a new host, the same CEF) loads and paints",
         json!({"pixel": format!("{px:?}"), "events": second.since(0), "pumps": PUMPS.load(Ordering::Relaxed), "controllers": second.host.controllers()}),
     );
+    rep.check(
+        "app-loop.one-engine",
+        crate::host::engine_starts() == (1, 0),
+        "the second host adopted the engine the first started: CEF started once, never shut down by the idle host",
+        json!({"starts_and_shutdowns": format!("{:?}", crate::host::engine_starts())}),
+    );
+    // The GPU process fails: Chromium starts it again, and every live view gets a note (rule 1158).
+    let gpu: Vec<i32> = bundle_processes()
+        .into_iter()
+        .filter(|(_, cmd)| cmd.contains("--type=gpu-process"))
+        .filter_map(|(pid, _)| pid.parse().ok())
+        .collect();
+    let from = second.mark();
+    for pid in &gpu {
+        // SAFETY: a pid of this probe's own GPU helper, read just now.
+        unsafe { libc::kill(*pid, libc::SIGKILL) };
+    }
+    let noted = second
+        .until(from, 10_000, |e| {
+            matches!(e, WebEvent::Note { tab, note }
+                if tab == "t2" && note.kind() == NoteKind::Process && note.word() == "gpu")
+        })
+        .is_some();
+    rep.check(
+        "app-loop.gpu-note",
+        !gpu.is_empty() && noted,
+        "a GPU process that fails is a Process note on the live view (detail gpu), as on Windows",
+        json!({"gpu": gpu, "events": second.since(from)}),
+    );
     second.host.close("t2");
     second.wait(300);
-    second.host.close_all();
+    // The last panel closes again and the window lets the host go; then it quits with no host (rule 1156).
+    drop(second);
+    crate::host::end_engine();
+    rep.check(
+        "app-loop.quit-after-idle",
+        crate::host::engine_starts() == (1, 1),
+        "the quit with no host left shuts the process's CEF down, once",
+        json!({"starts_and_shutdowns": format!("{:?}", crate::host::engine_starts())}),
+    );
     Ok(())
 }
 
@@ -2163,8 +2478,14 @@ pub fn main() -> i32 {
             return 2;
         }
     };
-    let data = std::env::temp_dir().join(format!("flare-web-probe-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&data);
+    // The persistence check's two runs share a folder the test names (and removes); every other run has its own.
+    let kept = std::env::var_os("FLARE_WEB_PROBE_DATA").map(PathBuf::from);
+    let data = kept.clone().unwrap_or_else(|| {
+        std::env::temp_dir().join(format!("flare-web-probe-{}", std::process::id()))
+    });
+    if kept.is_none() {
+        let _ = std::fs::remove_dir_all(&data);
+    }
     let t = Instant::now();
     let r = match scenario.as_str() {
         "panel" => panel(&mut rep, &data),
@@ -2172,6 +2493,10 @@ pub fn main() -> i32 {
         "agent" => agent::run(&mut rep, &data),
         "quiet" => quiet(&mut rep, &data),
         "app-loop" => app_loop(&mut rep, &data),
+        "persist-write" => parity::persist_write(&mut rep, &data),
+        "persist-read" => parity::persist_read(&mut rep, &data),
+        "content" => parity::content(&mut rep, &data),
+        "plugins" => parity::plugins(&mut rep, &data),
         other => Err(format!("no scenario {other:?}")),
     };
     if let Err(e) = r {
@@ -2195,6 +2520,8 @@ pub fn main() -> i32 {
     rep.set("windows_at_end", json!(screen::windows_of_self()));
     rep.set("shutdown", json!(true));
     write(&rep);
-    let _ = std::fs::remove_dir_all(&data);
+    if kept.is_none() {
+        let _ = std::fs::remove_dir_all(&data);
+    }
     0
 }

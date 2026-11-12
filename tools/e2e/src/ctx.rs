@@ -63,6 +63,10 @@ pub struct Launch {
     /// Stores Horizontal as the Tab position in the profile just before the start. Vertical is the
     /// app's default since 2026-11-11; a scenario written for the strip asks for it here.
     pub tabs_along_the_top: bool,
+    /// Stores Bar as the tab marks' style in the profile just before the start. Ring is the default,
+    /// and with Ring Settings > Agents draws no Mark colours section (rule 1140); a scenario that
+    /// works the three mark colours asks for Bar here.
+    pub marks_as_bar: bool,
 }
 
 /// One running app and its pipe. Dropping it reaps the process.
@@ -302,6 +306,9 @@ impl Ctx {
         let profile = w.profile.clone();
         if opts.tabs_along_the_top {
             crate::world::tabs_along_the_top(&profile)?;
+        }
+        if opts.marks_as_bar {
+            crate::world::marks_as_bar(&profile)?;
         }
         let exe = if packaged {
             installed_exe()?

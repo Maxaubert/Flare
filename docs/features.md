@@ -196,8 +196,11 @@ are added as milestones land.
   (held by `order_only_material_first_when_glass_turns_on`); a failed DWM call leaves the window solid
   (`a_failed_backdrop_call_leaves_the_window_solid`).
 - **Fonts and size belong to no theme.** Fifteen faces with fallback stacks (default Cascadia Mono),
-  base 13 px, size steps 50 to 200 percent. Ctrl+wheel zooms the one tab between 7 and 64 px and is
-  never saved. Held by `a_theme_leaves_the_font_and_its_size_alone`, `zoom_is_never_saved` and `zoom_stops_at_7_and_64`.
+  base 13 px, size steps 50 to 200 percent. Ctrl+wheel (Cmd+wheel and Cmd+plus, minus and 0 on the
+  Mac) moves one zoom that every tab shares, between 7 and 64 px: every open tab, hidden ones included, takes the new
+  size at once and new tabs open at it. The zoom is held for the run and never saved (rule 1154). Held by
+  `a_theme_leaves_the_font_and_its_size_alone`, `zoom_is_never_saved`, `zoom_stops_at_7_and_64` and
+  `a_zoom_resizes_every_shell_hidden_ones_included_and_a_reset_brings_all_back`.
 - **Planner decisions D1 to D16 and four owner questions** are in `docs/parity.md` (Decisions). The
   owner may overrule any of them. Q1 (see-through on the software renderer stays solid), Q2 (21H2
   reads "Needs Windows 11 22H2."), Q3 (the reference is Prism Terminal 0.58.0) and Q4 (the transparent
@@ -1875,7 +1878,7 @@ A review of the whole app by eight reviewers found these, all fixed on `fix/gene
   (term-3); DECRQM 2031 is answered once, even inside a synchronized update (term-6); a cmd resume never searches the tab's
   folder (term-8); a resize waits for neither the pump nor the console host (term-4); closing a tab spares processes in a
   console window of their own (term-2); the missing-folder test tests the absolute path (term-9).
-- **Rendering.** A lazily found fallback font repaints an idle window (render-1); a zoom reflows one tab (render-2); a
+- **Rendering.** A lazily found fallback font repaints an idle window (render-1); a zoom reflows one tab (render-2, since replaced by the shared zoom of rule 1154); a
   family that will not load is asked for once (render-3, the repeat only); the cell underline is the one hairline
   (render-4); the see-through texture is freed when the ground is solid (render-5).
 - **App and platform.** Hand-offs (app-1, app-5, platform-5), restore stats with a deadline (app-2), unreadable stores and

@@ -262,6 +262,53 @@ fn chord_matches(c: &KeyChord, is_up: bool, h: &Hotkey) -> bool {
         .all(|&f| Some(f) == own || !chord_flag(c, f) || (f == Flag::Ctrl && h.code == "AltRight"))
 }
 
+/// The code a hook's "a modifier the binding does not name is down" arrives with (never which one).
+pub const EXTRA_MODIFIER: &str = "ExtraModifier";
+
+/// Did this down just cost a solo binding (Ctrl+Win, Right Alt) its press because something more was held?
+/// `"modifier"` for an extra modifier (Shift with Ctrl+Cmd: the Mac's region screenshot), `"key"` for any
+/// other key, never which one; None for anything else. For the diag log only: the reducer has already
+/// decided. Counted: a press that was still deciding and is now dead, a toggle's stopping tap that is
+/// spoiled, and a chord key that went down with all of the binding's modifiers AND another one.
+pub fn extra_cancel(
+    before: &KeyState,
+    after: &KeyState,
+    evt: &KeyEvt,
+    cfg: &KeyConfig,
+) -> Option<&'static str> {
+    let KeyEvt::Down(k) = evt else { return None };
+    let h = &cfg.hotkey;
+    if !is_solo(h) || k.code == "Escape" {
+        return None;
+    }
+    let kind = if modifier_flag(&k.code).is_some() || k.code == EXTRA_MODIFIER {
+        "modifier"
+    } else {
+        "key"
+    };
+    let spoiled = before.held
+        && !before.polluted
+        && after.polluted
+        && ((before.phase == Phase::Arming && after.phase == Phase::Idle)
+            || (cfg.mode == DictMode::Toggle
+                && before.phase == Phase::Listening
+                && after.phase == Phase::Listening));
+    if spoiled {
+        return Some(kind);
+    }
+    // The binding's own key with all of its modifiers and more: no press at all.
+    let own = if is_bare_modifier(h) {
+        k.code == h.code
+    } else {
+        is_solo_key(&k.code, h)
+    };
+    let set = chord_set(h);
+    let has_all = FLAGS
+        .iter()
+        .all(|&f| !set[f as usize] || chord_flag(k, f) || modifier_flag(&k.code) == Some(f));
+    (own && !k.repeat && has_all && !chord_matches(k, false, h)).then_some("modifier")
+}
+
 /// One event in, the next state out, plus what the host must DO about it.
 ///
 /// What the host owes the reducer: every key down and up (before anything else sees it), a `Blur`
@@ -1911,5 +1958,255 @@ mod tests {
         let own = [hk("KeyK", "cs")];
         assert!(!usable_hotkey(&hk("KeyK", "cs"), &own));
         assert!(usable_hotkey(&hk("KeyD", "cs"), &own));
+    }
+
+    // ---- exactly the chord: an extra modifier or a key cancels (Karabiner's Cmd+Shift+S) ----
+
+    /// The Mac's region screenshot as Karabiner posts it for Cmd+Shift+S: Cmd and Shift are held, Ctrl
+    /// joins them, then 4; on the release 4 and Ctrl go up, then Shift and Cmd.
+    /// `key` is the key pressed inside the chord (Digit4 on the Mac, KeyS for Ctrl+Win+Shift+S on Windows).
+    fn karabiner_shot(key: Option<&str>) -> Vec<KeyEvt> {
+        let (ctrl, meta) = ("ControlLeft", "MetaLeft");
+        let mut v = vec![
+            down(meta, 0.0, "m"),
+            down("ShiftLeft", 5.0, "ms"),
+            down(ctrl, 10.0, "cms"),
+        ];
+        if let Some(k) = key {
+            v.push(down(k, 12.0, "cms"));
+        }
+        v.extend([
+            tick(220.0),
+            up(key.unwrap_or("Digit4"), 300.0, "cms"),
+            up(ctrl, 302.0, "ms"),
+            up("ShiftLeft", 350.0, "m"),
+            up(meta, 360.0, ""),
+        ]);
+        v
+    }
+
+    #[test]
+    fn ctrl_cmd_inside_a_karabiner_screenshot_chord_never_dictates_hold_or_toggle() {
+        // The 4 may never reach a listen-only tap (the system takes the screenshot shortcut); KeyS is Windows'.
+        for key in [Some("Digit4"), None, Some("KeyS")] {
+            for mode in [Hold, Toggle] {
+                let r = run_with(&karabiner_shot(key), mode, default_hotkey(), None);
+                assert_eq!(r.actions(), vec![], "{mode:?} {key:?}");
+                assert_eq!(r.state.phase, Idle);
+                // Nothing of it is swallowed: the screenshot is the system's.
+                assert!(
+                    r.swallows().iter().all(|s| !s),
+                    "{mode:?} {:?}",
+                    r.swallows()
+                );
+            }
+        }
+        // Twice in a row in Toggle: the second shot does not stop (or start) anything either.
+        let mut two = karabiner_shot(None);
+        two.extend(karabiner_shot(None).into_iter().map(|e| match e {
+            KeyEvt::Down(mut c) => {
+                c.at += 1000.0;
+                KeyEvt::Down(c)
+            }
+            KeyEvt::Up(mut c) => {
+                c.at += 1000.0;
+                KeyEvt::Up(c)
+            }
+            KeyEvt::Tick { at } => KeyEvt::Tick { at: at + 1000.0 },
+            b => b,
+        }));
+        assert_eq!(
+            run_with(&two, Toggle, default_hotkey(), None).actions(),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn the_three_flags_in_one_event_are_no_match_and_a_shift_added_later_cancels() {
+        // All three flags on Ctrl's own down (Karabiner posting them in one flagsChanged).
+        assert!(!is_hotkey_event(
+            &down("ControlLeft", 0.0, "cms"),
+            &default_hotkey()
+        ));
+        assert!(!is_hotkey_event(
+            &down("MetaLeft", 0.0, "cma"),
+            &default_hotkey()
+        ));
+        // Ctrl+Cmd first, Shift a moment later: the press dies, in both modes, before it fires.
+        for mode in [Hold, Toggle] {
+            let r = run_with(
+                &[
+                    ctrl_down(0.0, ""),
+                    win_down(10.0, "c"),
+                    down("ShiftLeft", 30.0, "cms"),
+                    tick(220.0),
+                    up("MetaLeft", 300.0, "cs"),
+                    up("ControlLeft", 310.0, "s"),
+                ],
+                mode,
+                default_hotkey(),
+                None,
+            );
+            assert_eq!(r.actions(), vec![], "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn ctrl_cmd_alone_still_starts_and_stops_in_hold_and_toggle() {
+        let h = run_with(
+            &[
+                ctrl_down(0.0, ""),
+                win_down(10.0, "c"),
+                tick(220.0),
+                up("MetaLeft", 900.0, "c"),
+                up("ControlLeft", 910.0, ""),
+            ],
+            Hold,
+            default_hotkey(),
+            None,
+        );
+        assert_eq!(h.actions(), vec![Start, Stop]);
+        let t = run_with(
+            &[
+                ctrl_down(0.0, ""),
+                win_down(10.0, "c"),
+                up("MetaLeft", 120.0, "c"),
+                up("ControlLeft", 130.0, ""),
+                ctrl_down(2000.0, ""),
+                win_down(2010.0, "c"),
+                up("MetaLeft", 2120.0, "c"),
+                up("ControlLeft", 2130.0, ""),
+            ],
+            Toggle,
+            default_hotkey(),
+            None,
+        );
+        assert_eq!(t.actions(), vec![Start, Stop]);
+    }
+
+    #[test]
+    fn ctrl_cmd_then_a_letter_cancels_in_hold_and_toggle_and_a_toggles_stopping_tap_too() {
+        for mode in [Hold, Toggle] {
+            let r = run_with(
+                &[
+                    ctrl_down(0.0, ""),
+                    win_down(10.0, "c"),
+                    down("KeyF", 50.0, "cm"),
+                    tick(220.0),
+                    up("KeyF", 100.0, "cm"),
+                    up("MetaLeft", 300.0, "c"),
+                    up("ControlLeft", 310.0, ""),
+                ],
+                mode,
+                default_hotkey(),
+                None,
+            );
+            assert_eq!(r.actions(), vec![], "{mode:?}");
+            assert!(!r.steps[2].swallow, "the letter is the app's");
+        }
+        // Toggle, listening: a stopping tap with a letter in it stops nothing.
+        let t = run_with(
+            &[
+                ctrl_down(0.0, ""),
+                win_down(10.0, "c"),
+                up("MetaLeft", 120.0, "c"),
+                up("ControlLeft", 130.0, ""),
+                ctrl_down(2000.0, ""),
+                win_down(2010.0, "c"),
+                down("KeyF", 2050.0, "cm"),
+                up("MetaLeft", 2120.0, "c"),
+                up("ControlLeft", 2130.0, ""),
+            ],
+            Toggle,
+            default_hotkey(),
+            None,
+        );
+        assert_eq!(t.actions(), vec![Start]);
+        assert_eq!(t.state.phase, Listening);
+    }
+
+    #[test]
+    fn a_key_after_a_hold_has_begun_keeps_the_recording_as_on_windows() {
+        // The existing rule: alone for the whole hold time, THEN a key, is dictation that began.
+        let r = run_with(
+            &[
+                ctrl_down(0.0, ""),
+                win_down(10.0, "c"),
+                tick(220.0),
+                down("KeyF", 400.0, "cm"),
+                up("MetaLeft", 900.0, "c"),
+            ],
+            Hold,
+            default_hotkey(),
+            None,
+        );
+        assert_eq!(r.actions(), vec![Start, Stop]);
+    }
+
+    /// What `extra_cancel` says for each step of a run.
+    fn cancels(events: &[KeyEvt], mode: DictMode, hotkey: Hotkey) -> Vec<Option<&'static str>> {
+        let cfg = KeyConfig {
+            hotkey,
+            mode,
+            hold_ms: None,
+        };
+        let mut state = KeyState::initial();
+        events
+            .iter()
+            .map(|e| {
+                let r = reduce_key(&state, e, &cfg);
+                let c = extra_cancel(&state, &r.state, e, &cfg);
+                state = r.state;
+                c
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_cancel_by_an_extra_modifier_or_key_is_told_by_kind_only() {
+        let cw = default_hotkey();
+        for mode in [Hold, Toggle] {
+            // The screenshot chord: Ctrl's down carries Shift, so it is a modifier.
+            let c = cancels(&karabiner_shot(Some("Digit4")), mode, cw.clone());
+            assert_eq!(c.iter().flatten().collect::<Vec<_>>(), vec![&"modifier"]);
+            assert_eq!(c[2], Some("modifier"));
+            // A hook's "a modifier is down" after the press.
+            let c = cancels(
+                &[
+                    ctrl_down(0.0, ""),
+                    win_down(10.0, "c"),
+                    down(EXTRA_MODIFIER, 10.0, "cm"),
+                ],
+                mode,
+                cw.clone(),
+            );
+            assert_eq!(c, vec![None, None, Some("modifier")]);
+            // A letter.
+            let c = cancels(
+                &[
+                    ctrl_down(0.0, ""),
+                    win_down(10.0, "c"),
+                    down("KeyF", 50.0, "cm"),
+                ],
+                mode,
+                cw.clone(),
+            );
+            assert_eq!(c, vec![None, None, Some("key")]);
+        }
+        // A clean press, a key once the hold began, Escape and a plain chord binding say nothing.
+        let quiet = cancels(
+            &[
+                ctrl_down(0.0, ""),
+                win_down(10.0, "c"),
+                tick(220.0),
+                down("KeyF", 400.0, "cm"),
+                down("Escape", 500.0, "cm"),
+            ],
+            Hold,
+            cw,
+        );
+        assert!(quiet.iter().all(Option::is_none), "{quiet:?}");
+        let plain = cancels(&[down("KeyD", 0.0, "cms")], Hold, chord_kd());
+        assert_eq!(plain, vec![None]);
     }
 }

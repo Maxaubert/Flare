@@ -1171,6 +1171,10 @@ impl WebCtl {
         if let Some(mut b) = self.backend.take() {
             b.close_all();
         }
+        // The Mac's engine is the process's and outlives an idle host: it shuts down here even with no host left
+        // (rule 1156).
+        #[cfg(target_os = "macos")]
+        flare_web::host::end_engine();
         self.shown_tab = None;
         self.phase = Phase::Hidden;
         self.still = None;
@@ -3660,9 +3664,16 @@ pub fn production_factory(
     limits: Option<std::sync::Arc<flare_mods::limit::Limits>>,
 ) -> WebFactory {
     Box::new(move |sink| {
+        // The window's HWND on Windows; on a Mac its content view, where the page's sheets and menu go.
         let parent = window
             .upgrade()
-            .and_then(|a| crate::window::hwnd_of(&a))
+            .and_then(|a| {
+                if cfg!(target_os = "macos") {
+                    crate::window::native_view_of(&a)
+                } else {
+                    crate::window::hwnd_of(&a)
+                }
+            })
             .unwrap_or(0);
         let (data_dir, moved, error) =
             web::settle_webview_folder(old_dir.as_deref(), &web::webview_folder(&profile_dir));
