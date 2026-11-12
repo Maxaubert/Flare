@@ -417,6 +417,7 @@ pub fn remote_open(ctx: &mut Ctx) -> Result<(), String> {
                 concat!("FLARE_E2E", "_REMOTE_COMMAND").to_string(),
                 cmd.to_string(),
             )],
+            folders: vec![world.alpha.clone()],
             ..Launch::default()
         },
     )?;
