@@ -2793,6 +2793,21 @@ on release or the settle the page's next picture fills the box again. Windows dr
 false), so nothing changes on Windows. Native: `crates/flare/ui/panel.slint`. Held by
 `a_page_drawn_off_screen_keeps_its_width_while_the_splitter_is_held` (`crates/flare/src/appctl/tests/web_tests.rs`,
 rendered pixels). Source: the browser parity audit (LC-09), 2026-11-11.
+1181. **Slint's GPU renderer keeps its GPU pipelines from one frame to the next; a frame never compiles them again.**
+Max on his Mac: the UI, the caret in Claude Code and the tab icons "flicker very quickly, consistently". Sampled in his
+running Flare (2026-11-12, `sample`, read only): about 80 % of the main thread was drawing (Slint's `CADisplayLink`
+frames), 78 % of that inside wgpu's `create_render_pipeline` (naga to MSL, a Metal compile), 45 to 50 % CPU for hours.
+Cause: with a rendering notifier installed (Flare's, for the grid) Slint's femtovg renderer flushes its clear on its
+own before `BeforeRendering`, and femtovg 0.27.0 dropped at the end of every flush each pipeline that flush did not use,
+so the clear-only flush left one and every frame built all the others again. Frames run while any tab's mark moves
+(a working or asking agent, nearly always on Max's machine), so every one of them overran the display's refresh. An
+idle window with nothing moving already asked for no frame (now held by a test). Now Flare uses a patched femtovg
+(`third_party/femtovg`, `[patch.crates-io]`): a pipeline goes only after 240 flushes in a row left it unused. Windows has
+the same double flush and gains the same. Not proved on screen: whether this alone ends the flicker Max sees (the
+headless frames are pixel-identical with and without the rebuilds); if it remains, record the screen next. Native:
+`third_party/femtovg/src/renderer/wgpu.rs`, `Cargo.toml`. Held by `a_clear_only_flush_keeps_the_pipelines_of_the_frame_before`
+(`crates/flare-render/tests/femtovg_pipelines.rs`; on upstream femtovg the second frame starts with one pipeline) and
+`an_idle_window_asks_for_no_frame` (`crates/flare/src/headless.rs`). Source: Max on his Mac, 2026-11-12.
 1180. **macOS: Flare never smooths, eases or animates the terminal's scroll; a glide comes from a mouse utility, and
 the cure is that utility's per-app rule for Flare, not a Flare setting.** Max (2026-11-12): "it scrolls like a browser
 and not line by line", in plain shell tabs too, on the build with rule 1129. His Mac has no trackpad: a Razer Basilisk
