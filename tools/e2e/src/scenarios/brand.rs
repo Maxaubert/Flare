@@ -11,7 +11,7 @@
 //! the plugin's name as its hint; `secret.ask` shows the plugin's heading, sub line, button and Flare's line naming it,
 //! the eye shows and hides, Enter submits and the helper gets only that a secret came; the fill approval names the
 //! login, the site and the tab the agent asked in (in quotes), and the first press on Deny answers it; every surface
-//! wears the brand exactly when the manifest has one, and the logo only with a logo; the card's info button opens the
+//! wears the brand exactly when the manifest has one, and the logo only with a logo; the card's Details button opens the
 //! sheet with a tile per permission and the facts, a dropdown opens on its tile; turning the agent tool off takes the
 //! tool from the agent and keeps the choice in `mods.json`, on gives it back; "Always allow" fills with no question
 //! and the sheet's warning says so; and no secret, value or choice is in a log.
@@ -487,7 +487,7 @@ fn run(
         r["rect"]["w"].as_f64().unwrap_or(0.0),
         r["rect"]["h"].as_f64().unwrap_or(0.0),
     );
-    // The info button is the second from the right end: 16 in, the trash (32) and a gap of 10, then its middle.
+    // The Details button is the second from the right end: 16 in, the trash (32) and a gap of 10, then 16 px into it.
     let _ = app.session.click(
         (x + w - 16.0 - 32.0 - 10.0 - 16.0) as f32,
         (y + h / 2.0) as f32,
@@ -525,7 +525,7 @@ fn run(
             && tile_of(&s, "fill")["tone"] == json!(1)
             && tile_of(&s, "actions")["label"] == json!("Tab menu"),
         format!(
-            "{pct}: the info button opens the sheet, a tile per permission and the facts ({s})"
+            "{pct}: the Details button opens the sheet, a tile per permission and the facts ({s})"
         ),
     );
     shot(ctx, app, dir, &format!("sheet-{pct}"));

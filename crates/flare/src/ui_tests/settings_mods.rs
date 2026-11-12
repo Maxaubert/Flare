@@ -1,6 +1,7 @@
 //! Settings > Plugins (the page key `mods`; Surfaces stage 8, plugins phase 2), headless, at 100 and 225 percent:
-//! the rail lists the page, each mod is a card of one row (its logo, name, description, switch, Update, the info
-//! button and Remove, 2026-11-08), the info button opens the plugin's details sheet whose tiles reach the mods port,
+//! the rail lists the page, each mod is a card of one row (its logo, name, description, switch, Update, Details and
+//! Remove, 2026-11-08; Details worded 2026-11-12), the switch alone turns a plugin on (2026-11-12), Details opens
+//! the plugin's details sheet whose tiles reach the mods port,
 //! a folder that is not a mod is a warning with its reason, the buttons and the switch reach the mods port, and every
 //! row sits in the panel on whole device pixels whatever the length of its words.
 
@@ -268,24 +269,19 @@ fn each_mod_shows_its_name_version_description_permissions_and_a_switch_that_is_
 }
 
 #[test]
-fn turning_a_plugin_on_from_its_card_opens_its_sheet_and_turn_on_there_approves_what_it_lists() {
+fn the_switch_alone_turns_a_plugin_on_with_what_its_sheet_lists_and_opens_no_sheet() {
+    // Max, 2026-11-12: "when you turn on plugins have it just be flipping the switch, dont show the details panel
+    // with the turn on button, the user can get there by clicking details if they wanna".
     for s in SCALES2 {
         let f = fx_at(s, info(vec![notes(false)]));
         *f.port.sheet.borrow_mut() = Some(vault_sheet_on(&Default::default(), false));
         f.page("mods");
-        // The card lists no permission: its switch opens the sheet, and nothing is approved yet.
         f.b().invoke_row_switch("mod:notes".into(), true);
         f.pump();
-        assert!(f.port.switched.borrow().is_empty(), "{s}");
-        assert!(f.b().get_sheet_open());
-        assert!(
-            f.b().get_sheet_can_turn_on(),
-            "off: the sheet offers Turn on"
-        );
-        assert!(!f.row("mod:notes").unwrap().on, "the switch stays off");
-        // Turn on carries what the sheet lists (a tile per permission, the maker, the homepage), so only that is
-        // approved; Full control was on the sheet in amber, on its Access tile.
-        f.b().invoke_sheet_turn_on();
+        assert!(!f.b().get_sheet_open(), "{s}: no sheet opens");
+        assert_eq!(f.ctl.borrow().sheet_of(), None);
+        // The approval is the one the sheet's Turn on records: what the sheet lists now (a tile per permission, the
+        // maker, the homepage), so the hub refuses it if the manifest changed since.
         let listed = vault_sheet_on(&Default::default(), false).shown;
         assert_eq!(listed.author, "someone");
         assert_eq!(listed.permissions.len(), 4);
@@ -294,14 +290,13 @@ fn turning_a_plugin_on_from_its_card_opens_its_sheet_and_turn_on_there_approves_
             [("notes".to_string(), true)]
         );
         assert_eq!(f.port.switched_with.borrow().as_slice(), [listed]);
-        // The port answers in the window; the page and the sheet then draw the new state.
+        // The port answers in the window; the page draws the switch on.
         *f.port.info.borrow_mut() = info(vec![notes(true)]);
         *f.port.sheet.borrow_mut() = Some(vault_sheet_on(&Default::default(), true));
         f.ctl.borrow_mut().on_msg(SettingsMsg::Mods);
         assert!(f.row("mod:notes").unwrap().on);
-        assert!(!f.b().get_sheet_can_turn_on(), "on: no Turn on");
+        assert!(!f.b().get_sheet_open());
         // Off from the card goes at once and approves nothing.
-        f.b().invoke_sheet_close();
         f.b().invoke_row_switch("mod:notes".into(), false);
         assert_eq!(
             f.port.switched.borrow().last().cloned(),
@@ -312,6 +307,38 @@ fn turning_a_plugin_on_from_its_card_opens_its_sheet_and_turn_on_there_approves_
             Some(flare_mods::hub::Shown::default())
         );
         assert!(!f.b().get_sheet_open());
+    }
+}
+
+#[test]
+fn the_details_button_opens_the_sheet_whose_turn_on_still_approves_what_it_lists() {
+    for s in SCALES2 {
+        let f = fx_at(s, info(vec![notes(false)]));
+        *f.port.sheet.borrow_mut() = Some(vault_sheet_on(&Default::default(), false));
+        f.page("mods");
+        f.b().invoke_row_button("mod:notes".into(), "info".into());
+        f.pump();
+        assert!(f.b().get_sheet_open(), "{s}");
+        assert!(
+            f.b().get_sheet_can_turn_on(),
+            "off: the sheet offers Turn on"
+        );
+        assert!(
+            f.port.switched.borrow().is_empty(),
+            "opening approves nothing"
+        );
+        f.b().invoke_sheet_turn_on();
+        let listed = vault_sheet_on(&Default::default(), false).shown;
+        assert_eq!(
+            f.port.switched.borrow().as_slice(),
+            [("notes".to_string(), true)]
+        );
+        assert_eq!(f.port.switched_with.borrow().as_slice(), [listed]);
+        *f.port.info.borrow_mut() = info(vec![notes(true)]);
+        *f.port.sheet.borrow_mut() = Some(vault_sheet_on(&Default::default(), true));
+        f.ctl.borrow_mut().on_msg(SettingsMsg::Mods);
+        assert!(f.row("mod:notes").unwrap().on);
+        assert!(!f.b().get_sheet_can_turn_on(), "on: no Turn on");
     }
 }
 
@@ -413,7 +440,7 @@ fn vault_sheet_on(c: &flare_mods::grants::Choices, on: bool) -> crate::plugin_lo
 }
 
 #[test]
-fn the_info_button_opens_the_details_sheet_whose_tiles_reach_the_port_and_escape_closes_it() {
+fn the_details_button_opens_the_details_sheet_whose_tiles_reach_the_port_and_escape_closes_it() {
     for s in SCALES2 {
         let f = fx_at(s, info(vec![notes(true)]));
         *f.port.sheet.borrow_mut() = Some(vault_sheet(&Default::default()));
@@ -656,7 +683,7 @@ fn todo_plugin() -> ModInfo {
 }
 
 #[test]
-fn every_card_is_one_row_with_update_info_and_remove_and_a_branded_one_draws_its_logo() {
+fn every_card_is_one_row_with_update_details_and_remove_and_a_branded_one_draws_its_logo() {
     let mut branded = todo_plugin();
     branded.brand_color = "#175ddc".into();
     branded.logo = "M3 3h18v18H3z".into();
@@ -687,16 +714,17 @@ fn every_card_is_one_row_with_update_info_and_remove_and_a_branded_one_draws_its
                 )
             })
             .collect();
+        let words: Vec<String> = row.buttons.iter().map(|b| b.label.to_string()).collect();
+        assert_eq!(
+            words,
+            ["Update", "Details", ""],
+            "Details is worded, not an icon alone"
+        );
         assert_eq!(
             b,
             [
                 ("update".into(), String::new(), true, false),
-                (
-                    "info".into(),
-                    "Details and permissions".into(),
-                    false,
-                    false
-                ),
+                ("info".into(), "Details and permissions".into(), true, false),
                 (
                     "remove".into(),
                     flare_settings::page::mods::REMOVE_TIP.into(),
