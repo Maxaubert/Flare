@@ -168,6 +168,49 @@ pub fn mac_edit_command(key: &str, modifiers: u64) -> Option<String> {
     Some(cmd)
 }
 
+/// What a person's key the page left alone does on a Mac (CEF's `on_key_event`, called only for a key down the page's
+/// script did not cancel and its renderer did not use), as Chrome's menu and key bindings do there: Cmd+C, X, V, A, Z
+/// and Shift+Z are the frame's edit commands, Cmd+[ and Cmd+] go back and forward, and so do Cmd+Left and Cmd+Right
+/// while no editable field has the keys (in one they move the caret). A chord with Ctrl or Alt is never one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MacPageKey {
+    /// One of [`mac_edit_command`]'s commands: `selectAll`, `undo`, `redo`, `copy`, `cut` or `paste`.
+    Edit(&'static str),
+    Back,
+    Forward,
+}
+
+pub fn mac_page_key(windows_code: i32, modifiers: u32, editable: bool) -> Option<MacPageKey> {
+    use flags::{ALT, COMMAND, CONTROL, SHIFT};
+    if modifiers & COMMAND == 0 || modifiers & (CONTROL | ALT) != 0 {
+        return None;
+    }
+    let shift = modifiers & SHIFT != 0;
+    let letter = u8::try_from(windows_code)
+        .ok()
+        .filter(u8::is_ascii_uppercase)
+        .map(|c| char::from(c.to_ascii_lowercase()));
+    if let Some(l) = letter {
+        // Cmd+Y is the history window in Chrome on a Mac, not redo.
+        if l == 'y' {
+            return None;
+        }
+        let mods = cdp_mods::META | if shift { cdp_mods::SHIFT } else { 0 };
+        let cmd = mac_edit_command(&l.to_string(), mods)?;
+        return ["selectAll", "undo", "redo", "copy", "cut", "paste"]
+            .into_iter()
+            .find(|c| *c == cmd)
+            .map(MacPageKey::Edit);
+    }
+    match windows_code {
+        0xDB if !shift => Some(MacPageKey::Back),
+        0xDD if !shift => Some(MacPageKey::Forward),
+        0x25 if !shift && !editable => Some(MacPageKey::Back),
+        0x27 if !shift && !editable => Some(MacPageKey::Forward),
+        _ => None,
+    }
+}
+
 /// A DevTools call as it goes to CEF on a Mac: an `Input.dispatchKeyEvent` key down of an editing chord carries its
 /// command ([`mac_edit_command`]), the way Chromium's own Mac input does; everything else goes as it came. A call
 /// that names its own `commands` keeps them.
@@ -189,6 +232,69 @@ pub fn mac_devtools_params(method: &str, params: &serde_json::Value) -> serde_js
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn a_persons_cmd_chord_the_page_left_is_the_frames_edit_command_or_a_step_through_the_history()
+    {
+        use flags::{ALT, COMMAND, CONTROL, SHIFT};
+        let k = |c: char| i32::from(c as u8);
+        assert_eq!(
+            mac_page_key(k('C'), COMMAND, true),
+            Some(MacPageKey::Edit("copy"))
+        );
+        assert_eq!(
+            mac_page_key(k('X'), COMMAND, true),
+            Some(MacPageKey::Edit("cut"))
+        );
+        assert_eq!(
+            mac_page_key(k('V'), COMMAND, false),
+            Some(MacPageKey::Edit("paste"))
+        );
+        assert_eq!(
+            mac_page_key(k('A'), COMMAND, false),
+            Some(MacPageKey::Edit("selectAll"))
+        );
+        assert_eq!(
+            mac_page_key(k('Z'), COMMAND, true),
+            Some(MacPageKey::Edit("undo"))
+        );
+        assert_eq!(
+            mac_page_key(k('Z'), COMMAND | SHIFT, true),
+            Some(MacPageKey::Edit("redo"))
+        );
+        assert_eq!(
+            mac_page_key(k('Y'), COMMAND, true),
+            None,
+            "Cmd+Y is no redo on a Mac"
+        );
+        assert_eq!(mac_page_key(k('V'), COMMAND | SHIFT, true), None);
+        assert_eq!(mac_page_key(k('T'), COMMAND, true), None);
+        assert_eq!(
+            mac_page_key(k('C'), CONTROL, true),
+            None,
+            "Ctrl+C is the page's own"
+        );
+        assert_eq!(mac_page_key(k('C'), COMMAND | ALT, true), None);
+        assert_eq!(mac_page_key(k('C'), 0, true), None);
+        assert_eq!(mac_page_key(0xDB, COMMAND, true), Some(MacPageKey::Back));
+        assert_eq!(mac_page_key(0xDD, COMMAND, true), Some(MacPageKey::Forward));
+        assert_eq!(
+            mac_page_key(0xDB, COMMAND | SHIFT, false),
+            None,
+            "Cmd+Shift+[ is the tabs'"
+        );
+        assert_eq!(mac_page_key(0x25, COMMAND, false), Some(MacPageKey::Back));
+        assert_eq!(
+            mac_page_key(0x27, COMMAND, false),
+            Some(MacPageKey::Forward)
+        );
+        assert_eq!(
+            mac_page_key(0x25, COMMAND, true),
+            None,
+            "in a field Cmd+Left goes to the line's start"
+        );
+        assert_eq!(mac_page_key(0x27, COMMAND | SHIFT, false), None);
+    }
 
     #[test]
     fn a_chromium_error_reads_as_the_webview2_status_the_failure_notice_knows() {

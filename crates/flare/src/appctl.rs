@@ -634,6 +634,8 @@ pub struct AppCtl {
     plugin_ask_seq: u64,
     /// The panel had the keys at the last look, so they go back to the terminal when it goes away.
     panel_focus_seen: bool,
+    /// The key being handled is one the page's key filter handed back (macOS): it never goes to the page again.
+    key_from_page: bool,
     /// The tab that was in front at the last panel sync: another one letting go of a splitter drag.
     panel_front_seen: Option<String>,
     /// Where control channel events go (None: no channel, in tests and headless runs).
@@ -1114,6 +1116,7 @@ impl AppCtl {
             plugin_ask: None,
             plugin_ask_seq: 0,
             panel_focus_seen: false,
+            key_from_page: false,
             panel_front_seen: None,
             ctl_events: None,
             ctl_info: None,
@@ -1564,6 +1567,12 @@ impl AppCtl {
             on_panel_web_key,
             |c, d: bool, t: slint::SharedString, m: i32, r: bool| c.web.page_key(d, &t, m, r)
         );
+        bind!(app, rc, on_panel_web_find_edited, |c, q: SharedString| c
+            .page_find_edited(&q));
+        bind!(app, rc, on_panel_web_find_next, |c| c.page_find_step(true));
+        bind!(app, rc, on_panel_web_find_previous, |c| c
+            .page_find_step(false));
+        bind!(app, rc, on_panel_web_find_close, |c| c.page_find_close());
         bind!(app, rc, on_overlay_changed, |c| c.web_moved());
     }
 
@@ -4194,6 +4203,10 @@ impl AppCtl {
                 self.focus_terminal();
             } else if self.web.focus_page(&id) {
                 self.panel_focus_seen = false;
+                // macOS: the page's own scope takes Slint's focus too, or the keys would still go to the terminal.
+                if app.get_panel_web_live() {
+                    app.invoke_focus_web_page();
+                }
             }
             return true;
         }
@@ -4530,6 +4543,22 @@ impl AppCtl {
         }
     }
 
+    /// macOS: the page drawn in the panel has the keys (its own scope has Slint's focus and the browser has the
+    /// keyboard). Every key then goes to the page first, whose key filter hands the app's chords and the second
+    /// Escape back ([`Self::on_key_from_page`]), as WebView2's accelerator hook does on Windows. Never on Windows,
+    /// where the page is a window of its own and the panel draws no picture.
+    pub fn page_has_keys(&self) -> bool {
+        self.web.has_focus() && self.app().is_some_and(|a| a.get_panel_web_focused())
+    }
+
+    /// A key the page's key filter handed back (an app chord): the chord table, never the page again.
+    pub(crate) fn on_key_from_page(&mut self, ev: &KeyEvent) -> KeyOutcome {
+        self.key_from_page = true;
+        let out = self.on_key(ev);
+        self.key_from_page = false;
+        out
+    }
+
     /// Order: the chord table first; then a Slint control with the keys, else the front shell.
     pub fn on_key(&mut self, ev: &KeyEvent) -> KeyOutcome {
         // Dictation sees every key first (Prism Terminal's capture phase); a swallowed key goes nowhere else.
@@ -4558,6 +4587,10 @@ impl AppCtl {
             self.web.cancel_draw();
             self.refresh();
             return KeyOutcome::Consumed;
+        }
+        // The page has the keys (macOS): it gets every key, and its filter gives the app its chords back.
+        if !self.key_from_page && self.page_has_keys() {
+            return KeyOutcome::Slint;
         }
         let mut ctx = self.key_context();
         // A text field of the window (the find bar, the sidebar find box, the help search) or the panel has the
@@ -4695,9 +4728,11 @@ impl AppCtl {
     pub fn on_pointer_down(&mut self) {
         // A press anywhere ends a key capture on the Dictation page (the field's own click follows it).
         crate::dictation_ctl::on_press();
-        // A press on Flare's own window (the page's window takes its own) is a press away from the page.
+        // A press on Flare's own window (the page's window takes its own) is a press away from the page. On a Mac
+        // the page is drawn in the window: a press on it keeps the keys there (no blur and focus again).
         if self.web.has_focus()
             && let Some(app) = self.app()
+            && !app.get_panel_web_hovered()
         {
             let hwnd = crate::window::hwnd_of(&app);
             self.web.release_focus(hwnd);
@@ -4877,6 +4912,14 @@ impl AppCtl {
     /// macOS Cmd+plus, Cmd+minus (one size up or down, as a wheel notch with the modifier) and Cmd+0
     /// (every tab back to the settings' size). False when there is no shell in front.
     pub fn zoom_front_step(&mut self, step: i32) -> bool {
+        // The page has the keys or the pointer: the page is zoomed, as Ctrl+plus does in WebView2.
+        if let Some(app) = self.app()
+            && (self.page_has_keys() || app.get_panel_web_hovered())
+            && let Some(tab) = self.front_id()
+            && self.web.zoom_page(&tab, step)
+        {
+            return true;
+        }
         if step != 0 {
             return self.zoom_front(f64::from(step));
         }
@@ -5571,6 +5614,7 @@ mod tests {
     mod ctl_socket_tests;
     mod md_tests;
     mod mods_tests;
+    mod page_keys_tests;
     mod splitter_tests;
     mod text_sel_tests;
     mod web_tests;

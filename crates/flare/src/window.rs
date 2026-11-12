@@ -2192,10 +2192,14 @@ pub(crate) fn handle_key(kp: &KeyPath, ev: &KeyEvent) -> EventResult {
             .borrow_mut()
             .on_key(crate::ui_clock::monotonic_ms() as i64);
     }
-    let chrome_focus = kp
+    let mut chrome_focus = kp
         .app
         .upgrade()
         .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused());
+    // macOS: the page drawn in the panel has the keys: their key ups are its own too.
+    if !ev.pressed && !chrome_focus {
+        kp.with_ctl(&mut |c| chrome_focus = c.page_has_keys());
+    }
     let outcome = if ev.pressed {
         let mut out = KeyOutcome::Slint;
         kp.with_ctl(&mut |c| out = c.on_key(ev));
@@ -2669,7 +2673,23 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 );
                 handle_key(&kp, &ev)
             }
+            // macOS: the page drawn in the panel has the keys: the input method's text being composed and chosen is
+            // the page's (it shows the composition itself), never the shell's.
+            WindowEvent::Ime(Ime::Preedit(text, cursor)) => {
+                let mut taken = false;
+                with_ctl(&mut |c| taken = c.page_ime(text, cursor.map(|c| c.1), false));
+                if taken {
+                    EventResult::PreventDefault
+                } else {
+                    EventResult::Propagate
+                }
+            }
             WindowEvent::Ime(Ime::Commit(s)) => {
+                let mut taken = false;
+                with_ctl(&mut |c| taken = c.page_ime(s, None, true));
+                if taken {
+                    return EventResult::PreventDefault;
+                }
                 if weak
                     .upgrade()
                     .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused())

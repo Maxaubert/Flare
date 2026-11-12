@@ -293,6 +293,22 @@ impl H {
         }
     }
 
+    /// A DevTools call through `WebBackend::cdp`, its answer.
+    fn eval_cdp(&mut self, tab: &str, method: &str, params: Value) -> Result<String, String> {
+        self.script_seq += 1;
+        let id = 1_000_000 + self.script_seq;
+        let from = self.mark();
+        self.host.cdp(tab, id, method, &params.to_string());
+        match self.until(
+            from,
+            10_000,
+            |e| matches!(e, WebEvent::Cdp { id: i, .. } if *i == id),
+        ) {
+            Some(WebEvent::Cdp { result, .. }) => result,
+            _ => Err("no answer".into()),
+        }
+    }
+
     fn opened(&mut self, from: usize, tab: &str, title: &str) -> bool {
         self.until(
             from,
@@ -326,6 +342,28 @@ impl H {
             );
             self.wait(30);
         }
+    }
+
+    /// A key with Cmd held, down and up (the page's own keys, KEY/NAT-09 and NAV-06).
+    fn cmd_key(&mut self, slot: &Slot, vk: u32, mac: u16, text: &str, shift: bool) {
+        for down in [true, false] {
+            self.host.key(
+                slot,
+                KeyInput {
+                    down,
+                    repeat: false,
+                    vk,
+                    mac_code: mac,
+                    text: text.to_string(),
+                    mods: Mods {
+                        cmd: true,
+                        shift,
+                        ..Default::default()
+                    },
+                },
+            );
+        }
+        self.wait(60);
     }
 
     fn type_text(&mut self, slot: &Slot, vk: u32, mac: u16, text: &str) {
@@ -1275,6 +1313,194 @@ fn panel(rep: &mut Report, data: &Path) -> Result<(), String> {
         focus && blurred,
         "the page takes the keyboard (Focus true) and gives it back (Focus false)",
         json!({"focus": focus, "blur": blurred}),
+    );
+
+    // ---- the person's Mac keys in the page, the status text, find, a click under zoom
+    let from = h.mark();
+    h.host.focus(tab);
+    let _ = h.until(from, 2_000, |e| {
+        matches!(e, WebEvent::Focus { has: true, .. })
+    });
+    h.click(&slot, 340.0, 270.0);
+    let _ = h.script(tab, "document.getElementById('t1').value = 'hello'; 1");
+    h.cmd_key(&slot, 0x41, 0x00, "a", false);
+    let selected = h.script(
+        tab,
+        "(function (t) { return [t.selectionStart, t.selectionEnd].join(','); })(document.getElementById('t1'))",
+    );
+    h.type_text(&slot, 0x58, 0x07, "x");
+    let replaced = h.script(tab, "document.getElementById('t1').value");
+    h.cmd_key(&slot, 0x5A, 0x06, "z", false);
+    let undone = h.script(tab, "document.getElementById('t1').value");
+    h.cmd_key(&slot, 0x5A, 0x06, "z", true);
+    let redone = h.script(tab, "document.getElementById('t1').value");
+    rep.check(
+        "panel.edit-keys",
+        selected.as_deref() == Ok("\"0,5\"")
+            && replaced.as_deref() == Ok("\"x\"")
+            && undone.as_deref() == Ok("\"hello\"")
+            && redone.as_deref() == Ok("\"x\""),
+        "Cmd+A selects all in the field, Cmd+Z undoes and Cmd+Shift+Z redoes, as Chrome's Edit menu does on a Mac",
+        json!({"selected": format!("{selected:?}"), "typed_over": format!("{replaced:?}"),
+               "undone": format!("{undone:?}"), "redone": format!("{redone:?}")}),
+    );
+    // In a field Cmd+Left moves the caret; outside one it goes back, and Cmd+] forward again.
+    let from = h.mark();
+    h.cmd_key(&slot, 0x25, 0x7B, "", false);
+    h.wait(400);
+    let stayed = h.since(from).iter().all(|e| !e.starts_with("Loading"));
+    let caret = h.script(tab, "document.getElementById('t1').selectionStart");
+    let _ = h.script(
+        tab,
+        "document.activeElement && document.activeElement.blur(); 1",
+    );
+    let from = h.mark();
+    h.cmd_key(&slot, 0x25, 0x7B, "", false);
+    let went_back = h
+        .until(
+            from,
+            10_000,
+            |e| matches!(e, WebEvent::Loaded { tab: t, ok: true, .. } if t == tab),
+        )
+        .is_some();
+    let back_title = h.script(tab, "document.title");
+    let from = h.mark();
+    let _ = h.script(
+        tab,
+        "document.activeElement && document.activeElement.blur(); 1",
+    );
+    h.cmd_key(&slot, 0xDD, 0x1E, "]", false);
+    let forward = h.opened(from, tab, "Main");
+    let from = h.mark();
+    let _ = h.script(
+        tab,
+        "document.activeElement && document.activeElement.blur(); 1",
+    );
+    h.cmd_key(&slot, 0xDB, 0x21, "[", false);
+    let bracket_back = h
+        .until(
+            from,
+            10_000,
+            |e| matches!(e, WebEvent::Loaded { tab: t, ok: true, .. } if t == tab),
+        )
+        .is_some();
+    let from = h.mark();
+    h.cmd_key(&slot, 0x27, 0x7C, "", false);
+    let main_again = h.opened(from, tab, "Main");
+    rep.check(
+        "panel.history-keys",
+        stayed && went_back && back_title.as_deref() != Ok("\"Main\"")
+            && forward && bracket_back && main_again,
+        "Cmd+Left in a field moves its caret; outside one Cmd+Left and Cmd+[ go back, Cmd+] and Cmd+Right forward",
+        json!({"field_kept_the_page": stayed, "caret": format!("{caret:?}"), "back": went_back,
+               "back_title": format!("{back_title:?}"), "forward": forward, "bracket_back": bracket_back,
+               "right_forward": main_again}),
+    );
+    // A link under the pointer: its address is the status text; it goes when the pointer leaves.
+    let from = h.mark();
+    for (x, act) in [(200.0, PointerAct::Move), (200.0, PointerAct::Leave)] {
+        h.host.pointer(
+            &slot,
+            Pointer {
+                x,
+                y: 490.0,
+                act,
+                mods: Mods::default(),
+            },
+        );
+        h.wait(400);
+    }
+    let statuses: Vec<String> = h
+        .seen
+        .iter()
+        .skip(from)
+        .filter_map(|e| match e {
+            WebEvent::Status { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    rep.check(
+        "panel.status",
+        statuses.first().is_some_and(|t| t.ends_with("/page2"))
+            && statuses.last().is_some_and(String::is_empty),
+        "a link under the pointer puts its address in the status text, and it goes when the pointer leaves",
+        json!({"statuses": statuses}),
+    );
+    let from = h.mark();
+    let find_from = from;
+    h.host.find(tab, "w", true, false);
+    let first = h.until(
+        from,
+        5_000,
+        |e| matches!(e, WebEvent::Found { count, .. } if *count > 0),
+    );
+    h.wait(200);
+    let from = h.mark();
+    h.host.find(tab, "w", true, true);
+    let _ = h.until(
+        from,
+        5_000,
+        |e| matches!(e, WebEvent::Found { active, .. } if *active > 0),
+    );
+    h.wait(200);
+    let from = h.mark();
+    h.host.find(tab, "w", true, true);
+    let next = h.until(
+        from,
+        5_000,
+        |e| matches!(e, WebEvent::Found { active, .. } if *active > 1),
+    );
+    let from = h.mark();
+    h.host.find(tab, "zzqqnomatch", true, false);
+    let none = h.until(from, 5_000, |e| {
+        matches!(e, WebEvent::Found { count: 0, .. })
+    });
+    h.host.stop_find(tab);
+    let found = |e: &Option<WebEvent>| match e {
+        Some(WebEvent::Found { count, active, .. }) => Some((*count, *active)),
+        _ => None,
+    };
+    rep.check(
+        "panel.find",
+        found(&first).is_some_and(|(n, _)| n >= 2)
+            && found(&next).is_some_and(|(_, a)| a == 2)
+            && none.is_some(),
+        "a find in the page counts its matches (CEF selects none yet), each step selects the next one, and a word \
+         not there counts none (Flare's find bar over the page)",
+        json!({"first": found(&first), "next": found(&next), "none": found(&none),
+               "all": h.seen.iter().skip(find_from).filter_map(|e| match e {
+                   WebEvent::Found { count, active, .. } => Some((*count, *active)),
+                   _ => None,
+               }).collect::<Vec<_>>()}),
+    );
+    // The agent's click at an element's centre (CSS pixels of the page) lands on it at 150 %.
+    h.host.set_zoom(tab, 1.5);
+    h.wait(300);
+    let _ = h.script(tab, "document.activeElement.blur(); window.__clicks = 0; 1");
+    let rect = h.eval(
+        tab,
+        "(function (r) { return [r.left + r.width / 2, r.top + r.height / 2]; })(document.getElementById('hit').getBoundingClientRect())",
+    );
+    let (cx, cy) = rect
+        .as_ref()
+        .ok()
+        .and_then(|v| Some((v[0].as_f64()?, v[1].as_f64()?)))
+        .unwrap_or((0.0, 0.0));
+    for kind in ["mousePressed", "mouseReleased"] {
+        let _ = h.eval_cdp(
+            tab,
+            "Input.dispatchMouseEvent",
+            json!({"type": kind, "x": cx, "y": cy, "button": "left", "clickCount": 1}),
+        );
+    }
+    let zoomed_clicks = h.script(tab, "window.__clicks");
+    h.host.set_zoom(tab, 1.0);
+    h.wait(300);
+    rep.check(
+        "panel.zoomed-agent-click",
+        zoomed_clicks.as_deref() == Ok("1"),
+        "at the person's 150 % zoom the agent's click at an element's centre (its CSS box) lands on it",
+        json!({"centre": [cx, cy], "clicks": format!("{zoomed_clicks:?}")}),
     );
 
     // ---- DevTools, a crashed page, closing

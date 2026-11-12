@@ -717,6 +717,12 @@ pub fn key_event_of(k: &KeyPress) -> Option<KeyEvent> {
         0x20 => (" ".to_string(), "Space".to_string()),
         0xBC => (",".to_string(), "Comma".to_string()),
         0x1B => ("Escape".to_string(), "Escape".to_string()),
+        // The Mac's zoom keys and its tab keys (Cmd+Shift+[ and ]) as the page's view hands them over; no Windows
+        // chord has these keys.
+        0xBB => ("=".to_string(), "Equal".to_string()),
+        0xBD => ("-".to_string(), "Minus".to_string()),
+        0xDB => ("[".to_string(), "BracketLeft".to_string()),
+        0xDD => ("]".to_string(), "BracketRight".to_string()),
         _ => return None,
     };
     Some(KeyEvent {
@@ -744,14 +750,15 @@ pub fn key_event_for(k: &KeyPress, ctx: &KeyContext) -> Option<KeyEvent> {
 }
 
 /// Does the app take this key from the page? The chord table, less the two chords whose key a page
-/// has its own use for: Ctrl+F (the page's find) and Ctrl+D / Ctrl+C of the agent guard.
+/// has its own use for: Ctrl+F (the page's find) and Ctrl+D / Ctrl+C of the agent guard. On a Mac Cmd+F is the
+/// app's too: the page has no find bar of its own there, so Flare draws one over it.
 pub fn app_takes(k: &KeyPress, ctx: &KeyContext) -> bool {
     let Some(ev) = key_event_for(k, ctx) else {
         return false;
     };
     match chord_of(&ev, ctx) {
         Some(ChordId::AgentGuard) => false,
-        Some(ChordId::Find) => ev.shift,
+        Some(ChordId::Find) => ev.shift || ctx.os.is_mac(),
         Some(_) => true,
         None => false,
     }
@@ -3373,6 +3380,8 @@ impl WebCtl {
                 }
             }
             WebEvent::Key { tab: _, key } => out.push(WebOut::Key(key)),
+            WebEvent::Status { tab, text } => self.page_status(app, &tab, text),
+            WebEvent::Found { tab, count, active } => self.page_found(app, &tab, count, active),
             WebEvent::Focus { tab, has } => {
                 self.has_focus = has;
                 out.push(WebOut::PageFocus(has));

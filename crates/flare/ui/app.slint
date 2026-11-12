@@ -508,6 +508,20 @@ export component AppWindow inherits Window {
     callback panel-web-wheel(length, length, length, length, int);
     callback panel-web-key(bool, string, int, bool);
     public function focus-web-page() { panel-slot.focus-page(); }
+    public function focus-web-find() { panel-slot.focus-page-find(); }
+    // macOS: the page has the keys, or the pointer (see the panel's `web-page-focused` and `web-hovered`).
+    out property <bool> panel-web-focused: panel-slot.web-page-focused;
+    out property <bool> panel-web-hovered: panel-slot.web-hovered;
+    // macOS: the find bar over the page and the page's status text (see the panel's).
+    in property <bool> panel-web-find-open;
+    in-out property <string> panel-web-find-query;
+    in property <string> panel-web-find-readout;
+    in property <bool> panel-web-find-can-step;
+    callback panel-web-find-edited(string);
+    callback panel-web-find-next();
+    callback panel-web-find-previous();
+    callback panel-web-find-close();
+    in property <string> panel-web-status;
     // A pop-up over the page (rule 249): the strip's words, empty while none is open; its Close.
     in property <string> panel-web-popup;
     out property <length> panel-popup-h: panel-slot.popup-h;
@@ -787,7 +801,7 @@ export component AppWindow inherits Window {
     in property <string> find-readout;
     in property <bool> find-can-step;
     // A Slint text field has the keys: the find box or the Command help panel.
-    out property <bool> find-input-focused: find.input-has-focus || help-panel.focused || panel-slot.web-input-focused;
+    out property <bool> find-input-focused: find.input-has-focus || help-panel.focused || panel-slot.web-input-focused || panel-slot.web-find-focused;
     out property <length> help-sheet-w: help-panel.sheet-w;
     in-out property <length> help-viewport-y <=> help-panel.viewport-y;
     out property <length> title-buttons-w: top-buttons.width;
@@ -1342,6 +1356,15 @@ export component AppWindow inherits Window {
                         web-pointer(k, x, y, b, m) => { root.panel-web-pointer(k, x, y, b, m); }
                         web-wheel(x, y, dx, dy, m) => { root.panel-web-wheel(x, y, dx, dy, m); }
                         web-key(d, t, m, r) => { root.panel-web-key(d, t, m, r); }
+                        web-find-open: root.panel-web-find-open;
+                        web-find-query <=> root.panel-web-find-query;
+                        web-find-readout: root.panel-web-find-readout;
+                        web-find-can-step: root.panel-web-find-can-step;
+                        web-find-edited(q) => { root.panel-web-find-edited(q); }
+                        web-find-next => { root.panel-web-find-next(); }
+                        web-find-previous => { root.panel-web-find-previous(); }
+                        web-find-close => { root.panel-web-find-close(); }
+                        web-status: root.panel-web-status;
                         web-back => { root.panel-web-back(); }
                         web-forward => { root.panel-web-forward(); }
                         web-reload => { root.panel-web-reload(); }

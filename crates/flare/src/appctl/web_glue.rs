@@ -382,6 +382,38 @@ impl AppCtl {
         }
     }
 
+    /// macOS: the input method's text while the page has the keys: being composed (`cursor` a byte offset in it) or
+    /// chosen (`commit`). False when the page does not have the keys.
+    pub(crate) fn page_ime(&mut self, text: &str, cursor: Option<usize>, commit: bool) -> bool {
+        if !self.page_has_keys() {
+            return false;
+        }
+        self.web.page_ime(text, cursor, commit);
+        true
+    }
+
+    /// macOS: the find bar over the page: its text changed (a new search).
+    pub(super) fn page_find_edited(&mut self, q: &str) {
+        if let Some(app) = self.app() {
+            self.web.page_find(&app, q, true, false);
+        }
+    }
+
+    /// macOS: the find bar's next (Enter) or previous (Shift+Enter) match.
+    pub(super) fn page_find_step(&mut self, forward: bool) {
+        if let Some(app) = self.app() {
+            let q = app.get_panel_web_find_query().to_string();
+            self.web.page_find(&app, &q, forward, true);
+        }
+    }
+
+    /// macOS: the find bar closes (its button or Escape): the page has the keys again.
+    pub(super) fn page_find_close(&mut self) {
+        if let Some(app) = self.app() {
+            self.web.close_page_find(&app, true);
+        }
+    }
+
     /// What the browser told the window.
     pub(super) fn apply_web(&mut self, outs: Vec<WebOut>) {
         for out in outs {
@@ -414,13 +446,32 @@ impl AppCtl {
                         // themselves (the panel's focus and toggle, closing the tab) keep it: they hand it back.
                         use flare_tabs::keymap::ChordId;
                         let ctx = self.key_context();
-                        if flare_tabs::keymap::chord_of(&ev, &ctx).is_some_and(|c| {
-                            !matches!(c, ChordId::PanelFocus | ChordId::Panel | ChordId::CloseTab)
+                        let chord = flare_tabs::keymap::chord_of(&ev, &ctx);
+                        // macOS: Cmd+F in the page opens Flare's find bar over it (the page has none of its own).
+                        if chord == Some(ChordId::Find)
+                            && ctx.os.is_mac()
+                            && !ev.shift
+                            && let Some(app) = self.app()
+                            && self.web.open_page_find(&app)
+                        {
+                            continue;
+                        }
+                        // The zoom keys (macOS) zoom the page that has the keys: they leave them there.
+                        if chord.is_some_and(|c| {
+                            !matches!(
+                                c,
+                                ChordId::PanelFocus
+                                    | ChordId::Panel
+                                    | ChordId::CloseTab
+                                    | ChordId::ZoomIn
+                                    | ChordId::ZoomOut
+                                    | ChordId::ZoomReset
+                            )
                         }) {
                             let hwnd = self.app().and_then(|a| crate::window::hwnd_of(&a));
                             self.web.release_focus(hwnd);
                         }
-                        let _ = self.on_key(&ev);
+                        let _ = self.on_key_from_page(&ev);
                     }
                 }
                 // The page is part of the window: its taking the keyboard is not the window losing it.
