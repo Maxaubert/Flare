@@ -140,9 +140,48 @@ impl MachinesPort for FileMachines {
 /// own home folder, which the viewer does not know. The tab shows the host's real folder once its shell reports it.
 pub const HOST_HOME: &str = "~";
 
-/// Where Settings > Machines looks for Flare on a host it adds (remote sessions PR 7), in this order: on the login
-/// shell's PATH, then where the Mac app keeps it. The first that answers `remote.hello` is the one saved.
-pub const FLARE_CANDIDATES: [&str; 2] = ["flare", "/Applications/Flare.app/Contents/MacOS/flare"];
+/// Where Settings > Machines looks for Flare on a host it adds (remote sessions PR 7, rules 1207 and 1208), in this
+/// order: on the login shell's PATH, then a PC's two installs (Stable, then Dev) under cmd's `%LOCALAPPDATA%`, the same
+/// two under PowerShell's `$env:LOCALAPPDATA` (a PowerShell login shell with a space in the profile folder answers only
+/// there), then where the Mac app keeps it. The first that answers `remote.hello` is the one saved.
+pub const FLARE_CANDIDATES: [&str; 6] = [
+    "flare",
+    r"%LOCALAPPDATA%\StableFlare\current\FlareStable.exe",
+    r"%LOCALAPPDATA%\Flare\current\Flare.exe",
+    r"$env:LOCALAPPDATA\StableFlare\current\FlareStable.exe",
+    r"$env:LOCALAPPDATA\Flare\current\Flare.exe",
+    "/Applications/Flare.app/Contents/MacOS/flare",
+];
+
+/// Pure: how a candidate is quoted when it is probed, in the order to try (rule 1207), since the host's system is not
+/// known until it answers. A PC path (a leading `%LOCALAPPDATA%`, `$env:LOCALAPPDATA` or a drive letter) gets the
+/// PC's `cmd /c` form only; a `/` path gets the sh form only (no kind); a bare name gets the sh form, then the PC form.
+pub fn probe_kinds(flare: &str) -> Vec<Option<Os>> {
+    let b = flare.as_bytes();
+    let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+    if drive
+        || flare.starts_with(crate::remote_link::PC_LOCAL_APP_DATA)
+        || flare.starts_with(crate::remote_link::PC_LOCAL_APP_DATA_PWSH)
+    {
+        vec![Some(Os::Pc)]
+    } else if flare.starts_with('/') {
+        vec![None]
+    } else {
+        vec![None, Some(Os::Pc)]
+    }
+}
+
+/// Pure: the kind a machine is saved with once `flare`, probed in `answered`'s quoting, said hello and named `named`
+/// (rule 1208). The kind is both the logo and the quoting every later link uses, so the host's own word is kept only
+/// when its quoting is the one that answered; otherwise the quoting that answered is kept. A Windows host whose login
+/// shell is Git Bash answers sh's form and names itself a PC: saved as a PC, its links would send `cmd /c` to bash,
+/// which rewrites `/c` to `C:/`.
+pub fn saved_kind(answered: Option<Os>, named: Option<Os>, flare: &str) -> Option<Os> {
+    use crate::remote_link::remote_command;
+    named
+        .filter(|os| remote_command(Some(*os), flare) == remote_command(answered, flare))
+        .or(answered)
+}
 
 /// Pure: the system `remote.hello` named (`mac`, `pc`); any other word is no kind (rule 40).
 pub fn os_of_hello(word: &str) -> Option<Os> {

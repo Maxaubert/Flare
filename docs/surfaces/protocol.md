@@ -155,8 +155,12 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     worker thread. The link is the child `ssh -o BatchMode=yes -T [-l <user>] -- <host> <command>` (ssh by its absolute
     path, no console window), every part an argv item of its own; `<host>` and `<user>` come from `machines.json` in the
     profile and must be plain words that cannot be read as an option. `<command>` is the host's Flare path quoted for its
-    login shell (`'<path>' --serve-remote` for a Mac's sh, `"<path>" --serve-remote` for a PC's cmd, no `&&`) and
-    nothing else: no token, no environment (rule 290). The worker says `remote.hello` (90 s, PR 5), then `remote.open
+    login shell (`'<path>' --serve-remote` for a Mac's sh; `cmd /c "<path>" --serve-remote` for a PC, no `&&`) and
+    nothing else: no token, no environment (rule 290). A PC's sshd runs cmd or, often, PowerShell (its `DefaultShell`);
+    PowerShell refuses a bare `"<path>" --serve-remote` and does not wait for the GUI-subsystem `flare.exe` behind `&`,
+    so the PC form goes through `cmd /c`, which both shells run and which waits (rule 1207). A PC path with one of
+    `& < > ( ) @ ^ |` (cmd would strip its quotes), `" % ! $`, a backquote or a quote mark from U+2018 to U+201F is
+    refused, except a leading `%LOCALAPPDATA%` or `$env:LOCALAPPDATA`, which the host's shell expands (rule 1208). The worker says `remote.hello` (90 s, PR 5), then `remote.open
     {folder, resume?}` for a new tab (`resume` only when the tab was opened with one, PR 5) (its answer `tab` is kept as the tab's `host_tab`) or straight to `remote.attach {tab}` for a
     restored one, then `remote.resize` with the tab's size. A tab that has shown nothing yet starts from `remote.snapshot`;
     after a reconnect it calls `remote.output {since: <the number read>, max: 1048576}` until caught up (`gap: true`: a
@@ -176,9 +180,15 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     1193), and, only while the window wants the tab's fitted conversation view, a `remote.convo {tab, since}` poll every
     1.5 s whose new entries (each taken once by its number) are handed to the window. Settings > Machines checks a
     machine with a link of its own that says `remote.hello` and ends (`hello_over`): its `flare_version` and `os` are
-    shown and saved; a new machine's Flare is looked for as `"flare"` (the PATH) and then as
-    `"/Applications/Flare.app/Contents/MacOS/flare"`, double-quoted (the same words in sh and cmd) until the host says its
-    system. A call that fails
+    shown and saved; a new machine's Flare is looked for as `flare` (the PATH), then
+    `%LOCALAPPDATA%\StableFlare\current\FlareStable.exe` and `%LOCALAPPDATA%\Flare\current\Flare.exe` (a PC's two
+    installs), the same two under `$env:LOCALAPPDATA` (a PowerShell login shell, rule 1208), then
+    `/Applications/Flare.app/Contents/MacOS/flare`, each quoted as its path implies until the host says
+    its system (rule 1207): a PC path in the PC's `cmd /c` form, a `/` path in sh's, the bare `flare` in sh's and then the
+    PC's. The first that answers is saved with the system its `remote.hello` names when that system's quoting is the one
+    that answered, else with the quoting that answered (rule 1208); a refusal ends the search. On the
+    host, a renamed copy (`FlareStable.exe`) started with no `--user-data-dir` serves `%APPDATA%\<its name>`, the
+    profile its shortcut names. A call that fails
     with `no_tab` ends the tab as a shell that exits; any other broken
     call drops the link, and the worker tries again after 1 s, doubling to 30 s. Closing the tab sends `remote.close`
     (on a fresh link if the old one is down); the quit and a dropped tab send `remote.detach` (rule 288). Under `--e2e`

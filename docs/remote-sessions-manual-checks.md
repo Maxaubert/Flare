@@ -17,12 +17,24 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
 
 ## The link (PRs 1 to 3)
 
-- [ ] Spike 1, the PC as host: Windows OpenSSH starts the GUI-subsystem `flare.exe --serve-remote` with sshd's pipes as
-  its stdio, and `remote.hello` answers (a tab opens on the Mac).
+- [x] Spike 1, the PC as host: Windows OpenSSH starts the GUI-subsystem `flare.exe --serve-remote` with sshd's pipes as
+  its stdio, and `remote.hello` answers (a tab opens on the Mac). Passed 2026-11-13 over real ssh from the Mac with
+  `cmd /c "C:\Users\Admin\AppData\Local\StableFlare\current\FlareStable.exe" --serve-remote --user-data-dir=...`:
+  hello, `remote.open {folder: "~"}`, attach, an `echo` typed and seen in `remote.output`, `remote.close`, and the serve
+  log ends with "the link closed".
 - [ ] Windows `ssh.exe` started with no console (`CREATE_NO_WINDOW`) and `BatchMode=yes` runs the command with clean
   stdio both ways, and no console window flashes on the PC.
-- [ ] The Mac's login shell runs `'<path>' --serve-remote` as built, and the PC's `cmd` runs `"<path>" --serve-remote`,
-  both with a path that holds a space.
+- [ ] The Mac's login shell runs `'<path>' --serve-remote` as built, and the PC's login shell runs
+  `cmd /c "<path>" --serve-remote` (rule 1207), both with a path that holds a space. Found 2026-11-13: the PC's sshd
+  `DefaultShell` (`HKLM:\SOFTWARE\OpenSSH`) was PowerShell 7. PowerShell refuses the old `"<path>" --serve-remote`
+  (`ParserError: Unexpected token 'serve-remote'`), and with `& "<path>"` it does not wait for the GUI exe, so sshd ends
+  the session seconds after hello. `cmd /c` works under PowerShell (measured) and under cmd.
+- [ ] Settings > Machines adds the PC with no path typed: the Stable install answers as
+  `%LOCALAPPDATA%\StableFlare\current\FlareStable.exe` (not on the PATH), and its serve process relays to the Stable
+  profile `%APPDATA%\FlareStable`, not the Dev copy's `%APPDATA%\Flare` (its log says which).
+- [ ] Rule 1208 over real ssh: a PC account whose profile folder holds a space, with a PowerShell login shell, is added
+  at `$env:LOCALAPPDATA\StableFlare\current\FlareStable.exe` and links (measured only by running the shells locally
+  as sshd would, 2026-11-13).
 - [ ] How long a real ssh takes to come up; the 90 s hello wait covers it with room.
 - [ ] Spike 3: the serve process started by sshd on the Mac reaches the running Flare's per-user socket
   (`LOCAL_PEERPID` checks pass; the serve child has no `FLARE_CTL_PID`, so it uses the plain-name path).
@@ -77,3 +89,10 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
 - [ ] A Claude session in a remote tab: type on the host's own Flare, and the viewer shows the conversation fitted to
   its window with "Live on <machine>"; a click or a key there brings the terminal back at the viewer's size, and the
   host's window gets its size back at the next key typed there.
+
+## Known follow-ups (found over real ssh, 2026-11-13)
+
+- `remote.attach` sent right after `remote.open` can answer `unavailable` ("that tab's shell is not running") for a
+  moment while the new tab's shell starts. The viewer recovers by itself (it drops the link and connects again after
+  1 s, `remote_link.rs` `session`), but that costs one more ssh connect on every new remote tab. Better: retry the attach
+  on the same link for a few seconds before dropping it. Seen from the Mac viewing the PC over real ssh.

@@ -75,6 +75,20 @@ fn plain_extension(file: &str) -> Option<String> {
     name.rfind('.').map(|i| name[i + 1..].to_lowercase())
 }
 
+/// The extension of a clicked name for the diagnostics log: one from the allowlist as it is there,
+/// `none` for a name with none, `other` for anything else. Only fixed words, so no screen text reaches
+/// the log (diagnostics privacy).
+pub fn ext_label(name: &str) -> &'static str {
+    match plain_extension(name) {
+        None => "none",
+        Some(e) => OPENABLE
+            .iter()
+            .find(|x| **x == e)
+            .copied()
+            .unwrap_or("other"),
+    }
+}
+
 /// True when a click may open a file of this name. Unknown and runnable types answer false, and so
 /// does every name Windows would read differently from what is shown (a trailing dot or space on
 /// any segment, a `:` stream).
@@ -602,6 +616,16 @@ mod tests {
             got[0].as_ref().unwrap().abs,
             format!("{root}\\docs\\sign-off\\rapport.pdf")
         );
+    }
+
+    #[test]
+    fn the_logged_extension_is_a_fixed_word_never_the_screen_text() {
+        assert_eq!(ext_label(r"C:\proj\src\main.TS"), "ts");
+        assert_eq!(ext_label("docs/notes.md"), "md");
+        assert_eq!(ext_label(r"C:\proj\Makefile"), "none");
+        assert_eq!(ext_label("secret.mysecretword"), "other");
+        assert_eq!(ext_label("run.bat"), "other");
+        assert_eq!(ext_label("a.txt:stream"), "none");
     }
 
     #[test]

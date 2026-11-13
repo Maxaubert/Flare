@@ -929,6 +929,8 @@ mod tests {
         "kill-stuck",
         "memory",
         "first-run",
+        "path-click",
+        "open-failed",
     ];
 
     fn source_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {

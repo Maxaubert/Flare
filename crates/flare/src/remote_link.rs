@@ -122,19 +122,46 @@ impl<W: Wire> Drop for ClientLink<W> {
 pub use crate::machines::parse_machines;
 pub use crate::machines::{Machine, argv_word, machines_file, read_machines};
 
+/// A variable a PC path may start with (rule 1207): a cmd login shell expands it on the host, so a candidate names the
+/// user's own install without knowing the host's user name.
+pub const PC_LOCAL_APP_DATA: &str = "%LOCALAPPDATA%";
+
+/// The same folder in PowerShell's words (rule 1208). A PowerShell login shell drops the double quotes when it hands
+/// `"%LOCALAPPDATA%\..."` to cmd, so cmd splits the expanded path at a space (`C:\Users\John Doe`); PowerShell expands
+/// this one itself and quotes the result for cmd when it holds a space. A cmd login shell leaves it as text, which
+/// names no file.
+pub const PC_LOCAL_APP_DATA_PWSH: &str = "$env:LOCALAPPDATA";
+
+/// Pure: a PC path without its leading variable, if it has one (rules 1207 and 1208).
+fn pc_rest(flare: &str) -> &str {
+    [PC_LOCAL_APP_DATA, PC_LOCAL_APP_DATA_PWSH]
+        .iter()
+        .find_map(|v| flare.strip_prefix(v))
+        .unwrap_or(flare)
+}
+
 /// Pure: the command the host's login shell runs (rule 290: no token, no environment). A Mac's sh gets the path in
-/// single quotes; a PC's cmd in double quotes, with no `&&` and nothing cmd would expand. None for a path that cannot
-/// be quoted safely there.
+/// single quotes. A PC gets `cmd /c "<path>" --serve-remote` (rule 1207): sshd's DefaultShell there is cmd or, often,
+/// PowerShell, which refuses a bare `"<path>" --serve-remote` and does not wait for the GUI-subsystem flare.exe with
+/// `&`; `cmd /c` parses the same in both and waits. cmd keeps the quotes only when the path holds none of
+/// `& < > ( ) @ ^ |`, so such a path is refused, and so is one with `" % ! $` or a backquote (expanded by cmd or by
+/// PowerShell inside double quotes), except a leading `%LOCALAPPDATA%` or `$env:LOCALAPPDATA`, which the host's shell
+/// expands. PowerShell also ends a double-quoted string at a curly quote (U+201C to U+201E), so every quote mark from
+/// U+2018 to U+201F is refused too (rule 1208). None for a path that cannot be quoted safely there.
 pub fn remote_command(kind: Option<Os>, flare: &str) -> Option<String> {
     if flare.is_empty() || flare.chars().any(char::is_control) {
         return None;
     }
     match kind {
         Some(Os::Pc) => {
-            if flare.contains(['"', '%', '^', '!']) {
+            let rest = pc_rest(flare);
+            if rest.contains([
+                '"', '%', '!', '$', '`', '&', '<', '>', '(', ')', '@', '^', '|',
+            ]) || rest.chars().any(|c| ('\u{2018}'..='\u{201F}').contains(&c))
+            {
                 return None;
             }
-            Some(format!("\"{flare}\" --serve-remote"))
+            Some(format!("cmd /c \"{flare}\" --serve-remote"))
         }
         _ => Some(format!("'{}' --serve-remote", flare.replace('\'', "'\\''"))),
     }
