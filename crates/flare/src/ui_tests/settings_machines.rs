@@ -1,8 +1,9 @@
 //! Settings > Machines (remote sessions PR 7), headless, at 100 and 225 percent: the rail lists the page after
 //! Plugins; with no machine it is the "+ Add a machine" row alone, with no subtext; linked machines are a table under a
 //! heading row (logo, name, SSH host, Flare version, status, a menu with Test and Remove); the add row opens the form
-//! in its place (host drop-down, name, Cancel, Add) and a failed check is one red line under it. Every link check runs
-//! against an in-memory stand-in: no ssh.
+//! in its place (host drop-down, name, Cancel, Add) and a failed check is one red line under it; a machine that is Not
+//! linked shows why as one grey line under its row, with no tooltip. Every link check runs against an in-memory
+//! stand-in: no ssh.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -228,7 +229,9 @@ fn linked_machines_are_a_table_with_logo_host_version_and_status() {
         assert_eq!(m.label.as_str(), "Mac Mini");
         assert_eq!(m.value.as_str(), "mini");
         assert_eq!(m.note.as_str(), "0.3.1");
-        assert_eq!(m.sub.as_str(), "Linked");
+        assert_eq!(m.badge.as_str(), "Linked");
+        assert_eq!(m.sub.as_str(), "", "a linked machine has no line under it");
+        assert!((f64::from(m.h) - 50.0).abs() < 0.5, "{s}: one line high");
         assert_eq!(m.vendor.as_str(), "mac", "the Apple logo");
         // Every block sits in its panel on whole device pixels, one after the other.
         let sec = &f.sections()[0];
@@ -254,8 +257,13 @@ fn the_menu_offers_test_and_remove_and_remove_tells_the_window() {
             .is_some_and(|r| r.state.as_str() == "failed")
     });
     let m = f.row("machine:mac").unwrap();
-    assert_eq!(m.sub.as_str(), "Not linked");
-    assert_eq!(m.row_tip.as_str(), "No Flare answered over SSH on mini.");
+    assert_eq!(m.badge.as_str(), "Not linked");
+    assert_eq!(m.sub.as_str(), "No Flare answered over SSH on mini.");
+    assert_eq!(
+        m.row_tip.as_str(),
+        "",
+        "the reason is a line, not a tooltip"
+    );
     f.b()
         .invoke_select_open_request("machine:mac".into(), 600.0, 200.0, 120.0, 30.0);
     assert!(f.b().get_select_open());
@@ -381,7 +389,7 @@ fn a_machine_row_draws_its_logo_and_its_menu_button_takes_a_click() {
             value: "mini".into(),
             note: "0.1.0".into(),
             state: "linked".into(),
-            sub: "Linked".into(),
+            badge: "Linked".into(),
             vendor: vendor.into(),
             ..SetRow::default()
         };
@@ -404,5 +412,140 @@ fn a_machine_row_draws_its_logo_and_its_menu_button_takes_a_click() {
         // The menu button sits at the row's right end.
         h.click(760.0 - 21.0, 34.0 + 25.0);
         assert_eq!(h.comp.get_menus(), 1, "{s}");
+    }
+}
+
+/// A machine that is Not linked carries the reason as its row's line (68 high, its blocks still touching on whole device
+/// pixels), and hovering anywhere on the page, its status included, asks for no tooltip with the reason (owner rule
+/// 2026-11-13: a control with words has no tooltip); at 100 and 225 percent.
+#[test]
+fn a_not_linked_machine_shows_its_reason_under_the_row_and_hovering_its_status_shows_no_tooltip() {
+    for s in SCALES2 {
+        let mut io = FakeIo::default();
+        *io.list.get_mut().unwrap() = vec![mac()];
+        let f = fx_at(s, io);
+        f.page();
+        f.settle("the check", |f| {
+            f.row("machine:mac")
+                .is_some_and(|r| r.state.as_str() == "failed")
+        });
+        let m = f.row("machine:mac").unwrap();
+        assert_eq!(m.badge.as_str(), "Not linked");
+        assert_eq!(m.sub.as_str(), "No Flare answered over SSH on mini.");
+        assert_eq!(m.row_tip.as_str(), "");
+        assert!(
+            (f64::from(m.h) - 68.0).abs() < 0.5,
+            "{s}: the row grows by its line ({})",
+            m.h
+        );
+        let rows: Vec<SetRow> = f.sections()[0].rows.iter().collect();
+        for w in rows.windows(2) {
+            assert!((w[0].y + w[0].h - w[1].y).abs() < 0.01, "{s}: blocks touch");
+        }
+        for r in &rows {
+            let dev = f64::from(r.y + r.h) * f64::from(s);
+            assert!((dev - dev.round()).abs() < 0.01, "{s}: whole device pixels");
+        }
+        let tips: Rc<RefCell<Vec<String>>> = Rc::default();
+        {
+            let tips = Rc::clone(&tips);
+            f.b()
+                .on_tip(move |t, _, _, _, _| tips.borrow_mut().push(t.to_string()));
+        }
+        f.h.render();
+        // The pointer crosses the whole page in small steps, over the status column and the reason line too.
+        // Each step lets the hover handlers run, so a tooltip on any spot would be asked for.
+        let mut y = 0.0;
+        while y < 640.0 {
+            let mut x = 0.0;
+            while x < 1000.0 {
+                f.h.move_to(x, y);
+                f.h.advance(0);
+                x += 8.0;
+            }
+            y += 4.0;
+        }
+        f.h.leave();
+        assert!(
+            tips.borrow()
+                .iter()
+                .all(|t| !t.contains("No Flare answered")),
+            "{s}: no tooltip says the reason ({:?})",
+            tips.borrow()
+        );
+    }
+}
+
+/// The reason is drawn as one grey line under the machine's row, from the name's left edge, while the row's columns
+/// stay in its top 50 px; a long reason is elided on that one line and never reaches the menu. At 100 and 225 percent.
+#[test]
+fn a_machine_row_draws_its_reason_as_one_grey_line_under_it() {
+    for s in SCALES2 {
+        let h = Harness::new(s, 760, 240, || crate::MachinesPreview::new().unwrap());
+        let row = |sub: &str, rh: f32| SetRow {
+            id: "machine:mac".into(),
+            label: "Mac Mini".into(),
+            value: "mini".into(),
+            state: "failed".into(),
+            badge: "Not linked".into(),
+            sub: sub.into(),
+            vendor: "mac".into(),
+            h: rh,
+            ..SetRow::default()
+        };
+        let k = |v: f32| (v * s).round() as u32;
+        // Ink that is not the ground (sampled left of the name, inside the row), in a box of css px.
+        let ink = |f: &crate::ui_harness::Frame, x0: f32, y0: f32, x1: f32, y1: f32| {
+            let g = f.px(k(4.0), k(34.0 + 30.0));
+            f.count_where(k(x0), k(y0), k(x1), k(y1), |p| {
+                (0..3).any(|c| p[c].abs_diff(g[c]) > 30)
+            })
+        };
+        // The top edge of the name's bright pixels, in device px.
+        let name_top = |f: &crate::ui_harness::Frame| {
+            f.bbox_where(k(37.0), k(34.0), k(200.0), k(34.0 + 68.0), |p| {
+                p[0] > 150 && p[1] > 150 && p[2] > 150
+            })
+            .map(|b| b.1)
+        };
+        let long = "No Flare answered over SSH on mini. ".repeat(8);
+        // The line's band: inside 44 to 60 px down the 68 px row.
+        let (bx0, by0, bx1, by1) = (37.0, 34.0 + 46.0, 700.0, 34.0 + 58.0);
+        h.comp.set_machine(row("", 50.0));
+        h.advance(0);
+        let top_linked = name_top(&h.render());
+        assert!(top_linked.is_some(), "{s}: the name draws");
+        h.comp.set_machine(row("", 68.0));
+        h.advance(16);
+        let none = ink(&h.render(), bx0, by0, bx1, by1);
+        h.comp.set_machine(row(&long, 68.0));
+        h.advance(16);
+        let f = h.render();
+        let lit = ink(&f, bx0, by0, bx1, by1);
+        assert!(lit > 40, "{s}: the reason draws under the row ({lit} lit)");
+        assert_eq!(none, 0, "{s}: no reason, no line");
+        assert_eq!(
+            name_top(&f),
+            top_linked,
+            "{s}: the columns keep the top 50 px"
+        );
+        // One line: nothing under the band, nothing between the band's end and the menu's column.
+        assert_eq!(
+            ink(&f, 0.0, 34.0 + 61.0, 760.0, 34.0 + 67.0),
+            0,
+            "{s}: one line"
+        );
+        assert_eq!(
+            ink(&f, 721.0, by0, 760.0, by1),
+            0,
+            "{s}: elided before the menu"
+        );
+        // The line is grey ink (the sub line's), not the status's red.
+        let g = f.px(k(4.0), k(34.0 + 30.0));
+        let grey = f.count_where(k(bx0), k(by0), k(bx1), k(by1), |p| {
+            let (lo, hi) = (p[0].min(p[1]).min(p[2]), p[0].max(p[1]).max(p[2]));
+            (0..3).any(|c| p[c].abs_diff(g[c]) > 30) && hi - lo < 24
+        });
+        assert!(grey > lit / 2, "{s}: grey ink ({grey} of {lit})");
     }
 }

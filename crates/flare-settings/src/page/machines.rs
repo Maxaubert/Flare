@@ -4,6 +4,7 @@
 //! anywhere on the page; the linked machines are a table (Machine with its system's logo and name, SSH host, Flare
 //! version, Status, and a menu with Test and Remove); adding is a "+ Add a machine" row that opens an inline form in
 //! its place (an SSH host drop-down, a Name field, Cancel and Add), and a failed check is one red line under the form.
+//! A machine that is Not linked shows why as one small grey line under its row, not as a tooltip (2026-11-13).
 //!
 //! This is data only. The app's `machines_page` reads `machines.json` and `~/.ssh/config` and checks a link on a
 //! worker, and hands the page what it found in a [`MachinesInfo`].
@@ -76,6 +77,17 @@ pub struct MachineRow {
     /// The Flare version the host said at its last check ("" until one answered).
     pub version: String,
     pub status: LinkStatus,
+}
+
+impl MachineRow {
+    /// The small grey line under the row: why the last check failed, "" for any other status. It is a line of its own,
+    /// never the status's tooltip (owner rule 2026-11-13: a control with words has no tooltip).
+    pub fn sub_line(&self) -> &str {
+        match &self.status {
+            LinkStatus::Failed(reason) => reason,
+            _ => "",
+        }
+    }
 }
 
 /// The add form while it is open.
@@ -250,5 +262,26 @@ mod tests {
         assert_eq!(words, ["unknown", "checking", "linked", "failed"]);
         let texts: Vec<&str> = all.iter().map(LinkStatus::text).collect();
         assert_eq!(texts, ["", "Checking", "Linked", "Not linked"]);
+    }
+
+    #[test]
+    fn a_failed_machine_carries_its_reason_as_its_sub_line_and_the_others_have_none() {
+        let with = |status: LinkStatus| MachineRow { status, ..mac() };
+        let failed = with(LinkStatus::Failed(
+            "No Flare answered over SSH on mini.".into(),
+        ));
+        assert_eq!(failed.sub_line(), "No Flare answered over SSH on mini.");
+        assert_eq!(
+            failed.status.text(),
+            "Not linked",
+            "the status keeps its words"
+        );
+        for status in [
+            LinkStatus::Unknown,
+            LinkStatus::Checking,
+            LinkStatus::Linked,
+        ] {
+            assert_eq!(with(status.clone()).sub_line(), "", "{status:?}: no line");
+        }
     }
 }

@@ -70,7 +70,7 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
   it (Flare found on the Mac's PATH, or at `/Applications/Flare.app/Contents/MacOS/flare`), the row shows the Apple
   logo, the Mac's Flare version and "Linked". The same on the Mac adding the PC (the Windows logo).
 - [ ] With an older Flare on the other machine, Add shows one red line that says which side to update, and saves
-  nothing; Test on a linked machine whose ssh is down shows "Not linked" with the reason as its tooltip.
+  nothing; Test on a linked machine whose ssh is down shows "Not linked" and the reason as one grey line under its row (no tooltip on the status).
 - [ ] The + menu (right-click on +, or the New tab arrow) lists the machine; its pick opens a shell tab in the other
   machine's home folder, with the logo on the tab (vertical: before the folder; horizontal: before the ×).
 - [ ] "Hide here only" on that tab: gone here, still open on the other machine; Close on it ends it on both.

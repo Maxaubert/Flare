@@ -174,8 +174,8 @@ pub fn machine_id(name: &str, taken: &[String]) -> String {
         .unwrap_or(base)
 }
 
-/// Pure: the one red line a failed link check shows under the add form, or as a machine's Status tip (owner pick,
-/// remote sessions PR 7). A protocol refusal says which side to update; the version line names both protocols, the
+/// Pure: the one red line a failed link check shows under the add form, or the grey line under a machine's row (owner
+/// picks, remote sessions PR 7 and 2026-11-13). A protocol refusal says which side to update; the version line names both protocols, the
 /// host's first, whichever end noticed (rule 278). `here` is this Flare's remote protocol.
 pub fn failure_line(host: &str, e: &crate::remote_link::LinkError, here: u32) -> String {
     use crate::remote_link::LinkError;

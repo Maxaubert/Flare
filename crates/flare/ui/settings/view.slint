@@ -556,7 +556,6 @@ export component SettingsView inherits Rectangle {
                         data: row;
                         menu-open: SettingsBridge.select-open && SettingsBridge.select-row == row.id;
                         menu-request(x, y, w, h) => { SettingsBridge.select-open-request(row.id, Px.snap(x), Px.snap(y), Px.snap(x + w) - Px.snap(x), Px.snap(y + h) - Px.snap(y)); }
-                        tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
                     }
                     if row.block == BlockKind.machine-add: SetMachineForm {
                         width: parent.width;
