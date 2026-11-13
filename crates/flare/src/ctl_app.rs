@@ -296,6 +296,39 @@ pub enum CtlOp {
         tool: String,
         input: Value,
     },
+    /// `remote.open` (remote sessions PR 2): a new tab in a host folder the call's thread checked is one, with a session
+    /// id that passed `valid_resume`. Answered with `{tab, session}`.
+    RemoteOpen {
+        folder: String,
+        resume: Option<String>,
+    },
+    /// `remote.tabs`: every shell tab with its folder, title, the agent's state word and session.
+    RemoteTabs,
+    /// `remote.attach`: connection `conn` follows the tab (its handle and output tail go into the `RemoteHost`).
+    /// Answered with `{tab, cols, rows, seq}`.
+    RemoteAttach {
+        tab: String,
+        conn: u64,
+    },
+    /// `remote.input`: intents the call's thread checked (rule 279), typed into the tab.
+    RemoteInput {
+        tab: String,
+        intents: Vec<flare_term::handle::RemoteIntent>,
+    },
+    /// `remote.resize`: a clamped size; the remote viewer owns the tab's size from now (rule 282).
+    RemoteResize {
+        tab: String,
+        cols: usize,
+        rows: usize,
+    },
+    /// The last remote viewer of the tab detached or went: its size goes back to the window. Never ends it (rule 280).
+    RemoteRelease {
+        tab: String,
+    },
+    /// `remote.close`: the tab closes the way a person's close does; an agent at work asks first (rule 48).
+    RemoteClose {
+        tab: String,
+    },
 }
 
 /// Where `browser.navigate` sends the page.
@@ -354,6 +387,13 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::FillPage { .. } => "CtlOp::FillPage",
             CtlOp::Fill { .. } => "CtlOp::Fill",
             CtlOp::SecretAsk { .. } => "CtlOp::SecretAsk",
+            CtlOp::RemoteOpen { .. } => "CtlOp::RemoteOpen",
+            CtlOp::RemoteTabs => "CtlOp::RemoteTabs",
+            CtlOp::RemoteAttach { .. } => "CtlOp::RemoteAttach",
+            CtlOp::RemoteInput { .. } => "CtlOp::RemoteInput",
+            CtlOp::RemoteResize { .. } => "CtlOp::RemoteResize",
+            CtlOp::RemoteRelease { .. } => "CtlOp::RemoteRelease",
+            CtlOp::RemoteClose { .. } => "CtlOp::RemoteClose",
         })
     }
 }
@@ -449,6 +489,9 @@ pub struct AppDispatcher {
     surface_rate: Mutex<HashMap<String, flare_ctl::session::Bucket>>,
     /// The decor limit's clock (a test passes a still one).
     clock: fn() -> Instant,
+    /// Remote sessions (PR 2): the bridge key and the tabs remote viewers follow. Without it no token is the bridge and
+    /// the `remote.*` methods are neither listed nor answered.
+    remote: Option<Arc<crate::remote_host::RemoteHost>>,
 }
 
 /// Buckets kept at most; past it the map starts again (a bucket is only a second of memory).
@@ -480,7 +523,14 @@ impl AppDispatcher {
             decor_plugin_rate: Mutex::new(HashMap::new()),
             surface_rate: Mutex::new(HashMap::new()),
             clock: Instant::now,
+            remote: None,
         }
+    }
+
+    /// Serves remote sessions (PR 2): the bridge key resolves to the bridge grant and `remote.*` is answered.
+    pub fn with_remote(mut self, host: Arc<crate::remote_host::RemoteHost>) -> Self {
+        self.remote = Some(host);
+        self
     }
 
     /// The tab a call acts on (plugins phase 3): the `tab` it names, or else the caller's own. A caller may name its
@@ -537,8 +587,8 @@ impl AppDispatcher {
                     "Flare's own interface draws its own marks",
                 ));
             }
-            // The grant check keeps a remote link out of the decor methods already (rule 276).
-            Grant::Remote => {
+            // The grant check keeps a remote link and the bridge out of the decor methods already (rules 276, 284).
+            Grant::Remote | Grant::Bridge => {
                 return Err(CtlError::new(
                     code::FORBIDDEN,
                     "a remote link draws no marks",
@@ -2112,10 +2162,309 @@ pub fn agent_op(method: Method, params: &Value) -> Result<(AgentOp, Duration), C
     Ok((op, BROWSER_WAIT))
 }
 
+/// `remote.input` calls one tab takes a second (a viewer batches its keys between polls, so a person typing fast makes
+/// far fewer).
+pub const REMOTE_INPUT_RATE: f64 = 50.0;
+
+/// The tab a `remote.*` call names: a tab's public id, required.
+fn remote_tab(params: &Value) -> Result<String, CtlError> {
+    match str_param(params, "tab")? {
+        Some(t) if !t.is_empty() && t.len() <= 64 => Ok(t.to_string()),
+        _ => Err(CtlError::new(
+            code::BAD_PARAMS,
+            "tab is the id of one of the host's tabs",
+        )),
+    }
+}
+
+/// A whole number param, or `bad_params` naming it.
+fn count_param(params: &Value, key: &str, need: bool) -> Result<Option<u64>, CtlError> {
+    match params.get(key) {
+        None | Some(Value::Null) if !need => Ok(None),
+        Some(v) if v.as_u64().is_some() => Ok(v.as_u64()),
+        _ => Err(CtlError::new(
+            code::BAD_PARAMS,
+            format!("{key} is a whole number"),
+        )),
+    }
+}
+
+/// A host folder a remote call names: an absolute path with no control character. Whether it is a folder is asked of
+/// the disk by the caller, on the call's worker.
+fn host_folder(text: &str) -> Result<std::path::PathBuf, CtlError> {
+    let bad = |m: &str| CtlError::new(code::BAD_PARAMS, m);
+    if text.is_empty() || text.len() > 4096 || text.chars().any(char::is_control) {
+        return Err(bad("a folder is a path on the host"));
+    }
+    let p = std::path::PathBuf::from(text);
+    if !p.is_absolute() {
+        return Err(bad("a folder is an absolute path on the host"));
+    }
+    Ok(p)
+}
+
+/// `remote.ls`: one folder's names, folders first, then by name; at most `LS_MAX`, then `truncated`. Host paths only:
+/// the answer says the folder as the host names it and the bare names in it. On the call's worker (rule 34).
+pub fn list_folder(dir: &std::path::Path) -> Result<Value, CtlError> {
+    use flare_ctl::remote::LS_MAX;
+    // sync-ok: the control channel's worker lists the folder, never the UI thread
+    let rd = std::fs::read_dir(dir).map_err(|e| {
+        CtlError::new(
+            code::NOT_FOUND,
+            format!("that folder cannot be read on the host: {e}"),
+        )
+    })?;
+    let mut entries: Vec<(bool, String)> = Vec::new();
+    let mut truncated = false;
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.chars().any(char::is_control) {
+            continue;
+        }
+        // A link to a folder lists as a folder, like the file pickers show it.
+        let is_dir = e.path().is_dir();
+        if entries.len() >= LS_MAX * 4 {
+            truncated = true;
+            break;
+        }
+        entries.push((is_dir, name));
+    }
+    entries.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+    });
+    if entries.len() > LS_MAX {
+        entries.truncate(LS_MAX);
+        truncated = true;
+    }
+    let list: Vec<Value> = entries
+        .into_iter()
+        .map(|(dir, name)| json!({"name": name, "dir": dir}))
+        .collect();
+    Ok(json!({
+        "path": dir.to_string_lossy(),
+        "entries": list,
+        "truncated": truncated,
+    }))
+}
+
+/// A checked key intent as the key event the encoder takes.
+fn key_event_of(k: flare_ctl::remote::KeyIntent) -> flare_term::keys::KeyEvent {
+    flare_term::keys::KeyEvent {
+        pressed: true,
+        key: k.key,
+        code: k.code,
+        text: k.text,
+        ctrl: k.ctrl,
+        shift: k.shift,
+        alt: k.alt,
+        meta: k.meta,
+    }
+}
+
+impl AppDispatcher {
+    /// The remote host, or `unavailable` when this run serves no remote sessions.
+    fn remote_host(&self) -> Result<&Arc<crate::remote_host::RemoteHost>, CtlError> {
+        self.remote.as_ref().ok_or_else(|| {
+            CtlError::new(
+                code::UNAVAILABLE,
+                "this Flare does not serve remote sessions",
+            )
+        })
+    }
+
+    /// Tells the window a tab's last remote viewer is gone, without waiting for it (a link that dropped has nobody to
+    /// answer).
+    fn post_release(&self, tab: String) {
+        if self.stopping.load(Ordering::SeqCst) {
+            return;
+        }
+        let (tx, _rx) = mpsc::channel();
+        (self.post)(UiMsg::Ctl(CtlRequestBox(CtlRequest {
+            op: CtlOp::RemoteRelease { tab },
+            deadline: Instant::now() + UI_WAIT,
+            reply: tx,
+        })));
+    }
+
+    /// The `remote.*` methods (remote sessions PR 2), for the bridge (the host's own serve process on the pipe) and a
+    /// remote link served in process. Params are checked here, on the call's worker; the disk is read here too
+    /// (`remote.open`'s folder, `remote.ls`); output and snapshots come from the followed tab's tail without the UI
+    /// thread; what changes a tab is posted to the window.
+    fn remote_call(
+        &self,
+        ctx: &CallContext,
+        method: Method,
+        params: &Value,
+    ) -> Result<Value, CtlError> {
+        use base64::Engine as _;
+        use flare_ctl::remote;
+        let host = self.remote_host()?;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let no_tab = || {
+            CtlError::new(
+                code::NO_TAB,
+                "that tab is not followed: send remote.attach first",
+            )
+        };
+        match method {
+            Method::RemoteOpen => {
+                only_fields(params, &["folder", "resume"], "remote.open")?;
+                let folder = str_param(params, "folder")?
+                    .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "folder is required"))?;
+                let dir = host_folder(folder)?;
+                // sync-ok: the control channel's worker asks the disk, never the UI thread
+                if !dir.is_dir() {
+                    return Err(CtlError::new(
+                        code::NOT_FOUND,
+                        "that folder does not exist on the host",
+                    ));
+                }
+                let resume = match str_param(params, "resume")? {
+                    None => None,
+                    Some(r) => Some(
+                        flare_agent::resume::valid_resume(Some(r))
+                            .ok_or_else(|| {
+                                CtlError::new(code::BAD_PARAMS, "resume is not a session id")
+                            })?
+                            .to_string(),
+                    ),
+                };
+                self.ask(CtlOp::RemoteOpen {
+                    folder: dir.to_string_lossy().into_owned(),
+                    resume,
+                })
+            }
+            Method::RemoteLs => {
+                only_fields(params, &["path"], "remote.ls")?;
+                let dir = match str_param(params, "path")? {
+                    Some(p) => host_folder(p)?,
+                    None => std::path::PathBuf::from(&self.home),
+                };
+                list_folder(&dir)
+            }
+            Method::RemoteTabs => {
+                only_fields(params, &[], "remote.tabs")?;
+                self.ask(CtlOp::RemoteTabs)
+            }
+            Method::RemoteAttach => {
+                only_fields(params, &["tab"], "remote.attach")?;
+                let tab = remote_tab(params)?;
+                self.ask(CtlOp::RemoteAttach {
+                    tab,
+                    conn: ctx.conn,
+                })
+            }
+            Method::RemoteDetach => {
+                only_fields(params, &["tab"], "remote.detach")?;
+                let tab = remote_tab(params)?;
+                // Rule 280: a detach only stops following; the tab and its shell go on.
+                if host.unfollow(&tab, ctx.conn) {
+                    self.post_release(tab.clone());
+                }
+                Ok(json!({"tab": tab, "detached": true}))
+            }
+            Method::RemoteInput => {
+                only_fields(params, &["tab", "intents"], "remote.input")?;
+                let tab = remote_tab(params)?;
+                let intents = remote::parse_intents(params.get("intents"))?;
+                self.spend_surface(
+                    format!("remote.input:{tab}"),
+                    REMOTE_INPUT_RATE,
+                    "remote.input calls on one tab",
+                )?;
+                let intents = intents
+                    .into_iter()
+                    .map(|i| match i {
+                        remote::Intent::Key(k) => {
+                            flare_term::handle::RemoteIntent::Key(key_event_of(k))
+                        }
+                        remote::Intent::Text(t) => flare_term::handle::RemoteIntent::Text(t),
+                        remote::Intent::Paste(p) => flare_term::handle::RemoteIntent::Paste(p),
+                    })
+                    .collect();
+                self.ask(CtlOp::RemoteInput { tab, intents })
+            }
+            Method::RemoteResize => {
+                only_fields(params, &["tab", "cols", "rows"], "remote.resize")?;
+                let tab = remote_tab(params)?;
+                let cols = count_param(params, "cols", true)?.unwrap_or(0);
+                let rows = count_param(params, "rows", true)?.unwrap_or(0);
+                let (cols, rows) = remote::clamp_size(cols, rows);
+                self.ask(CtlOp::RemoteResize {
+                    tab,
+                    cols: usize::from(cols),
+                    rows: usize::from(rows),
+                })
+            }
+            Method::RemoteOutput => {
+                only_fields(params, &["tab", "since", "max"], "remote.output")?;
+                let tab = remote_tab(params)?;
+                let since = count_param(params, "since", true)?.unwrap_or(0);
+                let max = remote::output_max(count_param(params, "max", false)?);
+                let (_, tail) = host.followed(&tab).ok_or_else(no_tab)?;
+                let r = tail.read(since, max);
+                Ok(json!({
+                    "tab": tab,
+                    "from": r.from,
+                    "to": r.to,
+                    "data": b64.encode(&r.data),
+                    "gap": r.gap,
+                }))
+            }
+            Method::RemoteSnapshot => {
+                only_fields(params, &["tab"], "remote.snapshot")?;
+                let tab = remote_tab(params)?;
+                let (handle, _) = host.followed(&tab).ok_or_else(no_tab)?;
+                let snap = handle
+                    .remote_snapshot(remote::SNAPSHOT_LINES)
+                    .ok_or_else(|| {
+                        CtlError::new(code::UNAVAILABLE, "that tab's shell is not running")
+                    })?;
+                Ok(json!({
+                    "tab": tab,
+                    "seq": snap.seq,
+                    "cols": snap.cols,
+                    "rows": snap.rows,
+                    "data": b64.encode(&snap.data),
+                }))
+            }
+            Method::RemoteClose => {
+                only_fields(params, &["tab"], "remote.close")?;
+                let tab = remote_tab(params)?;
+                self.ask(CtlOp::RemoteClose { tab })
+            }
+            _ => Err(CtlError::new(code::INTERNAL, "not a remote method")),
+        }
+    }
+}
+
 impl Dispatcher for AppDispatcher {
     /// A mod's token (stage 8): the grant of exactly its permissions while it is on, nothing once it is off.
     fn resolve_token(&self, token: &str) -> Option<Grant> {
+        // The bridge key (rule 284): the host's own serve process, relaying a remote link. Checked first and in full.
+        if self.remote.as_ref().is_some_and(|r| r.is_bridge_key(token)) {
+            return Some(Grant::Bridge);
+        }
         self.mods.as_ref()?.grant_of_token(token)
+    }
+
+    /// A remote link served in this process (the tests' loopback): the remote grant while this Flare serves remote
+    /// sessions. The running app has no stdio server, so in it only the bridge reaches `remote.*`.
+    fn remote_grant(&self, _origin: flare_ctl::ConnOrigin) -> Option<Grant> {
+        self.remote.as_ref().map(|_| Grant::Remote)
+    }
+
+    /// A remote viewer's link dropped, or its bridge quit: the tabs nobody follows any more take the window's size
+    /// again. Their shells go on (rule 280).
+    fn client_gone(&self, ctx: &CallContext) {
+        let Some(host) = &self.remote else { return };
+        if !matches!(ctx.grant, Grant::Bridge | Grant::Remote) {
+            return;
+        }
+        for tab in host.gone(ctx.conn) {
+            self.post_release(tab);
+        }
     }
 
     fn resolve_tab_token(&self, tab_token: &str) -> Option<String> {
@@ -2166,6 +2515,14 @@ impl Dispatcher for AppDispatcher {
                 Method::ViewAudio,
                 Method::ViewModel,
             ]);
+        }
+        // Remote sessions (PR 2) only where this run serves them.
+        if self.remote.is_some() {
+            all.extend(
+                Method::ALL
+                    .into_iter()
+                    .filter(|m| m.namespace() == flare_ctl::Namespace::Remote),
+            );
         }
         // Mods (stage 8) are listed only where there is a hub for them, and so are the plugins' own surfaces.
         if self.mods.is_some() {
@@ -2395,6 +2752,16 @@ impl Dispatcher for AppDispatcher {
             Method::ViewDiagram => self.view_diagram(ctx, &params),
             Method::ViewImage => self.view_file(ctx, PanelKind::Image, &params),
             Method::ViewFile => self.view_file(ctx, PanelKind::Text, &params),
+            Method::RemoteOpen
+            | Method::RemoteLs
+            | Method::RemoteTabs
+            | Method::RemoteAttach
+            | Method::RemoteDetach
+            | Method::RemoteInput
+            | Method::RemoteResize
+            | Method::RemoteOutput
+            | Method::RemoteSnapshot
+            | Method::RemoteClose => self.remote_call(ctx, method, &params),
             Method::ViewText => {
                 let tab = Self::tab_of_call(ctx)?;
                 let text = str_param(&params, "text")?
@@ -2454,6 +2821,7 @@ pub struct CtlServer {
 impl CtlServer {
     /// Starts the server on `pipe` (its own threads; the UI thread only makes the pipe). A failure
     /// (the name is taken, no SID) is the caller's to log: Flare runs without the channel.
+    #[allow(clippy::too_many_arguments)] // one optional part each (apps, mods, remote sessions); startup calls it once
     pub fn start(
         pipe: &str,
         post: Post,
@@ -2462,6 +2830,7 @@ impl CtlServer {
         eval: EvalSwitch,
         apps: AppsCfg,
         mods: Option<Arc<Hub>>,
+        remote: Option<Arc<crate::remote_host::RemoteHost>>,
     ) -> std::io::Result<Self> {
         let stopping = Arc::new(AtomicBool::new(false));
         let mut d = AppDispatcher::new(post, tab_of, real_resolve(), home, Arc::clone(&stopping))
@@ -2469,6 +2838,9 @@ impl CtlServer {
             .with_apps(apps);
         if let Some(hub) = mods {
             d = d.with_mods(hub);
+        }
+        if let Some(r) = remote {
+            d = d.with_remote(r);
         }
         let dispatcher = Arc::new(d);
         // sync-ok: startup, creates the pipe and its accept thread
@@ -5147,5 +5519,330 @@ mod tests {
             reply: tx,
         });
         assert_eq!(format!("{b:?}"), "CtlOp::ShowText");
+    }
+
+    // Remote sessions PR 2: the `remote.*` methods on the host's dispatcher.
+
+    const BRIDGE_KEY: &str = "bridge-key-of-this-run";
+
+    /// A rig that serves remote sessions, its window answering every op with `{ok: true}`.
+    fn remote_rig() -> (
+        AppDispatcher,
+        Arc<Mutex<Vec<String>>>,
+        Arc<crate::remote_host::RemoteHost>,
+    ) {
+        let r = rig(|_| Ok(json!({"ok": true})), false, &[]);
+        let host = crate::remote_host::RemoteHost::with_key(BRIDGE_KEY.into());
+        let mut d = r.d.with_remote(Arc::clone(&host));
+        d.clock = still;
+        (d, r.ops, host)
+    }
+
+    fn bridge(conn: u64) -> CallContext {
+        CallContext {
+            conn,
+            ..ctx(None, Grant::Bridge)
+        }
+    }
+
+    fn a_followed_tab(
+        host: &crate::remote_host::RemoteHost,
+        tab: &str,
+        conn: u64,
+    ) -> flare_term::tail::TailHandle {
+        let mgr = flare_term::session::SessionManager::new(
+            flare_term::fake::FakeSpawner::new(),
+            flare_term::fake::FakeShells::new(),
+            flare_term::session::SessionOptions::default(),
+        );
+        let tail = flare_term::tail::TailHandle::new(16);
+        host.follow(
+            tab,
+            conn,
+            flare_term::handle::TermHandle::new(tab, mgr, 80, 24),
+            tail.clone(),
+        );
+        tail
+    }
+
+    /// Rule 284: the bridge key, and only it, is the bridge grant; a run that serves no remote sessions has no key, lists
+    /// no `remote.*` method and answers them `unavailable`.
+    #[test]
+    fn the_bridge_key_is_the_bridge_grant_and_remote_methods_need_a_remote_host() {
+        let (d, _, _) = remote_rig();
+        assert_eq!(d.resolve_token(BRIDGE_KEY), Some(Grant::Bridge));
+        assert_eq!(d.resolve_token("bridge-key-of-another-run"), None);
+        assert_eq!(d.resolve_token(""), None);
+        assert_eq!(
+            d.remote_grant(flare_ctl::ConnOrigin::Stdio),
+            Some(Grant::Remote)
+        );
+        assert!(d.capabilities().contains(&Method::RemoteOutput));
+        let plain = rig(ok_all, false, &[]);
+        assert_eq!(plain.d.resolve_token(BRIDGE_KEY), None);
+        assert_eq!(plain.d.remote_grant(flare_ctl::ConnOrigin::Stdio), None);
+        assert!(
+            !plain
+                .d
+                .capabilities()
+                .iter()
+                .any(|m| m.namespace() == flare_ctl::Namespace::Remote)
+        );
+        assert_eq!(
+            code_of(plain.d.call(&bridge(1), Method::RemoteTabs, json!({}))),
+            code::UNAVAILABLE
+        );
+        assert!(plain.ops.lock().unwrap().is_empty());
+    }
+
+    /// Rule 279: `remote.input` is checked on the worker (the intents, the size, the characters, the rate) before the
+    /// window hears of it, and reaches the window as typed intents.
+    #[test]
+    fn remote_input_is_checked_and_rate_limited_before_the_window_types_it() {
+        let (d, ops, _) = remote_rig();
+        let c = bridge(1);
+        for bad in [
+            json!({"tab": "t1"}),
+            json!({"tab": "t1", "intents": []}),
+            json!({"tab": "t1", "intents": [{"text": "ls\r"}]}),
+            json!({"tab": "t1", "intents": [{"bytes": "x"}]}),
+            json!({"tab": "t1", "intents": [{"paste": "x".repeat(70 * 1024)}]}),
+            json!({"intents": [{"text": "a"}]}),
+            json!({"tab": "t1", "intents": [{"text": "a"}], "raw": "x"}),
+        ] {
+            assert_eq!(
+                code_of(d.call(&c, Method::RemoteInput, bad.clone())),
+                code::BAD_PARAMS,
+                "{bad}"
+            );
+        }
+        assert!(ops.lock().unwrap().is_empty());
+        let good = json!({"tab": "t1", "intents": [{"text": "echo hi"}, {"key": {"key": "Enter", "code": "Enter"}}]});
+        let mut ok = 0;
+        let mut limited = 0;
+        for _ in 0..(REMOTE_INPUT_RATE as usize + 5) {
+            match d.call(&c, Method::RemoteInput, good.clone()) {
+                Ok(_) => ok += 1,
+                Err(e) if e.code == code::RATE_LIMITED => limited += 1,
+                Err(e) => panic!("{e}"),
+            }
+        }
+        assert_eq!((ok, limited), (REMOTE_INPUT_RATE as usize, 5));
+        assert!(
+            ops.lock()
+                .unwrap()
+                .iter()
+                .all(|o| o == "CtlOp::RemoteInput")
+        );
+    }
+
+    /// Rule 281: output comes from the followed tab's tail on the worker, numbered, and a `since` that fell out of the
+    /// ring says `gap`; a tab nobody attached is `no_tab`. The window is never asked.
+    #[test]
+    fn remote_output_reads_the_followed_tail_and_never_asks_the_window() {
+        use base64::Engine as _;
+        let (d, ops, host) = remote_rig();
+        let c = bridge(1);
+        let tail = a_followed_tab(&host, "t1", 1);
+        tail.push(b"hello ");
+        tail.push(b"world");
+        let decode = |v: &Value| {
+            base64::engine::general_purpose::STANDARD
+                .decode(v["data"].as_str().unwrap())
+                .unwrap()
+        };
+        let v = d
+            .call(&c, Method::RemoteOutput, json!({"tab": "t1", "since": 0}))
+            .unwrap();
+        assert_eq!(decode(&v), b"hello world");
+        assert_eq!(
+            (v["from"].as_u64(), v["to"].as_u64(), v["gap"].as_bool()),
+            (Some(0), Some(11), Some(false))
+        );
+        // The next poll from `to` gets nothing twice.
+        let v = d
+            .call(
+                &c,
+                Method::RemoteOutput,
+                json!({"tab": "t1", "since": 11, "max": 4}),
+            )
+            .unwrap();
+        assert_eq!(decode(&v), b"");
+        tail.push(b"0123456789abcdef!");
+        let v = d
+            .call(
+                &c,
+                Method::RemoteOutput,
+                json!({"tab": "t1", "since": 11, "max": 4}),
+            )
+            .unwrap();
+        assert_eq!(v["gap"], true);
+        assert_eq!(decode(&v).len(), 4);
+        assert_eq!(
+            code_of(d.call(&c, Method::RemoteOutput, json!({"tab": "t9", "since": 0}))),
+            code::NO_TAB
+        );
+        assert_eq!(
+            code_of(d.call(&c, Method::RemoteOutput, json!({"tab": "t1"}))),
+            code::BAD_PARAMS
+        );
+        assert!(ops.lock().unwrap().is_empty());
+    }
+
+    /// Rule 280: a detach only stops following. The size goes back to the window once, when the last follower goes;
+    /// a link that drops is the same; nothing closes the tab.
+    #[test]
+    fn a_remote_detach_or_a_dropped_link_never_closes_the_tab() {
+        let (d, ops, host) = remote_rig();
+        a_followed_tab(&host, "t1", 1);
+        host.follow(
+            "t1",
+            2,
+            host.followed("t1").unwrap().0,
+            host.followed("t1").unwrap().1,
+        );
+        let v = d
+            .call(&bridge(1), Method::RemoteDetach, json!({"tab": "t1"}))
+            .unwrap();
+        assert_eq!(v["detached"], true);
+        assert!(ops.lock().unwrap().is_empty(), "connection 2 still follows");
+        d.client_gone(&bridge(2));
+        assert_eq!(*ops.lock().unwrap(), ["CtlOp::RemoteRelease"]);
+        assert!(host.followed("t1").is_none());
+        // An agent's connection going is nothing to the remote host.
+        a_followed_tab(&host, "t2", 3);
+        d.client_gone(&CallContext {
+            conn: 3,
+            ..agent_in_tab()
+        });
+        assert!(host.followed("t2").is_some());
+        assert!(
+            !ops.lock()
+                .unwrap()
+                .iter()
+                .any(|o| o == "CtlOp::RemoteClose")
+        );
+    }
+
+    /// `remote.open` names a host folder: absolute, there on the disk (asked on the worker), with a resume id that is a
+    /// session id. Only then does the window open a tab.
+    #[test]
+    fn remote_open_checks_the_host_folder_and_the_resume_id_first() {
+        let (d, ops, _) = remote_rig();
+        let c = bridge(1);
+        let dir = tempfile::tempdir().unwrap();
+        let here = dir.path().to_string_lossy().into_owned();
+        let gone = dir.path().join("gone").to_string_lossy().into_owned();
+        assert_eq!(
+            code_of(d.call(&c, Method::RemoteOpen, json!({"folder": "relative\\x"}))),
+            code::BAD_PARAMS
+        );
+        assert_eq!(
+            code_of(d.call(&c, Method::RemoteOpen, json!({"folder": gone}))),
+            code::NOT_FOUND
+        );
+        assert_eq!(
+            code_of(d.call(
+                &c,
+                Method::RemoteOpen,
+                json!({"folder": here, "resume": "--evil"})
+            )),
+            code::BAD_PARAMS
+        );
+        assert!(ops.lock().unwrap().is_empty());
+        assert!(
+            d.call(&c, Method::RemoteOpen, json!({"folder": here}))
+                .is_ok()
+        );
+        assert!(
+            d.call(
+                &c,
+                Method::RemoteOpen,
+                json!({"folder": here, "resume": "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f"})
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            *ops.lock().unwrap(),
+            ["CtlOp::RemoteOpen", "CtlOp::RemoteOpen"]
+        );
+    }
+
+    /// `remote.ls` lists one host folder on the worker: folders first, then by name, bounded.
+    #[test]
+    fn remote_ls_lists_folders_first_and_only_names() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("zeta")).unwrap();
+        std::fs::write(dir.path().join("Alpha.txt"), "a").unwrap();
+        std::fs::write(dir.path().join("beta.txt"), "b").unwrap();
+        let v = list_folder(dir.path()).unwrap();
+        let names: Vec<(&str, bool)> = v["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| (e["name"].as_str().unwrap(), e["dir"].as_bool().unwrap()))
+            .collect();
+        assert_eq!(
+            names,
+            [("zeta", true), ("Alpha.txt", false), ("beta.txt", false)]
+        );
+        assert_eq!(v["truncated"], false);
+        for i in 0..(flare_ctl::remote::LS_MAX + 3) {
+            std::fs::write(dir.path().join(format!("f{i:04}")), "").unwrap();
+        }
+        let v = list_folder(dir.path()).unwrap();
+        assert_eq!(
+            v["entries"].as_array().unwrap().len(),
+            flare_ctl::remote::LS_MAX
+        );
+        assert_eq!(v["truncated"], true);
+        assert_eq!(
+            code_of(list_folder(&dir.path().join("nope"))),
+            code::NOT_FOUND
+        );
+        let (d, ops, _) = remote_rig();
+        assert_eq!(
+            code_of(d.call(
+                &bridge(1),
+                Method::RemoteLs,
+                json!({"path": "not/absolute"})
+            )),
+            code::BAD_PARAMS
+        );
+        assert!(ops.lock().unwrap().is_empty());
+    }
+
+    /// `remote.resize` is clamped, never refused, and reaches the window as one size.
+    #[test]
+    fn remote_resize_is_clamped_on_the_worker() {
+        let r = rig(
+            |op| match op {
+                CtlOp::RemoteResize { cols, rows, .. } => Ok(json!({"cols": cols, "rows": rows})),
+                _ => Ok(json!({})),
+            },
+            false,
+            &[],
+        );
+        let d =
+            r.d.with_remote(crate::remote_host::RemoteHost::with_key("k".into()));
+        let v = d
+            .call(
+                &bridge(1),
+                Method::RemoteResize,
+                json!({"tab": "t1", "cols": 1, "rows": 99999}),
+            )
+            .unwrap();
+        assert_eq!(
+            (v["cols"].as_u64(), v["rows"].as_u64()),
+            (Some(2), Some(500))
+        );
+        assert_eq!(
+            code_of(d.call(
+                &bridge(1),
+                Method::RemoteResize,
+                json!({"tab": "t1", "cols": "80", "rows": 24})
+            )),
+            code::BAD_PARAMS
+        );
     }
 }

@@ -212,6 +212,7 @@ fn prewarm_plan(
         || args.live_screenshot.is_some()
         || args.scene.is_some()
         || args.instance_probe
+        || args.serve_remote
         || args.live_tabs.is_some());
     if args.renderer != RendererChoice::Gpu || !opens_window {
         return None;

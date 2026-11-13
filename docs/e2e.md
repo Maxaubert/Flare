@@ -338,6 +338,13 @@ under `--e2e`) and talks to the pipe with the `flare-ctl` client; it connects to
 `flare-mcp.exe` from beside the exe (build it first: `cargo build --release -p flare -p flare-mcp`) with `CREATE_NO_WINDOW`, killed
 on every way out. The probes are `ctl.info` and `panel.state` (which now also reports `row0`, the first row of the text viewer).
 
+`remoteLoopback` (`tools/e2e/src/scenarios/remote.rs`, remote sessions PR 2, Windows only for now) launches the host Flare in its
+own world and starts `flare --serve-remote --user-data-dir=<that profile>` beside it with `CREATE_NO_WINDOW`, its stdin and
+stdout piped to an in-process `StdioWire`: a loopback in place of ssh, so no other machine is reached. It opens a tab with
+`remote.open`, attaches, waits for the prompt in the polled `remote.output`, types `echo remote-loop-7` and an Enter as
+intents (the only text it ever sends), reads the output, resizes, detaches, attaches again and polls on from the last `to`
+(no byte twice), reads `remote.snapshot`, closes the tab and closes the link (the serve process exits 0).
+
 ## Agent browser scenarios (Surfaces stage 4)
 
 `convoPanels` (`tools/e2e/src/scenarios/convo.rs`, Surfaces stage 6) needs no WebView2. It launches with `CLAUDE_CONFIG_DIR` at a folder of its own and a synthetic transcript. One command line in the shell stands in for Claude: it prints the hook line with a session id, waits for a flag file, prints a second session, and never returns to the prompt (a prompt takes the agent and its session back, and a `working` hook would make the close ask a question). It opens Changes with `panel.open`, clicks the first file row (`ui.rect convo-file-0`), appends lines to the transcript, checks that `panel.open` kind `tasks` is refused (the Tasks panel was removed 2026-10-26) and reads the `convo.state` probe, at 100 and 225 percent (42 checks).

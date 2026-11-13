@@ -119,6 +119,11 @@ pub enum Grant {
     /// The other machine's Flare on a remote link: the serve stdio path only (rule 276). It holds no permission a
     /// mod could ask for, and reaches the `remote.*` methods only: no shell input, setting, mod, browser or eval.
     Remote,
+    /// The host's own `flare --serve-remote` process on the pipe (remote sessions PR 2): the bridge that relays a remote
+    /// link's `remote.*` calls to the running Flare. Issued only for the bridge key, a secret the running Flare writes
+    /// into its own profile at start (owner-only, new every start), never for "no token" (rule 284). It reaches the
+    /// `remote.*` methods but `remote.hello` (the link's greeting is the serve process's own) and nothing else.
+    Bridge,
 }
 
 impl Grant {
@@ -133,6 +138,7 @@ impl Grant {
             Grant::Mod { .. } => "mod",
             Grant::Ui => "ui",
             Grant::Remote => "remote",
+            Grant::Bridge => "bridge",
         }
     }
 
@@ -153,7 +159,7 @@ impl Grant {
                 .chain(["ui"])
                 .collect(),
             // Not a manifest permission: a name for the `remote` namespace, which no mod can ask for.
-            Grant::Remote => vec!["remote"],
+            Grant::Remote | Grant::Bridge => vec!["remote"],
         }
     }
 
@@ -164,7 +170,7 @@ impl Grant {
     pub fn may_act_on_any_tab(&self) -> bool {
         match self {
             Grant::Ui => true,
-            Grant::Agent { .. } | Grant::Remote => false,
+            Grant::Agent { .. } | Grant::Remote | Grant::Bridge => false,
             Grant::Mod { permissions, .. } => permissions.contains(&Permission::Tabs),
         }
     }
@@ -175,8 +181,12 @@ impl Grant {
             Grant::Ui => true,
             Grant::Agent { eval } => *eval,
             Grant::Mod { permissions, .. } => permissions.contains(&Permission::Eval),
-            Grant::Remote => false,
+            Grant::Remote | Grant::Bridge => false,
         };
+        // The bridge relays a link that already said `remote.hello` to its own serve process: it never greets.
+        if *self == Grant::Bridge && method == Method::RemoteHello {
+            return false;
+        }
         self.may_enter(method.namespace()) && (method != Method::BrowserEval || eval_ok)
     }
 
@@ -189,12 +199,14 @@ impl Grant {
             // A remote link reaches its own namespace and nothing else: not even `hello` or `tabs.list`, so nothing the
             // pipe offers rides on it (rule 276).
             Grant::Remote => ns == N::Remote,
+            // The bridge says `hello` on the pipe (with its key) and then relays `remote.*`: nothing else (rule 284).
+            Grant::Bridge => matches!(ns, N::Hello | N::Remote),
             // `hello` and `tabs.list` are open to every connection; the rest depends on the grant.
             _ if matches!(ns, N::Hello | N::Tabs) => true,
             // Nothing in the Ui namespace (shell input, settings, mod management) is reachable
             // over the pipe by anyone, whatever they hold.
             _ if ns == N::Ui => false,
-            // A remote link's methods are the remote grant's only, whatever a pipe caller holds.
+            // A remote link's methods are the remote grant's and the bridge's only, whatever another pipe caller holds.
             _ if ns == N::Remote => false,
             Grant::Agent { .. } => match ns {
                 // Decorating is for the caller's own tab only: the dispatcher holds it to that.
@@ -850,6 +862,38 @@ mod tests {
             assert!(!other.may_call(Method::RemoteHello), "{}", other.kind());
         }
         assert!(Grant::Ui.may_call(Method::RemoteHello));
+    }
+
+    /// Rule 284: the bridge (the host's own serve process, on the pipe with the bridge key) relays `remote.*` and
+    /// reaches nothing else: not `remote.hello`, not `tabs.list`, no shell input, setting, mod, browser or eval.
+    #[test]
+    fn bridge_grant_reaches_the_remote_methods_but_the_greeting_and_nothing_else() {
+        let g = Grant::Bridge;
+        for m in Method::ALL {
+            let want = m == Method::Hello
+                || (m.namespace() == Namespace::Remote && m != Method::RemoteHello);
+            assert_eq!(g.may_call(m), want, "{}", m.name());
+        }
+        for m in [
+            Method::ShellInput,
+            Method::TabsInput,
+            Method::TabsList,
+            Method::SettingsSet,
+            Method::BrowserEval,
+            Method::RemoteHello,
+        ] {
+            assert_eq!(
+                g.check(m).unwrap_err().code,
+                code::FORBIDDEN,
+                "{}",
+                m.name()
+            );
+        }
+        assert!(!g.may_act_on_any_tab());
+        assert_eq!(g.kind(), "bridge");
+        assert_eq!(g.permission_names(), ["remote"]);
+        // The remote link's own grant still never reaches `hello`.
+        assert!(!Grant::Remote.may_call(Method::Hello));
     }
 
     #[test]

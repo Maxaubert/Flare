@@ -701,10 +701,17 @@ impl Emulator {
 
     /// Lets a synchronized update go when its deadline has passed.
     pub fn release_sync_if_due(&mut self, now: Instant) -> Vec<TermEvent> {
+        match self.sync_deadline() {
+            Some(d) if now >= d => self.release_sync(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Lets a synchronized update go now, whatever its deadline: the grid then holds every byte fed so far
+    /// (a remote snapshot, rule 285). Nothing when no update is open.
+    pub fn release_sync(&mut self) -> Vec<TermEvent> {
         let mut out = Vec::new();
-        if let Some(d) = self.sync_deadline()
-            && now >= d
-        {
+        if self.sync_deadline().is_some() {
             self.processor.stop_sync(&mut self.term);
             self.drain(&mut out);
         }

@@ -12,6 +12,8 @@
 //! - `text`: words from outside made safe for a model (one copy for both sides).
 //! - `stdio`: a [`framing::Wire`] over two byte streams, for a remote link (`ssh <host> flare --serve-remote`, remote
 //!   sessions): the serve process's own stdio, or the ssh child's. The only path to the remote grant (rule 276).
+//! - `remote`: the typed intents of `remote.input` and the limits of the `remote.*` methods, shared by both ends of a
+//!   remote link (rule 279).
 //! - `pipe`: the endpoint, one API on both systems. Windows (`pipe.rs`): the named pipe, its
 //!   owner-only descriptor, the accept loop, `connect`. macOS (`uds.rs`): a Unix socket in a 0700
 //!   per-user folder, mode 0600, the peer's uid and pid checked on both ends (rule 1012). Any other
@@ -34,6 +36,7 @@ pub mod pipe;
 #[path = "pipe_stub.rs"]
 pub mod pipe;
 pub mod proto;
+pub mod remote;
 pub mod session;
 pub mod stdio;
 pub mod text;

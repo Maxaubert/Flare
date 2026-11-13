@@ -35,6 +35,7 @@ pub mod sel_text;
 pub mod selection_edit;
 pub mod session;
 pub mod spare_opening;
+pub mod tail;
 pub mod term_buf;
 pub mod term_query;
 pub mod version;

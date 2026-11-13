@@ -103,6 +103,9 @@ pub struct Args {
     pub settings_open: SettingsOpen,
     /// `--theme`, `--see-through`, `--font`, `--font-pct`, `--accent`, `--background`, `--secondary`, `--edges`.
     pub look: LookOverrides,
+    /// `--serve-remote` (remote sessions PR 2): the host end of a remote link on this process's own stdio, run by ssh.
+    /// Headless: no window, no single-instance lock (rule 283).
+    pub serve_remote: bool,
     /// Bare arguments (folders or files), in order.
     pub positional: Vec<String>,
 }
@@ -136,6 +139,7 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
         settings_find: None,
         settings_open: SettingsOpen::None,
         look: LookOverrides::default(),
+        serve_remote: false,
         positional: Vec::new(),
     };
     let mut i = 0;
@@ -176,6 +180,7 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
                 out.after_pid = Some(pid);
             }
             "--instance-probe" => out.instance_probe = true,
+            "--serve-remote" => out.serve_remote = true,
             "--preview-update" => out.preview_update = true,
             "--scene" => out.scene = Some(value(args, &mut i, flag)?.to_string()),
             "--live-tabs" => {
@@ -263,6 +268,20 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
         }
         i += 1;
     }
+    // A serve process is a bridge and nothing else: it opens no folder and draws nothing (rule 283).
+    if out.serve_remote
+        && (!out.positional.is_empty()
+            || out.scene.is_some()
+            || out.screenshot.is_some()
+            || out.live_screenshot.is_some()
+            || out.bench_frames.is_some()
+            || out.instance_probe
+            || out.live_tabs.is_some())
+    {
+        return Err(
+            "--serve-remote takes no folder and no other mode; only --user-data-dir".to_string(),
+        );
+    }
     if out.live_shell.is_some() && out.live_screenshot.is_none() {
         return Err("--live-shell needs --live-screenshot <path>".to_string());
     }
@@ -320,6 +339,21 @@ mod tests {
 
     fn a(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn serve_remote_is_a_mode_of_its_own() {
+        let args = parse_args(&a(&["--serve-remote", "--user-data-dir=C:\\p"]), None).unwrap();
+        assert!(args.serve_remote);
+        assert!(args.positional.is_empty());
+        assert!(!parse_args(&a(&[]), None).unwrap().serve_remote);
+        for extra in ["C:\\work", "--instance-probe", "--scene"] {
+            let mut v = vec!["--serve-remote", extra];
+            if extra == "--scene" {
+                v.push("strip");
+            }
+            assert!(parse_args(&a(&v), None).is_err(), "{extra}");
+        }
     }
 
     #[test]

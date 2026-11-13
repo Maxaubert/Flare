@@ -20,7 +20,10 @@ plugins phase 5 adds `session.read`, `tabs.input`, `storage.get` and `storage.se
 `bar.hide` and `view.audio`; the 3D viewer (issue #36) adds `view.model`; the agent motions (2026-10-26) add `agents.motion.set` and `agents.motion.clear`; the `fill` permission (2026-10-28) adds
 `browser.fill`, `browser.fill.page` and `secret.ask`, and the `tool` event to a plugin's helper. Remote sessions PR 1
 (2026-11-12) adds the remote link in `flare-ctl` only: the stdio transport, the `remote` grant and `remote.hello` (section
-1 "Remote link", section 4, section 5 `remote.hello`); Flare does not serve it yet (PR 2 adds `flare --serve-remote`). Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
+1 "Remote link", section 4, section 5 `remote.hello`); remote sessions PR 2 (2026-11-12) adds `flare --serve-remote` (the
+host's bridge), the `bridge` grant and `remote.open`, `remote.ls`, `remote.tabs`, `remote.attach`, `remote.detach`,
+`remote.input`, `remote.resize`, `remote.output`, `remote.snapshot` and `remote.close` (section 1 "The serve process", section
+4, section 5 "remote.*"). Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
 
@@ -113,6 +116,23 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     `remote.hello` is answered, the serve side skips a line that is no request, and the viewer's `remote_hello` skips
     lines that are no message (at most 200), so both resync on the first real one. After the hello the framing is
     strict as everywhere.
+  - **The serve process** (remote sessions PR 2, `crates/flare/src/serve_remote.rs`). `flare --serve-remote` is a
+    headless bridge: `main.rs` branches to it before the e2e set-up, the single-instance lock and any window (rule 283),
+    and it takes `--user-data-dir` and nothing else. It answers the link's `remote.hello` itself and relays every other
+    `remote.*` call to the Flare that runs on this machine under the same profile, over that Flare's pipe: it says
+    `hello` there with the **bridge key** (`token`), and the running Flare gives it the `bridge` grant (section 4, rule
+    284). The key is a fresh 256-bit secret the running Flare writes into its profile at every start
+    (`remote-bridge.key`, written whole by a rename, owner-only), so a key of an earlier run is refused (`unauthorized`),
+    and the bridge reports `unavailable` ("Flare is not running on this machine"). The calls that follow or change a tab
+    (`attach`, `detach`, `input`, `resize`, `close`) go in turn on one **anchor** pipe connection, the one the running
+    Flare keys the follows by; every other call (`output`, `snapshot`, `tabs`, `ls`, `open`) takes an idle pooled
+    connection or a new one, so a slow folder read never holds up typing or the polls (rule 286). A call's time counts
+    from when the link handed it over, its wait for its turn included: a call whose turn comes too late is answered
+    `timeout` and never sent, and a timeout keeps its connection. A connection that broke is opened again, and a call
+    that changes nothing (`remote.ls`, `tabs`, `attach`, `detach`, `resize`, `output`, `snapshot`) is sent once more on
+    it. Typing, opening and closing are never sent twice. When the link closes the bridge's pipe connections close
+    too, and the running Flare stops following that viewer's tabs (their shells go on, rule 280). With no Flare running, `remote.hello` still answers
+    and every relayed call is `unavailable` (remote sessions PR 5 starts one hidden).
 
 ## 2. Framing
 
@@ -195,7 +215,7 @@ can wait on them inside its quit cap.
 | Line size | 16 MB |
 | Clients | 64 at once. The 65th is accepted, sent `too_many_clients` (null id), and closed. |
 | First hello | 10 s (30 s for `remote.hello` on a remote link) |
-| Request timeout | 15 s; 60 s for `browser.*`; 40 s for `mods.call` |
+| Request timeout | 15 s; 60 s for `browser.*`, `remote.open` and `remote.ls`; 40 s for `mods.call` |
 | Rate | 100/s, burst 200, per connection |
 | Queued events per connection | 256, then the oldest is dropped |
 | Stuck handlers | 32 |
@@ -209,7 +229,7 @@ environment).
 
 ## 4. Grants (who may call what)
 
-Four kinds. A grant is decided at `hello` (or `remote.hello`) and re-read on every request (check 4).
+Five kinds. A grant is decided at `hello` (or `remote.hello`) and re-read on every request (check 4).
 
 | Grant | Who | How it is issued |
 |---|---|---|
@@ -222,6 +242,13 @@ The `remote` grant enters the `remote.*` methods and **nothing else**: not `hell
 (`shell.input`, `tabs.input`), no setting, no mod, no browser, no eval, no session. It names no other tab. No pipe grant,
 whatever it holds, enters `remote.*` (`remote_grant_cannot_reach_ui_or_browser`, `remote_grant_never_on_the_pipe`,
 `a_live_pipe_client_cannot_get_the_remote_grant`).
+
+The `bridge` grant (remote sessions PR 2, rule 284) is the host's own `flare --serve-remote` on the pipe, relaying a
+remote link. It is issued for one token only, the bridge key the running Flare wrote into its profile, and never for
+"no token" (an agent grant of `bridge` answers `internal`). It enters `hello` and the `remote.*` methods but
+`remote.hello`, and nothing else; its `permissions` are `["remote"]` (`bridge_grant_reaches_the_remote_methods_but_the_greeting_and_nothing_else`,
+`the_bridge_grant_comes_only_from_its_key_and_reaches_only_the_relayed_methods`). It is the remote grant's relay, so
+it holds what a remote link holds: typing as intents into the host's shell tabs (rule 279), never `shell.input`.
 
 Permissions of a `mod` grant: `panel`, `view`, `browser`, `eval`, `convo`, `tools`. The `agent` grant
 holds `panel`, `view`, `browser` and `convo`, plus `eval` only when the user has turned `browser_eval`
@@ -268,7 +295,8 @@ so without `tabs` it can name none (`forbidden`) and with it, it must name one (
 | `tools.respond` | no | `tools` | yes |
 | `mods.tools`, `mods.call` | yes | **no** | yes |
 | `shell.input`, `settings.set`, `mods.enable` | **no** | **no** | yes |
-| `remote.hello` (the `remote` grant's only row: it is **no** in every other one) | **no** | **no** (no permission opens it) | yes |
+| `remote.hello` (the `remote` grant's row: it is **no** in every other one, and for `bridge`) | **no** | **no** (no permission opens it) | yes |
+| `remote.open`, `remote.ls`, `remote.tabs`, `remote.attach`, `remote.detach`, `remote.input`, `remote.resize`, `remote.output`, `remote.snapshot`, `remote.close` (the `remote` and `bridge` grants' rows: **no** in every other one) | **no** | **no** (no permission opens it) | yes |
 
 **Rule S3** is the last row and the `agent` column: the agent can show content and drive its panel
 browser. It cannot type into a shell (neither `shell.input` nor a plugin's `tabs.input`), change settings, enable
@@ -829,8 +857,54 @@ The version is checked first, so a peer whose other params differ still gets the
 line with its own version first. A remote link is sent no events (it polls). Errors: `bad_params` (a param missing or
 of the wrong type, a machine name too long or with a control character; the link may greet again),
 `unsupported_protocol` (closes), `unavailable` (this Flare serves no remote sessions), `internal` (the app handed the
-link a grant other than `remote`), `already_hello`. Timeout: 15 s, like every short `remote.*` call; the long ones that
-come later (`remote.open`, `remote.ls`, `remote.fetch`) get 60 s (`REMOTE_CALL`).
+link a grant other than `remote`), `already_hello`. Timeout: 15 s, like every short `remote.*` call; `remote.open` and
+`remote.ls` get 60 s (`REMOTE_CALL`), and so will `remote.fetch` (a later PR).
+
+### remote.* (remote sessions PR 2, 2026-11-12)
+
+The host's methods for a remote viewer. Callers: a remote link (`remote` grant) and the bridge that relays one
+(`bridge` grant); the serve process relays them unchanged, so the contract is the running Flare's
+(`crates/flare/src/ctl_app.rs`, `remote_call`). Listed in `remote.hello`'s and the bridge's `capabilities` only where the
+running Flare serves remote sessions (it wrote its bridge key); elsewhere `unavailable`. Params are checked on the
+call's worker, unknown params are `bad_params`, and a tab is named by its public id (`tab`, at most 64 characters): any
+shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
+
+- `remote.open {folder, resume?}` -> `{tab, session}`. `folder` is an absolute host path with no control character,
+  asked of the disk on the worker (`bad_params`, `not_found`); `resume` must pass `valid_resume` (`bad_params`). The
+  window opens a tab there the way a new tab opens, resuming that session. 60 s.
+- `remote.ls {path?}` -> `{path, entries: [{name, dir}], truncated}`. One host folder (default: the host's home),
+  read on the worker: folders first, then by name, at most 500 entries, names with a control character left out.
+  Host paths only. `not_found` when it cannot be read. 60 s.
+- `remote.tabs {}` -> `{tabs: [{tab, cwd, title, state, session}]}`. `state` is `working`, `question`, `done`, `failed`
+  or `idle`, as `tabs.list` tells a plugin.
+- `remote.attach {tab}` -> `{tab, cols, rows, seq}`. The connection follows the tab: from now every byte the tab's
+  shell prints is numbered and kept in a 4 MiB ring (made at the first attach, kept for the session's life, fed after the
+  tab's own sink so it never blocks it, rule 281). `seq` is the number the next byte gets. `no_tab` (closed),
+  `unavailable` (its shell is not running).
+- `remote.detach {tab}` -> `{tab, detached: true}`. Stops following; never ends the session (rule 280). When the
+  last follower of a tab detaches, or its link drops (the connection closes), the tab's size goes back to the window.
+- `remote.input {tab, intents}` -> `{tab, typed}`. Typing as typed intents, never bytes (rule 279): a list of 1 to 1024
+  objects, each one of `{"key": {key, code, text?, ctrl?, shift?, alt?, meta?}}` (encoded on the host by the encoder a
+  local key goes through), `{"text": "..."}` (committed text, no control character) and `{"paste": "..."}`
+  (sanitised on the host as a local paste, rule 1, bracketed when the program asked). At most 64 KB of text a call,
+  key names at most 32 bytes and key text 16, neither with a control character; anything else is `bad_params` and
+  nothing of the call is typed. At most 50 calls a second on one tab (`rate_limited`). `typed` counts the intents
+  that wrote something. It counts as typing (an answer key answers a question as a local key does).
+- `remote.resize {tab, cols, rows}` -> `{tab, cols, rows}`. Clamped to 2..1000 columns and 1..500 rows, never refused;
+  the tab takes that size and the remote viewer owns it: the window's refits pass the tab by until a key is typed here
+  (the last typist wins, rule 282).
+- `remote.output {tab, since, max?}` -> `{tab, from, to, data, gap}`. The followed tab's bytes from `since` on,
+  base64, at most `max` (default 256 KiB, at most 1 MiB). The next poll's `since` is `to`: each byte comes once, in
+  order. `gap: true` when `since` is older than the ring (or newer than the end): bytes were lost, `data` starts at
+  the oldest kept, and the viewer asks for `remote.snapshot`. Answered on the worker, never the UI thread. `no_tab`
+  when no connection follows the tab (send `remote.attach` first). Polled in short calls: events are lossy and never
+  sent to a link.
+- `remote.snapshot {tab}` -> `{tab, seq, cols, rows, data}`. The tab's screen and up to 1000 lines of history above it
+  as text (base64: clear, home, the lines joined by CR LF; no colours), read while no batch of output is being parsed,
+  so it holds every byte before `seq` and none after: `remote.output {since: seq}` goes on from it with no byte twice.
+  On the worker.
+- `remote.close {tab}` -> `{tab, closed}`. Closes the tab the way a person's close does: an agent at work asks first
+  in the host's window (rule 48), and `closed` is false until the person there answers.
 
 ## 6. Errors
 

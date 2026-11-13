@@ -2444,3 +2444,30 @@ plan `docs/superpowers/plans/2026-11-12-remote-sessions.md` (PR 1). Contract: `d
 - **remote.hello.** Both ends say their remote protocol, machine and Flare version; a mismatch is refused with one line
   naming both (`remote protocol 1 here, 2 there`). A login banner before the first message is skipped. Rules 277, 278.
 - **For other crates' tests.** The `testing` feature of `flare-ctl` opens `framing::testwire` (an in-memory wire pair).
+
+## Remote sessions, PR 2: serve mode and the host bridge, 2026-11-12
+
+A host Flare now serves remote sessions; nothing a person sees in the window changes yet (the viewer tab is PR 3).
+Plan `docs/superpowers/plans/2026-11-12-remote-sessions.md` (PR 2). Contract: `docs/surfaces/protocol.md` (section 1
+"The serve process", section 4 `bridge`, section 5 `remote.*`).
+
+- **`flare --serve-remote`.** The host end of `ssh <host> flare --serve-remote`: a headless bridge with no window and
+  no single-instance lock (rule 283). It answers the link's `remote.hello` itself and relays every other `remote.*` call
+  to the Flare running on that machine, over its pipe, with the bridge key the running Flare writes into its profile at
+  every start (`remote-bridge.key`, the `bridge` grant, rule 284). With no Flare running the hello answers and every
+  call is `unavailable`. Held by `serve_remote::tests` and `tests/serve_remote.rs`.
+- **Run, list, follow, type, size and close a host tab.** `remote.open` (a tab in a host folder, optionally resuming a
+  Claude session), `remote.ls` (one host folder, 500 names at most), `remote.tabs`, `remote.attach` and
+  `remote.detach`, `remote.input` (typed intents: keys, committed text, sanitised pastes; rule 279), `remote.resize`
+  (the remote viewer owns the size until a key is typed on the host; rule 282), `remote.output` (numbered bytes from a
+  4 MiB ring, polled; rule 281), `remote.snapshot` (the screen and history as text, for a viewer that fell out of the
+  ring) and `remote.close` (asks first like any close, rule 48). A detach or a dropped link never ends a session
+  (rule 280). Held by the `ctl_app::tests` `remote_*` tests, `tab_host::tests`, `flare_term::tail::tests` and the
+  `handle::tests` `remote_*` tests.
+- **A snapshot holds a half-drawn frame; a slow call holds up nothing.** A snapshot taken inside an open synchronized
+  update (DEC 2026) lets the update go first, so the bytes it kept back are in the text (rule 285). The bridge sends
+  attach, detach, typing, resize and close in turn on one connection and every other call on a pooled one, so a slow
+  folder read or open never holds up typing or the polls; a call whose turn comes after its time is answered `timeout`
+  and never sent, and a timeout no longer drops the connection that follows the tabs (rule 286).
+- **Not yet.** The viewer tab, reconnect and the Mac/PC tag (PR 3), status and conversation (PR 4), the hidden start of a
+  host Flare that is not running (PR 5). A snapshot is plain text (no colours).

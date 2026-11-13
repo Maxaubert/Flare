@@ -577,10 +577,14 @@ struct Hello {
 /// A grant from the app, checked to be one that may exist over the pipe: never `ui` (S3) and never `remote` (rule
 /// 276). A bug on the app side (a manifest permission mapped to `ui`, a cached `ui` grant, a token that resolves to
 /// the remote grant) must not open the `ui` or `remote` namespace to a socket.
+///
+/// The bridge grant (rule 284) is a pipe grant, but only for a token: the app gives it for the bridge key alone, so
+/// "no token" (the agent's way in) can never be the bridge.
 fn pipe_grant(g: Grant, from_token: bool) -> Result<Grant, CtlError> {
     let held = match g {
         Grant::Ui => "ui",
         Grant::Remote => "remote",
+        Grant::Bridge if !from_token => "bridge",
         _ => return Ok(g),
     };
     Err(if from_token {
@@ -991,6 +995,8 @@ mod tests {
         pub remote_is_ui: AtomicBool,
         /// A bug on the app side: the agent grant is the remote grant.
         pub remote_agent: AtomicBool,
+        /// A bug on the app side: the agent grant is the bridge grant.
+        pub bridge_agent: AtomicBool,
     }
 
     impl Dispatcher for Fake {
@@ -1000,6 +1006,9 @@ mod tests {
             }
             if token == "remote" {
                 return Some(Grant::Remote);
+            }
+            if token == "bridge-key" {
+                return Some(Grant::Bridge);
             }
             (token == "good" && !self.revoked.load(Ordering::SeqCst)).then(|| Grant::Mod {
                 id: "m".into(),
@@ -1013,6 +1022,9 @@ mod tests {
             }
             if self.remote_agent.load(Ordering::SeqCst) {
                 return Grant::Remote;
+            }
+            if self.bridge_agent.load(Ordering::SeqCst) {
+                return Grant::Bridge;
             }
             Grant::Agent {
                 eval: self.eval.load(Ordering::SeqCst),
@@ -1746,7 +1758,13 @@ mod tests {
         assert_eq!(v["result"]["remote_protocol"], REMOTE_PROTOCOL);
         assert_eq!(v["result"]["machine"], "host-a");
         assert_eq!(v["result"]["flare_version"], "1.2.3");
-        assert_eq!(v["result"]["capabilities"], json!(["remote.hello"]));
+        // Every `remote.*` method this app has, and nothing else.
+        let remote: Vec<&str> = Method::ALL
+            .into_iter()
+            .filter(|m| m.namespace() == Namespace::Remote)
+            .map(Method::name)
+            .collect();
+        assert_eq!(v["result"]["capabilities"], json!(remote));
         // A second greeting is refused like a second hello.
         assert_eq!(code_of(&r.remote_hello("")), code::ALREADY_HELLO);
         r.finish();
@@ -1839,6 +1857,47 @@ mod tests {
         assert_eq!(shared.origin(), ConnOrigin::Pipe);
         let mut r = Rig::on(fake, shared, 7);
         assert_eq!(code_of(&r.remote_hello("")), code::FORBIDDEN);
+        r.finish();
+    }
+
+    /// Rule 284: the bridge grant is a pipe grant for its key only. With the key, `hello` gives it and it reaches the
+    /// relayed `remote.*` methods (never `remote.hello`, never `tabs.list` or a panel); as "no token" it is refused.
+    #[test]
+    fn the_bridge_grant_comes_only_from_its_key_and_reaches_only_the_relayed_methods() {
+        let mut r = rig();
+        let v = r.hello(r#","token":"bridge-key""#);
+        assert_eq!(v["result"]["grant"]["kind"], "bridge");
+        let caps: Vec<&str> = v["result"]["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(caps.contains(&"remote.output") && caps.contains(&"remote.input"));
+        assert!(!caps.contains(&"remote.hello") && !caps.contains(&"tabs.list"));
+        let v = r.ask(r#"{"id":1,"method":"remote.tabs","params":{}}"#);
+        assert_eq!(v["result"]["ok"], "remote.tabs");
+        for m in ["remote.hello", "tabs.list", "panel.state", "shell.input"] {
+            let v = r.ask(&format!(r#"{{"id":2,"method":"{m}","params":{{}}}}"#));
+            assert_eq!(code_of(&v), code::FORBIDDEN, "{m}");
+        }
+        assert_eq!(r.fake.calls.lock().unwrap().len(), 1);
+        assert_eq!(r.fake.calls.lock().unwrap()[0].3, "bridge");
+        r.finish();
+        // "No token" can never be the bridge: an app that says so is refused.
+        let mut r = rig();
+        r.fake.bridge_agent.store(true, Ordering::SeqCst);
+        let v = r.hello("");
+        assert_eq!(code_of(&v), code::INTERNAL);
+        assert!(v["error"]["message"].as_str().unwrap().contains("bridge"));
+        r.finish();
+        // A plain agent connection reaches no `remote.*` method.
+        let mut r = rig();
+        r.hello("");
+        assert_eq!(
+            code_of(&r.ask(r#"{"id":1,"method":"remote.tabs","params":{}}"#)),
+            code::FORBIDDEN
+        );
         r.finish();
     }
 

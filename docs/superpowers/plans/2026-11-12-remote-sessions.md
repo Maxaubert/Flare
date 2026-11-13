@@ -1,7 +1,7 @@
 # Remote sessions: implementation plan (2026-11-12)
 
 Spec: `docs/superpowers/specs/2026-11-12-remote-sessions-design.md`.
-Status: approved 2026-11-12; building. PR 1 built on `feat/remote-1` (2026-11-12, not merged); PR 2 next.
+Status: approved 2026-11-12; building. PR 1 built on `feat/remote-1` (2026-11-12, not merged); PR 2 built on `feat/remote-2` (2026-11-12, stacked on PR 1, not merged); PR 3 next.
 
 Seven PRs, in order. Each one ships alone and passes its own tests. Only PR 7 needs an approved mockup.
 Rule numbers below are "R-new-N". Number them after the last rule in `docs/regression-rules.md` when you write them.
@@ -118,6 +118,40 @@ the lines above:
 - R-new-7: remote resize sets the size owner. Window refit skips remote-owned tabs until a local key.
 - R-new-8: serve mode takes no single-instance lock and opens no window.
 
+**Built (2026-11-12, `feat/remote-2`, stacked on `feat/remote-1`).** Rules R-new-4 to R-new-8 are rules 279 to 283; the
+bridge grant below is rule 284. Where the build differs from the lines above:
+- **The bridge needs a pipe grant.** Rule 276 keeps `remote.*` off the pipe for every pipe grant, but the serve process
+  relays to the running Flare over its pipe. So the pipe has one new grant, `Grant::Bridge` (kind `bridge`), issued
+  only for the **bridge key**: a fresh 256-bit secret the running Flare writes into its profile at every start
+  (`remote-bridge.key`, by a rename, owner-only), compared in constant time, never for "no token". It enters `hello` and
+  `remote.*` but `remote.hello`. The remote grant itself still never rides the pipe. A same-user process that can read
+  the key can also run `flare --serve-remote`, so the key adds no reach (written into rule 284).
+- **The pipe is the profile's**, not `connect_default`: the serve process takes `--user-data-dir` and finds the pipe and
+  the key the way a launch does (`ctl_app::pipe_for`), so an e2e profile is served too. It opens its pipe connection at
+  the first relayed call and again after one broke; a call that changes nothing is sent once more, typing, opening and
+  closing never.
+- **No `SessionManager::write_remote`.** Typing goes `remote.input` -> `CtlOp::RemoteInput` -> `TermHandle::remote_input`
+  on the UI thread, the same `TermHandle` paths a local key, text and paste take (so a question is answered, rule 279).
+  "Typed by remote" is the handle's `last_typist` (`Typist::Remote`); the hub sees the same `Typed` and `AnswerKey`
+  events as for a local key.
+- **The tail is per session, made at the first attach and kept for its life** (`SessionManager::subscribe_tail`, 4 MiB),
+  fed after the sink under the delivery lock. The followed tabs live in `remote_host::RemoteHost` (handle and tail per
+  tab, followers per connection), so `remote.output` and `remote.snapshot` run on the channel's worker without the UI
+  thread. `remote.output` needs an attach (`no_tab` otherwise); a detach or a dropped link (`client_gone`) only removes
+  that follower, and the last one gone gives the size back (`CtlOp::RemoteRelease`).
+- **Size owner** is `TabHost::remote_sized` (`SizeOwner`): `remote_resize`, `take_size_back`; a local key is seen in
+  `drain_events` (a `Typed` event with `last_typist() == Local`).
+- **`remote.snapshot`** is plain text (no colours): clear, home, up to 1000 lines joined by CR LF, read under the
+  delivery lock with the tail's `seq` (`with_tail_still`), so it meets `remote.output {since: seq}` exactly.
+- `remote.close` answers `{closed}`: false while the host's window asks (rule 48). `remote.tabs` answers `{tab, cwd,
+  title, state, session}` from `tab_facts`. `remote.input` is limited to 50 calls a second a tab.
+- **Tests.** Unit: `flare_ctl::remote` (intents), `grant` and `session` (bridge), `flare_term::tail`, `handle`
+  (`remote_input`, tail and snapshot), `tab_host` (size owner), `ctl_app` (`remote_*`), `remote_host`, `serve_remote`
+  (the bridge in front of a live `AppDispatcher` over in-memory pipes, and over OS pipes), `config`, `main` (branch
+  order). Process: `crates/flare/tests/serve_remote.rs` runs the built binary with piped stdio (no Flare running: the
+  hello answers, the relay is `unavailable`, exit 0 when the link closes; an `--instance-probe` beside it is the first
+  instance). E2E: `remoteLoopback` (one host profile; the test client plays the viewer, so the second profile waits for
+  PR 3).
 **Depends on.** PR 1. **UI.** No.
 
 ---
@@ -342,5 +376,11 @@ step of PR 2: `StdioWire::from_process` returns an `io::Result`, and with no std
 expected to fail rather than hang. That is not tested yet: PR 2 tests it with a child it starts itself, and a by-hand
 run over real ssh confirms it. Spikes 2 and 3 stay
 for the by-hand list (`docs/remote-sessions-manual-checks.md`, PR 6).
+
+Spike status after PR 2 (2026-11-12): still no ssh to any real machine. Spike 1 is proven as far as it can be without
+sshd: the serve process is a `windows_subsystem = "windows"` binary in a release build, and `remoteLoopback` starts that
+build with piped stdin and stdout (`CREATE_NO_WINDOW`) and speaks the whole protocol over them; the debug build does
+the same in `tests/serve_remote.rs`. With no stdin or stdout handle at all `from_process` fails and `--serve-remote` exits 2 with one stderr line, never a hang. Whether sshd hands a GUI-subsystem child its pipe handles the same way is
+the one part left for the by-hand list. Spikes 2 and 3 are unchanged.
 
 Open risks tracked across PRs: closed enum arrays (`Method::ALL`, `Namespace::ALL`, `Permission::ALL`) and their exhaustive tests; event lossiness (solved by polling and sequence numbers); stuck-handler cap of 32 on slow links (short polls only); two writers on one session; version skew between machines (refuse with one line); `tabs.changed` is reserved and unsent, so the viewer polls `remote.tabs` and `remote.status`.

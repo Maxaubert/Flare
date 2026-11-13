@@ -342,7 +342,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(info.machine, "host");
-        assert_eq!(info.capabilities, ["remote.hello"]);
+        assert_eq!(info.capabilities[0], "remote.hello");
+        assert!(info.capabilities.iter().all(|c| c.starts_with("remote.")));
         drop(viewer);
         host.join().unwrap();
     }

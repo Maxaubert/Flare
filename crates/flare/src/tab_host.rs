@@ -12,9 +12,10 @@ use flare_settings::recent_roots::remember_root;
 use flare_settings::term_prefs::saved_shell_id;
 use flare_shells::env::PluginEnv;
 use flare_term::emulator::TermEvent;
-use flare_term::handle::{StartOptions, TermHandle};
+use flare_term::handle::{StartOptions, TermHandle, Typist};
 use flare_term::pty::PtySpawner;
 use flare_term::session::{SessionManager, SessionOptions, ShellSource};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -101,6 +102,14 @@ pub enum HostEvent {
     },
 }
 
+/// Who sets a tab's size (remote sessions PR 2, rule 282): this window, or a remote viewer that sent `remote.resize`.
+/// The live terminal has one size, the last typist's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SizeOwner {
+    Local,
+    Remote,
+}
+
 pub struct TabHost {
     mgr: Arc<SessionManager>,
     handles: HashMap<String, Arc<TermHandle>>,
@@ -113,6 +122,9 @@ pub struct TabHost {
     /// Where the Claude plugin lives, found once at startup. None: no shell's environment is
     /// touched.
     plugin_dir: Option<String>,
+    /// Tabs whose size a remote viewer set: the window's refits pass them by until a key is typed here (rule 282).
+    /// A cell, so the event drain (which takes `&self`) can hand a tab back when a key was typed here.
+    remote_sized: RefCell<HashMap<String, (usize, usize)>>,
 }
 
 impl TabHost {
@@ -151,6 +163,7 @@ impl TabHost {
             waker,
             prefs,
             plugin_dir,
+            remote_sized: RefCell::new(HashMap::new()),
         }
     }
 
@@ -212,6 +225,49 @@ impl TabHost {
         self.mgr.kill(id);
         self.order.retain(|x| x != id);
         self.shell_ids.remove(id);
+        self.remote_sized.borrow_mut().remove(id);
+    }
+
+    /// Who sets the tab's size now.
+    pub fn size_owner(&self, id: &str) -> SizeOwner {
+        if self.remote_sized.borrow().contains_key(id) {
+            SizeOwner::Remote
+        } else {
+            SizeOwner::Local
+        }
+    }
+
+    /// A remote viewer's `remote.resize` (rule 282): the tab takes that size and its owner is the remote viewer, so the
+    /// window's refits leave it alone until someone types here. False for a tab this host has no handle for.
+    pub fn remote_resize(&mut self, id: &str, cols: usize, rows: usize) -> bool {
+        let Some(h) = self.handles.get(id) else {
+            return false;
+        };
+        if cols < 2 || rows < 1 {
+            return false;
+        }
+        self.remote_sized
+            .borrow_mut()
+            .insert(id.to_string(), (cols, rows));
+        if h.size() != (cols, rows) {
+            h.resize(cols, rows);
+        }
+        true
+    }
+
+    /// The size goes back to this window (a key typed here, or the last remote viewer gone): the tab fits the grid
+    /// area again. Never ends anything (rule 280).
+    pub fn take_size_back(&self, id: &str) {
+        if self.remote_sized.borrow_mut().remove(id).is_none() {
+            return;
+        }
+        if let Some(h) = self.handles.get(id) {
+            h.resize(self.dims.0, self.dims.1);
+        }
+    }
+
+    fn local_owned(&self, id: &str) -> bool {
+        !self.remote_sized.borrow().contains_key(id)
     }
 
     /// A size or family change, or the shared zoom (rule 1154): every open tab, visible or not,
@@ -224,6 +280,10 @@ impl TabHost {
         self.dims = (cols, rows);
         self.mgr.resize("", cols, rows);
         for id in &self.order {
+            // A tab a remote viewer sized keeps that size until a key is typed here (rule 282).
+            if !self.local_owned(id) {
+                continue;
+            }
             if let Some(h) = self.handles.get(id) {
                 h.resize(cols, rows);
             }
@@ -253,7 +313,9 @@ impl TabHost {
         self.dims = (cols, rows);
         // The default size a spawn or a prewarm uses (the manager's "" entry).
         self.mgr.resize("", cols, rows);
-        if let Some(h) = front.and_then(|f| self.handles.get(f)) {
+        if let Some(f) = front.filter(|f| self.local_owned(f))
+            && let Some(h) = self.handles.get(f)
+        {
             h.resize(cols, rows);
         }
     }
@@ -264,6 +326,9 @@ impl TabHost {
 
     /// A tab shown after being hidden fits the area it now has.
     pub fn activate(&self, id: &str) {
+        if !self.local_owned(id) {
+            return;
+        }
         if let Some(h) = self.handles.get(id) {
             h.resize(self.dims.0, self.dims.1);
         }
@@ -273,11 +338,20 @@ impl TabHost {
     /// no reader for (raw OSC) are dropped here.
     pub fn drain_events(&self) -> Vec<HostEvent> {
         let mut out = Vec::new();
+        let mut typed_here = Vec::new();
         for id in &self.order {
             let Some(h) = self.handles.get(id) else {
                 continue;
             };
-            for ev in h.drain_events() {
+            let evs = h.drain_events();
+            // The last typist wins (rule 282): a key typed here takes a remote-sized tab back to this window's size.
+            if self.remote_sized.borrow().contains_key(id)
+                && evs.contains(&TermEvent::Typed)
+                && h.last_typist() == Some(Typist::Local)
+            {
+                typed_here.push(id.clone());
+            }
+            for ev in evs {
                 let id = id.clone();
                 match ev {
                     TermEvent::Cwd(path) => out.push(HostEvent::Cwd { id, path }),
@@ -303,6 +377,9 @@ impl TabHost {
                     _ => {}
                 }
             }
+        }
+        for id in typed_here {
+            self.take_size_back(&id);
         }
         out
     }
@@ -332,6 +409,7 @@ impl TabHost {
         self.handles.clear();
         self.order.clear();
         self.shell_ids.clear();
+        self.remote_sized.borrow_mut().clear();
         self.mgr.kill_all();
         let ok = self.mgr.shells_gone(QUIT_WAIT);
         if !ok {
@@ -388,6 +466,58 @@ mod tests {
         assert_eq!(sp.made().len(), 1);
         assert_eq!(sp.made()[0].spec().cwd, "C:\\a");
         assert_eq!(recent_roots(&prefs), vec!["C:\\a".to_string()]);
+        assert!(h.handle("t1").is_some());
+    }
+
+    /// Rule 282: a remote resize makes the remote viewer the size owner; the window's refits, a new front size and
+    /// an activation pass the tab by; a key typed here (the last typist) takes it back to the window's size.
+    #[test]
+    fn a_remote_resize_owns_the_size_until_a_key_is_typed_here() {
+        let (mut h, sp, _p) = host();
+        h.spawn("t1", "C:\\a", None);
+        h.spawn("t2", "C:\\b", None);
+        made(&sp, 2);
+        assert_eq!(h.size_owner("t1"), SizeOwner::Local);
+        assert!(h.remote_resize("t1", 50, 20));
+        assert_eq!(h.size_owner("t1"), SizeOwner::Remote);
+        assert_eq!(h.handle("t1").unwrap().size(), (50, 20));
+        h.refit_all(100, 30);
+        h.set_dims(110, 32, Some("t1"));
+        h.activate("t1");
+        assert_eq!(
+            h.handle("t1").unwrap().size(),
+            (50, 20),
+            "the window's refits pass it by"
+        );
+        assert_eq!(
+            h.handle("t2").unwrap().size(),
+            (100, 30),
+            "a local tab still follows the window"
+        );
+        // Remote typing keeps it remote; a local key takes it back.
+        let t1 = h.handle("t1").unwrap();
+        t1.remote_input(&[flare_term::handle::RemoteIntent::Text("x".into())]);
+        let _ = h.drain_events();
+        assert_eq!(h.size_owner("t1"), SizeOwner::Remote);
+        t1.send_text("y");
+        let _ = h.drain_events();
+        assert_eq!(h.size_owner("t1"), SizeOwner::Local);
+        assert_eq!(h.handle("t1").unwrap().size(), (110, 32));
+        assert!(!h.remote_resize("nobody", 50, 20));
+    }
+
+    /// Rule 280: the size going back (a detach, a link gone) never ends the tab's shell.
+    #[test]
+    fn taking_the_size_back_never_kills_the_shell() {
+        let (mut h, sp, _p) = host();
+        h.spawn("t1", "C:\\a", None);
+        made(&sp, 1);
+        h.refit_all(90, 25);
+        assert!(h.remote_resize("t1", 40, 10));
+        h.take_size_back("t1");
+        assert_eq!(h.size_owner("t1"), SizeOwner::Local);
+        assert_eq!(h.handle("t1").unwrap().size(), (90, 25));
+        assert!(!sp.made()[0].killed());
         assert!(h.handle("t1").is_some());
     }
 
