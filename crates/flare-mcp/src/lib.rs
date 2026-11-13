@@ -2679,11 +2679,18 @@ app", "loaded": true}))),
     struct Stdin {
         rx: mpsc::Receiver<String>,
         left: std::io::Cursor<Vec<u8>>,
+        /// Lines handed to the reader so far.
+        taken: usize,
+        /// Told `taken` each time the reader asks for more. The stdin thread asks only once it has acted on every
+        /// line before, so this is how a test knows a cancel has been seen.
+        idle: mpsc::Sender<usize>,
     }
 
     impl std::io::Read for Stdin {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
             if self.left.position() as usize >= self.left.get_ref().len() {
+                let _ = self.idle.send(self.taken);
+                self.taken += 1;
                 match self.rx.recv() {
                     Ok(line) => self.left = std::io::Cursor::new(line.into_bytes()),
                     Err(_) => return Ok(0),
@@ -2693,13 +2700,15 @@ app", "loaded": true}))),
         }
     }
 
-    /// Everything the server wrote, in a buffer the test can read while it runs.
+    /// Everything the server wrote, in a buffer the test can read while it runs. A reply may reach it in several
+    /// writes, so only lines that have their newline are read.
     #[derive(Clone, Default)]
-    struct Stdout(Arc<Mutex<Vec<u8>>>);
+    struct Stdout(Arc<(Mutex<Vec<u8>>, std::sync::Condvar)>);
 
     impl Write for Stdout {
         fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(b);
+            self.0.0.lock().unwrap().extend_from_slice(b);
+            self.0.1.notify_all();
             Ok(b.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
@@ -2707,13 +2716,20 @@ app", "loaded": true}))),
         }
     }
 
+    /// The whole lines in `bytes`; a line still being written is left out.
+    fn whole_lines(bytes: &[u8]) -> Vec<Value> {
+        let end = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+        std::str::from_utf8(&bytes[..end])
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
     impl Stdout {
         fn lines(&self) -> Vec<Value> {
-            String::from_utf8(self.0.lock().unwrap().clone())
-                .unwrap()
-                .lines()
-                .map(|l| serde_json::from_str(l).unwrap())
-                .collect()
+            let bytes = self.0.0.lock().unwrap().clone();
+            whole_lines(&bytes)
         }
 
         fn has_id(&self, id: u64) -> bool {
@@ -2723,12 +2739,15 @@ app", "loaded": true}))),
         /// Waits for the answer to request `id`.
         fn wait_for(&self, id: u64) -> Value {
             let until = std::time::Instant::now() + Duration::from_secs(10);
+            let mut g = self.0.0.lock().unwrap();
             loop {
-                if let Some(l) = self.lines().into_iter().find(|l| l["id"] == id) {
+                let bytes = g.clone();
+                if let Some(l) = whole_lines(&bytes).into_iter().find(|l| l["id"] == id) {
                     return l;
                 }
-                assert!(std::time::Instant::now() < until, "no answer to {id}");
-                std::thread::sleep(Duration::from_millis(2));
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                assert!(!left.is_zero(), "no answer to {id}");
+                g = self.0.1.wait_timeout(g, left).unwrap().0;
             }
         }
     }
@@ -2765,6 +2784,9 @@ app", "loaded": true}))),
 
     struct Live {
         stdin: mpsc::Sender<String>,
+        /// Lines sent on `stdin`.
+        sent: std::cell::Cell<usize>,
+        idle: mpsc::Receiver<usize>,
         out: Stdout,
         entered: mpsc::Receiver<()>,
         finish: mpsc::Sender<()>,
@@ -2777,6 +2799,7 @@ app", "loaded": true}))),
             let (stdin, rx) = mpsc::channel();
             let (entered_tx, entered) = mpsc::channel();
             let (finish, finish_rx) = mpsc::channel();
+            let (idle_tx, idle) = mpsc::channel();
             let out = Stdout::default();
             let calls = Arc::new(Mutex::new(0));
             let mut ch = Blocking {
@@ -2789,12 +2812,16 @@ app", "loaded": true}))),
             let input = Stdin {
                 rx,
                 left: std::io::Cursor::new(Vec::new()),
+                taken: 0,
+                idle: idle_tx,
             };
             let server = std::thread::spawn(move || {
                 serve(std::io::BufReader::new(input), writer, &mut ch, None, grace)
             });
             Live {
                 stdin,
+                sent: std::cell::Cell::new(0),
+                idle,
                 out,
                 entered,
                 finish,
@@ -2805,6 +2832,20 @@ app", "loaded": true}))),
 
         fn send(&self, v: Value) {
             self.stdin.send(format!("{v}\n")).unwrap();
+            self.sent.set(self.sent.get() + 1);
+        }
+
+        /// Waits until the stdin thread has acted on every line sent so far.
+        fn read_through(&self) {
+            loop {
+                let taken = self
+                    .idle
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("the stdin thread to read on");
+                if taken == self.sent.get() {
+                    return;
+                }
+            }
         }
 
         fn call(&self, id: u64) {
@@ -2870,6 +2911,8 @@ app", "loaded": true}))),
         l.call(2);
         l.cancel(json!(2));
         l.send(json!({"jsonrpc":"2.0","id":3,"method":"ping"}));
+        // Request 1 ends only once the cancel has been read: 2 is still queued behind it then.
+        l.read_through();
         l.finish.send(()).unwrap();
         l.out.wait_for(1);
         l.out.wait_for(3);
