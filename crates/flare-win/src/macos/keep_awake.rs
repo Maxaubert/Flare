@@ -78,3 +78,69 @@ impl Drop for Awake {
         super::SystemSleep::set(self, false);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keep_awake::{KeepAwake, SystemAwake};
+    use std::time::{Duration, Instant};
+
+    /// The lines of `pmset -g assertions` that are this process's keep-awake.
+    fn ours() -> Vec<String> {
+        let out = std::process::Command::new("/usr/bin/pmset")
+            .args(["-g", "assertions"])
+            .output()
+            .expect("pmset runs");
+        let me = format!("pid {}(", std::process::id());
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.contains(&me) && l.contains(PREVENT_IDLE_SLEEP) && l.contains(REASON))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Waits (briefly) for the power manager's list to say `held`.
+    fn listed(held: bool) -> bool {
+        let end = Instant::now() + Duration::from_secs(5);
+        loop {
+            if ours().is_empty() != held {
+                return true;
+            }
+            if Instant::now() >= end {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Rule 296 on a real Mac: the first hold makes one real `PreventUserIdleSystemSleep` assertion of this process,
+    /// named for Flare (what `pmset -g assertions` shows the owner), a second hold makes no other, and the last drop
+    /// releases it. Held for well under a second: only idle sleep is put off, and only while the test runs.
+    #[test]
+    fn a_hold_makes_one_real_assertion_and_its_last_drop_releases_it() {
+        let _turn = crate::keep_awake::REAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(
+            listed(false),
+            "no assertion of this process before the hold"
+        );
+        let awake = SystemAwake::new();
+        let a = awake.hold();
+        assert!(listed(true), "the hold is listed by pmset");
+        let b = awake.hold();
+        assert_eq!(ours().len(), 1, "two holds are one assertion: {:?}", ours());
+        drop(a);
+        assert_eq!(ours().len(), 1, "one hold left keeps it");
+        drop(b);
+        assert!(listed(false), "the last drop releases it: {:?}", ours());
+
+        // The drop of the system's side releases a held assertion too (the window's end).
+        let mut a = Awake::new();
+        crate::keep_awake::SystemSleep::set(&mut a, true);
+        assert!(a.id.is_some(), "the assertion was made");
+        assert!(listed(true));
+        drop(a);
+        assert!(listed(false), "released on drop: {:?}", ours());
+    }
+}

@@ -96,12 +96,6 @@ fn main() {
     startup_trace::mark(startup_trace::Phase::Main);
     let start = std::time::Instant::now();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    // macOS: the shared application is CEF's kind before winit makes it, so the web panel's engine can start
-    // later (port phase 5; rule 1023). Windows has WebView2 and nothing to prepare.
-    #[cfg(target_os = "macos")]
-    if let Err(e) = flare_web::host::prepare_app() {
-        log::warn!("the web engine cannot run in this process: {e}");
-    }
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let env_renderer = std::env::var("FLARE_RENDERER").ok();
     // The GPU device is built on a worker thread while the rest of start-up runs (Task 64).
@@ -135,6 +129,15 @@ fn main() {
     if let Some(open) = &args.open_on {
         attach_parent_console();
         std::process::exit(cli_open::run(open, args.user_data_dir.as_deref(), args.e2e));
+    }
+
+    // macOS: the shared application is CEF's kind before winit makes it, so the web panel's engine can start
+    // later (port phase 5; rule 1023). Windows has WebView2 and nothing to prepare. After the serve and `open --on`
+    // branches: neither is an app, so neither makes an NSApplication, registers with LaunchServices or reaches for the
+    // window server (rule 1196: ssh starts the serve process in a login with no desktop).
+    #[cfg(target_os = "macos")]
+    if let Err(e) = flare_web::host::prepare_app() {
+        log::warn!("the web engine cannot run in this process: {e}");
     }
 
     if args.probe_backend
@@ -435,6 +438,8 @@ mod serve_order_tests {
             "window::run_window(",
             "backend::select_backend_with(",
             "conpty::verify_bundled()",
+            // Rule 1196: no NSApplication in a serve process.
+            "flare_web::host::prepare_app()",
         ] {
             assert!(
                 serve < at(later),
@@ -451,6 +456,7 @@ mod serve_order_tests {
         let at = |s: &str| src.find(s).unwrap_or_else(|| panic!("{s} is in main.rs"));
         let open = at("if let Some(open) = &args.open_on {");
         for later in [
+            "flare_web::host::prepare_app()",
             "e2e::init(args.e2e)",
             "startup::launch(&profile",
             "window::run_window(",

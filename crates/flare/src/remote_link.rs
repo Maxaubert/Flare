@@ -209,16 +209,12 @@ impl SshConnector {
     }
 }
 
-/// The name this machine gives the host in `remote.hello`.
+/// The name this machine gives the host in `remote.hello`: the serve side's own rule (a Mac's host name when no
+/// `HOSTNAME` is exported, rule 1199), else "viewer".
 fn this_machine() -> String {
-    std::env::var(if cfg!(windows) {
-        "COMPUTERNAME"
-    } else {
-        "HOSTNAME"
-    })
-    .ok()
-    .filter(|n| !n.is_empty())
-    .unwrap_or_else(|| "viewer".to_string())
+    Some(flare_ctl::session::default_machine_name())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "viewer".to_string())
 }
 
 /// BLOCKING (it starts the link and waits for `remote.hello`): the link `argv` names, said hello to. A worker's call.

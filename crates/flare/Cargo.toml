@@ -68,6 +68,10 @@ sha2.workspace = true
 [target.'cfg(unix)'.dev-dependencies]
 libc.workspace = true
 
+# The window server's list, for the serve process's screen check (tests/serve_remote.rs, rule 1196).
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+flare-cef = { path = "../flare-cef" }
+
 [build-dependencies]
 slint-build.workspace = true
 

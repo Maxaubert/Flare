@@ -299,7 +299,8 @@ Where the build differs from the lines above:
   `remote_convo_*`), `agent_hub::tests` (`a_remote_tabs_host_status_marks_it_and_a_reconnect_raises_nothing_twice`).
   ui_tests: `agent_flows::remote_flows` (keep-awake, the host's toast, the status words). E2E: `remoteStatus`.
 - **Known limits.** The keep-awake and the IOKit assertion are not proven on real hardware (no real ssh, no sleep
-  timer waited out): the unit tests hold the counting and the Windows call; the Mac code only compiles in CI. A host
+  timer waited out): the unit tests hold the counting and the Windows call; the Mac assertion is made and released for
+  real in macOS CI since 2026-11-13 (`pmset -g assertions`, rule 296). A host
   that says `idle` while the viewer's live signals say `working` (an agent the host's poll has not found yet) takes the
   viewer's work mark down until the next live signal or status.
 
@@ -440,7 +441,8 @@ Where the build differs from the lines above:
   what was typed before it; work asked while the link is down or after the session ended is refused at once.
 - **Images.** `ClipboardPort::read_image` (new): Windows reads the registered PNG format, else `CF_DIB`/`CF_DIBV5` as a
   `.bmp` (`bmp_of_dib`), made a PNG with the `image` crate; macOS reads the pasteboard's PNG (`read_png`), and a
-  TIFF-only picture is refused (no TIFF decoder). Copied files pasted on a remote tab go the same way as a drop.
+  TIFF-only picture is made a PNG by AppKit (2026-11-13, rule 1198). Copied files pasted on a remote tab go the same
+  way as a drop.
 - **`handle.rs` is unchanged.** The routing is above the handle: `TermUi` posts `TermMsg::RemoteLink` (a click) and
   `TermMsg::RemoteUpload` (a drop, or a paste of files or a picture) for a remote tab, and
   `appctl/remote_files_glue.rs` hands them to the link. Text still pastes through `TermHandle::paste` (rule 292).
@@ -617,5 +619,16 @@ over the same loopback the other scenarios use (`remoteUi`, and the page's tests
 proven without real hardware and left for the by-hand list: that `ssh <host> "flare" --serve-remote` finds Flare on a
 Mac's or a PC's login PATH (and the Mac app's path when it does not), that `~/.ssh/config` hosts with an `Include` read
 as ssh reads them, and how long the page's first checks take over a real login.
+
+Mac parity audit (2026-11-13, `fix/mac-remote-parity`): every remote e2e scenario already ran in the macOS E2E job
+(none is `mac_gate`d), the paste/drop routing and the put path's quoting (zsh, bash, fish, csh by the tab's shell id)
+are the same code on both. Fixed for the Mac: the serve process made an `NSApplication` and checked in with
+LaunchServices (rule 1196); a hidden start from ssh passed the login's `SSH_*` and a forwarded agent socket on and
+could leave `TMPDIR` unset, and started a linked `flare` instead of the bundle's program (rule 1197); a TIFF-only
+clipboard picture was refused (rule 1198); a Mac named itself "viewer" or nothing in `remote.hello` (rule 1199). The
+process tests (`tests/serve_remote.rs`) and a real IOKit assertion test now run on macOS. Still by hand only: whether a
+direct exec from an sshd login reaches the console user's window server (the alternative is `open -n -g -j`, which
+LaunchServices runs in the GUI session; not taken without a real ssh to prove it), and Keychain access for Claude in a
+Mac host started that way.
 
 Open risks tracked across PRs: closed enum arrays (`Method::ALL`, `Namespace::ALL`, `Permission::ALL`) and their exhaustive tests; event lossiness (solved by polling and sequence numbers); stuck-handler cap of 32 on slow links (short polls only); two writers on one session; version skew between machines (refuse with one line); `tabs.changed` is reserved and unsent, so the viewer polls `remote.tabs` and `remote.status`.

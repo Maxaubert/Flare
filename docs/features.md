@@ -2606,8 +2606,8 @@ and Mac can make: `docs/remote-sessions-manual-checks.md`.
 - **The ssh command for each kind of host.** A Mac's command is quoted for sh, a PC's for cmd (no `&&`, nothing cmd
   expands), from separate argv items with no secret (rule 305). Held by
   `remote_link::tests::the_remote_command_table_quotes_each_hosts_shell`.
-- **Not yet.** A Mac's TIFF-only clipboard picture is not copied (the image reader has no TIFF decoder; screenshots put
-  a PNG there too). A dropped folder is not copied. Real ssh between the PC and the Mac is on the by-hand list.
+- **Not yet.** A dropped folder is not copied. Real ssh between the PC and the Mac is on the by-hand list. (A Mac's
+  TIFF-only clipboard picture is copied as a PNG since 2026-11-13, rule 1198.)
 ## Remote sessions, PR 7: Settings > Machines, the + menu's machines, tab logos and the fitted conversation, 2026-11-12
 
 The remote sessions get their screens, as the owner picked them in the 2026-11-12 mockups

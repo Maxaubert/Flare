@@ -1088,8 +1088,10 @@ and by the system when the process ends. Only system sleep is held: the display 
 locks. Under `--e2e` a counter stands in. Native: `crates/flare-win/src/keep_awake.rs`, `macos/keep_awake.rs`,
 `crates/flare/src/appctl/remote_glue.rs` (`sync_keep_awake`). Held by
 `the_system_is_held_from_the_first_hold_to_the_last_drop`, `the_fake_counts_holds_and_a_drop_lets_go`,
-`the_system_keep_awake_takes_and_lets_go_without_waiting` and
-`a_followed_tab_holds_the_host_awake_while_it_works_and_lets_go_after`. Source: remote sessions PR 4 (2026-11-12).
+`the_system_keep_awake_takes_and_lets_go_without_waiting`,
+`a_followed_tab_holds_the_host_awake_while_it_works_and_lets_go_after` and, on a real Mac (CI's macOS job),
+`keep_awake::sys::tests::a_hold_makes_one_real_assertion_and_its_last_drop_releases_it` (`pmset -g assertions` lists
+the process's one Flare assertion while held and none after). Source: remote sessions PR 4 (2026-11-12).
 297. **Conversation entries cross the link as numbered `Entry` values; no host path does.** `remote.convo {tab, since}`
 answers the followed tab's Claude session as entries (role, text, tool, time) the host numbers from 1 per tab. The host
 finds the transcript from the tab's session and folder with its own Claude folder, so a Mac's project slug and a PC's
@@ -1278,6 +1280,38 @@ logo and the login shell's quoting. Native: `crates/flare/src/machines.rs`, `cra
 `machines::tests::an_unknown_kind_reads_as_none_and_is_written_as_none`,
 `machines_page::tests::a_failed_add_saves_nothing_and_shows_one_line_under_the_form`, `ssh_config::tests::*` and
 `ui_tests::settings_machines::*`. Source: remote sessions PR 7 (2026-11-12), plan R-new-27.
+1196. **macOS: the serve process is no app.** `flare --serve-remote` is what ssh runs on a Mac host, in a login that
+may have no desktop. `main` branches to it (and to `flare open --on`) before `flare_web::host::prepare_app()`, so it
+makes no `NSApplication`: it never checks in with LaunchServices, never reaches for the window server and owns no
+window (before, every serve process checked in as a background app, `lsappinfo` listed it). Native:
+`crates/flare/src/main.rs`. Held by `serve_order_tests::serve_remote_branches_before_the_lock_the_e2e_and_the_window`,
+`serve_order_tests::open_on_branches_before_the_hand_off_and_the_window` and the process test
+`a_mac_serve_process_is_no_app_and_owns_no_window` (`crates/flare/tests/serve_remote.rs`, which now runs on macOS
+too, with `a_serve_process_takes_no_single_instance_lock` checking that a second probe meets the first's lock).
+Source: the Mac parity audit of remote sessions (2026-11-13).
+1197. **A Flare started hidden from an ssh login carries nothing of that login.** It outlives the login, and so do the
+shells it starts later. `hidden_start::login_env` drops `SSH_CONNECTION`, `SSH_CLIENT`, `SSH_TTY`,
+`SSH_ORIGINAL_COMMAND` and an `SSH_AUTH_SOCK` that sshd made for this login (`<tmp>/ssh-*/agent.<pid>`, gone with
+it; the desktop's agent socket stays), and, when the login has no `TMPDIR` (sshd sets none on a Mac), gives it the
+user's private temp folder (`confstr(_CS_DARWIN_USER_TEMP_DIR)`), as the Dock does, so its uploads (rule 304) are
+never in the shared `/tmp`. On a Mac the started program is the serve process's own resolved (`canonicalize`): a
+`flare` reached by a link into `Flare.app` starts the bundle's program, whose web engine and helpers sit next to it.
+Native: `crates/flare/src/hidden_start.rs`. Held by `hidden_start::tests::the_started_flare_carries_nothing_of_the_ssh_login`,
+`only_a_forwarded_agent_socket_is_dropped`, `a_login_with_no_tmpdir_gets_the_users_own_temp_folder`,
+`a_mac_starts_the_program_a_link_points_to` and `the_mac_users_temp_folder_is_the_systems_private_one`. Source: the Mac
+parity audit of remote sessions (2026-11-13).
+1198. **macOS: a picture copied as a TIFF alone is pasted on a remote tab as a PNG.** Preview, Pages and many other
+apps put only a TIFF on the pasteboard. `pasteboard::read_png` reads the PNG when there is one and else makes the TIFF
+a PNG with AppKit (`NSBitmapImageRep`), the cap (`IMAGE_READ_MAX`) holding for both; before, a TIFF-only picture was
+refused with one line and not sent. Native: `crates/flare-win/src/macos/pasteboard.rs`. Held by
+`pasteboard::tests::a_tiff_only_picture_is_read_as_a_png_of_the_same_size`. Source: the Mac parity audit of remote
+sessions (2026-11-13).
+1199. **A Mac names itself in `remote.hello` by its host name.** No shell exports `HOSTNAME` to an app or to an ssh
+command on a Mac, so the viewer's hello said "viewer" and the serve process's said nothing. `session::default_machine_name`
+falls back to `gethostname` there; the viewer's `remote_link::this_machine` uses the same rule. Native:
+`crates/flare-ctl/src/session.rs`, `crates/flare/src/remote_link.rs`. Held by
+`session::tests::a_mac_has_its_host_name_when_the_environment_names_none`. Source: the Mac parity audit of remote
+sessions (2026-11-13).
 
 ## macOS port
 
