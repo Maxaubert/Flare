@@ -3030,6 +3030,9 @@ mod flow {
         assert_eq!(w.h.comp.get_preview_chip_label(), "", "the panel shows it");
         // ssh ends on its own; the tab prints nothing more.
         alive.lock().unwrap()[0].store(false, Ordering::SeqCst);
+        // The timer's next ask about the tunnels, `TUNNEL_CHECK_MS` (a busy machine's slow steps never run out the
+        // wait below).
+        w.run(1000);
         steps_until(&w, "the chip back", |w| {
             w.h.comp.get_preview_chip_label() == "localhost:5173"
         });

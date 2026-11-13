@@ -512,6 +512,7 @@ impl AppCtl {
         self.s7.tunnels.insert((tab.to_string(), port), tunnel);
         // From now on the tunnels are asked, on the timer, whether they still carry (rule 1214).
         self.s7.tunnel_check_at = self.now() + TUNNEL_CHECK_MS;
+        self.kick();
         if self.front_id().as_deref() != Some(tab) {
             return;
         }
