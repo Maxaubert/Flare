@@ -517,15 +517,15 @@ fn centre_of_the_glyph_is_unchanged() {
     centres_hold(None);
 }
 
-/// macOS: the overflow chevron sits after the tab labels, which are SF there, so from 200 percent
-/// up it lands one device pixel or so right of the Windows record. Measured on the port
-/// (2026-11-08) by the same drawer; the other three glyphs keep the Windows centres.
+/// macOS: the overflow chevron sits after the tab labels, which are Flare Selawik there (rule 1232), a
+/// little wider than Segoe UI, so it lands up to about one device pixel right of the Windows record.
+/// Measured on the port (2026-11-13) by the same drawer; the other three glyphs keep the Windows centres.
 #[cfg(not(windows))]
 const MAC_CHEVRON: [(f32, f32); 8] = [
-    (840.50, 17.53),
-    (1050.62, 21.91),
-    (1260.77, 26.28),
-    (1470.87, 30.60),
+    (841.00, 17.46),
+    (1051.26, 21.88),
+    (1261.50, 26.27),
+    (1471.75, 30.61),
     (1682.00, 34.93),
     (1892.25, 39.36),
     (2102.50, 43.75),

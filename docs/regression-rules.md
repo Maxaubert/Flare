@@ -1370,6 +1370,7 @@ Arial Unicode MS covers most scripts, so a script face left lazy would lose to i
 all-fonts build. The generic `monospace` at the end of a stack is SF Mono, Menlo, Monaco (`MONOSPACE_FAMILIES`;
 empty on Windows). The Slint faces come from `ui/platform_fonts.slint`: "System Font" (SF) and Menlo on macOS,
 Segoe UI and Cascadia Mono on Windows; Helvetica, Slint's own fallback, has a one-em line and shrinks every row.
+Since rule 1232 the macOS UI face is the bundled Flare Selawik, not SF; Menlo stays.
 `flare_render::gpu::NATIVE_BACKEND` is DX12 on Windows and Metal on macOS, for the prewarm instance and the headless
 painter. Held by `font_catalog::macos::tests`, `glyph_images_are_identical_to_the_all_fonts_build_for_the_theme_sample`,
 `tests/metal_macos.rs`, `the_prewarm_instance_starts_metal_alone_unless_a_backend_is_named` and the `_on_macos`
@@ -3686,6 +3687,32 @@ so the main window is the only one. Nothing is set at start while the original i
 (`IconCtl`, `start`), `ship_ctl::set_window_icon` and `set_worn_icon`. Held by `the_default_is_the_original_and_needs_nothing_at_start`,
 `a_pick_is_worn_once_and_the_original_brings_the_shipped_icon_back`, `an_unknown_stored_icon_falls_back_to_the_original`
 and `every_icon_draws_at_the_system_sizes` (`app_icon.rs`, a recording icon port). Source: the owner, 2026-11-13.
+1232. **macOS draws the UI in the bundled Flare Selawik; Windows keeps Segoe UI.** Max, 2026-11-13, after a side by
+side of Segoe UI, SF, Selawik and Inter: the Mac's UI font looked different from Windows', and he chose Selawik on the
+Mac. Segoe UI's licence does not let it ship on a Mac; Selawik is Microsoft's open (SIL OFL 1.1) stand-in for it, with
+its letter widths. Selawik's own line is 1.2 em (hhea 2027 and 431) where Segoe UI's is 1.33 (2210 and 514, which
+Selawik carries as its usWin metrics), so `tools/fonts/make-flare-selawik.py` sets hhea to Segoe UI's values and, as
+the OFL asks of a changed font with the reserved name Selawik, renames it "Flare Selawik"; no glyph changes. The
+Regular (400), Semibold (600) and Bold (700) faces are in `assets/selawik/` with `OFL.txt` and a README, and only a
+macOS build compiles them in: `ui_font::register` (`include_bytes!` into Slint's shared fontique collection, through
+the `unstable-fontique-011` feature) runs after every platform is set (`backend::select_backend_with`, the headless
+screenshot and scene platforms, the UI test harness); on Windows it is empty and nothing is bundled. 500 draws as 400
+and 650 as 700, as Segoe UI's own weights do. `ui/platform_fonts.slint` names "Flare Selawik" for the ui, text and
+display faces on macOS; Menlo stays the mono face. Glyphs: Selawik has U+2026, so Slint's elide ends a cut path in its
+own three dots, and every other character outside ASCII that the UI strings carry (middle dot, en and em dash, curly
+quotes, accented letters) except the Mac's key symbols; those (U+2318, U+2303, U+2325, U+21E7) and CJK in a path or a
+tab name come from the system's faces by Slint's per-character fallback. A Text with no `font-family` stays on
+Slint's default (Arial on Windows, Helvetica on macOS, the same widths). With Segoe UI's line on both systems, the
+Windows expectations for the sidebar's name-to-folder gap, the settings row's cut subtext and the help panel's
+two-line row now hold on macOS and their macOS twins are gone; the Mac keeps its own measured numbers where Selawik's
+letters, about 1 percent wider than Segoe UI's, move them (the Panel edges pill, the tab strip chevron, the update
+arrow). The help panel's name was capped at PT's 32.5 px (two lines at 1.3), so a 1.33 line dropped its second line at
+150 percent; it now takes its own two lines (`max-lines: 2`) inside the same 38.5 px row. Held by
+`ui_font::tests::{the_three_faces_register_as_one_flare_selawik_family, the_ellipsis_is_three_dots,
+the_ui_characters_selawik_lacks_fall_back_to_a_real_glyph}`, `the_name_and_folder_baselines_are_as_far_apart_as_pts`,
+`the_subtext_tooltip_appears_only_when_it_is_cut`, `a_two_line_name_makes_the_row_taller`,
+`a_two_line_name_is_drawn_whole_inside_its_row` and the `_on_macos` twins with the new numbers. Source: Max,
+2026-11-13 ("Selawik on the Mac").
 
 1214. **A remote tab's Preview tunnel whose ssh ended on its own is dropped and opened again.** Found 2026-11-13 by
 an independent review of rule 1213: a stored tunnel was never checked again, so once ssh exited (the Wi-Fi dropped,

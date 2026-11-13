@@ -1,7 +1,11 @@
-// The UI faces per platform (macOS port phase 2, step 4). Windows keeps Prism Terminal's faces (Segoe UI,
-// Segoe UI Variable, Cascadia Mono). macOS has none of them, and Slint's fallback there is Helvetica, whose
-// line is one em tall (Segoe UI's is 1.33): every row of text would shrink. So macOS names its own system
-// face, SF (fontique lists it as "System Font"), and Menlo, the monospace face every macOS has.
+// The UI faces per platform (macOS port phase 2, step 4; rule 1232). Windows keeps Prism Terminal's faces
+// (Segoe UI, Segoe UI Variable, Cascadia Mono). Segoe UI may not ship on a Mac, so macOS draws every UI role in
+// Flare Selawik: Selawik, Microsoft's open (OFL) stand-in for Segoe UI with its letter widths, with its line set
+// to Segoe UI's 1.33 em (Selawik's own is 1.2) and renamed, bundled in `assets/selawik/` and registered at start
+// by `ui_font.rs` in a macOS build only (Max's choice, 2026-11-13: the Mac's UI should look like the PC's). SF,
+// the face before, has a one em line and narrower letters, so rows and labels measured differently from Windows.
+// Selawik has U+2026 for Slint's elide; a character it lacks (the ⌘ ⌃ ⌥ ⇧ of a shortcut label, CJK) falls back
+// per character to the system's faces. Menlo stays the mono face.
 export global PlatformFonts {
     out property <bool> mac: Platform.os == OperatingSystemType.macos;
     // Windows: Prism Terminal's --p-font-ui, the settings page faces and the mono face.
@@ -9,8 +13,8 @@ export global PlatformFonts {
     out property <string> windows-text: "Segoe UI Variable Text";
     out property <string> windows-display: "Segoe UI Variable Display";
     out property <string> windows-mono: "Cascadia Mono";
-    // macOS: the system face for every UI role, and Menlo.
-    out property <string> macos-ui: "System Font";
+    // macOS: the bundled Flare Selawik for every UI role, and Menlo.
+    out property <string> macos-ui: "Flare Selawik";
     out property <string> macos-mono: "Menlo";
     // What the theme reads.
     out property <string> ui: self.mac ? self.macos-ui : self.windows-ui;

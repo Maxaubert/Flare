@@ -2792,3 +2792,13 @@ Four gaps of a remote tab closed, owner approved 2026-11-13 (rule 1213). Contrac
   accessible names are unchanged. The settings cog, help, window buttons and plugin icons keep theirs, and so does the
   Preview chip, whose tooltip shows the server's origin that its label leaves out (rule 1201). Held by
   `hovering_the_build_ready_chip_shows_no_tooltip` and `hovering_the_update_chip_shows_no_tooltip`.
+
+## The Mac's UI font matches Windows, 2026-11-13
+
+- **macOS draws the UI in Flare Selawik, Windows keeps Segoe UI.** Max chose Selawik on the Mac after a side by side
+  of Segoe UI, SF, Selawik and Inter (rule 1232). Selawik is Microsoft's open stand-in for Segoe UI; Flare bundles its
+  Regular, Semibold and Bold in `assets/selawik/` with the line set to Segoe UI's 1.33 em and renamed, as its licence
+  asks. Only the Mac build carries it. Tabs, the sidebar, menus and Settings now measure as on Windows (letters within
+  about 1 percent); the terminal's Menlo is unchanged. Cut text ends in Selawik's own ellipsis, and the Mac's key
+  symbols and CJK fall back to the system's faces. The help panel's two-line command names are no longer cut to one
+  line at 150 percent.

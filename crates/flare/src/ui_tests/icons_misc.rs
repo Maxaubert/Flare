@@ -747,19 +747,19 @@ fn centre_of_the_glyph_is_unchanged() {
     centres_hold(CENTRES_BEFORE);
 }
 
-/// macOS: the update chip's arrow sits after its label, which is SF there, so its centre moves with
-/// the label's width. Measured on the port (2026-11-08) by the same drawer; every other glyph keeps
-/// the centre recorded on Windows.
+/// macOS: the update chip's arrow sits after its label, which is Flare Selawik there (rule 1232), so its
+/// centre moves with the label's width, within a device pixel or two of Windows. Measured on the port
+/// (2026-11-13) by the same drawer; every other glyph keeps the centre recorded on Windows.
 #[cfg(not(windows))]
 const MAC_UPDATE_ARROW: [(f32, f32); 8] = [
-    (739.50, 18.56),
-    (928.87, 22.97),
-    (1115.24, 27.33),
-    (1301.68, 31.67),
+    (740.50, 18.56),
+    (925.87, 22.97),
+    (1110.24, 27.33),
+    (1296.68, 31.67),
     (1481.00, 36.11),
-    (1662.38, 41.44),
-    (1845.73, 44.81),
-    (2215.50, 54.55),
+    (1666.38, 41.44),
+    (1850.73, 44.81),
+    (2221.50, 54.55),
 ];
 
 /// macOS twin of `centre_of_the_glyph_is_unchanged`.

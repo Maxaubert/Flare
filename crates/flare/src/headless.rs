@@ -88,6 +88,7 @@ fn headless(args: Args, start: Instant, live_mode: bool) -> Result<(), String> {
     let win = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     slint::platform::set_platform(Box::new(HeadlessPlatform(win.clone())))
         .map_err(|e| format!("cannot set the headless platform: {e}"))?;
+    crate::ui_font::register();
 
     let glyphs = Box::new(Rasterizer::new(DEFAULT_FAMILIES, 1.0));
     let mut host = match args.renderer {
@@ -383,6 +384,7 @@ pub(crate) fn offer_scene_window(win: &Rc<MinimalSoftwareWindow>) -> Result<(), 
     if !SCENE_PLATFORM_SET.with(Cell::get) {
         slint::platform::set_platform(Box::new(ScenePlatform))
             .map_err(|e| format!("cannot set the scene platform: {e}"))?;
+        crate::ui_font::register();
         SCENE_PLATFORM_SET.with(|s| s.set(true));
     }
     NEXT_SCENE_WINDOW.with(|w| *w.borrow_mut() = Some(win.clone()));

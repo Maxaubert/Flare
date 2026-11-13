@@ -321,12 +321,12 @@ fn a_segmented_pill_is_as_wide_as_pts_not_a_whole_pixel_per_label_wider() {
     pill_widths_hold(&PT_PANEL_EDGES_PILL_W, "PT's");
 }
 
-/// The same pill with macOS's system face (SF), measured on the port (2026-11-08): there is no PT
-/// reference on a Mac, so these are Flare's own widths. They are fractional, like PT's: a label
-/// rounded up to a whole css px again would make the pill 2 to 3 px wider and fail this. SF changes
-/// its optical size with the pixel size, so 150 percent draws narrower letters than 100 and 225.
+/// The same pill in macOS's Flare Selawik (rule 1232), measured on the port (2026-11-13): there is no PT
+/// reference on a Mac, so these are Flare's own widths. Selawik's letters run about 1 percent wider than
+/// Segoe UI's, so the pill is 2 to 3 css px wider than PT's. They are fractional, like PT's: a label
+/// rounded up to a whole css px again would make the pill 2 to 3 px wider still and fail this.
 #[cfg(not(windows))]
-const MAC_PANEL_EDGES_PILL_W: [(f32, f32); 3] = [(1.0, 227.31), (1.5, 219.58), (2.25, 228.4)];
+const MAC_PANEL_EDGES_PILL_W: [(f32, f32); 3] = [(1.0, 232.94), (1.5, 232.27), (2.25, 232.72)];
 
 /// macOS twin of `a_segmented_pill_is_as_wide_as_pts_not_a_whole_pixel_per_label_wider`.
 #[cfg(not(windows))]

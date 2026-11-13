@@ -44,6 +44,7 @@ pub fn ensure_platform() {
     if !PLATFORM_SET.with(Cell::get) {
         slint::platform::set_platform(Box::new(HarnessPlatform))
             .expect("the harness platform is set once per thread");
+        crate::ui_font::register();
         PLATFORM_SET.with(|s| s.set(true));
     }
 }

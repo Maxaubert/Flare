@@ -426,9 +426,10 @@ export component UpdateWindow inherits Rectangle {
 
     box := Rectangle {
         width: Px.snap(min(460px, root.width - 48px));
-        // SF's lines are fractions of a device pixel (Segoe UI's land on the grid at every scale
+        // SF's lines were fractions of a device pixel (Segoe UI's land on the grid at every scale
         // Flare draws at), so on macOS the column's height is rounded up to the grid, or the box
-        // edges would fall between device pixels.
+        // edges would fall between device pixels. Flare Selawik (rule 1232) has Segoe UI's line; the
+        // rounding stays as a guard.
         height: PlatformFonts.mac ? Px.snap-up(col.preferred-height) : col.preferred-height;
         x: Px.snap((root.width - self.width) / 2);
         y: Px.snap((root.height - self.height) / 2);

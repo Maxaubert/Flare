@@ -141,7 +141,9 @@ component HelpRow inherits Rectangle {
         name := Text {
             x: root.pad-x;
             width: root.name-w;
-            height: min(self.preferred-height, 32.5px);
+            // Its own two lines, not the row's 32.5 px: a line taller than PT's 1.3 (Segoe UI's and Flare
+            // Selawik's own line is 1.33 em) would otherwise drop the second line at some scales (rule 1232).
+            height: self.preferred-height;
             y: (root.height - self.height) / 2;
             text: root.d.name;
             wrap: word-wrap;

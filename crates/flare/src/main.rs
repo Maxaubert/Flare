@@ -79,6 +79,7 @@ mod theme_scene;
 mod thumbs;
 mod timer_registry;
 mod ui_clock;
+mod ui_font;
 mod update_ctl;
 mod web_ctl;
 mod window;

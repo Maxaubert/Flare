@@ -745,9 +745,9 @@ fn the_rows_and_controls_match_the_reference_boxes() {
             let save = pt_box(key, "appearance", "saveTerm");
             const SEGMENT_DIFF: f64 = 1.3;
             // The Save button: PT is 17.25 of text (line height 1.5) + 8 + a 2 px border = 27.25; Flare
-            // sizes it to the 16 px line of its text, 3.25 short. Also listed for Task 53. On macOS the
-            // line is SF's, about 14 px, so Save is 22 high there: 5.25 short (port phase 2, step 4).
-            const SAVE_DIFF: f64 = if cfg!(windows) { 3.3 } else { 5.3 };
+            // sizes it to the 16 px line of its text, 3.25 short. Also listed for Task 53. macOS's Flare
+            // Selawik has Segoe UI's line, so the same holds there (rule 1232).
+            const SAVE_DIFF: f64 = 3.3;
             let hn = Harness::new(s, 400, 200, || ControlsPreview::new().expect("controls"));
             hn.advance(0);
             assert!(

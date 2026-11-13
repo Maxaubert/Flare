@@ -81,6 +81,18 @@ pub fn select_backend_with(
         os_version(),
         glass_disabled(std::env::var("FLARE_NO_GLASS").ok().as_deref()),
     );
+    let chosen = select_renderer(choice, e2e, plan, prewarm)?;
+    crate::ui_font::register();
+    Ok(chosen)
+}
+
+/// The GPU renderer when asked for and available, otherwise software.
+fn select_renderer(
+    choice: RendererChoice,
+    e2e: bool,
+    plan: GlassPlan,
+    prewarm: Option<Prewarm>,
+) -> Result<BackendOutcome, slint::PlatformError> {
     match choice {
         RendererChoice::Software => {
             select_software(e2e, GlassPlan::NONE)?;
