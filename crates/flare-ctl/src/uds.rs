@@ -47,6 +47,13 @@ pub const ENV_PIPE: &str = "FLARE_CTL_PIPE";
 
 /// How long `Server::stop` waits for workers to leave.
 const STOP_WAIT: Duration = Duration::from_secs(2);
+/// How long a refused client's socket stays open after its refusal, waiting for the client to hang up.
+/// macOS answers `LOCAL_PEERPID` only while the peer is still connected: a refusal closed at once
+/// left the client unable to check who served it (rule 1209).
+const REFUSED_HOLD: Duration = Duration::from_secs(5);
+/// The most refused sockets held at once; past it a refusal is closed at once (a flood of clients can
+/// not pin the server's file descriptors).
+const REFUSED_MAX: usize = 32;
 /// The longest socket path macOS takes (`sun_path` is 104 bytes with its NUL).
 pub const MAX_PATH: usize = 103;
 /// The folder under the per-user temp folder that holds the sockets.
@@ -545,11 +552,15 @@ fn accept_loop(
     active: &Arc<AtomicUsize>,
     me: u32,
 ) {
+    // Refused clients, held open until they hang up or `REFUSED_HOLD` passes (see `hold_refused`).
+    let mut refused: Vec<(PipeEnd, Instant)> = Vec::new();
     loop {
         if shared.stop.load(Ordering::SeqCst) {
             return;
         }
-        let mut fds = [
+        let now = Instant::now();
+        refused.retain(|(_, since)| now.duration_since(*since) < REFUSED_HOLD);
+        let mut fds = vec![
             libc::pollfd {
                 fd: listener.as_raw_fd(),
                 events: libc::POLLIN,
@@ -561,10 +572,24 @@ fn accept_loop(
                 revents: 0,
             },
         ];
-        // SAFETY: two live fds in a local array of the stated length.
-        let r = unsafe { libc::poll(fds.as_mut_ptr(), 2, 1000) }; // sync-ok: accept thread waits for a client
+        fds.extend(refused.iter().map(|(end, _)| libc::pollfd {
+            fd: end.0.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        }));
+        // Wake for the oldest held refusal's deadline, at most a second away.
+        let wait = refused
+            .iter()
+            .map(|(_, since)| REFUSED_HOLD.saturating_sub(now.duration_since(*since)))
+            .min()
+            .map_or(1000, |d| d.as_millis().clamp(1, 1000) as libc::c_int);
+        // SAFETY: live fds in a vector of the stated length.
+        let r = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, wait) }; // sync-ok: accept thread waits for a client
         if shared.stop.load(Ordering::SeqCst) || fds[1].revents != 0 {
             return;
+        }
+        if r > 0 {
+            release_refused(&mut refused, &fds[2..]);
         }
         if r < 0 {
             let e = io::Error::last_os_error();
@@ -594,12 +619,49 @@ fn accept_loop(
         }
         // The listener is non-blocking; the connection's own reads and writes are not.
         let _ = stream.set_nonblocking(false);
-        admit(PipeEnd::new(stream), shared, active);
+        if let Some(end) = admit(PipeEnd::new(stream), shared, active) {
+            hold_refused(&mut refused, end);
+        }
     }
 }
 
-/// Starts a worker for a connected client, or refuses it when the server is full.
-fn admit(end: PipeEnd, shared: &Arc<Shared>, active: &Arc<AtomicUsize>) {
+/// Keeps a refused client's socket open, its refusal written and its sending side shut (the client
+/// reads the refusal, then end of file), until the client hangs up. A client checks who serves the
+/// socket right after it connects, and macOS answers `LOCAL_PEERPID` only while the server's end is
+/// still open: closed at once, the refusal raced that check and the client saw "could not tell who
+/// serves the pipe" instead of "too many clients" (rule 1209). Past `REFUSED_MAX` held sockets a
+/// refusal is closed at once, as before.
+fn hold_refused(refused: &mut Vec<(PipeEnd, Instant)>, end: PipeEnd) {
+    if refused.len() < REFUSED_MAX {
+        let _ = end.0.shutdown(std::net::Shutdown::Write);
+        refused.push((end, Instant::now()));
+    }
+}
+
+/// Closes the held refusals whose clients hung up; anything such a client still sends is read and
+/// dropped. `ready` is the poll result for `refused`, in the same order.
+fn release_refused(refused: &mut Vec<(PipeEnd, Instant)>, ready: &[libc::pollfd]) {
+    let mut i = 0;
+    refused.retain(|(end, _)| {
+        let fired = ready.get(i).is_some_and(|p| p.revents != 0);
+        i += 1;
+        if !fired {
+            return true;
+        }
+        let mut buf = [0u8; 4096];
+        loop {
+            match end.poll_read(&mut buf) {
+                Ok(Some(0)) => return true, // drained, the client is still there
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => return false,
+            }
+        }
+    });
+}
+
+/// Starts a worker for a connected client. When the server is full the client is sent its refusal
+/// and its socket is handed back, for the accept loop to hold until the client hangs up.
+fn admit(end: PipeEnd, shared: &Arc<Shared>, active: &Arc<AtomicUsize>) -> Option<PipeEnd> {
     if active.fetch_add(1, Ordering::SeqCst) >= shared.config.max_clients {
         active.fetch_sub(1, Ordering::SeqCst);
         let e = CtlError::new(
@@ -607,7 +669,7 @@ fn admit(end: PipeEnd, shared: &Arc<Shared>, active: &Arc<AtomicUsize>) {
             "Flare serves too many clients already",
         );
         let _ = write_line(&end, &to_line(&Response::err(Value::Null, e)), MAX_LINE);
-        return; // dropping the socket closes it; the client still reads what was written
+        return Some(end);
     }
     let (shared, active2) = (shared.clone(), active.clone());
     let raw = end.0.as_raw_fd();
@@ -630,6 +692,7 @@ fn admit(end: PipeEnd, shared: &Arc<Shared>, active: &Arc<AtomicUsize>) {
     if spawned.is_err() {
         active.fetch_sub(1, Ordering::SeqCst);
     }
+    None
 }
 
 /// What a client knows of the server before it sends a byte, checked as a pure function: the uid must
