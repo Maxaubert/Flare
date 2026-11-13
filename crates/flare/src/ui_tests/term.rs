@@ -3095,16 +3095,17 @@ mod flow {
         assert_eq!(row.icon.as_str(), glyph_path(GLYPH_LOGO_MAC));
         let made = w.remote.made().len();
         w.h.comp.invoke_menu_picked(i as i32);
-        w.pump_until("the remote pty", |w| w.remote.made().len() > made);
-        let spec = w.remote.made()[made]
-            .0
-            .remote
-            .clone()
-            .expect("a remote spec");
-        assert_eq!(
-            (spec.machine.as_str(), spec.folder.as_str()),
-            ("mac", "/Users/max/proj")
-        );
+        // The home tab's own pty can be made late on a busy runner, so find the picked folder's pty among the new ones
+        // instead of taking the next one made.
+        let picked = |w: &Wx| {
+            w.remote.made()[made..].iter().any(|m| {
+                m.0.remote
+                    .as_ref()
+                    .is_some_and(|s| s.machine == "mac" && s.folder == "/Users/max/proj")
+            })
+        };
+        w.pump_until("the picked folder's remote pty", |w| picked(w));
+        assert!(picked(&w));
         // A machine no longer linked takes its folders off the list.
         w.ctl.borrow_mut().on_msg(UiMsg::Machines(Vec::new()));
         w.h.comp.invoke_plus_menu(10.0, 10.0);
