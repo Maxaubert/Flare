@@ -89,3 +89,10 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
 - [ ] A Claude session in a remote tab: type on the host's own Flare, and the viewer shows the conversation fitted to
   its window with "Live on <machine>"; a click or a key there brings the terminal back at the viewer's size, and the
   host's window gets its size back at the next key typed there.
+
+## Known follow-ups (found over real ssh, 2026-11-13)
+
+- `remote.attach` sent right after `remote.open` can answer `unavailable` ("that tab's shell is not running") for a
+  moment while the new tab's shell starts. The viewer recovers by itself (it drops the link and connects again after
+  1 s, `remote_link.rs` `session`), but that costs one more ssh connect on every new remote tab. Better: retry the attach
+  on the same link for a few seconds before dropping it. Seen from the Mac viewing the PC over real ssh.
