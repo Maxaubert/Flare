@@ -54,7 +54,12 @@ pub struct BridgeDispatcher<W: Wire + Send + 'static> {
     turn: Condvar,
     /// Asked before the hello is answered: a Flare runs here, or is started hidden (remote sessions PR 5).
     ready: ReadyCheck,
+    /// The viewer's machine, from the link's `remote.hello` (each call's context carries it).
+    viewer: Mutex<Option<String>>,
 }
+
+/// The name an older bridge said `hello` with, and this one before the link named its machine: it names no machine.
+pub const BRIDGE_CLIENT: &str = "flare-serve-remote";
 
 /// The bridge's connections to the running Flare.
 struct Lanes<W: Wire> {
@@ -149,6 +154,7 @@ impl<W: Wire + Send + 'static> BridgeDispatcher<W> {
             }),
             turn: Condvar::new(),
             ready: Box::new(|| Ok(())),
+            viewer: Mutex::new(None),
         }
     }
 
@@ -169,6 +175,16 @@ impl<W: Wire + Send + 'static> BridgeDispatcher<W> {
         self.lanes.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The name the bridge says `hello` with: the viewer's machine, as the link's `remote.hello` named it (rule 1211),
+    /// so the running Flare's fitted view can say where the live terminal is. [`BRIDGE_CLIENT`] before any call.
+    fn viewer_name(&self) -> String {
+        self.viewer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or_else(|| BRIDGE_CLIENT.to_string())
+    }
+
     /// A connection that said `hello` with the bridge key and was given the bridge grant.
     fn open(&self) -> Result<Client<W>, CtlError> {
         let not_running = || unavailable("Flare is not running on this machine");
@@ -177,7 +193,7 @@ impl<W: Wire + Send + 'static> BridgeDispatcher<W> {
         let info = c
             .hello(
                 &HelloParams {
-                    client: "flare-serve-remote".into(),
+                    client: self.viewer_name(),
                     version: crate::app_facts::version().into(),
                     token: Some(key),
                     tab_token: None,
@@ -332,6 +348,11 @@ impl<W: Wire + Send + 'static> Dispatcher for BridgeDispatcher<W> {
                 "the serve process relays remote calls only",
             ));
         }
+        // The link's machine (its `remote.hello` was checked: at most 256 characters, no control character). A
+        // connection opened from now says it in its `hello`.
+        if !ctx.client.is_empty() {
+            *self.viewer.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx.client.clone());
+        }
         self.relay(method, params)
     }
 
@@ -456,6 +477,9 @@ mod tests {
                     CtlOp::RemoteTabs => Ok(json!({"tabs": [{"tab": "t1", "cwd": "C:\\w"}]})),
                     CtlOp::RemoteAttach { tab, .. } => {
                         Ok(json!({"tab": tab, "cols": 80, "rows": 24, "seq": 0}))
+                    }
+                    CtlOp::RemoteResize { tab, viewer, .. } => {
+                        Ok(json!({"tab": tab, "viewer": viewer}))
                     }
                     _ => Err(CtlError::new(code::NO_TAB, "that tab is closed")),
                 };
@@ -586,6 +610,25 @@ mod tests {
         }
         // The running Flare saw the two relayed calls and nothing else.
         assert_eq!(host.ops.lock().unwrap().len(), 2);
+        c.wire().close();
+        t.join().unwrap();
+    }
+
+    /// Rule 1211: the bridge says `hello` to the running Flare with the machine the link's `remote.hello` named, so a
+    /// resize there names the viewer whose size the tab takes.
+    #[test]
+    fn the_bridge_names_the_links_machine_to_the_running_flare() {
+        let host = Host::new();
+        let (mut c, t) = link(&host, Some(KEY));
+        hello(&mut c);
+        let v = c
+            .call(
+                Method::RemoteResize,
+                json!({"tab": "t1", "cols": 100, "rows": 30}),
+                WAIT,
+            )
+            .unwrap();
+        assert_eq!(v["viewer"], "viewer");
         c.wire().close();
         t.join().unwrap();
     }

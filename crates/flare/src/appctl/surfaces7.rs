@@ -7,7 +7,9 @@
 //! - **Preview chip.** The terminal reads local server addresses off its own screen, in any tab. After a tab prints,
 //!   the window asks its handle what it read (the terminal looks at its screen at most every 40 ms); the chip waits for a
 //!   listener on that port (a worker looks in the system's listening table, never connecting to it), and goes when
-//!   nothing listens or the screen was cleared.
+//!   nothing listens or the screen was cleared. A remote tab's address is its host's (rule 1213): its chip shows as
+//!   soon as the screen names it, and a click opens an ssh tunnel to the host (`remote_tunnel`) and the page through
+//!   it; the tunnel is kept for the tab and port, and closes when the chip goes or the tab closes.
 //! - **Notifications.** On each look at the hub the notifier decides which questions get a toast; a toast goes to the
 //!   sink the window installed (Windows' own, or under `--e2e` a recording one).
 
@@ -25,6 +27,9 @@ use super::{AppCtl, Post, UiMsg};
 
 /// How soon a screen the terminal has not read yet is asked about again.
 pub const DEV_RETRY_MS: u64 = 50;
+
+/// How often a remote tab's open tunnels are asked whether their ssh still runs (rule 1214).
+pub const TUNNEL_CHECK_MS: u64 = 1000;
 
 /// Looks whether anything listens on a local port. Production reads the system's listening table; the tests hand a
 /// table of their own.
@@ -49,6 +54,12 @@ pub(super) struct Surf7 {
     /// Tabs whose screen has output the terminal has not read yet (asked again too soon), and when to ask each
     /// again. One deadline per tab: another tab's output never pushes it back.
     pub dev_retry: std::collections::HashMap<String, u64>,
+    /// Rule 1213: the tunnels of remote tabs' chips, by tab and host port, and the ones being opened; how they open.
+    pub tunnels: std::collections::HashMap<(String, u16), crate::remote_tunnel::Tunnel>,
+    pub tunnels_opening: std::collections::HashSet<(String, u16)>,
+    pub tunnel_opener: crate::remote_tunnel::TunnelOpener,
+    /// Rule 1214: when the open tunnels are next asked whether they still carry (only while there are any).
+    pub tunnel_check_at: u64,
 }
 
 impl Surf7 {
@@ -61,6 +72,11 @@ impl Surf7 {
             toasts: 0,
             dev_on: true,
             dev_retry: std::collections::HashMap::new(),
+            tunnels: std::collections::HashMap::new(),
+            tunnels_opening: std::collections::HashSet::new(),
+            // No tunnel until the window installs one: a test never starts ssh.
+            tunnel_opener: Arc::new(|_| Err("no tunnel here".to_string())),
+            tunnel_check_at: 0,
         }
     }
 }
@@ -136,9 +152,8 @@ impl AppCtl {
     /// news. One lock on the emulator, which reads its own screen at most every 40 ms (see `Emulator::dev_state`); a
     /// comparison of counters here.
     pub(super) fn dev_read(&mut self, tab: &str) {
-        // A remote tab's `localhost` is the host's, not this machine's: no live preview chip for it (remote sessions
-        // PR 3).
-        if !dev_preview(&self.prefs) || self.model.remote_of(tab).is_some() {
+        // A remote tab's `localhost` is the host's: its chip opens through a tunnel to the host (rule 1213).
+        if !dev_preview(&self.prefs) {
             return;
         }
         let Some(handle) = self.deps.host.handle(tab) else {
@@ -174,6 +189,30 @@ impl AppCtl {
     pub(super) fn dev_forget(&mut self, tab: &str) {
         self.s7.dev.forget(tab);
         self.s7.dev_retry.remove(tab);
+        // Its tunnels close with it (rule 1213).
+        self.s7.tunnels.retain(|(t, _), _| t != tab);
+        self.s7.tunnels_opening.retain(|(t, _)| t != tab);
+    }
+
+    /// How a remote tab's chip opens its tunnel (startup: ssh, or under `--e2e` the loopback stand-in; tests a fake).
+    pub fn set_tunnel_opener(&mut self, opener: crate::remote_tunnel::TunnelOpener) {
+        self.s7.tunnel_opener = opener;
+    }
+
+    /// Rule 1213: a remote tab's tunnel closes once its chip went or holds another port. Rule 1214: a tunnel whose ssh
+    /// ended on its own (the link to the host died) is dropped too, so the chip shows again and a click opens a new one.
+    fn drop_gone_tunnels(&mut self) {
+        let dev = &self.s7.dev;
+        self.s7.tunnels.retain(|(t, port), tunnel| {
+            if !dev.server(t).is_some_and(|s| s.port == *port) {
+                return false;
+            }
+            let alive = tunnel.alive();
+            if !alive {
+                log::info!("the preview tunnel for port {port} ended; a click opens a new one");
+            }
+            alive
+        });
     }
 
     /// A setting changed: if it is the previews switch, the chips follow at once.
@@ -205,6 +244,16 @@ impl AppCtl {
         let now = self.now();
         let pids = self.deps.host.manager().live_pids();
         for check in self.s7.dev.due(now) {
+            // A remote tab's server listens on the host, where this machine cannot look: what its screen says is
+            // believed, and the chip goes when the screen is cleared (rule 1213). No port of this machine is looked at.
+            if self.model.remote_of(&check.tab).is_some() {
+                (self.deps.post)(UiMsg::DevLook {
+                    tab: check.tab,
+                    token: check.token,
+                    look: PortLook::InTree,
+                });
+                continue;
+            }
             // The tab's shell: its tree is the only place a listener is believed. No shell, no chip.
             let shell = pids
                 .iter()
@@ -241,6 +290,7 @@ impl AppCtl {
     /// The chip on the window: shown for the tab in front while it holds a listening local server and the panel does not
     /// show that page already.
     pub(super) fn sync_chip(&mut self) {
+        self.drop_gone_tunnels();
         let Some(app) = self.app() else { return };
         // Only the tab in front, and not while the window is down, has its chip looked at again.
         let front = self.model.active_shell().map(|t| t.id.clone());
@@ -276,11 +326,20 @@ impl AppCtl {
         let chip = self.s7.dev.shown(&front)?.clone();
         // The panel already shows that server (on any page of it, after the person followed a link inside the app):
         // nothing to offer, and a click must never send it back to the origin.
+        // A remote tab's panel shows the page at its tunnel's port on this machine (rule 1213).
+        let tunnel = self
+            .s7
+            .tunnels
+            .get(&(front.clone(), chip.port))
+            .map(|t| t.local_port);
         let shows = self
             .panels
             .web_target(&front)
             .and_then(|t| dev_server::parse_local(&t))
-            .is_some_and(|s| s.url == chip.url);
+            .is_some_and(|s| match tunnel {
+                Some(local) => s.port == local,
+                None => s.url == chip.url,
+            });
         if shows {
             return None;
         }
@@ -308,6 +367,10 @@ impl AppCtl {
         let Some(token) = self.s7.dev.token(&front) else {
             return;
         };
+        if self.model.remote_of(&front).is_some() {
+            self.remote_chip_clicked(&front, &chip, token);
+            return;
+        }
         let shell = self
             .deps
             .host
@@ -356,6 +419,123 @@ impl AppCtl {
         if self.browser_open(tab, &chip.url).is_ok() {
             self.sync_chip();
         }
+    }
+
+    /// Rule 1213: a remote tab's chip was clicked. Its tunnel, when open, is used again at once; else one is opened on a
+    /// worker to the tab's machine (never twice for one tab and port), and the page opens when it comes up.
+    fn remote_chip_clicked(&mut self, tab: &str, chip: &ChipServer, token: u64) {
+        let key = (tab.to_string(), chip.port);
+        // A tunnel whose ssh ended is never used again: it is dropped and a new one opened (rule 1214).
+        if self.s7.tunnels.get(&key).is_some_and(|t| !t.alive()) {
+            self.s7.tunnels.remove(&key);
+        }
+        if let Some(t) = self.s7.tunnels.get(&key) {
+            if let Some(url) = crate::remote_tunnel::tunnel_url(&chip.url, t.local_port)
+                && self.browser_open(tab, &url).is_ok()
+            {
+                self.sync_chip();
+            }
+            return;
+        }
+        if self.s7.tunnels_opening.contains(&key) {
+            return;
+        }
+        let post = Arc::clone(&self.deps.post);
+        let Some(machine) = self
+            .model
+            .remote_of(tab)
+            .and_then(|tag| self.machines.iter().find(|m| m.id == tag.id))
+            .cloned()
+        else {
+            let name = self
+                .model
+                .remote_of(tab)
+                .map_or_else(String::new, |t| t.name.clone());
+            post(UiMsg::RemoteTunnel {
+                tab: tab.to_string(),
+                port: chip.port,
+                token,
+                opened: Err(format!("{name} is not in Settings > Machines any more")),
+            });
+            return;
+        };
+        self.s7.tunnels_opening.insert(key);
+        let opener = Arc::clone(&self.s7.tunnel_opener);
+        let ask = crate::remote_tunnel::TunnelAsk {
+            machine,
+            host_port: chip.port,
+        };
+        let (id, port) = (tab.to_string(), chip.port);
+        let job = move || {
+            let opened = opener(&ask);
+            post(UiMsg::RemoteTunnel {
+                tab: id,
+                port,
+                token,
+                opened,
+            });
+        };
+        if let Err(e) = std::thread::Builder::new()
+            .name("flare-tunnel-open".into())
+            .spawn(job)
+        {
+            log::warn!("could not start the tunnel: {e}");
+            self.s7.tunnels_opening.remove(&(tab.to_string(), port));
+        }
+    }
+
+    /// Rule 1213: a remote tab's tunnel came up (or did not). It is kept only while the same chip stands on that tab;
+    /// the page opens when the tab is still in front. A failure is one line in the tab's panel.
+    pub(super) fn on_remote_tunnel(
+        &mut self,
+        tab: &str,
+        port: u16,
+        token: u64,
+        opened: Result<crate::remote_tunnel::Tunnel, String>,
+    ) {
+        self.s7.tunnels_opening.remove(&(tab.to_string(), port));
+        let tunnel = match opened {
+            Ok(t) => t,
+            Err(why) => {
+                let text = format!("The preview could not be opened: {why}");
+                self.say_in_panel(tab, &text, &text, "Not done on the other machine");
+                return;
+            }
+        };
+        let same = self.s7.dev.token(tab) == Some(token)
+            && self.s7.dev.server(tab).is_some_and(|s| s.port == port);
+        if !same {
+            // The chip went meanwhile: the tunnel closes as it drops.
+            return;
+        }
+        let local = tunnel.local_port;
+        self.s7.tunnels.insert((tab.to_string(), port), tunnel);
+        // From now on the tunnels are asked, on the timer, whether they still carry (rule 1214).
+        self.s7.tunnel_check_at = self.now() + TUNNEL_CHECK_MS;
+        self.kick();
+        if self.front_id().as_deref() != Some(tab) {
+            return;
+        }
+        let Some(chip) = self.chip_for_front() else {
+            return;
+        };
+        if let Some(url) = crate::remote_tunnel::tunnel_url(&chip.url, local)
+            && self.browser_open(tab, &url).is_ok()
+        {
+            self.sync_chip();
+        }
+    }
+
+    /// The tunnels open now, as (tab, host port, local port) (the tests and the e2e probe).
+    pub(crate) fn remote_tunnels(&self) -> Vec<(String, u16, u16)> {
+        let mut v: Vec<(String, u16, u16)> = self
+            .s7
+            .tunnels
+            .iter()
+            .map(|((t, p), x)| (t.clone(), *p, x.local_port))
+            .collect();
+        v.sort();
+        v
     }
 
     // ---- questions as notifications --------------------------------------------------------------------------------
@@ -442,6 +622,7 @@ impl AppCtl {
             self.s7.dev.next_due(),
             self.s7.notifier.next_due(),
             self.s7.dev_retry.values().copied().min(),
+            (!self.s7.tunnels.is_empty()).then_some(self.s7.tunnel_check_at),
         ]
         .into_iter()
         .flatten()
@@ -462,6 +643,13 @@ impl AppCtl {
             self.dev_read(&tab);
         }
         self.dev_pump();
+        // Rule 1214: a tunnel whose ssh ended on its own goes now, so the chip shows again without any new output.
+        if !self.s7.tunnels.is_empty() && self.s7.tunnel_check_at <= now {
+            self.s7.tunnel_check_at = now + TUNNEL_CHECK_MS;
+            if self.s7.tunnels.values().any(|t| !t.alive()) {
+                self.sync_chip();
+            }
+        }
         if self.s7.notifier.next_due().is_some_and(|d| d <= now) {
             self.notify_update();
         }
@@ -480,6 +668,7 @@ impl AppCtl {
             "chip_tip": self.app().map(|a| a.get_preview_chip_tip().to_string()),
             "tracked": self.s7.dev.tracked(),
             "tracked_urls": self.s7.dev.tracked_urls(),
+            "tunnels": self.remote_tunnels(),
             "toasts": self.s7.toasts,
             "notify_waiting": self.s7.notifier.waiting(),
         })
@@ -493,6 +682,13 @@ static UNAVAILABLE_LOGGED: flare_win::toast::FirstTime = flare_win::toast::First
 /// recorder (nothing reaches the desktop).
 pub fn install(rc: &Rc<RefCell<AppCtl>>, post: Post, e2e: bool) {
     let mut c = rc.borrow_mut();
+    // A remote tab's chip opens a tunnel to its host (rule 1213): ssh, or under `--e2e` the loopback stand-in, never
+    // a real ssh.
+    c.set_tunnel_opener(if e2e {
+        Arc::new(crate::remote_tunnel::open_loopback)
+    } else {
+        Arc::new(|ask| crate::remote_tunnel::open_ssh(ask, crate::remote_tunnel::TUNNEL_WAIT))
+    });
     c.set_port_probe(Arc::new(|port, shell| {
         use flare_win::tcp_owner::TreeLook;
         if shell == 0 {

@@ -297,10 +297,12 @@ pub enum CtlOp {
         input: Value,
     },
     /// `remote.open` (remote sessions PR 2): a new tab in a host folder the call's thread checked is one, with a session
-    /// id that passed `valid_resume`. Answered with `{tab, session}`.
+    /// id that passed `valid_resume`. Answered with `{tab, session}`. An `open_id` the host answered lately is answered
+    /// with the tab it opened, not a second one (rule 1210).
     RemoteOpen {
         folder: String,
         resume: Option<String>,
+        open_id: Option<String>,
     },
     /// `remote.tabs`: every shell tab with its folder, title, the agent's state word and session.
     RemoteTabs,
@@ -315,11 +317,13 @@ pub enum CtlOp {
         tab: String,
         intents: Vec<flare_term::handle::RemoteIntent>,
     },
-    /// `remote.resize`: a clamped size; the remote viewer owns the tab's size from now (rule 282).
+    /// `remote.resize`: a clamped size; the remote viewer owns the tab's size from now (rule 282). `viewer` is the
+    /// viewer's machine as its link named it, for the host's fitted view (rule 1211); None when the bridge said none.
     RemoteResize {
         tab: String,
         cols: usize,
         rows: usize,
+        viewer: Option<String>,
     },
     /// The last remote viewer of the tab detached or went: its size goes back to the window. Never ends it (rule 280).
     RemoteRelease {
@@ -2401,7 +2405,7 @@ impl AppDispatcher {
         };
         match method {
             Method::RemoteOpen => {
-                only_fields(params, &["folder", "resume"], "remote.open")?;
+                only_fields(params, &["folder", "resume", "open_id"], "remote.open")?;
                 let folder = str_param(params, "folder")?
                     .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "folder is required"))?;
                 // `~` alone is this host's home folder (remote sessions PR 7: the + menu's shell on a machine).
@@ -2427,9 +2431,22 @@ impl AppDispatcher {
                             .to_string(),
                     ),
                 };
+                // Rule 1210: the viewer's id for this open, so the same open sent again after a lost answer finds the
+                // tab the first one opened.
+                let open_id = match str_param(params, "open_id")? {
+                    None => None,
+                    Some(o) if remote::valid_open_id(o) => Some(o.to_string()),
+                    Some(_) => {
+                        return Err(CtlError::new(
+                            code::BAD_PARAMS,
+                            "open_id is 1 to 64 letters, digits, - or _",
+                        ));
+                    }
+                };
                 self.ask(CtlOp::RemoteOpen {
                     folder: dir.to_string_lossy().into_owned(),
                     resume,
+                    open_id,
                 })
             }
             Method::RemoteLs => {
@@ -2492,6 +2509,7 @@ impl AppDispatcher {
                     tab,
                     cols: usize::from(cols),
                     rows: usize::from(rows),
+                    viewer: viewer_of(ctx),
                 })
             }
             Method::RemoteOutput => {
@@ -2510,11 +2528,22 @@ impl AppDispatcher {
                 }))
             }
             Method::RemoteSnapshot => {
-                only_fields(params, &["tab"], "remote.snapshot")?;
+                only_fields(params, &["tab", "styled"], "remote.snapshot")?;
                 let tab = remote_tab(params)?;
+                // Rule 1213: `styled` asks for the lines with their colours and styles, within the styled cap.
+                let styled = match params.get("styled") {
+                    None | Some(Value::Null) => false,
+                    Some(Value::Bool(b)) => *b,
+                    Some(_) => {
+                        return Err(CtlError::new(code::BAD_PARAMS, "styled is true or false"));
+                    }
+                };
                 let (handle, _) = host.followed(&tab).ok_or_else(no_tab)?;
                 let snap = handle
-                    .remote_snapshot(remote::SNAPSHOT_LINES)
+                    .remote_snapshot_with(
+                        remote::SNAPSHOT_LINES,
+                        styled.then_some(remote::SNAPSHOT_STYLED_MAX),
+                    )
                     .ok_or_else(|| {
                         CtlError::new(code::UNAVAILABLE, "that tab's shell is not running")
                     })?;
@@ -2523,6 +2552,7 @@ impl AppDispatcher {
                     "seq": snap.seq,
                     "cols": snap.cols,
                     "rows": snap.rows,
+                    "styled": styled,
                     "data": b64.encode(&snap.data),
                 }))
             }
@@ -2593,13 +2623,56 @@ fn remote_put(
     use base64::Engine as _;
     only_fields(
         params,
-        &["tab", "name", "chunk", "chunks", "data"],
+        &[
+            "tab", "name", "chunk", "chunks", "data", "folder", "under", "exec",
+        ],
         "remote.put",
     )?;
+    // Rule 1215: the file ran as a program on the viewer; its last chunk makes it runnable on a Mac or Linux host.
+    let exec = match params.get("exec") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(CtlError::new(code::BAD_PARAMS, "exec is true or false")),
+    };
     let tab = remote_tab(params)?;
     let name = str_param(params, "name")?
         .filter(|n| !n.is_empty() && n.len() <= 4096)
         .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "name is the file's name"))?;
+    // Rule 1213: a dropped folder. `folder: true` makes a folder (the dropped one without `under`, one inside it with);
+    // `under` puts a file in a folder of that copy.
+    let folder = match params.get("folder") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(CtlError::new(code::BAD_PARAMS, "folder is true or false")),
+    };
+    let under = str_param(params, "under")?;
+    let Some((handle, _)) = host.followed(&tab) else {
+        return Err(CtlError::new(
+            code::NO_TAB,
+            "that tab is not followed: send remote.attach first",
+        ));
+    };
+    if folder {
+        let made = host.uploads().make_folder(&tab, name, under)?;
+        let mut v = json!({"tab": tab, "name": made.name, "done": true});
+        // The dropped folder itself is what is pasted; a folder inside it says only where it is.
+        if let Some(p) = made.host_path {
+            let text = p.to_string_lossy().into_owned();
+            if under.is_none() {
+                let shell = flare_shells::paste::path_shell_of(handle.shell_id().as_deref());
+                let paste =
+                    flare_shells::paste::quote_path(&text, Some(shell)).ok_or_else(|| {
+                        CtlError::new(
+                            code::UNAVAILABLE,
+                            "the host's upload folder cannot be typed in that tab's shell",
+                        )
+                    })?;
+                v["paste"] = json!(paste);
+            }
+            v["host_path"] = json!(text);
+        }
+        return Ok(v);
+    }
     let num = |key: &str| -> Result<u32, CtlError> {
         let n = count_param(params, key, true)?.unwrap_or(0);
         u32::try_from(n).map_err(|_| CtlError::new(code::BAD_PARAMS, format!("{key} is a count")))
@@ -2608,15 +2681,20 @@ fn remote_put(
     let data = base64::engine::general_purpose::STANDARD
         .decode(str_param(params, "data")?.unwrap_or_default())
         .map_err(|_| CtlError::new(code::BAD_PARAMS, "data is base64"))?;
-    let Some((handle, _)) = host.followed(&tab) else {
-        return Err(CtlError::new(
-            code::NO_TAB,
-            "that tab is not followed: send remote.attach first",
-        ));
-    };
-    let put = host.uploads().put(&tab, name, chunk, chunks, &data)?;
+    let put = host
+        .uploads()
+        .put_in(&tab, under, name, chunk, chunks, &data)?;
+    if exec && let Some(p) = &put.host_path {
+        crate::remote_files::make_runnable(p).map_err(|e| {
+            CtlError::new(
+                code::UNAVAILABLE,
+                format!("the file could not be made runnable on the host: {e}"),
+            )
+        })?;
+    }
     let mut v = json!({"tab": tab, "name": put.name, "done": put.host_path.is_some()});
-    if let Some(p) = put.host_path {
+    // A file inside a dropped folder is not pasted: the folder is (rule 1213).
+    if let Some(p) = put.host_path.filter(|_| under.is_none()) {
         let text = p.to_string_lossy().into_owned();
         let shell = flare_shells::paste::path_shell_of(handle.shell_id().as_deref());
         // The name is clean (`put_name`), so every shell's quotes take it; a folder no shell can quote is said.
@@ -2663,16 +2741,11 @@ impl AppDispatcher {
         ) else {
             return Ok(host.convo().none(&tab, since).to_json(&tab));
         };
-        let dir = std::path::Path::new(dir);
-        let Some(mut path) = flare_convo::transcript_path_in(dir, folder, session) else {
+        let Some(path) =
+            crate::remote_convo::transcript_of(std::path::Path::new(dir), folder, session)
+        else {
             return Ok(host.convo().none(&tab, since).to_json(&tab));
         };
-        // sync-ok: the control channel's worker asks the disk, never the UI thread
-        if !path.is_file()
-            && let Some(other) = flare_convo::find_transcript_in(dir, session)
-        {
-            path = other;
-        }
         let answer = host
             .convo()
             .read(&tab, session, &path, since)
@@ -2688,6 +2761,18 @@ impl AppDispatcher {
 
 /// `remote.convo` calls one tab takes a second (a viewer polls it every second or two).
 pub const REMOTE_CONVO_RATE: f64 = 10.0;
+
+/// The viewer's machine, as the call's connection names it (rule 1211): a remote link's own `remote.hello` named it,
+/// and the bridge says it as its `hello`'s client. An older bridge says only its own name, which names no machine, and
+/// so does a name that is empty, too long or holds a control character.
+pub fn viewer_of(ctx: &CallContext) -> Option<String> {
+    let name = ctx.client.trim();
+    (!name.is_empty()
+        && name != crate::serve_remote::BRIDGE_CLIENT
+        && name.chars().count() <= flare_ctl::session::MAX_MACHINE_NAME
+        && !name.chars().any(char::is_control))
+    .then(|| name.to_string())
+}
 
 impl Dispatcher for AppDispatcher {
     /// A mod's token (stage 8): the grant of exactly its permissions while it is on, nothing once it is off.
@@ -6077,6 +6162,18 @@ mod tests {
             )),
             code::BAD_PARAMS
         );
+        // Rule 1210: an open id is a short plain word.
+        for bad in [json!(""), json!("a b"), json!("x".repeat(65)), json!(7)] {
+            assert_eq!(
+                code_of(d.call(
+                    &c,
+                    Method::RemoteOpen,
+                    json!({"folder": here, "open_id": bad})
+                )),
+                code::BAD_PARAMS,
+                "{bad}"
+            );
+        }
         assert!(ops.lock().unwrap().is_empty());
         assert!(
             d.call(&c, Method::RemoteOpen, json!({"folder": here}))
@@ -6090,9 +6187,21 @@ mod tests {
             )
             .is_ok()
         );
+        assert!(
+            d.call(
+                &c,
+                Method::RemoteOpen,
+                json!({"folder": here, "open_id": "a1-B2_c3".repeat(8)})
+            )
+            .is_ok()
+        );
         assert_eq!(
             *ops.lock().unwrap(),
-            ["CtlOp::RemoteOpen", "CtlOp::RemoteOpen"]
+            [
+                "CtlOp::RemoteOpen",
+                "CtlOp::RemoteOpen",
+                "CtlOp::RemoteOpen"
+            ]
         );
     }
 
@@ -6195,6 +6304,46 @@ mod tests {
                 json!({"tab": "t1", "cols": "80", "rows": 24})
             )),
             code::BAD_PARAMS
+        );
+    }
+
+    /// Rule 1211: `remote.resize` names the viewer's machine as the bridge's `hello` said it; an older bridge's own name,
+    /// an empty name, an overlong one or one with a control character names none.
+    #[test]
+    fn remote_resize_names_the_viewer_the_bridge_said() {
+        let r = rig(
+            |op| match op {
+                CtlOp::RemoteResize { viewer, .. } => Ok(json!({"viewer": viewer})),
+                _ => Ok(json!({})),
+            },
+            false,
+            &[],
+        );
+        let d =
+            r.d.with_remote(crate::remote_host::RemoteHost::with_key("k".into()));
+        let viewer = |client: String| {
+            let ctx = CallContext {
+                client,
+                ..bridge(1)
+            };
+            d.call(
+                &ctx,
+                Method::RemoteResize,
+                json!({"tab": "t1", "cols": 80, "rows": 24}),
+            )
+            .unwrap()["viewer"]
+                .clone()
+        };
+        assert_eq!(viewer("Mac Mini".into()), json!("Mac Mini"));
+        assert_eq!(
+            viewer(crate::serve_remote::BRIDGE_CLIENT.into()),
+            Value::Null
+        );
+        assert_eq!(viewer(String::new()), Value::Null);
+        assert_eq!(viewer("a\u{7}b".into()), Value::Null);
+        assert_eq!(
+            viewer("m".repeat(flare_ctl::session::MAX_MACHINE_NAME + 1)),
+            Value::Null
         );
     }
 
@@ -6347,6 +6496,109 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10)); // sync-ok: test code only
         }
         assert!(!dir.exists(), "the closed tab's uploads are gone");
+    }
+
+    /// Rule 1213: `remote.put {folder: true}` makes the dropped folder in the tab's upload folder and answers its path
+    /// quoted for the tab's shell; folders and files go inside it with `under`, a file there answers no paste, and a
+    /// bad `folder` or `under` is refused. `remote.snapshot` takes `styled` as true or false only.
+    #[test]
+    fn remote_put_makes_a_dropped_folder_and_fills_it_and_a_snapshot_takes_styled() {
+        use base64::Engine as _;
+        let enc = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let temp = tempfile::tempdir().unwrap();
+        let r = rig(|_| Ok(json!({"ok": true})), false, &[]);
+        let host = crate::remote_host::RemoteHost::with_temp("k".into(), temp.path().into());
+        let d = r.d.with_remote(Arc::clone(&host));
+        let put = |p: Value| d.call(&bridge(1), Method::RemotePut, p);
+        assert_eq!(
+            code_of(put(json!({"tab": "t1", "name": "my proj", "folder": true}))),
+            code::NO_TAB
+        );
+        a_followed_tab(&host, "t1", 1);
+        let v = put(json!({"tab": "t1", "name": "my proj", "folder": true})).unwrap();
+        assert_eq!(v["name"], "my proj");
+        let top = std::path::PathBuf::from(v["host_path"].as_str().unwrap());
+        assert!(top.is_dir());
+        assert_eq!(top.parent(), Some(host.uploads().folder("t1").as_path()));
+        assert!(v["paste"].as_str().unwrap().contains("my proj"));
+        let v =
+            put(json!({"tab": "t1", "name": "src", "folder": true, "under": "my proj"})).unwrap();
+        assert!(
+            v.get("paste").is_none(),
+            "only the dropped folder is pasted"
+        );
+        let v = put(json!({
+            "tab": "t1", "name": "a.rs", "chunk": 0, "chunks": 1, "data": enc(b"x"), "under": "my proj/src"
+        }))
+        .unwrap();
+        assert_eq!(v["done"], true);
+        assert!(v.get("paste").is_none());
+        assert_eq!(std::fs::read(top.join("src").join("a.rs")).unwrap(), b"x");
+        for p in [
+            json!({"tab": "t1", "name": "x", "folder": "yes"}),
+            json!({"tab": "t1", "name": "x", "folder": true, "under": "../t2"}),
+            json!({"tab": "t1", "name": "x", "folder": true, "under": "not made"}),
+            json!({"tab": "t1", "name": "x", "chunk": 0, "chunks": 1, "data": "", "under": "my proj/../.."}),
+        ] {
+            assert_eq!(code_of(put(p.clone())), code::BAD_PARAMS, "{p}");
+        }
+        let snap = |p: Value| d.call(&bridge(1), Method::RemoteSnapshot, p);
+        assert_eq!(
+            code_of(snap(json!({"tab": "t1", "styled": "yes"}))),
+            code::BAD_PARAMS
+        );
+        assert_ne!(
+            code_of(snap(json!({"tab": "t1", "styled": true}))),
+            code::BAD_PARAMS
+        );
+    }
+
+    /// Rule 1215: a file the viewer says ran as a program (`exec: true` on its last chunk) is runnable on a Mac or Linux
+    /// host, in the tab's folder and inside a dropped folder; one without it is not, a Windows host takes the param and
+    /// changes nothing, and an `exec` that is no true or false is refused.
+    #[test]
+    fn remote_put_with_exec_makes_the_file_runnable_on_a_unix_host() {
+        use base64::Engine as _;
+        let enc = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let temp = tempfile::tempdir().unwrap();
+        let r = rig(|_| Ok(json!({"ok": true})), false, &[]);
+        let host = crate::remote_host::RemoteHost::with_temp("k".into(), temp.path().into());
+        let d = r.d.with_remote(Arc::clone(&host));
+        let put = |p: Value| d.call(&bridge(1), Method::RemotePut, p);
+        a_followed_tab(&host, "t1", 1);
+        let path_of = |v: Value| std::path::PathBuf::from(v["host_path"].as_str().unwrap());
+        let run = path_of(
+            put(json!({"tab": "t1", "name": "run.sh", "chunk": 0, "chunks": 1, "data": enc(b"#!/bin/sh\n"), "exec": true}))
+                .unwrap(),
+        );
+        let plain = path_of(
+            put(json!({"tab": "t1", "name": "a.txt", "chunk": 0, "chunks": 1, "data": enc(b"a"), "exec": false}))
+                .unwrap(),
+        );
+        let top = path_of(put(json!({"tab": "t1", "name": "proj", "folder": true})).unwrap());
+        put(json!({
+            "tab": "t1", "name": "gradlew", "chunk": 0, "chunks": 1, "data": enc(b"x"), "under": "proj", "exec": true
+        }))
+        .unwrap();
+        assert_eq!(std::fs::read(&run).unwrap(), b"#!/bin/sh\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode();
+            // Every reader may run it: at least its owner, whatever the host's umask left.
+            assert_eq!(mode(&run) & 0o100, 0o100, "{:o}", mode(&run));
+            assert_eq!((mode(&run) & 0o444) >> 2, mode(&run) & 0o111);
+            assert_eq!(mode(&top.join("gradlew")) & 0o100, 0o100);
+            assert_eq!(mode(&plain) & 0o111, 0);
+        }
+        #[cfg(not(unix))]
+        assert!(plain.is_file() && top.join("gradlew").is_file());
+        assert_eq!(
+            code_of(put(
+                json!({"tab": "t1", "name": "y", "chunk": 0, "chunks": 1, "data": "", "exec": "yes"})
+            )),
+            code::BAD_PARAMS
+        );
     }
 
     /// Rule 297: the host finds the tab's transcript with its own Claude folder and sends numbered entries, never a

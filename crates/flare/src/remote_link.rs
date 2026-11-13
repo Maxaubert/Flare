@@ -14,9 +14,16 @@
 //! one whose number fell out of the host's ring (`gap`). What a reconnect catches up on is the past: the agent's
 //! signals are taken out of it (rule 289).
 //!
+//! Rule 1210, the link's edge cases: an attach the host answers `unavailable` (a new tab's shell still starting) is
+//! tried again on the same link every 250 ms for up to 10 s; `remote.open` carries the tab's open id, so an open whose
+//! answer was lost is answered with the tab the first one opened; and typing while the link is down is kept (30 s and
+//! 64 KB at most) and sent in order after the next attach, never into another host tab.
+//!
 //! Between the typing and the output poll the worker does the window's file work (remote sessions PR 6, `Errand`): a
 //! file link's host file fetched in chunks (`remote.fetch`, rule 303), and dropped or pasted files copied to the host
-//! (`remote.put`) with their host paths pasted as one paste (rule 304).
+//! (`remote.put`) with their host paths pasted as one paste (rule 304); a dropped folder goes whole, its folders and
+//! files under it, and only its path is pasted (rule 1213). A snapshot is asked styled, so the host's colours show at
+//! once; an older host's refusal is asked again plain (rule 1213).
 //!
 //! Closing the tab closes the host's session (`remote.close`, which asks as any close does); the quit and a dropped
 //! link only detach (rule 288). Every wait here is on this worker: a dead link never holds the UI thread, a close or
@@ -25,8 +32,8 @@
 use base64::Engine as _;
 use flare_ctl::framing::Wire;
 use flare_ctl::remote::{
-    FILE_CHUNK, FILE_CHUNKS_MAX, FILE_MAX, Intent, KeyIntent, MAX_INPUT_BYTES, MAX_INTENTS,
-    OUTPUT_MAX, chunks_of, intents_json,
+    FILE_CHUNK, FILE_CHUNKS_MAX, FILE_MAX, FOLDER_DIRS_MAX, FOLDER_FILES_MAX, FOLDER_MAX, Intent,
+    KeyIntent, MAX_INPUT_BYTES, MAX_INTENTS, OUTPUT_MAX, chunks_of, intents_json,
 };
 use flare_ctl::{
     Client, ClientError, CtlError, Method, RemoteHelloInfo, RemoteHelloParams, StdioWire, code,
@@ -36,7 +43,7 @@ use flare_term::handle::RemoteIntent;
 use flare_term::pty::{PtyProcess, PtySpawner, SpawnSpec};
 use flare_term::remote_pty::{
     Errand, ErrandFail, Fetched, Leaving, LinkState, RemoteIo, RemotePty, RemoteSpec, SignalStrip,
-    Upload, plain_snapshot,
+    Upload, UploadFolder, plain_snapshot, styled_snapshot,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -456,13 +463,18 @@ pub fn put_files(
     link: &mut dyn Link,
     tab: &str,
     files: &[Upload],
+    folders: &[UploadFolder],
     wait: Duration,
 ) -> Answered<(Vec<String>, String)> {
-    let enc = base64::engine::general_purpose::STANDARD;
-    if files.is_empty() {
+    if files.is_empty() && folders.is_empty() {
         return Ok(Err(ErrandFail::Failed("there is no file to copy".into())));
     }
+    if let Err(why) = folders_fit(folders) {
+        return Ok(Err(ErrandFail::Failed(why)));
+    }
     let (mut paths, mut pastes) = (Vec::new(), Vec::new());
+    // Rule 1215: whether the host still takes `exec`; an older one refuses it once, and this errand leaves it out.
+    let mut exec_on = true;
     for f in files {
         if f.data.len() as u64 > FILE_MAX {
             return Ok(Err(ErrandFail::Failed(format!(
@@ -471,25 +483,16 @@ pub fn put_files(
                 FILE_MAX / (1024 * 1024)
             ))));
         }
-        let chunks = chunks_of(f.data.len() as u64);
-        let mut name = f.name.clone();
-        let mut last = Value::Null;
-        for c in 0..chunks {
-            let from = (c as usize) * FILE_CHUNK;
-            let piece = &f.data[from.min(f.data.len())..(from + FILE_CHUNK).min(f.data.len())];
-            last = match link.call(
-                Method::RemotePut,
-                json!({"tab": tab, "name": name, "chunk": c, "chunks": chunks, "data": enc.encode(piece)}),
-                wait,
-            ) {
-                Ok(v) => v,
-                Err(e) => return refused(e),
-            };
-            // The next chunks name the file as the host kept it.
-            if let Some(n) = last["name"].as_str() {
-                name = n.to_string();
-            }
-        }
+        let one = PutOne {
+            under: None,
+            name: &f.name,
+            data: &f.data,
+            exec: f.exec,
+        };
+        let last = match put_one(link, tab, &one, &mut exec_on, wait)? {
+            Ok(v) => v,
+            Err(why) => return Ok(Err(why)),
+        };
         let (Some(p), Some(q)) = (last["host_path"].as_str(), last["paste"].as_str()) else {
             return Ok(Err(ErrandFail::Failed(
                 "the host kept the file but named no path".into(),
@@ -498,7 +501,213 @@ pub fn put_files(
         paths.push(p.to_string());
         pastes.push(q.to_string());
     }
+    for f in folders {
+        match put_folder(link, tab, f, &mut exec_on, wait)? {
+            Ok((p, q)) => {
+                paths.push(p);
+                pastes.push(q);
+            }
+            Err(why) => return Ok(Err(why)),
+        }
+    }
     Ok(Ok((paths, pastes.join(" "))))
+}
+
+/// Pure: whether dropped folders fit the caps together (rule 1213): at most `FOLDER_FILES_MAX` files, `FOLDER_MAX`
+/// bytes and `FOLDER_DIRS_MAX` folders, each file at most `FILE_MAX`. The one line that says why not, otherwise.
+pub fn folders_fit(folders: &[UploadFolder]) -> Result<(), String> {
+    let files: usize = folders.iter().map(|f| f.files.len()).sum();
+    let dirs: usize = folders.iter().map(|f| f.dirs.len() + 1).sum();
+    let bytes: u64 = folders
+        .iter()
+        .flat_map(|f| f.files.iter().map(|x| x.size))
+        .sum();
+    let mb = |b: u64| b / (1024 * 1024);
+    if files > FOLDER_FILES_MAX {
+        return Err(format!(
+            "the folder holds {files} files, over {FOLDER_FILES_MAX}: copy it to the other machine another way"
+        ));
+    }
+    if bytes > FOLDER_MAX {
+        return Err(format!(
+            "the folder is {} MB, over {} MB: copy it to the other machine another way",
+            mb(bytes),
+            mb(FOLDER_MAX)
+        ));
+    }
+    if dirs > FOLDER_DIRS_MAX {
+        return Err(format!(
+            "the folder holds over {FOLDER_DIRS_MAX} folders: copy it to the other machine another way"
+        ));
+    }
+    if let Some(big) = folders
+        .iter()
+        .flat_map(|f| f.files.iter())
+        .find(|x| x.size > FILE_MAX)
+    {
+        return Err(format!(
+            "{} is over {} MB: copy the folder to the other machine another way",
+            big.name,
+            mb(FILE_MAX)
+        ));
+    }
+    Ok(())
+}
+
+/// One file for [`put_one`]: the folder `under` names inside a dropped folder (none: the tab's upload folder), its
+/// name, its bytes and whether it runs as a program on this machine (rule 1215).
+struct PutOne<'a> {
+    under: Option<&'a str>,
+    name: &'a str,
+    data: &'a [u8],
+    exec: bool,
+}
+
+/// One file to the host in chunks (`remote.put`), into the tab's upload folder or the folder `under` names inside a
+/// dropped folder: the host's answer to the last chunk. A runnable file's last chunk says `exec: true` (rule 1215); a
+/// host that refuses the unknown param (`bad_params` naming it, an older Flare) takes the chunk again without it, and
+/// `exec_on` goes false so the rest of the errand leaves it out.
+fn put_one(
+    link: &mut dyn Link,
+    tab: &str,
+    f: &PutOne<'_>,
+    exec_on: &mut bool,
+    wait: Duration,
+) -> Answered<Value> {
+    let enc = base64::engine::general_purpose::STANDARD;
+    let data = f.data;
+    let chunks = chunks_of(data.len() as u64);
+    let mut name = f.name.to_string();
+    let mut last = Value::Null;
+    for c in 0..chunks {
+        let from = (c as usize) * FILE_CHUNK;
+        let piece = &data[from.min(data.len())..(from + FILE_CHUNK).min(data.len())];
+        let mut p = json!({"tab": tab, "name": name, "chunk": c, "chunks": chunks, "data": enc.encode(piece)});
+        if let Some(u) = f.under {
+            p["under"] = json!(u);
+        }
+        let exec = f.exec && *exec_on && c + 1 == chunks;
+        if exec {
+            p["exec"] = json!(true);
+        }
+        let mut answer = link.call(Method::RemotePut, p.clone(), wait);
+        if exec
+            && let Err(LinkError::Refused(e)) = &answer
+            && e.code == code::BAD_PARAMS
+            && e.message.contains("exec")
+        {
+            log::info!("remote.put: an older host without exec, copying without it");
+            *exec_on = false;
+            if let Some(o) = p.as_object_mut() {
+                o.remove("exec");
+            }
+            answer = link.call(Method::RemotePut, p, wait);
+        }
+        last = match answer {
+            Ok(v) => v,
+            Err(e) => return refused(e),
+        };
+        // The next chunks name the file as the host kept it.
+        if let Some(n) = last["name"].as_str() {
+            name = n.to_string();
+        }
+    }
+    Ok(Ok(last))
+}
+
+/// One dropped folder to the host (rule 1213): the folder (`folder: true`), the folders in it, then each file, read
+/// here as it goes. The folder's host path and that path quoted for the tab's shell. An older host that takes single
+/// files only refuses the first call and nothing is copied.
+fn put_folder(
+    link: &mut dyn Link,
+    tab: &str,
+    f: &UploadFolder,
+    exec_on: &mut bool,
+    wait: Duration,
+) -> Answered<(String, String)> {
+    let top = match link.call(
+        Method::RemotePut,
+        json!({"tab": tab, "name": f.name, "folder": true}),
+        wait,
+    ) {
+        Ok(v) => v,
+        Err(LinkError::Refused(e))
+            if e.code == code::BAD_PARAMS && e.message.contains("folder") =>
+        {
+            return Ok(Err(ErrandFail::Failed(
+                "Flare on the other machine takes single files only: update it there to copy a folder"
+                    .into(),
+            )));
+        }
+        Err(e) => return refused(e),
+    };
+    let (Some(kept), Some(p), Some(q)) = (
+        top["name"].as_str(),
+        top["host_path"].as_str(),
+        top["paste"].as_str(),
+    ) else {
+        return Ok(Err(ErrandFail::Failed(
+            "the host made the folder but named no path".into(),
+        )));
+    };
+    // Each folder's place on the host (`under`), by its parts here.
+    let mut at: std::collections::HashMap<Vec<String>, String> = std::collections::HashMap::new();
+    at.insert(Vec::new(), kept.to_string());
+    for d in &f.dirs {
+        let Some((name, parent)) = d.split_last() else {
+            continue;
+        };
+        let Some(under) = at.get(parent).cloned() else {
+            return Ok(Err(ErrandFail::Failed(
+                "a folder came before the folder it is in".into(),
+            )));
+        };
+        let v = match link.call(
+            Method::RemotePut,
+            json!({"tab": tab, "name": name, "folder": true, "under": under}),
+            wait,
+        ) {
+            Ok(v) => v,
+            Err(e) => return refused(e),
+        };
+        let made = v["name"].as_str().unwrap_or(name);
+        at.insert(d.clone(), format!("{under}/{made}"));
+    }
+    for file in &f.files {
+        let Some(under) = at.get(&file.dir).cloned() else {
+            return Ok(Err(ErrandFail::Failed(format!(
+                "{} is in a folder that was not copied",
+                file.name
+            ))));
+        };
+        // sync-ok: the tab's link worker reads a dropped folder's file as it sends it, never the UI thread
+        let data = match std::fs::read(&file.path) {
+            Ok(d) if d.len() as u64 <= FILE_MAX => d,
+            Ok(_) => {
+                return Ok(Err(ErrandFail::Failed(format!(
+                    "{} grew over {} MB while it was copied",
+                    file.name,
+                    FILE_MAX / (1024 * 1024)
+                ))));
+            }
+            Err(_) => {
+                return Ok(Err(ErrandFail::Failed(format!(
+                    "{} could not be read here",
+                    file.name
+                ))));
+            }
+        };
+        let one = PutOne {
+            under: Some(&under),
+            name: &file.name,
+            data: &data,
+            exec: file.exec,
+        };
+        if let Err(why) = put_one(link, tab, &one, exec_on, wait)? {
+            return Ok(Err(why));
+        }
+    }
+    Ok(Ok((p.to_string(), q.to_string())))
 }
 
 // ---- the tab's worker ----
@@ -520,7 +729,16 @@ pub struct Timing {
     pub end_call: Duration,
     /// Between two `remote.status` polls (remote sessions PR 4).
     pub status_every: Duration,
+    /// Between two tries of an attach the host answered `unavailable` (a new tab's shell still starting, rule 1210).
+    pub attach_retry: Duration,
+    /// How long an attach is tried again on the same link before the link is dropped.
+    pub attach_patience: Duration,
+    /// The oldest typing kept while the link is down and sent after the next attach (rule 1210).
+    pub typing_kept: Duration,
 }
+
+/// The most typing kept while the link is down, in the bytes `remote.input` counts (rule 1210).
+pub const KEPT_TYPING_MAX: usize = 64 * 1024;
 
 impl Default for Timing {
     fn default() -> Self {
@@ -533,6 +751,9 @@ impl Default for Timing {
             long_call: Duration::from_secs(60),
             end_call: Duration::from_secs(5),
             status_every: Duration::from_millis(1500),
+            attach_retry: Duration::from_millis(250),
+            attach_patience: Duration::from_secs(10),
+            typing_kept: Duration::from_secs(30),
         }
     }
 }
@@ -589,6 +810,10 @@ impl PtySpawner for RemoteSpawner {
             convo: crate::remote_convo::ConvoMirror::new(),
             convo_next: None,
             convo_off: false,
+            open_id: flare_term::session::new_ctl_token(),
+            open_id_on: true,
+            kept: KeptTyping::default(),
+            styled_on: true,
         };
         std::thread::Builder::new()
             .name("flare-remote-link".into())
@@ -625,6 +850,14 @@ struct Worker {
     convo: crate::remote_convo::ConvoMirror,
     convo_next: Option<Instant>,
     convo_off: bool,
+    /// This tab's `remote.open` id, the same across its reconnects (rule 1210), and whether the host takes it (an older
+    /// host refuses the param).
+    open_id: String,
+    open_id_on: bool,
+    /// The typing kept while the link is down (rule 1210).
+    kept: KeptTyping,
+    /// Whether the host takes `remote.snapshot {styled}` (rule 1213; an older host refuses the param).
+    styled_on: bool,
 }
 
 /// The most characters of one entry the fitted view shows (a long answer is cut, the view is for a glance).
@@ -633,8 +866,16 @@ pub const CONVO_LINE_MAX: usize = 4000;
 /// Pure: the fitted view's lines of a mirrored conversation (remote sessions PR 7): who said it, the words (cut at
 /// [`CONVO_LINE_MAX`] characters) and a tool's name.
 pub fn convo_lines(m: &crate::remote_convo::ConvoMirror) -> Vec<flare_term::remote_pty::ConvoLine> {
+    entry_lines(m.entries())
+}
+
+/// Pure: the fitted view's lines of numbered entries, as [`convo_lines`] makes them (the host's own view, rule 1211,
+/// reads its entries the same way).
+pub fn entry_lines(
+    entries: &[(u64, flare_convo::said::Entry)],
+) -> Vec<flare_term::remote_pty::ConvoLine> {
     use flare_convo::said::Role;
-    m.entries()
+    entries
         .iter()
         .map(|(_, e)| flare_term::remote_pty::ConvoLine {
             role: match e.role {
@@ -649,14 +890,94 @@ pub fn convo_lines(m: &crate::remote_convo::ConvoMirror) -> Vec<flare_term::remo
         .collect()
 }
 
-/// Pure: `remote.open`'s params for a tab: the host folder, and the session to resume there when one was asked for
-/// (the host checks it again with `valid_resume`).
-pub fn open_params(spec: &RemoteSpec) -> Value {
+/// Pure: `remote.open`'s params for a tab: the host folder, the session to resume there when one was asked for (the
+/// host checks it again with `valid_resume`), and the tab's open id when the host takes one (rule 1210).
+pub fn open_params(spec: &RemoteSpec, open_id: Option<&str>) -> Value {
     let mut p = json!({"folder": spec.folder});
     if let Some(r) = &spec.resume {
         p["resume"] = json!(r);
     }
+    if let Some(o) = open_id {
+        p["open_id"] = json!(o);
+    }
     p
+}
+
+/// Pure: `remote.snapshot`'s params: the tab, and `styled` when the host takes it (rule 1213).
+pub fn snapshot_params(tab: &str, styled: bool) -> Value {
+    let mut p = json!({"tab": tab});
+    if styled {
+        p["styled"] = json!(true);
+    }
+    p
+}
+
+/// One typed thing kept while the link is down: when it was typed, and its weight toward [`KEPT_TYPING_MAX`].
+type Kept = (Instant, RemoteIntent, usize);
+
+/// The typing of a remote tab kept while its link is down (rule 1210), sent in order once the tab is attached again.
+/// Typing older than the kept age is dropped, and so is what comes past [`KEPT_TYPING_MAX`]: once over it, the rest of
+/// the outage's typing too, so what is sent has no hole in it. Either drop is told in the tab once.
+#[derive(Default)]
+pub struct KeptTyping {
+    typed: std::collections::VecDeque<Kept>,
+    bytes: usize,
+    /// Over the cap since the last send: everything typed after is dropped.
+    full: bool,
+    /// Something was dropped since the last send.
+    lost: bool,
+}
+
+impl KeptTyping {
+    fn forget_old(&mut self, now: Instant, max_age: Duration) {
+        while let Some((at, _, w)) = self.typed.front() {
+            if now.saturating_duration_since(*at) <= max_age {
+                break;
+            }
+            self.bytes -= w;
+            self.typed.pop_front();
+            self.lost = true;
+        }
+    }
+
+    /// Keeps `intents`, typed at `at` (one time each, in order; now when missing).
+    pub fn keep(
+        &mut self,
+        intents: Vec<RemoteIntent>,
+        at: &[Instant],
+        now: Instant,
+        max_age: Duration,
+    ) {
+        self.forget_old(now, max_age);
+        for (n, i) in intents.into_iter().enumerate() {
+            let w = weight(&wire_intent(&i));
+            if self.full || self.bytes + w > KEPT_TYPING_MAX {
+                self.full = true;
+                self.lost = true;
+                continue;
+            }
+            self.bytes += w;
+            self.typed
+                .push_back((at.get(n).copied().unwrap_or(now), i, w));
+        }
+    }
+
+    /// What is sent now, oldest first, and whether anything typed meanwhile was dropped. Empties the keep.
+    pub fn take(&mut self, now: Instant, max_age: Duration) -> (Vec<RemoteIntent>, bool) {
+        self.forget_old(now, max_age);
+        let lost = self.lost;
+        let typed = std::mem::take(&mut self.typed)
+            .into_iter()
+            .map(|(_, i, _)| i)
+            .collect();
+        *self = Self::default();
+        (typed, lost)
+    }
+
+    /// The tab's host session is gone: nothing kept is ever typed into another tab.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
 }
 
 fn b64(v: &Value) -> Vec<u8> {
@@ -702,27 +1023,46 @@ impl Worker {
         }
     }
 
-    /// Waits `d` (sizes asked meanwhile are kept, typing while the link is down is not). False when the tab let go
-    /// meanwhile: a close is still taken to the host, on a link of its own.
+    /// Waits `d` while the link is down (sizes and typing asked meanwhile are kept, rule 1210). False when the tab let
+    /// go meanwhile: a close is still taken to the host, on a link of its own.
     fn wait(&mut self, d: Duration) -> bool {
+        match self.hold(d, true) {
+            Some(Leaving::Close) => {
+                self.close_without_a_link();
+                false
+            }
+            Some(Leaving::Detach) => false,
+            None => true,
+        }
+    }
+
+    /// Waits `d` with no live link: the last size asked is kept for the next attach, and the typing too (rule 1210).
+    /// File work is refused at once when `refuse` (the link is down), else left for the polls. How the tab let go,
+    /// when it did.
+    fn hold(&mut self, d: Duration, refuse: bool) -> Option<Leaving> {
         let end = Instant::now() + d;
         loop {
             let left = end.saturating_duration_since(Instant::now());
-            self.refuse_errands();
+            if refuse {
+                self.refuse_errands();
+            }
             let out = self
                 .io
                 .take_outgoing(left.min(self.t.poll_max.max(Duration::from_millis(1))));
             if let Some(s) = out.size {
                 self.size = Some(s);
             }
-            if let Some(how) = out.leaving {
-                if how == Leaving::Close {
-                    self.close_without_a_link();
-                }
-                return false;
+            self.kept.keep(
+                out.intents,
+                &out.typed_at,
+                Instant::now(),
+                self.t.typing_kept,
+            );
+            if out.leaving.is_some() {
+                return out.leaving;
             }
             if left.is_zero() {
-                return true;
+                return None;
             }
         }
     }
@@ -769,41 +1109,29 @@ impl Worker {
         let live = self.spec.live.clone();
         let tab = match live.host_tab() {
             Some(t) => t,
-            None => match link.call(
-                Method::RemoteOpen,
-                open_params(&self.spec),
-                self.t.long_call,
-            ) {
-                Ok(v) => match v["tab"].as_str() {
-                    Some(t) => {
-                        live.set_host_tab(t);
-                        t.to_string()
-                    }
-                    None => return Step::Down,
-                },
-                Err(LinkError::Refused(e)) => {
-                    self.say(&format!(
-                        "Could not open {} on {}: {}",
-                        self.spec.folder, self.spec.machine, e.message
-                    ));
-                    return Step::Ended;
+            None => match self.open(&mut *link) {
+                Ok(t) => {
+                    live.set_host_tab(&t);
+                    t
                 }
-                Err(LinkError::Down(_)) => return Step::Down,
+                Err(step) => return step,
             },
         };
-        match link.call(Method::RemoteAttach, json!({"tab": tab}), self.t.call) {
-            Ok(_) => {}
-            Err(LinkError::Refused(e)) if e.code == code::NO_TAB => {
-                // The host's tab is gone (closed there, or the host started again): the tab ends as a shell that exits.
-                self.io.finish(None);
-                return Step::Ended;
-            }
-            Err(LinkError::Refused(e)) => {
-                log::warn!("remote.attach refused: {}", e.message);
-                return Step::Down;
-            }
-            Err(LinkError::Down(_)) => return Step::Down,
+        if let Some(step) = self.attach(&mut *link, &tab) {
+            return step;
         }
+        // What the tab typed and sized while the link came up joins the typing kept meanwhile, so the age and the cap
+        // hold for it too (rule 1210). A leave is still the polls' to take.
+        let out = self.io.take_outgoing(Duration::ZERO);
+        if let Some(s) = out.size {
+            self.size = Some(s);
+        }
+        self.kept.keep(
+            out.intents,
+            &out.typed_at,
+            Instant::now(),
+            self.t.typing_kept,
+        );
         if let Some((cols, rows)) = self.size
             && let Err(e) = link.call(
                 Method::RemoteResize,
@@ -825,13 +1153,123 @@ impl Worker {
         live.set_link(LinkState::Live);
         // The host's status is asked at once on every attach, and its first answer is always news (rule 294).
         self.status.attached();
+        if let Err(e) = self.send_kept(&mut *link, &tab) {
+            return self.failed(e);
+        }
         self.pump(&mut *link, &tab)
     }
 
-    /// What a failed call means: the session gone on the host ends the tab; anything else is a broken link.
-    fn failed(&self, e: LinkError) -> Step {
+    /// `remote.open` for a tab with no host tab yet, with this tab's open id (rule 1210): an open whose answer a broken
+    /// link lost goes again with the same id, and the host answers with the tab the first one opened. An older host
+    /// refuses the unknown param (`bad_params` naming it): the open goes again without it, on this link, and later
+    /// opens of this tab leave it out.
+    fn open(&mut self, link: &mut dyn Link) -> Result<String, Step> {
+        let id = self.open_id_on.then_some(self.open_id.as_str());
+        let mut answer = link.call(
+            Method::RemoteOpen,
+            open_params(&self.spec, id),
+            self.t.long_call,
+        );
+        if id.is_some()
+            && let Err(LinkError::Refused(e)) = &answer
+            && e.code == code::BAD_PARAMS
+            && e.message.contains("open_id")
+        {
+            log::info!("remote.open: an older host without open_id, opening without it");
+            self.open_id_on = false;
+            answer = link.call(
+                Method::RemoteOpen,
+                open_params(&self.spec, None),
+                self.t.long_call,
+            );
+        }
+        match answer {
+            Ok(v) => v["tab"].as_str().map(str::to_string).ok_or(Step::Down),
+            Err(LinkError::Refused(e)) => {
+                self.say(&format!(
+                    "Could not open {} on {}: {}",
+                    self.spec.folder, self.spec.machine, e.message
+                ));
+                Err(Step::Ended)
+            }
+            Err(LinkError::Down(_)) => Err(Step::Down),
+        }
+    }
+
+    /// `remote.attach`, tried again on the same link every `attach_retry` for up to `attach_patience` while the host
+    /// answers `unavailable`: a tab opened a moment ago may not have its shell running yet (rule 1210). None once
+    /// attached; else what the session comes to.
+    fn attach(&mut self, link: &mut dyn Link, tab: &str) -> Option<Step> {
+        let end = Instant::now() + self.t.attach_patience;
+        loop {
+            match link.call(Method::RemoteAttach, json!({"tab": tab}), self.t.call) {
+                Ok(_) => return None,
+                Err(LinkError::Refused(e)) if e.code == code::NO_TAB => {
+                    // The host's tab is gone (closed there, or the host started again): the tab ends as a shell that
+                    // exits, and what was typed meanwhile is never typed into another tab.
+                    self.kept.clear();
+                    self.io.finish(None);
+                    return Some(Step::Ended);
+                }
+                Err(LinkError::Refused(e))
+                    if e.code == code::UNAVAILABLE && Instant::now() < end =>
+                {
+                    log::info!("remote.attach not yet ({}), trying again", e.message);
+                    if let Some(how) = self.hold(self.t.attach_retry, false) {
+                        if how == Leaving::Close {
+                            let _ = link.call(
+                                Method::RemoteClose,
+                                json!({"tab": tab}),
+                                self.t.end_call,
+                            );
+                        }
+                        return Some(Step::Ended);
+                    }
+                }
+                Err(LinkError::Refused(e)) => {
+                    log::warn!("remote.attach refused: {}", e.message);
+                    return Some(Step::Down);
+                }
+                Err(LinkError::Down(_)) => return Some(Step::Down),
+            }
+        }
+    }
+
+    /// The typing kept while the link was down, in the order typed, once the tab is attached again (rule 1210). What
+    /// was too old or over the cap is told in the tab in one line. A call the link broke under loses its typing, as a
+    /// live call does: it may have been typed on the host already.
+    fn send_kept(&mut self, link: &mut dyn Link, tab: &str) -> Result<(), LinkError> {
+        let (typed, lost) = self.kept.take(Instant::now(), self.t.typing_kept);
+        if lost {
+            self.say(&format!(
+                "Some typing while the link to {} was down was not sent (older than {} s, or over {} KB).",
+                self.spec.machine,
+                self.t.typing_kept.as_secs(),
+                KEPT_TYPING_MAX / 1024
+            ));
+        }
+        for batch in input_batches(&typed) {
+            match link.call(
+                Method::RemoteInput,
+                json!({"tab": tab, "intents": intents_json(&batch)}),
+                self.t.call,
+            ) {
+                Ok(_) => {}
+                Err(LinkError::Refused(e)) if e.code != code::NO_TAB => {
+                    log::warn!("remote.input refused: {}", e.message);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    /// What a failed call means: the session gone on the host ends the tab (and drops the typing kept for it); anything
+    /// else is a broken link.
+    fn failed(&mut self, e: LinkError) -> Step {
         match e {
             LinkError::Refused(r) if r.code == code::NO_TAB => {
+                self.kept.clear();
                 self.io.finish(None);
                 Step::Ended
             }
@@ -840,16 +1278,39 @@ impl Worker {
     }
 
     /// The host's screen and history as text, and the number it holds (rule 289: text only, no mark rides on it).
+    /// Rule 1213: the snapshot is asked `styled`, so the tab shows the host's colours at once; an older host refuses
+    /// the param (`bad_params` naming it), and the snapshot goes again plain, on this link, and later ones of this tab
+    /// leave it out. Only an answer that says `styled` keeps its SGRs.
     fn snapshot(&mut self, link: &mut dyn Link, tab: &str) -> Result<(), LinkError> {
-        let v = link.call(
+        let mut v = link.call(
             Method::RemoteSnapshot,
-            json!({"tab": tab}),
+            snapshot_params(tab, self.styled_on),
             self.t.long_call,
-        )?;
+        );
+        if self.styled_on
+            && let Err(LinkError::Refused(e)) = &v
+            && e.code == code::BAD_PARAMS
+            && e.message.contains("styled")
+        {
+            log::info!("remote.snapshot: an older host without styled, asking plain");
+            self.styled_on = false;
+            v = link.call(
+                Method::RemoteSnapshot,
+                snapshot_params(tab, false),
+                self.t.long_call,
+            );
+        }
+        let v = v?;
         let seq = v["seq"]
             .as_u64()
             .ok_or_else(|| LinkError::Down("a snapshot with no seq".into()))?;
-        self.io.push_output(&plain_snapshot(&b64(&v)));
+        let data = b64(&v);
+        self.io
+            .push_output(&if v["styled"].as_bool() == Some(true) {
+                styled_snapshot(&data)
+            } else {
+                plain_snapshot(&data)
+            });
         self.spec.live.set_seq(seq);
         Ok(())
     }
@@ -962,7 +1423,11 @@ impl Worker {
                     }
                 }
             }
-            Errand::Put { files, done } => match put_files(link, tab, &files, self.t.long_call) {
+            Errand::Put {
+                files,
+                folders,
+                done,
+            } => match put_files(link, tab, &files, &folders, self.t.long_call) {
                 Ok(Ok((paths, paste))) => {
                     // One paste of every path, quoted by the host for its shell (rules 1, 292, 304).
                     for batch in input_batches(&[RemoteIntent::Paste(paste)]) {

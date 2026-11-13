@@ -125,6 +125,9 @@ pub struct TabHost {
     /// Tabs whose size a remote viewer set: the window's refits pass them by until a key is typed here (rule 282).
     /// A cell, so the event drain (which takes `&self`) can hand a tab back when a key was typed here.
     remote_sized: RefCell<HashMap<String, (usize, usize)>>,
+    /// Remote-sized tabs whose viewer typed since it took the size (rule 1212): only these show the host's own fitted
+    /// view. A size alone (an attach, a reconnect, a refit or a tab switch on the viewer) never counts as typing.
+    viewer_typed: RefCell<std::collections::HashSet<String>>,
 }
 
 impl TabHost {
@@ -164,6 +167,7 @@ impl TabHost {
             prefs,
             plugin_dir,
             remote_sized: RefCell::new(HashMap::new()),
+            viewer_typed: RefCell::new(std::collections::HashSet::new()),
         }
     }
 
@@ -259,6 +263,7 @@ impl TabHost {
         self.order.retain(|x| x != id);
         self.shell_ids.remove(id);
         self.remote_sized.borrow_mut().remove(id);
+        self.viewer_typed.borrow_mut().remove(id);
     }
 
     /// Who sets the tab's size now.
@@ -288,9 +293,24 @@ impl TabHost {
         true
     }
 
+    /// A remote viewer's `remote.input` reached the tab (rule 1212): while that viewer sizes it, the viewer typed last.
+    /// Typing while this window sizes the tab counts for nothing here.
+    pub fn note_viewer_typed(&self, id: &str) {
+        if self.remote_sized.borrow().contains_key(id) {
+            self.viewer_typed.borrow_mut().insert(id.to_string());
+        }
+    }
+
+    /// Rule 1212: a remote viewer sizes the tab and typed there since it took the size, so the last typist is on the
+    /// viewer's screen. False after a size alone, and from the moment the size comes back to this window.
+    pub fn viewer_typed_last(&self, id: &str) -> bool {
+        self.size_owner(id) == SizeOwner::Remote && self.viewer_typed.borrow().contains(id)
+    }
+
     /// The size goes back to this window (a key typed here, or the last remote viewer gone): the tab fits the grid
     /// area again. Never ends anything (rule 280).
     pub fn take_size_back(&self, id: &str) {
+        self.viewer_typed.borrow_mut().remove(id);
         if self.remote_sized.borrow_mut().remove(id).is_none() {
             return;
         }
@@ -535,6 +555,38 @@ mod tests {
         assert_eq!(h.size_owner("t1"), SizeOwner::Local);
         assert_eq!(h.handle("t1").unwrap().size(), (110, 32));
         assert!(!h.remote_resize("nobody", 50, 20));
+    }
+
+    /// Rule 1212: only a viewer that typed since it took the size typed last. A size alone (an attach, a reconnect, a
+    /// refit or a tab switch on the viewer) never counts; typing while this window sizes the tab does not either; a key
+    /// typed here, or the size coming back, ends it, and the viewer's next size alone does not bring it back.
+    #[test]
+    fn a_viewer_typed_last_only_after_typing_while_it_sizes_the_tab() {
+        let (mut h, sp, _p) = host();
+        h.spawn("t1", "C:\\a", None);
+        made(&sp, 1);
+        h.note_viewer_typed("t1");
+        assert!(h.remote_resize("t1", 50, 20));
+        assert!(
+            !h.viewer_typed_last("t1"),
+            "a size alone, after typing that came while this window sized it"
+        );
+        h.note_viewer_typed("t1");
+        assert!(h.viewer_typed_last("t1"));
+        assert!(h.remote_resize("t1", 60, 20), "a refit on the viewer");
+        assert!(h.viewer_typed_last("t1"), "its own refit keeps it");
+        h.handle("t1").unwrap().send_text("y");
+        let _ = h.drain_events();
+        assert!(!h.viewer_typed_last("t1"), "a key typed here");
+        assert!(h.remote_resize("t1", 50, 20), "the viewer refits again");
+        assert!(!h.viewer_typed_last("t1"), "this window typed last");
+        h.note_viewer_typed("t1");
+        h.take_size_back("t1");
+        assert!(h.remote_resize("t1", 50, 20), "a reconnect after a release");
+        assert!(!h.viewer_typed_last("t1"));
+        h.note_viewer_typed("t1");
+        h.leave("t1");
+        assert!(!h.viewer_typed_last("t1"));
     }
 
     /// Rule 280: the size going back (a detach, a link gone) never ends the tab's shell.

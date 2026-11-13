@@ -651,6 +651,18 @@ impl TermHandle {
     /// An open synchronized update (DEC 2026) is let go first: its bytes are before `seq` but not yet on the grid, so
     /// without that the viewer would never get them (rule 285).
     pub fn remote_snapshot(&self, lines: usize) -> Option<RemoteSnapshot> {
+        self.remote_snapshot_with(lines, None)
+    }
+
+    /// [`TermHandle::remote_snapshot`]; with `styled` (the most bytes) the lines carry their colours and styles as SGR runs
+    /// (`remote.snapshot {styled: true}`, rule 1213): still clear, home, lines and the cursor, and nothing else. A
+    /// styled snapshot is at most that many bytes: past it the oldest history lines are left out, never
+    /// the screen.
+    pub fn remote_snapshot_with(
+        &self,
+        lines: usize,
+        styled: Option<usize>,
+    ) -> Option<RemoteSnapshot> {
         self.sh.mgr.with_tail_still(&self.sh.id, |seq| {
             let mut e = self.emu.lock();
             let evs = e.release_sync();
@@ -659,11 +671,29 @@ impl TermHandle {
             // the screen's bottom row, so the cursor can be put back where the host's is (rule 293).
             let top = -(e.history_size() as i32);
             let start = (rows as i32 - lines.max(rows) as i32).max(top);
-            let text: Vec<String> = (start..rows as i32).map(|l| e.row_text(l)).collect();
+            let text: Vec<String> = if let Some(max) = styled {
+                let mut kept: Vec<String> = Vec::new();
+                let mut bytes = 0;
+                for l in (start..rows as i32).rev() {
+                    let row = e.row_styled(l);
+                    bytes += row.len() + 2;
+                    if bytes > max && l < 0 {
+                        break;
+                    }
+                    kept.push(row);
+                }
+                kept.reverse();
+                kept
+            } else {
+                (start..rows as i32).map(|l| e.row_text(l)).collect()
+            };
             let (line, col) = e.cursor();
             drop(e);
             self.sh.handle(evs);
             let mut data = b"\x1b[H\x1b[2J\x1b[3J".to_vec();
+            if styled.is_some() {
+                data.extend_from_slice(b"\x1b[0m");
+            }
             data.extend_from_slice(text.join("\r\n").as_bytes());
             data.extend_from_slice(&crate::remote_pty::snapshot_cursor(rows, line, col));
             RemoteSnapshot {
@@ -1034,6 +1064,37 @@ mod tests {
         wait_until("the move", || t.h.emu.lock().cursor() == (9, 19));
         let snap = t.h.remote_snapshot(100).expect("a snapshot");
         assert_eq!(viewer_after(&snap, 24).cursor(), (9, 19));
+    }
+
+    /// Rule 1213: a styled snapshot gives a reconnected viewer the host's colours at once, puts the cursor back as a
+    /// plain one does, and past its byte cap leaves out the oldest history, never the screen.
+    #[test]
+    fn a_styled_snapshot_shows_the_hosts_colours_and_keeps_the_screen_under_its_cap() {
+        let t = T::started();
+        let _tail = t.h.sh.mgr.subscribe_tail("a").expect("a tail");
+        t.fake()
+            .feed(b"old line\r\n\x1b[32mok\x1b[0m and \x1b[1;41mbad\x1b[0m\r\nmax@mac % ");
+        wait_until("the prompt", || t.text().contains("mac %"));
+        let host = t.h.emu.lock().cursor();
+        let snap =
+            t.h.remote_snapshot_with(100, Some(1 << 20))
+                .expect("a snapshot");
+        let mut v = Emulator::new(80, 24);
+        v.feed(&crate::remote_pty::styled_snapshot(&snap.data));
+        assert_eq!(v.cursor(), host);
+        assert_eq!(v.row_styled(1), t.h.emu.lock().row_styled(1));
+        assert!(
+            v.row_styled(1).contains("\x1b[0;32mok"),
+            "{:?}",
+            v.row_styled(1)
+        );
+        // A plain snapshot of the same screen has no colour.
+        let plain = t.h.remote_snapshot(100).expect("a snapshot");
+        assert!(!plain.data.windows(4).any(|w| w == b"[0;3"));
+        // A cap smaller than the screen still sends the whole screen.
+        let small = t.h.remote_snapshot_with(100, Some(10)).expect("a snapshot");
+        let text = String::from_utf8_lossy(&small.data).into_owned();
+        assert!(text.contains("max@mac %"), "{text:?}");
     }
 
     /// Rule 292: a paste on a remote tab crosses as one paste even when this emulator never saw the host ask for

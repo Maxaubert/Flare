@@ -129,7 +129,10 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     and it takes `--user-data-dir` and nothing else. It answers the link's `remote.hello` itself and relays every other
     `remote.*` call to the Flare that runs on this machine under the same profile, over that Flare's pipe: it says
     `hello` there with the **bridge key** (`token`), and the running Flare gives it the `bridge` grant (section 4, rule
-    284). The key is a fresh 256-bit secret the running Flare writes into its profile at every start
+    284). That `hello`'s `client` is the machine the link's `remote.hello` named (2026-11-13, rule 1211): the running
+    Flare's window names it on a tab the viewer sizes ("Live on <machine>"). No param is added, so either side may be
+    older: an older bridge says `flare-serve-remote`, which the running Flare reads as no machine named, and so is a
+    name that is empty, over 256 characters or holds a control character. The key is a fresh 256-bit secret the running Flare writes into its profile at every start
     (`remote-bridge.key`, written whole by a rename, owner-only), so a key of an earlier run is refused (`unauthorized`),
     and the bridge reports `unavailable` ("Flare is not running on this machine"). The calls that follow or change a tab
     (`attach`, `detach`, `input`, `resize`, `close`) go in turn on one **anchor** pipe connection, the one the running
@@ -161,8 +164,16 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     so the PC form goes through `cmd /c`, which both shells run and which waits (rule 1207). A PC path with one of
     `& < > ( ) @ ^ |` (cmd would strip its quotes), `" % ! $`, a backquote or a quote mark from U+2018 to U+201F is
     refused, except a leading `%LOCALAPPDATA%` or `$env:LOCALAPPDATA`, which the host's shell expands (rule 1208). The worker says `remote.hello` (90 s, PR 5), then `remote.open
-    {folder, resume?}` for a new tab (`resume` only when the tab was opened with one, PR 5) (its answer `tab` is kept as the tab's `host_tab`) or straight to `remote.attach {tab}` for a
-    restored one, then `remote.resize` with the tab's size. A tab that has shown nothing yet starts from `remote.snapshot`;
+    {folder, resume?, open_id}` for a new tab (`resume` only when the tab was opened with one, PR 5) (its answer `tab` is kept as the tab's `host_tab`) or straight to `remote.attach {tab}` for a
+    restored one, then `remote.resize` with the tab's size. Rule 1210: `open_id` is a random id the worker makes once
+    per tab and sends with every open of it, so an open whose answer a broken link lost, sent again on the next link,
+    is answered with the tab the first one opened; an older host refuses the unknown param (`bad_params` naming
+    `open_id`) and the worker opens again without it on the same link. A `remote.attach` answered `unavailable` (a tab
+    opened a moment ago whose shell is not running yet) is sent again on the same link every 250 ms for up to 10 s
+    before the link is dropped. What the tab types while the link is down (keys, text and pastes) is kept, at most 30 s
+    old and 64 KB in all, and sent as `remote.input` calls in the order typed right after the next attach and its
+    catch-up; what is older or over the cap (and, once over it, the rest of that outage's typing) is dropped, and the
+    tab shows one line saying so. A `no_tab` end drops the kept typing: it is never typed into another host tab. A tab that has shown nothing yet starts from `remote.snapshot`;
     after a reconnect it calls `remote.output {since: <the number read>, max: 1048576}` until caught up (`gap: true`: a
     snapshot instead), with the agent's signals taken out of what it catches up on (rule 289). Then, one call at a time:
     the typing as `remote.input` calls (each within 1024 intents and 64 KB, a long paste cut on character boundaries),
@@ -174,7 +185,13 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     typing and the output poll the worker does the window's file work in the order asked (remote sessions PR 6): a
     click on a file link is `remote.fetch` of each spelling in turn until the host has one (then every chunk, each of
     the same size and count); a drop or a paste of files or an image is `remote.put` of each file, then one
-    `remote.input` with a `paste` of the host's `paste` answers joined by a space. File work asked while the link is
+    `remote.input` with a `paste` of the host's `paste` answers joined by a space. Rule 1213: a dropped folder is listed
+    here first (links and junctions skipped; over 5000 files, 5000 folders or 200 MiB, or a file over 32 MiB, nothing
+    is copied and the tab's panel says so in one line), then copied after the files: `remote.put {folder: true}`, its
+    folders parents first, then each file read as it goes with `under`; only the folder's `paste` joins the paste. Rule
+    1215: Finder's `.DS_Store` and `._name` files are left out, a dropped macOS package is refused in one line, and a
+    runnable file's last chunk says `exec: true` (an older host's refusal: sent again without it). The
+    snapshot is asked `styled: true` (an older host's refusal: asked plain, as above). File work asked while the link is
     down, or after the tab's session ended, is refused at once. Remote sessions PR 7: after the status poll, a
     `remote.resize` with the tab's last size when a click or a key took the live terminal back on this screen (rule
     1193), and, only while the window wants the tab's fitted conversation view, a `remote.convo {tab, since}` poll every
@@ -943,7 +960,10 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   asked of the disk on the worker (`bad_params`, `not_found`), or `~` alone: the host's home folder (remote sessions
   PR 7, the + menu's shell on a machine, whose home the viewer does not know; `~/x` is still `bad_params`); `resume`
   must pass `valid_resume` (`bad_params`). The window opens a tab there the way a new tab opens, resuming that
-  session. 60 s.
+  session. 60 s. `open_id` (optional, 2026-11-13, rule 1210): 1 to 64 ASCII letters, digits, `-` or `_`
+  (`bad_params`), the viewer's id for this tab's open. The host remembers the last 64 ids for 10 minutes each; an
+  `open_id` it remembers, whose tab is still open, is answered with that tab and its `session`, and no second tab
+  opens. A host older than this refuses the param as unknown (`bad_params`), and the viewer opens without it.
 - `remote.ls {path?}` -> `{path, entries: [{name, dir}], truncated}`. One host folder (default: the host's home),
   read on the worker: folders first, then by name, at most 500 entries, names with a control character left out.
   Host paths only. `not_found` when it cannot be read. 60 s.
@@ -952,7 +972,8 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
 - `remote.attach {tab}` -> `{tab, cols, rows, seq}`. The connection follows the tab: from now every byte the tab's
   shell prints is numbered and kept in a 4 MiB ring (made at the first attach, kept for the session's life, fed after the
   tab's own sink so it never blocks it, rule 281). `seq` is the number the next byte gets. `no_tab` (closed),
-  `unavailable` (its shell is not running).
+  `unavailable` (its shell is not running; right after `remote.open` this lasts a moment while the new shell starts,
+  and the viewer asks again on the same link, rule 1210).
 - `remote.detach {tab}` -> `{tab, detached: true}`. Stops following; never ends the session (rule 280). When the
   last follower of a tab detaches, or its link drops (the connection closes), the tab's size goes back to the window.
 - `remote.input {tab, intents}` -> `{tab, typed}`. Typing as typed intents, never bytes (rule 279): a list of 1 to 1024
@@ -964,18 +985,28 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   that wrote something. It counts as typing (an answer key answers a question as a local key does).
 - `remote.resize {tab, cols, rows}` -> `{tab, cols, rows}`. Clamped to 2..1000 columns and 1..500 rows, never refused;
   the tab takes that size and the remote viewer owns it: the window's refits pass the tab by until a key is typed here
-  (the last typist wins, rule 282).
+  (the last typist wins, rule 282). While it does and the viewer has typed (`remote.input`) since it took the size, an
+  agent tab in front in the host's window shows its fitted conversation view, naming the viewer's machine from the
+  bridge's `hello`, and a key or a click there takes the size back (2026-11-13, rules 1211 and 1212). A size alone (an
+  attach, a reconnect, a refit) leaves the host's terminal up; the answer does not change.
 - `remote.output {tab, since, max?}` -> `{tab, from, to, data, gap}`. The followed tab's bytes from `since` on,
   base64, at most `max` (default 256 KiB, at most 1 MiB). The next poll's `since` is `to`: each byte comes once, in
   order. `gap: true` when `since` is older than the ring (or newer than the end): bytes were lost, `data` starts at
   the oldest kept, and the viewer asks for `remote.snapshot`. Answered on the worker, never the UI thread. `no_tab`
   when no connection follows the tab (send `remote.attach` first). Polled in short calls: events are lossy and never
   sent to a link.
-- `remote.snapshot {tab}` -> `{tab, seq, cols, rows, data}`. The tab's whole screen and history above it, 1000 lines
-  at most, as text (base64: clear, home, the lines joined by CR LF, then CR and the cursor moves up and right that put
-  the cursor where the host's is, rule 293; no colours and no modes), read while no batch of output is being parsed,
+- `remote.snapshot {tab, styled?}` -> `{tab, seq, cols, rows, styled, data}`. The tab's whole screen and history above
+  it, 1000 lines at most, as text (base64: clear, home, the lines joined by CR LF, then CR and the cursor moves up and
+  right that put the cursor where the host's is, rule 293; no modes), read while no batch of output is being parsed,
   so it holds every byte before `seq` and none after: `remote.output {since: seq}` goes on from it with no byte twice.
-  On the worker.
+  On the worker. Rule 1213 (2026-11-13): with `styled: true` the data is a reset after the clear and home, and each
+  line's runs of one style start with an SGR that resets and sets it (`ESC [ 0 ; ... m`: colours as 16-colour, 256-colour
+  or RGB, bold, dim, italic, underline, inverse, hidden, strikeout), a styled line ends with a reset, and a trailing
+  blank with a background or underline is kept; no other escape is added. A styled snapshot is at most 8 MiB before
+  base64: past it the oldest history lines are left out, never the screen. The answer's `styled` says which it is.
+  `styled` is not true or false: `bad_params`. A host older than rule 1213 refuses the param (`bad_params` naming
+  `styled`); the viewer then asks plain on the same link and leaves it out for the tab from then on, and keeps the
+  SGRs (and nothing else) only of an answer that says `styled: true` (`styled_snapshot`).
 - `remote.close {tab}` -> `{tab, closed}`. Closes the tab the way a person's close does: an agent at work asks first
   in the host's window (rule 48), and `closed` is false until the person there answers.
 - `remote.status {}` -> `{tabs: [{tab, state, kind, session, folder, title, sized, working_for?, question_text?,
@@ -1022,6 +1053,29 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   and put in place by the last chunk, whose answer has `done: true`, `host_path` and `paste`: the path quoted for the
   tab's own shell (`quote_path`), which the viewer pastes as one paste (`remote.input`'s `paste`, sanitised again). The
   folder goes when the tab closes; a run's folders left by a crash go a day later. 60 s. Never sent twice.
+  Rule 1213 (2026-11-13), a dropped folder: `remote.put {tab, name, folder: true}` -> `{tab, name, done, host_path,
+  paste}` makes the dropped folder in the tab's upload folder, its name kept as a file's is (and made unique there),
+  and answers its path quoted for the tab's shell, which is what the viewer pastes. `remote.put {tab, name, folder:
+  true, under}` -> `{tab, name, done, host_path}` makes a folder inside it (kept when it is there already), and a file
+  chunk with `under` (`{tab, name, chunk, chunks, data, under}`) is written into that folder and answers no `paste`.
+  `under` is the place below the tab's upload folder: names joined by `/`, each one the host would keep as it is (one
+  leading dot allowed inside a dropped folder, so `.git` and `.env` keep their names; never `.` or `..`, a separator,
+  a device name or a character a shell acts on), at most 65 deep and 4096 bytes, its first name a folder this run
+  made for the tab with `folder: true`, and every step a real folder on the host (a link or junction is refused):
+  anything else is `bad_params`. One dropped folder holds at most 5000 files, 5000 folders and 200 MiB in all on the
+  host too (`too_large`, the file dropped). A host older than rule 1213 refuses `folder` and `under` (`bad_params`
+  naming the field); the viewer then copies nothing of the folder and says in one line that Flare there takes single
+  files only.
+  Rule 1215 (2026-11-13), additive: chunk 0's `name` is made NFC before it is cleaned, so a decomposed accent keeps its
+  letter (`under` names are NFC too: the host answers NFC names). An optional `exec` (true or false, anything else
+  `bad_params`) on a file's last chunk says the file runs as a program on the viewer (any execute bit of a Mac or Linux
+  viewer's file; a Windows viewer never sends it): a Mac or Linux host then gives every reader of the finished file
+  the right to run it (`0o644` becomes `0o755`); a Windows host takes it and changes nothing; `exec` on another chunk
+  or with `folder: true` does nothing. A host older than rule 1215 refuses `exec` (`bad_params` naming it); the
+  viewer sends that chunk again without it, and the rest of that copy leaves it out (as `open_id` and `styled` do). The
+  viewer never lists a dropped folder's `.DS_Store` or `._name` files, and refuses a dropped macOS package (a folder
+  named `*.app`, `*.framework`, `*.bundle` and the like) in one line, copying nothing. A host whose disk ignores case
+  merges two folders of a drop that differ only by case (`Src`, `src`) into one.
 
 ### open.remote (remote sessions PR 5, 2026-11-12)
 

@@ -2,6 +2,8 @@
 // typed on last (rule 282); while the other machine sizes it, this screen shows the session's conversation instead of
 // a terminal squeezed or cut to that size: the words the host sent (`remote.convo`, rule 297), wrapped to this
 // window's width, newest at the foot. A click anywhere or a key takes the live terminal back at this window's size.
+// The host's own window shows it too, for its agent tab while a remote viewer sizes it (rule 1211): then `machine` is
+// the viewer's.
 //
 // The lines come from Rust (`RemoteConvoLine`): `role` user, assistant or tool; `text` the words; `tool` a tool's name.
 // Whole device pixels where it matters (`Px.snap`); nothing moves on its own.
