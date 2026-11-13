@@ -246,6 +246,18 @@ fn viewer_sizes(f: &Fx, tab: &str, viewer: Option<&str>) {
     .expect("the resize");
 }
 
+/// A viewer's `remote.input` of one letter into `tab` (rule 1212: the viewer typed last).
+fn viewer_types(f: &Fx, tab: &str) {
+    ask(
+        f,
+        CtlOp::RemoteInput {
+            tab: tab.to_string(),
+            intents: vec![flare_term::handle::RemoteIntent::Text("m".into())],
+        },
+    )
+    .expect("the input");
+}
+
 fn size_of(f: &Fx, tab: &str) -> (usize, usize) {
     f.ctl.borrow().handle_of(tab).expect("a handle").size()
 }
@@ -285,6 +297,7 @@ fn the_hosts_own_window_shows_the_fitted_view_while_a_viewer_sizes_an_agent_tab(
         // terminal, naming the Mac.
         viewer_sizes(&f, &id, Some("Mac Mini"));
         assert_eq!(size_of(&f, &id), (61, 19), "{s}");
+        viewer_types(&f, &id);
         until(&f, "the host's fitted view", |f| f.h.comp.get_rconvo_open());
         assert_eq!(f.h.comp.get_rconvo_machine().as_str(), "Mac Mini", "{s}");
         let lines = f.h.comp.get_rconvo_lines();
@@ -313,6 +326,7 @@ fn the_hosts_own_window_shows_the_fitted_view_while_a_viewer_sizes_an_agent_tab(
         });
         // The viewer types again; a click on the view takes it back the same way.
         viewer_sizes(&f, &id, Some("Mac Mini"));
+        viewer_types(&f, &id);
         until(&f, "the view again", |f| f.h.comp.get_rconvo_open());
         f.h.click(500.0, 400.0);
         f.pump();
@@ -320,6 +334,7 @@ fn the_hosts_own_window_shows_the_fitted_view_while_a_viewer_sizes_an_agent_tab(
         assert_eq!(size_of(&f, &id), own, "{s}");
         // The viewer goes: the size is this window's and nothing shows.
         viewer_sizes(&f, &id, None);
+        viewer_types(&f, &id);
         until(&f, "the view, no machine named", |f| {
             f.h.comp.get_rconvo_open()
         });
@@ -331,6 +346,7 @@ fn the_hosts_own_window_shows_the_fitted_view_while_a_viewer_sizes_an_agent_tab(
         let plain = f.tabs(&["C:\\plain"]).remove(0);
         f.visit(1);
         viewer_sizes(&f, &plain, Some("Mac Mini"));
+        viewer_types(&f, &plain);
         for _ in 0..5 {
             f.step(HOST_EVERY);
         }
@@ -338,11 +354,55 @@ fn the_hosts_own_window_shows_the_fitted_view_while_a_viewer_sizes_an_agent_tab(
         assert_eq!(size_of(&f, &plain), (61, 19), "{s}");
         // Back on the agent tab, sized by the viewer: its view; another tab in front shows its own terminal.
         viewer_sizes(&f, &id, Some("Mac Mini"));
+        viewer_types(&f, &id);
         f.visit(0);
         until(&f, "the agent tab's view", |f| f.h.comp.get_rconvo_open());
         f.visit(1);
         assert!(!f.h.comp.get_rconvo_open(), "{s}");
     }
+}
+
+/// Rule 1212: a viewer's size alone never puts the host's fitted view up. An attach, a reconnect after a release, a
+/// refit or a tab switch on the viewer sends `remote.resize` while this window typed last: the tab takes the viewer's
+/// size and this window keeps its live terminal. The view stands only once the viewer types, and a key typed here
+/// takes it back for good: the viewer's next size alone leaves the terminal here.
+#[test]
+fn a_viewers_size_alone_never_puts_the_hosts_fitted_view_up() {
+    const SID: &str = "77777777-7777-4777-8777-777777777777";
+    let f = Fx::new();
+    serving(&f);
+    let said = |role: &str, text: &str| {
+        serde_json::json!({"type": role, "message": {"role": role, "content": text}}).to_string()
+    };
+    let (id, _claude) = host_agent_tab(
+        &f,
+        "C:\\work",
+        SID,
+        &[said("user", "Fix the build"), said("assistant", "Done.")],
+    );
+    let quiet = |f: &Fx, what: &str| {
+        for _ in 0..5 {
+            f.step(HOST_EVERY);
+        }
+        assert!(!f.h.comp.get_rconvo_open(), "{what}");
+    };
+    // The viewer attaches, refits and comes back after a release: sizes only.
+    viewer_sizes(&f, &id, Some("Mac Mini"));
+    assert_eq!(size_of(&f, &id), (61, 19), "the viewer's size");
+    quiet(&f, "an attach is not typing");
+    viewer_sizes(&f, &id, Some("Mac Mini"));
+    quiet(&f, "a refit is not typing");
+    ask(&f, CtlOp::RemoteRelease { tab: id.clone() }).expect("the release");
+    viewer_sizes(&f, &id, Some("Mac Mini"));
+    quiet(&f, "a reconnect is not typing");
+    // The viewer types: the view stands.
+    viewer_types(&f, &id);
+    until(&f, "the host's fitted view", |f| f.h.comp.get_rconvo_open());
+    // A key here takes it back, and the viewer's next refit alone leaves the terminal here.
+    assert_eq!(f.key(KeyEvent::new("y", "KeyY").text("y")), KeyOutcome::Pty);
+    assert!(!f.h.comp.get_rconvo_open());
+    viewer_sizes(&f, &id, Some("Mac Mini"));
+    quiet(&f, "this window typed last");
 }
 
 /// The host's read interval, for the steps of the window clock.

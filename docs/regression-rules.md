@@ -3553,6 +3553,20 @@ viewer named), `ctl_app::tests::remote_resize_names_the_viewer_the_bridge_said`,
 `remote_flows::the_hosts_own_window_shows_the_fitted_view_while_a_viewer_sizes_an_agent_tab` (every shipped scale:
 the view and its machine, a key and a click taking the size back, the release, a plain shell, another tab in front).
 Source: Max, 2026-11-13.
+1212. **A viewer's size alone never puts the host's fitted view up; only its typing does.** Found 2026-11-13 by an
+independent review of rule 1211: the host view stood whenever a viewer owned the size, but a viewer takes the size
+without typing. Every attach and reconnect sends `remote.resize`, and so does every refit and tab switch on the viewer
+(`TabHost::activate` resizes, the `RemotePty` wants that size, the link sends it). So the host's front Claude tab
+swapped its live terminal for "Live on <viewer>" while the host had typed last, against the design (the last typist
+sets the size, the other screen shows the conversation). Now `TabHost` keeps, per remote-sized tab, whether the viewer
+typed since it took the size: `remote.input` sets it (`TabHost::note_viewer_typed`, only while the viewer sizes the
+tab), and the size coming back here clears it (`take_size_back`: a key typed here, a click on the view, a release;
+`leave` too). `host_convo_want` asks `TabHost::viewer_typed_last`, never `size_owner` alone. A size alone still sets the
+tab's size as rule 282 says; only the view waits for the viewer's typing. After a reconnect the viewer types once
+before the view returns. Native: `tab_host.rs` (`viewer_typed`, `note_viewer_typed`, `viewer_typed_last`),
+`appctl/remote_glue.rs` (`CtlOp::RemoteInput`, `host_convo_want`, `host_view_stands`). Held by
+`tab_host::tests::a_viewer_typed_last_only_after_typing_while_it_sizes_the_tab` and
+`remote_flows::a_viewers_size_alone_never_puts_the_hosts_fitted_view_up`. Source: independent review, 2026-11-13.
 
 1207. **A PC host runs the serve command through `cmd /c`, Settings > Machines finds a PC's own installs, and a
 renamed copy serves its own profile.** Found 2026-11-13 over real ssh from the Mac to the PC: the PC's sshd

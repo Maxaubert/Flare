@@ -59,11 +59,16 @@ impl RemoteConvoView {
 pub(crate) const HOST_CONVO_EVERY_MS: u64 = 1500;
 
 /// Pure (rule 1211): whether the host's own window shows the fitted conversation view of its tab in front instead of
-/// the terminal. Only while a remote viewer sizes the tab (the last typist was there), only for a tab of this host (a
-/// remote tab has the viewer's view, rule 1193), and only for an agent tab: one whose Claude session is known. A plain
-/// shell keeps its terminal at the viewer's size.
-pub(crate) fn host_view_stands(viewer_sizes: bool, remote_tab: bool, has_session: bool) -> bool {
-    viewer_sizes && !remote_tab && has_session
+/// the terminal. Only while a remote viewer sizes the tab and typed there since it took the size (the last typist is
+/// on the viewer's screen, rule 1212; a size alone is not typing), only for a tab of this host (a remote tab has the
+/// viewer's view, rule 1193), and only for an agent tab: one whose Claude session is known. A plain shell keeps its
+/// terminal at the viewer's size.
+pub(crate) fn host_view_stands(
+    viewer_typed_last: bool,
+    remote_tab: bool,
+    has_session: bool,
+) -> bool {
+    viewer_typed_last && !remote_tab && has_session
 }
 
 /// What a worker read of a tab's conversation for the host's own fitted view: the session it read, and the answer as
@@ -274,6 +279,10 @@ impl AppCtl {
                 }
                 let handle = self.handle_of(&tab).ok_or_else(not_running)?;
                 let typed = handle.remote_input(&intents);
+                // Rule 1212: the viewer that sizes the tab typed last, so an agent tab in front shows its fitted view here.
+                self.deps.host.note_viewer_typed(&tab);
+                self.push_remote_convo();
+                self.kick();
                 Ok(json!({"tab": tab, "typed": typed}))
             }
             CtlOp::RemoteResize {
@@ -288,7 +297,8 @@ impl AppCtl {
                 if !self.deps.host.remote_resize(&tab, cols, rows) {
                     return Err(not_running());
                 }
-                // Rule 1211: an agent tab in front shows its fitted conversation view here from now, naming the viewer.
+                // Rule 1211: the view names this viewer. It stands only once the viewer typed (rule 1212): an attach, a
+                // reconnect, a refit or a tab switch over there sends a size too, and none of those is typing.
                 self.hconvo.sized_by(&tab, viewer.as_deref());
                 self.push_remote_convo();
                 self.kick();
@@ -511,16 +521,15 @@ impl AppCtl {
     }
 
     /// Rule 1211: the tab in front and its Claude session, when the host's own fitted view stands for it: a tab of this
-    /// host that a remote viewer sizes, with a session.
+    /// host that a remote viewer sizes and typed in last (rule 1212), with a session.
     fn host_convo_want(&self) -> Option<(String, String)> {
         let id = self.model.state.active_id.clone()?;
         if !self.is_shell_tab(&id) {
             return None;
         }
-        let viewer_sizes = self.deps.host.size_owner(&id) == crate::tab_host::SizeOwner::Remote;
         let session = self.hub.claude_session(&id);
         host_view_stands(
-            viewer_sizes,
+            self.deps.host.viewer_typed_last(&id),
             self.model.remote_of(&id).is_some(),
             session.is_some(),
         )
@@ -696,13 +705,14 @@ mod tests {
     }
 
     /// Rule 1211: the host's own window shows the fitted view only for a tab of its own that a remote viewer sizes and
-    /// that has a Claude session; its own sizing, a remote tab or a plain shell keeps the terminal.
+    /// typed in last (rule 1212) and that has a Claude session; its own sizing or typing, a remote tab or a plain shell
+    /// keeps the terminal.
     #[test]
     fn the_host_view_stands_only_for_an_agent_tab_of_this_host_a_viewer_sizes() {
         assert!(host_view_stands(true, false, true));
         assert!(
             !host_view_stands(false, false, true),
-            "this window sizes it"
+            "this window sizes it or typed last"
         );
         assert!(!host_view_stands(true, false, false), "a plain shell");
         assert!(

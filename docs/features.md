@@ -2670,6 +2670,11 @@ Contract: `docs/surfaces/protocol.md` (`remote.hello`'s `os`, `remote.status`'s 
   host-side bridge names none, and the line then says only how to take the terminal back (rule 1211). Held by
   `ui_tests::agent_flows::remote_flows::the_hosts_own_window_shows_the_fitted_view_while_a_viewer_sizes_an_agent_tab`
   (every shipped scale) and `appctl::remote_glue::tests`.
+- **Only after the viewer types, 2026-11-13.** The host's own fitted view now waits until the viewer really typed in
+  the tab while it holds the size. A viewer that only attaches, reconnects, refits or switches to the tab still sets
+  the size, but the host keeps its live terminal; a key typed on the host ends it until the viewer types again
+  (rule 1212). Held by `tab_host::tests::a_viewer_typed_last_only_after_typing_while_it_sizes_the_tab` and
+  `ui_tests::agent_flows::remote_flows::a_viewers_size_alone_never_puts_the_hosts_fitted_view_up`.
 - **Not yet.** Adding a machine reached
   as a user other than the one in `~/.ssh/config`, or with Flare elsewhere than on the PATH, a PC's two installs or
   `/Applications`, still needs a hand edit of `machines.json`. Real ssh between the PC and the Mac is on the by-hand

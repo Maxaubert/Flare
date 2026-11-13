@@ -979,9 +979,10 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   that wrote something. It counts as typing (an answer key answers a question as a local key does).
 - `remote.resize {tab, cols, rows}` -> `{tab, cols, rows}`. Clamped to 2..1000 columns and 1..500 rows, never refused;
   the tab takes that size and the remote viewer owns it: the window's refits pass the tab by until a key is typed here
-  (the last typist wins, rule 282). While it does, an agent tab in front in the host's window shows its fitted
-  conversation view, naming the viewer's machine from the bridge's `hello`, and a key or a click there takes the size
-  back (2026-11-13, rule 1211); the answer does not change.
+  (the last typist wins, rule 282). While it does and the viewer has typed (`remote.input`) since it took the size, an
+  agent tab in front in the host's window shows its fitted conversation view, naming the viewer's machine from the
+  bridge's `hello`, and a key or a click there takes the size back (2026-11-13, rules 1211 and 1212). A size alone (an
+  attach, a reconnect, a refit) leaves the host's terminal up; the answer does not change.
 - `remote.output {tab, since, max?}` -> `{tab, from, to, data, gap}`. The followed tab's bytes from `since` on,
   base64, at most `max` (default 256 KiB, at most 1 MiB). The next poll's `since` is `to`: each byte comes once, in
   order. `gap: true` when `since` is older than the ring (or newer than the end): bytes were lost, `data` starts at

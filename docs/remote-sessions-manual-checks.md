@@ -94,6 +94,9 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
   terminal at the viewer's size, and new answers appear in it within about 2 s. A key typed on the host, or a click on
   the view, brings the terminal back at the host window's size (the key reaches the shell), and the viewer then shows
   its own fitted view. A plain shell tab the viewer sizes keeps its terminal on the host.
+- [ ] A size alone (rule 1212): type on the host last, then on the viewer only switch to that tab, resize the window,
+  or drop and restore the link. The host keeps its live terminal (at the viewer's size); the view comes only once
+  the viewer types.
 
 ## Link edge cases (rule 1210, 2026-11-13)
 
