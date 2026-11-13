@@ -6,13 +6,31 @@ use std::sync::Mutex;
 use flare_term::path_open::PathOpeners;
 
 /// Production openers: they call Windows through `flare_win::openers`. Errors are logged without
-/// the path.
+/// the path, and each one is an `open-failed` crumb in the diagnostics log (owner, 2026-11-13).
 pub struct WinOpeners;
+
+/// One `open-failed` crumb: which opener, the file's extension as a fixed word, and the opener's own
+/// error (fixed text such as `ShellExecuteW failed with 2`; never the path).
+fn failed_crumb(via: &str, abs: &str, err: &str) {
+    let err: String = err.chars().take(80).collect();
+    crate::diag_ctl::crumb(
+        "open-failed",
+        &[
+            ("via", crate::diag_ctl::txt(via)),
+            (
+                "ext",
+                crate::diag_ctl::txt(flare_term::path_open::ext_label(abs)),
+            ),
+            ("err", crate::diag_ctl::txt(&err)),
+        ],
+    );
+}
 
 impl PathOpeners for WinOpeners {
     fn open_path(&self, abs: &str) {
         if let Err(e) = flare_win::openers::shell_open_file(abs, &flare_term::path_open::may_open) {
             log::warn!("open failed: {e}");
+            failed_crumb("file", abs, &e);
         }
     }
 
@@ -21,6 +39,7 @@ impl PathOpeners for WinOpeners {
             Ok(()) => true,
             Err(e) => {
                 log::warn!("folder open failed: {e}");
+                failed_crumb("folder", abs, &e);
                 false
             }
         }
@@ -29,6 +48,7 @@ impl PathOpeners for WinOpeners {
     fn reveal_path(&self, abs: &str) {
         if let Err(e) = flare_win::openers::explorer_reveal(abs) {
             log::warn!("reveal failed: {e}");
+            failed_crumb("reveal", abs, &e);
         }
     }
 }
