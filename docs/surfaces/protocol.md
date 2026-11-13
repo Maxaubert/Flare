@@ -27,7 +27,8 @@ host's bridge), the `bridge` grant and `remote.open`, `remote.ls`, `remote.tabs`
 viewer"), with no new method; remote sessions PR 4 (2026-11-12) adds `remote.status` and `remote.convo` (section 5
 "remote.*") and the viewer's status poll (section 1 "The viewer"); remote sessions PR 5 (2026-11-12) adds `open.remote`
 (the agent's and `flare open --on`'s, section 5 `open.remote`), the serve process's hidden start and the
-`host_not_ready` answer to `remote.hello` (section 1 "The serve process"). Each method below says which stage owns its behaviour;
+`host_not_ready` answer to `remote.hello` (section 1 "The serve process"); remote sessions PR 6 (2026-11-12) adds
+`remote.fetch` and `remote.put` (section 5 "remote.*") and the viewer's file work (section 1 "The viewer"). Each method below says which stage owns its behaviour;
 the names, params and grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
@@ -163,7 +164,12 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     backing off to 250 ms when idle, and a `remote.status {}` poll every 1.5 s (the first at once after each attach;
     remote sessions PR 4). The tab's own entry in the answer is handed to the window when it changed (the first after
     an attach always), and the window is woken; the hub turns it into marks (rule 294). A host that refuses
-    `remote.status` (an older Flare) is not asked again on that link, and the tab goes on without it. A call that fails
+    `remote.status` (an older Flare) is not asked again on that link, and the tab goes on without it. Between the
+    typing and the output poll the worker does the window's file work in the order asked (remote sessions PR 6): a
+    click on a file link is `remote.fetch` of each spelling in turn until the host has one (then every chunk, each of
+    the same size and count); a drop or a paste of files or an image is `remote.put` of each file, then one
+    `remote.input` with a `paste` of the host's `paste` answers joined by a space. File work asked while the link is
+    down, or after the tab's session ended, is refused at once. A call that fails
     with `no_tab` ends the tab as a shell that exits; any other broken
     call drops the link, and the worker tries again after 1 s, doubling to 30 s. Closing the tab sends `remote.close`
     (on a fresh link if the old one is down); the quit and a dropped tab send `remote.detach` (rule 288). Under `--e2e`
@@ -332,7 +338,7 @@ so without `tabs` it can name none (`forbidden`) and with it, it must name one (
 | `mods.tools`, `mods.call` | yes | **no** | yes |
 | `shell.input`, `settings.set`, `mods.enable` | **no** | **no** | yes |
 | `remote.hello` (the `remote` grant's row: it is **no** in every other one, and for `bridge`) | **no** | **no** (no permission opens it) | yes |
-| `remote.open`, `remote.ls`, `remote.tabs`, `remote.attach`, `remote.detach`, `remote.input`, `remote.resize`, `remote.output`, `remote.snapshot`, `remote.close`, `remote.status`, `remote.convo` (the `remote` and `bridge` grants' rows: **no** in every other one) | **no** | **no** (no permission opens it) | yes |
+| `remote.open`, `remote.ls`, `remote.tabs`, `remote.attach`, `remote.detach`, `remote.input`, `remote.resize`, `remote.output`, `remote.snapshot`, `remote.close`, `remote.status`, `remote.convo`, `remote.fetch`, `remote.put` (the `remote` and `bridge` grants' rows: **no** in every other one) | **no** | **no** (no permission opens it) | yes |
 | `open.remote` (remote sessions PR 5; **no** for `remote` and `bridge`) | yes, with no prompt (owner decision); the tab it opens takes no typing from it (rule 299) | **no** (no permission opens it) | yes |
 
 **Rule S3** is the last row and the `agent` column: the agent can show content and drive its panel
@@ -968,6 +974,25 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   started again). `to` is the last number given. The viewer takes each entry once by its number, so a poll sent again
   after a reconnect adds nothing twice. 10 calls a second a tab. Its view (the fitted conversation) is remote
   sessions PR 7's.
+- `remote.fetch {tab, path, chunk?}` -> `{tab, name, size, chunk, chunks, data}` (remote sessions PR 6, rule 303). One
+  chunk (256 KiB, base64) of a file a followed tab's file link names (`no_tab` when no connection follows it). `path`
+  is read as a click on the host reads it: relative to the folder the host's window has for the tab, `~` from the
+  host's home, the platform's grammar. The file, as the host's file system names it (links followed, `..` resolved),
+  must be a plain file inside that folder or inside the host's temp folder, and no device name (`NUL`, `con.txt`) or
+  network path; anything else, and a missing file, is `not_found`, so a probe learns nothing more. A file over 32 MiB
+  is `too_large`. `name` is the file's last part, `size` its bytes, `chunks` how many chunks it takes (an empty file
+  is one empty chunk); a `chunk` past the end is `bad_params`. Read on the call's worker. 60 s. Sent once more after a
+  broken pipe connection (it changes nothing).
+- `remote.put {tab, name, chunk, chunks, data}` -> `{tab, name, done, host_path?, paste?}` (remote sessions PR 6, rule
+  304). One chunk (at most 256 KiB, base64) of a viewer's file for a followed tab (a dropped file, a pasted image),
+  written into the tab's own upload folder on the host, `<host temp>/flare-remote/<run>/<tab>/`. Chunk 0 names the
+  file: the host keeps only its last part with every character but letters, digits, space and `-_.()+,` made `_`, no
+  dot or space at either end, no device name, at most 100 bytes, and `-2`, `-3` and so on before the extension when
+  the name is taken; the answer's `name` is the kept name, which the next chunks send. Chunks come in order (`bad_params`
+  and the file dropped otherwise), at most 128 of them (32 MiB, `too_large`). The file is written as `<name>.flare-part`
+  and put in place by the last chunk, whose answer has `done: true`, `host_path` and `paste`: the path quoted for the
+  tab's own shell (`quote_path`), which the viewer pastes as one paste (`remote.input`'s `paste`, sanitised again). The
+  folder goes when the tab closes; a run's folders left by a crash go a day later. 60 s. Never sent twice.
 
 ### open.remote (remote sessions PR 5, 2026-11-12)
 

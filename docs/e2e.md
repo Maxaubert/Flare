@@ -373,6 +373,15 @@ holds the session, types `echo remote-open-5` into A (the only text it sends) an
 and reaps B by its profile at the end. `crates/flare/tests/serve_remote.rs` runs every serve process with `--no-start`,
 so no unit test ever starts a Flare hidden.
 
+`remoteFiles` (`tools/e2e/src/scenarios/remote.rs`, remote sessions PR 6, Windows only for now) runs the two Flares of
+`remoteViewer`. B's folder holds `remote-note.txt`; A's remote tab prints its name between the file-link marks (a line
+the scenario wrote in full), and a left click on it in A shows B's note in A's side panel (text, two lines, titled with
+its name) with nothing handed to Windows (rule 303). A 4 by 4 PNG in A's own world is then dropped on the left of A's
+grid: B's quoted path for it (in B's temp folder, under `flare-remote`) shows at the prompt, A's path never does, and
+the file at B's path holds the PNG's bytes (rule 304). No Enter is pressed after the paste. On one PC the two roles
+are the same both ways round; the Mac to PC direction is on the by-hand list
+(`docs/remote-sessions-manual-checks.md`).
+
 ## Agent browser scenarios (Surfaces stage 4)
 
 `convoPanels` (`tools/e2e/src/scenarios/convo.rs`, Surfaces stage 6) needs no WebView2. It launches with `CLAUDE_CONFIG_DIR` at a folder of its own and a synthetic transcript. One command line in the shell stands in for Claude: it prints the hook line with a session id, waits for a flag file, prints a second session, and never returns to the prompt (a prompt takes the agent and its session back, and a `working` hook would make the close ask a question). It opens Changes with `panel.open`, clicks the first file row (`ui.rect convo-file-0`), appends lines to the transcript, checks that `panel.open` kind `tasks` is refused (the Tasks panel was removed 2026-10-26) and reads the `convo.state` probe, at 100 and 225 percent (42 checks).

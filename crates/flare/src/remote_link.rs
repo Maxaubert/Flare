@@ -14,6 +14,10 @@
 //! one whose number fell out of the host's ring (`gap`). What a reconnect catches up on is the past: the agent's
 //! signals are taken out of it (rule 289).
 //!
+//! Between the typing and the output poll the worker does the window's file work (remote sessions PR 6, `Errand`): a
+//! file link's host file fetched in chunks (`remote.fetch`, rule 303), and dropped or pasted files copied to the host
+//! (`remote.put`) with their host paths pasted as one paste (rule 304).
+//!
 //! Closing the tab closes the host's session (`remote.close`, which asks as any close does); the quit and a dropped
 //! link only detach (rule 288). Every wait here is on this worker: a dead link never holds the UI thread, a close or
 //! the quit (rule 28).
@@ -21,14 +25,16 @@
 use base64::Engine as _;
 use flare_ctl::framing::Wire;
 use flare_ctl::remote::{
-    Intent, KeyIntent, MAX_INPUT_BYTES, MAX_INTENTS, OUTPUT_MAX, intents_json,
+    FILE_CHUNK, FILE_CHUNKS_MAX, FILE_MAX, Intent, KeyIntent, MAX_INPUT_BYTES, MAX_INTENTS,
+    OUTPUT_MAX, chunks_of, intents_json,
 };
 use flare_ctl::{Client, ClientError, CtlError, Method, RemoteHelloParams, StdioWire, code};
 use flare_tabs::tabs::Os;
 use flare_term::handle::RemoteIntent;
 use flare_term::pty::{PtyProcess, PtySpawner, SpawnSpec};
 use flare_term::remote_pty::{
-    Leaving, LinkState, RemoteIo, RemotePty, RemoteSpec, SignalStrip, plain_snapshot,
+    Errand, ErrandFail, Fetched, Leaving, LinkState, RemoteIo, RemotePty, RemoteSpec, SignalStrip,
+    Upload, plain_snapshot,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -337,6 +343,123 @@ pub fn input_batches(typed: &[RemoteIntent]) -> Vec<Vec<Intent>> {
     out
 }
 
+// ---- files (remote sessions PR 6) ----
+
+/// What a file errand's calls came to: the host's answer (`Ok`, the file or why not) or a broken link (`Err`).
+type Answered<T> = Result<Result<T, ErrandFail>, LinkError>;
+
+/// A refusal the person reads, or a broken link handed on.
+fn refused<T>(e: LinkError) -> Answered<T> {
+    match e {
+        LinkError::Refused(r) => Ok(Err(ErrandFail::Failed(r.message))),
+        down => Err(down),
+    }
+}
+
+/// Fetches a host file by the first of `texts` the host has (rule 303), chunk by chunk, each chunk checked to be of
+/// the same file. `NoSuchFile` when the host has none of them that it may send.
+pub fn fetch_file(
+    link: &mut dyn Link,
+    tab: &str,
+    texts: &[String],
+    wait: Duration,
+) -> Answered<Fetched> {
+    for text in texts {
+        let first = match link.call(
+            Method::RemoteFetch,
+            json!({"tab": tab, "path": text, "chunk": 0}),
+            wait,
+        ) {
+            Ok(v) => v,
+            Err(LinkError::Refused(r)) if r.code == code::NOT_FOUND => continue,
+            Err(e) => return refused(e),
+        };
+        let size = first["size"].as_u64().unwrap_or(0);
+        let chunks = first["chunks"].as_u64().unwrap_or(1);
+        if size > FILE_MAX || chunks > u64::from(FILE_CHUNKS_MAX) {
+            return Ok(Err(ErrandFail::Failed(
+                "that file is too big to fetch".into(),
+            )));
+        }
+        let name = first["name"].as_str().unwrap_or("file").to_string();
+        let mut data = b64(&first);
+        for c in 1..chunks {
+            let v = match link.call(
+                Method::RemoteFetch,
+                json!({"tab": tab, "path": text, "chunk": c}),
+                wait,
+            ) {
+                Ok(v) => v,
+                Err(e) => return refused(e),
+            };
+            if v["size"].as_u64() != Some(size) || v["chunks"].as_u64() != Some(chunks) {
+                return Ok(Err(ErrandFail::Failed(
+                    "the file changed on the host while it was read".into(),
+                )));
+            }
+            data.extend(b64(&v));
+        }
+        if data.len() as u64 != size {
+            return Ok(Err(ErrandFail::Failed(
+                "the file changed on the host while it was read".into(),
+            )));
+        }
+        return Ok(Ok(Fetched { name, data }));
+    }
+    Ok(Err(ErrandFail::NoSuchFile))
+}
+
+/// Copies files to the tab's upload folder on the host, chunk by chunk (rule 304): the host paths, and every path as
+/// the host quoted it for its shell, joined by a space (what is pasted).
+pub fn put_files(
+    link: &mut dyn Link,
+    tab: &str,
+    files: &[Upload],
+    wait: Duration,
+) -> Answered<(Vec<String>, String)> {
+    let enc = base64::engine::general_purpose::STANDARD;
+    if files.is_empty() {
+        return Ok(Err(ErrandFail::Failed("there is no file to copy".into())));
+    }
+    let (mut paths, mut pastes) = (Vec::new(), Vec::new());
+    for f in files {
+        if f.data.len() as u64 > FILE_MAX {
+            return Ok(Err(ErrandFail::Failed(format!(
+                "{} is over {} MB: copy it to the other machine another way",
+                f.name,
+                FILE_MAX / (1024 * 1024)
+            ))));
+        }
+        let chunks = chunks_of(f.data.len() as u64);
+        let mut name = f.name.clone();
+        let mut last = Value::Null;
+        for c in 0..chunks {
+            let from = (c as usize) * FILE_CHUNK;
+            let piece = &f.data[from.min(f.data.len())..(from + FILE_CHUNK).min(f.data.len())];
+            last = match link.call(
+                Method::RemotePut,
+                json!({"tab": tab, "name": name, "chunk": c, "chunks": chunks, "data": enc.encode(piece)}),
+                wait,
+            ) {
+                Ok(v) => v,
+                Err(e) => return refused(e),
+            };
+            // The next chunks name the file as the host kept it.
+            if let Some(n) = last["name"].as_str() {
+                name = n.to_string();
+            }
+        }
+        let (Some(p), Some(q)) = (last["host_path"].as_str(), last["paste"].as_str()) else {
+            return Ok(Err(ErrandFail::Failed(
+                "the host kept the file but named no path".into(),
+            )));
+        };
+        paths.push(p.to_string());
+        pastes.push(q.to_string());
+    }
+    Ok(Ok((paths, pastes.join(" "))))
+}
+
 // ---- the tab's worker ----
 
 /// The waits of a tab's worker.
@@ -493,7 +616,19 @@ impl Worker {
                 }
             }
         }
-        live.set_link(LinkState::Ended);
+        for e in live.end_errands() {
+            e.fail(ErrandFail::Failed("this tab's session has ended".into()));
+        }
+    }
+
+    /// File work asked while the link is down is told so at once, not held for a link that may take 30 s to return.
+    fn refuse_errands(&self) {
+        for e in self.spec.live.take_errands() {
+            e.fail(ErrandFail::Failed(format!(
+                "the link to {} is down; try again when it is back",
+                self.spec.machine
+            )));
+        }
     }
 
     /// Waits `d` (sizes asked meanwhile are kept, typing while the link is down is not). False when the tab let go
@@ -502,7 +637,10 @@ impl Worker {
         let end = Instant::now() + d;
         loop {
             let left = end.saturating_duration_since(Instant::now());
-            let out = self.io.take_outgoing(left);
+            self.refuse_errands();
+            let out = self
+                .io
+                .take_outgoing(left.min(self.t.poll_max.max(Duration::from_millis(1))));
             if let Some(s) = out.size {
                 self.size = Some(s);
             }
@@ -701,6 +839,61 @@ impl Worker {
         }
     }
 
+    /// One piece of file work (remote sessions PR 6). The asker is always told; a broken link is handed back as the
+    /// call's error, so the link is tried again as for any call.
+    fn errand(&mut self, link: &mut dyn Link, tab: &str, e: Errand) -> Result<(), LinkError> {
+        match e {
+            Errand::Fetch { texts, done } => {
+                match fetch_file(link, tab, &texts, self.t.long_call) {
+                    Ok(f) => {
+                        done(f);
+                        Ok(())
+                    }
+                    Err(err) => {
+                        done(Err(ErrandFail::Failed("the link broke".into())));
+                        Err(err)
+                    }
+                }
+            }
+            Errand::Put { files, done } => match put_files(link, tab, &files, self.t.long_call) {
+                Ok(Ok((paths, paste))) => {
+                    // One paste of every path, quoted by the host for its shell (rules 1, 292, 304).
+                    for batch in input_batches(&[RemoteIntent::Paste(paste)]) {
+                        match link.call(
+                            Method::RemoteInput,
+                            json!({"tab": tab, "intents": intents_json(&batch)}),
+                            self.t.call,
+                        ) {
+                            Ok(_) => {}
+                            Err(LinkError::Refused(r)) => {
+                                done(Err(ErrandFail::Failed(r.message.clone())));
+                                return if r.code == code::NO_TAB {
+                                    Err(LinkError::Refused(r))
+                                } else {
+                                    Ok(())
+                                };
+                            }
+                            Err(err) => {
+                                done(Err(ErrandFail::Failed("the link broke".into())));
+                                return Err(err);
+                            }
+                        }
+                    }
+                    done(Ok(paths));
+                    Ok(())
+                }
+                Ok(Err(why)) => {
+                    done(Err(why));
+                    Ok(())
+                }
+                Err(err) => {
+                    done(Err(ErrandFail::Failed("the link broke".into())));
+                    Err(err)
+                }
+            },
+        }
+    }
+
     /// The live polls: typing and sizes as they come, output in short polls.
     fn pump(&mut self, link: &mut dyn Link, tab: &str) -> Step {
         let mut idle = self.t.poll_min;
@@ -737,6 +930,18 @@ impl Worker {
                         log::warn!("remote.input refused: {}", e.message);
                     }
                     Err(e) => return self.failed(e),
+                }
+            }
+            // File work (remote sessions PR 6) comes after the typing asked before it, so a dropped file's path is
+            // pasted where the person was typing.
+            let mut errands = self.spec.live.take_errands().into_iter();
+            while let Some(e) = errands.next() {
+                busy = true;
+                if let Err(err) = self.errand(link, tab, e) {
+                    for rest in errands {
+                        rest.fail(ErrandFail::Failed("the link broke".into()));
+                    }
+                    return self.failed(err);
                 }
             }
             let since = self.spec.live.seq();

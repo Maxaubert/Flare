@@ -6,7 +6,8 @@
 //! - Copied files are the file URLs of the pasteboard's items (`public.file-url`), as absolute
 //!   POSIX paths, in the order Finder put them there.
 //! - An image is only seen (PNG or TIFF on the pasteboard), as on Windows: a paste then sends the
-//!   key so the program reads the image itself.
+//!   key so the program reads the image itself. A paste on a remote tab reads the PNG's bytes
+//!   (`read_png`) to copy them to the host (remote sessions PR 6).
 //! - The sequence is the pasteboard's `changeCount`, which moves with every change by anyone.
 //!
 //! Every function takes the pasteboard it works on, so the tests use a private one
@@ -89,6 +90,20 @@ pub fn has_image(pb: &NSPasteboard) -> bool {
         let kinds = unsafe { [NSPasteboardTypePNG, NSPasteboardTypeTIFF] };
         let types = NSArray::from_slice(&kinds);
         pb.availableTypeFromArray(&types).is_some()
+    })
+}
+
+/// The pasteboard's PNG image as file bytes, at most `max` (remote sessions PR 6: a paste on a remote tab copies it to
+/// the host). None when there is no PNG: a TIFF alone is not read (the image reader here has no TIFF decoder).
+pub fn read_png(pb: &NSPasteboard, max: usize) -> Option<Vec<u8>> {
+    autoreleasepool(|_| {
+        // SAFETY: an AppKit constant, valid for the life of the process.
+        let png = unsafe { NSPasteboardTypePNG };
+        let data = pb.dataForType(png)?;
+        if data.length() == 0 || data.length() > max {
+            return None;
+        }
+        Some(data.to_vec())
     })
 }
 
@@ -203,6 +218,12 @@ mod tests {
         let data = objc2_foundation::NSData::with_bytes(b"\x89PNG\r\n\x1a\n");
         assert!(pb.0.setData_forType(Some(&data), png));
         assert!(has_image(&pb.0));
+        // Remote sessions PR 6: its bytes are read back whole, and not past a cap.
+        assert_eq!(
+            read_png(&pb.0, 1024).as_deref(),
+            Some(&b"\x89PNG\r\n\x1a\n"[..])
+        );
+        assert_eq!(read_png(&pb.0, 4), None);
     }
 
     #[test]

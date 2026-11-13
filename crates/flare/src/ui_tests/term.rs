@@ -2652,6 +2652,176 @@ mod flow {
         assert_eq!(w.quiet(), before, "nothing reached the local shell");
     }
 
+    /// A remote tab in front, its link the test's: the tab's id and its live state (where its errands wait).
+    fn remote_in_front(w: &Wx) -> (String, flare_term::remote_pty::RemoteLive) {
+        let id = w
+            .ctl
+            .borrow_mut()
+            .open_remote("mac", "/Users/max/proj", None, true);
+        w.pump_until("the remote pty", |w| !w.remote.made().is_empty());
+        w.pump_until("the remote tab in front", |w| {
+            w.slot.borrow().as_ref().is_some_and(|h| h.id() == id)
+        });
+        let live = w
+            .ctl
+            .borrow()
+            .model()
+            .remote_live(&id)
+            .cloned()
+            .expect("a remote tab's live state");
+        (id, live)
+    }
+
+    /// Waits for the errands the window hands the remote tab's link.
+    fn errands_of(
+        w: &Wx,
+        live: &flare_term::remote_pty::RemoteLive,
+    ) -> Vec<flare_term::remote_pty::Errand> {
+        let t = Instant::now();
+        loop {
+            let got = live.take_errands();
+            if !got.is_empty() || t.elapsed() > Duration::from_secs(5) {
+                return got;
+            }
+            w.step(100);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Remote sessions PR 6 (rule 303): a click on a file link in a remote tab is never resolved here. The tab's link
+    /// is asked for the host's file by every spelling; the copy it brings back is kept in this run's temp folder and
+    /// shown in the side panel; nothing of this machine is opened and nothing is typed.
+    #[test]
+    fn a_remote_file_link_is_fetched_by_the_link_and_shown_from_a_copy_in_the_panel() {
+        use flare_term::remote_pty::{Errand, Fetched};
+        let w = Wx::new(1.0);
+        let before = w.written();
+        let (id, live) = remote_in_front(&w);
+        w.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Term(crate::appctl::TermMsgBox(
+                crate::term_ui::TermMsg::RemoteLink {
+                    tab: id.clone(),
+                    texts: vec!["notes.md".into(), "no tes.md".into()],
+                    line: Some(2),
+                },
+            )));
+        let mut errands = errands_of(&w, &live);
+        assert_eq!(errands.len(), 1, "one fetch for the click");
+        let Errand::Fetch { texts, done } = errands.remove(0) else {
+            panic!("a fetch");
+        };
+        assert_eq!(texts, ["notes.md", "no tes.md"]);
+        done(Ok(Fetched {
+            name: "notes.md".into(),
+            data: b"line one\nline two\n".to_vec(),
+        }));
+        w.pump_until("the copy in the panel", |w| {
+            w.ctl.borrow().panel_snap(&id).is_some_and(|s| s.open)
+        });
+        let snap = w.ctl.borrow().panel_snap(&id).expect("a panel");
+        let path = snap.path.clone().expect("the panel shows a file");
+        assert!(path.ends_with("notes.md"), "{path}");
+        assert!(
+            path.contains("flare-remote-copies"),
+            "the panel shows this machine's copy, never a host path: {path}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"line one\nline two\n"); // sync-ok: test code only
+        assert!(w.openers.records().is_empty(), "nothing was opened here");
+        assert_eq!(w.quiet(), before, "nothing reached the local shell");
+        // This run's copies are in the real temp folder: the test takes its own away.
+        if let Some(run) = std::path::Path::new(&path)
+            .parent()
+            .and_then(|t| t.parent())
+        {
+            let _ = std::fs::remove_dir_all(run); // sync-ok: test code only
+        }
+    }
+
+    /// Rule 303: a link the host has no file for is said in the panel as a local one is; a refusal is said too.
+    #[test]
+    fn a_remote_file_link_the_host_does_not_have_is_said_in_the_panel() {
+        use flare_term::remote_pty::{Errand, ErrandFail};
+        let w = Wx::new(1.0);
+        let (id, live) = remote_in_front(&w);
+        w.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Term(crate::appctl::TermMsgBox(
+                crate::term_ui::TermMsg::RemoteLink {
+                    tab: id.clone(),
+                    texts: vec!["gone.md".into()],
+                    line: None,
+                },
+            )));
+        let Some(Errand::Fetch { done, .. }) = errands_of(&w, &live).into_iter().next() else {
+            panic!("a fetch");
+        };
+        done(Err(ErrandFail::NoSuchFile));
+        w.pump_until("the note", |w| {
+            w.ctl.borrow().panel_snap(&id).is_some_and(|s| s.open)
+        });
+        assert!(w.openers.records().is_empty());
+    }
+
+    /// Rule 304: a file dropped on a remote tab is read here and handed to the tab's link, which copies it to the host
+    /// and pastes the host's path; this machine's path is never typed anywhere.
+    #[test]
+    fn a_file_dropped_on_a_remote_tab_goes_to_its_link_and_is_never_typed_here() {
+        use flare_term::remote_pty::{Errand, Upload};
+        let w = Wx::new(1.0);
+        let before = w.written();
+        let (_id, live) = remote_in_front(&w);
+        let file = w.dir.path().join("a b.txt");
+        std::fs::write(&file, b"dropped").unwrap(); // sync-ok: test code only
+        w.ctl.borrow_mut().on_dropped_path(file, (500.0, 300.0));
+        let mut errands = errands_of(&w, &live);
+        assert_eq!(errands.len(), 1, "one copy for the drop");
+        let Errand::Put { files, done } = errands.remove(0) else {
+            panic!("a put");
+        };
+        assert_eq!(
+            files,
+            vec![Upload {
+                name: "a b.txt".into(),
+                data: b"dropped".to_vec()
+            }]
+        );
+        done(Ok(vec!["/tmp/flare-remote/x/t1/a b.txt".into()]));
+        // Nothing of this machine's path reached the pty's typing (the link pastes the host's), nor the local shell.
+        let typed = w.remote.made()[0]
+            .1
+            .take_outgoing(Duration::from_millis(50));
+        assert!(typed.intents.is_empty(), "{:?}", typed.intents);
+        assert_eq!(w.quiet(), before);
+    }
+
+    /// Rule 304: an image pasted on a remote tab goes to the host as a PNG (the host's Claude cannot read this
+    /// machine's clipboard); no image key is sent.
+    #[test]
+    fn an_image_pasted_on_a_remote_tab_goes_to_the_host_as_a_png() {
+        use flare_term::remote_pty::Errand;
+        let w = Wx::new(1.0);
+        let (_id, live) = remote_in_front(&w);
+        w.clip.set_image_png_b64("iVBORw0KGgo=").unwrap();
+        w.key_front(ctrl("v", "KeyV"));
+        let mut errands = errands_of(&w, &live);
+        assert_eq!(errands.len(), 1, "one copy for the paste");
+        let Errand::Put { files, .. } = errands.remove(0) else {
+            panic!("a put");
+        };
+        assert_eq!(files.len(), 1);
+        assert!(files[0].name.starts_with("pasted-image-") && files[0].name.ends_with(".png"));
+        assert_eq!(files[0].data, b"\x89PNG\r\n\x1a\n");
+        let typed = w.remote.made()[0]
+            .1
+            .take_outgoing(Duration::from_millis(50));
+        assert!(
+            typed.intents.is_empty(),
+            "no image key: {:?}",
+            typed.intents
+        );
+    }
+
     /// Remote sessions PR 5 (rule 299): the agent's `open.remote` leaves the tab in front where it is, so what the person
     /// types there never lands in the new remote session; the new tab is there behind it, its link started.
     #[test]

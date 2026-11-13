@@ -2100,6 +2100,7 @@ dependencies = [
 name = "flare-win"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "block2 0.6.2",
  "dispatch2",
  "flare-proc",

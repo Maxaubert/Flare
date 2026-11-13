@@ -2535,10 +2535,99 @@ impl AppDispatcher {
                 Ok(json!({"tabs": tabs, "seq": seq}))
             }
             Method::RemoteConvo => self.remote_convo(host, params),
+            Method::RemoteFetch => self.remote_fetch(host, params),
+            Method::RemotePut => remote_put(host, params),
             _ => Err(CtlError::new(code::INTERNAL, "not a remote method")),
         }
     }
 
+    /// `remote.fetch {tab, path, chunk?}` (remote sessions PR 6, rule 303): one chunk of a file a followed tab's link
+    /// names. The window names the tab's folder; the path is resolved and checked here, on the call's worker (rule
+    /// 34), and only a plain file in the tab's folder or the host's temp folder is read.
+    fn remote_fetch(
+        &self,
+        host: &Arc<crate::remote_host::RemoteHost>,
+        params: &Value,
+    ) -> Result<Value, CtlError> {
+        use base64::Engine as _;
+        only_fields(params, &["tab", "path", "chunk"], "remote.fetch")?;
+        let tab = remote_tab(params)?;
+        let path = str_param(params, "path")?
+            .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "path is required"))?;
+        let chunk = count_param(params, "chunk", false)?.unwrap_or(0);
+        let chunk = u32::try_from(chunk)
+            .map_err(|_| CtlError::new(code::BAD_PARAMS, "chunk is a chunk's number"))?;
+        if !host.is_followed(&tab) {
+            return Err(CtlError::new(
+                code::NO_TAB,
+                "that tab is not followed: send remote.attach first",
+            ));
+        }
+        let at = self.ask(CtlOp::SessionOf { tab: tab.clone() })?;
+        let folder = at["folder"].as_str().unwrap_or_default();
+        let file = crate::remote_files::resolve_fetch(folder, path, &self.home, host.temp())?;
+        let c = crate::remote_files::read_chunk(&file, chunk)?;
+        Ok(json!({
+            "tab": tab,
+            "name": c.name,
+            "size": c.size,
+            "chunk": c.chunk,
+            "chunks": c.chunks,
+            "data": base64::engine::general_purpose::STANDARD.encode(&c.data),
+        }))
+    }
+}
+
+/// `remote.put {tab, name, chunk, chunks, data}` (remote sessions PR 6, rule 304): one chunk of a viewer's file, written
+/// into the followed tab's upload folder on the host, on the call's worker. The last chunk answers the host path and
+/// that path quoted for the tab's own shell (`paste`), which the viewer pastes as one paste (rule 1).
+fn remote_put(
+    host: &Arc<crate::remote_host::RemoteHost>,
+    params: &Value,
+) -> Result<Value, CtlError> {
+    use base64::Engine as _;
+    only_fields(
+        params,
+        &["tab", "name", "chunk", "chunks", "data"],
+        "remote.put",
+    )?;
+    let tab = remote_tab(params)?;
+    let name = str_param(params, "name")?
+        .filter(|n| !n.is_empty() && n.len() <= 4096)
+        .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "name is the file's name"))?;
+    let num = |key: &str| -> Result<u32, CtlError> {
+        let n = count_param(params, key, true)?.unwrap_or(0);
+        u32::try_from(n).map_err(|_| CtlError::new(code::BAD_PARAMS, format!("{key} is a count")))
+    };
+    let (chunk, chunks) = (num("chunk")?, num("chunks")?);
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(str_param(params, "data")?.unwrap_or_default())
+        .map_err(|_| CtlError::new(code::BAD_PARAMS, "data is base64"))?;
+    let Some((handle, _)) = host.followed(&tab) else {
+        return Err(CtlError::new(
+            code::NO_TAB,
+            "that tab is not followed: send remote.attach first",
+        ));
+    };
+    let put = host.uploads().put(&tab, name, chunk, chunks, &data)?;
+    let mut v = json!({"tab": tab, "name": put.name, "done": put.host_path.is_some()});
+    if let Some(p) = put.host_path {
+        let text = p.to_string_lossy().into_owned();
+        let shell = flare_shells::paste::path_shell_of(handle.shell_id().as_deref());
+        // The name is clean (`put_name`), so every shell's quotes take it; a folder no shell can quote is said.
+        let paste = flare_shells::paste::quote_path(&text, Some(shell)).ok_or_else(|| {
+            CtlError::new(
+                code::UNAVAILABLE,
+                "the host's upload folder cannot be typed in that tab's shell",
+            )
+        })?;
+        v["host_path"] = json!(text);
+        v["paste"] = json!(paste);
+    }
+    Ok(v)
+}
+
+impl AppDispatcher {
     /// `remote.convo {tab, since?}` (remote sessions PR 4, rule 297): the followed tab's Claude session as numbered
     /// entries after `since`. The window names the session, the folder and this host's Claude folder; the transcript
     /// is found and read here, on the call's worker (rule 34). No host path is in the answer.
@@ -2923,7 +3012,9 @@ impl Dispatcher for AppDispatcher {
             | Method::RemoteSnapshot
             | Method::RemoteClose
             | Method::RemoteStatus
-            | Method::RemoteConvo => self.remote_call(ctx, method, &params),
+            | Method::RemoteConvo
+            | Method::RemoteFetch
+            | Method::RemotePut => self.remote_call(ctx, method, &params),
             Method::OpenRemoteSession => self.open_remote(&params),
             Method::ViewText => {
                 let tab = Self::tab_of_call(ctx)?;
@@ -6115,6 +6206,118 @@ mod tests {
                 .iter()
                 .all(|o| o == "CtlOp::RemoteStatus")
         );
+    }
+
+    /// Rule 303: `remote.fetch` reads a followed tab's file by the path its link names, from the folder the window says
+    /// the tab is in, chunk by chunk; a file outside that folder (and the temp folder), or a tab nobody follows, is
+    /// refused before anything is read.
+    #[test]
+    fn remote_fetch_reads_only_the_followed_tabs_folder_in_chunks() {
+        use base64::Engine as _;
+        let all = tempfile::tempdir().unwrap();
+        let proj = all.path().join("proj");
+        let secret = all.path().join("secret");
+        std::fs::create_dir_all(proj.join("docs")).unwrap();
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::write(proj.join("docs").join("a.md"), b"# hello").unwrap();
+        std::fs::write(secret.join("key.txt"), b"no").unwrap();
+        let folder = proj.to_string_lossy().into_owned();
+        let r = rig(
+            move |op| match op {
+                CtlOp::SessionOf { .. } => Ok(json!({"folder": folder})),
+                _ => Ok(json!({})),
+            },
+            false,
+            &[],
+        );
+        // The host's temp folder is one of its own, so the test's folders are outside it.
+        let host =
+            crate::remote_host::RemoteHost::with_temp("k".into(), all.path().join("host-temp"));
+        let d = r.d.with_remote(Arc::clone(&host));
+        let fetch = |p: Value| d.call(&bridge(1), Method::RemoteFetch, p);
+        assert_eq!(
+            code_of(fetch(json!({"tab": "t1", "path": "docs/a.md"}))),
+            code::NO_TAB
+        );
+        a_followed_tab(&host, "t1", 1);
+        let v = fetch(json!({"tab": "t1", "path": "docs/a.md"})).unwrap();
+        assert_eq!(
+            (v["name"].as_str(), v["size"].as_u64(), v["chunks"].as_u64()),
+            (Some("a.md"), Some(7), Some(1))
+        );
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(v["data"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(data, b"# hello");
+        // The host's temp folder is the one other place it reads.
+        std::fs::create_dir_all(all.path().join("host-temp")).unwrap();
+        let shot = all.path().join("host-temp").join("shot.png");
+        std::fs::write(&shot, b"png").unwrap();
+        let v = fetch(json!({"tab": "t1", "path": shot.to_string_lossy()})).unwrap();
+        assert_eq!(v["name"], "shot.png");
+        let outside = secret.join("key.txt").to_string_lossy().into_owned();
+        for p in [
+            json!({"tab": "t1", "path": outside}),
+            json!({"tab": "t1", "path": "../secret/key.txt"}),
+            json!({"tab": "t1", "path": "docs"}),
+        ] {
+            assert_eq!(code_of(fetch(p.clone())), code::NOT_FOUND, "{p}");
+        }
+        for p in [
+            json!({"tab": "t1"}),
+            json!({"tab": "t1", "path": "docs/a.md", "chunk": 1}),
+            json!({"tab": "t1", "path": "docs/a.md", "raw": true}),
+        ] {
+            assert_eq!(code_of(fetch(p.clone())), code::BAD_PARAMS, "{p}");
+        }
+    }
+
+    /// Rule 304: `remote.put` writes a followed tab's file into its upload folder on the host, under a clean name, and
+    /// the last chunk answers the host path and that path quoted for the tab's shell; a tab nobody follows is refused.
+    #[test]
+    fn remote_put_lands_in_the_tabs_upload_folder_and_answers_a_quoted_path() {
+        use base64::Engine as _;
+        let enc = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let temp = tempfile::tempdir().unwrap();
+        let r = rig(|_| Ok(json!({"ok": true})), false, &[]);
+        let host = crate::remote_host::RemoteHost::with_temp("k".into(), temp.path().into());
+        let d = r.d.with_remote(Arc::clone(&host));
+        let put = |p: Value| d.call(&bridge(1), Method::RemotePut, p);
+        let first = json!({"tab": "t1", "name": "../shot%1.png", "chunk": 0, "chunks": 2, "data": enc(b"ab")});
+        assert_eq!(code_of(put(first.clone())), code::NO_TAB);
+        a_followed_tab(&host, "t1", 1);
+        let v = put(first).unwrap();
+        assert_eq!(
+            (v["name"].as_str(), v["done"].as_bool()),
+            (Some("shot_1.png"), Some(false))
+        );
+        assert!(v.get("host_path").is_none());
+        let v = put(
+            json!({"tab": "t1", "name": "shot_1.png", "chunk": 1, "chunks": 2, "data": enc(b"cd")}),
+        )
+        .unwrap();
+        let path = std::path::PathBuf::from(v["host_path"].as_str().unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), b"abcd");
+        assert_eq!(path.parent(), Some(host.uploads().folder("t1").as_path()));
+        let paste = v["paste"].as_str().unwrap();
+        assert!(
+            paste.contains("shot_1.png") && paste.len() > path.to_string_lossy().len(),
+            "quoted for the shell: {paste}"
+        );
+        assert_eq!(
+            code_of(put(
+                json!({"tab": "t1", "name": "x", "chunk": 0, "chunks": 1, "data": "not base64!"})
+            )),
+            code::BAD_PARAMS
+        );
+        // The tab closing takes its folder with it.
+        let dir = host.uploads().folder("t1");
+        host.forget_tab("t1");
+        let t = Instant::now();
+        while dir.exists() && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10)); // sync-ok: test code only
+        }
+        assert!(!dir.exists(), "the closed tab's uploads are gone");
     }
 
     /// Rule 297: the host finds the tab's transcript with its own Claude folder and sends numbered entries, never a

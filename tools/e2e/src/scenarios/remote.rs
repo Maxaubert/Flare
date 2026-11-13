@@ -663,3 +663,157 @@ fn status_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> 
     ctx.ok(quit, "the viewer quits again");
     Ok(())
 }
+
+// ---- remote sessions PR 6: `remoteFiles`, a file link fetched from the host and a file dropped onto it ----
+
+/// The host's file the remote tab links to.
+const FILES_NOTE: &str = "remote note one\nremote note two\n";
+/// What is typed into the remote tab: it prints the host file's name between the file-link marks. Written here in
+/// full: nothing else is typed into the host's shell (the drop pastes a path, never an Enter).
+const FILES_LINE: &str =
+    "cls; $o = [char]0x27E6; $c = [char]0x27E7; Write-Host ('note: ' + $o + 'remote-note.txt' + $c)";
+
+/// `TEMP` and `TMP` in a folder of the world, so the host's uploads and the viewer's copies are removed with it.
+fn temp_in(root: &Path) -> Result<Vec<(String, String)>, String> {
+    let temp = root.join("temp");
+    std::fs::create_dir_all(&temp).map_err(|e| format!("make the world's temp folder: {e}"))?;
+    let t = temp.to_string_lossy().into_owned();
+    Ok(vec![
+        ("TEMP".to_string(), t.clone()),
+        ("TMP".to_string(), t),
+    ])
+}
+
+/// A 4 by 4 picture: what is dropped on the remote tab.
+fn small_png() -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, 4, 4);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut w = enc.write_header().map_err(|e| e.to_string())?;
+        let px: Vec<u8> = (0..16).flat_map(|_| [10u8, 200, 90, 255]).collect();
+        w.write_image_data(&px).map_err(|e| e.to_string())?;
+    }
+    Ok(out)
+}
+
+/// The host path the remote tab's prompt shows for `name`: the quoted path's text holding `flare-remote`.
+fn pasted_path(screen: &str, name: &str) -> Option<String> {
+    let flat: String = screen.lines().map(str::trim_end).collect();
+    let end = flat.find(name)? + name.len();
+    let start = flat[..end].rfind('\'')? + 1;
+    let p = &flat[start..end];
+    p.contains("flare-remote").then(|| p.to_string())
+}
+
+/// `remoteFiles`: Flare A (the viewer) shows a tab that runs in Flare B (the host), joined by a stdio loopback. B's
+/// folder holds a text file; the tab prints its name between the file-link marks, and a click on it in A fetches the
+/// host's file over the link (`remote.fetch`) and shows A's copy in A's side panel, with nothing handed to Windows
+/// (rule 303). A picture of A's world is then dropped on A's remote tab: it is copied to B's upload folder
+/// (`remote.put`) and B's path for it is pasted at the host's prompt, never A's path (rule 304). Both are offscreen on
+/// the hidden desktop. The roles on one PC are the same both ways round: the Mac to PC direction is the by-hand list.
+pub fn remote_files(ctx: &mut Ctx) -> Result<(), String> {
+    let (alpha, root) = {
+        let w = ctx.ensure_world();
+        (w.alpha.clone(), w.root.clone())
+    };
+    std::fs::write(alpha.join("remote-note.txt"), FILES_NOTE)
+        .map_err(|e| format!("make the host's note: {e}"))?;
+    let mut host = ctx.launch(Launch {
+        folders: vec![alpha.clone()],
+        env: temp_in(&root)?,
+        ..Launch::default()
+    })?;
+    let r = files_on(ctx, &mut host, &alpha);
+    let left = host.close();
+    ctx.ok(left, "the host quits by itself");
+    r
+}
+
+fn files_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
+    use flare_e2e_proto::Button;
+    prompt(host)?;
+    let world = ctx.new_world();
+    let picture = world.alpha.join("dropped-pic.png");
+    let png = small_png()?;
+    std::fs::write(&picture, &png).map_err(|e| format!("make the picture: {e}"))?;
+    let exe = ctx.exe.clone();
+    let mut env = viewer_env(&exe, &host.profile, alpha, true);
+    env.extend(temp_in(&world.root)?);
+    let mut a = ctx.launch_in(
+        &world,
+        Launch {
+            env,
+            ..Launch::default()
+        },
+    )?;
+    let r = (|| -> Result<(), String> {
+        front_rows_until(ctx, &mut a, "the host's prompt in the remote tab", |t| {
+            t.contains("PS ")
+        })?;
+        type_line(&mut a, FILES_LINE)?;
+        let lit = ctx.until("the host file's name to be a link", 15_000, &mut || {
+            super::input_b::path_texts(&mut a)
+                .iter()
+                .any(|p| p.contains("remote-note.txt"))
+        });
+        ctx.ok(lit, "the marked name in the remote tab is a file link");
+        let before = super::input_b::opened(&mut a).len();
+        super::input_b::click_on(&mut a, "remote-note.txt", 2, Button::Left)?;
+        let shown = ctx.until("the host's note in the panel", 20_000, &mut || {
+            let s = super::panel::state(&mut a);
+            s["shown"] == json!(true) && s["kind"] == json!(2) && s["lines"] == json!(2)
+        });
+        let s = super::panel::state(&mut a);
+        ctx.ok(
+            shown && s["title"] == json!("remote-note.txt"),
+            format!(
+                "a click on a remote file link shows the host's file in the panel ({} {} {})",
+                s["title"], s["kind"], s["lines"]
+            ),
+        );
+        ctx.ok(
+            super::input_b::opened(&mut a).len() == before,
+            "nothing was handed to Windows for a remote link",
+        );
+
+        // The drop: A's picture goes to B, and B's path for it comes to the prompt.
+        let grid = a
+            .session
+            .probe("ui.rect", json!({"name": "grid"}))
+            .map_err(|e| format!("ui.rect grid: {e}"))?;
+        let (x, y, w, h) = super::input_b::css(&grid).ok_or("the grid has no rect")?;
+        a.session.call(&Request::DropFiles {
+            paths: vec![picture.to_string_lossy().into_owned()],
+            x: (x + w / 4.0) as f32,
+            y: (y + h / 2.0) as f32,
+        })?;
+        let mut host_path = None;
+        let pasted = ctx.until("the host's path at the prompt", 20_000, &mut || {
+            host_path = pasted_path(&super::input_b::rows(&mut a), "dropped-pic.png");
+            host_path.is_some()
+        });
+        ctx.ok(
+            pasted,
+            "a file dropped on the remote tab pastes a host path",
+        );
+        let viewer_path = picture.to_string_lossy().into_owned();
+        ctx.ok(
+            !super::input_b::rows(&mut a).contains(&viewer_path),
+            "the viewer's own path is never typed into the host's shell",
+        );
+        if let Some(p) = host_path {
+            let same = std::fs::read(&p).is_ok_and(|b| b == png);
+            ctx.ok(
+                same,
+                format!("the picture is in the host's upload folder whole ({p})"),
+            );
+        }
+        Ok(())
+    })();
+    let quit = a.close();
+    r?;
+    ctx.ok(quit, "the viewer quits");
+    Ok(())
+}

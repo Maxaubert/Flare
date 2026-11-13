@@ -46,6 +46,106 @@ pub trait ClipboardPort: Send + Sync {
     fn set_image_png_b64(&self, _png_b64: &str) -> Result<(), String> {
         Err("the real clipboard never takes an image from the harness".to_string())
     }
+    /// The image on the clipboard as file bytes (remote sessions PR 6: a paste on a remote tab copies it to the host):
+    /// a PNG when one is there, else the bitmap as a `.bmp` file (Windows' `CF_DIB`). None when there is none, it
+    /// cannot be read, or it is over [`IMAGE_READ_MAX`]. A worker thread only.
+    fn read_image(&self) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+/// The biggest clipboard image `read_image` reads (a 4K screenshot as a bitmap is about 33 MB).
+pub const IMAGE_READ_MAX: usize = 128 * 1024 * 1024;
+
+/// Pure: a `.bmp` file of a packed DIB (`CF_DIB`, `CF_DIBV5`): the 14-byte file header in front, its pixel offset past
+/// the info header, the colour masks a `BITMAPINFOHEADER` with `BI_BITFIELDS` carries, and the colour table. None for a
+/// DIB too short for its own header.
+pub fn bmp_of_dib(dib: &[u8]) -> Option<Vec<u8>> {
+    let u32_at =
+        |i: usize| -> Option<u32> { Some(u32::from_le_bytes(dib.get(i..i + 4)?.try_into().ok()?)) };
+    let header = u32_at(0)? as usize;
+    if header < 12 || dib.len() < header {
+        return None;
+    }
+    let (bits, compression, used) = if header == 12 {
+        // BITMAPCOREHEADER: 3-byte colour table entries; Windows never puts one on the clipboard, but read it right.
+        let bits = u16::from_le_bytes(dib.get(10..12)?.try_into().ok()?);
+        (bits, 0, 0)
+    } else {
+        let bits = u16::from_le_bytes(dib.get(14..16)?.try_into().ok()?);
+        (bits, u32_at(16)?, u32_at(32)?)
+    };
+    let entry = if header == 12 { 3 } else { 4 };
+    let colours = if used != 0 {
+        used as usize
+    } else if bits <= 8 {
+        1usize << bits
+    } else {
+        0
+    };
+    // BI_BITFIELDS (3) and BI_ALPHABITFIELDS (6) put their masks after a 40-byte header; a V4 or V5 header holds them.
+    let masks = match (header, compression) {
+        (40, 3) => 12,
+        (40, 6) => 16,
+        _ => 0,
+    };
+    let offset = 14 + header + masks + colours * entry;
+    let size = 14 + dib.len();
+    let mut out = Vec::with_capacity(size);
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&u32::try_from(size).ok()?.to_le_bytes());
+    out.extend_from_slice(&[0, 0, 0, 0]);
+    out.extend_from_slice(&u32::try_from(offset).ok()?.to_le_bytes());
+    out.extend_from_slice(dib);
+    Some(out)
+}
+
+/// The bytes of a global block, at most `max`. None for a null handle, a failed lock or a bigger block.
+///
+/// # Safety
+/// `handle` must be null or a live movable global memory handle for the whole call.
+#[cfg(windows)]
+unsafe fn read_global_bytes(handle: HGLOBAL, max: usize) -> Option<Vec<u8>> {
+    if handle.is_null() {
+        return None;
+    }
+    // SAFETY: the caller guarantees a live handle; the pointer is null-checked below.
+    let (locked, size) = unsafe { (GlobalLock(handle).cast::<u8>(), GlobalSize(handle)) };
+    if locked.is_null() {
+        return None;
+    }
+    let _unlock = LockGuard(handle);
+    if size == 0 || size > max {
+        return None;
+    }
+    // SAFETY: the lock holds `size` bytes readable at `locked`.
+    Some(unsafe { std::slice::from_raw_parts(locked, size) }.to_vec())
+}
+
+/// The clipboard's image as file bytes: the registered "PNG" format first, then `CF_DIB` and `CF_DIBV5` as a `.bmp`.
+/// The clipboard must be open on this thread.
+#[cfg(windows)]
+fn image_bytes_open() -> Option<Vec<u8>> {
+    let name: Vec<u16> = "PNG".encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: the caller has the clipboard open, so a handle it gives stays valid for the read; `name` is a
+    // NUL-terminated UTF-16 string that outlives the call.
+    unsafe {
+        let png = RegisterClipboardFormatW(name.as_ptr());
+        if png != 0
+            && IsClipboardFormatAvailable(png) != 0
+            && let Some(b) = read_global_bytes(GetClipboardData(png), IMAGE_READ_MAX)
+        {
+            return Some(b);
+        }
+        for f in [CF_DIB, CF_DIBV5] {
+            if IsClipboardFormatAvailable(u32::from(f)) != 0
+                && let Some(dib) = read_global_bytes(GetClipboardData(u32::from(f)), IMAGE_READ_MAX)
+            {
+                return bmp_of_dib(&dib);
+            }
+        }
+    }
+    None
 }
 
 fn check_write(text: &str, max: usize) -> Result<(), String> {
@@ -213,6 +313,14 @@ impl ClipboardPort for WinClipboard {
         // SAFETY: takes no arguments and only reads a system counter.
         unsafe { GetClipboardSequenceNumber() }
     }
+
+    fn read_image(&self) -> Option<Vec<u8>> {
+        if !open() {
+            return None;
+        }
+        let _close = ClipboardGuard;
+        image_bytes_open()
+    }
 }
 
 /// macOS: `NSPasteboard` (see `pasteboard.rs`): text, copied files as POSIX paths, an image seen,
@@ -239,6 +347,10 @@ impl ClipboardPort for WinClipboard {
 
     fn sequence(&self) -> u32 {
         crate::pasteboard::change_count(&crate::pasteboard::general())
+    }
+
+    fn read_image(&self) -> Option<Vec<u8>> {
+        crate::pasteboard::read_png(&crate::pasteboard::general(), IMAGE_READ_MAX)
     }
 }
 
@@ -305,6 +417,13 @@ impl ClipboardPort for MemoryClipboard {
 
     fn sequence(&self) -> u32 {
         self.seq.load(Ordering::SeqCst)
+    }
+
+    fn read_image(&self) -> Option<Vec<u8>> {
+        use base64::Engine as _;
+        let g = self.lock();
+        let b64 = g.png_b64.as_deref()?;
+        base64::engine::general_purpose::STANDARD.decode(b64).ok()
     }
 
     fn set_image_png_b64(&self, png_b64: &str) -> Result<(), String> {
@@ -374,6 +493,64 @@ mod tests {
         c.set_image_png_b64("iVBORw0KGgo=").unwrap();
         assert!(c.read_state().image);
         assert!(c.sequence() > a);
+    }
+
+    /// Remote sessions PR 6: the harness's image reads back as its bytes, and a bare "an image is there" reads none.
+    #[test]
+    fn the_stand_in_reads_back_the_png_it_was_given() {
+        let c = MemoryClipboard::new();
+        assert_eq!(c.read_image(), None);
+        c.set_image(true);
+        assert_eq!(c.read_image(), None);
+        c.set_image_png_b64("iVBORw0KGgo=").unwrap();
+        assert_eq!(c.read_image().unwrap(), b"\x89PNG\r\n\x1a\n");
+    }
+
+    /// A clipboard bitmap becomes a `.bmp` file whose pixel offset skips the header, the masks and the colour table.
+    #[test]
+    fn a_dib_becomes_a_bmp_file_with_its_pixels_where_the_header_says() {
+        fn dib(header: u32, bits: u16, compression: u32, used: u32, rest: usize) -> Vec<u8> {
+            let mut d = vec![0u8; header as usize];
+            d[0..4].copy_from_slice(&header.to_le_bytes());
+            d[4..8].copy_from_slice(&1i32.to_le_bytes());
+            d[8..12].copy_from_slice(&1i32.to_le_bytes());
+            d[14..16].copy_from_slice(&bits.to_le_bytes());
+            d[16..20].copy_from_slice(&compression.to_le_bytes());
+            d[32..36].copy_from_slice(&used.to_le_bytes());
+            d.extend(std::iter::repeat_n(7u8, rest));
+            d
+        }
+        let offset = |b: &[u8]| u32::from_le_bytes(b[10..14].try_into().unwrap());
+        // 24-bit, no table: pixels right after the 40-byte header.
+        let b = bmp_of_dib(&dib(40, 24, 0, 0, 4)).unwrap();
+        assert_eq!(&b[0..2], b"BM");
+        assert_eq!(
+            u32::from_le_bytes(b[2..6].try_into().unwrap()) as usize,
+            b.len()
+        );
+        assert_eq!(offset(&b), 14 + 40);
+        // 32-bit BI_BITFIELDS: three masks after the header.
+        assert_eq!(
+            offset(&bmp_of_dib(&dib(40, 32, 3, 0, 16)).unwrap()),
+            14 + 40 + 12
+        );
+        // 8-bit: a 256-entry table; a table of the size it says.
+        assert_eq!(
+            offset(&bmp_of_dib(&dib(40, 8, 0, 0, 1024)).unwrap()),
+            14 + 40 + 1024
+        );
+        assert_eq!(
+            offset(&bmp_of_dib(&dib(40, 8, 0, 16, 64)).unwrap()),
+            14 + 40 + 64
+        );
+        // A V5 header holds its own masks.
+        assert_eq!(
+            offset(&bmp_of_dib(&dib(124, 32, 3, 0, 4)).unwrap()),
+            14 + 124
+        );
+        // Too short for its own header.
+        assert_eq!(bmp_of_dib(&[40, 0, 0, 0]), None);
+        assert_eq!(bmp_of_dib(&[]), None);
     }
 
     #[test]

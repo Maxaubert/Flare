@@ -71,6 +71,57 @@ struct LiveInner {
     state: AtomicU8,
     /// The host's newest status of the tab that the window has not taken yet (remote sessions PR 4).
     status: Mutex<Option<HostStatus>>,
+    /// File work for the link, in the order asked (remote sessions PR 6).
+    errands: Mutex<VecDeque<Errand>>,
+}
+
+/// A file of the host the link fetched for a click on a file link (remote sessions PR 6, rule 303): the host's name
+/// for it (its last part) and its bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fetched {
+    pub name: String,
+    pub data: Vec<u8>,
+}
+
+/// A file of this machine to copy to the host (a dropped file, a pasted image; rule 304): the name to keep it under
+/// there (the host cleans it again) and its bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Upload {
+    pub name: String,
+    pub data: Vec<u8>,
+}
+
+/// Why an errand did not get done.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ErrandFail {
+    /// The host has no file by any spelling the link was given, or none it may send (rule 303 says nothing more).
+    NoSuchFile,
+    /// The link is down, the host refused, or the file is too big: a line for the person.
+    Failed(String),
+}
+
+type FetchDone = Box<dyn FnOnce(Result<Fetched, ErrandFail>) + Send>;
+type PutDone = Box<dyn FnOnce(Result<Vec<String>, ErrandFail>) + Send>;
+
+/// File work a remote tab's link does between its polls, on its own worker (rule 34): the window asks, the link answers
+/// through `done` (on the link's thread: `done` posts to the window).
+pub enum Errand {
+    /// Fetch a host file a file link names: each spelling in turn (`texts`), read by the host from its own folder of
+    /// the tab (rule 303).
+    Fetch { texts: Vec<String>, done: FetchDone },
+    /// Copy files to the host's upload folder of the tab, then paste their host paths into the tab as one paste, quoted
+    /// by the host for its shell (rule 304). `done` gets the host paths.
+    Put { files: Vec<Upload>, done: PutDone },
+}
+
+impl Errand {
+    /// Tells the asker the errand will not be done.
+    pub fn fail(self, why: ErrandFail) {
+        match self {
+            Errand::Fetch { done, .. } => done(Err(why)),
+            Errand::Put { done, .. } => done(Err(why)),
+        }
+    }
 }
 
 /// What the host says of a remote tab (`remote.status`, remote sessions PR 4, rule 294): words its own marks give, never
@@ -138,6 +189,31 @@ impl RemoteLive {
     /// The host's status the window has not taken yet, taken (the UI thread, at each wake).
     pub fn take_status(&self) -> Option<HostStatus> {
         lk(&self.0.status).take()
+    }
+
+    /// File work for the link (the window): done between the link's polls, in the order asked. A tab whose link has
+    /// ended is told at once.
+    pub fn send_errand(&self, e: Errand) {
+        let mut q = lk(&self.0.errands);
+        if self.link() == LinkState::Ended {
+            drop(q);
+            e.fail(ErrandFail::Failed("this tab's session has ended".into()));
+            return;
+        }
+        q.push_back(e);
+    }
+
+    /// The errands asked since the last take (the link's worker).
+    pub fn take_errands(&self) -> Vec<Errand> {
+        lk(&self.0.errands).drain(..).collect()
+    }
+
+    /// The link ends: no errand is taken any more, and the ones still waiting are handed back to be failed. Under the
+    /// errands' lock, so an errand is either handed back here or told at once by [`RemoteLive::send_errand`].
+    pub fn end_errands(&self) -> Vec<Errand> {
+        let mut q = lk(&self.0.errands);
+        self.set_link(LinkState::Ended);
+        q.drain(..).collect()
     }
 }
 
@@ -1135,5 +1211,47 @@ mod tests {
         assert_eq!(a.link(), LinkState::Live);
         assert_eq!(a, b);
         assert_ne!(a, RemoteLive::new(Some("t1".into()), 9));
+    }
+
+    /// Remote sessions PR 6: file work waits for the link in the order asked; once the link ends, what still waits is
+    /// handed back to be failed and anything asked later is failed at once, so no asker waits forever.
+    #[test]
+    fn errands_wait_in_order_and_none_is_lost_when_the_link_ends() {
+        let live = RemoteLive::default();
+        let told: Arc<Mutex<Vec<String>>> = Arc::default();
+        let put = |name: &str| {
+            let told = Arc::clone(&told);
+            let name = name.to_string();
+            Errand::Put {
+                files: vec![Upload {
+                    name: name.clone(),
+                    data: Vec::new(),
+                }],
+                done: Box::new(move |r| {
+                    lk(&told).push(format!("{name}: {}", r.is_ok()));
+                }),
+            }
+        };
+        live.send_errand(put("a"));
+        live.send_errand(put("b"));
+        let got = live.take_errands();
+        assert_eq!(got.len(), 2);
+        let names: Vec<String> = got
+            .iter()
+            .map(|e| match e {
+                Errand::Put { files, .. } => files[0].name.clone(),
+                Errand::Fetch { .. } => String::new(),
+            })
+            .collect();
+        assert_eq!(names, ["a", "b"]);
+        assert!(live.take_errands().is_empty());
+        live.send_errand(put("c"));
+        for e in live.end_errands() {
+            e.fail(ErrandFail::Failed("ended".into()));
+        }
+        assert_eq!(live.link(), LinkState::Ended);
+        live.send_errand(put("d"));
+        assert_eq!(*lk(&told), ["c: false", "d: false"]);
+        drop(got);
     }
 }

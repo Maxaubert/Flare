@@ -53,6 +53,7 @@ mod plugin_safe;
 mod plugin_sessions;
 mod plugin_ui;
 mod remote_convo;
+mod remote_files;
 mod remote_host;
 mod remote_link;
 mod remote_status;
