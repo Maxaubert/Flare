@@ -335,9 +335,18 @@ fn rows_are_at_least_58_and_tiles_32_and_hairlines_start_60_in() {
         for page in ["appearance", "terminal"] {
             let sc = Scene::new(page, s, 1000, 604);
             let one_dev = 1.0 / sc.scale;
-            // The model: every row block is 58 css px, to the device pixel.
+            // The model: every row block is 58 css px, to the device pixel. The app icon picker's row is its 58 of
+            // words over its line of tiles (Flare's own, rule 1230).
             for (si, ri) in row_blocks(&sc.layout) {
                 let r = &sc.layout.sections[si].rows[ri];
+                if r.id == "app-icon" {
+                    assert!(
+                        within(r.h, flare_settings::layout::ICON_ROW_H, one_dev),
+                        "scale {s} {page}: the app icon row is {} high",
+                        r.h
+                    );
+                    continue;
+                }
                 assert!(
                     within(r.h, 58.0, one_dev),
                     "scale {s} {page}: row {} is {} high, not 58",
@@ -839,12 +848,12 @@ fn the_section_and_header_rhythm_matches() {
                 first.panel_w,
                 panel.2
             );
-            // (Flare's About panel also holds the "Made with Slint" badge, decision O9; Prism Terminal's
-            // has no such block, so its height is compared without it.)
+            // (Flare's About panel also holds the "Made with Slint" badge, decision O9, and its Window panel the
+            // app icon picker, rule 1230; Prism Terminal has neither, so the height is compared without them.)
             let badge: f64 = first
                 .rows
                 .iter()
-                .filter(|r| r.block == LayoutBlock::Slint)
+                .filter(|r| r.block == LayoutBlock::Slint || r.id == "app-icon")
                 .map(|r| r.h)
                 .sum();
             assert!(

@@ -3,6 +3,7 @@
 
 pub mod actions;
 pub mod agent_prefs;
+pub mod app_icon;
 pub mod atomic;
 pub mod colour_format;
 pub mod copy_rules;

@@ -51,6 +51,8 @@ cosmic-text = { version = "=0.19.0", default-features = false, features = ["std"
 ttf-parser = { version = "0.25.1", default-features = false, features = ["std"] }
 unicode-width = "=0.2.2"
 png = "=0.18.1"
+# The app icon picker draws the chosen icon for the Dock and the window (rule 1230): the version Slint already pulls in.
+resvg = { version = "=0.48.1", default-features = false }
 # The panel image viewer decodes png, jpeg, gif, bmp, webp and ico on a worker (Surfaces stage 1).
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "ico"] }
 pollster = "=1.0.1"

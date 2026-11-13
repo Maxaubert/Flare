@@ -242,6 +242,7 @@ pub fn control_kind(c: &Control) -> SetKind {
         Control::Key { .. } => SetKind::Key,
         Control::Mic { .. } => SetKind::Mic,
         Control::Text { .. } => SetKind::Text,
+        Control::Icons { .. } => SetKind::Icons,
     }
 }
 
@@ -338,6 +339,23 @@ pub fn to_slint_row(r: &RowModel, y: f64, h: f64, ctx: &RowCtx<'_>) -> SetRow {
         Control::Segmented { value, options } | Control::Select { value, options } => {
             out.value = value.as_str().into();
             out.options = options_of(options);
+        }
+        // The app icon picker (rule 1230): each tile's picture, and the picked icon's name for the row's right.
+        Control::Icons { value, options } => {
+            out.value = value.as_str().into();
+            out.options = options_of(options);
+            out.art = ModelRc::new(VecModel::from(
+                options
+                    .iter()
+                    .map(|o| crate::app_icon::tile_image(&o.id))
+                    .collect::<Vec<_>>(),
+            ));
+            out.badge = options
+                .iter()
+                .find(|o| &o.id == value)
+                .map(|o| o.name.as_str())
+                .unwrap_or_default()
+                .into();
         }
         Control::Slider {
             value,

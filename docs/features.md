@@ -661,6 +661,18 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   `assets/icon/app-windows.svg` (a gold flame on a dark rounded square), the Mac's from the Icon Composer icon
   `assets/icon/app-macos.icon` (Liquid Glass, compiled by `actool` into `Assets.car` plus a fallback `Flare.icns`).
   `flare-color.svg` stays the in-app mark.
+  2026-11-13 (owner: "the app icon should stay the same as default, no new default, just a picker so the user can
+  change their look"): the original icon is the shipped app icon on both systems again (rule 1230): `build/icon.ico`
+  and the Mac's `Flare.icns` both come from `assets/icon/flare-color.svg`. The new designs are choices instead:
+  **Settings > Appearance > App icon**, a line of twelve icon tiles under the row's words (Original first and picked
+  until another is, then Liquid Glass, High Voltage, Daybreak, Hazard Reverse, Safety Orange, Blue Enamel, Raspberry
+  Lacquer, Lemon Ink, Jade Glass, Citrus Punch, Cobalt Electric; sources in `assets/icon/app-icons/`). A tile has no
+  words: its name is its tooltip and accessible label ("Original, the default" for the first), the chosen one wears
+  the accent ring, and the picked name sits at the row's right. Stored as `flare.window.appIcon` in `settings.json`.
+  How a pick is worn (rule 1231): on the Mac, `NSApplication.applicationIconImage` (the Dock and the app switcher),
+  at start and on every pick; Finder keeps the original, since the signed bundle is never written to. On Windows,
+  the window's big and small icons (`WM_SETICON`, which the taskbar button shows), at start, on a DPI change and on
+  every pick; shortcuts, the exe and the installer keep the original.
 - **Taskbar identity per profile.** 2026-10-22 (owner: the stable copy showed the installed Flare's old icon on
   the taskbar): a run with its own `--user-data-dir` has its own taskbar identity,
   `com.flare.terminal.p<16 hex>`, the FNV-1a 64 hash of the lowercased profile path (`/` as `\`, trailing

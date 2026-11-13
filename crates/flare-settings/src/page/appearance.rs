@@ -141,6 +141,37 @@ fn colour_row(id: &str, picked: Option<String>, from_theme: &str, range: AlphaRa
     }
 }
 
+/// What the app icon row says under its label: where the pick shows, and that the app's file keeps the original
+/// (rule 1230: the signed bundle and the exe are never written to).
+pub const APP_ICON_SUB: &str = if cfg!(target_os = "macos") {
+    "The Dock and the app switcher. Finder keeps the original."
+} else {
+    "The taskbar and the window. Shortcuts keep the original."
+};
+
+/// The app icon picker (rule 1230): the icon in force picked, the original first and named as the default.
+fn app_icon_row(env: &PageEnv) -> RowModel {
+    use crate::app_icon::{APP_ICONS, app_icon, tile_name};
+    let options = APP_ICONS
+        .iter()
+        .map(|i| Opt {
+            id: i.id.to_string(),
+            name: tile_name(i),
+            face: String::new(),
+        })
+        .collect();
+    RowModel {
+        sub: APP_ICON_SUB.to_string(),
+        ..row_with(
+            "app-icon",
+            Control::Icons {
+                value: app_icon(env.prefs).id.to_string(),
+                options,
+            },
+        )
+    }
+}
+
 /// The Appearance page: the window section, then the theme section (the wall and the see-through row
 /// under the theme row, the window's own colours under the wall).
 pub fn build(env: &PageEnv) -> PageModel {
@@ -194,6 +225,7 @@ pub fn build(env: &PageEnv) -> PageModel {
             BlockModel::Row(layout),
             BlockModel::Row(switch),
             BlockModel::Row(edges),
+            BlockModel::Row(app_icon_row(env)),
         ],
     );
 
@@ -343,7 +375,51 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(window, vec!["tab-layout", "tab-switch", "window-edges"]);
+        assert_eq!(
+            window,
+            vec!["tab-layout", "tab-switch", "window-edges", "app-icon"]
+        );
+    }
+
+    /// Rule 1230: the app icon row offers every icon, the original first and named as the default, and shows the
+    /// original picked on a fresh profile, a stored pick once there is one, and the original for an unknown word.
+    #[test]
+    fn the_app_icon_row_picks_the_original_until_another_is_chosen() {
+        use crate::app_icon::{APP_ICONS, KEY};
+        let (prefs, look) = fresh();
+        let picked = |p: &PageModel| match &row(p, "app-icon").control {
+            Control::Icons { value, options } => (value.clone(), options.clone()),
+            other => panic!("app-icon is an icon picker, not {other:?}"),
+        };
+        let (value, options) = picked(&page(&prefs, &look, GlassSupport::Ok));
+        assert_eq!(value, "original");
+        let ids: Vec<&str> = options.iter().map(|o| o.id.as_str()).collect();
+        let want: Vec<&str> = APP_ICONS.iter().map(|i| i.id).collect();
+        assert_eq!(ids, want);
+        assert_eq!(options[0].name, "Original, the default");
+        assert_eq!(options[1].name, "Liquid Glass");
+        let r = row(&page(&prefs, &look, GlassSupport::Ok), "app-icon").clone();
+        assert_eq!(r.label, "App icon");
+        assert_eq!(r.sub, APP_ICON_SUB);
+        assert!(r.sub.contains("keep the original") || r.sub.contains("keeps the original"));
+        let diag = crate::verb::FakeDiag::new("C:/diag", false);
+        let pending = std::cell::RefCell::new(None);
+        let ctx = crate::actions::Ctx {
+            prefs: &prefs,
+            look: &look,
+            diag: &diag,
+            pending_pick: &pending,
+        };
+        crate::actions::apply(
+            &ctx,
+            crate::actions::Event::Choose {
+                row: "app-icon".to_string(),
+                option: "daybreak".to_string(),
+            },
+        );
+        assert_eq!(picked(&page(&prefs, &look, GlassSupport::Ok)).0, "daybreak");
+        prefs.set(KEY, "neon");
+        assert_eq!(picked(&page(&prefs, &look, GlassSupport::Ok)).0, "original");
     }
 
     #[test]

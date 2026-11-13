@@ -433,7 +433,7 @@ pub const DIAGNOSTICS_OPTIONS: [RowDef; 3] = [
 ];
 
 /// This app's own rows, in draw order (section by section, as the pages draw them).
-pub const APP_OPTIONS: [RowDef; 21] = [
+pub const APP_OPTIONS: [RowDef; 22] = [
     RowDef {
         id: "tab-layout",
         label: "Tab position",
@@ -473,6 +473,19 @@ pub const APP_OPTIONS: [RowDef; 21] = [
         icon: "edges",
         keywords: "border lines hairline outline faint solid",
         keys: &["flare.window.edges"],
+        kind: RowKind::Choice,
+        source: Source::App,
+        only_nvidia: false,
+    },
+    RowDef {
+        id: "app-icon",
+        label: "App icon",
+        sub: "The icon Flare wears while it runs.",
+        section: "window",
+        page: "appearance",
+        icon: "app-icon",
+        keywords: "dock taskbar logo look icon glass daybreak original alternate",
+        keys: &["flare.window.appIcon"],
         kind: RowKind::Choice,
         source: Source::App,
         only_nvidia: false,
@@ -716,10 +729,11 @@ pub const APP_OPTIONS: [RowDef; 21] = [
 ];
 
 /// The row ids in draw order (Appendix C, the `#` column), with Flare's own rows where their pages draw them.
-pub const ROW_ORDER: [&str; 49] = [
+pub const ROW_ORDER: [&str; 50] = [
     "tab-layout",
     "tab-switch",
     "window-edges",
+    "app-icon",
     "term-theme",
     "term-acrylic",
     "window-background",
@@ -830,14 +844,14 @@ mod tests {
     #[test]
     fn the_tables_name_the_46_rows_in_row_order() {
         let ids: Vec<&str> = table_order().iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 49);
+        assert_eq!(ids.len(), 50);
         let mut sorted_tables = ids.clone();
         sorted_tables.sort_unstable();
         let mut sorted_order: Vec<&str> = ROW_ORDER.to_vec();
         sorted_order.sort_unstable();
         assert_eq!(sorted_tables, sorted_order);
         let distinct: BTreeSet<&str> = ROW_ORDER.iter().copied().collect();
-        assert_eq!(distinct.len(), 49);
+        assert_eq!(distinct.len(), 50);
         let drawn: Vec<&str> = all_rows().map(|r| r.id).collect();
         assert_eq!(drawn, ROW_ORDER.to_vec());
     }
@@ -950,6 +964,7 @@ mod tests {
                 "tab-layout=flare.window.tabLayout+flare.window.sidebar+flare.window.sidebarWidth",
                 "tab-switch=flare.window.tabSwitch",
                 "window-edges=flare.window.edges",
+                "app-icon=flare.window.appIcon",
                 "window-background=flare.window.background",
                 "window-secondary=flare.window.secondary",
                 "window-accent=flare.window.accent",
@@ -970,7 +985,7 @@ mod tests {
                 "app-version=",
             ]
         );
-        assert_eq!(app.len(), 21);
+        assert_eq!(app.len(), 22);
     }
 
     #[test]
@@ -1090,6 +1105,7 @@ mod tests {
             include_str!("term_prefs.rs"),
             include_str!("tab_layout.rs"),
             include_str!("tab_switch.rs"),
+            include_str!("app_icon.rs"),
             include_str!("sidebar.rs"),
             include_str!("new_tab.rs"),
             include_str!("agent_prefs.rs"),

@@ -315,12 +315,29 @@ fn wall_cards(app: &mut App) -> Vec<(String, R, bool, bool)> {
 /// Opens the wall (its toggle), brings a card into view and waits until the pane has stopped
 /// moving; the card's rect then. The wheel steps the pane the way `reveal` does.
 fn show_card(app: &mut App, id: &str) -> Option<R> {
+    let at = pane_point(app);
     if wall(app)["expanded"] == json!(false) {
+        // The toggle can sit below the fold (the Window section holds the app icon picker, rule 1230): it is wheeled
+        // into the pane before the press, as a person would.
+        wait_for(12_000, &mut || {
+            let w = wall(app);
+            if w["toggle_visible"] == json!(true) {
+                return true;
+            }
+            let _ = app.session.call(&Request::Pointer {
+                x: at.0,
+                y: at.1,
+                action: PointerAction::Wheel {
+                    dx: 0.0,
+                    dy: -160.0,
+                },
+            });
+            false
+        });
         let toggle = wall(app)["toggle"].clone();
         click_rect(app, &toggle);
         wait_for(4_000, &mut || wall(app)["expanded"] == json!(true));
     }
-    let at = pane_point(app);
     let in_view = wait_for(12_000, &mut || {
         let Some(c) = wall_cards(app).into_iter().find(|c| c.0 == id) else {
             return false;

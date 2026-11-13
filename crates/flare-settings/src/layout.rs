@@ -134,6 +134,13 @@ impl SnapGrid {
     }
 }
 
+/// The app icon picker's row (rule 1230): the row's 58 of words, a 40 px line of tiles and 16 under it.
+pub const ICON_ROW_H: f64 = 114.0;
+/// The picker's tile, its gap, and the tiles' top inside the row.
+pub const ICON_TILE: f64 = 40.0;
+pub const ICON_GAP: f64 = 8.0;
+pub const ICON_TILES_Y: f64 = 58.0;
+
 /// A speech model's or the GPU pack's row: PT's `min-h-16` (M8 Task 25).
 pub const MODEL_ROW_H: f64 = 64.0;
 /// The id the GPU pack's block carries (the store's id for the pack).
@@ -256,6 +263,10 @@ fn child_of(
     grid: SnapGrid,
 ) -> Child {
     let (kind, id, css_h) = match block {
+        // The app icon picker's row is its words, then its tiles under them (rule 1230).
+        BlockModel::Row(r) if matches!(r.control, crate::page::Control::Icons { .. }) => {
+            (BlockKind::Row, r.id, ICON_ROW_H)
+        }
         BlockModel::Row(r) => (BlockKind::Row, r.id, m.row_h),
         BlockModel::Wall => (BlockKind::Wall, "", wall.clip_h + m.wall_overhead),
         BlockModel::AboutCard { .. } => (BlockKind::About, "", m.about_h),
@@ -720,6 +731,29 @@ mod tests {
         let open = layout_page(&page, 1000.0, 1.0, &expanded, expanded.full_h, 112.0);
         assert_eq!(open.sections[0].rows[0].h, expanded.full_h + 66.0);
         assert_eq!(open.wall_expanded_h, expanded.full_h + 66.0);
+    }
+
+    /// Rule 1230: the app icon row is its words over one line of 40 px tiles, 114 high; the other rows stay 58.
+    #[test]
+    fn the_app_icon_row_is_its_words_over_a_line_of_tiles() {
+        for scale in [1.0, 1.5, 2.25] {
+            let l = laid_out("appearance", 1000.0, scale);
+            let window = &l.sections[0];
+            let ids: Vec<&str> = window.rows.iter().map(|r| r.id).collect();
+            assert_eq!(
+                ids,
+                ["tab-layout", "tab-switch", "window-edges", "app-icon"]
+            );
+            let icons = &window.rows[3];
+            assert_eq!(icons.block, BlockKind::Row);
+            assert!((icons.h - ICON_ROW_H).abs() < 1.0, "{scale}: {}", icons.h);
+            assert!((window.rows[2].h - 58.0).abs() < 1.0, "{scale}");
+        }
+        assert_eq!(ICON_TILES_Y + ICON_TILE + 16.0, ICON_ROW_H);
+        // Twelve tiles and their gaps fit the row's free width (from the label column at 60, 16 from the right)
+        // down to the narrow layout's narrowest panel.
+        let tiles = 12.0 * ICON_TILE + 11.0 * ICON_GAP;
+        assert!(60.0 + tiles + 16.0 <= 760.0 - 56.0 - 2.0 * 20.0, "{tiles}");
     }
 
     #[test]
