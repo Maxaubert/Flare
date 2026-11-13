@@ -37,6 +37,17 @@ struct HostState {
     put: Vec<(String, Vec<u8>)>,
     /// A put being written: (name kept, bytes so far).
     putting: Option<(String, Vec<u8>)>,
+    /// The links made (rule 1210: an attach not taken yet is tried again on the same link).
+    connects: u32,
+    /// The next this many attaches are answered `unavailable` (a new tab's shell still starting).
+    attach_not_yet: u32,
+    /// The next this many opens open their tab and then the link breaks before the answer reaches the viewer.
+    lose_open_answers: u32,
+    /// An older host: `remote.open` refuses `open_id` as an unknown field.
+    no_open_id: bool,
+    /// The tab each open id opened, and every open's params as sent.
+    open_ids: HashMap<String, String>,
+    opens: Vec<Value>,
 }
 
 #[derive(Clone, Default)]
@@ -61,12 +72,33 @@ impl FakeHost {
         let tab = p["tab"].as_str().unwrap_or_default().to_string();
         match m {
             Method::RemoteOpen => {
+                st.opens.push(p.clone());
+                let open_id = p["open_id"].as_str().map(str::to_string);
+                if open_id.is_some() && st.no_open_id {
+                    return Err(CtlError::new(
+                        code::BAD_PARAMS,
+                        "open_id is not a field of remote.open",
+                    ));
+                }
+                if let Some(t) = open_id.as_ref().and_then(|o| st.open_ids.get(o)) {
+                    return Ok(json!({"tab": t}));
+                }
                 st.next += 1;
                 let id = format!("h{}", st.next);
                 st.tabs.insert(id.clone(), HostTab::default());
+                if let Some(o) = open_id {
+                    st.open_ids.insert(o, id.clone());
+                }
                 Ok(json!({"tab": id}))
             }
             Method::RemoteAttach => {
+                if st.attach_not_yet > 0 {
+                    st.attach_not_yet -= 1;
+                    return Err(CtlError::new(
+                        code::UNAVAILABLE,
+                        "that tab's shell is not running",
+                    ));
+                }
                 let seq = st.tabs.get(&tab).ok_or_else(no_tab)?.out.len();
                 st.attached.insert((conn, tab.clone()));
                 Ok(json!({"tab": tab, "cols": 80, "rows": 24, "seq": seq}))
@@ -210,9 +242,15 @@ impl Link for FakeLink {
         if lk(&self.host).epoch != self.epoch {
             return Err(LinkError::Down("the link broke".into()));
         }
-        self.host
-            .answer(self.conn, m, &p)
-            .map_err(LinkError::Refused)
+        let answer = self.host.answer(self.conn, m, &p);
+        let mut st = lk(&self.host);
+        if m == Method::RemoteOpen && answer.is_ok() && st.lose_open_answers > 0 {
+            // The host opened the tab; the link broke before its answer came back.
+            st.lose_open_answers -= 1;
+            st.epoch += 1;
+            return Err(LinkError::Down("the link broke under the open".into()));
+        }
+        answer.map_err(LinkError::Refused)
     }
 }
 
@@ -224,7 +262,8 @@ struct FakeConnector {
 impl Connector for FakeConnector {
     fn connect(&self, _machine: &str) -> Result<Box<dyn Link>, LinkError> {
         let (refuse, epoch) = {
-            let st = lk(&self.host);
+            let mut st = lk(&self.host);
+            st.connects += 1;
             (st.refuse, st.epoch)
         };
         if refuse {
@@ -248,6 +287,9 @@ fn fast() -> Timing {
         long_call: Duration::from_secs(5),
         end_call: Duration::from_secs(1),
         status_every: Duration::from_millis(10),
+        attach_retry: Duration::from_millis(5),
+        attach_patience: Duration::from_millis(200),
+        typing_kept: Duration::from_secs(30),
     }
 }
 
@@ -261,13 +303,17 @@ struct Rig {
 }
 
 fn rig_with(host: FakeHost, host_tab: Option<&str>) -> Rig {
+    rig_timed(host, host_tab, fast())
+}
+
+fn rig_timed(host: FakeHost, host_tab: Option<&str>, timing: Timing) -> Rig {
     let live = flare_term::remote_pty::RemoteLive::new(host_tab.map(str::to_string), 0);
     let sp = RemoteSpawner::new(
         Arc::new(FakeConnector {
             host: host.clone(),
             conns: AtomicU64::new(1),
         }),
-        fast(),
+        timing,
     );
     let spec = SpawnSpec {
         exe: String::new(),
@@ -1096,4 +1142,207 @@ fn the_remote_command_table_quotes_each_hosts_shell() {
             "{kind:?} {flare}"
         );
     }
+}
+
+// ---- the link's edge cases (rule 1210) ----
+
+/// Rule 1210: an attach the host answers `unavailable` right after the open (the new tab's shell is still starting) is
+/// tried again on the same link, with no new connect.
+#[test]
+fn an_attach_the_host_cannot_take_yet_is_tried_again_on_the_same_link() {
+    let host = FakeHost::default();
+    lk(&host).attach_not_yet = 3;
+    let r = rig_with(host, None);
+    r.live_on();
+    assert_eq!(r.host.calls("remote.attach"), 4);
+    assert_eq!(lk(&r.host).connects, 1, "no second connect");
+    assert_eq!(r.host.calls("remote.open"), 1);
+    r.host.print("h1", b"ready\r\n");
+    wait_for("the output", || r.text().contains("ready"));
+}
+
+/// Rule 1210: an attach still not taken after the patience drops the link, and the next link attaches.
+#[test]
+fn an_attach_still_unavailable_after_the_patience_drops_the_link_and_the_next_one_attaches() {
+    let host = FakeHost::default();
+    lk(&host).attach_not_yet = u32::MAX;
+    let r = rig_with(host, None);
+    wait_for("a second connect", || lk(&r.host).connects >= 2);
+    lk(&r.host).attach_not_yet = 0;
+    r.live_on();
+    assert_eq!(r.host.calls("remote.open"), 1, "the tab is opened once");
+    assert_eq!(lk(&r.host).tabs.len(), 1);
+}
+
+/// Rule 1210: the link breaks after the host opened the tab and before its answer came back. The open goes again with
+/// the same open id on the next link, and the host answers with the tab it opened: one tab, not two.
+#[test]
+fn an_open_whose_answer_was_lost_opens_no_second_tab() {
+    let host = FakeHost::default();
+    lk(&host).lose_open_answers = 1;
+    let r = rig_with(host, None);
+    r.live_on();
+    assert_eq!(r.live.host_tab().as_deref(), Some("h1"));
+    assert_eq!(
+        r.host.calls("remote.open"),
+        2,
+        "sent again after the lost answer"
+    );
+    assert_eq!(lk(&r.host).tabs.len(), 1, "no second tab on the host");
+    let opens = lk(&r.host).opens.clone();
+    let id = opens[0]["open_id"].as_str().expect("an open id");
+    assert!(flare_ctl::remote::valid_open_id(id), "{id}");
+    assert_eq!(
+        opens[1]["open_id"], opens[0]["open_id"],
+        "the same id again"
+    );
+    // Another tab has an id of its own.
+    let other = rig();
+    other.live_on();
+    assert_ne!(lk(&other.host).opens[0]["open_id"], opens[0]["open_id"]);
+}
+
+/// Rule 1210: an older host refuses `open_id` as an unknown field; the viewer opens again without it, and the tab works.
+#[test]
+fn an_older_host_that_refuses_the_open_id_still_opens_the_tab() {
+    let host = FakeHost::default();
+    lk(&host).no_open_id = true;
+    let r = rig_with(host, None);
+    r.live_on();
+    assert_eq!(r.live.host_tab().as_deref(), Some("h1"));
+    let opens = lk(&r.host).opens.clone();
+    assert_eq!(opens.len(), 2);
+    assert!(opens[0].get("open_id").is_some());
+    assert_eq!(opens[1], json!({"folder": "/Users/max/proj"}));
+    assert_eq!(lk(&r.host).tabs.len(), 1);
+}
+
+/// Rule 1210: what is typed while the link is down is kept and reaches the host in order after the next attach, before
+/// what is typed once the link is back.
+#[test]
+fn typing_while_the_link_is_down_is_sent_in_order_after_the_next_attach() {
+    let mut r = rig();
+    r.live_on();
+    lk(&r.host).refuse = true;
+    r.host.cut();
+    wait_for("the link down", || r.live.link() == LinkState::Down);
+    r.writer.write_all(b"one ").unwrap();
+    std::thread::sleep(Duration::from_millis(30)); // sync-ok: test code only, never the app
+    r.writer.write_all(b"two").unwrap();
+    std::thread::sleep(Duration::from_millis(30)); // sync-ok: test code only, never the app
+    lk(&r.host).refuse = false;
+    wait_for("the kept typing", || r.host.typed("h1").len() >= 2);
+    r.writer.write_all(b" three").unwrap();
+    wait_for("the live typing", || r.host.typed("h1").len() >= 3);
+    assert_eq!(
+        r.host.typed("h1"),
+        vec![
+            Intent::Text("one ".into()),
+            Intent::Text("two".into()),
+            Intent::Text(" three".into()),
+        ]
+    );
+    assert!(!r.text().contains("not sent"), "{:?}", r.text());
+}
+
+/// Rule 1210: typing older than the kept age when the link comes back is dropped, the rest is sent, and the tab says
+/// in one line that some typing was not sent.
+#[test]
+fn typing_older_than_the_kept_age_is_dropped_and_the_tab_says_so() {
+    let t = Timing {
+        typing_kept: Duration::from_millis(300),
+        ..fast()
+    };
+    let mut r = rig_timed(FakeHost::default(), None, t);
+    r.live_on();
+    lk(&r.host).refuse = true;
+    r.host.cut();
+    wait_for("the link down", || r.live.link() == LinkState::Down);
+    r.writer.write_all(b"stale").unwrap();
+    std::thread::sleep(Duration::from_millis(600)); // sync-ok: test code only, never the app
+    r.writer.write_all(b"fresh").unwrap();
+    lk(&r.host).refuse = false;
+    wait_for("the fresh typing", || !r.host.typed("h1").is_empty());
+    wait_for("the note", || r.text().contains("was not sent"));
+    assert_eq!(r.host.typed("h1"), vec![Intent::Text("fresh".into())]);
+    assert_eq!(r.text().matches("was not sent").count(), 1);
+}
+
+/// Rule 1210: typing over the cap while the link is down is dropped, with everything typed after it, and the tab says
+/// so; nothing of it reaches the host.
+#[test]
+fn typing_over_the_cap_while_the_link_is_down_is_dropped_and_the_tab_says_so() {
+    let mut r = rig();
+    r.live_on();
+    lk(&r.host).refuse = true;
+    r.host.cut();
+    wait_for("the link down", || r.live.link() == LinkState::Down);
+    r.writer.write_all(b"kept").unwrap();
+    std::thread::sleep(Duration::from_millis(30)); // sync-ok: test code only, never the app
+    r.writer
+        .write_all("x".repeat(KEPT_TYPING_MAX).as_bytes())
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(30)); // sync-ok: test code only, never the app
+    r.writer.write_all(b"after").unwrap();
+    std::thread::sleep(Duration::from_millis(30)); // sync-ok: test code only, never the app
+    lk(&r.host).refuse = false;
+    wait_for("the note", || r.text().contains("was not sent"));
+    wait_for("the kept typing", || !r.host.typed("h1").is_empty());
+    assert_eq!(r.host.typed("h1"), vec![Intent::Text("kept".into())]);
+}
+
+/// Rule 1210: the host tab is gone when the link comes back: the tab ends, and what was typed meanwhile is typed
+/// nowhere.
+#[test]
+fn typing_kept_for_a_host_tab_that_is_gone_is_typed_nowhere() {
+    let mut r = rig();
+    r.live_on();
+    lk(&r.host).refuse = true;
+    r.host.cut();
+    wait_for("the link down", || r.live.link() == LinkState::Down);
+    r.writer.write_all(b"rm -rf build").unwrap();
+    std::thread::sleep(Duration::from_millis(30)); // sync-ok: test code only, never the app
+    {
+        let mut st = lk(&r.host);
+        st.tabs.remove("h1");
+        st.refuse = false;
+    }
+    wait_for("the end", || r.live.link() == LinkState::Ended);
+    assert_eq!(r.host.calls("remote.input"), 0);
+    assert_eq!(r.host.calls("remote.open"), 1, "no new tab to type into");
+}
+
+/// Rule 1210, the keep itself: order, the age dropping the oldest, the cap dropping the rest of the outage, one note.
+#[test]
+fn the_kept_typing_keeps_order_and_drops_old_and_over_the_cap_with_no_hole() {
+    let t0 = Instant::now();
+    let age = Duration::from_secs(30);
+    let text = |s: &str| RemoteIntent::Text(s.into());
+    let mut k = KeptTyping::default();
+    k.keep(vec![text("a"), text("b")], &[t0, t0], t0, age);
+    k.keep(vec![text("c")], &[], t0, age);
+    assert_eq!(
+        k.take(t0, age),
+        (vec![text("a"), text("b"), text("c")], false)
+    );
+    assert_eq!(k.take(t0, age), (vec![], false), "taken once");
+
+    let later = t0 + Duration::from_secs(20);
+    k.keep(vec![text("old")], &[t0], t0, age);
+    k.keep(vec![text("new")], &[later], later, age);
+    assert_eq!(
+        k.take(t0 + Duration::from_secs(40), age),
+        (vec![text("new")], true)
+    );
+
+    k.keep(vec![text("first")], &[t0], t0, age);
+    k.keep(vec![text(&"x".repeat(KEPT_TYPING_MAX))], &[t0], t0, age);
+    k.keep(vec![text("then")], &[t0], t0, age);
+    assert_eq!(k.take(t0, age), (vec![text("first")], true));
+    k.keep(vec![text("next outage")], &[t0], t0, age);
+    assert_eq!(k.take(t0, age), (vec![text("next outage")], false));
+
+    k.keep(vec![text("gone")], &[t0], t0, age);
+    k.clear();
+    assert_eq!(k.take(t0, age), (vec![], false));
 }

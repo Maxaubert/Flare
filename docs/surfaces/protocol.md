@@ -161,8 +161,16 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     so the PC form goes through `cmd /c`, which both shells run and which waits (rule 1207). A PC path with one of
     `& < > ( ) @ ^ |` (cmd would strip its quotes), `" % ! $`, a backquote or a quote mark from U+2018 to U+201F is
     refused, except a leading `%LOCALAPPDATA%` or `$env:LOCALAPPDATA`, which the host's shell expands (rule 1208). The worker says `remote.hello` (90 s, PR 5), then `remote.open
-    {folder, resume?}` for a new tab (`resume` only when the tab was opened with one, PR 5) (its answer `tab` is kept as the tab's `host_tab`) or straight to `remote.attach {tab}` for a
-    restored one, then `remote.resize` with the tab's size. A tab that has shown nothing yet starts from `remote.snapshot`;
+    {folder, resume?, open_id}` for a new tab (`resume` only when the tab was opened with one, PR 5) (its answer `tab` is kept as the tab's `host_tab`) or straight to `remote.attach {tab}` for a
+    restored one, then `remote.resize` with the tab's size. Rule 1210: `open_id` is a random id the worker makes once
+    per tab and sends with every open of it, so an open whose answer a broken link lost, sent again on the next link,
+    is answered with the tab the first one opened; an older host refuses the unknown param (`bad_params` naming
+    `open_id`) and the worker opens again without it on the same link. A `remote.attach` answered `unavailable` (a tab
+    opened a moment ago whose shell is not running yet) is sent again on the same link every 250 ms for up to 10 s
+    before the link is dropped. What the tab types while the link is down (keys, text and pastes) is kept, at most 30 s
+    old and 64 KB in all, and sent as `remote.input` calls in the order typed right after the next attach and its
+    catch-up; what is older or over the cap (and, once over it, the rest of that outage's typing) is dropped, and the
+    tab shows one line saying so. A `no_tab` end drops the kept typing: it is never typed into another host tab. A tab that has shown nothing yet starts from `remote.snapshot`;
     after a reconnect it calls `remote.output {since: <the number read>, max: 1048576}` until caught up (`gap: true`: a
     snapshot instead), with the agent's signals taken out of what it catches up on (rule 289). Then, one call at a time:
     the typing as `remote.input` calls (each within 1024 intents and 64 KB, a long paste cut on character boundaries),
@@ -943,7 +951,10 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   asked of the disk on the worker (`bad_params`, `not_found`), or `~` alone: the host's home folder (remote sessions
   PR 7, the + menu's shell on a machine, whose home the viewer does not know; `~/x` is still `bad_params`); `resume`
   must pass `valid_resume` (`bad_params`). The window opens a tab there the way a new tab opens, resuming that
-  session. 60 s.
+  session. 60 s. `open_id` (optional, 2026-11-13, rule 1210): 1 to 64 ASCII letters, digits, `-` or `_`
+  (`bad_params`), the viewer's id for this tab's open. The host remembers the last 64 ids for 10 minutes each; an
+  `open_id` it remembers, whose tab is still open, is answered with that tab and its `session`, and no second tab
+  opens. A host older than this refuses the param as unknown (`bad_params`), and the viewer opens without it.
 - `remote.ls {path?}` -> `{path, entries: [{name, dir}], truncated}`. One host folder (default: the host's home),
   read on the worker: folders first, then by name, at most 500 entries, names with a control character left out.
   Host paths only. `not_found` when it cannot be read. 60 s.
@@ -952,7 +963,8 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
 - `remote.attach {tab}` -> `{tab, cols, rows, seq}`. The connection follows the tab: from now every byte the tab's
   shell prints is numbered and kept in a 4 MiB ring (made at the first attach, kept for the session's life, fed after the
   tab's own sink so it never blocks it, rule 281). `seq` is the number the next byte gets. `no_tab` (closed),
-  `unavailable` (its shell is not running).
+  `unavailable` (its shell is not running; right after `remote.open` this lasts a moment while the new shell starts,
+  and the viewer asks again on the same link, rule 1210).
 - `remote.detach {tab}` -> `{tab, detached: true}`. Stops following; never ends the session (rule 280). When the
   last follower of a tab detaches, or its link drops (the connection closes), the tab's size goes back to the window.
 - `remote.input {tab, intents}` -> `{tab, typed}`. Typing as typed intents, never bytes (rule 279): a list of 1 to 1024

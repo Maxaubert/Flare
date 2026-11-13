@@ -46,6 +46,19 @@ pub const FILE_CHUNKS_MAX: u32 = (FILE_MAX / FILE_CHUNK as u64) as u32;
 /// The longest file name `remote.put` keeps, in bytes.
 pub const PUT_NAME_MAX: usize = 100;
 
+/// The longest `remote.open` id (rule 1210), in bytes.
+pub const OPEN_ID_MAX: usize = 64;
+
+/// Pure: whether `id` is a `remote.open` id a host takes (rule 1210): 1 to [`OPEN_ID_MAX`] ASCII letters, digits, `-`
+/// or `_`.
+pub fn valid_open_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= OPEN_ID_MAX
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 /// Pure: the number of chunks a file of `size` bytes is sent in (an empty file is one empty chunk).
 pub fn chunks_of(size: u64) -> u32 {
     (size.div_ceil(FILE_CHUNK as u64)).max(1) as u32

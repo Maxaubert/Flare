@@ -3508,6 +3508,28 @@ dropped), at most `REFUSED_HOLD` (5 s) and `REFUSED_MAX` (32) sockets at once; p
 as before. Native: `crates/flare-ctl/src/uds.rs` (`admit`, `hold_refused`, `release_refused`, `accept_loop`). Held
 by `macos::a_refused_client_can_still_tell_who_serves_the_socket` (reads the refusal to end of file, then the pid
 must still read) and `the_65th_client_is_refused_and_the_first_64_keep_working`. Source: Mac CI on main, 2026-11-13.
+1210. **A remote link rides out a slow attach, a lost open and an outage without losing typing or doubling a tab.**
+(1) An attach the host answers `unavailable` (a tab opened a moment ago whose shell is not running yet, measured over
+real ssh) is tried again on the same link every 250 ms for up to 10 s before the link is dropped; it used to cost a
+whole new ssh after 1 s. (2) `remote.open` carries `open_id`, a random id the viewer makes once per tab and keeps
+across its reconnects; the host remembers the last 64 ids for 10 minutes and answers a remembered one whose tab is
+still open with that tab, so an open whose answer a broken link lost, sent again, never leaves a second tab. The param
+is additive: an older host refuses it as unknown (`bad_params` naming `open_id`) and the viewer opens again without it
+on the same link. (3) Typing while the link is down (keys, text, pastes) is kept with the time it was typed and sent in
+order right after the next attach and catch-up, before new typing; typing older than 30 s or past 64 KB in all is
+dropped (once over the cap, the rest of that outage too, so what is sent has no hole), and the tab shows one red line
+that it was not sent. A `no_tab` end drops the kept typing: it is never typed into another host tab. Native:
+`remote_link.rs` (`Worker::open`, `attach`, `hold`, `send_kept`, `KeptTyping`, `Timing::attach_retry`,
+`attach_patience`, `typing_kept`), `remote_pty.rs` (`Outgoing::typed_at`), `remote_host.rs` (`OpenIds`),
+`ctl_app.rs` (`remote.open`'s `open_id` check), `appctl/remote_glue.rs` (`CtlOp::RemoteOpen`), `flare-ctl`
+`remote::valid_open_id`. Held by `remote_link::tests` (`an_attach_the_host_cannot_take_yet_is_tried_again_on_the_same_link`,
+`an_attach_still_unavailable_after_the_patience_drops_the_link_and_the_next_one_attaches`,
+`an_open_whose_answer_was_lost_opens_no_second_tab` with a fake link that breaks between the open and its answer,
+`an_older_host_that_refuses_the_open_id_still_opens_the_tab`, the four typing tests and
+`the_kept_typing_keeps_order_and_drops_old_and_over_the_cap_with_no_hole`),
+`remote_host::tests::an_open_id_is_remembered_ten_minutes_and_at_most_64_of_them`,
+`ctl_app::tests::remote_open_checks_the_host_folder_and_the_resume_id_first` and
+`remote_flows::a_remote_open_sent_again_with_its_open_id_opens_no_second_tab`. Source: Max, 2026-11-13.
 
 1207. **A PC host runs the serve command through `cmd /c`, Settings > Machines finds a PC's own installs, and a
 renamed copy serves its own profile.** Found 2026-11-13 over real ssh from the Mac to the PC: the PC's sshd
