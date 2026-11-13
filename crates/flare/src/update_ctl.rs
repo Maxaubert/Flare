@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use flare_update::copy::{
-    can_abort, cancel_enabled, cancel_label, cancel_tip, chip_aria, chip_label, chip_tip, pct_text,
+    can_abort, cancel_enabled, cancel_label, cancel_tip, chip_aria, chip_label, pct_text,
     status_line, window_sub, window_title,
 };
 use flare_update::engine::{Engine, Events, Fld};
@@ -47,7 +47,6 @@ pub struct UpdateView {
     pub chip_shown: bool,
     pub chip_label: String,
     pub chip_aria: String,
-    pub chip_tip: String,
     pub chip_busy: bool,
     /// The flow's notice, ONLY while the window is not up (else empty).
     pub notice: String,
@@ -85,7 +84,6 @@ pub fn view_of(flow: &Flow, current: &str) -> UpdateView {
         chip_shown: true,
         chip_label: chip_label(v),
         chip_aria: chip_aria(v),
-        chip_tip: chip_tip(v, info.mock, flow.phase),
         chip_busy: running,
         notice: if flow.open {
             String::new()
@@ -420,7 +418,6 @@ impl UpdateCtl {
             app.set_update_chip_shown(v.chip_shown);
             app.set_update_chip_label((&v.chip_label).into());
             app.set_update_chip_aria((&v.chip_aria).into());
-            app.set_update_chip_tip((&v.chip_tip).into());
             app.set_update_chip_busy(v.chip_busy);
             app.set_update_notice((&v.notice).into());
             app.set_update_open(v.open);
@@ -739,7 +736,6 @@ mod tests {
         assert!(f.app().get_update_chip_shown());
         assert_eq!(f.app().get_update_chip_label(), "Update 99.0.0");
         assert_eq!(f.app().get_update_chip_aria(), "Update to 99.0.0");
-        assert_eq!(f.app().get_update_chip_tip(), "See what is new in 99.0.0");
         assert!(!f.app().get_update_open());
     }
 
@@ -930,11 +926,6 @@ mod tests {
         f.engine.start();
         f.pump();
         assert!(f.view().chip_shown);
-        assert!(
-            f.app()
-                .get_update_chip_tip()
-                .starts_with("Preview: see what")
-        );
         f.click_chip();
         f.install();
         f.run_jobs();

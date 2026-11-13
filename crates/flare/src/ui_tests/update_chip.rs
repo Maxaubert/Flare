@@ -15,7 +15,6 @@ const TEXT_SOFT: [u8; 4] = [0xc2, 0xbf, 0xb5, 255];
 const TABS: [u8; 4] = [0x17, 0x17, 0x17, 255];
 
 const LABEL: &str = "Update 0.56.0";
-const TIP: &str = "See what is new in 0.56.0";
 
 fn harness(scale: f32) -> Harness<UpdateChipPreview> {
     let h = Harness::new(scale, 1000, 120, || {
@@ -24,7 +23,6 @@ fn harness(scale: f32) -> Harness<UpdateChipPreview> {
     h.comp.set_shown(true);
     h.comp.set_label(LABEL.into());
     h.comp.set_aria("Update to 0.56.0".into());
-    h.comp.set_tip(TIP.into());
     h.advance(0);
     h
 }
@@ -176,20 +174,14 @@ fn hover_brightens_the_fill_by_ten_percent() {
 }
 
 #[test]
-fn a_click_emits_clicked_once_and_no_tip() {
+fn a_click_emits_clicked_once() {
     let h = harness(1.0);
     let (x, y) = chip_centre_css(&h);
     h.move_to(x, y);
     h.advance(0);
-    let tips = h.comp.get_tip_requests();
     h.click(x, y);
     h.advance(0);
     assert_eq!(h.comp.get_clicks(), 1);
-    assert_eq!(
-        h.comp.get_tip_requests(),
-        tips,
-        "the click asked for no tip"
-    );
     assert_eq!(h.comp.get_dismissals(), 0);
 }
 
@@ -201,16 +193,6 @@ fn the_width_is_the_same_in_every_phase() {
     h.advance(0);
     assert_eq!(h.comp.get_chip_w(), idle);
     h.comp.set_busy(false);
-}
-
-#[test]
-fn a_tip_is_requested_once_on_hover() {
-    let h = harness(1.0);
-    let (x, y) = chip_centre_css(&h);
-    h.move_to(x, y);
-    h.move_to(x + 1.0, y);
-    assert_eq!(h.comp.get_tip_requests(), 1);
-    assert_eq!(h.comp.get_last_tip().as_str(), TIP);
 }
 
 #[test]
