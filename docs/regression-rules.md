@@ -3441,3 +3441,14 @@ and sets the owner's three motions from its background page. Picks saved by 0.1 
 Native: `sample-plugins/agent-moves/`. Held by `the_sample_plugins_are_valid`
 (`flare-mods/src/discover.rs`: no actions, no panel, no `panel.open`) and the sample round trip
 `every_sample_plugin_loads_turns_on_and_answers_one_round_trip_of_its_protocol`. Source: Max, 2026-11-13.
+1201. **A control with a text label gets no tooltip; an icon-only control does.** Max, 2026-11-13, on the "Build ready"
+chip's tooltip ("Build f6bea11: click to install and restart"), which showed far below and to the left of the chip:
+"if something has a label, you dont need a tooltip generally, if its an icon like the settings icon we use a tooltip".
+The two labelled title-bar chips, "Build ready" and "Update <version>" (`UpdateChip` in `ui/update.slint`, four uses in
+`app.slint`), ask for no tooltip: the chip has no `tip` property and no `tip-request` callback, and the app's
+`staged-chip-tip` and `update-chip-tip`, `copy::chip_tip`, `copy::staged_chip_tip` and the views' `chip_tip` are gone.
+Their accessible names stay. Icon-only controls (the settings cog, help, the window buttons, plugin icons) keep their
+tooltips, and so does the Preview chip, whose tooltip shows the server's origin that its label leaves out. Native:
+`crates/flare/ui/update.slint`. Held by `ui_tests::staged_flows::hovering_the_build_ready_chip_shows_no_tooltip` and
+`ui_tests::update_flows::hovering_the_update_chip_shows_no_tooltip` (each also checks that the cog still shows its tip
+and that the hovered point is on the chip). Source: Max, 2026-11-13.

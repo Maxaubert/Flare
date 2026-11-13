@@ -244,7 +244,6 @@ fn draw_chip_arrow(s: f32) -> Drawn {
     h.comp.set_shown(true);
     h.comp.set_label("Update 0.56.0".into());
     h.comp.set_aria("Update to 0.56.0".into());
-    h.comp.set_tip("See what is new in 0.56.0".into());
     h.advance(0);
     let f = h.render();
     // The icon's box is 11 px at css (chip x + 10, chip centre): its centre is 5.5 px in from both.

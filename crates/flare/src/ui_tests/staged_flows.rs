@@ -235,6 +235,14 @@ impl Fx {
         self.settle();
     }
 
+    /// The commit of the build the chip offers.
+    fn commit(&self) -> Option<String> {
+        self.ctl
+            .borrow()
+            .staged_flow()
+            .and_then(|s| s.ready().map(|r| r.commit.clone()))
+    }
+
     fn phase(&self) -> Phase {
         self.ctl.borrow().staged_flow().unwrap().phase()
     }
@@ -285,8 +293,39 @@ fn no_stage_no_chip_and_a_ready_stage_shows_build_ready() {
         "Build ready, click to install and restart"
     );
     assert_eq!(
-        app.get_staged_chip_tip(),
-        "Build abc1234: click to install and restart"
+        f.commit().as_deref(),
+        Some("abc1234"),
+        "the chip offers that build"
+    );
+}
+/// Max, 2026-11-13: a control with a text label gets no tooltip. Hovering "Build ready" past the tooltip delay shows
+/// none, while the settings cog (an icon) still shows its own; a click at the same point installs, so it hit the chip.
+#[test]
+fn hovering_the_build_ready_chip_shows_no_tooltip() {
+    let f = make(Start::Plain, true);
+    assert!(f.app().get_staged_chip_shown());
+    let x = f.app().get_staged_chip_x() + f.app().get_staged_chip_w() / 2.0;
+    let y = f.app().get_staged_chip_y() + f.app().get_staged_chip_h() / 2.0;
+    f.h.move_to(x, y);
+    f.h.move_to(x + 1.0, y);
+    f.h.advance(0);
+    f.clock.set(f.clock.get() + 1_001);
+    f.ctl.borrow_mut().tick();
+    assert!(
+        !f.app().get_tip_visible(),
+        "the labelled chip has no tooltip"
+    );
+    f.h.move_to(1000.0 - 22.0 - 36.0 * 3.0, 18.0);
+    f.h.advance(0);
+    f.clock.set(f.clock.get() + 1_001);
+    f.ctl.borrow_mut().tick();
+    assert!(f.app().get_tip_visible(), "the cog still has its tooltip");
+    assert_eq!(f.app().get_tip_text().as_str(), "Settings (Ctrl+,)");
+    f.h.click(x, y);
+    f.pump();
+    assert!(
+        matches!(f.phase(), Phase::Countdown { .. }),
+        "the hover point is on the chip"
     );
 }
 #[test]
@@ -650,10 +689,7 @@ fn a_mac_bundle_shows_build_ready_and_a_click_swaps_the_whole_bundle_and_restart
     f.changed();
     assert!(f.app().get_staged_chip_shown());
     assert_eq!(f.app().get_staged_chip_label(), "Build ready");
-    assert_eq!(
-        f.app().get_staged_chip_tip(),
-        "Build abc1234: click to install and restart"
-    );
+    assert_eq!(f.commit().as_deref(), Some("abc1234"));
     f.clock.set(1_000);
     f.click_chip();
     assert_eq!(f.phase(), Phase::Countdown { ends: 11_000 });

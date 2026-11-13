@@ -104,7 +104,6 @@ pub fn window_json(a: &AppWindow) -> Value {
             "shown": a.get_update_chip_shown(),
             "label": a.get_update_chip_label().to_string(),
             "aria": a.get_update_chip_aria().to_string(),
-            "tip": a.get_update_chip_tip().to_string(),
             "busy": a.get_update_chip_busy(),
             "rect": rect(a.get_update_chip_x(), a.get_update_chip_y(), a.get_update_chip_w(), a.get_update_chip_h(), k),
             "icon_h": a.get_update_chip_icon_h(),
