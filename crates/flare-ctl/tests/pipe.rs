@@ -736,6 +736,36 @@ mod macos {
         }
     }
 
+    /// Rule 1209: a client the full server refuses can still check who serves the socket. macOS answers
+    /// `LOCAL_PEERPID` only while the server's end is open; the server used to close a refusal at once,
+    /// and a client that asked after that saw "could not tell who serves the pipe" instead of the
+    /// refusal (CI run 43409645011). Reading to end of file proves the server is done with the client,
+    /// so the check below is the latest a client could make it.
+    #[test]
+    fn a_refused_client_can_still_tell_who_serves_the_socket() {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::net::UnixStream;
+
+        let (server, name) = start(ServerConfig {
+            max_clients: 1,
+            ..ServerConfig::default()
+        });
+        let _first = hello(&name, None, None);
+        assert!(wait_for(|| server.client_count() == 1));
+        let mut extra = UnixStream::connect(&name).unwrap();
+        extra.set_read_timeout(Some(WAIT)).unwrap();
+        let mut got = String::new();
+        extra.read_to_string(&mut got).unwrap();
+        assert!(got.contains(&code::TOO_MANY_CLIENTS.to_string()), "{got}");
+        assert_eq!(
+            flare_ctl::pipe::peer_pid(extra.as_raw_fd()),
+            Some(std::process::id())
+        );
+        drop(extra);
+        server.stop();
+    }
+
     /// A server that believes it is another user meets this process as a stranger: the connection is
     /// dropped before a byte is read, and the dispatcher never hears of it.
     #[test]

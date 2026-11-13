@@ -3496,6 +3496,17 @@ words in `badge`, the reason in `sub`), `SetMachineRow` (`ui/settings/machines.s
 `a_failed_machine_carries_its_reason_as_its_sub_line_and_the_others_have_none`,
 `a_not_linked_machine_shows_its_reason_under_the_row_and_hovering_its_status_shows_no_tooltip` and
 `a_machine_row_draws_its_reason_as_one_grey_line_under_it`, at 100 and 225 percent. Source: Max, 2026-11-13.
+1209. **A client the full control server refuses is told so, on macOS too.** A client checks who serves the control
+socket right after it connects (`verify_server`: the uid from `getpeereid`, the pid from `LOCAL_PEERPID`). macOS
+answers `LOCAL_PEERPID` only while the server's end is still connected (ENOTCONN after it closes; the uid is cached
+and still reads). The server wrote a 65th client its TOO_MANY_CLIENTS refusal and closed the socket at once, so a
+client that asked a moment later failed with "could not tell who serves the pipe" instead of the refusal (CI run
+43409645011, `the_65th_client_is_refused_and_the_first_64_keep_working`). The server now writes the refusal, shuts
+its sending side and holds the socket in the accept loop until the client hangs up (anything it sends is read and
+dropped), at most `REFUSED_HOLD` (5 s) and `REFUSED_MAX` (32) sockets at once; past those a refusal closes at once
+as before. Native: `crates/flare-ctl/src/uds.rs` (`admit`, `hold_refused`, `release_refused`, `accept_loop`). Held
+by `macos::a_refused_client_can_still_tell_who_serves_the_socket` (reads the refusal to end of file, then the pid
+must still read) and `the_65th_client_is_refused_and_the_first_64_keep_working`. Source: Mac CI on main, 2026-11-13.
 
 1207. **A PC host runs the serve command through `cmd /c`, Settings > Machines finds a PC's own installs, and a
 renamed copy serves its own profile.** Found 2026-11-13 over real ssh from the Mac to the PC: the PC's sshd
