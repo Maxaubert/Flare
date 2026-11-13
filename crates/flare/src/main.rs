@@ -3,6 +3,7 @@
 mod agent_hub;
 mod app_ask;
 mod app_facts;
+mod app_icon;
 mod appctl;
 mod ask_agent;
 mod backend;

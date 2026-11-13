@@ -1,0 +1,140 @@
+// The app icon picker (rule 1230, 2026-11-13): one line of icon tiles under the App icon row's words, the original
+// first. Rust owns the choices, their order and the pick; this file draws them and reports a pick back.
+// A tile carries no words, so its name is its tooltip and its accessible label; the chosen tile wears the accent
+// ring the theme wall's chosen card wears, with a gap between the ring and the icon.
+import { Theme, Px, SettingsInk, Motion } from "../theme.slint";
+import { SetOption } from "types.slint";
+
+export component AppIconTile inherits Rectangle {
+    in property <SetOption> option;
+    in property <image> art;
+    in property <bool> chosen;
+    in property <length> size: 40px;
+    callback picked(string);
+    callback tip(string, length, length, length, length);
+
+    property <bool> by-key;
+    out property <bool> key-focus: fs.has-focus && root.by-key;
+
+    width: root.size;
+    height: root.size;
+
+    accessible-role: button;
+    accessible-label: root.option.name;
+    accessible-checkable: true;
+    accessible-checked: root.chosen;
+    accessible-action-default => {
+        root.picked(root.option.id);
+    }
+
+    // The hover and focus fill behind the icon (the icon's own corners are clear).
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: root.size * 0.28;
+        background: ta.has-hover && !root.chosen ? Theme.hover : transparent;
+        animate background { duration: Motion.d(120ms); }
+    }
+    Image {
+        x: Px.snap(root.size * 0.05);
+        y: Px.snap(root.size * 0.05);
+        width: root.size - 2 * Px.snap(root.size * 0.05);
+        height: root.size - 2 * Px.snap(root.size * 0.05);
+        source: root.art;
+        image-fit: contain;
+        accessible-role: none;
+    }
+    // The ring: the accent round the chosen icon, the focus edge round a tile reached by the keys.
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: root.size * 0.28;
+        border-width: root.chosen ? 2 * Px.hair() : (root.key-focus ? Px.hair() * 2 : 0px);
+        border-color: root.chosen ? Theme.accent-solid : SettingsInk.focus-edge;
+        animate border-color { duration: Motion.d(120ms); }
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Space || e.text == Key.Return {
+                root.by-key = true;
+                root.picked(root.option.id);
+                return accept;
+            }
+            return reject;
+        }
+    }
+    ta := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        mouse-cursor: pointer;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                root.by-key = false;
+                fs.focus();
+            }
+        }
+        clicked => {
+            root.picked(root.option.id);
+        }
+        changed has-hover => {
+            if self.has-hover {
+                root.tip(root.option.name, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+            }
+        }
+    }
+}
+
+// The line of tiles. `width` is the room the row leaves (from its label column to 16 px short of its right edge):
+// the tiles are 40 px with 8 px between them, and shrink together when the room is less.
+export component AppIconStrip inherits Rectangle {
+    in property <[SetOption]> options;
+    in property <[image]> art;
+    in property <string> value;
+    in property <string> label;
+    callback picked(string);
+    callback tip(string, length, length, length, length);
+
+    property <length> gap: 8px;
+    property <length> tile: Px.snap(min(40px, (root.width - (root.options.length - 1) * root.gap) / max(1, root.options.length)));
+
+    accessible-role: list;
+    accessible-label: root.label;
+
+    for o[i] in root.options: AppIconTile {
+        x: i * (root.tile + root.gap);
+        y: 0px;
+        size: root.tile;
+        option: o;
+        art: root.art[i];
+        chosen: o.id == root.value;
+        picked(id) => { root.picked(id); }
+        tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
+    }
+}
+
+// A stand-alone strip for the component's own checks: three tiles, the first picked.
+export component AppIconsPreview inherits Window {
+    in-out property <string> value: "original";
+    in-out property <[image]> art;
+    width: 300px;
+    height: 80px;
+    background: Theme.ground;
+    AppIconStrip {
+        x: 20px;
+        y: 20px;
+        width: 260px;
+        height: 40px;
+        label: "App icon";
+        options: [
+            { id: "original", name: "Original, the default", face: "" },
+            { id: "daybreak", name: "Daybreak", face: "" },
+            { id: "jade-glass", name: "Jade Glass", face: "" }
+        ];
+        art: root.art;
+        value: root.value;
+        picked(id) => { root.value = id; }
+    }
+}

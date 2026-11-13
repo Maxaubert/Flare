@@ -1033,6 +1033,8 @@ pub fn run_window(
         Option<flare_update::types::Offer>,
     )> = None;
     let mut stores: Option<Stores> = None;
+    // The app icon picker's listener (rule 1230), kept as long as the window.
+    let mut _app_icon_sub: Option<flare_settings::kv::Subscription> = None;
     if let (false, Some(inst)) = (sample, instance.as_ref()) {
         let post = make_post();
         let prefs = PrefStore::new(Arc::new(FileBackend::open(
@@ -1621,6 +1623,8 @@ pub fn run_window(
         );
         // A font setting changed: the controller's own look listener (`LookChanged`) has the grid
         // wear the new face and size, Settings open or not.
+        // The app icon picker's choice (rule 1230): the Dock or the window wears it now and after every pick.
+        _app_icon_sub = Some(crate::app_icon::start(&prefs));
         stores = Some((tabs_store, window_store, prefs, panels_store));
         crate::startup_trace::mark(crate::startup_trace::Phase::Profile);
         // The memory breakdown (F12 overlay, probe `memory.breakdown`) reads the grid host and each

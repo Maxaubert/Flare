@@ -3262,7 +3262,8 @@ SVG reader draws the gradient fills as nothing). The Mac's is the owner's Icon C
 feeds neither. Held by `each_platform_app_icon_has_its_own_source_and_the_in_app_mark_stays`
 (`crates/flare/tests/ship_text.rs`), `the_mac_app_icon_is_the_icon_composer_icon_compiled_by_actool` and
 `actool_compiles_the_app_icon_into_a_catalog_and_an_icns` (`crates/flare-cef/src/macos/release.rs`) and
-`tools/test_make_icon.py`. Source: the owner's new app icons, 2026-11-12.
+`tools/test_make_icon.py`. Source: the owner's new app icons, 2026-11-12. Replaced by 1230 (2026-11-13): the original
+is the shipped icon again and #199's designs are choices of the app icon picker.
 1181. **Slint's GPU renderer keeps its GPU pipelines from one frame to the next; a frame never compiles them again.**
 Max on his Mac: the UI, the caret in Claude Code and the tab icons "flicker very quickly, consistently". Sampled in his
 running Flare (2026-11-12, `sample`, read only): about 80 % of the main thread was drawing (Slint's `CADisplayLink`
@@ -3554,3 +3555,33 @@ and `saved_kind`, `MachinesPage::add_on_worker`. Held by `the_remote_command_tab
 `a_pc_whose_profile_folder_has_a_space_is_found_through_powershells_variable`,
 `a_pc_that_answered_in_sh_quoting_keeps_that_quoting`, `the_saved_kind_keeps_the_quoting_that_answered` and
 `each_candidate_is_probed_with_the_quoting_its_path_implies`. Source: the review of PR fix/remote-pc-host, 2026-11-13.
+1230. **The original Flare icon is the shipped app icon; the other designs are a picker, never a new default.** Both
+systems ship `assets/icon/flare-color.svg`: Windows' `build/icon.ico` (exe resource 1, the installer, the taskbar) and
+the Mac's `Flare.icns`, which `flare-cef`'s `macos::release` makes with `sips` and `iconutil` from
+`build/icon-source.png` (`APP_ICON_SOURCE`; no `Assets.car`, no `CFBundleIconName`). The owner's other designs
+(`assets/icon/app-icons/*.svg`, and Liquid Glass as the static vector of `assets/icon/app-macos.icon` on the Mac and
+#199's Windows SVG on Windows) are choices of **Settings > Appearance > App icon**: one line of twelve tiles under the
+row's words, Original first; the tiles carry no words, so each has its name as tooltip and accessible label, the
+first saying "Original, the default". The pick is `flare.window.appIcon` in `settings.json` (`flare_settings::app_icon`):
+`original` until another is picked, and for any stored word that is not a choice. Held by
+`the_original_icon_is_the_shipped_app_icon_and_the_others_are_choices` (`crates/flare/tests/ship_text.rs`),
+`the_mac_app_icon_is_the_original_flare_icon` (`crates/flare-cef/src/macos/release.rs`), `tools/test_make_icon.py`,
+`flare_settings::app_icon`'s tests (`the_pick_round_trips_through_settings_json`,
+`an_unknown_stored_word_reads_as_the_original_and_is_never_stored`),
+`the_app_icon_row_picks_the_original_until_another_is_chosen` (`page/appearance.rs`),
+`the_app_icon_row_is_its_words_over_a_line_of_tiles` (`layout.rs`) and the rendered picker in
+`crates/flare/src/ui_tests/settings_app_icon.rs` (`the_picker_shows_every_icon_with_the_original_picked_and_named_the_default`,
+`a_press_on_a_tile_stores_it_and_the_row_follows`, `a_stored_pick_is_shown_and_an_unknown_one_shows_the_original`).
+Source: the owner, 2026-11-13 ("the app icon should stay the same as default, no new default, just a picker so the
+user can change their look").
+1231. **A picked app icon changes only the running app; the signed bundle and the exe are never written to.** macOS:
+`NSApplication.applicationIconImage` (the Dock and the app switcher), the pick drawn at 512 px from its SVG with
+resvg, set at start and on every pick, and cleared for the original so the bundle's icon shows again; never
+`NSWorkspace setIcon` on `Flare.app`, which would break its code signature, so Finder keeps the original (the row
+says so). Windows: the main window's big and small icons (`WM_SETICON`, which the taskbar button shows), drawn at the
+monitor's icon sizes, at start, on every DPI change and on every pick; the exe's resource for the original. Shortcuts,
+the exe and the installer keep the original. The dictation widget is a tool window with no icon and Settings is a tab,
+so the main window is the only one. Nothing is set at start while the original is picked. Code: `crates/flare/src/app_icon.rs`
+(`IconCtl`, `start`), `ship_ctl::set_window_icon` and `set_worn_icon`. Held by `the_default_is_the_original_and_needs_nothing_at_start`,
+`a_pick_is_worn_once_and_the_original_brings_the_shipped_icon_back`, `an_unknown_stored_icon_falls_back_to_the_original`
+and `every_icon_draws_at_the_system_sizes` (`app_icon.rs`, a recording icon port). Source: the owner, 2026-11-13.

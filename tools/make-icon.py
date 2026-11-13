@@ -1,9 +1,9 @@
-"""Build Flare's Windows app icon files from the owner's artwork, assets/icon/app-windows.svg.
+"""Build Flare's Windows app icon files from the owner's original artwork, assets/icon/flare-color.svg.
 
-The app icon has its own sources (2026-11-12): app-windows.svg here for Windows, and the Icon Composer
-icon assets/icon/app-macos.icon for the Mac, which flare-mac-app compiles with actool
-(crates/flare-cef/src/macos/release.rs). assets/icon/flare-color.svg stays the in-app mark and is
-not read here.
+The original Flare icon is the shipped app icon on both systems (2026-11-13, rule 1230): Windows' exe
+resource here, and the Mac's Flare.icns, which flare-mac-app makes from build/icon-source.png
+(crates/flare-cef/src/macos/release.rs). The other designs (assets/icon/app-icons/*.svg) are choices in
+Settings > Appearance > App icon, drawn at run time; nothing here reads them.
 
 Writes build/icon-source.png (1024 px), build/icon.ico (19 frames, the sizes Windows asks for
 between 100% and 300% scaling) and docs/assets/flare-icon.png (256 px). The app's exe reads
@@ -28,7 +28,7 @@ from pathlib import Path
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
-SVG = ROOT / 'assets' / 'icon' / 'app-windows.svg'
+SVG = ROOT / 'assets' / 'icon' / 'flare-color.svg'
 SOURCE = ROOT / 'build' / 'icon-source.png'
 OUT = ROOT / 'build' / 'icon.ico'
 README = ROOT / 'docs' / 'assets' / 'flare-icon.png'

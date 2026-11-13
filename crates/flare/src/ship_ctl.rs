@@ -372,25 +372,49 @@ pub fn build_engine(
 static BIG_ICON: AtomicIsize = AtomicIsize::new(0);
 #[cfg(windows)]
 static SMALL_ICON: AtomicIsize = AtomicIsize::new(0);
+/// The window that wears the icon (the main window), so a pick in Settings reaches it.
+#[cfg(windows)]
+static ICON_WINDOW: AtomicIsize = AtomicIsize::new(0);
+/// The app icon picker's choice the window wears (rule 1230): `original` is the exe's own icon.
+#[cfg(windows)]
+static WORN: std::sync::Mutex<&'static str> = std::sync::Mutex::new("original");
 
-/// The window icon comes from the app bundle on macOS (phase 8 of the port plan): nothing to set.
+/// The window icon comes from the app bundle on macOS (phase 8 of the port plan): nothing to set. The app icon
+/// picker's choice is AppKit's application icon there (`app_icon`).
 #[cfg(not(windows))]
 pub fn set_window_icon(_hwnd: isize) {}
 
-/// Puts the exe's own icon (resource 1) on the window at its monitor's DPI. A null handle (a test
-/// binary without the resource) is ignored. The handles are shared system-cached icons, kept for
-/// the process lifetime and never destroyed.
+/// The app icon picker's choice (rule 1230): kept, then put on the window that wears the icon.
+#[cfg(windows)]
+pub fn set_worn_icon(id: &'static str) {
+    *WORN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = id;
+    let hwnd = ICON_WINDOW.load(Ordering::SeqCst);
+    if hwnd != 0 {
+        set_window_icon(hwnd);
+    }
+}
+
+/// Puts the icon on the window at its monitor's DPI: the exe's own icon (resource 1) for the original, else the
+/// picked design drawn at each size (rule 1230). The taskbar button shows the big one. A null handle (a test binary
+/// without the resource) is ignored. The resource's handles are shared system-cached icons, never destroyed; a drawn
+/// icon is destroyed once the next one has replaced it.
 #[cfg(windows)]
 pub fn set_window_icon(hwnd: isize) {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR, LR_SHARED, LoadImageW, SM_CXICON,
-        SM_CXSMICON, SM_CYICON, SM_CYSMICON, SendMessageW, WM_SETICON,
+        DestroyIcon, HICON, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR, LR_SHARED,
+        LoadImageW, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON, SendMessageW, WM_SETICON,
     };
     if hwnd == 0 {
         return;
     }
+    ICON_WINDOW.store(hwnd, Ordering::SeqCst);
+    let worn = *WORN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // SAFETY: plain Win32 calls; `hwnd` is a window of this process, the module handle is this
     // exe's, and the icon id is passed as an integer resource (MAKEINTRESOURCE).
     unsafe {
@@ -399,32 +423,111 @@ pub fn set_window_icon(hwnd: isize) {
             d => d,
         };
         let module = GetModuleHandleW(std::ptr::null());
-        let load = |cx: i32, cy: i32| {
-            LoadImageW(
+        let load = |cx: i32, cy: i32| -> (HICON, bool) {
+            if worn != "original"
+                && let Some(icon) = drawn_icon(worn, cx.max(cy))
+            {
+                return (icon, true);
+            }
+            let shared = LoadImageW(
                 module,
                 ICON_RESOURCE_ID as *const u16,
                 IMAGE_ICON,
                 cx,
                 cy,
                 LR_DEFAULTCOLOR | LR_SHARED,
-            )
+            );
+            (shared, false)
         };
-        let big = load(
+        let (big, big_drawn) = load(
             GetSystemMetricsForDpi(SM_CXICON, dpi),
             GetSystemMetricsForDpi(SM_CYICON, dpi),
         );
-        let small = load(
+        let (small, small_drawn) = load(
             GetSystemMetricsForDpi(SM_CXSMICON, dpi),
             GetSystemMetricsForDpi(SM_CYSMICON, dpi),
         );
-        if !big.is_null() {
-            BIG_ICON.store(big as isize, Ordering::SeqCst);
-            SendMessageW(hwnd as _, WM_SETICON, ICON_BIG as usize, big as isize);
+        // The handles are kept with a low bit marking a drawn icon (a handle's own low bits are always clear).
+        let keep = |slot: &AtomicIsize, which: u32, icon: HICON, drawn: bool| {
+            if icon.is_null() {
+                return;
+            }
+            SendMessageW(hwnd as _, WM_SETICON, which as usize, icon as isize);
+            let old = slot.swap(icon as isize | isize::from(drawn), Ordering::SeqCst);
+            if old & 1 == 1 {
+                DestroyIcon((old & !1) as HICON);
+            }
+        };
+        keep(&BIG_ICON, ICON_BIG, big, big_drawn);
+        keep(&SMALL_ICON, ICON_SMALL, small, small_drawn);
+    }
+}
+
+/// An icon of the picked design drawn at `px` (rule 1230): a 32-bit top-down colour bitmap with its alpha, and an
+/// empty mask. None when it could not be drawn or made.
+#[cfg(windows)]
+fn drawn_icon(id: &str, px: i32) -> Option<windows_sys::Win32::UI::WindowsAndMessaging::HICON> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        BI_BITFIELDS, BITMAPINFO, BITMAPV5HEADER, CreateBitmap, CreateDIBSection, DIB_RGB_COLORS,
+        DeleteObject, GetDC, ReleaseDC,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, ICONINFO};
+    let side = u32::try_from(px).ok().filter(|p| *p > 0)?;
+    let rgba = crate::app_icon::render_rgba(id, side)?;
+    // SAFETY: the header is a plain struct sized and filled here; the section's bits are px * px * 4 bytes, written
+    // only within that length; every GDI object made here is deleted once the icon holds its own copies.
+    unsafe {
+        let mut header: BITMAPV5HEADER = std::mem::zeroed();
+        header.bV5Size = std::mem::size_of::<BITMAPV5HEADER>() as u32;
+        header.bV5Width = px;
+        header.bV5Height = -px;
+        header.bV5Planes = 1;
+        header.bV5BitCount = 32;
+        header.bV5Compression = BI_BITFIELDS;
+        header.bV5RedMask = 0x00FF_0000;
+        header.bV5GreenMask = 0x0000_FF00;
+        header.bV5BlueMask = 0x0000_00FF;
+        header.bV5AlphaMask = 0xFF00_0000;
+        let dc = GetDC(std::ptr::null_mut());
+        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+        let colour = CreateDIBSection(
+            dc,
+            (&raw const header).cast::<BITMAPINFO>(),
+            DIB_RGB_COLORS,
+            &mut bits,
+            std::ptr::null_mut(),
+            0,
+        );
+        ReleaseDC(std::ptr::null_mut(), dc);
+        if colour.is_null() || bits.is_null() {
+            return None;
         }
-        if !small.is_null() {
-            SMALL_ICON.store(small as isize, Ordering::SeqCst);
-            SendMessageW(hwnd as _, WM_SETICON, ICON_SMALL as usize, small as isize);
+        let out = std::slice::from_raw_parts_mut(bits.cast::<u8>(), rgba.len());
+        for (o, i) in out
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(rgba.as_chunks::<4>().0)
+        {
+            *o = [i[2], i[1], i[0], i[3]];
         }
+        // The mask's rows are whole 16-bit words; all clear, so the colour bitmap's alpha decides.
+        let mask_row = (side as usize).div_ceil(16) * 2;
+        let mask_bits = vec![0u8; mask_row * side as usize];
+        let mask = CreateBitmap(px, px, 1, 1, mask_bits.as_ptr().cast());
+        let info = ICONINFO {
+            fIcon: 1,
+            xHotspot: 0,
+            yHotspot: 0,
+            hbmMask: mask,
+            hbmColor: colour,
+        };
+        let icon = CreateIconIndirect(&info);
+        DeleteObject(colour);
+        if !mask.is_null() {
+            DeleteObject(mask);
+        }
+        (!icon.is_null()).then_some(icon)
     }
 }
 

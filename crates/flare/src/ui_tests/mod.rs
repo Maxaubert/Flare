@@ -24,6 +24,7 @@ mod plugin_surfaces;
 mod remote_convo;
 mod scrollbar;
 mod settings_about;
+mod settings_app_icon;
 mod settings_colour;
 mod settings_controls;
 mod settings_find;

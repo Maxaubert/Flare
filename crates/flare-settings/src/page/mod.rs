@@ -77,6 +77,12 @@ pub enum Control {
         level: f32,
         problem: Option<String>,
     },
+    /// The app icon picker (rule 1230): a row of icon tiles under the row's words. `value` is the picked icon's id; each
+    /// option's `name` is its tile's tooltip and accessible label (the tiles carry no words).
+    Icons {
+        value: String,
+        options: Vec<Opt>,
+    },
 }
 
 /// A small text button beside a row's control (ROW_BUTTON, 32 high). With an `icon` (a name in `icons`) and an empty

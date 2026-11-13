@@ -1,8 +1,8 @@
 """Checks of the icon pipeline (M9 Task 26). Run: python -I tools/test_make_icon.py
 
-Stdlib unittest plus Pillow. The frames are the owner's Windows app icon rendered from
-assets/icon/app-windows.svg (2026-11-12: a gold flame and a light gold flame on a dark rounded
-square, transparent outside the square), so the checks look for that artwork.
+Stdlib unittest plus Pillow. The frames are the owner's artwork rendered from the SVG, so the
+checks look for the artwork (an orange and a gold flame on a dark square, transparent outside the\nsquare; the owner's final icon of 2026-10-21),
+never for a badge or an outline.
 """
 
 import struct
@@ -17,16 +17,16 @@ SOURCE = ROOT / 'build' / 'icon-source.png'
 README = ROOT / 'docs' / 'assets' / 'flare-icon.png'
 
 SIZES = [16, 20, 24, 28, 30, 32, 36, 40, 42, 48, 54, 56, 60, 64, 72, 80, 96, 128, 256]
-# Sample points as fractions of the frame.
-FLAME_POINT = (0.25, 0.65)  # deep inside the gold flame (left)
-LIGHT_POINT = (0.62, 0.45)  # deep inside the light gold flame (right)
-SQUARE_POINT = (0.10, 0.50)  # inside the dark rounded square, left of the flames, clear of its edge
+VIEW = 1254  # the SVG's viewBox; the sample points below are in these units
+FLAME_POINT = (440, 690)  # deep inside the orange flame
+GOLD_POINT = (880, 700)  # deep inside the gold flame
+SQUARE_POINT = (180, 640)  # inside the dark rounded square, left of the flames, clear of its edge
 
 
 def at(point, n):
-    """The pixel of an n-pixel frame that holds a point given as fractions of the frame."""
-    x = min(n - 1, int(point[0] * n))
-    y = min(n - 1, int(point[1] * n))
+    """The pixel of an n-pixel frame that holds a point given in SVG units."""
+    x = min(n - 1, int(point[0] * n / VIEW))
+    y = min(n - 1, int(point[1] * n / VIEW))
     return x, y
 
 
@@ -66,10 +66,10 @@ class IconFrames(unittest.TestCase):
 
     def assert_artwork(self, frame, n):
         r, g, b, a = frame.getpixel(at(FLAME_POINT, n))
-        self.assertTrue(r > 150 and 100 < g < r and b < 60, f'frame {n}: not gold {(r, g, b)}')
+        self.assertTrue(r > 200 and g < 130 and b < 60, f'frame {n}: not orange {(r, g, b)}')
         self.assertEqual(a, 255, f'frame {n}: the flame is not opaque')
-        r, g, b, a = frame.getpixel(at(LIGHT_POINT, n))
-        self.assertTrue(r > 200 and g > 150 and b < 140, f'frame {n}: not light gold {(r, g, b)}')
+        r, g, b, a = frame.getpixel(at(GOLD_POINT, n))
+        self.assertTrue(r > 200 and g > 170 and b < 80, f'frame {n}: not gold {(r, g, b)}')
         r, g, b, a = frame.getpixel(at(SQUARE_POINT, n))
         self.assertLess(max(r, g, b), 70, f'frame {n}: the square is not dark {(r, g, b)}')
         self.assertEqual(a, 255, f'frame {n}: the square is not opaque')
@@ -91,17 +91,16 @@ class IconFrames(unittest.TestCase):
             mean = sum(abs(p - q) for p, q in zip(a, b)) / len(a)
             self.assertLess(mean, 3.0, f'frame {n} is {mean:.1f} levels from the vector on average')
 
-    def test_there_is_no_badge_around_the_artwork(self):
-        # PT's icon sat on a black badge; Flare's is the artwork as it is: the rounded square
-        # reaches the frame's edges and its corners stay transparent.
+    def test_there_is_no_badge_or_outline(self):
+        # PT's icon had a #202020 edge on a black badge; Flare's is the artwork as it is.
         im = Image.open(ICO)
         im.size = (256, 256)
         im.load()
         frame = im.convert('RGBA')
-        for x, y in [(3, 3), (252, 3), (3, 252), (252, 252)]:
-            self.assertEqual(frame.getpixel((x, y))[3], 0, f'({x}, {y}) is not transparent')
-        for x, y in [(4, 128), (128, 4)]:
-            self.assertEqual(frame.getpixel((x, y))[3], 255, f'({x}, {y}): the square stops short')
+        for x, y in [(10, 128), (128, 10)]:
+            r, g, b, a = frame.getpixel((x, y))
+            self.assertEqual(a, 0, f'({x}, {y}) is not transparent: {frame.getpixel((x, y))}')
+            self.assertNotEqual((r, g, b), (0x20, 0x20, 0x20))
 
 
 class SourceAndReadme(unittest.TestCase):

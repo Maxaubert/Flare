@@ -219,6 +219,7 @@ fn choose(ctx: &Ctx, row: &str, option: &str) -> Vec<Effect> {
         "tab-layout" => tab_layout::set_tab_layout_word(p, option),
         "tab-switch" => tab_switch::set_tab_switch_word(p, option),
         "window-edges" => set_window_edges_word(p, option),
+        "app-icon" => crate::app_icon::set_app_icon_word(p, option),
         "term-shell" => term_prefs::save_shell_id(p, option),
         "term-font-family" => ctx.look.set_font_id(option),
         "term-font" => {

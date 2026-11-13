@@ -1,6 +1,6 @@
 // The shared structs of the Settings tab (M7 Task 1). Change them only through the orchestrator.
 
-export enum SetKind { none, pill, switch, segmented, select, slider, colour, save, key, mic, text }
+export enum SetKind { none, pill, switch, segmented, select, slider, colour, save, key, mic, text, icons }
 export enum BlockKind { row, wall, about, slint, note, model, machine-head, machine, machine-add }
 
 // face: the font-family for the font select ("" = the UI font)
@@ -34,6 +34,9 @@ export struct SetRow {
     button-title: string,                       // the tooltip of the Uninstall or Disable button
     // A plugin's card (2026-11-08): its brand logo (path data, filled in logo-fill on a white tile); "" draws icon.
     logo: string, logo-fill: color,
+    // The app icon picker (rule 1230): each option's picture, in the options' order (`value` is the picked id, `badge`
+    // the picked icon's name, drawn at the row's right).
+    art: [image],
 }
 export struct SetSection {
     id: string, title: string, tag: string,

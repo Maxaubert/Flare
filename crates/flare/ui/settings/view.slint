@@ -18,6 +18,7 @@ import { AboutCard, SlintBadge } from "about.slint";
 import { HelpPanel } from "help_panel.slint";
 import { DictKeyField, DictMicField, DictLimitedMark, DictModelRow, DictAsk } from "dictation.slint";
 import { SetMachineHead, SetMachineRow, SetMachineForm } from "machines.slint";
+import { AppIconStrip } from "app_icons.slint";
 
 export global SettingsBridge {
     // data, all computed by Rust
@@ -179,6 +180,17 @@ component RowControls inherits HorizontalLayout {
     spacing: 10px;
     alignment: end;
 
+    // The app icon picker's row (rule 1230): the picked icon's name at the right; the tiles are drawn under the words.
+    if root.data.kind == SetKind.icons: VerticalLayout {
+        alignment: center;
+        Text {
+            text: root.data.badge;
+            font-family: Theme.font-ui;
+            font-size: 12px;
+            color: Theme.text-soft;
+            wrap: no-wrap;
+        }
+    }
     if root.data.kind == SetKind.pill: VerticalLayout {
         alignment: center;
         Rectangle {
@@ -512,7 +524,9 @@ export component SettingsView inherits Rectangle {
                     height: row.h;
                     if row.block == BlockKind.row: SetRowFrame {
                         width: parent.width;
-                        height: parent.height;
+                        // The app icon picker's words take the row's usual 58 at its top; its tiles sit under them (rule 1230).
+                        y: 0px;
+                        height: row.kind == SetKind.icons ? 58px : parent.height;
                         first: i == 0;
                         after-block: i > 0 && section.rows[i - 1].block != BlockKind.row;
                         icon: row.icon;
@@ -535,6 +549,30 @@ export component SettingsView inherits Rectangle {
                         }
                         tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
                         RowControls { data: row; }
+                    }
+                    if row.block == BlockKind.row && row.kind == SetKind.icons: Rectangle {
+                        x: 0px;
+                        y: 58px;
+                        width: parent.width;
+                        height: parent.height - 58px;
+                        Rectangle {
+                            width: parent.width;
+                            height: parent.height;
+                            background: SettingsInk.flash;
+                            opacity: row.flash;
+                        }
+                        AppIconStrip {
+                            x: 60px;
+                            y: 0px;
+                            width: parent.width - 60px - 16px;
+                            height: 40px;
+                            options: row.options;
+                            art: row.art;
+                            value: row.value;
+                            label: row.label;
+                            picked(id) => { SettingsBridge.row-choose(row.id, id); }
+                            tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+                        }
                     }
                     if row.block == BlockKind.model: DictModelRow {
                         width: parent.width;

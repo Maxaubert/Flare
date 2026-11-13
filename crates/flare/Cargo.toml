@@ -28,6 +28,7 @@ slint.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
 png.workspace = true
+resvg.workspace = true
 image.workspace = true
 # The person's arrow drawn on a look's screenshot (2026-11-10): the picture comes and goes as base64.
 base64.workspace = true
@@ -45,9 +46,13 @@ windows-sys.workspace = true
 [target.'cfg(not(windows))'.dependencies]
 flare-proc = { path = "../flare-proc" }
 
-# macOS: the --e2e test hook's Unix socket waits with poll (rule 1103).
+# macOS: the --e2e test hook's Unix socket waits with poll (rule 1103); the app icon picker's Dock icon
+# (NSApplication.applicationIconImage, rule 1230).
 [target.'cfg(target_os = "macos")'.dependencies]
 libc.workspace = true
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-app-kit.workspace = true
 
 [features]
 default = []

@@ -57,30 +57,33 @@ fn no_prism_and_no_em_dash_in_the_resource() {
     assert!(!text.contains('\u{2014}'));
 }
 
-/// Rule 1182: the app icon has its own sources, one per platform (2026-11-12). Windows' .ico (the exe, the
-/// installer and the taskbar) is rendered from assets/icon/app-windows.svg; the Mac's is the Icon Composer icon
-/// assets/icon/app-macos.icon, compiled by actool (flare-cef's macos::release). The in-app mark,
-/// assets/icon/flare-color.svg, is neither and stays.
+/// Rule 1230 (it replaces 1182's split): the original Flare icon, assets/icon/flare-color.svg, is the shipped app icon
+/// on both systems again. Windows' .ico (the exe, the installer and the taskbar) and the Mac's Flare.icns both come from
+/// it (tools/make-icon.py renders build/icon.ico and build/icon-source.png; flare-cef's macos::release makes the .icns
+/// of the PNG). #199's designs stay as choices of Settings > Appearance > App icon: the Liquid Glass Icon Composer icon
+/// and the flat SVGs under assets/icon/app-icons.
 #[test]
-fn each_platform_app_icon_has_its_own_source_and_the_in_app_mark_stays() {
+fn the_original_icon_is_the_shipped_app_icon_and_the_others_are_choices() {
     let icon = root().join("assets").join("icon");
     for f in [
-        "app-windows.svg",
+        "flare-color.svg",
         "app-macos.icon/icon.json",
         "app-macos.icon/Assets/flame.svg",
         "app-macos.icon/Assets/golden-flame.svg",
-        "flare-color.svg",
+        "app-icons/liquid-glass.svg",
+        "app-icons/liquid-glass-windows.svg",
+        "app-icons/daybreak.svg",
     ] {
         assert!(icon.join(f).exists(), "assets/icon/{f} is missing");
     }
     let make = fs::read_to_string(root().join("tools").join("make-icon.py")).expect("make-icon.py");
-    assert!(make.contains("SVG = ROOT / 'assets' / 'icon' / 'app-windows.svg'"));
+    assert!(make.contains("SVG = ROOT / 'assets' / 'icon' / 'flare-color.svg'"));
     let mac = fs::read_to_string(root().join("crates/flare-cef/src/macos/release.rs"))
         .expect("release.rs");
-    assert!(mac.contains("pub const APP_ICON_SOURCE: &str = \"assets/icon/app-macos.icon\";"));
+    assert!(mac.contains("pub const APP_ICON_SOURCE: &str = \"build/icon-source.png\";"));
+    assert!(mac.contains("icon_catalog: None,"));
     let bundle =
         fs::read_to_string(root().join("crates/flare-cef/src/macos/bundle.rs")).expect("bundle.rs");
-    assert!(bundle.contains("\"CFBundleIconName\""));
     assert!(bundle.contains("\"CFBundleIconFile\""));
 }
 

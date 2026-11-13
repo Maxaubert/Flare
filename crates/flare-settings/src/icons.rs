@@ -148,6 +148,11 @@ pub fn button_icon_path(name: &str) -> Option<&'static str> {
 pub const FLARE_ICONS: &[(&str, &str)] = &[
     ("machines", "M3 5h18v11H3zM12 16v4M8 20h8"),
     ("plus", "M12 5v14M5 12h14"),
+    // The app icon picker's row (rule 1230): an app tile with a flame in it.
+    (
+        "app-icon",
+        "M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4zM12 7.5c2.2 2.3 3.5 3.9 3.5 6a3.5 3.5 0 0 1-7 0c0-1.5.8-2.6 1.8-3.6.2 1 .7 1.6 1.3 1.9-.4-1.4-.3-2.8.4-4.3z",
+    ),
 ];
 
 /// The path data of a named icon, or `None` when the name is not in the set.
