@@ -19,6 +19,41 @@ use serde_json::{Value, json};
 use super::AppCtl;
 use crate::ctl_app::CtlOp;
 
+/// A remote tab's fitted conversation view (remote sessions PR 7, rule 1193): what the host last said of each remote
+/// tab, the tabs whose live terminal was taken back here, and what the window shows.
+#[derive(Default)]
+pub(crate) struct RemoteConvoView {
+    /// Per remote tab: the host's window sizes it, and it has a Claude session there.
+    host: std::collections::HashMap<String, (bool, bool)>,
+    /// Tabs taken back here by a click or a key, until the host says this viewer sizes them.
+    taken: std::collections::HashSet<String>,
+    /// The tab and the conversation's number the window shows, None while the terminal shows.
+    shown: Option<(String, u64)>,
+}
+
+impl RemoteConvoView {
+    /// Pure: whether the view stands for this tab: the host sizes it, it has a session, and it was not taken back.
+    pub(crate) fn wanted(&self, tab: &str) -> bool {
+        self.host
+            .get(tab)
+            .is_some_and(|&(sized, session)| sized && session)
+            && !self.taken.contains(tab)
+    }
+
+    /// The host said who sizes the tab: a status that gives it to this viewer ends a takeover.
+    pub(crate) fn heard(&mut self, tab: &str, host_sized: bool, session: bool) {
+        if !host_sized {
+            self.taken.remove(tab);
+        }
+        self.host.insert(tab.to_string(), (host_sized, session));
+    }
+
+    pub(crate) fn forget(&mut self, tab: &str) {
+        self.host.remove(tab);
+        self.taken.remove(tab);
+    }
+}
+
 impl AppCtl {
     /// The window hands over the remote host (startup, when the bridge key was written).
     pub fn set_remote_host(&mut self, host: Arc<crate::remote_host::RemoteHost>) {
@@ -139,6 +174,12 @@ impl AppCtl {
             .into_iter()
             .map(|f| {
                 let id = f.id.as_str();
+                // Who sizes the tab now (remote sessions PR 7): `host` once someone typed in this window, else the
+                // viewer that sent its size (rule 282). The other screen shows its fitted conversation view.
+                let sized = match self.deps.host.size_owner(id) {
+                    crate::tab_host::SizeOwner::Local => "host",
+                    crate::tab_host::SizeOwner::Remote => "viewer",
+                };
                 let mut v = json!({
                     "tab": f.id,
                     "state": f.state,
@@ -146,6 +187,7 @@ impl AppCtl {
                     "session": f.session,
                     "folder": f.folder,
                     "title": f.title,
+                    "sized": sized,
                 });
                 match TabState::parse(f.state) {
                     Some(TabState::Working) => {
@@ -207,6 +249,68 @@ impl AppCtl {
         self.awake_hold.is_some()
     }
 
+    /// Remote sessions PR 7: the machines as `machines.json` holds them now (read at start, or saved by Settings >
+    /// Machines). The + menu lists them, and every remote tab takes its machine's name and system (its logo).
+    pub(crate) fn set_machines(&mut self, list: Vec<crate::machines::Machine>) {
+        self.machines = list;
+        self.tag_remote_tabs();
+        self.refresh();
+    }
+
+    /// The machines this window knows (the tests).
+    #[cfg(test)]
+    pub(crate) fn machines(&self) -> &[crate::machines::Machine] {
+        &self.machines
+    }
+
+    /// A remote tab's tag for the machine `id`: its name and system when the machines name it, else its id alone.
+    pub(crate) fn machine_tag(&self, id: &str) -> flare_tabs::tabs::MachineTag {
+        self.machines.iter().find(|m| m.id == id).map_or_else(
+            || flare_tabs::tabs::MachineTag::of_id(id),
+            |m| flare_tabs::tabs::MachineTag {
+                id: m.id.clone(),
+                name: m.name.clone(),
+                kind: m.kind,
+            },
+        )
+    }
+
+    /// Every remote tab takes its machine's name and system from the machines known now (a restored tab knew its id
+    /// only). A machine no longer listed keeps the tag it had.
+    pub(crate) fn tag_remote_tabs(&mut self) {
+        let tags: Vec<(usize, flare_tabs::tabs::MachineTag)> = self
+            .model
+            .state
+            .tabs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| t.remote.as_ref().map(|r| (i, r.id.clone())))
+            .filter(|(_, id)| self.machines.iter().any(|m| &m.id == id))
+            .map(|(i, id)| (i, self.machine_tag(&id)))
+            .collect();
+        for (i, tag) in tags {
+            if let Some(t) = self.model.state.tabs.get_mut(i) {
+                t.remote = Some(tag);
+            }
+        }
+    }
+
+    /// "Hide here only" (remote sessions PR 7, rule 1192): the remote tab goes from this window and its session goes
+    /// on on its machine (`remote.detach`, never `remote.close`), so nothing asks first. Its plain Close still ends it
+    /// everywhere and asks as any close does (rule 48).
+    pub(crate) fn hide_remote(&mut self, id: &str) {
+        if self.model.remote_of(id).is_none() {
+            return;
+        }
+        self.note_close(id);
+        self.deps.host.leave(id);
+        self.working.remove(id);
+        self.model.close(id);
+        self.term.tab_closed(id);
+        self.forget_tab_surfaces(id);
+        self.refresh();
+    }
+
     /// Remote sessions PR 4 on the viewer (rule 294): a remote tab's link brought the host's status of it. Each remote
     /// tab's newest status is applied once; the hub turns it into marks (question and working, never a copied done).
     pub(crate) fn sync_remote_status(&mut self) {
@@ -224,7 +328,88 @@ impl AppCtl {
             })
             .collect();
         for (id, st) in news {
+            self.rconvo.heard(&id, st.host_sized, st.session.is_some());
             self.hub.on_remote_status(&id, &st);
         }
+    }
+
+    /// Remote sessions PR 7 (rule 1193): each remote tab's link polls its conversation only while its view is wanted,
+    /// and the window shows the view of the tab in front. True when what the window shows changed.
+    pub(crate) fn sync_remote_convo(&mut self) -> bool {
+        for t in &self.model.state.tabs {
+            if t.remote.is_some()
+                && let Some(live) = self.model.remote_live(&t.id)
+            {
+                live.want_convo(self.rconvo.wanted(&t.id));
+            }
+        }
+        let before = self.rconvo.shown.clone();
+        self.push_remote_convo();
+        before != self.rconvo.shown
+    }
+
+    /// The tab in front, when its fitted view stands: it is remote, the host sizes it, and its conversation came.
+    fn remote_convo_front(&self) -> Option<(String, flare_term::remote_pty::RemoteLive)> {
+        let id = self.model.state.active_id.clone()?;
+        self.model.remote_of(&id)?;
+        let live = self.model.remote_live(&id)?.clone();
+        (self.rconvo.wanted(&id) && live.convo_version() > 0).then_some((id, live))
+    }
+
+    /// Whether the fitted view is up now (the key path reads it).
+    pub(crate) fn remote_convo_shown(&self) -> bool {
+        self.rconvo.shown.is_some()
+    }
+
+    /// The window shows the fitted view of the tab in front, or the terminal. The lines are written again only when the
+    /// conversation or the tab changed.
+    pub(crate) fn push_remote_convo(&mut self) {
+        let Some(app) = self.app() else { return };
+        let front = self.remote_convo_front();
+        let now = front
+            .as_ref()
+            .map(|(id, live)| (id.clone(), live.convo_version()));
+        if now == self.rconvo.shown {
+            return;
+        }
+        match front {
+            Some((id, live)) => {
+                let lines: Vec<crate::RemoteConvoLine> = live
+                    .convo()
+                    .1
+                    .iter()
+                    .map(|l| crate::RemoteConvoLine {
+                        role: l.role.as_str().into(),
+                        text: l.text.as_str().into(),
+                        tool: l.tool.clone().unwrap_or_default().into(),
+                    })
+                    .collect();
+                let machine = self
+                    .model
+                    .remote_of(&id)
+                    .map(|m| m.name.clone())
+                    .unwrap_or_default();
+                app.set_rconvo_lines(slint::ModelRc::new(slint::VecModel::from(lines)));
+                app.set_rconvo_machine(machine.into());
+                app.set_rconvo_open(true);
+            }
+            None => app.set_rconvo_open(false),
+        }
+        self.rconvo.shown = now;
+    }
+
+    /// A click on the fitted view, or a key while it is up (rule 1193): the live terminal comes back on this screen and
+    /// this window sizes it again (the link sends its size; rule 282, the last typist sets the size).
+    pub(crate) fn remote_convo_take_over(&mut self) {
+        let Some((id, _)) = self.rconvo.shown.clone() else {
+            return;
+        };
+        if let Some(live) = self.model.remote_live(&id) {
+            live.retake_size();
+            live.want_convo(false);
+        }
+        self.rconvo.taken.insert(id);
+        self.push_remote_convo();
+        self.refresh();
     }
 }

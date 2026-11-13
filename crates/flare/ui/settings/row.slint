@@ -131,7 +131,8 @@ export component SetRowFrame inherits Rectangle {
                     color: Theme.text;
                     overflow: elide;
                 }
-                sub := SetSubtext {
+                // A row with no subtext (the Machines page's add row, remote sessions PR 7) centres its label alone.
+                if root.sub != "": SetSubtext {
                     text: root.sub;
                     warn: root.warn;
                     tip(a, b, c, d, e) => { root.tip(a, b, c, d, e); }

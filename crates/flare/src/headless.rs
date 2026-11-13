@@ -1164,8 +1164,15 @@ impl Scene {
                     .push_back(m);
             })
         };
-        let ports = settings_scene::deps(&self.prefs, post, Rc::new(scene_now));
+        let ports = settings_scene::deps(&self.prefs, Arc::clone(&post), Rc::new(scene_now));
         let settings = SettingsCtl::new(&self.app, ports);
+        // Settings > Machines shows the scene's machines (remote sessions PR 7): no file, no link.
+        settings
+            .borrow_mut()
+            .set_machines(crate::machines_page::MachinesPage::new(
+                Arc::new(crate::machines_page::SceneMachinesIo),
+                post,
+            ));
         {
             let mut ctl = self.ctl.borrow_mut();
             ctl.set_settings(settings);
@@ -1201,6 +1208,22 @@ impl Scene {
         let bridge = self.app.global::<SettingsBridge>();
         bridge.invoke_page_chosen(page.as_str().into());
         self.settle(4);
+        if page == "machines" {
+            // The page's read and its checks answer on workers: take them in before the picture.
+            let until = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < until {
+                let next = self
+                    .queue
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .pop_front();
+                match next {
+                    Some(m) => self.ctl.borrow_mut().on_msg(m),
+                    None => std::thread::sleep(Duration::from_millis(10)), // sync-ok: scene tooling, waits for the page's workers
+                }
+            }
+            self.settle(4);
+        }
         if let Some(query) = &args.settings_find {
             bridge.set_find_text(query.as_str().into());
             bridge.invoke_find_edited(query.as_str().into());

@@ -58,3 +58,17 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
 - [ ] Closing the remote tab removes its upload folder on the host (`<temp>/flare-remote/<run>/<tab>`) and its copies
   on the viewer (`<temp>/flare-remote-copies/<run>/<tab>`).
 - [ ] A Mac clipboard picture that is only TIFF (rare: some apps copy only TIFF) is refused with one line, not sent.
+
+## Screens (PR 7)
+
+- [ ] Settings > Machines on the PC: "+ Add a machine" lists the Mac's alias from `~/.ssh/config`; Add with a name links
+  it (Flare found on the Mac's PATH, or at `/Applications/Flare.app/Contents/MacOS/flare`), the row shows the Apple
+  logo, the Mac's Flare version and "Linked". The same on the Mac adding the PC (the Windows logo).
+- [ ] With an older Flare on the other machine, Add shows one red line that says which side to update, and saves
+  nothing; Test on a linked machine whose ssh is down shows "Not linked" with the reason as its tooltip.
+- [ ] The + menu (right-click on +, or the New tab arrow) lists the machine; its pick opens a shell tab in the other
+  machine's home folder, with the logo on the tab (vertical: before the folder; horizontal: before the ×).
+- [ ] "Hide here only" on that tab: gone here, still open on the other machine; Close on it ends it on both.
+- [ ] A Claude session in a remote tab: type on the host's own Flare, and the viewer shows the conversation fitted to
+  its window with "Live on <machine>"; a click or a key there brings the terminal back at the viewer's size, and the
+  host's window gets its size back at the next key typed there.

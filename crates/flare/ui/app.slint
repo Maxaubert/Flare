@@ -28,6 +28,7 @@ import { PluginSheet } from "settings/plugin_sheet.slint";
 import { HelpPanel, HelpBridge } from "settings/help_panel.slint";
 import { PanelSlot } from "panel.slint";
 import { ConvoFileRow, ConvoDiffRow } from "convo.slint";
+import { RemoteConvoLine, RemoteConvoView } from "remote_convo.slint";
 import { PreviewChip } from "devchip.slint";
 import { UpdateChip, UpdateNotice, UpdateWindow, UpdateBridge, UpdateChipPreview, UpdateWindowPreview, StagedToast } from "update.slint";
 
@@ -48,6 +49,7 @@ export { MenusPreview } from "menus.slint";
 export { DialogPreview } from "dialog.slint";
 export { TabRow, StripGeom, Place, MenuRow, OverflowRow, PluginRow, PluginButton } from "types.slint";
 export { ConvoFileRow, ConvoDiffRow, ConvoInk } from "convo.slint";
+export { RemoteConvoLine } from "remote_convo.slint";
 
 // The Settings tab (M7 Task 1): every file is listed so the compiler checks it, and the
 // previews, the real components and the two globals are reachable from Rust.
@@ -62,6 +64,7 @@ export { WallPreview } from "settings/wall.slint";
 export { AboutPreview } from "settings/about.slint";
 export { HelpPanelPreview, HelpBridge } from "settings/help_panel.slint";
 export { SettingsPreview, SettingsBridge } from "settings/view.slint";
+export { MachinesPreview } from "settings/machines.slint";
 export { UpdateBridge, UpdateChipPreview, UpdateWindowPreview } from "update.slint";
 
 // One of the title bar's buttons (PT TitleBar.tsx: h-7 w-8, rounded, an
@@ -372,6 +375,14 @@ export component AppWindow inherits Window {
     out property <length> preview-chip-w: preview-chip.width;
     out property <length> preview-chip-h: preview-chip.height;
     callback preview-chip-clicked();
+    // A remote tab's fitted conversation view (remote sessions PR 7): shown over the terminal while the other machine
+    // sizes the live terminal; its lines and the machine's name; a click (or, in Rust, a key) takes the terminal back.
+    in property <bool> rconvo-open;
+    in property <[RemoteConvoLine]> rconvo-lines;
+    in property <string> rconvo-machine;
+    callback rconvo-take-over();
+    out property <length> rconvo-column-w: rconvo.column-w;
+    out property <bool> rconvo-at-foot: rconvo.at-foot;
     // The tab share of the page (0: not set, the default applies). The limits are the layout
     // maths of flare-surfaces, handed over once (`layout::MIN_SLOT` and the others).
     in property <float> panel-share: 0;
@@ -1252,6 +1263,17 @@ export component AppWindow inherits Window {
                             live-text: root.dict-live-text;
                             message: root.dict-message;
                             level: root.dict-level;
+                        }
+                        // A remote tab's fitted conversation view, over the terminal (remote sessions PR 7).
+                        rconvo := RemoteConvoView {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: parent.height;
+                            visible: root.rconvo-open;
+                            lines: root.rconvo-lines;
+                            machine: root.rconvo-machine;
+                            take-over => { root.rconvo-take-over(); }
                         }
                         // The "Preview" chip of a local dev server the tab started (stage 7).
                         preview-chip := PreviewChip {

@@ -223,6 +223,7 @@ fn the_rail_lists_mods_between_dictation_and_diagnostics() {
                 "agents",
                 "dictation",
                 "mods",
+                "machines",
                 "diagnostics",
                 "about"
             ],

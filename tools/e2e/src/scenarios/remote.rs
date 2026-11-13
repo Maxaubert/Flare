@@ -817,3 +817,163 @@ fn files_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
     ctx.ok(quit, "the viewer quits");
     Ok(())
 }
+
+/// `remoteUi` (remote sessions PR 7): the + menu of Flare A lists the machine its `machines.json` links, with the
+/// machine's logo; picking it opens a shell tab on Flare B (the host, over the stdio loopback, no ssh) in B's home
+/// folder, and the tab wears the machine's logo. Its menu's "Hide here only" lets it go here and B's session goes on.
+/// Both are offscreen on the hidden desktop, as every launch here.
+/// A probe's answer, Null when it fails (`tour::probe` is Windows-only).
+fn probe(app: &mut App, name: &str, arg: Value) -> Value {
+    app.session.probe(name, arg).unwrap_or(Value::Null)
+}
+
+pub fn remote_ui(ctx: &mut Ctx) -> Result<(), String> {
+    let alpha = ctx.ensure_world().alpha.clone();
+    let mut host = ctx.launch(Launch {
+        folders: vec![alpha.clone()],
+        ..Launch::default()
+    })?;
+    let r = ui_on(ctx, &mut host, &alpha);
+    let left = host.close();
+    ctx.ok(left, "the host quits by itself");
+    r
+}
+
+/// The open menu's row labels, once a menu is open (4 s at most).
+fn open_menu_labels(ctx: &mut Ctx, app: &mut App) -> Vec<Value> {
+    let mut rows = Vec::new();
+    ctx.until("the + menu", 4_000, &mut || {
+        rows = probe(app, "app.state", Value::Null)["menu"]["rows"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        !rows.is_empty()
+    });
+    rows
+}
+
+/// Clicks the open menu's row at `idx`, as `menus.slint` lays it out: a hairline border, 28 px rows, a hairline between
+/// two rows of one group. `last` clicks the menu's last row from its foot instead (the + menu's machine row, under the
+/// wider gaps of its groups).
+fn click_row(app: &mut App, idx: usize, last: bool) -> Result<(), String> {
+    let (x, y, w, h) = super::input_b::css(&probe(app, "ui.rect", json!({ "name": "menu" })))
+        .ok_or("no menu rectangle")?;
+    let at_y = if last {
+        y + h - 15.0
+    } else {
+        y + 1.0 + idx as f64 * 29.0 + 14.0
+    };
+    app.session.click((x + w / 2.0) as f32, at_y as f32)
+}
+
+fn ui_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
+    prompt(host)?;
+    let host_tabs = host.session.state()?.tabs.len();
+    let world = ctx.new_world();
+    std::fs::create_dir_all(&world.profile).map_err(|e| e.to_string())?;
+    std::fs::write(
+        world.profile.join("machines.json"),
+        json!({"machines": [{"id": "loop", "name": "Loopback", "kind": "pc", "ssh": "loop"}]})
+            .to_string(),
+    )
+    .map_err(|e| e.to_string())?;
+    let exe = ctx.exe.clone();
+    let mut a = ctx.launch_in(
+        &world,
+        Launch {
+            env: viewer_env(&exe, &host.profile, alpha, false),
+            folders: vec![world.alpha.clone()],
+            // The + button and the tabs are clicked by their strip boxes.
+            tabs_along_the_top: true,
+            ..Launch::default()
+        },
+    )?;
+    let r = (|| -> Result<(), String> {
+        prompt(&mut a)?;
+        let local_tabs = a.session.state()?.tabs.len();
+        let (x, y, w, h) =
+            super::input_b::css(&probe(&mut a, "ui.rect", json!({ "name": "plus" })))
+                .ok_or("no + button")?;
+        a.session
+            .right_click((x + w / 2.0) as f32, (y + h / 2.0) as f32)?;
+        let rows = open_menu_labels(ctx, &mut a);
+        let idx = rows.iter().position(|r| r["label"] == json!("Loopback"));
+        ctx.ok(
+            idx.is_some(),
+            "the + menu lists the linked machine by its name",
+        );
+        let idx = idx.ok_or("no machine row")?;
+        ctx.ok(
+            rows[idx]["icon"]
+                .as_str()
+                .is_some_and(|i| i.starts_with("M0 0h11.377")),
+            "the machine's row wears the Windows logo",
+        );
+        ctx.ok(
+            idx + 1 == rows.len(),
+            "the machine's row is the menu's last",
+        );
+        click_row(&mut a, idx, true)?;
+        front_rows_until(
+            ctx,
+            &mut a,
+            "the host's prompt in the new remote tab",
+            |t| t.contains("PS "),
+        )?;
+        let mut more = 0;
+        ctx.until("the host has the new tab", 20_000, &mut || {
+            more = host.session.state().map_or(0, |s| s.tabs.len());
+            more > host_tabs
+        });
+        ctx.ok(more == host_tabs + 1, "the pick opened one tab on the host");
+        let tabs = probe(&mut a, "app.state", Value::Null)["tabs"].clone();
+        let front = tabs
+            .as_array()
+            .and_then(|t| t.iter().find(|t| t["front"] == json!(true)).cloned())
+            .unwrap_or(Value::Null);
+        ctx.ok(
+            tabs.as_array().map_or(0, Vec::len) == local_tabs + 1,
+            "one new tab on the viewer",
+        );
+        ctx.ok(
+            front["machine"] == json!("pc"),
+            "the new tab wears the PC logo",
+        );
+        ctx.ok(
+            front["tooltip"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("Loopback: ")),
+            "its tooltip names the machine",
+        );
+        // Hide here only: gone from the viewer, still open on the host.
+        let rect = super::input_b::css(&front["rect"]).ok_or("no tab rectangle")?;
+        a.session.right_click(
+            (rect.0 + rect.2 / 2.0) as f32,
+            (rect.1 + rect.3 / 2.0) as f32,
+        )?;
+        let rows = open_menu_labels(ctx, &mut a);
+        let hide = rows
+            .iter()
+            .position(|r| r["label"] == json!("Hide here only"))
+            .ok_or("no Hide here only on the remote tab's menu")?;
+        click_row(&mut a, hide, false)?;
+        let mut left = 0;
+        ctx.until("the remote tab gone from the viewer", 10_000, &mut || {
+            left = a.session.state().map_or(usize::MAX, |s| s.tabs.len());
+            left == local_tabs
+        });
+        ctx.ok(
+            left == local_tabs,
+            "Hide here only takes the tab from the viewer",
+        );
+        ctx.ok(
+            host.session.state().map_or(0, |s| s.tabs.len()) == host_tabs + 1,
+            "the host's session goes on",
+        );
+        Ok(())
+    })();
+    let quit = a.close();
+    r?;
+    ctx.ok(quit, "the viewer quits");
+    Ok(())
+}

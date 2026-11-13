@@ -1315,6 +1315,22 @@ impl SessionManager {
         }
     }
 
+    /// One session lets go the quit's way (remote sessions PR 7, "Hide here only"): a remote tab detaches and its host
+    /// session goes on (rule 288); a local shell is killed as by [`SessionManager::kill`].
+    pub fn leave(&self, id: &str) {
+        let s = {
+            let mut st = lk(&self.sh.st);
+            if st.pending.contains(id) {
+                st.killed_pending.insert(id.to_string());
+            }
+            st.desired.remove(id);
+            st.sessions.remove(id)
+        };
+        if let Some(s) = s {
+            end_pty(&self.sh, s, true);
+        }
+    }
+
     /// Every session and every warm spare: the quit. A remote tab lets go of its host session and leaves it running
     /// (rule 288); every local shell is killed.
     pub fn kill_all(&self) {

@@ -119,12 +119,28 @@ component SideRow inherits Rectangle {
                 font-family: Theme.font-ui;
                 overflow: elide;
             }
-            if !root.tab.settings && root.tab.folder != "": Text {
-                text: root.tab.folder;
-                color: Theme.side-dim;
-                font-size: 11.5px;
-                font-family: Theme.font-ui;
-                overflow: elide;
+            // A remote tab's machine (remote sessions PR 7, owner pick Vertical 4): its system's logo before the folder.
+            if !root.tab.settings && root.tab.folder != "": HorizontalLayout {
+                spacing: 4px;
+                if root.tab.machine == 1 || root.tab.machine == 2: VerticalLayout {
+                    alignment: center;
+                    Path {
+                        width: 11px;
+                        height: 11px;
+                        viewbox-width: 24;
+                        viewbox-height: 24;
+                        commands: root.tab.machine == 1 ? Glyphs.logo-mac : Glyphs.logo-pc;
+                        fill: Theme.side-dim;
+                    }
+                }
+                Text {
+                    text: root.tab.folder;
+                    color: Theme.side-dim;
+                    font-size: 11.5px;
+                    font-family: Theme.font-ui;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
             }
         }
 

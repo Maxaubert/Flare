@@ -752,6 +752,13 @@ mod tests {
         assert_eq!(args.size, (800, 600));
         let plain = parse_args(&a(&["--scene", "settings"]), None).unwrap();
         assert_eq!(plain.settings_page, None);
+        // Remote sessions PR 7: the Machines page is a page of the scene too.
+        let machines = parse_args(
+            &a(&["--scene", "settings", "--settings-page", "machines"]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(machines.settings_page.as_deref(), Some("machines"));
         assert_eq!(plain.settings_open, SettingsOpen::None);
         for word in SETTINGS_OPEN_WORDS {
             let args =

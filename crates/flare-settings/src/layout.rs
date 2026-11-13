@@ -138,8 +138,14 @@ impl SnapGrid {
 pub const MODEL_ROW_H: f64 = 64.0;
 /// The id the GPU pack's block carries (the store's id for the pack).
 pub const GPU_ROW_ID: &str = "gpu-pack";
+/// The Machines page's table (remote sessions PR 7): the heading row, a machine's row, and the add form, which grows
+/// by one line for its red line.
+pub const MACHINE_HEAD_H: f64 = 34.0;
+pub const MACHINE_ROW_H: f64 = 50.0;
+pub const MACHINE_FORM_H: f64 = 58.0;
+pub const MACHINE_FORM_LINE_H: f64 = 26.0;
 
-/// The kind of a panel's block (Slint's `BlockKind` names the same six).
+/// The kind of a panel's block (Slint's `BlockKind` names the same ones).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockKind {
     Row,
@@ -149,6 +155,10 @@ pub enum BlockKind {
     Note,
     /// A speech model or the GPU pack (M8 Task 25).
     Model,
+    /// The Machines page's table heading, a machine, and the add form (remote sessions PR 7).
+    MachineHead,
+    Machine,
+    MachineAdd,
 }
 
 /// One block of a panel. `id` is the row id for a row and "" for the other kinds.
@@ -253,6 +263,18 @@ fn child_of(
         // A speech model or the GPU pack: PT's `min-h-16` row (M8 Task 25), named by its catalogue id.
         BlockModel::Model(r) => (BlockKind::Model, r.id, MODEL_ROW_H),
         BlockModel::Gpu(_) => (BlockKind::Model, GPU_ROW_ID, MODEL_ROW_H),
+        BlockModel::MachineHead => (BlockKind::MachineHead, "", MACHINE_HEAD_H),
+        BlockModel::Machine(_) => (BlockKind::Machine, "", MACHINE_ROW_H),
+        BlockModel::MachineAdd(a) => (
+            BlockKind::MachineAdd,
+            crate::page::machines::ADD_ROW,
+            MACHINE_FORM_H
+                + if a.form.error.is_some() {
+                    MACHINE_FORM_LINE_H
+                } else {
+                    0.0
+                },
+        ),
     };
     Child {
         kind,

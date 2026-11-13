@@ -1,0 +1,294 @@
+// Settings > Machines (remote sessions PR 7): the table of linked machines and the add form. The owner's picks
+// (2026-11-12 mockups): no subtext; a table with Machine (the system's logo and the name), SSH host, Flare, Status and a
+// menu (Test, Remove); "+ Add a machine" opens a form in its place: an SSH host drop-down, a Name field, Cancel and
+// Add, and one red line under it when the check failed.
+//
+// The rows are SetRow data (types.slint): a machine's `label` is its name, `value` its SSH host, `note` the Flare
+// version, `state` its status word (unknown, checking, linked, failed), `sub` the status's words, `row-tip` the line
+// of a failed check, and `vendor` its system (mac, pc, ""). The form's `value` is the host picked, `options` the
+// hosts, `note` the name typed, `sub` the red line and `state` "busy" while the host is checked.
+
+import { Theme, Px, SettingsInk, SettingsFixed, SettingsShape } from "../theme.slint";
+import { Glyphs } from "../glyphs.slint";
+import { SetRow } from "types.slint";
+import { SetRowButton, SetTextField } from "controls.slint";
+import { SetSelect } from "select.slint";
+
+// The columns' left edges as parts of the row's width, shared by the heading and the rows.
+global MachineCols {
+    out property <float> host: 0.36;
+    out property <float> flare: 0.58;
+    out property <float> status: 0.72;
+    out property <length> pad: 14px;
+    out property <length> menu-w: 40px;
+}
+
+// A machine's system: the Apple logo for a Mac, the Windows logo for a PC, nothing when it is not known.
+export component MachineLogo inherits Path {
+    in property <string> os;
+    in property <length> size: 15px;
+    width: root.size;
+    height: root.size;
+    viewbox-width: 24;
+    viewbox-height: 24;
+    commands: root.os == "mac" ? Glyphs.logo-mac : root.os == "pc" ? Glyphs.logo-pc : "";
+    fill: Theme.text;
+    visible: root.os != "";
+}
+
+// A column's name.
+component MachineHeadText inherits Text {
+    font-family: Theme.font-ui;
+    font-size: 12px;
+    color: Theme.dim;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
+// One line of the heading: the four column names.
+export component SetMachineHead inherits Rectangle {
+    in property <bool> first;
+    MachineHeadText { x: MachineCols.pad; width: root.width * MachineCols.host - MachineCols.pad - 8px; height: root.height; text: "Machine"; }
+    MachineHeadText { x: root.width * MachineCols.host; width: root.width * (MachineCols.flare - MachineCols.host) - 8px; height: root.height; text: "SSH host"; }
+    MachineHeadText { x: root.width * MachineCols.flare; width: root.width * (MachineCols.status - MachineCols.flare) - 8px; height: root.height; text: "Flare"; }
+    MachineHeadText { x: root.width * MachineCols.status; width: root.width * (1 - MachineCols.status) - MachineCols.menu-w; height: root.height; text: "Status"; }
+}
+
+// One linked machine.
+export component SetMachineRow inherits Rectangle {
+    in property <SetRow> data;
+    in property <bool> menu-open;
+    callback menu-request(length, length, length, length);
+    callback tip(string, length, length, length, length);
+
+    // The rule between machines, edge to edge (a table).
+    Rectangle {
+        y: 0px;
+        width: parent.width;
+        height: Px.hair();
+        background: Theme.line;
+    }
+    HorizontalLayout {
+        x: MachineCols.pad;
+        width: root.width * MachineCols.host - MachineCols.pad - 8px;
+        height: root.height;
+        spacing: 8px;
+        alignment: start;
+        VerticalLayout {
+            alignment: center;
+            MachineLogo { os: root.data.vendor; }
+        }
+        Text {
+            text: root.data.label;
+            font-family: Theme.font-ui;
+            font-size: 13.5px;
+            font-weight: 600;
+            color: Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    Text {
+        x: root.width * MachineCols.host;
+        width: root.width * (MachineCols.flare - MachineCols.host) - 8px;
+        height: root.height;
+        text: root.data.value;
+        font-family: SettingsFixed.font-mono;
+        font-size: 12.5px;
+        color: Theme.text-soft;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    Text {
+        x: root.width * MachineCols.flare;
+        width: root.width * (MachineCols.status - MachineCols.flare) - 8px;
+        height: root.height;
+        text: root.data.note;
+        font-family: Theme.font-ui;
+        font-size: 13px;
+        color: Theme.dim;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    status := HorizontalLayout {
+        x: root.width * MachineCols.status;
+        width: root.width * (1 - MachineCols.status) - MachineCols.menu-w;
+        height: root.height;
+        spacing: 7px;
+        alignment: start;
+        property <color> ink: root.data.state == "linked" ? SettingsFixed.copied
+            : root.data.state == "failed" ? Theme.danger-fill : Theme.dim;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: status.ink;
+                visible: root.data.state != "unknown";
+            }
+        }
+        Text {
+            text: root.data.sub;
+            font-family: Theme.font-ui;
+            font-size: 13px;
+            font-weight: 500;
+            color: status.ink;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        sta := TouchArea {
+            changed has-hover => {
+                if self.has-hover && root.data.row-tip != "" {
+                    root.tip(root.data.row-tip, status.absolute-position.x, status.absolute-position.y, status.width, status.height);
+                } else {
+                    root.tip("", 0px, 0px, 0px, 0px);
+                }
+            }
+        }
+    }
+    // The ⋯ menu: Test and Remove (the Select menu, opened under the button).
+    more := Rectangle {
+        x: root.width - MachineCols.menu-w + 4px;
+        y: Px.snap((root.height - 30px) / 2);
+        width: 30px;
+        height: 30px;
+        border-radius: SettingsShape.radius-sm;
+        background: mta.has-hover || root.menu-open ? Theme.hover : transparent;
+        accessible-role: AccessibleRole.button;
+        accessible-label: "More for " + root.data.label;
+        accessible-action-default => { root.menu-request(more.absolute-position.x - 120px + more.width, more.absolute-position.y, 120px, more.height); }
+        for i in 3: Rectangle {
+            x: Px.snap(more.width / 2 - 1.6px + (i - 1) * 6px);
+            y: Px.snap(more.height / 2 - 1.6px);
+            width: 3.2px;
+            height: 3.2px;
+            border-radius: 1.6px;
+            background: Theme.text-soft;
+        }
+        mta := TouchArea {
+            clicked => { root.menu-request(more.absolute-position.x - 120px + more.width, more.absolute-position.y, 120px, more.height); }
+        }
+    }
+}
+
+// The add form, in the add row's place: host, name, Cancel, Add; the red line of a failed check under them.
+export component SetMachineForm inherits Rectangle {
+    in property <SetRow> data;
+    in property <bool> first;
+    in property <bool> select-open;
+    callback open-request(length, length, length, length);
+    callback name-edited(string);
+    callback pressed(string);
+    callback tip(string, length, length, length, length);
+
+    public function focus-me() {
+        host.focus-me();
+    }
+
+    background: SettingsInk.row-hover;
+    Rectangle {
+        y: 0px;
+        width: parent.width;
+        height: Px.hair();
+        background: Theme.line;
+        visible: !root.first;
+    }
+    HorizontalLayout {
+        x: MachineCols.pad;
+        y: 0px;
+        width: root.width - MachineCols.pad - 16px;
+        height: 58px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            host := SetSelect {
+                width: SettingsShape.select-min-w;
+                options: root.data.options;
+                value: root.data.value;
+                disabled: root.data.state == "busy";
+                label: "SSH host";
+                sub: "";
+                open: root.select-open;
+                open-request(x, y, w, h) => { root.open-request(Px.snap(x), Px.snap(y), Px.snap(x + w) - Px.snap(x), Px.snap(y + h) - Px.snap(y)); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            SetTextField {
+                width: 160px;
+                text: root.data.note;
+                placeholder: root.data.placeholder;
+                label: "Name";
+                sub: "";
+                off: root.data.state == "busy";
+                edited(t) => { root.name-edited(t); }
+                accepted => { root.pressed("add"); }
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        VerticalLayout {
+            alignment: center;
+            SetRowButton {
+                label: "Cancel";
+                off: root.data.state == "busy";
+                clicked => { root.pressed("cancel"); }
+                tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            SetRowButton {
+                label: root.data.state == "busy" ? "Checking" : "Add";
+                off: root.data.state == "busy";
+                clicked => { root.pressed("add"); }
+                tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
+            }
+        }
+    }
+    if root.data.sub != "": HorizontalLayout {
+        x: MachineCols.pad;
+        y: 52px;
+        width: root.width - 2 * MachineCols.pad;
+        height: 24px;
+        spacing: 8px;
+        alignment: start;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: Theme.danger-fill;
+            }
+        }
+        Text {
+            text: root.data.sub;
+            font-family: Theme.font-ui;
+            font-size: 13px;
+            color: Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+// The test window: one heading, one machine row and the add form, on sample data the test sets.
+export component MachinesPreview inherits Window {
+    preferred-width: 760px;
+    preferred-height: 220px;
+    in property <SetRow> machine;
+    in property <SetRow> form;
+    out property <int> menus: 0;
+    background: Theme.ground;
+    SetMachineHead { x: 0px; y: 0px; width: root.width; height: 34px; first: true; }
+    SetMachineRow {
+        x: 0px;
+        y: 34px;
+        width: root.width;
+        height: 50px;
+        data: root.machine;
+        menu-request(x, y, w, h) => { root.menus += 1; }
+    }
+    SetMachineForm { x: 0px; y: 84px; width: root.width; height: 84px; data: root.form; }
+}

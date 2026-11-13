@@ -629,6 +629,18 @@ fn remote_grant(shared: &Shared) -> Result<Grant, CtlError> {
     }
 }
 
+/// The system this host runs, as `remote.hello` says it (remote sessions PR 7): `mac`, `pc`, or `other`. The viewer
+/// draws the machine's logo by it and quotes the host's command for its login shell.
+pub fn this_os() -> &'static str {
+    if cfg!(windows) {
+        "pc"
+    } else if cfg!(target_os = "macos") {
+        "mac"
+    } else {
+        "other"
+    }
+}
+
 /// The one line a remote protocol mismatch is refused with: both versions, this side's first (rule 278).
 pub fn remote_mismatch(here: u64, there: u64) -> String {
     format!("remote protocol {here} here, {there} there")
@@ -684,6 +696,7 @@ fn handle_remote_hello(
         "remote_protocol": REMOTE_PROTOCOL,
         "machine": shared.config.machine,
         "flare_version": shared.config.server_version,
+        "os": this_os(),
         "capabilities": names,
     });
     let hello = Hello {
@@ -1778,6 +1791,9 @@ mod tests {
         assert_eq!(v["result"]["remote_protocol"], REMOTE_PROTOCOL);
         assert_eq!(v["result"]["machine"], "host-a");
         assert_eq!(v["result"]["flare_version"], "1.2.3");
+        // The host's system, for the viewer's logo and quoting (remote sessions PR 7).
+        assert_eq!(v["result"]["os"], this_os());
+        assert!(["mac", "pc", "other"].contains(&this_os()));
         // Every `remote.*` method this app has, and nothing else.
         let remote: Vec<&str> = Method::ALL
             .into_iter()

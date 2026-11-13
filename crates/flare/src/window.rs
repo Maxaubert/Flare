@@ -1549,6 +1549,32 @@ pub fn run_window(
             if let Some(port) = rc.borrow().mods_port() {
                 settings.borrow_mut().set_mods(port);
             }
+            // Settings > Machines (remote sessions PR 7): the profile's machines, the ssh config's hosts, and link checks
+            // over ssh (under --e2e over the scenario's loopback, never a real ssh).
+            let machines_io: Arc<dyn crate::machines_page::MachinesIo> =
+                Arc::new(crate::machines_page::RealMachinesIo::new(
+                    &inst.profile.dir,
+                    PathBuf::from(crate::app_facts::home()),
+                    crate::remote_link::e2e_loopback(
+                        e2e::global()
+                            .env(&["FLARE_E2E", "_REMOTE_COMMAND"].concat())
+                            .as_deref(),
+                    ),
+                ));
+            settings
+                .borrow_mut()
+                .set_machines(crate::machines_page::MachinesPage::new(
+                    Arc::clone(&machines_io),
+                    Arc::clone(&post),
+                ));
+            // The + menu and the remote tabs' logos need the machines from the start: read once on a worker.
+            let p = Arc::clone(&post);
+            let started = std::thread::Builder::new()
+                .name("flare-machines-start".into())
+                .spawn(move || p(crate::appctl::UiMsg::Machines(machines_io.list())));
+            if let Err(e) = started {
+                log::warn!("could not read the machines: {e}");
+            }
             rc.borrow_mut().set_settings(settings);
         }
         *inputs_cell.borrow_mut() = Some(rc.borrow().decor_inputs());

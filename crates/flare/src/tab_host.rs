@@ -249,6 +249,18 @@ impl TabHost {
         self.remote_sized.borrow_mut().remove(id);
     }
 
+    /// A remote tab goes from this window and its host session goes on (remote sessions PR 7, "Hide here only", rule
+    /// 1192): the pty lets go (`remote.detach`), never `remote.close`. A no-op for a tab with no handle.
+    pub fn leave(&mut self, id: &str) {
+        if self.handles.remove(id).is_none() {
+            return;
+        }
+        self.mgr.leave(id);
+        self.order.retain(|x| x != id);
+        self.shell_ids.remove(id);
+        self.remote_sized.borrow_mut().remove(id);
+    }
+
     /// Who sets the tab's size now.
     pub fn size_owner(&self, id: &str) -> SizeOwner {
         if self.remote_sized.borrow().contains_key(id) {

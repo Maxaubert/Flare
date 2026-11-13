@@ -2404,7 +2404,12 @@ impl AppDispatcher {
                 only_fields(params, &["folder", "resume"], "remote.open")?;
                 let folder = str_param(params, "folder")?
                     .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "folder is required"))?;
-                let dir = host_folder(folder)?;
+                // `~` alone is this host's home folder (remote sessions PR 7: the + menu's shell on a machine).
+                let dir = if folder == crate::machines::HOST_HOME {
+                    std::path::PathBuf::from(&self.home)
+                } else {
+                    host_folder(folder)?
+                };
                 // sync-ok: the control channel's worker asks the disk, never the UI thread
                 if !dir.is_dir() {
                     return Err(CtlError::new(
@@ -6089,6 +6094,30 @@ mod tests {
             *ops.lock().unwrap(),
             ["CtlOp::RemoteOpen", "CtlOp::RemoteOpen"]
         );
+    }
+
+    /// Remote sessions PR 7: `~` alone is the host's home folder (the + menu's shell on a machine, whose home the viewer
+    /// does not know); `~/x` is still no host path.
+    #[test]
+    fn remote_open_reads_a_lone_tilde_as_the_hosts_home() {
+        let (mut d, ops, _) = remote_rig();
+        let dir = tempfile::tempdir().unwrap();
+        let c = bridge(1);
+        d.home = dir.path().join("gone").to_string_lossy().into_owned();
+        assert_eq!(
+            code_of(d.call(&c, Method::RemoteOpen, json!({"folder": "~"}))),
+            code::NOT_FOUND
+        );
+        d.home = dir.path().to_string_lossy().into_owned();
+        assert!(
+            d.call(&c, Method::RemoteOpen, json!({"folder": "~"}))
+                .is_ok()
+        );
+        assert_eq!(
+            code_of(d.call(&c, Method::RemoteOpen, json!({"folder": "~/x"}))),
+            code::BAD_PARAMS
+        );
+        assert_eq!(*ops.lock().unwrap(), ["CtlOp::RemoteOpen"]);
     }
 
     /// `remote.ls` lists one host folder on the worker: folders first, then by name, bounded.

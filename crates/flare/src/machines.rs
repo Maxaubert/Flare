@@ -3,7 +3,7 @@
 //!
 //! `{"machines":[{"id":"mac","name":"Mac Mini","kind":"mac","ssh":"mac-mini","user":"max","flare":"/Applications/..."}]}`
 //!
-//! Hand-edited until PR 7's page. A machine whose id, host or user is not a plain word is left out when it is read
+//! Settings > Machines (PR 7, `machines_page`) adds and removes them; a hand edit still works. A machine whose id, host or user is not a plain word is left out when it is read
 //! (no option smuggled into ssh's argv, rule 290); an unknown `kind` reads as no kind and is never written back
 //! (rule 40). Saving writes the whole file at once (`write_atomic`, rule 36). Every read and write is a disk call:
 //! a worker's, never the UI thread's (rule 34).
@@ -69,7 +69,6 @@ pub fn parse_machines(raw: &str) -> Vec<Machine> {
 
 /// Pure: the file's text for `machines`. A machine with no kind is written with none (rule 40: an unknown kind read
 /// in is not turned into a guess).
-#[cfg_attr(not(test), allow(dead_code))] // PR 7's Settings > Machines saves; held by the tests here until then
 pub fn machines_json(machines: &[Machine]) -> String {
     let list: Vec<Value> = machines
         .iter()
@@ -126,7 +125,6 @@ impl FileMachines {
     }
 
     /// Writes the whole list at once (a temp file, then a rename, rule 36). BLOCKING: a worker's call.
-    #[cfg_attr(not(test), allow(dead_code))] // PR 7's Settings > Machines saves; held by the tests here until then
     pub fn save(&self, machines: &[Machine]) -> std::io::Result<()> {
         flare_settings::atomic::write_atomic(&self.path, &machines_json(machines))
     }
@@ -135,6 +133,77 @@ impl FileMachines {
 impl MachinesPort for FileMachines {
     fn list(&self) -> Vec<Machine> {
         read_machines(&self.path)
+    }
+}
+
+/// The folder a + menu row opens a remote shell in (remote sessions PR 7): `remote.open` reads this word as the host's
+/// own home folder, which the viewer does not know. The tab shows the host's real folder once its shell reports it.
+pub const HOST_HOME: &str = "~";
+
+/// Where Settings > Machines looks for Flare on a host it adds (remote sessions PR 7), in this order: on the login
+/// shell's PATH, then where the Mac app keeps it. The first that answers `remote.hello` is the one saved.
+pub const FLARE_CANDIDATES: [&str; 2] = ["flare", "/Applications/Flare.app/Contents/MacOS/flare"];
+
+/// Pure: the system `remote.hello` named (`mac`, `pc`); any other word is no kind (rule 40).
+pub fn os_of_hello(word: &str) -> Option<Os> {
+    Os::parse(word)
+}
+
+/// Pure: an id for a new machine named `name`: its letters and digits in lower case, a dash for the rest, never one
+/// of `taken` (`-2`, `-3` and so on after it), always one plain argv word.
+pub fn machine_id(name: &str, taken: &[String]) -> String {
+    let mut base = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            base.push(c.to_ascii_lowercase());
+        } else if !base.ends_with('-') && !base.is_empty() {
+            base.push('-');
+        }
+    }
+    let base = base.trim_end_matches('-');
+    let base: String = if base.is_empty() { "machine" } else { base }
+        .chars()
+        .take(40)
+        .collect();
+    if !taken.contains(&base) {
+        return base;
+    }
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|id| !taken.contains(id))
+        .unwrap_or(base)
+}
+
+/// Pure: the one red line a failed link check shows under the add form, or as a machine's Status tip (owner pick,
+/// remote sessions PR 7). A protocol refusal says which side to update; the version line names both protocols, the
+/// host's first, whichever end noticed (rule 278). `here` is this Flare's remote protocol.
+pub fn failure_line(host: &str, e: &crate::remote_link::LinkError, here: u32) -> String {
+    use crate::remote_link::LinkError;
+    match e {
+        LinkError::Refused(err) if err.code == flare_ctl::code::UNSUPPORTED_PROTOCOL => {
+            let nums: Vec<u64> = err
+                .message
+                .split(|c: char| !c.is_ascii_digit())
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            let there = nums.iter().copied().find(|n| *n != u64::from(here));
+            match there {
+                Some(t) => format!(
+                    "Flare there speaks remote protocol {t}, here {here}. Update {}.",
+                    if t < u64::from(here) {
+                        "it there"
+                    } else {
+                        "Flare here"
+                    }
+                ),
+                None => err.message.clone(),
+            }
+        }
+        LinkError::Refused(err) if err.code == flare_ctl::code::HOST_NOT_READY => {
+            err.message.clone()
+        }
+        LinkError::Refused(err) => format!("{host} said: {}", err.message),
+        LinkError::Down(_) => format!("No Flare answered over SSH on {host}."),
     }
 }
 
@@ -208,5 +277,50 @@ mod tests {
             "no machine called nas in machines.json; the machines are mac"
         );
         assert!(unknown_machine("nas", &[]).contains("names none"));
+    }
+
+    #[test]
+    fn a_new_machines_id_is_a_plain_word_from_its_name_and_never_one_taken() {
+        assert_eq!(machine_id("Mac Mini", &[]), "mac-mini");
+        assert_eq!(machine_id("  Max's PC!! ", &[]), "max-s-pc");
+        assert_eq!(machine_id("---", &[]), "machine");
+        assert_eq!(machine_id("Ærlig", &[]), "rlig");
+        let taken = vec!["mac-mini".to_string(), "mac-mini-2".to_string()];
+        assert_eq!(machine_id("Mac mini", &taken), "mac-mini-3");
+        for n in ["Mac Mini", "-x", "a b c", "ÆØÅ"] {
+            assert!(argv_word(&machine_id(n, &[])), "{n}");
+        }
+    }
+
+    /// The owner's one red line: a version refusal says which side to update, whichever end noticed (rule 278).
+    #[test]
+    fn a_failed_check_is_one_line_that_says_what_to_do() {
+        use crate::remote_link::LinkError;
+        use flare_ctl::CtlError;
+        let refused = |code: &str, msg: &str| LinkError::Refused(CtlError::new(code, msg));
+        // The viewer noticed: "remote protocol 2 here, 1 there".
+        let older = refused("unsupported_protocol", "remote protocol 2 here, 1 there");
+        assert_eq!(
+            failure_line("studio", &older, 2),
+            "Flare there speaks remote protocol 1, here 2. Update it there."
+        );
+        // The host noticed, in its own words: "remote protocol 3 here, 2 there".
+        let newer = refused("unsupported_protocol", "remote protocol 3 here, 2 there");
+        assert_eq!(
+            failure_line("studio", &newer, 2),
+            "Flare there speaks remote protocol 3, here 2. Update Flare here."
+        );
+        let not_ready = refused("host_not_ready", "open Flare there once");
+        assert_eq!(failure_line("desk", &not_ready, 1), "open Flare there once");
+        assert_eq!(
+            failure_line("desk", &LinkError::Down("the link ended".into()), 1),
+            "No Flare answered over SSH on desk."
+        );
+        assert_eq!(
+            failure_line("desk", &refused("unavailable", "no"), 1),
+            "desk said: no"
+        );
+        assert_eq!(os_of_hello("mac"), Some(Os::Mac));
+        assert_eq!(os_of_hello("other"), None);
     }
 }

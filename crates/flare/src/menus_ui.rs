@@ -40,6 +40,9 @@ pub const GLYPH_BADGE_BOLT: &str = "badge-bolt";
 pub const GLYPH_BADGE_STAR: &str = "badge-star";
 pub const GLYPH_BADGE_PLUS: &str = "badge-plus";
 pub const GLYPH_BADGE_PIN: &str = "badge-pin";
+/// A remote machine's system (remote sessions PR 7): filled logos on the 24-unit box.
+pub const GLYPH_LOGO_MAC: &str = "logo-mac";
+pub const GLYPH_LOGO_PC: &str = "logo-pc";
 
 /// The glyph a badge icon is drawn with, for a built-in badge name (`flare_ctl::decor::BADGE_ICONS`).
 pub fn badge_glyph(icon: &str) -> Option<&'static str> {
@@ -103,6 +106,12 @@ pub fn glyph_path(name: &str) -> &'static str {
         }
         GLYPH_BADGE_PLUS => "M12 5v14M5 12h14",
         GLYPH_BADGE_PIN => "M15 3l6 6-3 1-4 4 .5 4.5L10 14l-6 6-1-1 6-6-4.5-4.5L9 8l4-4z",
+        GLYPH_LOGO_MAC => {
+            "M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"
+        }
+        GLYPH_LOGO_PC => {
+            "M0 0h11.377v11.372H0zm12.623 0H24v11.372H12.623zM0 12.623h11.377V24H0zm12.623 0H24V24H12.623z"
+        }
         _ => "",
     }
 }
@@ -176,6 +185,43 @@ pub enum MenuKind {
 /// The folder menu's first row: the folder picker, then a tab there (2026-10-27).
 pub const CHOOSE_FOLDER: &str = "Choose a folder\u{2026}";
 
+/// What a machine's row in the + menu carries instead of a folder (remote sessions PR 7): this mark, then the machine's
+/// id. A NUL starts it, so no folder's path is ever read as one.
+pub const MACHINE_ROW: &str = "\u{0}machine:";
+
+/// The machine a + menu row opens a shell on, for a machine's row.
+pub fn machine_of_row(path: &str) -> Option<&str> {
+    path.strip_prefix(MACHINE_ROW)
+}
+
+/// The logo glyph of a machine's system (remote sessions PR 7); none for a system not known.
+pub fn machine_logo(kind: Option<flare_tabs::tabs::Os>) -> Option<&'static str> {
+    kind.map(|k| match k {
+        flare_tabs::tabs::Os::Mac => GLYPH_LOGO_MAC,
+        flare_tabs::tabs::Os::Pc => GLYPH_LOGO_PC,
+    })
+}
+
+/// The + menu's machine rows (owner pick, 2026-11-12): one a linked machine, its system's logo and its name, after a
+/// rule. A pick opens a shell tab on that machine, in the host's home folder; there is no submenu.
+fn machine_rows(machines: &[crate::machines::Machine]) -> Vec<(MenuRowData, String)> {
+    machines
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let mut row = MenuRowData::plain(&m.name);
+            if let Some(g) = machine_logo(m.kind) {
+                row.icon_cmd = glyph_path(g).to_string();
+                row.filled_icon = true;
+            } else {
+                row.icon = GLYPH_LINK;
+            }
+            row.group = i == 0;
+            (row, format!("{MACHINE_ROW}{}", m.id))
+        })
+        .collect()
+}
+
 /// What a starter folder's row says on its right: "user folder" for the user's own, `~\Documents` for one inside
 /// it, nothing for one elsewhere (a Documents moved to another drive).
 fn starter_hint(path: &str, home: &str) -> String {
@@ -202,11 +248,19 @@ fn starter_hint(path: &str, home: &str) -> String {
 /// Desktop, the user folder: those that exist) fill the empty spots; a real recent pushes one out. Nothing to
 /// list at all: a disabled note under the first row. Each row comes with the folder it opens ("" for the first
 /// row and the note).
+/// After them, one row per linked machine (remote sessions PR 7, [`machine_rows`]).
 pub fn plus_menu_rows(
     prefs: &PrefStore,
     starters: &[String],
     home: &str,
+    machines: &[crate::machines::Machine],
 ) -> Vec<(MenuRowData, String)> {
+    let mut rows = folder_rows(prefs, starters, home);
+    rows.extend(machine_rows(machines));
+    rows
+}
+
+fn folder_rows(prefs: &PrefStore, starters: &[String], home: &str) -> Vec<(MenuRowData, String)> {
     let (pinned, recent) = (pinned_roots(prefs), recent_roots(prefs));
     let places = place_rows(&pinned, &recent);
     let fill = starter_fill(&pinned, &recent, starters, RECENT_SHOWN);
@@ -255,16 +309,21 @@ pub fn toggle_pin_in_menu(
     index: usize,
     starters: &[String],
     home: &str,
+    machines: &[crate::machines::Machine],
 ) {
     let Some((_, path)) = rows.get(index) else {
         return;
     };
-    if path.is_empty() {
+    if path.is_empty() || machine_of_row(path).is_some() {
         return;
     }
     toggle_pin(prefs, &path.clone());
-    *rows = plus_menu_rows(prefs, starters, home);
+    *rows = plus_menu_rows(prefs, starters, home, machines);
 }
+
+/// A remote tab's menu row after Close tab (remote sessions PR 7, rule 1192): the tab goes from this window and the
+/// session goes on on its machine.
+pub const HIDE_HERE: &str = "Hide here only";
 
 /// A tab's own menu: Close tab (with its key) and, for a folder tab only, Copy folder path.
 /// Settings has no folder, and copying "" would blank the clipboard.
@@ -426,7 +485,7 @@ mod tests {
     #[test]
     fn the_plus_menu_is_choose_then_pins_then_five_recents_or_a_disabled_note() {
         let prefs = PrefStore::memory();
-        let empty = plus_menu_rows(&prefs, &[], "");
+        let empty = plus_menu_rows(&prefs, &[], "", &[]);
         assert_eq!(labels(&empty), [CHOOSE_FOLDER, "No recent folders"]);
         assert!(!empty[0].0.disabled);
         assert_eq!(empty[0].0.icon, GLYPH_FOLDER);
@@ -437,7 +496,7 @@ mod tests {
         }
         toggle_pin(&prefs, r"C:\p\pinA");
         toggle_pin(&prefs, r"C:\p\pinB");
-        let rows = plus_menu_rows(&prefs, &[], "");
+        let rows = plus_menu_rows(&prefs, &[], "", &[]);
         assert_eq!(rows.len(), 8);
         assert_eq!(rows[0].0.label, CHOOSE_FOLDER);
         assert_eq!(rows[0].1, "");
@@ -447,6 +506,53 @@ mod tests {
         // A rule between the first row and the folders.
         assert!(rows[1].0.group && rows[2..].iter().all(|(r, _)| !r.group));
         assert!(rows.iter().all(|(r, _)| !r.disabled));
+    }
+
+    /// Owner pick (remote sessions PR 7): one row per linked machine after the folders, its logo and its name, no pin
+    /// and no submenu; its pick names the machine, never a folder.
+    #[test]
+    fn each_linked_machine_is_one_row_after_the_folders_with_its_logo_and_name() {
+        use crate::machines::Machine;
+        use flare_tabs::tabs::Os;
+        let m = |id: &str, name: &str, kind: Option<Os>| Machine {
+            id: id.into(),
+            name: name.into(),
+            kind,
+            ssh: id.into(),
+            user: None,
+            flare: "flare".into(),
+        };
+        let machines = [
+            m("mac", "Mac Mini", Some(Os::Mac)),
+            m("pc", "Desk", Some(Os::Pc)),
+            m("nas", "nas", None),
+        ];
+        let prefs = PrefStore::memory();
+        remember_root(&prefs, r"C:\w\a");
+        let mut rows = plus_menu_rows(&prefs, &[], "", &machines);
+        assert_eq!(
+            labels(&rows),
+            [CHOOSE_FOLDER, "a", "Mac Mini", "Desk", "nas"]
+        );
+        let (mac, path) = &rows[2];
+        assert_eq!(machine_of_row(path), Some("mac"));
+        assert_eq!(mac.icon_cmd, glyph_path(GLYPH_LOGO_MAC));
+        assert!(mac.filled_icon && mac.group && mac.trailing_icon.is_none() && !mac.flyout);
+        assert_eq!(rows[3].0.icon_cmd, glyph_path(GLYPH_LOGO_PC));
+        assert!(!rows[3].0.group);
+        // A system not known draws no logo of either.
+        assert!(rows[4].0.icon_cmd.is_empty());
+        assert_eq!(rows[4].0.icon, GLYPH_LINK);
+        // A folder's path is never a machine; a machine's row has no pin to toggle.
+        assert_eq!(machine_of_row(r"C:\w\a"), None);
+        toggle_pin_in_menu(&prefs, &mut rows, 2, &[], "", &machines);
+        assert!(pinned_roots(&prefs).is_empty());
+        // No folder known: the note, then the machines.
+        let none = plus_menu_rows(&PrefStore::memory(), &[], "", &machines[..1]);
+        assert_eq!(
+            labels(&none),
+            [CHOOSE_FOLDER, "No recent folders", "Mac Mini"]
+        );
     }
 
     #[test]
@@ -462,7 +568,7 @@ mod tests {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        let rows = plus_menu_rows(&prefs, &starters, home);
+        let rows = plus_menu_rows(&prefs, &starters, home, &[]);
         assert_eq!(
             labels(&rows),
             [CHOOSE_FOLDER, "Documents", "Downloads", "Desktop", "me"]
@@ -477,7 +583,7 @@ mod tests {
         // Two recents: they come first and the last two starters give way.
         remember_root(&prefs, r"C:\work\b");
         remember_root(&prefs, r"C:\work\a");
-        let rows = plus_menu_rows(&prefs, &starters, home);
+        let rows = plus_menu_rows(&prefs, &starters, home, &[]);
         assert_eq!(
             labels(&rows),
             [CHOOSE_FOLDER, "a", "b", "Documents", "Downloads", "Desktop"]
@@ -485,7 +591,7 @@ mod tests {
         assert_eq!(rows[1].0.hint, "");
         // A starter opened once is a recent: listed once, as a recent.
         remember_root(&prefs, r"C:\Users\me\Downloads");
-        let rows = plus_menu_rows(&prefs, &starters, home);
+        let rows = plus_menu_rows(&prefs, &starters, home, &[]);
         assert_eq!(
             labels(&rows),
             [CHOOSE_FOLDER, "Downloads", "a", "b", "Documents", "Desktop"]
@@ -493,7 +599,7 @@ mod tests {
         assert_eq!(rows[1].0.hint, "");
         // Pinning a starter makes it a pin.
         let mut rows = rows;
-        toggle_pin_in_menu(&prefs, &mut rows, 4, &starters, home);
+        toggle_pin_in_menu(&prefs, &mut rows, 4, &starters, home, &[]);
         assert_eq!(
             labels(&rows),
             [
@@ -515,15 +621,15 @@ mod tests {
         for p in [r"C:\x\c", r"C:\x\b", r"C:\x\a"] {
             remember_root(&prefs, p);
         }
-        let mut rows = plus_menu_rows(&prefs, &[], "");
+        let mut rows = plus_menu_rows(&prefs, &[], "", &[]);
         assert_eq!(
             rows.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>(),
             ["", r"C:\x\a", r"C:\x\b", r"C:\x\c"]
         );
         // The first row has no pin: toggling it does nothing.
-        toggle_pin_in_menu(&prefs, &mut rows, 0, &[], "");
+        toggle_pin_in_menu(&prefs, &mut rows, 0, &[], "", &[]);
         assert!(pinned_roots(&prefs).is_empty());
-        toggle_pin_in_menu(&prefs, &mut rows, 3, &[], "");
+        toggle_pin_in_menu(&prefs, &mut rows, 3, &[], "", &[]);
         assert_eq!(
             rows.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>(),
             ["", r"C:\x\c", r"C:\x\a", r"C:\x\b"]
@@ -533,7 +639,7 @@ mod tests {
         assert_eq!(rows[2].0.trailing_tip, "Pin to this menu");
         assert_eq!(rows[3].0.trailing_tip, "Pin to this menu");
         // And back: unpinning drops it to the recents' place.
-        toggle_pin_in_menu(&prefs, &mut rows, 1, &[], "");
+        toggle_pin_in_menu(&prefs, &mut rows, 1, &[], "", &[]);
         assert!(pinned_roots(&prefs).is_empty());
     }
 
@@ -564,6 +670,8 @@ mod tests {
             GLYPH_BADGE_STAR,
             GLYPH_BADGE_PLUS,
             GLYPH_BADGE_PIN,
+            GLYPH_LOGO_MAC,
+            GLYPH_LOGO_PC,
         ] {
             let needle = format!("<string> {name}: \"{}\";", glyph_path(name));
             assert!(
@@ -752,7 +860,7 @@ mod tests {
     fn labels_helper_reads_rows() {
         let prefs = PrefStore::memory();
         assert_eq!(
-            labels(&plus_menu_rows(&prefs, &[], "")),
+            labels(&plus_menu_rows(&prefs, &[], "", &[])),
             [CHOOSE_FOLDER, "No recent folders"]
         );
     }

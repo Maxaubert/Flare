@@ -98,6 +98,7 @@ pub(super) fn build(page: &str, prefs: &PrefStore, look: &LookStore) -> PageMode
         agent_key_labels: String::new(),
         face_of: &face,
         mods: None,
+        machines: None,
     };
     build_page(page, &env, &crate::dictation_page::DictationPageProvider)
 }
@@ -627,10 +628,11 @@ fn the_rail_and_the_find_field_match_reference() {
                 } else {
                     r.items[i].0
                 };
-                // Flare's Mods page (Surfaces stage 8, DIFF-25 in docs/parity.md) is one item Prism Terminal
-                // does not have: the tab below it sits one item (36 + 2) lower than Prism Terminal's.
+                // Flare's Mods page (Surfaces stage 8, DIFF-25 in docs/parity.md) and Machines page (remote sessions
+                // PR 7) are two items Prism Terminal does not have: the tab below them sits two items (36 + 2 each)
+                // lower than Prism Terminal's.
                 let below_mods = !p.end && i > 4;
-                let want = if below_mods { t.1 + 38.0 } else { t.1 };
+                let want = if below_mods { t.1 + 2.0 * 38.0 } else { t.1 };
                 assert!(
                     within(y, want, 1.0),
                     "{page} @{key}: tab {} y {y} vs {}",
