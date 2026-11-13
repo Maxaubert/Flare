@@ -723,6 +723,7 @@ mod tests {
                     .map(|i| SavedTab {
                         cwd: format!("C:\\w\\proj{i:02}"),
                         agent: None,
+                        remote: None,
                     })
                     .collect(),
                 active: 0,

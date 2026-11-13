@@ -467,6 +467,7 @@ mod tests {
                 env: env(),
                 cols: 80,
                 rows: 24,
+                remote: None,
             }
         }
 

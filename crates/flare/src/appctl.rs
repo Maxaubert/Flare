@@ -702,6 +702,7 @@ struct FrontTab {
     cwd: Option<String>,
     shell_cwd: Option<String>,
     alive: bool,
+    remote: bool,
 }
 
 impl FrontTab {
@@ -712,6 +713,7 @@ impl FrontTab {
             cwd: self.cwd.as_deref(),
             shell_cwd: self.shell_cwd.as_deref(),
             alive: self.alive,
+            remote: self.remote,
         }
     }
 }
@@ -2481,6 +2483,13 @@ impl AppCtl {
         self.restore_panels();
         let now = self.now();
         for s in spawns {
+            // A remote tab attaches to its host session again; it is not new work (rule 288).
+            if let Some(r) = &s.remote {
+                let live = flare_term::remote_pty::RemoteLive::new(r.host_tab.clone(), r.last_seq);
+                self.model.set_remote_live(&s.id, live.clone());
+                self.start_remote(&s.id, &r.machine, &s.cwd, live);
+                continue;
+            }
             self.deps.host.spawn(&s.id, &s.cwd, s.resume.as_deref());
             self.note_spawn(&s.id, &s.cwd, s.resume.is_some());
             self.hub.on_spawned(&s.id, &s.cwd, s.resume.as_deref());
@@ -2495,11 +2504,55 @@ impl AppCtl {
         for folder in queued {
             self.open_folder(&folder);
         }
+        // Under --e2e only: the remote tab a scenario asks for (before PR 5's command and PR 7's menu exist).
+        if let Some((machine, folder)) = crate::remote_link::e2e_open(
+            crate::e2e::global()
+                .env(&["FLARE_E2E", "_REMOTE_OPEN"].concat())
+                .as_deref(),
+        ) {
+            self.open_remote(&machine, &folder);
+        }
         self.prewarm_new_tab();
         self.refresh();
     }
 
     // ---- opening and closing tabs -----------------------------------------------------------------
+
+    /// A new remote tab (remote sessions PR 3): a shell tab on `machine` (its id in `machines.json`) in the host's
+    /// `folder`. The host opens the session; this tab shows it. Never blocks: the tab's link worker connects.
+    pub(crate) fn open_remote(&mut self, machine: &str, folder: &str) -> String {
+        let live = flare_term::remote_pty::RemoteLive::default();
+        let id = self.model.open_remote_tab(
+            flare_tabs::tabs::MachineTag::of_id(machine),
+            folder,
+            live.clone(),
+        );
+        self.start_remote(&id, machine, folder, live);
+        self.refresh();
+        id
+    }
+
+    /// Starts a remote tab's session and tells the hub what it is (rules 287, 289).
+    fn start_remote(
+        &mut self,
+        id: &str,
+        machine: &str,
+        folder: &str,
+        live: flare_term::remote_pty::RemoteLive,
+    ) {
+        self.deps.host.spawn_remote(
+            id,
+            flare_term::remote_pty::RemoteSpec {
+                machine: machine.to_string(),
+                folder: folder.to_string(),
+                live,
+            },
+        );
+        self.note_spawn(id, folder, false);
+        self.hub.on_spawned(id, folder, None);
+        self.hub.on_remote_tab(id);
+        self.model.set_agent(id, None);
+    }
 
     /// A new tab in `dir`, shell started. Never blocks.
     pub(crate) fn open_folder(&mut self, dir: &str) -> String {
@@ -3225,6 +3278,7 @@ impl AppCtl {
             cwd: link_folder(self.hub.agent_folder(&t.id), shell),
             shell_cwd: shell.map(str::to_string),
             alive,
+            remote: t.remote.is_some(),
         })
     }
 
@@ -5456,6 +5510,18 @@ impl AppCtl {
                 _ => {}
             }
         }
+        // A remote tab's link learned the host's tab id on its worker: `tabs.json` keeps it at once, so a restart that
+        // comes before any other change still attaches to the same session (rule 288).
+        if !changed
+            && !self.ended
+            && self.model.has_remote_tabs()
+            && self
+                .model
+                .saved_if_restored()
+                .is_some_and(|s| self.last_saved.as_ref() != Some(&s))
+        {
+            changed = true;
+        }
         // Output on the tab in front: the find refreshes after the last of it, and the drawn frame
         // may ask which printed paths exist (a few timer rounds pump those questions).
         if let Some(front) = self.front_id() {
@@ -5710,6 +5776,7 @@ mod tests {
                     .map(|(cwd, agent)| SavedTab {
                         cwd: (*cwd).to_string(),
                         agent: *agent,
+                        remote: None,
                     })
                     .collect(),
                 active: opts.active,

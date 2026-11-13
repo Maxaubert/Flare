@@ -134,6 +134,7 @@ impl Fx {
                     .map(|(cwd, agent)| SavedTab {
                         cwd: cwd.clone(),
                         agent: *agent,
+                        remote: None,
                     })
                     .collect(),
                 active: opts.active,

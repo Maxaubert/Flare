@@ -609,6 +609,12 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 240,
     },
     Scenario {
+        name: "remoteViewer",
+        group: "ctl",
+        run: remote::remote_viewer,
+        limit_secs: 300,
+    },
+    Scenario {
         name: "webPanel",
         group: "web",
         run: web::web_panel,

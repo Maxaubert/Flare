@@ -687,6 +687,10 @@ const E2E_SEAMS: &[&str] = &[
     // The Mac E2E (rule 1106): the shell a new tab starts when the profile saves none (tab_host.rs, macOS
     // only; the harness's sandbox sets pwsh so the PowerShell scenarios run unchanged).
     "FLARE_E2E_SHELL",
+    // Remote sessions PR 3: the viewer's link is a loopback `flare --serve-remote` of another profile instead of ssh,
+    // and one remote tab is opened at start (remote_link.rs, appctl.rs; tools/e2e remoteViewer sets both).
+    "FLARE_E2E_REMOTE_COMMAND",
+    "FLARE_E2E_REMOTE_OPEN",
 ];
 
 /// Every `FLARE_E2E_<NAME>` literal in the text.

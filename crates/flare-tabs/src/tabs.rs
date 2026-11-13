@@ -19,6 +19,44 @@ pub enum Pending {
     Shell,
 }
 
+/// What a remote tab's host is: its logo on the tab (remote sessions PR 7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Os {
+    Mac,
+    Pc,
+}
+
+impl Os {
+    /// `mac` or `pc`; any other word is no kind (rule 40: an unknown value reads as the default and is never
+    /// written back).
+    pub fn parse(s: &str) -> Option<Os> {
+        match s {
+            "mac" => Some(Os::Mac),
+            "pc" => Some(Os::Pc),
+            _ => None,
+        }
+    }
+}
+
+/// The machine a remote tab runs on (remote sessions PR 3): its id in `machines.json`, its name and its kind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MachineTag {
+    pub id: String,
+    pub name: String,
+    pub kind: Option<Os>,
+}
+
+impl MachineTag {
+    /// A machine known only by its id (a restored tab before the machines are read): its name is the id.
+    pub fn of_id(id: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            name: id.to_string(),
+            kind: None,
+        }
+    }
+}
+
 /// One shell and the folder it is in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tab {
@@ -26,6 +64,9 @@ pub struct Tab {
     pub kind: TabKind,
     pub cwd: String,
     pub pending: Option<Pending>,
+    /// Some for a remote tab (remote sessions PR 3, rule 287): a `TabKind::Shell` whose session runs on that
+    /// machine. `cwd` is then a folder of that machine, never statted or opened here.
+    pub remote: Option<MachineTag>,
 }
 
 /// The window's tab list and the id of the tab in front.
@@ -45,11 +86,21 @@ pub fn add_tab(s: &TabState, id: &str, cwd: &str) -> TabState {
         kind: TabKind::Shell,
         cwd: cwd.to_string(),
         pending: None,
+        remote: None,
     });
     TabState {
         tabs,
         active_id: Some(id.to_string()),
     }
+}
+
+/// `add_tab` for a remote tab: a shell tab on `machine`, in a folder of that machine (rule 287).
+pub fn add_remote_tab(s: &TabState, id: &str, cwd: &str, machine: MachineTag) -> TabState {
+    let mut out = add_tab(s, id, cwd);
+    if let Some(t) = out.tabs.last_mut() {
+        t.remote = Some(machine);
+    }
+    out
 }
 
 /// Closing the tab in front hands over to its right neighbour, else its left. Unknown id: unchanged.
@@ -143,6 +194,7 @@ pub fn open_settings(s: &TabState) -> TabState {
         kind: TabKind::Settings,
         cwd: String::new(),
         pending: None,
+        remote: None,
     });
     TabState {
         tabs,

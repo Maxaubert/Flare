@@ -21,7 +21,7 @@ use base64::Engine as _;
 use flare_ctl::{Client, ClientError, Method, RemoteHelloParams, StdioWire};
 use serde_json::{json, Value};
 
-use super::input_b::prompt;
+use super::input_b::{prompt, type_line};
 use crate::ctx::{App, Ctx, Launch};
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -240,5 +240,145 @@ fn loopback_on(
         ended.is_some_and(|s| s.success()),
         "the serve process ends with exit code 0 when its link closes",
     );
+    Ok(())
+}
+
+// ---- remote sessions PR 3: `remoteViewer`, a viewing Flare and a host Flare ----
+
+/// What is typed into the remote tab. Written here in full: nothing else is ever sent to the host's shell.
+const VIEW_MARK: &str = "remote-view-7";
+const VIEW_MARK_2: &str = "remote-view-8";
+
+/// The env of a viewing Flare whose link is a loopback `flare --serve-remote` of the host's profile (never ssh), and,
+/// when `open`, the remote tab it opens at start in `folder`.
+fn viewer_env(exe: &Path, host: &Path, folder: &Path, open: bool) -> Vec<(String, String)> {
+    let cmd = json!([
+        exe.to_string_lossy(),
+        "--serve-remote",
+        format!("--user-data-dir={}", host.display()),
+    ]);
+    let mut env = vec![(
+        concat!("FLARE_E2E", "_REMOTE_COMMAND").to_string(),
+        cmd.to_string(),
+    )];
+    if open {
+        env.push((
+            concat!("FLARE_E2E", "_REMOTE_OPEN").to_string(),
+            json!({"machine": "loop", "folder": folder.to_string_lossy()}).to_string(),
+        ));
+    }
+    env
+}
+
+/// The front tab of `app` once its grid holds `want`; the text then.
+fn front_rows_until(
+    ctx: &mut Ctx,
+    app: &mut App,
+    what: &str,
+    want: impl Fn(&str) -> bool,
+) -> Result<String, String> {
+    let mut text = String::new();
+    let ok = ctx.until(what, 30_000, &mut || {
+        text = super::input_b::rows(app);
+        want(&text)
+    });
+    if ok {
+        Ok(text)
+    } else {
+        Err(format!("{what}: not on the viewer's screen: {text:?}"))
+    }
+}
+
+/// `remoteViewer`: Flare A (the viewer) shows a tab that runs in Flare B (the host), joined by a stdio loopback. A opens
+/// it, types into it and sees the output; A quits and starts again, and the restored tab attaches to the same host
+/// session with no line twice. Both are offscreen on the hidden desktop, as every launch here.
+pub fn remote_viewer(ctx: &mut Ctx) -> Result<(), String> {
+    let alpha = ctx.ensure_world().alpha.clone();
+    let mut host = ctx.launch(Launch {
+        folders: vec![alpha.clone()],
+        ..Launch::default()
+    })?;
+    let r = viewer_on(ctx, &mut host, &alpha);
+    let left = host.close();
+    ctx.ok(left, "the host quits by itself");
+    r
+}
+
+fn viewer_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
+    prompt(host)?;
+    let host_tabs = host.session.state()?.tabs.len();
+    let world = ctx.new_world();
+    let exe = ctx.exe.clone();
+    let mut a = ctx.launch_in(
+        &world,
+        Launch {
+            env: viewer_env(&exe, &host.profile, alpha, true),
+            ..Launch::default()
+        },
+    )?;
+    let typed = (|| -> Result<(), String> {
+        front_rows_until(ctx, &mut a, "the host's prompt in the remote tab", |t| {
+            t.contains("PS ")
+        })?;
+        let mut more = 0;
+        ctx.until("the host has the new tab", 20_000, &mut || {
+            more = host.session.state().map_or(0, |s| s.tabs.len());
+            more > host_tabs
+        });
+        ctx.ok(
+            more == host_tabs + 1,
+            "remote.open opened one tab on the host",
+        );
+        type_line(&mut a, &format!("echo {VIEW_MARK}"))?;
+        let t = front_rows_until(ctx, &mut a, "the typed command's output", |t| {
+            t.matches(VIEW_MARK).count() >= 2
+        })?;
+        ctx.ok(
+            t.matches(VIEW_MARK).count() == 2,
+            "the command and its output show once each on the viewer",
+        );
+        Ok(())
+    })();
+    let quit = a.close();
+    typed?;
+    ctx.ok(quit, "the viewer quits");
+    ctx.ok(
+        host.session.state().map_or(0, |s| s.tabs.len()) == host_tabs + 1,
+        "the viewer's quit leaves the host's session running",
+    );
+
+    // The viewer starts again: the restored tab attaches to the same session and shows its screen, no line twice.
+    let mut a = ctx.launch_in(
+        &world,
+        Launch {
+            env: viewer_env(&exe, &host.profile, alpha, false),
+            ..Launch::default()
+        },
+    )?;
+    let again = (|| -> Result<(), String> {
+        let t = front_rows_until(ctx, &mut a, "the restored remote tab", |t| {
+            t.contains(VIEW_MARK)
+        })?;
+        ctx.ok(
+            t.matches(VIEW_MARK).count() == 2,
+            "after a restart the host's lines show once each",
+        );
+        ctx.ok(
+            host.session.state().map_or(0, |s| s.tabs.len()) == host_tabs + 1,
+            "the restore attached and opened no new host tab",
+        );
+        type_line(&mut a, &format!("echo {VIEW_MARK_2}"))?;
+        let t = front_rows_until(ctx, &mut a, "typing after the restore", |t| {
+            t.matches(VIEW_MARK_2).count() >= 2
+        })?;
+        ctx.ok(
+            t.matches(VIEW_MARK).count() == 2 && t.matches(VIEW_MARK_2).count() == 2,
+            "the restored tab takes typing and no earlier line comes again",
+        );
+        Ok(())
+    })();
+    let quit = a.close();
+    again?;
+    ctx.ok(quit, "the viewer quits again");
     Ok(())
 }

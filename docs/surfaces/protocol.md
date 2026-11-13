@@ -23,7 +23,8 @@ plugins phase 5 adds `session.read`, `tabs.input`, `storage.get` and `storage.se
 1 "Remote link", section 4, section 5 `remote.hello`); remote sessions PR 2 (2026-11-12) adds `flare --serve-remote` (the
 host's bridge), the `bridge` grant and `remote.open`, `remote.ls`, `remote.tabs`, `remote.attach`, `remote.detach`,
 `remote.input`, `remote.resize`, `remote.output`, `remote.snapshot` and `remote.close` (section 1 "The serve process", section
-4, section 5 "remote.*"). Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
+4, section 5 "remote.*"); remote sessions PR 3 (2026-11-12) adds the viewer, the client end of those methods (section 1 "The
+viewer"), with no new method. Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
 
@@ -133,6 +134,23 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     it. Typing, opening and closing are never sent twice. When the link closes the bridge's pipe connections close
     too, and the running Flare stops following that viewer's tabs (their shells go on, rule 280). With no Flare running, `remote.hello` still answers
     and every relayed call is `unavailable` (remote sessions PR 5 starts one hidden).
+  - **The viewer** (remote sessions PR 3, `crates/flare/src/remote_link.rs`). Each remote tab has one link and one
+    worker thread. The link is the child `ssh -o BatchMode=yes -T [-l <user>] -- <host> <command>` (ssh by its absolute
+    path, no console window), every part an argv item of its own; `<host>` and `<user>` come from `machines.json` in the
+    profile and must be plain words that cannot be read as an option. `<command>` is the host's Flare path quoted for its
+    login shell (`'<path>' --serve-remote` for a Mac's sh, `"<path>" --serve-remote` for a PC's cmd, no `&&`) and
+    nothing else: no token, no environment (rule 290). The worker says `remote.hello` (30 s), then `remote.open
+    {folder}` for a new tab (its answer `tab` is kept as the tab's `host_tab`) or straight to `remote.attach {tab}` for a
+    restored one, then `remote.resize` with the tab's size. A tab that has shown nothing yet starts from `remote.snapshot`;
+    after a reconnect it calls `remote.output {since: <the number read>, max: 1048576}` until caught up (`gap: true`: a
+    snapshot instead), with the agent's signals taken out of what it catches up on (rule 289). Then, one call at a time:
+    the typing as `remote.input` calls (each within 1024 intents and 64 KB, a long paste cut on character boundaries),
+    the last size asked as one `remote.resize`, and a `remote.output {since}` poll every 30 ms while output flows,
+    backing off to 250 ms when idle. A call that fails with `no_tab` ends the tab as a shell that exits; any other broken
+    call drops the link, and the worker tries again after 1 s, doubling to 30 s. Closing the tab sends `remote.close`
+    (on a fresh link if the old one is down); the quit and a dropped tab send `remote.detach` (rule 288). Under `--e2e`
+    only, `FLARE_E2E_REMOTE_COMMAND` (a JSON argv) replaces ssh with a loopback `flare --serve-remote` of another profile,
+    and `FLARE_E2E_REMOTE_OPEN` (`{"machine", "folder"}`) opens one remote tab at start.
 
 ## 2. Framing
 
@@ -899,8 +917,9 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   the oldest kept, and the viewer asks for `remote.snapshot`. Answered on the worker, never the UI thread. `no_tab`
   when no connection follows the tab (send `remote.attach` first). Polled in short calls: events are lossy and never
   sent to a link.
-- `remote.snapshot {tab}` -> `{tab, seq, cols, rows, data}`. The tab's screen and up to 1000 lines of history above it
-  as text (base64: clear, home, the lines joined by CR LF; no colours), read while no batch of output is being parsed,
+- `remote.snapshot {tab}` -> `{tab, seq, cols, rows, data}`. The tab's whole screen and history above it, 1000 lines
+  at most, as text (base64: clear, home, the lines joined by CR LF, then CR and the cursor moves up and right that put
+  the cursor where the host's is, rule 293; no colours and no modes), read while no batch of output is being parsed,
   so it holds every byte before `seq` and none after: `remote.output {since: seq}` goes on from it with no byte twice.
   On the worker.
 - `remote.close {tab}` -> `{tab, closed}`. Closes the tab the way a person's close does: an agent at work asks first

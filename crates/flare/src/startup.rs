@@ -461,7 +461,11 @@ pub fn run_live_tabs(user_data_dir: Option<&Path>, n: u32) -> i32 {
         println!("spawn {cwd}");
         host.spawn(&id, &cwd, None);
         ids.push(id);
-        now.push(SavedTab { cwd, agent: None });
+        now.push(SavedTab {
+            cwd,
+            agent: None,
+            remote: None,
+        });
     };
     for t in &plan.tabs {
         open(&mut host, t.cwd.clone());
@@ -976,6 +980,7 @@ mod tests {
             tabs: vec![SavedTab {
                 cwd: "C:\\a".into(),
                 agent: None,
+                remote: None,
             }],
             active: 0,
         });
@@ -1005,6 +1010,7 @@ mod tests {
             tabs: vec![SavedTab {
                 cwd: "C:\\a".into(),
                 agent: None,
+                remote: None,
             }],
             active: 0,
         };
@@ -1023,6 +1029,7 @@ mod tests {
                 cwd: "C:\\a".into(),
                 resume: None,
                 from: Some(0),
+                remote: None,
             }],
             active: 0,
         });

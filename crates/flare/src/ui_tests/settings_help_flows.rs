@@ -57,6 +57,7 @@ fn fx(opts: Opts) -> Fx {
         tabs: vec![SavedTab {
             cwd: CWD.to_string(),
             agent: None,
+            remote: None,
         }],
         active: 0,
     };

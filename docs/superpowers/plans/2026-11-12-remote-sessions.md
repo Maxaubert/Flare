@@ -1,7 +1,7 @@
 # Remote sessions: implementation plan (2026-11-12)
 
 Spec: `docs/superpowers/specs/2026-11-12-remote-sessions-design.md`.
-Status: approved 2026-11-12; building. PR 1 built on `feat/remote-1` (2026-11-12, not merged); PR 2 built on `feat/remote-2` (2026-11-12, stacked on PR 1, not merged); PR 3 next.
+Status: approved 2026-11-12; building. PR 1 built on `feat/remote-1` (2026-11-12, not merged); PR 2 built on `feat/remote-2` (2026-11-12, stacked on PR 1, not merged); PR 3 built on `feat/remote-3` (2026-11-12, stacked on PR 2, not merged); PR 4 next.
 
 Seven PRs, in order. Each one ships alone and passes its own tests. Only PR 7 needs an approved mockup.
 Rule numbers below are "R-new-N". Number them after the last rule in `docs/regression-rules.md` when you write them.
@@ -189,6 +189,43 @@ bridge grant below is rule 284. Where the build differs from the lines above:
 - R-new-11: replayed output never raises agent marks.
 - R-new-12: no tokens or env cross the link. The host builds its own env with `pty_env` (rule 12).
 - R-new-13: remote spawn never uses a warm spare and never mints a `FLARE_TAB_TOKEN`.
+
+**Built (2026-11-12, `feat/remote-3`, stacked on `feat/remote-2`).** Rules R-new-9 to R-new-13 are rules 287 to 291.
+Where the build differs from the lines above:
+- **No `Link` in `flare-term`.** `flare-term` has no `flare-ctl`, so the pty and the link meet in a `RemoteIo`
+  (`remote_pty.rs`): the pty's writer puts typing there, `resize` the last size, `kill` and `leave` the way it goes; the
+  link's worker (`flare/src/remote_link.rs`) takes them and pushes output back. `Link::call` takes `&mut self` (one call
+  at a time on a link). The fake link is an in-process host (`remote_link_tests.rs`), plus one test over a `MemWire`
+  to a served dispatcher; `SshConnector` is the real one.
+- **Typing is read back into intents.** The tab's emulator and key encoder stay as they are; `decode_typing` reads
+  what the tab wrote back into keys, text and pastes (`encode_key` backwards, held by a round-trip test over every
+  named key and chord), and the emulator's answers never reach the writer (`SessionManager::write_reply`). A mouse or
+  focus report is not sent (there is no mouse intent yet).
+- **`kill` closes, `leave` detaches.** `PtyProcess::leave` (default: `kill`) is what the quit calls (`kill_all`), so a
+  local shell is still killed and a remote tab only detaches. `TabHost::shutdown` no longer kills tab by tab.
+- **The first attach is a snapshot.** A new or restored tab has an empty screen, so it starts from `remote.snapshot`,
+  then polls from its `seq`; `since: last_seq` is used for a reconnect within a run (`gap`: a snapshot). `last_seq` is
+  still kept in `tabs.json`, but is no reason on its own to write it.
+- **Replay without marks** is three parts: the snapshot is plain text (`plain_snapshot`), a catch-up has its OSC 777
+  and 7501 taken out (`SignalStrip`), and the hub reads a remote tab's screen as blank, keeps no question watch and
+  does not score its first 3 s of output (`AgentHub::on_remote_tab`). There is no in-band "replayed" marker.
+- **`machines.json` by hand.** A small reader in `remote_link.rs` (`id`, `name`, `kind`, `ssh`, `user`, `flare`); PR 5's
+  `machines.rs` registry takes it over. `MachineTag { id, name, kind: Option<Os> }`; a restored tab knows only the id
+  until PR 7 reads names and logos. The ssh command builder is here already (the plan put it in PR 6).
+- **One link per tab.** No ssh connection sharing yet; a second tab on the same machine starts a second ssh.
+- **Kind == Shell audit.** Skipped for a remote tab: file link open, preview, thumbnail and menu path (`TabInfo.remote`),
+  a dropped file, the live-preview chip, recent folders, `cd`, `live_pids` and the restore's stat. Kept: the Cwd report
+  (the host's folder becomes the tab's folder), the tab menu (Close, Copy folder path), plugins' tab actions (their
+  typing goes as intents), Ask agent.
+- **Opening one.** No menu or command yet: under `--e2e` `FLARE_E2E_REMOTE_OPEN` opens one at start, and
+  `FLARE_E2E_REMOTE_COMMAND` replaces ssh with a loopback `flare --serve-remote` of another profile.
+- **Tests.** Unit: `remote_pty::tests`, `session::remote_tests`, `restore::remote_tests`, `model::remote_tests`,
+  `remote_link::tests`, `tab_host::tests::a_remote_tab_never_starts_a_local_shell_and_the_quit_leaves_its_session`,
+  `agent_hub::tests::a_remote_tabs_replay_raises_no_mark_and_live_output_does`. ui_tests:
+  `a_remote_tab_shows_the_hosts_output_and_takes_typing`. E2E: `remoteViewer`.
+- **Known limits.** Typing while the link is down is dropped. A `remote.open` whose answer is lost to a broken link is
+  sent again, and may leave a second tab on the host. A remote tab shows no colours after a snapshot. A refused open
+  leaves the tab with the reason in red and no session.
 
 **Depends on.** PR 2. **UI.** Almost none (no new screens). The Mac/PC tag is deferred to PR 7.
 
@@ -382,5 +419,12 @@ sshd: the serve process is a `windows_subsystem = "windows"` binary in a release
 build with piped stdin and stdout (`CREATE_NO_WINDOW`) and speaks the whole protocol over them; the debug build does
 the same in `tests/serve_remote.rs`. With no stdin or stdout handle at all `from_process` fails and `--serve-remote` exits 2 with one stderr line, never a hang. Whether sshd hands a GUI-subsystem child its pipe handles the same way is
 the one part left for the by-hand list. Spikes 2 and 3 are unchanged.
+
+Spike status after PR 3 (2026-11-12): still no ssh to any real machine. The viewer's whole path runs in `remoteViewer`
+(two Flares, the link a loopback `flare --serve-remote` started as the viewer's child with piped stdio and no window),
+and the ssh command line is held by a table test (argv items, sh and cmd quoting). Not proven without a real ssh and
+left for the by-hand list: that Windows OpenSSH's `ssh.exe` started with no console (`CREATE_NO_WINDOW`) and
+`BatchMode=yes` runs the remote command with clean stdio both ways; that a Mac's login shell and a PC's `cmd` run the
+quoted command as built (paths with spaces); and how long a real ssh takes to come up, which the 30 s hello wait assumes.
 
 Open risks tracked across PRs: closed enum arrays (`Method::ALL`, `Namespace::ALL`, `Permission::ALL`) and their exhaustive tests; event lossiness (solved by polling and sequence numbers); stuck-handler cap of 32 on slow links (short polls only); two writers on one session; version skew between machines (refuse with one line); `tabs.changed` is reserved and unsent, so the viewer polls `remote.tabs` and `remote.status`.
