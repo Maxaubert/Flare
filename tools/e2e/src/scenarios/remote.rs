@@ -19,10 +19,12 @@ use std::os::windows::process::CommandExt;
 
 use base64::Engine as _;
 use flare_ctl::{Client, ClientError, Method, RemoteHelloParams, StdioWire};
+use flare_e2e_proto::Request;
 use serde_json::{json, Value};
 
 use super::input_b::{prompt, type_line};
 use crate::ctx::{App, Ctx, Launch};
+use crate::standins::agent_proc;
 
 const WAIT: Duration = Duration::from_secs(20);
 #[cfg(windows)]
@@ -375,6 +377,165 @@ fn viewer_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> 
             t.matches(VIEW_MARK).count() == 2 && t.matches(VIEW_MARK_2).count() == 2,
             "the restored tab takes typing and no earlier line comes again",
         );
+        Ok(())
+    })();
+    let quit = a.close();
+    again?;
+    ctx.ok(quit, "the viewer quits again");
+    Ok(())
+}
+
+// ---- remote sessions PR 4: `remoteStatus`, the host's agent marks on the viewer ----
+
+/// "Notify me when an agent asks" on (it is off by default), stored in the profile before the launch.
+fn notify_on(profile: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(profile).map_err(|e| e.to_string())?;
+    std::fs::write(
+        profile.join("settings.json"),
+        json!({"flare.window.notifyAsk": "1"}).to_string(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// `[Console]::Write` of an OSC with the payload: the line the stand-in agent runs on the host.
+fn osc_line(payload: &str) -> String {
+    let p = payload.replace('\'', "''");
+    format!("[Console]::Write(([string][char]27)+']{p}'+([string][char]7))")
+}
+
+fn hook(state: &str) -> String {
+    osc_line(&format!("777;flare-agent;state={state}"))
+}
+
+/// The state word of the viewer's or the host's tab `id`: `none`, `working`, `question`, `finished` or `failed`.
+fn tab_state(app: &mut App, id: &str) -> String {
+    let v = super::input_b::probe(app, "agent.state", Value::Null);
+    v["tabs"]
+        .as_array()
+        .and_then(|t| t.iter().find(|t| t["id"] == id))
+        .and_then(|t| t["state"].as_str())
+        .unwrap_or("?")
+        .to_string()
+}
+
+fn toast_count(app: &mut App) -> usize {
+    super::input_b::probe(app, "notify.log", Value::Null)["toasts"]
+        .as_array()
+        .map_or(0, Vec::len)
+}
+
+/// Lets `ms` of real time go by (a wait that holds nothing, to see that nothing happens).
+fn pass(ctx: &mut Ctx, ms: u64) {
+    let t = std::time::Instant::now();
+    ctx.until("time to pass", ms + 5_000, &mut || {
+        t.elapsed() >= Duration::from_millis(ms)
+    });
+}
+
+/// `remoteStatus`: Flare B (the host) runs a stand-in agent in the tab Flare A (the viewer) follows, started by what A
+/// types. It works, asks and finishes. A shows the work, the question (one notification on A, none on B, rule 295) and
+/// its own Finished mark (rule 294); A quits and starts again, attaches, and the finished turn is not raised a second
+/// time. Both are offscreen on the hidden desktop, as every launch here.
+pub fn remote_status(ctx: &mut Ctx) -> Result<(), String> {
+    let hw = ctx.new_world();
+    notify_on(&hw.profile)?;
+    let mut host = ctx.launch_in(
+        &hw,
+        Launch {
+            folders: vec![hw.alpha.clone()],
+            ..Launch::default()
+        },
+    )?;
+    let r = status_on(ctx, &mut host, &hw.alpha);
+    let left = host.close();
+    ctx.ok(left, "the host quits by itself");
+    r
+}
+
+fn status_on(ctx: &mut Ctx, host: &mut App, alpha: &Path) -> Result<(), String> {
+    prompt(host)?;
+    let world = ctx.new_world();
+    notify_on(&world.profile)?;
+    let exe = ctx.exe.clone();
+    let mut a = ctx.launch_in(
+        &world,
+        Launch {
+            env: viewer_env(&exe, &host.profile, alpha, true),
+            ..Launch::default()
+        },
+    )?;
+    let marked = (|| -> Result<(), String> {
+        front_rows_until(ctx, &mut a, "the host's prompt in the remote tab", |t| {
+            t.contains("PS ")
+        })?;
+        let tab = super::input_b::front_tab(&mut a);
+        // The viewer is away (its window does not have the keyboard): a finished turn is news there.
+        a.session.call(&Request::Focus { on: false })?;
+        // A stand-in agent process on the host, so the host's own poll believes the hooks (review #47).
+        type_line(&mut a, &agent_proc::command(&host.profile)?)?;
+        pass(ctx, agent_proc::SETTLE_MS);
+        type_line(&mut a, &hook("working"))?;
+        let w = ctx.until("the viewer shows the work", 20_000, &mut || {
+            tab_state(&mut a, &tab) == "working"
+        });
+        ctx.ok(w, "the host's work shows on the viewer's remote tab");
+        type_line(&mut a, &hook("question"))?;
+        let q = ctx.until("the viewer shows the question", 20_000, &mut || {
+            tab_state(&mut a, &tab) == "question"
+        });
+        ctx.ok(q, "the host's question shows on the viewer");
+        let told = ctx.until("the viewer's notification", 15_000, &mut || {
+            toast_count(&mut a) >= 1
+        });
+        ctx.ok(told, "the viewer announces the question");
+        pass(ctx, 2_000);
+        ctx.ok(
+            toast_count(&mut a) == 1,
+            format!(
+                "one notification for one question on the viewer ({})",
+                toast_count(&mut a)
+            ),
+        );
+        ctx.ok(
+            toast_count(host) == 0,
+            format!(
+                "none on the host for a tab the viewer follows ({})",
+                toast_count(host)
+            ),
+        );
+        type_line(&mut a, &hook("done"))?;
+        let d = ctx.until("the viewer's finished mark", 20_000, &mut || {
+            tab_state(&mut a, &tab) == "finished"
+        });
+        ctx.ok(d, "the turn's end is a finished mark on the viewer");
+        Ok(())
+    })();
+    let quit = a.close();
+    marked?;
+    ctx.ok(quit, "the viewer quits");
+
+    // The viewer starts again: the restored tab attaches and hears the host still say `done`; nothing is raised again.
+    let mut a = ctx.launch_in(
+        &world,
+        Launch {
+            env: viewer_env(&exe, &host.profile, alpha, false),
+            ..Launch::default()
+        },
+    )?;
+    let again = (|| -> Result<(), String> {
+        front_rows_until(ctx, &mut a, "the restored remote tab", |t| {
+            t.contains("PS ")
+        })?;
+        let tab = super::input_b::front_tab(&mut a);
+        a.session.call(&Request::Focus { on: false })?;
+        // Two status polls and more go by.
+        pass(ctx, 4_000);
+        let s = tab_state(&mut a, &tab);
+        ctx.ok(
+            s != "finished",
+            format!("a reconnect does not raise the finished turn again ({s})"),
+        );
+        ctx.ok(toast_count(&mut a) == 0, "and announces no old question");
         Ok(())
     })();
     let quit = a.close();

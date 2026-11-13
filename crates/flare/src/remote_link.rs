@@ -415,6 +415,8 @@ pub struct Timing {
     pub long_call: Duration,
     /// The close or detach sent as the tab goes.
     pub end_call: Duration,
+    /// Between two `remote.status` polls (remote sessions PR 4).
+    pub status_every: Duration,
 }
 
 impl Default for Timing {
@@ -427,6 +429,7 @@ impl Default for Timing {
             call: Duration::from_secs(15),
             long_call: Duration::from_secs(60),
             end_call: Duration::from_secs(5),
+            status_every: Duration::from_millis(1500),
         }
     }
 }
@@ -440,11 +443,26 @@ pub fn next_backoff(prev: Duration, max: Duration) -> Duration {
 pub struct RemoteSpawner {
     connector: Arc<dyn Connector>,
     timing: Timing,
+    /// Wakes the window when a tab's link heard a new status from the host (remote sessions PR 4).
+    wake: Option<Wake>,
 }
+
+/// Wakes the UI thread (the window's `HostWake`).
+pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
 impl RemoteSpawner {
     pub fn new(connector: Arc<dyn Connector>, timing: Timing) -> Self {
-        Self { connector, timing }
+        Self {
+            connector,
+            timing,
+            wake: None,
+        }
+    }
+
+    /// The window is woken when a remote tab's status changes on the host.
+    pub fn with_wake(mut self, wake: Wake) -> Self {
+        self.wake = Some(wake);
+        self
     }
 }
 
@@ -463,6 +481,8 @@ impl PtySpawner for RemoteSpawner {
             strip: SignalStrip::new(),
             fresh: true,
             told: false,
+            wake: self.wake.clone(),
+            status: crate::remote_status::StatusPoll::new(self.timing.status_every),
         };
         std::thread::Builder::new()
             .name("flare-remote-link".into())
@@ -491,6 +511,9 @@ struct Worker {
     fresh: bool,
     /// A refusal of the link was shown in the tab once already.
     told: bool,
+    wake: Option<Wake>,
+    /// The `remote.status` polls of this tab (remote sessions PR 4).
+    status: crate::remote_status::StatusPoll,
 }
 
 fn b64(v: &Value) -> Vec<u8> {
@@ -642,6 +665,8 @@ impl Worker {
         }
         self.fresh = false;
         live.set_link(LinkState::Live);
+        // The host's status is asked at once on every attach, and its first answer is always news (rule 294).
+        self.status.attached();
         self.pump(&mut *link, &tab)
     }
 
@@ -690,6 +715,40 @@ impl Worker {
             if data.len() < OUTPUT_MAX {
                 return Ok(());
             }
+        }
+    }
+
+    /// The host's status of the tab, every `status_every` (remote sessions PR 4, rule 294): a change is handed to the
+    /// window and wakes it. A host with no `remote.status` (an older Flare, `unknown_method`) is asked no more on this
+    /// link; any other refusal (a host UI wait that timed out, a busy or rate refusal) is passing and the next poll asks
+    /// again (rule 298). A broken link ends the polls as any call's does.
+    fn poll_status(&mut self, link: &mut dyn Link, tab: &str) -> Result<(), LinkError> {
+        if !self.status.due(Instant::now()) {
+            return Ok(());
+        }
+        match link.call(Method::RemoteStatus, json!({}), self.t.call) {
+            Ok(v) => {
+                if let Some(s) = self.status.news(&v, tab) {
+                    self.spec.live.set_status(s);
+                    if let Some(w) = &self.wake {
+                        w();
+                    }
+                }
+                Ok(())
+            }
+            Err(LinkError::Refused(e)) if e.code == code::UNKNOWN_METHOD => {
+                log::info!("remote.status unknown to the host, not asked again on this link");
+                self.status.off();
+                Ok(())
+            }
+            Err(LinkError::Refused(e)) => {
+                log::info!(
+                    "remote.status refused, asked again at the next poll: {}",
+                    e.code
+                );
+                Ok(())
+            }
+            Err(e) => Err(e),
         }
     }
 
@@ -752,6 +811,9 @@ impl Worker {
                     self.spec.live.set_seq(v["to"].as_u64().unwrap_or(since));
                 }
                 Err(e) => return self.failed(e),
+            }
+            if let Err(e) = self.poll_status(link, tab) {
+                return self.failed(e);
             }
             idle = if busy {
                 self.t.poll_min

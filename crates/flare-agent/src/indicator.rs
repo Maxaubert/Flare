@@ -82,6 +82,18 @@ pub enum Effect {
     AskLook { tab: String },
 }
 
+/// What a remote tab's host says its agent is doing (remote sessions PR 4, rule 294), as the viewer's marks take it:
+/// work and a question are shown as said; a finished or failed turn is never copied, only an end of the work this
+/// viewer showed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoteMark {
+    Working,
+    Question,
+    Finished,
+    Failed { kind: Option<String> },
+    Idle,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LogItem {
     Hook {
@@ -380,6 +392,71 @@ impl Indicator {
     /// Whether the tab's marks come from its OSC 7501 reports.
     pub fn reports_status(&self, tab: &str) -> bool {
         self.status.contains_key(tab)
+    }
+
+    /// A remote tab's host said what its agent does (remote sessions PR 4, rules 294 and 61). The poll is blind to a
+    /// remote tab and its screen is not read, so the host's words stand in for them:
+    /// - `Working` and `Question` are shown as said (the tab holds an agent: `kind`, else Claude).
+    /// - `Finished` and `Failed` take the work and the question down. Only when this viewer showed the tab working or
+    ///   asking, and nobody here looks at it, is its own Finished or Failed mark raised; its own looking holds and
+    ///   clears it. A status read again after a reconnect, the mark gone already, raises nothing.
+    /// - `Idle` ends the work as `Finished` does (rule 298): a host that looked at the tab never raised its own done
+    ///   mark and goes from working straight to idle, so the end of the work this viewer showed is still its Finished.
+    ///   Idle after nothing shown here raises nothing.
+    pub fn remote_mark(
+        &mut self,
+        now: u64,
+        tab: &str,
+        mark: RemoteMark,
+        kind: Option<DetectedAgent>,
+    ) {
+        let word = match &mark {
+            RemoteMark::Working => "working",
+            RemoteMark::Question => "question",
+            RemoteMark::Finished => "done",
+            RemoteMark::Failed { .. } => "failed",
+            RemoteMark::Idle => "idle",
+        };
+        self.why(tab, &format!("remote status {word}"));
+        let busy = self.working.contains(tab) || self.question.contains(tab);
+        match mark {
+            RemoteMark::Working | RemoteMark::Question => {
+                self.agent_kinds
+                    .entry(tab.to_string())
+                    .or_insert(kind.unwrap_or(DetectedAgent::Claude));
+                self.agent_ids.insert(tab.to_string());
+                if mark == RemoteMark::Working {
+                    self.working.insert(tab.to_string());
+                    self.question.remove(tab);
+                    self.failed_kinds.remove(tab);
+                } else {
+                    self.working.remove(tab);
+                    self.question.insert(tab.to_string());
+                }
+            }
+            RemoteMark::Finished | RemoteMark::Failed { .. } | RemoteMark::Idle => {
+                self.working.remove(tab);
+                self.question.remove(tab);
+                let raise = busy && self.agent_ids.contains(tab) && !self.looked_at(tab);
+                match mark {
+                    RemoteMark::Finished | RemoteMark::Idle if raise => {
+                        self.done.insert(tab.to_string());
+                        self.hold_if_front_away(tab);
+                    }
+                    RemoteMark::Failed { kind } if raise => {
+                        self.failed.insert(tab.to_string());
+                        if let Some(k) = kind {
+                            self.failed_kinds.insert(tab.to_string(), k);
+                        }
+                        self.hold_if_front_away(tab);
+                    }
+                    _ => {}
+                }
+                // The end said what it raises: the work that stopped is not read again as "stopped while away".
+                self.prev_working.remove(tab);
+            }
+        }
+        self.reconcile(now);
     }
 
     // ---- internals ----
@@ -1190,6 +1267,85 @@ mod tests {
 
     fn has(set: &HashSet<String>, tab: &str) -> bool {
         set.contains(tab)
+    }
+
+    /// Rule 294: a remote tab's host status shows work and a question as said; the end of the work raises this
+    /// viewer's own Finished mark only when it showed the work and nobody looked, and a status read again raises none.
+    #[test]
+    fn a_remote_status_shows_work_and_questions_and_its_end_is_never_copied_twice() {
+        let mut h = H::fronted();
+        h.ind.remote_mark(0, "r", RemoteMark::Working, None);
+        assert!(has(h.ind.working_ids(), "r") && has(h.ind.agent_ids(), "r"));
+        assert_eq!(h.ind.agent_kind("r"), Some(DetectedAgent::Claude));
+        h.ind.remote_mark(10, "r", RemoteMark::Question, None);
+        assert!(has(h.ind.question_ids(), "r") && !has(h.ind.working_ids(), "r"));
+        h.ind.remote_mark(20, "r", RemoteMark::Working, None);
+        h.ind.remote_mark(30, "r", RemoteMark::Finished, None);
+        assert!(
+            has(h.ind.done_ids(), "r"),
+            "it worked here and nobody looked"
+        );
+        assert!(!has(h.ind.working_ids(), "r") && !has(h.ind.question_ids(), "r"));
+        // This viewer's own look clears it, and the same status read again (a reconnect) raises nothing.
+        h.ind.set_looking(40, Some("r"), true);
+        assert!(!has(h.ind.done_ids(), "r"));
+        h.ind.set_looking(50, Some("front"), true);
+        h.ind.remote_mark(60, "r", RemoteMark::Finished, None);
+        assert!(
+            !has(h.ind.done_ids(), "r"),
+            "a done read again is not raised again"
+        );
+        // A host done or idle the viewer never saw working is not copied.
+        h.ind.remote_mark(70, "s", RemoteMark::Finished, None);
+        assert!(!has(h.ind.done_ids(), "s"));
+        h.ind.remote_mark(75, "s", RemoteMark::Idle, None);
+        assert!(!has(h.ind.done_ids(), "s"));
+        h.ind
+            .remote_mark(80, "s", RemoteMark::Working, Some(DetectedAgent::Codex));
+        assert_eq!(h.ind.agent_kind("s"), Some(DetectedAgent::Codex));
+        // A failure ends the work with this viewer's own Failed mark and its kind.
+        h.ind.remote_mark(100, "s", RemoteMark::Working, None);
+        h.ind.remote_mark(
+            110,
+            "s",
+            RemoteMark::Failed {
+                kind: Some("rate_limit".into()),
+            },
+            None,
+        );
+        assert!(has(h.ind.failed_ids(), "s"));
+        assert_eq!(h.ind.failed_kind("s"), Some("rate_limit"));
+        // Work ending on the tab being looked at raises nothing.
+        h.ind.remote_mark(120, "front", RemoteMark::Working, None);
+        h.ind.remote_mark(130, "front", RemoteMark::Finished, None);
+        assert!(!has(h.ind.done_ids(), "front"));
+    }
+
+    /// Rule 298: a host that looks at the tab raises no done mark of its own and says `idle` straight after `working`.
+    /// The end of the work this viewer showed is still its own Finished mark, once, and only when nobody here looked.
+    #[test]
+    fn a_remote_idle_after_work_shown_here_raises_the_viewers_own_finished_mark() {
+        let mut h = H::fronted();
+        h.ind.remote_mark(0, "r", RemoteMark::Working, None);
+        h.ind.remote_mark(10, "r", RemoteMark::Idle, None);
+        assert!(
+            has(h.ind.done_ids(), "r"),
+            "the work shown here ended and nobody here looked"
+        );
+        assert!(!has(h.ind.working_ids(), "r"));
+        // Looked at here: it goes, and idle read again (a reconnect) raises nothing.
+        h.ind.set_looking(20, Some("r"), true);
+        h.ind.set_looking(30, Some("front"), true);
+        assert!(!has(h.ind.done_ids(), "r"));
+        h.ind.remote_mark(40, "r", RemoteMark::Idle, None);
+        assert!(
+            !has(h.ind.done_ids(), "r"),
+            "idle read again raises nothing"
+        );
+        // Work that ends on the tab being looked at here raises nothing.
+        h.ind.remote_mark(50, "front", RemoteMark::Working, None);
+        h.ind.remote_mark(60, "front", RemoteMark::Idle, None);
+        assert!(!has(h.ind.done_ids(), "front"));
     }
 
     #[test]

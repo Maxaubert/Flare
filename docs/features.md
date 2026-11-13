@@ -2505,3 +2505,31 @@ viewer").
 - **Not yet.** Opening a remote tab from the + menu, a command or an agent (PR 5, PR 7), the host's status words and the
   conversation view (PR 4), file links and file drops over the link (PR 6), the Mac/PC logo on the tab (PR 7). Typing
   while the link is down is not kept, and a remote tab shows no colours after a reconnect from a snapshot.
+
+## Remote sessions, PR 4: status, conversation and keep-awake, 2026-11-12
+
+A remote tab now shows what its agent does on the other machine, the host stays awake while such a session works, and
+the host can send what is said in the session. No new screen (the fitted conversation view is PR 7). Plan
+`docs/superpowers/plans/2026-11-12-remote-sessions.md` (PR 4). Contract: `docs/surfaces/protocol.md` (section 1 "The
+viewer", section 5 `remote.status` and `remote.convo`).
+
+- **Marks from the host's words.** The tab's link asks the host for its status every 1.5 s (`remote.status`): one word
+  a tab (working, question, done, failed, idle), the agent, its session and the question's words. A remote tab shows
+  work and a question as the host says them, with the host's words in its question notification. Finished and Failed
+  are this machine's own: raised only when it showed the tab working and nobody here looked, cleared by looking here,
+  and never raised again by a status read after a reconnect (rule 294). A host whose window looks at the tab goes from
+  working straight to idle, and that idle is still an end of the work here; a passing refusal of `remote.status` (the
+  host busy for a moment) never stops the polls, and a question taken down here by an answer key comes back with the
+  host's next question (rule 298). An older host without `remote.status` keeps working, without the words. Held by `remote_status::tests`, `remote_link::tests`, `agent_hub::tests`,
+  `indicator::tests` and `ui_tests::agent_flows::remote_flows`.
+- **One notification per question.** A question in a tab followed from the other machine is announced there, never
+  also on the host (rule 295). Held by `remote_flows::a_question_in_a_followed_tab_is_the_viewers_to_notify`.
+- **Keep-awake.** The host holds off system sleep while a tab followed from the other machine has an agent at work,
+  and lets go when the work stops, the viewer goes or Flare ends; the display still sleeps and the screen still locks
+  (rule 296, owner decision). Held by `keep_awake::tests` and
+  `remote_flows::a_followed_tab_holds_the_host_awake_while_it_works_and_lets_go_after`.
+- **The conversation over the link.** `remote.convo` sends what is said in the tab's Claude session as numbered
+  entries; the host finds and reads the transcript itself, no path crosses, and a viewer takes each entry once (rule
+  297). Held by `remote_convo::tests` and `ctl_app::tests::remote_convo_sends_the_hosts_transcript_as_numbered_entries_and_no_path`.
+- **Not yet.** The fitted conversation view that shows those entries (PR 7). When the viewer's link drops, the host
+  takes its questions back and announces an open one itself.

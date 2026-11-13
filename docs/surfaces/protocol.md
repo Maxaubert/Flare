@@ -24,7 +24,9 @@ plugins phase 5 adds `session.read`, `tabs.input`, `storage.get` and `storage.se
 host's bridge), the `bridge` grant and `remote.open`, `remote.ls`, `remote.tabs`, `remote.attach`, `remote.detach`,
 `remote.input`, `remote.resize`, `remote.output`, `remote.snapshot` and `remote.close` (section 1 "The serve process", section
 4, section 5 "remote.*"); remote sessions PR 3 (2026-11-12) adds the viewer, the client end of those methods (section 1 "The
-viewer"), with no new method. Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
+viewer"), with no new method; remote sessions PR 4 (2026-11-12) adds `remote.status` and `remote.convo` (section 5
+"remote.*") and the viewer's status poll (section 1 "The viewer"). Each method below says which stage owns its behaviour;
+the names, params and grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
 
@@ -130,7 +132,7 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     connection or a new one, so a slow folder read never holds up typing or the polls (rule 286). A call's time counts
     from when the link handed it over, its wait for its turn included: a call whose turn comes too late is answered
     `timeout` and never sent, and a timeout keeps its connection. A connection that broke is opened again, and a call
-    that changes nothing (`remote.ls`, `tabs`, `attach`, `detach`, `resize`, `output`, `snapshot`) is sent once more on
+    that changes nothing (`remote.ls`, `tabs`, `attach`, `detach`, `resize`, `output`, `snapshot`, `status`, `convo`) is sent once more on
     it. Typing, opening and closing are never sent twice. When the link closes the bridge's pipe connections close
     too, and the running Flare stops following that viewer's tabs (their shells go on, rule 280). With no Flare running, `remote.hello` still answers
     and every relayed call is `unavailable` (remote sessions PR 5 starts one hidden).
@@ -146,7 +148,11 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     snapshot instead), with the agent's signals taken out of what it catches up on (rule 289). Then, one call at a time:
     the typing as `remote.input` calls (each within 1024 intents and 64 KB, a long paste cut on character boundaries),
     the last size asked as one `remote.resize`, and a `remote.output {since}` poll every 30 ms while output flows,
-    backing off to 250 ms when idle. A call that fails with `no_tab` ends the tab as a shell that exits; any other broken
+    backing off to 250 ms when idle, and a `remote.status {}` poll every 1.5 s (the first at once after each attach;
+    remote sessions PR 4). The tab's own entry in the answer is handed to the window when it changed (the first after
+    an attach always), and the window is woken; the hub turns it into marks (rule 294). A host that refuses
+    `remote.status` (an older Flare) is not asked again on that link, and the tab goes on without it. A call that fails
+    with `no_tab` ends the tab as a shell that exits; any other broken
     call drops the link, and the worker tries again after 1 s, doubling to 30 s. Closing the tab sends `remote.close`
     (on a fresh link if the old one is down); the quit and a dropped tab send `remote.detach` (rule 288). Under `--e2e`
     only, `FLARE_E2E_REMOTE_COMMAND` (a JSON argv) replaces ssh with a loopback `flare --serve-remote` of another profile,
@@ -314,7 +320,7 @@ so without `tabs` it can name none (`forbidden`) and with it, it must name one (
 | `mods.tools`, `mods.call` | yes | **no** | yes |
 | `shell.input`, `settings.set`, `mods.enable` | **no** | **no** | yes |
 | `remote.hello` (the `remote` grant's row: it is **no** in every other one, and for `bridge`) | **no** | **no** (no permission opens it) | yes |
-| `remote.open`, `remote.ls`, `remote.tabs`, `remote.attach`, `remote.detach`, `remote.input`, `remote.resize`, `remote.output`, `remote.snapshot`, `remote.close` (the `remote` and `bridge` grants' rows: **no** in every other one) | **no** | **no** (no permission opens it) | yes |
+| `remote.open`, `remote.ls`, `remote.tabs`, `remote.attach`, `remote.detach`, `remote.input`, `remote.resize`, `remote.output`, `remote.snapshot`, `remote.close`, `remote.status`, `remote.convo` (the `remote` and `bridge` grants' rows: **no** in every other one) | **no** | **no** (no permission opens it) | yes |
 
 **Rule S3** is the last row and the `agent` column: the agent can show content and drive its panel
 browser. It cannot type into a shell (neither `shell.input` nor a plugin's `tabs.input`), change settings, enable
@@ -924,6 +930,27 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   On the worker.
 - `remote.close {tab}` -> `{tab, closed}`. Closes the tab the way a person's close does: an agent at work asks first
   in the host's window (rule 48), and `closed` is false until the person there answers.
+- `remote.status {}` -> `{tabs: [{tab, state, kind, session, folder, title, working_for?, question_text?, failed?}],
+  seq}` (remote sessions PR 4, rule 294). Every shell tab of the host in strip order, as the host's own marks say it:
+  `state` is one word, `question`, `failed`, `working`, `done` or `idle`, in that order of weight
+  (`flare_ctl::remote::TabState`); `kind` the agent the host found (`claude`, `codex`, `agy`, or null); `session` its
+  Claude session; `working_for` the milliseconds it has worked (only while `working`); `question_text` the words of
+  the question the host's screen shows (only while `question`, at most 500 characters); `failed` the failure's kind
+  (only while `failed`). Words only: no host file is read for it and the viewer copies no mark from it (it shows work
+  and a question as said, and raises its own Finished or Failed mark only when the work it showed stops while nobody
+  there looks). `seq` grows when the answer differs from the last one (while a tab works its `working_for` does).
+  Polled by the viewer every 1.5 s; a short call, sent once more after a broken pipe connection.
+- `remote.convo {tab, since?}` -> `{tab, entries: [{seq, role, text, tool?, at?}], reset, to}` (remote sessions PR 4,
+  rule 297). What is said in the followed tab's Claude session (`no_tab` when no connection follows it), as entries
+  (`role` is `user`, `assistant` or `tool`, as `session.read` gives them) numbered by the host from 1, per tab, for as
+  long as the host runs. The host finds the transcript from the tab's session and folder with its own Claude folder
+  (`CLAUDE_CONFIG_DIR` or `~/.claude`), reads its last 200 entries once and then what is written after them, on the
+  call's worker; no path crosses the link. The answer holds the entries after `since` (0: none held). `reset: true`
+  means drop what you hold and take these: the transcript was cut or rewritten, the tab's session changed, `since` fell
+  behind the 200 kept, the tab has no session any more (no entries), or `since` is a number this host never gave (it
+  started again). `to` is the last number given. The viewer takes each entry once by its number, so a poll sent again
+  after a reconnect adds nothing twice. 10 calls a second a tab. Its view (the fitted conversation) is remote
+  sessions PR 7's.
 
 ## 6. Errors
 

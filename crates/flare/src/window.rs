@@ -1039,7 +1039,9 @@ pub fn run_window(
                 ),
             )),
             crate::remote_link::Timing::default(),
-        );
+        )
+        // A remote tab's status from its host wakes the window (remote sessions PR 4).
+        .with_wake(Arc::clone(&waker));
         let tab_host = TabHost::with_options(
             Arc::new(flare_term::pty::RoutingSpawner {
                 local: Arc::new(PortableSpawner),
@@ -1331,7 +1333,15 @@ pub fn run_window(
             ) {
                 Ok(server) => {
                     if let Some(r) = remote {
-                        rc.borrow_mut().set_remote_host(r);
+                        let mut c = rc.borrow_mut();
+                        c.set_remote_host(r);
+                        // Remote sessions PR 4 (rule 296): the system stays awake while a followed tab works. Under
+                        // --e2e a counter stands in, so no test run holds this machine's sleep.
+                        c.set_keep_awake(if args.e2e {
+                            Arc::new(flare_win::keep_awake::FakeAwake::new())
+                        } else {
+                            Arc::new(flare_win::keep_awake::SystemAwake::new())
+                        });
                     }
                     mods_dispatcher = Some(server.dispatcher());
                     owner_events = Some(server.owner_events());

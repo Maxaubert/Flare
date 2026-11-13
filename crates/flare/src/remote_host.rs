@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use flare_term::handle::TermHandle;
 use flare_term::tail::TailHandle;
+use serde_json::Value;
 
 /// The file the bridge key is kept in, in the profile folder.
 pub const BRIDGE_KEY_FILE: &str = "remote-bridge.key";
@@ -73,6 +74,11 @@ struct Follow {
 pub struct RemoteHost {
     key: String,
     follows: Mutex<HashMap<String, Follow>>,
+    /// The followed tabs' numbered conversations (`remote.convo`, PR 4).
+    convo: crate::remote_convo::ConvoFeeds,
+    /// The number of the host's status and the status it numbered (`remote.status`, PR 4): it grows when the status
+    /// changes, so a viewer sees at a glance that nothing did.
+    status: Mutex<(u64, Value)>,
 }
 
 impl RemoteHost {
@@ -85,6 +91,8 @@ impl RemoteHost {
         Arc::new(Self {
             key,
             follows: Mutex::new(HashMap::new()),
+            convo: crate::remote_convo::ConvoFeeds::new(),
+            status: Mutex::new((0, Value::Null)),
         })
     }
 
@@ -130,6 +138,8 @@ impl RemoteHost {
         }
         if f.conns.is_empty() {
             map.remove(tab);
+            drop(map);
+            self.convo.forget(tab);
             return true;
         }
         false
@@ -146,6 +156,10 @@ impl RemoteHost {
             }
             true
         });
+        drop(map);
+        for tab in &last {
+            self.convo.forget(tab);
+        }
         last.sort();
         last
     }
@@ -153,6 +167,7 @@ impl RemoteHost {
     /// The tab is closed, or its shell ended: nobody follows it any more.
     pub fn forget_tab(&self, tab: &str) {
         self.lk().remove(tab);
+        self.convo.forget(tab);
     }
 
     /// A followed tab's handle and tail (any thread).
@@ -162,10 +177,31 @@ impl RemoteHost {
             .map(|f| (Arc::clone(&f.handle), f.tail.clone()))
     }
 
-    /// Whether anyone follows `tab` (a later PR's notifier and keep-awake ask it).
-    #[allow(dead_code)] // the notifier and keep-awake of remote sessions PR 4 ask it
+    /// Whether anyone follows `tab`: the host's own question notification is held back for it (rule 295).
     pub fn is_followed(&self, tab: &str) -> bool {
         self.lk().contains_key(tab)
+    }
+
+    /// The tabs remote viewers follow, sorted: the keep-awake counts the ones that work (rule 296).
+    pub fn followed_tabs(&self) -> Vec<String> {
+        let mut tabs: Vec<String> = self.lk().keys().cloned().collect();
+        tabs.sort();
+        tabs
+    }
+
+    /// The followed tabs' numbered conversations (`remote.convo`).
+    pub fn convo(&self) -> &crate::remote_convo::ConvoFeeds {
+        &self.convo
+    }
+
+    /// The number of `tabs` as the host's status: the last number while nothing changed, the next one when it did.
+    pub fn status_seq(&self, tabs: &Value) -> u64 {
+        let mut st = self.status.lock().unwrap_or_else(|e| e.into_inner());
+        if st.0 == 0 || st.1 != *tabs {
+            st.0 += 1;
+            st.1 = tabs.clone();
+        }
+        st.0
     }
 }
 
@@ -216,6 +252,21 @@ mod tests {
         host.follow("t3", 5, handle(), TailHandle::new(8));
         host.forget_tab("t3");
         assert!(host.gone(5).is_empty());
+    }
+
+    /// Rule 294: the status's number stays while nothing changed and grows when something did.
+    #[test]
+    fn the_status_number_grows_only_when_the_status_changes() {
+        let host = RemoteHost::with_key("k".into());
+        let a = serde_json::json!([{"tab": "t1", "state": "idle"}]);
+        let b = serde_json::json!([{"tab": "t1", "state": "working"}]);
+        assert_eq!(host.status_seq(&a), 1);
+        assert_eq!(host.status_seq(&a), 1);
+        assert_eq!(host.status_seq(&b), 2);
+        assert_eq!(host.status_seq(&a), 3);
+        host.follow("t2", 1, handle(), TailHandle::new(8));
+        host.follow("t1", 1, handle(), TailHandle::new(8));
+        assert_eq!(host.followed_tabs(), ["t1", "t2"]);
     }
 
     #[test]

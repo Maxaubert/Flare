@@ -86,6 +86,8 @@ impl AppCtl {
                 let seq = tail.end();
                 let (cols, rows) = handle.size();
                 host.follow(&tab, conn, handle, tail);
+                // A tab that works as a viewer attaches holds the system awake from now (rule 296).
+                self.sync_keep_awake();
                 Ok(json!({"tab": tab, "cols": cols, "rows": rows, "seq": seq}))
             }
             CtlOp::RemoteInput { tab, intents } => {
@@ -107,6 +109,8 @@ impl AppCtl {
             }
             CtlOp::RemoteRelease { tab } => {
                 self.deps.host.take_size_back(&tab);
+                // The last viewer went (a detach or a dropped link): its work no longer holds the system awake.
+                self.sync_keep_awake();
                 Ok(json!({"tab": tab}))
             }
             CtlOp::RemoteClose { tab } => {
@@ -118,10 +122,109 @@ impl AppCtl {
                 let closed_now = !self.model.state.tabs.iter().any(|t| t.id == tab);
                 Ok(json!({"tab": tab, "closed": closed_now}))
             }
+            CtlOp::RemoteStatus => Ok(json!({"tabs": self.remote_status_tabs()})),
             _ => Err(CtlError::new(
                 code::INTERNAL,
                 "not a remote op reached the remote handler",
             )),
+        }
+    }
+
+    /// `remote.status` (remote sessions PR 4, rule 294): every shell tab in strip order as this window's own marks say
+    /// it: one state word, the agent, its Claude session, the folder and title, how long it has worked, the words of
+    /// its question and the kind of its failure. Words only; nothing here is a path to read or a mark to copy.
+    pub(crate) fn remote_status_tabs(&self) -> Vec<Value> {
+        use flare_ctl::remote::{QUESTION_MAX, TabState};
+        self.tab_facts()
+            .into_iter()
+            .map(|f| {
+                let id = f.id.as_str();
+                let mut v = json!({
+                    "tab": f.id,
+                    "state": f.state,
+                    "kind": f.agent,
+                    "session": f.session,
+                    "folder": f.folder,
+                    "title": f.title,
+                });
+                match TabState::parse(f.state) {
+                    Some(TabState::Working) => {
+                        if let Some(ms) = self.hub.working_for(id) {
+                            v["working_for"] = json!(ms);
+                        }
+                    }
+                    Some(TabState::Question) => {
+                        if let Some(q) = self.hub.question_text(id) {
+                            let q: String = q.chars().take(QUESTION_MAX).collect();
+                            v["question_text"] = json!(q);
+                        }
+                    }
+                    Some(TabState::Failed) => {
+                        if let Some(k) = self.hub.failed_kind(id) {
+                            v["failed"] = json!(k);
+                        }
+                    }
+                    _ => {}
+                }
+                v
+            })
+            .collect()
+    }
+
+    /// Rule 296: this host holds the system awake while a tab a remote viewer follows has an agent at work, and lets go
+    /// once none does, the last viewer goes, or the window ends (the hold is dropped with it).
+    pub(crate) fn sync_keep_awake(&mut self) {
+        let want = self.remote_host.as_ref().is_some_and(|h| {
+            h.followed_tabs()
+                .iter()
+                .any(|t| self.hub.working(t) && self.hub.agent_here(t))
+        });
+        match (want, self.awake_hold.is_some()) {
+            (true, false) => {
+                self.awake_hold = self.keep_awake.as_ref().map(|k| k.hold());
+                if self.awake_hold.is_some() {
+                    crate::diag_ctl::crumb_often(
+                        "keep-awake",
+                        &[("held", crate::diag_ctl::txt("1"))],
+                    );
+                }
+            }
+            (false, true) => {
+                self.awake_hold = None;
+                crate::diag_ctl::crumb_often("keep-awake", &[("held", crate::diag_ctl::txt("0"))]);
+            }
+            _ => {}
+        }
+    }
+
+    /// The keep-awake the host holds while a remote session works (startup; a test gives a fake).
+    pub fn set_keep_awake(&mut self, k: Arc<dyn flare_win::keep_awake::KeepAwake>) {
+        self.keep_awake = Some(k);
+    }
+
+    /// Whether this host holds the system awake now (tests and the probe).
+    pub(crate) fn holds_awake(&self) -> bool {
+        self.awake_hold.is_some()
+    }
+
+    /// Remote sessions PR 4 on the viewer (rule 294): a remote tab's link brought the host's status of it. Each remote
+    /// tab's newest status is applied once; the hub turns it into marks (question and working, never a copied done).
+    pub(crate) fn sync_remote_status(&mut self) {
+        let news: Vec<(String, flare_term::remote_pty::HostStatus)> = self
+            .model
+            .state
+            .tabs
+            .iter()
+            .filter(|t| t.remote.is_some())
+            .filter_map(|t| {
+                self.model
+                    .remote_live(&t.id)
+                    .and_then(flare_term::remote_pty::RemoteLive::take_status)
+                    .map(|s| (t.id.clone(), s))
+            })
+            .collect();
+        for (id, st) in news {
+            self.hub.on_remote_status(&id, &st);
         }
     }
 }

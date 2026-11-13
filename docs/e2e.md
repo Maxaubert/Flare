@@ -353,6 +353,15 @@ tab, types `echo remote-view-7` into A (the only text it ever sends there, plus 
 output in A's grid, once each. A quits (B's session goes on) and starts again without the open: the restored tab
 attaches to the same host tab (B opens none), shows B's lines once each, and takes typing again.
 
+`remoteStatus` (`tools/e2e/src/scenarios/remote.rs`, remote sessions PR 4, Windows only for now) runs the same two
+Flares, each in a world of its own with "Notify me when an agent asks" on in its profile. A's window is away
+(`Focus {on: false}`). Typed into A's remote tab, so they run on B: the stand-in agent process (`agent_proc`, so B's
+own poll believes the hooks), then the hook lines `working`, `question` and `done` (`[Console]::Write` of the OSC 777
+line, text this file wrote). A's `agent.state` shows the tab working, then asking; A's `notify.log` holds one
+notification and B's none (rule 295); then A shows its own finished mark. A quits and starts again without the open:
+the restored tab attaches, B's status still says `done`, and after 4 s A shows no finished mark and no notification
+(rule 294).
+
 ## Agent browser scenarios (Surfaces stage 4)
 
 `convoPanels` (`tools/e2e/src/scenarios/convo.rs`, Surfaces stage 6) needs no WebView2. It launches with `CLAUDE_CONFIG_DIR` at a folder of its own and a synthetic transcript. One command line in the shell stands in for Claude: it prints the hook line with a session id, waits for a flag file, prints a second session, and never returns to the prompt (a prompt takes the agent and its session back, and a `working` hook would make the close ask a question). It opens Changes with `panel.open`, clicks the first file row (`ui.rect convo-file-0`), appends lines to the transcript, checks that `panel.open` kind `tasks` is refused (the Tasks panel was removed 2026-10-26) and reads the `convo.state` probe, at 100 and 225 percent (42 checks).

@@ -28,6 +28,7 @@ pub mod float_panel;
 #[cfg(target_os = "macos")]
 #[path = "macos/glass.rs"]
 pub mod glass;
+pub mod keep_awake;
 pub mod material;
 #[cfg(target_os = "macos")]
 #[path = "macos/menu_bar.rs"]
