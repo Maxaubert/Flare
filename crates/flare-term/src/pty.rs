@@ -160,28 +160,40 @@ fn anyhow_is_transient(e: &anyhow::Error) -> bool {
         .any(spawn_error_is_transient)
 }
 
+/// The retry loop of `PortablePty::spawn`: runs `attempt` until it works, fails for good, or the
+/// pauses in `SPAWN_RETRY_MS` run out; `pause` waits the given milliseconds between tries. Tests pass
+/// their own `pause` to count tries without depending on the clock.
+fn retry_spawn<T>(
+    exe: &str,
+    mut attempt: impl FnMut() -> Result<T, (String, bool)>,
+    mut pause: impl FnMut(u64),
+) -> Result<T, String> {
+    let mut pauses = SPAWN_RETRY_MS.iter();
+    loop {
+        match attempt() {
+            Ok(p) => return Ok(p),
+            Err((e, transient)) => match pauses.next() {
+                Some(ms) if transient => {
+                    log::warn!("starting {exe} failed ({e}); trying again in {ms} ms");
+                    pause(*ms);
+                }
+                _ => return Err(e),
+            },
+        }
+    }
+}
+
 impl PortablePty {
     /// Opens a pty and starts the program in it. A start the OS refused for a passing reason (see
     /// `spawn_error_is_transient`) is tried again after a short pause, up to three times: a busy
     /// machine must not leave a tab without its shell. BLOCKING: callers run it on a worker thread.
     pub fn spawn(spec: &SpawnSpec) -> Result<Self, String> {
-        let mut pauses = SPAWN_RETRY_MS.iter();
-        loop {
-            match Self::spawn_once(spec) {
-                Ok(p) => return Ok(p),
-                Err((e, transient)) => match pauses.next() {
-                    Some(ms) if transient => {
-                        log::warn!(
-                            "starting {} failed ({e}); trying again in {ms} ms",
-                            spec.exe
-                        );
-                        // sync-ok: a worker thread's start, after the OS refused it for a passing reason
-                        std::thread::sleep(std::time::Duration::from_millis(*ms));
-                    }
-                    _ => return Err(e),
-                },
-            }
-        }
+        retry_spawn(
+            &spec.exe,
+            || Self::spawn_once(spec),
+            // sync-ok: a worker thread's start, after the OS refused it for a passing reason
+            |ms| std::thread::sleep(std::time::Duration::from_millis(ms)),
+        )
     }
 
     /// One try: the error text, and whether it may pass. Only the pty and the start itself are
@@ -719,9 +731,73 @@ mod tests {
             rows: 24,
             remote: None,
         };
-        let t = std::time::Instant::now();
-        assert!(PortablePty::spawn(&spec).is_err());
-        assert!(t.elapsed() < std::time::Duration::from_millis(SPAWN_RETRY_MS[0]));
+        // Counted, not timed: a loaded CI runner can take longer than the first pause for one try.
+        let mut tries = 0;
+        let mut pauses = vec![];
+        let r = retry_spawn(
+            &spec.exe,
+            || {
+                tries += 1;
+                PortablePty::spawn_once(&spec)
+            },
+            |ms| pauses.push(ms),
+        );
+        assert!(r.is_err());
+        assert_eq!(tries, 1, "a missing program is tried once");
+        assert!(pauses.is_empty(), "and never waited for");
+    }
+
+    #[test]
+    fn a_passing_refusal_is_tried_again_after_each_pause_then_given_up() {
+        let mut tries = 0;
+        let mut pauses = vec![];
+        let r: Result<(), String> = retry_spawn(
+            "sh",
+            || {
+                tries += 1;
+                Err(("busy".into(), true))
+            },
+            |ms| pauses.push(ms),
+        );
+        assert_eq!(r, Err("busy".into()));
+        assert_eq!(tries, 1 + SPAWN_RETRY_MS.len());
+        assert_eq!(pauses, SPAWN_RETRY_MS);
+    }
+
+    #[test]
+    fn a_start_that_works_on_a_later_try_is_kept() {
+        let mut tries = 0;
+        let mut pauses = vec![];
+        let r = retry_spawn(
+            "sh",
+            || {
+                tries += 1;
+                if tries < 3 {
+                    Err(("busy".into(), true))
+                } else {
+                    Ok(tries)
+                }
+            },
+            |ms| pauses.push(ms),
+        );
+        assert_eq!(r, Ok(3));
+        assert_eq!(pauses, SPAWN_RETRY_MS[..2]);
+    }
+
+    #[test]
+    fn a_final_error_after_a_passing_one_stops_the_retries() {
+        let mut tries = 0;
+        let mut pauses = vec![];
+        let r: Result<(), String> = retry_spawn(
+            "sh",
+            || {
+                tries += 1;
+                Err((format!("try {tries}"), tries == 1))
+            },
+            |ms| pauses.push(ms),
+        );
+        assert_eq!(r, Err("try 2".into()));
+        assert_eq!(pauses, SPAWN_RETRY_MS[..1]);
     }
 
     #[test]
