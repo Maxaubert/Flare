@@ -2860,6 +2860,7 @@ mod remote_tests {
         RemoteSpec {
             machine: machine.into(),
             folder: "/Users/max/proj".into(),
+            resume: None,
             live: RemoteLive::default(),
         }
     }

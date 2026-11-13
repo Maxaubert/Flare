@@ -1,6 +1,7 @@
 //! Process tests of `flare --serve-remote` (remote sessions PR 2): the built binary run the way ssh runs it, its stdin
 //! and stdout piped to a test that plays the viewer. Every run has its own temp profile with no Flare running in it, so
-//! nothing here can reach the owner's Flare, and no ssh to any machine is made.
+//! nothing here can reach the owner's Flare, and no ssh to any machine is made. Every serve process here has
+//! `--no-start`, so none starts a Flare hidden (that is the e2e's `remoteOpen`, on the hidden desktop).
 //! Windows-only for now, like `instance.rs` (the macOS run is on the by-hand list of remote sessions PR 6).
 #![cfg(windows)]
 
@@ -17,6 +18,8 @@ const WAIT: Duration = Duration::from_secs(20);
 fn serve(profile: &Path) -> Child {
     Command::new(env!("CARGO_BIN_EXE_flare"))
         .arg("--serve-remote")
+        // Never a hidden start of a real Flare from a unit test (remote sessions PR 5): the relay stays `unavailable`.
+        .arg("--no-start")
         .arg(format!("--user-data-dir={}", profile.display()))
         .env_remove("FLARE_CTL_PIPE")
         .stdin(Stdio::piped())

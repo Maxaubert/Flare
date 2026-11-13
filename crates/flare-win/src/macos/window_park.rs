@@ -7,6 +7,9 @@
 //! window never paints (the Mac E2E's first runs: one software frame, no GPU frame, no link colour). The
 //! report reads the real frame and alpha; the Mac E2E itself runs in CI only (the port plan's "Ongoing" row).
 //!
+//! A `--start-hidden` run (remote sessions, rule 302) is parked the same way from its first window, and its
+//! first raise lets go of all of it (`unpark`): an `--e2e` run never does.
+//!
 //! The handle is the window's `NSView` as an integer (raw-window-handle's `AppKit` handle).
 
 use objc2::MainThreadMarker;
@@ -14,6 +17,9 @@ use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
 use objc2::sel;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSScreen};
 use objc2_foundation::{NSPoint, NSRect};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 /// Where a parked window sits: far outside every monitor's rectangle.
 const PARK_AT: i32 = -32000;
@@ -23,15 +29,41 @@ pub fn parked_origin() -> (i32, i32) {
     (PARK_AT, PARK_AT)
 }
 
+/// Whether the park still holds this run's windows clear, click-through and free of screens (rules 1107,
+/// 1109, 1111). True from the start: an `--e2e` run never lets go. A `--start-hidden` run lets go at its
+/// first raise (`unpark`, rule 302); from then on every stand-in passes on what it is asked.
+static HELD: AtomicBool = AtomicBool::new(true);
+
+/// Whether the park still holds the windows (see `HELD`).
+pub fn is_held() -> bool {
+    HELD.load(Ordering::SeqCst)
+}
+
+/// `NSWindow`'s own `constrainFrameRect:toScreen:`, kept by `allow_off_screen` for the time after `unpark`.
+static ORIGINAL_CONSTRAIN: OnceLock<usize> = OnceLock::new();
+
 /// `constrainFrameRect:toScreen:` that keeps the frame it is given: a parked window stays where it was
-/// put instead of being pulled back until a strip of it is on a screen (rule 1107).
+/// put instead of being pulled back until a strip of it is on a screen (rule 1107). Once the park lets
+/// go (`unpark`, rule 302), AppKit's own rule applies again.
 extern "C-unwind" fn keep_frame(
-    _this: *mut AnyObject,
-    _cmd: Sel,
+    this: *mut AnyObject,
+    cmd: Sel,
     frame: NSRect,
-    _screen: *mut AnyObject,
+    screen: *mut AnyObject,
 ) -> NSRect {
-    frame
+    if is_held() {
+        return frame;
+    }
+    match ORIGINAL_CONSTRAIN.get() {
+        Some(&imp) => {
+            // SAFETY: `imp` is NSWindow's own `constrainFrameRect:toScreen:` of exactly this signature,
+            // saved before it was replaced; it is called with the receiver and arguments it was given.
+            let f: extern "C-unwind" fn(*mut AnyObject, Sel, NSRect, *mut AnyObject) -> NSRect =
+                unsafe { std::mem::transmute(imp) };
+            f(this, cmd, frame, screen)
+        }
+        None => frame,
+    }
 }
 
 /// The implementation `allow_off_screen` puts in.
@@ -57,6 +89,13 @@ const CONSTRAIN_TYPES: &std::ffi::CStr =
 /// changes; NSWindow and every other window keep AppKit's rule.
 pub fn allow_off_screen(class: &AnyClass) {
     let cls: *const AnyClass = class;
+    // AppKit's own rule is kept for the time after `unpark` (rule 302); never our stand-in.
+    if ORIGINAL_CONSTRAIN.get().is_none()
+        && let Some(m) = class.instance_method(sel!(constrainFrameRect:toScreen:))
+        && !std::ptr::fn_addr_eq(m.implementation(), keep_frame_imp())
+    {
+        let _ = ORIGINAL_CONSTRAIN.set(m.implementation() as usize);
+    }
     // SAFETY: replacing (or adding, on this class only) an instance method with a function of the
     // signature its type encoding states; AppKit calls it on the main thread only.
     unsafe {
@@ -76,10 +115,11 @@ pub fn allows_off_screen(class: &AnyClass) -> bool {
         .is_some_and(|m| std::ptr::fn_addr_eq(m.implementation(), keep_frame_imp()))
 }
 
-/// macOS under `--e2e`, before the first window is made (rule 1107): no window of the run is ever pulled
-/// onto a screen, so the main window is born at the parking spot and stays there from its first order-in
-/// (the park after `show()` would come after AppKit had already moved it). Every window of the process
-/// inherits it from `NSWindow`; the real app never calls this.
+/// macOS under `--e2e` and `--start-hidden`, before the first window is made (rules 1107, 302): no window of
+/// the run is ever pulled onto a screen, so the main window is born at the parking spot and stays there
+/// from its first order-in (the park after `show()` would come after AppKit had already moved it). Every
+/// window of the process inherits it from `NSWindow`; a normal launch never calls this, and a
+/// `--start-hidden` run lets go of it at its first raise (`unpark`).
 pub fn keep_windows_off_screen() {
     if let Some(window) = AnyClass::get(c"NSWindow") {
         allow_off_screen(window);
@@ -89,13 +129,62 @@ pub fn keep_windows_off_screen() {
 }
 
 /// `NSWindow`'s own two content-rect initialisers, kept by `born_clear`.
-static ORIGINAL_INIT4: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-static ORIGINAL_INIT5: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+static ORIGINAL_INIT4: OnceLock<usize> = OnceLock::new();
+static ORIGINAL_INIT5: OnceLock<usize> = OnceLock::new();
+
+/// What a held window's own code last asked of the two setters the park holds (rule 302), given back
+/// at `unpark`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wanted {
+    /// The alpha asked for.
+    pub alpha: f64,
+    /// Whether clicks were asked to pass through.
+    pub through: bool,
+}
+
+impl Default for Wanted {
+    /// Nothing asked yet: a window is opaque and takes its clicks.
+    fn default() -> Self {
+        Self {
+            alpha: 1.0,
+            through: false,
+        }
+    }
+}
+
+/// Every held window's `Wanted`, by its pointer. Read once, at `unpark`, for the windows still alive.
+static WANTED: Mutex<Option<HashMap<usize, Wanted>>> = Mutex::new(None);
+
+/// Runs `f` on the `WANTED` map, made on first use. A poisoned lock is taken as it is: plain values.
+fn with_wanted<R>(f: impl FnOnce(&mut HashMap<usize, Wanted>) -> R) -> R {
+    let mut guard = WANTED.lock().unwrap_or_else(PoisonError::into_inner);
+    f(guard.get_or_insert_with(HashMap::new))
+}
+
+/// Pure (rules 1109, 302): the alpha a stand-in passes on. Held, always 0; let go, what was asked.
+pub fn alpha_to_pass(held: bool, asked: f64) -> f64 {
+    if held { 0.0 } else { asked }
+}
+
+/// Pure (rules 1109, 302): whether a stand-in lets clicks through. Held, always; let go, as asked.
+pub fn through_to_pass(held: bool, asked: bool) -> bool {
+    held || asked
+}
+
+/// Pure (rule 302): what a held window asked, with one ask written over it.
+pub fn wanted_after(old: Option<Wanted>, alpha: Option<f64>, through: Option<bool>) -> Wanted {
+    let old = old.unwrap_or_default();
+    Wanted {
+        alpha: alpha.unwrap_or(old.alpha),
+        through: through.unwrap_or(old.through),
+    }
+}
 
 /// Makes a just-initialised window clear before anything can order it in: alpha 0, no shadow, every
-/// click through, no order-in animation (rule 1111). A null window (a failed init) is left alone.
+/// click through, no order-in animation (rule 1111). A null window (a failed init) is left alone, and
+/// so is every window made after the park let go (`unpark`, rule 302).
 fn make_clear(window: *mut AnyObject) {
-    if window.is_null() {
+    if window.is_null() || !is_held() {
         return;
     }
     // SAFETY: `window` is the NSWindow its initialiser just returned, alive and owned by the caller;
@@ -108,6 +197,8 @@ fn make_clear(window: *mut AnyObject) {
         // NSWindowAnimationBehaviorNone: AppKit draws no zoom-in of the window on its first order-in.
         let _: () = objc2::msg_send![w, setAnimationBehavior: 2isize];
     }
+    // The setters above were the park's own asks, not the window's (rule 302): nothing is asked yet.
+    with_wanted(|m| m.insert(window as usize, Wanted::default()));
 }
 
 /// `initWithContentRect:styleMask:backing:defer:` under `--e2e`: NSWindow's own, then clear.
@@ -227,39 +318,59 @@ pub fn born_clear(class: &AnyClass) {
 }
 
 /// `NSWindow`'s own `setAlphaValue:` and `setIgnoresMouseEvents:`, kept by `keep_clear`.
-static ORIGINAL_ALPHA: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-static ORIGINAL_IGNORE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+static ORIGINAL_ALPHA: OnceLock<usize> = OnceLock::new();
+static ORIGINAL_IGNORE: OnceLock<usize> = OnceLock::new();
 
-/// `setAlphaValue:` under `--e2e`: whatever is asked, the window stays at alpha 0.
-extern "C-unwind" fn alpha_stays_clear(this: *mut AnyObject, cmd: Sel, _alpha: f64) {
+/// `setAlphaValue:` while the park holds: whatever is asked, the window stays at alpha 0, and the ask is
+/// kept for `unpark` (rule 302). Once the park lets go, the ask is passed on.
+extern "C-unwind" fn alpha_stays_clear(this: *mut AnyObject, cmd: Sel, alpha: f64) {
+    let held = is_held();
+    if held && !this.is_null() {
+        with_wanted(|m| {
+            let now = wanted_after(m.get(&(this as usize)).copied(), Some(alpha), None);
+            m.insert(this as usize, now);
+        });
+    }
     if let Some(&imp) = ORIGINAL_ALPHA.get() {
         // SAFETY: `imp` is NSWindow's own `setAlphaValue:` (a `void (id, SEL, CGFloat)`), saved when it
         // was replaced; it is called with the receiver and selector it was called with.
         let f: extern "C-unwind" fn(*mut AnyObject, Sel, f64) = unsafe { std::mem::transmute(imp) };
-        f(this, cmd, 0.0);
+        f(this, cmd, alpha_to_pass(held, alpha));
     }
 }
 
-/// `setIgnoresMouseEvents:` under `--e2e`: every click goes through the window to what is below.
+/// `setIgnoresMouseEvents:` while the park holds: every click goes through the window to what is below,
+/// and the ask is kept for `unpark` (rule 302). Once the park lets go, the ask is passed on.
 extern "C-unwind" fn clicks_stay_through(
     this: *mut AnyObject,
     cmd: Sel,
-    _flag: objc2::runtime::Bool,
+    flag: objc2::runtime::Bool,
 ) {
+    let held = is_held();
+    if held && !this.is_null() {
+        with_wanted(|m| {
+            let now = wanted_after(m.get(&(this as usize)).copied(), None, Some(flag.as_bool()));
+            m.insert(this as usize, now);
+        });
+    }
     if let Some(&imp) = ORIGINAL_IGNORE.get() {
         // SAFETY: `imp` is NSWindow's own `setIgnoresMouseEvents:` (a `void (id, SEL, BOOL)`), saved when
         // it was replaced.
         let f: extern "C-unwind" fn(*mut AnyObject, Sel, objc2::runtime::Bool) =
             unsafe { std::mem::transmute(imp) };
-        f(this, cmd, objc2::runtime::Bool::YES);
+        f(
+            this,
+            cmd,
+            objc2::runtime::Bool::new(through_to_pass(held, flag.as_bool())),
+        );
     }
 }
 
-/// macOS under `--e2e` only (rule 1109): every window of the run stays clear and click-through, whoever
-/// asks otherwise. Slint reveals a GPU window by setting its alpha back to 1 once the first frame is
-/// drawn (its `RevealOnFirstFrame`), which put the parked window on the runner's display (the Mac
-/// E2E's fourth run: "not clear and click-through" at every GPU launch). The original methods are kept
-/// and called with 0 and YES. Once per process; the real app never calls this.
+/// macOS under `--e2e` and `--start-hidden` (rules 1109, 302): every window of the run stays clear and
+/// click-through, whoever asks otherwise, until `unpark`. Slint reveals a GPU window by setting its alpha
+/// back to 1 once the first frame is drawn (its `RevealOnFirstFrame`), which put the parked window on the
+/// runner's display (the Mac E2E's fourth run: "not clear and click-through" at every GPU launch). The
+/// original methods are kept and called with 0 and YES. Once per process; a normal launch never calls this.
 pub fn keep_clear(class: &AnyClass) {
     let cls: *const AnyClass = class;
     // SAFETY: as in `panels::guard`: function pointers given as the runtime's untyped `Imp` with the type
@@ -295,10 +406,10 @@ pub fn keep_clear(class: &AnyClass) {
     }
 }
 
-/// macOS under `--e2e` (rule 1109): no App Nap for the run. An accessory app whose only window is clear
-/// would be napped by the system (timers coalesced to seconds, I/O at background priority), and a
-/// scenario's 8 s waits would time out on a Mac only. Held for the whole process; the real app never
-/// calls this.
+/// macOS under `--e2e` and `--start-hidden` (rules 1109, 301): no App Nap for the run. An accessory app
+/// whose only window is clear would be napped by the system (timers coalesced to seconds, I/O at
+/// background priority), and a scenario's 8 s waits would time out on a Mac only, as would a hidden
+/// host's live shells. Held for the whole process; a normal launch never calls this.
 pub fn hold_off_app_nap() {
     use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
     let token = NSProcessInfo::processInfo().beginActivityWithOptions_reason(
@@ -312,11 +423,14 @@ pub fn hold_off_app_nap() {
 /// Makes the app an accessory and the window clear (alpha 0, no shadow, click-through), then puts it on
 /// the main screen's visible area so it paints (rule 1109). Its class keeps the frame it is given (rule
 /// 1107). Never activates the app, never orders the window front, never resizes it. Nothing happens off
-/// the main thread.
+/// the main thread, and nothing once the park has let go (`unpark`, rule 302): a raise that came first wins.
 pub fn park(view: isize) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
+    if !is_held() {
+        return;
+    }
     let Some(window) = crate::glass::window_of(view, mtm) else {
         return;
     };
@@ -332,6 +446,38 @@ pub fn park(view: isize) {
         .map(|s| s.visibleFrame().origin)
         .unwrap_or(NSPoint::new(0.0, 0.0));
     window.setFrameOrigin(at);
+}
+
+/// A `--start-hidden` run's first raise (rule 302): the park lets go of every window for good. The app is a
+/// regular app again (a Dock icon, it may be the active app); every window still alive gets back what its own
+/// code last asked of its alpha and clicks (opaque and taking clicks when it asked nothing) and its order-in
+/// animation; the main window (`view`) is opaque, takes clicks and has its shadow; and AppKit's own rules for
+/// frames, alpha and clicks apply again. The caller moves the window to its place after this, so AppKit's
+/// rule keeps it on a screen. Nothing happens off the main thread.
+pub fn unpark(view: isize) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    HELD.store(false, Ordering::SeqCst);
+    let wanted = with_wanted(std::mem::take);
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    for window in app.windows().iter() {
+        let key = objc2::rc::Retained::as_ptr(&window) as usize;
+        let Some(asked) = wanted.get(&key) else {
+            continue;
+        };
+        window.setAlphaValue(asked.alpha);
+        window.setIgnoresMouseEvents(asked.through);
+        // Its shadow stays as it is: a window may have asked for none (the dictation widget does).
+        window.setAnimationBehavior(objc2_app_kit::NSWindowAnimationBehavior::Default);
+    }
+    if let Some(window) = crate::glass::window_of(view, mtm) {
+        window.setAlphaValue(1.0);
+        window.setIgnoresMouseEvents(false);
+        window.setHasShadow(true);
+        window.setAnimationBehavior(objc2_app_kit::NSWindowAnimationBehavior::Default);
+    }
 }
 
 /// What the harness checks of an `--e2e` window (the same shape as on Windows).
@@ -516,5 +662,43 @@ mod tests {
     fn off_the_main_thread_nothing_is_touched() {
         park(0);
         assert_eq!(report(0), ParkReport::default());
+        // Rule 302: an unpark off the main thread lets go of nothing.
+        unpark(0);
+        assert!(is_held());
+    }
+
+    // Rule 302: held, the stand-ins keep a window clear and click-through; let go, they pass on the ask.
+    #[test]
+    fn a_held_park_keeps_windows_clear_and_a_released_one_passes_the_ask_on() {
+        assert_eq!(alpha_to_pass(true, 1.0), 0.0);
+        assert!(through_to_pass(true, false));
+        assert_eq!(alpha_to_pass(false, 1.0), 1.0);
+        assert_eq!(alpha_to_pass(false, 0.5), 0.5);
+        assert!(!through_to_pass(false, false));
+        assert!(through_to_pass(false, true));
+    }
+
+    // Rule 302: the unpark gives a window back what its own code last asked, opaque and taking clicks if nothing.
+    #[test]
+    fn a_window_gets_back_its_last_ask_and_opaque_with_clicks_when_it_asked_nothing() {
+        assert_eq!(wanted_after(None, None, None), Wanted::default());
+        assert_eq!(
+            Wanted::default(),
+            Wanted {
+                alpha: 1.0,
+                through: false
+            }
+        );
+        let revealed = wanted_after(None, Some(1.0), None);
+        let passing = wanted_after(Some(revealed), None, Some(true));
+        assert_eq!(
+            passing,
+            Wanted {
+                alpha: 1.0,
+                through: true
+            }
+        );
+        assert_eq!(wanted_after(Some(passing), Some(0.25), None).alpha, 0.25);
+        assert!(wanted_after(Some(passing), Some(0.25), None).through);
     }
 }

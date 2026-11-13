@@ -2606,7 +2606,10 @@ mod flow {
     fn a_remote_tab_shows_the_hosts_output_and_takes_typing() {
         let w = Wx::new(1.0);
         let before = w.written();
-        let id = w.ctl.borrow_mut().open_remote("mac", "/Users/max/proj");
+        let id = w
+            .ctl
+            .borrow_mut()
+            .open_remote("mac", "/Users/max/proj", None, true);
         w.pump_until("the remote pty", |w| !w.remote.made().is_empty());
         let io = w.remote.made()[0].1.clone();
         let front = || w.slot.borrow().clone().expect("a tab in front");
@@ -2647,5 +2650,30 @@ mod flow {
             ]
         );
         assert_eq!(w.quiet(), before, "nothing reached the local shell");
+    }
+
+    /// Remote sessions PR 5 (rule 299): the agent's `open.remote` leaves the tab in front where it is, so what the person
+    /// types there never lands in the new remote session; the new tab is there behind it, its link started.
+    #[test]
+    fn an_agents_remote_open_stays_behind_the_tab_in_front() {
+        let w = Wx::new(1.0);
+        let was = w.ctl.borrow().model().active().map(|t| t.id.clone());
+        assert!(was.is_some(), "a tab in front");
+        let id = w
+            .ctl
+            .borrow_mut()
+            .open_remote("mac", "/Users/max/proj", None, false);
+        w.pump_until("the remote pty", |w| !w.remote.made().is_empty());
+        assert_eq!(w.ctl.borrow().model().active().map(|t| t.id.clone()), was);
+        assert!(w.ctl.borrow().model().remote_of(&id).is_some());
+        w.key_front(KeyEvent::new("x", "KeyX").text("x"));
+        w.pump();
+        let io = w.remote.made()[0].1.clone();
+        assert!(
+            io.take_outgoing(Duration::from_millis(50))
+                .intents
+                .is_empty(),
+            "nothing typed in front reached the remote session"
+        );
     }
 }

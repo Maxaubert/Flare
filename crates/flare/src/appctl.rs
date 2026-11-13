@@ -2495,7 +2495,7 @@ impl AppCtl {
             if let Some(r) = &s.remote {
                 let live = flare_term::remote_pty::RemoteLive::new(r.host_tab.clone(), r.last_seq);
                 self.model.set_remote_live(&s.id, live.clone());
-                self.start_remote(&s.id, &r.machine, &s.cwd, live);
+                self.start_remote(&s.id, &r.machine, &s.cwd, None, live);
                 continue;
             }
             self.deps.host.spawn(&s.id, &s.cwd, s.resume.as_deref());
@@ -2518,7 +2518,7 @@ impl AppCtl {
                 .env(&["FLARE_E2E", "_REMOTE_OPEN"].concat())
                 .as_deref(),
         ) {
-            self.open_remote(&machine, &folder);
+            self.open_remote(&machine, &folder, None, true);
         }
         self.prewarm_new_tab();
         self.refresh();
@@ -2527,15 +2527,28 @@ impl AppCtl {
     // ---- opening and closing tabs -----------------------------------------------------------------
 
     /// A new remote tab (remote sessions PR 3): a shell tab on `machine` (its id in `machines.json`) in the host's
-    /// `folder`. The host opens the session; this tab shows it. Never blocks: the tab's link worker connects.
-    pub(crate) fn open_remote(&mut self, machine: &str, folder: &str) -> String {
+    /// `folder`, resuming the Claude session `resume` there when one is given (PR 5: the agent's `open.remote` and
+    /// `flare open --on`). The host opens the session; this tab shows it. Never blocks: the tab's link worker connects.
+    /// With `front` false (the agent's open) the tab in front stays in front, so a person typing there keeps the keys
+    /// and nothing they type lands in the new session (rule 299).
+    pub(crate) fn open_remote(
+        &mut self,
+        machine: &str,
+        folder: &str,
+        resume: Option<&str>,
+        front: bool,
+    ) -> String {
         let live = flare_term::remote_pty::RemoteLive::default();
+        let before = self.model.state.active_id.clone();
         let id = self.model.open_remote_tab(
             flare_tabs::tabs::MachineTag::of_id(machine),
             folder,
             live.clone(),
         );
-        self.start_remote(&id, machine, folder, live);
+        if !front && let Some(b) = before {
+            self.model.pick(&b);
+        }
+        self.start_remote(&id, machine, folder, resume, live);
         self.refresh();
         id
     }
@@ -2546,6 +2559,7 @@ impl AppCtl {
         id: &str,
         machine: &str,
         folder: &str,
+        resume: Option<&str>,
         live: flare_term::remote_pty::RemoteLive,
     ) {
         self.deps.host.spawn_remote(
@@ -2553,6 +2567,7 @@ impl AppCtl {
             flare_term::remote_pty::RemoteSpec {
                 machine: machine.to_string(),
                 folder: folder.to_string(),
+                resume: resume.map(str::to_string),
                 live,
             },
         );
@@ -4204,6 +4219,17 @@ impl AppCtl {
             | CtlOp::RemoteRelease { .. }
             | CtlOp::RemoteClose { .. }
             | CtlOp::RemoteStatus) => self.ctl_remote(op),
+            // Remote sessions PR 5: a tab here that shows a session on another machine (the agent's `open.remote` and
+            // `flare open --on`). The worker checked the machine and the params; the link connects on its own worker.
+            CtlOp::OpenRemote {
+                machine,
+                folder,
+                resume,
+                front,
+            } => {
+                let tab = self.open_remote(&machine, &folder, resume.as_deref(), front);
+                Ok(json!({"tab": tab, "machine": machine, "folder": folder}))
+            }
             // Answered by the browser's message, never here (see `ctl_browser`), or by the person (`ask_glue`).
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }
@@ -5018,8 +5044,12 @@ impl AppCtl {
         self.font.as_ref().map_or(0, FontCtl::zoom)
     }
 
-    /// Folders from a second launch: raise the window, then each folder is a new tab.
+    /// Folders from a second launch: raise the window, then each folder is a new tab. A `--start-hidden` launch (a hidden
+    /// start that met this Flare already running, remote sessions PR 5) raises nothing and opens nothing (rule 301).
     pub fn handoff(&mut self, h: Handoff) {
+        if h.args.iter().any(|a| a == "--start-hidden") {
+            return;
+        }
         (self.deps.raise)();
         // `--preview-update` on a second launch shows the update window in the running app; with a
         // real offer present the engine changes nothing. Alone, it opens no tab.
@@ -6643,6 +6673,30 @@ mod tests {
         assert_eq!(f.log.borrow().raised, 1);
         f.ctl.borrow_mut().handoff(h());
         f.pump_until("a second tab", |f| f.rows() == 2);
+    }
+
+    /// Rule 301: a `--start-hidden` launch that met this Flare running (a hidden start that lost a race) neither raises
+    /// the window nor opens a tab, whatever else its command line holds.
+    #[test]
+    fn a_background_launch_that_meets_a_running_flare_raises_and_opens_nothing() {
+        let f = fx_with(Opts {
+            real_fs: true,
+            ..Opts::default()
+        });
+        std::fs::create_dir(f.dir.path().join("sub")).unwrap(); // sync-ok: test code only, never the app
+        f.start_restore_and_wait();
+        f.ctl.borrow_mut().handoff(Handoff {
+            cwd: f.dir.path().to_string_lossy().into_owned(),
+            args: vec![
+                "flare.exe".to_string(),
+                "--start-hidden".to_string(),
+                "sub".to_string(),
+            ],
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        f.pump();
+        assert_eq!(f.rows(), 0);
+        assert_eq!(f.log.borrow().raised, 0);
     }
 
     #[test]

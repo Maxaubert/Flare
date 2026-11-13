@@ -60,6 +60,10 @@ pub mod code {
     /// What the call would replace is someone else's: a plugin opens its panel only on a tab whose panel is closed
     /// or shows the plugin already (plugins phase 3).
     pub const BUSY: &str = "busy";
+    /// The host end of a remote link cannot reach a running Flare there and could not start one hidden (remote
+    /// sessions PR 5): no desktop session to start it in, or it never opened its channel. One line says why; the
+    /// link stays open, so a later `remote.hello` may still be answered.
+    pub const HOST_NOT_READY: &str = "host_not_ready";
 
     /// Errors after which the server closes the connection.
     pub fn closes_client(code: &str) -> bool {

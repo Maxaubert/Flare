@@ -1120,6 +1120,62 @@ show it: an answer key here that read the mirrored box gone took the question do
 `a_remote_idle_after_work_shown_here_raises_the_viewers_own_finished_mark` and
 `a_remote_question_answered_here_is_raised_again_by_the_hosts_next_question`. Source: review of remote sessions PR 4
 (2026-11-12).
+299. **An agent may open a remote session; it may not type into it.** Amends S3 (rule 188). Owner decision: an agent
+may start a session on another machine with no prompt. `open.remote` (the agent's `open_remote_session` tool and
+`flare open --on`) is the agent grant's and the app's only, in a namespace of its own (`open`) that no permission opens,
+so no mod, remote link or bridge reaches it. The tab it opens takes no typing from the agent: the agent grant still has
+no `remote.*`, `shell.input` or `tabs.input`, and it names no tab but its own. The agent's open leaves the front tab in
+front, so what the person types there never lands in the new session; only the command (`front`) brings it forward. The
+machine must be one `machines.json` names (`not_found` lists them); the folder is the other machine's and is never
+statted or opened here. Native: `crates/flare-ctl/src/grant.rs`, `crates/flare/src/ctl_app.rs` (`open_remote`),
+`crates/flare/src/appctl.rs` (`open_remote`), `crates/flare-mcp/src/lib.rs` (`open_remote_session`). Held by
+`the_agent_may_open_a_remote_session_but_never_type_into_one`, `agent_can_show_and_drive_but_not_eval`,
+`open_remote_names_a_known_machine_and_opens_a_tab_the_agent_cannot_type_into`,
+`an_agents_remote_open_stays_behind_the_tab_in_front` and
+`open_remote_session_checks_its_arguments_and_routes_to_open_remote`. Source: remote sessions PR 5 (2026-11-12).
+300. **`--on` and other flag values never reach path parsing.** `flare open --on <machine> <folder> [--resume <id>]` reads
+`--on` and `--resume` as values in `config.rs`, takes `open` and the folder out of the bare words, and runs before the
+lock, the hand-off (whose `paths_from_argv` reads the raw command line for folders) and any window, then exits. So a
+machine name or a session id is never opened as a folder here, and the host folder is never statted on this machine.
+`--user-data-dir` is untouched. Native: `crates/flare/src/config.rs` (`open_on`), `crates/flare/src/main.rs`,
+`crates/flare/src/cli_open.rs`. Held by `open_on_reads_its_values_and_leaves_no_folder_to_open`,
+`open_on_refuses_what_it_cannot_use_with_its_usage`, `open_on_branches_before_the_hand_off_and_the_window` and
+`the_command_asks_the_running_flare_as_the_agent_for_a_tab_in_front`. Source: remote sessions PR 5 (2026-11-12).
+301. **`--start-hidden` never raises or takes the focus; it uses the e2e's park code.** When no Flare runs, the serve
+process (before it answers `remote.hello`) and `flare open` start `<this exe> --start-hidden` and wait up to 60 s for its
+pipe. The window is born parked (the e2e's attributes: inactive, off the taskbar, at the parking spot) and parked again
+with the no-activate tool-window style by the same timer, and its parked place is never saved as the person's. A
+`--start-hidden` launch that meets a Flare running hands nothing over and raises nothing. The first raise (a normal
+launch later) takes the window off the parking spot with its normal style and its taskbar button. A Windows process in
+session 0 (sshd's logins) starts nothing, and a host with no Flare to be had answers the hello `host_not_ready` in one
+line, which the viewer shows once. The flag is `--start-hidden`, not the plan's `--background`: that name is the
+background colour's look flag. Native: `crates/flare/src/hidden_start.rs`, `crates/flare/src/serve_remote.rs`
+(`remote_ready`), `crates/flare/src/window.rs` (`parked_start`, `unpark_background`), `crates/flare/src/appctl.rs`
+(`handoff`), `crates/flare-ctl/src/session.rs` (`Dispatcher::remote_ready`). Held by
+`with_none_running_one_is_started_once_and_its_pipe_awaited`, `a_running_flare_is_used_and_nothing_is_started`,
+`a_pipe_that_never_opens_is_host_not_ready_in_one_line`, `with_no_desktop_nothing_is_started_and_the_line_says_what_to_do`,
+`the_hello_waits_for_a_flare_here_and_a_host_that_cannot_start_one_says_so`,
+`a_host_that_is_not_ready_refuses_the_hello_in_one_line_and_takes_another`,
+`a_background_start_is_parked_like_the_e2e_and_its_raise_undoes_the_style`,
+`a_background_launch_that_meets_a_running_flare_raises_and_opens_nothing` and the e2e `remoteOpen`. Source: remote
+sessions PR 5 (2026-11-12).
+
+302. **A Mac `--start-hidden` run is held clear from its first window, and its first raise lets go of all of it.** Amends
+rule 301 for macOS. A Mac draws nothing for a window on no screen, so the park puts it on the main screen at alpha 0
+(rule 1109). `--start-hidden` therefore installs the e2e's whole Mac park before the first window is made, as `--e2e`
+does (`keep_windows_off_screen`: no constraint to a screen, born clear, kept clear against Slint's reveal on the first
+GPU frame), not App Nap's hold alone; without it the window showed as a strip at a screen edge, then at full alpha on
+the host's screen. The hold is one flag (`window_park::HELD`) that an `--e2e` run never clears. The first raise calls
+`window_park::unpark` before the window moves: the flag clears, so every stand-in passes on what it is asked and AppKit
+constrains frames again; the app is a regular app (a Dock icon); every live window gets back the alpha and click
+pass-through its own code last asked while held (opaque and taking clicks when it asked nothing); and the main window
+is opaque, takes clicks and has its shadow. A park that comes after the raise parks nothing. Native:
+`crates/flare/src/main.rs`, `crates/flare/src/window.rs` (`unpark_background`),
+`crates/flare-win/src/macos/window_park.rs` (`unpark`, `Wanted`). Held by
+`a_background_start_on_a_mac_is_born_clear_and_its_raise_undoes_the_mac_park` and, in macOS CI,
+`a_held_park_keeps_windows_clear_and_a_released_one_passes_the_ask_on`,
+`a_window_gets_back_its_last_ask_and_opaque_with_clicks_when_it_asked_nothing` and
+`off_the_main_thread_nothing_is_touched`. Source: the review of remote sessions PR 5 (2026-11-12).
 
 ## macOS port
 

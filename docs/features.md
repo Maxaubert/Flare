@@ -2533,3 +2533,34 @@ viewer", section 5 `remote.status` and `remote.convo`).
   297). Held by `remote_convo::tests` and `ctl_app::tests::remote_convo_sends_the_hosts_transcript_as_numbered_entries_and_no_path`.
 - **Not yet.** The fitted conversation view that shows those entries (PR 7). When the viewer's link drops, the host
   takes its questions back and announces an open one itself.
+
+## Remote sessions, PR 5: starting sessions (command, agent tool, hidden start), 2026-11-12
+
+A remote session can now be started without the + menu (PR 7): by a command, by an agent, and on a host whose Flare is
+not running. Plan `docs/superpowers/plans/2026-11-12-remote-sessions.md` (PR 5). Contract: `docs/surfaces/protocol.md`
+(section 1 "The hidden start", section 4, section 5 `open.remote`).
+
+- **`flare open --on <machine> <folder> [--resume <id>]`.** Asks the Flare running here for a tab on that machine (an
+  id in `machines.json`) in that folder, in front, resuming that Claude session when asked; prints one line and exits.
+  The folder is the other machine's and is never looked at here; `--on`'s value never reaches path parsing (rule 300).
+  When no Flare runs here it starts one hidden first. Held by `config::tests`, `cli_open::tests` and the e2e
+  `remoteOpen`.
+- **The agent's `open_remote_session` tool.** An agent may open a session on a linked machine with no prompt (owner
+  decision): `open.remote`. The tab opens behind the one in front, and the agent cannot type into it or read it (rule
+  299). A machine `machines.json` does not name is refused with the names it does. Held by
+  `grant::tests::the_agent_may_open_a_remote_session_but_never_type_into_one`, `ctl_app::tests`, the `flare-mcp`
+  tests and `ui_tests::term::flow::an_agents_remote_open_stays_behind_the_tab_in_front`.
+- **Hidden start.** When the other machine's Flare is not running, the link's `flare --serve-remote` starts it with
+  `--start-hidden` before it answers: a normal Flare whose window stays parked off every screen and never takes the
+  focus (the e2e's park code); a later normal launch brings it forward. A Windows login over sshd (session 0) cannot
+  start one: the tab shows one line (`host_not_ready`) and connects once Flare runs there (rule 301). Held by
+  `hidden_start::tests`, `serve_remote::tests`, `window::tests` and the e2e `remoteOpen`.
+  On a Mac the hidden window is clear and click-through from its first order-in, as the Mac e2e's is, and its first
+  raise makes Flare a regular app again with an opaque window that takes clicks (rule 302). Held by
+  `window::tests::a_background_start_on_a_mac_is_born_clear_and_its_raise_undoes_the_mac_park` and the macOS
+  `window_park::tests`.
+- **`machines.json` registry.** `crates/flare/src/machines.rs` reads and writes the hand-edited list (whole-file
+  writes, unknown kinds left unknown). Held by `machines::tests`.
+- **Not yet.** The past-sessions list (`remote.sessions`) is not built: the owner's PR 7 picks drop it from the +
+  menu, and `--resume` takes an id. Whether a Mac's sshd login can start the app hidden, and a raise of a hidden Mac
+  window on a real screen, are on the by-hand list.

@@ -332,6 +332,15 @@ pub enum CtlOp {
     /// `remote.status` (remote sessions PR 4): every shell tab as the host's own marks say it (rule 294). Answered with
     /// `{tabs}`; the worker numbers it.
     RemoteStatus,
+    /// `open.remote` (remote sessions PR 5): a tab here that shows a session on `machine` (an id the worker found in
+    /// `machines.json`) in the host's `folder`, resuming `resume` there (checked with `valid_resume`). In front only
+    /// when `front` (the `flare open` command); the agent's open leaves the front tab where it is. Answered with `{tab}`.
+    OpenRemote {
+        machine: String,
+        folder: String,
+        resume: Option<String>,
+        front: bool,
+    },
 }
 
 /// Where `browser.navigate` sends the page.
@@ -398,6 +407,7 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::RemoteRelease { .. } => "CtlOp::RemoteRelease",
             CtlOp::RemoteClose { .. } => "CtlOp::RemoteClose",
             CtlOp::RemoteStatus => "CtlOp::RemoteStatus",
+            CtlOp::OpenRemote { .. } => "CtlOp::OpenRemote",
         })
     }
 }
@@ -496,7 +506,13 @@ pub struct AppDispatcher {
     /// Remote sessions (PR 2): the bridge key and the tabs remote viewers follow. Without it no token is the bridge and
     /// the `remote.*` methods are neither listed nor answered.
     remote: Option<Arc<crate::remote_host::RemoteHost>>,
+    /// Remote sessions (PR 5): the machines `open.remote` may name (the profile's `machines.json`). Without it
+    /// `open.remote` is neither listed nor answered.
+    machines: Option<Arc<dyn crate::machines::MachinesPort>>,
 }
+
+/// The longest host folder `open.remote` takes, in bytes.
+const OPEN_FOLDER_MAX: usize = 4096;
 
 /// Buckets kept at most; past it the map starts again (a bucket is only a second of memory).
 const DECOR_BUCKETS_MAX: usize = 1024;
@@ -528,6 +544,7 @@ impl AppDispatcher {
             surface_rate: Mutex::new(HashMap::new()),
             clock: Instant::now,
             remote: None,
+            machines: None,
         }
     }
 
@@ -535,6 +552,77 @@ impl AppDispatcher {
     pub fn with_remote(mut self, host: Arc<crate::remote_host::RemoteHost>) -> Self {
         self.remote = Some(host);
         self
+    }
+
+    /// Opens remote sessions here (PR 5): `open.remote` names a machine of `machines`.
+    pub fn with_machines(mut self, machines: Arc<dyn crate::machines::MachinesPort>) -> Self {
+        self.machines = Some(machines);
+        self
+    }
+
+    /// `open.remote` (remote sessions PR 5): the agent's tool and `flare open --on`. The machine must be one
+    /// `machines.json` names (read here, on the call's worker); the folder is a path of that machine, never statted or
+    /// opened here (it is the host's to check, rule 287); a resume id must pass `valid_resume`. The tab opens at once
+    /// and its link connects on its own worker, so the answer never waits for ssh. Whoever calls, the opened tab takes
+    /// no typing from them: the agent's grant has no `remote.*`, `shell.input` or `tabs.input` (rule 299).
+    fn open_remote(&self, params: &Value) -> Result<Value, CtlError> {
+        let machines = self.machines.as_ref().ok_or_else(|| {
+            CtlError::new(code::UNAVAILABLE, "this Flare opens no remote sessions")
+        })?;
+        only_fields(
+            params,
+            &["machine", "folder", "resume", "front"],
+            "open.remote",
+        )?;
+        let machine = str_param(params, "machine")?
+            .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "machine is required"))?;
+        if !crate::machines::argv_word(machine) {
+            return Err(CtlError::new(
+                code::BAD_PARAMS,
+                "machine is an id from machines.json, one plain word",
+            ));
+        }
+        let folder = str_param(params, "folder")?
+            .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "folder is required"))?;
+        if folder.trim().is_empty()
+            || folder.len() > OPEN_FOLDER_MAX
+            || folder.chars().any(char::is_control)
+        {
+            return Err(CtlError::new(
+                code::BAD_PARAMS,
+                "folder is a path on that machine: not empty, no control characters, at most 4096 bytes",
+            ));
+        }
+        let resume = match str_param(params, "resume")? {
+            None => None,
+            Some(r) => Some(
+                flare_agent::resume::valid_resume(Some(r))
+                    .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "resume is not a session id"))?
+                    .to_string(),
+            ),
+        };
+        let front = match params.get("front") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => {
+                return Err(CtlError::new(
+                    code::BAD_PARAMS,
+                    "front must be true or false",
+                ));
+            }
+        };
+        if machines.get(machine).is_none() {
+            return Err(CtlError::new(
+                code::NOT_FOUND,
+                crate::machines::unknown_machine(machine, &machines.list()),
+            ));
+        }
+        self.ask(CtlOp::OpenRemote {
+            machine: machine.to_string(),
+            folder: folder.to_string(),
+            resume,
+            front,
+        })
     }
 
     /// The tab a call acts on (plugins phase 3): the `tab` it names, or else the caller's own. A caller may name its
@@ -2584,6 +2672,10 @@ impl Dispatcher for AppDispatcher {
                 Method::ViewModel,
             ]);
         }
+        // Opening a remote session (PR 5) only where this run has its machines.
+        if self.machines.is_some() {
+            all.push(Method::OpenRemoteSession);
+        }
         // Remote sessions (PR 2) only where this run serves them.
         if self.remote.is_some() {
             all.extend(
@@ -2832,6 +2924,7 @@ impl Dispatcher for AppDispatcher {
             | Method::RemoteClose
             | Method::RemoteStatus
             | Method::RemoteConvo => self.remote_call(ctx, method, &params),
+            Method::OpenRemoteSession => self.open_remote(&params),
             Method::ViewText => {
                 let tab = Self::tab_of_call(ctx)?;
                 let text = str_param(&params, "text")?
@@ -2901,11 +2994,13 @@ impl CtlServer {
         apps: AppsCfg,
         mods: Option<Arc<Hub>>,
         remote: Option<Arc<crate::remote_host::RemoteHost>>,
+        machines: Arc<dyn crate::machines::MachinesPort>,
     ) -> std::io::Result<Self> {
         let stopping = Arc::new(AtomicBool::new(false));
         let mut d = AppDispatcher::new(post, tab_of, real_resolve(), home, Arc::clone(&stopping))
             .with_eval(eval)
-            .with_apps(apps);
+            .with_apps(apps)
+            .with_machines(machines);
         if let Some(hub) = mods {
             d = d.with_mods(hub);
         }
@@ -5791,6 +5886,73 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|o| o == "CtlOp::RemoteClose")
+        );
+    }
+
+    /// Rule 299: `open.remote` (the agent's tool, `flare open --on`) names a machine of `machines.json`, a folder of
+    /// that machine (never statted here) and a session id; only then does the window open a tab. The agent that asked
+    /// still cannot type into it, and a run with no machines neither lists nor answers it.
+    #[test]
+    fn open_remote_names_a_known_machine_and_opens_a_tab_the_agent_cannot_type_into() {
+        struct One;
+        impl crate::machines::MachinesPort for One {
+            fn list(&self) -> Vec<crate::machines::Machine> {
+                crate::machines::parse_machines(r#"{"machines":[{"id":"mac","ssh":"mac-mini"}]}"#)
+            }
+        }
+        let r = rig(|_| Ok(json!({"tab": "t9"})), false, &[]);
+        let ops = r.ops.clone();
+        let d = r.d.with_machines(Arc::new(One));
+        let c = agent_in_tab();
+        assert!(d.capabilities().contains(&Method::OpenRemoteSession));
+        for bad in [
+            json!({"folder": "/Users/max/p"}),
+            json!({"machine": "mac"}),
+            json!({"machine": "-oProxyCommand=x", "folder": "/p"}),
+            json!({"machine": "mac", "folder": "a\u{7}b"}),
+            json!({"machine": "mac", "folder": "  "}),
+            json!({"machine": "mac", "folder": "/p", "resume": "x; rm -rf"}),
+            json!({"machine": "mac", "folder": "/p", "front": "yes"}),
+            json!({"machine": "mac", "folder": "/p", "command": "claude"}),
+        ] {
+            assert_eq!(
+                code_of(d.call(&c, Method::OpenRemoteSession, bad.clone())),
+                code::BAD_PARAMS,
+                "{bad}"
+            );
+        }
+        let e = d
+            .call(
+                &c,
+                Method::OpenRemoteSession,
+                json!({"machine": "nas", "folder": "/p"}),
+            )
+            .unwrap_err();
+        assert_eq!(e.code, code::NOT_FOUND);
+        assert!(e.message.contains("the machines are mac"), "{}", e.message);
+        assert!(ops.lock().unwrap().is_empty(), "nothing reached the window");
+        // A host path that is no path here is still the host's to check: it is not statted on this machine.
+        let v = d
+            .call(
+                &c,
+                Method::OpenRemoteSession,
+                json!({"machine": "mac", "folder": "/Users/max/nowhere-here", "resume": "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f"}),
+            )
+            .unwrap();
+        assert_eq!(v["tab"], "t9");
+        assert_eq!(*ops.lock().unwrap(), ["CtlOp::OpenRemote"]);
+        for m in [Method::RemoteInput, Method::ShellInput, Method::TabsInput] {
+            assert!(c.grant.check(m).is_err(), "{}", m.name());
+        }
+        let bare = rig(|_| Ok(json!({})), false, &[]);
+        assert!(!bare.d.capabilities().contains(&Method::OpenRemoteSession));
+        assert_eq!(
+            code_of(bare.d.call(
+                &c,
+                Method::OpenRemoteSession,
+                json!({"machine": "mac", "folder": "/p"})
+            )),
+            code::UNAVAILABLE
         );
     }
 
