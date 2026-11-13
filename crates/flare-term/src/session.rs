@@ -357,7 +357,10 @@ impl Session {
 struct State {
     sessions: HashMap<String, Arc<Session>>,
     pending: HashSet<String>,
-    killed_pending: HashSet<String>,
+    /// Spawns still in flight that were ended before they registered, and how: `true` lets go the quit's way
+    /// (`PtyProcess::leave`, a remote tab detaches), `false` kills (a remote tab closes). The first way asked wins, as
+    /// in `RemoteIo::leave`.
+    killed_pending: HashMap<String, bool>,
     desired: HashMap<String, (usize, usize)>,
     /// Oldest first; the key is the lower-cased root.
     warm: Vec<(String, Arc<Session>)>,
@@ -806,7 +809,7 @@ impl SessionManager {
                 st: Mutex::new(State {
                     sessions: HashMap::new(),
                     pending: HashSet::new(),
-                    killed_pending: HashSet::new(),
+                    killed_pending: HashMap::new(),
                     desired: HashMap::new(),
                     warm: Vec::new(),
                 }),
@@ -951,7 +954,7 @@ impl SessionManager {
         let size;
         {
             let mut st = lk(&self.sh.st);
-            if st.killed_pending.contains(id) {
+            if st.killed_pending.contains_key(id) {
                 return false;
             }
             if resume.is_none()
@@ -996,9 +999,11 @@ impl SessionManager {
             }
         };
         let mut st = lk(&self.sh.st);
-        if st.killed_pending.contains(id) {
+        if let Some(&leave) = st.killed_pending.get(id) {
+            // Ended while it started: the quit (or "Hide here only") lets a remote tab go and leaves its host session
+            // running (rule 288); only a close closes it.
             drop(st);
-            kill_pty(&self.sh, s);
+            end_pty(&self.sh, s, leave);
             return false;
         }
         if s.reported.load(Ordering::SeqCst) {
@@ -1028,7 +1033,7 @@ impl SessionManager {
         let _starting = StartGuard::new(&self.sh);
         let size = {
             let st = lk(&self.sh.st);
-            if st.killed_pending.contains(id) {
+            if st.killed_pending.contains_key(id) {
                 return false;
             }
             Self::size_for(&st, id)
@@ -1062,9 +1067,11 @@ impl SessionManager {
             }
         };
         let mut st = lk(&self.sh.st);
-        if st.killed_pending.contains(id) {
+        if let Some(&leave) = st.killed_pending.get(id) {
+            // Ended while it started: the quit (or "Hide here only") lets a remote tab go and leaves its host session
+            // running (rule 288); only a close closes it.
             drop(st);
-            kill_pty(&self.sh, s);
+            end_pty(&self.sh, s, leave);
             return false;
         }
         if s.reported.load(Ordering::SeqCst) {
@@ -1305,7 +1312,7 @@ impl SessionManager {
         let s = {
             let mut st = lk(&self.sh.st);
             if st.pending.contains(id) {
-                st.killed_pending.insert(id.to_string());
+                st.killed_pending.entry(id.to_string()).or_insert(false);
             }
             st.desired.remove(id);
             st.sessions.remove(id)
@@ -1321,7 +1328,7 @@ impl SessionManager {
         let s = {
             let mut st = lk(&self.sh.st);
             if st.pending.contains(id) {
-                st.killed_pending.insert(id.to_string());
+                st.killed_pending.entry(id.to_string()).or_insert(true);
             }
             st.desired.remove(id);
             st.sessions.remove(id)
@@ -1338,7 +1345,9 @@ impl SessionManager {
             let mut st = lk(&self.sh.st);
             self.sh.quit_gen.fetch_add(1, Ordering::SeqCst);
             let pending: Vec<String> = st.pending.iter().cloned().collect();
-            st.killed_pending.extend(pending);
+            for id in pending {
+                st.killed_pending.entry(id).or_insert(true);
+            }
             st.desired.retain(|k, _| k.is_empty());
             let mut v: Vec<Arc<Session>> = st.sessions.drain().map(|(_, s)| s).collect();
             v.extend(st.warm.drain(..).map(|(_, s)| s));
@@ -2964,6 +2973,41 @@ mod remote_tests {
         assert_eq!(made[0].1.leaving(), Some(Leaving::Close));
         assert_eq!(made[1].1.leaving(), Some(Leaving::Detach));
         assert!(local.made()[0].killed());
+    }
+
+    /// Rule 288: a quit or a "Hide here only" that overtakes a remote tab still starting lets it go and leaves the host
+    /// session running; only a close made while it starts closes it (macOS CI, 2026-11-13: the quit closed it).
+    #[test]
+    fn a_remote_tab_ended_while_it_starts_closes_only_on_a_close() {
+        for (how, want) in [
+            ("quit", Leaving::Detach),
+            ("hide", Leaving::Detach),
+            ("close", Leaving::Close),
+            ("close then quit", Leaving::Close),
+        ] {
+            let (m, _local, remote) = rig();
+            remote.hold();
+            assert!(m.reserve("r1"));
+            let m2 = Arc::clone(&m);
+            let t = std::thread::spawn(move || {
+                m2.spawn_remote_reserved("r1", spec("mac"), Arc::new(NullSink))
+            });
+            assert!(wait_until(|| remote.made().len() == 1), "{how}");
+            match how {
+                "quit" => m.kill_all(),
+                "hide" => m.leave("r1"),
+                "close" => m.kill("r1"),
+                _ => {
+                    m.kill("r1");
+                    m.kill_all();
+                }
+            }
+            remote.release();
+            assert!(!t.join().unwrap(), "{how}: the tab never registers");
+            assert!(m.shells_gone(Duration::from_secs(3)), "{how}");
+            assert_eq!(remote.made()[0].1.leaving(), Some(want), "{how}");
+            assert!(!m.is_remote("r1"), "{how}");
+        }
     }
 
     /// The host session ended: the tab hears the exit as a local shell's.

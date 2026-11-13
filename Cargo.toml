@@ -116,9 +116,10 @@ webview2-com = "=0.39.1"
 pulldown-cmark = { version = "=0.13.6", default-features = false }
 zip = { version = "=9.0.0", default-features = false, features = ["deflate"] }
 
-# femtovg 0.27.0 with Flare's one change (regression rule 1181, third_party/femtovg/FLARE-PATCH.md): its wgpu
-# renderer keeps a GPU pipeline until 240 flushes in a row left it unused, instead of dropping every pipeline the last
-# flush did not use (Slint's clear-only flush made every frame build them all again). Drop this patch when Slint's
-# femtovg moves past that eviction (the canary `crates/flare-render/tests/femtovg_pipelines.rs` says when).
+# femtovg 0.27.0 with Flare's two changes (third_party/femtovg/FLARE-PATCH.md): its wgpu renderer keeps a GPU pipeline
+# until 240 flushes in a row left it unused, instead of dropping every pipeline the last flush did not use (rule 1181),
+# and a concave fill's cover quad takes the fringe on all four corners, so no stencil is left for the next frame (rule
+# 1203). Drop this patch when Slint's femtovg has both (the canaries `crates/flare-render/tests/femtovg_pipelines.rs`
+# and `femtovg_clawd_hop.rs` say when).
 [patch.crates-io]
 femtovg = { path = "third_party/femtovg" }

@@ -1965,6 +1965,7 @@ dependencies = [
  "bytemuck",
  "cosmic-text",
  "femtovg",
+ "flare-agent",
  "log",
  "pollster",
  "tempfile",

@@ -20,6 +20,7 @@ windows-sys.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 femtovg = { version = "0.27", default-features = false, features = ["wgpu"] }
+flare-agent = { path = "../flare-agent" }
 
 [lints]
 workspace = true
