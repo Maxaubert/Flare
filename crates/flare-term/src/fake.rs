@@ -304,6 +304,8 @@ impl PtySpawner for FakeSpawner {
 #[derive(Default)]
 pub struct FakeRemote {
     made: Mutex<Vec<(SpawnSpec, Arc<crate::remote_pty::RemoteIo>)>>,
+    /// While true, a spawn waits after it is counted in `made` (a start the quit can overtake).
+    held: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl FakeRemote {
@@ -315,12 +317,27 @@ impl FakeRemote {
     pub fn made(&self) -> Vec<(SpawnSpec, Arc<crate::remote_pty::RemoteIo>)> {
         lk(&self.made).clone()
     }
+
+    /// Holds every spawn from now on after it is made and before it returns, until `release`.
+    pub fn hold(&self) {
+        *lk(&self.held.0) = true;
+    }
+
+    pub fn release(&self) {
+        *lk(&self.held.0) = false;
+        self.held.1.notify_all();
+    }
 }
 
 impl PtySpawner for FakeRemote {
     fn spawn(&self, spec: &SpawnSpec) -> Result<Box<dyn PtyProcess>, String> {
         let io = crate::remote_pty::RemoteIo::new();
         lk(&self.made).push((spec.clone(), Arc::clone(&io)));
+        let mut held = lk(&self.held.0);
+        while *held {
+            held = self.held.1.wait(held).unwrap_or_else(|p| p.into_inner()); // sync-ok: a test spawner's worker thread
+        }
+        drop(held);
         Ok(Box::new(crate::remote_pty::RemotePty::new(io)))
     }
 }
