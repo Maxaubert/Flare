@@ -1,7 +1,8 @@
 //! Remote sessions PR 2 on the UI thread: what a remote viewer's `remote.*` call changes in this window. The control
 //! channel's worker checked every param first (`ctl_app::AppDispatcher::remote_call`); here the tab must still be open.
 //!
-//! - `remote.open` opens a tab the way a person's new tab does, with a resume id that passed `valid_resume`.
+//! - `remote.open` opens a tab the way a person's new tab does, with a resume id that passed `valid_resume`; the same
+//!   `open_id` again is answered with the tab it opened (rule 1210).
 //! - `remote.attach` puts the tab's handle and output tail into the `RemoteHost`, so the polls never come here.
 //! - `remote.input` types through `TermHandle::remote_input`, the typed path (rule 279).
 //! - `remote.resize` makes the remote viewer the size owner (rule 282); a release gives it back.
@@ -71,10 +72,31 @@ impl AppCtl {
         let closed = || CtlError::new(code::NO_TAB, "that tab is closed");
         let not_running = || CtlError::new(code::UNAVAILABLE, "that tab's shell is not running");
         match op {
-            CtlOp::RemoteOpen { folder, resume } => {
+            CtlOp::RemoteOpen {
+                folder,
+                resume,
+                open_id,
+            } => {
+                // Rule 1210: the same open sent again (its answer was lost to a broken link) gets the tab the first one
+                // opened, while that tab is still open; never a second tab.
+                if let (Some(oid), Some(host)) = (open_id.as_deref(), self.remote_host.as_ref())
+                    && let Some(o) = host.opened(oid)
+                    && self.is_shell_tab(&o.tab)
+                {
+                    return Ok(json!({"tab": o.tab, "session": o.session}));
+                }
                 let id = self.model.open_tab(&folder);
                 // Only an id that passed the check is a resume (the worker checked it, and the host checks it again).
                 let resume = valid_resume(resume.as_deref()).map(str::to_string);
+                if let (Some(oid), Some(host)) = (open_id.as_deref(), self.remote_host.as_ref()) {
+                    host.note_opened(
+                        oid,
+                        crate::remote_host::Opened {
+                            tab: id.clone(),
+                            session: resume.clone(),
+                        },
+                    );
+                }
                 self.deps.host.spawn(&id, &folder, resume.as_deref());
                 self.note_spawn(&id, &folder, resume.is_some());
                 self.hub.on_spawned(&id, &folder, resume.as_deref());

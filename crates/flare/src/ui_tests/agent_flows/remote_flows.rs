@@ -175,3 +175,33 @@ fn remote_status_says_the_windows_own_marks_as_words() {
         v["tabs"][0]["state"] == "question" && v["tabs"][0]["question_text"] == "Pick a colour?"
     });
 }
+
+/// Rule 1210: a `remote.open` sent again with the same open id (its answer was lost to a broken link) is answered with
+/// the tab the first one opened, and no second tab opens; another id, or none, opens a tab of its own.
+#[test]
+fn a_remote_open_sent_again_with_its_open_id_opens_no_second_tab() {
+    let f = Fx::new();
+    f.tabs(&["C:\\work"]);
+    serving(&f);
+    let open = |oid: Option<&str>| {
+        ask(
+            &f,
+            CtlOp::RemoteOpen {
+                folder: "C:\\there".into(),
+                resume: None,
+                open_id: oid.map(str::to_string),
+            },
+        )
+        .expect("the open")["tab"]
+            .as_str()
+            .expect("a tab")
+            .to_string()
+    };
+    let before = f.ids().len();
+    let first = open(Some("viewer-1"));
+    assert_eq!(open(Some("viewer-1")), first, "the same tab again");
+    assert_eq!(f.ids().len(), before + 1, "one tab for one open");
+    assert_ne!(open(Some("viewer-2")), first);
+    assert_ne!(open(None), first);
+    assert_eq!(f.ids().len(), before + 3);
+}

@@ -297,10 +297,12 @@ pub enum CtlOp {
         input: Value,
     },
     /// `remote.open` (remote sessions PR 2): a new tab in a host folder the call's thread checked is one, with a session
-    /// id that passed `valid_resume`. Answered with `{tab, session}`.
+    /// id that passed `valid_resume`. Answered with `{tab, session}`. An `open_id` the host answered lately is answered
+    /// with the tab it opened, not a second one (rule 1210).
     RemoteOpen {
         folder: String,
         resume: Option<String>,
+        open_id: Option<String>,
     },
     /// `remote.tabs`: every shell tab with its folder, title, the agent's state word and session.
     RemoteTabs,
@@ -2401,7 +2403,7 @@ impl AppDispatcher {
         };
         match method {
             Method::RemoteOpen => {
-                only_fields(params, &["folder", "resume"], "remote.open")?;
+                only_fields(params, &["folder", "resume", "open_id"], "remote.open")?;
                 let folder = str_param(params, "folder")?
                     .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "folder is required"))?;
                 // `~` alone is this host's home folder (remote sessions PR 7: the + menu's shell on a machine).
@@ -2427,9 +2429,22 @@ impl AppDispatcher {
                             .to_string(),
                     ),
                 };
+                // Rule 1210: the viewer's id for this open, so the same open sent again after a lost answer finds the
+                // tab the first one opened.
+                let open_id = match str_param(params, "open_id")? {
+                    None => None,
+                    Some(o) if remote::valid_open_id(o) => Some(o.to_string()),
+                    Some(_) => {
+                        return Err(CtlError::new(
+                            code::BAD_PARAMS,
+                            "open_id is 1 to 64 letters, digits, - or _",
+                        ));
+                    }
+                };
                 self.ask(CtlOp::RemoteOpen {
                     folder: dir.to_string_lossy().into_owned(),
                     resume,
+                    open_id,
                 })
             }
             Method::RemoteLs => {
@@ -6077,6 +6092,18 @@ mod tests {
             )),
             code::BAD_PARAMS
         );
+        // Rule 1210: an open id is a short plain word.
+        for bad in [json!(""), json!("a b"), json!("x".repeat(65)), json!(7)] {
+            assert_eq!(
+                code_of(d.call(
+                    &c,
+                    Method::RemoteOpen,
+                    json!({"folder": here, "open_id": bad})
+                )),
+                code::BAD_PARAMS,
+                "{bad}"
+            );
+        }
         assert!(ops.lock().unwrap().is_empty());
         assert!(
             d.call(&c, Method::RemoteOpen, json!({"folder": here}))
@@ -6090,9 +6117,21 @@ mod tests {
             )
             .is_ok()
         );
+        assert!(
+            d.call(
+                &c,
+                Method::RemoteOpen,
+                json!({"folder": here, "open_id": "a1-B2_c3".repeat(8)})
+            )
+            .is_ok()
+        );
         assert_eq!(
             *ops.lock().unwrap(),
-            ["CtlOp::RemoteOpen", "CtlOp::RemoteOpen"]
+            [
+                "CtlOp::RemoteOpen",
+                "CtlOp::RemoteOpen",
+                "CtlOp::RemoteOpen"
+            ]
         );
     }
 

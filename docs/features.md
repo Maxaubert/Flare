@@ -2523,8 +2523,9 @@ viewer").
   working mark here; live output still does (rule 289). Held by
   `agent_hub::tests::a_remote_tabs_replay_raises_no_mark_and_live_output_does`.
 - **Not yet.** Opening a remote tab from the + menu, a command or an agent (PR 5, PR 7), the host's status words and the
-  conversation view (PR 4), file links and file drops over the link (PR 6), the Mac/PC logo on the tab (PR 7). Typing
-  while the link is down is not kept, and a remote tab shows no colours after a reconnect from a snapshot.
+  conversation view (PR 4), file links and file drops over the link (PR 6), the Mac/PC logo on the tab (PR 7). A
+  remote tab shows no colours after a reconnect from a snapshot. (Typing while the link is down is kept since
+  2026-11-13, rule 1210: see "Remote link edge cases" below.)
 
 ## Remote sessions, PR 4: status, conversation and keep-awake, 2026-11-12
 
@@ -2679,6 +2680,35 @@ Contract: `docs/surfaces/protocol.md` (`remote.hello`'s `os`, `remote.status`'s 
   the sh quoting that answered, with no PC logo (rule 1208). Held by
   `a_pc_whose_profile_folder_has_a_space_is_found_through_powershells_variable`,
   `a_pc_that_answered_in_sh_quoting_keeps_that_quoting` and `the_saved_kind_keeps_the_quoting_that_answered`.
+
+## Remote link edge cases, 2026-11-13
+
+Three fixes to a remote tab's link when it is slow or drops, owner approved 2026-11-13 (rule 1210). Contract:
+`docs/surfaces/protocol.md` (section 1 "The viewer", section 5 `remote.open` and `remote.attach`).
+
+- **Attach right after open.** A new remote tab's first attach can come before the host's new shell runs; the host
+  answers "that tab's shell is not running". The viewer asks again on the same link every 250 ms for up to 10 s, so a
+  new tab no longer costs a second ssh connect. Held by
+  `remote_link::tests::an_attach_the_host_cannot_take_yet_is_tried_again_on_the_same_link` and
+  `an_attach_still_unavailable_after_the_patience_drops_the_link_and_the_next_one_attaches`.
+- **No second tab on a lost open.** Each remote tab sends an open id with `remote.open`, the same on every reconnect.
+  When the link breaks after the host opened the tab but before its answer came back, the open sent again gets the
+  same tab, not a second one. The host remembers 64 ids for 10 minutes. An older host without the id still opens the
+  tab (the viewer opens again without it). Held by `remote_link::tests::an_open_whose_answer_was_lost_opens_no_second_tab`,
+  `an_older_host_that_refuses_the_open_id_still_opens_the_tab`, `remote_host::tests::an_open_id_is_remembered_ten_minutes_and_at_most_64_of_them`,
+  `ctl_app::tests::remote_open_checks_the_host_folder_and_the_resume_id_first` and
+  `remote_flows::a_remote_open_sent_again_with_its_open_id_opens_no_second_tab`.
+- **Typing while the link is down is kept.** Keys, text and pastes typed in a remote tab while its link is down are
+  kept and sent in order right after the next attach. Typing older than 30 s, or past 64 KB in all (and the rest of
+  that outage's typing after it), is dropped, and the tab shows one red line: "Some typing while the link to <machine>
+  was down was not sent". When the host's tab is gone (`no_tab`), the kept typing is dropped and never typed into
+  another tab. Held by `typing_while_the_link_is_down_is_sent_in_order_after_the_next_attach`,
+  `typing_older_than_the_kept_age_is_dropped_and_the_tab_says_so`,
+  `typing_over_the_cap_while_the_link_is_down_is_dropped_and_the_tab_says_so`,
+  `typing_kept_for_a_host_tab_that_is_gone_is_typed_nowhere` and
+  `the_kept_typing_keeps_order_and_drops_old_and_over_the_cap_with_no_hole` (all `remote_link::tests`).
+- **Not yet.** Typing in a `remote.input` call that the link broke under is not sent again (the host may have typed it
+  already). Against a host older than this change, a lost open can still leave a second tab.
 
 ## Tooltips only on icons, 2026-11-13
 

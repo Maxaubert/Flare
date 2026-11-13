@@ -14,6 +14,11 @@
 //! one whose number fell out of the host's ring (`gap`). What a reconnect catches up on is the past: the agent's
 //! signals are taken out of it (rule 289).
 //!
+//! Rule 1210, the link's edge cases: an attach the host answers `unavailable` (a new tab's shell still starting) is
+//! tried again on the same link every 250 ms for up to 10 s; `remote.open` carries the tab's open id, so an open whose
+//! answer was lost is answered with the tab the first one opened; and typing while the link is down is kept (30 s and
+//! 64 KB at most) and sent in order after the next attach, never into another host tab.
+//!
 //! Between the typing and the output poll the worker does the window's file work (remote sessions PR 6, `Errand`): a
 //! file link's host file fetched in chunks (`remote.fetch`, rule 303), and dropped or pasted files copied to the host
 //! (`remote.put`) with their host paths pasted as one paste (rule 304).
@@ -520,7 +525,16 @@ pub struct Timing {
     pub end_call: Duration,
     /// Between two `remote.status` polls (remote sessions PR 4).
     pub status_every: Duration,
+    /// Between two tries of an attach the host answered `unavailable` (a new tab's shell still starting, rule 1210).
+    pub attach_retry: Duration,
+    /// How long an attach is tried again on the same link before the link is dropped.
+    pub attach_patience: Duration,
+    /// The oldest typing kept while the link is down and sent after the next attach (rule 1210).
+    pub typing_kept: Duration,
 }
+
+/// The most typing kept while the link is down, in the bytes `remote.input` counts (rule 1210).
+pub const KEPT_TYPING_MAX: usize = 64 * 1024;
 
 impl Default for Timing {
     fn default() -> Self {
@@ -533,6 +547,9 @@ impl Default for Timing {
             long_call: Duration::from_secs(60),
             end_call: Duration::from_secs(5),
             status_every: Duration::from_millis(1500),
+            attach_retry: Duration::from_millis(250),
+            attach_patience: Duration::from_secs(10),
+            typing_kept: Duration::from_secs(30),
         }
     }
 }
@@ -589,6 +606,9 @@ impl PtySpawner for RemoteSpawner {
             convo: crate::remote_convo::ConvoMirror::new(),
             convo_next: None,
             convo_off: false,
+            open_id: flare_term::session::new_ctl_token(),
+            open_id_on: true,
+            kept: KeptTyping::default(),
         };
         std::thread::Builder::new()
             .name("flare-remote-link".into())
@@ -625,6 +645,12 @@ struct Worker {
     convo: crate::remote_convo::ConvoMirror,
     convo_next: Option<Instant>,
     convo_off: bool,
+    /// This tab's `remote.open` id, the same across its reconnects (rule 1210), and whether the host takes it (an older
+    /// host refuses the param).
+    open_id: String,
+    open_id_on: bool,
+    /// The typing kept while the link is down (rule 1210).
+    kept: KeptTyping,
 }
 
 /// The most characters of one entry the fitted view shows (a long answer is cut, the view is for a glance).
@@ -649,14 +675,85 @@ pub fn convo_lines(m: &crate::remote_convo::ConvoMirror) -> Vec<flare_term::remo
         .collect()
 }
 
-/// Pure: `remote.open`'s params for a tab: the host folder, and the session to resume there when one was asked for
-/// (the host checks it again with `valid_resume`).
-pub fn open_params(spec: &RemoteSpec) -> Value {
+/// Pure: `remote.open`'s params for a tab: the host folder, the session to resume there when one was asked for (the
+/// host checks it again with `valid_resume`), and the tab's open id when the host takes one (rule 1210).
+pub fn open_params(spec: &RemoteSpec, open_id: Option<&str>) -> Value {
     let mut p = json!({"folder": spec.folder});
     if let Some(r) = &spec.resume {
         p["resume"] = json!(r);
     }
+    if let Some(o) = open_id {
+        p["open_id"] = json!(o);
+    }
     p
+}
+
+/// One typed thing kept while the link is down: when it was typed, and its weight toward [`KEPT_TYPING_MAX`].
+type Kept = (Instant, RemoteIntent, usize);
+
+/// The typing of a remote tab kept while its link is down (rule 1210), sent in order once the tab is attached again.
+/// Typing older than the kept age is dropped, and so is what comes past [`KEPT_TYPING_MAX`]: once over it, the rest of
+/// the outage's typing too, so what is sent has no hole in it. Either drop is told in the tab once.
+#[derive(Default)]
+pub struct KeptTyping {
+    typed: std::collections::VecDeque<Kept>,
+    bytes: usize,
+    /// Over the cap since the last send: everything typed after is dropped.
+    full: bool,
+    /// Something was dropped since the last send.
+    lost: bool,
+}
+
+impl KeptTyping {
+    fn forget_old(&mut self, now: Instant, max_age: Duration) {
+        while let Some((at, _, w)) = self.typed.front() {
+            if now.saturating_duration_since(*at) <= max_age {
+                break;
+            }
+            self.bytes -= w;
+            self.typed.pop_front();
+            self.lost = true;
+        }
+    }
+
+    /// Keeps `intents`, typed at `at` (one time each, in order; now when missing).
+    pub fn keep(
+        &mut self,
+        intents: Vec<RemoteIntent>,
+        at: &[Instant],
+        now: Instant,
+        max_age: Duration,
+    ) {
+        self.forget_old(now, max_age);
+        for (n, i) in intents.into_iter().enumerate() {
+            let w = weight(&wire_intent(&i));
+            if self.full || self.bytes + w > KEPT_TYPING_MAX {
+                self.full = true;
+                self.lost = true;
+                continue;
+            }
+            self.bytes += w;
+            self.typed
+                .push_back((at.get(n).copied().unwrap_or(now), i, w));
+        }
+    }
+
+    /// What is sent now, oldest first, and whether anything typed meanwhile was dropped. Empties the keep.
+    pub fn take(&mut self, now: Instant, max_age: Duration) -> (Vec<RemoteIntent>, bool) {
+        self.forget_old(now, max_age);
+        let lost = self.lost;
+        let typed = std::mem::take(&mut self.typed)
+            .into_iter()
+            .map(|(_, i, _)| i)
+            .collect();
+        *self = Self::default();
+        (typed, lost)
+    }
+
+    /// The tab's host session is gone: nothing kept is ever typed into another tab.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
 }
 
 fn b64(v: &Value) -> Vec<u8> {
@@ -702,27 +799,46 @@ impl Worker {
         }
     }
 
-    /// Waits `d` (sizes asked meanwhile are kept, typing while the link is down is not). False when the tab let go
-    /// meanwhile: a close is still taken to the host, on a link of its own.
+    /// Waits `d` while the link is down (sizes and typing asked meanwhile are kept, rule 1210). False when the tab let
+    /// go meanwhile: a close is still taken to the host, on a link of its own.
     fn wait(&mut self, d: Duration) -> bool {
+        match self.hold(d, true) {
+            Some(Leaving::Close) => {
+                self.close_without_a_link();
+                false
+            }
+            Some(Leaving::Detach) => false,
+            None => true,
+        }
+    }
+
+    /// Waits `d` with no live link: the last size asked is kept for the next attach, and the typing too (rule 1210).
+    /// File work is refused at once when `refuse` (the link is down), else left for the polls. How the tab let go,
+    /// when it did.
+    fn hold(&mut self, d: Duration, refuse: bool) -> Option<Leaving> {
         let end = Instant::now() + d;
         loop {
             let left = end.saturating_duration_since(Instant::now());
-            self.refuse_errands();
+            if refuse {
+                self.refuse_errands();
+            }
             let out = self
                 .io
                 .take_outgoing(left.min(self.t.poll_max.max(Duration::from_millis(1))));
             if let Some(s) = out.size {
                 self.size = Some(s);
             }
-            if let Some(how) = out.leaving {
-                if how == Leaving::Close {
-                    self.close_without_a_link();
-                }
-                return false;
+            self.kept.keep(
+                out.intents,
+                &out.typed_at,
+                Instant::now(),
+                self.t.typing_kept,
+            );
+            if out.leaving.is_some() {
+                return out.leaving;
             }
             if left.is_zero() {
-                return true;
+                return None;
             }
         }
     }
@@ -769,41 +885,29 @@ impl Worker {
         let live = self.spec.live.clone();
         let tab = match live.host_tab() {
             Some(t) => t,
-            None => match link.call(
-                Method::RemoteOpen,
-                open_params(&self.spec),
-                self.t.long_call,
-            ) {
-                Ok(v) => match v["tab"].as_str() {
-                    Some(t) => {
-                        live.set_host_tab(t);
-                        t.to_string()
-                    }
-                    None => return Step::Down,
-                },
-                Err(LinkError::Refused(e)) => {
-                    self.say(&format!(
-                        "Could not open {} on {}: {}",
-                        self.spec.folder, self.spec.machine, e.message
-                    ));
-                    return Step::Ended;
+            None => match self.open(&mut *link) {
+                Ok(t) => {
+                    live.set_host_tab(&t);
+                    t
                 }
-                Err(LinkError::Down(_)) => return Step::Down,
+                Err(step) => return step,
             },
         };
-        match link.call(Method::RemoteAttach, json!({"tab": tab}), self.t.call) {
-            Ok(_) => {}
-            Err(LinkError::Refused(e)) if e.code == code::NO_TAB => {
-                // The host's tab is gone (closed there, or the host started again): the tab ends as a shell that exits.
-                self.io.finish(None);
-                return Step::Ended;
-            }
-            Err(LinkError::Refused(e)) => {
-                log::warn!("remote.attach refused: {}", e.message);
-                return Step::Down;
-            }
-            Err(LinkError::Down(_)) => return Step::Down,
+        if let Some(step) = self.attach(&mut *link, &tab) {
+            return step;
         }
+        // What the tab typed and sized while the link came up joins the typing kept meanwhile, so the age and the cap
+        // hold for it too (rule 1210). A leave is still the polls' to take.
+        let out = self.io.take_outgoing(Duration::ZERO);
+        if let Some(s) = out.size {
+            self.size = Some(s);
+        }
+        self.kept.keep(
+            out.intents,
+            &out.typed_at,
+            Instant::now(),
+            self.t.typing_kept,
+        );
         if let Some((cols, rows)) = self.size
             && let Err(e) = link.call(
                 Method::RemoteResize,
@@ -825,13 +929,123 @@ impl Worker {
         live.set_link(LinkState::Live);
         // The host's status is asked at once on every attach, and its first answer is always news (rule 294).
         self.status.attached();
+        if let Err(e) = self.send_kept(&mut *link, &tab) {
+            return self.failed(e);
+        }
         self.pump(&mut *link, &tab)
     }
 
-    /// What a failed call means: the session gone on the host ends the tab; anything else is a broken link.
-    fn failed(&self, e: LinkError) -> Step {
+    /// `remote.open` for a tab with no host tab yet, with this tab's open id (rule 1210): an open whose answer a broken
+    /// link lost goes again with the same id, and the host answers with the tab the first one opened. An older host
+    /// refuses the unknown param (`bad_params` naming it): the open goes again without it, on this link, and later
+    /// opens of this tab leave it out.
+    fn open(&mut self, link: &mut dyn Link) -> Result<String, Step> {
+        let id = self.open_id_on.then_some(self.open_id.as_str());
+        let mut answer = link.call(
+            Method::RemoteOpen,
+            open_params(&self.spec, id),
+            self.t.long_call,
+        );
+        if id.is_some()
+            && let Err(LinkError::Refused(e)) = &answer
+            && e.code == code::BAD_PARAMS
+            && e.message.contains("open_id")
+        {
+            log::info!("remote.open: an older host without open_id, opening without it");
+            self.open_id_on = false;
+            answer = link.call(
+                Method::RemoteOpen,
+                open_params(&self.spec, None),
+                self.t.long_call,
+            );
+        }
+        match answer {
+            Ok(v) => v["tab"].as_str().map(str::to_string).ok_or(Step::Down),
+            Err(LinkError::Refused(e)) => {
+                self.say(&format!(
+                    "Could not open {} on {}: {}",
+                    self.spec.folder, self.spec.machine, e.message
+                ));
+                Err(Step::Ended)
+            }
+            Err(LinkError::Down(_)) => Err(Step::Down),
+        }
+    }
+
+    /// `remote.attach`, tried again on the same link every `attach_retry` for up to `attach_patience` while the host
+    /// answers `unavailable`: a tab opened a moment ago may not have its shell running yet (rule 1210). None once
+    /// attached; else what the session comes to.
+    fn attach(&mut self, link: &mut dyn Link, tab: &str) -> Option<Step> {
+        let end = Instant::now() + self.t.attach_patience;
+        loop {
+            match link.call(Method::RemoteAttach, json!({"tab": tab}), self.t.call) {
+                Ok(_) => return None,
+                Err(LinkError::Refused(e)) if e.code == code::NO_TAB => {
+                    // The host's tab is gone (closed there, or the host started again): the tab ends as a shell that
+                    // exits, and what was typed meanwhile is never typed into another tab.
+                    self.kept.clear();
+                    self.io.finish(None);
+                    return Some(Step::Ended);
+                }
+                Err(LinkError::Refused(e))
+                    if e.code == code::UNAVAILABLE && Instant::now() < end =>
+                {
+                    log::info!("remote.attach not yet ({}), trying again", e.message);
+                    if let Some(how) = self.hold(self.t.attach_retry, false) {
+                        if how == Leaving::Close {
+                            let _ = link.call(
+                                Method::RemoteClose,
+                                json!({"tab": tab}),
+                                self.t.end_call,
+                            );
+                        }
+                        return Some(Step::Ended);
+                    }
+                }
+                Err(LinkError::Refused(e)) => {
+                    log::warn!("remote.attach refused: {}", e.message);
+                    return Some(Step::Down);
+                }
+                Err(LinkError::Down(_)) => return Some(Step::Down),
+            }
+        }
+    }
+
+    /// The typing kept while the link was down, in the order typed, once the tab is attached again (rule 1210). What
+    /// was too old or over the cap is told in the tab in one line. A call the link broke under loses its typing, as a
+    /// live call does: it may have been typed on the host already.
+    fn send_kept(&mut self, link: &mut dyn Link, tab: &str) -> Result<(), LinkError> {
+        let (typed, lost) = self.kept.take(Instant::now(), self.t.typing_kept);
+        if lost {
+            self.say(&format!(
+                "Some typing while the link to {} was down was not sent (older than {} s, or over {} KB).",
+                self.spec.machine,
+                self.t.typing_kept.as_secs(),
+                KEPT_TYPING_MAX / 1024
+            ));
+        }
+        for batch in input_batches(&typed) {
+            match link.call(
+                Method::RemoteInput,
+                json!({"tab": tab, "intents": intents_json(&batch)}),
+                self.t.call,
+            ) {
+                Ok(_) => {}
+                Err(LinkError::Refused(e)) if e.code != code::NO_TAB => {
+                    log::warn!("remote.input refused: {}", e.message);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    /// What a failed call means: the session gone on the host ends the tab (and drops the typing kept for it); anything
+    /// else is a broken link.
+    fn failed(&mut self, e: LinkError) -> Step {
         match e {
             LinkError::Refused(r) if r.code == code::NO_TAB => {
+                self.kept.clear();
                 self.io.finish(None);
                 Step::Ended
             }

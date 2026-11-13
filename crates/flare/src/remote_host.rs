@@ -10,9 +10,10 @@
 //! copy of each batch into its 4 MiB ring and never blocks it (rule 281). A viewer that detaches, or whose link drops,
 //! only stops following: the tab and its shell go on (rule 280).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use flare_term::handle::TermHandle;
 use flare_term::tail::TailHandle;
@@ -62,6 +63,53 @@ fn same_secret(a: &str, b: &str) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// The most `remote.open` ids a host remembers (rule 1210): the oldest is forgotten first.
+pub const OPEN_IDS_MAX: usize = 64;
+/// How long a host remembers a `remote.open` id: a viewer sends a lost open again within a few back-offs (30 s at most
+/// apart), so ten minutes covers it with room.
+pub const OPEN_ID_KEEP: Duration = Duration::from_secs(600);
+
+/// What a `remote.open` with an `open_id` opened: the tab and the session it resumed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Opened {
+    pub tab: String,
+    pub session: Option<String>,
+}
+
+/// The `remote.open` ids a host answered lately (rule 1210): an open whose answer a broken link lost is sent again
+/// with the same id, and is answered with the tab the first one opened instead of a second tab. Bounded by count and
+/// age. Pure: the caller gives the time.
+#[derive(Default)]
+pub struct OpenIds {
+    seen: VecDeque<(String, Opened, Instant)>,
+}
+
+impl OpenIds {
+    fn forget_old(&mut self, now: Instant) {
+        self.seen
+            .retain(|(_, _, at)| now.saturating_duration_since(*at) < OPEN_ID_KEEP);
+    }
+
+    /// The tab `id` opened, while it is remembered.
+    pub fn find(&mut self, id: &str, now: Instant) -> Option<Opened> {
+        self.forget_old(now);
+        self.seen
+            .iter()
+            .find(|(k, _, _)| k == id)
+            .map(|(_, o, _)| o.clone())
+    }
+
+    /// `id` opened `opened`: remembered from `now`, the oldest forgotten past [`OPEN_IDS_MAX`].
+    pub fn note(&mut self, id: &str, opened: Opened, now: Instant) {
+        self.forget_old(now);
+        self.seen.retain(|(k, _, _)| k != id);
+        self.seen.push_back((id.to_string(), opened, now));
+        while self.seen.len() > OPEN_IDS_MAX {
+            self.seen.pop_front();
+        }
+    }
+}
+
 struct Follow {
     handle: Arc<TermHandle>,
     tail: TailHandle,
@@ -83,6 +131,8 @@ pub struct RemoteHost {
     uploads: crate::remote_files::Uploads,
     /// This host's temp folder (`remote.fetch` reads it besides the tab's folder).
     temp: PathBuf,
+    /// The `remote.open` ids answered lately (rule 1210).
+    opens: Mutex<OpenIds>,
 }
 
 impl RemoteHost {
@@ -110,7 +160,22 @@ impl RemoteHost {
             follows: Mutex::new(HashMap::new()),
             convo: crate::remote_convo::ConvoFeeds::new(),
             status: Mutex::new((0, Value::Null)),
+            opens: Mutex::new(OpenIds::default()),
         })
+    }
+
+    fn opens(&self) -> MutexGuard<'_, OpenIds> {
+        self.opens.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The tab a `remote.open` with this id opened lately (rule 1210).
+    pub fn opened(&self, open_id: &str) -> Option<Opened> {
+        self.opens().find(open_id, Instant::now())
+    }
+
+    /// A `remote.open` with this id opened `opened` (rule 1210).
+    pub fn note_opened(&self, open_id: &str, opened: Opened) {
+        self.opens().note(open_id, opened, Instant::now());
     }
 
     fn lk(&self) -> MutexGuard<'_, HashMap<String, Follow>> {
@@ -298,6 +363,44 @@ mod tests {
         host.follow("t2", 1, handle(), TailHandle::new(8));
         host.follow("t1", 1, handle(), TailHandle::new(8));
         assert_eq!(host.followed_tabs(), ["t1", "t2"]);
+    }
+
+    /// Rule 1210: an open id is answered with the tab it opened for ten minutes; the oldest of more than 64 goes first,
+    /// and the same id noted again keeps only its newest tab.
+    #[test]
+    fn an_open_id_is_remembered_ten_minutes_and_at_most_64_of_them() {
+        let opened = |t: &str| Opened {
+            tab: t.into(),
+            session: None,
+        };
+        let t0 = Instant::now();
+        let mut ids = OpenIds::default();
+        ids.note("a", opened("t1"), t0);
+        assert_eq!(
+            ids.find("a", t0 + Duration::from_secs(599)),
+            Some(opened("t1"))
+        );
+        assert_eq!(ids.find("b", t0), None);
+        assert_eq!(ids.find("a", t0 + OPEN_ID_KEEP), None, "ten minutes on");
+
+        let mut ids = OpenIds::default();
+        for i in 0..=OPEN_IDS_MAX {
+            ids.note(&format!("id{i}"), opened(&format!("t{i}")), t0);
+        }
+        assert_eq!(ids.find("id0", t0), None, "the oldest went");
+        assert_eq!(ids.find("id1", t0), Some(opened("t1")));
+        assert_eq!(
+            ids.find(&format!("id{OPEN_IDS_MAX}"), t0),
+            Some(opened(&format!("t{OPEN_IDS_MAX}")))
+        );
+        ids.note("id1", opened("t9"), t0);
+        assert_eq!(ids.find("id1", t0), Some(opened("t9")));
+        assert_eq!(ids.seen.len(), OPEN_IDS_MAX);
+
+        let host = RemoteHost::with_key("k".into());
+        assert_eq!(host.opened("x"), None);
+        host.note_opened("x", opened("t3"));
+        assert_eq!(host.opened("x"), Some(opened("t3")));
     }
 
     #[test]

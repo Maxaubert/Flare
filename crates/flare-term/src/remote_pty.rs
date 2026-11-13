@@ -22,7 +22,7 @@ use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn lk<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -319,6 +319,8 @@ pub enum Leaving {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Outgoing {
     pub intents: Vec<RemoteIntent>,
+    /// When each of `intents` was typed, in the same order: the link keeps typing while it is down, 30 s at most.
+    pub typed_at: Vec<Instant>,
     /// The last size the tab asked for since the last take (resizes are coalesced).
     pub size: Option<(u16, u16)>,
     pub leaving: Option<Leaving>,
@@ -327,6 +329,7 @@ pub struct Outgoing {
 #[derive(Default)]
 struct Outbox {
     intents: Vec<RemoteIntent>,
+    typed_at: Vec<Instant>,
     size: Option<(u16, u16)>,
     leaving: Option<Leaving>,
 }
@@ -376,6 +379,7 @@ impl RemoteIo {
         }
         Outgoing {
             intents: std::mem::take(&mut o.intents),
+            typed_at: std::mem::take(&mut o.typed_at),
             size: o.size.take(),
             leaving: o.leaving,
         }
@@ -440,6 +444,8 @@ impl RemoteIo {
         if o.leaving.is_some() {
             return;
         }
+        let now = Instant::now();
+        o.typed_at.extend(std::iter::repeat_n(now, intents.len()));
         o.intents.extend(intents);
         drop(o);
         self.out_cv.notify_all();
