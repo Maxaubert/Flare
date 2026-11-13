@@ -89,6 +89,14 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
 - [ ] A Claude session in a remote tab: type on the host's own Flare, and the viewer shows the conversation fitted to
   its window with "Live on <machine>"; a click or a key there brings the terminal back at the viewer's size, and the
   host's window gets its size back at the next key typed there.
+- [ ] The host's own screen (rule 1211): with that Claude tab in front on the host, type in the viewer. The host's
+  window shows the conversation fitted to its own width with "Live on <viewer's computer name>" above it, not the
+  terminal at the viewer's size, and new answers appear in it within about 2 s. A key typed on the host, or a click on
+  the view, brings the terminal back at the host window's size (the key reaches the shell), and the viewer then shows
+  its own fitted view. A plain shell tab the viewer sizes keeps its terminal on the host.
+- [ ] A size alone (rule 1212): type on the host last, then on the viewer only switch to that tab, resize the window,
+  or drop and restore the link. The host keeps its live terminal (at the viewer's size); the view comes only once
+  the viewer types.
 
 ## Link edge cases (rule 1210, 2026-11-13)
 

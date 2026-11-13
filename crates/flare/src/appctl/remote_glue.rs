@@ -55,6 +55,132 @@ impl RemoteConvoView {
     }
 }
 
+/// How often the host reads the conversation again while its own fitted view stands (the viewer polls as often).
+pub(crate) const HOST_CONVO_EVERY_MS: u64 = 1500;
+
+/// Pure (rule 1211): whether the host's own window shows the fitted conversation view of its tab in front instead of
+/// the terminal. Only while a remote viewer sizes the tab and typed there since it took the size (the last typist is
+/// on the viewer's screen, rule 1212; a size alone is not typing), only for a tab of this host (a remote tab has the
+/// viewer's view, rule 1193), and only for an agent tab: one whose Claude session is known. A plain shell keeps its
+/// terminal at the viewer's size.
+pub(crate) fn host_view_stands(
+    viewer_typed_last: bool,
+    remote_tab: bool,
+    has_session: bool,
+) -> bool {
+    viewer_typed_last && !remote_tab && has_session
+}
+
+/// What a worker read of a tab's conversation for the host's own fitted view: the session it read, and the answer as
+/// `remote.convo` gives it (None: the transcript could not be read). Prints its kind only, never the words.
+pub struct HostConvoRead {
+    pub tab: String,
+    pub session: String,
+    pub answer: Option<Value>,
+}
+
+impl std::fmt::Debug for HostConvoRead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HostConvoRead")
+    }
+}
+
+/// The conversation the host read for one tab, as its fitted view shows it.
+struct HostMirror {
+    tab: String,
+    session: String,
+    mirror: crate::remote_convo::ConvoMirror,
+    /// Counts up with each change (0: nothing to show yet).
+    version: u64,
+}
+
+/// The host's own fitted view (rule 1211): while a remote viewer sizes a tab of this host and that tab is in front,
+/// this window shows the tab's conversation the way the viewer's window shows a remote one (rule 1193), read here on a
+/// worker with the same numbered feed `remote.convo` uses (rule 297), every [`HOST_CONVO_EVERY_MS`].
+#[derive(Default)]
+pub(crate) struct HostConvoView {
+    /// Per tab a remote viewer sized: the viewer's machine, as its link named it (empty when it did not).
+    viewers: std::collections::HashMap<String, String>,
+    /// The front tab's conversation as last read, while its view stands or until another tab's is read.
+    read: Option<HostMirror>,
+    feeds: Arc<crate::remote_convo::ConvoFeeds>,
+    /// A read is on a worker.
+    reading: bool,
+    /// When the next read is due (the window clock), None: at once.
+    due: Option<u64>,
+}
+
+impl HostConvoView {
+    /// A viewer's `remote.resize` named its machine (or not).
+    pub(crate) fn sized_by(&mut self, tab: &str, viewer: Option<&str>) {
+        self.viewers
+            .insert(tab.to_string(), viewer.unwrap_or_default().to_string());
+    }
+
+    /// The viewer machine the view names for `tab` (empty: none named).
+    pub(crate) fn viewer(&self, tab: &str) -> &str {
+        self.viewers.get(tab).map_or("", String::as_str)
+    }
+
+    /// Pure: the conversation to show for `tab` in `session`, and its version: None until a read brought words.
+    pub(crate) fn shown_for(
+        &self,
+        tab: &str,
+        session: &str,
+    ) -> Option<(u64, &[(u64, flare_convo::said::Entry)])> {
+        self.read
+            .as_ref()
+            .filter(|r| r.tab == tab && r.session == session && r.version > 0)
+            .map(|r| (r.version, r.mirror.entries()))
+    }
+
+    /// The number to ask the feed from for `tab` in `session` (0: what is held is another tab's or session's).
+    pub(crate) fn since(&self, tab: &str, session: &str) -> u64 {
+        self.read
+            .as_ref()
+            .filter(|r| r.tab == tab && r.session == session)
+            .map_or(0, |r| r.mirror.since())
+    }
+
+    /// Takes a worker's read: a read of another tab or session than the one held starts over. True when what the view
+    /// would show changed.
+    pub(crate) fn take(&mut self, r: &HostConvoRead) -> bool {
+        self.reading = false;
+        let Some(answer) = &r.answer else {
+            return false;
+        };
+        let same = self
+            .read
+            .as_ref()
+            .is_some_and(|m| m.tab == r.tab && m.session == r.session);
+        if !same {
+            self.read = Some(HostMirror {
+                tab: r.tab.clone(),
+                session: r.session.clone(),
+                mirror: crate::remote_convo::ConvoMirror::new(),
+                version: 0,
+            });
+        }
+        let Some(m) = self.read.as_mut() else {
+            return false;
+        };
+        if m.mirror.apply(answer) {
+            m.version += 1;
+            return true;
+        }
+        false
+    }
+
+    /// The tab closed: its viewer, its words and its feed go.
+    pub(crate) fn forget(&mut self, tab: &str) {
+        self.viewers.remove(tab);
+        if self.read.as_ref().is_some_and(|r| r.tab == tab) {
+            self.read = None;
+        }
+        self.feeds.forget(tab);
+    }
+}
+
 impl AppCtl {
     /// The window hands over the remote host (startup, when the bridge key was written).
     pub fn set_remote_host(&mut self, host: Arc<crate::remote_host::RemoteHost>) {
@@ -153,21 +279,37 @@ impl AppCtl {
                 }
                 let handle = self.handle_of(&tab).ok_or_else(not_running)?;
                 let typed = handle.remote_input(&intents);
+                // Rule 1212: the viewer that sizes the tab typed last, so an agent tab in front shows its fitted view here.
+                self.deps.host.note_viewer_typed(&tab);
+                self.push_remote_convo();
+                self.kick();
                 Ok(json!({"tab": tab, "typed": typed}))
             }
-            CtlOp::RemoteResize { tab, cols, rows } => {
+            CtlOp::RemoteResize {
+                tab,
+                cols,
+                rows,
+                viewer,
+            } => {
                 if !self.is_shell_tab(&tab) {
                     return Err(closed());
                 }
                 if !self.deps.host.remote_resize(&tab, cols, rows) {
                     return Err(not_running());
                 }
+                // Rule 1211: the view names this viewer. It stands only once the viewer typed (rule 1212): an attach, a
+                // reconnect, a refit or a tab switch over there sends a size too, and none of those is typing.
+                self.hconvo.sized_by(&tab, viewer.as_deref());
+                self.push_remote_convo();
+                self.kick();
                 Ok(json!({"tab": tab, "cols": cols, "rows": rows}))
             }
             CtlOp::RemoteRelease { tab } => {
                 self.deps.host.take_size_back(&tab);
                 // The last viewer went (a detach or a dropped link): its work no longer holds the system awake.
                 self.sync_keep_awake();
+                // The size is this window's again: the terminal, not the fitted view (rule 1211).
+                self.push_remote_convo();
                 Ok(json!({"tab": tab}))
             }
             CtlOp::RemoteClose { tab } => {
@@ -378,39 +520,76 @@ impl AppCtl {
         (self.rconvo.wanted(&id) && live.convo_version() > 0).then_some((id, live))
     }
 
+    /// Rule 1211: the tab in front and its Claude session, when the host's own fitted view stands for it: a tab of this
+    /// host that a remote viewer sizes and typed in last (rule 1212), with a session.
+    fn host_convo_want(&self) -> Option<(String, String)> {
+        let id = self.model.state.active_id.clone()?;
+        if !self.is_shell_tab(&id) {
+            return None;
+        }
+        let session = self.hub.claude_session(&id);
+        host_view_stands(
+            self.deps.host.viewer_typed_last(&id),
+            self.model.remote_of(&id).is_some(),
+            session.is_some(),
+        )
+        .then(|| (id, session.unwrap_or_default().to_string()))
+    }
+
     /// Whether the fitted view is up now (the key path reads it).
     pub(crate) fn remote_convo_shown(&self) -> bool {
         self.rconvo.shown.is_some()
     }
 
-    /// The window shows the fitted view of the tab in front, or the terminal. The lines are written again only when the
-    /// conversation or the tab changed.
+    /// The window shows the fitted view of the tab in front (a remote tab's, rule 1193, or this host's own, rule 1211),
+    /// or the terminal. The lines are written again only when the conversation or the tab changed.
     pub(crate) fn push_remote_convo(&mut self) {
         let Some(app) = self.app() else { return };
-        let front = self.remote_convo_front();
-        let now = front
-            .as_ref()
-            .map(|(id, live)| (id.clone(), live.convo_version()));
+        let remote = self.remote_convo_front();
+        let host = self.host_convo_want();
+        let now = match (&remote, &host) {
+            (Some((id, live)), _) => Some((id.clone(), live.convo_version())),
+            (None, Some((id, session))) => self
+                .hconvo
+                .shown_for(id, session)
+                .map(|(v, _)| (id.clone(), v)),
+            (None, None) => None,
+        };
         if now == self.rconvo.shown {
             return;
         }
-        match front {
-            Some((id, live)) => {
-                let lines: Vec<crate::RemoteConvoLine> = live
-                    .convo()
+        let line = |role: &str, text: &str, tool: Option<&str>| crate::RemoteConvoLine {
+            role: role.into(),
+            text: text.into(),
+            tool: tool.unwrap_or_default().into(),
+        };
+        let shown: Option<(Vec<crate::RemoteConvoLine>, String)> = match (remote, host) {
+            (Some((id, live)), _) => Some((
+                live.convo()
                     .1
                     .iter()
-                    .map(|l| crate::RemoteConvoLine {
-                        role: l.role.as_str().into(),
-                        text: l.text.as_str().into(),
-                        tool: l.tool.clone().unwrap_or_default().into(),
-                    })
-                    .collect();
-                let machine = self
-                    .model
+                    .map(|l| line(&l.role, &l.text, l.tool.as_deref()))
+                    .collect(),
+                self.model
                     .remote_of(&id)
                     .map(|m| m.name.clone())
-                    .unwrap_or_default();
+                    .unwrap_or_default(),
+            )),
+            (None, Some((id, session))) => self.hconvo.shown_for(&id, &session).map(|(_, e)| {
+                let mirror_lines = crate::remote_link::entry_lines(e);
+                (
+                    mirror_lines
+                        .iter()
+                        .map(|l| line(&l.role, &l.text, l.tool.as_deref()))
+                        .collect(),
+                    // The live terminal is on the viewer's screen: the line names that machine.
+                    self.hconvo.viewer(&id).to_string(),
+                )
+            }),
+            (None, None) => None,
+        };
+        match shown {
+            Some((lines, machine)) => {
                 app.set_rconvo_lines(slint::ModelRc::new(slint::VecModel::from(lines)));
                 app.set_rconvo_machine(machine.into());
                 app.set_rconvo_open(true);
@@ -421,17 +600,209 @@ impl AppCtl {
     }
 
     /// A click on the fitted view, or a key while it is up (rule 1193): the live terminal comes back on this screen and
-    /// this window sizes it again (the link sends its size; rule 282, the last typist sets the size).
+    /// this window sizes it again (rule 282, the last typist sets the size). On a remote tab the link sends this
+    /// window's size; on a tab of this host (rule 1211) the tab takes this window's size back from the remote viewer,
+    /// whose window then shows its own fitted view.
     pub(crate) fn remote_convo_take_over(&mut self) {
         let Some((id, _)) = self.rconvo.shown.clone() else {
             return;
         };
-        if let Some(live) = self.model.remote_live(&id) {
-            live.retake_size();
-            live.want_convo(false);
+        if self.model.remote_of(&id).is_some() {
+            if let Some(live) = self.model.remote_live(&id) {
+                live.retake_size();
+                live.want_convo(false);
+            }
+            self.rconvo.taken.insert(id);
+        } else {
+            self.deps.host.take_size_back(&id);
         }
-        self.rconvo.taken.insert(id);
         self.push_remote_convo();
         self.refresh();
+    }
+
+    /// Rule 1211: when the host's own fitted view next wants its conversation read (the window clock), while it stands.
+    pub(crate) fn host_convo_due(&self) -> Option<u64> {
+        self.host_convo_want()?;
+        if self.hconvo.reading {
+            return None;
+        }
+        Some(self.hconvo.due.unwrap_or_else(|| self.now()))
+    }
+
+    /// The timer's turn (rule 1211): while the host's own fitted view stands, its conversation is read again on a
+    /// worker every [`HOST_CONVO_EVERY_MS`], one read at a time. The transcript is found and read there, never here.
+    pub(crate) fn host_convo_tick(&mut self, now: u64) {
+        let Some((tab, session)) = self.host_convo_want() else {
+            self.hconvo.due = None;
+            return;
+        };
+        if self.hconvo.reading || self.hconvo.due.is_some_and(|d| now < d) {
+            return;
+        }
+        let Some(dir) = self.convo.claude_dir() else {
+            return;
+        };
+        let Some(folder) = self
+            .shell_tabs()
+            .into_iter()
+            .find(|(id, _)| id == &tab)
+            .map(|(_, f)| f)
+        else {
+            return;
+        };
+        self.hconvo.due = Some(now + HOST_CONVO_EVERY_MS);
+        self.hconvo.reading = true;
+        let since = self.hconvo.since(&tab, &session);
+        let feeds = Arc::clone(&self.hconvo.feeds);
+        let post = Arc::clone(&self.deps.post);
+        let spawned = std::thread::Builder::new()
+            .name("flare-host-convo".into())
+            .spawn(move || {
+                let answer = crate::remote_convo::transcript_of(&dir, &folder, &session)
+                    .and_then(|path| feeds.read(&tab, &session, &path, since).ok())
+                    .map(|a| a.to_json(&tab));
+                post(super::UiMsg::HostConvo(HostConvoRead {
+                    tab,
+                    session,
+                    answer,
+                }));
+            });
+        if let Err(e) = spawned {
+            self.hconvo.reading = false;
+            log::warn!("could not start the conversation read: {e}");
+        }
+    }
+
+    /// A worker's read for the host's own fitted view (rule 1211): taken, and the window shows it while it stands.
+    pub(crate) fn on_host_convo(&mut self, read: HostConvoRead) {
+        if self.hconvo.take(&read) {
+            self.push_remote_convo();
+        }
+        self.kick();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read(tab: &str, session: &str, answer: Value) -> HostConvoRead {
+        HostConvoRead {
+            tab: tab.into(),
+            session: session.into(),
+            answer: Some(answer),
+        }
+    }
+
+    fn said(seq: u64, text: &str) -> Value {
+        json!({"seq": seq, "role": "assistant", "text": text})
+    }
+
+    fn texts(v: &HostConvoView, tab: &str, session: &str) -> Vec<String> {
+        v.shown_for(tab, session)
+            .map(|(_, e)| e.iter().map(|(_, e)| e.text.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Rule 1211: the host's own window shows the fitted view only for a tab of its own that a remote viewer sizes and
+    /// typed in last (rule 1212) and that has a Claude session; its own sizing or typing, a remote tab or a plain shell
+    /// keeps the terminal.
+    #[test]
+    fn the_host_view_stands_only_for_an_agent_tab_of_this_host_a_viewer_sizes() {
+        assert!(host_view_stands(true, false, true));
+        assert!(
+            !host_view_stands(false, false, true),
+            "this window sizes it or typed last"
+        );
+        assert!(!host_view_stands(true, false, false), "a plain shell");
+        assert!(
+            !host_view_stands(true, true, true),
+            "a remote tab has the viewer's view"
+        );
+        assert!(!host_view_stands(false, true, false));
+    }
+
+    /// The view shows nothing until a read brought words; each entry is taken once by its number, and the version
+    /// counts each change.
+    #[test]
+    fn the_host_view_shows_once_words_came_and_takes_each_entry_once() {
+        let mut v = HostConvoView::default();
+        assert_eq!(v.shown_for("t1", "s"), None);
+        assert!(!v.take(&read(
+            "t1",
+            "s",
+            json!({"entries": [], "reset": false, "to": 0})
+        )));
+        assert_eq!(
+            v.shown_for("t1", "s"),
+            None,
+            "an empty transcript shows nothing yet"
+        );
+        assert!(v.take(&read(
+            "t1",
+            "s",
+            json!({"entries": [said(1, "one"), said(2, "two")], "reset": false})
+        )));
+        assert_eq!(texts(&v, "t1", "s"), ["one", "two"]);
+        assert_eq!(v.since("t1", "s"), 2);
+        let first = v.shown_for("t1", "s").map(|(n, _)| n);
+        assert!(!v.take(&read(
+            "t1",
+            "s",
+            json!({"entries": [said(2, "two")], "reset": false})
+        )));
+        assert_eq!(v.shown_for("t1", "s").map(|(n, _)| n), first, "nothing new");
+        assert!(v.take(&read(
+            "t1",
+            "s",
+            json!({"entries": [said(3, "three")], "reset": false})
+        )));
+        assert_eq!(texts(&v, "t1", "s"), ["one", "two", "three"]);
+        // A read that failed changes nothing.
+        assert!(!v.take(&HostConvoRead {
+            tab: "t1".into(),
+            session: "s".into(),
+            answer: None,
+        }));
+        assert_eq!(texts(&v, "t1", "s").len(), 3);
+    }
+
+    /// Another session in the tab, or another tab, starts over: what was held is not shown for it, and it is asked
+    /// from nothing.
+    #[test]
+    fn another_session_or_tab_starts_the_host_view_over() {
+        let mut v = HostConvoView::default();
+        v.take(&read(
+            "t1",
+            "s",
+            json!({"entries": [said(1, "old")], "reset": false}),
+        ));
+        assert_eq!(v.since("t1", "s2"), 0);
+        assert_eq!(v.shown_for("t1", "s2"), None);
+        assert_eq!(v.since("t2", "s"), 0);
+        v.take(&read(
+            "t1",
+            "s2",
+            json!({"entries": [said(2, "new")], "reset": true}),
+        ));
+        assert_eq!(texts(&v, "t1", "s2"), ["new"]);
+        assert_eq!(v.shown_for("t1", "s"), None);
+        // The tab closed: its words and its viewer go.
+        v.sized_by("t1", Some("Mac Mini"));
+        assert_eq!(v.viewer("t1"), "Mac Mini");
+        v.forget("t1");
+        assert_eq!(v.viewer("t1"), "");
+        assert_eq!(v.shown_for("t1", "s2"), None);
+    }
+
+    /// The viewer's machine as its resize named it; a bridge that named none leaves the line without a machine.
+    #[test]
+    fn the_host_view_names_the_viewer_that_sized_the_tab() {
+        let mut v = HostConvoView::default();
+        v.sized_by("t1", Some("Mac Mini"));
+        assert_eq!(v.viewer("t1"), "Mac Mini");
+        v.sized_by("t1", None);
+        assert_eq!(v.viewer("t1"), "");
+        assert_eq!(v.viewer("t2"), "");
     }
 }

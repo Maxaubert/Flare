@@ -659,8 +659,16 @@ pub const CONVO_LINE_MAX: usize = 4000;
 /// Pure: the fitted view's lines of a mirrored conversation (remote sessions PR 7): who said it, the words (cut at
 /// [`CONVO_LINE_MAX`] characters) and a tool's name.
 pub fn convo_lines(m: &crate::remote_convo::ConvoMirror) -> Vec<flare_term::remote_pty::ConvoLine> {
+    entry_lines(m.entries())
+}
+
+/// Pure: the fitted view's lines of numbered entries, as [`convo_lines`] makes them (the host's own view, rule 1211,
+/// reads its entries the same way).
+pub fn entry_lines(
+    entries: &[(u64, flare_convo::said::Entry)],
+) -> Vec<flare_term::remote_pty::ConvoLine> {
     use flare_convo::said::Role;
-    m.entries()
+    entries
         .iter()
         .map(|(_, e)| flare_term::remote_pty::ConvoLine {
             role: match e.role {

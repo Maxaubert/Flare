@@ -147,6 +147,20 @@ impl Feed {
     }
 }
 
+/// The transcript of `session`, a tab's in `folder`, in the Claude folder `dir`: where Claude Code files it, else
+/// wherever in that folder the session's file is (a folder renamed or moved since). None when no path can be made.
+/// BLOCKING (asks the disk): a worker only.
+pub fn transcript_of(dir: &Path, folder: &str, session: &str) -> Option<PathBuf> {
+    let mut path = flare_convo::transcript_path_in(dir, folder, session)?;
+    // sync-ok: a worker asks the disk, never the UI thread
+    if !path.is_file()
+        && let Some(other) = flare_convo::find_transcript_in(dir, session)
+    {
+        path = other;
+    }
+    Some(path)
+}
+
 /// The host's numbered conversations, one a followed tab. Any worker thread: the map's lock is short, and a feed's own
 /// lock is held only by the call that reads its file.
 #[derive(Default)]
