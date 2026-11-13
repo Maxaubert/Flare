@@ -281,7 +281,7 @@ fn updateWindow_preview_chip_next_minor_accent_click_opens_nothing_installs() {
     let app = f.app();
     assert!(app.get_update_chip_shown(), "the preview chip is shown");
     assert_eq!(app.get_update_chip_label(), "Update 0.56.0");
-    assert!(app.get_update_chip_tip().starts_with("Preview: see what"));
+    assert!(f.engine.offer().expect("an offer").mock, "a preview offer");
     assert!(
         contrast(SEL_BG, ON_ACCENT) >= 4.5,
         "the chip's label on its fill reads at 4.5:1 or better"
@@ -379,7 +379,6 @@ fn updateGuard_a_real_shaped_offer_shows_the_chip_and_is_not_a_preview() {
     let app = f.app();
     assert!(app.get_update_chip_shown());
     assert_eq!(app.get_update_chip_label(), "Update 99.0.0");
-    assert_eq!(app.get_update_chip_tip(), "See what is new in 99.0.0");
     assert!(
         !f.engine.offer().expect("an offer").mock,
         "a real offer, not a mock"
@@ -387,6 +386,32 @@ fn updateGuard_a_real_shaped_offer_shows_the_chip_and_is_not_a_preview() {
     assert!(!app.get_update_open(), "the chip alone opens nothing");
 }
 
+/// Max, 2026-11-13: a control with a text label gets no tooltip. Hovering "Update <version>" past the tooltip delay
+/// shows none, while the settings cog (an icon) still shows its own; a click at the same point opens the window.
+#[test]
+fn hovering_the_update_chip_shows_no_tooltip() {
+    let f = offering("99.0.0", SAMPLE_NOTES);
+    f.offered();
+    let app = f.app();
+    assert!(app.get_update_chip_shown());
+    let x = app.get_update_chip_x() + app.get_update_chip_w() / 2.0;
+    let y = app.get_update_chip_y() + app.get_update_chip_h() / 2.0;
+    f.h.move_to(x, y);
+    f.h.move_to(x + 1.0, y);
+    f.h.advance(0);
+    f.clock.set(f.clock.get() + 1_001);
+    f.ctl.borrow_mut().tick();
+    assert!(!app.get_tip_visible(), "the labelled chip has no tooltip");
+    f.h.move_to(1000.0 - 22.0 - 36.0 * 3.0, 18.0);
+    f.h.advance(0);
+    f.clock.set(f.clock.get() + 1_001);
+    f.ctl.borrow_mut().tick();
+    assert!(app.get_tip_visible(), "the cog still has its tooltip");
+    assert_eq!(app.get_tip_text().as_str(), "Settings (Ctrl+,)");
+    f.h.click(x, y);
+    f.pump();
+    assert!(app.get_update_open(), "the hover point is on the chip");
+}
 #[test]
 fn updateGuard_install_for_another_token_is_refused_with_no_fetch() {
     let f = offering("99.0.0", SAMPLE_NOTES);

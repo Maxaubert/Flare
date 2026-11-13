@@ -387,7 +387,6 @@ impl AppCtl {
             app.set_staged_chip_shown(v.chip_shown);
             app.set_staged_chip_label(v.chip_label.as_str().into());
             app.set_staged_chip_aria(v.chip_aria.as_str().into());
-            app.set_staged_chip_tip(v.chip_tip.as_str().into());
             app.set_staged_toast(v.toast.as_str().into());
             app.set_staged_toast_button(v.toast_button.as_str().into());
         }
@@ -413,7 +412,6 @@ impl AppCtl {
             let state = serde_json::json!({
                 "chip": v.chip_shown,
                 "label": v.chip_label,
-                "tip": v.chip_tip,
                 "toast": v.toast,
                 "button": v.toast_button,
                 "commit": s.flow.ready().map(|r| r.commit.clone()),

@@ -1018,7 +1018,7 @@ Lines added at e5848cb (Prism Terminal's dictation as it is on main at that comm
 ### Update chip
 
 - [x] Exists only while an offer exists; label exactly `Update {version}`; aria-label `Update to {version}`; aria-haspopup dialog; busy while installing (core/renderer/components/UpdateChip.tsx). (M9: nothing_is_drawn_without_an_offer, chip_label_names_the_version, chip_aria_says_update_to)
-- [x] Tooltip: `Updating to {v}` while not idle; `Preview: see what an update to {v} would look like`; else `See what is new in {v}`. (M9: chip_tip_for_a_preview_when_idle, chip_tip_for_a_real_offer_when_idle, chip_tip_while_not_idle, cancel_tip tests)
+- [x] No tooltip: the chip has a label (rule 1201, Max 2026-11-13; it was `Updating to {v}`, `Preview: see what an update to {v} would look like` or `See what is new in {v}`). (hovering_the_update_chip_shows_no_tooltip)
 - [x] Height 24, padding 10, gap 6, radius 6, 11.5 px semibold label, 11x11 up-arrow icon (path `M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 20h14`, stroke 2.4, round caps). (M9: the_chip_height_is_24_css_px_snapped, padding_and_gap_are_10_and_6, the_arrow_is_drawn_at_pt_size)
 - [x] Filled with `--p-sel-bg` (not the raw accent), label `--p-on-accent` at 4.5:1 or more, not grey (channel spread 40+); width and label never change across phases; leftmost control of the right group (e2e updateWindow). (M9: the_fill_is_sel_bg_and_not_grey, the_label_is_on_accent_and_clears_4_5_to_1, the_width_is_the_same_in_every_phase, the_chip_is_the_leftmost_control_of_the_right_group)
 - [ ] Hover brightness 110%; focus ring 2 px accent-hi offset 1 px; a click opens the window and never installs.

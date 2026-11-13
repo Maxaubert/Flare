@@ -70,7 +70,6 @@ pub struct StagedView {
     pub chip_shown: bool,
     pub chip_label: String,
     pub chip_aria: String,
-    pub chip_tip: String,
     /// The toast's line; empty hides it.
     pub toast: String,
     /// The toast's button; empty for none.
@@ -196,11 +195,10 @@ impl StagedFlow {
 
     pub fn view(&self) -> StagedView {
         let mut v = StagedView::default();
-        if let Some(r) = self.ready.as_ref() {
+        if self.ready.is_some() {
             v.chip_shown = true;
             v.chip_label = copy::STAGED_CHIP.to_string();
             v.chip_aria = copy::STAGED_CHIP_ARIA.to_string();
-            v.chip_tip = copy::staged_chip_tip(&r.commit);
         }
         match self.phase {
             Phase::Countdown { .. } => {
@@ -250,7 +248,6 @@ mod tests {
         assert!(v.chip_shown);
         assert_eq!(v.chip_label, "Build ready");
         assert_eq!(v.chip_aria, "Build ready, click to install and restart");
-        assert_eq!(v.chip_tip, "Build abc1234: click to install and restart");
         assert!(v.toast.is_empty());
         assert!(!f.needs_tick(), "nothing waits for idle");
     }

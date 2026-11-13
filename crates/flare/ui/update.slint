@@ -13,7 +13,6 @@ export component UpdateChip inherits Rectangle {
     in property <bool> shown;                 // an offer exists
     in property <string> label;               // "Update 0.56.0"
     in property <string> aria;                // "Update to 0.56.0"
-    in property <string> tip;                 // the tooltip text (chip_tip)
     in property <bool> busy;                  // phase != idle (accessible state only; the look never changes)
     // Width from the measured label: 10 pad + 11 icon + 6 gap + label + 10 pad, snapped to a device pixel.
     out property <length> chip-width: Px.snap(10px + 11px + 6px + label-measure.preferred-width + 10px);
@@ -22,7 +21,6 @@ export component UpdateChip inherits Rectangle {
     out property <length> icon-y: Px.snap((root.height - 11px) / 2);
     out property <length> icon-h: 11px;
     callback clicked();
-    callback tip-request(string, length, length, length, length);
 
     // Measures the label only; it draws nothing and takes no input.
     label-measure := Text {
@@ -102,11 +100,6 @@ export component UpdateChip inherits Rectangle {
                 focus.focus();
                 root.clicked();
             }
-            changed has-hover => {
-                if (self.has-hover) {
-                    root.tip-request(root.tip, root.absolute-position.x, root.absolute-position.y + root.height, root.width, root.height);
-                }
-            }
         }
     }
 
@@ -125,7 +118,6 @@ export component UpdateChip inherits Rectangle {
 
     accessible-role: AccessibleRole.button;
     accessible-label: root.aria;
-    accessible-description: root.tip;
 }
 
 // The notice under the chip: a flat surface with a hairline, the text in text-soft. A click anywhere
@@ -233,12 +225,9 @@ export component UpdateChipPreview inherits Window {
     in-out property <bool> shown: true;
     in-out property <string> label: "Update 0.56.0";
     in-out property <string> aria: "Update to 0.56.0";
-    in-out property <string> tip: "See what is new in 0.56.0";
     in-out property <bool> busy: false;
     in-out property <string> notice: "";
     out property <int> clicks: 0;
-    out property <int> tip-requests: 0;
-    out property <string> last-tip: "";
     out property <int> dismissals: 0;
 
     out property <length> buttons-left: 1000px - 154px;
@@ -262,13 +251,8 @@ export component UpdateChipPreview inherits Window {
         shown: root.shown;
         label: root.label;
         aria: root.aria;
-        tip: root.tip;
         busy: root.busy;
         clicked => { root.clicks += 1; }
-        tip-request(text, x, y, w, h) => {
-            root.tip-requests += 1;
-            root.last-tip = text;
-        }
     }
 
     nt := UpdateNotice {

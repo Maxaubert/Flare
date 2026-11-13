@@ -677,7 +677,6 @@ export component AppWindow inherits Window {
     in property <bool> update-chip-shown;
     in property <string> update-chip-label;
     in property <string> update-chip-aria;
-    in property <string> update-chip-tip;
     in property <bool> update-chip-busy;
     in property <string> update-notice;
     in property <bool> update-open;
@@ -705,7 +704,6 @@ export component AppWindow inherits Window {
     in property <bool> staged-chip-shown;
     in property <string> staged-chip-label;
     in property <string> staged-chip-aria;
-    in property <string> staged-chip-tip;
     in property <string> staged-toast;
     in property <string> staged-toast-button;
     // A click installs the staged build (no menu since 2026-11-10).
@@ -1075,9 +1073,7 @@ export component AppWindow inherits Window {
                             shown: root.staged-chip-shown && !root.side-mode;
                             label: root.staged-chip-label;
                             aria: root.staged-chip-aria;
-                            tip: root.staged-chip-tip;
                             clicked => { root.staged-chip-clicked(); }
-                            tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                         }
                     }
                     // The update chip (M9 Task 30): 10 px left of the first BUTTON (PT `toNextControl`),
@@ -1094,10 +1090,8 @@ export component AppWindow inherits Window {
                             shown: root.update-chip-shown && !root.side-mode;
                             label: root.update-chip-label;
                             aria: root.update-chip-aria;
-                            tip: root.update-chip-tip;
                             busy: root.update-chip-busy;
                             clicked => { root.update-chip-clicked(); }
-                            tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                         }
                     }
                     top-buttons := TitleButtons {
@@ -1161,9 +1155,7 @@ export component AppWindow inherits Window {
                     shown: root.staged-chip-shown && root.side-mode;
                     label: root.staged-chip-label;
                     aria: root.staged-chip-aria;
-                    tip: root.staged-chip-tip;
                     clicked => { root.staged-chip-clicked(); }
-                    tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                 }
                 side-chip := UpdateChip {
                     x: side-buttons.x - Px.snap(10px - 8px) - self.width;
@@ -1173,10 +1165,8 @@ export component AppWindow inherits Window {
                     shown: root.update-chip-shown && root.side-mode;
                     label: root.update-chip-label;
                     aria: root.update-chip-aria;
-                    tip: root.update-chip-tip;
                     busy: root.update-chip-busy;
                     clicked => { root.update-chip-clicked(); }
-                    tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                 }
                 side-buttons := TitleButtons {
                     on-secondary: true;

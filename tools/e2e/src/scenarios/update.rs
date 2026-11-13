@@ -1310,9 +1310,8 @@ fn guard_checks(ctx: &mut Ctx, app: &mut App, go: &Path, idle: &Path) {
             .contains("No notes were published"),
         "and says so in one line",
     );
-    let tip = w["chip"]["tip"].as_str().unwrap_or("").to_string();
     ctx.ok(
-        !tip.starts_with("Preview") && !all_text(&w).to_lowercase().contains("preview"),
+        !all_text(&w).to_lowercase().contains("preview"),
         "a real offer is not called a preview",
     );
     let _ = ctx.shot(app, "dialog-empty");

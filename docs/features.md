@@ -2127,8 +2127,8 @@ only when the person clicks "Build ready". How to stage: `docs/shipping.md`, "In
   from `target\release` never looks. The install root is watched (`FindFirstChangeNotificationW`) and every change is one
   check of `staged\` on a worker: every name a plain relative path, the copy's own exe among them, every hash right.
   Anything else shows no chip.
-- **The chip.** "Build ready" in the title bar, left of the update chip (both tab layouts). Tooltip "Build <commit>:
-  click to install and restart". It has no menu: a click is install now (rule 258). Nothing installs on its own, however long the
+- **The chip.** "Build ready" in the title bar, left of the update chip (both tab layouts). No tooltip: it has a label
+  (rule 1201, since 2026-11-13). It has no menu: a click is install now (rule 258). Nothing installs on its own, however long the
   app is idle. A build stays on offer until it is installed or a new stage replaces it (there is no Not today or Discard).
 - **The install.** A click asks the close question first when an agent is working ("Stop the agent and install the
   update?", "Install and restart"); Cancel there keeps the build on offer. With no agent working it goes on at once. Then
@@ -2647,3 +2647,11 @@ Contract: `docs/surfaces/protocol.md` (`remote.hello`'s `os`, `remote.status`'s 
   remote tab, so the host's tab keeps its terminal at the viewer's size until a key there). Adding a machine reached
   as a user other than the one in `~/.ssh/config`, or with Flare elsewhere than on the PATH or in `/Applications`,
   still needs a hand edit of `machines.json`. Real ssh between the PC and the Mac is on the by-hand list.
+
+## Tooltips only on icons, 2026-11-13
+
+- **A control with a text label gets no tooltip; an icon-only control does.** Max, 2026-11-13. The "Build ready" and
+  "Update <version>" chips in the title bar no longer show one (the Build ready tip showed far from the chip); their
+  accessible names are unchanged. The settings cog, help, window buttons and plugin icons keep theirs, and so does the
+  Preview chip, whose tooltip shows the server's origin that its label leaves out (rule 1201). Held by
+  `hovering_the_build_ready_chip_shows_no_tooltip` and `hovering_the_update_chip_shows_no_tooltip`.

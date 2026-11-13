@@ -11084,9 +11084,8 @@ two",
         assert_eq!(f.log.borrow().raised, 1);
         assert!(f.h.comp.get_update_chip_shown(), "the preview offer is up");
         assert!(
-            f.h.comp
-                .get_update_chip_tip()
-                .starts_with("Preview: see what")
+            engine.offer().expect("an offer").mock,
+            "the offer is the preview"
         );
         assert_eq!(f.rows(), tabs, "no tab is opened");
         assert_eq!(engine.calls().installs, 0);
@@ -11120,9 +11119,8 @@ two",
         f.pump();
         assert_eq!(f.h.comp.get_update_chip_label().as_str(), "Update 99.0.0");
         assert!(
-            f.h.comp
-                .get_update_chip_tip()
-                .starts_with("See what is new")
+            !engine.offer().expect("an offer").mock,
+            "still the real offer"
         );
     }
 

@@ -18,17 +18,6 @@ pub fn chip_aria(v: &str) -> String {
     format!("Update to {v}")
 }
 
-/// The chip's tooltip: busy, a preview, or a real offer.
-pub fn chip_tip(v: &str, mock: bool, phase: Phase) -> String {
-    if phase != Phase::Idle {
-        format!("Updating to {v}")
-    } else if mock {
-        format!("Preview: see what an update to {v} would look like")
-    } else {
-        format!("See what is new in {v}")
-    }
-}
-
 /// The window's title.
 pub fn window_title(v: &str, running: bool) -> String {
     if running {
@@ -105,11 +94,6 @@ pub const STAGED_CANCEL: &str = "Cancel";
 /// A swap that failed and put everything back.
 pub const STAGED_FAILED: &str = "The build could not be installed; nothing changed";
 
-/// The staged chip's tooltip.
-pub fn staged_chip_tip(commit: &str) -> String {
-    format!("Build {commit}: click to install and restart")
-}
-
 /// Said once by the first start of a new build.
 pub fn staged_installed(commit: &str) -> String {
     format!("Installed {commit}")
@@ -136,7 +120,6 @@ mod tests {
             STAGED_CHIP_ARIA,
             STAGED_COUNTDOWN,
             STAGED_FAILED,
-            &staged_chip_tip("abc1234"),
         ] {
             assert!(!s.contains('\u{2014}'), "no em-dash: {s}");
         }
@@ -150,34 +133,6 @@ mod tests {
     #[test]
     fn chip_aria_says_update_to() {
         assert_eq!(chip_aria("0.56.0"), "Update to 0.56.0");
-    }
-
-    #[test]
-    fn chip_tip_while_not_idle() {
-        assert_eq!(
-            chip_tip("1.0.0", false, Phase::Downloading),
-            "Updating to 1.0.0"
-        );
-        assert_eq!(
-            chip_tip("1.0.0", true, Phase::Installing),
-            "Updating to 1.0.0"
-        );
-    }
-
-    #[test]
-    fn chip_tip_for_a_preview_when_idle() {
-        assert_eq!(
-            chip_tip("1.0.0", true, Phase::Idle),
-            "Preview: see what an update to 1.0.0 would look like"
-        );
-    }
-
-    #[test]
-    fn chip_tip_for_a_real_offer_when_idle() {
-        assert_eq!(
-            chip_tip("1.0.0", false, Phase::Idle),
-            "See what is new in 1.0.0"
-        );
     }
 
     #[test]
