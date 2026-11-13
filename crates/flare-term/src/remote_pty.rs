@@ -106,6 +106,26 @@ pub struct Upload {
     pub data: Vec<u8>,
 }
 
+/// A folder of this machine to copy to the host (a dropped folder, rule 1213): its name, every folder below it (as path
+/// parts, parents first) and every file in it. The link reads each file as it sends it, so a big folder is never held
+/// whole in memory.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UploadFolder {
+    pub name: String,
+    pub dirs: Vec<Vec<String>>,
+    pub files: Vec<FolderFile>,
+}
+
+/// One file of a dropped folder: the parts of its folder below the dropped one (empty for the top), its name, where it
+/// is on this machine and its size when the folder was read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderFile {
+    pub dir: Vec<String>,
+    pub name: String,
+    pub path: std::path::PathBuf,
+    pub size: u64,
+}
+
 /// Why an errand did not get done.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ErrandFail {
@@ -125,8 +145,13 @@ pub enum Errand {
     /// the tab (rule 303).
     Fetch { texts: Vec<String>, done: FetchDone },
     /// Copy files to the host's upload folder of the tab, then paste their host paths into the tab as one paste, quoted
-    /// by the host for its shell (rule 304). `done` gets the host paths.
-    Put { files: Vec<Upload>, done: PutDone },
+    /// by the host for its shell (rule 304). Dropped folders go too, whole, after the files (rule 1213). `done` gets the
+    /// host paths.
+    Put {
+        files: Vec<Upload>,
+        folders: Vec<UploadFolder>,
+        done: PutDone,
+    },
 }
 
 impl Errand {
@@ -983,6 +1008,29 @@ fn cursor_move(s: &[char]) -> Option<usize> {
 /// and right that put the cursor back (rule 293) is taken out, so a snapshot can never raise a mark or set a title on
 /// this machine (rule 289). Line breaks stay.
 pub fn plain_snapshot(data: &[u8]) -> Vec<u8> {
+    snapshot_kept(data, false)
+}
+
+/// The length of an SGR (`ESC [ <digits and ;> m`, at most 64 parameter bytes) at the start of `s`, if one is there.
+fn sgr(s: &[char]) -> Option<usize> {
+    if s.get(1) != Some(&'[') {
+        return None;
+    }
+    let params = s[2..]
+        .iter()
+        .take_while(|c| c.is_ascii_digit() || **c == ';')
+        .count();
+    (params <= 64 && s.get(2 + params) == Some(&'m')).then_some(3 + params)
+}
+
+/// A styled remote snapshot (`remote.snapshot {styled: true}`, rule 1213): [`plain_snapshot`]'s text, with the SGRs
+/// that colour and style it kept too. An SGR only sets how cells look: it raises no mark, sets no title and answers
+/// nothing, so rule 289 holds. An older host's plain snapshot comes through the same.
+pub fn styled_snapshot(data: &[u8]) -> Vec<u8> {
+    snapshot_kept(data, true)
+}
+
+fn snapshot_kept(data: &[u8], styled: bool) -> Vec<u8> {
     const HEAD: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
     let body = data.strip_prefix(HEAD).unwrap_or(data);
     let mut out = HEAD.to_vec();
@@ -991,7 +1039,12 @@ pub fn plain_snapshot(data: &[u8]) -> Vec<u8> {
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
-        if let Some(n) = (c == '\x1b').then(|| cursor_move(&chars[i..])).flatten() {
+        let keep = (c == '\x1b')
+            .then(|| {
+                cursor_move(&chars[i..]).or_else(|| styled.then(|| sgr(&chars[i..])).flatten())
+            })
+            .flatten();
+        if let Some(n) = keep {
             kept.extend(&chars[i..i + n]);
             i += n;
             continue;
@@ -1263,6 +1316,24 @@ mod tests {
         assert_eq!(plain_snapshot(&data), want);
     }
 
+    /// Rule 1213: a styled snapshot keeps its SGRs and the cursor moves; a title, a mark, a mode or a move elsewhere
+    /// still loses its ESC, and a plain snapshot drops the SGRs too.
+    #[test]
+    fn a_styled_snapshot_keeps_its_colours_and_nothing_else() {
+        let data = b"\x1b[H\x1b[2J\x1b[3J\x1b[0m\x1b[0;1;31mred\x1b[0m\r\n\x1b]0;title\x07\x1b]777;state=done\x07\x1b[?1049h\x1b[2;3H\x1b[38;2;1;2;3mx\x1b[0m\r\x1b[1A\x1b[2C";
+        let want = b"\x1b[H\x1b[2J\x1b[3J\x1b[0m\x1b[0;1;31mred\x1b[0m\r\n]0;title]777;state=done[?1049h[2;3H\x1b[38;2;1;2;3mx\x1b[0m\r\x1b[1A\x1b[2C";
+        assert_eq!(styled_snapshot(data), want.to_vec());
+        let plain = plain_snapshot(data);
+        assert_eq!(
+            String::from_utf8_lossy(&plain).matches('\x1b').count(),
+            5,
+            "the head's three and the two cursor moves"
+        );
+        // An SGR with too many parameters is no SGR here.
+        let long = format!("\x1b[{}m", "1;".repeat(40));
+        assert!(!String::from_utf8_lossy(&styled_snapshot(long.as_bytes())).contains(&long));
+    }
+
     #[test]
     fn the_live_state_is_shared_and_equal_only_to_itself() {
         let a = RemoteLive::new(Some("t1".into()), 7);
@@ -1313,6 +1384,7 @@ mod tests {
                     name: name.clone(),
                     data: Vec::new(),
                 }],
+                folders: Vec::new(),
                 done: Box::new(move |r| {
                     lk(&told).push(format!("{name}: {}", r.is_ok()));
                 }),

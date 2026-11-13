@@ -156,6 +156,72 @@ pub fn toggle_pin(s: &PrefStore, path: &str) {
     write_list(s, PIN_KEY, &next);
 }
 
+/// Remote tabs' folders (rule 1213), kept apart from this machine's: `flare.recentRemoteRoots`, a JSON array of
+/// `{"machine": id, "path": folder}`, the front the newest, capped like the local list. An older Flare never reads it.
+const REMOTE_KEY: &str = "flare.recentRemoteRoots";
+/// The most remote folders the + menu shows, after this machine's.
+pub const REMOTE_SHOWN: usize = 3;
+
+/// A folder on another machine, by the machine's id in `machines.json`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteRoot {
+    pub machine: String,
+    pub path: String,
+}
+
+/// The remote list after seeing `path` on `machine`: it goes to the front, once, capped. A blank path or machine
+/// changes nothing.
+pub fn with_remote_root(list: &[RemoteRoot], machine: &str, path: &str) -> Vec<RemoteRoot> {
+    let (m, p) = (machine.trim(), path.trim());
+    if m.is_empty() || p.is_empty() {
+        return list.to_vec();
+    }
+    let mut out = vec![RemoteRoot {
+        machine: m.to_string(),
+        path: p.to_string(),
+    }];
+    out.extend(
+        list.iter()
+            .filter(|x| !(x.machine == m && same(&x.path, p)))
+            .cloned(),
+    );
+    out.truncate(RECENT_CAP);
+    out
+}
+
+/// The stored remote folders; anything that is not an entry with a machine and a path is dropped.
+pub fn remote_roots(s: &PrefStore) -> Vec<RemoteRoot> {
+    let Some(raw) = s.get(REMOTE_KEY) else {
+        return Vec::new();
+    };
+    let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(&raw)
+    else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|v| {
+            let machine = v.get("machine")?.as_str().filter(|m| !m.is_empty())?;
+            let path = v.get("path")?.as_str().filter(|p| !p.is_empty())?;
+            Some(RemoteRoot {
+                machine: machine.to_string(),
+                path: path.to_string(),
+            })
+        })
+        .collect()
+}
+
+pub fn remember_remote_root(s: &PrefStore, machine: &str, path: &str) {
+    let next = with_remote_root(&remote_roots(s), machine, path);
+    let list: Vec<serde_json::Value> = next
+        .iter()
+        .map(|r| serde_json::json!({"machine": r.machine, "path": r.path}))
+        .collect();
+    if let Ok(text) = serde_json::to_string(&list) {
+        s.set(REMOTE_KEY, &text);
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Place {
     pub path: String,
@@ -356,6 +422,49 @@ mod tests {
         assert_eq!(out, v(&["C:\\u\\Documents"]));
         let out = starter_fill(&[], &v(&["C:\\a", "C:\\u\\Documents"]), &starters, 5);
         assert_eq!(out, v(&["C:\\u\\Downloads", "C:\\u"]));
+    }
+
+    /// Rule 1213: a remote folder is kept with its machine, apart from this machine's list: newest first, once per
+    /// machine and folder, capped; junk in storage reads as nothing.
+    #[test]
+    fn remote_folders_are_kept_with_their_machine_newest_first() {
+        let s = PrefStore::memory();
+        remember_root(&s, "C:\\local");
+        remember_remote_root(&s, "mac", "/Users/max/proj");
+        remember_remote_root(&s, "pc", "/Users/max/proj");
+        remember_remote_root(&s, "mac", "/Users/max/notes");
+        remember_remote_root(&s, "mac", "/Users/max/proj");
+        let r = |m: &str, p: &str| RemoteRoot {
+            machine: m.into(),
+            path: p.into(),
+        };
+        assert_eq!(
+            remote_roots(&s),
+            vec![
+                r("mac", "/Users/max/proj"),
+                r("mac", "/Users/max/notes"),
+                r("pc", "/Users/max/proj"),
+            ]
+        );
+        assert_eq!(
+            recent_roots(&s),
+            v(&["C:\\local"]),
+            "the local list is untouched"
+        );
+        remember_remote_root(&s, "", "/x");
+        remember_remote_root(&s, "mac", "  ");
+        assert_eq!(remote_roots(&s).len(), 3);
+        for i in 0..20 {
+            remember_remote_root(&s, "mac", &format!("/f{i}"));
+        }
+        assert_eq!(remote_roots(&s).len(), RECENT_CAP);
+        s.set(
+            REMOTE_KEY,
+            "[\"/a\", {\"machine\": \"mac\"}, {\"machine\": \"m\", \"path\": \"/p\"}]",
+        );
+        assert_eq!(remote_roots(&s), vec![r("m", "/p")]);
+        s.set(REMOTE_KEY, "soup");
+        assert!(remote_roots(&s).is_empty());
     }
 
     #[test]

@@ -2490,7 +2490,8 @@ Plan `docs/superpowers/plans/2026-11-12-remote-sessions.md` (PR 2). Contract: `d
   folder read or open never holds up typing or the polls; a call whose turn comes after its time is answered `timeout`
   and never sent, and a timeout no longer drops the connection that follows the tabs (rule 286).
 - **Not yet.** The viewer tab, reconnect and the Mac/PC tag (PR 3), status and conversation (PR 4), the hidden start of a
-  host Flare that is not running (PR 5). A snapshot is plain text (no colours).
+  host Flare that is not running (PR 5). (A snapshot keeps its colours since 2026-11-13, rule 1213: see "Remote tab
+  extras" below.)
 
 ## Remote sessions, PR 3: the viewer tab, reconnect and restore, 2026-11-12
 
@@ -2502,8 +2503,8 @@ viewer").
 - **A remote tab.** A shell tab whose session is the host's (`Tab.remote`, rule 287). It draws the host's output like a
   local shell (the same batcher, emulator, scrollback and OSC parsing) through a `RemotePty`, and what is typed in it
   goes to the host as keys, text and pastes, never raw bytes; the emulator's answers to the program stay here. Its
-  file links are not opened, a file dropped on it is not typed, its `localhost` shows no Preview chip and its folder
-  never joins the recent folders. Held by `remote_pty::tests`, `session::remote_tests` and
+  file links are not opened and a file dropped on it is not typed (its `localhost` Preview chip and its folder in the
+  recent folders came 2026-11-13, rule 1213). Held by `remote_pty::tests`, `session::remote_tests` and
   `ui_tests::term::flow::a_remote_tab_shows_the_hosts_output_and_takes_typing`.
 - **The link.** One `ssh -o BatchMode=yes -T -- <host> '<flare>' --serve-remote` per remote tab, no console window, no
   token and no environment on the line (rule 290); `machines.json` names each machine's id, name, kind (`mac` or
@@ -2523,8 +2524,8 @@ viewer").
   working mark here; live output still does (rule 289). Held by
   `agent_hub::tests::a_remote_tabs_replay_raises_no_mark_and_live_output_does`.
 - **Not yet.** Opening a remote tab from the + menu, a command or an agent (PR 5, PR 7), the host's status words and the
-  conversation view (PR 4), file links and file drops over the link (PR 6), the Mac/PC logo on the tab (PR 7). A
-  remote tab shows no colours after a reconnect from a snapshot. (Typing while the link is down is kept since
+  conversation view (PR 4), file links and file drops over the link (PR 6), the Mac/PC logo on the tab (PR 7). (A
+  remote tab keeps its colours after a reconnect since 2026-11-13, rule 1213. Typing while the link is down is kept since
   2026-11-13, rule 1210: see "Remote link edge cases" below.)
 
 ## Remote sessions, PR 4: status, conversation and keep-awake, 2026-11-12
@@ -2607,7 +2608,7 @@ and Mac can make: `docs/remote-sessions-manual-checks.md`.
   pasted there (as a PNG) are copied to the tab's own folder in the host's temp folder first (`remote.put`, at most
   32 MB a file), under a clean name; the host's path, quoted for the host's shell, is then pasted as one paste. This
   machine's path is never typed into the host's shell, and no image key is sent (the host's Claude cannot read this
-  machine's clipboard) (rule 304). Folders are refused with one line in the panel. Held by `remote_files::tests`,
+  machine's clipboard) (rule 304). A dropped folder is copied whole since 2026-11-13 (rule 1213). Held by `remote_files::tests`,
   `remote_link::tests::a_put_copies_the_files_then_pastes_the_hosts_quoted_paths_as_one_paste`,
   `term_ui::tests::a_drop_on_a_remote_tab_is_never_typed_and_goes_to_the_app_to_copy`,
   `ui_tests::term::flow::an_image_pasted_on_a_remote_tab_goes_to_the_host_as_a_png` and the e2e `remoteFiles`.
@@ -2623,7 +2624,8 @@ and Mac can make: `docs/remote-sessions-manual-checks.md`.
 - **The ssh command for each kind of host.** A Mac's command is quoted for sh, a PC's for cmd (no `&&`, nothing cmd
   expands), from separate argv items with no secret (rule 305). Held by
   `remote_link::tests::the_remote_command_table_quotes_each_hosts_shell`.
-- **Not yet.** A dropped folder is not copied. Real ssh between the PC and the Mac is on the by-hand list. (A Mac's
+- **Not yet.** Real ssh between the PC and the Mac is on the by-hand list. (A dropped folder is copied since 2026-11-13,
+  rule 1213. A Mac's
   TIFF-only clipboard picture is copied as a PNG since 2026-11-13, rule 1198.)
 ## Remote sessions, PR 7: Settings > Machines, the + menu's machines, tab logos and the fitted conversation, 2026-11-12
 
@@ -2722,6 +2724,49 @@ Three fixes to a remote tab's link when it is slow or drops, owner approved 2026
   `the_kept_typing_keeps_order_and_drops_old_and_over_the_cap_with_no_hole` (all `remote_link::tests`).
 - **Not yet.** Typing in a `remote.input` call that the link broke under is not sent again (the host may have typed it
   already). Against a host older than this change, a lost open can still leave a second tab.
+
+## Remote tab extras, 2026-11-13
+
+Four gaps of a remote tab closed, owner approved 2026-11-13 (rule 1213). Contract: `docs/surfaces/protocol.md`
+(section 1 "The viewer", section 5 `remote.snapshot` and `remote.put`). Checks only a real PC and Mac can make:
+`docs/remote-sessions-manual-checks.md`.
+
+- **Preview chip over an ssh tunnel.** A remote tab that prints a local server address (`http://localhost:5173`) now
+  shows the Preview chip as soon as its screen names it (the server is the host's, so no port of this machine is
+  looked at). A click opens an ssh tunnel to the tab's machine, from the same machine entry the link uses (`ssh -N -o
+  BatchMode=yes -o ExitOnForwardFailure=yes -L 127.0.0.1:<free port>:localhost:<port> -- <host>`, every part its own
+  argv item, never a shell string), on a worker, and the side panel opens at `http://127.0.0.1:<free port>/`. One
+  tunnel per tab and host port, used again by the next click; it closes when the chip goes (the screen cleared, another
+  address) or the tab closes. A tunnel that does not come up in 20 s is closed and said in one line in the tab's
+  panel; nothing waits on the UI thread. Under `--e2e` a loopback forwarder stands in for ssh. Held by
+  `remote_tunnel::tests` and `ui_tests::term::flow::a_remote_tabs_preview_chip_opens_the_page_through_a_tunnel_to_its_host`.
+- **Remote folders in the recent folders.** A remote tab's folder joins the recent folders with its machine (a tab
+  opened in the host's home folder: the first folder the host's shell names). The + menu lists up to 3 of them after
+  this machine's folders, each with its machine's logo before its name and the machine's name on its right, and no pin;
+  a pick opens a remote tab on that machine in that folder. A machine removed from Settings > Machines takes its folders
+  off the list. They are kept apart from this machine's list (`flare.recentRemoteRoots`). Held by
+  `recent_roots::tests::remote_folders_are_kept_with_their_machine_newest_first`,
+  `menus_ui::tests::remote_folders_follow_the_local_ones_with_their_machines_logo` and
+  `ui_tests::term::flow::a_remote_tabs_folder_joins_the_recent_folders_and_opens_there_again`.
+- **Colours after a reconnect.** A remote tab that starts from the host's screen (a new tab, a restored one, one that
+  fell out of the host's ring) now shows the host's colours, bold, italic, underline and inverse at once, not only on
+  new output: the snapshot is asked styled. A title, a mark or a mode still never rides on it (rule 289). Against an
+  older host the snapshot is plain, as before. Held by `emulator::tests::a_styled_row_carries_its_colours_and_draws_the_same_cells_again`,
+  `handle::tests::a_styled_snapshot_shows_the_hosts_colours_and_keeps_the_screen_under_its_cap`,
+  `remote_pty::tests::a_styled_snapshot_keeps_its_colours_and_nothing_else` and
+  `remote_link::tests::a_snapshot_is_asked_styled_and_an_older_hosts_refusal_falls_back_to_plain`.
+- **Folder drop.** A folder dropped on a remote tab (or copied and pasted there) is copied whole into the tab's upload
+  folder on the host, its folders and files with their names (dot files keep theirs), links and junctions skipped;
+  then the host's path of the folder, quoted for its shell, is pasted as for a file. Over 5000 files, 200 MB in all, or
+  a file over 32 MB: nothing is copied and the panel says so in one line. A host older than this change takes single
+  files only and says so the same way. Held by `remote_files::tests`, `appctl::remote_files_glue::tests`,
+  `remote_link::tests::a_dropped_folder_is_copied_whole_and_only_its_path_is_pasted`,
+  `remote_link::tests::a_folder_over_the_caps_or_to_an_older_host_copies_nothing` and
+  `ctl_app::tests::remote_put_makes_a_dropped_folder_and_fills_it_and_a_snapshot_takes_styled`.
+- **Not yet.** A "resume a past session there" list in the + menu (left out on purpose: open a shell there and resume
+  Claude by hand; `flare open --on <machine> --resume <id>` still exists for scripts and agents). The tunnel and the
+  folder copy over a real ssh between the PC and the Mac are on the by-hand list. The e2e has no tunnel scenario yet:
+  the loopback stand-in is held by a unit test.
 
 ## Tooltips only on icons, 2026-11-13
 

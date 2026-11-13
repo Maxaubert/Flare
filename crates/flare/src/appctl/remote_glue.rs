@@ -427,6 +427,17 @@ impl AppCtl {
         &self.machines
     }
 
+    /// Rule 1213: a remote tab opened in the host's home folder: the first folder its host's shell names joins the recent
+    /// folders with the tab's machine. Any other tab, or a later folder, changes nothing.
+    pub(crate) fn remember_remote_home(&mut self, id: &str, path: &str) {
+        if path.trim().is_empty() || !self.remote_home.remove(id) {
+            return;
+        }
+        if let Some(machine) = self.model.remote_of(id).map(|t| t.id.clone()) {
+            flare_settings::recent_roots::remember_remote_root(&self.prefs, &machine, path);
+        }
+    }
+
     /// A remote tab's tag for the machine `id`: its name and system when the machines name it, else its id alone.
     pub(crate) fn machine_tag(&self, id: &str) -> flare_tabs::tabs::MachineTag {
         self.machines.iter().find(|m| m.id == id).map_or_else(

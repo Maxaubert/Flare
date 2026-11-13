@@ -172,6 +172,13 @@ pub enum UiMsg {
         token: u64,
         look: flare_surfaces::devpreview::PortLook,
     },
+    /// A remote tab's Preview tunnel opened, or the one line that says why not (rule 1213).
+    RemoteTunnel {
+        tab: String,
+        port: u16,
+        token: u64,
+        opened: Result<crate::remote_tunnel::Tunnel, String>,
+    },
     /// The person clicked a notification about this tab.
     ToastClicked(String),
     /// Windows would not take a notification.
@@ -524,6 +531,9 @@ pub struct AppCtl {
     /// The machines a remote tab can run on (remote sessions PR 7), as last read or saved: the + menu's rows and the
     /// tabs' logos. Empty until a worker has read them.
     machines: Vec<crate::machines::Machine>,
+    /// Remote tabs opened in the host's home folder whose real folder has not joined the recent folders yet: the first
+    /// folder the host's shell reports does (rule 1213).
+    remote_home: std::collections::HashSet<String>,
     /// A remote tab's fitted conversation view (remote sessions PR 7).
     rconvo: remote_glue::RemoteConvoView,
     /// The host's own fitted view of a tab a remote viewer sizes (rule 1211).
@@ -1084,6 +1094,7 @@ impl AppCtl {
             restore_started: false,
             starters: Vec::new(),
             machines: Vec::new(),
+            remote_home: std::collections::HashSet::new(),
             rconvo: remote_glue::RemoteConvoView::default(),
             hconvo: remote_glue::HostConvoView::default(),
             source_id: None,
@@ -2598,6 +2609,13 @@ impl AppCtl {
                 live,
             },
         );
+        // Rule 1213: the folder joins the recent folders with its machine; the host's home folder does once the host's
+        // shell names it.
+        if folder == crate::machines::HOST_HOME {
+            self.remote_home.insert(id.to_string());
+        } else {
+            flare_settings::recent_roots::remember_remote_root(&self.prefs, machine, folder);
+        }
         self.note_spawn(id, folder, false);
         self.hub.on_spawned(id, folder, None);
         self.hub.on_remote_tab(id);
@@ -2798,6 +2816,7 @@ impl AppCtl {
         }
         // Remote sessions PR 6: this run's copies of the host files the tab fetched.
         self.forget_remote_copies(id);
+        self.remote_home.remove(id);
     }
 
     fn toggle_settings(&mut self) {
@@ -3114,6 +3133,11 @@ impl AppCtl {
                 // The first row is always "Choose a folder…"; by its place, as a folder may carry that name.
                 if i == 0 {
                     self.choose_folder();
+                } else if let Some((machine, folder)) = crate::menus_ui::remote_folder_of_row(path)
+                {
+                    // A remote folder's row (rule 1213): a remote tab on that machine, in that folder.
+                    let (machine, folder) = (machine.to_string(), folder.to_string());
+                    self.open_remote(&machine, &folder, None, true);
                 } else if let Some(machine) = crate::menus_ui::machine_of_row(path) {
                     // A linked machine's row (remote sessions PR 7): a shell tab there, in the host's home folder.
                     let machine = machine.to_string();
@@ -5213,6 +5237,8 @@ impl AppCtl {
         }
         self.ended = true;
         self.staged_on_finish();
+        // A remote tab's Preview tunnels end with the app: their ssh is killed now, not left running (rule 1213).
+        self.s7.tunnels.clear();
         // Stop listening before anything slow: a launch that connects while the shells are killed
         // and waited for would get its folders acknowledged and then dropped.
         if let Some(stop) = self.handoff_stop.take() {
@@ -5443,6 +5469,12 @@ impl AppCtl {
             }
             UiMsg::DevLook { tab, token, look } => self.on_dev_look(&tab, token, look),
             UiMsg::DevClickLook { tab, token, look } => self.on_dev_click_look(&tab, token, look),
+            UiMsg::RemoteTunnel {
+                tab,
+                port,
+                token,
+                opened,
+            } => self.on_remote_tunnel(&tab, port, token, opened),
             UiMsg::ToastClicked(tab) => self.on_toast_clicked(&tab),
             UiMsg::ToastFailed => self.on_toast_failed(),
             UiMsg::Mods(crate::mods_ctl::ModsMsgBox(m)) => self.on_mods_msg(m),
@@ -5599,6 +5631,7 @@ impl AppCtl {
                     if !is_unsafe_restore_folder(&path) && self.model.set_cwd(&id, &path) {
                         changed = true;
                     }
+                    self.remember_remote_home(&id, &path);
                 }
                 HostEvent::Output { id } => self.dev_read(&id),
                 HostEvent::Exited { id, .. } => {

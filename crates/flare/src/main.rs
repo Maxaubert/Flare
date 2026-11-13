@@ -59,6 +59,7 @@ mod remote_files;
 mod remote_host;
 mod remote_link;
 mod remote_status;
+mod remote_tunnel;
 mod scrollbar;
 mod serve_remote;
 mod sessions;

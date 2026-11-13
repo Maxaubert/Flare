@@ -630,6 +630,50 @@ impl Emulator {
         s.trim_end().to_string()
     }
 
+    /// One screen line as text with its styles (a styled `remote.snapshot`, rule 1213): each run of cells of one style
+    /// starts with an SGR that resets and sets it (colours, bold, dim, italic, underline, inverse, hidden, strikeout),
+    /// and a line that ends in a style ends with a reset. Wide spacers are skipped; trailing blanks with no background,
+    /// inverse or underline are trimmed, as `row_text` trims them. No other escape is ever written.
+    pub fn row_styled(&self, line: i32) -> String {
+        let grid = self.term.grid();
+        // Each cell: its SGR ("" for the default style), whether a blank of it shows nothing, its text.
+        let mut cells: Vec<(String, bool, char, Option<Vec<char>>)> = Vec::new();
+        for col in 0..self.term.columns() {
+            let cell = &grid[Point::new(Line(line), Column(col))];
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            let c = if cell.c == '\0' { ' ' } else { cell.c };
+            let (sgr, bare) = sgr_of(cell.fg, cell.bg, cell.flags);
+            cells.push((sgr, bare, c, cell.zerowidth().map(<[char]>::to_vec)));
+        }
+        while cells
+            .last()
+            .is_some_and(|(_, bare, c, z)| *c == ' ' && z.is_none() && *bare)
+        {
+            cells.pop();
+        }
+        let mut s = String::new();
+        let mut cur = String::new();
+        for (sgr, _, c, z) in cells {
+            if sgr != cur {
+                s.push_str(if sgr.is_empty() { "\x1b[0m" } else { &sgr });
+                cur = sgr;
+            }
+            s.push(c);
+            if let Some(z) = z {
+                s.extend(z);
+            }
+        }
+        if !cur.is_empty() {
+            s.push_str("\x1b[0m");
+        }
+        s
+    }
+
     /// `text_tail` with placeholder ink blanked (see `row_text_with`): what the prompt-draft check reads.
     pub fn typed_tail(&self, rows: usize) -> Vec<String> {
         let top = -(self.history_size() as i32);
@@ -1682,6 +1726,87 @@ fn visible_pieces(m: FindMatch, cols: usize, top: usize, rows: usize) -> Vec<Row
         .collect()
 }
 
+/// The SGR that sets a cell's style from the default one (empty for the default style), and whether a blank in it shows
+/// nothing (no background, inverse, underline or strikeout): such a blank at a line's end is trimmed (rule 1213).
+fn sgr_of(
+    fg: alacritty_terminal::vte::ansi::Color,
+    bg: alacritty_terminal::vte::ansi::Color,
+    flags: Flags,
+) -> (String, bool) {
+    let mut p: Vec<String> = Vec::new();
+    for (flag, code) in [
+        (Flags::BOLD, "1"),
+        (Flags::DIM, "2"),
+        (Flags::ITALIC, "3"),
+        (Flags::INVERSE, "7"),
+        (Flags::HIDDEN, "8"),
+        (Flags::STRIKEOUT, "9"),
+    ] {
+        if flags.contains(flag) {
+            p.push(code.into());
+        }
+    }
+    let underline = flags.intersects(Flags::ALL_UNDERLINES);
+    if underline {
+        p.push("4".into());
+    }
+    let fg = colour_sgr(fg, false);
+    let bg = colour_sgr(bg, true);
+    let bare = bg.is_none() && !flags.intersects(Flags::INVERSE | Flags::STRIKEOUT) && !underline;
+    p.extend(fg);
+    p.extend(bg);
+    if p.is_empty() {
+        return (String::new(), true);
+    }
+    (format!("\x1b[0;{}m", p.join(";")), bare)
+}
+
+/// A colour's SGR parameters, foreground or background; None for the default colour (and the cursor's).
+fn colour_sgr(c: alacritty_terminal::vte::ansi::Color, bg: bool) -> Option<String> {
+    use alacritty_terminal::vte::ansi::{Color, NamedColor as N};
+    let base: u16 = if bg { 40 } else { 30 };
+    let named = |i: u8| {
+        if i < 8 {
+            format!("{}", base + u16::from(i))
+        } else {
+            format!("{}", base + 60 + u16::from(i - 8))
+        }
+    };
+    match c {
+        Color::Spec(rgb) => Some(format!("{};2;{};{};{}", base + 8, rgb.r, rgb.g, rgb.b)),
+        Color::Indexed(i) if i < 16 => Some(named(i)),
+        Color::Indexed(i) => Some(format!("{};5;{i}", base + 8)),
+        Color::Named(n) => {
+            let i = match n {
+                N::Black | N::DimBlack => 0,
+                N::Red | N::DimRed => 1,
+                N::Green | N::DimGreen => 2,
+                N::Yellow | N::DimYellow => 3,
+                N::Blue | N::DimBlue => 4,
+                N::Magenta | N::DimMagenta => 5,
+                N::Cyan | N::DimCyan => 6,
+                N::White | N::DimWhite => 7,
+                N::BrightBlack => 8,
+                N::BrightRed => 9,
+                N::BrightGreen => 10,
+                N::BrightYellow => 11,
+                N::BrightBlue => 12,
+                N::BrightMagenta => 13,
+                N::BrightCyan => 14,
+                N::BrightWhite => 15,
+                N::Foreground
+                | N::Background
+                | N::Cursor
+                | N::BrightForeground
+                | N::DimForeground => {
+                    return None;
+                }
+            };
+            Some(named(i))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2118,6 +2243,33 @@ mod tests {
         let mut e = Emulator::new(80, 24);
         e.feed("a\u{4e2d}b".as_bytes());
         assert_eq!(e.row_text(0), "a\u{4e2d}b");
+    }
+
+    /// Rule 1213: a styled row sets each run's style from the default and resets at its end, keeps a coloured blank
+    /// and trims a plain one; fed to a fresh emulator it draws the same cells.
+    #[test]
+    fn a_styled_row_carries_its_colours_and_draws_the_same_cells_again() {
+        let mut e = Emulator::new(40, 3);
+        e.feed(b"\x1b[1;31mred\x1b[0m plain \x1b[44m  \x1b[0m   ");
+        e.feed(b"\r\n\x1b[3;4;7m\x1b[38;5;200m\x1b[48;2;1;2;3mx\x1b[0m\x1b[92m\xe4\xb8\xadz");
+        assert_eq!(
+            e.row_styled(0),
+            "\x1b[0;1;31mred\x1b[0m plain \x1b[0;44m  \x1b[0m"
+        );
+        assert_eq!(
+            e.row_styled(1),
+            "\x1b[0;3;7;4;38;5;200;48;2;1;2;3mx\x1b[0;92m\u{4e2d}z\x1b[0m"
+        );
+        assert_eq!(e.row_text(1), "x\u{4e2d}z", "the plain text is unchanged");
+        let mut again = Emulator::new(40, 3);
+        again.feed(format!("{}\r\n{}", e.row_styled(0), e.row_styled(1)).as_bytes());
+        for line in 0..2 {
+            assert_eq!(again.row_styled(line), e.row_styled(line), "line {line}");
+        }
+        // A plain row has no escape at all.
+        let mut p = Emulator::new(10, 2);
+        p.feed(b"plain   ");
+        assert_eq!(p.row_styled(0), "plain");
     }
 
     #[test]

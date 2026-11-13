@@ -3568,6 +3568,48 @@ before the view returns. Native: `tab_host.rs` (`viewer_typed`, `note_viewer_typ
 `tab_host::tests::a_viewer_typed_last_only_after_typing_while_it_sizes_the_tab` and
 `remote_flows::a_viewers_size_alone_never_puts_the_hosts_fitted_view_up`. Source: independent review, 2026-11-13.
 
+1213. **A remote tab's Preview chip opens through an ssh tunnel, its folder joins the recent folders with its machine,
+its snapshot keeps the host's colours, and a dropped folder is copied whole.** Owner approved 2026-11-13. (1) A remote
+tab's `localhost` is the host's: its chip is believed from the screen (no port of this machine is looked at, so a
+local server on the same port never stands in) and a click opens `ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes
+-L 127.0.0.1:<free port>:localhost:<port> -- <host>` from the link's own machine entry (`tunnel_argv`: argv items,
+`argv_word` host and user, never a shell string), on a worker, waiting at most 20 s for the forward to listen; the panel
+opens at `http://127.0.0.1:<free port><path>` (`tunnel_url`). One tunnel per tab and host port, kept while that chip
+stands and dropped (ssh killed off the UI thread) when the chip goes or the tab closes; a failure is one line in the
+panel. Under `--e2e` a loopback forwarder stands in and ssh never runs. (2) A remote tab's folder is kept with its
+machine id in `flare.recentRemoteRoots`, apart from this machine's list (a remote path is never opened here); a tab
+opened in the host's home records the first folder its shell reports. The + menu lists up to 3 after the local ones,
+with the machine's logo and name and no pin, only for machines still in `machines.json`; the row carries `\0remote:`,
+so no folder is read as one. (3) `remote.snapshot {styled: true}` sends each line's style runs as SGRs that reset and
+set the style; the viewer keeps only SGRs (and the cursor moves of rule 293) of an answer that says `styled`, so a
+title, a mark or a mode still never rides on a snapshot (rule 289). A styled snapshot is at most 8 MiB: the oldest
+history goes first, never the screen. An older host refuses the param; the viewer asks plain on the same link and stops
+asking styled. (4) A dropped folder is listed on a worker (links and junctions skipped, its files only stat'ed), refused
+in one line past 5000 files, 5000 folders, 200 MB or a 32 MB file before anything is sent, then copied with
+`remote.put {folder: true}` and `under`: every name the host keeps is `put_inner_name`'s (a leading dot kept, never `.`
+or `..`), `under`'s first name must be a folder this run made for the tab, and every step must be a real folder on the
+host (`symlink_metadata`, no reparse point), so nothing lands outside the tab's upload folder; the host counts the caps
+too. Only the folder's quoted path is pasted. An older host refuses `folder`: nothing is copied, one line says to update
+it. Native: `remote_tunnel.rs`, `appctl/surfaces7.rs` (`remote_chip_clicked`, `on_remote_tunnel`,
+`drop_gone_tunnels`), `recent_roots::remember_remote_root`, `menus_ui::remote_folder_rows`,
+`appctl/remote_glue.rs::remember_remote_home`, `emulator::row_styled`, `TermHandle::remote_snapshot_with`,
+`remote_pty::styled_snapshot`, `remote_link::{snapshot, put_files, put_folder, folders_fit}`,
+`remote_files::Uploads::{make_folder, put_in}`, `flare_ctl::remote::{under_parts, put_inner_name}`,
+`appctl/remote_files_glue.rs::read_dropped`, `ctl_app::remote_put`. Held by `remote_tunnel::tests`,
+`a_remote_tabs_preview_chip_opens_the_page_through_a_tunnel_to_its_host`,
+`remote_folders_are_kept_with_their_machine_newest_first`, `remote_folders_follow_the_local_ones_with_their_machines_logo`,
+`a_remote_tabs_folder_joins_the_recent_folders_and_opens_there_again`,
+`a_styled_row_carries_its_colours_and_draws_the_same_cells_again`,
+`a_styled_snapshot_shows_the_hosts_colours_and_keeps_the_screen_under_its_cap`,
+`a_styled_snapshot_keeps_its_colours_and_nothing_else`,
+`a_snapshot_is_asked_styled_and_an_older_hosts_refusal_falls_back_to_plain`,
+`a_dropped_folder_lands_whole_in_the_tabs_folder_and_nothing_outside_it`,
+`a_dropped_folder_past_its_caps_is_refused_on_the_host_too`, `a_dropped_folder_is_listed_with_its_links_skipped`,
+`a_dropped_folder_past_the_file_cap_is_refused_in_one_line`, `a_dropped_folder_is_copied_whole_and_only_its_path_is_pasted`,
+`a_folder_over_the_caps_or_to_an_older_host_copies_nothing`,
+`an_under_is_clean_names_joined_by_slashes_and_nothing_else` and
+`remote_put_makes_a_dropped_folder_and_fills_it_and_a_snapshot_takes_styled`. Source: owner request, 2026-11-13.
+
 1207. **A PC host runs the serve command through `cmd /c`, Settings > Machines finds a PC's own installs, and a
 renamed copy serves its own profile.** Found 2026-11-13 over real ssh from the Mac to the PC: the PC's sshd
 `DefaultShell` was PowerShell 7, which refused the old `"<path>" --serve-remote` (`ParserError: Unexpected token

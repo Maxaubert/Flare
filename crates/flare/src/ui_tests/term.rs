@@ -2776,7 +2776,7 @@ mod flow {
         w.ctl.borrow_mut().on_dropped_path(file, (500.0, 300.0));
         let mut errands = errands_of(&w, &live);
         assert_eq!(errands.len(), 1, "one copy for the drop");
-        let Errand::Put { files, done } = errands.remove(0) else {
+        let Errand::Put { files, done, .. } = errands.remove(0) else {
             panic!("a put");
         };
         assert_eq!(
@@ -2907,6 +2907,150 @@ mod flow {
                 .all(|r| r.machine == 0),
             "a local tab wears no logo"
         );
+    }
+
+    /// Steps the window's clock in 50 ms slices, with a breath of real time for the workers, until `cond`.
+    fn steps_until(w: &Wx, what: &str, mut cond: impl FnMut(&Wx) -> bool) {
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(5) {
+            w.step(50);
+            if cond(w) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(4));
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    /// Rule 1213: a remote tab's `localhost` is its host's: its chip shows, and a click opens one tunnel to the tab's
+    /// machine for that port and the side panel at the tunnel's port here; the tunnel is kept for the next click and
+    /// closes when the chip goes. A tunnel that fails is one line in the panel.
+    #[test]
+    fn a_remote_tabs_preview_chip_opens_the_page_through_a_tunnel_to_its_host() {
+        use crate::remote_tunnel::Tunnel;
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let w = Wx::new(1.0);
+        w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![mac_mini()]));
+        let asks: Arc<Mutex<Vec<(String, u16)>>> = Arc::default();
+        let closed = Arc::new(AtomicUsize::new(0));
+        let (a, c) = (Arc::clone(&asks), Arc::clone(&closed));
+        w.ctl.borrow_mut().set_tunnel_opener(Arc::new(
+            move |ask: &crate::remote_tunnel::TunnelAsk| {
+                a.lock()
+                    .unwrap()
+                    .push((ask.machine.id.clone(), ask.host_port));
+                let c = Arc::clone(&c);
+                Ok(Tunnel::new(
+                    50123,
+                    Box::new(move || {
+                        c.fetch_add(1, Ordering::SeqCst);
+                    }),
+                ))
+            },
+        ));
+        let (id, _live) = remote_in_front(&w);
+        let io = w.remote.made()[0].1.clone();
+        io.push_output(b"  Local:   http://localhost:5173/app\r\n");
+        steps_until(&w, "the chip", |w| {
+            w.h.comp.get_preview_chip_label() == "localhost:5173"
+        });
+        w.h.comp.invoke_preview_chip_clicked();
+        steps_until(&w, "the panel", |w| {
+            w.ctl.borrow().panel_snap(&id).is_some_and(|s| s.open)
+        });
+        let snap = w.ctl.borrow().panel_snap(&id).expect("a panel");
+        assert_eq!(snap.url.as_deref(), Some("http://127.0.0.1:50123/"));
+        assert_eq!(*asks.lock().unwrap(), [("mac".to_string(), 5173)]);
+        assert_eq!(w.ctl.borrow().remote_tunnels(), [(id.clone(), 5173, 50123)]);
+        assert_eq!(w.h.comp.get_preview_chip_label(), "", "the panel shows it");
+        // The screen is cleared: the chip goes, and its tunnel with it.
+        io.push_output(b"\x1b[H\x1b[2J\x1b[3J");
+        steps_until(&w, "the tunnel closed", |_| {
+            closed.load(Ordering::SeqCst) == 1
+        });
+        assert!(w.ctl.borrow().remote_tunnels().is_empty());
+        // A tunnel that fails is said, and no tunnel is kept; the next click asks again.
+        let failed = Arc::new(AtomicUsize::new(0));
+        let f = Arc::clone(&failed);
+        w.ctl.borrow_mut().set_tunnel_opener(Arc::new(
+            move |_: &crate::remote_tunnel::TunnelAsk| {
+                f.fetch_add(1, Ordering::SeqCst);
+                Err("the tunnel to Mac Mini did not open in 20 s".to_string())
+            },
+        ));
+        io.push_output(b"  Local:   http://localhost:8080/\r\n");
+        steps_until(&w, "the second chip", |w| {
+            w.h.comp.get_preview_chip_label() == "localhost:8080"
+        });
+        w.h.comp.invoke_preview_chip_clicked();
+        steps_until(&w, "the failed tunnel", |_| {
+            failed.load(Ordering::SeqCst) == 1
+        });
+        w.run(200);
+        assert!(w.ctl.borrow().remote_tunnels().is_empty());
+        w.h.comp.invoke_preview_chip_clicked();
+        steps_until(&w, "a second try", |_| failed.load(Ordering::SeqCst) == 2);
+    }
+
+    /// Rule 1213: a remote tab's folder joins the recent folders with its machine (the host's home folder only once its
+    /// shell names it); the + menu lists it with the machine's logo, and its pick opens a remote tab there.
+    #[test]
+    fn a_remote_tabs_folder_joins_the_recent_folders_and_opens_there_again() {
+        use crate::menus_ui::{GLYPH_LOGO_MAC, glyph_path};
+        use flare_settings::recent_roots::{RemoteRoot, recent_roots, remote_roots};
+        let w = Wx::new(1.0);
+        w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![mac_mini()]));
+        let local = recent_roots(&w.prefs);
+        let home = w
+            .ctl
+            .borrow_mut()
+            .open_remote("mac", crate::machines::HOST_HOME, None, true);
+        w.ctl
+            .borrow_mut()
+            .open_remote("mac", "/Users/max/proj", None, false);
+        w.pump();
+        assert_eq!(
+            remote_roots(&w.prefs),
+            vec![RemoteRoot {
+                machine: "mac".into(),
+                path: "/Users/max/proj".into()
+            }],
+            "the home folder waits for its name"
+        );
+        assert_eq!(recent_roots(&w.prefs), local, "never a local folder");
+        w.ctl.borrow_mut().remember_remote_home(&home, "/Users/max");
+        w.ctl
+            .borrow_mut()
+            .remember_remote_home(&home, "/Users/max/later");
+        assert_eq!(
+            remote_roots(&w.prefs)
+                .iter()
+                .map(|r| r.path.as_str())
+                .collect::<Vec<_>>(),
+            ["/Users/max", "/Users/max/proj"],
+            "the first folder named, once"
+        );
+        w.h.comp.invoke_plus_menu(10.0, 10.0);
+        let i = menu_row(&w, "proj").expect("the remote folder's row");
+        let row = w.h.comp.get_menu_rows().row_data(i).unwrap();
+        assert_eq!(row.icon.as_str(), glyph_path(GLYPH_LOGO_MAC));
+        let made = w.remote.made().len();
+        w.h.comp.invoke_menu_picked(i as i32);
+        w.pump_until("the remote pty", |w| w.remote.made().len() > made);
+        let spec = w.remote.made()[made]
+            .0
+            .remote
+            .clone()
+            .expect("a remote spec");
+        assert_eq!(
+            (spec.machine.as_str(), spec.folder.as_str()),
+            ("mac", "/Users/max/proj")
+        );
+        // A machine no longer linked takes its folders off the list.
+        w.ctl.borrow_mut().on_msg(UiMsg::Machines(Vec::new()));
+        w.h.comp.invoke_plus_menu(10.0, 10.0);
+        assert!(menu_row(&w, "proj").is_none());
     }
 
     /// Rule 1192: a remote tab's menu has "Hide here only" after Close tab; it lets go here and the host session goes on

@@ -99,6 +99,9 @@ pub const INVENTORY: &[(&str, &str)] = &[
     ("e2e/src/fake_fill_helper.rs", "Web panel"),
     ("e2e/src/scenarios/brand.rs", "Web panel"),
     ("e2e/src/scenarios/fill.rs", "Web panel"),
+    // Rule 1213: a remote tab's Preview tunnel. Its readiness check and the e2e's loopback stand-in connect to this
+    // machine's 127.0.0.1 only; the tunnel itself is the user's own ssh to the machine in machines.json.
+    ("flare/src/remote_tunnel.rs", "Remote sessions"),
 ];
 
 /// Tokens that mark a line as possibly reaching the network.

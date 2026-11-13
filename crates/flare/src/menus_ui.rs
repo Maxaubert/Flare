@@ -7,7 +7,8 @@
 use crate::tabs_ui::View;
 use flare_settings::kv::PrefStore;
 use flare_settings::recent_roots::{
-    RECENT_SHOWN, pinned_roots, recent_labels, recent_roots, starter_fill, toggle_pin,
+    RECENT_SHOWN, REMOTE_SHOWN, RemoteRoot, pinned_roots, recent_labels, recent_roots,
+    remote_roots, starter_fill, toggle_pin,
 };
 use flare_tabs::places::place_rows;
 use flare_tabs::sidebar_rows::find_keeps;
@@ -222,6 +223,56 @@ fn machine_rows(machines: &[crate::machines::Machine]) -> Vec<(MenuRowData, Stri
         .collect()
 }
 
+/// What a remote folder's row in the + menu carries instead of a folder (rule 1213): this mark, the machine's id, a
+/// NUL, then the host's folder. A NUL starts it, so no folder's path is ever read as one.
+pub const REMOTE_FOLDER_ROW: &str = "\u{0}remote:";
+
+/// The machine and the host folder a + menu row opens a remote tab in, for a remote folder's row.
+pub fn remote_folder_of_row(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix(REMOTE_FOLDER_ROW)?;
+    let (machine, folder) = rest.split_once('\u{0}')?;
+    (!machine.is_empty() && !folder.is_empty()).then_some((machine, folder))
+}
+
+/// The + menu's remote folders (rule 1213): the newest folders remote tabs opened, after this machine's, each with its
+/// machine's logo before its name and the machine's name on its right. A machine no longer in `machines.json` drops its
+/// folders from the list. No pin: a pin is this machine's.
+fn remote_folder_rows(
+    prefs: &PrefStore,
+    machines: &[crate::machines::Machine],
+) -> Vec<(MenuRowData, String)> {
+    let listed: Vec<(RemoteRoot, &crate::machines::Machine)> = remote_roots(prefs)
+        .into_iter()
+        .filter_map(|r| {
+            let m = machines.iter().find(|m| m.id == r.machine)?;
+            Some((r, m))
+        })
+        .take(REMOTE_SHOWN)
+        .collect();
+    let paths: Vec<String> = listed.iter().map(|(r, _)| r.path.clone()).collect();
+    let labels = recent_labels(&paths);
+    listed
+        .into_iter()
+        .zip(labels)
+        .enumerate()
+        .map(|(i, ((r, m), l))| {
+            let mut row = MenuRowData::plain(&l.label);
+            if let Some(g) = machine_logo(m.kind) {
+                row.icon_cmd = glyph_path(g).to_string();
+                row.filled_icon = true;
+            } else {
+                row.icon = GLYPH_LINK;
+            }
+            row.hint = m.name.clone();
+            row.group = i == 0;
+            (
+                row,
+                format!("{REMOTE_FOLDER_ROW}{}\u{0}{}", r.machine, r.path),
+            )
+        })
+        .collect()
+}
+
 /// What a starter folder's row says on its right: "user folder" for the user's own, `~\Documents` for one inside
 /// it, nothing for one elsewhere (a Documents moved to another drive).
 fn starter_hint(path: &str, home: &str) -> String {
@@ -255,12 +306,19 @@ pub fn plus_menu_rows(
     home: &str,
     machines: &[crate::machines::Machine],
 ) -> Vec<(MenuRowData, String)> {
-    let mut rows = folder_rows(prefs, starters, home);
+    let remote = remote_folder_rows(prefs, machines);
+    let mut rows = folder_rows(prefs, starters, home, !remote.is_empty());
+    rows.extend(remote);
     rows.extend(machine_rows(machines));
     rows
 }
 
-fn folder_rows(prefs: &PrefStore, starters: &[String], home: &str) -> Vec<(MenuRowData, String)> {
+fn folder_rows(
+    prefs: &PrefStore,
+    starters: &[String],
+    home: &str,
+    has_remote: bool,
+) -> Vec<(MenuRowData, String)> {
     let (pinned, recent) = (pinned_roots(prefs), recent_roots(prefs));
     let places = place_rows(&pinned, &recent);
     let fill = starter_fill(&pinned, &recent, starters, RECENT_SHOWN);
@@ -268,6 +326,9 @@ fn folder_rows(prefs: &PrefStore, starters: &[String], home: &str) -> Vec<(MenuR
     choose.icon = GLYPH_FOLDER;
     let mut rows = vec![(choose, String::new())];
     if places.is_empty() && fill.is_empty() {
+        if has_remote {
+            return rows;
+        }
         let mut note = MenuRowData::plain("No recent folders");
         note.disabled = true;
         note.group = true;
@@ -314,7 +375,7 @@ pub fn toggle_pin_in_menu(
     let Some((_, path)) = rows.get(index) else {
         return;
     };
-    if path.is_empty() || machine_of_row(path).is_some() {
+    if path.is_empty() || machine_of_row(path).is_some() || remote_folder_of_row(path).is_some() {
         return;
     }
     toggle_pin(prefs, &path.clone());
@@ -552,6 +613,52 @@ mod tests {
         assert_eq!(
             labels(&none),
             [CHOOSE_FOLDER, "No recent folders", "Mac Mini"]
+        );
+    }
+
+    /// Rule 1213: a remote tab's folder is listed after this machine's, with its machine's logo before its name and the
+    /// machine's name on its right, no pin; its row names the machine and the host folder. A machine no longer linked
+    /// drops its folders from the list.
+    #[test]
+    fn remote_folders_follow_the_local_ones_with_their_machines_logo() {
+        use crate::machines::Machine;
+        use flare_settings::recent_roots::remember_remote_root;
+        use flare_tabs::tabs::Os;
+        let mac = Machine {
+            id: "mac".into(),
+            name: "Mac Mini".into(),
+            kind: Some(Os::Mac),
+            ssh: "mini".into(),
+            user: None,
+            flare: "flare".into(),
+        };
+        let prefs = PrefStore::memory();
+        remember_root(&prefs, r"C:\w\a");
+        remember_remote_root(&prefs, "gone", "/srv/old");
+        remember_remote_root(&prefs, "mac", "/Users/max/proj");
+        let mut rows = plus_menu_rows(&prefs, &[], "", std::slice::from_ref(&mac));
+        assert_eq!(labels(&rows), [CHOOSE_FOLDER, "a", "proj", "Mac Mini"]);
+        let (row, path) = &rows[2];
+        assert_eq!(remote_folder_of_row(path), Some(("mac", "/Users/max/proj")));
+        assert_eq!(machine_of_row(path), None);
+        assert_eq!(row.icon_cmd, glyph_path(GLYPH_LOGO_MAC));
+        assert!(row.filled_icon && row.group && row.trailing_icon.is_none());
+        assert_eq!(row.hint, "Mac Mini");
+        assert_eq!(remote_folder_of_row(r"C:\w\a"), None);
+        // A remote folder's row has no pin to toggle.
+        toggle_pin_in_menu(&prefs, &mut rows, 2, &[], "", std::slice::from_ref(&mac));
+        assert!(pinned_roots(&prefs).is_empty());
+        // Only remote folders known: no note, the remote folder, then the machine.
+        let only = PrefStore::memory();
+        remember_remote_root(&only, "mac", "/Users/max/proj");
+        assert_eq!(
+            labels(&plus_menu_rows(&only, &[], "", std::slice::from_ref(&mac))),
+            [CHOOSE_FOLDER, "proj", "Mac Mini"]
+        );
+        // No machines linked: no remote folder.
+        assert_eq!(
+            labels(&plus_menu_rows(&prefs, &[], "", &[])),
+            [CHOOSE_FOLDER, "a"]
         );
     }
 

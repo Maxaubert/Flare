@@ -294,6 +294,12 @@ impl DevChips {
             .map(|c| &c.server)
     }
 
+    /// The address the tab's chip is about, shown or still being looked for (a remote tab's tunnel stays while it is
+    /// there, rule 1213).
+    pub fn server(&self, tab: &str) -> Option<&ChipServer> {
+        self.chips.get(tab).map(|c| &c.server)
+    }
+
     /// The token of the tab's chip (what a look made for it hands back), if it holds one.
     pub fn token(&self, tab: &str) -> Option<u64> {
         self.chips.get(tab).map(|c| c.token)
