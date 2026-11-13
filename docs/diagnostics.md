@@ -115,6 +115,12 @@ kept in a ring of 50 and written as `k = crumb` with a field `a`:
 | `kill-stuck` | `pid`, `ms` | the kill path |
 | `memory` | `appMb`, `gpuMb`, `childrenMb`, `workingSetMb` | `MemWatch`, every 5 min |
 | `first-run` | `version` | the Velopack first-run hook |
+| `path-click` | `how` (`click`, `menu-open`, `menu-reveal`), `route` (`panel`, `opened`, `revealed`, `missing`, `refused`), `ext`, `ms` | TermUi, once per file link click or menu Open (owner, 2026-11-13: a click that opened nothing left no trace) |
+| `open-failed` | `via` (`file`, `folder`, `reveal`), `ext`, `err` (the opener's own fixed text, at most 80 characters) | `WinOpeners`, when Windows refused the open |
+
+`ext` is a fixed word, never the screen text: an extension from the click allowlist, `none` or `other`
+(`flare_term::path_open::ext_label`). No crumb at all after a click means Flare saw no file link there.
+`opened` means the path was handed to Windows' default app; whether that app then showed it is the app's own log.
 
 ## The agent kinds (M6)
 

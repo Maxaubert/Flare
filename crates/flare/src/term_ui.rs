@@ -33,8 +33,8 @@ use flare_term::link_target::{LinkAction, TermPathAt, click_action};
 use flare_term::mouse_report::{MouseButton, MouseEvt, MouseKind, MouseMods, encode_mouse};
 use flare_term::osc52::OSC52_MAX;
 use flare_term::path_open::{
-    OpenMode, PathKind, PathOpeners, first_existing, open_term_path, resolve_openable_file,
-    resolve_term_path,
+    OpenMode, Opened, PathKind, PathOpeners, ext_label, first_existing, open_term_path,
+    resolve_openable_file, resolve_term_path,
 };
 use flare_term::sel_machine::{
     ClickCounter, DRAG_SCROLL_MS, Drag, Press, SelMachine, SelOut, ViewBox,
@@ -114,6 +114,33 @@ pub enum TermMsg {
         tab: String,
         text: String,
     },
+}
+
+/// One `path-click` crumb for a file link's click or menu Open (owner, 2026-11-13: a click that opened nothing left
+/// no trace). `how` is `click`, `menu-open` or `menu-reveal`; `route` is where it went: `panel` (the side panel),
+/// `opened` (handed to Windows' default app; a failure there is its own `open-failed` crumb), `revealed`
+/// (Explorer, selected), `missing` (no spelling names anything) or `refused` (it changed under the click). The
+/// extension is a fixed word (`ext_label`): the screen text never reaches the log.
+fn link_crumb(how: &str, route: &str, text: &str, started: Instant) {
+    let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    crate::diag_ctl::crumb(
+        "path-click",
+        &[
+            ("how", crate::diag_ctl::txt(how)),
+            ("route", crate::diag_ctl::txt(route)),
+            ("ext", crate::diag_ctl::txt(ext_label(text))),
+            ("ms", serde_json::Value::from(ms)),
+        ],
+    );
+}
+
+/// `open_term_path`'s answer as a `path-click` route.
+fn route_of(got: Option<Opened>) -> &'static str {
+    match got {
+        Some(Opened::Opened) => "opened",
+        Some(Opened::Revealed) => "revealed",
+        None => "refused",
+    }
 }
 
 /// Puts the hover thumbnail on the window (Some), or takes it down (None).
@@ -672,13 +699,16 @@ impl TermUi {
         let home = self.deps.home.clone();
         let post = Arc::clone(&self.deps.post);
         let previews = self.previews;
+        let started = Instant::now();
         thread::spawn(move || {
             let Some(text) = first_existing(&base, &texts, &home) else {
                 let text = texts.into_iter().next().unwrap_or_default();
+                link_crumb("click", "missing", &text, started);
                 post(TermMsg::NoSuchFile { tab, text });
                 return;
             };
             if previews && let Some((kind, abs)) = previewable(&base, &text, &home) {
+                link_crumb("click", "panel", &text, started);
                 post(TermMsg::Preview {
                     tab,
                     kind,
@@ -688,7 +718,8 @@ impl TermUi {
                 });
                 return;
             }
-            let _ = open_term_path(&base, &text, OpenMode::Open, &*openers, &home);
+            let got = open_term_path(&base, &text, OpenMode::Open, &*openers, &home);
+            link_crumb("click", route_of(got), &text, started);
         });
     }
 
@@ -893,13 +924,20 @@ impl TermUi {
         let openers = Arc::clone(&self.deps.openers);
         let home = self.deps.home.clone();
         let post = Arc::clone(&self.deps.post);
+        let started = Instant::now();
+        let how = match mode {
+            OpenMode::Open => "menu-open",
+            OpenMode::Reveal => "menu-reveal",
+        };
         thread::spawn(move || {
             let Some(text) = first_existing(&base, &texts, &home) else {
                 let text = texts.into_iter().next().unwrap_or_default();
+                link_crumb(how, "missing", &text, started);
                 post(TermMsg::NoSuchFile { tab, text });
                 return;
             };
-            let _ = open_term_path(&base, &text, mode, &*openers, &home);
+            let got = open_term_path(&base, &text, mode, &*openers, &home);
+            link_crumb(how, route_of(got), &text, started);
         });
     }
 
