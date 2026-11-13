@@ -844,6 +844,8 @@ pub fn theme_editor_live(ctx: &mut Ctx) -> Result<(), String> {
         // macOS (rule 1136): the picker shuts before the tab switch is done, and a second Ctrl+Tab sent then
         // went nowhere (twice on the runner), so a Mac also waits for the shell to be in front, and for
         // Settings to be back before it looks for the picker. Windows waits as before.
+        // Rule 1195: this runs within 600 ms of the Cancel above, while the closed editor's pencil still
+        // waited for the keys; the wall rebuilt on return took them from the reopened picker, which shut.
         let mac = cfg!(target_os = "macos");
         let _ = app.session.key("Ctrl+Tab");
         ctx.until("the Background picker is shut away", 3_000, &mut || {

@@ -3351,6 +3351,19 @@ and `a_prompt_redraw_reaches_the_sink_whole` (`session`). That session test runs
 stretched to 25 ms (`SessionOptions::redraw_settle`), so a loaded CI runner that stalls a thread past 2 ms cannot
 split the pair (macOS CI run 43258287798 split 3 of 20 at the real 2 ms); the real 2 ms is held on a fake clock
 by the `batcher` tests. Number 1188 was left for a parallel PR. Source: Max, 2026-11-12.
+1195. **A colour picker left open when Settings goes behind another tab is open again when it comes back, even
+right after the theme editor closed.** Closing the editor asks the keys for its pencil for 600 ms
+(`pencil-pending`, app.slint), and a wall made in that time hands them over from the card's `init`; the pencil's
+`pencil-taken` is not wired, so the wait always ran its full 600 ms. A tab switch and back inside it rebuilt the wall
+on return: the popover the return reopened took the keys first, the new card took them from it, and the popover shut
+on `focus-left`, which also forgets a kept picker, so it never came back. themeEditorLive's "an Appearance picker left
+open is open again on return" failed this way in Mac CI (runs 43340817015 and 43352885658 on main 80f682ca, and
+11 of 60 local Mac runs, 9 of the 40 with 24 `yes` processes; 0 of 60 after), where the whole step takes under 600 ms; the Mac's
+event loop runs the change handlers before the frame that makes the cards. Opening a picker and Settings going
+behind a tab now end the wait (`SettingsCtl::drop_pencil_wait`, `crates/flare/src/settings_ctl.rs`); the pencil still
+takes the keys when nothing else did. Held by
+`a_picker_opened_just_after_the_editor_closed_is_open_again_after_a_tab_switch` (`ui_tests/settings_flows.rs`).
+Numbers 1190 to 1194 were left for parallel PRs. Source: Mac E2E in CI (2026-11-13).
 1190. **A paste on a remote tab chooses as a local tab's paste does.** Rule 304's upload ran before the paste's own
 choice and ignored its mode and the agent: a plain paste (Ctrl+Shift+V) with files or a picture on the clipboard copied
 them to the host, and an Excel or Word copy (text plus a bitmap) pasted at a plain prompt sent a `pasted-image-<ms>.png`

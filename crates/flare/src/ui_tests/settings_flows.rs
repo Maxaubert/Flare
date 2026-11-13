@@ -403,6 +403,52 @@ fn a_picked_background_paints_at_once_and_survives_a_tab_switch_and_the_picker_r
     f.pump();
 }
 
+fn a_picker_opened_just_after_the_editor_closed_is_open_again_after_a_tab_switch_at(f: &Fx) {
+    // e2e themeEditorLive, the Appearance half (rule 1195). The editor's pencil asks for the keys
+    // back when the editor closes (`pencil-pending`, 600 ms). A tab switch and back inside that time
+    // rebuilt the wall, the new card's `init` took the keys for its pencil, and the picker that had
+    // just come back lost them and shut for good (`focus-left`). Seen on the Mac runner only, where
+    // the whole step took under 600 ms and the card was made after the picker had the keys.
+    let id = f.selected_card().id;
+    // As the card's pencil does (view.slint): it notes the card, then opens the editor.
+    f.b().set_pencil_id(id.as_str().into());
+    f.b().invoke_wall_edit(id.as_str().into());
+    f.pump();
+    f.h.render();
+    f.b().invoke_editor_cancel();
+    f.pump();
+    f.h.advance(0);
+    f.h.render();
+    assert!(
+        f.b().get_pencil_pending(),
+        "the closed editor's pencil waits for the keys"
+    );
+    f.open_swatch("window-background");
+    f.h.render();
+    assert!(f.b().get_picker_open(), "the Background picker opens");
+    assert!(
+        !f.b().get_pencil_pending(),
+        "an open picker has the keys: the pencil no longer waits for them"
+    );
+    f.ctl.borrow_mut().hide();
+    f.h.render();
+    assert!(!f.b().get_picker_open(), "shut away on another tab");
+    f.ctl.borrow_mut().show();
+    f.pump();
+    // As the event loop runs it: the change handlers (the popover takes the keys), the frame that
+    // makes the rebuilt wall's cards, then the handlers again (a `focus-left` would come here).
+    f.h.advance(0);
+    f.h.render();
+    f.h.advance(0);
+    f.pump();
+    assert!(
+        f.b().get_picker_open(),
+        "the picker left open is open again on return"
+    );
+    f.b().invoke_picker_escape();
+    f.pump();
+}
+
 fn editor_escape_closes_and_a_user_closed_picker_stays_closed_at(f: &Fx) {
     let id = f.selected_card().id;
     f.open_editor_on(&id);
@@ -824,6 +870,11 @@ fn background_has_no_alpha_and_the_popover_says_so() {
 fn a_picked_background_paints_at_once_and_survives_a_tab_switch_and_the_picker_returns_with_focus()
 {
     every_scale(a_picked_background_paints_at_once_and_survives_a_tab_switch_and_the_picker_returns_with_focus_at);
+}
+
+#[test]
+fn a_picker_opened_just_after_the_editor_closed_is_open_again_after_a_tab_switch() {
+    every_scale(a_picker_opened_just_after_the_editor_closed_is_open_again_after_a_tab_switch_at);
 }
 
 #[test]
