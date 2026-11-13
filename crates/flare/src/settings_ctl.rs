@@ -975,6 +975,7 @@ impl SettingsCtl {
         self.close_select();
         self.close_sheet();
         self.picker_do(|p, _| p.hide_for_tab_switch());
+        self.drop_pencil_wait();
         if let Some(app) = self.weak.upgrade() {
             app.global::<SettingsBridge>().set_picker_open(false);
         }
@@ -1947,7 +1948,19 @@ impl SettingsCtl {
             return;
         }
         self.close_select();
+        // The keys are the popover's now: the pencil stops waiting for them (rule 1195).
+        self.drop_pencil_wait();
         self.picker_do(|p, ctx| p.open(id, in_editor, rect, ctx));
+    }
+
+    /// The theme editor's pencil asks for the keys for 600 ms after the editor closes
+    /// (`pencil-pending`, app.slint), and a wall made in that time hands them to it from its `init`.
+    /// A picker opened or a tab switch in that time ends the wait, or the wall the return rebuilds took
+    /// the keys from the picker that came back with it, and the popover shut on `focus-left` (rule 1195).
+    fn drop_pencil_wait(&self) {
+        if let Some(app) = self.weak.upgrade() {
+            app.global::<SettingsBridge>().set_pencil_pending(false);
+        }
     }
 
     /// The popover's properties on the bridge, and the editor wells' open marks.
