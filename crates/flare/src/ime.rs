@@ -10,6 +10,7 @@ use flare_render::metrics::{CellMetrics, cell_origin};
 use flare_term::caret_hold::{
     CaretHoldState, CaretPos, initial_caret_hold, on_caret_key, on_caret_move, release_caret_hold,
 };
+use flare_term::handle::CursorStop;
 
 /// The text-input rectangle the IME is told about, in window device pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +46,24 @@ pub fn record_area(a: ImeArea) {
 /// The rectangle last given to the window's input method, if a frame has placed one.
 pub fn last_area() -> Option<ImeArea> {
     LAST_AREA.with(std::cell::Cell::get)
+}
+
+/// A tab's cursor stops as the hold reads them: the position, and when on the UI clock, the clock
+/// `CaretFollower::on_key` is given. A stop on any other clock never lands in a key's window, so the
+/// echo a frame missed would not hold the caret (rule 1206).
+pub fn hold_stops(stops: &[CursorStop]) -> Vec<(CaretPos, i64)> {
+    stops
+        .iter()
+        .map(|s| {
+            (
+                CaretPos {
+                    line: i64::from(s.line),
+                    x: s.col as i64,
+                },
+                crate::ui_clock::ms_at(s.at) as i64,
+            )
+        })
+        .collect()
 }
 
 /// The caret hold as the window drives it: a key opens the window, each frame reports the cursor.
@@ -172,6 +191,32 @@ mod tests {
         // only the second position ever reached a frame.
         f.on_stops(&[(pos(24, 4), 1010), (pos(10, 3), 1020)]);
         assert_eq!(f.on_frame(pos(10, 3), false, 1030), pos(24, 4));
+    }
+
+    /// Rule 1206: the stops a tab records and the key the window notes are on one clock, so an echo
+    /// that only a stop saw still holds the caret on the input line while the stream parks above it.
+    #[test]
+    fn a_tabs_real_stops_hold_the_caret_after_a_real_key() {
+        let mut f = CaretFollower::new();
+        f.on_key(crate::ui_clock::monotonic_ms() as i64);
+        let now = std::time::Instant::now();
+        let stops = [
+            CursorStop {
+                line: 11,
+                col: 12,
+                at: now,
+            },
+            CursorStop {
+                line: 3,
+                col: 8,
+                at: now + std::time::Duration::from_millis(5),
+            },
+        ];
+        f.on_stops(&hold_stops(&stops));
+        let frame = crate::ui_clock::monotonic_ms() as i64 + 5;
+        assert_eq!(f.on_frame(pos(3, 8), false, frame), pos(11, 12));
+        // And after the window closes, the stream's next frame is still held back.
+        assert_eq!(f.on_frame(pos(3, 8), false, frame + 600), pos(11, 12));
     }
 
     #[test]

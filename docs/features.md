@@ -338,6 +338,8 @@ are added as milestones land.
 - **IME caret hold.** A key opens a 250 ms window that holds the caret on the input line for IME and
   screen readers; it is released on the alternate screen, a resize, a buffer change or scrollback.
   Held by `the_hold_is_released_on_the_alternate_screen_a_resize_and_scrollback` and the flare-term `caret_hold.rs` tests.
+  The cursor stops a tab records between frames are on the UI's monotonic clock, so a key's echo no frame showed
+  still holds the caret (rule 1206).
 - **Clipboard.** Reads and writes run on a worker. A copy is refused, never trimmed, when it is empty or
   too large. The test flag uses an in-memory clipboard and records openers. Held by
   `copy_async_refuses_empty_and_oversize_without_touching_the_clipboard` and
