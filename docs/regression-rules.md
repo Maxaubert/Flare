@@ -3473,6 +3473,18 @@ tooltips, and so does the Preview chip, whose tooltip shows the server's origin 
 `crates/flare/ui/update.slint`. Held by `ui_tests::staged_flows::hovering_the_build_ready_chip_shows_no_tooltip` and
 `ui_tests::update_flows::hovering_the_update_chip_shows_no_tooltip` (each also checks that the cog still shows its tip
 and that the hovered point is on the chip). Source: Max, 2026-11-13.
+1206. **The IME and the accessibility caret stay on the input line while a program streams above it (Windows and
+macOS).** Each parsed slice of output leaves a cursor stop, so the caret hold sees a key's echo on the input line even
+when no frame showed it (the next stream frame had parked the cursor above before the UI drew). Since the UI timers
+moved to the monotonic clock (audit A25) the key's time was monotonic while a stop was stamped in wall-clock ms: no
+stop ever fell inside a key's 250 ms window, every stop was dropped, and a frame that missed the echo put the IME
+candidate window and the macOS AX caret on the streaming row (CI run 43384377730, caretHold: "ime at 88, row top
+216"). A stop is now an `Instant` (`flare_term::handle::CursorStop::at`), read on the UI clock by
+`ui_clock::ms_at` in `ime::hold_stops`. Native: `crates/flare-term/src/handle.rs` (`feed_slices`),
+`crates/flare/src/ime.rs`, `crates/flare/src/ui_clock.rs`, `crates/flare/src/window.rs` (`place_ime`). Held by
+`ime::tests::a_tabs_real_stops_hold_the_caret_after_a_real_key`,
+`handle::tests::a_cursor_stop_is_stamped_on_the_monotonic_clock`, `ui_clock::tests::an_instant_reads_on_the_same_clock`
+and the e2e caretHold. Source: Max types with IME and dictation on the Mac, 2026-11-13.
 1205. **A Not linked machine shows its reason as a line under its row, not a tooltip.** Max, 2026-11-13: a control with
 a text label gets no tooltip; icon-only controls (the cog, the window buttons) do. On Settings > Machines a machine
 whose link check failed shows "Not linked" in its Status column and the reason as one small grey line under its row

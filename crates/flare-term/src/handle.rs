@@ -22,13 +22,15 @@ const SLICE: usize = 64 * 1024;
 /// The rows a copy worker reads under one hold of the emulator lock (the lock is let go between them).
 pub const CHUNK_ROWS: usize = 250;
 
-/// Where the cursor stood when one parsed slice of output ended (screen row, column, wall-clock ms).
-/// A frame may show only the last of several such stops; the caret hold needs each of them.
+/// Where the cursor stood when one parsed slice of output ended (screen row, column, and when, on the
+/// monotonic clock). A frame may show only the last of several such stops; the caret hold needs each
+/// of them. `at` is an `Instant` so the UI compares it with its key times on one clock: a wall-clock
+/// stop never fell inside a key's hold window, so every stop was dropped (rule 1206).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CursorStop {
     pub line: i32,
     pub col: usize,
-    pub at_ms: i64,
+    pub at: Instant,
 }
 
 /// The most stops kept between two frames.
@@ -73,12 +75,6 @@ pub struct RemoteSnapshot {
     pub rows: usize,
     /// Clear, home, then the lines joined by CR LF: what a fresh emulator is fed to show the same text.
     pub data: Vec<u8>,
-}
-
-fn epoch_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
 }
 
 fn lk<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -285,7 +281,7 @@ fn feed_slices(sh: &Shared, bytes: &[u8]) {
             log.push(CursorStop {
                 line,
                 col,
-                at_ms: epoch_ms(),
+                at: Instant::now(),
             });
         }
         sh.handle(evs);
@@ -1339,6 +1335,26 @@ mod tests {
         assert!(stops.iter().any(|s| s.line == 9), "{stops:?}");
         assert_eq!(stops.last().map(|s| s.line), Some(1), "{stops:?}");
         assert!(t.h.take_cursor_stops().is_empty());
+    }
+
+    /// Rule 1206: a stop is stamped on the monotonic clock the UI's key times use, between the moment
+    /// before its bytes came and the moment it was read, and stops never go back in time.
+    #[test]
+    fn a_cursor_stop_is_stamped_on_the_monotonic_clock() {
+        let t = T::started();
+        let _ = t.h.take_cursor_stops();
+        let before = Instant::now();
+        t.fake().feed(b"\x1b[10;3Hinput");
+        wait_until("the first slice", || t.text().contains("input"));
+        t.fake().feed(b"\x1b[2;1Hstream");
+        wait_until("the second slice", || t.text().contains("stream"));
+        let after = Instant::now();
+        let stops = t.h.take_cursor_stops();
+        assert!(!stops.is_empty());
+        for s in &stops {
+            assert!(s.at >= before && s.at <= after, "{stops:?}");
+        }
+        assert!(stops.windows(2).all(|w| w[0].at <= w[1].at), "{stops:?}");
     }
 
     #[test]

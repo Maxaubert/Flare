@@ -2461,19 +2461,7 @@ fn place_ime(
             e.mode().alt_screen,
         )
     });
-    let stops: Vec<(CaretPos, i64)> = handle
-        .take_cursor_stops()
-        .into_iter()
-        .map(|s| {
-            (
-                CaretPos {
-                    line: i64::from(s.line),
-                    x: s.col as i64,
-                },
-                s.at_ms,
-            )
-        })
-        .collect();
+    let stops = crate::ime::hold_stops(&handle.take_cursor_stops());
     caret.borrow_mut().on_stops(&stops);
     let held = caret.borrow_mut().on_frame(
         cursor,
