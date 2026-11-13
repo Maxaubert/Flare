@@ -170,8 +170,14 @@ pub struct RemoteRoot {
 }
 
 /// The remote list after seeing `path` on `machine`: it goes to the front, once, capped. A blank path or machine
-/// changes nothing.
-pub fn with_remote_root(list: &[RemoteRoot], machine: &str, path: &str) -> Vec<RemoteRoot> {
+/// changes nothing. Two folders are the same by their exact path; `fold_case` (a Windows host's folders, rule 1215)
+/// also takes them as one whatever their case, as that host does. A Mac or Linux host keeps `/x/App` and `/x/app` apart.
+pub fn with_remote_root(
+    list: &[RemoteRoot],
+    machine: &str,
+    path: &str,
+    fold_case: bool,
+) -> Vec<RemoteRoot> {
     let (m, p) = (machine.trim(), path.trim());
     if m.is_empty() || p.is_empty() {
         return list.to_vec();
@@ -182,7 +188,7 @@ pub fn with_remote_root(list: &[RemoteRoot], machine: &str, path: &str) -> Vec<R
     }];
     out.extend(
         list.iter()
-            .filter(|x| !(x.machine == m && same(&x.path, p)))
+            .filter(|x| !(x.machine == m && (x.path == p || (fold_case && same(&x.path, p)))))
             .cloned(),
     );
     out.truncate(RECENT_CAP);
@@ -211,8 +217,9 @@ pub fn remote_roots(s: &PrefStore) -> Vec<RemoteRoot> {
         .collect()
 }
 
-pub fn remember_remote_root(s: &PrefStore, machine: &str, path: &str) {
-    let next = with_remote_root(&remote_roots(s), machine, path);
+/// [`with_remote_root`] on the stored list; `fold_case` for a Windows host (rule 1215).
+pub fn remember_remote_root(s: &PrefStore, machine: &str, path: &str, fold_case: bool) {
+    let next = with_remote_root(&remote_roots(s), machine, path, fold_case);
     let list: Vec<serde_json::Value> = next
         .iter()
         .map(|r| serde_json::json!({"machine": r.machine, "path": r.path}))
@@ -430,10 +437,10 @@ mod tests {
     fn remote_folders_are_kept_with_their_machine_newest_first() {
         let s = PrefStore::memory();
         remember_root(&s, "C:\\local");
-        remember_remote_root(&s, "mac", "/Users/max/proj");
-        remember_remote_root(&s, "pc", "/Users/max/proj");
-        remember_remote_root(&s, "mac", "/Users/max/notes");
-        remember_remote_root(&s, "mac", "/Users/max/proj");
+        remember_remote_root(&s, "mac", "/Users/max/proj", false);
+        remember_remote_root(&s, "pc", "/Users/max/proj", true);
+        remember_remote_root(&s, "mac", "/Users/max/notes", false);
+        remember_remote_root(&s, "mac", "/Users/max/proj", false);
         let r = |m: &str, p: &str| RemoteRoot {
             machine: m.into(),
             path: p.into(),
@@ -451,11 +458,11 @@ mod tests {
             v(&["C:\\local"]),
             "the local list is untouched"
         );
-        remember_remote_root(&s, "", "/x");
-        remember_remote_root(&s, "mac", "  ");
+        remember_remote_root(&s, "", "/x", false);
+        remember_remote_root(&s, "mac", "  ", false);
         assert_eq!(remote_roots(&s).len(), 3);
         for i in 0..20 {
-            remember_remote_root(&s, "mac", &format!("/f{i}"));
+            remember_remote_root(&s, "mac", &format!("/f{i}"), false);
         }
         assert_eq!(remote_roots(&s).len(), RECENT_CAP);
         s.set(
@@ -465,6 +472,31 @@ mod tests {
         assert_eq!(remote_roots(&s), vec![r("m", "/p")]);
         s.set(REMOTE_KEY, "soup");
         assert!(remote_roots(&s).is_empty());
+    }
+
+    /// Rule 1215: on a Mac or Linux host `/x/App` and `/x/app` are two folders and both are kept; a Windows host's folders
+    /// are one whatever their case; the same path is always one.
+    #[test]
+    fn remote_folders_differ_by_case_except_on_a_windows_host() {
+        let r = |m: &str, p: &str| RemoteRoot {
+            machine: m.into(),
+            path: p.into(),
+        };
+        let mac = with_remote_root(&[r("mac", "/x/App")], "mac", "/x/app", false);
+        assert_eq!(mac, vec![r("mac", "/x/app"), r("mac", "/x/App")]);
+        assert_eq!(
+            with_remote_root(&mac, "mac", "/x/App", false),
+            vec![r("mac", "/x/App"), r("mac", "/x/app")]
+        );
+        assert_eq!(
+            with_remote_root(&[r("pc", "C:\\Work")], "pc", "c:\\work", true),
+            vec![r("pc", "c:\\work")]
+        );
+        // Another machine's folder of the same path is never touched.
+        assert_eq!(
+            with_remote_root(&[r("pc", "C:\\Work")], "pc2", "c:\\work", true).len(),
+            2
+        );
     }
 
     #[test]

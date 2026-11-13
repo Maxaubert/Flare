@@ -1837,6 +1837,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "unicode-normalization",
  "windows-sys 0.61.2",
 ]
 

@@ -1,9 +1,10 @@
 //! The Preview chip of a remote tab (rule 1213): a local server address a remote tab prints (`http://localhost:5173`)
 //! is the host's, so a click opens an ssh tunnel to the host first and the side panel shows the page through it.
 //!
-//! The tunnel is `ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -L 127.0.0.1:<local>:localhost:<port> -- <host>`,
-//! built by [`tunnel_argv`] from the same machine entry the link uses: every part an argv item of its own, never a
-//! shell string, no prompt, nothing run on the host. The local port is a free one on this machine's loopback only.
+//! The tunnel is `ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ControlMaster=no -o ControlPath=none
+//! -L 127.0.0.1:<local>:localhost:<port> -- <host>` (no ControlMaster, rule 1215: a shared master would take the
+//! forward and this ssh would end at once), built by [`tunnel_argv`] from the same machine entry the link uses: every
+//! part an argv item of its own, never a shell string, no prompt, nothing run on the host. The local port is a free one on this machine's loopback only.
 //! One tunnel per remote tab and host port, reused while the chip stands; it closes when the tab closes or the chip
 //! goes (the window drops its [`Tunnel`]). A tunnel that does not come up in [`TUNNEL_WAIT`] is closed and said in one
 //! line, never waited on by the UI thread (rule 34): the window opens it on a worker.
@@ -97,6 +98,12 @@ pub fn tunnel_argv(ssh: &str, m: &Machine, local_port: u16, host_port: u16) -> O
         "BatchMode=yes".into(),
         "-o".into(),
         "ExitOnForwardFailure=yes".into(),
+        // Rule 1215: never handed to a ControlMaster of the viewer's ssh config, whose master would take the forward
+        // and let this ssh exit at once (the tunnel would read as ended and be opened again on every click).
+        "-o".into(),
+        "ControlMaster=no".into(),
+        "-o".into(),
+        "ControlPath=none".into(),
         "-L".into(),
         format!("127.0.0.1:{local_port}:localhost:{host_port}"),
     ];
@@ -293,8 +300,9 @@ mod tests {
         }
     }
 
-    /// Rule 1213: the tunnel's argv is the link's machine entry, every part an item of its own: no command, no prompt,
-    /// the forward on the loopback only, `--` before the host; a host or a user that could be an option is refused.
+    /// Rules 1213 and 1215: the tunnel's argv is the link's machine entry, every part an item of its own: no command, no
+    /// prompt, no ControlMaster connection of the viewer's ssh config, the forward on the loopback only, `--` before the
+    /// host; a host or a user that could be an option is refused.
     #[test]
     fn the_tunnel_argv_is_the_links_machine_and_never_a_shell_string() {
         assert_eq!(
@@ -306,6 +314,10 @@ mod tests {
                 "BatchMode=yes",
                 "-o",
                 "ExitOnForwardFailure=yes",
+                "-o",
+                "ControlMaster=no",
+                "-o",
+                "ControlPath=none",
                 "-L",
                 "127.0.0.1:50123:localhost:5173",
                 "-l",

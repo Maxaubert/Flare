@@ -433,8 +433,15 @@ impl AppCtl {
         if path.trim().is_empty() || !self.remote_home.remove(id) {
             return;
         }
-        if let Some(machine) = self.model.remote_of(id).map(|t| t.id.clone()) {
-            flare_settings::recent_roots::remember_remote_root(&self.prefs, &machine, path);
+        if let Some(tag) = self.model.remote_of(id).cloned() {
+            // Rule 1215: only a Windows host's folders are one whatever their case.
+            let fold_case = tag.kind == Some(flare_tabs::tabs::Os::Pc);
+            flare_settings::recent_roots::remember_remote_root(
+                &self.prefs,
+                &tag.id,
+                path,
+                fold_case,
+            );
         }
     }
 

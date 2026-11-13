@@ -3701,3 +3701,29 @@ Native: `remote_tunnel::{Tunnel::with_alive, Tunnel::alive, child_running, open_
 `a_tunnels_child_counts_as_running_only_until_it_ends` and
 `a_remote_tabs_dead_tunnel_is_dropped_and_the_next_click_opens_a_new_one`. Source: the review of PR
 feat/remote-more-c, 2026-11-13.
+
+1215. **A remote tab's tunnel never rides a ControlMaster, a copy to the host keeps its accents and its runnable
+files without Finder's litter or a broken package, and a Mac host's recent folders keep their case.** Found 2026-11-13 by the Mac session's review
+of PR #230 (head 98101e25, macOS 27.2). Six fixes. (1) A viewer whose ~/.ssh/config has `ControlMaster auto` and
+`ControlPersist` handed `ssh -N -L` to the master, which exited at once: the tunnel read as ended and every click
+opened another one. `tunnel_argv` now adds `-o ControlMaster=no -o ControlPath=none` (harmless on Windows). (2) A
+decomposed name (`e` and U+0301, as some macOS apps write it) became `cafe_`: `put_name` makes the name NFC first
+(`unicode-normalization`), every refusal kept. (3) `.DS_Store` and the AppleDouble `._name` files of a dropped
+folder are skipped and never count toward its caps. (4) A dropped macOS package (a folder named `*.app`,
+`*.framework`, `*.bundle`, `*.rtfd`, `*.pkg`, `*.plugin`, `*.kext` and the like, any case) is refused in one line,
+nothing copied, on every viewer, by its name: its links would be left out and the host would get a broken bundle.
+(5) A file with an execute bit on a Mac or Linux viewer sends `exec: true` on its last `remote.put` chunk, and a Mac
+or Linux host makes it runnable (`0o644` becomes `0o755`); a Windows viewer never sends it, a Windows host takes
+it and changes nothing, and an older host's `bad_params` naming `exec` sends the chunk again without it, and the
+rest of that errand leaves it out (the `open_id` and `styled` pattern). (6) A remote folder joins the recent
+folders once by its exact path; only a Windows host's (`kind: pc`) folders are one whatever their case, so `/x/App`
+and `/x/app` on a Mac stay two. Native: `remote_tunnel::tunnel_argv`, `flare_ctl::remote::put_name`,
+`appctl/remote_files_glue.rs` (`is_finder_litter`, `is_package_name`, `is_exec`, `read_folder`, `read_dropped`),
+`remote_link::put_one`, `ctl_app::remote_put`, `remote_files::make_runnable`,
+`recent_roots::with_remote_root`. Held by `the_tunnel_argv_is_the_links_machine_and_never_a_shell_string`,
+`a_decomposed_put_name_keeps_its_accented_letters`, `finder_litter_in_a_dropped_folder_is_skipped_and_never_counted`,
+`a_dropped_macos_package_is_refused_in_one_line`, `a_dropped_files_execute_bit_is_carried_from_a_unix_viewer`,
+`a_runnable_file_says_exec_and_an_older_host_takes_it_without`,
+`remote_put_with_exec_makes_the_file_runnable_on_a_unix_host` and
+`remote_folders_differ_by_case_except_on_a_windows_host`. Real ssh: `docs/remote-sessions-manual-checks.md`.
+Source: the Mac review of PR #230, 2026-11-13.

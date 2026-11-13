@@ -2623,9 +2623,17 @@ fn remote_put(
     use base64::Engine as _;
     only_fields(
         params,
-        &["tab", "name", "chunk", "chunks", "data", "folder", "under"],
+        &[
+            "tab", "name", "chunk", "chunks", "data", "folder", "under", "exec",
+        ],
         "remote.put",
     )?;
+    // Rule 1215: the file ran as a program on the viewer; its last chunk makes it runnable on a Mac or Linux host.
+    let exec = match params.get("exec") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(CtlError::new(code::BAD_PARAMS, "exec is true or false")),
+    };
     let tab = remote_tab(params)?;
     let name = str_param(params, "name")?
         .filter(|n| !n.is_empty() && n.len() <= 4096)
@@ -2676,6 +2684,14 @@ fn remote_put(
     let put = host
         .uploads()
         .put_in(&tab, under, name, chunk, chunks, &data)?;
+    if exec && let Some(p) = &put.host_path {
+        crate::remote_files::make_runnable(p).map_err(|e| {
+            CtlError::new(
+                code::UNAVAILABLE,
+                format!("the file could not be made runnable on the host: {e}"),
+            )
+        })?;
+    }
     let mut v = json!({"tab": tab, "name": put.name, "done": put.host_path.is_some()});
     // A file inside a dropped folder is not pasted: the folder is (rule 1213).
     if let Some(p) = put.host_path.filter(|_| under.is_none()) {
@@ -6533,6 +6549,54 @@ mod tests {
         );
         assert_ne!(
             code_of(snap(json!({"tab": "t1", "styled": true}))),
+            code::BAD_PARAMS
+        );
+    }
+
+    /// Rule 1215: a file the viewer says ran as a program (`exec: true` on its last chunk) is runnable on a Mac or Linux
+    /// host, in the tab's folder and inside a dropped folder; one without it is not, a Windows host takes the param and
+    /// changes nothing, and an `exec` that is no true or false is refused.
+    #[test]
+    fn remote_put_with_exec_makes_the_file_runnable_on_a_unix_host() {
+        use base64::Engine as _;
+        let enc = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let temp = tempfile::tempdir().unwrap();
+        let r = rig(|_| Ok(json!({"ok": true})), false, &[]);
+        let host = crate::remote_host::RemoteHost::with_temp("k".into(), temp.path().into());
+        let d = r.d.with_remote(Arc::clone(&host));
+        let put = |p: Value| d.call(&bridge(1), Method::RemotePut, p);
+        a_followed_tab(&host, "t1", 1);
+        let path_of = |v: Value| std::path::PathBuf::from(v["host_path"].as_str().unwrap());
+        let run = path_of(
+            put(json!({"tab": "t1", "name": "run.sh", "chunk": 0, "chunks": 1, "data": enc(b"#!/bin/sh\n"), "exec": true}))
+                .unwrap(),
+        );
+        let plain = path_of(
+            put(json!({"tab": "t1", "name": "a.txt", "chunk": 0, "chunks": 1, "data": enc(b"a"), "exec": false}))
+                .unwrap(),
+        );
+        let top = path_of(put(json!({"tab": "t1", "name": "proj", "folder": true})).unwrap());
+        put(json!({
+            "tab": "t1", "name": "gradlew", "chunk": 0, "chunks": 1, "data": enc(b"x"), "under": "proj", "exec": true
+        }))
+        .unwrap();
+        assert_eq!(std::fs::read(&run).unwrap(), b"#!/bin/sh\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode();
+            // Every reader may run it: at least its owner, whatever the host's umask left.
+            assert_eq!(mode(&run) & 0o100, 0o100, "{:o}", mode(&run));
+            assert_eq!((mode(&run) & 0o444) >> 2, mode(&run) & 0o111);
+            assert_eq!(mode(&top.join("gradlew")) & 0o100, 0o100);
+            assert_eq!(mode(&plain) & 0o111, 0);
+        }
+        #[cfg(not(unix))]
+        assert!(plain.is_file() && top.join("gradlew").is_file());
+        assert_eq!(
+            code_of(put(
+                json!({"tab": "t1", "name": "y", "chunk": 0, "chunks": 1, "data": "", "exec": "yes"})
+            )),
             code::BAD_PARAMS
         );
     }

@@ -594,6 +594,26 @@ impl Uploads {
     }
 }
 
+/// Rule 1215: a copied file that ran as a program on the viewer is made runnable on a Mac or Linux host: every reader
+/// of it may also run it (`0o644` becomes `0o755`). A Windows host has no such bit: nothing changes. The control
+/// channel's worker, once the file is in place.
+pub fn make_runnable(file: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // sync-ok: the control channel's worker, on the file it just put in place
+        let mode = std::fs::metadata(file)?.permissions().mode();
+        let runnable = mode | ((mode & 0o444) >> 2);
+        if runnable != mode {
+            // sync-ok: the control channel's worker, on the file it just put in place
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(runnable))?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = file;
+    Ok(())
+}
+
 /// `name`, or `stem-2.ext`, `stem-3.ext` and so on: the first that is neither on disk in `dir` nor `taken`.
 fn unique_name(dir: &Path, name: &str, taken: impl Fn(&str) -> bool) -> String {
     let (stem, ext) = match name.rfind('.') {

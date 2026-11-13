@@ -473,6 +473,8 @@ pub fn put_files(
         return Ok(Err(ErrandFail::Failed(why)));
     }
     let (mut paths, mut pastes) = (Vec::new(), Vec::new());
+    // Rule 1215: whether the host still takes `exec`; an older one refuses it once, and this errand leaves it out.
+    let mut exec_on = true;
     for f in files {
         if f.data.len() as u64 > FILE_MAX {
             return Ok(Err(ErrandFail::Failed(format!(
@@ -481,7 +483,13 @@ pub fn put_files(
                 FILE_MAX / (1024 * 1024)
             ))));
         }
-        let last = match put_one(link, tab, None, &f.name, &f.data, wait)? {
+        let one = PutOne {
+            under: None,
+            name: &f.name,
+            data: &f.data,
+            exec: f.exec,
+        };
+        let last = match put_one(link, tab, &one, &mut exec_on, wait)? {
             Ok(v) => v,
             Err(why) => return Ok(Err(why)),
         };
@@ -494,7 +502,7 @@ pub fn put_files(
         pastes.push(q.to_string());
     }
     for f in folders {
-        match put_folder(link, tab, f, wait)? {
+        match put_folder(link, tab, f, &mut exec_on, wait)? {
             Ok((p, q)) => {
                 paths.push(p);
                 pastes.push(q);
@@ -546,28 +554,56 @@ pub fn folders_fit(folders: &[UploadFolder]) -> Result<(), String> {
     Ok(())
 }
 
+/// One file for [`put_one`]: the folder `under` names inside a dropped folder (none: the tab's upload folder), its
+/// name, its bytes and whether it runs as a program on this machine (rule 1215).
+struct PutOne<'a> {
+    under: Option<&'a str>,
+    name: &'a str,
+    data: &'a [u8],
+    exec: bool,
+}
+
 /// One file to the host in chunks (`remote.put`), into the tab's upload folder or the folder `under` names inside a
-/// dropped folder: the host's answer to the last chunk.
+/// dropped folder: the host's answer to the last chunk. A runnable file's last chunk says `exec: true` (rule 1215); a
+/// host that refuses the unknown param (`bad_params` naming it, an older Flare) takes the chunk again without it, and
+/// `exec_on` goes false so the rest of the errand leaves it out.
 fn put_one(
     link: &mut dyn Link,
     tab: &str,
-    under: Option<&str>,
-    name: &str,
-    data: &[u8],
+    f: &PutOne<'_>,
+    exec_on: &mut bool,
     wait: Duration,
 ) -> Answered<Value> {
     let enc = base64::engine::general_purpose::STANDARD;
+    let data = f.data;
     let chunks = chunks_of(data.len() as u64);
-    let mut name = name.to_string();
+    let mut name = f.name.to_string();
     let mut last = Value::Null;
     for c in 0..chunks {
         let from = (c as usize) * FILE_CHUNK;
         let piece = &data[from.min(data.len())..(from + FILE_CHUNK).min(data.len())];
         let mut p = json!({"tab": tab, "name": name, "chunk": c, "chunks": chunks, "data": enc.encode(piece)});
-        if let Some(u) = under {
+        if let Some(u) = f.under {
             p["under"] = json!(u);
         }
-        last = match link.call(Method::RemotePut, p, wait) {
+        let exec = f.exec && *exec_on && c + 1 == chunks;
+        if exec {
+            p["exec"] = json!(true);
+        }
+        let mut answer = link.call(Method::RemotePut, p.clone(), wait);
+        if exec
+            && let Err(LinkError::Refused(e)) = &answer
+            && e.code == code::BAD_PARAMS
+            && e.message.contains("exec")
+        {
+            log::info!("remote.put: an older host without exec, copying without it");
+            *exec_on = false;
+            if let Some(o) = p.as_object_mut() {
+                o.remove("exec");
+            }
+            answer = link.call(Method::RemotePut, p, wait);
+        }
+        last = match answer {
             Ok(v) => v,
             Err(e) => return refused(e),
         };
@@ -586,6 +622,7 @@ fn put_folder(
     link: &mut dyn Link,
     tab: &str,
     f: &UploadFolder,
+    exec_on: &mut bool,
     wait: Duration,
 ) -> Answered<(String, String)> {
     let top = match link.call(
@@ -660,7 +697,13 @@ fn put_folder(
                 ))));
             }
         };
-        if let Err(why) = put_one(link, tab, Some(&under), &file.name, &data, wait)? {
+        let one = PutOne {
+            under: Some(&under),
+            name: &file.name,
+            data: &data,
+            exec: file.exec,
+        };
+        if let Err(why) = put_one(link, tab, &one, exec_on, wait)? {
             return Ok(Err(why));
         }
     }

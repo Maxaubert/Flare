@@ -55,6 +55,9 @@ struct HostState {
     no_styled: bool,
     dirs: Vec<String>,
     no_folder: bool,
+    /// Rule 1215: the files put with `exec` (where they went), and an older host that refuses `exec`.
+    runnable: Vec<String>,
+    no_exec: bool,
 }
 
 #[derive(Clone, Default)]
@@ -206,6 +209,12 @@ impl FakeHost {
                         "folder is not a field of remote.put",
                     ));
                 }
+                if p.get("exec").is_some() && st.no_exec {
+                    return Err(CtlError::new(
+                        code::BAD_PARAMS,
+                        "exec is not a field of remote.put",
+                    ));
+                }
                 let place = |n: &str| match &under {
                     Some(u) => format!("{u}/{n}"),
                     None => n.to_string(),
@@ -239,9 +248,13 @@ impl FakeHost {
                     n.clone()
                 };
                 if chunk + 1 < chunks {
+                    assert!(p.get("exec").is_none(), "exec rides on the last chunk only");
                     return Ok(json!({"tab": tab, "name": name, "done": false}));
                 }
                 let (n, bytes) = st.putting.take().unwrap();
+                if p["exec"] == json!(true) {
+                    st.runnable.push(place(&n));
+                }
                 st.put.push((place(&n), bytes));
                 let host = format!("/tmp/up/{}", place(&name));
                 Ok(
@@ -1018,10 +1031,12 @@ fn a_put_copies_the_files_then_pastes_the_hosts_quoted_paths_as_one_paste() {
             Upload {
                 name: "C:\\Users\\max\\shot 1.png".into(),
                 data: b"png".to_vec(),
+                exec: false,
             },
             Upload {
                 name: "big.bin".into(),
                 data: big.clone(),
+                exec: false,
             },
         ],
         folders: Vec::new(),
@@ -1058,6 +1073,7 @@ fn a_file_over_the_cap_is_never_sent() {
         files: vec![Upload {
             name: "huge.bin".into(),
             data: vec![0; FILE_MAX as usize + 1],
+            exec: false,
         }],
         folders: Vec::new(),
         done,
@@ -1128,6 +1144,7 @@ fn folder_file(dir: &[&str], name: &str, path: &Path, size: u64) -> FolderFile {
         name: name.into(),
         path: path.to_path_buf(),
         size,
+        exec: false,
     }
 }
 
@@ -1157,6 +1174,7 @@ fn a_dropped_folder_is_copied_whole_and_only_its_path_is_pasted() {
         files: vec![Upload {
             name: "one.txt".into(),
             data: b"1".to_vec(),
+            exec: false,
         }],
         folders: vec![folder],
         done,
@@ -1180,6 +1198,69 @@ fn a_dropped_folder_is_copied_whole_and_only_its_path_is_pasted() {
     assert_eq!(
         r.host.typed("h1"),
         vec![Intent::Paste("'/tmp/up/one.txt' '/tmp/up/my proj'".into())]
+    );
+}
+
+/// Rule 1215: a runnable file says `exec` on its last chunk only, alone or in a dropped folder; an older host refuses the
+/// unknown param once, the chunk goes again without it, and the rest of the errand leaves it out, so every file still
+/// lands.
+#[test]
+fn a_runnable_file_says_exec_and_an_older_host_takes_it_without() {
+    let d = tempfile::tempdir().unwrap();
+    let run = d.path().join("gradlew");
+    std::fs::write(&run, b"#!/bin/sh\n").unwrap(); // sync-ok: test code only
+    let big = vec![5u8; FILE_CHUNK + 2];
+    let errand = |slot_done: Done<Vec<String>>| {
+        let mut file = folder_file(&[], "gradlew", &run, 10);
+        file.exec = true;
+        Errand::Put {
+            files: vec![
+                Upload {
+                    name: "build.sh".into(),
+                    data: big.clone(),
+                    exec: true,
+                },
+                Upload {
+                    name: "a.txt".into(),
+                    data: b"a".to_vec(),
+                    exec: false,
+                },
+            ],
+            folders: vec![UploadFolder {
+                name: "proj".into(),
+                dirs: Vec::new(),
+                files: vec![file],
+            }],
+            done: slot_done,
+        }
+    };
+    let r = rig();
+    r.live_on();
+    let (slot, done) = caught();
+    r.live.send_errand(errand(done));
+    assert!(answer(&slot).is_ok());
+    assert_eq!(lk(&r.host).runnable, ["build.sh", "proj/gradlew"]);
+    assert_eq!(r.host.calls("remote.put"), 5);
+
+    let old = rig();
+    old.live_on();
+    lk(&old.host).no_exec = true;
+    let (slot, done) = caught();
+    old.live.send_errand(errand(done));
+    assert_eq!(
+        answer(&slot).unwrap(),
+        ["/tmp/up/build.sh", "/tmp/up/a.txt", "/tmp/up/proj"]
+    );
+    let st = lk(&old.host);
+    assert!(st.runnable.is_empty());
+    let names: Vec<&str> = st.put.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["build.sh", "a.txt", "proj/gradlew"]);
+    assert_eq!(st.put[0].1, big, "the refused chunk went again whole");
+    drop(st);
+    assert_eq!(
+        old.host.calls("remote.put"),
+        6,
+        "one refusal, then never exec again"
     );
 }
 

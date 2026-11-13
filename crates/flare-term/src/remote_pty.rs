@@ -99,11 +99,13 @@ pub struct Fetched {
 }
 
 /// A file of this machine to copy to the host (a dropped file, a pasted image; rule 304): the name to keep it under
-/// there (the host cleans it again) and its bytes.
+/// there (the host cleans it again) and its bytes. `exec`: it runs as a program here (an execute bit on a Mac or Linux
+/// viewer, never on Windows), so a Mac or Linux host keeps it runnable (rule 1215).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Upload {
     pub name: String,
     pub data: Vec<u8>,
+    pub exec: bool,
 }
 
 /// A folder of this machine to copy to the host (a dropped folder, rule 1213): its name, every folder below it (as path
@@ -117,13 +119,14 @@ pub struct UploadFolder {
 }
 
 /// One file of a dropped folder: the parts of its folder below the dropped one (empty for the top), its name, where it
-/// is on this machine and its size when the folder was read.
+/// is on this machine, its size when the folder was read and whether it runs as a program here (rule 1215).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FolderFile {
     pub dir: Vec<String>,
     pub name: String,
     pub path: std::path::PathBuf,
     pub size: u64,
+    pub exec: bool,
 }
 
 /// Why an errand did not get done.
@@ -1383,6 +1386,7 @@ mod tests {
                 files: vec![Upload {
                     name: name.clone(),
                     data: Vec::new(),
+                    exec: false,
                 }],
                 folders: Vec::new(),
                 done: Box::new(move |r| {

@@ -33,9 +33,57 @@ fn is_link(m: &std::fs::Metadata) -> bool {
     m.file_type().is_symlink() || (m.is_dir() && crate::remote_files::is_reparse(m))
 }
 
+/// Whether a file runs as a program on this machine (rule 1215): any execute bit of its mode on a Mac or Linux viewer,
+/// so the host keeps it runnable. A Windows viewer never says so.
+fn is_exec(m: &std::fs::Metadata) -> bool {
+    // sync-ok: a type, no call
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        m.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = m;
+        false
+    }
+}
+
+/// Whether a file is Finder's litter (rule 1215): `.DS_Store`, and the AppleDouble `._name` files a Mac writes on
+/// exFAT and SMB drives. Never copied, and never counted toward the caps.
+fn is_finder_litter(name: &str) -> bool {
+    name == ".DS_Store" || name.starts_with("._")
+}
+
+/// The endings of the folders macOS shows as one item, a package (rule 1215): an app, a bundle, a framework and so on.
+const PACKAGE_ENDINGS: [&str; 14] = [
+    "app",
+    "appex",
+    "bundle",
+    "component",
+    "framework",
+    "kext",
+    "mpkg",
+    "pkg",
+    "plugin",
+    "prefpane",
+    "qlgenerator",
+    "rtfd",
+    "saver",
+    "xpc",
+];
+
+/// Pure: whether a folder's name makes it a macOS package (rule 1215), by its ending in any case. A package holds links
+/// a copy would leave out, so it is never copied whole; this is decided by name on every viewer.
+pub(crate) fn is_package_name(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(stem, ext)| {
+        !stem.is_empty() && PACKAGE_ENDINGS.iter().any(|e| e.eq_ignore_ascii_case(ext))
+    })
+}
+
 /// Reads a dropped folder (rule 1213): its folders and files, links and junctions skipped, in name order. The files
 /// are only listed (their size), never read here. Stops at once when the folder is over the caps
-/// (`remote_link::folders_fit`), with the one line that says so. A worker.
+/// (`remote_link::folders_fit`), with the one line that says so. Finder's litter is skipped (rule 1215). A worker.
 pub(crate) fn read_folder(top: &Path) -> Result<UploadFolder, String> {
     let name = top
         .file_name()
@@ -72,12 +120,16 @@ pub(crate) fn read_folder(top: &Path) -> Result<UploadFolder, String> {
                 folder.dirs.push(sub.clone());
                 subdirs.push((e.path(), sub));
             } else if m.is_file() {
+                if is_finder_litter(&entry) {
+                    continue;
+                }
                 bytes += m.len();
                 folder.files.push(FolderFile {
                     dir: parts.clone(),
                     name: entry,
                     path: e.path(),
                     size: m.len(),
+                    exec: is_exec(&m),
                 });
             }
             if folder.files.len() > FOLDER_FILES_MAX
@@ -114,6 +166,14 @@ pub(crate) fn read_dropped(paths: &[String]) -> Result<(Vec<Upload>, Vec<UploadF
             ));
         }
         if own.is_ok_and(|m| m.is_dir()) {
+            let name = path
+                .file_name()
+                .map_or_else(|| p.clone(), |n| n.to_string_lossy().into_owned());
+            if is_package_name(&name) {
+                return Err(format!(
+                    "{name} is a macOS package, and packages are not copied"
+                ));
+            }
             folders.push(read_folder(path)?);
         } else {
             files.extend(read_uploads(std::slice::from_ref(p))?);
@@ -147,7 +207,11 @@ pub(crate) fn read_uploads(paths: &[String]) -> Result<Vec<Upload>, String> {
         }
         // sync-ok: a worker reads the dropped file, never the UI thread
         let data = std::fs::read(path).map_err(|_| format!("{name} could not be read here"))?;
-        out.push(Upload { name, data });
+        out.push(Upload {
+            name,
+            data,
+            exec: is_exec(&meta),
+        });
     }
     Ok(out)
 }
@@ -275,6 +339,7 @@ impl AppCtl {
                                 vec![Upload {
                                     name: pasted_image_name(ms),
                                     data,
+                                    exec: false,
                                 }],
                                 Vec::new(),
                             )
@@ -342,7 +407,8 @@ mod tests {
             got,
             vec![Upload {
                 name: "a b.txt".into(),
-                data: b"hello".to_vec()
+                data: b"hello".to_vec(),
+                exec: false,
             }]
         );
         let e = read_uploads(&[s(&a), s(d.path())]).unwrap_err();
@@ -415,6 +481,103 @@ mod tests {
         let e = read_dropped(&[top.to_string_lossy().into_owned()]).unwrap_err();
         assert!(e.contains("over 5000"), "{e}");
         assert!(!e.contains('\n'));
+    }
+
+    /// Rule 1215: Finder's `.DS_Store` and AppleDouble `._` files are never listed and never count toward the file cap;
+    /// a folder named `._x` and a file named `x._y` still go.
+    #[test]
+    fn finder_litter_in_a_dropped_folder_is_skipped_and_never_counted() {
+        let d = tempfile::tempdir().unwrap();
+        let top = d.path().join("proj");
+        std::fs::create_dir_all(top.join("._dir")).unwrap();
+        std::fs::write(top.join(".DS_Store"), b"bud1").unwrap();
+        std::fs::write(top.join("._main.rs"), b"apple").unwrap();
+        std::fs::write(top.join("._dir").join(".DS_Store"), b"bud1").unwrap();
+        std::fs::write(top.join("main.rs"), b"fn main() {}").unwrap();
+        std::fs::write(top.join("x._y"), b"").unwrap();
+        let f = read_folder(&top).unwrap();
+        let names: Vec<&str> = f.files.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, ["main.rs", "x._y"]);
+        assert_eq!(f.dirs, vec![vec!["._dir".to_string()]]);
+        // Exactly the cap of real files, with litter beside them: still taken.
+        let many = d.path().join("many");
+        std::fs::create_dir_all(&many).unwrap();
+        for i in 0..FOLDER_FILES_MAX {
+            std::fs::write(many.join(format!("f{i}")), b"").unwrap();
+            if i < 50 {
+                std::fs::write(many.join(format!("._f{i}")), b"").unwrap();
+            }
+        }
+        std::fs::write(many.join(".DS_Store"), b"").unwrap();
+        assert_eq!(read_folder(&many).unwrap().files.len(), FOLDER_FILES_MAX);
+    }
+
+    /// Rule 1215: a dropped macOS package (an app, a framework, a bundle, by its name in any case) is refused in one
+    /// line and nothing is read; a plain folder or a file of that name is not a package.
+    #[test]
+    fn a_dropped_macos_package_is_refused_in_one_line() {
+        for name in [
+            "Flare.app",
+            "Sparkle.framework",
+            "x.BUNDLE",
+            "Notes.rtfd",
+            "Install.pkg",
+            "a.plugin",
+            "b.kext",
+        ] {
+            assert!(is_package_name(name), "{name}");
+        }
+        for name in [
+            "app",
+            ".app",
+            "my.app.d",
+            "src",
+            "x.application",
+            "notes.txt",
+        ] {
+            assert!(!is_package_name(name), "{name}");
+        }
+        let d = tempfile::tempdir().unwrap();
+        let app = d.path().join("Tool.app");
+        std::fs::create_dir_all(app.join("Contents").join("MacOS")).unwrap();
+        std::fs::write(app.join("Contents").join("Info.plist"), b"<plist/>").unwrap();
+        let one = d.path().join("one.txt");
+        std::fs::write(&one, b"1").unwrap();
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let e = read_dropped(&[s(&one), s(&app)]).unwrap_err();
+        assert!(
+            e.contains("Tool.app") && e.contains("packages are not copied"),
+            "{e}"
+        );
+        assert!(!e.contains('\n'));
+        // A file whose name ends like a package is a file.
+        let file = d.path().join("plain.app");
+        std::fs::write(&file, b"x").unwrap();
+        assert_eq!(read_dropped(&[s(&file)]).unwrap().0.len(), 1);
+    }
+
+    /// Rule 1215: a dropped file or a folder's file carries its execute bit from a Mac or Linux viewer; a Windows viewer
+    /// never sets it.
+    #[test]
+    fn a_dropped_files_execute_bit_is_carried_from_a_unix_viewer() {
+        let d = tempfile::tempdir().unwrap();
+        let top = d.path().join("proj");
+        std::fs::create_dir_all(&top).unwrap();
+        let run = top.join("gradlew");
+        std::fs::write(&run, b"#!/bin/sh\n").unwrap();
+        std::fs::write(top.join("README"), b"hi").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o744)).unwrap();
+            std::fs::set_permissions(top.join("README"), std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+        }
+        let f = read_folder(&top).unwrap();
+        let exec: Vec<(&str, bool)> = f.files.iter().map(|x| (x.name.as_str(), x.exec)).collect();
+        assert_eq!(exec, [("README", false), ("gradlew", cfg!(unix))]);
+        let up = read_uploads(&[run.to_string_lossy().into_owned()]).unwrap();
+        assert_eq!(up[0].exec, cfg!(unix));
     }
 
     /// A PNG goes as it is; a clipboard bitmap is made a PNG; anything else is refused with a line.

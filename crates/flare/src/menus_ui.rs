@@ -634,8 +634,8 @@ mod tests {
         };
         let prefs = PrefStore::memory();
         remember_root(&prefs, r"C:\w\a");
-        remember_remote_root(&prefs, "gone", "/srv/old");
-        remember_remote_root(&prefs, "mac", "/Users/max/proj");
+        remember_remote_root(&prefs, "gone", "/srv/old", false);
+        remember_remote_root(&prefs, "mac", "/Users/max/proj", false);
         let mut rows = plus_menu_rows(&prefs, &[], "", std::slice::from_ref(&mac));
         assert_eq!(labels(&rows), [CHOOSE_FOLDER, "a", "proj", "Mac Mini"]);
         let (row, path) = &rows[2];
@@ -650,7 +650,7 @@ mod tests {
         assert!(pinned_roots(&prefs).is_empty());
         // Only remote folders known: no note, the remote folder, then the machine.
         let only = PrefStore::memory();
-        remember_remote_root(&only, "mac", "/Users/max/proj");
+        remember_remote_root(&only, "mac", "/Users/max/proj", false);
         assert_eq!(
             labels(&plus_menu_rows(&only, &[], "", std::slice::from_ref(&mac))),
             [CHOOSE_FOLDER, "proj", "Mac Mini"]

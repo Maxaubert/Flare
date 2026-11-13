@@ -2614,7 +2614,14 @@ impl AppCtl {
         if folder == crate::machines::HOST_HOME {
             self.remote_home.insert(id.to_string());
         } else {
-            flare_settings::recent_roots::remember_remote_root(&self.prefs, machine, folder);
+            // Rule 1215: only a Windows host's folders are one whatever their case.
+            let fold_case = self.machine_tag(machine).kind == Some(flare_tabs::tabs::Os::Pc);
+            flare_settings::recent_roots::remember_remote_root(
+                &self.prefs,
+                machine,
+                folder,
+                fold_case,
+            );
         }
         self.note_spawn(id, folder, false);
         self.hub.on_spawned(id, folder, None);

@@ -126,3 +126,15 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
 - [ ] Folder drop: drop a project folder (with `.git`, `.env` and a link or junction inside) from Explorer or Finder on
   the remote tab: the host's quoted folder path is pasted, `ls -la` there shows the files with their names, dot files
   included, and no link. A folder over 200 MB or 5000 files copies nothing and says so in one line.
+
+## Mac review fixes (rule 1215, 2026-11-13)
+
+- [ ] ControlMaster: on a viewer whose `~/.ssh/config` has `ControlMaster auto`, `ControlPath ~/.ssh/cm-%r@%h:%p` and
+  `ControlPersist 10m` for the host (and a link to it already open in a terminal), the Preview click opens the page,
+  the `ssh -N` stays in the viewer's process list, and a second click uses the same tunnel instead of a new one.
+- [ ] Package drop: drop `/System/Applications/Calculator.app` (or any `.app`) from Finder on a remote tab, and an
+  `.app` from a PC viewer: the panel says in one line that packages are not copied, and nothing lands on the host.
+- [ ] Exec bit: from a Mac viewer drop a folder holding `gradlew` (`chmod +x`) and `README`, and a lone `run.sh`
+  (`chmod +x`), on a tab of the Mac host and of a Linux host if one is linked: `ls -l` there shows `gradlew` and
+  `run.sh` runnable (`-rwxr-xr-x`) and `README` not; `./run.sh` runs. From the PC viewer the same files arrive
+  not runnable. Against a host on an older Flare the files still land, not runnable.

@@ -188,7 +188,9 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     `remote.input` with a `paste` of the host's `paste` answers joined by a space. Rule 1213: a dropped folder is listed
     here first (links and junctions skipped; over 5000 files, 5000 folders or 200 MiB, or a file over 32 MiB, nothing
     is copied and the tab's panel says so in one line), then copied after the files: `remote.put {folder: true}`, its
-    folders parents first, then each file read as it goes with `under`; only the folder's `paste` joins the paste. The
+    folders parents first, then each file read as it goes with `under`; only the folder's `paste` joins the paste. Rule
+    1215: Finder's `.DS_Store` and `._name` files are left out, a dropped macOS package is refused in one line, and a
+    runnable file's last chunk says `exec: true` (an older host's refusal: sent again without it). The
     snapshot is asked `styled: true` (an older host's refusal: asked plain, as above). File work asked while the link is
     down, or after the tab's session ended, is refused at once. Remote sessions PR 7: after the status poll, a
     `remote.resize` with the tab's last size when a click or a key took the live terminal back on this screen (rule
@@ -1064,6 +1066,16 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   host too (`too_large`, the file dropped). A host older than rule 1213 refuses `folder` and `under` (`bad_params`
   naming the field); the viewer then copies nothing of the folder and says in one line that Flare there takes single
   files only.
+  Rule 1215 (2026-11-13), additive: chunk 0's `name` is made NFC before it is cleaned, so a decomposed accent keeps its
+  letter (`under` names are NFC too: the host answers NFC names). An optional `exec` (true or false, anything else
+  `bad_params`) on a file's last chunk says the file runs as a program on the viewer (any execute bit of a Mac or Linux
+  viewer's file; a Windows viewer never sends it): a Mac or Linux host then gives every reader of the finished file
+  the right to run it (`0o644` becomes `0o755`); a Windows host takes it and changes nothing; `exec` on another chunk
+  or with `folder: true` does nothing. A host older than rule 1215 refuses `exec` (`bad_params` naming it); the
+  viewer sends that chunk again without it, and the rest of that copy leaves it out (as `open_id` and `styled` do). The
+  viewer never lists a dropped folder's `.DS_Store` or `._name` files, and refuses a dropped macOS package (a folder
+  named `*.app`, `*.framework`, `*.bundle` and the like) in one line, copying nothing. A host whose disk ignores case
+  merges two folders of a drop that differ only by case (`Src`, `src`) into one.
 
 ### open.remote (remote sessions PR 5, 2026-11-12)
 

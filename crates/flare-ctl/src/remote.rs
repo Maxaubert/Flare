@@ -109,11 +109,14 @@ pub fn is_device_name(name: &str) -> bool {
 /// Pure: the name a `remote.put` file is kept under on the host (rule 304): only its last part, with every character
 /// that is not a letter, a digit, a space or one of `-_.()+,` made `_`, no dot or space at either end, no device name,
 /// at most [`PUT_NAME_MAX`] bytes with its extension kept. So the name is a plain word in every shell's quotes (cmd's
-/// `%` and `!`, sh's `$` and backquote never reach it) and names no other folder. An empty result is `file`.
+/// `%` and `!`, sh's `$` and backquote never reach it) and names no other folder. An empty result is `file`. The name is
+/// made NFC first (rule 1215), so a decomposed name (`e` and a combining accent, as some macOS apps write it) keeps its
+/// letter instead of an `_`; a combining mark with no letter to join is still `_`.
 pub fn put_name(raw: &str) -> String {
+    use unicode_normalization::UnicodeNormalization as _;
     let last = raw.rsplit(['/', '\\']).next().unwrap_or_default();
     let clean: String = last
-        .chars()
+        .nfc()
         .map(|c| {
             if c.is_alphanumeric() && !c.is_control() || " -_.()+,".contains(c) {
                 c
@@ -551,6 +554,28 @@ mod tests {
                 "{raw} -> {n}"
             );
         }
+    }
+
+    /// Rule 1215: a decomposed name (a letter and a combining accent, as some macOS apps write it) is made NFC and keeps
+    /// its letter, as a file or as a dropped folder's inner name; every refusal still holds, and a lone combining mark
+    /// with no letter before it is still `_`.
+    #[test]
+    fn a_decomposed_put_name_keeps_its_accented_letters() {
+        assert_eq!(put_name("cafe\u{301}.txt"), "caf\u{e9}.txt");
+        assert_eq!(
+            put_name("e\u{301}te\u{301} (2).jpg"),
+            "\u{e9}t\u{e9} (2).jpg"
+        );
+        assert_eq!(put_inner_name(".cafe\u{301}"), ".caf\u{e9}");
+        assert_eq!(
+            under_parts("proj/caf\u{e9}"),
+            Some(vec!["proj", "caf\u{e9}"])
+        );
+        assert_eq!(under_parts("proj/cafe\u{301}"), None, "the host wants NFC");
+        assert_eq!(put_name("\u{301}x"), "_x");
+        assert_eq!(put_name("/tmp/cafe\u{301}/../x$y.txt"), "x_y.txt");
+        assert_eq!(put_name("a\u{301}/NUL"), "_NUL");
+        assert_eq!(put_name(" .e\u{301}. "), "\u{e9}");
     }
 
     #[test]

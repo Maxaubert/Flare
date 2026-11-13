@@ -2734,7 +2734,8 @@ Four gaps of a remote tab closed, owner approved 2026-11-13 (rule 1213). Contrac
 - **Preview chip over an ssh tunnel.** A remote tab that prints a local server address (`http://localhost:5173`) now
   shows the Preview chip as soon as its screen names it (the server is the host's, so no port of this machine is
   looked at). A click opens an ssh tunnel to the tab's machine, from the same machine entry the link uses (`ssh -N -o
-  BatchMode=yes -o ExitOnForwardFailure=yes -L 127.0.0.1:<free port>:localhost:<port> -- <host>`, every part its own
+  BatchMode=yes -o ExitOnForwardFailure=yes -o ControlMaster=no -o ControlPath=none -L
+  127.0.0.1:<free port>:localhost:<port> -- <host>`, every part its own
   argv item, never a shell string), on a worker, and the side panel opens at `http://127.0.0.1:<free port>/`. One
   tunnel per tab and host port, used again by the next click; it closes when the chip goes (the screen cleared, another
   address) or the tab closes. A tunnel that does not come up in 20 s is closed and said in one line in the tab's
@@ -2768,6 +2769,17 @@ Four gaps of a remote tab closed, owner approved 2026-11-13 (rule 1213). Contrac
   `remote_link::tests::a_dropped_folder_is_copied_whole_and_only_its_path_is_pasted`,
   `remote_link::tests::a_folder_over_the_caps_or_to_an_older_host_copies_nothing` and
   `ctl_app::tests::remote_put_makes_a_dropped_folder_and_fills_it_and_a_snapshot_takes_styled`.
+- **Mac review fixes (rule 1215).** The tunnel also passes `-o ControlMaster=no -o ControlPath=none`, so a viewer
+  whose ssh config shares one connection (`ControlMaster auto`) still gets a tunnel of its own that stays up. A file
+  name written decomposed (an `e` and a combining accent, as some macOS apps do) keeps its accented letter on the host
+  (`café`, not `cafe_`). A dropped folder's `.DS_Store` and AppleDouble `._` files are left out and do not count
+  toward the 5000 files. A dropped macOS package (`*.app`, `*.framework`, `*.bundle`, `*.rtfd`, `*.pkg`, `*.plugin`,
+  `*.kext` and the like) is refused in one line, "packages are not copied", and nothing is copied, from any viewer. A
+  file that runs as a program on a Mac or Linux viewer (any execute bit: a script, `gradlew`) is runnable on a Mac or
+  Linux host too; a Windows viewer never marks one, and an older host copies it without the bit. A remote folder joins
+  the recent folders by its exact path, so `/x/App` and `/x/app` on a Mac are two; only a PC host's folders are one
+  whatever their case. Known, not changed: a folder copy to a host whose disk ignores case (a Mac's usual disk, a PC)
+  merges `Src` and `src` of the dropped folder into one folder there. Held by the tests rule 1215 names.
 - **Not yet.** A "resume a past session there" list in the + menu (left out on purpose: open a shell there and resume
   Claude by hand; `flare open --on <machine> --resume <id>` still exists for scripts and agents). The tunnel and the
   folder copy over a real ssh between the PC and the Mac are on the by-hand list. The e2e has no tunnel scenario yet:

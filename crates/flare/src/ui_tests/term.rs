@@ -2783,7 +2783,8 @@ mod flow {
             files,
             vec![Upload {
                 name: "a b.txt".into(),
-                data: b"dropped".to_vec()
+                data: b"dropped".to_vec(),
+                exec: false,
             }]
         );
         done(Ok(vec!["/tmp/flare-remote/x/t1/a b.txt".into()]));
