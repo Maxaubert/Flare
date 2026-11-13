@@ -215,13 +215,31 @@ export component AgentIcon inherits Rectangle {
         stroke-line-cap: round;
         stroke-line-join: round;
     }
-    // The agent's mark, in a box the motion scales about its centre and lifts. Each path fills the box
+    // The moving box on whole device pixels of the window (owner 2026-11-13, "keep squash, snap to pixels";
+    // flare_agent::icon_motion::icon_box is the rule): the rest size, the squashed size and the rise each round to
+    // whole device pixels, and the box's edges land on whole device pixels wherever the icon sits, so no frame
+    // smears across a fraction. The box keeps its centre across; a hop squashes about its art's feet, which stay on
+    // the rest line (plus the rise), the breath keeps its centre down. feet: the lowest edge of the art in its view
+    // box, as a fraction of the box's height (flare_agent::icon::CLAWD_FEET, AGY_FEET, OPENAI_FEET).
+    property <float> feet: root.kind == 1 ? (10.04 + 2.5) / 17 : root.kind == 3 ? (8.02 + 1.5) / 11 : 1.0;
+    property <length> ax: Px.snap(root.absolute-position.x);
+    property <length> ay: Px.snap(root.absolute-position.y);
+    property <length> rest: Px.snap(root.size);
+    property <length> box-w: Px.snap(root.size * root.sx);
+    property <length> box-h: Px.snap(root.size * root.sy);
+    property <length> box-left: Px.snap(root.ax + (root.rest - root.box-w) / 2);
+    property <length> box-top: root.hops
+        ? root.ay + Px.snap(root.feet * root.rest) - Px.snap(root.feet * root.box-h) + Px.snap(MarkMotion.hop-y * root.size)
+        : Px.snap(root.ay + (root.rest - root.box-h) / 2);
+    property <bool> shut: root.kind == 1 && root.m == 1 && MarkMotion.blink;
+
+    // The agent's mark, in the box the motion squashes and lifts. Each path fills the box
     // (fit: fill; the default contain scales both ways by the smaller), so the hop squashes and stretches.
     if root.kind >= 1 && root.kind <= 3 : body := Rectangle {
-        width: root.size * root.sx;
-        height: root.size * root.sy;
-        x: (root.size - self.width) / 2;
-        y: (root.size - self.height) / 2 + (root.hops ? MarkMotion.hop-y * root.size : 0px);
+        width: root.box-w;
+        height: root.box-h;
+        x: root.box-left - root.absolute-position.x;
+        y: root.box-top - root.absolute-position.y;
         opacity: root.m == 2 ? MarkMotion.fade : root.m == 6 ? MarkMotion.grow-alpha : 1.0;
         transform-rotation: root.m == 2 ? MarkMotion.spin-fade : root.m == 5 ? MarkMotion.turn : 0deg;
 
@@ -233,19 +251,8 @@ export component AgentIcon inherits Rectangle {
             viewbox-y: -2.5;
             viewbox-width: 17;
             viewbox-height: 17;
-            commands: Glyphs.clawd;
-            fill: Theme.clawd;
-        }
-        // H1's blink: the eyes shut in Clawd's own colour.
-        if root.kind == 1 && root.m == 1 && MarkMotion.blink : Path {
-            width: body.width;
-            height: body.height;
-            fit: fill;
-            viewbox-x: 0.5;
-            viewbox-y: -2.5;
-            viewbox-width: 17;
-            viewbox-height: 17;
-            commands: Glyphs.clawd-lids;
+            // H1's blink swaps in Clawd with his eyes shut: one shape, no lid laid over the body to leave a seam.
+            commands: root.shut ? Glyphs.clawd-shut : Glyphs.clawd;
             fill: Theme.clawd;
         }
         if root.kind == 2 : Path {

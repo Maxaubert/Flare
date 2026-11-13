@@ -237,6 +237,34 @@ pub fn hop_at(ms: u64) -> (f32, f32, f32) {
     (lerp(a.1, b.1), lerp(a.2, b.2), lerp(a.3, b.3))
 }
 
+/// Where `AgentIcon` draws its moving box, in whole device pixels of the window: left, top, width, height.
+///
+/// This is the rule `AgentIcon`'s `body` box follows in `tabmark.slint` (owner 2026-11-13, "keep squash, snap to
+/// pixels"): `origin` is the icon's place in the window and `size` its size, in logical px, and `scale` the device
+/// pixels per logical px. The rest size, the squashed width and height and the rise each round to whole device
+/// pixels (`Px.snap`), and the box sits on whole device pixels of the window, so no frame lands on a fraction and
+/// smears. The box keeps its centre across. A hop (`feet` given: where the art's feet sit, as a fraction of the box's
+/// height from its top, `icon::CLAWD_FEET` and the like) squashes about its feet, which stay on the rest line to half a
+/// device pixel (plus the whole-pixel rise); any other motion keeps its centre down.
+pub fn icon_box(
+    origin: (f32, f32),
+    size: f32,
+    scale: f32,
+    (sx, sy, rise): (f32, f32, f32),
+    feet: Option<f32>,
+) -> (f32, f32, f32, f32) {
+    let snap = |l: f32| (l * scale).round();
+    let rest = snap(size);
+    let (w, h) = (snap(size * sx), snap(size * sy));
+    let (ax, ay) = (snap(origin.0), snap(origin.1));
+    let left = (ax + (rest - w) / 2.0).round();
+    let top = match feet {
+        Some(f) => ay + (f * rest).round() - (f * h).round() + snap(rise * size),
+        None => (ay + (rest - h) / 2.0).round(),
+    };
+    (left, top, w, h)
+}
+
 /// Whether Clawd's eyes are shut at `ms` (every other landing of the hop).
 pub fn blink_at(ms: u64) -> bool {
     (BLINK_FROM..BLINK_TO).contains(&(ms % BLINK_MS))
@@ -390,6 +418,72 @@ mod tests {
         // Rising between the squash and the top: the curve is the mock's, half way is above a straight line's.
         let (mid, _, _) = hop_at(HOP_MS * 285 / 1000);
         assert!(mid < -0.11, "{mid}");
+    }
+
+    /// Owner 2026-11-13 ("keep squash, snap to pixels"): every frame of the hop, at every shipped scale and wherever
+    /// the icon sits, is a box on whole device pixels whose art keeps its feet on the rest line (to half a device
+    /// pixel, lifted only by the whole-pixel rise), and it is never narrower than the narrowest key squashes it.
+    #[test]
+    fn every_frame_of_the_hop_is_a_whole_device_pixel_box_standing_on_its_feet() {
+        use crate::icon::{AGY_FEET, CLAWD_FEET, OPENAI_FEET};
+        let size = 18.0;
+        let min_sx = HOP_KEYS.iter().map(|k| k.2).fold(f32::MAX, f32::min);
+        let max_sx = HOP_KEYS.iter().map(|k| k.2).fold(f32::MIN, f32::max);
+        assert_eq!((min_sx, max_sx), (0.96, 1.08));
+        let whole = |v: f32| v.fract() == 0.0;
+        for scale in [1.0f32, 1.25, 1.5, 2.0, 2.25] {
+            for origin in [(340.0, 9.0), (10.0, 10.5), (14.0, 14.0), (7.3, 3.7)] {
+                for feet in [CLAWD_FEET, AGY_FEET, OPENAI_FEET] {
+                    let rest = icon_box(origin, size, scale, (1.0, 1.0, 0.0), Some(feet));
+                    assert_eq!(
+                        rest,
+                        icon_box(origin, size, scale, (1.0, 1.0, 0.0), None),
+                        "at rest a hop and a breath draw the same box ({scale}, {origin:?})"
+                    );
+                    let ground = rest.1 + (feet * rest.3).round();
+                    let mut last = rest;
+                    for ms in 0..HOP_MS {
+                        let (rise, sx, sy) = hop_at(ms);
+                        let b = icon_box(origin, size, scale, (sx, sy, rise), Some(feet));
+                        let at = format!(
+                            "{ms} ms at {scale}, {origin:?}, feet {feet}: {b:?}, rest {rest:?}"
+                        );
+                        assert!(whole(b.0) && whole(b.1) && whole(b.2) && whole(b.3), "{at}");
+                        // The squash never takes more width than its narrowest key, nor gives more than its widest.
+                        assert!(b.2 >= (size * scale * min_sx).round(), "{at}");
+                        assert!(b.2 <= (size * scale * max_sx).round(), "{at}");
+                        // Centred across on the rest box, to half a device pixel.
+                        assert!(
+                            ((b.0 + b.2 / 2.0) - (rest.0 + rest.2 / 2.0)).abs() <= 0.5,
+                            "{at}"
+                        );
+                        // The feet: on the ground line, lifted only by the whole-pixel rise.
+                        let lift = (rise * size * scale).round();
+                        assert!(
+                            (b.1 + feet * b.3 - (ground + lift)).abs() <= 0.5 + 1e-4,
+                            "{at}"
+                        );
+                        // A frame at a time the size steps by at most one device pixel: no jitter.
+                        if ms % 16 == 0 {
+                            assert!((b.2 - last.2).abs() <= 1.0, "{at} after {last:?}");
+                            assert!((b.3 - last.3).abs() <= 1.0, "{at} after {last:?}");
+                            last = b;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn the_breath_keeps_its_box_centred_on_whole_device_pixels() {
+        for scale in [1.0f32, 1.25, 1.5, 2.0, 2.25] {
+            let rest = icon_box((10.0, 10.5), 18.0, scale, (1.0, 1.0, 0.0), None);
+            for g in [0.82f32, 0.9, 1.0, 1.05] {
+                let b = icon_box((10.0, 10.5), 18.0, scale, (g, g, 0.0), None);
+                assert!(b.0.fract() == 0.0 && b.1.fract() == 0.0 && b.2.fract() == 0.0);
+                assert!(((b.1 + b.3 / 2.0) - (rest.1 + rest.3 / 2.0)).abs() <= 0.5);
+            }
+        }
     }
 
     #[test]
