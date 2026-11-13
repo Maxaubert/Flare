@@ -18,8 +18,26 @@ use crate::framing::{LineReader, ReadError, Wire, write_line};
 use crate::grant::Grant;
 use crate::method::{DEFAULT_TIMEOUT, Method, Namespace};
 use crate::proto::{
-    CtlError, Event, MAX_LINE, PROTOCOL, Request, Response, code, parse_request, to_line,
+    CtlError, Event, MAX_LINE, PROTOCOL, REMOTE_PROTOCOL, Request, Response, code, parse_request,
+    to_line,
 };
+
+/// Where a connection came in. Only [`ConnOrigin::Stdio`] can be given the remote grant (rule 276); it is set by
+/// [`Shared::new_stdio`] alone, so no pipe server can be configured into it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ConnOrigin {
+    /// The per-user pipe (Windows) or socket (macOS): the app's own channel.
+    #[default]
+    Pipe,
+    /// `flare --serve-remote`'s own stdin and stdout, which sshd gave it: a remote link (remote sessions).
+    Stdio,
+}
+
+/// A remote link must say `remote.hello` within this long: ssh is up before the viewer starts it, but a slow login
+/// shell and a cold start of the host's Flare come first.
+pub const STDIO_HELLO_TIMEOUT: Duration = Duration::from_secs(30);
+/// The longest machine name `remote.hello` takes.
+pub const MAX_MACHINE_NAME: usize = 256;
 
 /// What the app implements. Every method may be called from any worker thread.
 pub trait Dispatcher: Send + Sync + 'static {
@@ -41,6 +59,13 @@ pub trait Dispatcher: Send + Sync + 'static {
     /// The methods this build implements; `hello` lists them (narrowed to the caller's grant).
     fn capabilities(&self) -> Vec<Method> {
         Method::ALL.to_vec()
+    }
+
+    /// The grant of a connection that said `remote.hello`, or None when this app serves no remote sessions. Asked
+    /// only for a connection of [`ConnOrigin::Stdio`], at `remote.hello` and again on every request; anything but
+    /// [`Grant::Remote`] is refused by the library (rule 276). The pipe never asks it.
+    fn remote_grant(&self, _origin: ConnOrigin) -> Option<Grant> {
+        None
     }
 
     /// Runs one request. The grant was checked; `params` is an object. Anything but `hello`.
@@ -117,6 +142,8 @@ pub struct ServerConfig {
     pub timeout_override: Option<Duration>,
     /// Calls that timed out but are still running; past this the server refuses new ones.
     pub max_stuck_calls: usize,
+    /// This machine's name, as `remote.hello` answers it.
+    pub machine: String,
 }
 
 impl Default for ServerConfig {
@@ -131,8 +158,31 @@ impl Default for ServerConfig {
             rate_burst: 200.0,
             timeout_override: None,
             max_stuck_calls: 32,
+            machine: default_machine_name(),
         }
     }
+}
+
+impl ServerConfig {
+    /// The limits of a remote link: one client (the viewer on the other end of ssh) and a longer first hello.
+    pub fn stdio() -> Self {
+        Self {
+            max_clients: 1,
+            hello_timeout: STDIO_HELLO_TIMEOUT,
+            ..Self::default()
+        }
+    }
+}
+
+/// The computer's name from the environment (`COMPUTERNAME` on Windows, `HOSTNAME` elsewhere), else empty. The app
+/// may set a better one (the name the person gave it).
+fn default_machine_name() -> String {
+    ["COMPUTERNAME", "HOSTNAME"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .map(|v| v.trim().to_string())
+        .find(|v| !v.is_empty())
+        .unwrap_or_default()
 }
 
 /// Token bucket. `now` is passed in so tests do not sleep.
@@ -318,10 +368,27 @@ pub struct Shared {
     /// Every call thread that has not finished, timed out or not (reported by `Server::stop`).
     pub in_flight: Arc<AtomicUsize>,
     pub stop: AtomicBool,
+    /// Private, so only the two constructors decide it: a pipe server (`Shared::new`) can never be a stdio one.
+    origin: ConnOrigin,
 }
 
 impl Shared {
+    /// What the connections of a pipe server share: the agent, mod and plugin grants, never the remote one.
     pub fn new(dispatcher: Arc<dyn Dispatcher>, config: ServerConfig) -> Arc<Self> {
+        Self::with_origin(dispatcher, config, ConnOrigin::Pipe)
+    }
+
+    /// What the one connection of `flare --serve-remote` has: its own stdio, the only path to the remote grant
+    /// (rule 276). The caller must hand [`serve_stdio`] the process's own stdin and stdout and nothing else.
+    pub fn new_stdio(dispatcher: Arc<dyn Dispatcher>, config: ServerConfig) -> Arc<Self> {
+        Self::with_origin(dispatcher, config, ConnOrigin::Stdio)
+    }
+
+    fn with_origin(
+        dispatcher: Arc<dyn Dispatcher>,
+        config: ServerConfig,
+        origin: ConnOrigin,
+    ) -> Arc<Self> {
         Arc::new(Self {
             dispatcher,
             config,
@@ -329,8 +396,23 @@ impl Shared {
             stuck: Arc::new(AtomicUsize::new(0)),
             in_flight: Arc::new(AtomicUsize::new(0)),
             stop: AtomicBool::new(false),
+            origin,
         })
     }
+
+    pub fn origin(&self) -> ConnOrigin {
+        self.origin
+    }
+}
+
+/// Serves the one connection of a remote link (`flare --serve-remote`) until the viewer closes it, it breaks the
+/// protocol or `shared.stop` is raised. `shared` comes from [`Shared::new_stdio`]; `wire` is the process's own stdio
+/// ([`crate::stdio::StdioWire::from_process`]), or a test's in-memory pair.
+pub fn serve_stdio<W: Wire>(wire: &W, shared: &Arc<Shared>) {
+    let handle = ConnHandle::new(1);
+    shared.hub.add(handle.clone());
+    serve_connection(wire, shared, &handle);
+    shared.hub.remove(handle.id);
 }
 
 /// Where a call is: running in time, past its timeout and counted as stuck, or done.
@@ -488,20 +570,123 @@ struct Hello {
     token: Option<String>,
     /// The tab token, kept to re-check on every request.
     tab_token: Option<String>,
+    /// Said `remote.hello`: the grant is the remote one, asked again on every request.
+    remote: bool,
 }
 
-/// A grant from the app, checked to be one that may exist over the pipe: never `ui` (S3). A bug on
-/// the app side (a manifest permission mapped to `ui`, a cached `ui` grant) must not open the `ui`
-/// namespace to a socket.
+/// A grant from the app, checked to be one that may exist over the pipe: never `ui` (S3) and never `remote` (rule
+/// 276). A bug on the app side (a manifest permission mapped to `ui`, a cached `ui` grant, a token that resolves to
+/// the remote grant) must not open the `ui` or `remote` namespace to a socket.
 fn pipe_grant(g: Grant, from_token: bool) -> Result<Grant, CtlError> {
-    if matches!(g, Grant::Ui) {
-        return Err(if from_token {
-            CtlError::new(code::UNAUTHORIZED, "a token cannot hold the ui grant")
-        } else {
-            CtlError::new(code::INTERNAL, "the app gave a pipe caller the ui grant")
-        });
+    let held = match g {
+        Grant::Ui => "ui",
+        Grant::Remote => "remote",
+        _ => return Ok(g),
+    };
+    Err(if from_token {
+        CtlError::new(
+            code::UNAUTHORIZED,
+            format!("a token cannot hold the {held} grant"),
+        )
+    } else {
+        CtlError::new(
+            code::INTERNAL,
+            format!("the app gave a pipe caller the {held} grant"),
+        )
+    })
+}
+
+/// The grant of a remote link, checked: only a stdio connection asks, and only [`Grant::Remote`] is taken (rule 276).
+fn remote_grant(shared: &Shared) -> Result<Grant, CtlError> {
+    if shared.origin != ConnOrigin::Stdio {
+        return Err(CtlError::new(
+            code::FORBIDDEN,
+            "the remote grant is only on the serve stdio path",
+        ));
     }
-    Ok(g)
+    match shared.dispatcher.remote_grant(ConnOrigin::Stdio) {
+        Some(Grant::Remote) => Ok(Grant::Remote),
+        Some(g) => Err(CtlError::new(
+            code::INTERNAL,
+            format!("the app gave a remote link the {} grant", g.kind()),
+        )),
+        None => Err(CtlError::new(
+            code::UNAVAILABLE,
+            "this Flare does not serve remote sessions",
+        )),
+    }
+}
+
+/// The one line a remote protocol mismatch is refused with: both versions, this side's first (rule 278).
+pub fn remote_mismatch(here: u64, there: u64) -> String {
+    format!("remote protocol {here} here, {there} there")
+}
+
+/// `remote.hello`: the version first (so an older or newer peer with other params still hears the one line), then
+/// the machine and Flare version of the other end, then the grant.
+fn handle_remote_hello(
+    shared: &Shared,
+    conn: u64,
+    req: &Request,
+) -> Result<(Hello, Value), CtlError> {
+    let Some(theirs) = req.params.get("remote_protocol").and_then(Value::as_u64) else {
+        return Err(CtlError::new(
+            code::BAD_PARAMS,
+            "remote.hello needs remote_protocol, a number",
+        ));
+    };
+    if theirs != u64::from(REMOTE_PROTOCOL) {
+        return Err(CtlError::new(
+            code::UNSUPPORTED_PROTOCOL,
+            remote_mismatch(u64::from(REMOTE_PROTOCOL), theirs),
+        ));
+    }
+    let str_param = |k: &str| req.params.get(k).and_then(Value::as_str);
+    let Some(machine) = str_param("machine") else {
+        return Err(CtlError::new(
+            code::BAD_PARAMS,
+            "remote.hello needs the machine's name",
+        ));
+    };
+    if machine.chars().count() > MAX_MACHINE_NAME || machine.chars().any(char::is_control) {
+        return Err(CtlError::new(
+            code::BAD_PARAMS,
+            "the machine's name is too long or holds a control character",
+        ));
+    }
+    let Some(version) = str_param("flare_version") else {
+        return Err(CtlError::new(
+            code::BAD_PARAMS,
+            "remote.hello needs flare_version",
+        ));
+    };
+    let grant = remote_grant(shared)?;
+    let caps = shared.dispatcher.capabilities();
+    let names: Vec<&str> = Method::ALL
+        .into_iter()
+        .filter(|m| caps.contains(m) && grant.may_call(*m))
+        .map(Method::name)
+        .collect();
+    let result = json!({
+        "remote_protocol": REMOTE_PROTOCOL,
+        "machine": shared.config.machine,
+        "flare_version": shared.config.server_version,
+        "capabilities": names,
+    });
+    let hello = Hello {
+        ctx: CallContext {
+            conn,
+            client: machine.into(),
+            client_version: version.into(),
+            grant,
+            tab: None,
+            cancel: CancelFlag::default(),
+        },
+        token: None,
+        tab_token: None,
+        remote: true,
+    };
+    Ok((hello, result))
 }
 
 fn handle_hello(shared: &Shared, conn: u64, req: &Request) -> Result<Hello, CtlError> {
@@ -576,6 +761,7 @@ fn handle_hello(shared: &Shared, conn: u64, req: &Request) -> Result<Hello, CtlE
         },
         token,
         tab_token,
+        remote: false,
     })
 }
 
@@ -613,6 +799,17 @@ pub fn serve_connection<W: Wire>(wire: &W, shared: &Shared, handle: &Arc<ConnHan
         };
         let req = match parse_request(&line) {
             Ok(r) => r,
+            // A remote link may carry a login banner or a shell's greeting before the first message: until
+            // `remote.hello` is answered, a line that is no request is skipped, and the link resyncs on the first
+            // one that is. Bounded by the hello deadline and the line cap. After hello, and on the pipe, the
+            // framing is strict as ever.
+            Err(_) if hello.is_none() && shared.origin == ConnOrigin::Stdio => {
+                log::debug!(
+                    "remote link: skipped a line of {} bytes before remote.hello",
+                    line.len()
+                );
+                continue 'conn;
+            }
             Err(f) => {
                 let _ = reply(wire, &Response::err(f.id, f.error));
                 break 'conn;
@@ -665,9 +862,34 @@ fn answer(
             format!("no method named {}", req.method),
         ));
     };
-    if method == Method::Hello {
+    let stdio = shared.origin == ConnOrigin::Stdio;
+    if matches!(method, Method::Hello | Method::RemoteHello) {
+        // Each path has its one greeting: the pipe never says `remote.hello` (so never reaches the remote grant), and a
+        // remote link never says `hello` (so never reaches the agent grant, or a mod's by a token). Rule 276.
+        if stdio != (method == Method::RemoteHello) {
+            return fail(CtlError::new(
+                code::FORBIDDEN,
+                if stdio {
+                    "a remote link says remote.hello, not hello"
+                } else {
+                    "remote.hello is only on the serve stdio path"
+                },
+            ));
+        }
         if hello.is_some() {
             return fail(CtlError::new(code::ALREADY_HELLO, "hello was already sent"));
+        }
+        if method == Method::RemoteHello {
+            return match handle_remote_hello(shared, handle.id, req) {
+                Ok((h, result)) => {
+                    // A remote link polls (`remote.output`, `remote.status`): it is sent no events, so a link nobody
+                    // reads while no call runs can never fill and block this worker.
+                    handle.said_hello.store(false, Ordering::SeqCst);
+                    *hello = Some(h);
+                    (Response::ok(id, result), false)
+                }
+                Err(e) => fail(e),
+            };
         }
         return match handle_hello(shared, handle.id, req) {
             Ok(h) => {
@@ -688,11 +910,19 @@ fn answer(
         };
     }
     let Some(h) = hello.as_mut() else {
-        return fail(CtlError::new(code::HELLO_REQUIRED, "send hello first"));
+        return fail(CtlError::new(
+            code::HELLO_REQUIRED,
+            if stdio {
+                "send remote.hello first"
+            } else {
+                "send hello first"
+            },
+        ));
     };
     // The grant is read again on every request: a disabled mod loses its connection, and the user's
-    // eval switch takes effect without a reconnect.
+    // eval switch takes effect without a reconnect. A remote link asks the app for the remote grant again.
     let regranted = match &h.token {
+        _ if h.remote => remote_grant(shared),
         Some(t) => match shared.dispatcher.resolve_token(t) {
             Some(g) => pipe_grant(g, true),
             None => Err(CtlError::new(
@@ -755,12 +985,21 @@ mod tests {
         pub t1_closed: AtomicBool,
         /// Calls with `wait_cancel` whose flag was raised.
         pub cancelled: AtomicU32,
+        /// The app serves remote sessions: `remote_grant` answers the remote grant.
+        pub serves_remote: AtomicBool,
+        /// A bug on the app side: `remote_grant` answers the ui grant.
+        pub remote_is_ui: AtomicBool,
+        /// A bug on the app side: the agent grant is the remote grant.
+        pub remote_agent: AtomicBool,
     }
 
     impl Dispatcher for Fake {
         fn resolve_token(&self, token: &str) -> Option<Grant> {
             if token == "ui" || (token == "good" && self.promote.load(Ordering::SeqCst)) {
                 return Some(Grant::Ui);
+            }
+            if token == "remote" {
+                return Some(Grant::Remote);
             }
             (token == "good" && !self.revoked.load(Ordering::SeqCst)).then(|| Grant::Mod {
                 id: "m".into(),
@@ -772,9 +1011,21 @@ mod tests {
             if self.ui_agent.load(Ordering::SeqCst) {
                 return Grant::Ui;
             }
+            if self.remote_agent.load(Ordering::SeqCst) {
+                return Grant::Remote;
+            }
             Grant::Agent {
                 eval: self.eval.load(Ordering::SeqCst),
             }
+        }
+        fn remote_grant(&self, origin: ConnOrigin) -> Option<Grant> {
+            assert_eq!(origin, ConnOrigin::Stdio, "only a stdio link is asked");
+            if self.remote_is_ui.load(Ordering::SeqCst) {
+                return Some(Grant::Ui);
+            }
+            self.serves_remote
+                .load(Ordering::SeqCst)
+                .then_some(Grant::Remote)
         }
         fn resolve_tab_token(&self, tab_token: &str) -> Option<String> {
             match tab_token {
@@ -829,6 +1080,34 @@ mod tests {
             let fake = Arc::new(Fake::default());
             let shared = Shared::new(fake.clone(), cfg);
             Rig::on(fake, shared, 1)
+        }
+
+        /// The one connection of a remote link (`flare --serve-remote`), over an in-memory wire, on an app that serves
+        /// remote sessions.
+        pub fn stdio(cfg: ServerConfig) -> Rig {
+            let fake = Arc::new(Fake::default());
+            fake.serves_remote.store(true, Ordering::SeqCst);
+            let shared = Shared::new_stdio(fake.clone(), cfg);
+            let (server_end, client) = pair();
+            let s2 = shared.clone();
+            let thread = std::thread::spawn(move || {
+                serve_stdio(&server_end, &s2);
+                server_end.close();
+            });
+            Rig {
+                client,
+                fake,
+                shared,
+                thread: Some(thread),
+                reader: LineReader::new(MAX_LINE),
+            }
+        }
+
+        /// `remote.hello` with `extra` params after the three it needs (protocol 1, machine `viewer`, version `9.9`).
+        pub fn remote_hello(&mut self, extra: &str) -> Value {
+            self.ask(&format!(
+                r#"{{"id":0,"method":"remote.hello","params":{{"remote_protocol":1,"machine":"viewer","flare_version":"9.9"{extra}}}}}"#
+            ))
         }
 
         /// A connection on a server that other rigs share.
@@ -1448,6 +1727,215 @@ mod tests {
         assert_eq!(r.recv()["id"], 1);
         assert_eq!(r.recv()["id"], 2, "the line read during the call came next");
         assert_eq!(fake.cancelled.load(Ordering::SeqCst), 0);
+        r.finish();
+    }
+
+    fn stdio_rig() -> Rig {
+        Rig::stdio(ServerConfig {
+            machine: "host-a".into(),
+            server_version: "1.2.3".into(),
+            ..ServerConfig::stdio()
+        })
+    }
+
+    #[test]
+    fn remote_hello_on_the_stdio_path_gets_the_remote_grant_and_names_this_end() {
+        let mut r = stdio_rig();
+        let v = r.remote_hello("");
+        assert_eq!(v["id"], 0);
+        assert_eq!(v["result"]["remote_protocol"], REMOTE_PROTOCOL);
+        assert_eq!(v["result"]["machine"], "host-a");
+        assert_eq!(v["result"]["flare_version"], "1.2.3");
+        assert_eq!(v["result"]["capabilities"], json!(["remote.hello"]));
+        // A second greeting is refused like a second hello.
+        assert_eq!(code_of(&r.remote_hello("")), code::ALREADY_HELLO);
+        r.finish();
+    }
+
+    /// Rule 278: a mismatch is refused with one line that names both versions, this side's first, and closes.
+    #[test]
+    fn a_remote_protocol_mismatch_refuses_with_one_line_naming_both_versions() {
+        let mut r = stdio_rig();
+        let v = r.ask(
+            r#"{"id":1,"method":"remote.hello","params":{"remote_protocol":2,"machine":"m","flare_version":"9"}}"#,
+        );
+        assert_eq!(code_of(&v), code::UNSUPPORTED_PROTOCOL);
+        let msg = v["error"]["message"].as_str().unwrap();
+        assert_eq!(msg, "remote protocol 1 here, 2 there");
+        assert!(!msg.contains('\n'));
+        assert!(r.closed());
+        r.finish();
+        // The version is read first: a peer whose other params differ still hears the one line.
+        let mut r = stdio_rig();
+        let v = r.ask(r#"{"id":1,"method":"remote.hello","params":{"remote_protocol":7}}"#);
+        assert_eq!(v["error"]["message"], "remote protocol 1 here, 7 there");
+        r.finish();
+        assert_eq!(remote_mismatch(3, 4), "remote protocol 3 here, 4 there");
+    }
+
+    /// A login banner or a shell's greeting before the first message is skipped; the link resyncs on the first
+    /// valid `remote.hello`. After it the framing is strict again.
+    #[test]
+    fn a_banner_line_before_the_first_json_line_is_skipped_on_the_stdio_path() {
+        let mut r = stdio_rig();
+        r.send("Welcome to the Mac mini");
+        r.send("Last login: Thu Nov 12 09:00:00 2026 from 10.0.0.2");
+        r.send("{ not json either");
+        r.send("[1,2]");
+        let v = r.remote_hello("");
+        assert_eq!(v["id"], 0, "the first line back is the hello's answer");
+        assert_eq!(v["result"]["machine"], "host-a");
+        r.send("a stray line after hello");
+        assert_eq!(code_of(&r.recv()), code::PARSE_ERROR);
+        assert!(r.closed());
+        r.finish();
+        // On the pipe a banner line is a broken client, as before.
+        let mut r = rig();
+        r.send("Welcome");
+        assert_eq!(code_of(&r.recv()), code::PARSE_ERROR);
+        assert!(r.closed());
+        r.finish();
+    }
+
+    /// Rule 276: no pipe connection ever gets the remote grant: not by `remote.hello` (before or after `hello`), not by
+    /// a token that resolves to it, not as the agent grant. The app's `remote_grant` is never asked on the pipe.
+    #[test]
+    fn remote_grant_never_on_the_pipe() {
+        let mut r = rig();
+        r.fake.serves_remote.store(true, Ordering::SeqCst);
+        let v = r.remote_hello("");
+        assert_eq!(code_of(&v), code::FORBIDDEN);
+        assert_eq!(r.hello("")["result"]["grant"]["kind"], "agent");
+        assert_eq!(code_of(&r.remote_hello("")), code::FORBIDDEN);
+        r.finish();
+        let mut r = rig();
+        let v = r.hello(r#","token":"remote""#);
+        assert_eq!(code_of(&v), code::UNAUTHORIZED);
+        assert!(v["error"]["message"].as_str().unwrap().contains("remote"));
+        assert!(r.closed());
+        r.finish();
+        let mut r = rig();
+        r.fake.remote_agent.store(true, Ordering::SeqCst);
+        assert_eq!(code_of(&r.hello("")), code::INTERNAL);
+        r.finish();
+        // An agent connection that the app turns into the remote grant mid-way reaches nothing.
+        let mut r = rig();
+        r.hello("");
+        r.fake.remote_agent.store(true, Ordering::SeqCst);
+        assert_eq!(
+            code_of(&r.ask(r#"{"id":1,"method":"remote.hello"}"#)),
+            code::FORBIDDEN
+        );
+        assert_eq!(
+            code_of(&r.ask(r#"{"id":2,"method":"panel.state"}"#)),
+            code::INTERNAL
+        );
+        assert!(r.fake.calls.lock().unwrap().is_empty());
+        r.finish();
+        // A pipe server built from the stdio limits is still a pipe server.
+        let fake = Arc::new(Fake::default());
+        fake.serves_remote.store(true, Ordering::SeqCst);
+        let shared = Shared::new(fake.clone(), ServerConfig::stdio());
+        assert_eq!(shared.origin(), ConnOrigin::Pipe);
+        let mut r = Rig::on(fake, shared, 7);
+        assert_eq!(code_of(&r.remote_hello("")), code::FORBIDDEN);
+        r.finish();
+    }
+
+    /// The remote grant reaches nothing but its own namespace, and a remote link never says `hello`.
+    #[test]
+    fn a_remote_link_reaches_only_the_remote_methods() {
+        let mut r = stdio_rig();
+        assert_eq!(code_of(&r.hello("")), code::FORBIDDEN);
+        assert_eq!(
+            code_of(&r.ask(r#"{"id":1,"method":"tabs.list"}"#)),
+            code::HELLO_REQUIRED
+        );
+        r.remote_hello("");
+        for m in [
+            "hello",
+            "tabs.list",
+            "panel.state",
+            "view.text",
+            "browser.open",
+            "browser.eval",
+            "session.read",
+            "tabs.input",
+            "shell.input",
+            "settings.set",
+            "mods.enable",
+            "mods.call",
+        ] {
+            let v = r.ask(&format!(r#"{{"id":2,"method":"{m}","params":{{}}}}"#));
+            assert_eq!(code_of(&v), code::FORBIDDEN, "{m}");
+        }
+        assert!(r.fake.calls.lock().unwrap().is_empty());
+        // It is sent no events: it polls.
+        assert_eq!(r.shared.hub.publish("panel.changed", json!({}), None), 0);
+        r.finish();
+    }
+
+    #[test]
+    fn remote_hello_needs_its_three_params() {
+        let mut r = stdio_rig();
+        for params in [
+            r#"{}"#,
+            r#"{"remote_protocol":"1","machine":"m","flare_version":"9"}"#,
+            r#"{"remote_protocol":1,"flare_version":"9"}"#,
+            r#"{"remote_protocol":1,"machine":"m"}"#,
+            r#"{"remote_protocol":1,"machine":"a\u0007b","flare_version":"9"}"#,
+        ] {
+            let v = r.ask(&format!(
+                r#"{{"id":1,"method":"remote.hello","params":{params}}}"#
+            ));
+            assert_eq!(code_of(&v), code::BAD_PARAMS, "{params}");
+        }
+        let long = "m".repeat(MAX_MACHINE_NAME + 1);
+        let v = r.ask(&format!(
+            r#"{{"id":1,"method":"remote.hello","params":{{"remote_protocol":1,"machine":"{long}","flare_version":"9"}}}}"#
+        ));
+        assert_eq!(code_of(&v), code::BAD_PARAMS);
+        // The link stays and may greet again.
+        assert!(r.remote_hello("")["result"].is_object());
+        r.finish();
+    }
+
+    /// An app that serves no remote sessions says so; an app bug that hands a remote link another grant is refused.
+    #[test]
+    fn a_remote_link_takes_only_the_remote_grant_from_the_app() {
+        let mut r = stdio_rig();
+        r.fake.serves_remote.store(false, Ordering::SeqCst);
+        assert_eq!(code_of(&r.remote_hello("")), code::UNAVAILABLE);
+        r.fake.remote_is_ui.store(true, Ordering::SeqCst);
+        assert_eq!(code_of(&r.remote_hello("")), code::INTERNAL);
+        r.fake.remote_is_ui.store(false, Ordering::SeqCst);
+        r.fake.serves_remote.store(true, Ordering::SeqCst);
+        assert!(r.remote_hello("")["result"].is_object());
+        // Asked again on every request: a link the app stops serving is refused at once.
+        r.fake.serves_remote.store(false, Ordering::SeqCst);
+        assert_eq!(
+            code_of(&r.ask(r#"{"id":3,"method":"remote.hello"}"#)),
+            code::ALREADY_HELLO
+        );
+        assert_eq!(
+            code_of(&r.ask(r#"{"id":4,"method":"panel.state"}"#)),
+            code::UNAVAILABLE
+        );
+        r.finish();
+    }
+
+    #[test]
+    fn the_stdio_limits_are_one_client_and_a_30_second_hello() {
+        let cfg = ServerConfig::stdio();
+        assert_eq!(cfg.max_clients, 1);
+        assert_eq!(cfg.hello_timeout, STDIO_HELLO_TIMEOUT);
+        assert_eq!(STDIO_HELLO_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(cfg.max_line, MAX_LINE);
+        let mut r = Rig::stdio(ServerConfig {
+            hello_timeout: Duration::from_millis(80),
+            ..ServerConfig::stdio()
+        });
+        assert!(r.closed(), "a silent link is closed at its deadline");
         r.finish();
     }
 }

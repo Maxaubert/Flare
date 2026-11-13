@@ -6,6 +6,10 @@ use serde_json::{Map, Value};
 
 /// The protocol version this crate speaks.
 pub const PROTOCOL: u32 = 1;
+/// The version of the remote link (`remote.*` over `ssh <host> flare --serve-remote`, remote sessions). Both ends
+/// say theirs in `remote.hello`; a mismatch is refused with one line that names both (rule 278). Raised when a
+/// `remote.*` method changes in a way an older peer would misread.
+pub const REMOTE_PROTOCOL: u32 = 1;
 /// The longest line (one JSON message, without its newline) either side accepts: 16 MB.
 pub const MAX_LINE: usize = 16 * 1024 * 1024;
 

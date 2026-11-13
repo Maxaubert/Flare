@@ -854,6 +854,40 @@ spelling (`path_grammar::is_relative`) from `cwd` and any other from `shell_cwd`
 `appctl::link_folder` uses the agent's folder only when `resolve_term_path(folder, "x")` answers, else the tab's.
 Held by `only_a_relative_file_link_is_read_from_the_agents_folder` and
 `the_agents_folder_is_used_for_relative_links_only_when_a_relative_path_resolves_from_it`.
+
+## Remote sessions (2026-11-12)
+
+Spec `docs/superpowers/specs/2026-11-12-remote-sessions-design.md`, plan `docs/superpowers/plans/2026-11-12-remote-sessions.md`.
+
+276. **The remote grant exists only on the serve stdio path and never reaches the Ui namespace.** Extends S3 (rules 186
+to 188). A remote link (`ssh <host> flare --serve-remote`) is a caller from another machine, so its grant is new, not
+the agent's and not a mod's. `Grant::Remote` enters `Namespace::Remote` (`remote.*`) and nothing else: not `hello`,
+not `tabs.list`, no `shell.input` or `tabs.input`, no setting, mod, browser, eval or session. It is issued only to the
+one connection of `Shared::new_stdio` (`ConnOrigin::Stdio`, set by that constructor alone, so no pipe server can be
+configured into it) after `remote.hello`, and asked of the app again on every request. On the pipe `remote.hello` is
+`forbidden` before and after `hello`; a token or agent grant that resolves to `remote` is refused like `ui`
+(`unauthorized`, `internal`); a remote link that says `hello` is `forbidden`; no permission opens `remote.*`, so no
+`mod.json` can ask for it. Native: `crates/flare-ctl/src/grant.rs` (`may_enter`), `session.rs` (`pipe_grant`,
+`remote_grant`, `answer`). Held by `remote_grant_cannot_reach_ui_or_browser`, `remote_grant_never_on_the_pipe`,
+`a_remote_link_reaches_only_the_remote_methods`, `a_remote_link_takes_only_the_remote_grant_from_the_app`,
+`permission_names_agree_with_what_each_grant_can_call`, `nothing_over_the_pipe_reaches_the_ui_namespace` and, over a
+real pipe, `a_live_pipe_client_cannot_get_the_remote_grant`. Source: remote sessions PR 1 (2026-11-12).
+277. **Stdout of the serve process carries only protocol lines.** The viewer reads the host's stdout as JSON lines, so
+a log line, a panic message or a stray `println!` there breaks the link. In serve mode `StdioWire::from_process` is
+the only writer to stdout (whole lines, locked and flushed); logs go to stderr, which ssh carries apart. The one
+allowance is before the first message: a login banner or a shell's greeting is skipped by both ends until
+`remote.hello` is answered, then the framing is strict. Native: `crates/flare-ctl/src/stdio.rs`, `session.rs`
+(`serve_connection`), `client.rs` (`remote_hello`). Held by `a_write_reaches_the_stream_whole_and_flushed`,
+`a_banner_line_before_the_first_json_line_is_skipped_on_the_stdio_path`, `remote_hello_skips_a_banner_before_the_answer`,
+`noise_is_skipped_only_for_remote_hello_and_only_so_much` and `a_remote_hello_round_trips_over_os_pipes_after_a_banner`;
+the serve process itself (PR 2) adds a test that runs it and reads its stdout. Source: remote sessions PR 1 (2026-11-12).
+278. **A remote protocol mismatch refuses with one line naming both versions.** The two machines may run different
+Flare builds. `remote.hello` carries `remote_protocol` (`REMOTE_PROTOCOL`, now 1); the host checks it before any other
+param and answers `unsupported_protocol` (closes) with exactly `remote protocol N here, M there`, its own first; the
+viewer's `Client::remote_hello` checks the answer the same way, its own version first. Nothing is guessed around a
+mismatch. Native: `crates/flare-ctl/src/proto.rs` (`REMOTE_PROTOCOL`), `session.rs` (`remote_mismatch`,
+`handle_remote_hello`), `client.rs`. Held by `a_remote_protocol_mismatch_refuses_with_one_line_naming_both_versions` and
+`a_remote_hello_answer_of_another_version_is_refused_naming_both`. Source: remote sessions PR 1 (2026-11-12).
 ## macOS port
 
 The rules the macOS port stack added (PRs #121 to #140) are numbered from 1001 so they never clash with main: main's

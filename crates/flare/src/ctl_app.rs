@@ -537,6 +537,13 @@ impl AppDispatcher {
                     "Flare's own interface draws its own marks",
                 ));
             }
+            // The grant check keeps a remote link out of the decor methods already (rule 276).
+            Grant::Remote => {
+                return Err(CtlError::new(
+                    code::FORBIDDEN,
+                    "a remote link draws no marks",
+                ));
+            }
         };
         Ok((tab, source))
     }

@@ -15,6 +15,9 @@ pub const BROWSER_TIMEOUT: Duration = Duration::from_secs(60);
 pub const FILL_TIMEOUT: Duration = Duration::from_secs(90);
 /// Time for `mods.call`: the mod's page has 30 s, and a page that has to be opened first needs a few more.
 pub const MOD_CALL_TIMEOUT: Duration = Duration::from_secs(40);
+/// Time for the long `remote.*` calls a viewer makes over ssh (`remote.open`, `remote.ls`, `remote.fetch`, remote
+/// sessions PR 2 on): the host starts a shell, lists a folder or reads a file before it answers.
+pub const REMOTE_CALL: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Method {
@@ -94,6 +97,10 @@ pub enum Method {
     /// The agent calls one mod tool by its agent-facing name (`mod_<id>_<tool>`) and waits for the mod's page
     /// to answer.
     ModsCall,
+    /// The first line of a remote link (remote sessions, 2026-11-12): both ends say their remote protocol, their
+    /// machine and their Flare version. Only a connection that came in on `flare --serve-remote`'s own stdio may
+    /// send it, and it is what gives that connection the remote grant; on the pipe it is `forbidden`.
+    RemoteHello,
 }
 
 /// What a method belongs to, which decides which grants may call it.
@@ -132,11 +139,14 @@ pub enum Namespace {
     /// A login filled into a web page and a secret asked of the person (`browser.fill`, `browser.fill.page`,
     /// `secret.ask`), under `fill`. Never the agent's.
     Fill,
+    /// A remote link's methods (`remote.*`, remote sessions): only the remote grant, which only the serve stdio path
+    /// issues, enters it. No permission opens it, so no mod or plugin can ask for it.
+    Remote,
 }
 
 impl Namespace {
     /// Every namespace.
-    pub const ALL: [Namespace; 18] = [
+    pub const ALL: [Namespace; 19] = [
         Namespace::Hello,
         Namespace::Tabs,
         Namespace::Decor,
@@ -155,6 +165,7 @@ impl Namespace {
         Namespace::Storage,
         Namespace::Agents,
         Namespace::Fill,
+        Namespace::Remote,
     ];
 
     /// The one permission that opens this namespace to a plugin. `None` for the open ones (`hello`, `tabs.list`), for a
@@ -166,7 +177,8 @@ impl Namespace {
             | Namespace::Tabs
             | Namespace::AgentTools
             | Namespace::Ui
-            | Namespace::Storage => None,
+            | Namespace::Storage
+            | Namespace::Remote => None,
             Namespace::Decor => Some(Permission::Decorate),
             Namespace::Panel => Some(Permission::Panel),
             Namespace::View => Some(Permission::View),
@@ -186,7 +198,7 @@ impl Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 46] = [
+    pub const ALL: [Method; 47] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -233,6 +245,7 @@ impl Method {
         Method::ModsEnable,
         Method::ModsTools,
         Method::ModsCall,
+        Method::RemoteHello,
     ];
 
     /// The wire name.
@@ -284,6 +297,7 @@ impl Method {
             Method::ModsEnable => "mods.enable",
             Method::ModsTools => "mods.tools",
             Method::ModsCall => "mods.call",
+            Method::RemoteHello => "remote.hello",
         }
     }
 
@@ -330,6 +344,7 @@ impl Method {
             Method::ToolsRespond => Namespace::Tools,
             Method::ModsTools | Method::ModsCall => Namespace::AgentTools,
             Method::ShellInput | Method::SettingsSet | Method::ModsEnable => Namespace::Ui,
+            Method::RemoteHello => Namespace::Remote,
         }
     }
 
@@ -351,6 +366,9 @@ impl Method {
             // The mod's page has 30 s to answer (`flare_mods::hub::CALL_TIMEOUT`); the channel lets the
             // handler run a little longer, so the answer is the app's own, with the mod's name in it.
             Namespace::AgentTools if self == Method::ModsCall => MOD_CALL_TIMEOUT,
+            // A remote link's short calls (`remote.hello` now; the polls of later PRs) get the default. The long ones
+            // (`remote.open`, `remote.ls`, `remote.fetch`, remote sessions PR 2) get `REMOTE_CALL` when they come.
+            Namespace::Remote => DEFAULT_TIMEOUT,
             _ => DEFAULT_TIMEOUT,
         }
     }
@@ -394,6 +412,7 @@ mod tests {
                 Namespace::Storage => prefix == "storage",
                 Namespace::Agents => prefix == "agents",
                 Namespace::Fill => matches!(prefix, "browser" | "secret"),
+                Namespace::Remote => prefix == "remote",
             };
             assert!(ok, "{} is filed under the wrong namespace", m.name());
         }
@@ -433,6 +452,27 @@ mod tests {
         assert_eq!(Method::SecretAsk.timeout(), FILL_TIMEOUT);
         assert_eq!(Method::BrowserFillPage.timeout(), DEFAULT_TIMEOUT);
         assert!(FILL_TIMEOUT > Duration::from_secs(60));
+    }
+
+    #[test]
+    fn every_method_and_namespace_is_listed_once() {
+        assert_eq!(Method::ALL.len(), 47);
+        assert_eq!(Namespace::ALL.len(), 19);
+        for (i, ns) in Namespace::ALL.iter().enumerate() {
+            assert!(!Namespace::ALL[..i].contains(ns), "{ns:?} twice");
+        }
+        for m in Method::ALL {
+            assert!(Namespace::ALL.contains(&m.namespace()), "{}", m.name());
+        }
+    }
+
+    #[test]
+    fn remote_hello_is_a_short_call_and_the_long_remote_calls_have_their_own_time() {
+        assert_eq!(Method::RemoteHello.namespace(), Namespace::Remote);
+        assert_eq!(Method::parse("remote.hello"), Some(Method::RemoteHello));
+        assert_eq!(Method::RemoteHello.timeout(), DEFAULT_TIMEOUT);
+        assert!(REMOTE_CALL > DEFAULT_TIMEOUT);
+        assert_eq!(Namespace::Remote.permission(), None);
     }
 
     #[test]
