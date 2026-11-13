@@ -135,22 +135,11 @@ fn an_off_row_is_dimmed_and_ignores_the_pointer() {
     }
 }
 
-#[cfg_attr(
-    not(windows),
-    ignore = "260 px cuts the sub in Segoe UI (Windows); the macOS twin is the_subtext_tooltip_appears_only_when_it_is_cut_on_macos"
-)]
+/// Segoe UI on Windows, Flare Selawik on macOS (rule 1232): the same widths, so one panel width holds on both.
 #[test]
 fn the_subtext_tooltip_appears_only_when_it_is_cut() {
     // A 260 px panel: row 2's long sub is cut, row 1's short sub fits.
     subtext_tip_only_when_cut(260.0);
-}
-
-/// macOS twin of `the_subtext_tooltip_appears_only_when_it_is_cut`: SF is narrower than Segoe UI,
-/// so the long sub still fits a 260 px panel there; a 220 px one cuts it and keeps the short one.
-#[cfg(not(windows))]
-#[test]
-fn the_subtext_tooltip_appears_only_when_it_is_cut_on_macos() {
-    subtext_tip_only_when_cut(220.0);
 }
 
 fn subtext_tip_only_when_cut(panel_w: f32) {

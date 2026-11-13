@@ -842,8 +842,8 @@ impl SettingsCtl {
         g.set_font_display(pick("Segoe UI Variable Display").into());
     }
 
-    /// macOS: the page's two fonts are the system face, which every Mac has, so the defaults of
-    /// `ui/platform_fonts.slint` stay (setting them here would only cut their binding).
+    /// macOS: the page's two fonts are the bundled Flare Selawik (rule 1232), always there, so the defaults
+    /// of `ui/platform_fonts.slint` stay (setting them here would only cut their binding).
     #[cfg(not(windows))]
     fn set_fonts(_app: &AppWindow, _deps: &SettingsDeps) {}
 

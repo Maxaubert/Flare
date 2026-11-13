@@ -374,10 +374,7 @@ fn a_row_is_two_columns_with_the_well_and_the_copy_button() {
     }
 }
 
-#[cfg_attr(
-    not(windows),
-    ignore = "Segoe UI's 16.25 px lines outgrow the row; the macOS twin is a_two_line_name_fits_the_row_whole_on_macos"
-)]
+/// Two lines of Segoe UI (Windows) or Flare Selawik (macOS, rule 1232) outgrow the 36 px row.
 #[test]
 fn a_two_line_name_makes_the_row_taller() {
     let h = harness(1.0);
@@ -752,13 +749,11 @@ fn near_the_end_asks_for_more_rows() {
     assert!(*asked.borrow() > 0, "near-end fired");
 }
 
-/// macOS twin of `a_two_line_name_makes_the_row_taller`. The name is 12.5 px SF, whose line is about
-/// 14.9 px: two lines and the 6 px of air are 35.8, inside the 36 px row, so the row stays 36 where
-/// Segoe UI's two lines grow it to 38.5. The property both hold: the name's two lines are drawn
-/// whole, inside its row.
-#[cfg(not(windows))]
+/// The name's two lines are both drawn, whole and inside its row. Its box was capped at PT's 32.5 px (two
+/// lines at 1.3), and a 1.33 em line (Segoe UI's, Flare Selawik's) dropped the second line at 150 percent
+/// (rule 1232).
 #[test]
-fn a_two_line_name_fits_the_row_whole_on_macos() {
+fn a_two_line_name_is_drawn_whole_inside_its_row() {
     for scale in [1.0_f32, 1.5, 2.25] {
         let h = harness(scale);
         let long = "A very long task name that has to wrap onto a second line in the left column of the row";
