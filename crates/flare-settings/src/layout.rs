@@ -139,9 +139,10 @@ pub const MODEL_ROW_H: f64 = 64.0;
 /// The id the GPU pack's block carries (the store's id for the pack).
 pub const GPU_ROW_ID: &str = "gpu-pack";
 /// The Machines page's table (remote sessions PR 7): the heading row, a machine's row, and the add form, which grows
-/// by one line for its red line.
+/// by one line for its red line. A machine that is Not linked grows by its grey reason line (2026-11-13).
 pub const MACHINE_HEAD_H: f64 = 34.0;
 pub const MACHINE_ROW_H: f64 = 50.0;
+pub const MACHINE_REASON_H: f64 = 18.0;
 pub const MACHINE_FORM_H: f64 = 58.0;
 pub const MACHINE_FORM_LINE_H: f64 = 26.0;
 
@@ -264,7 +265,16 @@ fn child_of(
         BlockModel::Model(r) => (BlockKind::Model, r.id, MODEL_ROW_H),
         BlockModel::Gpu(_) => (BlockKind::Model, GPU_ROW_ID, MODEL_ROW_H),
         BlockModel::MachineHead => (BlockKind::MachineHead, "", MACHINE_HEAD_H),
-        BlockModel::Machine(_) => (BlockKind::Machine, "", MACHINE_ROW_H),
+        BlockModel::Machine(r) => (
+            BlockKind::Machine,
+            "",
+            MACHINE_ROW_H
+                + if r.sub_line().is_empty() {
+                    0.0
+                } else {
+                    MACHINE_REASON_H
+                },
+        ),
         BlockModel::MachineAdd(a) => (
             BlockKind::MachineAdd,
             crate::page::machines::ADD_ROW,
