@@ -2740,6 +2740,11 @@ Four gaps of a remote tab closed, owner approved 2026-11-13 (rule 1213). Contrac
   address) or the tab closes. A tunnel that does not come up in 20 s is closed and said in one line in the tab's
   panel; nothing waits on the UI thread. Under `--e2e` a loopback forwarder stands in for ssh. Held by
   `remote_tunnel::tests` and `ui_tests::term::flow::a_remote_tabs_preview_chip_opens_the_page_through_a_tunnel_to_its_host`.
+- **A dead Preview tunnel is opened again.** When a remote tab's tunnel ends on its own (the Wi-Fi dropped or the host
+  slept, and ssh exited), Flare notices within a second, even with no new output on the tab: the dead tunnel is
+  dropped, the Preview chip shows again, and its click opens a new tunnel instead of the dead port. Held by
+  `a_tunnels_child_counts_as_running_only_until_it_ends` and
+  `a_remote_tabs_dead_tunnel_is_dropped_and_the_next_click_opens_a_new_one`.
 - **Remote folders in the recent folders.** A remote tab's folder joins the recent folders with its machine (a tab
   opened in the host's home folder: the first folder the host's shell names). The + menu lists up to 3 of them after
   this machine's folders, each with its machine's logo before its name and the machine's name on its right, and no pin;

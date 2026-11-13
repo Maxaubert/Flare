@@ -28,6 +28,9 @@ use super::{AppCtl, Post, UiMsg};
 /// How soon a screen the terminal has not read yet is asked about again.
 pub const DEV_RETRY_MS: u64 = 50;
 
+/// How often a remote tab's open tunnels are asked whether their ssh still runs (rule 1214).
+pub const TUNNEL_CHECK_MS: u64 = 1000;
+
 /// Looks whether anything listens on a local port. Production reads the system's listening table; the tests hand a
 /// table of their own.
 ///
@@ -55,6 +58,8 @@ pub(super) struct Surf7 {
     pub tunnels: std::collections::HashMap<(String, u16), crate::remote_tunnel::Tunnel>,
     pub tunnels_opening: std::collections::HashSet<(String, u16)>,
     pub tunnel_opener: crate::remote_tunnel::TunnelOpener,
+    /// Rule 1214: when the open tunnels are next asked whether they still carry (only while there are any).
+    pub tunnel_check_at: u64,
 }
 
 impl Surf7 {
@@ -71,6 +76,7 @@ impl Surf7 {
             tunnels_opening: std::collections::HashSet::new(),
             // No tunnel until the window installs one: a test never starts ssh.
             tunnel_opener: Arc::new(|_| Err("no tunnel here".to_string())),
+            tunnel_check_at: 0,
         }
     }
 }
@@ -193,12 +199,20 @@ impl AppCtl {
         self.s7.tunnel_opener = opener;
     }
 
-    /// Rule 1213: a remote tab's tunnel closes once its chip went or holds another port.
+    /// Rule 1213: a remote tab's tunnel closes once its chip went or holds another port. Rule 1214: a tunnel whose ssh
+    /// ended on its own (the link to the host died) is dropped too, so the chip shows again and a click opens a new one.
     fn drop_gone_tunnels(&mut self) {
         let dev = &self.s7.dev;
-        self.s7
-            .tunnels
-            .retain(|(t, port), _| dev.server(t).is_some_and(|s| s.port == *port));
+        self.s7.tunnels.retain(|(t, port), tunnel| {
+            if !dev.server(t).is_some_and(|s| s.port == *port) {
+                return false;
+            }
+            let alive = tunnel.alive();
+            if !alive {
+                log::info!("the preview tunnel for port {port} ended; a click opens a new one");
+            }
+            alive
+        });
     }
 
     /// A setting changed: if it is the previews switch, the chips follow at once.
@@ -411,6 +425,10 @@ impl AppCtl {
     /// worker to the tab's machine (never twice for one tab and port), and the page opens when it comes up.
     fn remote_chip_clicked(&mut self, tab: &str, chip: &ChipServer, token: u64) {
         let key = (tab.to_string(), chip.port);
+        // A tunnel whose ssh ended is never used again: it is dropped and a new one opened (rule 1214).
+        if self.s7.tunnels.get(&key).is_some_and(|t| !t.alive()) {
+            self.s7.tunnels.remove(&key);
+        }
         if let Some(t) = self.s7.tunnels.get(&key) {
             if let Some(url) = crate::remote_tunnel::tunnel_url(&chip.url, t.local_port)
                 && self.browser_open(tab, &url).is_ok()
@@ -492,6 +510,8 @@ impl AppCtl {
         }
         let local = tunnel.local_port;
         self.s7.tunnels.insert((tab.to_string(), port), tunnel);
+        // From now on the tunnels are asked, on the timer, whether they still carry (rule 1214).
+        self.s7.tunnel_check_at = self.now() + TUNNEL_CHECK_MS;
         if self.front_id().as_deref() != Some(tab) {
             return;
         }
@@ -601,6 +621,7 @@ impl AppCtl {
             self.s7.dev.next_due(),
             self.s7.notifier.next_due(),
             self.s7.dev_retry.values().copied().min(),
+            (!self.s7.tunnels.is_empty()).then_some(self.s7.tunnel_check_at),
         ]
         .into_iter()
         .flatten()
@@ -621,6 +642,13 @@ impl AppCtl {
             self.dev_read(&tab);
         }
         self.dev_pump();
+        // Rule 1214: a tunnel whose ssh ended on its own goes now, so the chip shows again without any new output.
+        if !self.s7.tunnels.is_empty() && self.s7.tunnel_check_at <= now {
+            self.s7.tunnel_check_at = now + TUNNEL_CHECK_MS;
+            if self.s7.tunnels.values().any(|t| !t.alive()) {
+                self.sync_chip();
+            }
+        }
         if self.s7.notifier.next_due().is_some_and(|d| d <= now) {
             self.notify_update();
         }

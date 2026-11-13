@@ -22,18 +22,37 @@ use crate::machines::{Machine, argv_word};
 /// How long a tunnel may take to come up (ssh's login included) before it is closed and said.
 pub const TUNNEL_WAIT: Duration = Duration::from_secs(20);
 
-/// An open tunnel: the local port it listens on. Dropping it closes it (off the UI thread).
+/// An open tunnel: the local port it listens on, and whether it still carries. Dropping it closes it (off the UI
+/// thread).
 pub struct Tunnel {
     pub local_port: u16,
     closer: Option<Box<dyn FnOnce() + Send>>,
+    alive: Box<dyn Fn() -> bool + Send>,
 }
 
 impl Tunnel {
+    /// A tunnel that carries for as long as it is held (the loopback stand-in, the tests).
     pub fn new(local_port: u16, closer: Box<dyn FnOnce() + Send>) -> Self {
+        Self::with_alive(local_port, closer, Box::new(|| true))
+    }
+
+    /// A tunnel that can end on its own (ssh exits when the link to the host dies): `alive` says whether it still
+    /// carries. It must answer at once: the UI thread asks it.
+    pub fn with_alive(
+        local_port: u16,
+        closer: Box<dyn FnOnce() + Send>,
+        alive: Box<dyn Fn() -> bool + Send>,
+    ) -> Self {
         Self {
             local_port,
             closer: Some(closer),
+            alive,
         }
+    }
+
+    /// Whether the tunnel still carries (rule 1214): a tunnel whose ssh ended is dropped and opened again.
+    pub fn alive(&self) -> bool {
+        (self.alive)()
     }
 }
 
@@ -174,18 +193,35 @@ pub fn open_ssh(ask: &TunnelAsk, wait: Duration) -> Result<Tunnel, String> {
         }
         std::thread::sleep(Duration::from_millis(100)); // sync-ok: a worker waits for the tunnel, capped by `wait`
     }
-    Ok(Tunnel::new(
+    // The child is shared: the closer kills it, and `alive` asks it (without waiting) whether ssh is still running.
+    let child = Arc::new(std::sync::Mutex::new(child));
+    let asked = Arc::clone(&child);
+    Ok(Tunnel::with_alive(
         local,
         Box::new(move || {
             // The kill is at once (so a quit leaves no ssh behind); only the wait for its end is on a thread.
-            let _ = child.kill();
+            if let Ok(mut c) = child.lock() {
+                let _ = c.kill();
+            }
             let _ = std::thread::Builder::new()
                 .name("flare-tunnel-close".into())
                 .spawn(move || {
-                    let _ = child.wait(); // sync-ok: a thread of its own, after a kill
+                    if let Ok(mut c) = child.lock() {
+                        let _ = c.wait(); // sync-ok: a thread of its own, after a kill
+                    }
                 });
         }),
+        Box::new(move || child_running(&asked)),
     ))
+}
+
+/// Whether a tunnel's ssh is still running: `try_wait` never blocks. A lock held elsewhere (the closer's kill) or an
+/// error counts as running, so a tunnel is never dropped on a guess.
+fn child_running(child: &std::sync::Mutex<std::process::Child>) -> bool {
+    match child.try_lock() {
+        Ok(mut c) => !matches!(c.try_wait(), Ok(Some(_))),
+        Err(_) => true,
+    }
 }
 
 /// Copies one way until either end closes.
@@ -320,6 +356,46 @@ mod tests {
         assert_eq!(tunnel_url("http://localhost:1/", 0), None);
     }
 
+    /// Rule 1214: an ssh tunnel's `alive` is whether its child still runs: true while it runs, false once it ended.
+    #[test]
+    fn a_tunnels_child_counts_as_running_only_until_it_ends() {
+        fn quiet(mut cmd: std::process::Command) -> std::process::Child {
+            cmd.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0800_0000);
+            }
+            cmd.spawn().unwrap()
+        }
+        let long = |secs: &str| {
+            if cfg!(windows) {
+                let mut c = std::process::Command::new("ping");
+                c.args(["-n", secs, "127.0.0.1"]);
+                c
+            } else {
+                let mut c = std::process::Command::new("sleep");
+                c.arg(secs);
+                c
+            }
+        };
+        let running = std::sync::Mutex::new(quiet(long("30")));
+        assert!(child_running(&running));
+        running.lock().unwrap().kill().unwrap();
+        let ended = std::sync::Mutex::new(quiet(long("1")));
+        let end = Instant::now() + Duration::from_secs(10);
+        while child_running(&ended) {
+            assert!(Instant::now() < end, "the child never ended");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let end = Instant::now() + Duration::from_secs(10);
+        while child_running(&running) {
+            assert!(Instant::now() < end, "the killed child still runs");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
     /// Rule 1213's e2e stand-in: the loopback tunnel carries a request to the server's port and back, and once dropped
     /// it takes no new connection.
     #[test]

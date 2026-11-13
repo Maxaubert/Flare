@@ -2992,6 +2992,61 @@ mod flow {
         w.h.comp.invoke_preview_chip_clicked();
         steps_until(&w, "a second try", |_| failed.load(Ordering::SeqCst) == 2);
     }
+    /// Rule 1214: a tunnel whose ssh ended on its own (the link to the host died) is never used again. With no new
+    /// output on the tab, the timer drops it: the chip shows again, and its click opens a new tunnel at a new port
+    /// rather than the dead one's.
+    #[test]
+    fn a_remote_tabs_dead_tunnel_is_dropped_and_the_next_click_opens_a_new_one() {
+        use crate::remote_tunnel::Tunnel;
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+        let w = Wx::new(1.0);
+        w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![mac_mini()]));
+        let alive: Arc<Mutex<Vec<Arc<AtomicBool>>>> = Arc::default();
+        let next = Arc::new(AtomicU16::new(50123));
+        let (a, n) = (Arc::clone(&alive), Arc::clone(&next));
+        w.ctl.borrow_mut().set_tunnel_opener(Arc::new(
+            move |_: &crate::remote_tunnel::TunnelAsk| {
+                let up = Arc::new(AtomicBool::new(true));
+                a.lock().unwrap().push(Arc::clone(&up));
+                Ok(Tunnel::with_alive(
+                    n.fetch_add(1, Ordering::SeqCst),
+                    Box::new(|| {}),
+                    Box::new(move || up.load(Ordering::SeqCst)),
+                ))
+            },
+        ));
+        let (id, _live) = remote_in_front(&w);
+        let io = w.remote.made()[0].1.clone();
+        io.push_output(b"  Local:   http://localhost:5173/\r\n");
+        steps_until(&w, "the chip", |w| {
+            w.h.comp.get_preview_chip_label() == "localhost:5173"
+        });
+        w.h.comp.invoke_preview_chip_clicked();
+        steps_until(&w, "the panel", |w| {
+            w.ctl.borrow().panel_snap(&id).is_some_and(|s| s.open)
+        });
+        assert_eq!(w.ctl.borrow().remote_tunnels(), [(id.clone(), 5173, 50123)]);
+        assert_eq!(w.h.comp.get_preview_chip_label(), "", "the panel shows it");
+        // ssh ends on its own; the tab prints nothing more.
+        alive.lock().unwrap()[0].store(false, Ordering::SeqCst);
+        steps_until(&w, "the chip back", |w| {
+            w.h.comp.get_preview_chip_label() == "localhost:5173"
+        });
+        assert!(
+            w.ctl.borrow().remote_tunnels().is_empty(),
+            "the dead tunnel went"
+        );
+        w.h.comp.invoke_preview_chip_clicked();
+        steps_until(&w, "a new tunnel", |w| {
+            w.ctl
+                .borrow()
+                .panel_snap(&id)
+                .is_some_and(|s| s.url.as_deref() == Some("http://127.0.0.1:50124/"))
+        });
+        assert_eq!(alive.lock().unwrap().len(), 2, "a second tunnel was opened");
+        assert_eq!(w.ctl.borrow().remote_tunnels(), [(id.clone(), 5173, 50124)]);
+    }
 
     /// Rule 1213: a remote tab's folder joins the recent folders with its machine (the host's home folder only once its
     /// shell names it); the + menu lists it with the machine's logo, and its pick opens a remote tab there.

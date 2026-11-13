@@ -3686,3 +3686,18 @@ so the main window is the only one. Nothing is set at start while the original i
 (`IconCtl`, `start`), `ship_ctl::set_window_icon` and `set_worn_icon`. Held by `the_default_is_the_original_and_needs_nothing_at_start`,
 `a_pick_is_worn_once_and_the_original_brings_the_shipped_icon_back`, `an_unknown_stored_icon_falls_back_to_the_original`
 and `every_icon_draws_at_the_system_sizes` (`app_icon.rs`, a recording icon port). Source: the owner, 2026-11-13.
+
+1214. **A remote tab's Preview tunnel whose ssh ended on its own is dropped and opened again.** Found 2026-11-13 by
+an independent review of rule 1213: a stored tunnel was never checked again, so once ssh exited (the Wi-Fi dropped,
+the host slept) every later click opened the dead `127.0.0.1:<port>`, and while the panel showed that port the chip
+stayed hidden, so the page stayed dead until the screen was cleared or the tab closed. A `Tunnel` now carries
+`alive`: an ssh tunnel shares its child with the closer and answers `try_wait` without waiting (a lock held by the
+closer or an error counts as running, so a tunnel is never dropped on a guess); the loopback stand-in and the tests'
+`Tunnel::new` are alive while held. `drop_gone_tunnels` drops a dead tunnel as it drops one whose chip went;
+`remote_chip_clicked` never reuses a dead one and opens a new tunnel; and while any tunnel is open the timer asks every
+`TUNNEL_CHECK_MS` (1 s) and syncs the chip when one died, so the chip shows again with no new output on the tab.
+Native: `remote_tunnel::{Tunnel::with_alive, Tunnel::alive, child_running, open_ssh}`, `appctl/surfaces7.rs`
+(`drop_gone_tunnels`, `remote_chip_clicked`, `on_remote_tunnel`, `surf7_next_due`, `surf7_tick`). Held by
+`a_tunnels_child_counts_as_running_only_until_it_ends` and
+`a_remote_tabs_dead_tunnel_is_dropped_and_the_next_click_opens_a_new_one`. Source: the review of PR
+feat/remote-more-c, 2026-11-13.
