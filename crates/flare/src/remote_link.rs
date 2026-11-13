@@ -21,7 +21,9 @@
 //!
 //! Between the typing and the output poll the worker does the window's file work (remote sessions PR 6, `Errand`): a
 //! file link's host file fetched in chunks (`remote.fetch`, rule 303), and dropped or pasted files copied to the host
-//! (`remote.put`) with their host paths pasted as one paste (rule 304).
+//! (`remote.put`) with their host paths pasted as one paste (rule 304); a dropped folder goes whole, its folders and
+//! files under it, and only its path is pasted (rule 1213). A snapshot is asked styled, so the host's colours show at
+//! once; an older host's refusal is asked again plain (rule 1213).
 //!
 //! Closing the tab closes the host's session (`remote.close`, which asks as any close does); the quit and a dropped
 //! link only detach (rule 288). Every wait here is on this worker: a dead link never holds the UI thread, a close or
@@ -30,8 +32,8 @@
 use base64::Engine as _;
 use flare_ctl::framing::Wire;
 use flare_ctl::remote::{
-    FILE_CHUNK, FILE_CHUNKS_MAX, FILE_MAX, Intent, KeyIntent, MAX_INPUT_BYTES, MAX_INTENTS,
-    OUTPUT_MAX, chunks_of, intents_json,
+    FILE_CHUNK, FILE_CHUNKS_MAX, FILE_MAX, FOLDER_DIRS_MAX, FOLDER_FILES_MAX, FOLDER_MAX, Intent,
+    KeyIntent, MAX_INPUT_BYTES, MAX_INTENTS, OUTPUT_MAX, chunks_of, intents_json,
 };
 use flare_ctl::{
     Client, ClientError, CtlError, Method, RemoteHelloInfo, RemoteHelloParams, StdioWire, code,
@@ -41,7 +43,7 @@ use flare_term::handle::RemoteIntent;
 use flare_term::pty::{PtyProcess, PtySpawner, SpawnSpec};
 use flare_term::remote_pty::{
     Errand, ErrandFail, Fetched, Leaving, LinkState, RemoteIo, RemotePty, RemoteSpec, SignalStrip,
-    Upload, plain_snapshot,
+    Upload, UploadFolder, plain_snapshot, styled_snapshot,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -461,13 +463,18 @@ pub fn put_files(
     link: &mut dyn Link,
     tab: &str,
     files: &[Upload],
+    folders: &[UploadFolder],
     wait: Duration,
 ) -> Answered<(Vec<String>, String)> {
-    let enc = base64::engine::general_purpose::STANDARD;
-    if files.is_empty() {
+    if files.is_empty() && folders.is_empty() {
         return Ok(Err(ErrandFail::Failed("there is no file to copy".into())));
     }
+    if let Err(why) = folders_fit(folders) {
+        return Ok(Err(ErrandFail::Failed(why)));
+    }
     let (mut paths, mut pastes) = (Vec::new(), Vec::new());
+    // Rule 1215: whether the host still takes `exec`; an older one refuses it once, and this errand leaves it out.
+    let mut exec_on = true;
     for f in files {
         if f.data.len() as u64 > FILE_MAX {
             return Ok(Err(ErrandFail::Failed(format!(
@@ -476,25 +483,16 @@ pub fn put_files(
                 FILE_MAX / (1024 * 1024)
             ))));
         }
-        let chunks = chunks_of(f.data.len() as u64);
-        let mut name = f.name.clone();
-        let mut last = Value::Null;
-        for c in 0..chunks {
-            let from = (c as usize) * FILE_CHUNK;
-            let piece = &f.data[from.min(f.data.len())..(from + FILE_CHUNK).min(f.data.len())];
-            last = match link.call(
-                Method::RemotePut,
-                json!({"tab": tab, "name": name, "chunk": c, "chunks": chunks, "data": enc.encode(piece)}),
-                wait,
-            ) {
-                Ok(v) => v,
-                Err(e) => return refused(e),
-            };
-            // The next chunks name the file as the host kept it.
-            if let Some(n) = last["name"].as_str() {
-                name = n.to_string();
-            }
-        }
+        let one = PutOne {
+            under: None,
+            name: &f.name,
+            data: &f.data,
+            exec: f.exec,
+        };
+        let last = match put_one(link, tab, &one, &mut exec_on, wait)? {
+            Ok(v) => v,
+            Err(why) => return Ok(Err(why)),
+        };
         let (Some(p), Some(q)) = (last["host_path"].as_str(), last["paste"].as_str()) else {
             return Ok(Err(ErrandFail::Failed(
                 "the host kept the file but named no path".into(),
@@ -503,7 +501,213 @@ pub fn put_files(
         paths.push(p.to_string());
         pastes.push(q.to_string());
     }
+    for f in folders {
+        match put_folder(link, tab, f, &mut exec_on, wait)? {
+            Ok((p, q)) => {
+                paths.push(p);
+                pastes.push(q);
+            }
+            Err(why) => return Ok(Err(why)),
+        }
+    }
     Ok(Ok((paths, pastes.join(" "))))
+}
+
+/// Pure: whether dropped folders fit the caps together (rule 1213): at most `FOLDER_FILES_MAX` files, `FOLDER_MAX`
+/// bytes and `FOLDER_DIRS_MAX` folders, each file at most `FILE_MAX`. The one line that says why not, otherwise.
+pub fn folders_fit(folders: &[UploadFolder]) -> Result<(), String> {
+    let files: usize = folders.iter().map(|f| f.files.len()).sum();
+    let dirs: usize = folders.iter().map(|f| f.dirs.len() + 1).sum();
+    let bytes: u64 = folders
+        .iter()
+        .flat_map(|f| f.files.iter().map(|x| x.size))
+        .sum();
+    let mb = |b: u64| b / (1024 * 1024);
+    if files > FOLDER_FILES_MAX {
+        return Err(format!(
+            "the folder holds {files} files, over {FOLDER_FILES_MAX}: copy it to the other machine another way"
+        ));
+    }
+    if bytes > FOLDER_MAX {
+        return Err(format!(
+            "the folder is {} MB, over {} MB: copy it to the other machine another way",
+            mb(bytes),
+            mb(FOLDER_MAX)
+        ));
+    }
+    if dirs > FOLDER_DIRS_MAX {
+        return Err(format!(
+            "the folder holds over {FOLDER_DIRS_MAX} folders: copy it to the other machine another way"
+        ));
+    }
+    if let Some(big) = folders
+        .iter()
+        .flat_map(|f| f.files.iter())
+        .find(|x| x.size > FILE_MAX)
+    {
+        return Err(format!(
+            "{} is over {} MB: copy the folder to the other machine another way",
+            big.name,
+            mb(FILE_MAX)
+        ));
+    }
+    Ok(())
+}
+
+/// One file for [`put_one`]: the folder `under` names inside a dropped folder (none: the tab's upload folder), its
+/// name, its bytes and whether it runs as a program on this machine (rule 1215).
+struct PutOne<'a> {
+    under: Option<&'a str>,
+    name: &'a str,
+    data: &'a [u8],
+    exec: bool,
+}
+
+/// One file to the host in chunks (`remote.put`), into the tab's upload folder or the folder `under` names inside a
+/// dropped folder: the host's answer to the last chunk. A runnable file's last chunk says `exec: true` (rule 1215); a
+/// host that refuses the unknown param (`bad_params` naming it, an older Flare) takes the chunk again without it, and
+/// `exec_on` goes false so the rest of the errand leaves it out.
+fn put_one(
+    link: &mut dyn Link,
+    tab: &str,
+    f: &PutOne<'_>,
+    exec_on: &mut bool,
+    wait: Duration,
+) -> Answered<Value> {
+    let enc = base64::engine::general_purpose::STANDARD;
+    let data = f.data;
+    let chunks = chunks_of(data.len() as u64);
+    let mut name = f.name.to_string();
+    let mut last = Value::Null;
+    for c in 0..chunks {
+        let from = (c as usize) * FILE_CHUNK;
+        let piece = &data[from.min(data.len())..(from + FILE_CHUNK).min(data.len())];
+        let mut p = json!({"tab": tab, "name": name, "chunk": c, "chunks": chunks, "data": enc.encode(piece)});
+        if let Some(u) = f.under {
+            p["under"] = json!(u);
+        }
+        let exec = f.exec && *exec_on && c + 1 == chunks;
+        if exec {
+            p["exec"] = json!(true);
+        }
+        let mut answer = link.call(Method::RemotePut, p.clone(), wait);
+        if exec
+            && let Err(LinkError::Refused(e)) = &answer
+            && e.code == code::BAD_PARAMS
+            && e.message.contains("exec")
+        {
+            log::info!("remote.put: an older host without exec, copying without it");
+            *exec_on = false;
+            if let Some(o) = p.as_object_mut() {
+                o.remove("exec");
+            }
+            answer = link.call(Method::RemotePut, p, wait);
+        }
+        last = match answer {
+            Ok(v) => v,
+            Err(e) => return refused(e),
+        };
+        // The next chunks name the file as the host kept it.
+        if let Some(n) = last["name"].as_str() {
+            name = n.to_string();
+        }
+    }
+    Ok(Ok(last))
+}
+
+/// One dropped folder to the host (rule 1213): the folder (`folder: true`), the folders in it, then each file, read
+/// here as it goes. The folder's host path and that path quoted for the tab's shell. An older host that takes single
+/// files only refuses the first call and nothing is copied.
+fn put_folder(
+    link: &mut dyn Link,
+    tab: &str,
+    f: &UploadFolder,
+    exec_on: &mut bool,
+    wait: Duration,
+) -> Answered<(String, String)> {
+    let top = match link.call(
+        Method::RemotePut,
+        json!({"tab": tab, "name": f.name, "folder": true}),
+        wait,
+    ) {
+        Ok(v) => v,
+        Err(LinkError::Refused(e))
+            if e.code == code::BAD_PARAMS && e.message.contains("folder") =>
+        {
+            return Ok(Err(ErrandFail::Failed(
+                "Flare on the other machine takes single files only: update it there to copy a folder"
+                    .into(),
+            )));
+        }
+        Err(e) => return refused(e),
+    };
+    let (Some(kept), Some(p), Some(q)) = (
+        top["name"].as_str(),
+        top["host_path"].as_str(),
+        top["paste"].as_str(),
+    ) else {
+        return Ok(Err(ErrandFail::Failed(
+            "the host made the folder but named no path".into(),
+        )));
+    };
+    // Each folder's place on the host (`under`), by its parts here.
+    let mut at: std::collections::HashMap<Vec<String>, String> = std::collections::HashMap::new();
+    at.insert(Vec::new(), kept.to_string());
+    for d in &f.dirs {
+        let Some((name, parent)) = d.split_last() else {
+            continue;
+        };
+        let Some(under) = at.get(parent).cloned() else {
+            return Ok(Err(ErrandFail::Failed(
+                "a folder came before the folder it is in".into(),
+            )));
+        };
+        let v = match link.call(
+            Method::RemotePut,
+            json!({"tab": tab, "name": name, "folder": true, "under": under}),
+            wait,
+        ) {
+            Ok(v) => v,
+            Err(e) => return refused(e),
+        };
+        let made = v["name"].as_str().unwrap_or(name);
+        at.insert(d.clone(), format!("{under}/{made}"));
+    }
+    for file in &f.files {
+        let Some(under) = at.get(&file.dir).cloned() else {
+            return Ok(Err(ErrandFail::Failed(format!(
+                "{} is in a folder that was not copied",
+                file.name
+            ))));
+        };
+        // sync-ok: the tab's link worker reads a dropped folder's file as it sends it, never the UI thread
+        let data = match std::fs::read(&file.path) {
+            Ok(d) if d.len() as u64 <= FILE_MAX => d,
+            Ok(_) => {
+                return Ok(Err(ErrandFail::Failed(format!(
+                    "{} grew over {} MB while it was copied",
+                    file.name,
+                    FILE_MAX / (1024 * 1024)
+                ))));
+            }
+            Err(_) => {
+                return Ok(Err(ErrandFail::Failed(format!(
+                    "{} could not be read here",
+                    file.name
+                ))));
+            }
+        };
+        let one = PutOne {
+            under: Some(&under),
+            name: &file.name,
+            data: &data,
+            exec: file.exec,
+        };
+        if let Err(why) = put_one(link, tab, &one, exec_on, wait)? {
+            return Ok(Err(why));
+        }
+    }
+    Ok(Ok((p.to_string(), q.to_string())))
 }
 
 // ---- the tab's worker ----
@@ -609,6 +813,7 @@ impl PtySpawner for RemoteSpawner {
             open_id: flare_term::session::new_ctl_token(),
             open_id_on: true,
             kept: KeptTyping::default(),
+            styled_on: true,
         };
         std::thread::Builder::new()
             .name("flare-remote-link".into())
@@ -651,6 +856,8 @@ struct Worker {
     open_id_on: bool,
     /// The typing kept while the link is down (rule 1210).
     kept: KeptTyping,
+    /// Whether the host takes `remote.snapshot {styled}` (rule 1213; an older host refuses the param).
+    styled_on: bool,
 }
 
 /// The most characters of one entry the fitted view shows (a long answer is cut, the view is for a glance).
@@ -692,6 +899,15 @@ pub fn open_params(spec: &RemoteSpec, open_id: Option<&str>) -> Value {
     }
     if let Some(o) = open_id {
         p["open_id"] = json!(o);
+    }
+    p
+}
+
+/// Pure: `remote.snapshot`'s params: the tab, and `styled` when the host takes it (rule 1213).
+pub fn snapshot_params(tab: &str, styled: bool) -> Value {
+    let mut p = json!({"tab": tab});
+    if styled {
+        p["styled"] = json!(true);
     }
     p
 }
@@ -1062,16 +1278,39 @@ impl Worker {
     }
 
     /// The host's screen and history as text, and the number it holds (rule 289: text only, no mark rides on it).
+    /// Rule 1213: the snapshot is asked `styled`, so the tab shows the host's colours at once; an older host refuses
+    /// the param (`bad_params` naming it), and the snapshot goes again plain, on this link, and later ones of this tab
+    /// leave it out. Only an answer that says `styled` keeps its SGRs.
     fn snapshot(&mut self, link: &mut dyn Link, tab: &str) -> Result<(), LinkError> {
-        let v = link.call(
+        let mut v = link.call(
             Method::RemoteSnapshot,
-            json!({"tab": tab}),
+            snapshot_params(tab, self.styled_on),
             self.t.long_call,
-        )?;
+        );
+        if self.styled_on
+            && let Err(LinkError::Refused(e)) = &v
+            && e.code == code::BAD_PARAMS
+            && e.message.contains("styled")
+        {
+            log::info!("remote.snapshot: an older host without styled, asking plain");
+            self.styled_on = false;
+            v = link.call(
+                Method::RemoteSnapshot,
+                snapshot_params(tab, false),
+                self.t.long_call,
+            );
+        }
+        let v = v?;
         let seq = v["seq"]
             .as_u64()
             .ok_or_else(|| LinkError::Down("a snapshot with no seq".into()))?;
-        self.io.push_output(&plain_snapshot(&b64(&v)));
+        let data = b64(&v);
+        self.io
+            .push_output(&if v["styled"].as_bool() == Some(true) {
+                styled_snapshot(&data)
+            } else {
+                plain_snapshot(&data)
+            });
         self.spec.live.set_seq(seq);
         Ok(())
     }
@@ -1184,7 +1423,11 @@ impl Worker {
                     }
                 }
             }
-            Errand::Put { files, done } => match put_files(link, tab, &files, self.t.long_call) {
+            Errand::Put {
+                files,
+                folders,
+                done,
+            } => match put_files(link, tab, &files, &folders, self.t.long_call) {
                 Ok(Ok((paths, paste))) => {
                     // One paste of every path, quoted by the host for its shell (rules 1, 292, 304).
                     for batch in input_batches(&[RemoteIntent::Paste(paste)]) {

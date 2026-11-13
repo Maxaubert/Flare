@@ -3568,6 +3568,48 @@ before the view returns. Native: `tab_host.rs` (`viewer_typed`, `note_viewer_typ
 `tab_host::tests::a_viewer_typed_last_only_after_typing_while_it_sizes_the_tab` and
 `remote_flows::a_viewers_size_alone_never_puts_the_hosts_fitted_view_up`. Source: independent review, 2026-11-13.
 
+1213. **A remote tab's Preview chip opens through an ssh tunnel, its folder joins the recent folders with its machine,
+its snapshot keeps the host's colours, and a dropped folder is copied whole.** Owner approved 2026-11-13. (1) A remote
+tab's `localhost` is the host's: its chip is believed from the screen (no port of this machine is looked at, so a
+local server on the same port never stands in) and a click opens `ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes
+-L 127.0.0.1:<free port>:localhost:<port> -- <host>` from the link's own machine entry (`tunnel_argv`: argv items,
+`argv_word` host and user, never a shell string), on a worker, waiting at most 20 s for the forward to listen; the panel
+opens at `http://127.0.0.1:<free port><path>` (`tunnel_url`). One tunnel per tab and host port, kept while that chip
+stands and dropped (ssh killed off the UI thread) when the chip goes or the tab closes; a failure is one line in the
+panel. Under `--e2e` a loopback forwarder stands in and ssh never runs. (2) A remote tab's folder is kept with its
+machine id in `flare.recentRemoteRoots`, apart from this machine's list (a remote path is never opened here); a tab
+opened in the host's home records the first folder its shell reports. The + menu lists up to 3 after the local ones,
+with the machine's logo and name and no pin, only for machines still in `machines.json`; the row carries `\0remote:`,
+so no folder is read as one. (3) `remote.snapshot {styled: true}` sends each line's style runs as SGRs that reset and
+set the style; the viewer keeps only SGRs (and the cursor moves of rule 293) of an answer that says `styled`, so a
+title, a mark or a mode still never rides on a snapshot (rule 289). A styled snapshot is at most 8 MiB: the oldest
+history goes first, never the screen. An older host refuses the param; the viewer asks plain on the same link and stops
+asking styled. (4) A dropped folder is listed on a worker (links and junctions skipped, its files only stat'ed), refused
+in one line past 5000 files, 5000 folders, 200 MB or a 32 MB file before anything is sent, then copied with
+`remote.put {folder: true}` and `under`: every name the host keeps is `put_inner_name`'s (a leading dot kept, never `.`
+or `..`), `under`'s first name must be a folder this run made for the tab, and every step must be a real folder on the
+host (`symlink_metadata`, no reparse point), so nothing lands outside the tab's upload folder; the host counts the caps
+too. Only the folder's quoted path is pasted. An older host refuses `folder`: nothing is copied, one line says to update
+it. Native: `remote_tunnel.rs`, `appctl/surfaces7.rs` (`remote_chip_clicked`, `on_remote_tunnel`,
+`drop_gone_tunnels`), `recent_roots::remember_remote_root`, `menus_ui::remote_folder_rows`,
+`appctl/remote_glue.rs::remember_remote_home`, `emulator::row_styled`, `TermHandle::remote_snapshot_with`,
+`remote_pty::styled_snapshot`, `remote_link::{snapshot, put_files, put_folder, folders_fit}`,
+`remote_files::Uploads::{make_folder, put_in}`, `flare_ctl::remote::{under_parts, put_inner_name}`,
+`appctl/remote_files_glue.rs::read_dropped`, `ctl_app::remote_put`. Held by `remote_tunnel::tests`,
+`a_remote_tabs_preview_chip_opens_the_page_through_a_tunnel_to_its_host`,
+`remote_folders_are_kept_with_their_machine_newest_first`, `remote_folders_follow_the_local_ones_with_their_machines_logo`,
+`a_remote_tabs_folder_joins_the_recent_folders_and_opens_there_again`,
+`a_styled_row_carries_its_colours_and_draws_the_same_cells_again`,
+`a_styled_snapshot_shows_the_hosts_colours_and_keeps_the_screen_under_its_cap`,
+`a_styled_snapshot_keeps_its_colours_and_nothing_else`,
+`a_snapshot_is_asked_styled_and_an_older_hosts_refusal_falls_back_to_plain`,
+`a_dropped_folder_lands_whole_in_the_tabs_folder_and_nothing_outside_it`,
+`a_dropped_folder_past_its_caps_is_refused_on_the_host_too`, `a_dropped_folder_is_listed_with_its_links_skipped`,
+`a_dropped_folder_past_the_file_cap_is_refused_in_one_line`, `a_dropped_folder_is_copied_whole_and_only_its_path_is_pasted`,
+`a_folder_over_the_caps_or_to_an_older_host_copies_nothing`,
+`an_under_is_clean_names_joined_by_slashes_and_nothing_else` and
+`remote_put_makes_a_dropped_folder_and_fills_it_and_a_snapshot_takes_styled`. Source: owner request, 2026-11-13.
+
 1207. **A PC host runs the serve command through `cmd /c`, Settings > Machines finds a PC's own installs, and a
 renamed copy serves its own profile.** Found 2026-11-13 over real ssh from the Mac to the PC: the PC's sshd
 `DefaultShell` was PowerShell 7, which refused the old `"<path>" --serve-remote` (`ParserError: Unexpected token
@@ -3644,3 +3686,44 @@ so the main window is the only one. Nothing is set at start while the original i
 (`IconCtl`, `start`), `ship_ctl::set_window_icon` and `set_worn_icon`. Held by `the_default_is_the_original_and_needs_nothing_at_start`,
 `a_pick_is_worn_once_and_the_original_brings_the_shipped_icon_back`, `an_unknown_stored_icon_falls_back_to_the_original`
 and `every_icon_draws_at_the_system_sizes` (`app_icon.rs`, a recording icon port). Source: the owner, 2026-11-13.
+
+1214. **A remote tab's Preview tunnel whose ssh ended on its own is dropped and opened again.** Found 2026-11-13 by
+an independent review of rule 1213: a stored tunnel was never checked again, so once ssh exited (the Wi-Fi dropped,
+the host slept) every later click opened the dead `127.0.0.1:<port>`, and while the panel showed that port the chip
+stayed hidden, so the page stayed dead until the screen was cleared or the tab closed. A `Tunnel` now carries
+`alive`: an ssh tunnel shares its child with the closer and answers `try_wait` without waiting (a lock held by the
+closer or an error counts as running, so a tunnel is never dropped on a guess); the loopback stand-in and the tests'
+`Tunnel::new` are alive while held. `drop_gone_tunnels` drops a dead tunnel as it drops one whose chip went;
+`remote_chip_clicked` never reuses a dead one and opens a new tunnel; and while any tunnel is open the timer asks every
+`TUNNEL_CHECK_MS` (1 s) and syncs the chip when one died, so the chip shows again with no new output on the tab.
+Native: `remote_tunnel::{Tunnel::with_alive, Tunnel::alive, child_running, open_ssh}`, `appctl/surfaces7.rs`
+(`drop_gone_tunnels`, `remote_chip_clicked`, `on_remote_tunnel`, `surf7_next_due`, `surf7_tick`). Held by
+`a_tunnels_child_counts_as_running_only_until_it_ends` and
+`a_remote_tabs_dead_tunnel_is_dropped_and_the_next_click_opens_a_new_one`. Source: the review of PR
+feat/remote-more-c, 2026-11-13.
+
+1215. **A remote tab's tunnel never rides a ControlMaster, a copy to the host keeps its accents and its runnable
+files without Finder's litter or a broken package, and a Mac host's recent folders keep their case.** Found 2026-11-13 by the Mac session's review
+of PR #230 (head 98101e25, macOS 27.2). Six fixes. (1) A viewer whose ~/.ssh/config has `ControlMaster auto` and
+`ControlPersist` handed `ssh -N -L` to the master, which exited at once: the tunnel read as ended and every click
+opened another one. `tunnel_argv` now adds `-o ControlMaster=no -o ControlPath=none` (harmless on Windows). (2) A
+decomposed name (`e` and U+0301, as some macOS apps write it) became `cafe_`: `put_name` makes the name NFC first
+(`unicode-normalization`), every refusal kept. (3) `.DS_Store` and the AppleDouble `._name` files of a dropped
+folder are skipped and never count toward its caps. (4) A dropped macOS package (a folder named `*.app`,
+`*.framework`, `*.bundle`, `*.rtfd`, `*.pkg`, `*.plugin`, `*.kext` and the like, any case) is refused in one line,
+nothing copied, on every viewer, by its name: its links would be left out and the host would get a broken bundle.
+(5) A file with an execute bit on a Mac or Linux viewer sends `exec: true` on its last `remote.put` chunk, and a Mac
+or Linux host makes it runnable (`0o644` becomes `0o755`); a Windows viewer never sends it, a Windows host takes
+it and changes nothing, and an older host's `bad_params` naming `exec` sends the chunk again without it, and the
+rest of that errand leaves it out (the `open_id` and `styled` pattern). (6) A remote folder joins the recent
+folders once by its exact path; only a Windows host's (`kind: pc`) folders are one whatever their case, so `/x/App`
+and `/x/app` on a Mac stay two. Native: `remote_tunnel::tunnel_argv`, `flare_ctl::remote::put_name`,
+`appctl/remote_files_glue.rs` (`is_finder_litter`, `is_package_name`, `is_exec`, `read_folder`, `read_dropped`),
+`remote_link::put_one`, `ctl_app::remote_put`, `remote_files::make_runnable`,
+`recent_roots::with_remote_root`. Held by `the_tunnel_argv_is_the_links_machine_and_never_a_shell_string`,
+`a_decomposed_put_name_keeps_its_accented_letters`, `finder_litter_in_a_dropped_folder_is_skipped_and_never_counted`,
+`a_dropped_macos_package_is_refused_in_one_line`, `a_dropped_files_execute_bit_is_carried_from_a_unix_viewer`,
+`a_runnable_file_says_exec_and_an_older_host_takes_it_without`,
+`remote_put_with_exec_makes_the_file_runnable_on_a_unix_host` and
+`remote_folders_differ_by_case_except_on_a_windows_host`. Real ssh: `docs/remote-sessions-manual-checks.md`.
+Source: the Mac review of PR #230, 2026-11-13.

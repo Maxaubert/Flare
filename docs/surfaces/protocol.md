@@ -185,7 +185,13 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     typing and the output poll the worker does the window's file work in the order asked (remote sessions PR 6): a
     click on a file link is `remote.fetch` of each spelling in turn until the host has one (then every chunk, each of
     the same size and count); a drop or a paste of files or an image is `remote.put` of each file, then one
-    `remote.input` with a `paste` of the host's `paste` answers joined by a space. File work asked while the link is
+    `remote.input` with a `paste` of the host's `paste` answers joined by a space. Rule 1213: a dropped folder is listed
+    here first (links and junctions skipped; over 5000 files, 5000 folders or 200 MiB, or a file over 32 MiB, nothing
+    is copied and the tab's panel says so in one line), then copied after the files: `remote.put {folder: true}`, its
+    folders parents first, then each file read as it goes with `under`; only the folder's `paste` joins the paste. Rule
+    1215: Finder's `.DS_Store` and `._name` files are left out, a dropped macOS package is refused in one line, and a
+    runnable file's last chunk says `exec: true` (an older host's refusal: sent again without it). The
+    snapshot is asked `styled: true` (an older host's refusal: asked plain, as above). File work asked while the link is
     down, or after the tab's session ended, is refused at once. Remote sessions PR 7: after the status poll, a
     `remote.resize` with the tab's last size when a click or a key took the live terminal back on this screen (rule
     1193), and, only while the window wants the tab's fitted conversation view, a `remote.convo {tab, since}` poll every
@@ -989,11 +995,18 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   the oldest kept, and the viewer asks for `remote.snapshot`. Answered on the worker, never the UI thread. `no_tab`
   when no connection follows the tab (send `remote.attach` first). Polled in short calls: events are lossy and never
   sent to a link.
-- `remote.snapshot {tab}` -> `{tab, seq, cols, rows, data}`. The tab's whole screen and history above it, 1000 lines
-  at most, as text (base64: clear, home, the lines joined by CR LF, then CR and the cursor moves up and right that put
-  the cursor where the host's is, rule 293; no colours and no modes), read while no batch of output is being parsed,
+- `remote.snapshot {tab, styled?}` -> `{tab, seq, cols, rows, styled, data}`. The tab's whole screen and history above
+  it, 1000 lines at most, as text (base64: clear, home, the lines joined by CR LF, then CR and the cursor moves up and
+  right that put the cursor where the host's is, rule 293; no modes), read while no batch of output is being parsed,
   so it holds every byte before `seq` and none after: `remote.output {since: seq}` goes on from it with no byte twice.
-  On the worker.
+  On the worker. Rule 1213 (2026-11-13): with `styled: true` the data is a reset after the clear and home, and each
+  line's runs of one style start with an SGR that resets and sets it (`ESC [ 0 ; ... m`: colours as 16-colour, 256-colour
+  or RGB, bold, dim, italic, underline, inverse, hidden, strikeout), a styled line ends with a reset, and a trailing
+  blank with a background or underline is kept; no other escape is added. A styled snapshot is at most 8 MiB before
+  base64: past it the oldest history lines are left out, never the screen. The answer's `styled` says which it is.
+  `styled` is not true or false: `bad_params`. A host older than rule 1213 refuses the param (`bad_params` naming
+  `styled`); the viewer then asks plain on the same link and leaves it out for the tab from then on, and keeps the
+  SGRs (and nothing else) only of an answer that says `styled: true` (`styled_snapshot`).
 - `remote.close {tab}` -> `{tab, closed}`. Closes the tab the way a person's close does: an agent at work asks first
   in the host's window (rule 48), and `closed` is false until the person there answers.
 - `remote.status {}` -> `{tabs: [{tab, state, kind, session, folder, title, sized, working_for?, question_text?,
@@ -1040,6 +1053,29 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   and put in place by the last chunk, whose answer has `done: true`, `host_path` and `paste`: the path quoted for the
   tab's own shell (`quote_path`), which the viewer pastes as one paste (`remote.input`'s `paste`, sanitised again). The
   folder goes when the tab closes; a run's folders left by a crash go a day later. 60 s. Never sent twice.
+  Rule 1213 (2026-11-13), a dropped folder: `remote.put {tab, name, folder: true}` -> `{tab, name, done, host_path,
+  paste}` makes the dropped folder in the tab's upload folder, its name kept as a file's is (and made unique there),
+  and answers its path quoted for the tab's shell, which is what the viewer pastes. `remote.put {tab, name, folder:
+  true, under}` -> `{tab, name, done, host_path}` makes a folder inside it (kept when it is there already), and a file
+  chunk with `under` (`{tab, name, chunk, chunks, data, under}`) is written into that folder and answers no `paste`.
+  `under` is the place below the tab's upload folder: names joined by `/`, each one the host would keep as it is (one
+  leading dot allowed inside a dropped folder, so `.git` and `.env` keep their names; never `.` or `..`, a separator,
+  a device name or a character a shell acts on), at most 65 deep and 4096 bytes, its first name a folder this run
+  made for the tab with `folder: true`, and every step a real folder on the host (a link or junction is refused):
+  anything else is `bad_params`. One dropped folder holds at most 5000 files, 5000 folders and 200 MiB in all on the
+  host too (`too_large`, the file dropped). A host older than rule 1213 refuses `folder` and `under` (`bad_params`
+  naming the field); the viewer then copies nothing of the folder and says in one line that Flare there takes single
+  files only.
+  Rule 1215 (2026-11-13), additive: chunk 0's `name` is made NFC before it is cleaned, so a decomposed accent keeps its
+  letter (`under` names are NFC too: the host answers NFC names). An optional `exec` (true or false, anything else
+  `bad_params`) on a file's last chunk says the file runs as a program on the viewer (any execute bit of a Mac or Linux
+  viewer's file; a Windows viewer never sends it): a Mac or Linux host then gives every reader of the finished file
+  the right to run it (`0o644` becomes `0o755`); a Windows host takes it and changes nothing; `exec` on another chunk
+  or with `folder: true` does nothing. A host older than rule 1215 refuses `exec` (`bad_params` naming it); the
+  viewer sends that chunk again without it, and the rest of that copy leaves it out (as `open_id` and `styled` do). The
+  viewer never lists a dropped folder's `.DS_Store` or `._name` files, and refuses a dropped macOS package (a folder
+  named `*.app`, `*.framework`, `*.bundle` and the like) in one line, copying nothing. A host whose disk ignores case
+  merges two folders of a drop that differ only by case (`Src`, `src`) into one.
 
 ### open.remote (remote sessions PR 5, 2026-11-12)
 

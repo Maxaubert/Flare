@@ -108,3 +108,33 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
 - [ ] Pull the network on a live remote tab, type `echo kept` (no Enter), plug it back within 30 s: `echo kept`
   appears at the host's prompt once the tab is back. Type for longer than 30 s while it is down: the tab shows one red
   line that some typing was not sent.
+
+## Remote tab extras (rule 1213, 2026-11-13)
+
+- [ ] Preview over ssh: in a remote tab run a dev server on the host (`npm run dev`, Vite on `localhost:5173`). The
+  viewer shows the Preview chip; a click opens the side panel at `http://127.0.0.1:<port>/` with the host's page, and
+  no console window flashes. A second click after the panel moved on uses the same tunnel (one `ssh -N` in the
+  viewer's process list). `clear` in the tab, or closing it, ends that `ssh -N`.
+- [ ] A host whose sshd does not forward (`AllowTcpForwarding no`): the click says in one line that the tunnel did not
+  open, within 20 s, and the window never hangs.
+- [ ] Recent folders: a remote tab opened with `flare open --on <machine> <folder>` (and one from the machine's row,
+  once its shell reports its folder) is listed in the + menu with the machine's logo; its pick opens a remote tab
+  there. Removing the machine in Settings > Machines takes its folders off the menu.
+- [ ] Colours after a reconnect: with a coloured prompt or `ls --color` on the host's screen, drop the link until the
+  output falls out of the ring (or restart the viewer): the restored tab shows the colours at once. Against a host on
+  an older Flare the tab shows the text plain, as before.
+- [ ] Folder drop: drop a project folder (with `.git`, `.env` and a link or junction inside) from Explorer or Finder on
+  the remote tab: the host's quoted folder path is pasted, `ls -la` there shows the files with their names, dot files
+  included, and no link. A folder over 200 MB or 5000 files copies nothing and says so in one line.
+
+## Mac review fixes (rule 1215, 2026-11-13)
+
+- [ ] ControlMaster: on a viewer whose `~/.ssh/config` has `ControlMaster auto`, `ControlPath ~/.ssh/cm-%r@%h:%p` and
+  `ControlPersist 10m` for the host (and a link to it already open in a terminal), the Preview click opens the page,
+  the `ssh -N` stays in the viewer's process list, and a second click uses the same tunnel instead of a new one.
+- [ ] Package drop: drop `/System/Applications/Calculator.app` (or any `.app`) from Finder on a remote tab, and an
+  `.app` from a PC viewer: the panel says in one line that packages are not copied, and nothing lands on the host.
+- [ ] Exec bit: from a Mac viewer drop a folder holding `gradlew` (`chmod +x`) and `README`, and a lone `run.sh`
+  (`chmod +x`), on a tab of the Mac host and of a Linux host if one is linked: `ls -l` there shows `gradlew` and
+  `run.sh` runnable (`-rwxr-xr-x`) and `README` not; `./run.sh` runs. From the PC viewer the same files arrive
+  not runnable. Against a host on an older Flare the files still land, not runnable.

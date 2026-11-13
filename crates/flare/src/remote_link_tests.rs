@@ -3,6 +3,7 @@
 
 use super::*;
 use flare_ctl::remote::parse_intents;
+use flare_term::remote_pty::FolderFile;
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::sync::Mutex;
@@ -48,6 +49,15 @@ struct HostState {
     /// The tab each open id opened, and every open's params as sent.
     open_ids: HashMap<String, String>,
     opens: Vec<Value>,
+    /// Rule 1213: every snapshot's params, an older host that refuses `styled`, the folders made by a put and an older
+    /// host that refuses `folder` and `under`.
+    snapshots: Vec<Value>,
+    no_styled: bool,
+    dirs: Vec<String>,
+    no_folder: bool,
+    /// Rule 1215: the files put with `exec` (where they went), and an older host that refuses `exec`.
+    runnable: Vec<String>,
+    no_exec: bool,
 }
 
 #[derive(Clone, Default)]
@@ -118,10 +128,22 @@ impl FakeHost {
                 Ok(json!({"from": from, "to": to, "data": enc(&t.out[from..to]), "gap": false}))
             }
             Method::RemoteSnapshot => {
+                st.snapshots.push(p.clone());
+                let styled = p.get("styled").is_some();
+                if styled && st.no_styled {
+                    return Err(CtlError::new(
+                        code::BAD_PARAMS,
+                        "styled is not a field of remote.snapshot",
+                    ));
+                }
                 let t = st.tabs.get(&tab).ok_or_else(no_tab)?;
                 let mut data = b"\x1b[H\x1b[2J\x1b[3J".to_vec();
                 data.extend_from_slice(&t.out[t.start as usize..]);
-                Ok(json!({"seq": t.out.len(), "cols": 80, "rows": 24, "data": enc(&data)}))
+                let mut v = json!({"seq": t.out.len(), "cols": 80, "rows": 24, "data": enc(&data)});
+                if styled {
+                    v["styled"] = json!(true);
+                }
+                Ok(v)
             }
             Method::RemoteInput => {
                 let intents = parse_intents(p.get("intents"))?;
@@ -180,13 +202,43 @@ impl FakeHost {
             }
             Method::RemotePut => {
                 st.tabs.get(&tab).ok_or_else(no_tab)?;
+                let under = p["under"].as_str().map(str::to_string);
+                if (p.get("folder").is_some() || under.is_some()) && st.no_folder {
+                    return Err(CtlError::new(
+                        code::BAD_PARAMS,
+                        "folder is not a field of remote.put",
+                    ));
+                }
+                if p.get("exec").is_some() && st.no_exec {
+                    return Err(CtlError::new(
+                        code::BAD_PARAMS,
+                        "exec is not a field of remote.put",
+                    ));
+                }
+                let place = |n: &str| match &under {
+                    Some(u) => format!("{u}/{n}"),
+                    None => n.to_string(),
+                };
+                if p["folder"] == json!(true) {
+                    let n = flare_ctl::remote::put_inner_name(p["name"].as_str().unwrap());
+                    st.dirs.push(place(&n));
+                    let host = format!("/tmp/up/{}", place(&n));
+                    return Ok(
+                        json!({"tab": tab, "name": n, "done": true, "host_path": host, "paste": format!("'{host}'")}),
+                    );
+                }
                 let chunk = p["chunk"].as_u64().unwrap();
                 let chunks = p["chunks"].as_u64().unwrap();
                 let data = base64::engine::general_purpose::STANDARD
                     .decode(p["data"].as_str().unwrap())
                     .unwrap();
                 let name = if chunk == 0 {
-                    let n = flare_ctl::remote::put_name(p["name"].as_str().unwrap());
+                    let raw = p["name"].as_str().unwrap();
+                    let n = if under.is_some() {
+                        flare_ctl::remote::put_inner_name(raw)
+                    } else {
+                        flare_ctl::remote::put_name(raw)
+                    };
                     st.putting = Some((n.clone(), data));
                     n
                 } else {
@@ -196,11 +248,15 @@ impl FakeHost {
                     n.clone()
                 };
                 if chunk + 1 < chunks {
+                    assert!(p.get("exec").is_none(), "exec rides on the last chunk only");
                     return Ok(json!({"tab": tab, "name": name, "done": false}));
                 }
-                let whole = st.putting.take().unwrap();
-                st.put.push(whole);
-                let host = format!("/tmp/up/{name}");
+                let (n, bytes) = st.putting.take().unwrap();
+                if p["exec"] == json!(true) {
+                    st.runnable.push(place(&n));
+                }
+                st.put.push((place(&n), bytes));
+                let host = format!("/tmp/up/{}", place(&name));
                 Ok(
                     json!({"tab": tab, "name": name, "done": true, "host_path": host, "paste": format!("'{host}'")}),
                 )
@@ -975,12 +1031,15 @@ fn a_put_copies_the_files_then_pastes_the_hosts_quoted_paths_as_one_paste() {
             Upload {
                 name: "C:\\Users\\max\\shot 1.png".into(),
                 data: b"png".to_vec(),
+                exec: false,
             },
             Upload {
                 name: "big.bin".into(),
                 data: big.clone(),
+                exec: false,
             },
         ],
+        folders: Vec::new(),
         done,
     });
     assert_eq!(
@@ -1014,7 +1073,9 @@ fn a_file_over_the_cap_is_never_sent() {
         files: vec![Upload {
             name: "huge.bin".into(),
             data: vec![0; FILE_MAX as usize + 1],
+            exec: false,
         }],
+        folders: Vec::new(),
         done,
     });
     let Err(ErrandFail::Failed(why)) = answer(&slot) else {
@@ -1022,6 +1083,240 @@ fn a_file_over_the_cap_is_never_sent() {
     };
     assert!(why.contains("over 32 MB"), "{why}");
     assert_eq!(r.host.calls("remote.put"), 0);
+    assert!(r.host.typed("h1").is_empty());
+}
+
+fn coloured_tab(host: &FakeHost) {
+    lk(host).tabs.insert(
+        "h1".into(),
+        HostTab {
+            out: b"\x1b[31mred\x1b[0m\x1b]0;title\x07 ok".to_vec(),
+            ..HostTab::default()
+        },
+    );
+}
+
+/// Rule 1213: a fresh tab asks its snapshot styled and shows the host's colours at once (a title still never rides on
+/// it); an older host refuses the param, the snapshot goes again plain on the same link, and the tab's later snapshots
+/// leave it out.
+#[test]
+fn a_snapshot_is_asked_styled_and_an_older_hosts_refusal_falls_back_to_plain() {
+    let host = FakeHost::default();
+    coloured_tab(&host);
+    let r = rig_with(host, Some("h1"));
+    r.live_on();
+    wait_for("the colour", || r.text().contains("\x1b[31mred"));
+    assert!(!r.text().contains("\x1b]0;"), "{:?}", r.text());
+    assert_eq!(
+        lk(&r.host).snapshots,
+        vec![json!({"tab": "h1", "styled": true})]
+    );
+
+    let old = FakeHost::default();
+    coloured_tab(&old);
+    lk(&old).no_styled = true;
+    let r = rig_with(old, Some("h1"));
+    r.live_on();
+    wait_for("the text", || r.text().contains("red"));
+    assert!(!r.text().contains("\x1b[31m"), "{:?}", r.text());
+    assert_eq!(r.host.calls("remote.attach"), 1, "the same link");
+    // The output falls out of the ring: the next snapshot is asked plain at once.
+    {
+        let mut st = lk(&r.host);
+        let t = st.tabs.get_mut("h1").unwrap();
+        t.out.extend_from_slice(b" more");
+        t.start = t.out.len() as u64;
+    }
+    wait_for("a second snapshot", || lk(&r.host).snapshots.len() >= 3);
+    assert_eq!(
+        lk(&r.host).snapshots[..3],
+        [
+            json!({"tab": "h1", "styled": true}),
+            json!({"tab": "h1"}),
+            json!({"tab": "h1"})
+        ]
+    );
+}
+
+fn folder_file(dir: &[&str], name: &str, path: &Path, size: u64) -> FolderFile {
+    FolderFile {
+        dir: dir.iter().map(|s| s.to_string()).collect(),
+        name: name.into(),
+        path: path.to_path_buf(),
+        size,
+        exec: false,
+    }
+}
+
+/// Rule 1213: a dropped folder goes after the files: the folder, the folders in it parents first, then each file, read
+/// here as it goes, into its own folder there (a dot file keeps its name). Only the folder's host path is pasted, with
+/// the files', as one paste.
+#[test]
+fn a_dropped_folder_is_copied_whole_and_only_its_path_is_pasted() {
+    let r = rig();
+    r.live_on();
+    let d = tempfile::tempdir().unwrap();
+    let a = d.path().join("a.txt");
+    std::fs::write(&a, b"A").unwrap(); // sync-ok: test code only
+    let big = vec![7u8; FILE_CHUNK + 3];
+    let b = d.path().join("b.bin");
+    std::fs::write(&b, &big).unwrap(); // sync-ok: test code only
+    let folder = UploadFolder {
+        name: "my proj".into(),
+        dirs: vec![vec!["src".into()], vec!["src".into(), ".git".into()]],
+        files: vec![
+            folder_file(&[], ".env", &a, 1),
+            folder_file(&["src"], "b.bin", &b, big.len() as u64),
+        ],
+    };
+    let (slot, done) = caught();
+    r.live.send_errand(Errand::Put {
+        files: vec![Upload {
+            name: "one.txt".into(),
+            data: b"1".to_vec(),
+            exec: false,
+        }],
+        folders: vec![folder],
+        done,
+    });
+    assert_eq!(
+        answer(&slot).unwrap(),
+        ["/tmp/up/one.txt", "/tmp/up/my proj"]
+    );
+    {
+        let st = lk(&r.host);
+        assert_eq!(st.dirs, ["my proj", "my proj/src", "my proj/src/.git"]);
+        assert_eq!(
+            st.put,
+            vec![
+                ("one.txt".to_string(), b"1".to_vec()),
+                ("my proj/.env".to_string(), b"A".to_vec()),
+                ("my proj/src/b.bin".to_string(), big),
+            ]
+        );
+    }
+    assert_eq!(
+        r.host.typed("h1"),
+        vec![Intent::Paste("'/tmp/up/one.txt' '/tmp/up/my proj'".into())]
+    );
+}
+
+/// Rule 1215: a runnable file says `exec` on its last chunk only, alone or in a dropped folder; an older host refuses the
+/// unknown param once, the chunk goes again without it, and the rest of the errand leaves it out, so every file still
+/// lands.
+#[test]
+fn a_runnable_file_says_exec_and_an_older_host_takes_it_without() {
+    let d = tempfile::tempdir().unwrap();
+    let run = d.path().join("gradlew");
+    std::fs::write(&run, b"#!/bin/sh\n").unwrap(); // sync-ok: test code only
+    let big = vec![5u8; FILE_CHUNK + 2];
+    let errand = |slot_done: Done<Vec<String>>| {
+        let mut file = folder_file(&[], "gradlew", &run, 10);
+        file.exec = true;
+        Errand::Put {
+            files: vec![
+                Upload {
+                    name: "build.sh".into(),
+                    data: big.clone(),
+                    exec: true,
+                },
+                Upload {
+                    name: "a.txt".into(),
+                    data: b"a".to_vec(),
+                    exec: false,
+                },
+            ],
+            folders: vec![UploadFolder {
+                name: "proj".into(),
+                dirs: Vec::new(),
+                files: vec![file],
+            }],
+            done: slot_done,
+        }
+    };
+    let r = rig();
+    r.live_on();
+    let (slot, done) = caught();
+    r.live.send_errand(errand(done));
+    assert!(answer(&slot).is_ok());
+    assert_eq!(lk(&r.host).runnable, ["build.sh", "proj/gradlew"]);
+    assert_eq!(r.host.calls("remote.put"), 5);
+
+    let old = rig();
+    old.live_on();
+    lk(&old.host).no_exec = true;
+    let (slot, done) = caught();
+    old.live.send_errand(errand(done));
+    assert_eq!(
+        answer(&slot).unwrap(),
+        ["/tmp/up/build.sh", "/tmp/up/a.txt", "/tmp/up/proj"]
+    );
+    let st = lk(&old.host);
+    assert!(st.runnable.is_empty());
+    let names: Vec<&str> = st.put.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["build.sh", "a.txt", "proj/gradlew"]);
+    assert_eq!(st.put[0].1, big, "the refused chunk went again whole");
+    drop(st);
+    assert_eq!(
+        old.host.calls("remote.put"),
+        6,
+        "one refusal, then never exec again"
+    );
+}
+
+/// Rule 1213: a folder over the caps copies nothing and says so in one line; so does a host that takes single files
+/// only (an older Flare refuses `folder`), after its one refusal.
+#[test]
+fn a_folder_over_the_caps_or_to_an_older_host_copies_nothing() {
+    let r = rig();
+    r.live_on();
+    let nowhere = Path::new("nowhere");
+    let refused_with = |folder: UploadFolder| {
+        let (slot, done) = caught::<Vec<String>>();
+        r.live.send_errand(Errand::Put {
+            files: Vec::new(),
+            folders: vec![folder],
+            done,
+        });
+        let Err(ErrandFail::Failed(why)) = answer(&slot) else {
+            panic!("refused");
+        };
+        why
+    };
+    let many = UploadFolder {
+        name: "many".into(),
+        dirs: Vec::new(),
+        files: (0..=FOLDER_FILES_MAX)
+            .map(|i| folder_file(&[], &format!("f{i}"), nowhere, 1))
+            .collect(),
+    };
+    let why = refused_with(many);
+    assert!(
+        why.contains("5000 files") || why.contains("over 5000"),
+        "{why}"
+    );
+    let heavy = UploadFolder {
+        name: "heavy".into(),
+        dirs: Vec::new(),
+        files: vec![
+            folder_file(&[], "a", nowhere, FOLDER_MAX / 2 + 1),
+            folder_file(&[], "b", nowhere, FOLDER_MAX / 2 + 1),
+        ],
+    };
+    assert!(refused_with(heavy).contains("over 200 MB"));
+    assert_eq!(r.host.calls("remote.put"), 0, "nothing was copied");
+    lk(&r.host).no_folder = true;
+    let d = tempfile::tempdir().unwrap();
+    let f = d.path().join("x.txt");
+    std::fs::write(&f, b"x").unwrap(); // sync-ok: test code only
+    let why = refused_with(UploadFolder {
+        name: "x".into(),
+        dirs: Vec::new(),
+        files: vec![folder_file(&[], "x.txt", &f, 1)],
+    });
+    assert!(why.contains("update it there"), "{why}");
+    assert_eq!(r.host.calls("remote.put"), 1, "the one refused call");
+    assert!(lk(&r.host).put.is_empty() && lk(&r.host).dirs.is_empty());
     assert!(r.host.typed("h1").is_empty());
 }
 
@@ -1049,6 +1344,7 @@ fn file_work_asked_while_the_link_is_down_or_ended_is_refused_at_once() {
     let (slot, done) = caught::<Vec<String>>();
     r.live.send_errand(Errand::Put {
         files: Vec::new(),
+        folders: Vec::new(),
         done,
     });
     assert!(matches!(answer(&slot), Err(ErrandFail::Failed(_))));

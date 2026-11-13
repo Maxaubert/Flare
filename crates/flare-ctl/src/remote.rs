@@ -45,6 +45,36 @@ pub const FILE_MAX: u64 = 32 * 1024 * 1024;
 pub const FILE_CHUNKS_MAX: u32 = (FILE_MAX / FILE_CHUNK as u64) as u32;
 /// The longest file name `remote.put` keeps, in bytes.
 pub const PUT_NAME_MAX: usize = 100;
+/// The most bytes of one styled `remote.snapshot {styled: true}` (rule 1213), before base64: a third bigger, well
+/// under the 16 MB line. Past it the oldest history lines are left out; the screen is always sent.
+pub const SNAPSHOT_STYLED_MAX: usize = 8 * 1024 * 1024;
+/// A dropped folder copied to the host (rule 1213): at most this many bytes in all its files, and this many files. Past
+/// either nothing is copied.
+pub const FOLDER_MAX: u64 = 200 * 1024 * 1024;
+pub const FOLDER_FILES_MAX: usize = 5000;
+/// The most folders one dropped folder holds, itself included, and how deep they go below it.
+pub const FOLDER_DIRS_MAX: usize = 5000;
+pub const FOLDER_DEPTH_MAX: usize = 64;
+/// The longest `under` of a `remote.put` (the folder below the tab's upload folder a file or folder goes in), in bytes.
+pub const UNDER_MAX: usize = 4096;
+
+/// Pure: the parts of a `remote.put`'s `under` (rule 1213), when every one of them is a name [`put_inner_name`] keeps as
+/// it is (so no `.` or `..`, no separator, no device, nothing a shell acts on), there is at least one and at most
+/// [`FOLDER_DEPTH_MAX`] + 1, and the whole is at most [`UNDER_MAX`] bytes. Parts are joined by `/`.
+pub fn under_parts(under: &str) -> Option<Vec<&str>> {
+    if under.is_empty() || under.len() > UNDER_MAX {
+        return None;
+    }
+    let parts: Vec<&str> = under.split('/').collect();
+    if parts.len() > FOLDER_DEPTH_MAX + 1
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || put_inner_name(p) != *p)
+    {
+        return None;
+    }
+    Some(parts)
+}
 
 /// The longest `remote.open` id (rule 1210), in bytes.
 pub const OPEN_ID_MAX: usize = 64;
@@ -79,11 +109,14 @@ pub fn is_device_name(name: &str) -> bool {
 /// Pure: the name a `remote.put` file is kept under on the host (rule 304): only its last part, with every character
 /// that is not a letter, a digit, a space or one of `-_.()+,` made `_`, no dot or space at either end, no device name,
 /// at most [`PUT_NAME_MAX`] bytes with its extension kept. So the name is a plain word in every shell's quotes (cmd's
-/// `%` and `!`, sh's `$` and backquote never reach it) and names no other folder. An empty result is `file`.
+/// `%` and `!`, sh's `$` and backquote never reach it) and names no other folder. An empty result is `file`. The name is
+/// made NFC first (rule 1215), so a decomposed name (`e` and a combining accent, as some macOS apps write it) keeps its
+/// letter instead of an `_`; a combining mark with no letter to join is still `_`.
 pub fn put_name(raw: &str) -> String {
+    use unicode_normalization::UnicodeNormalization as _;
     let last = raw.rsplit(['/', '\\']).next().unwrap_or_default();
     let clean: String = last
-        .chars()
+        .nfc()
         .map(|c| {
             if c.is_alphanumeric() && !c.is_control() || " -_.()+,".contains(c) {
                 c
@@ -112,6 +145,24 @@ pub fn put_name(raw: &str) -> String {
         name.insert(0, '_');
     }
     name
+}
+
+/// Pure: the name a file or folder INSIDE a dropped folder is kept under on the host (rule 1213): [`put_name`], except
+/// that one leading dot is kept (`.gitignore`, `.env`), since a project's dot files must keep their names. `.` and `..`
+/// are never kept as they are.
+pub fn put_inner_name(raw: &str) -> String {
+    let last = raw.rsplit(['/', '\\']).next().unwrap_or_default();
+    match last.strip_prefix('.') {
+        Some(rest) if !rest.is_empty() && !rest.starts_with('.') => {
+            let n = put_name(rest);
+            if n.len() < PUT_NAME_MAX {
+                format!(".{n}")
+            } else {
+                n
+            }
+        }
+        _ => put_name(last),
+    }
 }
 
 /// What a host tab's agent is doing, as `remote.status` says it (rule 294): one word, from the host's own marks.
@@ -505,6 +556,28 @@ mod tests {
         }
     }
 
+    /// Rule 1215: a decomposed name (a letter and a combining accent, as some macOS apps write it) is made NFC and keeps
+    /// its letter, as a file or as a dropped folder's inner name; every refusal still holds, and a lone combining mark
+    /// with no letter before it is still `_`.
+    #[test]
+    fn a_decomposed_put_name_keeps_its_accented_letters() {
+        assert_eq!(put_name("cafe\u{301}.txt"), "caf\u{e9}.txt");
+        assert_eq!(
+            put_name("e\u{301}te\u{301} (2).jpg"),
+            "\u{e9}t\u{e9} (2).jpg"
+        );
+        assert_eq!(put_inner_name(".cafe\u{301}"), ".caf\u{e9}");
+        assert_eq!(
+            under_parts("proj/caf\u{e9}"),
+            Some(vec!["proj", "caf\u{e9}"])
+        );
+        assert_eq!(under_parts("proj/cafe\u{301}"), None, "the host wants NFC");
+        assert_eq!(put_name("\u{301}x"), "_x");
+        assert_eq!(put_name("/tmp/cafe\u{301}/../x$y.txt"), "x_y.txt");
+        assert_eq!(put_name("a\u{301}/NUL"), "_NUL");
+        assert_eq!(put_name(" .e\u{301}. "), "\u{e9}");
+    }
+
     #[test]
     fn a_file_is_cut_into_chunks_and_an_empty_file_is_one() {
         assert_eq!(chunks_of(0), 1);
@@ -513,6 +586,40 @@ mod tests {
         assert_eq!(chunks_of(FILE_CHUNK as u64 + 1), 2);
         assert_eq!(chunks_of(FILE_MAX), FILE_CHUNKS_MAX);
         assert!(is_device_name("aux.c") && !is_device_name("auxiliary"));
+    }
+
+    /// Rule 1213: a folder's place below the tab's upload folder is clean names joined by `/`, never `..`, an absolute
+    /// path, a backslash or a name the host would clean.
+    #[test]
+    fn an_under_is_clean_names_joined_by_slashes_and_nothing_else() {
+        assert_eq!(under_parts("proj"), Some(vec!["proj"]));
+        assert_eq!(
+            under_parts("proj/src/a b"),
+            Some(vec!["proj", "src", "a b"])
+        );
+        assert_eq!(under_parts("proj/.git"), Some(vec!["proj", ".git"]));
+        assert_eq!(put_inner_name(".gitignore"), ".gitignore");
+        assert_eq!(put_inner_name(".."), "file");
+        assert_eq!(put_inner_name("..x"), "x");
+        assert_eq!(put_inner_name("a%b"), "a_b");
+        for bad in [
+            "",
+            "/proj",
+            "proj/",
+            "proj//src",
+            "..",
+            "proj/../x",
+            "proj\\src",
+            "C:",
+            "a%b",
+            "nul",
+            "...",
+            ".",
+        ] {
+            assert_eq!(under_parts(bad), None, "{bad}");
+        }
+        let deep = vec!["d"; FOLDER_DEPTH_MAX + 2].join("/");
+        assert_eq!(under_parts(&deep), None);
     }
 
     #[test]
