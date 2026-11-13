@@ -137,11 +137,12 @@ pub fn malformed_profile_arg(argv: &[String]) -> Option<&str> {
 }
 
 /// The taskbar identity of this run: the plain one for the default profile, a per-profile one for a
-/// run with its own `--user-data-dir` (see `flare_win::names::aumid_for_profile`). Toasts must use
-/// this same value.
+/// run with its own `--user-data-dir` (see `flare_win::names::aumid_for_profile`), or with the profile
+/// its exe's name gives it (rule 1207, `startup::effective_user_data_dir`). Toasts must use this same value.
 pub fn effective_aumid() -> String {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    aumid_for_profile(profile_arg(&argv).as_deref())
+    let dir = crate::startup::effective_user_data_dir(profile_arg(&argv));
+    aumid_for_profile(dir.as_deref())
 }
 
 /// Sets the taskbar identity in every build, so a dev run and an installed run share it. A second

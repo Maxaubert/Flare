@@ -3496,3 +3496,27 @@ words in `badge`, the reason in `sub`), `SetMachineRow` (`ui/settings/machines.s
 `a_failed_machine_carries_its_reason_as_its_sub_line_and_the_others_have_none`,
 `a_not_linked_machine_shows_its_reason_under_the_row_and_hovering_its_status_shows_no_tooltip` and
 `a_machine_row_draws_its_reason_as_one_grey_line_under_it`, at 100 and 225 percent. Source: Max, 2026-11-13.
+
+1207. **A PC host runs the serve command through `cmd /c`, Settings > Machines finds a PC's own installs, and a
+renamed copy serves its own profile.** Found 2026-11-13 over real ssh from the Mac to the PC: the PC's sshd
+`DefaultShell` was PowerShell 7, which refused the old `"<path>" --serve-remote` (`ParserError: Unexpected token
+'serve-remote'`); with `& "<path>"` it parsed but did not wait for the GUI-subsystem exe, so the shell exited and sshd
+tore the link down seconds after hello. The PC form is now `cmd /c "<path>" --serve-remote`, measured working under
+PowerShell (hello, open, attach, input, output, close, and the serve log's "the link closed") and the same under cmd.
+cmd /c keeps the quotes only when the path holds none of `& < > ( ) @ ^ |`, so such a path is refused (None), and so
+is one with `" % ! $` or a backquote, except a leading `%LOCALAPPDATA%`, which cmd expands on the host. Settings >
+Machines tries, in order, `flare`, `%LOCALAPPDATA%\StableFlare\current\FlareStable.exe`,
+`%LOCALAPPDATA%\Flare\current\Flare.exe` and the Mac app, each quoted as its path implies (a PC path in the cmd form,
+a `/` path in sh's, the bare name in sh's then the PC's), stops at a refusal and saves what answered with the system
+its hello names. On Windows a run with no `--user-data-dir` whose exe is not `flare.exe` (any case) runs as if the
+flag named `%APPDATA%\<stem>`, so `FlareStable.exe --serve-remote` relays to (or hidden-starts) the Stable profile,
+never the Dev copy's `%APPDATA%\Flare`; its pipe, lock and taskbar identity are the ones the Stable shortcut's flag
+gives. Known limit (reasoned, not measured): when the host's `%LOCALAPPDATA%` holds a space and its login shell is
+PowerShell, the expanded path reaches cmd without quotes and that candidate does not answer (type the full path in
+`machines.json`). Native: `remote_link::remote_command`, `machines::FLARE_CANDIDATES`
+and `probe_kinds`, `MachinesPage::add_on_worker` (`machines_page.rs`), `startup::user_data_dir_of_exe` and
+`effective_user_data_dir`, `main.rs`, `ship_ctl::effective_aumid`. Held by
+`the_remote_command_table_quotes_each_hosts_shell`, `adding_looks_for_flare_saves_only_what_answered_with_the_hosts_system`,
+`adding_a_pc_finds_its_stable_install_and_saves_it_as_a_pc`,
+`each_candidate_is_probed_with_the_quoting_its_path_implies` and
+`a_renamed_exe_with_no_flag_takes_the_profile_of_its_name`. Source: Max's real-ssh run, 2026-11-13.

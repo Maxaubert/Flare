@@ -140,9 +140,30 @@ impl MachinesPort for FileMachines {
 /// own home folder, which the viewer does not know. The tab shows the host's real folder once its shell reports it.
 pub const HOST_HOME: &str = "~";
 
-/// Where Settings > Machines looks for Flare on a host it adds (remote sessions PR 7), in this order: on the login
-/// shell's PATH, then where the Mac app keeps it. The first that answers `remote.hello` is the one saved.
-pub const FLARE_CANDIDATES: [&str; 2] = ["flare", "/Applications/Flare.app/Contents/MacOS/flare"];
+/// Where Settings > Machines looks for Flare on a host it adds (remote sessions PR 7, rule 1207), in this order: on the
+/// login shell's PATH, then a PC's two installs (Stable, then Dev; cmd expands `%LOCALAPPDATA%` on the host), then where
+/// the Mac app keeps it. The first that answers `remote.hello` is the one saved.
+pub const FLARE_CANDIDATES: [&str; 4] = [
+    "flare",
+    r"%LOCALAPPDATA%\StableFlare\current\FlareStable.exe",
+    r"%LOCALAPPDATA%\Flare\current\Flare.exe",
+    "/Applications/Flare.app/Contents/MacOS/flare",
+];
+
+/// Pure: how a candidate is quoted when it is probed, in the order to try (rule 1207), since the host's system is not
+/// known until it answers. A PC path (a leading `%LOCALAPPDATA%` or a drive letter) gets the PC's `cmd /c` form only;
+/// a `/` path gets the sh form only (no kind); a bare name gets the sh form, then the PC form.
+pub fn probe_kinds(flare: &str) -> Vec<Option<Os>> {
+    let b = flare.as_bytes();
+    let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+    if drive || flare.starts_with(crate::remote_link::PC_LOCAL_APP_DATA) {
+        vec![Some(Os::Pc)]
+    } else if flare.starts_with('/') {
+        vec![None]
+    } else {
+        vec![None, Some(Os::Pc)]
+    }
+}
 
 /// Pure: the system `remote.hello` named (`mac`, `pc`); any other word is no kind (rule 40).
 pub fn os_of_hello(word: &str) -> Option<Os> {

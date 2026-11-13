@@ -2650,8 +2650,17 @@ Contract: `docs/surfaces/protocol.md` (`remote.hello`'s `os`, `remote.status`'s 
   `ui_tests::remote_convo::*`.
 - **Not yet.** The host's own window shows no fitted view while a viewer sizes the tab (the plan puts the view on the
   remote tab, so the host's tab keeps its terminal at the viewer's size until a key there). Adding a machine reached
-  as a user other than the one in `~/.ssh/config`, or with Flare elsewhere than on the PATH or in `/Applications`,
-  still needs a hand edit of `machines.json`. Real ssh between the PC and the Mac is on the by-hand list.
+  as a user other than the one in `~/.ssh/config`, or with Flare elsewhere than on the PATH, a PC's two installs or
+  `/Applications`, still needs a hand edit of `machines.json`. Real ssh between the PC and the Mac is on the by-hand
+  list.
+- **A PC as host, 2026-11-13.** A PC whose ssh login shell is PowerShell (sshd's `DefaultShell`) works as a host: the
+  viewer runs `cmd /c "<path>" --serve-remote` there, which PowerShell and cmd both run and wait for. Settings >
+  Machines finds the PC's Flare at `%LOCALAPPDATA%\StableFlare\current\FlareStable.exe` or
+  `%LOCALAPPDATA%\Flare\current\Flare.exe` when it is not on the PATH, and `FlareStable.exe` started by ssh with no
+  `--user-data-dir` serves the Stable profile (`%APPDATA%\FlareStable`), not the Dev one (rule 1207). Held by
+  `the_remote_command_table_quotes_each_hosts_shell`, `adding_a_pc_finds_its_stable_install_and_saves_it_as_a_pc`,
+  `each_candidate_is_probed_with_the_quoting_its_path_implies` and
+  `a_renamed_exe_with_no_flag_takes_the_profile_of_its_name`.
 
 ## Tooltips only on icons, 2026-11-13
 

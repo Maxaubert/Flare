@@ -302,7 +302,7 @@ fn the_add_row_opens_the_form_and_a_failed_check_is_one_red_line_under_it() {
             Err((true, "remote protocol 1 here, 0 there".into())),
         );
         io.answers.insert(
-            ("nas".into(), FLARE_CANDIDATES[1].into()),
+            ("nas".into(), FLARE_CANDIDATES[3].into()),
             Ok(HelloFacts {
                 version: "0.3.1".into(),
                 os: Some(Os::Mac),

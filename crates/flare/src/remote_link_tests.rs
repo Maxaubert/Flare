@@ -605,7 +605,7 @@ fn the_ssh_command_is_argv_items_quoted_for_the_hosts_shell() {
     .unwrap();
     assert_eq!(
         pc.last().unwrap(),
-        r#""C:\Program Files\Flare\flare.exe" --serve-remote"#
+        r#"cmd /c "C:\Program Files\Flare\flare.exe" --serve-remote"#
     );
     assert!(!pc.iter().any(|a| a.contains("&&")));
     assert_eq!(
@@ -1007,9 +1007,10 @@ fn file_work_asked_while_the_link_is_down_or_ended_is_refused_at_once() {
     });
     assert!(matches!(answer(&slot), Err(ErrandFail::Failed(_))));
 }
-/// Remote sessions PR 6: the serve command for each host kind, as a table. A PC's cmd takes the path in double quotes
-/// (no `&&`, nothing cmd expands: `%`, `!`, `^` and `"` are refused); a Mac's sh (and an unknown kind) in single quotes,
-/// where nothing expands.
+/// Remote sessions PR 6, rule 1207: the serve command for each host kind, as a table. A PC gets
+/// `cmd /c "<path>" --serve-remote`, the one form both cmd and PowerShell login shells run and wait for; a path cmd
+/// would strip the quotes of (`& < > ( ) @ ^ |`) or that either shell expands (`" % ! $` and a backquote) is refused,
+/// except a leading `%LOCALAPPDATA%`. A Mac's sh (and an unknown kind) takes single quotes, where nothing expands.
 #[test]
 fn the_remote_command_table_quotes_each_hosts_shell() {
     let pc = Some(Os::Pc);
@@ -1017,22 +1018,38 @@ fn the_remote_command_table_quotes_each_hosts_shell() {
     for (kind, flare, want) in [
         (
             pc,
-            r"C:\Program Files (x86)\Flare\flare.exe",
-            Some(r#""C:\Program Files (x86)\Flare\flare.exe" --serve-remote"#),
-        ),
-        (
-            pc,
             r"C:\Users\max\AppData\Local\Flare\current\flare.exe",
-            Some(r#""C:\Users\max\AppData\Local\Flare\current\flare.exe" --serve-remote"#),
+            Some(r#"cmd /c "C:\Users\max\AppData\Local\Flare\current\flare.exe" --serve-remote"#),
         ),
         (
             pc,
-            r"D:\Tools & Apps\it's\flare.exe",
-            Some(r#""D:\Tools & Apps\it's\flare.exe" --serve-remote"#),
+            r"C:\Program Files\Flare\flare.exe",
+            Some(r#"cmd /c "C:\Program Files\Flare\flare.exe" --serve-remote"#),
         ),
+        (
+            pc,
+            r"D:\Tools\it's\flare.exe",
+            Some(r#"cmd /c "D:\Tools\it's\flare.exe" --serve-remote"#),
+        ),
+        (
+            pc,
+            r"%LOCALAPPDATA%\StableFlare\current\FlareStable.exe",
+            Some(r#"cmd /c "%LOCALAPPDATA%\StableFlare\current\FlareStable.exe" --serve-remote"#),
+        ),
+        (pc, "flare", Some(r#"cmd /c "flare" --serve-remote"#)),
+        // cmd /c drops the quotes of a path with one of its special characters: the command would split.
+        (pc, r"C:\Program Files (x86)\Flare\flare.exe", None),
+        (pc, r"D:\Tools & Apps\flare.exe", None),
+        (pc, r"C:\a@b\flare.exe", None),
+        (pc, r"C:\a|b\flare.exe", None),
+        (pc, r"C:\a<b>\flare.exe", None),
         (pc, r"C:\a!b\flare.exe", None),
         (pc, r"C:\a^b\flare.exe", None),
         (pc, r"C:\%USERPROFILE%\flare.exe", None),
+        (pc, r"%USERPROFILE%\flare.exe", None),
+        (pc, r"%LOCALAPPDATA%\%PATH%\flare.exe", None),
+        (pc, r"C:\$env\flare.exe", None),
+        (pc, r"C:\a`b\flare.exe", None),
         (pc, r#"C:\a"b\flare.exe"#, None),
         (
             mac,

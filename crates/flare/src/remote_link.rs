@@ -122,8 +122,16 @@ impl<W: Wire> Drop for ClientLink<W> {
 pub use crate::machines::parse_machines;
 pub use crate::machines::{Machine, argv_word, machines_file, read_machines};
 
+/// The one variable a PC path may start with (rule 1207): cmd expands it on the host, so a candidate names the
+/// user's own install without knowing the host's user name.
+pub const PC_LOCAL_APP_DATA: &str = "%LOCALAPPDATA%";
+
 /// Pure: the command the host's login shell runs (rule 290: no token, no environment). A Mac's sh gets the path in
-/// single quotes; a PC's cmd in double quotes, with no `&&` and nothing cmd would expand. None for a path that cannot
+/// single quotes. A PC gets `cmd /c "<path>" --serve-remote` (rule 1207): sshd's DefaultShell there is cmd or, often,
+/// PowerShell, which refuses a bare `"<path>" --serve-remote` and does not wait for the GUI-subsystem flare.exe with
+/// `&`; `cmd /c` parses the same in both and waits. cmd keeps the quotes only when the path holds none of
+/// `& < > ( ) @ ^ |`, so such a path is refused, and so is one with `" % ! $` or a backquote (expanded by cmd or by
+/// PowerShell inside double quotes), except a leading `%LOCALAPPDATA%`, which cmd expands. None for a path that cannot
 /// be quoted safely there.
 pub fn remote_command(kind: Option<Os>, flare: &str) -> Option<String> {
     if flare.is_empty() || flare.chars().any(char::is_control) {
@@ -131,10 +139,13 @@ pub fn remote_command(kind: Option<Os>, flare: &str) -> Option<String> {
     }
     match kind {
         Some(Os::Pc) => {
-            if flare.contains(['"', '%', '^', '!']) {
+            let rest = flare.strip_prefix(PC_LOCAL_APP_DATA).unwrap_or(flare);
+            if rest.contains([
+                '"', '%', '!', '$', '`', '&', '<', '>', '(', ')', '@', '^', '|',
+            ]) {
                 return None;
             }
-            Some(format!("\"{flare}\" --serve-remote"))
+            Some(format!("cmd /c \"{flare}\" --serve-remote"))
         }
         _ => Some(format!("'{}' --serve-remote", flare.replace('\'', "'\\''"))),
     }

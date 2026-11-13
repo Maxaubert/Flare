@@ -39,6 +39,39 @@ pub fn profile_dir(user_data_dir: Option<&Path>, appdata: Option<&str>) -> PathB
     }
 }
 
+/// Pure (rule 1207): the profile a run with no `--user-data-dir` takes from its exe's name, as if the flag named it.
+/// `flare.exe` (any case) keeps the default profile (None); any other `<stem>.exe` is `<APPDATA>\<stem>`, so
+/// `FlareStable.exe --serve-remote` serves `%APPDATA%\FlareStable`, the profile the Stable copy's shortcut names, and
+/// never the Dev copy's. A given flag always wins. Windows only: `windows` is false on macOS, where nothing changes.
+pub fn user_data_dir_of_exe(
+    given: Option<PathBuf>,
+    exe_stem: Option<&str>,
+    appdata: Option<&str>,
+    windows: bool,
+) -> Option<PathBuf> {
+    if given.is_some() || !windows {
+        return given;
+    }
+    let stem = exe_stem.filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("flare"))?;
+    let appdata = appdata.filter(|a| !a.is_empty())?;
+    Some(PathBuf::from(appdata).join(stem))
+}
+
+/// [`user_data_dir_of_exe`] over this process: its exe's file stem and `%APPDATA%`. BLOCKING (one path lookup):
+/// startup only.
+pub fn effective_user_data_dir(given: Option<PathBuf>) -> Option<PathBuf> {
+    if given.is_some() || !cfg!(windows) {
+        return given;
+    }
+    let exe = std::env::current_exe().ok(); // sync-ok: startup, before any window
+    let stem = exe
+        .as_deref()
+        .and_then(Path::file_stem)
+        .map(|s| s.to_string_lossy().into_owned());
+    let appdata = flare_win::paths::roaming_app_data();
+    user_data_dir_of_exe(given, stem.as_deref(), appdata.as_deref(), true)
+}
+
 /// The three state files of a profile.
 pub struct Profile {
     pub dir: PathBuf,
@@ -752,6 +785,49 @@ mod tests {
             PathBuf::from("C:\\Users\\x\\AppData\\Roaming").join("Flare")
         );
         assert!(profile_dir(None, None).ends_with("Flare"));
+    }
+
+    /// Rule 1207: `FlareStable.exe --serve-remote` (ssh starts it with no flag) serves the Stable profile its shortcut
+    /// names, never the Dev copy's `%APPDATA%\Flare`; `Flare.exe` and any given flag are untouched, and macOS too.
+    #[test]
+    fn a_renamed_exe_with_no_flag_takes_the_profile_of_its_name() {
+        let roaming = Some("C:\\Users\\x\\AppData\\Roaming");
+        let of = |given: Option<&str>, stem: Option<&str>, windows: bool| {
+            user_data_dir_of_exe(given.map(PathBuf::from), stem, roaming, windows)
+        };
+        assert_eq!(
+            of(None, Some("FlareStable"), true),
+            Some(PathBuf::from("C:\\Users\\x\\AppData\\Roaming").join("FlareStable"))
+        );
+        let stable = profile_dir(of(None, Some("FlareStable"), true).as_deref(), roaming);
+        assert_eq!(
+            stable,
+            PathBuf::from("C:\\Users\\x\\AppData\\Roaming").join("FlareStable")
+        );
+        for stem in ["flare", "Flare", "FLARE"] {
+            assert_eq!(
+                of(None, Some(stem), true),
+                None,
+                "{stem}: the default profile"
+            );
+        }
+        assert_eq!(
+            of(Some("D:\\p"), Some("FlareStable"), true),
+            Some(PathBuf::from("D:\\p")),
+            "a given flag wins"
+        );
+        assert_eq!(of(None, Some("FlareStable"), false), None, "macOS");
+        assert_eq!(of(None, None, true), None);
+        assert_eq!(of(None, Some(""), true), None);
+        assert_eq!(
+            user_data_dir_of_exe(None, Some("FlareStable"), None, true),
+            None,
+            "no APPDATA"
+        );
+        assert_eq!(
+            user_data_dir_of_exe(None, Some("FlareStable"), Some(""), true),
+            None
+        );
     }
 
     #[test]
