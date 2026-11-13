@@ -3434,3 +3434,10 @@ Native: `crates/flare/ui/tabmark.slint` (`AgentIcon`), `crates/flare-agent/src/i
 `the_agent_icons_moving_box_snaps_every_edge_to_whole_device_pixels` and
 `the_shut_clawd_is_the_agent_crates_path_swapped_in_for_the_body`. Source: Max, 2026-11-13 ("Keep squash, snap to
 pixels").
+1200. **The Agent moves sample adds nothing to a tab's menu.** Max, 2026-11-13: "the plugin agent moves dont need to
+add itsself to the reight click menu". Its "Agent motions" item (an `actions` entry, `where: ["tab-menu"]`) and the
+picker panel it opened are gone, with the `panel` and `actions` permissions; the plugin asks for `agent-looks` only
+and sets the owner's three motions from its background page. Picks saved by 0.1 (its store, key `picks`) still apply.
+Native: `sample-plugins/agent-moves/`. Held by `the_sample_plugins_are_valid`
+(`flare-mods/src/discover.rs`: no actions, no panel, no `panel.open`) and the sample round trip
+`every_sample_plugin_loads_turns_on_and_answers_one_round_trip_of_its_protocol`. Source: Max, 2026-11-13.

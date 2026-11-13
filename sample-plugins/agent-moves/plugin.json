@@ -1,17 +1,11 @@
 {
   "id": "agent-moves",
   "name": "Agent moves",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "protocol": 2,
-  "description": "Makes the agents' tab icons move while they work: Claude hops and blinks, Codex turns while it fades, Antigravity's rainbow flows along its arch. Pick another motion for each agent from a tab's menu (Agent motions).",
+  "description": "Makes the agents' tab icons move while they work: Claude hops and blinks, Codex turns while it fades, Antigravity's rainbow flows along its arch.",
   "author": "Flare",
   "homepage": "https://github.com/Maxaubert/Flare/tree/main/sample-plugins/agent-moves",
-  "permissions": ["agent-looks", "panel", "actions"],
-  "background": "background.html",
-  "panel": { "entry": "panel.html", "title": "Agent motions" },
-  "contributes": {
-    "actions": [
-      { "key": "pick", "title": "Agent motions", "where": ["tab-menu"] }
-    ]
-  }
+  "permissions": ["agent-looks"],
+  "background": "background.html"
 }
