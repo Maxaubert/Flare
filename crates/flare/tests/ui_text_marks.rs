@@ -86,21 +86,71 @@ fn the_agy_arch_is_filled_from_the_theme_list_that_holds_the_agent_crates_colour
     }
 }
 
+/// Owner 2026-11-13: the blink swaps in one shut shape for the body; no second path of lids is laid over it (a seam).
 #[test]
-fn clawds_lids_are_the_agent_crates_path_in_clawds_colour() {
+fn the_shut_clawd_is_the_agent_crates_path_swapped_in_for_the_body() {
     assert_eq!(
-        glyph(&glyphs(), "clawd-lids"),
-        flare_agent::icon::clawd_lids_path()
+        glyph(&glyphs(), "clawd-shut"),
+        flare_agent::icon::clawd_shut_path()
     );
+    assert!(!glyphs().contains("clawd-lids"), "no lids glyph remains");
     let mark = ui_file("tabmark.slint");
-    let at = mark
-        .find("commands: Glyphs.clawd-lids;")
-        .expect("AgentIcon draws the lids");
+    let swap = "commands: root.shut ? Glyphs.clawd-shut : Glyphs.clawd;";
+    let at = mark.find(swap).expect("AgentIcon swaps the shut Clawd in");
     assert!(
         mark[at..]
-            .trim_start_matches("commands: Glyphs.clawd-lids;")
+            .trim_start_matches(swap)
             .trim_start()
             .starts_with("fill: Theme.clawd;")
+    );
+    assert_eq!(
+        mark.matches("Glyphs.clawd").count(),
+        2,
+        "one Clawd path, its two shapes"
+    );
+    assert!(
+        mark.contains("property <bool> shut: root.kind == 1 && root.m == 1 && MarkMotion.blink;")
+    );
+}
+
+/// Owner 2026-11-13 ("keep squash, snap to pixels"): the moving box follows flare_agent::icon_motion::icon_box,
+/// every edge snapped to whole device pixels of the window, and a hop stands on its feet.
+#[test]
+fn the_agent_icons_moving_box_snaps_every_edge_to_whole_device_pixels() {
+    let mark = ui_file("tabmark.slint");
+    for line in [
+        "property <length> ax: Px.snap(root.absolute-position.x);",
+        "property <length> ay: Px.snap(root.absolute-position.y);",
+        "property <length> rest: Px.snap(root.size);",
+        "property <length> box-w: Px.snap(root.size * root.sx);",
+        "property <length> box-h: Px.snap(root.size * root.sy);",
+        "property <length> box-left: Px.snap(root.ax + (root.rest - root.box-w) / 2);",
+        "property <float> feet: root.kind == 1 ? (10.04 + 2.5) / 17 : root.kind == 3 ? (8.02 + 1.5) / 11 : 1.0;",
+        "? root.ay + Px.snap(root.feet * root.rest) - Px.snap(root.feet * root.box-h) + Px.snap(MarkMotion.hop-y * root.size)",
+        ": Px.snap(root.ay + (root.rest - root.box-h) / 2);",
+        "width: root.box-w;",
+        "height: root.box-h;",
+        "x: root.box-left - root.absolute-position.x;",
+        "y: root.box-top - root.absolute-position.y;",
+    ] {
+        assert!(mark.contains(line), "AgentIcon has {line}");
+    }
+    // The feet in the slint are the agent crate's.
+    let (cy, ch) = (
+        flare_agent::icon::CLAWD_VIEWBOX.1,
+        flare_agent::icon::CLAWD_VIEWBOX.3,
+    );
+    assert!((flare_agent::icon::CLAWD_FEET - (10.04 - cy) / ch).abs() < 1e-6);
+    let (ay, ah) = (
+        flare_agent::icon::AGY_VIEWBOX.1,
+        flare_agent::icon::AGY_VIEWBOX.3,
+    );
+    assert!((flare_agent::icon::AGY_FEET - (8.02 - ay) / ah).abs() < 1e-6);
+    assert_eq!((cy, ch, ay, ah), (-2.5, 17.0, -1.5, 11.0));
+    assert_eq!(flare_agent::icon::OPENAI_FEET, 1.0);
+    assert!(
+        !mark.contains("width: root.size * root.sx;"),
+        "no unsnapped box remains"
     );
 }
 

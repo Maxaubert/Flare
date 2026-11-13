@@ -3417,3 +3417,20 @@ file is locked, or cannot be looked at, and judges a folder with none by age alo
 `crates/flare/src/remote_files.rs` (`RunLock`, `run_alive`, `sweep_old`). Held by
 `remote_files::tests::a_live_runs_folders_are_never_swept_however_old_and_a_gone_runs_are`. Source: review of remote
 sessions PR 6 (2026-11-12).
+1192. **Clawd's working hop lands on whole device pixels and blinks in one shape.** `AgentIcon`'s moving box (H1's
+hop and `hop`, since 6b7307e1) took `size * sx` and `size * sy` with unsnapped, fractional x and y, so every 16 ms frame
+fell on another sub-pixel box: the anti-aliasing smeared, and Clawd looked to shrink in width, wobble and leave
+artifacts on the tab. The blink laid a second path of lids over the body and left a seam. Now the rest size, the
+squashed size, the rise and the box's place snap to whole device pixels of the window (`Px.snap` on the icon's
+`absolute-position`), a hop squashes about its art's feet (`flare_agent::icon::CLAWD_FEET` and the like), the keys
+and timing stay, and the blink swaps in `Glyphs.clawd-shut` (`flare_agent::icon::clawd_shut_path`, the body with its eyes
+filled) for the one Clawd path.
+Native: `crates/flare/ui/tabmark.slint` (`AgentIcon`), `crates/flare-agent/src/icon_motion.rs` (`icon_box`),
+`crates/flare-agent/src/icon.rs`, `crates/flare/ui/glyphs.slint`. Held by
+`icon_motion::tests::every_frame_of_the_hop_is_a_whole_device_pixel_box_standing_on_its_feet`,
+`ui_tests::marks::every_frame_of_the_hop_draws_clawd_on_whole_device_pixels` (100, 125, 150, 200 and 225 %),
+`icon::tests::the_shut_clawd_is_the_body_with_its_two_eyes_filled_and_nothing_else`,
+`icon::tests::the_feet_are_the_lowest_edge_of_each_marks_art` and the `ui_text_marks` tests
+`the_agent_icons_moving_box_snaps_every_edge_to_whole_device_pixels` and
+`the_shut_clawd_is_the_agent_crates_path_swapped_in_for_the_body`. Source: Max, 2026-11-13 ("Keep squash, snap to
+pixels").
