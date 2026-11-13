@@ -1973,8 +1973,8 @@ Spec: `docs/superpowers/specs/2026-10-26-agy-and-agent-motion.md`, Part 2 (owner
   permission `agent-looks` ("Change how agent icons move while they work"), protocol 2 only; the newest pick wins, and a
   plugin that stops takes its picks with it (`flare_agent::icon_motion::MotionPicks`, kept by the window, applied for the
   plugin generation that was checked). Contract: `docs/surfaces/plugins.md` ("Agent icon motions"), `protocol.md`.
-- **Sample.** `sample-plugins/agent-moves/`: the owner's three picks from its background page, and a panel (a tab's menu,
-  "Agent motions") to pick one per agent, kept in its store.
+- **Sample.** `sample-plugins/agent-moves/`: the owner's three picks from its background page, and nothing in a tab's
+  menu (owner, 2026-11-13: the "Agent motions" item and its picker panel are gone; picks saved by 0.1 still apply).
 - Held by the `icon_motion` tests (each motion's frames at fixed phases: hop height and squash, the blink's frames, the
   turns, the fade, the flow's colours and offsets, the still frame, the picks), `only_a_working_agents_tab_wears_its_agents_motion`,
   `a_picked_motion_moves_a_working_agents_icon_from_the_mark_clock_and_stills_with_effects_off`,

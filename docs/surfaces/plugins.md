@@ -442,8 +442,7 @@ sends the agent's artwork, never draws a check or a dot, and the agent's marks (
   now. A motion or an agent not on the list, or `rainbow-flow` for an agent that is not agy, is `bad_params`, and the
   message lists what fits. A protocol 1 mod cannot ask for `agent-looks`.
 - Sample: `../../sample-plugins/agent-moves/` sets the owner's picks (Claude `hop-blink`, Codex `spin-fade`, agy
-  `rainbow-flow`) from its background page and has a panel, opened from a tab's menu, to pick one per agent (kept in
-  its store).
+  `rainbow-flow`) from its background page. It has no panel and adds nothing to a tab's menu (owner, 2026-11-13).
 
 ## Filling logins (`fill`)
 
