@@ -3473,3 +3473,14 @@ tooltips, and so does the Preview chip, whose tooltip shows the server's origin 
 `crates/flare/ui/update.slint`. Held by `ui_tests::staged_flows::hovering_the_build_ready_chip_shows_no_tooltip` and
 `ui_tests::update_flows::hovering_the_update_chip_shows_no_tooltip` (each also checks that the cog still shows its tip
 and that the hovered point is on the chip). Source: Max, 2026-11-13.
+1205. **A Not linked machine shows its reason as a line under its row, not a tooltip.** Max, 2026-11-13: a control with
+a text label gets no tooltip; icon-only controls (the cog, the window buttons) do. On Settings > Machines a machine
+whose link check failed shows "Not linked" in its Status column and the reason as one small grey line under its row
+(the settings' sub line style: 11.5 px, `SettingsInk.sub`), from the name's left edge to the menu, elided on that one
+line. The row grows by 18 px for it (`MACHINE_REASON_H`) and its columns keep the top 50 px; Linked, Checking and
+unchecked rows have no line. The status has no tooltip. The add form's red line is unchanged. Native:
+`MachineRow::sub_line` (`flare-settings/src/page/machines.rs`), `to_slint_machine` (`settings_ctl.rs`, the status's
+words in `badge`, the reason in `sub`), `SetMachineRow` (`ui/settings/machines.slint`). Held by
+`a_failed_machine_carries_its_reason_as_its_sub_line_and_the_others_have_none`,
+`a_not_linked_machine_shows_its_reason_under_the_row_and_hovering_its_status_shows_no_tooltip` and
+`a_machine_row_draws_its_reason_as_one_grey_line_under_it`, at 100 and 225 percent. Source: Max, 2026-11-13.

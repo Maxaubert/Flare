@@ -566,19 +566,17 @@ fn os_word(os: Option<flare_settings::page::machines::MachineOs>) -> &'static st
 }
 
 /// One linked machine's table row (remote sessions PR 7): its name, its SSH host, the Flare version it said, its
-/// status (the word it draws by and the words it shows) and the one line of a failed check as the status's tooltip.
+/// status (the word it draws by in `state`, the words it shows in `badge`) and, in `sub`, the one line of a failed check
+/// drawn under the row. The status has no tooltip (owner rule 2026-11-13: a control with words has none).
 pub fn to_slint_machine(m: &flare_settings::page::machines::MachineRow, y: f64, h: f64) -> SetRow {
-    use flare_settings::page::machines::{LinkStatus, MACHINE_PREFIX};
+    use flare_settings::page::machines::MACHINE_PREFIX;
     SetRow {
         label: m.name.as_str().into(),
         value: m.ssh.as_str().into(),
         note: m.version.as_str().into(),
         state: m.status.word().into(),
-        sub: m.status.text().into(),
-        row_tip: match &m.status {
-            LinkStatus::Failed(line) => line.as_str().into(),
-            _ => "".into(),
-        },
+        badge: m.status.text().into(),
+        sub: m.sub_line().into(),
         vendor: os_word(m.os).into(),
         ..block_row(
             &format!("{MACHINE_PREFIX}{}", m.id),

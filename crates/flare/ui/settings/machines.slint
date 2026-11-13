@@ -4,8 +4,9 @@
 // Add, and one red line under it when the check failed.
 //
 // The rows are SetRow data (types.slint): a machine's `label` is its name, `value` its SSH host, `note` the Flare
-// version, `state` its status word (unknown, checking, linked, failed), `sub` the status's words, `row-tip` the line
-// of a failed check, and `vendor` its system (mac, pc, ""). The form's `value` is the host picked, `options` the
+// version, `state` its status word (unknown, checking, linked, failed), `badge` the status's words, `sub` the line of
+// a failed check (one small grey line under the row, never a tooltip: owner rule 2026-11-13), and `vendor` its system
+// (mac, pc, ""). The form's `value` is the host picked, `options` the
 // hosts, `note` the name typed, `sub` the red line and `state` "busy" while the host is checked.
 
 import { Theme, Px, SettingsInk, SettingsFixed, SettingsShape } from "../theme.slint";
@@ -54,12 +55,13 @@ export component SetMachineHead inherits Rectangle {
     MachineHeadText { x: root.width * MachineCols.status; width: root.width * (1 - MachineCols.status) - MachineCols.menu-w; height: root.height; text: "Status"; }
 }
 
-// One linked machine.
+// One linked machine. A machine that is Not linked is 18 px taller: its columns keep the top 50 px (`band`) and the
+// reason is one grey line under them, from the name's left edge to the menu, elided rather than wrapped.
 export component SetMachineRow inherits Rectangle {
     in property <SetRow> data;
     in property <bool> menu-open;
     callback menu-request(length, length, length, length);
-    callback tip(string, length, length, length, length);
+    property <length> band: root.data.sub != "" ? root.height - 18px : root.height;
 
     // The rule between machines, edge to edge (a table).
     Rectangle {
@@ -71,7 +73,8 @@ export component SetMachineRow inherits Rectangle {
     HorizontalLayout {
         x: MachineCols.pad;
         width: root.width * MachineCols.host - MachineCols.pad - 8px;
-        height: root.height;
+        y: 0px;
+        height: root.band;
         spacing: 8px;
         alignment: start;
         VerticalLayout {
@@ -91,7 +94,8 @@ export component SetMachineRow inherits Rectangle {
     Text {
         x: root.width * MachineCols.host;
         width: root.width * (MachineCols.flare - MachineCols.host) - 8px;
-        height: root.height;
+        y: 0px;
+        height: root.band;
         text: root.data.value;
         font-family: SettingsFixed.font-mono;
         font-size: 12.5px;
@@ -102,7 +106,8 @@ export component SetMachineRow inherits Rectangle {
     Text {
         x: root.width * MachineCols.flare;
         width: root.width * (MachineCols.status - MachineCols.flare) - 8px;
-        height: root.height;
+        y: 0px;
+        height: root.band;
         text: root.data.note;
         font-family: Theme.font-ui;
         font-size: 13px;
@@ -113,7 +118,8 @@ export component SetMachineRow inherits Rectangle {
     status := HorizontalLayout {
         x: root.width * MachineCols.status;
         width: root.width * (1 - MachineCols.status) - MachineCols.menu-w;
-        height: root.height;
+        y: 0px;
+        height: root.band;
         spacing: 7px;
         alignment: start;
         property <color> ink: root.data.state == "linked" ? SettingsFixed.copied
@@ -129,7 +135,7 @@ export component SetMachineRow inherits Rectangle {
             }
         }
         Text {
-            text: root.data.sub;
+            text: root.data.badge;
             font-family: Theme.font-ui;
             font-size: 13px;
             font-weight: 500;
@@ -137,20 +143,25 @@ export component SetMachineRow inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
         }
-        sta := TouchArea {
-            changed has-hover => {
-                if self.has-hover && root.data.row-tip != "" {
-                    root.tip(root.data.row-tip, status.absolute-position.x, status.absolute-position.y, status.width, status.height);
-                } else {
-                    root.tip("", 0px, 0px, 0px, 0px);
-                }
-            }
-        }
+    }
+    // Why the last check failed: one grey line in the settings' sub line style, from the name's left edge (the logo and
+    // its 8 px gap in) to the menu. Words only: no tooltip.
+    if root.data.sub != "": Text {
+        x: MachineCols.pad + 23px;
+        y: Px.snap(root.band - 6px);
+        width: root.width - MachineCols.pad - 23px - MachineCols.menu-w;
+        height: 16px;
+        text: root.data.sub;
+        font-family: Theme.font-ui;
+        font-size: 11.5px;
+        color: SettingsInk.sub;
+        vertical-alignment: center;
+        overflow: elide;
     }
     // The ⋯ menu: Test and Remove (the Select menu, opened under the button).
     more := Rectangle {
         x: root.width - MachineCols.menu-w + 4px;
-        y: Px.snap((root.height - 30px) / 2);
+        y: Px.snap((root.band - 30px) / 2);
         width: 30px;
         height: 30px;
         border-radius: SettingsShape.radius-sm;
@@ -282,13 +293,14 @@ export component MachinesPreview inherits Window {
     out property <int> menus: 0;
     background: Theme.ground;
     SetMachineHead { x: 0px; y: 0px; width: root.width; height: 34px; first: true; }
-    SetMachineRow {
+    // The machine's `h` when the test sets one (68 for a Not linked machine with its reason line), else 50.
+    mrow := SetMachineRow {
         x: 0px;
         y: 34px;
         width: root.width;
-        height: 50px;
+        height: root.machine.h > 0px ? root.machine.h : 50px;
         data: root.machine;
         menu-request(x, y, w, h) => { root.menus += 1; }
     }
-    SetMachineForm { x: 0px; y: 84px; width: root.width; height: 84px; data: root.form; }
+    SetMachineForm { x: 0px; y: 34px + mrow.height; width: root.width; height: 84px; data: root.form; }
 }

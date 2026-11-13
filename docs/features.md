@@ -2616,9 +2616,12 @@ The remote sessions get their screens, as the owner picked them in the 2026-11-1
 (`docs/superpowers/specs/remote-sessions-mockups/`). Plan `docs/superpowers/plans/2026-11-12-remote-sessions.md` (PR 7).
 Contract: `docs/surfaces/protocol.md` (`remote.hello`'s `os`, `remote.status`'s `sized`, `remote.open`'s `~`).
 
-- **Settings > Machines.** A page after Plugins with no subtext anywhere. Linked machines are a table: the machine's
-  logo (Apple for a Mac, Windows for a PC) and name, its SSH host, the Flare version it said, its status ("Linked" with
-  a green dot, or "Not linked" with the reason as the tooltip), and a ⋯ menu with Test and Remove. "+ Add a machine"
+- **Settings > Machines.** A page after Plugins with no subtext (a Not linked machine's reason line aside). Linked
+  machines are a table: the machine's logo (Apple for a Mac, Windows for a PC) and name, its SSH host, the Flare
+  version it said, its status ("Linked" with a green dot, or "Not linked"), and a ⋯ menu with Test and Remove. A
+  machine that is Not linked shows why as one small grey line under its row, from the name's left edge, elided on that
+  one line; the status has no tooltip (Max's rule 2026-11-13: a control with words gets none). Rule 1205. "+ Add a
+  machine"
   opens a form in its place: an SSH host drop-down (the plain hosts of `~/.ssh/config` and its `Include`s), a Name
   field, Cancel and Add. Add checks the link first (Flare on the host's PATH, then the Mac app's) and saves only a
   machine that answered; a failed check is one red line under the form (for example "Flare there speaks remote
