@@ -605,7 +605,7 @@ fn the_ssh_command_is_argv_items_quoted_for_the_hosts_shell() {
     .unwrap();
     assert_eq!(
         pc.last().unwrap(),
-        r#""C:\Program Files\Flare\flare.exe" --serve-remote"#
+        r#"cmd /c "C:\Program Files\Flare\flare.exe" --serve-remote"#
     );
     assert!(!pc.iter().any(|a| a.contains("&&")));
     assert_eq!(
@@ -1007,9 +1007,11 @@ fn file_work_asked_while_the_link_is_down_or_ended_is_refused_at_once() {
     });
     assert!(matches!(answer(&slot), Err(ErrandFail::Failed(_))));
 }
-/// Remote sessions PR 6: the serve command for each host kind, as a table. A PC's cmd takes the path in double quotes
-/// (no `&&`, nothing cmd expands: `%`, `!`, `^` and `"` are refused); a Mac's sh (and an unknown kind) in single quotes,
-/// where nothing expands.
+/// Remote sessions PR 6, rule 1207: the serve command for each host kind, as a table. A PC gets
+/// `cmd /c "<path>" --serve-remote`, the one form both cmd and PowerShell login shells run and wait for; a path cmd
+/// would strip the quotes of (`& < > ( ) @ ^ |`) or that either shell expands (`" % ! $` and a backquote) is refused,
+/// except a leading `%LOCALAPPDATA%` or `$env:LOCALAPPDATA`, and so is a curly quote (rule 1208). A Mac's sh (and an
+/// unknown kind) takes single quotes, where nothing expands.
 #[test]
 fn the_remote_command_table_quotes_each_hosts_shell() {
     let pc = Some(Os::Pc);
@@ -1017,22 +1019,58 @@ fn the_remote_command_table_quotes_each_hosts_shell() {
     for (kind, flare, want) in [
         (
             pc,
-            r"C:\Program Files (x86)\Flare\flare.exe",
-            Some(r#""C:\Program Files (x86)\Flare\flare.exe" --serve-remote"#),
-        ),
-        (
-            pc,
             r"C:\Users\max\AppData\Local\Flare\current\flare.exe",
-            Some(r#""C:\Users\max\AppData\Local\Flare\current\flare.exe" --serve-remote"#),
+            Some(r#"cmd /c "C:\Users\max\AppData\Local\Flare\current\flare.exe" --serve-remote"#),
         ),
         (
             pc,
-            r"D:\Tools & Apps\it's\flare.exe",
-            Some(r#""D:\Tools & Apps\it's\flare.exe" --serve-remote"#),
+            r"C:\Program Files\Flare\flare.exe",
+            Some(r#"cmd /c "C:\Program Files\Flare\flare.exe" --serve-remote"#),
         ),
+        (
+            pc,
+            r"D:\Tools\it's\flare.exe",
+            Some(r#"cmd /c "D:\Tools\it's\flare.exe" --serve-remote"#),
+        ),
+        (
+            pc,
+            r"%LOCALAPPDATA%\StableFlare\current\FlareStable.exe",
+            Some(r#"cmd /c "%LOCALAPPDATA%\StableFlare\current\FlareStable.exe" --serve-remote"#),
+        ),
+        // Rule 1208: PowerShell's name for the same folder, expanded and quoted by a PowerShell login shell.
+        (
+            pc,
+            r"$env:LOCALAPPDATA\Flare\current\Flare.exe",
+            Some(r#"cmd /c "$env:LOCALAPPDATA\Flare\current\Flare.exe" --serve-remote"#),
+        ),
+        (pc, "flare", Some(r#"cmd /c "flare" --serve-remote"#)),
+        (pc, r"$env:LOCALAPPDATA\$x\flare.exe", None),
+        (pc, r"C:\x$env:LOCALAPPDATA\flare.exe", None),
+        // PowerShell ends a double-quoted string at a curly quote too (rule 1208): `calc` would run on its own.
+        (pc, "C:\\x\u{201D}; calc; \u{201D}\\flare.exe", None),
+        (pc, "C:\\x\u{201C}\\flare.exe", None),
+        (pc, "C:\\x\u{201E}\\flare.exe", None),
+        (pc, "C:\\x\u{2018}\\flare.exe", None),
+        (pc, "%LOCALAPPDATA%\\x\u{201F}\\flare.exe", None),
+        // Other letters outside ASCII are a path's own (a user named Jose with an accent).
+        (
+            pc,
+            "C:\\Users\\Jos\u{E9}\\flare.exe",
+            Some("cmd /c \"C:\\Users\\Jos\u{E9}\\flare.exe\" --serve-remote"),
+        ),
+        // cmd /c drops the quotes of a path with one of its special characters: the command would split.
+        (pc, r"C:\Program Files (x86)\Flare\flare.exe", None),
+        (pc, r"D:\Tools & Apps\flare.exe", None),
+        (pc, r"C:\a@b\flare.exe", None),
+        (pc, r"C:\a|b\flare.exe", None),
+        (pc, r"C:\a<b>\flare.exe", None),
         (pc, r"C:\a!b\flare.exe", None),
         (pc, r"C:\a^b\flare.exe", None),
         (pc, r"C:\%USERPROFILE%\flare.exe", None),
+        (pc, r"%USERPROFILE%\flare.exe", None),
+        (pc, r"%LOCALAPPDATA%\%PATH%\flare.exe", None),
+        (pc, r"C:\$env\flare.exe", None),
+        (pc, r"C:\a`b\flare.exe", None),
         (pc, r#"C:\a"b\flare.exe"#, None),
         (
             mac,

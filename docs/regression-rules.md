@@ -3496,3 +3496,50 @@ words in `badge`, the reason in `sub`), `SetMachineRow` (`ui/settings/machines.s
 `a_failed_machine_carries_its_reason_as_its_sub_line_and_the_others_have_none`,
 `a_not_linked_machine_shows_its_reason_under_the_row_and_hovering_its_status_shows_no_tooltip` and
 `a_machine_row_draws_its_reason_as_one_grey_line_under_it`, at 100 and 225 percent. Source: Max, 2026-11-13.
+
+1207. **A PC host runs the serve command through `cmd /c`, Settings > Machines finds a PC's own installs, and a
+renamed copy serves its own profile.** Found 2026-11-13 over real ssh from the Mac to the PC: the PC's sshd
+`DefaultShell` was PowerShell 7, which refused the old `"<path>" --serve-remote` (`ParserError: Unexpected token
+'serve-remote'`); with `& "<path>"` it parsed but did not wait for the GUI-subsystem exe, so the shell exited and sshd
+tore the link down seconds after hello. The PC form is now `cmd /c "<path>" --serve-remote`, measured working under
+PowerShell (hello, open, attach, input, output, close, and the serve log's "the link closed") and the same under cmd.
+cmd /c keeps the quotes only when the path holds none of `& < > ( ) @ ^ |`, so such a path is refused (None), and so
+is one with `" % ! $` or a backquote, except a leading `%LOCALAPPDATA%`, which cmd expands on the host. Settings >
+Machines tries, in order, `flare`, `%LOCALAPPDATA%\StableFlare\current\FlareStable.exe`,
+`%LOCALAPPDATA%\Flare\current\Flare.exe` and the Mac app, each quoted as its path implies (a PC path in the cmd form,
+a `/` path in sh's, the bare name in sh's then the PC's), stops at a refusal and saves what answered with the system
+its hello names. On Windows a run with no `--user-data-dir` whose exe is not `flare.exe` (any case) runs as if the
+flag named `%APPDATA%\<stem>`, so `FlareStable.exe --serve-remote` relays to (or hidden-starts) the Stable profile,
+never the Dev copy's `%APPDATA%\Flare`; its pipe, lock and taskbar identity are the ones the Stable shortcut's flag
+gives. A host whose `%LOCALAPPDATA%` holds a space under a PowerShell login shell is rule 1208. Native: `remote_link::remote_command`, `machines::FLARE_CANDIDATES`
+and `probe_kinds`, `MachinesPage::add_on_worker` (`machines_page.rs`), `startup::user_data_dir_of_exe` and
+`effective_user_data_dir`, `main.rs`, `ship_ctl::effective_aumid`. Held by
+`the_remote_command_table_quotes_each_hosts_shell`, `adding_looks_for_flare_saves_only_what_answered_with_the_hosts_system`,
+`adding_a_pc_finds_its_stable_install_and_saves_it_as_a_pc`,
+`each_candidate_is_probed_with_the_quoting_its_path_implies` and
+`a_renamed_exe_with_no_flag_takes_the_profile_of_its_name`. Source: Max's real-ssh run, 2026-11-13.
+
+1208. **A PC host's install is found under PowerShell's `$env:LOCALAPPDATA` too, a curly quote is refused in a PC
+path, and a machine keeps the quoting that answered.** Found by an independent review of rule 1207, 2026-11-13.
+(1) A PowerShell login shell drops the double quotes of `cmd /c "%LOCALAPPDATA%\...\FlareStable.exe"` when it calls
+cmd (legacy argument passing quotes only text with a space, and the unexpanded text has none), so cmd splits the
+expanded path at a space and a host whose profile folder is `C:\Users\John Doe` never answered. Settings > Machines now
+also tries `$env:LOCALAPPDATA\StableFlare\current\FlareStable.exe` and `$env:LOCALAPPDATA\Flare\current\Flare.exe`
+after the two `%LOCALAPPDATA%` ones: PowerShell expands that itself and quotes the result for cmd; a cmd login shell
+leaves it as text, which names no file. `remote_command` accepts a leading `$env:LOCALAPPDATA` like `%LOCALAPPDATA%`.
+Measured locally 2026-11-13 by running cmd, Windows PowerShell 5.1 and PowerShell 7.6 as an sshd login shell would
+(`<shell> /c|-c <command>`) with `LOCALAPPDATA` pointed at folders named `Max`, `John Doe`, `Bob (Work)` and
+`Tom&Jerry`: the `%` form answers under cmd for all but `Tom&Jerry` and under PowerShell only for `Max`; the `$env`
+form answers under PowerShell for all but `Tom&Jerry`. Known limit: a profile folder with `&` answers under neither
+shell (type the full path in `machines.json`; it is refused, so the machine says why). (2) PowerShell also ends a
+double-quoted string at U+201C, U+201D and U+201E, so `C:\x”; calc; ”\flare.exe` ran `calc` under a PowerShell login
+shell; `remote_command` refuses every quote mark from U+2018 to U+201F in a PC path. Other letters outside ASCII
+stay allowed. (3) The kind saved is both the logo and the quoting of every later link. A Windows host whose login shell
+is Git Bash answers the bare name in sh's form and names itself a PC; saved as a PC, its links sent `cmd /c` to bash,
+which rewrites `/c` to `C:/`, and cmd sat waiting on the link. `machines::saved_kind` keeps the host's own word only
+when its quoting is the one that answered; otherwise the quoting that answered (that host has no PC logo). Native:
+`remote_link::PC_LOCAL_APP_DATA_PWSH`, `pc_rest` and `remote_command`, `machines::FLARE_CANDIDATES`, `probe_kinds`
+and `saved_kind`, `MachinesPage::add_on_worker`. Held by `the_remote_command_table_quotes_each_hosts_shell`,
+`a_pc_whose_profile_folder_has_a_space_is_found_through_powershells_variable`,
+`a_pc_that_answered_in_sh_quoting_keeps_that_quoting`, `the_saved_kind_keeps_the_quoting_that_answered` and
+`each_candidate_is_probed_with_the_quoting_its_path_implies`. Source: the review of PR fix/remote-pc-host, 2026-11-13.

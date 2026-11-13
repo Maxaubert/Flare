@@ -100,7 +100,7 @@ fn main() {
     let env_renderer = std::env::var("FLARE_RENDERER").ok();
     // The GPU device is built on a worker thread while the rest of start-up runs (Task 64).
     let prewarm = backend::prewarm_if_gpu(&argv, env_renderer.as_deref());
-    let args = match config::parse_args(&argv, env_renderer.as_deref()) {
+    let mut args = match config::parse_args(&argv, env_renderer.as_deref()) {
         Ok(args) => args,
         Err(message) => {
             // A release build has no console of its own: attach first or a bad flag fails silently.
@@ -109,6 +109,9 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // Rule 1207: a renamed copy (`FlareStable.exe`) with no --user-data-dir runs on `%APPDATA%\<its name>`, as if the
+    // flag named it, so its profile, lock, pipe and a hidden start all agree (the serve process ssh starts included).
+    args.user_data_dir = startup::effective_user_data_dir(args.user_data_dir.take());
 
     startup_trace::mark(startup_trace::Phase::Args);
 
