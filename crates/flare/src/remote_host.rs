@@ -79,16 +79,33 @@ pub struct RemoteHost {
     /// The number of the host's status and the status it numbered (`remote.status`, PR 4): it grows when the status
     /// changes, so a viewer sees at a glance that nothing did.
     status: Mutex<(u64, Value)>,
+    /// The files viewers copied to the followed tabs (`remote.put`, PR 6), in the run's own temp folder.
+    uploads: crate::remote_files::Uploads,
+    /// This host's temp folder (`remote.fetch` reads it besides the tab's folder).
+    temp: PathBuf,
 }
 
 impl RemoteHost {
-    /// A host with a fresh bridge key.
+    /// A host with a fresh bridge key. An earlier run's upload folders left by a crash are swept on a thread of their
+    /// own (rule 304).
     pub fn new() -> Arc<Self> {
+        crate::remote_files::sweep_leftovers_later();
         Self::with_key(flare_term::session::new_ctl_token())
     }
 
     pub fn with_key(key: String) -> Arc<Self> {
+        Self::with_temp(key, std::env::temp_dir())
+    }
+
+    /// A host whose temp folder is `temp`: the second folder `remote.fetch` reads (rule 303) and where the uploads go
+    /// (`<temp>/flare-remote/<run>`). The real one is the system's; a test gives its own.
+    pub fn with_temp(key: String, temp: PathBuf) -> Arc<Self> {
         Arc::new(Self {
+            temp: temp.clone(),
+            uploads: crate::remote_files::Uploads::new(
+                temp.join("flare-remote")
+                    .join(crate::remote_files::run_name()),
+            ),
             key,
             follows: Mutex::new(HashMap::new()),
             convo: crate::remote_convo::ConvoFeeds::new(),
@@ -164,10 +181,24 @@ impl RemoteHost {
         last
     }
 
-    /// The tab is closed, or its shell ended: nobody follows it any more.
+    /// The tab is closed, or its shell ended: nobody follows it any more, and the files viewers copied to it go (on a
+    /// thread of their own, rule 304).
     pub fn forget_tab(&self, tab: &str) {
         self.lk().remove(tab);
         self.convo.forget(tab);
+        if let Some(dir) = self.uploads.forget(tab) {
+            crate::remote_files::remove_later(dir);
+        }
+    }
+
+    /// The files viewers copy to the followed tabs (`remote.put`).
+    pub fn uploads(&self) -> &crate::remote_files::Uploads {
+        &self.uploads
+    }
+
+    /// This host's temp folder.
+    pub fn temp(&self) -> &Path {
+        &self.temp
     }
 
     /// A followed tab's handle and tail (any thread).

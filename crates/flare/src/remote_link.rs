@@ -14,6 +14,10 @@
 //! one whose number fell out of the host's ring (`gap`). What a reconnect catches up on is the past: the agent's
 //! signals are taken out of it (rule 289).
 //!
+//! Between the typing and the output poll the worker does the window's file work (remote sessions PR 6, `Errand`): a
+//! file link's host file fetched in chunks (`remote.fetch`, rule 303), and dropped or pasted files copied to the host
+//! (`remote.put`) with their host paths pasted as one paste (rule 304).
+//!
 //! Closing the tab closes the host's session (`remote.close`, which asks as any close does); the quit and a dropped
 //! link only detach (rule 288). Every wait here is on this worker: a dead link never holds the UI thread, a close or
 //! the quit (rule 28).
@@ -21,14 +25,18 @@
 use base64::Engine as _;
 use flare_ctl::framing::Wire;
 use flare_ctl::remote::{
-    Intent, KeyIntent, MAX_INPUT_BYTES, MAX_INTENTS, OUTPUT_MAX, intents_json,
+    FILE_CHUNK, FILE_CHUNKS_MAX, FILE_MAX, Intent, KeyIntent, MAX_INPUT_BYTES, MAX_INTENTS,
+    OUTPUT_MAX, chunks_of, intents_json,
 };
-use flare_ctl::{Client, ClientError, CtlError, Method, RemoteHelloParams, StdioWire, code};
+use flare_ctl::{
+    Client, ClientError, CtlError, Method, RemoteHelloInfo, RemoteHelloParams, StdioWire, code,
+};
 use flare_tabs::tabs::Os;
 use flare_term::handle::RemoteIntent;
 use flare_term::pty::{PtyProcess, PtySpawner, SpawnSpec};
 use flare_term::remote_pty::{
-    Leaving, LinkState, RemoteIo, RemotePty, RemoteSpec, SignalStrip, plain_snapshot,
+    Errand, ErrandFail, Fetched, Leaving, LinkState, RemoteIo, RemotePty, RemoteSpec, SignalStrip,
+    Upload, plain_snapshot,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -109,72 +117,10 @@ impl<W: Wire> Drop for ClientLink<W> {
 
 // ---- machines ----
 
-/// A machine a remote tab can run on, as `machines.json` in the profile names it (hand-edited until PR 7's page):
-/// `{"machines":[{"id":"mac","name":"Mac Mini","kind":"mac","ssh":"mac-mini","user":"max","flare":"/Applications/..."}]}`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Machine {
-    pub id: String,
-    pub name: String,
-    /// `mac` or `pc`; anything else is no kind and reads as a Mac's shell (rule 40, never written back).
-    pub kind: Option<Os>,
-    /// The ssh host (an alias of `~/.ssh/config` or a name).
-    pub ssh: String,
-    pub user: Option<String>,
-    /// Flare's executable on the host; `flare` (on the host's PATH) when not given.
-    pub flare: String,
-}
-
-/// A word that goes to ssh as one argv item: printable, no space, never read as an option.
-fn argv_word(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 255
-        && !s.starts_with('-')
-        && s.chars().all(|c| c.is_ascii_graphic())
-}
-
-/// Pure: the machines a `machines.json` names. A machine whose id, host or user is not a plain word is left out.
-pub fn parse_machines(raw: &str) -> Vec<Machine> {
-    let Ok(v) = serde_json::from_str::<Value>(raw) else {
-        return Vec::new();
-    };
-    let Some(list) = v.get("machines").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    let s = |m: &Value, k: &str| m.get(k).and_then(Value::as_str).map(str::to_string);
-    list.iter()
-        .filter_map(|m| {
-            let id = s(m, "id").filter(|i| argv_word(i))?;
-            let ssh = s(m, "ssh").filter(|h| argv_word(h))?;
-            let user = match m.get("user") {
-                None | Some(Value::Null) => None,
-                Some(_) => Some(s(m, "user").filter(|u| argv_word(u))?),
-            };
-            Some(Machine {
-                name: s(m, "name")
-                    .filter(|n| !n.trim().is_empty())
-                    .unwrap_or_else(|| id.clone()),
-                kind: s(m, "kind").as_deref().and_then(Os::parse),
-                flare: s(m, "flare")
-                    .filter(|f| !f.trim().is_empty())
-                    .unwrap_or_else(|| "flare".to_string()),
-                id,
-                ssh,
-                user,
-            })
-        })
-        .collect()
-}
-
-/// `machines.json` in the profile. BLOCKING (a file read): a worker's call.
-pub fn machines_file(profile: &Path) -> PathBuf {
-    profile.join("machines.json")
-}
-
-pub fn read_machines(path: &Path) -> Vec<Machine> {
-    std::fs::read_to_string(path) // sync-ok: the tab's link worker or a test, never the UI thread
-        .map(|raw| parse_machines(&raw))
-        .unwrap_or_default()
-}
+// The registry is `crate::machines` (PR 5); the link reads it to build ssh's argv.
+#[cfg(test)]
+pub use crate::machines::parse_machines;
+pub use crate::machines::{Machine, argv_word, machines_file, read_machines};
 
 /// Pure: the command the host's login shell runs (rule 290: no token, no environment). A Mac's sh gets the path in
 /// single quotes; a PC's cmd in double quotes, with no `&&` and nothing cmd would expand. None for a path that cannot
@@ -195,7 +141,7 @@ pub fn remote_command(kind: Option<Os>, flare: &str) -> Option<String> {
 }
 
 /// This machine's ssh: by its absolute path (rule 1).
-fn ssh_exe() -> String {
+pub(crate) fn ssh_exe() -> String {
     #[cfg(windows)]
     {
         let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
@@ -229,8 +175,9 @@ pub fn ssh_argv(ssh: &str, m: &Machine) -> Option<Vec<String>> {
     Some(argv)
 }
 
-/// How long `remote.hello` may take once the link is up (the host may start its Flare first, PR 5).
-const HELLO_WAIT: Duration = Duration::from_secs(30);
+/// How long `remote.hello` may take once the link is up: the host may start its Flare hidden first and wait up to
+/// `hidden_start::PIPE_WAIT` (60 s) for its channel (remote sessions PR 5), with time left for a slow login shell.
+pub const HELLO_WAIT: Duration = Duration::from_secs(90);
 
 /// The real connector: ssh to the machine `machines.json` names, or, under `--e2e`, the loopback command the scenario
 /// gives (`FLARE_E2E_REMOTE_COMMAND`, a JSON list: an argv).
@@ -274,45 +221,62 @@ fn this_machine() -> String {
     .unwrap_or_else(|| "viewer".to_string())
 }
 
+/// BLOCKING (it starts the link and waits for `remote.hello`): the link `argv` names, said hello to. A worker's call.
+fn start_link(argv: &[String]) -> Result<(ClientLink<StdioWire>, RemoteHelloInfo), LinkError> {
+    let (exe, args) = argv
+        .split_first()
+        .ok_or_else(|| LinkError::Down("an empty link command".into()))?;
+    let mut cmd = std::process::Command::new(exe); // sync-ok: the tab's link worker starts ssh, never the UI thread
+    cmd.args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // No console window, ever (tests never take the screen; nor does a link).
+        cmd.creation_flags(0x0800_0000);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| LinkError::Down(format!("could not start the link: {e}")))?;
+    let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        let _ = child.kill();
+        return Err(LinkError::Down("the link has no stdio".into()));
+    };
+    let wire = match StdioWire::from_child(stdin, stdout) {
+        Ok(w) => w,
+        Err(e) => {
+            let _ = child.kill();
+            return Err(LinkError::Down(format!("a wire over the link: {e}")));
+        }
+    };
+    let mut link = ClientLink::new(Client::new(wire), Some(child));
+    let info = hello_info(&mut link.client)?;
+    Ok((link, info))
+}
+
 impl Connector for SshConnector {
     fn connect(&self, machine: &str) -> Result<Box<dyn Link>, LinkError> {
-        let argv = self.argv(machine)?;
-        let (exe, args) = argv
-            .split_first()
-            .ok_or_else(|| LinkError::Down("an empty link command".into()))?;
-        let mut cmd = std::process::Command::new(exe); // sync-ok: the tab's link worker starts ssh, never the UI thread
-        cmd.args(args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // No console window, ever (tests never take the screen; nor does a link).
-            cmd.creation_flags(0x0800_0000);
-        }
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| LinkError::Down(format!("could not start the link: {e}")))?;
-        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
-            let _ = child.kill();
-            return Err(LinkError::Down("the link has no stdio".into()));
-        };
-        let wire = match StdioWire::from_child(stdin, stdout) {
-            Ok(w) => w,
-            Err(e) => {
-                let _ = child.kill();
-                return Err(LinkError::Down(format!("a wire over the link: {e}")));
-            }
-        };
-        let mut link = ClientLink::new(Client::new(wire), Some(child));
-        hello(&mut link.client)?;
+        let (link, _) = start_link(&self.argv(machine)?)?;
         Ok(Box::new(link))
     }
 }
 
-/// `remote.hello` over a fresh client.
+/// BLOCKING: the link `argv` names (ssh, or the e2e's loopback) started, said hello to and let go: what the host
+/// answered (Settings > Machines checks a link with it, remote sessions PR 7). The ssh child ends with the link.
+pub fn hello_over(argv: &[String]) -> Result<RemoteHelloInfo, LinkError> {
+    start_link(argv).map(|(_, info)| info)
+}
+
+/// `remote.hello` over a fresh client (the tests' links).
+#[cfg(test)]
 pub fn hello<W: Wire>(c: &mut Client<W>) -> Result<(), LinkError> {
+    hello_info(c).map(|_| ())
+}
+
+/// `remote.hello` over a fresh client, and what the host answered.
+pub fn hello_info<W: Wire>(c: &mut Client<W>) -> Result<RemoteHelloInfo, LinkError> {
     c.remote_hello(
         &RemoteHelloParams {
             machine: this_machine(),
@@ -320,7 +284,6 @@ pub fn hello<W: Wire>(c: &mut Client<W>) -> Result<(), LinkError> {
         },
         HELLO_WAIT,
     )
-    .map(|_| ())
     .map_err(of_client)
 }
 
@@ -396,6 +359,123 @@ pub fn input_batches(typed: &[RemoteIntent]) -> Vec<Vec<Intent>> {
         out.push(cur);
     }
     out
+}
+
+// ---- files (remote sessions PR 6) ----
+
+/// What a file errand's calls came to: the host's answer (`Ok`, the file or why not) or a broken link (`Err`).
+type Answered<T> = Result<Result<T, ErrandFail>, LinkError>;
+
+/// A refusal the person reads, or a broken link handed on.
+fn refused<T>(e: LinkError) -> Answered<T> {
+    match e {
+        LinkError::Refused(r) => Ok(Err(ErrandFail::Failed(r.message))),
+        down => Err(down),
+    }
+}
+
+/// Fetches a host file by the first of `texts` the host has (rule 303), chunk by chunk, each chunk checked to be of
+/// the same file. `NoSuchFile` when the host has none of them that it may send.
+pub fn fetch_file(
+    link: &mut dyn Link,
+    tab: &str,
+    texts: &[String],
+    wait: Duration,
+) -> Answered<Fetched> {
+    for text in texts {
+        let first = match link.call(
+            Method::RemoteFetch,
+            json!({"tab": tab, "path": text, "chunk": 0}),
+            wait,
+        ) {
+            Ok(v) => v,
+            Err(LinkError::Refused(r)) if r.code == code::NOT_FOUND => continue,
+            Err(e) => return refused(e),
+        };
+        let size = first["size"].as_u64().unwrap_or(0);
+        let chunks = first["chunks"].as_u64().unwrap_or(1);
+        if size > FILE_MAX || chunks > u64::from(FILE_CHUNKS_MAX) {
+            return Ok(Err(ErrandFail::Failed(
+                "that file is too big to fetch".into(),
+            )));
+        }
+        let name = first["name"].as_str().unwrap_or("file").to_string();
+        let mut data = b64(&first);
+        for c in 1..chunks {
+            let v = match link.call(
+                Method::RemoteFetch,
+                json!({"tab": tab, "path": text, "chunk": c}),
+                wait,
+            ) {
+                Ok(v) => v,
+                Err(e) => return refused(e),
+            };
+            if v["size"].as_u64() != Some(size) || v["chunks"].as_u64() != Some(chunks) {
+                return Ok(Err(ErrandFail::Failed(
+                    "the file changed on the host while it was read".into(),
+                )));
+            }
+            data.extend(b64(&v));
+        }
+        if data.len() as u64 != size {
+            return Ok(Err(ErrandFail::Failed(
+                "the file changed on the host while it was read".into(),
+            )));
+        }
+        return Ok(Ok(Fetched { name, data }));
+    }
+    Ok(Err(ErrandFail::NoSuchFile))
+}
+
+/// Copies files to the tab's upload folder on the host, chunk by chunk (rule 304): the host paths, and every path as
+/// the host quoted it for its shell, joined by a space (what is pasted).
+pub fn put_files(
+    link: &mut dyn Link,
+    tab: &str,
+    files: &[Upload],
+    wait: Duration,
+) -> Answered<(Vec<String>, String)> {
+    let enc = base64::engine::general_purpose::STANDARD;
+    if files.is_empty() {
+        return Ok(Err(ErrandFail::Failed("there is no file to copy".into())));
+    }
+    let (mut paths, mut pastes) = (Vec::new(), Vec::new());
+    for f in files {
+        if f.data.len() as u64 > FILE_MAX {
+            return Ok(Err(ErrandFail::Failed(format!(
+                "{} is over {} MB: copy it to the other machine another way",
+                f.name,
+                FILE_MAX / (1024 * 1024)
+            ))));
+        }
+        let chunks = chunks_of(f.data.len() as u64);
+        let mut name = f.name.clone();
+        let mut last = Value::Null;
+        for c in 0..chunks {
+            let from = (c as usize) * FILE_CHUNK;
+            let piece = &f.data[from.min(f.data.len())..(from + FILE_CHUNK).min(f.data.len())];
+            last = match link.call(
+                Method::RemotePut,
+                json!({"tab": tab, "name": name, "chunk": c, "chunks": chunks, "data": enc.encode(piece)}),
+                wait,
+            ) {
+                Ok(v) => v,
+                Err(e) => return refused(e),
+            };
+            // The next chunks name the file as the host kept it.
+            if let Some(n) = last["name"].as_str() {
+                name = n.to_string();
+            }
+        }
+        let (Some(p), Some(q)) = (last["host_path"].as_str(), last["paste"].as_str()) else {
+            return Ok(Err(ErrandFail::Failed(
+                "the host kept the file but named no path".into(),
+            )));
+        };
+        paths.push(p.to_string());
+        pastes.push(q.to_string());
+    }
+    Ok(Ok((paths, pastes.join(" "))))
 }
 
 // ---- the tab's worker ----
@@ -483,6 +563,9 @@ impl PtySpawner for RemoteSpawner {
             told: false,
             wake: self.wake.clone(),
             status: crate::remote_status::StatusPoll::new(self.timing.status_every),
+            convo: crate::remote_convo::ConvoMirror::new(),
+            convo_next: None,
+            convo_off: false,
         };
         std::thread::Builder::new()
             .name("flare-remote-link".into())
@@ -514,6 +597,43 @@ struct Worker {
     wake: Option<Wake>,
     /// The `remote.status` polls of this tab (remote sessions PR 4).
     status: crate::remote_status::StatusPoll,
+    /// The tab's conversation as the host numbered it (remote sessions PR 7, rule 297), polled only while the window
+    /// wants it: when the next poll is due, and whether the host has no `remote.convo` (an older Flare).
+    convo: crate::remote_convo::ConvoMirror,
+    convo_next: Option<Instant>,
+    convo_off: bool,
+}
+
+/// The most characters of one entry the fitted view shows (a long answer is cut, the view is for a glance).
+pub const CONVO_LINE_MAX: usize = 4000;
+
+/// Pure: the fitted view's lines of a mirrored conversation (remote sessions PR 7): who said it, the words (cut at
+/// [`CONVO_LINE_MAX`] characters) and a tool's name.
+pub fn convo_lines(m: &crate::remote_convo::ConvoMirror) -> Vec<flare_term::remote_pty::ConvoLine> {
+    use flare_convo::said::Role;
+    m.entries()
+        .iter()
+        .map(|(_, e)| flare_term::remote_pty::ConvoLine {
+            role: match e.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::Tool => "tool",
+            }
+            .to_string(),
+            text: e.text.chars().take(CONVO_LINE_MAX).collect(),
+            tool: e.tool.clone(),
+        })
+        .collect()
+}
+
+/// Pure: `remote.open`'s params for a tab: the host folder, and the session to resume there when one was asked for
+/// (the host checks it again with `valid_resume`).
+pub fn open_params(spec: &RemoteSpec) -> Value {
+    let mut p = json!({"folder": spec.folder});
+    if let Some(r) = &spec.resume {
+        p["resume"] = json!(r);
+    }
+    p
 }
 
 fn b64(v: &Value) -> Vec<u8> {
@@ -544,7 +664,19 @@ impl Worker {
                 }
             }
         }
-        live.set_link(LinkState::Ended);
+        for e in live.end_errands() {
+            e.fail(ErrandFail::Failed("this tab's session has ended".into()));
+        }
+    }
+
+    /// File work asked while the link is down is told so at once, not held for a link that may take 30 s to return.
+    fn refuse_errands(&self) {
+        for e in self.spec.live.take_errands() {
+            e.fail(ErrandFail::Failed(format!(
+                "the link to {} is down; try again when it is back",
+                self.spec.machine
+            )));
+        }
     }
 
     /// Waits `d` (sizes asked meanwhile are kept, typing while the link is down is not). False when the tab let go
@@ -553,7 +685,10 @@ impl Worker {
         let end = Instant::now() + d;
         loop {
             let left = end.saturating_duration_since(Instant::now());
-            let out = self.io.take_outgoing(left);
+            self.refuse_errands();
+            let out = self
+                .io
+                .take_outgoing(left.min(self.t.poll_max.max(Duration::from_millis(1))));
             if let Some(s) = out.size {
                 self.size = Some(s);
             }
@@ -613,7 +748,7 @@ impl Worker {
             Some(t) => t,
             None => match link.call(
                 Method::RemoteOpen,
-                json!({"folder": self.spec.folder}),
+                open_params(&self.spec),
                 self.t.long_call,
             ) {
                 Ok(v) => match v["tab"].as_str() {
@@ -752,6 +887,97 @@ impl Worker {
         }
     }
 
+    /// The tab's conversation, every `status_every` while the window wants it (remote sessions PR 7): `remote.convo`
+    /// from the last number held, each entry taken once (rule 297); a change goes to the window and wakes it. A host
+    /// with no `remote.convo` is asked no more on this link; any other refusal (no session there yet) is asked again
+    /// at the next poll.
+    fn poll_convo(&mut self, link: &mut dyn Link, tab: &str) -> Result<(), LinkError> {
+        let now = Instant::now();
+        if self.convo_off
+            || !self.spec.live.convo_wanted()
+            || self.convo_next.is_some_and(|n| now < n)
+        {
+            return Ok(());
+        }
+        self.convo_next = Some(now + self.t.status_every);
+        match link.call(
+            Method::RemoteConvo,
+            json!({"tab": tab, "since": self.convo.since()}),
+            self.t.call,
+        ) {
+            Ok(v) => {
+                if self.convo.apply(&v) {
+                    self.spec.live.set_convo(convo_lines(&self.convo));
+                    if let Some(w) = &self.wake {
+                        w();
+                    }
+                }
+                Ok(())
+            }
+            Err(LinkError::Refused(e)) if e.code == code::UNKNOWN_METHOD => {
+                self.convo_off = true;
+                Ok(())
+            }
+            Err(LinkError::Refused(e)) if e.code != code::NO_TAB => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// One piece of file work (remote sessions PR 6). The asker is always told; a broken link is handed back as the
+    /// call's error, so the link is tried again as for any call.
+    fn errand(&mut self, link: &mut dyn Link, tab: &str, e: Errand) -> Result<(), LinkError> {
+        match e {
+            Errand::Fetch { texts, done } => {
+                match fetch_file(link, tab, &texts, self.t.long_call) {
+                    Ok(f) => {
+                        done(f);
+                        Ok(())
+                    }
+                    Err(err) => {
+                        done(Err(ErrandFail::Failed("the link broke".into())));
+                        Err(err)
+                    }
+                }
+            }
+            Errand::Put { files, done } => match put_files(link, tab, &files, self.t.long_call) {
+                Ok(Ok((paths, paste))) => {
+                    // One paste of every path, quoted by the host for its shell (rules 1, 292, 304).
+                    for batch in input_batches(&[RemoteIntent::Paste(paste)]) {
+                        match link.call(
+                            Method::RemoteInput,
+                            json!({"tab": tab, "intents": intents_json(&batch)}),
+                            self.t.call,
+                        ) {
+                            Ok(_) => {}
+                            Err(LinkError::Refused(r)) => {
+                                done(Err(ErrandFail::Failed(r.message.clone())));
+                                return if r.code == code::NO_TAB {
+                                    Err(LinkError::Refused(r))
+                                } else {
+                                    Ok(())
+                                };
+                            }
+                            Err(err) => {
+                                done(Err(ErrandFail::Failed("the link broke".into())));
+                                return Err(err);
+                            }
+                        }
+                    }
+                    done(Ok(paths));
+                    Ok(())
+                }
+                Ok(Err(why)) => {
+                    done(Err(why));
+                    Ok(())
+                }
+                Err(err) => {
+                    done(Err(ErrandFail::Failed("the link broke".into())));
+                    Err(err)
+                }
+            },
+        }
+    }
+
     /// The live polls: typing and sizes as they come, output in short polls.
     fn pump(&mut self, link: &mut dyn Link, tab: &str) -> Step {
         let mut idle = self.t.poll_min;
@@ -790,6 +1016,18 @@ impl Worker {
                     Err(e) => return self.failed(e),
                 }
             }
+            // File work (remote sessions PR 6) comes after the typing asked before it, so a dropped file's path is
+            // pasted where the person was typing.
+            let mut errands = self.spec.live.take_errands().into_iter();
+            while let Some(e) = errands.next() {
+                busy = true;
+                if let Err(err) = self.errand(link, tab, e) {
+                    for rest in errands {
+                        rest.fail(ErrandFail::Failed("the link broke".into()));
+                    }
+                    return self.failed(err);
+                }
+            }
             let since = self.spec.live.seq();
             match link.call(
                 Method::RemoteOutput,
@@ -813,6 +1051,21 @@ impl Worker {
                 Err(e) => return self.failed(e),
             }
             if let Err(e) = self.poll_status(link, tab) {
+                return self.failed(e);
+            }
+            // A click or a key took the live terminal back on this screen (remote sessions PR 7): this tab's size goes
+            // again, so the host's refits leave it to this window (rule 282, the last typist sets the size).
+            if self.spec.live.take_retake()
+                && let Some((cols, rows)) = self.size
+                && let Err(e) = link.call(
+                    Method::RemoteResize,
+                    json!({"tab": tab, "cols": cols, "rows": rows}),
+                    self.t.call,
+                )
+            {
+                return self.failed(e);
+            }
+            if let Err(e) = self.poll_convo(link, tab) {
                 return self.failed(e);
             }
             idle = if busy {

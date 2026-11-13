@@ -9,6 +9,7 @@ mod backend;
 mod badge;
 mod chords;
 mod chrome_apply;
+mod cli_open;
 mod clip_flow;
 mod config;
 mod convo_ctl;
@@ -27,12 +28,15 @@ mod e2e_probes;
 mod font_ctl;
 mod headless;
 mod help_ctl;
+mod hidden_start;
 mod host;
 mod ime;
 mod keymap;
 mod live;
 mod look_ctl;
 mod mac_menu;
+mod machines;
+mod machines_page;
 mod mark_colours;
 mod material_ctl;
 mod memory;
@@ -50,6 +54,7 @@ mod plugin_safe;
 mod plugin_sessions;
 mod plugin_ui;
 mod remote_convo;
+mod remote_files;
 mod remote_host;
 mod remote_link;
 mod remote_status;
@@ -61,6 +66,7 @@ mod settings_scene;
 mod ship_ctl;
 mod side_slide;
 mod sidebar_ui;
+mod ssh_config;
 mod startup;
 mod startup_trace;
 mod tab_host;
@@ -115,7 +121,20 @@ fn main() {
     // `--serve-remote` (remote sessions PR 2): the host end of a remote link, before anything else starts. It takes no
     // single-instance lock, opens no window and sets up no e2e (rule 283); stdout is the link's alone (rule 277).
     if args.serve_remote {
-        std::process::exit(serve_remote::run(args.user_data_dir.as_deref()));
+        // `--no-start` (the process tests): never a hidden start, the relay is `unavailable` with no Flare running.
+        std::process::exit(serve_remote::run(
+            args.user_data_dir.as_deref(),
+            args.e2e,
+            !args.no_start,
+        ));
+    }
+
+    // `flare open --on <machine> <folder>` (remote sessions PR 5): a command, not a launch. It asks the running Flare
+    // (started hidden when none runs) for the tab and exits; its values never reach the hand-off's path parsing
+    // (rule 300), and it takes no lock and opens no window of its own.
+    if let Some(open) = &args.open_on {
+        attach_parent_console();
+        std::process::exit(cli_open::run(open, args.user_data_dir.as_deref(), args.e2e));
     }
 
     if args.probe_backend
@@ -209,9 +228,11 @@ fn main() {
     }
 
     e2e::init(args.e2e);
-    // macOS: an --e2e window is never pulled onto a screen, from its first order-in (rule 1107).
+    // macOS: an --e2e window and a `--start-hidden` one (remote sessions PR 5, rules 1107, 301, 302) are never pulled
+    // onto a screen and are born clear and click-through, from their first order-in, and kept from App Nap, so a hidden
+    // host's live shells keep running while nobody looks. A `--start-hidden` run lets go of all of it at its first raise.
     #[cfg(target_os = "macos")]
-    if args.e2e {
+    if window::parked_start(args.e2e, args.start_hidden) {
         flare_win::window_park::keep_windows_off_screen();
         flare_win::window_park::hold_off_app_nap();
     }
@@ -257,7 +278,9 @@ fn main() {
             }
         }
     };
-    let outcome = match backend::select_backend_with(args.renderer, args.e2e, prewarm) {
+    // The window is born parked under `--e2e` and `--start-hidden` alike (rule 301).
+    let born_parked = window::parked_start(args.e2e, args.start_hidden);
+    let outcome = match backend::select_backend_with(args.renderer, born_parked, prewarm) {
         Ok(outcome) => outcome,
         Err(e) => {
             attach_parent_console();
@@ -417,6 +440,22 @@ mod serve_order_tests {
                 serve < at(later),
                 "the serve branch must come before {later}"
             );
+        }
+    }
+
+    /// Rule 300: `flare open --on` is a command that exits before the lock, the hand-off (which reads the command line
+    /// for folders) and the window, so its values never reach path parsing and it never opens a window itself.
+    #[test]
+    fn open_on_branches_before_the_hand_off_and_the_window() {
+        let src = include_str!("main.rs");
+        let at = |s: &str| src.find(s).unwrap_or_else(|| panic!("{s} is in main.rs"));
+        let open = at("if let Some(open) = &args.open_on {");
+        for later in [
+            "e2e::init(args.e2e)",
+            "startup::launch(&profile",
+            "window::run_window(",
+        ] {
+            assert!(open < at(later), "the open branch must come before {later}");
         }
     }
 }

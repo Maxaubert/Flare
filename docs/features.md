@@ -2533,3 +2533,111 @@ viewer", section 5 `remote.status` and `remote.convo`).
   297). Held by `remote_convo::tests` and `ctl_app::tests::remote_convo_sends_the_hosts_transcript_as_numbered_entries_and_no_path`.
 - **Not yet.** The fitted conversation view that shows those entries (PR 7). When the viewer's link drops, the host
   takes its questions back and announces an open one itself.
+
+## Remote sessions, PR 5: starting sessions (command, agent tool, hidden start), 2026-11-12
+
+A remote session can now be started without the + menu (PR 7): by a command, by an agent, and on a host whose Flare is
+not running. Plan `docs/superpowers/plans/2026-11-12-remote-sessions.md` (PR 5). Contract: `docs/surfaces/protocol.md`
+(section 1 "The hidden start", section 4, section 5 `open.remote`).
+
+- **`flare open --on <machine> <folder> [--resume <id>]`.** Asks the Flare running here for a tab on that machine (an
+  id in `machines.json`) in that folder, in front, resuming that Claude session when asked; prints one line and exits.
+  The folder is the other machine's and is never looked at here; `--on`'s value never reaches path parsing (rule 300).
+  When no Flare runs here it starts one hidden first. Held by `config::tests`, `cli_open::tests` and the e2e
+  `remoteOpen`.
+- **The agent's `open_remote_session` tool.** An agent may open a session on a linked machine with no prompt (owner
+  decision): `open.remote`. The tab opens behind the one in front, and the agent cannot type into it or read it (rule
+  299). A machine `machines.json` does not name is refused with the names it does. Held by
+  `grant::tests::the_agent_may_open_a_remote_session_but_never_type_into_one`, `ctl_app::tests`, the `flare-mcp`
+  tests and `ui_tests::term::flow::an_agents_remote_open_stays_behind_the_tab_in_front`.
+- **Hidden start.** When the other machine's Flare is not running, the link's `flare --serve-remote` starts it with
+  `--start-hidden` before it answers: a normal Flare whose window stays parked off every screen and never takes the
+  focus (the e2e's park code); a later normal launch brings it forward. A Windows login over sshd (session 0) cannot
+  start one: the tab shows one line (`host_not_ready`) and connects once Flare runs there (rule 301). Held by
+  `hidden_start::tests`, `serve_remote::tests`, `window::tests` and the e2e `remoteOpen`.
+  On a Mac the hidden window is clear and click-through from its first order-in, as the Mac e2e's is, and its first
+  raise makes Flare a regular app again with an opaque window that takes clicks (rule 302). Held by
+  `window::tests::a_background_start_on_a_mac_is_born_clear_and_its_raise_undoes_the_mac_park` and the macOS
+  `window_park::tests`.
+- **`machines.json` registry.** `crates/flare/src/machines.rs` reads and writes the hand-edited list (whole-file
+  writes, unknown kinds left unknown). Held by `machines::tests`.
+- **Not yet.** The past-sessions list (`remote.sessions`) is not built: the owner's PR 7 picks drop it from the +
+  menu, and `--resume` takes an id. Whether a Mac's sshd login can start the app hidden, and a raise of a hidden Mac
+  window on a real screen, are on the by-hand list.
+
+## Remote sessions, PR 6: file links, image paste and file drop across the link, 2026-11-12
+
+A remote tab's files now cross the link both ways, and both directions (a PC viewing a Mac, a Mac viewing a PC) use
+the same code. Plan `docs/superpowers/plans/2026-11-12-remote-sessions.md` (PR 6). Contract:
+`docs/surfaces/protocol.md` (section 1 "The viewer", section 5 `remote.fetch` and `remote.put`). Checks only a real PC
+and Mac can make: `docs/remote-sessions-manual-checks.md`.
+
+- **File links from the other machine.** A click on a file link in a remote tab asks the tab's link for the host's
+  file (`remote.fetch`), never a file of this machine. The host reads it only from the tab's folder or its own temp
+  folder, as the file system names it (no `..` or link out, no device, no share), at most 32 MB (rule 303). A copy is
+  kept in this machine's temp folder: a picture or a text file shows in the side panel; anything else opens the way a
+  clicked file opens (a program is shown in Explorer or Finder, never run). A link the host has no file for says "No
+  such file" as a local one does. The copies go when the tab closes. Held by `remote_files::tests`,
+  `remote_link::tests::a_file_link_is_fetched_by_the_first_spelling_the_host_has_in_chunks`,
+  `term_ui::tests::a_click_on_a_remote_tabs_file_link_asks_the_link_and_opens_nothing_here`,
+  `ui_tests::term::flow::a_remote_file_link_is_fetched_by_the_link_and_shown_from_a_copy_in_the_panel` and the e2e
+  `remoteFiles`.
+- **Drop and paste of files and pictures.** A file dropped on a remote tab, copied files pasted there, and a picture
+  pasted there (as a PNG) are copied to the tab's own folder in the host's temp folder first (`remote.put`, at most
+  32 MB a file), under a clean name; the host's path, quoted for the host's shell, is then pasted as one paste. This
+  machine's path is never typed into the host's shell, and no image key is sent (the host's Claude cannot read this
+  machine's clipboard) (rule 304). Folders are refused with one line in the panel. Held by `remote_files::tests`,
+  `remote_link::tests::a_put_copies_the_files_then_pastes_the_hosts_quoted_paths_as_one_paste`,
+  `term_ui::tests::a_drop_on_a_remote_tab_is_never_typed_and_goes_to_the_app_to_copy`,
+  `ui_tests::term::flow::an_image_pasted_on_a_remote_tab_goes_to_the_host_as_a_png` and the e2e `remoteFiles`.
+- **A remote paste chooses as a local one.** Ctrl+Shift+V (plain) on a remote tab pastes the text only and copies
+  nothing to the host. An Excel or Word copy (text plus a picture) pasted at a plain prompt pastes its text; the picture
+  goes to the host only when an agent runs in the tab or there is no text (rule 1190). Held by
+  `clip_flow::tests::a_remote_paste_copies_files_or_an_image_only_where_a_local_paste_would_use_them` and
+  `term_ui::tests::a_remote_tab_pastes_the_text_of_an_excel_copy_and_a_plain_paste_never_copies_to_the_host`.
+- **A live run's copied files stay.** Each run locks a file in its own `flare-remote` and `flare-remote-copies` folder
+  while it lives, so another Flare starting on that machine sweeps only the folders of runs that are gone and a day
+  old, never a running one's (rule 1191). Held by
+  `remote_files::tests::a_live_runs_folders_are_never_swept_however_old_and_a_gone_runs_are`.
+- **The ssh command for each kind of host.** A Mac's command is quoted for sh, a PC's for cmd (no `&&`, nothing cmd
+  expands), from separate argv items with no secret (rule 305). Held by
+  `remote_link::tests::the_remote_command_table_quotes_each_hosts_shell`.
+- **Not yet.** A Mac's TIFF-only clipboard picture is not copied (the image reader has no TIFF decoder; screenshots put
+  a PNG there too). A dropped folder is not copied. Real ssh between the PC and the Mac is on the by-hand list.
+## Remote sessions, PR 7: Settings > Machines, the + menu's machines, tab logos and the fitted conversation, 2026-11-12
+
+The remote sessions get their screens, as the owner picked them in the 2026-11-12 mockups
+(`docs/superpowers/specs/remote-sessions-mockups/`). Plan `docs/superpowers/plans/2026-11-12-remote-sessions.md` (PR 7).
+Contract: `docs/surfaces/protocol.md` (`remote.hello`'s `os`, `remote.status`'s `sized`, `remote.open`'s `~`).
+
+- **Settings > Machines.** A page after Plugins with no subtext anywhere. Linked machines are a table: the machine's
+  logo (Apple for a Mac, Windows for a PC) and name, its SSH host, the Flare version it said, its status ("Linked" with
+  a green dot, or "Not linked" with the reason as the tooltip), and a ⋯ menu with Test and Remove. "+ Add a machine"
+  opens a form in its place: an SSH host drop-down (the plain hosts of `~/.ssh/config` and its `Include`s), a Name
+  field, Cancel and Add. Add checks the link first (Flare on the host's PATH, then the Mac app's) and saves only a
+  machine that answered; a failed check is one red line under the form (for example "Flare there speaks remote
+  protocol 0, here 1. Update it there."). Every machine is checked once a run when the page opens. Find a setting finds
+  it ("ssh", "add a machine"). Rule 1194. Held by `ui_tests::settings_machines::*`, `machines_page::tests`,
+  `ssh_config::tests`, `machines::tests` and the `flare-settings` page tests.
+- **The + menu.** One row per linked machine after the folders, its logo and its name; a pick opens a shell tab on
+  that machine in its home folder (`remote.open {folder: "~"}`), where Claude is started or resumed by hand. No
+  submenu. Held by `menus_ui::tests::each_linked_machine_is_one_row_after_the_folders_with_its_logo_and_name`,
+  `ui_tests::term::flow::a_machines_row_in_the_plus_menu_opens_a_shell_there_wearing_its_logo` and the e2e `remoteUi`.
+- **Tab logos.** A remote tab wears its machine's logo: in vertical tabs before the folder path on the card's second
+  line (Clawd stays in the pane), in horizontal tabs at the right after the status ring and before the ×. Its tooltip
+  names the machine. A restored tab takes the logo once the machines are read. Held by
+  `tabs_ui::tests::a_remote_tabs_row_carries_its_machines_logo_and_name`.
+- **Hide here only.** A remote tab's right-click menu has "Hide here only" after "Close tab": the tab goes from this
+  window and the session goes on on its machine. Close still ends it everywhere and asks first while an agent works
+  (rule 1192). Held by `ui_tests::term::flow::hide_here_only_detaches_and_close_ends_the_session_everywhere` and the
+  e2e `remoteUi`.
+- **The fitted conversation view.** While the other machine sizes a remote tab (someone typed there last) and the tab
+  has a Claude session, this screen shows the conversation wrapped to its own width instead of a terminal at the other
+  window's size, with "Live on <machine>. Click or type to take the terminal here." above it. A click or a key brings
+  the live terminal back at this window's size; the key goes on to the tab (rule 1193). Held by
+  `ui_tests::term::flow::a_remote_tab_the_host_sizes_shows_its_conversation_until_a_key_takes_it_back` and
+  `ui_tests::remote_convo::*`.
+- **Not yet.** The host's own window shows no fitted view while a viewer sizes the tab (the plan puts the view on the
+  remote tab, so the host's tab keeps its terminal at the viewer's size until a key there). Adding a machine reached
+  as a user other than the one in `~/.ssh/config`, or with Flare elsewhere than on the PATH or in `/Applications`,
+  still needs a hand edit of `machines.json`. Real ssh between the PC and the Mac is on the by-hand list.

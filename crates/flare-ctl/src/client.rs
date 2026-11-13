@@ -121,6 +121,8 @@ pub struct RemoteHelloInfo {
     pub remote_protocol: u32,
     pub machine: String,
     pub flare_version: String,
+    /// The host's system (`mac`, `pc`, `other`; remote sessions PR 7), "" from a host that does not say it.
+    pub os: String,
     pub capabilities: Vec<String>,
     pub raw: Value,
 }
@@ -213,6 +215,7 @@ impl<W: Wire> Client<W> {
             remote_protocol: REMOTE_PROTOCOL,
             machine: v["machine"].as_str().unwrap_or_default().into(),
             flare_version: v["flare_version"].as_str().unwrap_or_default().into(),
+            os: v["os"].as_str().unwrap_or_default().into(),
             capabilities: strings(&v["capabilities"]),
             raw: v,
         })
@@ -531,7 +534,7 @@ mod tests {
             s,
             vec![format!(
                 "Welcome to the Mac mini\n\nLast login: Thu Nov 12\r\n{{oops\n{}",
-                r#"{"id":1,"result":{"remote_protocol":1,"machine":"mini","flare_version":"0.4.0","capabilities":["remote.hello"]}}"#
+                r#"{"id":1,"result":{"remote_protocol":1,"machine":"mini","flare_version":"0.4.0","os":"mac","capabilities":["remote.hello"]}}"#
             )],
         );
         let mut cl = Client::new(c);
@@ -547,6 +550,8 @@ mod tests {
         assert_eq!(info.remote_protocol, REMOTE_PROTOCOL);
         assert_eq!(info.machine, "mini");
         assert_eq!(info.flare_version, "0.4.0");
+        // The host's system (remote sessions PR 7); an older host that does not say it reads as "".
+        assert_eq!(info.os, "mac");
         assert!(info.capabilities.iter().any(|c| c == "remote.hello"));
     }
 

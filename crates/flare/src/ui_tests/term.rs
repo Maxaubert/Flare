@@ -2606,7 +2606,10 @@ mod flow {
     fn a_remote_tab_shows_the_hosts_output_and_takes_typing() {
         let w = Wx::new(1.0);
         let before = w.written();
-        let id = w.ctl.borrow_mut().open_remote("mac", "/Users/max/proj");
+        let id = w
+            .ctl
+            .borrow_mut()
+            .open_remote("mac", "/Users/max/proj", None, true);
         w.pump_until("the remote pty", |w| !w.remote.made().is_empty());
         let io = w.remote.made()[0].1.clone();
         let front = || w.slot.borrow().clone().expect("a tab in front");
@@ -2647,5 +2650,381 @@ mod flow {
             ]
         );
         assert_eq!(w.quiet(), before, "nothing reached the local shell");
+    }
+
+    /// A remote tab in front, its link the test's: the tab's id and its live state (where its errands wait).
+    fn remote_in_front(w: &Wx) -> (String, flare_term::remote_pty::RemoteLive) {
+        let id = w
+            .ctl
+            .borrow_mut()
+            .open_remote("mac", "/Users/max/proj", None, true);
+        w.pump_until("the remote pty", |w| !w.remote.made().is_empty());
+        w.pump_until("the remote tab in front", |w| {
+            w.slot.borrow().as_ref().is_some_and(|h| h.id() == id)
+        });
+        let live = w
+            .ctl
+            .borrow()
+            .model()
+            .remote_live(&id)
+            .cloned()
+            .expect("a remote tab's live state");
+        (id, live)
+    }
+
+    /// Waits for the errands the window hands the remote tab's link.
+    fn errands_of(
+        w: &Wx,
+        live: &flare_term::remote_pty::RemoteLive,
+    ) -> Vec<flare_term::remote_pty::Errand> {
+        let t = Instant::now();
+        loop {
+            let got = live.take_errands();
+            if !got.is_empty() || t.elapsed() > Duration::from_secs(5) {
+                return got;
+            }
+            w.step(100);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Remote sessions PR 6 (rule 303): a click on a file link in a remote tab is never resolved here. The tab's link
+    /// is asked for the host's file by every spelling; the copy it brings back is kept in this run's temp folder and
+    /// shown in the side panel; nothing of this machine is opened and nothing is typed.
+    #[test]
+    fn a_remote_file_link_is_fetched_by_the_link_and_shown_from_a_copy_in_the_panel() {
+        use flare_term::remote_pty::{Errand, Fetched};
+        let w = Wx::new(1.0);
+        let before = w.written();
+        let (id, live) = remote_in_front(&w);
+        w.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Term(crate::appctl::TermMsgBox(
+                crate::term_ui::TermMsg::RemoteLink {
+                    tab: id.clone(),
+                    texts: vec!["notes.md".into(), "no tes.md".into()],
+                    line: Some(2),
+                },
+            )));
+        let mut errands = errands_of(&w, &live);
+        assert_eq!(errands.len(), 1, "one fetch for the click");
+        let Errand::Fetch { texts, done } = errands.remove(0) else {
+            panic!("a fetch");
+        };
+        assert_eq!(texts, ["notes.md", "no tes.md"]);
+        done(Ok(Fetched {
+            name: "notes.md".into(),
+            data: b"line one\nline two\n".to_vec(),
+        }));
+        w.pump_until("the copy in the panel", |w| {
+            w.ctl.borrow().panel_snap(&id).is_some_and(|s| s.open)
+        });
+        let snap = w.ctl.borrow().panel_snap(&id).expect("a panel");
+        let path = snap.path.clone().expect("the panel shows a file");
+        assert!(path.ends_with("notes.md"), "{path}");
+        assert!(
+            path.contains("flare-remote-copies"),
+            "the panel shows this machine's copy, never a host path: {path}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"line one\nline two\n"); // sync-ok: test code only
+        assert!(w.openers.records().is_empty(), "nothing was opened here");
+        assert_eq!(w.quiet(), before, "nothing reached the local shell");
+        // This run's copies are in the real temp folder: the test takes its own away.
+        if let Some(run) = std::path::Path::new(&path)
+            .parent()
+            .and_then(|t| t.parent())
+        {
+            let _ = std::fs::remove_dir_all(run); // sync-ok: test code only
+        }
+    }
+
+    /// Rule 303: a link the host has no file for is said in the panel as a local one is; a refusal is said too.
+    #[test]
+    fn a_remote_file_link_the_host_does_not_have_is_said_in_the_panel() {
+        use flare_term::remote_pty::{Errand, ErrandFail};
+        let w = Wx::new(1.0);
+        let (id, live) = remote_in_front(&w);
+        w.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Term(crate::appctl::TermMsgBox(
+                crate::term_ui::TermMsg::RemoteLink {
+                    tab: id.clone(),
+                    texts: vec!["gone.md".into()],
+                    line: None,
+                },
+            )));
+        let Some(Errand::Fetch { done, .. }) = errands_of(&w, &live).into_iter().next() else {
+            panic!("a fetch");
+        };
+        done(Err(ErrandFail::NoSuchFile));
+        w.pump_until("the note", |w| {
+            w.ctl.borrow().panel_snap(&id).is_some_and(|s| s.open)
+        });
+        assert!(w.openers.records().is_empty());
+    }
+
+    /// Rule 304: a file dropped on a remote tab is read here and handed to the tab's link, which copies it to the host
+    /// and pastes the host's path; this machine's path is never typed anywhere.
+    #[test]
+    fn a_file_dropped_on_a_remote_tab_goes_to_its_link_and_is_never_typed_here() {
+        use flare_term::remote_pty::{Errand, Upload};
+        let w = Wx::new(1.0);
+        let before = w.written();
+        let (_id, live) = remote_in_front(&w);
+        let file = w.dir.path().join("a b.txt");
+        std::fs::write(&file, b"dropped").unwrap(); // sync-ok: test code only
+        w.ctl.borrow_mut().on_dropped_path(file, (500.0, 300.0));
+        let mut errands = errands_of(&w, &live);
+        assert_eq!(errands.len(), 1, "one copy for the drop");
+        let Errand::Put { files, done } = errands.remove(0) else {
+            panic!("a put");
+        };
+        assert_eq!(
+            files,
+            vec![Upload {
+                name: "a b.txt".into(),
+                data: b"dropped".to_vec()
+            }]
+        );
+        done(Ok(vec!["/tmp/flare-remote/x/t1/a b.txt".into()]));
+        // Nothing of this machine's path reached the pty's typing (the link pastes the host's), nor the local shell.
+        let typed = w.remote.made()[0]
+            .1
+            .take_outgoing(Duration::from_millis(50));
+        assert!(typed.intents.is_empty(), "{:?}", typed.intents);
+        assert_eq!(w.quiet(), before);
+    }
+
+    /// Rule 304: an image pasted on a remote tab goes to the host as a PNG (the host's Claude cannot read this
+    /// machine's clipboard); no image key is sent.
+    #[test]
+    fn an_image_pasted_on_a_remote_tab_goes_to_the_host_as_a_png() {
+        use flare_term::remote_pty::Errand;
+        let w = Wx::new(1.0);
+        let (_id, live) = remote_in_front(&w);
+        w.clip.set_image_png_b64("iVBORw0KGgo=").unwrap();
+        w.key_front(ctrl("v", "KeyV"));
+        let mut errands = errands_of(&w, &live);
+        assert_eq!(errands.len(), 1, "one copy for the paste");
+        let Errand::Put { files, .. } = errands.remove(0) else {
+            panic!("a put");
+        };
+        assert_eq!(files.len(), 1);
+        assert!(files[0].name.starts_with("pasted-image-") && files[0].name.ends_with(".png"));
+        assert_eq!(files[0].data, b"\x89PNG\r\n\x1a\n");
+        let typed = w.remote.made()[0]
+            .1
+            .take_outgoing(Duration::from_millis(50));
+        assert!(
+            typed.intents.is_empty(),
+            "no image key: {:?}",
+            typed.intents
+        );
+    }
+
+    /// Remote sessions PR 5 (rule 299): the agent's `open.remote` leaves the tab in front where it is, so what the person
+    /// types there never lands in the new remote session; the new tab is there behind it, its link started.
+    #[test]
+    fn an_agents_remote_open_stays_behind_the_tab_in_front() {
+        let w = Wx::new(1.0);
+        let was = w.ctl.borrow().model().active().map(|t| t.id.clone());
+        assert!(was.is_some(), "a tab in front");
+        let id = w
+            .ctl
+            .borrow_mut()
+            .open_remote("mac", "/Users/max/proj", None, false);
+        w.pump_until("the remote pty", |w| !w.remote.made().is_empty());
+        assert_eq!(w.ctl.borrow().model().active().map(|t| t.id.clone()), was);
+        assert!(w.ctl.borrow().model().remote_of(&id).is_some());
+        w.key_front(KeyEvent::new("x", "KeyX").text("x"));
+        w.pump();
+        let io = w.remote.made()[0].1.clone();
+        assert!(
+            io.take_outgoing(Duration::from_millis(50))
+                .intents
+                .is_empty(),
+            "nothing typed in front reached the remote session"
+        );
+    }
+
+    fn mac_mini() -> crate::machines::Machine {
+        crate::machines::Machine {
+            id: "mac".into(),
+            name: "Mac Mini".into(),
+            kind: Some(flare_tabs::tabs::Os::Mac),
+            ssh: "mini".into(),
+            user: None,
+            flare: "flare".into(),
+        }
+    }
+
+    /// The index of the open menu's row with these words.
+    fn menu_row(w: &Wx, label: &str) -> Option<usize> {
+        let rows = w.h.comp.get_menu_rows();
+        (0..rows.row_count()).find(|&i| rows.row_data(i).is_some_and(|r| r.label == label))
+    }
+
+    /// Remote sessions PR 7 (owner pick): the + menu has one row per linked machine, its logo and its name; its pick
+    /// opens a shell tab on that machine in the host's home folder, and the tab wears the machine's logo and name.
+    #[test]
+    fn a_machines_row_in_the_plus_menu_opens_a_shell_there_wearing_its_logo() {
+        use crate::menus_ui::{GLYPH_LOGO_MAC, glyph_path};
+        let w = Wx::new(1.0);
+        w.ctl.borrow_mut().on_msg(UiMsg::Machines(vec![mac_mini()]));
+        w.h.comp.invoke_plus_menu(10.0, 10.0);
+        let i = menu_row(&w, "Mac Mini").expect("the machine's row");
+        let row = w.h.comp.get_menu_rows().row_data(i).unwrap();
+        assert_eq!(row.icon.as_str(), glyph_path(GLYPH_LOGO_MAC));
+        assert!(row.filled_icon);
+        assert_eq!(row.trailing_icon.as_str(), "", "no pin on a machine");
+        w.h.comp.invoke_menu_picked(i as i32);
+        w.pump_until("the remote pty", |w| !w.remote.made().is_empty());
+        let spec = w.remote.made()[0].0.remote.clone().expect("a remote spec");
+        assert_eq!(spec.machine, "mac");
+        assert_eq!(spec.folder, crate::machines::HOST_HOME);
+        let id = w
+            .ctl
+            .borrow()
+            .model()
+            .active()
+            .map(|t| t.id.clone())
+            .unwrap();
+        let tag = w.ctl.borrow().model().remote_of(&id).cloned().unwrap();
+        assert_eq!(tag.name, "Mac Mini");
+        assert_eq!(tag.kind, Some(flare_tabs::tabs::Os::Mac));
+        w.pump();
+        let rows = w.h.comp.get_tab_rows();
+        let r = (0..rows.row_count())
+            .filter_map(|i| rows.row_data(i))
+            .find(|r| r.id == id.as_str())
+            .unwrap();
+        assert_eq!(r.machine, 1, "the Apple logo on the tab");
+        assert!(r.tip.starts_with("Mac Mini: "), "{}", r.tip);
+        assert!(
+            (0..rows.row_count())
+                .filter_map(|i| rows.row_data(i))
+                .filter(|r| r.id != id.as_str())
+                .all(|r| r.machine == 0),
+            "a local tab wears no logo"
+        );
+    }
+
+    /// Rule 1192: a remote tab's menu has "Hide here only" after Close tab; it lets go here and the host session goes on
+    /// (`remote.detach`), where Close ends it everywhere (`remote.close`). A local tab has no such row.
+    #[test]
+    fn hide_here_only_detaches_and_close_ends_the_session_everywhere() {
+        use flare_term::remote_pty::Leaving;
+        let w = Wx::new(1.0);
+        let local = w
+            .ctl
+            .borrow()
+            .model()
+            .active()
+            .map(|t| t.id.clone())
+            .unwrap();
+        w.h.comp.invoke_tab_menu(local.as_str().into(), 10.0, 10.0);
+        assert_eq!(menu_row(&w, crate::menus_ui::HIDE_HERE), None);
+        let (hide, _) = remote_in_front(&w);
+        let close = w
+            .ctl
+            .borrow_mut()
+            .open_remote("mac", "/Users/max/two", None, true);
+        w.pump_until("two remote ptys", |w| w.remote.made().len() == 2);
+        w.h.comp.invoke_tab_menu(hide.as_str().into(), 10.0, 10.0);
+        let i = menu_row(&w, crate::menus_ui::HIDE_HERE).expect("Hide here only");
+        assert_eq!(i, 1, "right after Close tab");
+        w.h.comp.invoke_menu_picked(i as i32);
+        w.pump();
+        assert!(
+            w.ctl.borrow().model().remote_of(&hide).is_none(),
+            "gone here"
+        );
+        let io0 = w.remote.made()[0].1.clone();
+        w.pump_until("the detach", |_| io0.leaving().is_some());
+        assert_eq!(io0.leaving(), Some(Leaving::Detach));
+        w.h.comp.invoke_tab_menu(close.as_str().into(), 10.0, 10.0);
+        let c = menu_row(&w, "Close tab").unwrap();
+        w.h.comp.invoke_menu_picked(c as i32);
+        w.pump();
+        let io1 = w.remote.made()[1].1.clone();
+        w.pump_until("the close", |_| io1.leaving().is_some());
+        assert_eq!(io1.leaving(), Some(Leaving::Close));
+    }
+
+    /// Rule 1193: while the host's window sizes a remote tab that has a Claude session, this screen shows the session's
+    /// conversation fitted to its width (the link polls it only then); a key takes the live terminal back, sends this
+    /// window's size again and goes on to the tab.
+    #[test]
+    fn a_remote_tab_the_host_sizes_shows_its_conversation_until_a_key_takes_it_back() {
+        use flare_term::remote_pty::{ConvoLine, HostStatus};
+        const SID: &str = "55555555-5555-4555-8555-555555555555";
+        let w = Wx::new(1.0);
+        let (id, live) = remote_in_front(&w);
+        let host = |sized: bool| HostStatus {
+            state: "idle".into(),
+            agent: Some("claude".into()),
+            session: Some(SID.into()),
+            host_sized: sized,
+            ..HostStatus::default()
+        };
+        // This viewer sizes it: the terminal, and no conversation is asked for.
+        live.set_status(host(false));
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        assert!(!live.convo_wanted());
+        assert!(!w.h.comp.get_rconvo_open());
+        // Someone typed on the host: the link is asked for the conversation; the view shows once it came.
+        live.set_status(host(true));
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        assert!(live.convo_wanted());
+        assert!(!w.h.comp.get_rconvo_open(), "nothing to show yet");
+        let line = |role: &str, text: &str| ConvoLine {
+            role: role.into(),
+            text: text.into(),
+            tool: None,
+        };
+        live.set_convo(vec![
+            line("user", "Fix the build"),
+            line("assistant", "Done: the test passes now."),
+        ]);
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        assert!(w.h.comp.get_rconvo_open());
+        let lines = w.h.comp.get_rconvo_lines();
+        assert_eq!(lines.row_count(), 2);
+        assert_eq!(
+            lines.row_data(1).unwrap().text.as_str(),
+            "Done: the test passes now."
+        );
+        // Another tab in front shows its own terminal; back here, the view again.
+        let local = w.ctl.borrow().model().state.tabs[0].id.clone();
+        w.ctl.borrow_mut().model_mut().pick(&local);
+        w.ctl.borrow_mut().refresh();
+        assert!(!w.h.comp.get_rconvo_open());
+        w.ctl.borrow_mut().model_mut().pick(&id);
+        w.ctl.borrow_mut().refresh();
+        assert!(w.h.comp.get_rconvo_open());
+        // A key: the terminal is back, its size goes again, the polls stop, and the key reaches the tab.
+        assert!(!live.take_retake());
+        w.key_front(KeyEvent::new("y", "KeyY").text("y"));
+        w.pump();
+        assert!(!w.h.comp.get_rconvo_open());
+        assert!(live.take_retake(), "this window's size is sent again");
+        assert!(!live.convo_wanted());
+        let io = w.remote.made()[0].1.clone();
+        let mut typed = Vec::new();
+        w.pump_until("the key on the tab", |_| {
+            typed.extend(io.take_outgoing(Duration::from_millis(20)).intents);
+            !typed.is_empty()
+        });
+        // The host now says this viewer sizes it; when someone types there again, the view comes back.
+        live.set_status(host(false));
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        assert!(!w.h.comp.get_rconvo_open());
+        live.set_status(host(true));
+        w.ctl.borrow_mut().on_msg(UiMsg::HostWake);
+        assert!(w.h.comp.get_rconvo_open());
+        // A click on it is the same takeover.
+        w.h.comp.invoke_rconvo_take_over();
+        assert!(!w.h.comp.get_rconvo_open());
+        assert!(live.take_retake());
     }
 }

@@ -1120,6 +1120,164 @@ show it: an answer key here that read the mirrored box gone took the question do
 `a_remote_idle_after_work_shown_here_raises_the_viewers_own_finished_mark` and
 `a_remote_question_answered_here_is_raised_again_by_the_hosts_next_question`. Source: review of remote sessions PR 4
 (2026-11-12).
+299. **An agent may open a remote session; it may not type into it.** Amends S3 (rule 188). Owner decision: an agent
+may start a session on another machine with no prompt. `open.remote` (the agent's `open_remote_session` tool and
+`flare open --on`) is the agent grant's and the app's only, in a namespace of its own (`open`) that no permission opens,
+so no mod, remote link or bridge reaches it. The tab it opens takes no typing from the agent: the agent grant still has
+no `remote.*`, `shell.input` or `tabs.input`, and it names no tab but its own. The agent's open leaves the front tab in
+front, so what the person types there never lands in the new session; only the command (`front`) brings it forward. The
+machine must be one `machines.json` names (`not_found` lists them); the folder is the other machine's and is never
+statted or opened here. Native: `crates/flare-ctl/src/grant.rs`, `crates/flare/src/ctl_app.rs` (`open_remote`),
+`crates/flare/src/appctl.rs` (`open_remote`), `crates/flare-mcp/src/lib.rs` (`open_remote_session`). Held by
+`the_agent_may_open_a_remote_session_but_never_type_into_one`, `agent_can_show_and_drive_but_not_eval`,
+`open_remote_names_a_known_machine_and_opens_a_tab_the_agent_cannot_type_into`,
+`an_agents_remote_open_stays_behind_the_tab_in_front` and
+`open_remote_session_checks_its_arguments_and_routes_to_open_remote`. Source: remote sessions PR 5 (2026-11-12).
+300. **`--on` and other flag values never reach path parsing.** `flare open --on <machine> <folder> [--resume <id>]` reads
+`--on` and `--resume` as values in `config.rs`, takes `open` and the folder out of the bare words, and runs before the
+lock, the hand-off (whose `paths_from_argv` reads the raw command line for folders) and any window, then exits. So a
+machine name or a session id is never opened as a folder here, and the host folder is never statted on this machine.
+`--user-data-dir` is untouched. Native: `crates/flare/src/config.rs` (`open_on`), `crates/flare/src/main.rs`,
+`crates/flare/src/cli_open.rs`. Held by `open_on_reads_its_values_and_leaves_no_folder_to_open`,
+`open_on_refuses_what_it_cannot_use_with_its_usage`, `open_on_branches_before_the_hand_off_and_the_window` and
+`the_command_asks_the_running_flare_as_the_agent_for_a_tab_in_front`. Source: remote sessions PR 5 (2026-11-12).
+301. **`--start-hidden` never raises or takes the focus; it uses the e2e's park code.** When no Flare runs, the serve
+process (before it answers `remote.hello`) and `flare open` start `<this exe> --start-hidden` and wait up to 60 s for its
+pipe. The window is born parked (the e2e's attributes: inactive, off the taskbar, at the parking spot) and parked again
+with the no-activate tool-window style by the same timer, and its parked place is never saved as the person's. A
+`--start-hidden` launch that meets a Flare running hands nothing over and raises nothing. The first raise (a normal
+launch later) takes the window off the parking spot with its normal style and its taskbar button. A Windows process in
+session 0 (sshd's logins) starts nothing, and a host with no Flare to be had answers the hello `host_not_ready` in one
+line, which the viewer shows once. The flag is `--start-hidden`, not the plan's `--background`: that name is the
+background colour's look flag. Native: `crates/flare/src/hidden_start.rs`, `crates/flare/src/serve_remote.rs`
+(`remote_ready`), `crates/flare/src/window.rs` (`parked_start`, `unpark_background`), `crates/flare/src/appctl.rs`
+(`handoff`), `crates/flare-ctl/src/session.rs` (`Dispatcher::remote_ready`). Held by
+`with_none_running_one_is_started_once_and_its_pipe_awaited`, `a_running_flare_is_used_and_nothing_is_started`,
+`a_pipe_that_never_opens_is_host_not_ready_in_one_line`, `with_no_desktop_nothing_is_started_and_the_line_says_what_to_do`,
+`the_hello_waits_for_a_flare_here_and_a_host_that_cannot_start_one_says_so`,
+`a_host_that_is_not_ready_refuses_the_hello_in_one_line_and_takes_another`,
+`a_background_start_is_parked_like_the_e2e_and_its_raise_undoes_the_style`,
+`a_background_launch_that_meets_a_running_flare_raises_and_opens_nothing` and the e2e `remoteOpen`. Source: remote
+sessions PR 5 (2026-11-12).
+
+302. **A Mac `--start-hidden` run is held clear from its first window, and its first raise lets go of all of it.** Amends
+rule 301 for macOS. A Mac draws nothing for a window on no screen, so the park puts it on the main screen at alpha 0
+(rule 1109). `--start-hidden` therefore installs the e2e's whole Mac park before the first window is made, as `--e2e`
+does (`keep_windows_off_screen`: no constraint to a screen, born clear, kept clear against Slint's reveal on the first
+GPU frame), not App Nap's hold alone; without it the window showed as a strip at a screen edge, then at full alpha on
+the host's screen. The hold is one flag (`window_park::HELD`) that an `--e2e` run never clears. The first raise calls
+`window_park::unpark` before the window moves: the flag clears, so every stand-in passes on what it is asked and AppKit
+constrains frames again; the app is a regular app (a Dock icon); every live window gets back the alpha and click
+pass-through its own code last asked while held (opaque and taking clicks when it asked nothing); and the main window
+is opaque, takes clicks and has its shadow. A park that comes after the raise parks nothing. Native:
+`crates/flare/src/main.rs`, `crates/flare/src/window.rs` (`unpark_background`),
+`crates/flare-win/src/macos/window_park.rs` (`unpark`, `Wanted`). Held by
+`a_background_start_on_a_mac_is_born_clear_and_its_raise_undoes_the_mac_park` and, in macOS CI,
+`a_held_park_keeps_windows_clear_and_a_released_one_passes_the_ask_on`,
+`a_window_gets_back_its_last_ask_and_opaque_with_clicks_when_it_asked_nothing` and
+`off_the_main_thread_nothing_is_touched`. Source: the review of remote sessions PR 5 (2026-11-12).
+
+303. **A remote path is never opened as a local path; a host file comes through `remote.fetch` and the host's
+allowlist.** Extends S2 (rule 187) and rules 157, 266 to 275 for a remote tab. A click on a file link in a remote tab is
+never resolved, statted, previewed or opened on the viewer (its text names a file of the host): the viewer hands its
+spellings to the tab's link, which asks `remote.fetch` for each in turn. The host resolves the path as a click there
+would (relative to its folder of the tab, `~` from its home) and reads it only when the file, as its file system names
+it (links followed, `..` resolved), is a plain file inside the tab's folder or the host's temp folder, with no device
+name and no network path; anything else is `not_found`, and a file over 32 MiB `too_large`. It is read in 256 KiB
+chunks on the call's worker, and the viewer checks each chunk is of the same file. The viewer keeps the bytes as a copy
+in its own temp folder (`flare-remote-copies/<run>/<tab>`, removed when the tab closes) and shows the copy in the side
+panel when it is a picture or a text file, or opens it as a clicked file of this machine otherwise (the click
+allowlist, so a program is revealed and never run, rule 14). File work asked while the link is down, or after the tab's
+session ended, is refused at once, never held. Native: `crates/flare/src/remote_files.rs` (`resolve_fetch`,
+`read_chunk`, `Copies`), `crates/flare/src/ctl_app.rs` (`remote_fetch`), `crates/flare/src/remote_link.rs`
+(`fetch_file`, the worker's errands), `crates/flare-term/src/remote_pty.rs` (`Errand`), `crates/flare/src/term_ui.rs`
+(`click_link`), `crates/flare/src/appctl/remote_files_glue.rs` (`remote_fetch_link`). Held by
+`a_fetch_reads_the_tabs_folder_and_the_temp_folder_and_nothing_else`, `a_link_out_of_the_tabs_folder_is_refused`,
+`device_names_and_shares_are_never_fetched`, `a_fetched_file_is_read_in_chunks_that_join_up_and_a_big_one_is_refused`,
+`remote_fetch_reads_only_the_followed_tabs_folder_in_chunks`,
+`a_file_link_is_fetched_by_the_first_spelling_the_host_has_in_chunks`,
+`file_work_asked_while_the_link_is_down_or_ended_is_refused_at_once`,
+`errands_wait_in_order_and_none_is_lost_when_the_link_ends`,
+`a_click_on_a_remote_tabs_file_link_asks_the_link_and_opens_nothing_here`,
+`a_remote_file_link_is_fetched_by_the_link_and_shown_from_a_copy_in_the_panel`,
+`a_remote_file_link_the_host_does_not_have_is_said_in_the_panel` and the e2e `remoteFiles`. Source: remote sessions
+PR 6 (2026-11-12); owner decision "a link to a file on the other machine is fetched over SSH and shown in the side
+panel; Open saves a copy and opens it locally".
+304. **A paste or drop of files or a picture on a remote tab copies them to a host temp folder and pastes a quoted host
+path.** A file dropped on a remote tab, copied files pasted there and a clipboard picture pasted there are never typed
+as this machine's paths, and no image key is sent (the host's program would read the host's clipboard). The viewer
+reads the files (only files, at most 32 MiB each; a picture is sent as a PNG, a bitmap made one) on a worker and the
+tab's link copies each with `remote.put` into the tab's own upload folder on the host (`<temp>/flare-remote/<run>/<tab>`,
+removed when the tab closes; a crashed run's folders go a day later). The host cleans the name (`put_name`: last part
+only, letters, digits, space and `-_.()+,`, no device name, at most 100 bytes) and makes it unique, writes the file
+whole before it is in place, and answers its path quoted for the tab's own shell (`quote_path`); the link then pastes
+those paths as one `paste` intent, sanitised on the host as any paste (rule 1, rule 292). A put chunk is never sent
+twice. Native: `crates/flare-ctl/src/remote.rs` (`put_name`, `FILE_*`), `crates/flare/src/remote_files.rs`
+(`Uploads`), `crates/flare/src/ctl_app.rs` (`remote_put`), `crates/flare/src/remote_link.rs` (`put_files`),
+`crates/flare/src/term_ui.rs` (`on_dropped`, the drop flush, `TermMsg::Clip`),
+`crates/flare/src/appctl/remote_files_glue.rs` (`remote_upload`, `png_of`), `crates/flare-win/src/clipboard_port.rs`
+(`read_image`, `bmp_of_dib`), `crates/flare-win/src/macos/pasteboard.rs` (`read_png`). Held by
+`a_put_name_is_its_last_part_with_nothing_a_shell_acts_on`, `an_upload_lands_whole_in_the_tabs_folder_under_a_clean_unique_name`,
+`a_closed_tabs_uploads_are_removed_and_old_runs_are_swept`,
+`remote_put_lands_in_the_tabs_upload_folder_and_answers_a_quoted_path`,
+`a_put_copies_the_files_then_pastes_the_hosts_quoted_paths_as_one_paste`, `a_file_over_the_cap_is_never_sent`,
+`a_broken_pipe_is_opened_again_for_a_call_that_changes_nothing`,
+`a_drop_on_a_remote_tab_is_never_typed_and_goes_to_the_app_to_copy`,
+`a_paste_of_files_or_an_image_on_a_remote_tab_goes_to_the_app_to_copy`,
+`a_file_dropped_on_a_remote_tab_goes_to_its_link_and_is_never_typed_here`,
+`an_image_pasted_on_a_remote_tab_goes_to_the_host_as_a_png`, `a_pasted_image_goes_as_a_png`,
+`a_dib_becomes_a_bmp_file_with_its_pixels_where_the_header_says` and the e2e `remoteFiles`. Source: remote sessions
+PR 6 (2026-11-12); the design's "copied to a per-session temp folder on the host first, then the host path is pasted".
+305. **The ssh command line is built per host OS from separate argv items and carries no secret.** Amends rule 290 with
+the full table: a Mac's (and an unknown kind's) login shell gets the Flare path in single quotes (nothing expands
+there, a `'` written `'\''`); a PC's cmd gets it in double quotes with no `&&`, and a path holding `%`, `!`, `^` or `"`
+(which cmd still acts on inside quotes) or a control character builds no command at all. Host and user are argv items
+of their own that cannot be read as an option. Native: `crates/flare/src/remote_link.rs` (`remote_command`,
+`ssh_argv`). Held by `the_remote_command_table_quotes_each_hosts_shell` and
+`the_ssh_command_is_argv_items_quoted_for_the_hosts_shell`. Source: remote sessions PR 6 (2026-11-12).
+
+The UI rules of remote sessions PR 7 are numbered after main's last rule (1189) and the PR 6 fixes (1190, 1191). The
+plan's R-new-26 (the folder browser) was dropped with the browser itself: the owner's + menu opens a shell on the
+machine and nothing else.
+
+1192. **"Close" on a remote tab ends the session everywhere and asks as any close does; "Hide here only" never ends
+it.** Owner decision: closing a remote tab is closing the tab, on both machines (`remote.close`, which asks first in the
+host's window while an agent works there, rule 48). The remote tab's right-click menu adds "Hide here only" right
+after "Close tab": the tab goes from this window and its pty lets go the quit's way (`remote.detach`, rule 288), so its
+session goes on on its machine and nothing asks. A local tab has no such row. Native:
+`crates/flare/src/appctl/remote_glue.rs` (`hide_remote`), `crates/flare/src/tab_host.rs` (`TabHost::leave`),
+`crates/flare-term/src/session.rs` (`SessionManager::leave`), `crates/flare/src/menus_ui.rs` (`HIDE_HERE`). Held by
+`ui_tests::term::flow::hide_here_only_detaches_and_close_ends_the_session_everywhere` and the e2e `remoteUi`. Source:
+remote sessions PR 7 (2026-11-12), plan R-new-25.
+1193. **While the other machine sizes a remote tab, this screen shows its conversation fitted to the window, never a
+terminal at the other window's size; a click or a key takes the terminal back.** The live terminal has one size, the
+last typist's (rule 282). The host's `remote.status` says who that is (`sized`: `host` or `viewer`). While the host
+sizes a remote tab that has a Claude session there, the viewer's link polls `remote.convo` (only then) and the tab in
+front shows the conversation, wrapped to this window's width, newest at the foot, under one line that names the
+machine. A click on it, or any key, takes the terminal back: the view goes, the link sends this tab's size again
+(`remote.resize`, so this window sizes it), the polls stop, and the key goes on to the tab. The view comes back only
+when the host says it sizes the tab again after saying this viewer did. A host that does not say `sized` (an older
+Flare) is read as the viewer sizing it, so the terminal stays. Words only cross the link (rule 297). Native:
+`crates/flare/src/appctl/remote_glue.rs` (`RemoteConvoView`, `sync_remote_convo`, `remote_convo_take_over`),
+`crates/flare/src/remote_link.rs` (`poll_convo`, the retake), `crates/flare-term/src/remote_pty.rs` (`RemoteLive`'s
+conversation and retake), `crates/flare/ui/remote_convo.slint`. Held by
+`ui_tests::term::flow::a_remote_tab_the_host_sizes_shows_its_conversation_until_a_key_takes_it_back`,
+`ui_tests::remote_convo::*` (fitted at three widths and two scales) and `remote_status::tests` (`sized`). Source: remote
+sessions PR 7 (2026-11-12), owner decision "the other screen".
+1194. **Machines are saved whole and at once, only a machine that answered is added, and nothing read from the ssh
+config reaches ssh as an option.** Settings > Machines writes `machines.json` with a temp file and a rename (rule 36),
+on a worker, and reads a `kind` it does not know as none, never written back as a guess (rule 40). Adding a machine
+checks its link first (`remote.hello` over its own ssh command, the e2e's loopback in a test, never a real ssh) and
+saves nothing when no Flare answered or the protocols differ; the failure is one red line under the form that says what
+to do (`Flare there speaks remote protocol 0, here 1. Update it there.`). The form's hosts are the plain `Host` names of
+`~/.ssh/config` and its `Include`s: a pattern, a negation, a `Match` block and any name that is not one plain argv word
+(a space, a leading `-`) are left out (rule 305). The host's own `remote.hello` says its system (`os`), which picks the
+logo and the login shell's quoting. Native: `crates/flare/src/machines.rs`, `crates/flare/src/machines_page.rs`,
+`crates/flare/src/ssh_config.rs`, `crates/flare-settings/src/page/machines.rs`. Held by
+`machines::tests::a_saved_list_reads_back_the_same_and_leaves_no_temp_file`,
+`machines::tests::an_unknown_kind_reads_as_none_and_is_written_as_none`,
+`machines_page::tests::a_failed_add_saves_nothing_and_shows_one_line_under_the_form`, `ssh_config::tests::*` and
+`ui_tests::settings_machines::*`. Source: remote sessions PR 7 (2026-11-12), plan R-new-27.
 
 ## macOS port
 
@@ -3206,3 +3364,22 @@ behind a tab now end the wait (`SettingsCtl::drop_pencil_wait`, `crates/flare/sr
 takes the keys when nothing else did. Held by
 `a_picker_opened_just_after_the_editor_closed_is_open_again_after_a_tab_switch` (`ui_tests/settings_flows.rs`).
 Numbers 1190 to 1194 were left for parallel PRs. Source: Mac E2E in CI (2026-11-13).
+1190. **A paste on a remote tab chooses as a local tab's paste does.** Rule 304's upload ran before the paste's own
+choice and ignored its mode and the agent: a plain paste (Ctrl+Shift+V) with files or a picture on the clipboard copied
+them to the host, and an Excel or Word copy (text plus a bitmap) pasted at a plain prompt sent a `pasted-image-<ms>.png`
+to the host and typed its path, where a local tab pastes the text. Now a plain paste never copies to the host; a normal
+one copies files whenever there are some, and a picture only where a local paste would send the image key (an agent is
+armed, or there is no text). Native: `crates/flare/src/clip_flow.rs` (`remote_upload`),
+`crates/flare/src/term_ui.rs`. Held by
+`clip_flow::tests::a_remote_paste_copies_files_or_an_image_only_where_a_local_paste_would_use_them` and
+`term_ui::tests::a_remote_tab_pastes_the_text_of_an_excel_copy_and_a_plain_paste_never_copies_to_the_host`. Source:
+review of remote sessions PR 6 (2026-11-12).
+1191. **The leftover sweep never takes a live run's folder.** Rule 304's sweep judged a run folder under
+`<temp>/flare-remote` and `<temp>/flare-remote-copies` by its own mtime, which changes only when a tab folder in it comes
+or goes. So any new Flare process on the machine removed the uploads and fetched copies of another Flare still running,
+once that run had made no new tab folder for a day. Each run now locks `.flare-run.lock` in its run folder when it first
+makes it and holds it for its life (the system lets go when it ends or crashes); the sweep skips a folder whose lock
+file is locked, or cannot be looked at, and judges a folder with none by age alone. Native:
+`crates/flare/src/remote_files.rs` (`RunLock`, `run_alive`, `sweep_old`). Held by
+`remote_files::tests::a_live_runs_folders_are_never_swept_however_old_and_a_gone_runs_are`. Source: review of remote
+sessions PR 6 (2026-11-12).

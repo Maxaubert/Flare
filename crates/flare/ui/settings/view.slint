@@ -17,6 +17,7 @@ import { ThemeWallView, ThemeEditor, AskThree } from "wall.slint";
 import { AboutCard, SlintBadge } from "about.slint";
 import { HelpPanel } from "help_panel.slint";
 import { DictKeyField, DictMicField, DictLimitedMark, DictModelRow, DictAsk } from "dictation.slint";
+import { SetMachineHead, SetMachineRow, SetMachineForm } from "machines.slint";
 
 export global SettingsBridge {
     // data, all computed by Rust
@@ -527,6 +528,9 @@ export component SettingsView inherits Rectangle {
                         tapped => {
                             if row.kind == SetKind.switch && !row.off {
                                 SettingsBridge.row-switch(row.id, !row.on);
+                            } else if row.kind == SetKind.none && !row.off {
+                                // A row that is one press (the Machines page's "+ Add a machine").
+                                SettingsBridge.row-button(row.id, "tap");
                             }
                         }
                         tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
@@ -540,6 +544,37 @@ export component SettingsView inherits Rectangle {
                         pressed(b) => { SettingsBridge.row-button(row.id, b); }
                         tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
                         look(l) => { SettingsBridge.row-look(l); }
+                    }
+                    if row.block == BlockKind.machine-head: SetMachineHead {
+                        width: parent.width;
+                        height: parent.height;
+                        first: i == 0;
+                    }
+                    if row.block == BlockKind.machine: SetMachineRow {
+                        width: parent.width;
+                        height: parent.height;
+                        data: row;
+                        menu-open: SettingsBridge.select-open && SettingsBridge.select-row == row.id;
+                        menu-request(x, y, w, h) => { SettingsBridge.select-open-request(row.id, Px.snap(x), Px.snap(y), Px.snap(x + w) - Px.snap(x), Px.snap(y + h) - Px.snap(y)); }
+                        tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+                    }
+                    if row.block == BlockKind.machine-add: SetMachineForm {
+                        width: parent.width;
+                        height: parent.height;
+                        data: row;
+                        first: i == 0;
+                        select-open: SettingsBridge.select-open && SettingsBridge.select-row == row.id;
+                        property <bool> want: SettingsBridge.focus-id != "" && SettingsBridge.focus-id == row.id;
+                        changed want => {
+                            if self.want {
+                                self.focus-me();
+                                SettingsBridge.focus-id = "";
+                            }
+                        }
+                        open-request(x, y, w, h) => { SettingsBridge.select-open-request(row.id, x, y, w, h); }
+                        name-edited(t) => { SettingsBridge.row-text(row.id, t); }
+                        pressed(b) => { SettingsBridge.row-button(row.id, b); }
+                        tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
                     }
                     if row.block == BlockKind.wall: SetBlockFrame {
                         width: parent.width;

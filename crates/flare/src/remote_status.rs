@@ -46,6 +46,9 @@ pub fn status_of(answer: &Value, tab: &str) -> Option<HostStatus> {
         session: word("session").filter(|s| flare_agent::signal::is_session_id(s)),
         question: word("question_text"),
         failed: word("failed"),
+        // Remote sessions PR 7: the host's own window sizes the tab (someone typed there last). A host that does not
+        // say it (an older Flare) is read as the viewer sizing it: the terminal stays.
+        host_sized: word("sized").as_deref() == Some("host"),
     })
 }
 
@@ -149,6 +152,7 @@ mod tests {
                 session: Some(SID.into()),
                 question: Some("Overwrite it?".into()),
                 failed: None,
+                host_sized: false,
             })
         );
         assert_eq!(
@@ -157,6 +161,13 @@ mod tests {
             "a session that is not a UUID is dropped"
         );
         assert_eq!(status_of(&answer, "t9"), None);
+        // Remote sessions PR 7: who sizes the tab, read as the host only when it says so.
+        let sized = json!({"tabs": [{"tab": "a", "state": "idle", "sized": "host"},
+                                     {"tab": "b", "state": "idle", "sized": "viewer"},
+                                     {"tab": "c", "state": "idle", "sized": "elsewhere"}]});
+        assert!(status_of(&sized, "a").unwrap().host_sized);
+        assert!(!status_of(&sized, "b").unwrap().host_sized);
+        assert!(!status_of(&sized, "c").unwrap().host_sized);
         assert_eq!(status_of(&json!({"tabs": [{"tab": "t1"}]}), "t1"), None);
         assert_eq!(status_of(&json!({}), "t1"), None);
     }

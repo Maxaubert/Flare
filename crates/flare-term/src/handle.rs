@@ -1055,6 +1055,7 @@ mod tests {
             remote: Some(crate::remote_pty::RemoteSpec {
                 machine: "mac".into(),
                 folder: "/Users/max/proj".into(),
+                resume: None,
                 live: crate::remote_pty::RemoteLive::default(),
             }),
             ..start_opts()

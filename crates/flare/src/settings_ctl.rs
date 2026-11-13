@@ -86,6 +86,8 @@ pub enum SettingsMsg {
     Changed,
     /// The mods Flare knows changed (a scan, a switch): the Mods page draws them again.
     Mods,
+    /// A worker of the Machines page answered (remote sessions PR 7).
+    Machines(crate::machines_page::MachinesMsg),
 }
 
 /// The Mods page's door to the mods (Surfaces stage 8). The window's controller of mods implements it; a run with
@@ -220,6 +222,8 @@ pub struct SettingsCtl {
     pub rebuilds: u32,
     /// The Mods page's door to the mods (Surfaces stage 8); none until the window hands it over.
     mods: Option<Rc<dyn ModsPort>>,
+    /// The Machines page (remote sessions PR 7); none until the window hands it over.
+    machines: Option<crate::machines_page::MachinesPage>,
 }
 
 // ---- the pure mappers ------------------------------------------------------------------------------
@@ -524,6 +528,11 @@ pub fn to_slint_section(s: &SectionModel, l: &SectionLayout, ctx: &RowCtx<'_>) -
                     note: text.as_str().into(),
                     ..block_row("note", SlintBlock::Note, y, rl.h)
                 },
+                BlockModel::MachineHead => {
+                    block_row("machine-head", SlintBlock::MachineHead, y, rl.h)
+                }
+                BlockModel::Machine(m) => to_slint_machine(m, y, rl.h),
+                BlockModel::MachineAdd(a) => to_slint_machine_add(a, y, rl.h),
             };
             if section_flash > 0.0 {
                 row.flash = section_flash;
@@ -543,6 +552,60 @@ pub fn to_slint_section(s: &SectionModel, l: &SectionLayout, ctx: &RowCtx<'_>) -
         panel_y: l.panel_y as f32,
         panel_h: l.panel_h as f32,
         rows: ModelRc::new(VecModel::from(rows)),
+    }
+}
+
+/// The logo word a machine's system draws by (`mac`, `pc`, "" for none known).
+fn os_word(os: Option<flare_settings::page::machines::MachineOs>) -> &'static str {
+    use flare_settings::page::machines::MachineOs;
+    match os {
+        Some(MachineOs::Mac) => "mac",
+        Some(MachineOs::Pc) => "pc",
+        None => "",
+    }
+}
+
+/// One linked machine's table row (remote sessions PR 7): its name, its SSH host, the Flare version it said, its
+/// status (the word it draws by and the words it shows) and the one line of a failed check as the status's tooltip.
+pub fn to_slint_machine(m: &flare_settings::page::machines::MachineRow, y: f64, h: f64) -> SetRow {
+    use flare_settings::page::machines::{LinkStatus, MACHINE_PREFIX};
+    SetRow {
+        label: m.name.as_str().into(),
+        value: m.ssh.as_str().into(),
+        note: m.version.as_str().into(),
+        state: m.status.word().into(),
+        sub: m.status.text().into(),
+        row_tip: match &m.status {
+            LinkStatus::Failed(line) => line.as_str().into(),
+            _ => "".into(),
+        },
+        vendor: os_word(m.os).into(),
+        ..block_row(
+            &format!("{MACHINE_PREFIX}{}", m.id),
+            SlintBlock::Machine,
+            y,
+            h,
+        )
+    }
+}
+
+/// The add form (remote sessions PR 7): the host picked and the hosts to pick from, the name typed, its red line, and
+/// `busy` while the host is checked.
+pub fn to_slint_machine_add(
+    a: &flare_settings::page::machines::AddBlock,
+    y: f64,
+    h: f64,
+) -> SetRow {
+    use flare_settings::page::machines::ADD_ROW;
+    let hosts: Vec<(&str, &str)> = a.hosts.iter().map(|h| (h.as_str(), h.as_str())).collect();
+    SetRow {
+        value: a.form.host.as_str().into(),
+        options: options_of(&flare_settings::page::opts(&hosts)),
+        note: a.form.name.as_str().into(),
+        sub: a.form.error.clone().unwrap_or_default().into(),
+        state: if a.form.busy { "busy" } else { "" }.into(),
+        placeholder: "Name".into(),
+        ..block_row(ADD_ROW, SlintBlock::MachineAdd, y, h)
     }
 }
 
@@ -710,6 +773,7 @@ impl SettingsCtl {
             verb_q: VerbQueue::default(),
             rebuilds: 0,
             mods: None,
+            machines: None,
             deps,
         };
         let rc = Rc::new(RefCell::new(ctl));
@@ -1039,7 +1103,20 @@ impl SettingsCtl {
                 }
                 self.refresh_sheet();
             }
+            SettingsMsg::Machines(m) => {
+                if let Some(p) = self.machines.as_mut()
+                    && p.on_msg(m)
+                    && self.page == "machines"
+                {
+                    self.refresh_if_visible();
+                }
+            }
         }
+    }
+
+    /// The window hands over the Machines page's door to the disk and the links (startup).
+    pub fn set_machines(&mut self, page: crate::machines_page::MachinesPage) {
+        self.machines = Some(page);
     }
 
     /// The window hands over the door to the mods (startup).
@@ -1099,10 +1176,16 @@ impl SettingsCtl {
         self.sheet.as_deref()
     }
 
-    /// The Mods page is in front: the folder is looked at again.
-    fn mods_page_shown(&self) {
+    /// The Mods page is in front: the folder is looked at again. The Machines page in front: the machines and the
+    /// ssh hosts are read again, and the ones not checked in this run are checked (remote sessions PR 7).
+    fn mods_page_shown(&mut self) {
         if self.page == "mods"
             && let Some(m) = &self.mods
+        {
+            m.page_shown();
+        }
+        if self.page == "machines"
+            && let Some(m) = self.machines.as_mut()
         {
             m.page_shown();
         }
@@ -1186,6 +1269,9 @@ impl SettingsCtl {
                 i.url = self.plugin_url.clone();
                 i
             });
+        let machines_info = (self.page == "machines")
+            .then(|| self.machines.as_ref().map(|m| m.info()))
+            .flatten();
 
         let env = PageEnv {
             prefs: &self.deps.prefs,
@@ -1206,6 +1292,7 @@ impl SettingsCtl {
             agent_key_labels: (self.deps.agent_key_labels)(),
             face_of: &*self.deps.face_of,
             mods: mods_info.as_ref(),
+            machines: machines_info.as_ref(),
         };
         build_page(self.page, &env, &*self.deps.dictation)
     }
@@ -1701,10 +1788,19 @@ impl SettingsCtl {
         if row == flare_settings::page::mods::URL_ROW {
             self.plugin_url = text.to_string();
         }
+        if row == flare_settings::page::machines::ADD_ROW
+            && let Some(m) = self.machines.as_mut()
+        {
+            m.set_name(text);
+        }
     }
 
     fn row_button(&mut self, row: &str, button: &str) {
         use flare_settings::page::mods::{INSTALL_ROW, SWITCH_PREFIX, URL_ROW};
+        if row == flare_settings::page::machines::ADD_ROW {
+            self.machines_button(button);
+            return;
+        }
         if row == flare_settings::page::mods::FOLDER_ROW && button == "open" {
             if let Some(m) = &self.mods {
                 (self.deps.open_path)(&m.dir());
@@ -1753,6 +1849,75 @@ impl SettingsCtl {
             row: row.to_string(),
             button: button.to_string(),
         });
+    }
+
+    /// The Machines page's add row and form (remote sessions PR 7): a press on the row opens the form, Cancel closes
+    /// it, Add checks the host and saves it once it answered.
+    fn machines_button(&mut self, button: &str) {
+        use flare_settings::page::machines::{ADD_BUTTON, CANCEL_BUTTON, OPEN_BUTTON};
+        let Some(m) = self.machines.as_mut() else {
+            return;
+        };
+        match button {
+            OPEN_BUTTON => m.open_form(),
+            CANCEL_BUTTON => m.cancel_form(),
+            ADD_BUTTON | "submit" => m.submit(),
+            _ => return,
+        }
+        self.rebuild();
+        if button == OPEN_BUTTON {
+            self.focus_row(flare_settings::page::machines::ADD_ROW);
+        }
+    }
+
+    /// What the Select menu offers for a row of the Machines page: the form's hosts, or a machine's ⋯ menu (Test,
+    /// Remove). None for any other row.
+    fn machines_select(&self, row: &str) -> Option<(String, Vec<flare_settings::page::Opt>)> {
+        use flare_settings::page::machines::{ADD_ROW, MACHINE_PREFIX, REMOVE_CHOICE, TEST_CHOICE};
+        use flare_settings::page::opts as opts_of;
+        let m = self.machines.as_ref()?;
+        if row == ADD_ROW {
+            let info = m.info();
+            let hosts: Vec<(&str, &str)> = info
+                .ssh_hosts
+                .iter()
+                .map(|h| (h.as_str(), h.as_str()))
+                .collect();
+            return Some((info.add.host.clone(), opts_of(&hosts)));
+        }
+        row.strip_prefix(MACHINE_PREFIX)?;
+        Some((
+            String::new(),
+            opts_of(&[(TEST_CHOICE, "Test"), (REMOVE_CHOICE, "Remove")]),
+        ))
+    }
+
+    /// A pick in the Machines page's Select menu: true when it was one.
+    fn machines_chosen(&mut self, row: &str, id: &str) -> bool {
+        use flare_settings::page::machines::{ADD_ROW, MACHINE_PREFIX, REMOVE_CHOICE, TEST_CHOICE};
+        let Some(m) = self.machines.as_mut() else {
+            return false;
+        };
+        if row == ADD_ROW {
+            m.set_host(id);
+        } else if let Some(machine) = row.strip_prefix(MACHINE_PREFIX) {
+            match id {
+                TEST_CHOICE => m.test(machine),
+                REMOVE_CHOICE => m.remove(machine),
+                _ => {}
+            }
+        } else {
+            return false;
+        }
+        self.rebuild();
+        true
+    }
+
+    /// Asks the view to put the keys on this row's first control.
+    fn focus_row(&self, id: &str) {
+        if let Some(app) = self.weak.upgrade() {
+            app.global::<SettingsBridge>().set_focus_id(id.into());
+        }
     }
 
     fn save_clicked(&mut self, id: &str) {
@@ -2042,16 +2207,23 @@ impl SettingsCtl {
         let Some(app) = self.weak.upgrade() else {
             return;
         };
+        let mine = self.machines_select(row);
         let Some(built) = self.built.as_ref() else {
             return;
         };
-        let Some(r) = flare_settings::page::row_of(&built.model, row) else {
-            return;
-        };
-        // The language picker and the microphone's picker open the same menu.
-        let (Control::Select { value, options } | Control::Mic { value, options, .. }) = &r.control
-        else {
-            return;
+        let (value, options) = if let Some((v, o)) = &mine {
+            (v, o)
+        } else {
+            let Some(r) = flare_settings::page::row_of(&built.model, row) else {
+                return;
+            };
+            // The language picker and the microphone's picker open the same menu.
+            let (Control::Select { value, options } | Control::Mic { value, options, .. }) =
+                &r.control
+            else {
+                return;
+            };
+            (value, options)
         };
         let scale = Self::scale_of(&app);
         let size = app.window().size();
@@ -2088,6 +2260,9 @@ impl SettingsCtl {
     fn select_chosen(&mut self, id: &str) {
         let row = std::mem::take(&mut self.select_row);
         self.close_select();
+        if self.machines_chosen(&row, id) {
+            return;
+        }
         if !row.is_empty() {
             self.event(Event::Choose {
                 row,

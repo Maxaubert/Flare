@@ -36,6 +36,70 @@ pub const SNAPSHOT_LINES: usize = 1000;
 pub const CONVO_MAX: usize = 200;
 /// The longest question text `remote.status` carries, in characters.
 pub const QUESTION_MAX: usize = 500;
+/// One chunk of `remote.fetch` and `remote.put` (remote sessions PR 6): base64 makes it a third bigger, far under the
+/// 16 MB line.
+pub const FILE_CHUNK: usize = 256 * 1024;
+/// The biggest file `remote.fetch` reads and `remote.put` writes.
+pub const FILE_MAX: u64 = 32 * 1024 * 1024;
+/// The most chunks one file is cut into.
+pub const FILE_CHUNKS_MAX: u32 = (FILE_MAX / FILE_CHUNK as u64) as u32;
+/// The longest file name `remote.put` keeps, in bytes.
+pub const PUT_NAME_MAX: usize = 100;
+
+/// Pure: the number of chunks a file of `size` bytes is sent in (an empty file is one empty chunk).
+pub fn chunks_of(size: u64) -> u32 {
+    (size.div_ceil(FILE_CHUNK as u64)).max(1) as u32
+}
+
+/// Windows' device names: a file named like one (any extension, any case) is the device, on a PC host.
+const DEVICES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// Whether a file name is one of Windows' device names (`NUL`, `con.txt`, `COM1.log`): never a file to read or write.
+pub fn is_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or_default().trim_end();
+    DEVICES.iter().any(|d| d.eq_ignore_ascii_case(stem))
+}
+
+/// Pure: the name a `remote.put` file is kept under on the host (rule 304): only its last part, with every character
+/// that is not a letter, a digit, a space or one of `-_.()+,` made `_`, no dot or space at either end, no device name,
+/// at most [`PUT_NAME_MAX`] bytes with its extension kept. So the name is a plain word in every shell's quotes (cmd's
+/// `%` and `!`, sh's `$` and backquote never reach it) and names no other folder. An empty result is `file`.
+pub fn put_name(raw: &str) -> String {
+    let last = raw.rsplit(['/', '\\']).next().unwrap_or_default();
+    let clean: String = last
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() && !c.is_control() || " -_.()+,".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let mut name = clean.trim_matches(['.', ' ']).to_string();
+    if name.len() > PUT_NAME_MAX {
+        let ext = name
+            .rfind('.')
+            .map(|i| name[i..].to_string())
+            .filter(|e| e.len() <= 16)
+            .unwrap_or_default();
+        let mut stem = name[..name.len() - ext.len()].to_string();
+        while stem.len() + ext.len() > PUT_NAME_MAX {
+            stem.pop();
+        }
+        name = format!("{}{ext}", stem.trim_end_matches(['.', ' ']));
+    }
+    if name.is_empty() || name.trim_matches(['.', ' ']).is_empty() {
+        return "file".to_string();
+    }
+    if is_device_name(&name) {
+        name.insert(0, '_');
+    }
+    name
+}
 
 /// What a host tab's agent is doing, as `remote.status` says it (rule 294): one word, from the host's own marks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -392,6 +456,50 @@ mod tests {
         assert_eq!(clamp_size(0, 0), (MIN_COLS, MIN_ROWS));
         assert_eq!(clamp_size(120, 40), (120, 40));
         assert_eq!(clamp_size(u64::MAX, u64::MAX), (MAX_COLS, MAX_ROWS));
+    }
+
+    /// Rule 304: a put file's name is one plain word on the host: its last part, no character a shell acts on, no device
+    /// name, no dot or space at its ends, and short with its extension kept.
+    #[test]
+    fn a_put_name_is_its_last_part_with_nothing_a_shell_acts_on() {
+        assert_eq!(put_name("shot.png"), "shot.png");
+        assert_eq!(put_name("C:\\Users\\max\\Pictures\\a b.png"), "a b.png");
+        assert_eq!(put_name("/tmp/../../etc/passwd"), "passwd");
+        assert_eq!(put_name(".."), "file");
+        assert_eq!(put_name(""), "file");
+        assert_eq!(put_name("..\\"), "file");
+        assert_eq!(put_name("100%!.txt"), "100__.txt");
+        assert_eq!(put_name("a\"b'c$d`e;f&g|h.txt"), "a_b_c_d_e_f_g_h.txt");
+        assert_eq!(put_name("line\nbreak\u{1b}.txt"), "line_break_.txt");
+        assert_eq!(put_name(" .hidden. "), "hidden");
+        assert_eq!(put_name("NUL"), "_NUL");
+        assert_eq!(put_name("con.txt"), "_con.txt");
+        assert_eq!(put_name("com1.log"), "_com1.log");
+        assert_eq!(put_name("console.txt"), "console.txt");
+        assert_eq!(put_name("été (2).jpg"), "été (2).jpg");
+        let long = format!("{}.png", "x".repeat(300));
+        let kept = put_name(&long);
+        assert!(
+            kept.len() <= PUT_NAME_MAX && kept.ends_with(".png"),
+            "{kept}"
+        );
+        for raw in ["a%b", "a!b", "a\"b", "~/x", "$(rm)", "`x`"] {
+            let n = put_name(raw);
+            assert!(
+                !n.contains(['%', '!', '"', '$', '`', '/', '\\', '~']),
+                "{raw} -> {n}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_is_cut_into_chunks_and_an_empty_file_is_one() {
+        assert_eq!(chunks_of(0), 1);
+        assert_eq!(chunks_of(1), 1);
+        assert_eq!(chunks_of(FILE_CHUNK as u64), 1);
+        assert_eq!(chunks_of(FILE_CHUNK as u64 + 1), 2);
+        assert_eq!(chunks_of(FILE_MAX), FILE_CHUNKS_MAX);
+        assert!(is_device_name("aux.c") && !is_device_name("auxiliary"));
     }
 
     #[test]

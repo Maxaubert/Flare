@@ -1,7 +1,7 @@
 # Remote sessions: implementation plan (2026-11-12)
 
 Spec: `docs/superpowers/specs/2026-11-12-remote-sessions-design.md`.
-Status: approved 2026-11-12; building. PR 1 built on `feat/remote-1` (2026-11-12, not merged); PR 2 built on `feat/remote-2` (2026-11-12, stacked on PR 1, not merged); PR 3 built on `feat/remote-3` (2026-11-12, stacked on PR 2, not merged); PR 4 built on `feat/remote-4` (2026-11-12, stacked on PR 3, not merged); PR 5 next.
+Status: approved 2026-11-12; building. PR 1 built on `feat/remote-1` (2026-11-12, not merged); PR 2 built on `feat/remote-2` (2026-11-12, stacked on PR 1, not merged); PR 3 built on `feat/remote-3` (2026-11-12, stacked on PR 2, not merged); PR 4 built on `feat/remote-4` (2026-11-12, stacked on PR 3, not merged); PR 5 built on `feat/remote-5` (2026-11-12, stacked on PR 4, not merged); PR 6 built on `feat/remote-6` (2026-11-12, stacked on PR 5, not merged); PR 7 built on `feat/remote-7` (2026-11-12, stacked on PR 6, not merged). All seven PRs are built; none is merged.
 
 Seven PRs, in order. Each one ships alone and passes its own tests. Only PR 7 needs an approved mockup.
 Rule numbers below are "R-new-N". Number them after the last rule in `docs/regression-rules.md` when you write them.
@@ -342,6 +342,50 @@ Where the build differs from the lines above:
 - R-new-20: `--on` and other flag values never reach path parsing.
 - R-new-21: session listing reads only the head of each transcript on a worker.
 
+**Built (2026-11-12, `feat/remote-5`, stacked on `feat/remote-4`).** Rules R-new-18 to R-new-20 are rules 299 to 301;
+R-new-21 was not written (no session listing, below). Where the build differs from the lines above:
+- **No resume list.** The owner's PR 7 picks drop the past-sessions list from the + menu (the person resumes Claude in
+  the remote shell), and this PR's task is "command, agent tool, hidden start". So `remote.sessions`,
+  `claude_session_list` and `ClaudeSessionSummary` are not built; `--resume <id>` and the tool's `resume` take an id the
+  caller already has, and the host checks it with `valid_resume` at `remote.open` (PR 2).
+- **One method, `open.remote` (`Method::OpenRemoteSession`), in a new `Namespace::Open`** (`ALL` 19 to 20, `Method::ALL`
+  59 to 60). The agent grant enters it; no permission opens it (no mod), and the remote and bridge grants never do. There
+  is no `RemoteOpenLocal` and no `cli` permission: `flare open` says `hello` with no token, which is the agent grant, so
+  the command reaches exactly what the agent's tool reaches. Params `{machine, folder, resume?, front?}`; the command
+  sends `front: true`, the agent's tool leaves it out, so an agent's open never takes the front tab (and the keys)
+  from the person. Answered `{tab, machine, folder}` at once; the tab's link worker connects. `remote.open` now carries
+  `resume` (`RemoteSpec.resume`).
+- **`--start-hidden`, not `--background`.** `--background <colour>` is already the look flag. `--start-hidden` is a
+  normal launch born parked (the e2e's window attributes, `select_backend_with(.., parked)`) and parked again by the same
+  timer (`park_e2e_window_when_ready`), with nothing else of the e2e; its parked place is never saved; its first raise
+  (`unpark_background`) gives back the normal style, the taskbar button and the saved place. A `--start-hidden` launch
+  that meets a running Flare hands over nothing and raises nothing (`handoff`). macOS also gets `hold_off_app_nap`.
+- **Where the start happens.** `flare_ctl::Dispatcher::remote_ready`, asked by the library after `remote.hello`'s
+  version check and grant and before its answer; the bridge's `hidden_start::ensure_running` starts
+  `<exe> --start-hidden [--user-data-dir] [--e2e]` detached (out of ssh's job where allowed, its own process group on a
+  Mac) and waits 60 s for the pipe. `host_not_ready` (new code) answers the hello in one line; the link stays open. The
+  viewer's hello wait is 90 s (`HELLO_WAIT`). `flare --serve-remote --no-start` (new) never starts one: the process
+  tests use it.
+- **Windows session 0.** sshd runs a login in session 0, where no window is ever seen and the single-instance lock is
+  not the desktop's: a Flare started there could never be raised. So a serve process in session 0 starts nothing and
+  answers `host_not_ready` ("open Flare there once"); the PC as a host needs Flare running in the person's session.
+- **`machines.rs`** holds the registry `remote_link.rs` had (`Machine`, `parse_machines`, `read_machines`), plus
+  `MachinesPort` (`list`, `get`), `FileMachines` with an atomic `save` (`flare_settings::atomic::write_atomic`) for PR 7,
+  and `unknown_machine`'s one line.
+- **Tests.** Unit: `flare_ctl` `grant::tests::the_agent_may_open_a_remote_session_but_never_type_into_one` (and the
+  table tests), `method::tests`, `session::tests::a_host_that_is_not_ready_refuses_the_hello_in_one_line_and_takes_another`;
+  `flare` `config::tests` (`open_on_*`, `start_hidden_*`), `main` (branch order), `cli_open::tests`, `hidden_start::tests`
+  (running, started, never up, no desktop), `serve_remote::tests::the_hello_waits_for_a_flare_here_and_a_host_that_cannot_start_one_says_so`,
+  `ctl_app::tests::open_remote_names_a_known_machine_and_opens_a_tab_the_agent_cannot_type_into`, `machines::tests`,
+  `window::tests::a_background_start_is_parked_like_the_e2e_and_its_raise_undoes_the_style`,
+  `appctl::tests::a_background_launch_that_meets_a_running_flare_raises_and_opens_nothing`; `flare-mcp`
+  `open_remote_session_checks_its_arguments_and_routes_to_open_remote`. ui_tests:
+  `term::flow::an_agents_remote_open_stays_behind_the_tab_in_front`. E2E: `remoteOpen`.
+- **Known limits.** The hidden start over a real ssh login is not proven (no ssh to a real machine): whether a Mac's sshd
+  login of the person at the screen can start the app (an accessory app until raised; whether the raise brings it to the
+  Dock) and whether a Windows host refuses as designed are on the by-hand list. The e2e proves the chain on one PC: the
+  command, the agent grant, the serve process's start of a `--start-hidden --e2e` host, its park and no focus.
+
 **Depends on.** PR 4. **UI.** No (the folder picker UI is in PR 7). The agent and command paths pass a folder string.
 
 ---
@@ -376,7 +420,41 @@ Where the build differs from the lines above:
 - R-new-23: paste and drop of files and images copy to a host temp folder and paste a quoted host path.
 - R-new-24: the ssh command line is built per host OS from separate argv items and has no secrets.
 
-**Depends on.** PR 5. **UI.** Reuses the existing side panel. No new screens.
+**Built (2026-11-12, `feat/remote-6`, stacked on `feat/remote-5`).** Rules R-new-22 to R-new-24 are rules 303 to 305.
+Where the build differs from the lines above:
+- **`remote.fetch {tab, path, chunk?}`** answers `{tab, name, size, chunk, chunks, data}`: no `max_bytes` and no
+  `mime` (the viewer classifies the copy by its name as a click does; the cap is the host's, 32 MiB, `too_large`).
+  The tab must be followed; its folder comes from the window (`CtlOp::SessionOf`); the path is resolved with the
+  click's own `resolve_term_path` from that folder and checked by `remote_files::resolve_fetch` on the worker (the
+  file's real name inside the tab's folder or the host's temp folder, no device name, no share; `not_found`
+  otherwise).
+- **`remote.put {tab, name, chunk, chunks, data}`** answers `{tab, name, done, host_path?, paste?}`. Chunk 0's answer
+  names the file as kept (`put_name`, then `-2`, `-3` when taken), and the next chunks send that name. The upload
+  folder is per tab and per run, `<temp>/flare-remote/<run>/<tab>` (a host tab's id can come again after a restart),
+  removed when the tab closes; a crashed run's folders go a day later. **The host quotes the path** (`paste`, with
+  `quote_path` for the tab's own shell), not the viewer: the viewer does not know the host's shell (its `MachineTag`
+  kind is unknown until PR 7), the host does. The viewer pastes the joined answers as one `paste` intent, sanitised
+  again on the host (rule 1).
+- **No `Link` in the window.** File work goes to the tab's link worker as an `Errand` (`flare_term::remote_pty`,
+  `RemoteLive::send_errand`), done between the typing and the output poll, so a dropped file's path is pasted after
+  what was typed before it; work asked while the link is down or after the session ended is refused at once.
+- **Images.** `ClipboardPort::read_image` (new): Windows reads the registered PNG format, else `CF_DIB`/`CF_DIBV5` as a
+  `.bmp` (`bmp_of_dib`), made a PNG with the `image` crate; macOS reads the pasteboard's PNG (`read_png`), and a
+  TIFF-only picture is refused (no TIFF decoder). Copied files pasted on a remote tab go the same way as a drop.
+- **`handle.rs` is unchanged.** The routing is above the handle: `TermUi` posts `TermMsg::RemoteLink` (a click) and
+  `TermMsg::RemoteUpload` (a drop, or a paste of files or a picture) for a remote tab, and
+  `appctl/remote_files_glue.rs` hands them to the link. Text still pastes through `TermHandle::paste` (rule 292).
+- **The command builder** was built in PR 3; this PR adds its full table test and rule 305.
+- **Tests.** Unit: `flare_ctl::remote::tests` (`put_name`, chunks), `method::tests`, `remote_files::tests`,
+  `remote_link::tests` (fetch, put, caps, the link down, the command table), `ctl_app::tests` (`remote_fetch_*`,
+  `remote_put_*`), `serve_remote::tests` (fetch retried, put never), `term_ui::tests` (a remote click, drop and paste),
+  `remote_files_glue::tests`, `remote_pty::tests` (errands), `clipboard_port::tests` (`bmp_of_dib`, the stand-in's
+  image) and, in macOS CI, `pasteboard::tests`. ui_tests: `term::flow::a_remote_file_link_*`,
+  `a_file_dropped_on_a_remote_tab_*`, `an_image_pasted_on_a_remote_tab_*`. E2E: `remoteFiles`.
+- **Known limits.** "Both directions" on one PC is the same code with the profiles' roles swapped, so no swapped copy of
+  every remote scenario was added; the Mac to PC direction over real ssh is on the by-hand list
+  (`docs/remote-sessions-manual-checks.md`, new). A dropped folder is not copied. The e2e has no clipboard-image
+  request, so the image paste is held by the ui test only.
 
 ---
 
@@ -420,6 +498,51 @@ Where the build differs from the lines above:
 - R-new-25: "Close" on a remote tab ends the session everywhere and asks as any tab (rule 48). "Hide here only" never ends it.
 - R-new-26: the folder browser lists host paths only and never touches the OS dialog.
 - R-new-27: machines are stored atomically. Unknown values read as default (rules 36, 40).
+
+**Built (2026-11-12, `feat/remote-7`, stacked on `feat/remote-6`).** Rules R-new-25 and R-new-27 are rules 1192 and 1194
+(numbered after main's last rule, 1189, and the PR 6 fixes 1190 and 1191); the fitted view's rule is 1193; R-new-26 was
+dropped with the folder browser. Where the build differs from the lines above (the owner's picks win):
+- **Settings > Machines** is `flare_settings::page::machines` (data: a table heading, one `BlockModel::Machine` a
+  machine, the add row or `BlockModel::MachineAdd` in its place) drawn by `ui/settings/machines.slint`, with its door to
+  the disk and the links in `crates/flare/src/machines_page.rs` (`MachinesPage`, `MachinesIo`; `RealMachinesIo` in the
+  window, `SceneMachinesIo` in the settings scene, a fake in the tests). No `MachinesInfo.ssh_hosts: Vec<SshHost>`: the
+  hosts are plain names. The ⋯ menu and the host drop-down reuse the Settings Select menu. The rail icon and the add
+  row's plus are Flare's own icons (`icons::FLARE_ICONS`), since `SETTING_ICONS` is Prism Terminal's fixed set. The add
+  row is in the row tables (`machines-add`), so Find a setting reaches the page.
+- **`test_link`** is `remote_link::hello_over` (a link that says `remote.hello` and ends). The hello's answer now carries
+  the host's `os` (`mac`, `pc`, `other`), which the page saves as the machine's `kind`. Adding a machine tries Flare on
+  the host's PATH, then `/Applications/Flare.app/Contents/MacOS/flare`, double-quoted until the host says its system;
+  a refusal stops the search. A version refusal's red line says which side to update from the two protocol numbers
+  (`machines::failure_line`); the refusal names protocols, not Flare versions, so the line names protocols too. Every
+  machine is checked once a run when the page first opens; Test checks it again.
+- **The + menu** is the folder menu (the strip's + right-click and the sidebar's New tab arrow): one row per machine
+  after the folders (`menus_ui::MACHINE_ROW` marks its pick), which opens a shell tab with `remote.open {folder: "~"}`;
+  the host reads a lone `~` as its home folder (the viewer does not know it). The window reads `machines.json` once at
+  start on a worker (`UiMsg::Machines`) and again after every save of the page.
+- **Tab logos** are `TabRow.machine` (0 local, 1 Mac, 2 PC, 3 a remote machine of a system not known, which draws no
+  logo); the vertical card draws it before the folder, the strip's `TabEnd` after the ring and before the ×; the
+  tooltip starts with the machine's name. A restored tab takes its machine's name and kind once the machines are read
+  (`AppCtl::tag_remote_tabs`).
+- **"Hide here only"** is `TabHost::leave` and `SessionManager::leave` (the quit's detach for one tab).
+- **The fitted conversation view** is on the viewer's remote tab only (as the plan says), not on the host's own tab.
+  `remote.status` says who sizes each tab (`sized`); while the host does and the tab has a session, the link polls
+  `remote.convo` into its `ConvoMirror` and hands the lines to the window (`RemoteLive`'s conversation); a click or a
+  key takes the terminal back (`RemoteLive::retake_size`: the link sends `remote.resize` again) and the key goes on to
+  the tab. `ui/remote_convo.slint` draws it over the terminal.
+- **Tests.** Unit: `flare_settings` (`page::machines::tests`, the page, row, find and icon tables), `flare_ctl`
+  (`session` and `client`: `os`), `flare_term::remote_pty::tests` (the conversation state), `flare` `machines::tests`,
+  `machines_page::tests`, `ssh_config::tests`, `menus_ui::tests`, `tabs_ui::tests`, `remote_status::tests`,
+  `ctl_app::tests::remote_open_reads_a_lone_tilde_as_the_hosts_home`, `config::tests`. ui_tests:
+  `settings_machines::*` (the page at 100 and 225 percent, the table, the menu, the form and its red line),
+  `remote_convo::*` (fitted at three widths and two scales, the click), `term::flow::a_machines_row_in_the_plus_menu_*`,
+  `hide_here_only_*`, `a_remote_tab_the_host_sizes_shows_its_conversation_*`. Scene: `--scene settings --settings-page
+  machines`. E2E: `remoteUi` (the + menu's machine row opens a tab on the loopback host with its logo; Hide here only
+  leaves the host's session).
+- **Known limits.** No real ssh was run: adding a machine over a real ssh (a Mac's login shell running
+  `"flare" --serve-remote` and the Mac app's path, a PC's cmd), the page's first checks taking as long as a real
+  login, and a key on the host taking the size back while the viewer shows the terminal are on the by-hand list. The
+  host's own tab shows no fitted view while a viewer sizes it. A machine reached as another user, or with Flare
+  elsewhere, still needs a hand edit of `machines.json` (the form has no user or path field, as picked).
 
 **Depends on.** PRs 5 and 6. **UI.** Yes, all of it. Needs the approved mockup first.
 
@@ -473,5 +596,26 @@ by-hand list: that a Mac host's IOKit assertion holds its idle sleep off for a s
 after (the code compiles in the macOS CI job only), and that a Windows host's `SetThreadExecutionState` keeps it awake
 past its sleep timer while the viewer is on the other machine (`powercfg /requests` should list Flare while a followed
 tab works).
+
+Spike status after PR 5 (2026-11-12): still no ssh to any real machine. Spike 2 (can Flare start from an ssh session of
+the logged-in user) cannot be proven here; the build tries the start on a Mac and answers `host_not_ready` when the pipe
+never opens in 60 s, and on Windows it refuses in session 0 (sshd's logins) before trying, since a Flare there could
+never be seen or raised. `remoteOpen` proves the rest of the chain on one PC (command, agent grant, the serve process's
+hidden start, the park, no focus change). Left for the by-hand list: a Mac host started over ssh (does `open`-less
+start of the binary reach the window server; does the accessory app get its Dock icon when raised), a PC host reached
+over sshd with Flare closed (the one-line refusal), and whether `CREATE_BREAKAWAY_FROM_JOB` is allowed by sshd's job.
+
+Spike status after PR 6 (2026-11-12): still no ssh to any real machine. Spike 3 (`LOCAL_PEERPID` and the per-user
+socket for a serve process started by sshd on the Mac) cannot be proven without one: the serve child has no
+`FLARE_CTL_PID`, so it takes the plain-name path, and the check is on the by-hand list. `remoteFiles` proves the file
+path on one PC (a click fetched from the host into the viewer's panel, a drop copied to the host's upload folder and
+its host path pasted). The by-hand list now exists: `docs/remote-sessions-manual-checks.md` (every spike and every
+real-hardware check of PRs 1 to 6, in both directions).
+
+Spike status after PR 7 (2026-11-12): still no ssh to any real machine. Settings > Machines checks and adds machines
+over the same loopback the other scenarios use (`remoteUi`, and the page's tests over an in-memory stand-in). Not
+proven without real hardware and left for the by-hand list: that `ssh <host> "flare" --serve-remote` finds Flare on a
+Mac's or a PC's login PATH (and the Mac app's path when it does not), that `~/.ssh/config` hosts with an `Include` read
+as ssh reads them, and how long the page's first checks take over a real login.
 
 Open risks tracked across PRs: closed enum arrays (`Method::ALL`, `Namespace::ALL`, `Permission::ALL`) and their exhaustive tests; event lossiness (solved by polling and sequence numbers); stuck-handler cap of 32 on slow links (short polls only); two writers on one session; version skew between machines (refuse with one line); `tabs.changed` is reserved and unsent, so the viewer polls `remote.tabs` and `remote.status`.

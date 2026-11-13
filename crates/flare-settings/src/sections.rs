@@ -29,6 +29,8 @@ pub const APP_SECTIONS: &[(&str, &str)] = &[
     // Surfaces stage 7: the notification switch, last on the Agents page (Prism Terminal's sections there are
     // marks, Claude Code and the mark colours, and each has the rows it measured).
     ("notify", "Notifications"),
+    // Remote sessions PR 7: the Machines page's one section (its rows are the machines this Flare links to).
+    ("machines", "Linked machines"),
     ("about", ""),
 ];
 

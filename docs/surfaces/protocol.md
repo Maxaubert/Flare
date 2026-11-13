@@ -25,7 +25,12 @@ host's bridge), the `bridge` grant and `remote.open`, `remote.ls`, `remote.tabs`
 `remote.input`, `remote.resize`, `remote.output`, `remote.snapshot` and `remote.close` (section 1 "The serve process", section
 4, section 5 "remote.*"); remote sessions PR 3 (2026-11-12) adds the viewer, the client end of those methods (section 1 "The
 viewer"), with no new method; remote sessions PR 4 (2026-11-12) adds `remote.status` and `remote.convo` (section 5
-"remote.*") and the viewer's status poll (section 1 "The viewer"). Each method below says which stage owns its behaviour;
+"remote.*") and the viewer's status poll (section 1 "The viewer"); remote sessions PR 5 (2026-11-12) adds `open.remote`
+(the agent's and `flare open --on`'s, section 5 `open.remote`), the serve process's hidden start and the
+`host_not_ready` answer to `remote.hello` (section 1 "The serve process"); remote sessions PR 6 (2026-11-12) adds
+`remote.fetch` and `remote.put` (section 5 "remote.*") and the viewer's file work (section 1 "The viewer"); remote sessions
+PR 7 (2026-11-12) adds `os` to `remote.hello`'s answer, `sized` to `remote.status`'s tabs and `~` (the host's home) to
+`remote.open`, and the viewer's conversation poll and size takeover (section 1 "The viewer", section 5). Each method below says which stage owns its behaviour;
 the names, params and grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
@@ -134,15 +139,25 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     `timeout` and never sent, and a timeout keeps its connection. A connection that broke is opened again, and a call
     that changes nothing (`remote.ls`, `tabs`, `attach`, `detach`, `resize`, `output`, `snapshot`, `status`, `convo`) is sent once more on
     it. Typing, opening and closing are never sent twice. When the link closes the bridge's pipe connections close
-    too, and the running Flare stops following that viewer's tabs (their shells go on, rule 280). With no Flare running, `remote.hello` still answers
-    and every relayed call is `unavailable` (remote sessions PR 5 starts one hidden).
+    too, and the running Flare stops following that viewer's tabs (their shells go on, rule 280).
+  - **The hidden start** (remote sessions PR 5, `crates/flare/src/hidden_start.rs`, rule 301). Before the serve process
+    answers `remote.hello` (after its version check), it makes sure a Flare runs on this machine for the profile: when
+    the pipe takes no connection it starts `<this exe> --start-hidden [--user-data-dir=<profile>]` (no console, no stdio,
+    out of ssh's job where the job allows it, its own process group on a Mac) and waits up to **60 s** for the pipe,
+    looking every 250 ms. `--start-hidden` is a normal launch (lock, pipe, restore, live shells) whose window is parked off
+    every screen by the e2e's park code and never takes the focus; a later normal launch raises it. A process in
+    Windows session 0 (where sshd runs its logins; no window there is ever seen) starts nothing. When no Flare can be
+    had, `remote.hello` answers `host_not_ready` with one line (no grant; the link stays open and may say
+    `remote.hello` again), and the viewer shows that line once in the tab and tries again on its back-off. The viewer
+    waits up to **90 s** for the hello. `flare --serve-remote --no-start` (the process tests) never starts one: the hello
+    answers at once and, with no Flare running, every relayed call is `unavailable`.
   - **The viewer** (remote sessions PR 3, `crates/flare/src/remote_link.rs`). Each remote tab has one link and one
     worker thread. The link is the child `ssh -o BatchMode=yes -T [-l <user>] -- <host> <command>` (ssh by its absolute
     path, no console window), every part an argv item of its own; `<host>` and `<user>` come from `machines.json` in the
     profile and must be plain words that cannot be read as an option. `<command>` is the host's Flare path quoted for its
     login shell (`'<path>' --serve-remote` for a Mac's sh, `"<path>" --serve-remote` for a PC's cmd, no `&&`) and
-    nothing else: no token, no environment (rule 290). The worker says `remote.hello` (30 s), then `remote.open
-    {folder}` for a new tab (its answer `tab` is kept as the tab's `host_tab`) or straight to `remote.attach {tab}` for a
+    nothing else: no token, no environment (rule 290). The worker says `remote.hello` (90 s, PR 5), then `remote.open
+    {folder, resume?}` for a new tab (`resume` only when the tab was opened with one, PR 5) (its answer `tab` is kept as the tab's `host_tab`) or straight to `remote.attach {tab}` for a
     restored one, then `remote.resize` with the tab's size. A tab that has shown nothing yet starts from `remote.snapshot`;
     after a reconnect it calls `remote.output {since: <the number read>, max: 1048576}` until caught up (`gap: true`: a
     snapshot instead), with the agent's signals taken out of what it catches up on (rule 289). Then, one call at a time:
@@ -151,7 +166,19 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     backing off to 250 ms when idle, and a `remote.status {}` poll every 1.5 s (the first at once after each attach;
     remote sessions PR 4). The tab's own entry in the answer is handed to the window when it changed (the first after
     an attach always), and the window is woken; the hub turns it into marks (rule 294). A host that refuses
-    `remote.status` (an older Flare) is not asked again on that link, and the tab goes on without it. A call that fails
+    `remote.status` (an older Flare) is not asked again on that link, and the tab goes on without it. Between the
+    typing and the output poll the worker does the window's file work in the order asked (remote sessions PR 6): a
+    click on a file link is `remote.fetch` of each spelling in turn until the host has one (then every chunk, each of
+    the same size and count); a drop or a paste of files or an image is `remote.put` of each file, then one
+    `remote.input` with a `paste` of the host's `paste` answers joined by a space. File work asked while the link is
+    down, or after the tab's session ended, is refused at once. Remote sessions PR 7: after the status poll, a
+    `remote.resize` with the tab's last size when a click or a key took the live terminal back on this screen (rule
+    1193), and, only while the window wants the tab's fitted conversation view, a `remote.convo {tab, since}` poll every
+    1.5 s whose new entries (each taken once by its number) are handed to the window. Settings > Machines checks a
+    machine with a link of its own that says `remote.hello` and ends (`hello_over`): its `flare_version` and `os` are
+    shown and saved; a new machine's Flare is looked for as `"flare"` (the PATH) and then as
+    `"/Applications/Flare.app/Contents/MacOS/flare"`, double-quoted (the same words in sh and cmd) until the host says its
+    system. A call that fails
     with `no_tab` ends the tab as a shell that exits; any other broken
     call drops the link, and the worker tries again after 1 s, doubling to 30 s. Closing the tab sends `remote.close`
     (on a fresh link if the old one is down); the quit and a dropped tab send `remote.detach` (rule 288). Under `--e2e`
@@ -238,7 +265,7 @@ can wait on them inside its quit cap.
 |---|---|
 | Line size | 16 MB |
 | Clients | 64 at once. The 65th is accepted, sent `too_many_clients` (null id), and closed. |
-| First hello | 10 s (30 s for `remote.hello` on a remote link) |
+| First hello | 10 s (30 s for `remote.hello` on a remote link to arrive; its answer may wait up to 60 s for a hidden start, PR 5) |
 | Request timeout | 15 s; 60 s for `browser.*`, `remote.open` and `remote.ls`; 40 s for `mods.call` |
 | Rate | 100/s, burst 200, per connection |
 | Queued events per connection | 256, then the oldest is dropped |
@@ -320,10 +347,12 @@ so without `tabs` it can name none (`forbidden`) and with it, it must name one (
 | `mods.tools`, `mods.call` | yes | **no** | yes |
 | `shell.input`, `settings.set`, `mods.enable` | **no** | **no** | yes |
 | `remote.hello` (the `remote` grant's row: it is **no** in every other one, and for `bridge`) | **no** | **no** (no permission opens it) | yes |
-| `remote.open`, `remote.ls`, `remote.tabs`, `remote.attach`, `remote.detach`, `remote.input`, `remote.resize`, `remote.output`, `remote.snapshot`, `remote.close`, `remote.status`, `remote.convo` (the `remote` and `bridge` grants' rows: **no** in every other one) | **no** | **no** (no permission opens it) | yes |
+| `remote.open`, `remote.ls`, `remote.tabs`, `remote.attach`, `remote.detach`, `remote.input`, `remote.resize`, `remote.output`, `remote.snapshot`, `remote.close`, `remote.status`, `remote.convo`, `remote.fetch`, `remote.put` (the `remote` and `bridge` grants' rows: **no** in every other one) | **no** | **no** (no permission opens it) | yes |
+| `open.remote` (remote sessions PR 5; **no** for `remote` and `bridge`) | yes, with no prompt (owner decision); the tab it opens takes no typing from it (rule 299) | **no** (no permission opens it) | yes |
 
 **Rule S3** is the last row and the `agent` column: the agent can show content and drive its panel
-browser. It cannot type into a shell (neither `shell.input` nor a plugin's `tabs.input`), change settings, enable
+browser, and open a tab that shows a session on another machine (`open.remote`, rule 299, amending rule 188). It
+cannot type into a shell, that tab's included (neither `shell.input` nor a plugin's `tabs.input`), change settings, enable
 mods, answer as a mod, read a session's conversation, keep a plugin's store, or read other tabs' screens. The three methods in the last row are reserved names that exist only so the grant table
 can pin their refusal: nothing over the pipe reaches them, whatever token or permission is held, and
 the in-process UI path does not use the channel for them at all in v1.
@@ -872,8 +901,12 @@ character), `flare_version` (string, required).
 Result (the same shape, the other end's, plus the methods the `remote` grant may call):
 
 ```json
-{"remote_protocol": 1, "machine": "Mac-mini", "flare_version": "0.4.0", "capabilities": ["remote.hello"]}
+{"remote_protocol": 1, "machine": "Mac-mini", "flare_version": "0.4.0", "os": "mac", "capabilities": ["remote.hello"]}
 ```
+
+`os` (remote sessions PR 7) is the answering side's system, `mac`, `pc` or `other`; a viewer reads a missing or unknown
+word as no system (rule 40). Settings > Machines saves it as the machine's `kind`: its logo, and how the host's login
+shell is quoted.
 
 The version is checked first, so a peer whose other params differ still gets the refusal: on a mismatch the answer is
 `unsupported_protocol` (closes) with exactly one line that names both versions, the answering side's first:
@@ -881,8 +914,11 @@ The version is checked first, so a peer whose other params differ still gets the
 line with its own version first. A remote link is sent no events (it polls). Errors: `bad_params` (a param missing or
 of the wrong type, a machine name too long or with a control character; the link may greet again),
 `unsupported_protocol` (closes), `unavailable` (this Flare serves no remote sessions), `internal` (the app handed the
-link a grant other than `remote`), `already_hello`. Timeout: 15 s, like every short `remote.*` call; `remote.open` and
-`remote.ls` get 60 s (`REMOTE_CALL`), and so will `remote.fetch` (a later PR).
+link a grant other than `remote`), `already_hello`, and `host_not_ready` (remote sessions PR 5: no Flare runs on the
+host and none could be started hidden, section 1 "The hidden start"; one line, no grant, the link stays open and may
+greet again). Timeout: 15 s, like every short `remote.*` call; `remote.open` and `remote.ls` get 60 s (`REMOTE_CALL`),
+and so will `remote.fetch` (a later PR). The hello itself is answered on the link's own thread, after the hidden start
+(up to 60 s), so the viewer waits up to 90 s for it.
 
 ### remote.* (remote sessions PR 2, 2026-11-12)
 
@@ -894,8 +930,10 @@ call's worker, unknown params are `bad_params`, and a tab is named by its public
 shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
 
 - `remote.open {folder, resume?}` -> `{tab, session}`. `folder` is an absolute host path with no control character,
-  asked of the disk on the worker (`bad_params`, `not_found`); `resume` must pass `valid_resume` (`bad_params`). The
-  window opens a tab there the way a new tab opens, resuming that session. 60 s.
+  asked of the disk on the worker (`bad_params`, `not_found`), or `~` alone: the host's home folder (remote sessions
+  PR 7, the + menu's shell on a machine, whose home the viewer does not know; `~/x` is still `bad_params`); `resume`
+  must pass `valid_resume` (`bad_params`). The window opens a tab there the way a new tab opens, resuming that
+  session. 60 s.
 - `remote.ls {path?}` -> `{path, entries: [{name, dir}], truncated}`. One host folder (default: the host's home),
   read on the worker: folders first, then by name, at most 500 entries, names with a control character left out.
   Host paths only. `not_found` when it cannot be read. 60 s.
@@ -930,15 +968,18 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   On the worker.
 - `remote.close {tab}` -> `{tab, closed}`. Closes the tab the way a person's close does: an agent at work asks first
   in the host's window (rule 48), and `closed` is false until the person there answers.
-- `remote.status {}` -> `{tabs: [{tab, state, kind, session, folder, title, working_for?, question_text?, failed?}],
-  seq}` (remote sessions PR 4, rule 294). Every shell tab of the host in strip order, as the host's own marks say it:
+- `remote.status {}` -> `{tabs: [{tab, state, kind, session, folder, title, sized, working_for?, question_text?,
+  failed?}], seq}` (remote sessions PR 4, rule 294; `sized` PR 7, rule 1193). Every shell tab of the host in strip order, as the host's own marks say it:
   `state` is one word, `question`, `failed`, `working`, `done` or `idle`, in that order of weight
   (`flare_ctl::remote::TabState`); `kind` the agent the host found (`claude`, `codex`, `agy`, or null); `session` its
   Claude session; `working_for` the milliseconds it has worked (only while `working`); `question_text` the words of
   the question the host's screen shows (only while `question`, at most 500 characters); `failed` the failure's kind
   (only while `failed`). Words only: no host file is read for it and the viewer copies no mark from it (it shows work
   and a question as said, and raises its own Finished or Failed mark only when the work it showed stops while nobody
-  there looks). `seq` grows when the answer differs from the last one (while a tab works its `working_for` does).
+  there looks). `sized` says who sets the tab's one live size now (rule 282): `host` once someone typed in the host's
+  window, `viewer` while the remote viewer that sent `remote.resize` does; the other screen shows its fitted
+  conversation view (rule 1193). `seq` grows when the answer differs from the last one (while a tab works its
+  `working_for` does).
   Polled by the viewer every 1.5 s; a short call, sent once more after a broken pipe connection.
 - `remote.convo {tab, since?}` -> `{tab, entries: [{seq, role, text, tool?, at?}], reset, to}` (remote sessions PR 4,
   rule 297). What is said in the followed tab's Claude session (`no_tab` when no connection follows it), as entries
@@ -949,8 +990,47 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   means drop what you hold and take these: the transcript was cut or rewritten, the tab's session changed, `since` fell
   behind the 200 kept, the tab has no session any more (no entries), or `since` is a number this host never gave (it
   started again). `to` is the last number given. The viewer takes each entry once by its number, so a poll sent again
-  after a reconnect adds nothing twice. 10 calls a second a tab. Its view (the fitted conversation) is remote
-  sessions PR 7's.
+  after a reconnect adds nothing twice. 10 calls a second a tab. The viewer polls it only while its fitted
+  conversation view stands for the tab (remote sessions PR 7, rule 1193: the host sizes the tab and it has a
+  session), every 1.5 s between the output polls; a host with no `remote.convo` is not asked again on that link.
+- `remote.fetch {tab, path, chunk?}` -> `{tab, name, size, chunk, chunks, data}` (remote sessions PR 6, rule 303). One
+  chunk (256 KiB, base64) of a file a followed tab's file link names (`no_tab` when no connection follows it). `path`
+  is read as a click on the host reads it: relative to the folder the host's window has for the tab, `~` from the
+  host's home, the platform's grammar. The file, as the host's file system names it (links followed, `..` resolved),
+  must be a plain file inside that folder or inside the host's temp folder, and no device name (`NUL`, `con.txt`) or
+  network path; anything else, and a missing file, is `not_found`, so a probe learns nothing more. A file over 32 MiB
+  is `too_large`. `name` is the file's last part, `size` its bytes, `chunks` how many chunks it takes (an empty file
+  is one empty chunk); a `chunk` past the end is `bad_params`. Read on the call's worker. 60 s. Sent once more after a
+  broken pipe connection (it changes nothing).
+- `remote.put {tab, name, chunk, chunks, data}` -> `{tab, name, done, host_path?, paste?}` (remote sessions PR 6, rule
+  304). One chunk (at most 256 KiB, base64) of a viewer's file for a followed tab (a dropped file, a pasted image),
+  written into the tab's own upload folder on the host, `<host temp>/flare-remote/<run>/<tab>/`. Chunk 0 names the
+  file: the host keeps only its last part with every character but letters, digits, space and `-_.()+,` made `_`, no
+  dot or space at either end, no device name, at most 100 bytes, and `-2`, `-3` and so on before the extension when
+  the name is taken; the answer's `name` is the kept name, which the next chunks send. Chunks come in order (`bad_params`
+  and the file dropped otherwise), at most 128 of them (32 MiB, `too_large`). The file is written as `<name>.flare-part`
+  and put in place by the last chunk, whose answer has `done: true`, `host_path` and `paste`: the path quoted for the
+  tab's own shell (`quote_path`), which the viewer pastes as one paste (`remote.input`'s `paste`, sanitised again). The
+  folder goes when the tab closes; a run's folders left by a crash go a day later. 60 s. Never sent twice.
+
+### open.remote (remote sessions PR 5, 2026-11-12)
+
+Opens a tab in **this** Flare that shows a session on another machine. Callers: the agent (`open_remote_session` in
+`flare-mcp`, its own tab's token or none) and `flare open --on <machine> <folder> [--resume <id>]` (no token, so the
+agent grant); never a mod, a remote link or the bridge (rule 299). Listed in `capabilities` where the run has its
+machines (the profile's `machines.json`); elsewhere `unavailable`.
+
+Params: `machine` (string, required: an id `machines.json` names, one plain word that cannot be read as an option),
+`folder` (string, required: a path on that machine, at most 4096 bytes, no control character; it is **not** statted or
+opened here, the host checks it at `remote.open`), `resume` (string, optional: must pass `valid_resume`), `front` (bool,
+optional, default false: whether the new tab comes to the front; the command sends true, the agent's tool leaves it
+out, so a person typing in the front tab never types into the new session). Unknown params are `bad_params`.
+
+Result: `{tab, machine, folder}`, as soon as the tab exists: its link (ssh, `remote.hello`, `remote.open {folder,
+resume}`) connects on the tab's own worker, so the answer never waits for the other machine. A machine `machines.json`
+does not name is `not_found` with one line that lists the ones it does. The opened tab takes no typing from the
+agent: the agent grant has no `remote.*`, `shell.input` or `tabs.input`, and an agent names no tab but its own. Timeout:
+15 s.
 
 ## 6. Errors
 
@@ -975,6 +1055,7 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
 | `busy` | a plugin's `panel.open` on another tab whose open panel shows something else (plugins phase 3), its `bar.show` on a tab that shows another plugin's bar (phase 6), or a `browser.fill` or `secret.ask` while a plugin question is open (2026-10-28) | no |
 | `tool_error` | a mod answered a tool call with an error (stage 8); the message is the mod's own reason | no |
 | `too_large` (a call) | a plugin's `storage.set` would pass 1 MB (plugins phase 5); nothing changed | no |
+| `host_not_ready` | `remote.hello` on a host where no Flare runs and none could be started hidden (remote sessions PR 5); one line says why | no |
 | `rate_limited` | too many requests (the connection's 100 a second, a decor method's 10 a second per tab or 30 a second per plugin, `sidebar.set`'s 5 a second per section, `actions.set`'s 20 a second per plugin, `session.read`'s once a second per tab, `tabs.input`'s 2 a second per tab, `bar.show`'s and `bar.hide`'s once a second per tab, the 6 asks a minute per plugin of `browser.fill` and `secret.ask`, or a plugin's 50 messages and 2 MB a second) | no |
 | `internal` | the server failed | no |
 

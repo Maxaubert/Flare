@@ -1,0 +1,103 @@
+// A remote tab's fitted conversation view (remote sessions PR 7). The live terminal has one size, set by the machine
+// typed on last (rule 282); while the other machine sizes it, this screen shows the session's conversation instead of
+// a terminal squeezed or cut to that size: the words the host sent (`remote.convo`, rule 297), wrapped to this
+// window's width, newest at the foot. A click anywhere or a key takes the live terminal back at this window's size.
+//
+// The lines come from Rust (`RemoteConvoLine`): `role` user, assistant or tool; `text` the words; `tool` a tool's name.
+// Whole device pixels where it matters (`Px.snap`); nothing moves on its own.
+
+import { Theme, Px } from "theme.slint";
+
+export struct RemoteConvoLine { role: string, text: string, tool: string }
+
+export component RemoteConvoView inherits Rectangle {
+    in property <[RemoteConvoLine]> lines;
+    // The machine the session runs on, for the line at the top.
+    in property <string> machine;
+    callback take-over();
+    // What was laid out, for the tests: the text column's width and the content's height.
+    out property <length> column-w: col.width;
+    out property <length> content-h: flick.content-height;
+    out property <bool> at-foot: flick.content-y <= flick.height - flick.content-height + 1px;
+
+    background: Theme.ground;
+    clip: true;
+    accessible-role: AccessibleRole.button;
+    accessible-label: "Take the terminal here";
+    accessible-action-default => { root.take-over(); }
+
+    property <length> pad: 18px;
+    property <length> head-h: 34px;
+
+    // The line at the top: where the session runs, and how to take it back.
+    head := Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.head-h;
+        background: Theme.text.with-alpha(0.04);
+        Text {
+            x: root.pad;
+            width: parent.width - 2 * root.pad;
+            height: parent.height;
+            text: (root.machine != "" ? "Live on " + root.machine + ". " : "") + "Click or type to take the terminal here.";
+            font-family: Theme.font-ui;
+            font-size: 12.5px;
+            color: Theme.dim;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Rectangle {
+            y: parent.height - Px.hair();
+            width: parent.width;
+            height: Px.hair();
+            background: Theme.line;
+        }
+    }
+
+    flick := Flickable {
+        x: 0px;
+        y: root.head-h;
+        width: root.width;
+        height: root.height - root.head-h;
+        content-width: self.width;
+        content-height: col.preferred-height;
+        // Newest at the foot: a new line keeps the view there.
+        changed content-height => {
+            self.content-y = min(0px, self.height - self.content-height);
+        }
+        changed height => {
+            self.content-y = min(0px, self.height - self.content-height);
+        }
+        // A press anywhere in the conversation is the takeover (the wheel still scrolls).
+        TouchArea {
+            width: flick.content-width;
+            height: max(flick.height, flick.content-height);
+            clicked => { root.take-over(); }
+        }
+        col := VerticalLayout {
+            x: root.pad;
+            width: flick.width - 2 * root.pad;
+            padding-top: 14px;
+            padding-bottom: 18px;
+            spacing: 12px;
+            for l in root.lines: VerticalLayout {
+                spacing: 3px;
+                Text {
+                    text: l.role == "user" ? "You" : l.role == "assistant" ? "Claude" : (l.tool != "" ? l.tool : "Tool");
+                    font-family: Theme.font-ui;
+                    font-size: 11.5px;
+                    font-weight: 600;
+                    color: l.role == "user" ? Theme.accent-ink : Theme.dim;
+                }
+                Text {
+                    text: l.text;
+                    font-family: Theme.font-ui;
+                    font-size: l.role == "tool" ? 12px : 13.5px;
+                    color: l.role == "tool" ? Theme.dim : Theme.text;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

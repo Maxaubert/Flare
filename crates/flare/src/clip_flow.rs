@@ -101,6 +101,20 @@ pub fn paste_action(
     }
 }
 
+/// Whether a paste on a remote tab copies the clipboard's files or image to the host first (rule 304) instead of
+/// pasting text. The same choice a local tab makes (rule 1190): a Plain paste is text only, so never; a Normal one
+/// copies files whenever there are some, and an image only where [`paste_action`] would send the image key (an agent is
+/// armed, or there is no text). So an Excel or Word copy (text plus a bitmap) at a plain prompt pastes its text.
+pub fn remote_upload(state: &ClipboardState, mode: PasteMode, agent: Option<AgentKind>) -> bool {
+    if mode != PasteMode::Normal {
+        return false;
+    }
+    if !state.files.is_empty() {
+        return true;
+    }
+    state.image && (agent.is_some() || sanitize_paste(&state.text).is_empty())
+}
+
 /// A selection of at most this many rows is read on the UI thread, as before; a bigger one is read
 /// on a worker in chunks (`TermHandle::selection_text_async`).
 pub const SYNC_COPY_ROWS: usize = 200;
@@ -445,6 +459,30 @@ mod tests {
             ),
             PasteAction::Text("plain text".to_string())
         );
+    }
+
+    /// Rule 1190: a remote tab copies to the host only what a local tab would paste as files or as the image key.
+    #[test]
+    fn a_remote_paste_copies_files_or_an_image_only_where_a_local_paste_would_use_them() {
+        let excel = cs(true, "a\tb", &[]);
+        let shot = cs(true, "", &[]);
+        let files = cs(true, "text", &["C:\\a.txt"]);
+        assert!(!remote_upload(&excel, PasteMode::Normal, None));
+        assert!(remote_upload(
+            &excel,
+            PasteMode::Normal,
+            Some(AgentKind::Claude)
+        ));
+        assert!(remote_upload(&shot, PasteMode::Normal, None));
+        assert!(remote_upload(&files, PasteMode::Normal, None));
+        for s in [&excel, &shot, &files] {
+            assert!(!remote_upload(s, PasteMode::Plain, Some(AgentKind::Claude)));
+        }
+        assert!(!remote_upload(
+            &cs(false, "text", &[]),
+            PasteMode::Normal,
+            None
+        ));
     }
 
     #[test]

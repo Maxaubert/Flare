@@ -71,6 +71,72 @@ struct LiveInner {
     state: AtomicU8,
     /// The host's newest status of the tab that the window has not taken yet (remote sessions PR 4).
     status: Mutex<Option<HostStatus>>,
+    /// File work for the link, in the order asked (remote sessions PR 6).
+    errands: Mutex<VecDeque<Errand>>,
+    /// Remote sessions PR 7, the fitted conversation view: the window wants the conversation polled, what the link
+    /// mirrored of it (with a number that grows with each change), and the window asks for its size to be sent again
+    /// (a click or a key took the live terminal back).
+    convo_want: std::sync::atomic::AtomicBool,
+    convo: Mutex<(u64, Vec<ConvoLine>)>,
+    retake: std::sync::atomic::AtomicBool,
+}
+
+/// One line of a remote tab's fitted conversation view (remote sessions PR 7): who said it (`user`, `assistant`,
+/// `tool`), the words, and the tool's name for a tool's line. Words only: no host path rides on it (rule 297).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConvoLine {
+    pub role: String,
+    pub text: String,
+    pub tool: Option<String>,
+}
+
+/// A file of the host the link fetched for a click on a file link (remote sessions PR 6, rule 303): the host's name
+/// for it (its last part) and its bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fetched {
+    pub name: String,
+    pub data: Vec<u8>,
+}
+
+/// A file of this machine to copy to the host (a dropped file, a pasted image; rule 304): the name to keep it under
+/// there (the host cleans it again) and its bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Upload {
+    pub name: String,
+    pub data: Vec<u8>,
+}
+
+/// Why an errand did not get done.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ErrandFail {
+    /// The host has no file by any spelling the link was given, or none it may send (rule 303 says nothing more).
+    NoSuchFile,
+    /// The link is down, the host refused, or the file is too big: a line for the person.
+    Failed(String),
+}
+
+type FetchDone = Box<dyn FnOnce(Result<Fetched, ErrandFail>) + Send>;
+type PutDone = Box<dyn FnOnce(Result<Vec<String>, ErrandFail>) + Send>;
+
+/// File work a remote tab's link does between its polls, on its own worker (rule 34): the window asks, the link answers
+/// through `done` (on the link's thread: `done` posts to the window).
+pub enum Errand {
+    /// Fetch a host file a file link names: each spelling in turn (`texts`), read by the host from its own folder of
+    /// the tab (rule 303).
+    Fetch { texts: Vec<String>, done: FetchDone },
+    /// Copy files to the host's upload folder of the tab, then paste their host paths into the tab as one paste, quoted
+    /// by the host for its shell (rule 304). `done` gets the host paths.
+    Put { files: Vec<Upload>, done: PutDone },
+}
+
+impl Errand {
+    /// Tells the asker the errand will not be done.
+    pub fn fail(self, why: ErrandFail) {
+        match self {
+            Errand::Fetch { done, .. } => done(Err(why)),
+            Errand::Put { done, .. } => done(Err(why)),
+        }
+    }
 }
 
 /// What the host says of a remote tab (`remote.status`, remote sessions PR 4, rule 294): words its own marks give, never
@@ -87,6 +153,9 @@ pub struct HostStatus {
     pub question: Option<String>,
     /// The kind of the failure, while it failed.
     pub failed: Option<String>,
+    /// The host's own window sizes the tab now: someone typed there last (remote sessions PR 7, rule 282). This
+    /// screen then shows the fitted conversation view instead of a terminal at the other window's size.
+    pub host_sized: bool,
 }
 
 /// What a remote tab has reached, shared by its link (which writes it) and the window (which saves it in `tabs.json`):
@@ -139,6 +208,69 @@ impl RemoteLive {
     pub fn take_status(&self) -> Option<HostStatus> {
         lk(&self.0.status).take()
     }
+
+    /// File work for the link (the window): done between the link's polls, in the order asked. A tab whose link has
+    /// ended is told at once.
+    pub fn send_errand(&self, e: Errand) {
+        let mut q = lk(&self.0.errands);
+        if self.link() == LinkState::Ended {
+            drop(q);
+            e.fail(ErrandFail::Failed("this tab's session has ended".into()));
+            return;
+        }
+        q.push_back(e);
+    }
+
+    /// The errands asked since the last take (the link's worker).
+    pub fn take_errands(&self) -> Vec<Errand> {
+        lk(&self.0.errands).drain(..).collect()
+    }
+
+    /// The window wants the conversation (the fitted view is up, or may come up): the link polls `remote.convo` while
+    /// this is on, and only then.
+    pub fn want_convo(&self, on: bool) {
+        self.0.convo_want.store(on, Ordering::SeqCst);
+    }
+
+    pub fn convo_wanted(&self) -> bool {
+        self.0.convo_want.load(Ordering::SeqCst)
+    }
+
+    /// The link mirrored a change of the conversation.
+    pub fn set_convo(&self, lines: Vec<ConvoLine>) {
+        let mut c = lk(&self.0.convo);
+        c.0 += 1;
+        c.1 = lines;
+    }
+
+    /// The conversation as last mirrored, and its number (0: nothing yet).
+    pub fn convo(&self) -> (u64, Vec<ConvoLine>) {
+        lk(&self.0.convo).clone()
+    }
+
+    /// The number of the last change of the conversation (0: nothing yet).
+    pub fn convo_version(&self) -> u64 {
+        lk(&self.0.convo).0
+    }
+
+    /// The live terminal was taken back here: the link sends this tab's size again, so this window sizes it (rule
+    /// 282, the last typist sets the size).
+    pub fn retake_size(&self) {
+        self.0.retake.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the window asked for the size to be sent again since the last take (the link's worker).
+    pub fn take_retake(&self) -> bool {
+        self.0.retake.swap(false, Ordering::SeqCst)
+    }
+
+    /// The link ends: no errand is taken any more, and the ones still waiting are handed back to be failed. Under the
+    /// errands' lock, so an errand is either handed back here or told at once by [`RemoteLive::send_errand`].
+    pub fn end_errands(&self) -> Vec<Errand> {
+        let mut q = lk(&self.0.errands);
+        self.set_link(LinkState::Ended);
+        q.drain(..).collect()
+    }
 }
 
 impl PartialEq for RemoteLive {
@@ -167,6 +299,9 @@ pub struct RemoteSpec {
     pub machine: String,
     /// The folder on the host the session works in: a host path, never statted or opened here.
     pub folder: String,
+    /// The Claude session to resume in the host's new tab (remote sessions PR 5): sent with `remote.open` only, so a
+    /// tab that already has its host tab never starts it again.
+    pub resume: Option<String>,
     /// The tab's live state (the host's id of the tab, the output reached).
     pub live: RemoteLive,
 }
@@ -1132,5 +1267,71 @@ mod tests {
         assert_eq!(a.link(), LinkState::Live);
         assert_eq!(a, b);
         assert_ne!(a, RemoteLive::new(Some("t1".into()), 9));
+    }
+
+    /// Remote sessions PR 6: file work waits for the link in the order asked; once the link ends, what still waits is
+    /// handed back to be failed and anything asked later is failed at once, so no asker waits forever.
+    /// Remote sessions PR 7: the conversation the link mirrors is numbered by change, asked for only while wanted, and a
+    /// takeover's size is asked once.
+    #[test]
+    fn the_mirrored_conversation_counts_its_changes_and_a_retake_is_taken_once() {
+        let live = RemoteLive::default();
+        assert!(!live.convo_wanted());
+        assert_eq!(live.convo(), (0, Vec::new()));
+        live.want_convo(true);
+        assert!(live.convo_wanted());
+        let line = ConvoLine {
+            role: "user".into(),
+            text: "hi".into(),
+            tool: None,
+        };
+        live.set_convo(vec![line.clone()]);
+        live.set_convo(vec![line.clone(), line.clone()]);
+        assert_eq!(live.convo_version(), 2);
+        assert_eq!(live.convo().1.len(), 2);
+        assert!(!live.take_retake());
+        live.retake_size();
+        assert!(live.clone().take_retake(), "the link's clone sees it");
+        assert!(!live.take_retake(), "taken once");
+    }
+
+    #[test]
+    fn errands_wait_in_order_and_none_is_lost_when_the_link_ends() {
+        let live = RemoteLive::default();
+        let told: Arc<Mutex<Vec<String>>> = Arc::default();
+        let put = |name: &str| {
+            let told = Arc::clone(&told);
+            let name = name.to_string();
+            Errand::Put {
+                files: vec![Upload {
+                    name: name.clone(),
+                    data: Vec::new(),
+                }],
+                done: Box::new(move |r| {
+                    lk(&told).push(format!("{name}: {}", r.is_ok()));
+                }),
+            }
+        };
+        live.send_errand(put("a"));
+        live.send_errand(put("b"));
+        let got = live.take_errands();
+        assert_eq!(got.len(), 2);
+        let names: Vec<String> = got
+            .iter()
+            .map(|e| match e {
+                Errand::Put { files, .. } => files[0].name.clone(),
+                Errand::Fetch { .. } => String::new(),
+            })
+            .collect();
+        assert_eq!(names, ["a", "b"]);
+        assert!(live.take_errands().is_empty());
+        live.send_errand(put("c"));
+        for e in live.end_errands() {
+            e.fail(ErrandFail::Failed("ended".into()));
+        }
+        assert_eq!(live.link(), LinkState::Ended);
+        live.send_errand(put("d"));
+        assert_eq!(*lk(&told), ["c: false", "d: false"]);
+        drop(got);
     }
 }

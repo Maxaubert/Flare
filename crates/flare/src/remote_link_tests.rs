@@ -31,6 +31,12 @@ struct HostState {
     states: Option<HashMap<String, String>>,
     /// A passing refusal of `remote.status` (the host's UI wait timed out, a rate refusal), while set.
     status_refusal: Option<&'static str>,
+    /// The host's files a fetch may read, by the path a link names (remote sessions PR 6).
+    files: HashMap<String, Vec<u8>>,
+    /// The files put on the host, whole: (name kept, bytes).
+    put: Vec<(String, Vec<u8>)>,
+    /// A put being written: (name kept, bytes so far).
+    putting: Option<(String, Vec<u8>)>,
 }
 
 #[derive(Clone, Default)]
@@ -122,6 +128,50 @@ impl FakeHost {
                     .map(|(t, s)| json!({"tab": t, "state": s, "kind": "claude"}))
                     .collect();
                 Ok(json!({"tabs": tabs, "seq": 1}))
+            }
+            Method::RemoteFetch => {
+                st.tabs.get(&tab).ok_or_else(no_tab)?;
+                let path = p["path"].as_str().unwrap_or_default();
+                let data = st
+                    .files
+                    .get(path)
+                    .ok_or_else(|| CtlError::new(code::NOT_FOUND, "no such file"))?;
+                let chunk = p["chunk"].as_u64().unwrap_or(0) as usize;
+                let chunks = flare_ctl::remote::chunks_of(data.len() as u64);
+                let from = (chunk * FILE_CHUNK).min(data.len());
+                let to = (from + FILE_CHUNK).min(data.len());
+                let name = path.rsplit('/').next().unwrap_or(path);
+                Ok(json!({
+                    "tab": tab, "name": name, "size": data.len(), "chunk": chunk, "chunks": chunks,
+                    "data": enc(&data[from..to]),
+                }))
+            }
+            Method::RemotePut => {
+                st.tabs.get(&tab).ok_or_else(no_tab)?;
+                let chunk = p["chunk"].as_u64().unwrap();
+                let chunks = p["chunks"].as_u64().unwrap();
+                let data = base64::engine::general_purpose::STANDARD
+                    .decode(p["data"].as_str().unwrap())
+                    .unwrap();
+                let name = if chunk == 0 {
+                    let n = flare_ctl::remote::put_name(p["name"].as_str().unwrap());
+                    st.putting = Some((n.clone(), data));
+                    n
+                } else {
+                    let (n, so_far) = st.putting.as_mut().expect("a put under way");
+                    assert_eq!(p["name"].as_str(), Some(n.as_str()), "the kept name");
+                    so_far.extend(data);
+                    n.clone()
+                };
+                if chunk + 1 < chunks {
+                    return Ok(json!({"tab": tab, "name": name, "done": false}));
+                }
+                let whole = st.putting.take().unwrap();
+                st.put.push(whole);
+                let host = format!("/tmp/up/{name}");
+                Ok(
+                    json!({"tab": tab, "name": name, "done": true, "host_path": host, "paste": format!("'{host}'")}),
+                )
             }
             _ => Err(CtlError::new(code::FORBIDDEN, "not here")),
         }
@@ -229,6 +279,7 @@ fn rig_with(host: FakeHost, host_tab: Option<&str>) -> Rig {
         remote: Some(RemoteSpec {
             machine: "mac".into(),
             folder: "/Users/max/proj".into(),
+            resume: None,
             live: live.clone(),
         }),
     };
@@ -724,6 +775,7 @@ fn the_hosts_status_of_the_tab_reaches_the_window_on_change_and_wakes_it() {
         remote: Some(RemoteSpec {
             machine: "mac".into(),
             folder: "/Users/max/proj".into(),
+            resume: None,
             live: live.clone(),
         }),
     };
@@ -813,4 +865,197 @@ fn a_passing_status_refusal_keeps_the_polls_and_a_later_question_still_arrives()
         r.live.take_status().is_some_and(|s| s.state == "question")
     });
     assert_eq!(r.host.calls("remote.attach"), 1, "the link never broke");
+}
+
+// ---- files (remote sessions PR 6) ----
+
+/// An errand's answer, caught for the test.
+type Caught<T> = Arc<Mutex<Option<Result<T, ErrandFail>>>>;
+/// The `done` an errand is given.
+type Done<T> = Box<dyn FnOnce(Result<T, ErrandFail>) + Send>;
+
+fn caught<T: Send + 'static>() -> (Caught<T>, Done<T>) {
+    let slot: Caught<T> = Arc::default();
+    let s = Arc::clone(&slot);
+    (slot, Box::new(move |r| *s.lock().unwrap() = Some(r)))
+}
+
+fn answer<T: Clone>(slot: &Caught<T>) -> Result<T, ErrandFail> {
+    wait_for("the errand's answer", || slot.lock().unwrap().is_some());
+    slot.lock().unwrap().clone().unwrap()
+}
+
+/// Rule 303: a click's spellings are asked of the host in turn; the first file it has comes back whole, read in
+/// chunks; a link the host has no file for is `NoSuchFile`.
+#[test]
+fn a_file_link_is_fetched_by_the_first_spelling_the_host_has_in_chunks() {
+    let r = rig();
+    r.live_on();
+    let big: Vec<u8> = (0..(FILE_CHUNK * 2 + 7)).map(|i| (i % 253) as u8).collect();
+    lk(&r.host)
+        .files
+        .insert("docs/big file.bin".into(), big.clone());
+    let (slot, done) = caught();
+    r.live.send_errand(Errand::Fetch {
+        texts: vec!["docs/big".into(), "docs/big file.bin".into()],
+        done,
+    });
+    let got = answer(&slot).unwrap();
+    assert_eq!(got.name, "big file.bin");
+    assert_eq!(got.data, big);
+    assert_eq!(
+        r.host.calls("remote.fetch"),
+        4,
+        "one miss, then three chunks"
+    );
+    let (slot, done) = caught();
+    r.live.send_errand(Errand::Fetch {
+        texts: vec!["gone.txt".into()],
+        done,
+    });
+    assert_eq!(answer(&slot), Err(ErrandFail::NoSuchFile));
+}
+
+/// Rule 304: files go to the host in chunks under the name it keeps, then their host paths, as the host quoted them,
+/// are pasted as one paste; this machine's path and bytes are never typed.
+#[test]
+fn a_put_copies_the_files_then_pastes_the_hosts_quoted_paths_as_one_paste() {
+    let r = rig();
+    r.live_on();
+    let big = vec![9u8; FILE_CHUNK + 1];
+    let (slot, done) = caught();
+    r.live.send_errand(Errand::Put {
+        files: vec![
+            Upload {
+                name: "C:\\Users\\max\\shot 1.png".into(),
+                data: b"png".to_vec(),
+            },
+            Upload {
+                name: "big.bin".into(),
+                data: big.clone(),
+            },
+        ],
+        done,
+    });
+    assert_eq!(
+        answer(&slot).unwrap(),
+        ["/tmp/up/shot 1.png", "/tmp/up/big.bin"]
+    );
+    assert_eq!(
+        lk(&r.host).put,
+        vec![
+            ("shot 1.png".to_string(), b"png".to_vec()),
+            ("big.bin".to_string(), big)
+        ]
+    );
+    assert_eq!(r.host.calls("remote.put"), 3);
+    assert_eq!(
+        r.host.typed("h1"),
+        vec![Intent::Paste(
+            "'/tmp/up/shot 1.png' '/tmp/up/big.bin'".into()
+        )],
+        "one paste of the host's paths, nothing else"
+    );
+}
+
+/// Rule 304: a file over the cap is never sent, and the person is told.
+#[test]
+fn a_file_over_the_cap_is_never_sent() {
+    let r = rig();
+    r.live_on();
+    let (slot, done) = caught();
+    r.live.send_errand(Errand::Put {
+        files: vec![Upload {
+            name: "huge.bin".into(),
+            data: vec![0; FILE_MAX as usize + 1],
+        }],
+        done,
+    });
+    let Err(ErrandFail::Failed(why)) = answer(&slot) else {
+        panic!("refused");
+    };
+    assert!(why.contains("over 32 MB"), "{why}");
+    assert_eq!(r.host.calls("remote.put"), 0);
+    assert!(r.host.typed("h1").is_empty());
+}
+
+/// Rule 28's spirit for files: work asked while the link is down is told so at once, and a tab whose link ended
+/// tells at once too; nothing waits for a link that may take 30 s to come back.
+#[test]
+fn file_work_asked_while_the_link_is_down_or_ended_is_refused_at_once() {
+    let r = rig();
+    r.live_on();
+    lk(&r.host).refuse = true;
+    r.host.cut();
+    wait_for("the link down", || r.live.link() == LinkState::Down);
+    let (slot, done) = caught::<Fetched>();
+    r.live.send_errand(Errand::Fetch {
+        texts: vec!["a.txt".into()],
+        done,
+    });
+    let Err(ErrandFail::Failed(why)) = answer(&slot) else {
+        panic!("refused");
+    };
+    assert!(why.contains("down"), "{why}");
+    let mut pty = r.pty;
+    pty.kill();
+    wait_for("the link ended", || r.live.link() == LinkState::Ended);
+    let (slot, done) = caught::<Vec<String>>();
+    r.live.send_errand(Errand::Put {
+        files: Vec::new(),
+        done,
+    });
+    assert!(matches!(answer(&slot), Err(ErrandFail::Failed(_))));
+}
+/// Remote sessions PR 6: the serve command for each host kind, as a table. A PC's cmd takes the path in double quotes
+/// (no `&&`, nothing cmd expands: `%`, `!`, `^` and `"` are refused); a Mac's sh (and an unknown kind) in single quotes,
+/// where nothing expands.
+#[test]
+fn the_remote_command_table_quotes_each_hosts_shell() {
+    let pc = Some(Os::Pc);
+    let mac = Some(Os::Mac);
+    for (kind, flare, want) in [
+        (
+            pc,
+            r"C:\Program Files (x86)\Flare\flare.exe",
+            Some(r#""C:\Program Files (x86)\Flare\flare.exe" --serve-remote"#),
+        ),
+        (
+            pc,
+            r"C:\Users\max\AppData\Local\Flare\current\flare.exe",
+            Some(r#""C:\Users\max\AppData\Local\Flare\current\flare.exe" --serve-remote"#),
+        ),
+        (
+            pc,
+            r"D:\Tools & Apps\it's\flare.exe",
+            Some(r#""D:\Tools & Apps\it's\flare.exe" --serve-remote"#),
+        ),
+        (pc, r"C:\a!b\flare.exe", None),
+        (pc, r"C:\a^b\flare.exe", None),
+        (pc, r"C:\%USERPROFILE%\flare.exe", None),
+        (pc, r#"C:\a"b\flare.exe"#, None),
+        (
+            mac,
+            "/Applications/Flare.app/Contents/MacOS/flare",
+            Some("'/Applications/Flare.app/Contents/MacOS/flare' --serve-remote"),
+        ),
+        (
+            mac,
+            "/Users/max/My Apps/$HOME/`x`/flare",
+            Some("'/Users/max/My Apps/$HOME/`x`/flare' --serve-remote"),
+        ),
+        (
+            None,
+            "/opt/it's/flare",
+            Some(r"'/opt/it'\''s/flare' --serve-remote"),
+        ),
+        (mac, "", None),
+        (pc, "C:\\a\tb\\flare.exe", None),
+    ] {
+        assert_eq!(
+            remote_command(kind, flare).as_deref(),
+            want,
+            "{kind:?} {flare}"
+        );
+    }
 }

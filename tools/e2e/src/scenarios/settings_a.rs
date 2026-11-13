@@ -134,11 +134,12 @@ fn read_row_look(ctx: &mut Ctx, app: &mut App, with_rule: bool, name: &str) -> O
 }
 
 /// The six pages of the rail, in the rail's order.
-const PAGES: [&str; 6] = [
+const PAGES: [&str; 7] = [
     "appearance",
     "terminal",
     "agents",
     "dictation",
+    "machines",
     "diagnostics",
     "about",
 ];
@@ -388,6 +389,14 @@ pub fn options(ctx: &mut Ctx) -> Result<(), String> {
                 rows_now(&mut app)["rows"]
                     .as_array()
                     .is_some_and(|rows| rows.iter().any(|r| str_of(r, "id") == "term-shell"))
+            });
+        }
+        if tab == "machines" {
+            // The page reads machines.json and ~/.ssh/config on a worker: its add row comes a moment later.
+            ctx.until("the Machines page is drawn", 6_000, &mut || {
+                rows_now(&mut app)["rows"]
+                    .as_array()
+                    .is_some_and(|rows| rows.iter().any(|r| str_of(r, "id") == "machines-add"))
             });
         }
         let v = rows_now(&mut app);

@@ -203,7 +203,6 @@ impl ConvoFeeds {
 }
 
 /// The viewer's copy of a remote tab's conversation: each entry once, by its host number (rule 297).
-#[allow(dead_code)] // PR 7's fitted conversation view polls `remote.convo` into it; its tests hold it now
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConvoMirror {
     entries: Vec<(u64, Entry)>,
@@ -211,7 +210,6 @@ pub struct ConvoMirror {
     last: u64,
 }
 
-#[allow(dead_code)] // PR 7's fitted conversation view
 impl ConvoMirror {
     pub fn new() -> Self {
         Self::default()
@@ -256,7 +254,6 @@ impl ConvoMirror {
     }
 }
 
-#[allow(dead_code)] // PR 7's fitted conversation view
 /// One entry as the wire carries it, or None for a role this end does not know (rule 40: read as nothing).
 fn entry_of(v: &Value) -> Option<Entry> {
     let role = match v["role"].as_str()? {

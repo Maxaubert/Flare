@@ -368,6 +368,54 @@ pub fn e2e_first_position(e2e: bool) -> Option<(i32, i32)> {
     e2e.then(flare_win::window_park::parked_origin)
 }
 
+/// Pure (rule 301): whether the window is born and kept parked: under `--e2e`, and for `--start-hidden` (a Flare started
+/// hidden for a remote link or `flare open`) until its first raise. One park code for both.
+pub fn parked_start(e2e: bool, background: bool) -> bool {
+    e2e || background
+}
+
+/// The extended style a `--start-hidden` window gets back at its first raise: it may take the focus again and it is a
+/// normal window with a taskbar button.
+#[cfg(windows)]
+pub fn background_raised_style(current: u32) -> u32 {
+    (current & !(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)) | WS_EX_APPWINDOW
+}
+
+/// A `--start-hidden` window's first raise (rules 301, 302): off the parking spot to its saved place (else near the
+/// primary screen's corner), with its normal style and its taskbar button back, so the raise that follows brings it
+/// forward. On a Mac the park lets go first: a regular app again, the window opaque and taking clicks.
+fn unpark_background(app: &AppWindow, home: Option<(i32, i32)>) {
+    // Without a handle yet (0) the park still lets go, so the park timer that finds it later parks nothing.
+    #[cfg(target_os = "macos")]
+    flare_win::window_park::unpark(native_view_of(app).unwrap_or(0));
+    #[cfg(windows)]
+    if let Some(h) = hwnd_of(app) {
+        let hwnd = h as *mut std::ffi::c_void;
+        // SAFETY: `hwnd` is this process's own live window on the UI thread; reading and writing its extended style
+        // touches no memory of ours.
+        unsafe {
+            let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, background_raised_style(current) as isize);
+        }
+    }
+    let corner = app
+        .window()
+        .with_winit_window(|w| {
+            #[cfg(windows)]
+            {
+                use slint::winit_030::winit::platform::windows::WindowExtWindows;
+                w.set_skip_taskbar(false);
+            }
+            w.primary_monitor().map(|m| m.position())
+        })
+        .flatten()
+        .map(|p| (p.x + 80, p.y + 80));
+    if let Some((x, y)) = home.or(corner) {
+        app.window()
+            .set_position(slint::PhysicalPosition::new(x, y));
+    }
+}
+
 /// Gives an `--e2e` window the no-activate style, so it can never take the foreground.
 #[cfg(windows)]
 fn apply_e2e_style_to(hwnd: isize) {
@@ -961,8 +1009,13 @@ pub fn run_window(
         let (state, areas) = WindowStateStore::read_at(file, flare_win::monitors::work_areas_at);
         initial_window(&state, &areas)
     });
+    // `--start-hidden` (remote sessions PR 5, rule 301): the window is parked like an `--e2e` window, by the same code,
+    // and never takes the focus; its first raise (a later normal launch) takes it off the parking spot.
+    let parked = parked_start(args.e2e, args.start_hidden);
+    let background_parked = Rc::new(Cell::new(args.start_hidden && !args.e2e));
+    let home_position = initial.as_ref().and_then(|i| i.pos);
     if let Some(init) = &initial {
-        apply_initial(&app, init, args.e2e);
+        apply_initial(&app, init, parked);
     }
 
     // ---- the controller -----------------------------------------------------------------------
@@ -1161,8 +1214,13 @@ pub fn run_window(
             },
             raise: {
                 let weak = app.as_weak();
+                let background_parked = background_parked.clone();
                 Rc::new(move || {
                     if let Some(app) = weak.upgrade() {
+                        // A `--start-hidden` window comes off its parking spot at its first raise (rule 301).
+                        if background_parked.replace(false) {
+                            unpark_background(&app, home_position);
+                        }
                         raise_window(&app, e2e_on);
                     }
                 })
@@ -1330,6 +1388,8 @@ pub fn run_window(
                 },
                 Some(Arc::clone(&mods_hub)),
                 remote.clone(),
+                // `open.remote` (remote sessions PR 5) names a machine of the profile's `machines.json`.
+                Arc::new(crate::machines::FileMachines::new(&inst.profile.dir)),
             ) {
                 Ok(server) => {
                     if let Some(r) = remote {
@@ -1488,6 +1548,32 @@ pub fn run_window(
             let settings = crate::settings_ctl::SettingsCtl::new(&app, sdeps);
             if let Some(port) = rc.borrow().mods_port() {
                 settings.borrow_mut().set_mods(port);
+            }
+            // Settings > Machines (remote sessions PR 7): the profile's machines, the ssh config's hosts, and link checks
+            // over ssh (under --e2e over the scenario's loopback, never a real ssh).
+            let machines_io: Arc<dyn crate::machines_page::MachinesIo> =
+                Arc::new(crate::machines_page::RealMachinesIo::new(
+                    &inst.profile.dir,
+                    PathBuf::from(crate::app_facts::home()),
+                    crate::remote_link::e2e_loopback(
+                        e2e::global()
+                            .env(&["FLARE_E2E", "_REMOTE_COMMAND"].concat())
+                            .as_deref(),
+                    ),
+                ));
+            settings
+                .borrow_mut()
+                .set_machines(crate::machines_page::MachinesPage::new(
+                    Arc::clone(&machines_io),
+                    Arc::clone(&post),
+                ));
+            // The + menu and the remote tabs' logos need the machines from the start: read once on a worker.
+            let p = Arc::clone(&post);
+            let started = std::thread::Builder::new()
+                .name("flare-machines-start".into())
+                .spawn(move || p(crate::appctl::UiMsg::Machines(machines_io.list())));
+            if let Err(e) = started {
+                log::warn!("could not read the machines: {e}");
             }
             rc.borrow_mut().set_settings(settings);
         }
@@ -1656,7 +1742,8 @@ pub fn run_window(
                 initial: initial.clone(),
                 material: material.clone(),
                 caret: caret.clone(),
-                e2e: args.e2e,
+                e2e: parked,
+                background_parked: background_parked.clone(),
                 software: no_notifier.clone(),
             },
         )
@@ -1759,7 +1846,7 @@ pub fn run_window(
     };
     // An `--e2e` window is placed on the parking spot BEFORE it first shows, so it is never on a
     // monitor, not even for the few ticks until its handle exists and the timer styles it.
-    if let Some((x, y)) = e2e_first_position(args.e2e) {
+    if let Some((x, y)) = e2e_first_position(parked) {
         app.window()
             .set_position(slint::PhysicalPosition::new(x, y));
     }
@@ -1787,7 +1874,8 @@ pub fn run_window(
         }));
     }
     // The handle does not exist before the event loop runs: style and park when it appears.
-    let park_timer = args.e2e.then(|| park_e2e_window_when_ready(&app));
+    // `--start-hidden` takes the same park as `--e2e` (rule 301), and nothing else of the e2e.
+    let park_timer = parked.then(|| park_e2e_window_when_ready(&app));
     if args.e2e {
         tell_renderer(
             effective,
@@ -2024,8 +2112,10 @@ struct FilterState {
     material: Rc<RefCell<Option<WindowMaterial>>>,
     /// The IME caret hold (Task 24b): a typed key opens its window.
     caret: Rc<RefCell<CaretFollower>>,
-    /// `--e2e`: the saved position is never applied.
+    /// `--e2e` or `--start-hidden`: the saved position is never applied (the window stays parked).
     e2e: bool,
+    /// A `--start-hidden` window not raised yet: its parked place is never saved as the person's (rule 301).
+    background_parked: Rc<Cell<bool>>,
     /// Slint's software renderer draws (it has no rendering notifier).
     software: Rc<Cell<bool>>,
 }
@@ -2496,6 +2586,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
         material,
         caret,
         e2e,
+        background_parked,
         software,
     } = st;
     let mods = Cell::new(ModifiersState::empty());
@@ -2744,8 +2835,11 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 {
                     m.on_window_state(maximised, fullscreen, Instant::now());
                 }
-                let o = observe(window);
-                with_ctl(&mut |c| c.on_geometry(o));
+                // A parked `--start-hidden` window's place is not the person's: it is never saved (rule 301).
+                if !background_parked.get() {
+                    let o = observe(window);
+                    with_ctl(&mut |c| c.on_geometry(o));
+                }
                 EventResult::Propagate
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -2946,7 +3040,8 @@ mod tests {
         assert_eq!(e2e_first_position(true), Some((-32000, -32000)));
         assert_eq!(e2e_first_position(false), None);
         let src = include_str!("window.rs").replace("\r\n", "\n");
-        let set = src.find("e2e_first_position(args.e2e)").expect("used");
+        // `parked` is `--e2e` or `--start-hidden` (rule 301): the same spot for both.
+        let set = src.find("e2e_first_position(parked)").expect("used");
         let show = src
             .find("    app.show()?;\n    // The watchdog")
             .expect("show");
@@ -3233,6 +3328,65 @@ mod tests {
         assert_ne!(style & WS_EX_NOACTIVATE, 0);
         assert_ne!(style & WS_EX_TOOLWINDOW, 0);
         assert_eq!(style & WS_EX_APPWINDOW, 0);
+    }
+
+    /// Rule 301: `--start-hidden` is born parked by the e2e's own park, and its first raise gives back a window that may
+    /// take the focus and has a taskbar button.
+    #[cfg(windows)]
+    #[test]
+    fn a_background_start_is_parked_like_the_e2e_and_its_raise_undoes_the_style() {
+        assert!(parked_start(false, true) && parked_start(true, false));
+        assert!(!parked_start(false, false));
+        assert_eq!(
+            e2e_first_position(parked_start(false, true)),
+            Some((-32000, -32000))
+        );
+        let parked = e2e_ex_style(WS_EX_APPWINDOW);
+        let raised = background_raised_style(parked);
+        assert_eq!(raised & WS_EX_NOACTIVATE, 0);
+        assert_eq!(raised & WS_EX_TOOLWINDOW, 0);
+        assert_ne!(raised & WS_EX_APPWINDOW, 0);
+        // The window's other style bits are kept.
+        assert_eq!(background_raised_style(parked | 0x10) & 0x10, 0x10);
+    }
+
+    /// Rule 302: on a Mac a `--start-hidden` run is held clear and off-screen-able from its first window, like the
+    /// e2e's, and its first raise lets go of the whole Mac park (the Mac code itself runs in macOS CI only).
+    #[test]
+    fn a_background_start_on_a_mac_is_born_clear_and_its_raise_undoes_the_mac_park() {
+        let main = include_str!("main.rs").replace("\r\n", "\n");
+        let from = main
+            .find("if window::parked_start(args.e2e, args.start_hidden) {")
+            .expect("main holds the Mac park for every parked start, not for --e2e alone");
+        let to = main[from..].find("\n    }\n").expect("the block ends") + from;
+        let block = &main[from..to];
+        assert!(block.contains("flare_win::window_park::keep_windows_off_screen();"));
+        assert!(block.contains("flare_win::window_park::hold_off_app_nap();"));
+        assert!(main[..from].ends_with("#[cfg(target_os = \"macos\")]\n    "));
+
+        let win = include_str!("window.rs").replace("\r\n", "\n");
+        let from = win
+            .find("fn unpark_background(")
+            .expect("unpark_background exists");
+        let to = win[from..].find("\n}\n").expect("it ends") + from;
+        assert!(
+            win[from..to].contains("flare_win::window_park::unpark("),
+            "the first raise lets go of the Mac park"
+        );
+
+        let mac = include_str!("../../flare-win/src/macos/window_park.rs").replace("\r\n", "\n");
+        let from = mac.find("pub fn unpark(").expect("the Mac park can let go");
+        let to = mac[from..].find("\n}\n").expect("it ends") + from;
+        let unpark = &mac[from..to];
+        for undo in [
+            "HELD.store(false",
+            "NSApplicationActivationPolicy::Regular",
+            "setAlphaValue(1.0)",
+            "setIgnoresMouseEvents(false)",
+            "setHasShadow(true)",
+        ] {
+            assert!(unpark.contains(undo), "unpark does `{undo}`");
+        }
     }
 
     #[test]

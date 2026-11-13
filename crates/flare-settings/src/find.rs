@@ -256,14 +256,15 @@ mod tests {
 
     #[test]
     fn the_index_has_46_rows_without_nvidia() {
-        // 33 rows outside dictation, 8 dictation rows and From any app (the GPU row needs NVIDIA).
+        // 34 rows outside dictation (Add a machine among them), 8 dictation rows and From any app (the GPU row needs
+        // NVIDIA).
         let n = settings_index(&IndexEnv {
             nvidia: false,
             dictation_wired: true,
             mark_colours: true,
         })
         .len();
-        assert_eq!(n, 47);
+        assert_eq!(n, 48);
         assert!(
             settings_index(&IndexEnv {
                 nvidia: false,
@@ -281,6 +282,19 @@ mod tests {
             dictation_wired: true,
             mark_colours: true,
         })
+    }
+
+    #[test]
+    fn the_machines_page_is_found_by_ssh_mac_and_its_add_row() {
+        let index = index_all();
+        let names = page_names();
+        for q in ["ssh", "add a machine", "machines", "remote mac"] {
+            let found = search_settings(&index, q, &names);
+            let first = found.first().unwrap_or_else(|| panic!("{q} found nothing"));
+            assert_eq!(first.id, "machines-add", "{q}");
+            assert_eq!(first.page, "machines");
+            assert_eq!(first.section, "Linked machines");
+        }
     }
 
     #[test]

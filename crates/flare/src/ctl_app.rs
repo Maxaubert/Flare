@@ -332,6 +332,15 @@ pub enum CtlOp {
     /// `remote.status` (remote sessions PR 4): every shell tab as the host's own marks say it (rule 294). Answered with
     /// `{tabs}`; the worker numbers it.
     RemoteStatus,
+    /// `open.remote` (remote sessions PR 5): a tab here that shows a session on `machine` (an id the worker found in
+    /// `machines.json`) in the host's `folder`, resuming `resume` there (checked with `valid_resume`). In front only
+    /// when `front` (the `flare open` command); the agent's open leaves the front tab where it is. Answered with `{tab}`.
+    OpenRemote {
+        machine: String,
+        folder: String,
+        resume: Option<String>,
+        front: bool,
+    },
 }
 
 /// Where `browser.navigate` sends the page.
@@ -398,6 +407,7 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::RemoteRelease { .. } => "CtlOp::RemoteRelease",
             CtlOp::RemoteClose { .. } => "CtlOp::RemoteClose",
             CtlOp::RemoteStatus => "CtlOp::RemoteStatus",
+            CtlOp::OpenRemote { .. } => "CtlOp::OpenRemote",
         })
     }
 }
@@ -496,7 +506,13 @@ pub struct AppDispatcher {
     /// Remote sessions (PR 2): the bridge key and the tabs remote viewers follow. Without it no token is the bridge and
     /// the `remote.*` methods are neither listed nor answered.
     remote: Option<Arc<crate::remote_host::RemoteHost>>,
+    /// Remote sessions (PR 5): the machines `open.remote` may name (the profile's `machines.json`). Without it
+    /// `open.remote` is neither listed nor answered.
+    machines: Option<Arc<dyn crate::machines::MachinesPort>>,
 }
+
+/// The longest host folder `open.remote` takes, in bytes.
+const OPEN_FOLDER_MAX: usize = 4096;
 
 /// Buckets kept at most; past it the map starts again (a bucket is only a second of memory).
 const DECOR_BUCKETS_MAX: usize = 1024;
@@ -528,6 +544,7 @@ impl AppDispatcher {
             surface_rate: Mutex::new(HashMap::new()),
             clock: Instant::now,
             remote: None,
+            machines: None,
         }
     }
 
@@ -535,6 +552,77 @@ impl AppDispatcher {
     pub fn with_remote(mut self, host: Arc<crate::remote_host::RemoteHost>) -> Self {
         self.remote = Some(host);
         self
+    }
+
+    /// Opens remote sessions here (PR 5): `open.remote` names a machine of `machines`.
+    pub fn with_machines(mut self, machines: Arc<dyn crate::machines::MachinesPort>) -> Self {
+        self.machines = Some(machines);
+        self
+    }
+
+    /// `open.remote` (remote sessions PR 5): the agent's tool and `flare open --on`. The machine must be one
+    /// `machines.json` names (read here, on the call's worker); the folder is a path of that machine, never statted or
+    /// opened here (it is the host's to check, rule 287); a resume id must pass `valid_resume`. The tab opens at once
+    /// and its link connects on its own worker, so the answer never waits for ssh. Whoever calls, the opened tab takes
+    /// no typing from them: the agent's grant has no `remote.*`, `shell.input` or `tabs.input` (rule 299).
+    fn open_remote(&self, params: &Value) -> Result<Value, CtlError> {
+        let machines = self.machines.as_ref().ok_or_else(|| {
+            CtlError::new(code::UNAVAILABLE, "this Flare opens no remote sessions")
+        })?;
+        only_fields(
+            params,
+            &["machine", "folder", "resume", "front"],
+            "open.remote",
+        )?;
+        let machine = str_param(params, "machine")?
+            .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "machine is required"))?;
+        if !crate::machines::argv_word(machine) {
+            return Err(CtlError::new(
+                code::BAD_PARAMS,
+                "machine is an id from machines.json, one plain word",
+            ));
+        }
+        let folder = str_param(params, "folder")?
+            .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "folder is required"))?;
+        if folder.trim().is_empty()
+            || folder.len() > OPEN_FOLDER_MAX
+            || folder.chars().any(char::is_control)
+        {
+            return Err(CtlError::new(
+                code::BAD_PARAMS,
+                "folder is a path on that machine: not empty, no control characters, at most 4096 bytes",
+            ));
+        }
+        let resume = match str_param(params, "resume")? {
+            None => None,
+            Some(r) => Some(
+                flare_agent::resume::valid_resume(Some(r))
+                    .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "resume is not a session id"))?
+                    .to_string(),
+            ),
+        };
+        let front = match params.get("front") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => {
+                return Err(CtlError::new(
+                    code::BAD_PARAMS,
+                    "front must be true or false",
+                ));
+            }
+        };
+        if machines.get(machine).is_none() {
+            return Err(CtlError::new(
+                code::NOT_FOUND,
+                crate::machines::unknown_machine(machine, &machines.list()),
+            ));
+        }
+        self.ask(CtlOp::OpenRemote {
+            machine: machine.to_string(),
+            folder: folder.to_string(),
+            resume,
+            front,
+        })
     }
 
     /// The tab a call acts on (plugins phase 3): the `tab` it names, or else the caller's own. A caller may name its
@@ -2316,7 +2404,12 @@ impl AppDispatcher {
                 only_fields(params, &["folder", "resume"], "remote.open")?;
                 let folder = str_param(params, "folder")?
                     .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "folder is required"))?;
-                let dir = host_folder(folder)?;
+                // `~` alone is this host's home folder (remote sessions PR 7: the + menu's shell on a machine).
+                let dir = if folder == crate::machines::HOST_HOME {
+                    std::path::PathBuf::from(&self.home)
+                } else {
+                    host_folder(folder)?
+                };
                 // sync-ok: the control channel's worker asks the disk, never the UI thread
                 if !dir.is_dir() {
                     return Err(CtlError::new(
@@ -2447,10 +2540,99 @@ impl AppDispatcher {
                 Ok(json!({"tabs": tabs, "seq": seq}))
             }
             Method::RemoteConvo => self.remote_convo(host, params),
+            Method::RemoteFetch => self.remote_fetch(host, params),
+            Method::RemotePut => remote_put(host, params),
             _ => Err(CtlError::new(code::INTERNAL, "not a remote method")),
         }
     }
 
+    /// `remote.fetch {tab, path, chunk?}` (remote sessions PR 6, rule 303): one chunk of a file a followed tab's link
+    /// names. The window names the tab's folder; the path is resolved and checked here, on the call's worker (rule
+    /// 34), and only a plain file in the tab's folder or the host's temp folder is read.
+    fn remote_fetch(
+        &self,
+        host: &Arc<crate::remote_host::RemoteHost>,
+        params: &Value,
+    ) -> Result<Value, CtlError> {
+        use base64::Engine as _;
+        only_fields(params, &["tab", "path", "chunk"], "remote.fetch")?;
+        let tab = remote_tab(params)?;
+        let path = str_param(params, "path")?
+            .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "path is required"))?;
+        let chunk = count_param(params, "chunk", false)?.unwrap_or(0);
+        let chunk = u32::try_from(chunk)
+            .map_err(|_| CtlError::new(code::BAD_PARAMS, "chunk is a chunk's number"))?;
+        if !host.is_followed(&tab) {
+            return Err(CtlError::new(
+                code::NO_TAB,
+                "that tab is not followed: send remote.attach first",
+            ));
+        }
+        let at = self.ask(CtlOp::SessionOf { tab: tab.clone() })?;
+        let folder = at["folder"].as_str().unwrap_or_default();
+        let file = crate::remote_files::resolve_fetch(folder, path, &self.home, host.temp())?;
+        let c = crate::remote_files::read_chunk(&file, chunk)?;
+        Ok(json!({
+            "tab": tab,
+            "name": c.name,
+            "size": c.size,
+            "chunk": c.chunk,
+            "chunks": c.chunks,
+            "data": base64::engine::general_purpose::STANDARD.encode(&c.data),
+        }))
+    }
+}
+
+/// `remote.put {tab, name, chunk, chunks, data}` (remote sessions PR 6, rule 304): one chunk of a viewer's file, written
+/// into the followed tab's upload folder on the host, on the call's worker. The last chunk answers the host path and
+/// that path quoted for the tab's own shell (`paste`), which the viewer pastes as one paste (rule 1).
+fn remote_put(
+    host: &Arc<crate::remote_host::RemoteHost>,
+    params: &Value,
+) -> Result<Value, CtlError> {
+    use base64::Engine as _;
+    only_fields(
+        params,
+        &["tab", "name", "chunk", "chunks", "data"],
+        "remote.put",
+    )?;
+    let tab = remote_tab(params)?;
+    let name = str_param(params, "name")?
+        .filter(|n| !n.is_empty() && n.len() <= 4096)
+        .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "name is the file's name"))?;
+    let num = |key: &str| -> Result<u32, CtlError> {
+        let n = count_param(params, key, true)?.unwrap_or(0);
+        u32::try_from(n).map_err(|_| CtlError::new(code::BAD_PARAMS, format!("{key} is a count")))
+    };
+    let (chunk, chunks) = (num("chunk")?, num("chunks")?);
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(str_param(params, "data")?.unwrap_or_default())
+        .map_err(|_| CtlError::new(code::BAD_PARAMS, "data is base64"))?;
+    let Some((handle, _)) = host.followed(&tab) else {
+        return Err(CtlError::new(
+            code::NO_TAB,
+            "that tab is not followed: send remote.attach first",
+        ));
+    };
+    let put = host.uploads().put(&tab, name, chunk, chunks, &data)?;
+    let mut v = json!({"tab": tab, "name": put.name, "done": put.host_path.is_some()});
+    if let Some(p) = put.host_path {
+        let text = p.to_string_lossy().into_owned();
+        let shell = flare_shells::paste::path_shell_of(handle.shell_id().as_deref());
+        // The name is clean (`put_name`), so every shell's quotes take it; a folder no shell can quote is said.
+        let paste = flare_shells::paste::quote_path(&text, Some(shell)).ok_or_else(|| {
+            CtlError::new(
+                code::UNAVAILABLE,
+                "the host's upload folder cannot be typed in that tab's shell",
+            )
+        })?;
+        v["host_path"] = json!(text);
+        v["paste"] = json!(paste);
+    }
+    Ok(v)
+}
+
+impl AppDispatcher {
     /// `remote.convo {tab, since?}` (remote sessions PR 4, rule 297): the followed tab's Claude session as numbered
     /// entries after `since`. The window names the session, the folder and this host's Claude folder; the transcript
     /// is found and read here, on the call's worker (rule 34). No host path is in the answer.
@@ -2583,6 +2765,10 @@ impl Dispatcher for AppDispatcher {
                 Method::ViewAudio,
                 Method::ViewModel,
             ]);
+        }
+        // Opening a remote session (PR 5) only where this run has its machines.
+        if self.machines.is_some() {
+            all.push(Method::OpenRemoteSession);
         }
         // Remote sessions (PR 2) only where this run serves them.
         if self.remote.is_some() {
@@ -2831,7 +3017,10 @@ impl Dispatcher for AppDispatcher {
             | Method::RemoteSnapshot
             | Method::RemoteClose
             | Method::RemoteStatus
-            | Method::RemoteConvo => self.remote_call(ctx, method, &params),
+            | Method::RemoteConvo
+            | Method::RemoteFetch
+            | Method::RemotePut => self.remote_call(ctx, method, &params),
+            Method::OpenRemoteSession => self.open_remote(&params),
             Method::ViewText => {
                 let tab = Self::tab_of_call(ctx)?;
                 let text = str_param(&params, "text")?
@@ -2901,11 +3090,13 @@ impl CtlServer {
         apps: AppsCfg,
         mods: Option<Arc<Hub>>,
         remote: Option<Arc<crate::remote_host::RemoteHost>>,
+        machines: Arc<dyn crate::machines::MachinesPort>,
     ) -> std::io::Result<Self> {
         let stopping = Arc::new(AtomicBool::new(false));
         let mut d = AppDispatcher::new(post, tab_of, real_resolve(), home, Arc::clone(&stopping))
             .with_eval(eval)
-            .with_apps(apps);
+            .with_apps(apps)
+            .with_machines(machines);
         if let Some(hub) = mods {
             d = d.with_mods(hub);
         }
@@ -5794,6 +5985,73 @@ mod tests {
         );
     }
 
+    /// Rule 299: `open.remote` (the agent's tool, `flare open --on`) names a machine of `machines.json`, a folder of
+    /// that machine (never statted here) and a session id; only then does the window open a tab. The agent that asked
+    /// still cannot type into it, and a run with no machines neither lists nor answers it.
+    #[test]
+    fn open_remote_names_a_known_machine_and_opens_a_tab_the_agent_cannot_type_into() {
+        struct One;
+        impl crate::machines::MachinesPort for One {
+            fn list(&self) -> Vec<crate::machines::Machine> {
+                crate::machines::parse_machines(r#"{"machines":[{"id":"mac","ssh":"mac-mini"}]}"#)
+            }
+        }
+        let r = rig(|_| Ok(json!({"tab": "t9"})), false, &[]);
+        let ops = r.ops.clone();
+        let d = r.d.with_machines(Arc::new(One));
+        let c = agent_in_tab();
+        assert!(d.capabilities().contains(&Method::OpenRemoteSession));
+        for bad in [
+            json!({"folder": "/Users/max/p"}),
+            json!({"machine": "mac"}),
+            json!({"machine": "-oProxyCommand=x", "folder": "/p"}),
+            json!({"machine": "mac", "folder": "a\u{7}b"}),
+            json!({"machine": "mac", "folder": "  "}),
+            json!({"machine": "mac", "folder": "/p", "resume": "x; rm -rf"}),
+            json!({"machine": "mac", "folder": "/p", "front": "yes"}),
+            json!({"machine": "mac", "folder": "/p", "command": "claude"}),
+        ] {
+            assert_eq!(
+                code_of(d.call(&c, Method::OpenRemoteSession, bad.clone())),
+                code::BAD_PARAMS,
+                "{bad}"
+            );
+        }
+        let e = d
+            .call(
+                &c,
+                Method::OpenRemoteSession,
+                json!({"machine": "nas", "folder": "/p"}),
+            )
+            .unwrap_err();
+        assert_eq!(e.code, code::NOT_FOUND);
+        assert!(e.message.contains("the machines are mac"), "{}", e.message);
+        assert!(ops.lock().unwrap().is_empty(), "nothing reached the window");
+        // A host path that is no path here is still the host's to check: it is not statted on this machine.
+        let v = d
+            .call(
+                &c,
+                Method::OpenRemoteSession,
+                json!({"machine": "mac", "folder": "/Users/max/nowhere-here", "resume": "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f"}),
+            )
+            .unwrap();
+        assert_eq!(v["tab"], "t9");
+        assert_eq!(*ops.lock().unwrap(), ["CtlOp::OpenRemote"]);
+        for m in [Method::RemoteInput, Method::ShellInput, Method::TabsInput] {
+            assert!(c.grant.check(m).is_err(), "{}", m.name());
+        }
+        let bare = rig(|_| Ok(json!({})), false, &[]);
+        assert!(!bare.d.capabilities().contains(&Method::OpenRemoteSession));
+        assert_eq!(
+            code_of(bare.d.call(
+                &c,
+                Method::OpenRemoteSession,
+                json!({"machine": "mac", "folder": "/p"})
+            )),
+            code::UNAVAILABLE
+        );
+    }
+
     /// `remote.open` names a host folder: absolute, there on the disk (asked on the worker), with a resume id that is a
     /// session id. Only then does the window open a tab.
     #[test]
@@ -5836,6 +6094,30 @@ mod tests {
             *ops.lock().unwrap(),
             ["CtlOp::RemoteOpen", "CtlOp::RemoteOpen"]
         );
+    }
+
+    /// Remote sessions PR 7: `~` alone is the host's home folder (the + menu's shell on a machine, whose home the viewer
+    /// does not know); `~/x` is still no host path.
+    #[test]
+    fn remote_open_reads_a_lone_tilde_as_the_hosts_home() {
+        let (mut d, ops, _) = remote_rig();
+        let dir = tempfile::tempdir().unwrap();
+        let c = bridge(1);
+        d.home = dir.path().join("gone").to_string_lossy().into_owned();
+        assert_eq!(
+            code_of(d.call(&c, Method::RemoteOpen, json!({"folder": "~"}))),
+            code::NOT_FOUND
+        );
+        d.home = dir.path().to_string_lossy().into_owned();
+        assert!(
+            d.call(&c, Method::RemoteOpen, json!({"folder": "~"}))
+                .is_ok()
+        );
+        assert_eq!(
+            code_of(d.call(&c, Method::RemoteOpen, json!({"folder": "~/x"}))),
+            code::BAD_PARAMS
+        );
+        assert_eq!(*ops.lock().unwrap(), ["CtlOp::RemoteOpen"]);
     }
 
     /// `remote.ls` lists one host folder on the worker: folders first, then by name, bounded.
@@ -5953,6 +6235,118 @@ mod tests {
                 .iter()
                 .all(|o| o == "CtlOp::RemoteStatus")
         );
+    }
+
+    /// Rule 303: `remote.fetch` reads a followed tab's file by the path its link names, from the folder the window says
+    /// the tab is in, chunk by chunk; a file outside that folder (and the temp folder), or a tab nobody follows, is
+    /// refused before anything is read.
+    #[test]
+    fn remote_fetch_reads_only_the_followed_tabs_folder_in_chunks() {
+        use base64::Engine as _;
+        let all = tempfile::tempdir().unwrap();
+        let proj = all.path().join("proj");
+        let secret = all.path().join("secret");
+        std::fs::create_dir_all(proj.join("docs")).unwrap();
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::write(proj.join("docs").join("a.md"), b"# hello").unwrap();
+        std::fs::write(secret.join("key.txt"), b"no").unwrap();
+        let folder = proj.to_string_lossy().into_owned();
+        let r = rig(
+            move |op| match op {
+                CtlOp::SessionOf { .. } => Ok(json!({"folder": folder})),
+                _ => Ok(json!({})),
+            },
+            false,
+            &[],
+        );
+        // The host's temp folder is one of its own, so the test's folders are outside it.
+        let host =
+            crate::remote_host::RemoteHost::with_temp("k".into(), all.path().join("host-temp"));
+        let d = r.d.with_remote(Arc::clone(&host));
+        let fetch = |p: Value| d.call(&bridge(1), Method::RemoteFetch, p);
+        assert_eq!(
+            code_of(fetch(json!({"tab": "t1", "path": "docs/a.md"}))),
+            code::NO_TAB
+        );
+        a_followed_tab(&host, "t1", 1);
+        let v = fetch(json!({"tab": "t1", "path": "docs/a.md"})).unwrap();
+        assert_eq!(
+            (v["name"].as_str(), v["size"].as_u64(), v["chunks"].as_u64()),
+            (Some("a.md"), Some(7), Some(1))
+        );
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(v["data"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(data, b"# hello");
+        // The host's temp folder is the one other place it reads.
+        std::fs::create_dir_all(all.path().join("host-temp")).unwrap();
+        let shot = all.path().join("host-temp").join("shot.png");
+        std::fs::write(&shot, b"png").unwrap();
+        let v = fetch(json!({"tab": "t1", "path": shot.to_string_lossy()})).unwrap();
+        assert_eq!(v["name"], "shot.png");
+        let outside = secret.join("key.txt").to_string_lossy().into_owned();
+        for p in [
+            json!({"tab": "t1", "path": outside}),
+            json!({"tab": "t1", "path": "../secret/key.txt"}),
+            json!({"tab": "t1", "path": "docs"}),
+        ] {
+            assert_eq!(code_of(fetch(p.clone())), code::NOT_FOUND, "{p}");
+        }
+        for p in [
+            json!({"tab": "t1"}),
+            json!({"tab": "t1", "path": "docs/a.md", "chunk": 1}),
+            json!({"tab": "t1", "path": "docs/a.md", "raw": true}),
+        ] {
+            assert_eq!(code_of(fetch(p.clone())), code::BAD_PARAMS, "{p}");
+        }
+    }
+
+    /// Rule 304: `remote.put` writes a followed tab's file into its upload folder on the host, under a clean name, and
+    /// the last chunk answers the host path and that path quoted for the tab's shell; a tab nobody follows is refused.
+    #[test]
+    fn remote_put_lands_in_the_tabs_upload_folder_and_answers_a_quoted_path() {
+        use base64::Engine as _;
+        let enc = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let temp = tempfile::tempdir().unwrap();
+        let r = rig(|_| Ok(json!({"ok": true})), false, &[]);
+        let host = crate::remote_host::RemoteHost::with_temp("k".into(), temp.path().into());
+        let d = r.d.with_remote(Arc::clone(&host));
+        let put = |p: Value| d.call(&bridge(1), Method::RemotePut, p);
+        let first = json!({"tab": "t1", "name": "../shot%1.png", "chunk": 0, "chunks": 2, "data": enc(b"ab")});
+        assert_eq!(code_of(put(first.clone())), code::NO_TAB);
+        a_followed_tab(&host, "t1", 1);
+        let v = put(first).unwrap();
+        assert_eq!(
+            (v["name"].as_str(), v["done"].as_bool()),
+            (Some("shot_1.png"), Some(false))
+        );
+        assert!(v.get("host_path").is_none());
+        let v = put(
+            json!({"tab": "t1", "name": "shot_1.png", "chunk": 1, "chunks": 2, "data": enc(b"cd")}),
+        )
+        .unwrap();
+        let path = std::path::PathBuf::from(v["host_path"].as_str().unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), b"abcd");
+        assert_eq!(path.parent(), Some(host.uploads().folder("t1").as_path()));
+        let paste = v["paste"].as_str().unwrap();
+        assert!(
+            paste.contains("shot_1.png") && paste.len() > path.to_string_lossy().len(),
+            "quoted for the shell: {paste}"
+        );
+        assert_eq!(
+            code_of(put(
+                json!({"tab": "t1", "name": "x", "chunk": 0, "chunks": 1, "data": "not base64!"})
+            )),
+            code::BAD_PARAMS
+        );
+        // The tab closing takes its folder with it.
+        let dir = host.uploads().folder("t1");
+        host.forget_tab("t1");
+        let t = Instant::now();
+        while dir.exists() && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10)); // sync-ok: test code only
+        }
+        assert!(!dir.exists(), "the closed tab's uploads are gone");
     }
 
     /// Rule 297: the host finds the tab's transcript with its own Claude folder and sends numbered entries, never a

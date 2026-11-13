@@ -180,6 +180,9 @@ pub enum UiMsg {
     Mods(crate::mods_ctl::ModsMsgBox),
     /// The staged build (install when idle, 2026-10-29): a look, a swap, a go-ahead.
     Staged(staged_glue::StagedMsg),
+    /// The machines of `machines.json`, read at start or saved by Settings > Machines (remote sessions PR 7): the +
+    /// menu's rows and the remote tabs' logos follow them.
+    Machines(Vec<crate::machines::Machine>),
 }
 
 mod ask_glue;
@@ -187,6 +190,7 @@ mod bar_glue;
 mod install_glue;
 mod mods_glue;
 mod plugins_glue;
+mod remote_files_glue;
 mod remote_glue;
 mod sessions_glue;
 pub mod staged_glue;
@@ -220,6 +224,9 @@ impl std::fmt::Debug for TermMsgBox {
             TermMsg::Preview { .. } => "TermMsg::Preview",
             TermMsg::PreviewRefused { .. } => "TermMsg::PreviewRefused",
             TermMsg::Thumb { .. } => "TermMsg::Thumb",
+            TermMsg::RemoteLink { .. } => "TermMsg::RemoteLink",
+            TermMsg::RemoteUpload { .. } => "TermMsg::RemoteUpload",
+            TermMsg::RemoteFileRefused { .. } => "TermMsg::RemoteFileRefused",
         })
     }
 }
@@ -510,6 +517,11 @@ pub struct AppCtl {
     restore_started: bool,
     /// The folder menu's starter folders, once a worker has found them (empty until then).
     starters: Vec<String>,
+    /// The machines a remote tab can run on (remote sessions PR 7), as last read or saved: the + menu's rows and the
+    /// tabs' logos. Empty until a worker has read them.
+    machines: Vec<crate::machines::Machine>,
+    /// A remote tab's fitted conversation view (remote sessions PR 7).
+    rconvo: remote_glue::RemoteConvoView,
     source_id: Option<String>,
     last_saved: Option<SavedTabs>,
     /// Agents that are mid-answer: tab id to the clock time they started (M6 fills this).
@@ -648,6 +660,8 @@ pub struct AppCtl {
     /// (rule 296). None in a run that serves none.
     keep_awake: Option<Arc<dyn flare_win::keep_awake::KeepAwake>>,
     awake_hold: Option<flare_win::keep_awake::Hold>,
+    /// Remote sessions (PR 6): this run's copies of the host files remote tabs' links fetched (rule 303).
+    remote_copies: Arc<crate::remote_files::Copies>,
     /// The staged build of an installed copy (install when idle); None for any other run.
     staged: Option<staged_glue::StagedState>,
 }
@@ -1063,6 +1077,8 @@ impl AppCtl {
             boot_saved,
             restore_started: false,
             starters: Vec::new(),
+            machines: Vec::new(),
+            rconvo: remote_glue::RemoteConvoView::default(),
             source_id: None,
             last_saved: None,
             working: HashMap::new(),
@@ -1131,6 +1147,7 @@ impl AppCtl {
             ctl_info: None,
             remote_host: None,
             keep_awake: None,
+            remote_copies: Arc::new(crate::remote_files::Copies::in_temp()),
             awake_hold: None,
             mods: None,
             staged: None,
@@ -1534,6 +1551,7 @@ impl AppCtl {
             .panel_wrap_cols_changed());
         bind!(app, rc, on_preview_chip_clicked, |c| c
             .preview_chip_clicked());
+        bind!(app, rc, on_rconvo_take_over, |c| c.remote_convo_take_over());
         bind!(app, rc, on_panel_pressed, |c| c.panel_focus_seen = true);
         bind!(
             app,
@@ -1734,6 +1752,8 @@ impl AppCtl {
     /// build_view, then push every property; a changed tab report goes to `tabs_store`.
     pub fn refresh(&mut self) {
         let Some(app) = self.app() else { return };
+        // The tab in front shows its fitted conversation view or its terminal (remote sessions PR 7).
+        self.push_remote_convo();
         let now = self.now();
         let front = self.model.state.active_id.clone();
         if front != self.crumbed_front {
@@ -2495,7 +2515,7 @@ impl AppCtl {
             if let Some(r) = &s.remote {
                 let live = flare_term::remote_pty::RemoteLive::new(r.host_tab.clone(), r.last_seq);
                 self.model.set_remote_live(&s.id, live.clone());
-                self.start_remote(&s.id, &r.machine, &s.cwd, live);
+                self.start_remote(&s.id, &r.machine, &s.cwd, None, live);
                 continue;
             }
             self.deps.host.spawn(&s.id, &s.cwd, s.resume.as_deref());
@@ -2508,6 +2528,8 @@ impl AppCtl {
                 self.restoring.insert(s.id.clone(), (k, now));
             }
         }
+        // Restored remote tabs know their machine's id only: the machines read so far give its name and logo.
+        self.tag_remote_tabs();
         let queued = self.pending.restored();
         for folder in queued {
             self.open_folder(&folder);
@@ -2518,7 +2540,7 @@ impl AppCtl {
                 .env(&["FLARE_E2E", "_REMOTE_OPEN"].concat())
                 .as_deref(),
         ) {
-            self.open_remote(&machine, &folder);
+            self.open_remote(&machine, &folder, None, true);
         }
         self.prewarm_new_tab();
         self.refresh();
@@ -2527,15 +2549,26 @@ impl AppCtl {
     // ---- opening and closing tabs -----------------------------------------------------------------
 
     /// A new remote tab (remote sessions PR 3): a shell tab on `machine` (its id in `machines.json`) in the host's
-    /// `folder`. The host opens the session; this tab shows it. Never blocks: the tab's link worker connects.
-    pub(crate) fn open_remote(&mut self, machine: &str, folder: &str) -> String {
+    /// `folder`, resuming the Claude session `resume` there when one is given (PR 5: the agent's `open.remote` and
+    /// `flare open --on`). The host opens the session; this tab shows it. Never blocks: the tab's link worker connects.
+    /// With `front` false (the agent's open) the tab in front stays in front, so a person typing there keeps the keys
+    /// and nothing they type lands in the new session (rule 299).
+    pub(crate) fn open_remote(
+        &mut self,
+        machine: &str,
+        folder: &str,
+        resume: Option<&str>,
+        front: bool,
+    ) -> String {
         let live = flare_term::remote_pty::RemoteLive::default();
-        let id = self.model.open_remote_tab(
-            flare_tabs::tabs::MachineTag::of_id(machine),
-            folder,
-            live.clone(),
-        );
-        self.start_remote(&id, machine, folder, live);
+        let before = self.model.state.active_id.clone();
+        let id = self
+            .model
+            .open_remote_tab(self.machine_tag(machine), folder, live.clone());
+        if !front && let Some(b) = before {
+            self.model.pick(&b);
+        }
+        self.start_remote(&id, machine, folder, resume, live);
         self.refresh();
         id
     }
@@ -2546,6 +2579,7 @@ impl AppCtl {
         id: &str,
         machine: &str,
         folder: &str,
+        resume: Option<&str>,
         live: flare_term::remote_pty::RemoteLive,
     ) {
         self.deps.host.spawn_remote(
@@ -2553,6 +2587,7 @@ impl AppCtl {
             flare_term::remote_pty::RemoteSpec {
                 machine: machine.to_string(),
                 folder: folder.to_string(),
+                resume: resume.map(str::to_string),
                 live,
             },
         );
@@ -2747,10 +2782,14 @@ impl AppCtl {
         self.dev_forget(id);
         self.s7.notifier.forget(id);
         self.web.close_tab(id);
+        // Its fitted conversation view, if any (remote sessions PR 7).
+        self.rconvo.forget(id);
         // A remote viewer that followed it hears `no_tab` from now (remote sessions PR 2).
         if let Some(r) = &self.remote_host {
             r.forget_tab(id);
         }
+        // Remote sessions PR 6: this run's copies of the host files the tab fetched.
+        self.forget_remote_copies(id);
     }
 
     fn toggle_settings(&mut self) {
@@ -2930,7 +2969,7 @@ impl AppCtl {
     /// The strip's + right-clicked: the folder menu at the pointer.
     fn open_plus_menu(&mut self, x: f32, y: f32) {
         self.close_overflow_quietly();
-        let rows = plus_menu_rows(&self.prefs, &self.starters, &self.deps.home);
+        let rows = plus_menu_rows(&self.prefs, &self.starters, &self.deps.home, &self.machines);
         self.show_menu(MenuKind::Plus, rows, x, y);
     }
 
@@ -2938,7 +2977,7 @@ impl AppCtl {
     /// `top` and `foot` its top and foot). It opens upward, right-aligned to the arrow, and never covers the button.
     fn open_folder_menu(&mut self, right: f32, top: f32, foot: f32) {
         self.close_overflow_quietly();
-        let rows = plus_menu_rows(&self.prefs, &self.starters, &self.deps.home);
+        let rows = plus_menu_rows(&self.prefs, &self.starters, &self.deps.home, &self.machines);
         self.show_menu_at(MenuKind::Plus, rows, right, top, Some(foot));
     }
 
@@ -2953,11 +2992,18 @@ impl AppCtl {
             tab.cwd.clone()
         };
         let shell = tab.kind == TabKind::Shell;
+        let remote = tab.remote.is_some();
         let mut rows: Vec<(MenuRowData, String)> =
             tab_menu_rows(&cwd, self.key_label_of(ChordId::CloseTab))
                 .into_iter()
                 .map(|r| (r, String::new()))
                 .collect();
+        // A remote tab (remote sessions PR 7, rule 1192): Close ends the session everywhere; this only lets go here.
+        if remote {
+            let mut hide = MenuRowData::plain(crate::menus_ui::HIDE_HERE);
+            hide.icon = crate::menus_ui::GLYPH_PANEL;
+            rows.insert(1, (hide, String::new()));
+        }
         // The plugins' actions for a shell tab, one flyout under each plugin's name (plugins phase 4).
         if shell {
             self.plugin_menu_rows(id, &mut rows);
@@ -3060,6 +3106,10 @@ impl AppCtl {
                 // The first row is always "Choose a folder…"; by its place, as a folder may carry that name.
                 if i == 0 {
                     self.choose_folder();
+                } else if let Some(machine) = crate::menus_ui::machine_of_row(path) {
+                    // A linked machine's row (remote sessions PR 7): a shell tab there, in the host's home folder.
+                    let machine = machine.to_string();
+                    self.open_remote(&machine, crate::machines::HOST_HOME, None, true);
                 } else if !path.is_empty() {
                     self.open_recent(path);
                 }
@@ -3068,6 +3118,7 @@ impl AppCtl {
             MenuKind::Section { sid } => self.section_menu_picked(&sid.clone(), &row.label.clone()),
             MenuKind::Tab { id, cwd } => match row.label.as_str() {
                 "Close tab" => self.request_close(id),
+                crate::menus_ui::HIDE_HERE => self.hide_remote(&id.clone()),
                 "Copy folder path" => (self.deps.clipboard)(cwd),
                 _ => {}
             },
@@ -3104,7 +3155,14 @@ impl AppCtl {
             return;
         }
         if let Ok(i) = usize::try_from(i) {
-            toggle_pin_in_menu(&self.prefs, &mut m.rows, i, &self.starters, &self.deps.home);
+            toggle_pin_in_menu(
+                &self.prefs,
+                &mut m.rows,
+                i,
+                &self.starters,
+                &self.deps.home,
+                &self.machines,
+            );
         }
         self.push_menu();
     }
@@ -4204,6 +4262,17 @@ impl AppCtl {
             | CtlOp::RemoteRelease { .. }
             | CtlOp::RemoteClose { .. }
             | CtlOp::RemoteStatus) => self.ctl_remote(op),
+            // Remote sessions PR 5: a tab here that shows a session on another machine (the agent's `open.remote` and
+            // `flare open --on`). The worker checked the machine and the params; the link connects on its own worker.
+            CtlOp::OpenRemote {
+                machine,
+                folder,
+                resume,
+                front,
+            } => {
+                let tab = self.open_remote(&machine, &folder, resume.as_deref(), front);
+                Ok(json!({"tab": tab, "machine": machine, "folder": folder}))
+            }
             // Answered by the browser's message, never here (see `ctl_browser`), or by the person (`ask_glue`).
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }
@@ -4650,6 +4719,11 @@ impl AppCtl {
         if ev.pressed {
             flare_term::session::trace_key("key");
             self.term.hide_thumb();
+            // A key on a remote tab's fitted conversation view takes the live terminal back here and goes on to it
+            // (remote sessions PR 7, rule 1193).
+            if self.remote_convo_shown() {
+                self.remote_convo_take_over();
+            }
         }
         // A right-click menu takes no keyboard (PT ContextMenu.tsx): Escape closes it and never
         // reaches the shell; every other key goes where it would without the menu.
@@ -5018,8 +5092,12 @@ impl AppCtl {
         self.font.as_ref().map_or(0, FontCtl::zoom)
     }
 
-    /// Folders from a second launch: raise the window, then each folder is a new tab.
+    /// Folders from a second launch: raise the window, then each folder is a new tab. A `--start-hidden` launch (a hidden
+    /// start that met this Flare already running, remote sessions PR 5) raises nothing and opens nothing (rule 301).
     pub fn handoff(&mut self, h: Handoff) {
+        if h.args.iter().any(|a| a == "--start-hidden") {
+            return;
+        }
         (self.deps.raise)();
         // `--preview-update` on a second launch shows the update window in the running app; with a
         // real offer present the engine changes nothing. Alone, it opens no tab.
@@ -5297,6 +5375,7 @@ impl AppCtl {
             }
             UiMsg::Picked(None) => {}
             UiMsg::StarterFolders(list) => self.starters = list,
+            UiMsg::Machines(list) => self.set_machines(list),
             UiMsg::FolderResolved(dir) => {
                 self.open_folder(&dir);
                 self.focus_terminal();
@@ -5444,6 +5523,15 @@ impl AppCtl {
                     "No such file",
                 );
             }
+            UiMsg::Term(TermMsgBox(TermMsg::RemoteLink { tab, texts, line })) => {
+                self.remote_fetch_link(&tab, texts, line);
+            }
+            UiMsg::Term(TermMsgBox(TermMsg::RemoteUpload { tab, files, image })) => {
+                self.remote_upload(&tab, files, image);
+            }
+            UiMsg::Term(TermMsgBox(TermMsg::RemoteFileRefused { tab, text })) => {
+                self.say_in_panel(&tab, &text, &text, "Not done on the other machine");
+            }
             UiMsg::Term(TermMsgBox(m)) => {
                 let front = self.front_tab();
                 {
@@ -5471,8 +5559,12 @@ impl AppCtl {
         let mut terminal_news = false;
         self.sync_hub();
         self.hub.on_host_events(&events);
-        // A remote tab's link brought the host's status of it (remote sessions PR 4, rule 294).
+        // A remote tab's link brought the host's status of it (remote sessions PR 4, rule 294), or its conversation
+        // (PR 7's fitted view).
         self.sync_remote_status();
+        if self.sync_remote_convo() {
+            changed = true;
+        }
         self.hub.drain_poll();
         if self.hub.take_changed() {
             self.sync_model_agents();
@@ -6643,6 +6735,30 @@ mod tests {
         assert_eq!(f.log.borrow().raised, 1);
         f.ctl.borrow_mut().handoff(h());
         f.pump_until("a second tab", |f| f.rows() == 2);
+    }
+
+    /// Rule 301: a `--start-hidden` launch that met this Flare running (a hidden start that lost a race) neither raises
+    /// the window nor opens a tab, whatever else its command line holds.
+    #[test]
+    fn a_background_launch_that_meets_a_running_flare_raises_and_opens_nothing() {
+        let f = fx_with(Opts {
+            real_fs: true,
+            ..Opts::default()
+        });
+        std::fs::create_dir(f.dir.path().join("sub")).unwrap(); // sync-ok: test code only, never the app
+        f.start_restore_and_wait();
+        f.ctl.borrow_mut().handoff(Handoff {
+            cwd: f.dir.path().to_string_lossy().into_owned(),
+            args: vec![
+                "flare.exe".to_string(),
+                "--start-hidden".to_string(),
+                "sub".to_string(),
+            ],
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        f.pump();
+        assert_eq!(f.rows(), 0);
+        assert_eq!(f.log.borrow().raised, 0);
     }
 
     #[test]

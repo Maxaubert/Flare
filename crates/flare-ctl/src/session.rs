@@ -68,6 +68,14 @@ pub trait Dispatcher: Send + Sync + 'static {
         None
     }
 
+    /// Whether this end of a remote link can serve it now, asked once a `remote.hello` passed its version check and
+    /// its grant, before it is answered (remote sessions PR 5). The serve process makes sure a Flare runs on this
+    /// machine here, and starts one hidden when none does; it may take a while (the viewer waits for the hello). An
+    /// error (`host_not_ready` with one line) is the hello's answer, and the link stays open for another try.
+    fn remote_ready(&self) -> Result<(), CtlError> {
+        Ok(())
+    }
+
     /// Runs one request. The grant was checked; `params` is an object. Anything but `hello`.
     ///
     /// Runs on its own thread and may still be running, or start, after `Server::stop`: it must
@@ -621,6 +629,18 @@ fn remote_grant(shared: &Shared) -> Result<Grant, CtlError> {
     }
 }
 
+/// The system this host runs, as `remote.hello` says it (remote sessions PR 7): `mac`, `pc`, or `other`. The viewer
+/// draws the machine's logo by it and quotes the host's command for its login shell.
+pub fn this_os() -> &'static str {
+    if cfg!(windows) {
+        "pc"
+    } else if cfg!(target_os = "macos") {
+        "mac"
+    } else {
+        "other"
+    }
+}
+
 /// The one line a remote protocol mismatch is refused with: both versions, this side's first (rule 278).
 pub fn remote_mismatch(here: u64, there: u64) -> String {
     format!("remote protocol {here} here, {there} there")
@@ -665,6 +685,7 @@ fn handle_remote_hello(
         ));
     };
     let grant = remote_grant(shared)?;
+    shared.dispatcher.remote_ready()?;
     let caps = shared.dispatcher.capabilities();
     let names: Vec<&str> = Method::ALL
         .into_iter()
@@ -675,6 +696,7 @@ fn handle_remote_hello(
         "remote_protocol": REMOTE_PROTOCOL,
         "machine": shared.config.machine,
         "flare_version": shared.config.server_version,
+        "os": this_os(),
         "capabilities": names,
     });
     let hello = Hello {
@@ -997,6 +1019,8 @@ mod tests {
         pub remote_agent: AtomicBool,
         /// A bug on the app side: the agent grant is the bridge grant.
         pub bridge_agent: AtomicBool,
+        /// The host has no running Flare and cannot start one: `remote_ready` refuses.
+        pub not_ready: AtomicBool,
     }
 
     impl Dispatcher for Fake {
@@ -1038,6 +1062,15 @@ mod tests {
             self.serves_remote
                 .load(Ordering::SeqCst)
                 .then_some(Grant::Remote)
+        }
+        fn remote_ready(&self) -> Result<(), CtlError> {
+            if self.not_ready.load(Ordering::SeqCst) {
+                return Err(CtlError::new(
+                    code::HOST_NOT_READY,
+                    "Flare is not running on this machine and could not be started",
+                ));
+            }
+            Ok(())
         }
         fn resolve_tab_token(&self, tab_token: &str) -> Option<String> {
             match tab_token {
@@ -1758,6 +1791,9 @@ mod tests {
         assert_eq!(v["result"]["remote_protocol"], REMOTE_PROTOCOL);
         assert_eq!(v["result"]["machine"], "host-a");
         assert_eq!(v["result"]["flare_version"], "1.2.3");
+        // The host's system, for the viewer's logo and quoting (remote sessions PR 7).
+        assert_eq!(v["result"]["os"], this_os());
+        assert!(["mac", "pc", "other"].contains(&this_os()));
         // Every `remote.*` method this app has, and nothing else.
         let remote: Vec<&str> = Method::ALL
             .into_iter()
@@ -1767,6 +1803,24 @@ mod tests {
         assert_eq!(v["result"]["capabilities"], json!(remote));
         // A second greeting is refused like a second hello.
         assert_eq!(code_of(&r.remote_hello("")), code::ALREADY_HELLO);
+        r.finish();
+    }
+
+    /// Remote sessions PR 5: a host that cannot get a Flare running answers the hello `host_not_ready` with one line,
+    /// gives no grant, and keeps the link open: a later `remote.hello` is answered once the host is ready.
+    #[test]
+    fn a_host_that_is_not_ready_refuses_the_hello_in_one_line_and_takes_another() {
+        let mut r = stdio_rig();
+        r.fake.not_ready.store(true, Ordering::SeqCst);
+        let v = r.remote_hello("");
+        assert_eq!(code_of(&v), code::HOST_NOT_READY);
+        assert!(!v["error"]["message"].as_str().unwrap().contains('\n'));
+        assert_eq!(
+            code_of(&r.ask(r#"{"id":2,"method":"remote.tabs","params":{}}"#)),
+            code::HELLO_REQUIRED
+        );
+        r.fake.not_ready.store(false, Ordering::SeqCst);
+        assert_eq!(r.remote_hello("")["result"]["machine"], "host-a");
         r.finish();
     }
 

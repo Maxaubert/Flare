@@ -621,6 +621,24 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 300,
     },
     Scenario {
+        name: "remoteOpen",
+        group: "ctl",
+        run: remote::remote_open,
+        limit_secs: 300,
+    },
+    Scenario {
+        name: "remoteFiles",
+        group: "ctl",
+        run: remote::remote_files,
+        limit_secs: 300,
+    },
+    Scenario {
+        name: "remoteUi",
+        group: "ctl",
+        run: remote::remote_ui,
+        limit_secs: 300,
+    },
+    Scenario {
         name: "webPanel",
         group: "web",
         run: web::web_panel,

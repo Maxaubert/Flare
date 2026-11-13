@@ -1250,6 +1250,7 @@ mod tests {
                 flare_term::remote_pty::RemoteSpec {
                     machine: "mac".into(),
                     folder: "/Users/max/proj".into(),
+                    resume: None,
                     live: flare_term::remote_pty::RemoteLive::default(),
                 },
             );
@@ -2207,6 +2208,7 @@ mod tests {
             session: Some(SID.into()),
             question: question.map(str::to_string),
             failed: None,
+            host_sized: false,
         };
         let mut r = Rig::new();
         r.open("b", None);
@@ -2253,6 +2255,7 @@ mod tests {
             session: None,
             question: Some(question.into()),
             failed: None,
+            host_sized: false,
         };
         let mut r = Rig::new();
         r.open("b", None);
