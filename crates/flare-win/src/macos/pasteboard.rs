@@ -6,8 +6,9 @@
 //! - Copied files are the file URLs of the pasteboard's items (`public.file-url`), as absolute
 //!   POSIX paths, in the order Finder put them there.
 //! - An image is only seen (PNG or TIFF on the pasteboard), as on Windows: a paste then sends the
-//!   key so the program reads the image itself. A paste on a remote tab reads the PNG's bytes
-//!   (`read_png`) to copy them to the host (remote sessions PR 6).
+//!   key so the program reads the image itself. A paste on a remote tab reads it as PNG bytes
+//!   (`read_png`) to copy them to the host (remote sessions PR 6): the PNG when there is one, else
+//!   the TIFF made a PNG by AppKit (`NSBitmapImageRep`, rule 1198).
 //! - The sequence is the pasteboard's `changeCount`, which moves with every change by anyone.
 //!
 //! Every function takes the pasteboard it works on, so the tests use a private one
@@ -15,12 +16,13 @@
 //! from any thread; each call runs in its own autorelease pool (the callers are worker threads).
 
 use objc2::rc::{Retained, autoreleasepool};
-use objc2::runtime::ProtocolObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2_app_kit::{
-    NSPasteboard, NSPasteboardItem, NSPasteboardType, NSPasteboardTypeFileURL, NSPasteboardTypePNG,
+    NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSPasteboard,
+    NSPasteboardItem, NSPasteboardType, NSPasteboardTypeFileURL, NSPasteboardTypePNG,
     NSPasteboardTypeString, NSPasteboardTypeTIFF, NSPasteboardWriting,
 };
-use objc2_foundation::{NSArray, NSString, NSURL};
+use objc2_foundation::{NSArray, NSData, NSDictionary, NSString, NSURL};
 
 /// The system clipboard.
 pub fn general() -> Retained<NSPasteboard> {
@@ -93,17 +95,36 @@ pub fn has_image(pb: &NSPasteboard) -> bool {
     })
 }
 
-/// The pasteboard's PNG image as file bytes, at most `max` (remote sessions PR 6: a paste on a remote tab copies it to
-/// the host). None when there is no PNG: a TIFF alone is not read (the image reader here has no TIFF decoder).
+/// The pasteboard's image as PNG file bytes, at most `max` (remote sessions PR 6: a paste on a remote tab copies it to
+/// the host). The PNG when there is one; else a TIFF (what Preview, Pages and many apps copy, often alone) made a PNG
+/// (rule 1198), `max` holding for the TIFF read and for the PNG made. None when there is no picture or it cannot be
+/// read.
 pub fn read_png(pb: &NSPasteboard, max: usize) -> Option<Vec<u8>> {
     autoreleasepool(|_| {
-        // SAFETY: an AppKit constant, valid for the life of the process.
-        let png = unsafe { NSPasteboardTypePNG };
-        let data = pb.dataForType(png)?;
+        // SAFETY: AppKit constants, valid for the life of the process.
+        let (png, tiff) = unsafe { (NSPasteboardTypePNG, NSPasteboardTypeTIFF) };
+        if let Some(data) = pb.dataForType(png) {
+            return (data.length() > 0 && data.length() <= max).then(|| data.to_vec());
+        }
+        let data = pb.dataForType(tiff)?;
         if data.length() == 0 || data.length() > max {
             return None;
         }
-        Some(data.to_vec())
+        png_of_tiff(&data.to_vec()).filter(|p| p.len() <= max)
+    })
+}
+
+/// A TIFF file's first picture as a PNG file, by AppKit (`NSBitmapImageRep`): None when AppKit cannot read it. Any
+/// thread (no window, no screen).
+pub fn png_of_tiff(tiff: &[u8]) -> Option<Vec<u8>> {
+    autoreleasepool(|_| {
+        let data = NSData::with_bytes(tiff);
+        let rep = NSBitmapImageRep::imageRepWithData(&data)?;
+        let props = NSDictionary::<NSBitmapImageRepPropertyKey, AnyObject>::new();
+        // SAFETY: an empty dictionary of the key and value types the method takes.
+        let png =
+            unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &props) }?;
+        (png.length() > 0).then(|| png.to_vec())
     })
 }
 
@@ -224,6 +245,83 @@ mod tests {
             Some(&b"\x89PNG\r\n\x1a\n"[..])
         );
         assert_eq!(read_png(&pb.0, 4), None);
+    }
+
+    /// A 2 x 1 baseline TIFF, written out by hand: little-endian, 8-bit grey, uncompressed, one strip of two pixels
+    /// (black, white).
+    fn tiny_tiff() -> Vec<u8> {
+        let mut t = b"II*\0".to_vec();
+        t.extend_from_slice(&8u32.to_le_bytes()); // the first directory
+        // (tag, type 3 = SHORT or 4 = LONG, value)
+        let entries: [(u16, u16, u32); 9] = [
+            (256, 3, 2), // ImageWidth
+            (257, 3, 1), // ImageLength
+            (258, 3, 8), // BitsPerSample
+            (259, 3, 1), // Compression: none
+            (262, 3, 1), // PhotometricInterpretation: black is zero
+            (273, 4, 0), // StripOffsets, filled in below
+            (277, 3, 1), // SamplesPerPixel
+            (278, 3, 1), // RowsPerStrip
+            (279, 4, 2), // StripByteCounts
+        ];
+        let pixels_at = 8 + 2 + entries.len() as u32 * 12 + 4;
+        t.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        for (tag, kind, value) in entries {
+            let value = if tag == 273 { pixels_at } else { value };
+            t.extend_from_slice(&tag.to_le_bytes());
+            t.extend_from_slice(&kind.to_le_bytes());
+            t.extend_from_slice(&1u32.to_le_bytes());
+            if kind == 3 {
+                t.extend_from_slice(&(value as u16).to_le_bytes());
+                t.extend_from_slice(&[0, 0]);
+            } else {
+                t.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        t.extend_from_slice(&0u32.to_le_bytes()); // no next directory
+        t.extend_from_slice(&[0x00, 0xff]);
+        t
+    }
+
+    /// The width and height a PNG's header says.
+    fn png_size(png: &[u8]) -> (u32, u32) {
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"), "not a PNG");
+        assert_eq!(&png[12..16], b"IHDR");
+        let be = |i: usize| u32::from_be_bytes(png[i..i + 4].try_into().unwrap());
+        (be(16), be(20))
+    }
+
+    /// Rule 1198: a picture copied as a TIFF alone is pasted on a remote tab as a PNG of the same size, made here; a
+    /// PNG beside it wins; neither is read past the cap; a TIFF AppKit cannot read gives nothing.
+    #[test]
+    fn a_tiff_only_picture_is_read_as_a_png_of_the_same_size() {
+        let tiff = tiny_tiff();
+        let png = png_of_tiff(&tiff).expect("AppKit reads the TIFF");
+        assert_eq!(png_size(&png), (2, 1));
+        assert_eq!(png_of_tiff(b"II*\0 not a tiff"), None);
+
+        let pb = Private::new();
+        pb.0.clearContents();
+        // SAFETY: AppKit constants.
+        let (png_t, tiff_t) = unsafe { (NSPasteboardTypePNG, NSPasteboardTypeTIFF) };
+        assert!(pb.0.setData_forType(Some(&NSData::with_bytes(&tiff)), tiff_t));
+        assert!(has_image(&pb.0));
+        let read = read_png(&pb.0, 1024 * 1024).expect("the TIFF is read as a PNG");
+        assert_eq!(png_size(&read), (2, 1));
+        assert_eq!(
+            read_png(&pb.0, tiff.len() - 1),
+            None,
+            "the cap holds for the TIFF"
+        );
+
+        pb.0.clearContents();
+        assert!(pb.0.setData_forType(Some(&NSData::with_bytes(&tiff)), tiff_t));
+        assert!(pb.0.setData_forType(Some(&NSData::with_bytes(&png)), png_t));
+        assert_eq!(
+            read_png(&pb.0, 1024 * 1024),
+            Some(png.clone()),
+            "the PNG wins"
+        );
     }
 
     #[test]

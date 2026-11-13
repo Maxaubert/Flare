@@ -39,6 +39,11 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
 
 - [ ] Spike 2: with Flare closed on the Mac, opening a tab from the PC starts it hidden over ssh; the tab works; a
   normal launch on the Mac then brings the window forward with its Dock icon.
+- [ ] In that hidden Mac Flare's tab: `env | grep -E 'SSH_|TMPDIR'` shows no `SSH_CONNECTION` and a `/var/folders`
+  `TMPDIR` (rule 1197); Claude started there signs in from the Keychain as in a Flare opened from the Dock (an ssh
+  login is its own security session: if it cannot, note it).
+- [ ] While the PC views the Mac, nothing new shows in the Mac's Dock or app switcher until a normal launch, and
+  `lsappinfo list` names no second `flare` (the serve process is no app, rule 1196).
 - [ ] With Flare closed on the PC, opening a tab from the Mac answers one line (`host_not_ready`: open Flare there
   once), and connects once Flare runs on the PC.
 - [ ] Whether sshd's job on the PC allows `CREATE_BREAKAWAY_FROM_JOB` (a hidden start there outlives the ssh login).
@@ -57,7 +62,7 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
 - [ ] A file dropped from Explorer or Finder on the remote tab pastes the host's quoted path; Claude reads it.
 - [ ] Closing the remote tab removes its upload folder on the host (`<temp>/flare-remote/<run>/<tab>`) and its copies
   on the viewer (`<temp>/flare-remote-copies/<run>/<tab>`).
-- [ ] A Mac clipboard picture that is only TIFF (rare: some apps copy only TIFF) is refused with one line, not sent.
+- [ ] A Mac clipboard picture that is only TIFF (Preview's Copy, Pages) arrives on the PC host as a PNG (rule 1198).
 
 ## Screens (PR 7)
 

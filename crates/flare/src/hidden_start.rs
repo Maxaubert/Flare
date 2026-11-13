@@ -6,6 +6,10 @@
 //! lock, the pipe, the tab restore and live shells as ever) whose window is parked off every screen with the e2e's own
 //! park code and never takes the focus (rule 301). A later normal launch brings it forward.
 //!
+//! On a Mac the started Flare is the bundle's own program (a link to it resolved), and it carries nothing of the ssh
+//! login that started it (`SSH_CONNECTION`, a forwarded agent's socket) and the user's private temp folder when the
+//! login named none (rule 1197): it outlives the login, and so do the shells it starts.
+//!
 //! The decision is pure over a [`Starter`] (a test fakes one): already running, start and wait for the pipe, no
 //! desktop to start one in, or a pipe that never opened. The last two answer `host_not_ready` with one line.
 
@@ -109,10 +113,84 @@ impl Starter for SystemStarter {
     }
 
     fn start(&self) -> std::io::Result<()> {
-        let exe = std::env::current_exe()?;
+        let exe = started_exe(std::env::current_exe()?);
         let args = background_args(self.user_data_dir.as_deref(), self.e2e);
-        spawn_detached(&exe, &args)
+        let env = login_env(std::env::vars(), user_temp_dir());
+        spawn_detached(&exe, &args, &env)
     }
+}
+
+/// The program the hidden start runs: this one as the file system names it on a Mac, so a `flare` reached through a
+/// link (a PATH entry pointing into `Flare.app`) still starts the bundle's own program, whose web engine and helpers
+/// are found next to it (rule 1197). Windows: as it is.
+fn started_exe(exe: PathBuf) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        std::fs::canonicalize(&exe).unwrap_or(exe) // sync-ok: the serve process, before the start
+    } else {
+        exe
+    }
+}
+
+/// The system's per-user temp folder (macOS `confstr`, `/var/folders/.../T/`), None where the temp folder needs no
+/// help (Windows).
+fn user_temp_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(flare_ctl::pipe::user_temp_dir())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+/// What the ssh login says about itself, which a Flare that outlives it must not carry into its shells.
+const LOGIN_ONLY: &[&str] = &[
+    "SSH_CLIENT",
+    "SSH_CONNECTION",
+    "SSH_TTY",
+    "SSH_ORIGINAL_COMMAND",
+];
+
+/// Whether `sock` is an agent socket sshd made for this login (`ssh -A`: `<tmp>/ssh-XXXXXXXXXX/agent.<pid>`): it goes
+/// with the login.
+fn forwarded_agent(sock: &str) -> bool {
+    let p = Path::new(sock);
+    let file = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let dir = p
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    dir.starts_with("ssh-")
+        && file
+            .strip_prefix("agent.")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The environment changes for the started Flare (rule 1197), pure over this process's `vars`: `(name, None)` removes
+/// a variable, `(name, Some(v))` sets it. The ssh login's own variables go (`SSH_CONNECTION` and the rest, and a
+/// forwarded agent's socket, which dies with the login): the Flare and every shell it starts later live on after the
+/// login, and a shell that sees `SSH_CONNECTION` thinks it is reached over ssh. And when the login has no `TMPDIR`
+/// (sshd sets none on a Mac) it gets the system's per-user one (`temp`), as an app started from the Dock has, so its
+/// temp files (the remote uploads among them) are in the user's private folder and not in the shared `/tmp`.
+pub fn login_env(
+    vars: impl IntoIterator<Item = (String, String)>,
+    temp: Option<PathBuf>,
+) -> Vec<(String, Option<String>)> {
+    let mut out = Vec::new();
+    let mut has_tmpdir = false;
+    for (k, v) in vars {
+        if LOGIN_ONLY.contains(&k.as_str()) || (k == "SSH_AUTH_SOCK" && forwarded_agent(&v)) {
+            out.push((k, None));
+        } else if k == "TMPDIR" && !v.is_empty() {
+            has_tmpdir = true;
+        }
+    }
+    if let (false, Some(t)) = (has_tmpdir, temp) {
+        out.push(("TMPDIR".to_string(), Some(t.to_string_lossy().into_owned())));
+    }
+    out
 }
 
 /// Windows: whether this process runs in a session other than 0 (sshd's logins run in session 0, which has no desktop
@@ -135,9 +213,19 @@ pub fn has_desktop() -> bool {
 }
 
 /// Starts `exe args` with no console, no stdio and nothing tying it to this process: it outlives the serve process and
-/// the ssh session that started it.
-fn spawn_detached(exe: &Path, args: &[String]) -> std::io::Result<()> {
+/// the ssh session that started it. `env` is [`login_env`]'s changes.
+fn spawn_detached(
+    exe: &Path,
+    args: &[String],
+    env: &[(String, Option<String>)],
+) -> std::io::Result<()> {
     let mut cmd = std::process::Command::new(exe); // sync-ok: the serve process or the command's own thread
+    for (k, v) in env {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
+    }
     cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -251,6 +339,108 @@ mod tests {
         assert_eq!(e.code, code::HOST_NOT_READY);
         assert_eq!(e.message, NO_DESKTOP);
         assert_eq!(f.starts.get(), 0);
+    }
+
+    fn vars(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// Rule 1197: the ssh login's own variables and a forwarded agent's socket are not passed on; the rest is.
+    #[test]
+    fn the_started_flare_carries_nothing_of_the_ssh_login() {
+        let got = login_env(
+            vars(&[
+                ("SSH_CONNECTION", "10.0.0.2 50000 10.0.0.3 22"),
+                ("SSH_CLIENT", "10.0.0.2 50000 22"),
+                ("SSH_TTY", "/dev/ttys004"),
+                ("SSH_ORIGINAL_COMMAND", "flare --serve-remote"),
+                ("SSH_AUTH_SOCK", "/tmp/ssh-AbCdEf1234/agent.4242"),
+                ("HOME", "/Users/max"),
+                ("PATH", "/usr/bin:/bin"),
+                ("TMPDIR", "/var/folders/x/T/"),
+            ]),
+            Some(PathBuf::from("/var/folders/y/T/")),
+        );
+        let removed: Vec<&str> = got
+            .iter()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert_eq!(
+            removed,
+            [
+                "SSH_CONNECTION",
+                "SSH_CLIENT",
+                "SSH_TTY",
+                "SSH_ORIGINAL_COMMAND",
+                "SSH_AUTH_SOCK"
+            ]
+        );
+        assert!(
+            got.iter().all(|(_, v)| v.is_none()),
+            "a TMPDIR the login has is kept: {got:?}"
+        );
+    }
+
+    /// Rule 1197: the agent of the person's own desktop login (launchd's socket, 1Password's, a `~/.ssh` one) stays;
+    /// only the socket sshd made for this login goes.
+    #[test]
+    fn only_a_forwarded_agent_socket_is_dropped() {
+        for kept in [
+            "/private/tmp/com.apple.launchd.Xy12/Listeners",
+            "/Users/max/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock",
+            "/Users/max/.ssh/agent.4242",
+            "/tmp/ssh-AbCd/agent.",
+            "/tmp/ssh-AbCd/agent.42x",
+            "",
+        ] {
+            assert!(!forwarded_agent(kept), "{kept}");
+            assert!(login_env(vars(&[("SSH_AUTH_SOCK", kept)]), None).is_empty());
+        }
+        assert!(forwarded_agent("/tmp/ssh-XXXXXXXXXX/agent.1"));
+        assert!(forwarded_agent("/var/folders/q/T/ssh-AbCd/agent.77"));
+    }
+
+    /// Rule 1197: a login with no `TMPDIR` (sshd sets none on a Mac) gives the started Flare the system's per-user one,
+    /// never the shared `/tmp`; an empty one counts as none.
+    #[test]
+    fn a_login_with_no_tmpdir_gets_the_users_own_temp_folder() {
+        let t = PathBuf::from("/var/folders/y/T/");
+        for v in [vars(&[("HOME", "/Users/max")]), vars(&[("TMPDIR", "")])] {
+            assert_eq!(
+                login_env(v, Some(t.clone())),
+                [("TMPDIR".to_string(), Some("/var/folders/y/T/".to_string()))]
+            );
+        }
+        // Windows: nothing to add.
+        assert!(login_env(vars(&[("HOME", "/Users/max")]), None).is_empty());
+    }
+
+    /// Rule 1197: a Mac starts the program a link points to, so the started Flare is the bundle's own.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_starts_the_program_a_link_points_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let macos = dir.path().join("Flare.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        let real = macos.join("flare");
+        std::fs::write(&real, b"").unwrap();
+        let link = dir.path().join("flare");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(started_exe(link), std::fs::canonicalize(&real).unwrap());
+        // A program that cannot be resolved is started as it is.
+        let gone = dir.path().join("gone");
+        assert_eq!(started_exe(gone.clone()), gone);
+    }
+
+    /// Rule 1197: the Mac's per-user temp folder is the system's private one.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_mac_users_temp_folder_is_the_systems_private_one() {
+        let t = user_temp_dir().expect("a Mac names one");
+        assert!(t.is_absolute() && t != Path::new("/tmp"), "{}", t.display());
     }
 
     #[test]

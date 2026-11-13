@@ -182,15 +182,38 @@ impl ServerConfig {
     }
 }
 
-/// The computer's name from the environment (`COMPUTERNAME` on Windows, `HOSTNAME` elsewhere), else empty. The app
-/// may set a better one (the name the person gave it).
-fn default_machine_name() -> String {
+/// The computer's name from the environment (`COMPUTERNAME` on Windows, `HOSTNAME` elsewhere), else, on a Mac, the
+/// system's host name (rule 1199: no shell exports `HOSTNAME` to an app or to an ssh command there), else empty. The
+/// app may set a better one (the name the person gave it).
+pub fn default_machine_name() -> String {
     ["COMPUTERNAME", "HOSTNAME"]
         .iter()
         .filter_map(|k| std::env::var(k).ok())
         .map(|v| v.trim().to_string())
         .find(|v| !v.is_empty())
+        .or_else(system_host_name)
         .unwrap_or_default()
+}
+
+/// macOS: `gethostname`, None when it cannot be read or is empty.
+#[cfg(target_os = "macos")]
+fn system_host_name() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: gethostname writes at most `buf.len()` bytes into `buf`.
+    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    std::str::from_utf8(&buf[..end])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Elsewhere the environment's name is the one.
+#[cfg(not(target_os = "macos"))]
+fn system_host_name() -> Option<String> {
+    None
 }
 
 /// Token bucket. `now` is passed in so tests do not sleep.
@@ -1225,6 +1248,23 @@ mod tests {
 
     fn code_of(v: &Value) -> &str {
         v["error"]["code"].as_str().unwrap_or("")
+    }
+
+    /// Rule 1199: a Mac names itself by its host name when nothing exports `HOSTNAME` (an app, an ssh command).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_has_its_host_name_when_the_environment_names_none() {
+        let host = system_host_name().expect("a Mac has a host name");
+        assert!(!host.is_empty() && !host.contains('\0'));
+        if std::env::var("HOSTNAME")
+            .ok()
+            .is_none_or(|h| h.trim().is_empty())
+            && std::env::var("COMPUTERNAME")
+                .ok()
+                .is_none_or(|h| h.trim().is_empty())
+        {
+            assert_eq!(default_machine_name(), host);
+        }
     }
 
     #[test]

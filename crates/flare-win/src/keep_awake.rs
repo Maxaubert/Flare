@@ -210,6 +210,10 @@ mod sys {
     }
 }
 
+/// The tests that ask the real system take turns (`cargo test` runs them in one process, whose assertions they read).
+#[cfg(test)]
+static REAL: Mutex<()> = Mutex::new(());
+
 #[cfg(target_os = "macos")]
 #[path = "macos/keep_awake.rs"]
 mod sys;
@@ -277,6 +281,7 @@ mod tests {
     /// The real one, taken and let go: it never fails or blocks (on Windows its thread starts at the first hold).
     #[test]
     fn the_system_keep_awake_takes_and_lets_go_without_waiting() {
+        let _turn = lk(&REAL);
         let k = SystemAwake::new();
         let h1 = k.hold();
         let h2 = k.hold();

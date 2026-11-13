@@ -1,9 +1,10 @@
 //! Process tests of `flare --serve-remote` (remote sessions PR 2): the built binary run the way ssh runs it, its stdin
 //! and stdout piped to a test that plays the viewer. Every run has its own temp profile with no Flare running in it, so
 //! nothing here can reach the owner's Flare, and no ssh to any machine is made. Every serve process here has
-//! `--no-start`, so none starts a Flare hidden (that is the e2e's `remoteOpen`, on the hidden desktop).
-//! Windows-only for now, like `instance.rs` (the macOS run is on the by-hand list of remote sessions PR 6).
-#![cfg(windows)]
+//! `--no-start`, so none starts a Flare hidden (that is the e2e's `remoteOpen`, on the hidden desktop or, on a Mac,
+//! parked clear and click-through). Windows and macOS: none of these processes opens a window or takes the focus, and on
+//! a Mac the serve process is no app at all (rule 1196: it never registers with LaunchServices and owns no window).
+#![cfg(any(windows, target_os = "macos"))]
 
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -123,6 +124,21 @@ fn a_serve_process_takes_no_single_instance_lock() {
         }
         assert_ne!(line, "second", "the serve process must not hold the lock");
     }
+    // The lock is real here (Windows and macOS): a second probe while the first lives is `second`, so the first
+    // probe's `first` says the serve process held none.
+    let second = first
+        && Command::new(env!("CARGO_BIN_EXE_flare"))
+            .arg("--instance-probe")
+            .arg(format!("--user-data-dir={}", dir.path().display()))
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .any(|l| l == "second")
+            })
+            .unwrap_or(false);
     drop(probe.stdin.take());
     let _ = exited_within(&mut probe, Duration::from_secs(10)).or_else(|| {
         let _ = probe.kill();
@@ -137,4 +153,64 @@ fn a_serve_process_takes_no_single_instance_lock() {
         first,
         "the probe is the first instance while a serve process runs"
     );
+    assert!(second, "a second probe meets the first one's lock");
+}
+
+/// The output of a short system tool, empty when it cannot run.
+#[cfg(target_os = "macos")]
+fn tool(exe: &str, args: &[&str]) -> String {
+    Command::new(exe)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Rule 1196: on a Mac the serve process ssh starts is no app. It makes no NSApplication, so LaunchServices never hears
+/// of it (`lsappinfo` finds no app for its pid) and the window server lists no window of it, while it answers the link.
+/// (Before, `main` made the shared application first, and every serve process checked in as a background app: in an
+/// ssh login with no desktop that is a window server connection that cannot be made.)
+#[cfg(target_os = "macos")]
+#[test]
+fn a_mac_serve_process_is_no_app_and_owns_no_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = serve(dir.path());
+    let pid = child.id();
+    let wire = StdioWire::from_child(child.stdin.take().unwrap(), child.stdout.take().unwrap())
+        .expect("a wire over the child's pipes");
+    let mut c = Client::new(wire);
+    c.remote_hello(
+        &RemoteHelloParams {
+            machine: "viewer".into(),
+            flare_version: "9".into(),
+        },
+        WAIT,
+    )
+    .expect("remote.hello answers");
+    // LaunchServices answers in this login (the Dock is an app it knows): only then does an empty answer mean
+    // something.
+    let ls = tool("/usr/bin/lsappinfo", &["find", "bundleid=com.apple.dock"]);
+    if ls.is_empty() {
+        eprintln!("lsappinfo finds no Dock in this login: the LaunchServices half is not checked");
+    } else {
+        let me = tool("/usr/bin/lsappinfo", &["find", &format!("pid={pid}")]);
+        assert!(
+            me.is_empty(),
+            "the serve process checked in with LaunchServices: {me}"
+        );
+    }
+    let shown: Vec<_> = flare_cef::macos::screen::on_screen()
+        .into_iter()
+        .filter(|w| w.pid == i64::from(pid))
+        .collect();
+    assert!(
+        shown.is_empty(),
+        "the serve process owns windows: {shown:?}"
+    );
+    drop(c);
+    let status = exited_within(&mut child, Duration::from_secs(10))
+        .expect("the serve process ends with its link");
+    assert!(status.success(), "{status:?}");
 }
