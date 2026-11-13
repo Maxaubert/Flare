@@ -183,6 +183,8 @@ pub enum UiMsg {
     /// The machines of `machines.json`, read at start or saved by Settings > Machines (remote sessions PR 7): the +
     /// menu's rows and the remote tabs' logos follow them.
     Machines(Vec<crate::machines::Machine>),
+    /// A worker read the conversation of a tab a remote viewer sizes, for the host's own fitted view (rule 1211).
+    HostConvo(remote_glue::HostConvoRead),
 }
 
 mod ask_glue;
@@ -198,6 +200,8 @@ mod surfaces7;
 mod text_sel_glue;
 mod web_glue;
 
+#[cfg(test)]
+pub(crate) use remote_glue::HOST_CONVO_EVERY_MS;
 pub use surfaces7::install as install_surfaces7;
 
 /// Publishes a control channel event: name, params, and the tab it is about (its connections only).
@@ -522,6 +526,8 @@ pub struct AppCtl {
     machines: Vec<crate::machines::Machine>,
     /// A remote tab's fitted conversation view (remote sessions PR 7).
     rconvo: remote_glue::RemoteConvoView,
+    /// The host's own fitted view of a tab a remote viewer sizes (rule 1211).
+    hconvo: remote_glue::HostConvoView,
     source_id: Option<String>,
     last_saved: Option<SavedTabs>,
     /// Agents that are mid-answer: tab id to the clock time they started (M6 fills this).
@@ -1079,6 +1085,7 @@ impl AppCtl {
             starters: Vec::new(),
             machines: Vec::new(),
             rconvo: remote_glue::RemoteConvoView::default(),
+            hconvo: remote_glue::HostConvoView::default(),
             source_id: None,
             last_saved: None,
             working: HashMap::new(),
@@ -2782,8 +2789,9 @@ impl AppCtl {
         self.dev_forget(id);
         self.s7.notifier.forget(id);
         self.web.close_tab(id);
-        // Its fitted conversation view, if any (remote sessions PR 7).
+        // Its fitted conversation view, if any (remote sessions PR 7), and the host's own (rule 1211).
         self.rconvo.forget(id);
+        self.hconvo.forget(id);
         // A remote viewer that followed it hears `no_tab` from now (remote sessions PR 2).
         if let Some(r) = &self.remote_host {
             r.forget_tab(id);
@@ -4577,6 +4585,7 @@ impl AppCtl {
             self.skeleton_due(),
             self.surf7_next_due(),
             reveal,
+            self.host_convo_due(),
         ]
         .into_iter()
         .flatten()
@@ -4631,6 +4640,8 @@ impl AppCtl {
         self.tip_tick(now);
         self.term_tick();
         self.surf7_tick(now);
+        // The host's own fitted view reads its conversation again (rule 1211).
+        self.host_convo_tick(now);
         // The agent: its deadlines, and every resuming tab's reveal clock (a key, an exit or a
         // failed spawn reveal through the handle itself).
         self.hub.tick();
@@ -5376,6 +5387,7 @@ impl AppCtl {
             UiMsg::Picked(None) => {}
             UiMsg::StarterFolders(list) => self.starters = list,
             UiMsg::Machines(list) => self.set_machines(list),
+            UiMsg::HostConvo(read) => self.on_host_convo(read),
             UiMsg::FolderResolved(dir) => {
                 self.open_folder(&dir);
                 self.focus_terminal();

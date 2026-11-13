@@ -129,7 +129,10 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     and it takes `--user-data-dir` and nothing else. It answers the link's `remote.hello` itself and relays every other
     `remote.*` call to the Flare that runs on this machine under the same profile, over that Flare's pipe: it says
     `hello` there with the **bridge key** (`token`), and the running Flare gives it the `bridge` grant (section 4, rule
-    284). The key is a fresh 256-bit secret the running Flare writes into its profile at every start
+    284). That `hello`'s `client` is the machine the link's `remote.hello` named (2026-11-13, rule 1211): the running
+    Flare's window names it on a tab the viewer sizes ("Live on <machine>"). No param is added, so either side may be
+    older: an older bridge says `flare-serve-remote`, which the running Flare reads as no machine named, and so is a
+    name that is empty, over 256 characters or holds a control character. The key is a fresh 256-bit secret the running Flare writes into its profile at every start
     (`remote-bridge.key`, written whole by a rename, owner-only), so a key of an earlier run is refused (`unauthorized`),
     and the bridge reports `unavailable` ("Flare is not running on this machine"). The calls that follow or change a tab
     (`attach`, `detach`, `input`, `resize`, `close`) go in turn on one **anchor** pipe connection, the one the running
@@ -976,7 +979,9 @@ shell tab of the host. Shared limits are in `crates/flare-ctl/src/remote.rs`.
   that wrote something. It counts as typing (an answer key answers a question as a local key does).
 - `remote.resize {tab, cols, rows}` -> `{tab, cols, rows}`. Clamped to 2..1000 columns and 1..500 rows, never refused;
   the tab takes that size and the remote viewer owns it: the window's refits pass the tab by until a key is typed here
-  (the last typist wins, rule 282).
+  (the last typist wins, rule 282). While it does, an agent tab in front in the host's window shows its fitted
+  conversation view, naming the viewer's machine from the bridge's `hello`, and a key or a click there takes the size
+  back (2026-11-13, rule 1211); the answer does not change.
 - `remote.output {tab, since, max?}` -> `{tab, from, to, data, gap}`. The followed tab's bytes from `since` on,
   base64, at most `max` (default 256 KiB, at most 1 MiB). The next poll's `since` is `to`: each byte comes once, in
   order. `gap: true` when `since` is older than the ring (or newer than the end): bytes were lost, `data` starts at

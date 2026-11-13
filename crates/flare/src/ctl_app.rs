@@ -317,11 +317,13 @@ pub enum CtlOp {
         tab: String,
         intents: Vec<flare_term::handle::RemoteIntent>,
     },
-    /// `remote.resize`: a clamped size; the remote viewer owns the tab's size from now (rule 282).
+    /// `remote.resize`: a clamped size; the remote viewer owns the tab's size from now (rule 282). `viewer` is the
+    /// viewer's machine as its link named it, for the host's fitted view (rule 1211); None when the bridge said none.
     RemoteResize {
         tab: String,
         cols: usize,
         rows: usize,
+        viewer: Option<String>,
     },
     /// The last remote viewer of the tab detached or went: its size goes back to the window. Never ends it (rule 280).
     RemoteRelease {
@@ -2507,6 +2509,7 @@ impl AppDispatcher {
                     tab,
                     cols: usize::from(cols),
                     rows: usize::from(rows),
+                    viewer: viewer_of(ctx),
                 })
             }
             Method::RemoteOutput => {
@@ -2678,16 +2681,11 @@ impl AppDispatcher {
         ) else {
             return Ok(host.convo().none(&tab, since).to_json(&tab));
         };
-        let dir = std::path::Path::new(dir);
-        let Some(mut path) = flare_convo::transcript_path_in(dir, folder, session) else {
+        let Some(path) =
+            crate::remote_convo::transcript_of(std::path::Path::new(dir), folder, session)
+        else {
             return Ok(host.convo().none(&tab, since).to_json(&tab));
         };
-        // sync-ok: the control channel's worker asks the disk, never the UI thread
-        if !path.is_file()
-            && let Some(other) = flare_convo::find_transcript_in(dir, session)
-        {
-            path = other;
-        }
         let answer = host
             .convo()
             .read(&tab, session, &path, since)
@@ -2703,6 +2701,18 @@ impl AppDispatcher {
 
 /// `remote.convo` calls one tab takes a second (a viewer polls it every second or two).
 pub const REMOTE_CONVO_RATE: f64 = 10.0;
+
+/// The viewer's machine, as the call's connection names it (rule 1211): a remote link's own `remote.hello` named it,
+/// and the bridge says it as its `hello`'s client. An older bridge says only its own name, which names no machine, and
+/// so does a name that is empty, too long or holds a control character.
+pub fn viewer_of(ctx: &CallContext) -> Option<String> {
+    let name = ctx.client.trim();
+    (!name.is_empty()
+        && name != crate::serve_remote::BRIDGE_CLIENT
+        && name.chars().count() <= flare_ctl::session::MAX_MACHINE_NAME
+        && !name.chars().any(char::is_control))
+    .then(|| name.to_string())
+}
 
 impl Dispatcher for AppDispatcher {
     /// A mod's token (stage 8): the grant of exactly its permissions while it is on, nothing once it is off.
@@ -6234,6 +6244,46 @@ mod tests {
                 json!({"tab": "t1", "cols": "80", "rows": 24})
             )),
             code::BAD_PARAMS
+        );
+    }
+
+    /// Rule 1211: `remote.resize` names the viewer's machine as the bridge's `hello` said it; an older bridge's own name,
+    /// an empty name, an overlong one or one with a control character names none.
+    #[test]
+    fn remote_resize_names_the_viewer_the_bridge_said() {
+        let r = rig(
+            |op| match op {
+                CtlOp::RemoteResize { viewer, .. } => Ok(json!({"viewer": viewer})),
+                _ => Ok(json!({})),
+            },
+            false,
+            &[],
+        );
+        let d =
+            r.d.with_remote(crate::remote_host::RemoteHost::with_key("k".into()));
+        let viewer = |client: String| {
+            let ctx = CallContext {
+                client,
+                ..bridge(1)
+            };
+            d.call(
+                &ctx,
+                Method::RemoteResize,
+                json!({"tab": "t1", "cols": 80, "rows": 24}),
+            )
+            .unwrap()["viewer"]
+                .clone()
+        };
+        assert_eq!(viewer("Mac Mini".into()), json!("Mac Mini"));
+        assert_eq!(
+            viewer(crate::serve_remote::BRIDGE_CLIENT.into()),
+            Value::Null
+        );
+        assert_eq!(viewer(String::new()), Value::Null);
+        assert_eq!(viewer("a\u{7}b".into()), Value::Null);
+        assert_eq!(
+            viewer("m".repeat(flare_ctl::session::MAX_MACHINE_NAME + 1)),
+            Value::Null
         );
     }
 

@@ -3530,6 +3530,29 @@ that it was not sent. A `no_tab` end drops the kept typing: it is never typed in
 `remote_host::tests::an_open_id_is_remembered_ten_minutes_and_at_most_64_of_them`,
 `ctl_app::tests::remote_open_checks_the_host_folder_and_the_resume_id_first` and
 `remote_flows::a_remote_open_sent_again_with_its_open_id_opens_no_second_tab`. Source: Max, 2026-11-13.
+1211. **The host's own window shows the fitted conversation view while a remote viewer sizes an agent tab.** The
+owner's design (spec "Size" and "The other screen"): the live terminal has one size, the last typist's, and the other
+screen shows the conversation instead of a squeezed terminal. Rule 1193 gave the viewer that view; the host kept
+drawing the terminal at the viewer's size until a key was typed there. Now, while a remote viewer owns a tab's size
+(`remote.resize`, rule 282) and that tab is in front, the host's window shows the same `RemoteConvoView` with the same
+look over its terminal: the tab's Claude session read on a worker every 1.5 s through the same numbered feed as
+`remote.convo` (rule 297), shown once a read brought words, and the head line `Live on <viewer>.` naming the viewer's
+machine. A key typed there, or a click on the view, takes the size back (`TabHost::take_size_back`): the view goes, the
+terminal is back at the window's size and the key reaches the shell; the viewer's next `remote.status` says `sized:
+host` and its window shows its own view. Only for an agent tab of this host (its Claude session known); a plain shell
+keeps its terminal at the viewer's size, and a remote tab keeps the viewer's view (rule 1193). The viewer's machine
+crosses with no new param: the bridge says `hello` to the running Flare with the machine the link's `remote.hello`
+named as its `client` (an older bridge said `flare-serve-remote`, which names no machine and gives a line with no
+name), and `ctl_app::viewer_of` hands it to `CtlOp::RemoteResize` only when it is 1 to 256 characters with no control
+character. Native: `appctl/remote_glue.rs` (`host_view_stands`, `HostConvoView`, `host_convo_want`,
+`host_convo_tick`, `push_remote_convo`, `remote_convo_take_over`), `remote_convo::transcript_of`,
+`remote_link::entry_lines`, `serve_remote.rs` (`BRIDGE_CLIENT`, `viewer_name`), `ctl_app::viewer_of`. Held by
+`appctl::remote_glue::tests` (the switching rule, the reads taken once, another session or tab starting over, the
+viewer named), `ctl_app::tests::remote_resize_names_the_viewer_the_bridge_said`,
+`serve_remote::tests::the_bridge_names_the_links_machine_to_the_running_flare` and
+`remote_flows::the_hosts_own_window_shows_the_fitted_view_while_a_viewer_sizes_an_agent_tab` (every shipped scale:
+the view and its machine, a key and a click taking the size back, the release, a plain shell, another tab in front).
+Source: Max, 2026-11-13.
 
 1207. **A PC host runs the serve command through `cmd /c`, Settings > Machines finds a PC's own installs, and a
 renamed copy serves its own profile.** Found 2026-11-13 over real ssh from the Mac to the PC: the PC's sshd

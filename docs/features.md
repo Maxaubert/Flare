@@ -2661,8 +2661,16 @@ Contract: `docs/surfaces/protocol.md` (`remote.hello`'s `os`, `remote.status`'s 
   the live terminal back at this window's size; the key goes on to the tab (rule 1193). Held by
   `ui_tests::term::flow::a_remote_tab_the_host_sizes_shows_its_conversation_until_a_key_takes_it_back` and
   `ui_tests::remote_convo::*`.
-- **Not yet.** The host's own window shows no fitted view while a viewer sizes the tab (the plan puts the view on the
-  remote tab, so the host's tab keeps its terminal at the viewer's size until a key there). Adding a machine reached
+- **The host's own fitted view, 2026-11-13.** While a remote viewer sizes an agent tab of the host (someone typed on the
+  viewer last) and that tab is in front, the host's window shows the same fitted conversation view of the tab's own
+  Claude session, with "Live on <viewer's machine>. Click or type to take the terminal here." above it, instead of the
+  terminal at the viewer's size. A key typed there or a click takes the size back: the terminal returns at the host
+  window's size, the key goes on to the shell, and the viewer's window shows its own fitted view. A plain shell keeps
+  its terminal at the viewer's size. The viewer's machine is the name its link said in `remote.hello`; an older
+  host-side bridge names none, and the line then says only how to take the terminal back (rule 1211). Held by
+  `ui_tests::agent_flows::remote_flows::the_hosts_own_window_shows_the_fitted_view_while_a_viewer_sizes_an_agent_tab`
+  (every shipped scale) and `appctl::remote_glue::tests`.
+- **Not yet.** Adding a machine reached
   as a user other than the one in `~/.ssh/config`, or with Flare elsewhere than on the PATH, a PC's two installs or
   `/Applications`, still needs a hand edit of `machines.json`. Real ssh between the PC and the Mac is on the by-hand
   list.
