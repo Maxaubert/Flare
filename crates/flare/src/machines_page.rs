@@ -22,7 +22,7 @@ use flare_tabs::tabs::Os;
 use crate::appctl::{Post, UiMsg};
 use crate::machines::{
     FLARE_CANDIDATES, FileMachines, Machine, MachinesPort, failure_line, machine_id, os_of_hello,
-    probe_kinds,
+    probe_kinds, saved_kind,
 };
 use crate::remote_link::LinkError;
 use crate::settings_ctl::SettingsMsg;
@@ -370,8 +370,8 @@ impl MachinesPage {
                     let id = machine_id(name, &taken);
                     list.push(Machine {
                         id: id.clone(),
-                        // The host's own word; a host that names no known system keeps the quoting that answered.
-                        kind: facts.os.or(kind),
+                        // The host's own word when its quoting is the one that answered (rule 1208).
+                        kind: saved_kind(kind, facts.os, flare),
                         ..probe
                     });
                     io.save(&list)?;
@@ -606,7 +606,7 @@ mod tests {
         };
         // Not on the PATH; the Mac app answers.
         io.answers.insert(
-            ("studio".into(), FLARE_CANDIDATES[3].into()),
+            ("studio".into(), FLARE_CANDIDATES[5].into()),
             facts("0.2.0", Some(Os::Mac)),
         );
         let mut r = Rig::new(io);
@@ -624,21 +624,23 @@ mod tests {
         assert_eq!(saved[0].name, "Studio Mac");
         assert_eq!(saved[0].ssh, "studio");
         assert_eq!(saved[0].kind, Some(Os::Mac));
-        assert_eq!(saved[0].flare, FLARE_CANDIDATES[3]);
+        assert_eq!(saved[0].flare, FLARE_CANDIDATES[5]);
         // The window heard the new list (the + menu and the logos follow).
         assert_eq!(lists, vec![saved.clone()]);
         let info = r.page.info();
         assert!(!info.add.open, "the form closes");
         assert_eq!(info.machines[0].status, LinkStatus::Linked);
         // Every path was tried in order, each quoted as its shape says (rule 1207): the bare name in sh's form, then
-        // the PC's; the PC installs in the PC's; the Mac app in sh's.
+        // the PC's; the PC installs in the PC's (cmd's variable, then PowerShell's, rule 1208); the Mac app in sh's.
         let probes = r.io.probes.lock().unwrap().clone();
         let want: Vec<(String, String, Option<Os>)> = [
             ("flare", None),
             ("flare", Some(Os::Pc)),
             (FLARE_CANDIDATES[1], Some(Os::Pc)),
             (FLARE_CANDIDATES[2], Some(Os::Pc)),
-            (FLARE_CANDIDATES[3], None),
+            (FLARE_CANDIDATES[3], Some(Os::Pc)),
+            (FLARE_CANDIDATES[4], Some(Os::Pc)),
+            (FLARE_CANDIDATES[5], None),
         ]
         .iter()
         .map(|(f, k)| ("studio".to_string(), f.to_string(), *k))
@@ -684,6 +686,92 @@ mod tests {
         );
     }
 
+    /// Rule 1208: a PC whose login shell is PowerShell and whose profile folder holds a space (`C:\Users\John Doe`)
+    /// does not answer at cmd's `%LOCALAPPDATA%` (PowerShell drops the quotes, cmd splits the expanded path); it is
+    /// found at PowerShell's `$env:LOCALAPPDATA`, saved as a PC with that path, and linked with the same command.
+    #[test]
+    fn a_pc_whose_profile_folder_has_a_space_is_found_through_powershells_variable() {
+        let mut io = FakeIo {
+            hosts: vec!["desk".into()],
+            ..FakeIo::default()
+        };
+        io.answers.insert(
+            (
+                "desk".into(),
+                r"$env:LOCALAPPDATA\StableFlare\current\FlareStable.exe".into(),
+            ),
+            facts("0.3.0", Some(Os::Pc)),
+        );
+        let mut r = Rig::new(io);
+        r.page.page_shown();
+        r.settle();
+        r.page.open_form();
+        r.page.submit();
+        r.settle();
+        let saved = r.io.list();
+        assert_eq!(saved.len(), 1, "{:?}", r.page.info().add.error);
+        assert_eq!(saved[0].kind, Some(Os::Pc));
+        assert_eq!(
+            crate::remote_link::remote_command(saved[0].kind, &saved[0].flare).as_deref(),
+            Some(
+                r#"cmd /c "$env:LOCALAPPDATA\StableFlare\current\FlareStable.exe" --serve-remote"#
+            )
+        );
+        // cmd's variable was tried first for both installs, then PowerShell's Stable answered.
+        let probes: Vec<String> =
+            r.io.probes
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|p| p.1.clone())
+                .collect();
+        assert_eq!(probes[2..], FLARE_CANDIDATES[1..4]);
+    }
+
+    /// Rule 1208: a Windows host whose ssh login shell is a POSIX shell (Git Bash) answers the bare name in sh's
+    /// quoting and names itself a PC. It keeps the sh quoting that answered: the PC's `cmd /c` would reach bash, which
+    /// rewrites `/c` to `C:/`, and every later link would hang.
+    #[test]
+    fn a_pc_that_answered_in_sh_quoting_keeps_that_quoting() {
+        let mut io = FakeIo {
+            hosts: vec!["bashpc".into()],
+            ..FakeIo::default()
+        };
+        io.answers.insert(
+            ("bashpc".into(), "flare".into()),
+            facts("0.3.0", Some(Os::Pc)),
+        );
+        let mut r = Rig::new(io);
+        r.page.page_shown();
+        r.settle();
+        r.page.open_form();
+        r.page.submit();
+        r.settle();
+        let saved = r.io.list();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(r.io.probes.lock().unwrap()[0].2, None, "sh's form answered");
+        assert_eq!(saved[0].kind, None);
+        assert_eq!(
+            crate::remote_link::remote_command(saved[0].kind, &saved[0].flare).as_deref(),
+            Some("'flare' --serve-remote")
+        );
+    }
+
+    /// Rule 1208: the system a host names is saved only when its quoting is the one that answered; otherwise the
+    /// quoting that answered is kept.
+    #[test]
+    fn the_saved_kind_keeps_the_quoting_that_answered() {
+        let (pc, mac) = (Some(Os::Pc), Some(Os::Mac));
+        // A Mac's quoting is sh's: the logo is kept.
+        assert_eq!(saved_kind(None, mac, "flare"), mac);
+        assert_eq!(saved_kind(pc, pc, "flare"), pc);
+        // A host that names no system keeps the quoting that answered.
+        assert_eq!(saved_kind(pc, None, "flare"), pc);
+        assert_eq!(saved_kind(None, None, "flare"), None);
+        // A PC that answered in sh's quoting (Git Bash as its login shell) keeps sh's.
+        assert_eq!(saved_kind(None, pc, "flare"), None);
+    }
+
     #[test]
     fn each_candidate_is_probed_with_the_quoting_its_path_implies() {
         assert_eq!(
@@ -692,11 +780,14 @@ mod tests {
                 "flare",
                 r"%LOCALAPPDATA%\StableFlare\current\FlareStable.exe",
                 r"%LOCALAPPDATA%\Flare\current\Flare.exe",
+                r"$env:LOCALAPPDATA\StableFlare\current\FlareStable.exe",
+                r"$env:LOCALAPPDATA\Flare\current\Flare.exe",
                 "/Applications/Flare.app/Contents/MacOS/flare",
             ]
         );
         assert_eq!(probe_kinds("flare"), [None, Some(Os::Pc)]);
         assert_eq!(probe_kinds(FLARE_CANDIDATES[1]), [Some(Os::Pc)]);
+        assert_eq!(probe_kinds(FLARE_CANDIDATES[3]), [Some(Os::Pc)]);
         assert_eq!(probe_kinds(r"D:\Tools\flare.exe"), [Some(Os::Pc)]);
         assert_eq!(probe_kinds("/opt/flare/bin/flare"), [None]);
         // Every candidate has a command in each quoting it is probed with.

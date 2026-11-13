@@ -32,6 +32,9 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
 - [ ] Settings > Machines adds the PC with no path typed: the Stable install answers as
   `%LOCALAPPDATA%\StableFlare\current\FlareStable.exe` (not on the PATH), and its serve process relays to the Stable
   profile `%APPDATA%\FlareStable`, not the Dev copy's `%APPDATA%\Flare` (its log says which).
+- [ ] Rule 1208 over real ssh: a PC account whose profile folder holds a space, with a PowerShell login shell, is added
+  at `$env:LOCALAPPDATA\StableFlare\current\FlareStable.exe` and links (measured only by running the shells locally
+  as sshd would, 2026-11-13).
 - [ ] How long a real ssh takes to come up; the 90 s hello wait covers it with room.
 - [ ] Spike 3: the serve process started by sshd on the Mac reaches the running Flare's per-user socket
   (`LOCAL_PEERPID` checks pass; the serve child has no `FLARE_CTL_PID`, so it uses the plain-name path).

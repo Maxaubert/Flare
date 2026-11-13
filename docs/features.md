@@ -2661,6 +2661,12 @@ Contract: `docs/surfaces/protocol.md` (`remote.hello`'s `os`, `remote.status`'s 
   `the_remote_command_table_quotes_each_hosts_shell`, `adding_a_pc_finds_its_stable_install_and_saves_it_as_a_pc`,
   `each_candidate_is_probed_with_the_quoting_its_path_implies` and
   `a_renamed_exe_with_no_flag_takes_the_profile_of_its_name`.
+- **A PC with a space in its profile folder, 2026-11-13.** Under a PowerShell login shell, Settings > Machines also
+  finds the PC's installs at `$env:LOCALAPPDATA\...` when `%LOCALAPPDATA%\...` does not answer (a profile folder such
+  as `C:\Users\John Doe`). A PC path with a curly quote is refused. A Windows host whose login shell is Git Bash keeps
+  the sh quoting that answered, with no PC logo (rule 1208). Held by
+  `a_pc_whose_profile_folder_has_a_space_is_found_through_powershells_variable`,
+  `a_pc_that_answered_in_sh_quoting_keeps_that_quoting` and `the_saved_kind_keeps_the_quoting_that_answered`.
 
 ## Tooltips only on icons, 2026-11-13
 

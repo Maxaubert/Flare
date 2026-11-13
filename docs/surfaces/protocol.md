@@ -159,8 +159,8 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     nothing else: no token, no environment (rule 290). A PC's sshd runs cmd or, often, PowerShell (its `DefaultShell`);
     PowerShell refuses a bare `"<path>" --serve-remote` and does not wait for the GUI-subsystem `flare.exe` behind `&`,
     so the PC form goes through `cmd /c`, which both shells run and which waits (rule 1207). A PC path with one of
-    `& < > ( ) @ ^ |` (cmd would strip its quotes) or `" % ! $` or a backquote is refused, except a leading
-    `%LOCALAPPDATA%`, which cmd expands on the host. The worker says `remote.hello` (90 s, PR 5), then `remote.open
+    `& < > ( ) @ ^ |` (cmd would strip its quotes), `" % ! $`, a backquote or a quote mark from U+2018 to U+201F is
+    refused, except a leading `%LOCALAPPDATA%` or `$env:LOCALAPPDATA`, which the host's shell expands (rule 1208). The worker says `remote.hello` (90 s, PR 5), then `remote.open
     {folder, resume?}` for a new tab (`resume` only when the tab was opened with one, PR 5) (its answer `tab` is kept as the tab's `host_tab`) or straight to `remote.attach {tab}` for a
     restored one, then `remote.resize` with the tab's size. A tab that has shown nothing yet starts from `remote.snapshot`;
     after a reconnect it calls `remote.output {since: <the number read>, max: 1048576}` until caught up (`gap: true`: a
@@ -182,9 +182,11 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
     machine with a link of its own that says `remote.hello` and ends (`hello_over`): its `flare_version` and `os` are
     shown and saved; a new machine's Flare is looked for as `flare` (the PATH), then
     `%LOCALAPPDATA%\StableFlare\current\FlareStable.exe` and `%LOCALAPPDATA%\Flare\current\Flare.exe` (a PC's two
-    installs), then `/Applications/Flare.app/Contents/MacOS/flare`, each quoted as its path implies until the host says
+    installs), the same two under `$env:LOCALAPPDATA` (a PowerShell login shell, rule 1208), then
+    `/Applications/Flare.app/Contents/MacOS/flare`, each quoted as its path implies until the host says
     its system (rule 1207): a PC path in the PC's `cmd /c` form, a `/` path in sh's, the bare `flare` in sh's and then the
-    PC's. The first that answers is saved with the system its `remote.hello` names; a refusal ends the search. On the
+    PC's. The first that answers is saved with the system its `remote.hello` names when that system's quoting is the one
+    that answered, else with the quoting that answered (rule 1208); a refusal ends the search. On the
     host, a renamed copy (`FlareStable.exe`) started with no `--user-data-dir` serves `%APPDATA%\<its name>`, the
     profile its shortcut names. A call that fails
     with `no_tab` ends the tab as a shell that exits; any other broken
