@@ -738,6 +738,70 @@ fn agent_icons_move_by_the_pushed_frame_and_stand_still_when_stilled() {
     );
 }
 
+/// Owner 2026-11-13 ("keep squash, snap to pixels"): every frame of H1's hop at the shipped scales draws Clawd in a box
+/// on whole device pixels. Two frames whose box has the same size draw the same pixels, only moved by whole device
+/// pixels (a box on a fraction smears and wobbles), and the squash never makes Clawd narrower than it allows.
+#[test]
+fn every_frame_of_the_hop_draws_clawd_on_whole_device_pixels() {
+    use flare_agent::icon::CLAWD_FEET;
+    use flare_agent::icon_motion::{HOP_MS, IconMotion as M, hop_at, icon_box};
+    use std::collections::HashMap;
+    for s in [1.0f32, 1.25, 1.5, 2.0, 2.25] {
+        let h = harness(s);
+        h.comp.set_icon_kind(1);
+        let (rest_bb, _) = icon_ink(&h.render(), s, CLAWD, 40);
+        let rest_bb = rest_bb.unwrap_or_else(|| panic!("Clawd shows at {s}"));
+        let rest_w = rest_bb.2 - rest_bb.0 + 1;
+        h.comp.set_icon_motion(M::HopBlink.code());
+        // The pixels the squash may take off the box's width, and one for the edge's blend.
+        let give = ((18.0 * s).round() - (18.0 * s * 0.96).round()) as u32 + 1;
+        // Each box size, with the first frame that drew it and its pixels.
+        type Drawn = (u64, Vec<[u8; 4]>);
+        let mut seen: HashMap<(u32, u32), Drawn> = HashMap::new();
+        for ms in (0..HOP_MS).step_by(16) {
+            let (rise, sx, sy) = hop_at(ms);
+            let g = h.comp.global::<MarkMotion>();
+            g.set_hop_y(rise);
+            g.set_hop_sx(sx);
+            g.set_hop_sy(sy);
+            let f = h.render();
+            let (bb, _) = icon_ink(&f, s, CLAWD, 40);
+            let bb = bb.unwrap_or_else(|| panic!("Clawd shows at {ms} ms, {s}"));
+            assert!(
+                bb.2 - bb.0 + 1 + give >= rest_w,
+                "{ms} ms at {s}: {bb:?}, rest {rest_bb:?}"
+            );
+            // On the ground the squash keeps Clawd's feet on the rest line (to the pixel the art's edge blends into).
+            if rise == 0.0 {
+                assert!(
+                    bb.3.abs_diff(rest_bb.3) <= 1,
+                    "{ms} ms at {s}: the feet stay put, {bb:?} {rest_bb:?}"
+                );
+            }
+            let (left, top, w, hgt) =
+                icon_box((340.0, 9.0), 18.0, s, (sx, sy, rise), Some(CLAWD_FEET));
+            let (left, top, w, hgt) = (left as u32, top as u32, w as u32, hgt as u32);
+            let mut crop = Vec::new();
+            for y in top - 2..top + hgt + 2 {
+                for x in left - 2..left + w + 2 {
+                    crop.push(f.px(x, y));
+                }
+            }
+            match seen.get(&(w, hgt)) {
+                // The same pixels, to the renderer's rounding (one level of a channel at 150 % and 225 %).
+                Some((first, want)) => assert!(
+                    want.iter().zip(&crop).all(|(a, b)| Frame::near(*a, *b, 2)),
+                    "{ms} ms at {s} draws a {w} x {hgt} box unlike {first} ms did"
+                ),
+                None => {
+                    seen.insert((w, hgt), (ms, crop));
+                }
+            }
+        }
+        assert!(seen.len() > 2, "the hop squashes and stretches at {s}");
+    }
+}
+
 #[test]
 fn the_still_set_stills_everything() {
     let busy = MotionSet {

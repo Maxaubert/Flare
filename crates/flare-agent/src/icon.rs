@@ -138,22 +138,33 @@ pub fn clawd_pixels() -> Vec<(u8, u8)> {
 /// Clawd as an SVG path: each pixel is 1.02 wide and 2.04 tall (a terminal cell is twice as
 /// tall as it is wide, so Clawd is not squat).
 pub fn clawd_path() -> String {
-    clawd_pixels()
-        .iter()
-        .map(|&(x, y)| format!("M{x} {} h1.02 v2.04 h-1.02 z", u32::from(y) * 2))
-        .collect::<Vec<_>>()
-        .join(" ")
+    clawd_cells_path(clawd_pixels())
 }
 
 /// Clawd's eyes: the two cells of the head's second row its art leaves open. H1's blink fills them in Clawd's own
 /// colour (`docs/surfaces/agent-motion-mock.html`, the `lid` path), drawn like the body.
 pub const CLAWD_EYES: [(u8, u8); 2] = [(5, 1), (12, 1)];
 
-/// Clawd's eyelids as an SVG path, in the body's units (`clawd_path`).
-pub fn clawd_lids_path() -> String {
-    CLAWD_EYES
-        .iter()
-        .map(|&(x, y)| format!("M{x} {} h1.02 v2.04 h-1.02 z", u32::from(y) * 2))
+/// Clawd with his eyes shut (H1's blink): the body's path with the two eye cells filled, in the body's units
+/// (`clawd_path`). One shape that the icon swaps in for the body, never lids laid over it: a second path over the
+/// body left a seam (owner 2026-11-13).
+pub fn clawd_shut_path() -> String {
+    clawd_cells_path(clawd_pixels().into_iter().chain(CLAWD_EYES))
+}
+
+/// Where each moving mark's feet sit in its box, as a fraction of the box's height from its top: the lowest edge of
+/// its art in its view box. The hop squashes about this line (`icon_motion::icon_box`), so the feet stay put.
+/// Clawd's legs are row 4 of his grid (y 8 to 10.04), agy's arch ends on row 7 (y 7 to 8.02), the OpenAI mark
+/// reaches the foot of its 24 unit box.
+pub const CLAWD_FEET: f32 = (10.04 - CLAWD_VIEWBOX.1) / CLAWD_VIEWBOX.3;
+pub const AGY_FEET: f32 = (8.02 - AGY_VIEWBOX.1) / AGY_VIEWBOX.3;
+pub const OPENAI_FEET: f32 = 1.0;
+
+/// Cells of Clawd's grid as an SVG path, one 1.02 x 2.04 rectangle each.
+fn clawd_cells_path(cells: impl IntoIterator<Item = (u8, u8)>) -> String {
+    cells
+        .into_iter()
+        .map(|(x, y)| format!("M{x} {} h1.02 v2.04 h-1.02 z", u32::from(y) * 2))
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -302,17 +313,38 @@ mod tests {
     }
 
     #[test]
-    fn the_lids_shut_clawds_two_eyes_and_nothing_else() {
+    fn the_shut_clawd_is_the_body_with_its_two_eyes_filled_and_nothing_else() {
         let body = clawd_pixels();
         for eye in CLAWD_EYES {
             assert!(!body.contains(&eye), "{eye:?} is open in the art");
             // Each eye sits in the head between two pixels of it.
             assert!(body.contains(&(eye.0 - 1, eye.1)) && body.contains(&(eye.0 + 1, eye.1)));
         }
+        // One shape: the body's own cells in the body's order, then the two eyes.
         assert_eq!(
-            clawd_lids_path(),
-            "M5 2 h1.02 v2.04 h-1.02 z M12 2 h1.02 v2.04 h-1.02 z"
+            clawd_shut_path(),
+            format!(
+                "{} M5 2 h1.02 v2.04 h-1.02 z M12 2 h1.02 v2.04 h-1.02 z",
+                clawd_path()
+            )
         );
+        assert_eq!(clawd_shut_path().matches('M').count(), 56);
+    }
+
+    #[test]
+    fn the_feet_are_the_lowest_edge_of_each_marks_art() {
+        let clawd_low = clawd_pixels().iter().map(|p| p.1).max().unwrap();
+        let clawd_foot = f32::from(clawd_low) * 2.0 + 2.04;
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        assert!(near(
+            CLAWD_FEET,
+            (clawd_foot - CLAWD_VIEWBOX.1) / CLAWD_VIEWBOX.3
+        ));
+        let agy_low = AGY_PIXELS.iter().map(|p| p.1).max().unwrap();
+        let agy_foot = f32::from(agy_low) + 1.02;
+        assert!(near(AGY_FEET, (agy_foot - AGY_VIEWBOX.1) / AGY_VIEWBOX.3));
+        assert!((0.73..0.74).contains(&CLAWD_FEET) && (0.86..0.87).contains(&AGY_FEET));
+        assert_eq!(OPENAI_FEET, 1.0);
     }
 
     #[test]

@@ -1962,9 +1962,13 @@ Spec: `docs/superpowers/specs/2026-10-26-agy-and-agent-motion.md`, Part 2 (owner
 - **How.** `flare_agent::icon_motion` computes every frame from the mark clock's time (`icon_phase`, no clock read
   there); `push_frame` puts it on `MarkMotion` with the marks; `AgentIcon` (`tabmark.slint`) moves and scales the icon's
   box for the hop and the breath, fades it, turns it (`transform-rotation`, left out by the software renderer), fills
-  Clawd's eyes (`Glyphs.clawd-lids`, pinned to `flare_agent::icon::clawd_lids_path`) and gives each path of agy's arch its
-  flowing colour. A row gets its motion from `tabs_ui::wear_motions`. No Slint `animate`, and nothing new ticks: the
-  clock runs while a tab works anyway.
+  Clawd's eyes (swaps in `Glyphs.clawd-shut`, pinned to `flare_agent::icon::clawd_shut_path`: one shape, no lid path laid
+  over the body) and gives each path of agy's arch its flowing colour. A row gets its motion from `tabs_ui::wear_motions`.
+  No Slint `animate`, and nothing new ticks: the clock runs while a tab works anyway.
+- **Whole pixels (2026-11-13).** The moving box keeps the squash and stretch but lands every edge, its size and the hop's
+  rise on whole device pixels of the window at any scale (`flare_agent::icon_motion::icon_box` is the rule), and a hop
+  squashes about its art's feet (`icon::CLAWD_FEET`, `AGY_FEET`, `OPENAI_FEET`), which stay on the rest line, so the icon
+  no longer shrinks, wobbles or smears. Windows and macOS alike.
 - **The plugin API.** `agents.motion.set {agent, motion}` and `agents.motion.clear {agent}`, namespace `Agents`, new
   permission `agent-looks` ("Change how agent icons move while they work"), protocol 2 only; the newest pick wins, and a
   plugin that stops takes its picks with it (`flare_agent::icon_motion::MotionPicks`, kept by the window, applied for the
