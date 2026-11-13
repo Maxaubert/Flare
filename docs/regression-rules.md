@@ -3417,7 +3417,7 @@ file is locked, or cannot be looked at, and judges a folder with none by age alo
 `crates/flare/src/remote_files.rs` (`RunLock`, `run_alive`, `sweep_old`). Held by
 `remote_files::tests::a_live_runs_folders_are_never_swept_however_old_and_a_gone_runs_are`. Source: review of remote
 sessions PR 6 (2026-11-12).
-1200. **Clawd's working hop lands on whole device pixels and blinks in one shape.** `AgentIcon`'s moving box (H1's
+1202. **Clawd's working hop lands on whole device pixels and blinks in one shape.** `AgentIcon`'s moving box (H1's
 hop and `hop`, since 6b7307e1) took `size * sx` and `size * sy` with unsnapped, fractional x and y, so every 16 ms frame
 fell on another sub-pixel box: the anti-aliasing smeared, and Clawd looked to shrink in width, wobble and leave
 artifacts on the tab. The blink laid a second path of lids over the body and left a seam. Now the rest size, the
@@ -3433,10 +3433,17 @@ Native: `crates/flare/ui/tabmark.slint` (`AgentIcon`), `crates/flare-agent/src/i
 `icon::tests::the_feet_are_the_lowest_edge_of_each_marks_art` and the `ui_text_marks` tests
 `the_agent_icons_moving_box_snaps_every_edge_to_whole_device_pixels` and
 `the_shut_clawd_is_the_agent_crates_path_swapped_in_for_the_body`; on the GPU renderer (femtovg on wgpu, Metal on the
-Mac, at 2.0 and 1.0) by the two tests in `crates/flare-render/tests/femtovg_clawd_hop.rs` (rule 1201). Source: Max,
+Mac, at 2.0 and 1.0) by the two tests in `crates/flare-render/tests/femtovg_clawd_hop.rs` (rule 1203). Source: Max,
 2026-11-13 ("Keep squash, snap to pixels").
-1201. **A filled shape on the GPU renderer leaves nothing behind for the next frame (femtovg's concave cover quad).**
-Rule 1200 checked Clawd's hop on the software renderer only. On femtovg (the GPU renderer, the Mac's at 200 %) the same
+1200. **The Agent moves sample adds nothing to a tab's menu.** Max, 2026-11-13: "the plugin agent moves dont need to
+add itsself to the reight click menu". Its "Agent motions" item (an `actions` entry, `where: ["tab-menu"]`) and the
+picker panel it opened are gone, with the `panel` and `actions` permissions; the plugin asks for `agent-looks` only
+and sets the owner's three motions from its background page. Picks saved by 0.1 (its store, key `picks`) still apply.
+Native: `sample-plugins/agent-moves/`. Held by `the_sample_plugins_are_valid`
+(`flare-mods/src/discover.rs`: no actions, no panel, no `panel.open`) and the sample round trip
+`every_sample_plugin_loads_turns_on_and_answers_one_round_trip_of_its_protocol`. Source: Max, 2026-11-13.
+1203. **A filled shape on the GPU renderer leaves nothing behind for the next frame (femtovg's concave cover quad).**
+Rule 1202 checked Clawd's hop on the software renderer only. On femtovg (the GPU renderer, the Mac's at 200 %) the same
 box drew other pixels after some frames: the top edge's anti-aliased row came and went. Cause: femtovg 0.27.0 fills a
 concave shape (Clawd is many cells, so concave) by counting a fan into the stencil, then drawing a cover quad that zeroes
 the stencil. Three corners of that quad take the fringe, the fourth (left, top) did not, so its top edge sloped and left a
@@ -3445,8 +3452,8 @@ flush, so every later fill there lost its fringe. Now the fourth corner takes th
 patch's second change). It holds for every concave fill Flare draws on the GPU, Windows too. Native:
 `third_party/femtovg/src/lib.rs` (`fill_path_internal`'s cover quad). Held by
 `every_frame_of_the_hop_draws_clawd_alike_on_the_gpu_at_retina_and_plain_scale` (`crates/flare-render/tests/femtovg_clawd_hop.rs`,
-fails on upstream femtovg). Source: the Mac check of rule 1200, 2026-11-13.
-1202. **The quit overtaking a remote tab still starting leaves its host session running.** The quit marked a remote tab
+fails on upstream femtovg). Source: the Mac check of rule 1202, 2026-11-13.
+1204. **The quit overtaking a remote tab still starting leaves its host session running.** The quit marked a remote tab
 still starting as killed, and when its link came up the start ended it as a close (`remote.close`), so the host's session
 ended with the quit (rule 288 says the quit only detaches). "Hide here only" on a starting tab did the same. Now a start
 ended before it registered remembers how it was ended: the quit and "Hide here only" let it go (`remote.detach`), a close

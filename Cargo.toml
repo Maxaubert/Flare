@@ -119,7 +119,7 @@ zip = { version = "=9.0.0", default-features = false, features = ["deflate"] }
 # femtovg 0.27.0 with Flare's two changes (third_party/femtovg/FLARE-PATCH.md): its wgpu renderer keeps a GPU pipeline
 # until 240 flushes in a row left it unused, instead of dropping every pipeline the last flush did not use (rule 1181),
 # and a concave fill's cover quad takes the fringe on all four corners, so no stencil is left for the next frame (rule
-# 1201). Drop this patch when Slint's femtovg has both (the canaries `crates/flare-render/tests/femtovg_pipelines.rs`
+# 1203). Drop this patch when Slint's femtovg has both (the canaries `crates/flare-render/tests/femtovg_pipelines.rs`
 # and `femtovg_clawd_hop.rs` say when).
 [patch.crates-io]
 femtovg = { path = "third_party/femtovg" }

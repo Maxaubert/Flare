@@ -11,7 +11,7 @@
 // agent its motion (agents.motion.set, permission agent-looks): the picks kept in the plugin's own store (key
 // "picks"), else the defaults below. Flare draws the motion, only while that agent's tab works, and never with
 // Windows' animation effects off; turning the plugin off takes its motions away and the icons stand still again.
-// The tab menu's "Agent motions" opens the panel, where the person picks one per agent.
+// Picks saved by version 0.1 (it had a picker panel) still apply. It adds nothing to a tab's menu (owner, 2026-11-13).
 (function () {
   var flare = window.flare;
   if (!flare) { return; }
@@ -35,12 +35,6 @@
     }, function () { apply({}); });
   });
 
-  flare.on('action', function (e) {
-    if (e && e.key === 'pick' && e.tab) {
-      // The click gives the plugin that tab (click scope), so its panel may open there.
-      flare.call('panel.open', { kind: 'mod:agent-moves', tab: e.tab }).catch(function () {});
-    }
-  });
 })();
 </script>
 </body>

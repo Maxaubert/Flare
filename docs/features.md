@@ -1968,15 +1968,15 @@ Spec: `docs/superpowers/specs/2026-10-26-agy-and-agent-motion.md`, Part 2 (owner
 - **Whole pixels (2026-11-13).** The moving box keeps the squash and stretch but lands every edge, its size and the hop's
   rise on whole device pixels of the window at any scale (`flare_agent::icon_motion::icon_box` is the rule), and a hop
   squashes about its art's feet (`icon::CLAWD_FEET`, `AGY_FEET`, `OPENAI_FEET`), which stay on the rest line, so the icon
-  no longer shrinks, wobbles or smears. Windows and macOS alike (rule 1200). On the GPU renderer (the Mac at 200 %, and
+  no longer shrinks, wobbles or smears. Windows and macOS alike (rule 1202). On the GPU renderer (the Mac at 200 %, and
   Windows) the same box now draws the same pixels frame after frame too: femtovg's concave cover quad left stencil
-  behind that ate the next frames' edge (rule 1201, `crates/flare-render/tests/femtovg_clawd_hop.rs`).
+  behind that ate the next frames' edge (rule 1203, `crates/flare-render/tests/femtovg_clawd_hop.rs`).
 - **The plugin API.** `agents.motion.set {agent, motion}` and `agents.motion.clear {agent}`, namespace `Agents`, new
   permission `agent-looks` ("Change how agent icons move while they work"), protocol 2 only; the newest pick wins, and a
   plugin that stops takes its picks with it (`flare_agent::icon_motion::MotionPicks`, kept by the window, applied for the
   plugin generation that was checked). Contract: `docs/surfaces/plugins.md` ("Agent icon motions"), `protocol.md`.
-- **Sample.** `sample-plugins/agent-moves/`: the owner's three picks from its background page, and a panel (a tab's menu,
-  "Agent motions") to pick one per agent, kept in its store.
+- **Sample.** `sample-plugins/agent-moves/`: the owner's three picks from its background page, and nothing in a tab's
+  menu (owner, 2026-11-13: the "Agent motions" item and its picker panel are gone; picks saved by 0.1 still apply).
 - Held by the `icon_motion` tests (each motion's frames at fixed phases: hop height and squash, the blink's frames, the
   turns, the fade, the flow's colours and offsets, the still frame, the picks), `only_a_working_agents_tab_wears_its_agents_motion`,
   `a_picked_motion_moves_a_working_agents_icon_from_the_mark_clock_and_stills_with_effects_off`,

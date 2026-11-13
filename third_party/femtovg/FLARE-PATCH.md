@@ -14,7 +14,7 @@ again; on the Mac each is a naga to MSL translation and a Metal compile. Sampled
 about 80 % of the main thread was drawing, 78 % of that in `create_render_pipeline`, 45 to 50 % CPU while agent marks
 moved. A headless probe of three shapes: 4.9 ms a frame with two flushes, 0.6 ms with one.
 
-## Change 2: the concave cover quad takes the fringe on all four corners (regression rule 1201)
+## Change 2: the concave cover quad takes the fringe on all four corners (regression rule 1203)
 
 `src/lib.rs`, the cover quad at the end of `fill_path_internal`: its fourth corner (left, top) is
 `bounds.miny - fringe_width`, as the other three take the fringe. Upstream left it at `bounds.miny`, so the quad's top

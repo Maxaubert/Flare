@@ -1218,7 +1218,7 @@ where
                 0.5,
                 1.0,
             ));
-            // Flare patch (regression rule 1201): the quad's fourth corner takes the fringe too. Upstream left it on
+            // Flare patch (regression rule 1203): the quad's fourth corner takes the fringe too. Upstream left it on
             // the bounds' top, so the quad's top edge sloped from a fringe above the shape at its right to the shape's
             // top at its left; the fan (drawn half a fringe out) left stencil counts under that sliver, no cover ever
             // zeroed them, and every later fill there lost its anti-aliased edge (Clawd's hop, 2026-11-13).

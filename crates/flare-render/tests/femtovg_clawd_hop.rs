@@ -1,4 +1,4 @@
-//! Regression rule 1200 on the GPU renderer: Clawd's working hop draws the same pixels for the same box, on the
+//! Regression rules 1202 and 1203 on the GPU renderer: Clawd's working hop draws the same pixels for the same box, on the
 //! renderer the Mac uses (femtovg on wgpu, Metal there) at the Mac's Retina scale (2.0) and at 1.0 (a plain
 //! external display). The software-renderer test (`ui_tests::marks::every_frame_of_the_hop_draws_clawd_on_whole_
 //! device_pixels`) cannot see femtovg's anti-aliasing, so this one draws the hop the way Slint's femtovg item renderer
