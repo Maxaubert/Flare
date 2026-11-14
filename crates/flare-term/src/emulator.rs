@@ -1119,6 +1119,84 @@ impl Emulator {
         }));
     }
 
+    /// Selects the cells between boundaries `start` and `end` (absolute rows, end exclusive): the agent prompt's
+    /// selection (rule 1234).
+    pub fn sel_cells(&mut self, start: (usize, usize), end: (usize, usize)) {
+        self.sel_apply(SelOut::Set(SelSpec {
+            block: false,
+            start: Anchor {
+                row: start.0,
+                b: start.1,
+            },
+            end: Anchor {
+                row: end.0,
+                b: end.1,
+            },
+        }));
+    }
+
+    /// The live screen's rows as the prompt reader takes them (rule 1234): each cell's character, width, reverse
+    /// video (Claude's caret) and ghost ink (dim or grey: a placeholder or a suggestion), whatever the view shows.
+    pub fn prompt_lines(&self) -> Vec<crate::prompt_keys::BoxLine> {
+        use crate::prompt_keys::{BoxCell, BoxLine};
+        use alacritty_terminal::vte::ansi::{Color, NamedColor};
+        let grid = self.term.grid();
+        let hist = self.history_size();
+        (0..self.rows())
+            .map(|r| {
+                let line = Line(i32::try_from(r).unwrap_or(0));
+                let cells = (0..self.cols())
+                    .map(|col| {
+                        let cell = &grid[Point::new(line, Column(col))];
+                        let width = if cell
+                            .flags
+                            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                        {
+                            0
+                        } else if cell.flags.contains(Flags::WIDE_CHAR) {
+                            2
+                        } else {
+                            1
+                        };
+                        BoxCell {
+                            c: if cell.c == '\0' { ' ' } else { cell.c },
+                            width,
+                            caret: cell.flags.contains(Flags::INVERSE),
+                            ghost: cell.flags.contains(Flags::DIM)
+                                || matches!(
+                                    cell.fg,
+                                    Color::Named(NamedColor::BrightBlack | NamedColor::DimBlack)
+                                        | Color::Indexed(8)
+                                ),
+                        }
+                    })
+                    .collect();
+                BoxLine {
+                    row: hist + r,
+                    cells,
+                }
+            })
+            .collect()
+    }
+
+    /// The absolute rows, scrollback and screen, whose first cell is `mark` and second a blank: where Claude
+    /// starts each message you sent (`❯`). One cell read per row, so a long scrollback costs little.
+    pub fn marked_rows(&self, mark: char) -> Vec<usize> {
+        let grid = self.term.grid();
+        let hist = self.history_size();
+        let top = -i32::try_from(hist).unwrap_or(0);
+        let bottom = i32::try_from(self.rows()).unwrap_or(0);
+        (top..bottom)
+            .filter(|&l| {
+                let first = &grid[Point::new(Line(l), Column(0))];
+                let second =
+                    grid[Point::new(Line(l), Column(1.min(self.cols().saturating_sub(1))))].c;
+                first.c == mark && matches!(second, ' ' | '\0' | '\u{a0}')
+            })
+            .map(|l| line_to_abs(hist, Line(l)))
+            .collect()
+    }
+
     /// Selects one match: a Simple selection over its cells. The end is the last cell's
     /// boundary plus one, so a match ending at a row's last cell stays on that row.
     fn select_match(&mut self, m: FindMatch) {
@@ -2355,6 +2433,44 @@ mod tests {
         // a long paste, shown as the line that names it, is a draft (the dictation send waits for it)
         let e = screen("\u{276f} [Pasted text #3 +40 lines]\x1b[7m \x1b[0m");
         assert!(draft(&e));
+    }
+
+    /// Claude's box read from real output (rule 1234): the reverse-video caret, a dim placeholder, a wide character,
+    /// and the rows your messages start on.
+    #[test]
+    fn the_prompt_reader_takes_the_box_from_the_screen() {
+        use crate::prompt_keys::read_box;
+        let rule = "\u{2500}".repeat(30);
+        let read = |input: &str| {
+            let mut e = Emulator::new(60, 8);
+            e.feed(
+                format!("\u{276f} hi\r\ndone\r\n{rule}\r\n{input}\r\n{rule}\r\n  auto").as_bytes(),
+            );
+            (read_box(&e.prompt_lines(), e.cols()), e)
+        };
+        let (t, e) = read("\u{276f} fix \u{65e5}\x1b[7mx\x1b[0m");
+        let t = t.expect("a box");
+        assert_eq!(t.text(), "fix \u{65e5}x");
+        assert_eq!(t.caret, 5, "the wide character counts once");
+        assert_eq!(t.rows, (3, 3));
+        assert_eq!(t.cells_of(4, 6), Some(((3, 6), (3, 9))));
+        assert_eq!(e.marked_rows('\u{276f}'), vec![0, 3]);
+        let (t, _) = read("\u{276f} \x1b[7mT\x1b[0m\x1b[2mry \"fix lint errors\"\x1b[0m");
+        let t = t.expect("a box");
+        assert_eq!((t.text().as_str(), t.caret), ("", 0));
+        let (t, _) = read("\u{276f} done\x1b[7m \x1b[0m");
+        assert_eq!(
+            t.map(|t| (t.text(), t.caret)),
+            Some(("done".to_string(), 4))
+        );
+        let mut e = Emulator::new(60, 8);
+        e.feed(b"PS C:\\> dir");
+        assert_eq!(read_box(&e.prompt_lines(), e.cols()), None);
+        // The selection the reader's cells make is the prompt's text.
+        let (t, mut e) = read("\u{276f} fix it\x1b[7m \x1b[0m");
+        let (s, end) = t.expect("a box").cells_of(0, 6).expect("cells");
+        e.sel_cells(s, end);
+        assert_eq!(e.sel_text(), "fix it");
     }
 
     /// An ANSI-only theme draws the box rules in bright black or dim: the box must still be found (R3).
