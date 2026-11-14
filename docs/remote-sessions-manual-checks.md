@@ -179,7 +179,10 @@ installed or not, sshd running or not, Remote Login on or off).
 - [ ] Windows, SSH server installed but stopped (its rule on every profile, and a `sshd_config` of your own with
   `PasswordAuthentication yes` and a `Match` block): after the switch, sshd runs and `(Get-NetFirewallRule -Name
   OpenSSH-Server-In-TCP).Profile` is `Private`; Flare's three lines are at the top, your own lines are all still there
-  below them, and a password login is refused.
+  below them, and a password login is refused. (A `Match` block of your own that sets `PasswordAuthentication yes`
+  itself still allows passwords for the logins it matches: sshd's own rule, which Flare leaves alone.)
+- [ ] Windows, an account whose name has a curly quote (`D’Angelo`, so `%TEMP%` has one): Computer sharing on works
+  after one UAC prompt.
 - [ ] Windows: turn sharing off and on again: `sshd_config` has Flare's lines once, not twice.
 - [ ] Windows: a setup that fails after sshd started (for example a firewall policy that refuses new rules) leaves
   sshd Stopped with its old start type, `sshd_config` as it was before, no Flare firewall rule, and the switch off.

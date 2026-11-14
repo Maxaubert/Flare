@@ -97,6 +97,16 @@ fn the_windows_script_installs_starts_and_opens_the_private_profile_only() {
     ] {
         assert!(s.contains(want), "{want}\n{s}");
     }
+    // PowerShell reads a curly quote as `'` too: a path with one (D’Angelo) is doubled, so it cannot end the string.
+    let curly = windows_on_script(
+        Path::new("C:\\Users\\D\u{2019}Angelo\\Temp\\f\\result.txt"),
+        Path::new("C:\\Users\\D\u{2018}x\u{201A}y\u{201B}\\Flare.exe"),
+    );
+    assert!(curly.contains("$result = 'C:\\Users\\D\u{2019}\u{2019}Angelo\\Temp\\f\\result.txt'"));
+    assert!(curly.contains(
+        "-Program 'C:\\Users\\D\u{2018}\u{2018}x\u{201A}\u{201A}y\u{201B}\u{201B}\\Flare.exe'"
+    ));
+    assert_eq!(ps_quote("a'b\u{2019}c"), "'a''b\u{2019}\u{2019}c'");
     // Never a profile other than Private, never Flare's rule opened to all.
     for profile in ["Public", "Domain", "Any"] {
         assert!(!s.contains(&format!("-Profile {profile}")), "{profile}");
@@ -154,8 +164,8 @@ fn flares_own_firewall_rules_are_narrow_and_go_when_the_setup_fails() {
 }
 
 /// Rule 1253 (keys only): a server Flare starts (installed now, or installed but stopped) gets password and
-/// keyboard-interactive logins off before it starts, at the top of `sshd_config` so they win over any later line or
-/// Match block. A backup is kept, the person's other lines stay, a missing config starts from Windows' default in a
+/// keyboard-interactive logins off before it starts, at the top of `sshd_config` so they win over any later global
+/// line (a Match block the person wrote still wins for what it matches, sshd's own rule). A backup is kept, the person's other lines stay, a missing config starts from Windows' default in a
 /// folder with sshd's own rights, and a failed step puts the config back. A server that already ran is left alone.
 #[test]
 fn a_server_flare_starts_takes_keys_only_and_a_running_one_is_left_alone() {
@@ -179,7 +189,7 @@ fn a_server_flare_starts_takes_keys_only_and_a_running_one_is_left_alone() {
     ] {
         assert!(block.contains(want), "{want}\n{block}");
     }
-    // Flare's lines go first (sshd keeps the first value), so no Match block can come before them.
+    // Flare's lines go first (sshd keeps the first global value), so no Match block can come before them.
     assert!(block.find("$flare + $keep").is_some());
     // Only the keys-only lines are written; nothing turns a login method on, and the older sshd's unknown keyword
     // is never written.
