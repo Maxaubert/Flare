@@ -5849,6 +5849,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     mod ctl_socket_tests;
+    mod key_release_tests;
     mod md_tests;
     mod mods_tests;
     mod page_keys_tests;
