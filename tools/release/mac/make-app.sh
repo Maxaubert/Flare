@@ -4,7 +4,7 @@
 #
 #   tools/release/mac/make-app.sh                 ad hoc: Flare.app only (runs on this Mac, cannot be notarized)
 #   FLARE_MAC_SIGN_IDENTITY="Developer ID Application: MAX AUBERT (WV7BY8CUM8)" \
-#   FLARE_NOTARY_PROFILE=flare-notary tools/release/mac/make-app.sh
+#   FLARE_NOTARY_PROFILE=notary tools/release/mac/make-app.sh
 #                                                 signed, notarized, stapled Flare.app and Flare-<version>-arm64.dmg
 #
 # Notary credentials: see lib.sh (a notarytool keychain profile or an App Store Connect API key).
