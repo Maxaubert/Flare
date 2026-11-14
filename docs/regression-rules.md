@@ -3924,14 +3924,14 @@ column is now "Address" (the address, else the SSH host). Labelled controls have
 `add_can_be_pressed_once_a_machine_is_picked_or_an_address_typed`, the overlay tests in `ui_tests::panel` and
 `ui_tests::overlay_order`.
 
-1238. **Settings > Machines starts with a section This computer, whose one row is the Computer sharing switch; its
+1252. **Settings > Machines starts with a section This computer, whose one row is the Computer sharing switch; its
 subtext is fixed, and the switch stays on across restarts.** Machine pairing PR 2, 2026-11-14 (spec, revised flow;
 approved mockup `docs/superpowers/specs/2026-11-14-machine-pairing-mockup.html`, "Computer sharing"). The row is
 `machines-sharing`: the share icon (a screen and a phone), the label "Computer sharing" and the subtext "Allows you to
 control sessions from other devices", which never changes to report state (no "Ready", no progress words, no errors;
 owner rule). It is a switch row (a press anywhere flips it) with no tooltip. The switch is not a plain store write:
 `settings_ctl::event` hands it to the Machines page's `sharing::Sharing`, which runs the OS setup on a worker (rules
-1239 and 1240) and saves `flare.machines.sharing` only once the setup finished; a press shows the switch on and dimmed
+1253 and 1254) and saves `flare.machines.sharing` only once the setup finished; a press shows the switch on and dimmed
 (deaf) while the setup runs, and back off when it was declined or failed. A failure is the sharing dialog (the Dialog
 look, title "Computer sharing", its one plain line and OK), never words under the row. A switch saved on is on after a
 restart with no setup run again (`Sharing::new` reads the store; the computer is announced again, PR 3). The dialog is
@@ -3949,7 +3949,7 @@ sharing_ask_look}`, `ui/settings/machines.slint` (`SharingAskDialog`). Held by
 `sharing_and_what_flare_changed_default_off_and_keep_what_is_set`, the row table tests in `flare_settings::rows` and
 the overlay tests in `ui_tests::panel` and `ui_tests::overlay_order`.
 
-1239. **On Windows, turning Computer sharing on is one elevated PowerShell script (one UAC prompt) that opens the SSH
+1253. **On Windows, turning Computer sharing on is one elevated PowerShell script (one UAC prompt) that opens the SSH
 server to the Private network profile only and never turns password logins on.** Machine pairing PR 2, 2026-11-14
 (spec, "Setup per OS"; research `Documents\Claude\research\flare\2026-11-14-machine-pairing.md`). `windows_on_script`
 installs the `OpenSSH.Server~~~~0.0.1.0` capability only when `Get-WindowsCapability` says it is not installed, starts
@@ -3971,7 +3971,7 @@ step becomes one plain line (`step_line`, Windows' words go to the log). The ele
 powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList ... -File "<script>"`; the script is
 written with a BOM (a profile path beyond ASCII) and both temp files are removed. No result file means the prompt was
 declined: the switch goes back off with nothing to say. `installed` or `started` make the server Flare's
-(`flare.machines.serverByFlare`), which turning off reads (rule 1241); it stays Flare's until turning off stops it. The
+(`flare.machines.serverByFlare`), which turning off reads (rule 1255); it stays Flare's until turning off stops it. The
 tests read the script as text and the elevation as its argv; nothing is ever run (`SharingOs` is a trait and the tests
 use `sharing::fake::FakeOs`). Real runs: `docs/remote-sessions-manual-checks.md`. Held by
 `the_windows_script_installs_starts_and_opens_the_private_profile_only`,
@@ -3979,7 +3979,7 @@ use `sharing::fake::FakeOs`). Real runs: `docs/remote-sessions-manual-checks.md`
 `a_result_file_is_read_and_a_failed_step_is_one_plain_line` and
 `a_declined_or_failed_windows_setup_leaves_the_switch_off`.
 
-1240. **On a Mac, turning Computer sharing on uses Remote Login: no prompt when port 22 answers, else the
+1254. **On a Mac, turning Computer sharing on uses Remote Login: no prompt when port 22 answers, else the
 administrator prompt, else the Flare dialog "Turn on Remote Login" that opens Sharing and carries on by itself.**
 Machine pairing PR 2, 2026-11-14 (spec, "Setup per OS"; mockup, "System prompts"). `turn_on` probes 127.0.0.1:22
 (500 ms); when it answers sharing is on and the server is the person's. Otherwise `osascript -e 'do shell script
@@ -4000,7 +4000,7 @@ number) and the switch goes back off. Flare never asks for Full Disk Access. `Fl
 `the_mac_runs_systemsetup_through_the_administrator_prompt` and (on a Mac)
 `the_app_plist_names_the_app_its_version_its_mac_its_category_and_why_it_wants_the_mic`.
 
-1241. **Turning Computer sharing off stops the announcement at once, removes only the keys Flare added, and offers to
+1255. **Turning Computer sharing off stops the announcement at once, removes only the keys Flare added, and offers to
 stop the SSH server only when Flare turned it on.** Machine pairing PR 2, 2026-11-14 (spec, "On the machine to
 reach"). The switch is off and saved off the moment it is pressed, and the computer stops being announced (PR 3).
 When `flare.machines.serverByFlare` is set, the sharing dialog asks "Stop the SSH server too?" ("Flare turned it on

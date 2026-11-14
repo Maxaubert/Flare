@@ -171,7 +171,7 @@ pub struct MachinesPage {
     add: AddForm,
     /// A read is on its way (the page shows what it had until then).
     loading: bool,
-    /// This computer's Computer sharing switch (machine pairing PR 2, rule 1238).
+    /// This computer's Computer sharing switch (machine pairing PR 2, rule 1252).
     sharing: Sharing,
 }
 

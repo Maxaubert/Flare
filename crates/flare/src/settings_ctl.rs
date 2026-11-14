@@ -605,7 +605,7 @@ pub fn to_slint_machine(m: &flare_settings::page::machines::MachineRow, y: f64, 
 }
 
 /// The Machine drop-down's choices as the Select menu draws them: the SSH hosts in `mono` (the code font), the others
-/// in the UI font (machine pairing PR 1, rule 1237). Nearby computers come in PR 3.
+/// in the UI font (machine pairing PR 1, rule 1251). Nearby computers come in PR 3.
 pub fn machine_choice_opts(hosts: &[String], mono: &str) -> Vec<flare_settings::page::Opt> {
     flare_settings::page::machines::machine_choices(&[], hosts)
         .into_iter()
@@ -621,7 +621,7 @@ pub fn machine_choice_opts(hosts: &[String], mono: &str) -> Vec<flare_settings::
         .collect()
 }
 
-/// The Add a machine dialog's look (machine pairing PR 1, rule 1237): the pick and the choices, the typed address and
+/// The Add a machine dialog's look (machine pairing PR 1, rule 1251): the pick and the choices, the typed address and
 /// user, the red line, `busy` while the machine is checked, and whether Add can be pressed.
 pub fn machine_add_look(
     form: &flare_settings::page::machines::AddForm,
@@ -639,7 +639,7 @@ pub fn machine_add_look(
     }
 }
 
-/// The sharing dialog's look (rules 1240 and 1241): its title, its line (a spinner before it while Flare waits for
+/// The sharing dialog's look (rules 1254 and 1255): its title, its line (a spinner before it while Flare waits for
 /// Remote Login), and its buttons ("" leaves the left one out).
 pub fn sharing_ask_look(ask: &crate::sharing::SharingAsk) -> crate::SharingAskLook {
     let w = crate::sharing::ask_words(ask);
@@ -1171,7 +1171,7 @@ impl SettingsCtl {
     }
 
     /// The window hands over the Machines page's door to the disk and the links (startup). Its Computer sharing switch
-    /// keeps its state in the settings (rule 1238: on after a restart when it was on).
+    /// keeps its state in the settings (rule 1252: on after a restart when it was on).
     pub fn set_machines(&mut self, mut page: crate::machines_page::MachinesPage) {
         page.use_prefs(self.deps.prefs.clone());
         self.machines = Some(page);
@@ -1612,7 +1612,7 @@ impl SettingsCtl {
         self.push_editor(app, format);
     }
 
-    /// The sharing dialog into the bridge (rules 1240 and 1241): open while the switch asks something, drawn only over
+    /// The sharing dialog into the bridge (rules 1254 and 1255): open while the switch asks something, drawn only over
     /// the Machines page while Settings is in front (a question asked while Settings was hidden waits for it).
     fn push_sharing_ask(&self, app: &AppWindow) {
         let b = app.global::<SettingsBridge>();
@@ -1628,7 +1628,7 @@ impl SettingsCtl {
         b.set_sharing_ask_open(self.visible && self.page == "machines");
     }
 
-    /// The Add a machine dialog into the bridge (machine pairing PR 1, rule 1237): open while the page's form is, and
+    /// The Add a machine dialog into the bridge (machine pairing PR 1, rule 1251): open while the page's form is, and
     /// what it shows. A keystroke in its fields pushes only this, so the field keeps its caret. It draws only over the
     /// Machines page while Settings is in front: a form left open by a check that still ran when Settings was hidden
     /// or left never comes back over another page.
@@ -1796,7 +1796,7 @@ impl SettingsCtl {
 
     /// Carries out one control event: the store writes, then the effects.
     pub fn event(&mut self, ev: Event) {
-        // The Computer sharing switch (rule 1238) is the Machines page's: it runs the OS setup, and the switch is saved
+        // The Computer sharing switch (rule 1252) is the Machines page's: it runs the OS setup, and the switch is saved
         // only once that finished.
         if let Event::Switch { row, on } = &ev
             && row == flare_settings::page::machines::SHARING_ROW
@@ -1910,7 +1910,7 @@ impl SettingsCtl {
         if row == flare_settings::page::mods::URL_ROW {
             self.plugin_url = text.to_string();
         }
-        // The Add a machine dialog's fields (rule 1237): "machines-add:address" and "machines-add:user".
+        // The Add a machine dialog's fields (rule 1251): "machines-add:address" and "machines-add:user".
         if let Some(field) = row
             .strip_prefix(flare_settings::page::machines::ADD_ROW)
             .and_then(|r| r.strip_prefix(':'))
@@ -1934,7 +1934,7 @@ impl SettingsCtl {
             self.machines_button(button);
             return;
         }
-        // The sharing dialog's buttons (rules 1240 and 1241).
+        // The sharing dialog's buttons (rules 1254 and 1255).
         if row == flare_settings::page::machines::SHARING_ROW {
             if let Some(m) = self.machines.as_mut() {
                 m.sharing_mut().button(button);
@@ -1992,7 +1992,7 @@ impl SettingsCtl {
         });
     }
 
-    /// The Machines page's add row and its dialog (machine pairing PR 1, rule 1237): a press on the row opens the
+    /// The Machines page's add row and its dialog (machine pairing PR 1, rule 1251): a press on the row opens the
     /// dialog, Cancel closes it, Add checks the machine and saves it once it answered.
     fn machines_button(&mut self, button: &str) {
         use flare_settings::page::machines::{ADD_BUTTON, CANCEL_BUTTON, OPEN_BUTTON};

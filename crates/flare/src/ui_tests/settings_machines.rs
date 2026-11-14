@@ -812,7 +812,7 @@ fn a_machine_row_draws_its_reason_as_one_grey_line_under_it() {
     }
 }
 
-/// Rule 1238: the Machines page starts with This computer, whose one row is the Computer sharing switch with its fixed
+/// Rule 1252: the Machines page starts with This computer, whose one row is the Computer sharing switch with its fixed
 /// subtext and no tooltip; Linked machines comes after it. Flipping the switch on Windows runs the elevated setup (a
 /// fake: nothing runs), the switch shows on and dimmed while it runs, then on and saved. At 100 and 225 percent.
 #[test]
@@ -858,7 +858,7 @@ fn this_computer_is_first_and_its_switch_turns_sharing_on() {
     }
 }
 
-/// Rule 1238: a switch left on is on after a restart (read from the settings), with no setup run again.
+/// Rule 1252: a switch left on is on after a restart (read from the settings), with no setup run again.
 #[test]
 fn the_sharing_switch_stays_on_across_restarts() {
     use crate::sharing::Platform;
@@ -875,7 +875,7 @@ fn the_sharing_switch_stays_on_across_restarts() {
     assert_eq!(*os.announced.lock().unwrap(), [true]);
 }
 
-/// Rule 1240: when macOS refuses, the Flare dialog "Turn on Remote Login" draws over the Machines page with Cancel and
+/// Rule 1254: when macOS refuses, the Flare dialog "Turn on Remote Login" draws over the Machines page with Cancel and
 /// Open System Settings; Open System Settings opens Sharing and the dialog waits; it closes by itself once Remote Login
 /// is on, and the switch is on. It draws only over the Machines page while Settings is in front.
 #[test]
@@ -917,7 +917,7 @@ fn a_refused_mac_shows_turn_on_remote_login_over_the_page() {
     assert!(flare_settings::machine_prefs::sharing_on(&f.prefs));
 }
 
-/// Rule 1241: turning off when Flare turned the SSH server on asks "Stop the SSH server too?" with Keep it and Stop
+/// Rule 1255: turning off when Flare turned the SSH server on asks "Stop the SSH server too?" with Keep it and Stop
 /// it; the switch is off at once; Escape is Keep it.
 #[test]
 fn turning_sharing_off_asks_to_stop_flares_server() {
@@ -951,7 +951,7 @@ fn turning_sharing_off_asks_to_stop_flares_server() {
     assert!(flare_settings::machine_prefs::server_by_flare(&f.prefs));
 }
 
-/// Rules 1240 and 1241: the sharing dialog draws in the Dialog look, a 380 px box in the middle of the scrim; a
+/// Rules 1254 and 1255: the sharing dialog draws in the Dialog look, a 380 px box in the middle of the scrim; a
 /// notice has its one button only; the spinner turns before a waiting line; the buttons and Escape answer. At 100 and
 /// 225 percent.
 #[test]

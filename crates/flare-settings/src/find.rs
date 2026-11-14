@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(ids, ["machines-sharing", "machines-add"]);
     }
 
-    /// Rule 1238: the Computer sharing switch is found by its words, under This computer.
+    /// Rule 1252: the Computer sharing switch is found by its words, under This computer.
     #[test]
     fn computer_sharing_is_found_by_sharing_and_the_ssh_server() {
         let index = index_all();

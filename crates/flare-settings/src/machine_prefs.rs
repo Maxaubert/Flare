@@ -1,4 +1,4 @@
-//! Machine pairing PR 2 (rules 1238 and 1241): the Computer sharing switch and what Flare changed to turn it on.
+//! Machine pairing PR 2 (rules 1252 and 1255): the Computer sharing switch and what Flare changed to turn it on.
 //!
 //! Keys: `flare.machines.sharing` (a bool, default OFF: the switch, kept across restarts once the setup finished),
 //! `flare.machines.serverByFlare` (a bool: Flare started or installed the SSH server when sharing turned on, so turning

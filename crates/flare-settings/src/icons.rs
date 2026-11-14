@@ -155,7 +155,7 @@ pub const FLARE_ICONS: &[(&str, &str)] = &[
     ),
     // The caret rows (rule 1233): a terminal with a caret bar after its prompt.
     ("caret", "M4 5h16v14H4zM7.5 9.5l3 2.5-3 2.5M14 9v6"),
-    // The Computer sharing row (rule 1238, the approved mockup's icon): a screen on its stand and a phone beside it.
+    // The Computer sharing row (rule 1252, the approved mockup's icon): a screen on its stand and a phone beside it.
     (
         "share",
         "M3 4h11a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zM5 18h7M8.5 14v4M18 8h3a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z",

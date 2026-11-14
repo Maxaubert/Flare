@@ -5,12 +5,12 @@
 //! version, Status, and a menu with Test and Remove). A machine that is Not linked shows why as one small grey line
 //! under its row, not as a tooltip (2026-11-13).
 //!
-//! Machine pairing PR 1 (approved mockup `docs/superpowers/specs/2026-11-14-machine-pairing-mockup.html`, rule 1237):
+//! Machine pairing PR 1 (approved mockup `docs/superpowers/specs/2026-11-14-machine-pairing-mockup.html`, rule 1251):
 //! "+ Add a machine" opens a Flare dialog over the page, no longer a form in the row's place. Its Machine drop-down
 //! lists the computers found nearby (PR 3; none yet), then the SSH config hosts, then "Type an address", which shows an
 //! Address field and an optional User field. A failed check is one red line in the dialog.
 //!
-//! Machine pairing PR 2 (rule 1238): a section **This computer** above the table, with one switch row, **Computer
+//! Machine pairing PR 2 (rule 1252): a section **This computer** above the table, with one switch row, **Computer
 //! sharing**, whose subtext is fixed: it never changes to report what the setup is doing. While the setup runs (or
 //! turning off cleans up) the switch is dimmed and deaf.
 //!
@@ -175,7 +175,7 @@ pub fn machine_choices(nearby: &[(String, String)], hosts: &[String]) -> Vec<Mac
     out
 }
 
-/// The Computer sharing switch (rule 1238): on (the setup finished, or is running), and busy (the setup or the clean
+/// The Computer sharing switch (rule 1252): on (the setup finished, or is running), and busy (the setup or the clean
 /// up runs, or a question about it is open): the switch is dimmed and deaf.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SharingInfo {
@@ -306,7 +306,7 @@ mod tests {
         });
     }
 
-    /// Rule 1238: This computer comes first, with the Computer sharing switch and its fixed subtext; the switch shows
+    /// Rule 1252: This computer comes first, with the Computer sharing switch and its fixed subtext; the switch shows
     /// the state and is dimmed while busy, and the words never change.
     #[test]
     fn this_computer_is_first_with_the_sharing_switch_and_its_fixed_subtext() {
@@ -349,7 +349,7 @@ mod tests {
         }
     }
 
-    /// Rule 1237: the dialog is drawn over the page; an open one leaves the add row in its place.
+    /// Rule 1251: the dialog is drawn over the page; an open one leaves the add row in its place.
     #[test]
     fn an_open_dialog_leaves_the_page_as_it_is() {
         let info = MachinesInfo {
@@ -368,7 +368,7 @@ mod tests {
         });
     }
 
-    /// Rule 1237: the drop-down lists the nearby computers, then the SSH hosts in the code font, then "Type an
+    /// Rule 1251: the drop-down lists the nearby computers, then the SSH hosts in the code font, then "Type an
     /// address"; no host can take the last one's id.
     #[test]
     fn the_machine_drop_down_lists_nearby_then_ssh_hosts_then_type_an_address() {
@@ -399,7 +399,7 @@ mod tests {
         );
     }
 
-    /// Rule 1237: Add waits for a pick, for an address when "Type an address" is picked, and while a check runs.
+    /// Rule 1251: Add waits for a pick, for an address when "Type an address" is picked, and while a check runs.
     #[test]
     fn add_can_be_pressed_once_a_machine_is_picked_or_an_address_typed() {
         let form = |pick: &str, address: &str, busy: bool| AddForm {

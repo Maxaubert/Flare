@@ -1,4 +1,4 @@
-//! The Computer sharing switch (rules 1238 to 1241) against a fake OS: the scripts are read as text and the elevation
+//! The Computer sharing switch (rules 1252 to 1255) against a fake OS: the scripts are read as text and the elevation
 //! as its argv, and nothing is ever run.
 
 use super::fake::FakeOs;
@@ -69,7 +69,7 @@ fn decode(argv: &[String]) -> String {
 
 // ---- the scripts and the calls, as text ---------------------------------------------------------------------------
 
-/// Rule 1239: the Windows script installs the server only when missing, starts it and sets it Automatic, scopes the
+/// Rule 1253: the Windows script installs the server only when missing, starts it and sets it Automatic, scopes the
 /// firewall to the Private profile, turns password logins off only on a server it installed (never on), and reports
 /// through the result file.
 #[test]
@@ -126,7 +126,7 @@ fn the_windows_script_installs_starts_and_opens_the_private_profile_only() {
     assert!(!s.contains('\u{2014}'));
 }
 
-/// Rule 1241: the off script cleans only what it is asked to: the admin keys Flare added (`flare-pair:` lines), the
+/// Rule 1255: the off script cleans only what it is asked to: the admin keys Flare added (`flare-pair:` lines), the
 /// server, and always Flare's firewall rule.
 #[test]
 fn the_windows_off_script_removes_only_what_flare_added() {
@@ -157,7 +157,7 @@ fn the_windows_off_script_removes_only_what_flare_added() {
     }
 }
 
-/// Rule 1239: the elevation is one hidden PowerShell that starts the script's PowerShell with `-Verb RunAs` (the UAC
+/// Rule 1253: the elevation is one hidden PowerShell that starts the script's PowerShell with `-Verb RunAs` (the UAC
 /// prompt) and waits; the command travels encoded, and the script's path is quoted whatever it holds.
 #[test]
 fn the_elevation_call_runs_the_script_with_runas_and_waits() {
@@ -182,7 +182,7 @@ fn the_elevation_call_runs_the_script_with_runas_and_waits() {
     );
 }
 
-/// Rule 1240: the Mac's commands go through osascript's administrator prompt, quoted for AppleScript.
+/// Rule 1254: the Mac's commands go through osascript's administrator prompt, quoted for AppleScript.
 #[test]
 fn the_mac_runs_systemsetup_through_the_administrator_prompt() {
     assert_eq!(
@@ -235,7 +235,7 @@ fn a_result_file_is_read_and_a_failed_step_is_one_plain_line() {
     }
 }
 
-/// Rule 1241: only the lines with Flare's comment go; the person's own keys, comments and blank lines stay.
+/// Rule 1255: only the lines with Flare's comment go; the person's own keys, comments and blank lines stay.
 #[test]
 fn only_the_keys_flare_added_are_removed() {
     let text = "ssh-ed25519 AAAAmine max@desk\n\
@@ -258,7 +258,7 @@ fn only_the_keys_flare_added_are_removed() {
 
 // ---- the switch -----------------------------------------------------------------------------------------------------
 
-/// Rules 1238 and 1239: on Windows the switch runs the elevated setup, stays on (dimmed) while it runs, and once it
+/// Rules 1252 and 1253: on Windows the switch runs the elevated setup, stays on (dimmed) while it runs, and once it
 /// finished is on, saved, announced, and remembers that Flare turned the server on.
 #[test]
 fn windows_turns_on_with_one_elevated_script_and_the_switch_is_saved() {
@@ -286,7 +286,7 @@ fn windows_turns_on_with_one_elevated_script_and_the_switch_is_saved() {
     assert_eq!(*again.os.announced.lock().unwrap(), [true]);
 }
 
-/// Rule 1239: a declined UAC prompt puts the switch back off with nothing to say; a failed step is the Notice dialog
+/// Rule 1253: a declined UAC prompt puts the switch back off with nothing to say; a failed step is the Notice dialog
 /// with its plain line, and nothing is saved.
 #[test]
 fn a_declined_or_failed_windows_setup_leaves_the_switch_off() {
@@ -328,7 +328,7 @@ fn a_declined_or_failed_windows_setup_leaves_the_switch_off() {
     assert!(r.os.announced.lock().unwrap().is_empty());
 }
 
-/// Rule 1240: a Mac whose port 22 answers is on at once, with no prompt.
+/// Rule 1254: a Mac whose port 22 answers is on at once, with no prompt.
 #[test]
 fn a_mac_with_remote_login_on_needs_no_prompt() {
     let mut r = Rig::new(
@@ -341,7 +341,7 @@ fn a_mac_with_remote_login_on_needs_no_prompt() {
     assert!(!prefs::server_by_flare(&r.prefs), "the person's own server");
 }
 
-/// Rule 1240: the administrator prompt turns Remote Login on; Cancel there puts the switch back off.
+/// Rule 1254: the administrator prompt turns Remote Login on; Cancel there puts the switch back off.
 #[test]
 fn a_mac_asks_for_the_password_and_cancel_puts_the_switch_back() {
     let mut r = Rig::new(
@@ -359,7 +359,7 @@ fn a_mac_asks_for_the_password_and_cancel_puts_the_switch_back() {
     assert_eq!(r.sharing.ask(), None);
 }
 
-/// Rule 1240: when macOS refuses (no Full Disk Access), the "Turn on Remote Login" dialog is up with its spinner line;
+/// Rule 1254: when macOS refuses (no Full Disk Access), the "Turn on Remote Login" dialog is up with its spinner line;
 /// Open System Settings opens Sharing; the switch carries on by itself the moment port 22 answers.
 #[test]
 fn a_refused_mac_shows_turn_on_remote_login_and_continues_by_itself() {
@@ -402,7 +402,7 @@ fn a_refused_mac_shows_turn_on_remote_login_and_continues_by_itself() {
     assert_eq!(*r.os.announced.lock().unwrap(), [true]);
 }
 
-/// Rule 1240: Cancel in "Turn on Remote Login" ends the watch and the switch goes back off; a late answer is ignored.
+/// Rule 1254: Cancel in "Turn on Remote Login" ends the watch and the switch goes back off; a late answer is ignored.
 #[test]
 fn cancel_in_turn_on_remote_login_puts_the_switch_back_off() {
     let os = FakeOs::new(Platform::Mac);
@@ -417,7 +417,7 @@ fn cancel_in_turn_on_remote_login_puts_the_switch_back_off() {
     assert!(!prefs::sharing_on(&r.prefs));
 }
 
-/// Rule 1241: turning off stops the announcement and saves off at once, removes Flare's keys, and offers to stop the
+/// Rule 1255: turning off stops the announcement and saves off at once, removes Flare's keys, and offers to stop the
 /// server only when Flare turned it on: Stop it runs the elevated clean up, and the server is no longer Flare's.
 #[test]
 fn turning_off_removes_flares_keys_and_offers_to_stop_only_flares_server() {
@@ -468,7 +468,7 @@ fn turning_off_removes_flares_keys_and_offers_to_stop_only_flares_server() {
     assert!(prefs::server_by_flare(&r.prefs));
 }
 
-/// Rule 1241: a Mac whose Remote Login Flare turned on is stopped through the administrator prompt; when it stays on,
+/// Rule 1255: a Mac whose Remote Login Flare turned on is stopped through the administrator prompt; when it stays on,
 /// the Notice says where to turn it off.
 #[test]
 fn a_mac_stops_remote_login_and_says_so_when_it_stays_on() {

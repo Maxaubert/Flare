@@ -1,21 +1,21 @@
-//! Settings > Machines > This computer: the Computer sharing switch (machine pairing PR 2, rules 1238 to 1241).
+//! Settings > Machines > This computer: the Computer sharing switch (machine pairing PR 2, rules 1252 to 1255).
 //!
 //! Spec `docs/superpowers/specs/2026-11-14-machine-pairing-design.md` ("Setup per OS", revised flow) and the approved
 //! mockup (`2026-11-14-machine-pairing-mockup.html`, "Computer sharing" and "System prompts"). Turning the switch on
 //! makes this computer reachable over SSH from the user's other computers:
 //!
-//! - **Windows** (rule 1239): one elevated PowerShell script (one UAC prompt, `Start-Process -Verb RunAs`) installs
+//! - **Windows** (rule 1253): one elevated PowerShell script (one UAC prompt, `Start-Process -Verb RunAs`) installs
 //!   the OpenSSH Server capability when it is missing, starts `sshd` and sets it to Automatic, makes sure the sshd
 //!   firewall rule exists for the Private profile only (a server Flare starts has its rule set to Private before it
 //!   starts), puts the server back as it was when a step fails, and adds Flare's own rule (its program, Private only) for the
 //!   pairing port and the network announcement. Password logins are never turned on; when Flare installed the server
 //!   itself, `PasswordAuthentication no` is written into `sshd_config`. The script reports through a temp file.
-//! - **macOS** (rule 1240): port 22 answering means Remote Login is on already. Otherwise `systemsetup
+//! - **macOS** (rule 1254): port 22 answering means Remote Login is on already. Otherwise `systemsetup
 //!   -setremotelogin on` runs through osascript's administrator prompt; when macOS refuses (Flare has no Full Disk
 //!   Access), the Flare dialog "Turn on Remote Login" offers Open System Settings at Sharing, and Flare watches port 22
 //!   and carries on by itself the moment it answers.
 //!
-//! Turning it off (rule 1241) stops the announcement, removes the keys Flare added (their comment starts
+//! Turning it off (rule 1255) stops the announcement, removes the keys Flare added (their comment starts
 //! `flare-pair:`), and offers to stop the SSH server only when Flare turned it on. The switch stays on across restarts
 //! (`flare.machines.sharing`).
 //!
@@ -85,13 +85,13 @@ pub fn ps_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-/// The elevated script that turns sharing on (rule 1239), reporting into `result`. `flare_exe` is the program the
+/// The elevated script that turns sharing on (rule 1253), reporting into `result`. `flare_exe` is the program the
 /// pairing rule lets in.
 pub fn windows_on_script(result: &Path, flare_exe: &Path) -> String {
     let result = ps_quote(&result.to_string_lossy());
     let exe = ps_quote(&flare_exe.to_string_lossy());
     format!(
-        r#"# Flare: turn on Computer sharing (rule 1239). Runs elevated, once per switch.
+        r#"# Flare: turn on Computer sharing (rule 1253). Runs elevated, once per switch.
 $ErrorActionPreference = 'Stop'
 $result = {result}
 $out = New-Object System.Collections.Generic.List[string]
@@ -159,7 +159,7 @@ Set-Content -LiteralPath $result -Value $out -Encoding UTF8
     )
 }
 
-/// The elevated script that cleans up when sharing turns off (rule 1241), reporting into `result`: the keys Flare
+/// The elevated script that cleans up when sharing turns off (rule 1255), reporting into `result`: the keys Flare
 /// added to `administrators_authorized_keys` (`admin_keys`), the SSH server (`stop_server`), and Flare's firewall rule.
 pub fn windows_off_script(result: &Path, stop_server: bool, admin_keys: bool) -> String {
     let result = ps_quote(&result.to_string_lossy());
@@ -181,7 +181,7 @@ pub fn windows_off_script(result: &Path, stop_server: bool, admin_keys: bool) ->
         ""
     };
     format!(
-        r#"# Flare: turn off Computer sharing (rule 1241). Runs elevated.
+        r#"# Flare: turn off Computer sharing (rule 1255). Runs elevated.
 $ErrorActionPreference = 'Stop'
 $result = {result}
 $out = New-Object System.Collections.Generic.List[string]
@@ -200,7 +200,7 @@ Set-Content -LiteralPath $result -Value $out -Encoding UTF8
     )
 }
 
-/// The elevation call (rule 1239): a hidden PowerShell that starts the script's own PowerShell with `-Verb RunAs`
+/// The elevation call (rule 1253): a hidden PowerShell that starts the script's own PowerShell with `-Verb RunAs`
 /// (Windows' UAC prompt) and waits for it. The outer command travels as `-EncodedCommand` (UTF-16LE in base64), so no
 /// quoting of the script's path can break it.
 pub fn elevation_argv(script: &Path) -> Vec<String> {
@@ -222,7 +222,7 @@ pub fn elevation_argv(script: &Path) -> Vec<String> {
     ]
 }
 
-/// osascript's argv that runs `command` as root behind macOS' administrator prompt (rule 1240).
+/// osascript's argv that runs `command` as root behind macOS' administrator prompt (rule 1254).
 pub fn osascript_argv(command: &str) -> Vec<String> {
     let quoted = command.replace('\\', "\\\\").replace('"', "\\\"");
     vec![
@@ -319,7 +319,7 @@ pub enum OnResult {
     Failed(String),
 }
 
-/// BLOCKING: turns sharing on for this system (rules 1239 and 1240).
+/// BLOCKING: turns sharing on for this system (rules 1253 and 1254).
 pub fn turn_on(os: &dyn SharingOs, flare_exe: &Path) -> OnResult {
     match os.platform() {
         Platform::Windows => {
@@ -370,7 +370,7 @@ pub fn turn_on(os: &dyn SharingOs, flare_exe: &Path) -> OnResult {
     }
 }
 
-/// BLOCKING: cleans up when sharing turns off (rule 1241): the user's own keys, then (elevated, only when there is
+/// BLOCKING: cleans up when sharing turns off (rule 1255): the user's own keys, then (elevated, only when there is
 /// something to do) the admin keys, the SSH server and the firewall rule. Ok, or the one line that says what is left.
 pub fn turn_off(os: &dyn SharingOs, stop_server: bool, admin_keys: bool) -> Result<(), String> {
     let mut problem = None;
@@ -468,7 +468,7 @@ pub struct AskWords {
     pub primary: &'static str,
 }
 
-/// Pure: what the dialog says for a question (rules 1240 and 1241).
+/// Pure: what the dialog says for a question (rules 1254 and 1255).
 pub fn ask_words(ask: &SharingAsk) -> AskWords {
     match ask {
         SharingAsk::RemoteLogin => AskWords {

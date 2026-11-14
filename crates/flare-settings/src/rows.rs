@@ -724,7 +724,7 @@ pub const APP_OPTIONS: [RowDef; 23] = [
         source: Source::App,
         only_nvidia: false,
     },
-    // Machine pairing PR 2 (rule 1238): the Machines page's This computer switch. Its subtext is fixed (approved
+    // Machine pairing PR 2 (rule 1252): the Machines page's This computer switch. Its subtext is fixed (approved
     // mockup 2026-11-14): it never changes to say what the setup is doing.
     RowDef {
         id: "machines-sharing",

@@ -158,7 +158,7 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
 - [ ] Paired fields: a hand-written machine with `port`, `key` and `known_hosts` (a key path and a known-hosts path
   with a space in them) links over real ssh, and ssh asks nothing (`StrictHostKeyChecking=yes`, the key only).
 
-## Machine pairing PR 2 (rules 1238 to 1241, 2026-11-14)
+## Machine pairing PR 2 (rules 1252 to 1255, 2026-11-14)
 
 Run these on a test account or a machine you can put back; note what each machine had before (OpenSSH Server
 installed or not, sshd running or not, Remote Login on or off).
