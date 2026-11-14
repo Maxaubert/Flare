@@ -3820,7 +3820,12 @@ Delete) to Alt+D, Ctrl+Z (Cmd+Z) to Ctrl+_ (undo), Ctrl+Shift+Backspace (Cmd+Shi
 with arrows and Backspaces, never Ctrl+C or Escape, so a working agent is not interrupted. Ctrl+Shift+Up and Down
 (Cmd+Shift) scroll the view to your previous or next message: the rows with Claude's `❯` in the first column (Flare has
 no prompt marks from shell integration), the live box's own row left out; on the alternate screen the keys are Claude's.
-Ctrl+X without a selection stays Claude's (it starts Claude's own two-key chords). Shift+Enter (rule 6) and the image
+Ctrl+X without a selection stays Claude's (it starts Claude's own two-key chords). On a Mac, Cmd+Backspace (⌘⌫,
+`Input::DeleteLineBack`) deletes the selection, else sends ^U (delete to the line's start); without it the selection was
+let go and ^U went out from the walked caret, deleting more than the selection (Mac review, 2026-11-14). With "Use
+Option as Meta" on, an Option key without Ctrl is no typed text (`classify` takes the setting): Option+B, F and D go out
+as ESC and the letter and let the selection go, never erase it first; with the setting off Option still types (Option+2
+is @ on a Norwegian layout) and replaces the selection. Shift+Enter (rule 6) and the image
 key (rule 5) already did what Max asked and are unchanged. Codex, agy and a plain shell keep every key: Flare knows no
 other agent's editor keys. Native: `flare_term::prompt_keys` (`prompt_key_of`, `read_box`, `plan`, `message_scroll`,
 `prompt_key_label`), `Emulator::{prompt_lines, marked_rows, sel_cells}`, `TermUi::{prompt_key, message_key,

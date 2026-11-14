@@ -524,7 +524,7 @@ pub fn agent_chords() -> Vec<ChordId> {
 /// The keys agent hotkeys add, as the Settings Keys list shows them, one line a note (rule 1235): the agent chords
 /// and the prompt keys, every key named by its table's label on this system.
 pub fn agent_keys_text(os: KeyOs) -> String {
-    use flare_term::prompt_keys::{PromptKey as P, prompt_key_label};
+    use flare_term::prompt_keys::{MAC_DELETE_LINE_LABEL, PromptKey as P, prompt_key_label};
     let c = |id| key_label_on(os, id, true);
     let p = |k| prompt_key_label(os, k);
     [
@@ -551,9 +551,14 @@ pub fn agent_keys_text(os: KeyOs) -> String {
             p(P::End)
         ),
         format!(
-            "{} and {} delete a word. {} cuts, {} undoes, {} clears the prompt.",
+            "{} and {} delete a word.{} {} cuts, {} undoes, {} clears the prompt.",
             p(P::DeleteWordBack),
             p(P::DeleteWordForward),
+            if os.is_mac() {
+                format!(" {MAC_DELETE_LINE_LABEL} deletes to the line's start.")
+            } else {
+                String::new()
+            },
             p(P::Cut),
             p(P::Undo),
             p(P::ClearPrompt)
@@ -982,6 +987,11 @@ mod tests {
             for k in PROMPT_KEYS {
                 assert!(text.contains(prompt_key_label(os, k)), "{os:?} {k:?}");
             }
+            assert_eq!(
+                text.contains(flare_term::prompt_keys::MAC_DELETE_LINE_LABEL),
+                os == KeyOs::Mac,
+                "Cmd+Backspace is the Mac's alone"
+            );
             assert!(!text.contains('\u{2014}'), "no em-dash");
             assert_eq!(text.lines().count(), 5);
         }
@@ -1055,6 +1065,10 @@ mod tests {
             seen.insert(prompt_key_of(&e, KeyOs::Mac).expect("a prompt key"));
         }
         assert_eq!(seen.len(), PROMPT_KEYS.len());
+        // Cmd+Backspace (delete to the line's start) reaches the prompt too.
+        let cmd_bs = KeyEvent::new("Backspace", "Backspace").meta();
+        assert_eq!(chord_of(&cmd_bs, &agent), None);
+        assert!(!app_owns_key(&cmd_bs, &agent));
     }
 
     // ---- macOS (port phase 3) ---------------------------------------------------------------------

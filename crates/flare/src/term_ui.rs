@@ -1376,8 +1376,15 @@ impl TermUi {
     /// A key for an agent's prompt (rule 1235), called only while agent hotkeys are on and Claude runs in the tab:
     /// a prompt key acts, and a key over Flare's prompt selection replaces, deletes or cuts it. `None`: the key
     /// goes on its usual way (after any bytes sent here, such as the deletion of the selection it replaces).
-    pub fn prompt_key(&mut self, tab: &TabInfo, ev: &KeyEvent, os: KeyOs) -> Option<KeyDone> {
-        let input = pk::classify(ev, os);
+    /// `option_as_meta`: the Mac's "Use Option as Meta" (Option+letter is then a Meta key, not text).
+    pub fn prompt_key(
+        &mut self,
+        tab: &TabInfo,
+        ev: &KeyEvent,
+        os: KeyOs,
+        option_as_meta: bool,
+    ) -> Option<KeyDone> {
+        let input = pk::classify(ev, os, option_as_meta);
         match input {
             Input::Ignore => return None,
             Input::Other => {

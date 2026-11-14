@@ -74,6 +74,9 @@ pub const PROMPT_KEYS: [PromptKey; 18] = [
     PromptKey::NextMessage,
 ];
 
+/// The Mac's Cmd+Backspace in its glyphs: it deletes to the line's start (`Input::DeleteLineBack`, Mac only).
+pub const MAC_DELETE_LINE_LABEL: &str = "\u{2318}\u{232b}";
+
 /// What the UI calls a prompt key on this system (the Mac in its glyphs).
 pub fn prompt_key_label(os: KeyOs, k: PromptKey) -> &'static str {
     use PromptKey as P;
@@ -522,6 +525,8 @@ pub enum Input {
     Type,
     /// Backspace or Delete alone: deletes a selection.
     Erase,
+    /// Cmd+Backspace on a Mac: deletes a selection, else the line before the caret (^U).
+    DeleteLineBack,
     /// Left or Right alone: a selection collapses to that end.
     Collapse(bool),
     /// A modifier going down: changes nothing.
@@ -530,8 +535,9 @@ pub enum Input {
     Other,
 }
 
-/// What a key is to the prompt, on this system.
-pub fn classify(e: &KeyEvent, os: KeyOs) -> Input {
+/// What a key is to the prompt, on this system. `option_as_meta` is the Mac's "Use Option as Meta" setting: with
+/// it on, Option+letter goes out as ESC and the letter (a Meta key for Claude's editor), not as typed text.
+pub fn classify(e: &KeyEvent, os: KeyOs, option_as_meta: bool) -> Input {
     if !e.pressed {
         return Input::Ignore;
     }
@@ -556,7 +562,14 @@ pub fn classify(e: &KeyEvent, os: KeyOs) -> Input {
         "Backspace" | "Delete" if none => return Input::Erase,
         "ArrowLeft" if none => return Input::Collapse(false),
         "ArrowRight" if none => return Input::Collapse(true),
+        "Backspace" if os.is_mac() && e.meta && !e.ctrl && !e.alt && !e.shift => {
+            return Input::DeleteLineBack;
+        }
         _ => {}
+    }
+    // Option as Meta: Option+B, F, D and the like are Claude's word keys, not text over the selection.
+    if os.is_mac() && option_as_meta && e.alt && !e.ctrl {
+        return Input::Other;
     }
     // Typed text: no Ctrl (AltGr is Ctrl+Alt on Windows) and no Cmd, and no control character.
     let typed = e
@@ -743,6 +756,11 @@ pub fn plan(
         Input::Erase => match range {
             Some((a, b)) => delete_range(a, b),
             None => Plan::pass(Highlight::Keep),
+        },
+        // ^U is Claude's (and readline's) delete to the line's start, what the Mac's Cmd+Backspace sends.
+        Input::DeleteLineBack => match range {
+            Some((a, b)) => delete_range(a, b),
+            None => Plan::done("\x15".into(), Highlight::Keep),
         },
         Input::Collapse(right) => match range {
             Some((a, b)) => Plan::done(
@@ -1001,23 +1019,99 @@ mod tests {
     #[test]
     fn classify_types_erases_and_ignores_modifiers() {
         let w = KeyOs::Windows;
-        assert_eq!(classify(&ev("q").text("q"), w), Input::Type);
-        assert_eq!(classify(&ev("Q").shift().text("Q"), w), Input::Type);
+        assert_eq!(classify(&ev("q").text("q"), w, false), Input::Type);
+        assert_eq!(classify(&ev("Q").shift().text("Q"), w, false), Input::Type);
         // AltGr on Windows is Ctrl+Alt with text.
         assert_eq!(
-            classify(&KeyEvent::new("@", "Digit2").ctrl().alt().text("@"), w),
+            classify(
+                &KeyEvent::new("@", "Digit2").ctrl().alt().text("@"),
+                w,
+                false
+            ),
             Input::Type
         );
-        assert_eq!(classify(&ev("v").ctrl(), w), Input::Type);
-        assert_eq!(classify(&ev("Backspace"), w), Input::Erase);
-        assert_eq!(classify(&ev("Delete"), w), Input::Erase);
-        assert_eq!(classify(&ev("ArrowLeft"), w), Input::Collapse(false));
-        assert_eq!(classify(&ev("Shift").shift(), w), Input::Ignore);
-        assert_eq!(classify(&ev("Control").ctrl(), w), Input::Ignore);
-        assert_eq!(classify(&ev("Enter").text("\r"), w), Input::Other);
-        assert_eq!(classify(&ev("c").ctrl(), w), Input::Other);
-        assert_eq!(classify(&ev("Escape"), w), Input::Other);
-        assert_eq!(classify(&ev("v").meta(), KeyOs::Mac), Input::Type);
+        assert_eq!(classify(&ev("v").ctrl(), w, false), Input::Type);
+        assert_eq!(classify(&ev("Backspace"), w, false), Input::Erase);
+        assert_eq!(classify(&ev("Delete"), w, false), Input::Erase);
+        assert_eq!(classify(&ev("ArrowLeft"), w, false), Input::Collapse(false));
+        assert_eq!(classify(&ev("Shift").shift(), w, false), Input::Ignore);
+        assert_eq!(classify(&ev("Control").ctrl(), w, false), Input::Ignore);
+        assert_eq!(classify(&ev("Enter").text("\r"), w, false), Input::Other);
+        assert_eq!(classify(&ev("c").ctrl(), w, false), Input::Other);
+        assert_eq!(classify(&ev("Escape"), w, false), Input::Other);
+        assert_eq!(classify(&ev("v").meta(), KeyOs::Mac, false), Input::Type);
+    }
+
+    #[test]
+    fn cmd_backspace_on_the_mac_deletes_the_selection_or_the_line_before_the_caret() {
+        let m = KeyOs::Mac;
+        let cmd_bs = ev("Backspace").meta();
+        assert_eq!(classify(&cmd_bs, m, false), Input::DeleteLineBack);
+        assert_eq!(classify(&cmd_bs, m, true), Input::DeleteLineBack);
+        // Cmd+Shift+Backspace stays the clear-prompt key; on Windows the Win key is no prompt key.
+        assert_eq!(
+            classify(&ev("Backspace").meta().shift(), m, false),
+            Input::Key(PromptKey::ClearPrompt)
+        );
+        assert_eq!(classify(&cmd_bs, W, false), Input::Other);
+        // "fix the login bug" with "the" selected: only "the" goes, from Flare's walked caret.
+        let t = read(&["fix the login bug"], (0, 19));
+        let s = PromptSel {
+            anchor: 4,
+            head: 7,
+            caret: 7,
+            text: t.text(),
+        };
+        let p = plan(Input::DeleteLineBack, &t, Some(&s), false, m);
+        assert_eq!(p.send, BS.repeat(3));
+        assert_eq!(p.highlight, Highlight::Clear);
+        assert!(!p.pass);
+        // Without a selection it is Claude's delete to the line's start.
+        let p = plan(Input::DeleteLineBack, &t, None, false, m);
+        assert_eq!(p.send, "\x15");
+        assert!(!p.pass);
+        assert_eq!(MAC_DELETE_LINE_LABEL, "\u{2318}\u{232b}");
+    }
+
+    #[test]
+    fn option_letters_type_unless_option_is_meta() {
+        let m = KeyOs::Mac;
+        let opt_d = KeyEvent::new("\u{2202}", "KeyD").alt().text("\u{2202}");
+        let opt_2 = KeyEvent::new("@", "Digit2").alt().text("@");
+        // Off: Option types the layout's character (Norwegian Option+2 is @), so it replaces a selection.
+        assert_eq!(classify(&opt_d, m, false), Input::Type);
+        assert_eq!(classify(&opt_2, m, false), Input::Type);
+        // On: Option+letter is ESC and the letter, Claude's word keys; the selection is let go, not erased.
+        assert_eq!(classify(&opt_d, m, true), Input::Other);
+        assert_eq!(classify(&opt_2, m, true), Input::Other);
+        let t = read(&["fix the login bug"], (0, 19));
+        let s = PromptSel {
+            anchor: 4,
+            head: 7,
+            caret: 7,
+            text: t.text(),
+        };
+        let p = plan(classify(&opt_d, m, true), &t, Some(&s), false, m);
+        assert_eq!(p.send, "");
+        assert!(p.pass);
+        // Option's prompt keys are still the prompt's with the setting on.
+        assert_eq!(
+            classify(&ev("ArrowLeft").alt(), m, true),
+            Input::Key(PromptKey::WordLeft)
+        );
+        assert_eq!(
+            classify(&ev("Backspace").alt(), m, true),
+            Input::Key(PromptKey::DeleteWordBack)
+        );
+        // Windows ignores the setting: AltGr text still types.
+        assert_eq!(
+            classify(
+                &KeyEvent::new("@", "Digit2").ctrl().alt().text("@"),
+                W,
+                true
+            ),
+            Input::Type
+        );
     }
 
     #[test]

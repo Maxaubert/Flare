@@ -3577,11 +3577,13 @@ impl AppCtl {
         };
         let info = front.info();
         let armed = self.agent_view.armed(&front.id);
+        let option_as_meta = self.option_as_meta();
         // Agent hotkeys with Claude in front: the prompt is a text box (rule 1235). Only Claude: Flare knows no
         // other agent's editor keys.
         if ctx.agent_keys
             && armed == Some(flare_agent::kinds::AgentKind::Claude)
-            && let Some(KeyDone::Handled) = self.term.prompt_key(&info, ev, self.key_os)
+            && let Some(KeyDone::Handled) =
+                self.term.prompt_key(&info, ev, self.key_os, option_as_meta)
         {
             self.push_term();
             self.wake_term();
