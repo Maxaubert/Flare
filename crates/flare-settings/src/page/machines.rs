@@ -10,12 +10,21 @@
 //! lists the computers found nearby (PR 3; none yet), then the SSH config hosts, then "Type an address", which shows an
 //! Address field and an optional User field. A failed check is one red line in the dialog.
 //!
+//! Machine pairing PR 2 (rule 1238): a section **This computer** above the table, with one switch row, **Computer
+//! sharing**, whose subtext is fixed: it never changes to report what the setup is doing. While the setup runs (or
+//! turning off cleans up) the switch is dimmed and deaf.
+//!
 //! This is data only. The app's `machines_page` reads `machines.json` and `~/.ssh/config` and checks a link on a
-//! worker, and hands the page what it found in a [`MachinesInfo`].
+//! worker, and hands the page what it found in a [`MachinesInfo`]; its `sharing` runs the OS setup.
 
-use super::{BlockModel, Control, PageEnv, PageModel, RowModel, plain_row, section};
+use super::{BlockModel, Control, PageEnv, PageModel, RowModel, plain_row, section, switch_row};
 use crate::rows::row;
 
+/// The Computer sharing switch's row id (its dialog's buttons answer to it too).
+pub const SHARING_ROW: &str = "machines-sharing";
+/// The sharing dialog's two buttons, as `row-button` names them: the left one (Cancel, Keep it) and the primary one.
+pub const SHARING_CANCEL: &str = "cancel";
+pub const SHARING_PRIMARY: &str = "primary";
 /// The add row's id (the dialog's Machine drop-down and its fields answer to it too).
 pub const ADD_ROW: &str = "machines-add";
 /// A machine row's id is this prefix and the machine's id (its ⋯ menu answers to it).
@@ -166,6 +175,14 @@ pub fn machine_choices(nearby: &[(String, String)], hosts: &[String]) -> Vec<Mac
     out
 }
 
+/// The Computer sharing switch (rule 1238): on (the setup finished, or is running), and busy (the setup or the clean
+/// up runs, or a question about it is open): the switch is dimmed and deaf.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SharingInfo {
+    pub on: bool,
+    pub busy: bool,
+}
+
 /// What the page shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MachinesInfo {
@@ -173,6 +190,16 @@ pub struct MachinesInfo {
     /// The hosts `~/.ssh/config` names (no wildcard, no `Match`), for the dialog's drop-down.
     pub ssh_hosts: Vec<String>,
     pub add: AddForm,
+    pub sharing: SharingInfo,
+}
+
+/// The Computer sharing row: the switch, its fixed subtext from the table, dimmed while busy.
+fn sharing_row(s: SharingInfo) -> RowModel {
+    let def = row(SHARING_ROW).expect("machines-sharing is a row");
+    RowModel {
+        off: s.busy,
+        ..switch_row(def, s.on)
+    }
 }
 
 /// The "+ Add a machine" row: its plus, its label and no subtext (owner pick); a press anywhere opens the dialog.
@@ -185,8 +212,9 @@ fn add_row() -> RowModel {
     }
 }
 
-/// The Machines page: the table of linked machines (its heading row first, none while there is no machine), then the
-/// add row. The Add a machine dialog is drawn over the page from [`MachinesInfo::add`], not as a block.
+/// The Machines page: This computer (the Computer sharing switch), then the table of linked machines (its heading row
+/// first, none while there is no machine) and the add row. The Add a machine dialog is drawn over the page from
+/// [`MachinesInfo::add`], not as a block.
 pub fn build(env: &PageEnv<'_>) -> PageModel {
     let empty = MachinesInfo::default();
     let info = env.machines.unwrap_or(&empty);
@@ -199,7 +227,13 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
     PageModel {
         id: "machines",
         label: "Machines",
-        sections: vec![section("machines", blocks)],
+        sections: vec![
+            section(
+                "this-computer",
+                vec![BlockModel::Row(sharing_row(info.sharing))],
+            ),
+            section("machines", blocks),
+        ],
     }
 }
 
@@ -219,8 +253,9 @@ mod tests {
         }
     }
 
+    /// The kinds of the Linked machines section's blocks (the page's second section).
     fn kinds(page: &PageModel) -> Vec<&'static str> {
-        page.sections[0]
+        page.sections[1]
             .blocks
             .iter()
             .map(|b| match b {
@@ -237,10 +272,10 @@ mod tests {
         with_env_machines(MachinesInfo::default(), |env| {
             let page = build(env);
             assert_eq!(page.id, "machines");
-            assert_eq!(page.sections.len(), 1);
-            assert_eq!(page.sections[0].title, "Linked machines");
+            assert_eq!(page.sections.len(), 2);
+            assert_eq!(page.sections[1].title, "Linked machines");
             assert_eq!(kinds(&page), ["add"]);
-            let BlockModel::Row(r) = &page.sections[0].blocks[0] else {
+            let BlockModel::Row(r) = &page.sections[1].blocks[0] else {
                 panic!("the add row");
             };
             assert_eq!(r.label, "Add a machine");
@@ -266,9 +301,52 @@ mod tests {
         with_env_machines(info, |env| {
             let page = build(env);
             assert_eq!(kinds(&page), ["head", "machine", "machine", "add"]);
-            assert_eq!(page.sections[0].blocks[1], BlockModel::Machine(mac()));
-            assert_eq!(page.sections[0].blocks[2], BlockModel::Machine(pc));
+            assert_eq!(page.sections[1].blocks[1], BlockModel::Machine(mac()));
+            assert_eq!(page.sections[1].blocks[2], BlockModel::Machine(pc));
         });
+    }
+
+    /// Rule 1238: This computer comes first, with the Computer sharing switch and its fixed subtext; the switch shows
+    /// the state and is dimmed while busy, and the words never change.
+    #[test]
+    fn this_computer_is_first_with_the_sharing_switch_and_its_fixed_subtext() {
+        let row_of = |sharing: SharingInfo| {
+            let info = MachinesInfo {
+                sharing,
+                ..MachinesInfo::default()
+            };
+            with_env_machines(info, |env| {
+                let page = build(env);
+                assert_eq!(page.sections[0].id, "this-computer");
+                assert_eq!(page.sections[0].title, "This computer");
+                assert_eq!(page.sections[0].blocks.len(), 1);
+                let BlockModel::Row(r) = &page.sections[0].blocks[0] else {
+                    panic!("the sharing row");
+                };
+                r.clone()
+            })
+        };
+        let off = row_of(SharingInfo::default());
+        assert_eq!(off.id, SHARING_ROW);
+        assert_eq!(off.label, "Computer sharing");
+        assert_eq!(off.sub, "Allows you to control sessions from other devices");
+        assert_eq!(off.icon, "share");
+        assert_eq!(off.control, Control::Switch { on: false });
+        assert!(off.tap && !off.off);
+        assert!(off.row_tip.is_empty(), "a labelled row has no tooltip");
+        let on = row_of(SharingInfo {
+            on: true,
+            busy: false,
+        });
+        assert_eq!(on.control, Control::Switch { on: true });
+        let busy = row_of(SharingInfo {
+            on: true,
+            busy: true,
+        });
+        assert!(busy.off, "dimmed and deaf while the setup runs");
+        for r in [&on, &busy] {
+            assert_eq!(r.sub, off.sub, "the subtext never reports state");
+        }
     }
 
     /// Rule 1237: the dialog is drawn over the page; an open one leaves the add row in its place.
@@ -283,6 +361,7 @@ mod tests {
                 error: Some("Not answering".into()),
                 ..AddForm::default()
             },
+            ..MachinesInfo::default()
         };
         with_env_machines(info, |env| {
             assert_eq!(kinds(&build(env)), ["head", "machine", "add"]);

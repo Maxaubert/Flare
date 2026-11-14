@@ -157,3 +157,29 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
   "This PC is missing Windows' SSH client". Do not remove ssh from the everyday PC.
 - [ ] Paired fields: a hand-written machine with `port`, `key` and `known_hosts` (a key path and a known-hosts path
   with a space in them) links over real ssh, and ssh asks nothing (`StrictHostKeyChecking=yes`, the key only).
+
+## Machine pairing PR 2 (rules 1238 to 1241, 2026-11-14)
+
+Run these on a test account or a machine you can put back; note what each machine had before (OpenSSH Server
+installed or not, sshd running or not, Remote Login on or off).
+
+- [ ] Windows, no SSH server: Computer sharing on shows one UAC prompt; after it (up to a minute while Windows adds
+  the feature) the switch is on. `Get-Service sshd` is Running and Automatic; `(Get-NetFirewallRule -Name
+  OpenSSH-Server-In-TCP).Profile` is `Private`; `Flare-Pairing-In` exists for Flare's exe, Private only;
+  `%ProgramData%\ssh\sshd_config` has `PasswordAuthentication no` above the `Match Group administrators` block, and
+  `ssh -o PreferredAuthentications=password localhost` is refused.
+- [ ] Windows, SSH server already running: the switch is on after one UAC prompt; `sshd_config` and the sshd rule's
+  profiles are as they were.
+- [ ] Windows: No at the UAC prompt puts the switch back off, with no dialog.
+- [ ] Windows, offline with no SSH server: the dialog says Windows could not add its SSH server, and the switch is off.
+- [ ] Restart Flare with the switch on: it is still on, and no UAC prompt shows.
+- [ ] Turn off on the machine where Flare turned sshd on: "Stop the SSH server too?"; Stop it shows one UAC prompt,
+  then sshd is Stopped and Manual and `Flare-Pairing-In` is gone. Keep it leaves sshd running and shows no prompt.
+- [ ] Mac with Remote Login on: the switch turns on with no prompt.
+- [ ] Mac with Remote Login off: the password prompt shows; after OK, either the switch is on (Remote Login on in
+  System Settings) or "Turn on Remote Login" shows. Open System Settings opens General > Sharing; turning Remote Login
+  on there closes the dialog within about a second and the switch is on. Note the macOS version.
+- [ ] Mac: Cancel at the password prompt puts the switch back off; Cancel in "Turn on Remote Login" too.
+- [ ] Mac turn off with Stop it: Remote Login goes off (or the dialog says where to turn it off).
+- [ ] Mac release build: the first launch after this PR shows no local network prompt yet (nothing browses until PR
+  3); `plutil -p Flare.app/Contents/Info.plist` lists `NSLocalNetworkUsageDescription` and `NSBonjourServices`.

@@ -39,6 +39,8 @@ pub enum Overlay {
     DictationAsk,
     /// The Machines page's Add a machine dialog (machine pairing PR 1).
     MachineAdd,
+    /// The Machines page's Computer sharing dialog (machine pairing PR 2).
+    SharingAsk,
     /// A plugin's details sheet (Settings > Plugins, its card's info button).
     PluginSheet,
     /// The colour picker.
@@ -57,7 +59,7 @@ pub enum Overlay {
 
 impl Overlay {
     /// All of them.
-    pub const ALL: [Overlay; 21] = [
+    pub const ALL: [Overlay; 22] = [
         Overlay::Menu,
         Overlay::Overflow,
         Overlay::PluginsDropdown,
@@ -72,6 +74,7 @@ impl Overlay {
         Overlay::SettingsAsk,
         Overlay::DictationAsk,
         Overlay::MachineAdd,
+        Overlay::SharingAsk,
         Overlay::PluginSheet,
         Overlay::ColourPicker,
         Overlay::Help,

@@ -1570,12 +1570,22 @@ pub fn run_window(
                             .as_deref(),
                     ),
                 ));
-            settings
-                .borrow_mut()
-                .set_machines(crate::machines_page::MachinesPage::new(
+            // The Computer sharing switch's OS calls (machine pairing PR 2): the real setup, except under --e2e, where
+            // the switch sets nothing up.
+            let sharing_os: Arc<dyn crate::sharing::SharingOs> = if e2e::global().on() {
+                Arc::new(crate::sharing::NoSharingOs)
+            } else {
+                Arc::new(crate::sharing::RealSharingOs::new(PathBuf::from(
+                    crate::app_facts::home(),
+                )))
+            };
+            settings.borrow_mut().set_machines(
+                crate::machines_page::MachinesPage::new(
                     Arc::clone(&machines_io),
                     Arc::clone(&post),
-                ));
+                )
+                .with_sharing_os(sharing_os),
+            );
             // The + menu and the remote tabs' logos need the machines from the start: read once on a worker.
             let p = Arc::clone(&post);
             let started = std::thread::Builder::new()

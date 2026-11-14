@@ -699,9 +699,11 @@ mod tests {
             .flatten()
             .filter(|d| d.kind == RowKind::Switch)
         {
+            // The Computer sharing switch is the app's (rule 1238): it is saved once the OS setup finished.
             if def.id.starts_with("dictation-")
                 || def.id == "explorer-verb"
                 || def.id == "diag-verbose"
+                || def.id == "machines-sharing"
             {
                 continue;
             }

@@ -459,7 +459,7 @@ pub const DIAGNOSTICS_OPTIONS: [RowDef; 3] = [
 ];
 
 /// This app's own rows, in draw order (section by section, as the pages draw them).
-pub const APP_OPTIONS: [RowDef; 22] = [
+pub const APP_OPTIONS: [RowDef; 23] = [
     RowDef {
         id: "tab-layout",
         label: "Tab position",
@@ -724,6 +724,22 @@ pub const APP_OPTIONS: [RowDef; 22] = [
         source: Source::App,
         only_nvidia: false,
     },
+    // Machine pairing PR 2 (rule 1238): the Machines page's This computer switch. Its subtext is fixed (approved
+    // mockup 2026-11-14): it never changes to say what the setup is doing.
+    RowDef {
+        id: "machines-sharing",
+        label: "Computer sharing",
+        sub: "Allows you to control sessions from other devices",
+        section: "this-computer",
+        page: "machines",
+        icon: "share",
+        // No "ssh" or "remote": those find Add a machine first (the Machines page's search test).
+        keywords: "share sharing server login pair pairing allow devices openssh",
+        keys: &["flare.machines.sharing"],
+        kind: RowKind::Switch,
+        source: Source::App,
+        only_nvidia: false,
+    },
     // Remote sessions PR 7: the Machines page's add row. Its words are for Find; the page draws no subtext (owner
     // pick, 2026-11-12), and a press opens the Add a machine dialog (machine pairing PR 1).
     RowDef {
@@ -755,7 +771,7 @@ pub const APP_OPTIONS: [RowDef; 22] = [
 ];
 
 /// The row ids in draw order (Appendix C, the `#` column), with Flare's own rows where their pages draw them.
-pub const ROW_ORDER: [&str; 52] = [
+pub const ROW_ORDER: [&str; 53] = [
     "tab-layout",
     "tab-switch",
     "window-edges",
@@ -803,6 +819,7 @@ pub const ROW_ORDER: [&str; 52] = [
     "dictation-model",
     "dictation-gpu",
     "dictation-anywhere",
+    "machines-sharing",
     "machines-add",
     "diag-verbose",
     "diag-folder",
@@ -872,14 +889,14 @@ mod tests {
     #[test]
     fn the_tables_name_the_46_rows_in_row_order() {
         let ids: Vec<&str> = table_order().iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 52);
+        assert_eq!(ids.len(), 53);
         let mut sorted_tables = ids.clone();
         sorted_tables.sort_unstable();
         let mut sorted_order: Vec<&str> = ROW_ORDER.to_vec();
         sorted_order.sort_unstable();
         assert_eq!(sorted_tables, sorted_order);
         let distinct: BTreeSet<&str> = ROW_ORDER.iter().copied().collect();
-        assert_eq!(distinct.len(), 52);
+        assert_eq!(distinct.len(), 53);
         let drawn: Vec<&str> = all_rows().map(|r| r.id).collect();
         assert_eq!(drawn, ROW_ORDER.to_vec());
     }
@@ -1011,11 +1028,12 @@ mod tests {
                 "dev-preview=flare.window.devPreview",
                 "taskbar-badge=flare.window.taskbarBadge",
                 "notify-ask=flare.window.notifyAsk",
+                "machines-sharing=flare.machines.sharing",
                 "machines-add=",
                 "app-version=",
             ]
         );
-        assert_eq!(app.len(), 22);
+        assert_eq!(app.len(), 23);
     }
 
     #[test]
@@ -1115,7 +1133,15 @@ mod tests {
             );
             assert!(
                 [
-                    "window", "opening", "keys", "links", "theme", "marks", "notify", "machines",
+                    "window",
+                    "opening",
+                    "keys",
+                    "links",
+                    "theme",
+                    "marks",
+                    "notify",
+                    "this-computer",
+                    "machines",
                     "about"
                 ]
                 .contains(&r.section),
@@ -1142,6 +1168,7 @@ mod tests {
             include_str!("look.rs"),
             include_str!("custom_theme.rs"),
             include_str!("window_colours.rs"),
+            include_str!("machine_prefs.rs"),
         ];
         for r in all_rows() {
             for k in r.keys {

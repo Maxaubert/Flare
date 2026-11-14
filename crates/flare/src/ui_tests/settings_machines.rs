@@ -38,6 +38,8 @@ struct Fx {
     q: Queue,
     /// The machine lists the window was sent.
     sent: RefCell<Vec<Vec<Machine>>>,
+    /// The settings store (the Computer sharing switch saves there).
+    prefs: PrefStore,
 }
 
 fn mac() -> Machine {
@@ -53,7 +55,21 @@ fn mac() -> Machine {
 }
 
 fn fx_at(scale: f32, io: FakeIo) -> Fx {
-    let prefs = PrefStore::memory();
+    fx_with(
+        scale,
+        io,
+        Arc::new(crate::sharing::NoSharingOs),
+        PrefStore::memory(),
+    )
+}
+
+/// The page with the Computer sharing switch's OS calls (a fake) and a settings store the test holds.
+fn fx_with(
+    scale: f32,
+    io: FakeIo,
+    sharing: Arc<dyn crate::sharing::SharingOs>,
+    prefs: PrefStore,
+) -> Fx {
     let look = LookStore::new(prefs.clone());
     let q: Queue = Arc::default();
     let post: Post = {
@@ -96,7 +112,7 @@ fn fx_at(scale: f32, io: FakeIo) -> Fx {
     let ctl = SettingsCtl::new(&h.comp, deps);
     let io = Arc::new(io);
     ctl.borrow_mut()
-        .set_machines(MachinesPage::new(io.clone(), post));
+        .set_machines(MachinesPage::new(io.clone(), post).with_sharing_os(sharing));
     ctl.borrow_mut().show();
     Fx {
         h,
@@ -104,6 +120,7 @@ fn fx_at(scale: f32, io: FakeIo) -> Fx {
         io,
         q,
         sent: RefCell::default(),
+        prefs,
     }
 }
 
@@ -156,8 +173,16 @@ impl Fx {
         self.rows().into_iter().find(|r| r.id == id)
     }
 
+    /// The Linked machines section (This computer comes before it since machine pairing PR 2).
+    fn table(&self) -> SetSection {
+        self.sections()
+            .into_iter()
+            .find(|s| s.id == "machines")
+            .expect("the Linked machines section")
+    }
+
     fn kinds(&self) -> Vec<BlockKind> {
-        self.rows().iter().map(|r| r.block).collect()
+        self.table().rows.iter().map(|r| r.block).collect()
     }
 }
 
@@ -199,7 +224,7 @@ fn with_no_machine_the_page_is_the_add_row_alone_with_no_subtext() {
         assert_eq!(add.label.as_str(), "Add a machine");
         assert_eq!(add.sub.as_str(), "", "no subtext (owner pick)");
         assert!(add.tap);
-        assert!(f.rows().iter().all(|r| r.sub.is_empty()));
+        assert!(f.table().rows.iter().all(|r| r.sub.is_empty()));
     }
 }
 
@@ -235,7 +260,7 @@ fn linked_machines_are_a_table_with_logo_host_version_and_status() {
         assert!((f64::from(m.h) - 50.0).abs() < 0.5, "{s}: one line high");
         assert_eq!(m.vendor.as_str(), "mac", "the Apple logo");
         // Every block sits in its panel on whole device pixels, one after the other.
-        let sec = &f.sections()[0];
+        let sec = f.table();
         let rows: Vec<SetRow> = sec.rows.iter().collect();
         for w in rows.windows(2) {
             assert!((w[0].y + w[0].h - w[1].y).abs() < 0.01, "{s}: blocks touch");
@@ -675,7 +700,7 @@ fn a_not_linked_machine_shows_its_reason_under_the_row_and_hovering_its_status_s
             "{s}: the row grows by its line ({})",
             m.h
         );
-        let rows: Vec<SetRow> = f.sections()[0].rows.iter().collect();
+        let rows: Vec<SetRow> = f.table().rows.iter().collect();
         for w in rows.windows(2) {
             assert!((w[0].y + w[0].h - w[1].y).abs() < 0.01, "{s}: blocks touch");
         }
@@ -784,5 +809,215 @@ fn a_machine_row_draws_its_reason_as_one_grey_line_under_it() {
             (0..3).any(|c| p[c].abs_diff(g[c]) > 30) && hi - lo < 24
         });
         assert!(grey > lit / 2, "{s}: grey ink ({grey} of {lit})");
+    }
+}
+
+/// Rule 1238: the Machines page starts with This computer, whose one row is the Computer sharing switch with its fixed
+/// subtext and no tooltip; Linked machines comes after it. Flipping the switch on Windows runs the elevated setup (a
+/// fake: nothing runs), the switch shows on and dimmed while it runs, then on and saved. At 100 and 225 percent.
+#[test]
+fn this_computer_is_first_and_its_switch_turns_sharing_on() {
+    use crate::sharing::Platform;
+    use crate::sharing::fake::FakeOs;
+    for s in SCALES2 {
+        let os = Arc::new(FakeOs::new(Platform::Windows));
+        *os.elevated.lock().unwrap() = Ok("ok=1\ninstalled=1\nstarted=1\n".into());
+        let f = fx_with(s, FakeIo::default(), os.clone(), PrefStore::memory());
+        f.page();
+        f.settle("the read", |f| f.row("machines-add").is_some());
+        let ids: Vec<String> = f.sections().iter().map(|s| s.id.to_string()).collect();
+        assert_eq!(ids, ["this-computer", "machines"], "{s}");
+        assert_eq!(f.sections()[0].title.as_str(), "This computer");
+        assert_eq!(f.sections()[1].title.as_str(), "Linked machines");
+        let row = f.row("machines-sharing").unwrap();
+        assert_eq!(row.label.as_str(), "Computer sharing");
+        assert_eq!(
+            row.sub.as_str(),
+            "Allows you to control sessions from other devices"
+        );
+        assert_eq!(row.row_tip.as_str(), "", "a labelled row has no tooltip");
+        assert!(!row.on && !row.off && row.tap, "{s}: off at first");
+        f.b().invoke_row_switch("machines-sharing".into(), true);
+        let busy = f.row("machines-sharing").unwrap();
+        assert!(
+            busy.on && busy.off,
+            "{s}: on and dimmed while the setup runs"
+        );
+        assert_eq!(busy.sub, row.sub, "the subtext never reports state");
+        f.settle("the setup", |f| {
+            f.row("machines-sharing").is_some_and(|r| r.on && !r.off)
+        });
+        assert!(flare_settings::machine_prefs::sharing_on(&f.prefs));
+        assert_eq!(
+            os.scripts.lock().unwrap().len(),
+            1,
+            "{s}: one elevated script"
+        );
+        assert!(!f.b().get_sharing_ask_open());
+        assert_eq!(f.row("machines-sharing").unwrap().sub, row.sub);
+    }
+}
+
+/// Rule 1238: a switch left on is on after a restart (read from the settings), with no setup run again.
+#[test]
+fn the_sharing_switch_stays_on_across_restarts() {
+    use crate::sharing::Platform;
+    use crate::sharing::fake::FakeOs;
+    let prefs = PrefStore::memory();
+    flare_settings::machine_prefs::set_sharing_on(&prefs, true);
+    let os = Arc::new(FakeOs::new(Platform::Windows));
+    let f = fx_with(1.0, FakeIo::default(), os.clone(), prefs);
+    f.page();
+    f.settle("the read", |f| f.row("machines-sharing").is_some());
+    let row = f.row("machines-sharing").unwrap();
+    assert!(row.on && !row.off);
+    assert!(os.scripts.lock().unwrap().is_empty());
+    assert_eq!(*os.announced.lock().unwrap(), [true]);
+}
+
+/// Rule 1240: when macOS refuses, the Flare dialog "Turn on Remote Login" draws over the Machines page with Cancel and
+/// Open System Settings; Open System Settings opens Sharing and the dialog waits; it closes by itself once Remote Login
+/// is on, and the switch is on. It draws only over the Machines page while Settings is in front.
+#[test]
+fn a_refused_mac_shows_turn_on_remote_login_over_the_page() {
+    use crate::sharing::fake::FakeOs;
+    use crate::sharing::{Platform, SHARING_SETTINGS_URL};
+    let os = Arc::new(FakeOs::new(Platform::Mac));
+    *os.admin.lock().unwrap() =
+        Ok("Turning Remote Login on or off requires Full Disk Access privileges.".into());
+    let f = fx_with(1.0, FakeIo::default(), os.clone(), PrefStore::memory());
+    f.page();
+    f.settle("the read", |f| f.row("machines-sharing").is_some());
+    f.b().invoke_row_switch("machines-sharing".into(), true);
+    f.settle("the refusal", |f| f.b().get_sharing_ask_open());
+    let look = f.b().get_sharing_ask();
+    assert_eq!(look.title.as_str(), "Turn on Remote Login");
+    assert_eq!(look.line.as_str(), "Flare continues when it is on");
+    assert!(look.spin);
+    assert_eq!(look.cancel.as_str(), "Cancel");
+    assert_eq!(look.primary.as_str(), "Open System Settings");
+    let row = f.row("machines-sharing").unwrap();
+    assert!(row.on && row.off, "on and dimmed while Flare waits");
+    // Another page, or Settings hidden: the dialog waits off screen and comes back with the page.
+    f.b().invoke_page_chosen("terminal".into());
+    assert!(!f.b().get_sharing_ask_open());
+    f.page();
+    assert!(f.b().get_sharing_ask_open());
+    f.b()
+        .invoke_row_button("machines-sharing".into(), "primary".into());
+    f.settle("System Settings opens", |_| {
+        !os.urls.lock().unwrap().is_empty()
+    });
+    assert_eq!(*os.urls.lock().unwrap(), [SHARING_SETTINGS_URL]);
+    assert!(f.b().get_sharing_ask_open(), "the dialog waits");
+    os.open_port();
+    f.settle("Remote Login is on", |f| !f.b().get_sharing_ask_open());
+    let row = f.row("machines-sharing").unwrap();
+    assert!(row.on && !row.off);
+    assert!(flare_settings::machine_prefs::sharing_on(&f.prefs));
+}
+
+/// Rule 1241: turning off when Flare turned the SSH server on asks "Stop the SSH server too?" with Keep it and Stop
+/// it; the switch is off at once; Escape is Keep it.
+#[test]
+fn turning_sharing_off_asks_to_stop_flares_server() {
+    use crate::sharing::Platform;
+    use crate::sharing::fake::FakeOs;
+    let prefs = PrefStore::memory();
+    flare_settings::machine_prefs::set_sharing_on(&prefs, true);
+    flare_settings::machine_prefs::set_server_by_flare(&prefs, true);
+    let os = Arc::new(FakeOs::new(Platform::Windows));
+    let f = fx_with(1.0, FakeIo::default(), os.clone(), prefs);
+    f.page();
+    f.settle("the read", |f| f.row("machines-sharing").is_some());
+    f.b().invoke_row_switch("machines-sharing".into(), false);
+    assert!(f.b().get_sharing_ask_open());
+    let look = f.b().get_sharing_ask();
+    assert_eq!(look.title.as_str(), "Stop the SSH server too?");
+    assert_eq!(
+        (look.cancel.as_str(), look.primary.as_str()),
+        ("Keep it", "Stop it")
+    );
+    assert!(!look.spin);
+    assert!(!f.row("machines-sharing").unwrap().on, "off at once");
+    assert!(!flare_settings::machine_prefs::sharing_on(&f.prefs));
+    assert!(f.ctl.borrow_mut().escape(), "Escape is Keep it");
+    assert!(!f.b().get_sharing_ask_open());
+    f.settle("the clean up", |f| {
+        f.row("machines-sharing").is_some_and(|r| !r.off)
+    });
+    assert_eq!(*os.stripped.lock().unwrap(), 1, "Flare's keys removed");
+    assert!(os.scripts.lock().unwrap().is_empty(), "the server stays");
+    assert!(flare_settings::machine_prefs::server_by_flare(&f.prefs));
+}
+
+/// Rules 1240 and 1241: the sharing dialog draws in the Dialog look, a 380 px box in the middle of the scrim; a
+/// notice has its one button only; the spinner turns before a waiting line; the buttons and Escape answer. At 100 and
+/// 225 percent.
+#[test]
+fn the_sharing_dialog_draws_its_box_its_line_and_its_buttons() {
+    use crate::SharingAskLook;
+    for s in SCALES2 {
+        let h = Harness::new(s, 900, 600, || crate::SharingAskPreview::new().unwrap());
+        h.activate();
+        h.comp.set_look(SharingAskLook {
+            title: "Turn on Remote Login".into(),
+            line: "Flare continues when it is on".into(),
+            spin: true,
+            cancel: "Cancel".into(),
+            primary: "Open System Settings".into(),
+        });
+        h.comp.set_open(true);
+        h.advance(16);
+        let (bx, by, bw, bh) = (
+            h.comp.get_box_x(),
+            h.comp.get_box_y(),
+            h.comp.get_box_w(),
+            h.comp.get_box_h(),
+        );
+        assert!((bw - 380.0).abs() < 0.5, "{s}: 380 px wide ({bw})");
+        assert!((bx + bw / 2.0 - 450.0).abs() < 1.0, "{s}: centred ({bx})");
+        assert!((by + bh / 2.0 - 300.0).abs() < 1.0, "{s}: centred ({by})");
+        assert!(h.comp.get_cancel_w() > 40.0, "{s}: Cancel shows");
+        // The spinner's accent arc draws left of the line, and it turns.
+        let k = |v: f32| (v * s).round() as u32;
+        let accent = |f: &crate::ui_harness::Frame| {
+            f.count_where(
+                k(bx + 18.0),
+                k(by + 40.0),
+                k(bx + 36.0),
+                k(by + 70.0),
+                |p| p[0] > 180 && p[1] > 100 && p[1] < 190 && p[2] < 110,
+            )
+        };
+        let first = h.render();
+        assert!(
+            accent(&first) > 2,
+            "{s}: the spinner draws ({})",
+            accent(&first)
+        );
+        let (px, py, pw) = (
+            h.comp.get_primary_x(),
+            h.comp.get_primary_y(),
+            h.comp.get_primary_w(),
+        );
+        h.click(px + pw / 2.0, py + 15.0);
+        assert_eq!(h.comp.get_primaries(), 1, "{s}");
+        h.click(20.0, 20.0);
+        assert_eq!(h.comp.get_cancels(), 1, "{s}: a press outside is Cancel");
+        h.key_text("\u{1b}");
+        assert_eq!(h.comp.get_cancels(), 2, "{s}: Escape is Cancel");
+        // A notice: OK only.
+        h.comp.set_look(SharingAskLook {
+            title: "Computer sharing".into(),
+            line: "Windows' SSH server would not start.".into(),
+            spin: false,
+            cancel: "".into(),
+            primary: "OK".into(),
+        });
+        h.advance(16);
+        h.render();
+        assert!(h.comp.get_cancel_w() < 0.5, "{s}: no left button");
+        assert_eq!(accent(&h.render()), 0, "{s}: no spinner");
     }
 }

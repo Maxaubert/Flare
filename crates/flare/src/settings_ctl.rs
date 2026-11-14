@@ -639,6 +639,19 @@ pub fn machine_add_look(
     }
 }
 
+/// The sharing dialog's look (rules 1240 and 1241): its title, its line (a spinner before it while Flare waits for
+/// Remote Login), and its buttons ("" leaves the left one out).
+pub fn sharing_ask_look(ask: &crate::sharing::SharingAsk) -> crate::SharingAskLook {
+    let w = crate::sharing::ask_words(ask);
+    crate::SharingAskLook {
+        title: w.title.into(),
+        line: w.line.as_str().into(),
+        spin: w.spin,
+        cancel: w.cancel.into(),
+        primary: w.primary.into(),
+    }
+}
+
 fn block_row(id: &str, block: SlintBlock, y: f64, h: f64) -> SetRow {
     SetRow {
         id: id.into(),
@@ -1078,6 +1091,7 @@ impl SettingsCtl {
             let b = app.global::<SettingsBridge>();
             b.set_picker_open(false);
             b.set_machine_add_open(false);
+            b.set_sharing_ask_open(false);
         }
     }
 
@@ -1088,9 +1102,11 @@ impl SettingsCtl {
         }
         crate::dictation_ctl::page_left();
         self.page = DEFAULT_PAGE;
-        // The Add a machine dialog ends with the tab (a check that runs keeps its form until it answers).
+        // The Add a machine dialog ends with the tab (a check that runs keeps its form until it answers), and so does
+        // the sharing dialog (Cancel, Keep it, OK).
         if let Some(m) = self.machines.as_mut() {
             m.cancel_form();
+            m.sharing_mut().dismiss();
         }
         self.find.set_query("");
         self.finish_watch();
@@ -1154,8 +1170,10 @@ impl SettingsCtl {
         }
     }
 
-    /// The window hands over the Machines page's door to the disk and the links (startup).
-    pub fn set_machines(&mut self, page: crate::machines_page::MachinesPage) {
+    /// The window hands over the Machines page's door to the disk and the links (startup). Its Computer sharing switch
+    /// keeps its state in the settings (rule 1238: on after a restart when it was on).
+    pub fn set_machines(&mut self, mut page: crate::machines_page::MachinesPage) {
+        page.use_prefs(self.deps.prefs.clone());
         self.machines = Some(page);
     }
 
@@ -1284,6 +1302,13 @@ impl SettingsCtl {
         }
         if b.get_machine_add_open() {
             self.machines_button(flare_settings::page::machines::CANCEL_BUTTON);
+            return true;
+        }
+        if b.get_sharing_ask_open() {
+            if let Some(m) = self.machines.as_mut() {
+                m.sharing_mut().dismiss();
+            }
+            self.rebuild();
             return true;
         }
         false
@@ -1583,7 +1608,24 @@ impl SettingsCtl {
         b.set_dict_ask_open(crate::dictation_ctl::page_snap().ask.is_some());
         b.set_dict_ask_text(flare_dictation::catalog::LIMITED_LANGUAGES_TEXT.into());
         self.push_machine_add(app);
+        self.push_sharing_ask(app);
         self.push_editor(app, format);
+    }
+
+    /// The sharing dialog into the bridge (rules 1240 and 1241): open while the switch asks something, drawn only over
+    /// the Machines page while Settings is in front (a question asked while Settings was hidden waits for it).
+    fn push_sharing_ask(&self, app: &AppWindow) {
+        let b = app.global::<SettingsBridge>();
+        let ask = self
+            .machines
+            .as_ref()
+            .and_then(|m| m.sharing().ask().cloned());
+        let Some(ask) = ask else {
+            b.set_sharing_ask_open(false);
+            return;
+        };
+        b.set_sharing_ask(sharing_ask_look(&ask));
+        b.set_sharing_ask_open(self.visible && self.page == "machines");
     }
 
     /// The Add a machine dialog into the bridge (machine pairing PR 1, rule 1237): open while the page's form is, and
@@ -1754,6 +1796,17 @@ impl SettingsCtl {
 
     /// Carries out one control event: the store writes, then the effects.
     pub fn event(&mut self, ev: Event) {
+        // The Computer sharing switch (rule 1238) is the Machines page's: it runs the OS setup, and the switch is saved
+        // only once that finished.
+        if let Event::Switch { row, on } = &ev
+            && row == flare_settings::page::machines::SHARING_ROW
+        {
+            if let Some(m) = self.machines.as_mut() {
+                m.sharing_mut().switch(*on);
+            }
+            self.rebuild();
+            return;
+        }
         // The Dictation page's controls are dictation's: its stored keys, its store, its microphone.
         let dictated = match &ev {
             Event::Switch { row, on } if crate::dictation_ctl::owns_row(row) => {
@@ -1879,6 +1932,14 @@ impl SettingsCtl {
         use flare_settings::page::mods::{INSTALL_ROW, SWITCH_PREFIX, URL_ROW};
         if row == flare_settings::page::machines::ADD_ROW {
             self.machines_button(button);
+            return;
+        }
+        // The sharing dialog's buttons (rules 1240 and 1241).
+        if row == flare_settings::page::machines::SHARING_ROW {
+            if let Some(m) = self.machines.as_mut() {
+                m.sharing_mut().button(button);
+            }
+            self.rebuild();
             return;
         }
         if row == flare_settings::page::mods::FOLDER_ROW && button == "open" {

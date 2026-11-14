@@ -2830,3 +2830,27 @@ The first of three PRs that let a person link another computer without leaving F
   (PR 3), and the error table's buttons. The drop-down draws no divider before "Type an address" and draws it in the
   normal ink (the mockup's divider and dim ink are left for PR 3, with the nearby rows). Real ssh: the new lines in
   `docs/remote-sessions-manual-checks.md`.
+
+## Machine pairing, PR 2: the Computer sharing switch, 2026-11-14
+
+The second of three PRs (spec and mockup as in PR 1).
+
+- **This computer.** Settings > Machines starts with a section **This computer** whose one row is the **Computer
+  sharing** switch, subtext "Allows you to control sessions from other devices" (fixed: it never reports state). The
+  switch is on and dimmed while the setup runs, on once it finished, and stays on across restarts
+  (`flare.machines.sharing`). A failure is a Flare dialog with one plain line and OK. Rule 1238.
+- **Windows setup.** One UAC prompt runs one elevated PowerShell script: it installs the OpenSSH Server capability
+  when it is missing, starts `sshd` and sets it to Automatic, opens port 22 and Flare's own program (for pairing and
+  the announcement) on the Private network profile only, and never turns password logins on (a server Flare installed
+  gets `PasswordAuthentication no` before the firewall opens). The script reports through a temp file. Declining the
+  prompt puts the switch back off. Rule 1239.
+- **Mac setup.** Port 22 answering means Remote Login is on (no prompt). Otherwise macOS' administrator prompt runs
+  `systemsetup -setremotelogin on`; when macOS refuses (no Full Disk Access), the Flare dialog "Turn on Remote Login"
+  opens System Settings at Sharing and closes by itself the moment Remote Login is on. `Flare.app` declares
+  `NSLocalNetworkUsageDescription` and `NSBonjourServices` (`_flare-pair._tcp`). Rule 1240.
+- **Turning off.** The switch is off at once and the announcement stops; the keys Flare added (`flare-pair:`) are
+  removed from `authorized_keys`; when Flare turned the SSH server on, a dialog offers Keep it or Stop it. Rule 1241.
+- **Not yet.** The announcement itself (mDNS), the pairing code and the nearby rows are PR 3; until then
+  `SharingOs::announce` only logs, and no key carries `flare-pair:` yet. Flare's firewall rule stays after a turn off
+  that needs no elevation (it lets only Flare's program in, on the Private profile, and nothing listens while sharing
+  is off). Real runs: the new lines in `docs/remote-sessions-manual-checks.md`.

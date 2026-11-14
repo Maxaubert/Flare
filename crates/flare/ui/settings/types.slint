@@ -9,6 +9,9 @@ export struct SetOption { id: string, name: string, face: string }
 // address" is picked (the Address and User fields show), what is typed in them, the red line ("" for none), busy while
 // the machine is checked, and whether Add can be pressed.
 export struct MachineAddLook { pick: string, options: [SetOption], typing: bool, address: string, user: string, error: string, busy: bool, can-add: bool }
+// The Computer sharing dialog (machine pairing PR 2, rules 1240 and 1241): its title, its line (a spinner before it
+// while Flare waits for Remote Login), and its two buttons ("" leaves the left one out).
+export struct SharingAskLook { title: string, line: string, spin: bool, cancel: string, primary: string }
 
 // alt: show label-alt instead (Mark, then Marked); both words are laid out in one cell
 // icon: path data (24 unit box); with an empty label it is a square icon button. tip: said on hover. warn: the
