@@ -34,6 +34,7 @@ mod hidden_start;
 mod host;
 mod ime;
 mod keymap;
+mod link_bases;
 mod live;
 mod look_ctl;
 mod mac_menu;

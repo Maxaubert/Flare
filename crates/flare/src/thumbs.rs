@@ -16,7 +16,9 @@ use flare_surfaces::PanelKind;
 use flare_surfaces::preview::{self, classify_resolved, loadable};
 use flare_tabs::tip_place::{BoxF, TIP_GAP, TIP_MARGIN, TipSide, TipSpot, place_tip};
 use flare_term::link_scan::Piece;
-use flare_term::path_open::{first_existing, resolve_openable_file};
+use flare_term::path_open::resolve_openable_file;
+
+use crate::link_bases::{LinkBases, find_link};
 
 /// How long the pointer must rest on an image path.
 pub const DWELL_MS: u64 = 350;
@@ -252,11 +254,11 @@ fn next_seq() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// One picture to fetch: what the link says and the folder it was found from.
+/// One picture to fetch: what the link says and the folders it is tried under, as a click tries them (rule 1248).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThumbJob {
     pub seq: u64,
-    pub base: String,
+    pub bases: LinkBases,
     pub text: String,
     /// The link's other spellings (a space where a row broke): the first of `text` and these that names something is read.
     pub alts: Vec<String>,
@@ -327,15 +329,14 @@ impl ThumbWorker {
                 let stale = || current.load(Ordering::SeqCst) != seq;
                 // A picture that breaks the decoder costs one thumbnail, never the app.
                 let got = catch_unwind(AssertUnwindSafe(|| {
-                    let text = if job.alts.is_empty() {
-                        job.text.clone()
-                    } else {
-                        let texts: Vec<String> = std::iter::once(job.text.clone())
-                            .chain(job.alts.iter().cloned())
-                            .collect();
-                        first_existing(&job.base, &texts, &home).unwrap_or_else(|| job.text.clone())
+                    let texts: Vec<String> = std::iter::once(job.text.clone())
+                        .chain(job.alts.iter().cloned())
+                        .collect();
+                    let (base, text) = match find_link(&job.bases, &texts, &home) {
+                        Some(f) => (f.base, f.text),
+                        None => (job.bases.first().to_string(), job.text.clone()),
                     };
-                    load_thumb(&job.base, &text, &home, &cache, &stale)
+                    load_thumb(&base, &text, &home, &cache, &stale)
                 }))
                 .ok()
                 .flatten();
@@ -692,7 +693,7 @@ mod tests {
         let (mut w, base) = worker(dir.path(), &answers);
         let job = |seq| ThumbJob {
             seq,
-            base: base.clone(),
+            bases: base.clone().into(),
             text: "p.png".into(),
             alts: Vec::new(),
         };
@@ -727,7 +728,7 @@ mod tests {
         let (mut w, base) = worker(dir.path(), &answers);
         w.submit(ThumbJob {
             seq: 1,
-            base,
+            bases: base.into(),
             text: "MyPics/p.png".into(),
             alts: vec!["My Pics/p.png".into()],
         });
@@ -745,7 +746,7 @@ mod tests {
         // Stale from its first look: `spawn` is given a job that is not the wanted one.
         w.spawn(ThumbJob {
             seq: 1,
-            base,
+            bases: base.into(),
             text: "p.png".into(),
             alts: Vec::new(),
         });
@@ -762,7 +763,7 @@ mod tests {
         let (mut w, base) = worker(dir.path(), &answers);
         let job = |seq, text: &str| ThumbJob {
             seq,
-            base: base.clone(),
+            bases: base.clone().into(),
             text: text.into(),
             alts: Vec::new(),
         };
@@ -786,7 +787,7 @@ mod tests {
         for (seq, text) in [(1, "x.png"), (2, "bad.png"), (3, "gone.png")] {
             w.submit(ThumbJob {
                 seq,
-                base: base.clone(),
+                bases: base.clone().into(),
                 text: text.into(),
                 alts: Vec::new(),
             });
