@@ -133,6 +133,7 @@ pub fn repo_roots(start: &Path) -> Vec<String> {
     for dir in start.ancestors().take(WALK_MAX) {
         let dot = dir.join(".git");
         let Ok(meta) = std::fs::symlink_metadata(&dot) else {
+            // sync-ok: link workers only, never the UI thread
             continue;
         };
         if meta.is_dir() {
@@ -192,9 +193,9 @@ fn local_folder(p: &Path) -> bool {
 
 fn read_small(p: &Path) -> Option<String> {
     use std::io::Read;
-    let f = std::fs::File::open(p).ok()?;
+    let f = std::fs::File::open(p).ok()?; // sync-ok: link workers only, a file of at most 4 KB
     let mut s = String::new();
-    f.take(GIT_FILE_MAX).read_to_string(&mut s).ok()?;
+    f.take(GIT_FILE_MAX).read_to_string(&mut s).ok()?; // sync-ok: link workers only, capped read
     Some(s)
 }
 
