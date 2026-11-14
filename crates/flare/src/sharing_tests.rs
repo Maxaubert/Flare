@@ -1,7 +1,7 @@
 //! The Computer sharing switch (rules 1252 to 1255) against a fake OS: the scripts are read as text and the elevation
 //! as its argv, and nothing is ever run.
 
-use super::fake::FakeOs;
+use super::fake::{FakeOs, ok_outcome, outcome};
 use super::*;
 use std::sync::Mutex;
 
@@ -67,16 +67,23 @@ fn decode(b64: &str) -> String {
     String::from_utf16(&units).unwrap()
 }
 
+/// A failed step's report, as the fake's outer PowerShell prints it.
+fn failed(step: &'static str) -> String {
+    outcome(&Report {
+        step,
+        ..Report::default()
+    })
+}
+
 // ---- the scripts and the calls, as text ---------------------------------------------------------------------------
 
-/// Rule 1253: the Windows script installs the server only when missing, starts it and sets it Automatic, scopes the
-/// firewall to the Private profile, and reports through the result file.
+/// Rule 1253: the Windows script installs the server only when missing, starts it and sets it Automatic, and scopes
+/// the firewall to the Private profile.
 #[test]
 fn the_windows_script_installs_starts_and_opens_the_private_profile_only() {
-    let s = windows_on_script(
-        Path::new(r"C:\Users\Jo O'Neil\AppData\Local\Temp\flare-sharing-1\result.txt"),
-        Path::new(r"C:\Users\Jo O'Neil\AppData\Local\Flare\current\Flare.exe"),
-    );
+    let s = windows_on_script(Path::new(
+        r"C:\Users\Jo O'Neil\AppData\Local\Flare\current\Flare.exe",
+    ));
     for want in [
         "$ErrorActionPreference = 'Stop'",
         "Get-WindowsCapability -Online",
@@ -90,21 +97,15 @@ fn the_windows_script_installs_starts_and_opens_the_private_profile_only() {
         "$startType = [string]$svc.StartType",
         "if ($started) { Stop-Service -Name 'sshd' -ErrorAction SilentlyContinue }",
         "if ($null -ne $startType -and $startType -ne 'Automatic') { Set-Service -Name 'sshd' -StartupType $startType",
-        "$result = 'C:\\Users\\Jo O''Neil\\AppData\\Local\\Temp\\flare-sharing-1\\result.txt'",
-        "$out.Add('installed=' + [int]$installed)",
-        "$out.Add('started=' + [int]$started)",
-        "$out.Add('rule=' + [int]$rule)",
     ] {
         assert!(s.contains(want), "{want}\n{s}");
     }
     // PowerShell reads a curly quote as `'` too: a path with one (D’Angelo) is doubled, so it cannot end the string.
-    let curly = windows_on_script(
-        Path::new("C:\\Users\\D\u{2019}Angelo\\Temp\\f\\result.txt"),
-        Path::new("C:\\Users\\D\u{2018}x\u{201A}y\u{201B}\\Flare.exe"),
-    );
-    assert!(curly.contains("$result = 'C:\\Users\\D\u{2019}\u{2019}Angelo\\Temp\\f\\result.txt'"));
+    let curly = windows_on_script(Path::new(
+        "C:\\Users\\D\u{2018}x\u{201A}y\u{201B}\u{2019}\\Flare.exe",
+    ));
     assert!(curly.contains(
-        "-Program 'C:\\Users\\D\u{2018}\u{2018}x\u{201A}\u{201A}y\u{201B}\u{201B}\\Flare.exe'"
+        "-Program 'C:\\Users\\D\u{2018}\u{2018}x\u{201A}\u{201A}y\u{201B}\u{201B}\u{2019}\u{2019}\\Flare.exe'"
     ));
     assert_eq!(ps_quote("a'b\u{2019}c"), "'a''b\u{2019}\u{2019}c'");
     // Never a profile other than Private, never Flare's rule opened to all.
@@ -125,19 +126,19 @@ fn the_windows_script_installs_starts_and_opens_the_private_profile_only() {
 }
 
 /// Rule 1253: Flare's own rules let in only its program, on the Private profile, from the local subnet: TCP for the
-/// pairing port (picked at random, so the rule names the program) and UDP 5353 for the announcement. A failed setup
-/// removes them again, and the report says whether they are in place.
+/// fixed pairing ports and UDP 5353 for the announcement. A failed setup removes them again, and the report says
+/// whether they are in place.
 #[test]
 fn flares_own_firewall_rules_are_narrow_and_go_when_the_setup_fails() {
-    let s = windows_on_script(
-        Path::new(r"C:\T\f\result.txt"),
-        Path::new(r"C:\Users\Jo O'Neil\AppData\Local\Flare\current\Flare.exe"),
-    );
+    let s = windows_on_script(Path::new(
+        r"C:\Users\Jo O'Neil\AppData\Local\Flare\current\Flare.exe",
+    ));
     let exe = "'C:\\Users\\Jo O''Neil\\AppData\\Local\\Flare\\current\\Flare.exe'";
     for want in [
         format!(
             "New-NetFirewallRule -Name 'Flare-Pairing-In' -DisplayName 'Flare pairing' -Enabled True -Direction Inbound \
-             -Program {exe} -Protocol TCP -RemoteAddress LocalSubnet -Action Allow -Profile Private"
+             -Program {exe} -Protocol TCP -LocalPort 47790-47794 -RemoteAddress LocalSubnet -Action Allow \
+             -Profile Private"
         ),
         format!(
             "New-NetFirewallRule -Name 'Flare-Pairing-mDNS-In' -DisplayName 'Flare pairing (mDNS)' -Enabled True \
@@ -147,6 +148,13 @@ fn flares_own_firewall_rules_are_narrow_and_go_when_the_setup_fails() {
     ] {
         assert!(s.contains(&want), "{want}\n{s}");
     }
+    // The pairing listener (PR 3) takes the first free port of this fixed range, so the rule can name it.
+    assert_eq!(PAIRING_PORTS, 47_790..=47_794);
+    assert!(!PAIRING_PORTS.contains(&SSH_PORT) && !PAIRING_PORTS.contains(&MDNS_PORT));
+    assert!(
+        *PAIRING_PORTS.end() < 49_152,
+        "below Windows' and macOS' own outgoing ports"
+    );
     let catch = &s[s.find("} catch {").unwrap()..];
     for want in [
         "Remove-NetFirewallRule -Name 'Flare-Pairing-In'",
@@ -165,11 +173,12 @@ fn flares_own_firewall_rules_are_narrow_and_go_when_the_setup_fails() {
 
 /// Rule 1253 (keys only): a server Flare starts (installed now, or installed but stopped) gets password and
 /// keyboard-interactive logins off before it starts, at the top of `sshd_config` so they win over any later global
-/// line (a Match block the person wrote still wins for what it matches, sshd's own rule). A backup is kept, the person's other lines stay, a missing config starts from Windows' default in a
-/// folder with sshd's own rights, and a failed step puts the config back. A server that already ran is left alone.
+/// line (a Match block the person wrote still wins for what it matches, sshd's own rule). A backup is kept, the
+/// person's other lines stay, a missing config starts from Windows' default in a folder with sshd's own rights, and a
+/// failed step puts the config back. A server that already ran is left alone.
 #[test]
 fn a_server_flare_starts_takes_keys_only_and_a_running_one_is_left_alone() {
-    let s = windows_on_script(Path::new(r"C:\T\f\result.txt"), Path::new(r"C:\F.exe"));
+    let s = windows_on_script(Path::new(r"C:\F.exe"));
     let guard = s.find("if ($svc.Status -ne 'Running') {").unwrap();
     let start = s.find("Start-Service -Name 'sshd'").unwrap();
     let block = &s[guard..start];
@@ -215,51 +224,231 @@ fn a_server_flare_starts_takes_keys_only_and_a_running_one_is_left_alone() {
     assert_eq!(SSHD_MARK, "# Flare Computer sharing: keys only");
 }
 
-/// Rule 1253: the result goes only into the folder Flare made for this run, never through a link and never over a file
-/// already there.
+/// Rule 1253: before the script writes into `%ProgramData%\ssh` (copies the default config in, keeps a backup, writes
+/// Flare's lines) and before sshd starts, the folder and `sshd_config` must be no link, owned by SYSTEM or
+/// Administrators, and changeable by no other account. A wrong one fails the `config` step, which puts the server back.
 #[test]
-fn the_elevated_scripts_write_the_result_only_into_a_plain_new_file() {
-    let r = Path::new(r"C:\T\f\result.txt");
-    for s in [
-        windows_on_script(r, Path::new(r"C:\F.exe")),
-        windows_off_script(r, true, true),
+fn the_ssh_folder_and_config_are_checked_before_flare_writes_there() {
+    let s = windows_on_script(Path::new(r"C:\F.exe"));
+    let at = |want: &str| s.find(want).unwrap_or_else(|| panic!("{want}\n{s}"));
+    // The check itself.
+    for want in [
+        "function Assert-AdminOnly([string]$path) {",
+        "$item = Get-Item -LiteralPath $path -Force",
+        "if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw ($path + ' is a link') }",
+        "$acl = Get-Acl -LiteralPath $path",
+        "$trusted = @('S-1-5-18', 'S-1-5-32-544', \
+         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464', 'S-1-3-0')",
+        "if ($trusted -notcontains $acl.GetOwner($sid).Value) { throw ($path + ' has another owner') }",
+        "foreach ($ace in $acl.GetAccessRules($true, $true, $sid)) {",
+        "if ($ace.AccessControlType -eq 'Allow' -and $trusted -notcontains $ace.IdentityReference.Value -and \
+         ([int64]$ace.FileSystemRights -band 0x500D0156)) {",
     ] {
-        let tail = &s[s
-            .find("$folder = [System.IO.Path]::GetDirectoryName($result)")
-            .unwrap()..];
-        for want in [
-            "-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)",
-            "-not (Test-Path -LiteralPath $result)",
-            "Set-Content -LiteralPath $result -Value $out -Encoding UTF8",
-        ] {
-            assert!(tail.contains(want), "{want}");
-        }
-        assert_eq!(s.matches("Set-Content -LiteralPath $result").count(), 1);
+        at(want);
     }
+    // Write data, append data, write attributes and extended attributes, delete a child, delete, change the rights,
+    // take ownership, generic write, generic all.
+    assert_eq!(
+        WRITE_RIGHTS_MASK,
+        0x2 | 0x4
+            | 0x10
+            | 0x40
+            | 0x100
+            | 0x1_0000
+            | 0x4_0000
+            | 0x8_0000
+            | 0x4000_0000
+            | 0x1000_0000
+    );
+    // The order: the folder is made (with sshd's rights) or found, then checked, before the config is touched; the
+    // config is checked before the backup and the write; everything before sshd starts.
+    let step = at("$step = 'config'");
+    let made = at("[System.IO.Directory]::CreateDirectory($dir, $acl)");
+    let dir_check = at("Assert-AdminOnly $dir");
+    let cfg_set = at("$cfg = Join-Path $dir 'sshd_config'");
+    let copy_in = at("System32\\OpenSSH\\sshd_config_default");
+    let cfg_check = at("Assert-AdminOnly $cfg");
+    let backup = at("$backup = $cfg + '.flare-backup'");
+    let write = at("[System.IO.File]::WriteAllLines");
+    let start = at("Start-Service -Name 'sshd'");
+    assert!(step < made && made < dir_check && dir_check < cfg_set && cfg_set < copy_in);
+    assert!(copy_in < cfg_check && cfg_check < backup && backup < write && write < start);
+    // `$cfg` is set only once the folder passed, so a failed folder check removes nothing in it.
+    assert_eq!(s.matches("$cfg = Join-Path").count(), 1);
+    assert_eq!(
+        step_line("config"),
+        "Other accounts can change the SSH server's settings folder, so Flare did not touch it."
+    );
+    // The off script checks the folder and the admin keys file before it rewrites the file; with no keys to remove it
+    // writes nothing there and needs no check.
+    let off = windows_off_script(false, true);
+    let check = off.find("Assert-AdminOnly $f").unwrap();
+    assert!(off.find("Assert-AdminOnly $dir").unwrap() < check);
+    assert!(check < off.find("Set-Content -LiteralPath $f").unwrap());
+    assert!(off.contains("function Assert-AdminOnly"));
+    assert!(!windows_off_script(true, false).contains("Assert-AdminOnly"));
+}
+
+/// Rule 1253: the elevated scripts write no file anywhere: they report only through their exit code, which the outer,
+/// non-elevated PowerShell reads and prints. The `exit` line is the same sum as [`report_code`], and the step list in
+/// it is [`STEPS`] in order.
+#[test]
+fn the_elevated_scripts_report_through_their_exit_code_and_write_no_file() {
+    for s in [
+        windows_on_script(Path::new(r"C:\F.exe")),
+        windows_off_script(true, true),
+        windows_off_script(false, false),
+    ] {
+        for gone in [
+            "$result",
+            "result.txt",
+            "$out",
+            "Out-File",
+            "-RedirectStandard",
+        ] {
+            assert!(!s.contains(gone), "{gone}\n{s}");
+        }
+        // Set-Content appears only for the admin keys file, inside `%ProgramData%\ssh`, after its check.
+        assert!(
+            s.matches("Set-Content").count() <= 1
+                && !s.contains("Set-Content -LiteralPath $result"),
+            "{s}"
+        );
+        for want in [
+            "$fail = 0",
+            "$fail = [array]::IndexOf(@('install', 'start', 'config', 'passwords', 'firewall', 'keys', 'stop'), $step) + 1",
+            "if ($fail -lt 1) { $fail = 15 }",
+            "exit (17920 + 8 * $fail + [int]$installed + 2 * [int]$started + 4 * [int]$rule)",
+        ] {
+            assert!(s.contains(want), "{want}\n{s}");
+        }
+        let catch = &s[s.find("} catch {").unwrap()..];
+        assert!(catch.contains("$fail = 1"), "{catch}");
+        // Every step the script names is one the exit code can carry.
+        for (i, _) in s.match_indices("$step = '") {
+            let name = s[i + 9..].split('\'').next().unwrap();
+            assert!(STEPS.contains(&name), "{name}");
+        }
+    }
+    assert_eq!(EXIT_BASE, 17_920);
+}
+
+/// Rule 1253: the exit code is read strictly. Every report goes there and back; PowerShell's own codes, a code below or
+/// above Flare's range, or an unknown step number are errors, never a half-read report.
+#[test]
+fn the_exit_code_carries_the_report_and_is_read_strictly() {
+    for step in [""].into_iter().chain(STEPS) {
+        for flags in 0..8u8 {
+            let r = Report {
+                ok: step.is_empty(),
+                installed: flags & 1 != 0,
+                started: flags & 2 != 0,
+                rule: flags & 4 != 0,
+                step,
+            };
+            assert_eq!(parse_code(report_code(&r)), Ok(r.clone()), "{r:?}");
+        }
+    }
+    assert_eq!(
+        parse_code(EXIT_BASE + 7).unwrap(),
+        Report {
+            ok: true,
+            installed: true,
+            started: true,
+            rule: true,
+            step: ""
+        }
+    );
+    assert_eq!(parse_code(EXIT_BASE + 8).unwrap().step, "install");
+    assert_eq!(parse_code(EXIT_BASE + 8 * 3).unwrap().step, "config");
+    for bad in [
+        0,
+        1,
+        -1,
+        EXIT_BASE - 1,
+        EXIT_BASE + 8 * 8,
+        EXIT_BASE + 8 * STEP_UNKNOWN,
+        EXIT_BASE + 128,
+        i64::from(u32::MAX),
+    ] {
+        assert!(parse_code(bad).is_err(), "{bad}");
+    }
+    // A report with an unknown step is never read back as ok.
+    let unknown = report_code(&Report {
+        step: "format-c",
+        ..Report::default()
+    });
+    assert!(parse_code(unknown).is_err());
+}
+
+/// Rule 1253: the outer PowerShell's line is untrusted text, read strictly: one `flare-sharing=` line with the exit
+/// code in digits, or `declined`; a BOM, `\r` and blank lines around it are fine; anything else is an error.
+#[test]
+fn the_outer_line_is_read_strictly() {
+    let ok = format!("\u{feff}\r\nflare-sharing={}\r\n\r\n", EXIT_BASE + 7);
+    assert!(
+        matches!(parse_outcome(&ok), Ok(Elevated::Done(r)) if r.ok && r.installed && r.started && r.rule)
+    );
+    assert_eq!(
+        parse_outcome("flare-sharing=declined\n"),
+        Ok(Elevated::Declined)
+    );
+    let good = EXIT_BASE.to_string();
+    for bad in [
+        String::new(),
+        "\n\n".into(),
+        format!("flare-sharing={good}\nflare-sharing={good}\n"),
+        format!("flare-sharing= {good}"),
+        format!(" flare-sharing={good}"),
+        format!("flare-sharing={good} "),
+        format!("flare-sharing=+{good}"),
+        format!("flare-sharing=-{good}"),
+        "flare-sharing=".into(),
+        "flare-sharing=0x4600".into(),
+        "flare-sharing=1".into(),
+        "flare-sharing=99999999999999999999".into(),
+        format!("ok=1\nflare-sharing={good}"),
+        format!("sharing={good}"),
+        "flare-sharing=Declined".into(),
+        format!("flare-sharing={good}\n{}", "x".repeat(OUTCOME_BYTES_MAX)),
+    ] {
+        assert!(parse_outcome(&bad).is_err(), "{bad:?}");
+    }
+    // An answer that cannot be read is a failed setup with the plain line, and nothing is saved.
+    let os = FakeOs::new(Platform::Windows);
+    *os.elevated.lock().unwrap() = Ok("flare-sharing=1\n".into());
+    let mut r = Rig::new(os, PrefStore::memory());
+    r.sharing.switch(true);
+    r.settle(|s| s.ask().is_some());
+    assert_eq!(
+        r.sharing.ask(),
+        Some(&SharingAsk::Notice(
+            "Computer sharing could not be set up.".into()
+        ))
+    );
+    assert!(!prefs::sharing_on(&r.prefs) && !prefs::firewall_rule(&r.prefs));
 }
 
 /// Rule 1255: the off script cleans only what it is asked to: the admin keys Flare added (`flare-pair:` lines), the
 /// server, and always Flare's two firewall rules.
 #[test]
 fn the_windows_off_script_removes_only_what_flare_added() {
-    let r = Path::new(r"C:\T\f\result.txt");
-    let both = windows_off_script(r, true, true);
+    let both = windows_off_script(true, true);
     for want in [
         "administrators_authorized_keys",
         "Where-Object { $_ -notmatch '\\sflare-pair:' }",
         "Stop-Service -Name 'sshd'",
         "Set-Service -Name 'sshd' -StartupType Manual",
-        "$result = 'C:\\T\\f\\result.txt'",
     ] {
         assert!(both.contains(want), "{want}\n{both}");
     }
-    let keys_only = windows_off_script(r, false, true);
+    let keys_only = windows_off_script(false, true);
     assert!(keys_only.contains("administrators_authorized_keys"));
     assert!(!keys_only.contains("Stop-Service"));
-    let stop_only = windows_off_script(r, true, false);
+    let stop_only = windows_off_script(true, false);
     assert!(stop_only.contains("Stop-Service -Name 'sshd'"));
     assert!(!stop_only.contains("administrators_authorized_keys"));
-    let rules_only = windows_off_script(r, false, false);
+    let rules_only = windows_off_script(false, false);
     assert!(
         !rules_only.contains("Stop-Service")
             && !rules_only.contains("administrators_authorized_keys")
@@ -276,14 +465,14 @@ fn the_windows_off_script_removes_only_what_flare_added() {
 }
 
 /// Rule 1253: the elevation is one hidden PowerShell that starts an elevated PowerShell with `-Verb RunAs` (the UAC
-/// prompt) and waits. The script travels inline as that PowerShell's `-EncodedCommand`: no script file exists that
-/// another program could swap before the prompt is answered.
+/// prompt), waits, and prints one line with its exit code (or `declined` when Start-Process fails). The script travels
+/// inline as that PowerShell's `-EncodedCommand`: no script file exists that another program could swap before the
+/// prompt is answered.
 #[test]
 fn the_elevation_call_runs_the_script_inline_with_runas_and_waits() {
-    let script = windows_on_script(
-        Path::new(r"C:\Users\Jo O'Neil\AppData\Local\Temp\flare-sharing-1\result.txt"),
-        Path::new(r"C:\Users\Jo O'Neil\AppData\Local\Flare\current\Flare.exe"),
-    );
+    let script = windows_on_script(Path::new(
+        r"C:\Users\Jo O'Neil\AppData\Local\Flare\current\Flare.exe",
+    ));
     let argv = elevation_argv(&script).unwrap();
     assert_eq!(
         argv[..6],
@@ -302,11 +491,14 @@ fn the_elevation_call_runs_the_script_inline_with_runas_and_waits() {
         .expect("the script travels encoded");
     assert_eq!(
         head,
-        "$p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -WindowStyle Hidden \
-         -ArgumentList @('-NoProfile','-NonInteractive','-WindowStyle','Hidden',"
+        "try { $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -WindowStyle Hidden \
+         -ErrorAction Stop -ArgumentList @('-NoProfile','-NonInteractive','-WindowStyle','Hidden',"
     );
     let (inner, tail) = rest.split_once('\'').unwrap();
-    assert_eq!(tail, "); exit $p.ExitCode");
+    assert_eq!(
+        tail,
+        "); 'flare-sharing=' + $p.ExitCode } catch { 'flare-sharing=declined' }"
+    );
     // The outer command holds only fixed words and base64: nothing a path could break.
     assert!(
         inner
@@ -317,29 +509,23 @@ fn the_elevation_call_runs_the_script_inline_with_runas_and_waits() {
     // The script that runs is the script, without its comments and indent, with the person's path intact.
     let ran = decode(inner);
     assert_eq!(ran, ps_compact(&script));
-    assert!(ran.contains(
-        "$result = 'C:\\Users\\Jo O''Neil\\AppData\\Local\\Temp\\flare-sharing-1\\result.txt'"
-    ));
+    assert!(
+        ran.contains("-Program 'C:\\Users\\Jo O''Neil\\AppData\\Local\\Flare\\current\\Flare.exe'")
+    );
     assert!(
         !ran.lines()
             .any(|l| l.starts_with('#') || l.starts_with(' '))
     );
 }
 
-/// Rule 1253: Windows takes a command line of at most 32 767 characters. Every script, with long paths full of
-/// letters beyond ASCII, stays well under it (the elevated PowerShell's own command line is shorter still); one
-/// that would not fit is refused before anything runs.
+/// Rule 1253: Windows takes a command line of at most 32 767 characters. Every script, with a long path full of
+/// letters beyond ASCII, stays well under it (the elevated PowerShell's own command line is shorter still); one that
+/// would not fit is refused before anything runs.
 #[test]
 fn the_elevated_command_line_stays_under_windows_limit() {
-    let long = format!(r"C:\Users\{}\AppData\Local\Temp", "Jø O'Néil ".repeat(20));
-    let result = PathBuf::from(format!(
-        r"{long}\flare-sharing-99999-1763100000000000000-7\result.txt"
-    ));
+    let long = format!(r"C:\Users\{}\AppData\Local", "Jø O'Néil ".repeat(20));
     let exe = PathBuf::from(format!(r"{long}\Flare\current\Flare.exe"));
-    for script in [
-        windows_on_script(&result, &exe),
-        windows_off_script(&result, true, true),
-    ] {
+    for script in [windows_on_script(&exe), windows_off_script(true, true)] {
         let argv = elevation_argv(&script).unwrap();
         let len = command_line_len(&argv);
         assert!(len < COMMAND_LINE_MAX / 2, "{len}");
@@ -348,22 +534,47 @@ fn the_elevated_command_line_stays_under_windows_limit() {
     assert_eq!(command_line_len(&["ab".into(), "c".into()]), 9);
 }
 
-/// Rule 1254: the Mac's commands go through osascript's administrator prompt, quoted for AppleScript.
+/// Rule 1254: the Mac's commands go through osascript's administrator prompt, quoted for AppleScript. Turning Remote
+/// Login on writes Flare's keys-only file first, in the same root command, and takes it away again when macOS refused;
+/// turning it off removes the file only once Remote Login is off.
 #[test]
 fn the_mac_runs_systemsetup_through_the_administrator_prompt() {
+    let on = mac_on_command();
+    let off = mac_off_command();
     assert_eq!(
-        osascript_argv(MAC_ON),
-        [
-            "/usr/bin/osascript",
-            "-e",
-            "do shell script \"/usr/sbin/systemsetup -setremotelogin on\" with administrator privileges"
-        ]
+        on,
+        "/bin/mkdir -p /etc/ssh/sshd_config.d && /usr/bin/printf '%s\\n' '# Flare Computer sharing: keys only' \
+         'PasswordAuthentication no' 'KbdInteractiveAuthentication no' > /etc/ssh/sshd_config.d/000-flare.conf \
+         && /usr/sbin/systemsetup -setremotelogin on; /usr/sbin/systemsetup -getremotelogin \
+         | /usr/bin/grep -q 'Remote Login: On' || /bin/rm -f /etc/ssh/sshd_config.d/000-flare.conf"
     );
+    let file = on.find(&format!("> {MAC_KEYS_FILE}")).unwrap();
+    assert!(
+        file < on.find("-setremotelogin on").unwrap(),
+        "keys only before the server starts"
+    );
+    assert!(on.contains(&format!("'{SSHD_MARK}'")));
+    for line in MAC_KEYS_ONLY {
+        assert!(on.contains(&format!("'{line}'")), "{line}");
+    }
+    assert!(!on.contains(" yes"));
+    assert_eq!(MAC_KEYS_FILE, "/etc/ssh/sshd_config.d/000-flare.conf");
+    // Through osascript: the `\n` of printf survives AppleScript's own string (`\\n` there).
+    let argv = osascript_argv(&on);
+    assert_eq!(argv[..2], ["/usr/bin/osascript", "-e"]);
+    assert!(argv[2].starts_with("do shell script \"/bin/mkdir -p /etc/ssh/sshd_config.d && "));
+    assert!(argv[2].contains("printf '%s\\\\n' '# Flare"));
+    assert!(argv[2].ends_with("000-flare.conf\" with administrator privileges"));
     assert_eq!(
         osascript_argv("a \"b\" \\c")[2],
         "do shell script \"a \\\"b\\\" \\\\c\" with administrator privileges"
     );
-    assert_eq!(MAC_OFF, "/usr/sbin/systemsetup -f -setremotelogin off");
+    assert_eq!(
+        off,
+        "/usr/sbin/systemsetup -f -setremotelogin off; /usr/sbin/systemsetup -getremotelogin \
+         | /usr/bin/grep -q 'Remote Login: Off' && /bin/rm -f /etc/ssh/sshd_config.d/000-flare.conf"
+    );
+    assert!(off.find("-setremotelogin off").unwrap() < off.find("/bin/rm -f").unwrap());
     assert_eq!(
         SHARING_SETTINGS_URL,
         "x-apple.systempreferences:com.apple.Sharing-Settings.extension"
@@ -374,78 +585,44 @@ fn the_mac_runs_systemsetup_through_the_administrator_prompt() {
     ));
 }
 
+/// Rule 1254: `socketfilterfw --getblockall` is read in each wording macOS has used.
 #[test]
-fn a_result_file_is_read_and_a_failed_step_is_one_plain_line() {
-    let r = parse_report("\u{feff}ok=1\r\ninstalled=1\r\nstarted=1\r\nrule=1\r\n").unwrap();
-    assert!(r.ok && r.installed && r.started && r.rule);
-    let r = parse_report(
-        "step=install\nerror=Add-WindowsCapability failed. 0x800f0954\ninstalled=0\nstarted=0\nrule=0\n",
-    )
-    .unwrap();
-    assert!(!r.ok);
-    assert_eq!(r.step, "install");
-    assert_eq!(r.error, "Add-WindowsCapability failed. 0x800f0954");
-    assert_eq!(
-        step_line(&r.step),
-        "Windows could not add its SSH server. Check the internet connection and try again."
-    );
-    for step in [
-        "install",
-        "start",
-        "passwords",
-        "firewall",
-        "keys",
-        "stop",
-        "x",
+fn the_mac_firewall_block_all_answer_is_read() {
+    for yes in [
+        "Firewall has block all state set to enabled.\n",
+        "Block all ENABLED! \n",
+        "Firewall is set to block all non-essential incoming connections\n",
     ] {
-        assert!(!step_line(step).contains('\u{2014}'));
+        assert!(blocks_all(yes), "{yes}");
     }
+    for no in [
+        "Firewall has block all state set to disabled.\n",
+        "Block all DISABLED! \n",
+        "",
+        "socketfilterfw: unknown option",
+    ] {
+        assert!(!blocks_all(no), "{no}");
+    }
+    assert_eq!(
+        SOCKETFILTERFW,
+        "/usr/libexec/ApplicationFirewall/socketfilterfw"
+    );
+    assert!(!MAC_BLOCK_ALL_LINE.contains('\u{2014}'));
 }
 
-/// Rule 1253: the result file is untrusted (another program of the same user could write it), so it is read strictly:
-/// known keys once each, flags 0 or 1, a known step, ok or a failed step, a size cap; Windows' words are cut and
-/// cleaned. Anything else is an error, never a half-read report.
 #[test]
-fn a_result_file_is_read_strictly() {
-    for bad in [
-        "",
-        "\n\n",
-        "installed=1\nstarted=1\n",
-        "ok=1\nstep=start\n",
-        "ok=yes\n",
-        "ok=1\nok=1\n",
-        "ok=1\nadmin=1\n",
-        "ok=1\nrule=2\n",
-        "ok=1\njunk\n",
-        "step=format-c\n",
-        " ok=1\n",
-        "ok=0\n",
-    ] {
-        assert!(parse_report(bad).is_err(), "{bad:?}");
-    }
-    let huge = format!("ok=1\nerror={}\n", "x".repeat(REPORT_BYTES_MAX));
-    assert!(parse_report(&huge).is_err());
-    let r = parse_report(&format!(
-        "step=start\nerror=a\u{1b}[31mb\u{7}{}\n",
-        "y".repeat(1000)
-    ))
-    .unwrap();
-    assert!(r.error.starts_with("a[31mb"));
-    assert_eq!(r.error.chars().count(), REPORT_ERROR_MAX);
-    assert!(!r.error.chars().any(char::is_control));
-    // A result that cannot be read is a failed setup with the plain line, and nothing is saved.
-    let os = FakeOs::new(Platform::Windows);
-    *os.elevated.lock().unwrap() = Ok("ok=1\ninstalled=1\nadmin=1\n".into());
-    let mut r = Rig::new(os, PrefStore::memory());
-    r.sharing.switch(true);
-    r.settle(|s| s.ask().is_some());
+fn a_failed_step_is_one_plain_line() {
+    let r = parse_code(EXIT_BASE + 8).unwrap();
+    assert!(!r.ok);
+    assert_eq!(r.step, "install");
     assert_eq!(
-        r.sharing.ask(),
-        Some(&SharingAsk::Notice(
-            "Computer sharing could not be set up.".into()
-        ))
+        step_line(r.step),
+        "Windows could not add its SSH server. Check the internet connection and try again."
     );
-    assert!(!prefs::sharing_on(&r.prefs) && !prefs::firewall_rule(&r.prefs));
+    for step in STEPS.into_iter().chain(["x"]) {
+        assert!(!step_line(step).contains('\u{2014}'));
+        assert!(step == "x" || step_line(step) != step_line(""), "{step}");
+    }
 }
 
 /// Rule 1255: only the lines with Flare's comment go; the person's own keys, comments and blank lines stay.
@@ -476,7 +653,7 @@ fn only_the_keys_flare_added_are_removed() {
 #[test]
 fn windows_turns_on_with_one_elevated_script_and_the_switch_is_saved() {
     let os = FakeOs::new(Platform::Windows);
-    *os.elevated.lock().unwrap() = Ok("ok=1\ninstalled=1\nstarted=1\nrule=1\n".into());
+    *os.elevated.lock().unwrap() = Ok(ok_outcome(true, true, true));
     let mut r = Rig::new(os, PrefStore::memory());
     assert_eq!(on(r.sharing.info()), (false, false));
     r.sharing.switch(true);
@@ -508,14 +685,13 @@ fn windows_turns_on_with_one_elevated_script_and_the_switch_is_saved() {
 #[test]
 fn a_declined_or_failed_windows_setup_leaves_the_switch_off() {
     let os = FakeOs::new(Platform::Windows);
-    *os.elevated.lock().unwrap() = Err("no answer".into());
+    *os.elevated.lock().unwrap() = Ok("flare-sharing=declined\r\n".into());
     let mut r = Rig::new(os, PrefStore::memory());
     r.sharing.switch(true);
     r.settle(|s| s.phase() == Phase::Off);
     assert_eq!(on(r.sharing.info()), (false, false));
     assert_eq!(r.sharing.ask(), None);
-    *r.os.elevated.lock().unwrap() =
-        Ok("step=start\nerror=boom\ninstalled=0\nstarted=0\nrule=0\n".into());
+    *r.os.elevated.lock().unwrap() = Ok(failed("start"));
     r.sharing.switch(true);
     r.settle(|s| s.ask().is_some());
     assert_eq!(r.sharing.phase(), Phase::Off);
@@ -568,7 +744,7 @@ fn a_mac_asks_for_the_password_and_cancel_puts_the_switch_back() {
     );
     r.sharing.switch(true);
     r.settle_phase(Phase::On);
-    assert_eq!(*r.os.admin_cmds.lock().unwrap(), [MAC_ON]);
+    assert_eq!(*r.os.admin_cmds.lock().unwrap(), [mac_on_command()]);
     assert!(prefs::server_by_flare(&r.prefs));
     let mut r = Rig::new(FakeOs::new(Platform::Mac), PrefStore::memory());
     *r.os.admin.lock().unwrap() = Err("execution error: User canceled. (-128)".into());
@@ -631,7 +807,7 @@ fn cancel_in_turn_on_remote_login_puts_the_switch_back_off() {
     r.sharing.dismiss();
     assert_eq!(r.sharing.phase(), Phase::Off);
     assert_eq!(on(r.sharing.info()), (false, false));
-    assert!(!r.sharing.on_msg(SharingMsg::RemoteLoginSeen(1)));
+    assert!(!r.sharing.on_msg(SharingMsg::RemoteLoginSeen(1, None)));
     assert!(!prefs::sharing_on(&r.prefs));
 }
 
@@ -713,7 +889,7 @@ fn turning_off_removes_flares_firewall_rules_even_when_the_server_is_not_flares(
     prefs::set_sharing_on(&p, true);
     prefs::set_firewall_rule(&p, true);
     let os = FakeOs::new(Platform::Windows);
-    *os.elevated.lock().unwrap() = Err("declined".into());
+    *os.elevated.lock().unwrap() = Ok("flare-sharing=declined\n".into());
     let mut r = Rig::new(os, p);
     r.sharing.switch(false);
     r.settle(|s| s.ask().is_some());
@@ -741,7 +917,7 @@ fn a_mac_stops_remote_login_and_says_so_when_it_stays_on() {
     r.sharing.switch(false);
     r.sharing.button(SHARING_PRIMARY);
     r.settle_phase(Phase::Off);
-    assert_eq!(*r.os.admin_cmds.lock().unwrap(), [MAC_OFF]);
+    assert_eq!(*r.os.admin_cmds.lock().unwrap(), [mac_off_command()]);
     assert_eq!(r.sharing.ask(), None);
     prefs::set_sharing_on(&p, true);
     prefs::set_server_by_flare(&p, true);
@@ -771,5 +947,134 @@ fn a_build_with_no_setup_says_where_sharing_works() {
         Some(&SharingAsk::Notice(
             "Computer sharing works on Windows and macOS.".into()
         ))
+    );
+}
+
+/// Rule 1254: port 22 answering on 127.0.0.1 is not enough when the Mac firewall blocks all incoming connections:
+/// sharing does not count as working, the dialog says where to turn that off, and nothing is saved. Asked with no root,
+/// with Remote Login already on, and before the password prompt otherwise, so Flare never turns on a server nobody can
+/// reach.
+#[test]
+fn a_mac_firewall_that_blocks_all_stops_sharing_with_one_line() {
+    let blocked = || {
+        let os = FakeOs::new(Platform::Mac);
+        *os.block_all.lock().unwrap() = Ok("Firewall has block all state set to enabled.\n".into());
+        os
+    };
+    // Remote Login on already.
+    let mut r = Rig::new(blocked().ports(&[true]), PrefStore::memory());
+    r.sharing.switch(true);
+    r.settle(|s| s.ask().is_some());
+    assert_eq!(
+        r.sharing.ask(),
+        Some(&SharingAsk::Notice(MAC_BLOCK_ALL_LINE.into()))
+    );
+    assert_eq!(r.sharing.phase(), Phase::Off);
+    assert_eq!(*r.os.block_all_asked.lock().unwrap(), 1);
+    assert!(r.os.admin_cmds.lock().unwrap().is_empty());
+    assert!(!prefs::sharing_on(&r.prefs) && !prefs::server_by_flare(&r.prefs));
+    assert!(r.os.announced.lock().unwrap().is_empty());
+    assert_eq!(
+        MAC_BLOCK_ALL_LINE,
+        "The Mac firewall blocks all incoming connections. Turn that off in System Settings, Network, Firewall, \
+         Options."
+    );
+    // Remote Login off: no password prompt at all.
+    let mut r = Rig::new(blocked(), PrefStore::memory());
+    r.sharing.switch(true);
+    r.settle(|s| s.ask().is_some());
+    assert_eq!(
+        r.sharing.ask(),
+        Some(&SharingAsk::Notice(MAC_BLOCK_ALL_LINE.into()))
+    );
+    assert!(
+        r.os.admin_cmds.lock().unwrap().is_empty(),
+        "never turned on"
+    );
+    // A firewall that does not block all, or a tool that does not answer, lets sharing on.
+    let os = FakeOs::new(Platform::Mac).ports(&[true]);
+    *os.block_all.lock().unwrap() = Err("no such file".into());
+    let mut r = Rig::new(os, PrefStore::memory());
+    r.sharing.switch(true);
+    r.settle_phase(Phase::On);
+    assert_eq!(*r.os.block_all_asked.lock().unwrap(), 1);
+    // Windows never asks it.
+    let mut r = Rig::new(FakeOs::new(Platform::Windows), PrefStore::memory());
+    r.sharing.switch(true);
+    r.settle_phase(Phase::On);
+    assert_eq!(*r.os.block_all_asked.lock().unwrap(), 0);
+}
+
+/// Rule 1254: when the person turns Remote Login on by hand while "Turn on Remote Login" is up and the firewall blocks
+/// all, the dialog becomes the one line instead, and the switch goes back off.
+#[test]
+fn remote_login_turned_on_by_hand_behind_a_block_all_firewall_is_not_sharing() {
+    let os = FakeOs::new(Platform::Mac);
+    *os.admin.lock().unwrap() =
+        Ok("Turning Remote Login on or off requires Full Disk Access privileges.".into());
+    let mut r = Rig::new(os, PrefStore::memory());
+    r.sharing.switch(true);
+    r.settle(|s| s.phase() == Phase::WaitingForRemoteLogin);
+    *r.os.block_all.lock().unwrap() = Ok("Block all ENABLED! \n".into());
+    r.os.open_port();
+    r.settle(|s| s.phase() == Phase::Off);
+    assert_eq!(
+        r.sharing.ask(),
+        Some(&SharingAsk::Notice(MAC_BLOCK_ALL_LINE.into()))
+    );
+    assert!(!prefs::sharing_on(&r.prefs));
+    assert!(r.os.announced.lock().unwrap().is_empty());
+    r.sharing.button(SHARING_PRIMARY);
+    assert_eq!(on(r.sharing.info()), (false, false));
+}
+
+/// Rule 1255: Cancel at macOS' password prompt while turning off says plainly that macOS did not allow the change, at
+/// once (no 2.5 s look at the port), and the server stays Flare's, so the next turn off asks again.
+#[test]
+fn cancel_at_the_mac_password_prompt_when_turning_off_says_so_at_once() {
+    let p = PrefStore::memory();
+    prefs::set_sharing_on(&p, true);
+    prefs::set_server_by_flare(&p, true);
+    let os = FakeOs::new(Platform::Mac).ports(&[true, true, true]);
+    *os.admin.lock().unwrap() = Err("execution error: User canceled. (-128)".into());
+    let mut r = Rig::new(os, p);
+    r.sharing.switch(false);
+    r.sharing.button(SHARING_PRIMARY);
+    r.settle(|s| s.ask().is_some());
+    assert_eq!(
+        r.sharing.ask(),
+        Some(&SharingAsk::Notice(MAC_OFF_DECLINED_LINE.into()))
+    );
+    assert_eq!(
+        MAC_OFF_DECLINED_LINE,
+        "macOS did not allow the change, so Remote Login stays on."
+    );
+    assert_eq!(*r.os.admin_cmds.lock().unwrap(), [mac_off_command()]);
+    assert_eq!(
+        r.os.port.lock().unwrap().len(),
+        3,
+        "the port is never looked at"
+    );
+    assert!(prefs::server_by_flare(&r.prefs));
+    assert!(!prefs::sharing_on(&r.prefs), "sharing is off all the same");
+}
+
+/// Rule 1253: PowerShell that did not start at all is a declined setup too: the switch goes back off with nothing to
+/// say.
+#[test]
+fn powershell_that_did_not_start_leaves_the_switch_off() {
+    let os = FakeOs::new(Platform::Windows);
+    *os.elevated.lock().unwrap() = Err("PowerShell did not start".into());
+    let mut r = Rig::new(os, PrefStore::memory());
+    r.sharing.switch(true);
+    r.settle(|s| s.phase() == Phase::Off);
+    assert_eq!(r.sharing.ask(), None);
+    // A failed config step (the folder check) is its own plain line.
+    *r.os.elevated.lock().unwrap() = Ok(failed("config"));
+    r.sharing.switch(true);
+    r.settle(|s| s.ask().is_some());
+    assert_eq!(
+        r.sharing.ask(),
+        Some(&SharingAsk::Notice(step_line("config").into()))
     );
 }

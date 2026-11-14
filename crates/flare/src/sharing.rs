@@ -8,16 +8,19 @@
 //!   the OpenSSH Server capability when it is missing, starts `sshd` and sets it to Automatic, makes sure the sshd
 //!   firewall rule exists for the Private profile only (a server Flare starts has its rule set to Private before it
 //!   starts), puts the server back as it was when a step fails, and adds Flare's own two rules (its program, Private
-//!   profile, local subnet only: TCP for the pairing port, UDP 5353 for the network announcement). A server Flare
-//!   starts (installed now, or installed but stopped) takes keys only: `PasswordAuthentication no` and
-//!   `ChallengeResponseAuthentication no` go at the top of `sshd_config` before it starts, with a backup, and the file
-//!   is put back when a step fails. A server that already ran keeps its config. The script travels inline
-//!   (`-EncodedCommand`), so no script file exists; it reports through a result file in a folder Flare made for this
-//!   run, and Flare reads that file as untrusted text ([`parse_report`]).
+//!   profile, local subnet only: TCP for the fixed pairing ports [`PAIRING_PORTS`], UDP 5353 for the network
+//!   announcement). A server Flare starts (installed now, or installed but stopped) takes keys only:
+//!   `PasswordAuthentication no` and `ChallengeResponseAuthentication no` go at the top of `sshd_config` before it
+//!   starts, with a backup, and the file is put back when a step fails. Before it writes there, the script checks that
+//!   only SYSTEM and Administrators can change `%ProgramData%\ssh` and `sshd_config`, and that neither is a link. A
+//!   server that already ran keeps its config. The script travels inline (`-EncodedCommand`), so no script file
+//!   exists, and it writes no file to report: its exit code says how it went ([`parse_code`]), the outer PowerShell
+//!   prints it as one line, and Flare reads that line strictly ([`parse_outcome`]).
 //! - **macOS** (rule 1254): port 22 answering means Remote Login is on already. Otherwise `systemsetup
-//!   -setremotelogin on` runs through osascript's administrator prompt; when macOS refuses (Flare has no Full Disk
-//!   Access), the Flare dialog "Turn on Remote Login" offers Open System Settings at Sharing, and Flare watches port 22
-//!   and carries on by itself the moment it answers.
+//!   -setremotelogin on` runs through osascript's administrator prompt, with Flare's keys-only file
+//!   ([`MAC_KEYS_FILE`]); when macOS refuses (Flare has no Full Disk Access), the Flare dialog "Turn on Remote Login"
+//!   offers Open System Settings at Sharing, and Flare watches port 22 and carries on by itself the moment it answers.
+//!   The Mac firewall's "Block all incoming connections" stops sharing with one plain line ([`MAC_BLOCK_ALL_LINE`]).
 //!
 //! Turning it off (rule 1255) stops the announcement, removes the keys Flare added (their comment starts
 //! `flare-pair:`), removes Flare's firewall rules (`flare.machines.firewallRule`), and offers to stop the SSH server
@@ -42,19 +45,37 @@ use crate::settings_ctl::SettingsMsg;
 pub const SSH_PORT: u16 = 22;
 /// The inbound firewall rule the OpenSSH Server capability makes (Microsoft's name for it).
 pub const SSHD_RULE: &str = "OpenSSH-Server-In-TCP";
-/// Flare's own inbound firewall rule for the pairing port: its program, TCP, the Private profile and the local subnet
-/// only. The pairing port is picked at random (machine pairing PR 3), so the rule names the program, not a port.
+/// Flare's own inbound firewall rule for the pairing listener: its program, TCP, the pairing ports, the Private profile
+/// and the local subnet only.
 pub const FLARE_RULE: &str = "Flare-Pairing-In";
+/// The TCP ports the pairing listener (machine pairing PR 3) may take: the first one free, in order. Fixed, so Flare's
+/// firewall rule names them.
+pub const PAIRING_PORTS: std::ops::RangeInclusive<u16> = 47_790..=47_794;
 /// Flare's own inbound firewall rule for the network announcement: its program, UDP 5353 (mDNS), Private, local subnet.
 pub const FLARE_MDNS_RULE: &str = "Flare-Pairing-mDNS-In";
 /// The mDNS port the announcement uses.
 pub const MDNS_PORT: u16 = 5353;
 /// The longest command line Windows takes (`CreateProcess`, in UTF-16 units, the final NUL included).
 pub const COMMAND_LINE_MAX: usize = 32_767;
-/// The most of a result file Flare reads: a real one is a few short lines.
-pub const REPORT_BYTES_MAX: usize = 4096;
-/// The most of Windows' error words Flare keeps from a result file (they go to the log only).
-pub const REPORT_ERROR_MAX: usize = 300;
+/// The most of the outer PowerShell's output Flare reads: a real one is one short line.
+pub const OUTCOME_BYTES_MAX: usize = 256;
+/// The line the outer PowerShell prints: this, then the elevated script's exit code, or `declined`.
+pub const OUTCOME_KEY: &str = "flare-sharing=";
+/// The elevated scripts' exit codes start here, so PowerShell's own codes (0, 1) are never read as a report.
+pub const EXIT_BASE: i64 = 0x4600;
+/// The exit code's failed-step number for a step the script does not know (never a real step).
+const STEP_UNKNOWN: i64 = 15;
+/// The SIDs that may own and change the SSH server's folder and config: SYSTEM, Administrators, TrustedInstaller, and
+/// CREATOR OWNER (it gives a new file to whoever made it, and only those three can make one there).
+pub const SSHD_TRUSTED_SIDS: [&str; 4] = [
+    "S-1-5-18",
+    "S-1-5-32-544",
+    "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+    "S-1-3-0",
+];
+/// The rights that change a file or folder: write and append data (add file, add folder), write attributes and extended
+/// attributes, delete a child, delete, change the rights, take ownership, and generic write and all.
+pub const WRITE_RIGHTS_MASK: u32 = 0x500D_0156;
 /// The line that starts Flare's lines at the top of `sshd_config`, so a second run replaces them instead of adding more.
 pub const SSHD_MARK: &str = "# Flare Computer sharing: keys only";
 /// The rights sshd gives `%ProgramData%\ssh` when it makes it: SYSTEM and Administrators full, signed-in users read.
@@ -73,9 +94,47 @@ pub const KEY_TAG: &str = "flare-pair:";
 /// System Settings at General > Sharing (macOS 13 and later).
 pub const SHARING_SETTINGS_URL: &str =
     "x-apple.systempreferences:com.apple.Sharing-Settings.extension";
-/// The commands osascript runs as root on a Mac.
-pub const MAC_ON: &str = "/usr/sbin/systemsetup -setremotelogin on";
-pub const MAC_OFF: &str = "/usr/sbin/systemsetup -f -setremotelogin off";
+/// The keys-only file a Remote Login Flare turns on gets (rule 1254). macOS' own `/etc/ssh/sshd_config` reads
+/// `Include /etc/ssh/sshd_config.d/*` before any setting of its own (macOS 13 and later), and sshd keeps the first value
+/// it reads, so these lines win. `000-` sorts it first in that folder.
+pub const MAC_KEYS_FILE: &str = "/etc/ssh/sshd_config.d/000-flare.conf";
+/// The lines of [`MAC_KEYS_FILE`] (macOS' OpenSSH is 8.7 or later, so it knows `KbdInteractiveAuthentication`).
+pub const MAC_KEYS_ONLY: [&str; 2] = [
+    "PasswordAuthentication no",
+    "KbdInteractiveAuthentication no",
+];
+/// The Mac firewall's tool, asked whether it blocks all incoming connections (no root needed).
+pub const SOCKETFILTERFW: &str = "/usr/libexec/ApplicationFirewall/socketfilterfw";
+/// The one line when the Mac firewall blocks all incoming connections (rule 1254).
+pub const MAC_BLOCK_ALL_LINE: &str = "The Mac firewall blocks all incoming connections. Turn that off in System \
+     Settings, Network, Firewall, Options.";
+/// The one line when the person pressed Cancel at macOS' administrator prompt while turning off (rule 1255).
+pub const MAC_OFF_DECLINED_LINE: &str = "macOS did not allow the change, so Remote Login stays on.";
+
+/// The command osascript runs as root to turn Remote Login on (rule 1254): Flare's keys-only file first, so the server
+/// never takes a password, then systemsetup. When Remote Login is still off after it (macOS refused), the file goes
+/// again, so a Remote Login the person turns on by hand keeps macOS' own setting. Every value is a fixed word of Flare's.
+pub fn mac_on_command() -> String {
+    let lines = std::iter::once(SSHD_MARK)
+        .chain(MAC_KEYS_ONLY)
+        .map(|l| format!("'{l}'"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "/bin/mkdir -p /etc/ssh/sshd_config.d && /usr/bin/printf '%s\\n' {lines} > {MAC_KEYS_FILE} \
+         && /usr/sbin/systemsetup -setremotelogin on; /usr/sbin/systemsetup -getremotelogin \
+         | /usr/bin/grep -q 'Remote Login: On' || /bin/rm -f {MAC_KEYS_FILE}"
+    )
+}
+
+/// The command osascript runs as root to turn Remote Login off (rule 1255): systemsetup, then Flare's keys-only file
+/// goes, only once Remote Login is off (a server left on keeps keys only).
+pub fn mac_off_command() -> String {
+    format!(
+        "/usr/sbin/systemsetup -f -setremotelogin off; /usr/sbin/systemsetup -getremotelogin \
+         | /usr/bin/grep -q 'Remote Login: Off' && /bin/rm -f {MAC_KEYS_FILE}"
+    )
+}
 
 /// The system the switch sets up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,12 +150,13 @@ pub trait SharingOs: Send + Sync {
     fn platform(&self) -> Platform;
     /// Something answers on this computer's TCP port.
     fn port_open(&self, port: u16) -> bool;
-    /// Windows: runs the script `build` makes for a result file elevated (one UAC prompt), inline with no script
-    /// file, and waits. The result file's text (untrusted: [`parse_report`] reads it), or Err when none came back (the
-    /// prompt was declined, or PowerShell did not start).
-    fn run_elevated(&self, build: &dyn Fn(&Path) -> String) -> Result<String, String>;
+    /// Windows: runs `script` elevated (one UAC prompt), inline with no script file, and waits. What the outer
+    /// PowerShell printed (untrusted: [`parse_outcome`] reads it), or Err when PowerShell did not start.
+    fn run_elevated(&self, script: &str) -> Result<String, String>;
     /// macOS: runs `command` as root through osascript's administrator prompt. Ok or Err with what it printed.
     fn run_as_admin(&self, command: &str) -> Result<String, String>;
+    /// macOS: what `socketfilterfw --getblockall` printed ([`blocks_all`] reads it), or Err when it did not run.
+    fn firewall_block_all(&self) -> Result<String, String>;
     /// Opens a URL (System Settings' Sharing page).
     fn open_url(&self, url: &str);
     /// Removes the keys Flare added (a `flare-pair:` comment) from the user's own `authorized_keys`. How many.
@@ -115,19 +175,55 @@ pub fn ps_quote(s: &str) -> String {
     flare_shells::ps_quote::ps_quote(s)
 }
 
-/// The end of every elevated script: it writes its lines into `$result` only when the folder Flare made for this run
-/// is a plain folder (not a link to somewhere else) and holds no file of that name yet.
-const WRITE_RESULT: &str = r#"$folder = [System.IO.Path]::GetDirectoryName($result)
-$item = Get-Item -LiteralPath $folder -Force -ErrorAction SilentlyContinue
-if ($null -ne $item -and $item.PSIsContainer -and -not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -and -not (Test-Path -LiteralPath $result)) {
-    Set-Content -LiteralPath $result -Value $out -Encoding UTF8
+/// The PowerShell function both scripts check the SSH server's folder and files with before they write there as an
+/// administrator (rules 1253 and 1255): it throws unless `$path` is no link (no junction, no symbolic link), its owner
+/// is one of [`SSHD_TRUSTED_SIDS`], and no other principal is allowed any of [`WRITE_RIGHTS_MASK`]. Deny entries are
+/// not counted (they only take rights away).
+fn assert_admin_only() -> String {
+    let trusted = SSHD_TRUSTED_SIDS
+        .iter()
+        .map(|s| ps_quote(s))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        r#"function Assert-AdminOnly([string]$path) {{
+    $item = Get-Item -LiteralPath $path -Force
+    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {{ throw ($path + ' is a link') }}
+    $sid = [System.Security.Principal.SecurityIdentifier]
+    $acl = Get-Acl -LiteralPath $path
+    $trusted = @({trusted})
+    if ($trusted -notcontains $acl.GetOwner($sid).Value) {{ throw ($path + ' has another owner') }}
+    foreach ($ace in $acl.GetAccessRules($true, $true, $sid)) {{
+        if ($ace.AccessControlType -eq 'Allow' -and $trusted -notcontains $ace.IdentityReference.Value -and ([int64]$ace.FileSystemRights -band 0x{WRITE_RIGHTS_MASK:08X})) {{
+            throw ($path + ' can be changed by ' + $ace.IdentityReference.Value)
+        }}
+    }}
+}}
+"#
+    )
 }
-"#;
 
-/// The elevated script that turns sharing on (rule 1253), reporting into `result`. `flare_exe` is the program
+/// The end of every elevated script: it reports through its exit code only, so it writes no file anywhere
+/// ([`parse_code`] reads it). A step the list does not know is [`STEP_UNKNOWN`], never `ok`.
+fn exit_tail() -> String {
+    let steps = STEPS
+        .iter()
+        .map(|s| ps_quote(s))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        r#"if ($fail -ne 0) {{
+    $fail = [array]::IndexOf(@({steps}), $step) + 1
+    if ($fail -lt 1) {{ $fail = {STEP_UNKNOWN} }}
+}}
+exit ({EXIT_BASE} + 8 * $fail + [int]$installed + 2 * [int]$started + 4 * [int]$rule)
+"#
+    )
+}
+
+/// The elevated script that turns sharing on (rule 1253), reporting through its exit code. `flare_exe` is the program
 /// Flare's firewall rules let in.
-pub fn windows_on_script(result: &Path, flare_exe: &Path) -> String {
-    let result = ps_quote(&result.to_string_lossy());
+pub fn windows_on_script(flare_exe: &Path) -> String {
     let exe = ps_quote(&flare_exe.to_string_lossy());
     let mark = ps_quote(SSHD_MARK);
     let keys_only = SSHD_KEYS_ONLY
@@ -135,12 +231,14 @@ pub fn windows_on_script(result: &Path, flare_exe: &Path) -> String {
         .map(|l| ps_quote(l))
         .collect::<Vec<_>>()
         .join(", ");
+    let check = assert_admin_only();
+    let tail = exit_tail();
+    let ports = format!("{}-{}", PAIRING_PORTS.start(), PAIRING_PORTS.end());
     format!(
         r#"# Flare: turn on Computer sharing (rule 1253). Runs elevated, once per switch.
 $ErrorActionPreference = 'Stop'
-$result = {result}
-$out = New-Object System.Collections.Generic.List[string]
-$step = 'install'
+{check}$step = 'install'
+$fail = 0
 $installed = $false
 $started = $false
 $rule = $false
@@ -163,22 +261,27 @@ try {{
         # only, before it starts: its rule may name every profile.
         $step = 'firewall'
         if ($null -ne $sshdRule) {{ Set-NetFirewallRule -Name '{SSHD_RULE}' -Profile Private -Enabled True }}
-        # A server Flare starts takes keys only, from its first start. Flare's lines go at the top of sshd_config,
-        # before any Match block (sshd keeps the first global value it reads); a backup is kept, the other lines stay.
-        $step = 'passwords'
+        # Flare writes into the SSH server's folder as an administrator only when no other account can change the
+        # folder or the config, and neither is a link.
+        $step = 'config'
         $dir = Join-Path $env:ProgramData 'ssh'
+        if (-not (Test-Path -LiteralPath $dir)) {{
+            # The folder gets the rights sshd gives it: SYSTEM and Administrators write, signed-in users read.
+            $acl = New-Object System.Security.AccessControl.DirectorySecurity
+            $acl.SetSecurityDescriptorSddlForm('{SSHD_DIR_SDDL}')
+            [System.IO.Directory]::CreateDirectory($dir, $acl) | Out-Null
+        }}
+        Assert-AdminOnly $dir
         $cfg = Join-Path $dir 'sshd_config'
         if (-not (Test-Path -LiteralPath $cfg)) {{
             # A server never started has no config yet: it starts from Windows' default, as sshd itself would.
             $hadCfg = $false
-            if (-not (Test-Path -LiteralPath $dir)) {{
-                # The folder gets the rights sshd gives it: SYSTEM and Administrators write, signed-in users read.
-                $acl = New-Object System.Security.AccessControl.DirectorySecurity
-                $acl.SetSecurityDescriptorSddlForm('{SSHD_DIR_SDDL}')
-                [System.IO.Directory]::CreateDirectory($dir, $acl) | Out-Null
-            }}
             Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\OpenSSH\sshd_config_default') -Destination $cfg
         }}
+        Assert-AdminOnly $cfg
+        # A server Flare starts takes keys only, from its first start. Flare's lines go at the top of sshd_config,
+        # before any Match block (sshd keeps the first global value it reads); a backup is kept, the other lines stay.
+        $step = 'passwords'
         $backup = $cfg + '.flare-backup'
         Copy-Item -LiteralPath $cfg -Destination $backup -Force
         $flare = @({mark}, {keys_only})
@@ -206,14 +309,12 @@ try {{
     Remove-NetFirewallRule -Name '{FLARE_RULE}' -ErrorAction SilentlyContinue
     Remove-NetFirewallRule -Name '{FLARE_MDNS_RULE}' -ErrorAction SilentlyContinue
     $rule = $true
-    New-NetFirewallRule -Name '{FLARE_RULE}' -DisplayName 'Flare pairing' -Enabled True -Direction Inbound -Program {exe} -Protocol TCP -RemoteAddress LocalSubnet -Action Allow -Profile Private | Out-Null
+    New-NetFirewallRule -Name '{FLARE_RULE}' -DisplayName 'Flare pairing' -Enabled True -Direction Inbound -Program {exe} -Protocol TCP -LocalPort {ports} -RemoteAddress LocalSubnet -Action Allow -Profile Private | Out-Null
     New-NetFirewallRule -Name '{FLARE_MDNS_RULE}' -DisplayName 'Flare pairing (mDNS)' -Enabled True -Direction Inbound -Program {exe} -Protocol UDP -LocalPort {MDNS_PORT} -RemoteAddress LocalSubnet -Action Allow -Profile Private | Out-Null
-    $out.Add('ok=1')
 }} catch {{
     # A failed setup leaves the SSH server as it found it: a server Flare started is stopped again, its config and
     # its start type are put back, and Flare's own rules go. The switch goes back off.
-    $out.Add('step=' + $step)
-    $out.Add('error=' + ($_.Exception.Message -replace '[\r\n]+', ' '))
+    $fail = 1
     if ($started) {{ Stop-Service -Name 'sshd' -ErrorAction SilentlyContinue }}
     if ($null -ne $backup -and (Test-Path -LiteralPath $backup)) {{ Copy-Item -LiteralPath $backup -Destination $cfg -Force -ErrorAction SilentlyContinue }}
     if (-not $hadCfg -and $null -ne $cfg) {{ Remove-Item -LiteralPath $cfg -Force -ErrorAction SilentlyContinue }}
@@ -224,22 +325,23 @@ try {{
         $rule = $false
     }}
 }}
-$out.Add('installed=' + [int]$installed)
-$out.Add('started=' + [int]$started)
-$out.Add('rule=' + [int]$rule)
-{WRITE_RESULT}"#
+{tail}"#
     )
 }
 
-/// The elevated script that cleans up when sharing turns off (rule 1255), reporting into `result`: the keys Flare
-/// added to `administrators_authorized_keys` (`admin_keys`), the SSH server (`stop_server`), and always Flare's own
-/// firewall rules.
-pub fn windows_off_script(result: &Path, stop_server: bool, admin_keys: bool) -> String {
-    let result = ps_quote(&result.to_string_lossy());
+/// The elevated script that cleans up when sharing turns off (rule 1255), reporting through its exit code: the keys
+/// Flare added to `administrators_authorized_keys` (`admin_keys`, only when no other account can change that file or
+/// its folder), the SSH server (`stop_server`), and always Flare's own firewall rules.
+pub fn windows_off_script(stop_server: bool, admin_keys: bool) -> String {
     let keys = if admin_keys {
         format!(
-            r#"    $f = Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
+            r#"    $dir = Join-Path $env:ProgramData 'ssh'
+    $f = Join-Path $dir 'administrators_authorized_keys'
     if (Test-Path -LiteralPath $f) {{
+        $step = 'config'
+        Assert-AdminOnly $dir
+        Assert-AdminOnly $f
+        $step = 'keys'
         $keep = @(Get-Content -LiteralPath $f | Where-Object {{ $_ -notmatch '\s{KEY_TAG}' }})
         Set-Content -LiteralPath $f -Value $keep -Encoding ascii
     }}
@@ -253,23 +355,29 @@ pub fn windows_off_script(result: &Path, stop_server: bool, admin_keys: bool) ->
     } else {
         ""
     };
+    let check = if admin_keys {
+        assert_admin_only()
+    } else {
+        String::new()
+    };
+    let tail = exit_tail();
     format!(
         r#"# Flare: turn off Computer sharing (rule 1255). Runs elevated.
 $ErrorActionPreference = 'Stop'
-$result = {result}
-$out = New-Object System.Collections.Generic.List[string]
-$step = 'keys'
+{check}$step = 'keys'
+$fail = 0
+$installed = $false
+$started = $false
+$rule = $false
 try {{
 {keys}    $step = 'stop'
 {stop}    $step = 'firewall'
     Remove-NetFirewallRule -Name '{FLARE_RULE}' -ErrorAction SilentlyContinue
     Remove-NetFirewallRule -Name '{FLARE_MDNS_RULE}' -ErrorAction SilentlyContinue
-    $out.Add('ok=1')
 }} catch {{
-    $out.Add('step=' + $step)
-    $out.Add('error=' + ($_.Exception.Message -replace '[\r\n]+', ' '))
+    $fail = 1
 }}
-{WRITE_RESULT}"#
+{tail}"#
     )
 }
 
@@ -302,14 +410,17 @@ pub fn command_line_len(argv: &[String]) -> usize {
 /// The elevation call (rule 1253): a hidden PowerShell that starts an elevated PowerShell with `-Verb RunAs`
 /// (Windows' UAC prompt) and waits for it. The script itself travels inline, as the elevated PowerShell's
 /// `-EncodedCommand` (UTF-16LE in base64), so no script file exists that another program could swap before the prompt
-/// is answered. The outer command holds only fixed words and base64, so it travels as plain `-Command`. Err when the
-/// command line would be longer than Windows takes (the tests hold every script well under it).
+/// is answered. The elevated script writes no file: the outer PowerShell reads its exit code and prints one line,
+/// `flare-sharing=<code>`, or `flare-sharing=declined` when the prompt was declined (Start-Process fails). The outer
+/// command holds only fixed words and base64, so it travels as plain `-Command`. Err when the command line would be
+/// longer than Windows takes (the tests hold every script well under it).
 pub fn elevation_argv(script: &str) -> Result<Vec<String>, String> {
     let inner = ps_encode(&ps_compact(script));
     let command = format!(
-        "$p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -WindowStyle Hidden \
+        "try {{ $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -WindowStyle Hidden \
+         -ErrorAction Stop \
          -ArgumentList @('-NoProfile','-NonInteractive','-WindowStyle','Hidden','-EncodedCommand','{inner}'); \
-         exit $p.ExitCode"
+         '{OUTCOME_KEY}' + $p.ExitCode }} catch {{ '{OUTCOME_KEY}declined' }}"
     );
     let argv: Vec<String> = vec![
         "powershell.exe".into(),
@@ -339,7 +450,7 @@ pub fn osascript_argv(command: &str) -> Vec<String> {
     ]
 }
 
-/// What an elevated script wrote into its result file.
+/// How an elevated script went, from its exit code.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
     pub ok: bool,
@@ -347,72 +458,107 @@ pub struct Report {
     pub started: bool,
     /// Flare's own firewall rules are in place (the on script made them).
     pub rule: bool,
-    /// The step that failed, and Windows' words.
-    pub step: String,
-    pub error: String,
+    /// The step that failed ("" when ok).
+    pub step: &'static str,
 }
 
-/// The steps an elevated script names when it fails.
-pub const STEPS: [&str; 6] = ["install", "start", "passwords", "firewall", "keys", "stop"];
+/// The steps an elevated script names when it fails, in the order of their number in the exit code (1 is `install`).
+pub const STEPS: [&str; 7] = [
+    "install",
+    "start",
+    "config",
+    "passwords",
+    "firewall",
+    "keys",
+    "stop",
+];
 
-/// Pure: reads a result file strictly, as untrusted text (another program of the same user could have written it):
-/// at most [`REPORT_BYTES_MAX`] bytes, only `key=value` lines with known keys, each once, flags `0` or `1`, a known
-/// step, and either `ok=1` or a step that failed. A BOM, `\r` and blank lines are allowed. Windows' error words are
-/// kept to [`REPORT_ERROR_MAX`] characters without control characters. Err says what was wrong.
-pub fn parse_report(text: &str) -> Result<Report, String> {
-    if text.len() > REPORT_BYTES_MAX {
-        return Err(format!("the result is too long ({} bytes)", text.len()));
-    }
-    let mut r = Report::default();
-    let mut seen: Vec<&str> = Vec::new();
-    for line in text.strip_prefix('\u{feff}').unwrap_or(text).lines() {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if line.is_empty() {
-            continue;
-        }
-        let Some((k, v)) = line.split_once('=') else {
-            return Err("a line with no value".into());
-        };
-        if seen.contains(&k) {
-            return Err(format!("{k} twice"));
-        }
-        let flag = |v: &str| match v {
-            "0" => Ok(false),
-            "1" => Ok(true),
-            _ => Err(format!("{k} is not 0 or 1")),
-        };
-        match k {
-            "ok" => r.ok = flag(v)?,
-            "installed" => r.installed = flag(v)?,
-            "started" => r.started = flag(v)?,
-            "rule" => r.rule = flag(v)?,
-            "step" if STEPS.contains(&v) => r.step = v.to_string(),
-            "step" => return Err("an unknown step".into()),
-            "error" => {
-                r.error = v
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .take(REPORT_ERROR_MAX)
-                    .collect()
-            }
-            _ => return Err("an unknown key".into()),
-        }
-        seen.push(k);
-    }
-    match (r.ok, r.step.is_empty()) {
-        (true, true) | (false, false) => Ok(r),
-        (true, false) => Err("ok and a failed step".into()),
-        (false, true) => Err("neither ok nor a failed step".into()),
-    }
+/// Pure: the exit code an elevated script ends with for `r`: [`EXIT_BASE`], plus 8 times the failed step's number (0
+/// when ok, 1 for the first of [`STEPS`]), plus `installed` (1), `started` (2) and `rule` (4). The scripts' `exit`
+/// line is the same sum (the tests hold them together).
+#[cfg(test)]
+pub fn report_code(r: &Report) -> i64 {
+    let step = if r.ok {
+        0
+    } else {
+        STEPS
+            .iter()
+            .position(|s| *s == r.step)
+            .map_or(STEP_UNKNOWN, |i| i as i64 + 1)
+    };
+    EXIT_BASE + 8 * step + i64::from(r.installed) + 2 * i64::from(r.started) + 4 * i64::from(r.rule)
 }
 
-/// The one line that says which step of the Windows setup failed, in plain words (Windows' own words go to the log).
+/// Pure: an elevated script's exit code read strictly: from [`EXIT_BASE`] to 127 above it, with a known step number
+/// (or 0, ok). Anything else (PowerShell's own 1 when the script could not run, a code another program left) is Err.
+pub fn parse_code(code: i64) -> Result<Report, String> {
+    let low = code - EXIT_BASE;
+    if !(0..128).contains(&low) {
+        return Err(format!("the exit code {code} is not Flare's"));
+    }
+    let step = match low >> 3 {
+        0 => "",
+        n => *STEPS
+            .get(n as usize - 1)
+            .ok_or_else(|| format!("the exit code {code} names no step"))?,
+    };
+    Ok(Report {
+        ok: step.is_empty(),
+        installed: low & 1 != 0,
+        started: low & 2 != 0,
+        rule: low & 4 != 0,
+        step,
+    })
+}
+
+/// What the elevation call answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Elevated {
+    /// The person said no at the UAC prompt (or the elevated PowerShell did not start).
+    Declined,
+    /// The elevated script ran and ended with this report.
+    Done(Report),
+}
+
+/// Pure: reads what the outer PowerShell printed, strictly, as untrusted text: at most [`OUTCOME_BYTES_MAX`] bytes,
+/// exactly one line `flare-sharing=<code>` (decimal digits, [`parse_code`]) or `flare-sharing=declined`. A BOM, `\r`
+/// and blank lines around it are allowed. Err says what was wrong.
+pub fn parse_outcome(text: &str) -> Result<Elevated, String> {
+    if text.len() > OUTCOME_BYTES_MAX {
+        return Err(format!("the answer is too long ({} bytes)", text.len()));
+    }
+    let mut lines = text
+        .strip_prefix('\u{feff}')
+        .unwrap_or(text)
+        .lines()
+        .map(|l| l.strip_suffix('\r').unwrap_or(l))
+        .filter(|l| !l.is_empty());
+    let (Some(line), None) = (lines.next(), lines.next()) else {
+        return Err("not one line".into());
+    };
+    let Some(value) = line.strip_prefix(OUTCOME_KEY) else {
+        return Err("not Flare's line".into());
+    };
+    if value == "declined" {
+        return Ok(Elevated::Declined);
+    }
+    if value.is_empty() || value.len() > 9 || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("no exit code".into());
+    }
+    let code: i64 = value.parse().map_err(|_| "no exit code".to_string())?;
+    parse_code(code).map(Elevated::Done)
+}
+
+/// The one line that says which step of the Windows setup failed, in plain words.
 pub fn step_line(step: &str) -> &'static str {
     match step {
         "install" => {
             "Windows could not add its SSH server. Check the internet connection and try again."
         }
         "start" => "Windows' SSH server would not start.",
+        "config" => {
+            "Other accounts can change the SSH server's settings folder, so Flare did not touch it."
+        }
         "passwords" => "Flare could not turn off password logins, so the SSH server stays off.",
         "firewall" => "Windows' firewall would not take the rule for sharing.",
         "keys" => "Flare could not remove the keys it added.",
@@ -425,6 +571,31 @@ pub fn step_line(step: &str) -> &'static str {
 pub fn mac_declined(out: &str) -> bool {
     let low = out.to_ascii_lowercase();
     out.contains("-128") || low.contains("user canceled") || low.contains("user cancelled")
+}
+
+/// Pure: `socketfilterfw --getblockall` says the Mac firewall blocks all incoming connections. macOS has said it as
+/// "Firewall has block all state set to enabled.", "Block all ENABLED!" and "Firewall is set to block all non-essential
+/// incoming connections"; anything that says disabled, or nothing known, is not blocking.
+pub fn blocks_all(out: &str) -> bool {
+    let low = out.to_ascii_lowercase();
+    !low.contains("disabled")
+        && (low.contains("enabled") || low.contains("block all non-essential"))
+}
+
+/// BLOCKING: the one line when the Mac firewall blocks all incoming connections, so port 22 answering on 127.0.0.1
+/// does not mean another computer reaches it (rule 1254). None when it does not block, or the tool did not answer.
+pub fn mac_firewall_problem(os: &dyn SharingOs) -> Option<String> {
+    match os.firewall_block_all() {
+        Ok(out) if blocks_all(&out) => {
+            log::info!("computer sharing: the firewall blocks all: {}", out.trim());
+            Some(MAC_BLOCK_ALL_LINE.to_string())
+        }
+        Ok(_) => None,
+        Err(e) => {
+            log::info!("computer sharing: socketfilterfw did not answer: {e}");
+            None
+        }
+    }
 }
 
 /// Pure: an `authorized_keys` text without the keys Flare added (a `flare-pair:` comment after the key), and how many
@@ -466,17 +637,21 @@ pub enum OnResult {
 pub fn turn_on(os: &dyn SharingOs, flare_exe: &Path) -> OnResult {
     match os.platform() {
         Platform::Windows => {
-            let text = match os.run_elevated(&|result| windows_on_script(result, flare_exe)) {
+            let text = match os.run_elevated(&windows_on_script(flare_exe)) {
                 Ok(t) => t,
                 Err(e) => {
                     log::info!("computer sharing: the elevated setup did not run: {e}");
                     return OnResult::Declined;
                 }
             };
-            let r = match parse_report(&text) {
-                Ok(r) => r,
+            let r = match parse_outcome(&text) {
+                Ok(Elevated::Done(r)) => r,
+                Ok(Elevated::Declined) => {
+                    log::info!("computer sharing: the UAC prompt was declined");
+                    return OnResult::Declined;
+                }
                 Err(e) => {
-                    log::warn!("computer sharing: the setup's result could not be read: {e}");
+                    log::warn!("computer sharing: the setup's answer could not be read: {e}");
                     return OnResult::Failed(step_line("").to_string());
                 }
             };
@@ -486,22 +661,26 @@ pub fn turn_on(os: &dyn SharingOs, flare_exe: &Path) -> OnResult {
                     firewall: r.rule,
                 }
             } else {
-                log::warn!(
-                    "computer sharing: the setup failed at {}: {}",
-                    r.step,
-                    r.error
-                );
-                OnResult::Failed(step_line(&r.step).to_string())
+                log::warn!("computer sharing: the setup failed at {}", r.step);
+                OnResult::Failed(step_line(r.step).to_string())
             }
         }
         Platform::Mac => {
             if os.port_open(SSH_PORT) {
-                return OnResult::On {
-                    by_flare: false,
-                    firewall: false,
+                return match mac_firewall_problem(os) {
+                    Some(line) => OnResult::Failed(line),
+                    None => OnResult::On {
+                        by_flare: false,
+                        firewall: false,
+                    },
                 };
             }
-            match os.run_as_admin(MAC_ON) {
+            // The firewall is asked before the password prompt too, so Flare never turns on a server that nobody can
+            // reach and leaves it on.
+            if let Some(line) = mac_firewall_problem(os) {
+                return OnResult::Failed(line);
+            }
+            match os.run_as_admin(&mac_on_command()) {
                 Err(out) if mac_declined(&out) => return OnResult::Declined,
                 Err(out) | Ok(out) if !out.trim().is_empty() => {
                     log::info!("computer sharing: systemsetup said: {}", out.trim());
@@ -557,36 +736,39 @@ pub fn turn_off(os: &dyn SharingOs, work: OffWork) -> Result<(), String> {
     }
     match os.platform() {
         Platform::Windows if stop_server || admin_keys || firewall => {
-            match os.run_elevated(&|result| windows_off_script(result, stop_server, admin_keys)) {
-                Ok(text) => match parse_report(&text) {
-                    Ok(r) if r.ok => {}
-                    Ok(r) => {
-                        log::warn!(
-                            "computer sharing: the clean up failed at {}: {}",
-                            r.step,
-                            r.error
-                        );
-                        problem = Some(step_line(&r.step).to_string());
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "computer sharing: the clean up's result could not be read: {e}"
-                        );
-                        problem = Some(step_line("").to_string());
-                    }
-                },
+            let declined = "Windows did not allow the change, so the SSH server and the keys stay as they were.";
+            match os
+                .run_elevated(&windows_off_script(stop_server, admin_keys))
+                .map(|text| parse_outcome(&text))
+            {
+                Ok(Ok(Elevated::Done(r))) if r.ok => {}
+                Ok(Ok(Elevated::Done(r))) => {
+                    log::warn!("computer sharing: the clean up failed at {}", r.step);
+                    problem = Some(step_line(r.step).to_string());
+                }
+                Ok(Ok(Elevated::Declined)) => {
+                    log::info!("computer sharing: the UAC prompt was declined");
+                    problem = Some(declined.to_string());
+                }
+                Ok(Err(e)) => {
+                    log::warn!("computer sharing: the clean up's answer could not be read: {e}");
+                    problem = Some(step_line("").to_string());
+                }
                 Err(e) => {
                     log::info!("computer sharing: the elevated clean up did not run: {e}");
-                    problem = Some(
-                        "Windows did not allow the change, so the SSH server and the keys stay as they were."
-                            .to_string(),
-                    );
+                    problem = Some(declined.to_string());
                 }
             }
         }
         Platform::Mac if stop_server => {
-            if let Err(out) = os.run_as_admin(MAC_OFF) {
-                log::info!("computer sharing: systemsetup said: {}", out.trim());
+            match os.run_as_admin(&mac_off_command()) {
+                // Cancel at the password prompt: nothing changed, so there is nothing to wait for.
+                Err(out) if mac_declined(&out) => {
+                    log::info!("computer sharing: the password prompt was cancelled");
+                    return Err(MAC_OFF_DECLINED_LINE.to_string());
+                }
+                Err(out) => log::info!("computer sharing: systemsetup said: {}", out.trim()),
+                Ok(_) => {}
             }
             let mut open = os.port_open(SSH_PORT);
             for _ in 0..5 {
@@ -678,8 +860,9 @@ pub fn ask_words(ask: &SharingAsk) -> AskWords {
 #[derive(Debug)]
 pub enum SharingMsg {
     TurnedOn(OnResult),
-    /// Port 22 answered while "Turn on Remote Login" was up (the watch's number).
-    RemoteLoginSeen(u64),
+    /// Port 22 answered while "Turn on Remote Login" was up (the watch's number), and the Mac firewall's one line when
+    /// it blocks all incoming connections.
+    RemoteLoginSeen(u64, Option<String>),
     /// The clean up ended: what it was asked to clean, and how it went.
     TurnedOff {
         work: OffWork,
@@ -697,10 +880,13 @@ impl SharingOs for NoSharingOs {
     fn port_open(&self, _port: u16) -> bool {
         false
     }
-    fn run_elevated(&self, _build: &dyn Fn(&Path) -> String) -> Result<String, String> {
+    fn run_elevated(&self, _script: &str) -> Result<String, String> {
         Err("no setup here".into())
     }
     fn run_as_admin(&self, _command: &str) -> Result<String, String> {
+        Err("no setup here".into())
+    }
+    fn firewall_block_all(&self) -> Result<String, String> {
         Err("no setup here".into())
     }
     fn open_url(&self, _url: &str) {}
@@ -839,7 +1025,8 @@ impl Sharing {
         worker("flare-sharing-watch", move || {
             while watch.load(Ordering::SeqCst) == n {
                 if os.port_open(SSH_PORT) {
-                    Self::say(&post, SharingMsg::RemoteLoginSeen(n));
+                    let problem = mac_firewall_problem(&*os);
+                    Self::say(&post, SharingMsg::RemoteLoginSeen(n, problem));
                     return;
                 }
                 os.wait(1000); // sync-ok: the watch is a worker
@@ -910,13 +1097,20 @@ impl Sharing {
                     self.ask = Some(SharingAsk::Notice(line));
                 }
             },
-            SharingMsg::RemoteLoginSeen(n)
+            SharingMsg::RemoteLoginSeen(n, problem)
                 if self.phase == Phase::WaitingForRemoteLogin
                     && n == self.watch.load(Ordering::SeqCst) =>
             {
                 self.watch.store(0, Ordering::SeqCst);
-                // The person turned Remote Login on: the server is theirs, not Flare's.
-                self.turned_on(false, false);
+                match problem {
+                    // The firewall blocks everyone: sharing does not count as working.
+                    Some(line) => {
+                        self.phase = Phase::Off;
+                        self.ask = Some(SharingAsk::Notice(line));
+                    }
+                    // The person turned Remote Login on: the server is theirs, not Flare's.
+                    None => self.turned_on(false, false),
+                }
             }
             SharingMsg::TurnedOff { work, result } if self.phase == Phase::TurningOff => {
                 self.phase = Phase::Off;
@@ -964,42 +1158,6 @@ fn quiet(program: &str) -> std::process::Command {
     cmd
 }
 
-/// BLOCKING: a new folder in the temp folder, made by this call (`create_dir` fails on a name that is there already, so
-/// a folder planted in advance is never used).
-fn fresh_folder() -> Result<PathBuf, String> {
-    static RUNS: AtomicU64 = AtomicU64::new(0);
-    let mut last = String::new();
-    for _ in 0..8 {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
-        let n = RUNS.fetch_add(1, Ordering::Relaxed);
-        let folder =
-            std::env::temp_dir().join(format!("flare-sharing-{}-{stamp}-{n}", std::process::id()));
-        match std::fs::create_dir(&folder) {
-            // sync-ok: SharingOs calls run on workers
-            Ok(()) => return Ok(folder),
-            Err(e) => last = e.to_string(),
-        }
-    }
-    Err(format!("no folder for the result: {last}"))
-}
-
-/// BLOCKING: a file's text, at most `max` bytes (a longer file is an error, never read whole).
-fn read_capped(path: &Path, max: usize) -> Result<String, String> {
-    use std::io::Read as _;
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?; // sync-ok: SharingOs calls run on workers
-    let mut bytes = Vec::new();
-    file.take(max as u64 + 1)
-        .read_to_end(&mut bytes) // sync-ok: SharingOs calls run on workers
-        .map_err(|e| e.to_string())?;
-    if bytes.len() > max {
-        return Err("the result is too long".into());
-    }
-    String::from_utf8(bytes).map_err(|_| "the result is not UTF-8".into())
-}
-
 impl SharingOs for RealSharingOs {
     fn platform(&self) -> Platform {
         if cfg!(windows) {
@@ -1016,31 +1174,43 @@ impl SharingOs for RealSharingOs {
         std::net::TcpStream::connect_timeout(&at, std::time::Duration::from_millis(500)).is_ok()
     }
 
-    fn run_elevated(&self, build: &dyn Fn(&Path) -> String) -> Result<String, String> {
-        // A fresh folder for this run's result (made here, never one that was there before); the script itself
-        // travels inline, so no script file exists.
-        let folder = fresh_folder()?;
-        let result = folder.join("result.txt");
-        let run = || {
-            let argv = elevation_argv(&build(&result))?;
-            let status = quiet(&argv[0]).args(&argv[1..]).status(); // sync-ok: waits for the UAC prompt, on a worker
-            match (read_capped(&result, REPORT_BYTES_MAX), status) {
-                (Ok(text), _) => Ok(text),
-                (Err(_), Ok(s)) => Err(format!("no answer from the elevated script ({s})")),
-                (Err(_), Err(e)) => Err(format!("PowerShell did not start: {e}")),
-            }
-        };
-        let answer = run();
-        let _ = std::fs::remove_dir_all(&folder); // sync-ok: SharingOs calls run on workers
-        answer
+    fn run_elevated(&self, script: &str) -> Result<String, String> {
+        // The script travels inline and writes no file; the outer PowerShell prints one line with its exit code.
+        let argv = elevation_argv(script)?;
+        let out = quiet(&argv[0])
+            .args(&argv[1..])
+            .output() // sync-ok: waits for the UAC prompt, on a worker
+            .map_err(|e| format!("PowerShell did not start: {e}"))?;
+        let mut stdout = out.stdout;
+        stdout.truncate(OUTCOME_BYTES_MAX + 1);
+        Ok(String::from_utf8_lossy(&stdout).into_owned())
     }
-
     fn run_as_admin(&self, command: &str) -> Result<String, String> {
         let argv = osascript_argv(command);
         let out = quiet(&argv[0])
             .args(&argv[1..])
             .output() // sync-ok: waits for the password prompt, on a worker
             .map_err(|e| format!("osascript did not start: {e}"))?;
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if out.status.success() {
+            Ok(said)
+        } else {
+            Err(said)
+        }
+    }
+
+    fn firewall_block_all(&self) -> Result<String, String> {
+        if !cfg!(target_os = "macos") {
+            return Err("not a Mac".into());
+        }
+        let out = quiet(SOCKETFILTERFW)
+            .arg("--getblockall")
+            .output() // sync-ok: SharingOs calls run on workers
+            .map_err(|e| format!("socketfilterfw did not start: {e}"))?;
         let said = format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),

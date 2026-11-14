@@ -821,7 +821,7 @@ fn this_computer_is_first_and_its_switch_turns_sharing_on() {
     use crate::sharing::fake::FakeOs;
     for s in SCALES2 {
         let os = Arc::new(FakeOs::new(Platform::Windows));
-        *os.elevated.lock().unwrap() = Ok("ok=1\ninstalled=1\nstarted=1\n".into());
+        *os.elevated.lock().unwrap() = Ok(crate::sharing::fake::ok_outcome(true, true, false));
         let f = fx_with(s, FakeIo::default(), os.clone(), PrefStore::memory());
         f.page();
         f.settle("the read", |f| f.row("machines-add").is_some());
