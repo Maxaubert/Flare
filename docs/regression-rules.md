@@ -3786,3 +3786,18 @@ blink_tick, blink_delay}`, `LookStore::{caret_shape, caret_blink}`. Held by `it_
 `a_pill_caret_is_three_hairs_wide_inset_two_with_round_ends`, `caret_shapes_follow_the_scale`,
 `a_popup_holding_the_keys_draws_the_outline_whatever_the_shape`, `the_caret_wears_the_accent_by_default` and
 `the_persons_own_cursor_colour_wins_over_the_accent`. Source: Max, 2026-11-14.
+
+1234. **On macOS the caret ticks at the person's own blink period.** Rule 1233 ticked the Mac at 530 ms because
+`system_caret::blink_time_ms` said "macOS has no caret blink setting". It has one: the global defaults
+`NSTextInsertionPointBlinkPeriodOn` and `NSTextInsertionPointBlinkPeriodOff` (milliseconds, read with
+`NSUserDefaults` `doubleForKey`, which AppKit's own text views follow). The on period is used, else the off period;
+neither set (the usual case) keeps 530 ms. A period of 30 000 ms or more (`MAC_STEADY_MS`) is "do not blink" and maps
+to `u32::MAX`, the same as Windows' INFINITE, because a huge on period is how people make the Mac caret steady
+(`defaults write -g NSTextInsertionPointBlinkPeriodOn -float 999999`). Values outside `period_from`'s 100 ms to 5 s
+fall back to 530 ms as on Windows. The macOS 14+ Accessibility "Prefer non-blinking cursor indicator" switch is not
+read: no documented or commonly used key for it was found in `com.apple.universalaccess` or the global domain on the
+Mac (2026-11-14), so only the blink defaults count. Other non-Windows systems still give `None`. Native:
+`flare_win::system_caret::{mac_blink_ms, MAC_STEADY_MS, blink_time_ms}`, `caret_blink::system_period`. Held by
+`the_mac_blink_period_comes_from_the_on_default_then_the_off_default`, `a_huge_mac_blink_period_is_steady`,
+`the_mac_defaults_read_runs_without_a_window` and `the_mac_blink_defaults_set_the_period_and_a_huge_one_is_steady`.
+Source: the macOS parity review of PR #234, 2026-11-14.

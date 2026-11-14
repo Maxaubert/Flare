@@ -139,8 +139,42 @@ pub fn blink_time_ms() -> Option<u32> {
     Some(unsafe { GetCaretBlinkTime() })
 }
 
-/// macOS has no caret blink setting: the caller ticks at its default.
-#[cfg(not(windows))]
+/// A macOS blink period at or above this many milliseconds is read as "do not blink". The Mac has no switch for a
+/// steady caret: the way people turn the blink off is a huge `NSTextInsertionPointBlinkPeriodOn` (often 999999 or
+/// more). 30 s is far past any period anyone would want to see tick, and far past `caret_blink`'s 5 s ceiling, so a
+/// value this large is meant as "steady", not as a slow blink (rule 1234).
+pub const MAC_STEADY_MS: f64 = 30_000.0;
+
+/// Pure: the two macOS blink defaults (`NSTextInsertionPointBlinkPeriodOn` and `...Off`, milliseconds, as
+/// `doubleForKey` gives them: 0 when unset) to the same raw value `GetCaretBlinkTime` gives on Windows. The on period
+/// wins, then the off period; neither set (0, negative or not a number) is `None`, so the caller ticks at its
+/// default. [`MAC_STEADY_MS`] or more is `u32::MAX`, Windows' INFINITE, "do not blink".
+pub fn mac_blink_ms(on: f64, off: f64) -> Option<u32> {
+    let usable = |v: f64| v.is_finite() && v > 0.0;
+    let ms = [on, off].into_iter().find(|&v| usable(v))?;
+    if ms >= MAC_STEADY_MS {
+        return Some(u32::MAX);
+    }
+    // Below 30 000, so the rounded value always fits.
+    Some(ms.round() as u32)
+}
+
+/// The person's caret blink period on macOS, for Flare's own drawn caret (rule 1234): the global defaults
+/// `NSTextInsertionPointBlinkPeriodOn` (then `NSTextInsertionPointBlinkPeriodOff`), which AppKit's own text views
+/// follow. Unset (the usual case) is `None` and the caller ticks at its default; see [`mac_blink_ms`].
+#[cfg(target_os = "macos")]
+pub fn blink_time_ms() -> Option<u32> {
+    use objc2_foundation::{NSString, NSUserDefaults};
+    let defaults = NSUserDefaults::standardUserDefaults();
+    let read = |key: &str| defaults.doubleForKey(&NSString::from_str(key));
+    mac_blink_ms(
+        read("NSTextInsertionPointBlinkPeriodOn"),
+        read("NSTextInsertionPointBlinkPeriodOff"),
+    )
+}
+
+/// Other systems: no blink setting is read, so the caller ticks at its default.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn blink_time_ms() -> Option<u32> {
     None
 }
@@ -222,6 +256,47 @@ mod tests {
         let mut p = CaretPlan::default();
         p.focus(true);
         assert_eq!(p.place(0, 0, 0)[0], CaretOp::Create { h: 1 });
+    }
+
+    #[test]
+    fn the_mac_blink_period_comes_from_the_on_default_then_the_off_default() {
+        assert_eq!(mac_blink_ms(0.0, 0.0), None, "unset: the default tick");
+        assert_eq!(mac_blink_ms(400.0, 0.0), Some(400));
+        assert_eq!(mac_blink_ms(400.0, 700.0), Some(400), "the on period wins");
+        assert_eq!(mac_blink_ms(0.0, 700.0), Some(700), "then the off period");
+        assert_eq!(
+            mac_blink_ms(-5.0, 650.4),
+            Some(650),
+            "a negative value is unset"
+        );
+        assert_eq!(
+            mac_blink_ms(f64::NAN, f64::INFINITY),
+            None,
+            "not a number is unset"
+        );
+    }
+
+    #[test]
+    fn a_huge_mac_blink_period_is_steady() {
+        assert_eq!(mac_blink_ms(MAC_STEADY_MS, 0.0), Some(u32::MAX));
+        assert_eq!(mac_blink_ms(999_999_999.0, 500.0), Some(u32::MAX));
+        assert_eq!(mac_blink_ms(MAC_STEADY_MS - 1.0, 0.0), Some(29_999));
+        assert_eq!(
+            mac_blink_ms(0.0, 1e12),
+            Some(u32::MAX),
+            "a huge off period alone too"
+        );
+    }
+
+    /// The real defaults read runs headless and gives what the pure mapping allows.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_mac_defaults_read_runs_without_a_window() {
+        let got = blink_time_ms();
+        assert!(
+            got.is_none_or(|ms| ms == u32::MAX || ms < 30_000),
+            "{got:?}"
+        );
     }
 
     /// What a magnifier reads of this thread: the caret's window and rectangle (`GetGUIThreadInfo`).

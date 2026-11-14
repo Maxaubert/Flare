@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 /// The tick's half period when the system names none: Windows' default caret blink time.
 pub const DEFAULT_PERIOD: Duration = Duration::from_millis(530);
 
-/// The system's caret blink time, as Windows' `GetCaretBlinkTime` gives it. `None` means "do not blink" (the
-/// person turned blinking off in Windows); anything odd falls back to [`DEFAULT_PERIOD`]. macOS has no such
-/// setting, so it ticks at the default.
+/// The system's caret blink time: Windows' `GetCaretBlinkTime`, or on macOS the global default
+/// `NSTextInsertionPointBlinkPeriodOn` (then `...Off`, rule 1234). `None` means "do not blink" (Windows' INFINITE,
+/// or a Mac period of 30 s or more); unset or anything odd falls back to [`DEFAULT_PERIOD`].
 pub fn system_period() -> Option<Duration> {
     period_from(flare_win::system_caret::blink_time_ms())
 }
@@ -201,6 +201,24 @@ mod tests {
         b.set_enabled(true, t0 + ms(600));
         assert!(b.lit(t0 + ms(600)));
         assert!(!b.lit(t0 + ms(1130)));
+    }
+
+    #[test]
+    fn the_mac_blink_defaults_set_the_period_and_a_huge_one_is_steady() {
+        use flare_win::system_caret::mac_blink_ms;
+        assert_eq!(
+            period_from(mac_blink_ms(0.0, 0.0)),
+            Some(DEFAULT_PERIOD),
+            "unset"
+        );
+        assert_eq!(period_from(mac_blink_ms(400.0, 0.0)), Some(ms(400)));
+        assert_eq!(period_from(mac_blink_ms(0.0, 800.0)), Some(ms(800)));
+        assert_eq!(period_from(mac_blink_ms(999_999.0, 0.0)), None, "steady");
+        assert_eq!(
+            period_from(mac_blink_ms(12_000.0, 0.0)),
+            Some(DEFAULT_PERIOD),
+            "slow but not steady is odd"
+        );
     }
 
     #[test]
