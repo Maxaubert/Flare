@@ -16,7 +16,7 @@ trap run_cleanup EXIT
 on_exit() { CLEANUP+=("$1"); }
 
 # Notary credentials, the first that is set (never a password on notarytool's command line, where `ps` shows it):
-#   FLARE_NOTARY_PROFILE                          a notarytool keychain profile (this Mac: flare-notary, made once
+#   FLARE_NOTARY_PROFILE                          a notarytool keychain profile (this Mac: notary, made once
 #                                                 with `xcrun notarytool store-credentials`; CI: flare-ci, stored in
 #                                                 the throwaway keychain FLARE_SIGNING_KEYCHAIN)
 #   FLARE_NOTARY_KEY, FLARE_NOTARY_KEY_ID, FLARE_NOTARY_ISSUER
