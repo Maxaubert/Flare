@@ -1120,7 +1120,7 @@ impl Emulator {
     }
 
     /// Selects the cells between boundaries `start` and `end` (absolute rows, end exclusive): the agent prompt's
-    /// selection (rule 1234).
+    /// selection (rule 1235).
     pub fn sel_cells(&mut self, start: (usize, usize), end: (usize, usize)) {
         self.sel_apply(SelOut::Set(SelSpec {
             block: false,
@@ -1135,7 +1135,7 @@ impl Emulator {
         }));
     }
 
-    /// The live screen's rows as the prompt reader takes them (rule 1234): each cell's character, width, reverse
+    /// The live screen's rows as the prompt reader takes them (rule 1235): each cell's character, width, reverse
     /// video (Claude's caret) and ghost ink (dim or grey: a placeholder or a suggestion), whatever the view shows.
     pub fn prompt_lines(&self) -> Vec<crate::prompt_keys::BoxLine> {
         use crate::prompt_keys::{BoxCell, BoxLine};
@@ -2435,7 +2435,7 @@ mod tests {
         assert!(draft(&e));
     }
 
-    /// Claude's box read from real output (rule 1234): the reverse-video caret, a dim placeholder, a wide character,
+    /// Claude's box read from real output (rule 1235): the reverse-video caret, a dim placeholder, a wide character,
     /// and the rows your messages start on.
     #[test]
     fn the_prompt_reader_takes_the_box_from_the_screen() {

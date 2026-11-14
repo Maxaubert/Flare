@@ -2303,7 +2303,7 @@ mod flow {
         assert_eq!(w.quiet().len(), n + 1);
     }
 
-    // ---- the agent prompt as a text box (rule 1234) ------------------------------------------
+    // ---- the agent prompt as a text box (rule 1235) ------------------------------------------
 
     /// Claude's prompt box on rows 1 to 3: a rule, `❯ ` and the text with the caret drawn in reverse video at
     /// column `caret`, a rule, and the footer.

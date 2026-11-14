@@ -395,12 +395,12 @@ pub struct TermUi {
     previews: bool,
     /// "Show thumbnails when hovering image paths": Some only while the setting is on.
     thumbs: Option<ThumbState>,
-    /// Flare's selection over an agent's prompt, and the tab it was made on (rule 1234).
+    /// Flare's selection over an agent's prompt, and the tab it was made on (rule 1235).
     prompt_sel: Option<(String, PromptSel)>,
 }
 
 /// How often the prompt's selection is looked at while it stands: should the agent's repaint drop the highlight
-/// (the selection guard covers the usual erase), the tick puts it back (rule 1234).
+/// (the selection guard covers the usual erase), the tick puts it back (rule 1235).
 const PROMPT_SEL_RECHECK_MS: u64 = 120;
 
 /// The longest a big copy may keep Ctrl+C a copy.
@@ -979,7 +979,7 @@ impl TermUi {
                 self.menu = None;
                 self.last_rows.borrow_mut().clear();
                 self.hide_thumb();
-                // A press starts a selection of the person's own: the prompt's is let go (rule 1234).
+                // A press starts a selection of the person's own: the prompt's is let go (rule 1235).
                 self.prompt_sel = None;
                 self.on_down(tab, &e, &hit, row_c, dev, mouse_owned, now);
             }
@@ -1373,7 +1373,7 @@ impl TermUi {
         }
     }
 
-    /// A key for an agent's prompt (rule 1234), called only while agent hotkeys are on and Claude runs in the tab:
+    /// A key for an agent's prompt (rule 1235), called only while agent hotkeys are on and Claude runs in the tab:
     /// a prompt key acts, and a key over Flare's prompt selection replaces, deletes or cuts it. `None`: the key
     /// goes on its usual way (after any bytes sent here, such as the deletion of the selection it replaces).
     pub fn prompt_key(&mut self, tab: &TabInfo, ev: &KeyEvent, os: KeyOs) -> Option<KeyDone> {

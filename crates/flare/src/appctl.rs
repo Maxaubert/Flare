@@ -3568,7 +3568,7 @@ impl AppCtl {
         };
         let info = front.info();
         let armed = self.agent_view.armed(&front.id);
-        // Agent hotkeys with Claude in front: the prompt is a text box (rule 1234). Only Claude: Flare knows no
+        // Agent hotkeys with Claude in front: the prompt is a text box (rule 1235). Only Claude: Flare knows no
         // other agent's editor keys.
         if ctx.agent_keys
             && armed == Some(flare_agent::kinds::AgentKind::Claude)

@@ -1,4 +1,4 @@
-//! The agent prompt as a text box (Max's picks, 2026-11-14; rule 1234). With agent hotkeys on and Claude in the
+//! The agent prompt as a text box (Max's picks, 2026-11-14; rule 1235). With agent hotkeys on and Claude in the
 //! tab in front, Ctrl+A selects the prompt being typed, Shift and the arrows select, typing over a selection
 //! replaces it, Ctrl+X cuts, Ctrl+Z undoes, and a few keys are translated to Claude Code's own editor keys.
 //!
@@ -953,11 +953,19 @@ mod tests {
         let cases = [
             (ev("a").meta(), PromptKey::SelectAll),
             (ev("ArrowLeft").shift(), PromptKey::SelectLeft),
+            (ev("ArrowRight").shift(), PromptKey::SelectRight),
             (ev("ArrowLeft").alt().shift(), PromptKey::SelectWordLeft),
+            (ev("ArrowRight").alt().shift(), PromptKey::SelectWordRight),
             (ev("ArrowRight").meta().shift(), PromptKey::SelectEnd),
             (ev("ArrowLeft").meta().shift(), PromptKey::SelectHome),
+            (ev("Home").shift(), PromptKey::SelectHome),
+            (ev("End").shift(), PromptKey::SelectEnd),
             (ev("ArrowLeft").alt(), PromptKey::WordLeft),
+            (ev("ArrowRight").alt(), PromptKey::WordRight),
+            (ev("ArrowLeft").meta(), PromptKey::Home),
             (ev("ArrowRight").meta(), PromptKey::End),
+            (ev("Home"), PromptKey::Home),
+            (ev("End"), PromptKey::End),
             (ev("Backspace").alt(), PromptKey::DeleteWordBack),
             (ev("Delete").alt(), PromptKey::DeleteWordForward),
             (ev("z").meta(), PromptKey::Undo),
@@ -966,11 +974,19 @@ mod tests {
             (ev("ArrowUp").meta().shift(), PromptKey::PrevMessage),
             (ev("ArrowDown").meta().shift(), PromptKey::NextMessage),
         ];
-        for (e, k) in cases {
-            assert_eq!(prompt_key_of(&e, m), Some(k), "{e:?}");
+        for (e, k) in &cases {
+            assert_eq!(prompt_key_of(e, m), Some(*k), "{e:?}");
         }
-        // Ctrl+A on a Mac is the line start, Claude's own key.
+        // Every kind of prompt key has a Mac key above.
+        let seen: std::collections::HashSet<_> = cases.iter().map(|(_, k)| *k).collect();
+        assert_eq!(seen.len(), PROMPT_KEYS.len());
+        // Ctrl+A on a Mac is the line start, Claude's own key; Ctrl+Z its suspend, Ctrl+X its chords.
         assert_eq!(prompt_key_of(&ev("a").ctrl(), m), None);
+        assert_eq!(prompt_key_of(&ev("z").ctrl(), m), None);
+        assert_eq!(prompt_key_of(&ev("x").ctrl(), m), None);
+        // The Windows keys are not the Mac's.
+        assert_eq!(prompt_key_of(&ev("ArrowLeft").ctrl().shift(), m), None);
+        assert_eq!(prompt_key_of(&ev("Backspace").ctrl(), m), None);
     }
 
     #[test]

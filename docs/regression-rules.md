@@ -3787,7 +3787,22 @@ blink_tick, blink_delay}`, `LookStore::{caret_shape, caret_blink}`. Held by `it_
 `a_popup_holding_the_keys_draws_the_outline_whatever_the_shape`, `the_caret_wears_the_accent_by_default` and
 `the_persons_own_cursor_colour_wins_over_the_accent`. Source: Max, 2026-11-14.
 
-1234. **With agent hotkeys on and Claude in the tab in front, its prompt is a text box.** Max, 2026-11-14 ("ctrl A is
+1234. **On macOS the caret ticks at the person's own blink period.** Rule 1233 ticked the Mac at 530 ms because
+`system_caret::blink_time_ms` said "macOS has no caret blink setting". It has one: the global defaults
+`NSTextInsertionPointBlinkPeriodOn` and `NSTextInsertionPointBlinkPeriodOff` (milliseconds, read with
+`NSUserDefaults` `doubleForKey`, which AppKit's own text views follow). The on period is used, else the off period;
+neither set (the usual case) keeps 530 ms. A period of 30 000 ms or more (`MAC_STEADY_MS`) is "do not blink" and maps
+to `u32::MAX`, the same as Windows' INFINITE, because a huge on period is how people make the Mac caret steady
+(`defaults write -g NSTextInsertionPointBlinkPeriodOn -float 999999`). Values outside `period_from`'s 100 ms to 5 s
+fall back to 530 ms as on Windows. The macOS 14+ Accessibility "Prefer non-blinking cursor indicator" switch is not
+read: no documented or commonly used key for it was found in `com.apple.universalaccess` or the global domain on the
+Mac (2026-11-14), so only the blink defaults count. Other non-Windows systems still give `None`. Native:
+`flare_win::system_caret::{mac_blink_ms, MAC_STEADY_MS, blink_time_ms}`, `caret_blink::system_period`. Held by
+`the_mac_blink_period_comes_from_the_on_default_then_the_off_default`, `a_huge_mac_blink_period_is_steady`,
+`the_mac_defaults_read_runs_without_a_window` and `the_mac_blink_defaults_set_the_period_and_a_huge_one_is_steady`.
+Source: the macOS parity review of PR #234, 2026-11-14.
+
+1235. **With agent hotkeys on and Claude in the tab in front, its prompt is a text box.** Max, 2026-11-14 ("ctrl A is
 select all instead of go all the way left", "ctrl shift arrows is select word by word"). Ctrl+A (Cmd+A) selects the
 prompt being typed, shown with Flare's own selection; Shift+Left and Right select by letter, Ctrl+Shift (Option+Shift)
 by word, Shift+Home and End (Cmd+Shift+Left and Right) to the line's ends. Typing or pasting over the selection replaces
@@ -3810,8 +3825,8 @@ key (rule 5) already did what Max asked and are unchanged. Codex, agy and a plai
 other agent's editor keys. Native: `flare_term::prompt_keys` (`prompt_key_of`, `read_box`, `plan`, `message_scroll`,
 `prompt_key_label`), `Emulator::{prompt_lines, marked_rows, sel_cells}`, `TermUi::{prompt_key, message_key,
 prompt_tick}`, the check in `AppCtl::term_key`, `keymap::agent_keys_text` for the Settings Keys notes. Held by the
-`prompt_keys` unit tests, `the_prompt_keys_are_no_chords`, `the_agent_keys_list_names_every_key_by_its_label`,
-`the_agent_keys_are_listed_under_their_switch_a_note_per_line` and the UI tests
+`prompt_keys` unit tests, `the_prompt_keys_are_no_chords`, `the_mac_prompt_keys_are_no_chords`,
+`the_agent_keys_list_names_every_key_by_its_label`, `the_agent_keys_are_listed_under_their_switch_a_note_per_line` and the UI tests
 `ctrl_a_selects_the_claude_prompt_and_typing_replaces_it`,
 `shift_arrows_grow_the_highlight_and_it_survives_the_agents_repaint`,
 `the_prompt_keys_are_claudes_only_and_only_with_agent_hotkeys_on` and

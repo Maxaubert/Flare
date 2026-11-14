@@ -521,7 +521,7 @@ pub fn agent_chords() -> Vec<ChordId> {
         .collect()
 }
 
-/// The keys agent hotkeys add, as the Settings Keys list shows them, one line a note (rule 1234): the agent chords
+/// The keys agent hotkeys add, as the Settings Keys list shows them, one line a note (rule 1235): the agent chords
 /// and the prompt keys, every key named by its table's label on this system.
 pub fn agent_keys_text(os: KeyOs) -> String {
     use flare_term::prompt_keys::{PromptKey as P, prompt_key_label};
@@ -990,7 +990,7 @@ mod tests {
 
     #[test]
     fn the_prompt_keys_are_no_chords() {
-        // They are the terminal's (rule 1234): the chord table never takes them, so they reach the prompt.
+        // They are the terminal's (rule 1235): the chord table never takes them, so they reach the prompt.
         use flare_term::prompt_keys::{PROMPT_KEYS, prompt_key_of};
         let agent = KeyContext {
             agent_keys: true,
@@ -1018,6 +1018,43 @@ mod tests {
         }
         // Every kind of prompt key is reached by one of these or its mirror (Right for Left, End for Home).
         assert!(seen.len() >= 13 && seen.len() <= PROMPT_KEYS.len());
+    }
+
+    #[test]
+    fn the_mac_prompt_keys_are_no_chords() {
+        // The Mac's Cmd and Option keys for the prompt (rule 1235) reach the terminal too.
+        use flare_term::prompt_keys::{PROMPT_KEYS, prompt_key_of};
+        let agent = KeyContext {
+            agent_keys: true,
+            ..mac()
+        };
+        let keys = [
+            KeyEvent::new("a", "KeyA").meta(),
+            KeyEvent::new("ArrowLeft", "ArrowLeft").shift(),
+            KeyEvent::new("ArrowRight", "ArrowRight").shift(),
+            KeyEvent::new("ArrowLeft", "ArrowLeft").alt().shift(),
+            KeyEvent::new("ArrowRight", "ArrowRight").alt().shift(),
+            KeyEvent::new("ArrowLeft", "ArrowLeft").meta().shift(),
+            KeyEvent::new("ArrowRight", "ArrowRight").meta().shift(),
+            KeyEvent::new("ArrowLeft", "ArrowLeft").alt(),
+            KeyEvent::new("ArrowRight", "ArrowRight").alt(),
+            KeyEvent::new("ArrowLeft", "ArrowLeft").meta(),
+            KeyEvent::new("ArrowRight", "ArrowRight").meta(),
+            KeyEvent::new("Backspace", "Backspace").alt(),
+            KeyEvent::new("Delete", "Delete").alt(),
+            KeyEvent::new("z", "KeyZ").meta(),
+            KeyEvent::new("x", "KeyX").meta(),
+            KeyEvent::new("Backspace", "Backspace").meta().shift(),
+            KeyEvent::new("ArrowUp", "ArrowUp").meta().shift(),
+            KeyEvent::new("ArrowDown", "ArrowDown").meta().shift(),
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for e in keys {
+            assert_eq!(chord_of(&e, &agent), None, "{e:?}");
+            assert!(!app_owns_key(&e, &agent), "{e:?}");
+            seen.insert(prompt_key_of(&e, KeyOs::Mac).expect("a prompt key"));
+        }
+        assert_eq!(seen.len(), PROMPT_KEYS.len());
     }
 
     // ---- macOS (port phase 3) ---------------------------------------------------------------------

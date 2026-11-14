@@ -125,7 +125,7 @@ fn keys_section(env: &PageEnv<'_>) -> SectionModel {
         ..switch_row(def("agent-guard"), agent_guard(env.prefs))
     };
     let right_click = switch_row(def("right-click-reports"), right_click_reports(env.prefs));
-    // The keys the hotkeys add, a note per line under their switch (rule 1234): the list is built from the key
+    // The keys the hotkeys add, a note per line under their switch (rule 1235): the list is built from the key
     // tables (`key_label`, `prompt_key_label`), never typed here.
     let mut blocks = vec![BlockModel::Row(hotkeys)];
     blocks.extend(

@@ -2806,7 +2806,7 @@ Four gaps of a remote tab closed, owner approved 2026-11-13 (rule 1213). Contrac
 ## The agent prompt as a text box, 2026-11-14
 
 With Settings > Terminal > Agent hotkeys on (the default) and Claude in the tab in front, Claude's prompt edits like
-a text box (rule 1234). Windows keys first, the Mac's in brackets.
+a text box (rule 1235). Windows keys first, the Mac's in brackets.
 
 - **Select:** Ctrl+A (Cmd+A) selects the whole prompt. Shift+Left and Right select by letter, Ctrl+Shift+Left and Right
   (Option+Shift) by word, Shift+Home and End (Cmd+Shift+Left and Right) to the line's start or end. The selection shows
