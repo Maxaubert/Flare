@@ -3812,7 +3812,7 @@ Alt too (AltGr) the key is the shell's. Under a question they do nothing and the
 Shift is still a new tab; Ctrl+Shift+T no longer is one. Ctrl+Shift+T opens the tab closed last again, in its old place
 in the strip, in front: a list of the last 10 closed tabs is kept in memory for this run only (never saved), so more
 presses walk back. Settings and a placeholder are not kept. A Claude tab resumes the session the hooks named for it; when
-none was named, a worker reads the folder's sessions and takes the newest one no open tab holds (rule 4), else a plain
+none was named, or an open tab holds that session now (two Claudes never share one session), a worker reads the folder's sessions and takes the newest one no open tab holds (rule 4), else a plain
 shell. Codex resumes with `codex resume --last` and agy with `agy -c`, as the restore does. A remote tab comes back on
 its machine in its folder; the host owns its session. Ctrl+Shift+N is the folder menu's "Choose a folder..." row (the
 row shows the key). Ctrl+Shift+R shows the linked machines as a menu under the bar (the + menu's machine rows; "No
@@ -3830,6 +3830,7 @@ menu bar lists them: File > New Tab in Folder..., New Tab on Machine..., Reopen 
 `the_app_keys_are_taken_in_a_plain_shell_and_a_full_screen_program_and_ctrl_t_still_opens`,
 `ctrl_shift_t_walks_back_through_the_closed_tabs_each_in_its_place`,
 `a_closed_claude_tab_comes_back_with_its_session_and_codex_with_its_own_resume`,
+`a_named_session_an_open_tab_took_since_is_not_resumed_twice`,
 `a_closed_remote_tab_comes_back_on_its_machine`, `ctrl_shift_n_asks_for_a_folder_and_opens_a_tab_there`,
 `ctrl_shift_r_lists_the_linked_machines_and_a_pick_opens_a_tab_there`,
 `ctrl_shift_l_opens_the_browser_panel_with_the_address_field_holding_the_keys`,

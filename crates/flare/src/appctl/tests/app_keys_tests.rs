@@ -178,6 +178,36 @@ fn a_claude_tab_whose_session_was_never_named_takes_the_newest_session_no_open_t
 }
 
 #[test]
+fn a_named_session_an_open_tab_took_since_is_not_resumed_twice() {
+    let lookup = FixedSessions::new(&[SESSION_A, SESSION_B]);
+    let f = fx_with(Opts {
+        saved: vec![("C:\\c", Some(AgentKind::Claude))],
+        lookup: lookup_of(&lookup),
+        shells: Some(vec![resume_pwsh()]),
+        ..Opts::default()
+    });
+    f.start_restore_and_wait();
+    f.wait_made("C:\\c");
+    // The closed tab had SESSION_A, but the open tab in C:\c resumed it since: two Claudes on one session never run.
+    f.ctl
+        .borrow_mut()
+        .closed
+        .push(crate::appctl::app_keys_glue::ClosedTab {
+            cwd: "C:\\d".into(),
+            at: 0,
+            agent: Some(AgentKind::Claude),
+            session: Some(SESSION_A.into()),
+            machine: None,
+        });
+    f.key(shift_ctrl_key("T"));
+    f.pump_until("the reopened tab", |f| !f.made_with("C:\\d").is_empty());
+    assert_eq!(
+        env_of(&f.made_with("C:\\d")[0], "FLARE_RESUME_ID").as_deref(),
+        Some(SESSION_B)
+    );
+}
+
+#[test]
 fn ctrl_shift_n_asks_for_a_folder_and_opens_a_tab_there() {
     let f = fx_with(Opts {
         pick_answer: Some(PathBuf::from("C:\\picked")),

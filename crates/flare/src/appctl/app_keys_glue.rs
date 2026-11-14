@@ -123,24 +123,33 @@ impl AppCtl {
             self.focus_terminal();
             return;
         }
+        // Two Claudes on one session write one file: a session an open tab took since is not resumed again (rule 4),
+        // the tab looks for one no open tab holds instead.
+        let held = self.held_sessions();
         match resume_of(&t) {
+            Ok(Some(s)) if t.agent == Some(AgentKind::Claude) && held.contains(&s) => {
+                self.find_session_then_reopen(t, held);
+            }
             Ok(resume) => {
                 self.open_resuming(&t.cwd, resume.as_deref(), t.at);
             }
-            Err(()) => self.find_session_then_reopen(t),
+            Err(()) => self.find_session_then_reopen(t, held),
         }
     }
 
-    /// A worker reads the folder's Claude sessions (newest first) and the tab opens with the newest no open tab
-    /// holds, or as a plain shell when there is none.
-    fn find_session_then_reopen(&mut self, t: ClosedTab) {
-        let held: HashSet<String> = self
-            .model
+    /// The Claude sessions the open tabs hold.
+    fn held_sessions(&self) -> HashSet<String> {
+        self.model
             .state
             .tabs
             .iter()
             .filter_map(|o| self.hub.claude_session(&o.id).map(str::to_string))
-            .collect();
+            .collect()
+    }
+
+    /// A worker reads the folder's Claude sessions (newest first) and the tab opens with the newest no open tab
+    /// holds (`held`), or as a plain shell when there is none.
+    fn find_session_then_reopen(&mut self, t: ClosedTab, held: HashSet<String>) {
         let lookup = Arc::clone(&self.deps.lookup);
         let post = Arc::clone(&self.deps.post);
         let (cwd, at) = (t.cwd.clone(), t.at);
