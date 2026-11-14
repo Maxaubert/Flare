@@ -2303,6 +2303,159 @@ mod flow {
         assert_eq!(w.quiet().len(), n + 1);
     }
 
+    // ---- the agent prompt as a text box (rule 1235) ------------------------------------------
+
+    /// Claude's prompt box on rows 1 to 3: a rule, `❯ ` and the text with the caret drawn in reverse video at
+    /// column `caret`, a rule, and the footer.
+    fn claude_box(text: &str, caret: usize) -> String {
+        let rule = "\u{2500}".repeat(40);
+        let mut row: Vec<char> = format!("\u{276f} {text}").chars().collect();
+        while row.len() <= caret {
+            row.push(' ');
+        }
+        let before: String = row[..caret].iter().collect();
+        let after: String = row[caret + 1..].iter().collect();
+        format!(
+            "\x1b[2J\x1b[Hdone\r\n{rule}\r\n{before}\x1b[7m{}\x1b[0m{after}\r\n{rule}\r\n  auto mode on",
+            row[caret]
+        )
+    }
+
+    const LEFT: &[u8] = b"\x1b[D";
+    const BS: u8 = 0x7f;
+
+    #[test]
+    fn ctrl_a_selects_the_claude_prompt_and_typing_replaces_it() {
+        let w = Wx::new(1.0);
+        flare_settings::term_prefs::set_agent_keys(&w.prefs, true);
+        w.agent.0.set(Some(AgentKind::Claude));
+        w.feed(&claude_box("fix the thing", 15));
+        assert_eq!(w.key(ctrl("a", "KeyA")), KeyOutcome::Consumed);
+        assert!(w.has_sel());
+        assert_eq!(w.text(), "fix the thing");
+        let f = w.frame();
+        assert!(
+            w.count_in(&f, 2, 2..15, SELECTION) > 100,
+            "the prompt shows selected"
+        );
+        assert_eq!(w.count_in(&f, 2, 0..2, SELECTION), 0, "the mark is not");
+        assert_eq!(w.count_in(&f, 1, 0..20, SELECTION), 0, "the rule is not");
+        assert_eq!(w.quiet(), b"", "selecting sends nothing");
+        // A letter replaces it: thirteen Backspaces (the caret is at the end), then the letter itself.
+        assert_eq!(w.key(KeyEvent::new("x", "KeyX").text("x")), KeyOutcome::Pty);
+        let mut want = vec![BS; 13];
+        want.push(b'x');
+        w.wait_written(&want);
+        assert!(!w.has_sel());
+    }
+
+    #[test]
+    fn shift_arrows_grow_the_highlight_and_it_survives_the_agents_repaint() {
+        let w = Wx::new(1.0);
+        flare_settings::term_prefs::set_agent_keys(&w.prefs, true);
+        w.agent.0.set(Some(AgentKind::Claude));
+        w.feed(&claude_box("fix the thing", 15));
+        let shift_left = || KeyEvent::new("ArrowLeft", "ArrowLeft").shift();
+        for _ in 0..3 {
+            assert_eq!(w.key(shift_left()), KeyOutcome::Consumed);
+        }
+        assert_eq!(w.text(), "ing");
+        w.wait_written(&LEFT.repeat(3));
+        let f = w.frame();
+        assert!(w.count_in(&f, 2, 12..15, SELECTION) > 50);
+        assert_eq!(w.count_in(&f, 2, 2..12, SELECTION), 0);
+        // Claude repaints its input row with the caret moved: the selection guard keeps the highlight over an erase.
+        w.feed("\x1b[3;1H\x1b[2K\u{276f} fix the th\x1b[7mi\x1b[0mng");
+        assert!(w.has_sel());
+        // A repaint the guard does not cover drops it: the tick puts it back while the text is the same.
+        w.handle.with_emu(|e| e.sel_clear());
+        w.run(200);
+        assert!(w.has_sel());
+        assert_eq!(w.text(), "ing");
+        // Ctrl+Shift+Left grows it by a word; Backspace deletes it (walk to its end, five Backspaces).
+        assert_eq!(
+            w.key(KeyEvent::new("ArrowLeft", "ArrowLeft").ctrl().shift()),
+            KeyOutcome::Consumed
+        );
+        assert_eq!(w.text(), "thing");
+        w.wait_written(&LEFT.repeat(5));
+        assert_eq!(
+            w.key(KeyEvent::new("Backspace", "Backspace")),
+            KeyOutcome::Consumed
+        );
+        let mut want = LEFT.repeat(5);
+        want.extend(b"\x1b[C".repeat(5));
+        want.extend([BS; 5]);
+        w.wait_written(&want);
+        assert!(!w.has_sel());
+    }
+
+    #[test]
+    fn the_prompt_keys_are_claudes_only_and_only_with_agent_hotkeys_on() {
+        let w = Wx::new(1.0);
+        w.feed(&claude_box("fix", 5));
+        // A plain shell keeps Ctrl+A (line start) and Ctrl+Z.
+        assert_eq!(w.key(ctrl("a", "KeyA")), KeyOutcome::Pty);
+        assert!(!w.has_sel());
+        // Codex: Flare knows none of its editor keys.
+        w.agent.0.set(Some(AgentKind::Codex));
+        assert_eq!(w.key(ctrl("a", "KeyA")), KeyOutcome::Pty);
+        // Claude with agent hotkeys off.
+        w.agent.0.set(Some(AgentKind::Claude));
+        flare_settings::term_prefs::set_agent_keys(&w.prefs, false);
+        assert_eq!(w.key(ctrl("a", "KeyA")), KeyOutcome::Pty);
+        assert!(!w.has_sel());
+        w.wait_written(&[1, 1, 1]);
+        // On: Ctrl+Z is Claude's undo, Ctrl+Left its word key, Home its line start.
+        flare_settings::term_prefs::set_agent_keys(&w.prefs, true);
+        assert_eq!(w.key(ctrl("z", "KeyZ")), KeyOutcome::Consumed);
+        assert_eq!(
+            w.key(KeyEvent::new("ArrowLeft", "ArrowLeft").ctrl()),
+            KeyOutcome::Consumed
+        );
+        assert_eq!(w.key(KeyEvent::new("Home", "Home")), KeyOutcome::Consumed);
+        w.wait_written(b"\x01\x01\x01\x1f\x1bb\x01");
+    }
+
+    #[test]
+    fn ctrl_shift_up_and_down_step_through_your_messages() {
+        let w = Wx::new(1.0);
+        flare_settings::term_prefs::set_agent_keys(&w.prefs, true);
+        w.agent.0.set(Some(AgentKind::Claude));
+        let mut out = String::from("\u{276f} first\r\n");
+        for i in 0..60 {
+            out.push_str(&format!("answer {i}\r\n"));
+        }
+        out.push_str("\u{276f} second\r\n");
+        for i in 0..60 {
+            out.push_str(&format!("more {i}\r\n"));
+        }
+        let rule = "\u{2500}".repeat(40);
+        out.push_str(&format!(
+            "{rule}\r\n\u{276f} \x1b[7m \x1b[0m\r\n{rule}\r\n  auto"
+        ));
+        w.feed(&out);
+        let marks = w.handle.with_emu_quiet(|e| e.marked_rows('\u{276f}'));
+        assert_eq!(marks.len(), 3, "two messages and the box");
+        let top = || w.handle.with_emu_quiet(|e| e.viewport_top());
+        let up = || KeyEvent::new("ArrowUp", "ArrowUp").ctrl().shift();
+        let down = || KeyEvent::new("ArrowDown", "ArrowDown").ctrl().shift();
+        assert_eq!(w.key(up()), KeyOutcome::Consumed);
+        assert_eq!(top(), marks[1]);
+        assert_eq!(w.key(up()), KeyOutcome::Consumed);
+        assert_eq!(top(), marks[0]);
+        assert_eq!(w.key(up()), KeyOutcome::Consumed);
+        assert_eq!(top(), marks[0], "nothing older");
+        assert_eq!(w.key(down()), KeyOutcome::Consumed);
+        assert_eq!(top(), marks[1]);
+        assert_eq!(w.key(down()), KeyOutcome::Consumed);
+        assert!(
+            !w.handle.with_emu_quiet(|e| e.is_scrolled_back()),
+            "the bottom"
+        );
+        assert_eq!(w.quiet(), b"", "the view moves, nothing is typed");
+    }
+
     // ---- drop ---------------------------------------------------------------------------------
 
     /// PT scenario dropAndMenu.

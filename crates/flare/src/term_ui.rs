@@ -27,7 +27,7 @@ use flare_term::click_caret::MouseTracking;
 use flare_term::emulator::{DecorReq, TermEvent};
 use flare_term::find;
 use flare_term::handle::TermHandle;
-use flare_term::keys::{KeyEvent, TermKeyAction, is_key};
+use flare_term::keys::{KeyEvent, KeyOs, TermKeyAction, is_key};
 use flare_term::link_scan::{LinkMark, LinkTarget};
 use flare_term::link_target::{LinkAction, TermPathAt, click_action};
 use flare_term::mouse_report::{MouseButton, MouseEvt, MouseKind, MouseMods, encode_mouse};
@@ -36,6 +36,7 @@ use flare_term::path_open::{
     OpenMode, Opened, PathKind, PathOpeners, ext_label, first_existing, open_term_path,
     resolve_openable_file, resolve_term_path,
 };
+use flare_term::prompt_keys::{self as pk, Highlight, Input, PromptKey, PromptSel};
 use flare_term::sel_machine::{
     ClickCounter, DRAG_SCROLL_MS, Drag, Press, SelMachine, SelOut, ViewBox,
 };
@@ -394,7 +395,13 @@ pub struct TermUi {
     previews: bool,
     /// "Show thumbnails when hovering image paths": Some only while the setting is on.
     thumbs: Option<ThumbState>,
+    /// Flare's selection over an agent's prompt, and the tab it was made on (rule 1235).
+    prompt_sel: Option<(String, PromptSel)>,
 }
+
+/// How often the prompt's selection is looked at while it stands: should the agent's repaint drop the highlight
+/// (the selection guard covers the usual erase), the tick puts it back (rule 1235).
+const PROMPT_SEL_RECHECK_MS: u64 = 120;
 
 /// The longest a big copy may keep Ctrl+C a copy.
 const COPY_PENDING_MAX_MS: u64 = 30_000;
@@ -564,6 +571,7 @@ impl TermUi {
             osc_copier,
             previews: true,
             thumbs: None,
+            prompt_sel: None,
         }
     }
 
@@ -971,6 +979,8 @@ impl TermUi {
                 self.menu = None;
                 self.last_rows.borrow_mut().clear();
                 self.hide_thumb();
+                // A press starts a selection of the person's own: the prompt's is let go (rule 1235).
+                self.prompt_sel = None;
                 self.on_down(tab, &e, &hit, row_c, dev, mouse_owned, now);
             }
             1 => out.open_menu = self.on_up(tab, g, &e, &hit, row_c, dev, now),
@@ -1363,6 +1373,134 @@ impl TermUi {
         }
     }
 
+    /// A key for an agent's prompt (rule 1235), called only while agent hotkeys are on and Claude runs in the tab:
+    /// a prompt key acts, and a key over Flare's prompt selection replaces, deletes or cuts it. `None`: the key
+    /// goes on its usual way (after any bytes sent here, such as the deletion of the selection it replaces).
+    /// `option_as_meta`: the Mac's "Use Option as Meta" (Option+letter is then a Meta key, not text).
+    pub fn prompt_key(
+        &mut self,
+        tab: &TabInfo,
+        ev: &KeyEvent,
+        os: KeyOs,
+        option_as_meta: bool,
+    ) -> Option<KeyDone> {
+        let input = pk::classify(ev, os, option_as_meta);
+        match input {
+            Input::Ignore => return None,
+            Input::Other => {
+                self.prompt_sel = None;
+                return None;
+            }
+            Input::Key(k @ (PromptKey::PrevMessage | PromptKey::NextMessage)) => {
+                return self.message_key(tab, k == PromptKey::PrevMessage);
+            }
+            _ => {}
+        }
+        let (text, bounds, app_cursor) = tab.handle.with_emu_quiet(|em| {
+            (
+                pk::read_box(&em.prompt_lines(), em.cols()),
+                em.sel_bounds(),
+                em.mode().app_cursor,
+            )
+        });
+        let Some(text) = text else {
+            self.prompt_sel = None;
+            return None;
+        };
+        // Flare's own selection, made on this tab over this very text; else one the mouse made in the box.
+        let now_text = text.text();
+        let sel = self
+            .prompt_sel
+            .take()
+            .filter(|(t, s)| t == tab.id && s.text == now_text)
+            .map(|(_, s)| s)
+            .or_else(|| {
+                let (s, e, block) = bounds?;
+                let (a, b) = (!block).then(|| text.range_of_cells(s, e))??;
+                Some(PromptSel {
+                    anchor: a,
+                    head: b,
+                    caret: text.caret,
+                    text: now_text.clone(),
+                })
+            });
+        let plan = pk::plan(input, &text, sel.as_ref(), app_cursor, os);
+        if !plan.send.is_empty() {
+            tab.handle.send_text(&plan.send);
+        }
+        match plan.highlight {
+            Highlight::Keep => {}
+            Highlight::Clear => tab.handle.with_emu(|em| em.sel_clear()),
+            Highlight::Set(a, b) => {
+                if let Some((s, e)) = text.cells_of(a, b) {
+                    tab.handle.with_emu(|em| em.sel_cells(s, e));
+                }
+            }
+        }
+        if let Some(cut) = plan.copy {
+            self.copy(cut, COPY_MAX);
+        }
+        self.prompt_sel = plan.sel.map(|s| (tab.id.to_string(), s));
+        self.redraw();
+        (!plan.pass).then_some(KeyDone::Handled)
+    }
+
+    /// Ctrl+Shift+Up and Down: the view to your previous or next message (`❯` in the first column, the box's own
+    /// row left out). A full-screen agent has no scrollback here: the key is the agent's then.
+    fn message_key(&mut self, tab: &TabInfo, up: bool) -> Option<KeyDone> {
+        if tab.handle.mode().alt_screen {
+            return None;
+        }
+        let step = tab.handle.with_emu_quiet(|em| {
+            let box_top =
+                pk::read_box(&em.prompt_lines(), em.cols()).map_or(usize::MAX, |t| t.rows.0);
+            let marks: Vec<usize> = em
+                .marked_rows('\u{276f}')
+                .into_iter()
+                .filter(|&r| r < box_top)
+                .collect();
+            pk::message_scroll(&marks, em.viewport_top(), em.history_size(), up)
+        });
+        if let Some(d) = step {
+            tab.handle.scroll_view(d);
+            self.redraw();
+        }
+        Some(KeyDone::Handled)
+    }
+
+    /// The prompt's selection stands while its text does: a highlight a repaint dropped while the text is the same
+    /// is put back; another text lets the selection go. True when the highlight was put back.
+    fn prompt_tick(&mut self, tab: Option<&TabInfo>) -> bool {
+        let Some((id, s)) = self.prompt_sel.clone() else {
+            return false;
+        };
+        let Some(tab) = tab.filter(|t| t.id == id) else {
+            self.prompt_sel = None;
+            return false;
+        };
+        let (text, has) = tab.handle.with_emu_quiet(|em| {
+            (
+                pk::read_box(&em.prompt_lines(), em.cols()),
+                em.has_selection(),
+            )
+        });
+        let Some(text) = text.filter(|t| t.text() == s.text) else {
+            self.prompt_sel = None;
+            return false;
+        };
+        if has {
+            return false;
+        }
+        let Some((a, b)) = s.range() else {
+            return false;
+        };
+        let Some((start, end)) = text.cells_of(a, b) else {
+            return false;
+        };
+        tab.handle.with_emu(|em| em.sel_cells(start, end));
+        true
+    }
+
     /// The closure for `KeyState::delete_selection`: asks the buffer for the plan, sends it,
     /// clears the selection. False = not allowed (the key is the shell's).
     pub fn selection_delete(&mut self, tab: &TabInfo) -> bool {
@@ -1753,6 +1891,12 @@ impl TermUi {
         }
 
         self.thumb_tick(tab, g, now, &mut due);
+        if self.prompt_tick(tab) {
+            out.redraw = true;
+        }
+        if self.prompt_sel.is_some() {
+            due.push(now + PROMPT_SEL_RECHECK_MS);
+        }
 
         if let Some(paths) = self.drops.take_ready(now) {
             if let Some(t) = tab.filter(|t| t.alive) {

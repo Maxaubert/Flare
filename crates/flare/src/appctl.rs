@@ -3607,8 +3607,21 @@ impl AppCtl {
             return KeyOutcome::Consumed;
         };
         let info = front.info();
+        let armed = self.agent_view.armed(&front.id);
+        let option_as_meta = self.option_as_meta();
+        // Agent hotkeys with Claude in front: the prompt is a text box (rule 1235). Only Claude: Flare knows no
+        // other agent's editor keys.
+        if ctx.agent_keys
+            && armed == Some(flare_agent::kinds::AgentKind::Claude)
+            && let Some(KeyDone::Handled) =
+                self.term.prompt_key(&info, ev, self.key_os, option_as_meta)
+        {
+            self.push_term();
+            self.wake_term();
+            return KeyOutcome::Consumed;
+        }
         let has_selection = self.term.has_selection(&info);
-        let agent_here = self.agent_view.armed(&front.id).is_some();
+        let agent_here = armed.is_some();
         let action = {
             let term = &mut self.term;
             let mut delete = || term.selection_delete(&info);

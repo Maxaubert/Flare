@@ -3802,6 +3802,41 @@ Mac (2026-11-14), so only the blink defaults count. Other non-Windows systems st
 `the_mac_defaults_read_runs_without_a_window` and `the_mac_blink_defaults_set_the_period_and_a_huge_one_is_steady`.
 Source: the macOS parity review of PR #234, 2026-11-14.
 
+1235. **With agent hotkeys on and Claude in the tab in front, its prompt is a text box.** Max, 2026-11-14 ("ctrl A is
+select all instead of go all the way left", "ctrl shift arrows is select word by word"). Ctrl+A (Cmd+A) selects the
+prompt being typed, shown with Flare's own selection; Shift+Left and Right select by letter, Ctrl+Shift (Option+Shift)
+by word, Shift+Home and End (Cmd+Shift+Left and Right) to the line's ends. Typing or pasting over the selection replaces
+it, Backspace and Delete delete it, Ctrl+X (Cmd+X) copies then deletes it, Left or Right alone collapse it. Claude Code
+has no selection of its own: a deletion walks Claude's caret to the selection's end with arrows and sends one Backspace
+per character, the way rule 17 deletes on a shell's line; Flare tracks the caret it walked, because the screen lags the
+keys. The prompt is read from the screen: the box between Claude's two rules whose first row starts with its mark, the
+caret is the reverse-video cell, dim and grey cells are a placeholder or a suggestion, and a row break is a typed line
+break when the next row's first word would have fitted on the row (Claude word-wraps), else a wrap. The selection guard
+keeps the highlight over Claude's erase-and-repaint; should a repaint still drop it, the tick puts it back every 120 ms
+while the prompt's text is unchanged; another text, a mouse press, another tab or any other key lets the selection go. Translated to Claude's
+own keys (its interactive-mode docs, read 2026-11-14): Ctrl+Left and Right (Option) to Alt+B and Alt+F, Home and End
+(Cmd+Left and Right) to Ctrl+A and Ctrl+E, Ctrl+Backspace to ^H (Option+Backspace to ESC DEL), Ctrl+Delete (Option+
+Delete) to Alt+D, Ctrl+Z (Cmd+Z) to Ctrl+_ (undo), Ctrl+Shift+Backspace (Cmd+Shift+Backspace) clears the whole prompt
+with arrows and Backspaces, never Ctrl+C or Escape, so a working agent is not interrupted. Ctrl+Shift+Up and Down
+(Cmd+Shift) scroll the view to your previous or next message: the rows with Claude's `❯` in the first column (Flare has
+no prompt marks from shell integration), the live box's own row left out; on the alternate screen the keys are Claude's.
+Ctrl+X without a selection stays Claude's (it starts Claude's own two-key chords). On a Mac, Cmd+Backspace (⌘⌫,
+`Input::DeleteLineBack`) deletes the selection, else sends ^U (delete to the line's start); without it the selection was
+let go and ^U went out from the walked caret, deleting more than the selection (Mac review, 2026-11-14). With "Use
+Option as Meta" on, an Option key without Ctrl is no typed text (`classify` takes the setting): Option+B, F and D go out
+as ESC and the letter and let the selection go, never erase it first; with the setting off Option still types (Option+2
+is @ on a Norwegian layout) and replaces the selection. Shift+Enter (rule 6) and the image
+key (rule 5) already did what Max asked and are unchanged. Codex, agy and a plain shell keep every key: Flare knows no
+other agent's editor keys. Native: `flare_term::prompt_keys` (`prompt_key_of`, `read_box`, `plan`, `message_scroll`,
+`prompt_key_label`), `Emulator::{prompt_lines, marked_rows, sel_cells}`, `TermUi::{prompt_key, message_key,
+prompt_tick}`, the check in `AppCtl::term_key`, `keymap::agent_keys_text` for the Settings Keys notes. Held by the
+`prompt_keys` unit tests, `the_prompt_keys_are_no_chords`, `the_mac_prompt_keys_are_no_chords`,
+`the_agent_keys_list_names_every_key_by_its_label`, `the_agent_keys_are_listed_under_their_switch_a_note_per_line` and the UI tests
+`ctrl_a_selects_the_claude_prompt_and_typing_replaces_it`,
+`shift_arrows_grow_the_highlight_and_it_survives_the_agents_repaint`,
+`the_prompt_keys_are_claudes_only_and_only_with_agent_hotkeys_on` and
+`ctrl_shift_up_and_down_step_through_your_messages`. Source: Max, 2026-11-14.
+
 ## App keys (2026-11-14)
 
 1236. **Five app keys, always on: Ctrl+Shift+T reopens, N picks a folder, R picks a machine, L opens the browser, E

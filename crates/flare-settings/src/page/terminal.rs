@@ -125,14 +125,18 @@ fn keys_section(env: &PageEnv<'_>) -> SectionModel {
         ..switch_row(def("agent-guard"), agent_guard(env.prefs))
     };
     let right_click = switch_row(def("right-click-reports"), right_click_reports(env.prefs));
-    section(
-        "keys",
-        vec![
-            BlockModel::Row(hotkeys),
-            BlockModel::Row(guard),
-            BlockModel::Row(right_click),
-        ],
-    )
+    // The keys the hotkeys add, a note per line under their switch (rule 1235): the list is built from the key
+    // tables (`key_label`, `prompt_key_label`), never typed here.
+    let mut blocks = vec![BlockModel::Row(hotkeys)];
+    blocks.extend(
+        env.agent_key_labels
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| BlockModel::Note(l.to_string())),
+    );
+    blocks.push(BlockModel::Row(guard));
+    blocks.push(BlockModel::Row(right_click));
+    section("keys", blocks)
 }
 
 /// The Links section: the previews switch, on by default (Surfaces stage 1), and the switch that lets an
@@ -667,6 +671,40 @@ mod tests {
         assert_eq!(the_row(&page, "agent-keys").row_tip, "Ctrl+S, Ctrl+Tab");
         assert!(the_row(&page, "agent-keys").tap);
         assert!(the_row(&page, "agent-guard").tap);
+    }
+
+    #[test]
+    fn the_agent_keys_are_listed_under_their_switch_a_note_per_line() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(prefs.clone());
+        let face: &dyn Fn(&str) -> String = &face_of_test;
+        let mut e = env(&prefs, &look, face);
+        e.agent_key_labels = "Ctrl+A selects the prompt.\n\nCtrl+Z undoes.".to_string();
+        let page = build_terminal(&e);
+        let keys = page
+            .sections
+            .iter()
+            .find(|s| s.id == "keys")
+            .expect("the keys section");
+        let kinds: Vec<String> = keys
+            .blocks
+            .iter()
+            .map(|b| match b {
+                BlockModel::Row(r) => r.id.to_string(),
+                BlockModel::Note(t) => format!("note:{t}"),
+                _ => "other".to_string(),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "agent-keys",
+                "note:Ctrl+A selects the prompt.",
+                "note:Ctrl+Z undoes.",
+                "agent-guard",
+                "right-click-reports"
+            ]
+        );
     }
 
     #[test]

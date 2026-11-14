@@ -25,6 +25,7 @@ pub mod osc52;
 pub mod osc8;
 pub mod path_grammar;
 pub mod path_open;
+pub mod prompt_keys;
 pub mod pty;
 pub mod remote_pty;
 pub mod replies;
