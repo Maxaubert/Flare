@@ -170,6 +170,10 @@ installed or not, sshd running or not, Remote Login on or off).
   `ssh -o PreferredAuthentications=password localhost` is refused.
 - [ ] Windows, SSH server already running: the switch is on after one UAC prompt; `sshd_config` and the sshd rule's
   profiles are as they were.
+- [ ] Windows, SSH server installed but stopped (its rule on every profile): after the switch, sshd runs and
+  `(Get-NetFirewallRule -Name OpenSSH-Server-In-TCP).Profile` is `Private`; `sshd_config` is as it was.
+- [ ] Windows: a setup that fails after sshd started (for example a firewall policy that refuses new rules) leaves
+  sshd Stopped with its old start type, and the switch off.
 - [ ] Windows: No at the UAC prompt puts the switch back off, with no dialog.
 - [ ] Windows, offline with no SSH server: the dialog says Windows could not add its SSH server, and the switch is off.
 - [ ] Restart Flare with the switch on: it is still on, and no UAC prompt shows.

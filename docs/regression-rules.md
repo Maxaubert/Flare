@@ -3910,10 +3910,14 @@ server to the Private network profile only and never turns password logins on.**
 installs the `OpenSSH.Server~~~~0.0.1.0` capability only when `Get-WindowsCapability` says it is not installed, starts
 `sshd` when it is not running and sets it to Automatic; when Flare installed the server itself it writes
 `PasswordAuthentication no` into `%ProgramData%\ssh\sshd_config` (in place of the commented default, else before the
-first `Match` block, never after it) and restarts sshd, all before any firewall rule is touched; if that step fails
-the script stops sshd again, so a server Flare installed never runs with password logins on. A server the person had
-already keeps its config. The firewall: `OpenSSH-Server-In-TCP` is made for port 22 on the Private profile when it is
-missing, and set to Private when Flare installed the server (the capability makes it for every profile); Flare's own
+first `Match` block, never after it) and restarts sshd, all before Flare makes any firewall rule. A server the person
+had already keeps its config. A failure at any step leaves the server as the script found it: a server Flare started
+is stopped again (so a server Flare installed never runs with password logins on) and its start type is put back, so a
+switch that went back off never leaves an SSH server running (review fix, 2026-11-14). The firewall: when sshd is not
+running, its existing `OpenSSH-Server-In-TCP` rule is set to the Private profile (and enabled) BEFORE `Start-Service`,
+whether Flare installed the server now or the person had it but left it stopped (the capability makes the rule for
+every profile, so starting a dormant server would otherwise open it on public networks; review fix, 2026-11-14); a
+running server's rule is left alone. The rule is made for port 22 on the Private profile when it is missing; Flare's own
 rule `Flare-Pairing-In` lets Flare's program in on the Private profile only (the pairing port and the announcement,
 PR 3), made again on every turn on. No rule names the Public or Domain profile. The script reports `ok`, `installed`,
 `started` and, on a failure, the `step` and Windows' words as `key=value` lines in a temp file (`parse_report`); the

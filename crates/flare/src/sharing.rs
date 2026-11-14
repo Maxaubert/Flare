@@ -6,7 +6,8 @@
 //!
 //! - **Windows** (rule 1239): one elevated PowerShell script (one UAC prompt, `Start-Process -Verb RunAs`) installs
 //!   the OpenSSH Server capability when it is missing, starts `sshd` and sets it to Automatic, makes sure the sshd
-//!   firewall rule exists for the Private profile only, and adds Flare's own rule (its program, Private only) for the
+//!   firewall rule exists for the Private profile only (a server Flare starts has its rule set to Private before it
+//!   starts), puts the server back as it was when a step fails, and adds Flare's own rule (its program, Private only) for the
 //!   pairing port and the network announcement. Password logins are never turned on; when Flare installed the server
 //!   itself, `PasswordAuthentication no` is written into `sshd_config`. The script reports through a temp file.
 //! - **macOS** (rule 1240): port 22 answering means Remote Login is on already. Otherwise `systemsetup
@@ -97,6 +98,7 @@ $out = New-Object System.Collections.Generic.List[string]
 $step = 'install'
 $installed = $false
 $started = $false
+$startType = $null
 try {{
     $cap = Get-WindowsCapability -Online | Where-Object {{ $_.Name -like 'OpenSSH.Server*' }} | Select-Object -First 1
     if ($null -eq $cap -or $cap.State -ne 'Installed') {{
@@ -105,7 +107,14 @@ try {{
     }}
     $step = 'start'
     $svc = Get-Service -Name 'sshd'
+    $startType = [string]$svc.StartType
+    $rule = Get-NetFirewallRule -Name '{SSHD_RULE}' -ErrorAction SilentlyContinue
     if ($svc.Status -ne 'Running') {{
+        # A server Flare starts (installed now, or one the person had but left stopped) opens on the Private profile
+        # only, before it starts: its rule may name every profile.
+        $step = 'firewall'
+        if ($null -ne $rule) {{ Set-NetFirewallRule -Name '{SSHD_RULE}' -Profile Private -Enabled True }}
+        $step = 'start'
         Start-Service -Name 'sshd'
         $started = $true
     }}
@@ -129,18 +138,17 @@ try {{
         Restart-Service -Name 'sshd'
     }}
     $step = 'firewall'
-    $rule = Get-NetFirewallRule -Name '{SSHD_RULE}' -ErrorAction SilentlyContinue
     if ($null -eq $rule) {{
         New-NetFirewallRule -Name '{SSHD_RULE}' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -Profile Private | Out-Null
-    }} elseif ($installed) {{
-        Set-NetFirewallRule -Name '{SSHD_RULE}' -Profile Private -Enabled True
     }}
     Remove-NetFirewallRule -Name '{FLARE_RULE}' -ErrorAction SilentlyContinue
     New-NetFirewallRule -Name '{FLARE_RULE}' -DisplayName 'Flare pairing' -Enabled True -Direction Inbound -Program {exe} -Action Allow -Profile Private | Out-Null
     $out.Add('ok=1')
 }} catch {{
-    # A server Flare installed never runs with password logins on.
-    if ($step -eq 'passwords') {{ Stop-Service -Name 'sshd' -ErrorAction SilentlyContinue }}
+    # A failed setup leaves the SSH server as it found it: a server Flare started is stopped again (so a server Flare
+    # installed never runs with password logins on), and its start type is put back. The switch goes back off.
+    if ($started) {{ Stop-Service -Name 'sshd' -ErrorAction SilentlyContinue }}
+    if ($null -ne $startType -and $startType -ne 'Automatic') {{ Set-Service -Name 'sshd' -StartupType $startType -ErrorAction SilentlyContinue }}
     $out.Add('step=' + $step)
     $out.Add('error=' + ($_.Exception.Message -replace '[\r\n]+', ' '))
 }}

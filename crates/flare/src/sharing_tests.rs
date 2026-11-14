@@ -92,10 +92,12 @@ fn the_windows_script_installs_starts_and_opens_the_private_profile_only() {
         "$lines.Insert($match, 'PasswordAuthentication no')",
         "Restart-Service -Name 'sshd'",
         "-LocalPort 22 -Profile Private",
-        "Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -Profile Private -Enabled True",
+        "if ($null -ne $rule) { Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -Profile Private -Enabled True }",
         "New-NetFirewallRule -Name 'Flare-Pairing-In' -DisplayName 'Flare pairing' -Enabled True -Direction Inbound \
          -Program 'C:\\Users\\Jo O''Neil\\AppData\\Local\\Flare\\current\\Flare.exe' -Action Allow -Profile Private",
-        "if ($step -eq 'passwords') { Stop-Service -Name 'sshd'",
+        "$startType = [string]$svc.StartType",
+        "if ($started) { Stop-Service -Name 'sshd' -ErrorAction SilentlyContinue }",
+        "if ($null -ne $startType -and $startType -ne 'Automatic') { Set-Service -Name 'sshd' -StartupType $startType",
         "$result = 'C:\\Users\\Jo O''Neil\\AppData\\Local\\Temp\\r.txt'",
         "Set-Content -LiteralPath $result -Value $out -Encoding UTF8",
     ] {
@@ -107,8 +109,20 @@ fn the_windows_script_installs_starts_and_opens_the_private_profile_only() {
         assert!(!s.contains(&format!("-Profile {profile}")), "{profile}");
     }
     assert_eq!(s.matches("-Profile Private").count(), 3);
-    // The passwords line is written before the firewall opens: the server is never reachable with passwords on.
-    assert!(s.find("PasswordAuthentication no").unwrap() < s.find("$step = 'firewall'").unwrap());
+    // A server Flare starts (installed now, or one the person had but left stopped) has its rule set to Private
+    // before it starts: its rule may name every profile, and it was never running, so nobody relied on it.
+    let restrict = s
+        .find("Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP'")
+        .unwrap();
+    let start = s.find("Start-Service -Name 'sshd'").unwrap();
+    assert!(restrict < start);
+    let guard = &s[s.find("if ($svc.Status -ne 'Running') {").unwrap()..start];
+    assert!(guard.contains("Set-NetFirewallRule"), "{guard}");
+    // A rule Flare makes comes only after the passwords line: the server is never reachable with passwords on.
+    let made = s
+        .find("New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP'")
+        .unwrap();
+    assert!(s.find("PasswordAuthentication no").unwrap() < made);
     assert!(!s.contains('\u{2014}'));
 }
 
