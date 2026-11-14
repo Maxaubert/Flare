@@ -278,11 +278,13 @@ fn listening_rows(d: &DictationData) -> Vec<BlockModel> {
         id: String::new(),
         name: "System default".to_string(),
         face: String::new(),
+        vendor: String::new(),
     }];
     mic_options.extend(d.mics.iter().map(|(id, name)| Opt {
         id: id.clone(),
         name: name.clone(),
         face: String::new(),
+        vendor: String::new(),
     }));
     // A saved microphone that is not listed (unplugged, or the listing has not arrived) reads as System default,
     // as PT's MicField does: the select draws only the option whose id equals the value.
@@ -328,6 +330,7 @@ fn listening_rows(d: &DictationData) -> Vec<BlockModel> {
                         id: code.to_string(),
                         name: name.to_string(),
                         face: String::new(),
+                        vendor: String::new(),
                     })
                     .collect(),
             },

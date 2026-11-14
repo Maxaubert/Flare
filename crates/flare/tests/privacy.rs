@@ -106,6 +106,11 @@ pub const INVENTORY: &[(&str, &str)] = &[
     // whether its SSH server answers; it sends nothing. The Windows setup may download the OpenSSH Server feature from
     // Windows Update (Windows' own download, asked for in the elevated script).
     ("flare/src/sharing.rs", "Remote sessions"),
+    // Rules 1242 and 1243: pairing. While Computer sharing is on, this machine announces itself on the home network
+    // (mDNS) and listens on one TCP port for a pairing request; while the Add a machine dialog is open it looks for
+    // those announcements and connects to the one picked. Only the pairing exchange crosses (no secret: the code
+    // never does), between two of the user's own computers.
+    ("flare/src/pairing.rs", "Remote sessions"),
 ];
 
 /// Tokens that mark a line as possibly reaching the network.

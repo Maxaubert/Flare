@@ -1579,12 +1579,24 @@ pub fn run_window(
                     crate::app_facts::home(),
                 )))
             };
+            // Pairing (machine pairing PR 3): mDNS and the pairing port on the real network, nothing under --e2e (no
+            // announcement, no listener, no nearby computer). Flare's key and known hosts live in the profile.
+            let pair_net: Arc<dyn crate::pairing::PairNet> = if e2e::global().on() {
+                Arc::new(crate::pairing::NoPairNet)
+            } else {
+                Arc::new(crate::pairing::RealPairNet::default())
+            };
             settings.borrow_mut().set_machines(
                 crate::machines_page::MachinesPage::new(
                     Arc::clone(&machines_io),
                     Arc::clone(&post),
                 )
-                .with_sharing_os(sharing_os),
+                .with_sharing_os(sharing_os)
+                .with_pairing(
+                    pair_net,
+                    crate::pair_keys::PairFiles::new(&inst.profile.dir),
+                    crate::pairing::Me::this_computer(),
+                ),
             );
             // The + menu and the remote tabs' logos need the machines from the start: read once on a worker.
             let p = Arc::clone(&post);
