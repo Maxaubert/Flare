@@ -14,6 +14,10 @@
 //! sharing**, whose subtext is fixed: it never changes to report what the setup is doing. While the setup runs (or
 //! turning off cleans up) the switch is dimmed and deaf.
 //!
+//! Machine pairing PR 3 (rules 1242 to 1246): the drop-down's first choices are the computers with Computer sharing on
+//! found nearby, each with its logo; picking one shows "Code shown on <name>" ([`AddForm::code_for`]). The computers
+//! paired to reach this one follow the machines in the table ([`INCOMING_PREFIX`]).
+//!
 //! This is data only. The app's `machines_page` reads `machines.json` and `~/.ssh/config` and checks a link on a
 //! worker, and hands the page what it found in a [`MachinesInfo`]; its `sharing` runs the OS setup.
 
@@ -36,12 +40,20 @@ pub const OPEN_BUTTON: &str = "tap";
 /// The dialog's two text fields, as `row-text` names them (the row is [`ADD_ROW`] and the text follows the word).
 pub const ADDRESS_FIELD: &str = "address";
 pub const USER_FIELD: &str = "user";
+/// The "Code shown on <name>" field (machine pairing PR 3), as `row-text` names it.
+pub const CODE_FIELD: &str = "code";
+/// The host's code dialog ("<name> wants to connect", machine pairing PR 3): its row id and its one button.
+pub const PAIR_ROW: &str = "machines-pair";
+pub const DECLINE_BUTTON: &str = "decline";
+/// A computer paired to reach this one is a row whose machine id is this prefix and its id (machine pairing PR 3). It
+/// starts with a space, so no machine id (a plain argv word) can be it.
+pub const INCOMING_PREFIX: &str = " in:";
 /// The ⋯ menu's two choices.
 pub const TEST_CHOICE: &str = "test";
 pub const REMOVE_CHOICE: &str = "remove";
 /// The Machine drop-down's last choice. It starts with a space, so no SSH host (a plain argv word) can be it.
 pub const TYPE_ADDRESS: &str = " address";
-/// A computer found nearby is this prefix and its id (machine pairing PR 3 fills them; none in PR 1).
+/// A computer found nearby is this prefix and its id (machine pairing PR 3).
 pub const NEARBY_PREFIX: &str = " nearby:";
 
 /// The system a machine runs: its logo on the page, on its tabs and in the + menu.
@@ -122,6 +134,12 @@ pub struct AddForm {
     pub user: String,
     /// The link is being checked: Add waits.
     pub busy: bool,
+    /// A nearby computer is picked (machine pairing PR 3): its name, for "Code shown on <name>" ("" otherwise).
+    pub code_for: String,
+    /// What is typed in the code field.
+    pub code: String,
+    /// The nearby computer shows its code: the code can be sent.
+    pub ready: bool,
     /// The one red line of the last failed check.
     pub error: Option<String>,
 }
@@ -132,45 +150,73 @@ impl AddForm {
         self.pick == TYPE_ADDRESS
     }
 
-    /// Add can be pressed: a machine is picked (with an address typed, for "Type an address"), and no check runs.
+    /// A nearby computer is picked: the code field shows.
+    pub fn pairing(&self) -> bool {
+        self.pick.starts_with(NEARBY_PREFIX)
+    }
+
+    /// Add can be pressed: a machine is picked (with an address typed, for "Type an address"; for a nearby computer,
+    /// once it shows its code and six digits are typed), and no check runs.
     pub fn can_add(&self) -> bool {
         !self.busy
             && match self.pick.as_str() {
                 "" => false,
                 TYPE_ADDRESS => !self.address.trim().is_empty(),
+                p if p.starts_with(NEARBY_PREFIX) => self.ready && six_digits(&self.code),
                 _ => true,
             }
     }
 }
 
-/// One choice of the Machine drop-down: its id, its words, and whether they are drawn in the code font (an SSH host).
+/// Six digits typed, with spaces or a dash between them allowed (`482 913`).
+pub fn six_digits(typed: &str) -> bool {
+    typed.chars().filter(char::is_ascii_digit).count() == 6
+        && typed
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == ' ' || c == '-')
+}
+
+/// One choice of the Machine drop-down: its id, its words, whether they are drawn in the code font (an SSH host), and
+/// its system's logo (a nearby computer).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineChoice {
     pub id: String,
     pub label: String,
     pub mono: bool,
+    pub os: Option<MachineOs>,
 }
 
-/// The Machine drop-down in the mockup's order: the computers found nearby (`(id, name)`, machine pairing PR 3), then
+/// A computer found nearby, as the drop-down lists it (machine pairing PR 3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NearbyChoice {
+    pub id: String,
+    pub name: String,
+    pub os: Option<MachineOs>,
+}
+
+/// The Machine drop-down in the mockup's order: the computers found nearby (machine pairing PR 3) with their logo, then
 /// the SSH config hosts, then "Type an address".
-pub fn machine_choices(nearby: &[(String, String)], hosts: &[String]) -> Vec<MachineChoice> {
+pub fn machine_choices(nearby: &[NearbyChoice], hosts: &[String]) -> Vec<MachineChoice> {
     let mut out: Vec<MachineChoice> = nearby
         .iter()
-        .map(|(id, name)| MachineChoice {
-            id: format!("{NEARBY_PREFIX}{id}"),
-            label: name.clone(),
+        .map(|n| MachineChoice {
+            id: format!("{NEARBY_PREFIX}{}", n.id),
+            label: n.name.clone(),
             mono: false,
+            os: n.os,
         })
         .collect();
     out.extend(hosts.iter().map(|h| MachineChoice {
         id: h.clone(),
         label: h.clone(),
         mono: true,
+        os: None,
     }));
     out.push(MachineChoice {
         id: TYPE_ADDRESS.to_string(),
         label: "Type an address".to_string(),
         mono: false,
+        os: None,
     });
     out
 }
@@ -189,6 +235,8 @@ pub struct MachinesInfo {
     pub machines: Vec<MachineRow>,
     /// The hosts `~/.ssh/config` names (no wildcard, no `Match`), for the dialog's drop-down.
     pub ssh_hosts: Vec<String>,
+    /// The computers with Computer sharing on found nearby while the dialog is open (machine pairing PR 3).
+    pub nearby: Vec<NearbyChoice>,
     pub add: AddForm,
     pub sharing: SharingInfo,
 }
@@ -386,10 +434,22 @@ mod tests {
             ]
         );
         assert_eq!(plain[2].id, TYPE_ADDRESS);
-        let near = machine_choices(&[("a1".into(), "Max's PC".into())], &hosts);
+        let near = machine_choices(
+            &[NearbyChoice {
+                id: "a1".into(),
+                name: "Max's PC".into(),
+                os: Some(MachineOs::Pc),
+            }],
+            &hosts,
+        );
         assert_eq!(near[0].label, "Max's PC");
         assert_eq!(near[0].id, format!("{NEARBY_PREFIX}a1"));
-        assert!(!near[0].mono);
+        assert_eq!(
+            near[0].os,
+            Some(MachineOs::Pc),
+            "a nearby computer has its logo"
+        );
+        assert!(!near[0].mono && plain[0].os.is_none());
         assert_eq!(near.len(), 4);
         // An id that starts with a space is never a plain host name.
         assert!(TYPE_ADDRESS.starts_with(' ') && NEARBY_PREFIX.starts_with(' '));
@@ -416,6 +476,32 @@ mod tests {
         assert!(form(TYPE_ADDRESS, "192.168.0.139", false).can_add());
         assert!(form(TYPE_ADDRESS, "", false).typing());
         assert!(!form("studio", "", false).typing());
+    }
+
+    /// Rule 1243: a nearby computer can be added once it shows its code and six digits are typed.
+    #[test]
+    fn a_nearby_computer_can_be_added_once_it_shows_its_code_and_six_digits_are_typed() {
+        let form = |ready: bool, code: &str, busy: bool| AddForm {
+            open: true,
+            pick: format!("{NEARBY_PREFIX}pc"),
+            code_for: "Max's PC".into(),
+            code: code.into(),
+            ready,
+            busy,
+            ..AddForm::default()
+        };
+        assert!(form(true, "482 913", false).pairing());
+        assert!(form(true, "482 913", false).can_add());
+        assert!(form(true, "482913", false).can_add());
+        assert!(
+            !form(false, "482 913", false).can_add(),
+            "no code shown yet"
+        );
+        assert!(!form(true, "482 91", false).can_add(), "five digits");
+        assert!(!form(true, "482 9134", false).can_add(), "seven digits");
+        assert!(!form(true, "48a 913", false).can_add());
+        assert!(!form(true, "482 913", true).can_add(), "a try runs");
+        assert!(six_digits("482-913") && !six_digits(""));
     }
 
     #[test]

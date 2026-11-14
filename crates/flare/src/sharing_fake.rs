@@ -22,6 +22,12 @@ pub(crate) struct FakeOs {
     pub urls: Mutex<Vec<String>>,
     pub stripped: Mutex<u32>,
     pub announced: Mutex<Vec<bool>>,
+    /// Pairing (PR 3): an account in Administrators, the lines added to and keys removed from the user's own file,
+    /// the SSH server's host key line and the user name.
+    pub admin_account: AtomicBool,
+    pub user_keys: Mutex<Vec<String>>,
+    pub removed_keys: Mutex<Vec<String>>,
+    pub host_key: Mutex<Result<String, String>>,
 }
 
 impl FakeOs {
@@ -37,6 +43,10 @@ impl FakeOs {
             urls: Mutex::default(),
             stripped: Mutex::new(0),
             announced: Mutex::default(),
+            admin_account: AtomicBool::new(false),
+            user_keys: Mutex::default(),
+            removed_keys: Mutex::default(),
+            host_key: Mutex::new(Ok(host_key())),
         }
     }
 
@@ -90,4 +100,26 @@ impl SharingOs for FakeOs {
     fn wait(&self, _ms: u64) {
         std::thread::sleep(std::time::Duration::from_millis(1)); // sync-ok: a test's fake wait
     }
+    fn windows_admin(&self) -> bool {
+        self.admin_account.load(Ordering::SeqCst)
+    }
+    fn add_user_key(&self, line: &str) -> Result<(), String> {
+        self.user_keys.lock().unwrap().push(line.to_string());
+        Ok(())
+    }
+    fn remove_user_key(&self, key: &str) -> Result<bool, String> {
+        self.removed_keys.lock().unwrap().push(key.to_string());
+        Ok(true)
+    }
+    fn ssh_host_key(&self) -> Result<String, String> {
+        self.host_key.lock().unwrap().clone()
+    }
+    fn user_name(&self) -> String {
+        "max".into()
+    }
+}
+
+/// The host key line a fake SSH server has (an ed25519 key made from a fixed seed).
+pub(crate) fn host_key() -> String {
+    crate::pair_keys::openssh_key_files(&[42u8; 32], "root@host", 1).1
 }

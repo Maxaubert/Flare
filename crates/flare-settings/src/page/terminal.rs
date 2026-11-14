@@ -42,6 +42,7 @@ fn shell_section(env: &PageEnv<'_>) -> Option<SectionModel> {
             id: id.clone(),
             name: name.clone(),
             face: String::new(),
+            vendor: String::new(),
         })
         .collect();
     let row = plain_row(def("term-shell"), Control::Select { value, options });
@@ -160,6 +161,7 @@ fn text_section(env: &PageEnv<'_>) -> SectionModel {
             id: f.id.to_string(),
             name: f.name.to_string(),
             face: (env.face_of)(f.id),
+            vendor: String::new(),
         })
         .collect();
     let family = plain_row(
@@ -175,6 +177,7 @@ fn text_section(env: &PageEnv<'_>) -> SectionModel {
             id: p.to_string(),
             name: format!("{p}%"),
             face: String::new(),
+            vendor: String::new(),
         })
         .collect();
     let size = plain_row(
@@ -191,6 +194,7 @@ fn text_section(env: &PageEnv<'_>) -> SectionModel {
             id: (*id).to_string(),
             name: (*name).to_string(),
             face: String::new(),
+            vendor: String::new(),
         })
         .collect();
     let caret = plain_row(

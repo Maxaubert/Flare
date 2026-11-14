@@ -187,3 +187,37 @@ installed or not, sshd running or not, Remote Login on or off).
 - [ ] Mac turn off with Stop it: Remote Login goes off (or the dialog says where to turn it off).
 - [ ] Mac release build: the first launch after this PR shows no local network prompt yet (nothing browses until PR
   3); `plutil -p Flare.app/Contents/Info.plist` lists `NSLocalNetworkUsageDescription` and `NSBonjourServices`.
+
+## Machine pairing PR 3 (rules 1242 to 1246, 2026-11-14)
+
+Run these between Max's PC and Max's Mac on the home network, with Computer sharing working on the machine to reach
+(the PR 2 lines above). Note both Flare versions, the macOS version and whether the Windows account is an
+administrator.
+
+- [ ] PC sharing on, Mac opens Add a machine: "Max's PC" (or the PC's name) shows first in the drop-down with the
+  Windows logo, within a few seconds. On the Mac's first browse, macOS asks to find devices on the local network
+  (Flare.app's `NSLocalNetworkUsageDescription`); after Allow, the PC shows.
+- [ ] Windows: the first announcement shows no firewall "allow access" dialog (PR 2's `Flare-Pairing-In` rule covers
+  Flare's program on Private networks). On a network marked Public, the PC is not found (expected).
+- [ ] Pick the PC on the Mac: the PC shows "<Mac's name> wants to connect" with a 6-digit code over whatever tab is
+  in front, also while Settings is closed, and the keys stay in that dialog.
+- [ ] Type a wrong code on the Mac: "Wrong code" under the field; the PC's code stays. Three wrong codes: the PC's
+  dialog closes and the Mac says "Wrong code three times. Pick <name> again for a new code."
+- [ ] The right code, PC on an administrator account: one UAC prompt on the PC; after Yes,
+  `%ProgramData%\ssh\administrators_authorized_keys` ends with the Mac's key and `flare-pair:<Mac name>`, and
+  `icacls` on it lists only Administrators and SYSTEM. The Mac's row turns Linked with the PC's Flare version, and a
+  remote tab on the PC opens from the + menu with no ssh prompt.
+- [ ] The same on a standard Windows account: no UAC prompt; the key is in `%USERPROFILE%\.ssh\authorized_keys`.
+- [ ] The other way (Mac sharing on, PC pairs): the key lands in `~/.ssh/authorized_keys` on the Mac with
+  `~/.ssh` 700 and the file 600, and the PC's row links.
+- [ ] `id_flare_ed25519` and `flare_known_hosts` are in the viewer's Flare profile, nothing new in `~/.ssh` on the
+  viewer, and `ssh -G` is not needed: the machine's row links with the paired fields only.
+- [ ] Both computers list the other in Linked machines. On the reached one, the row's menu has Remove only; Remove
+  takes the key out of the right file (an administrator account shows one UAC prompt) and the viewer's row then says
+  "Not paired with this computer" on Test.
+- [ ] Decline on the reached computer: the viewer says "<name> declined." Cancel on the viewer: the code dialog on the
+  other computer closes.
+- [ ] Turn sharing off on the reached computer: the viewer's drop-down no longer lists it (reopen the dialog), and
+  its Linked machines list is empty.
+- [ ] Pair again after the SSH server's host key changed (reinstall OpenSSH Server): the pin is replaced and the row
+  links again.

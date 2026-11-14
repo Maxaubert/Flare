@@ -11,7 +11,7 @@
 
 import { Theme, Px, SettingsInk, SettingsFixed, SettingsShape } from "../theme.slint";
 import { Glyphs } from "../glyphs.slint";
-import { SetRow, SetOption, MachineAddLook, SharingAskLook } from "types.slint";
+import { SetRow, SetOption, MachineAddLook, SharingAskLook, PairCodeLook } from "types.slint";
 import { SetTextField } from "controls.slint";
 import { SetSelect, SelectMenu } from "select.slint";
 import { DialogButton } from "../dialog.slint";
@@ -194,8 +194,9 @@ component MachineFieldLabel inherits Text {
 
 // The Add a machine dialog (machine pairing PR 1, rule 1237), in the Dialog look (dialog.slint): a 380 px box on the
 // scrim, the title, the Machine drop-down ("Pick a machine" until a pick), the Address and User fields while "Type an
-// address" is picked, the red line of a failed check, Cancel and Add. Machine pairing PR 3 adds "Code shown on <name>"
-// under the drop-down for a nearby computer. Escape and a press outside cancel unless a check runs; Enter adds once
+// address" is picked, the red line of a failed check, Cancel and Add. Machine pairing PR 3 (rule 1243): a nearby
+// computer picked shows "Code shown on <name>" under the drop-down, with the keys in it; a wrong code is the red line
+// "Wrong code". Escape and a press outside cancel unless a check runs; Enter adds once
 // Add can be pressed. The drop-down's menu is drawn inside the dialog, above it (the Settings Select menu's state:
 // the window's own menu stays closed while the dialog is open). Labelled controls have no tooltip.
 export component MachineAddDialog inherits Rectangle {
@@ -215,6 +216,7 @@ export component MachineAddDialog inherits Rectangle {
     callback menu-key(string);
     callback address-edited(string);
     callback user-edited(string);
+    callback code-edited(string);
     callback cancel();
     callback add();
     out property <length> box-x: box.x;
@@ -242,7 +244,7 @@ export component MachineAddDialog inherits Rectangle {
     }
     // A pick closed the menu: the keys go back to the drop-down (the Address field takes them itself when it shows).
     changed menu-open => {
-        if !root.menu-open && root.open && !root.look.typing {
+        if !root.menu-open && root.open && !root.look.typing && root.look.code-for == "" {
             machine.focus-me();
         }
     }
@@ -351,6 +353,27 @@ export component MachineAddDialog inherits Rectangle {
                         sub: "";
                         off: root.look.busy;
                         edited(t) => { root.user-edited(t); }
+                        accepted => {
+                            if root.look.can-add {
+                                root.add();
+                            }
+                        }
+                    }
+                }
+                // A nearby computer picked (machine pairing PR 3): the code it shows is typed here.
+                if root.look.code-for != "": VerticalLayout {
+                    init => { code.focus-me(); }
+                    Rectangle { height: 14px; }
+                    MachineFieldLabel { text: "Code shown on " + root.look.code-for; }
+                    Rectangle { height: 6px; }
+                    code := SetTextField {
+                        width: box.width - 40px;
+                        text: root.look.code;
+                        placeholder: "";
+                        label: "Code shown on " + root.look.code-for;
+                        sub: "";
+                        off: root.look.busy;
+                        edited(t) => { root.code-edited(t); }
                         accepted => {
                             if root.look.can-add {
                                 root.add();
@@ -573,6 +596,147 @@ export component SharingAskDialog inherits Rectangle {
     }
 }
 
+// The host's code dialog (machine pairing PR 3, rule 1243; mockup "The code"), in the Dialog look: "<name> wants to
+// connect", the code in large monospace digits in the middle, "Enter this code on <name>" under it, and Decline. It
+// draws over whatever tab is in front. Escape is Decline; a press outside does nothing (the code stays up until the
+// other computer is done, or Decline). Decline has its word, so no tooltip.
+export component PairCodeDialog inherits Rectangle {
+    in property <bool> open;
+    in property <PairCodeLook> look;
+    callback decline();
+    out property <length> box-x: box.x;
+    out property <length> box-y: box.y;
+    out property <length> box-w: box.width;
+    out property <length> box-h: box.height;
+    out property <length> code-y: code.absolute-position.y;
+    out property <length> code-h: code.height;
+    out property <length> decline-x: decline-btn.absolute-position.x;
+    out property <length> decline-y: decline-btn.absolute-position.y;
+    out property <length> decline-w: decline-btn.width;
+
+    visible: root.open;
+    width: 100%;
+    height: 100%;
+    changed open => {
+        if root.open {
+            fs.focus();
+        }
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                root.decline();
+            }
+            // Every key stays here while the code shows: none reaches the terminal under it.
+            return accept;
+        }
+
+        Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: Theme.scrim;
+        }
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+        }
+        box := Rectangle {
+            width: min(380px, root.width - 48px);
+            height: col.preferred-height;
+            x: Px.snap((root.width - self.width) / 2);
+            y: Px.snap((root.height - self.height) / 2);
+            background: Theme.side-flat;
+            border-radius: 2px;
+            border-width: Px.hair();
+            border-color: Theme.divider;
+            drop-shadow-offset-y: 24px;
+            drop-shadow-blur: 70px;
+            drop-shadow-color: SettingsFixed.modal-shadow;
+            accessible-role: none;
+            accessible-label: root.look.title;
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+            }
+            col := VerticalLayout {
+                padding: 20px;
+                alignment: start;
+                Text {
+                    text: root.look.title;
+                    font-family: Theme.font-ui;
+                    font-size: 14.5px;
+                    font-weight: 600;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: 18px; }
+                code := Text {
+                    text: root.look.code;
+                    font-family: SettingsFixed.font-mono;
+                    font-size: 30px;
+                    font-weight: 600;
+                    letter-spacing: 4px;
+                    color: Theme.text;
+                    horizontal-alignment: center;
+                    accessible-role: text;
+                    accessible-label: root.look.code;
+                }
+                Rectangle { height: 8px; }
+                Text {
+                    text: root.look.line;
+                    font-family: Theme.font-ui;
+                    font-size: 12.5px;
+                    color: Theme.dim;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: 20px; }
+                HorizontalLayout {
+                    alignment: end;
+                    decline-btn := DialogButton {
+                        label: "Decline";
+                        clicked => { root.decline(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The code dialog's test window: the dialog over a stand-in page, and how many times Decline was reported.
+export component PairCodePreview inherits Window {
+    preferred-width: 900px;
+    preferred-height: 600px;
+    background: Theme.ground;
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+    in-out property <bool> open;
+    in-out property <PairCodeLook> look;
+    in-out property <int> declines;
+    in-out property <int> behind-clicks;
+    out property <length> box-x: dlg.box-x;
+    out property <length> box-y: dlg.box-y;
+    out property <length> box-w: dlg.box-w;
+    out property <length> box-h: dlg.box-h;
+    out property <length> code-y: dlg.code-y;
+    out property <length> code-h: dlg.code-h;
+    out property <length> decline-x: dlg.decline-x;
+    out property <length> decline-y: dlg.decline-y;
+    out property <length> decline-w: dlg.decline-w;
+    TouchArea {
+        clicked => { root.behind-clicks += 1; }
+    }
+    dlg := PairCodeDialog {
+        open: root.open;
+        look: root.look;
+        decline => { root.declines += 1; }
+    }
+}
+
 // The sharing dialog's test window: the dialog over a stand-in page, and counts of what it reported.
 export component SharingAskPreview inherits Window {
     preferred-width: 900px;
@@ -636,6 +800,7 @@ export component MachineAddPreview inherits Window {
     in-out property <int> cancels;
     in-out property <string> address-typed;
     in-out property <string> user-typed;
+    in-out property <string> code-typed;
     in-out property <string> picked;
     in-out property <int> behind-clicks;
     out property <length> box-x: dlg.box-x;
@@ -681,6 +846,7 @@ export component MachineAddPreview inherits Window {
         menu-dismissed => { root.menu-open = false; }
         address-edited(t) => { root.address-typed = t; }
         user-edited(t) => { root.user-typed = t; }
+        code-edited(t) => { root.code-typed = t; }
         cancel => { root.cancels += 1; }
         add => { root.adds += 1; }
     }

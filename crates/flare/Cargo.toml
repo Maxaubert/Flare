@@ -38,6 +38,16 @@ serde_json.workspace = true
 raw-window-handle.workspace = true
 flare-update = { path = "../flare-update" }
 velopack.workspace = true
+# Machine pairing PR 3: the code exchange (SPAKE2, HKDF, HMAC, ChaCha20-Poly1305), Flare's own SSH key (ed25519), the
+# OS's random bytes, and the nearby computers on the network (mDNS).
+spake2.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+chacha20poly1305.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+mdns-sd.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true

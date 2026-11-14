@@ -4,7 +4,7 @@
 // below its 1 hairline border, so the view adds `Px.hair()` the way the frame's Results list does.
 // For the non-row blocks: `about` reads `label` (name), `sub` (line one) and `note` (line two).
 import { Theme, Px, SettingsInk, SettingsShape, SettingsFixed } from "../theme.slint";
-import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell, RowLook, SheetTile, MachineAddLook, SharingAskLook } from "types.slint";
+import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell, RowLook, SheetTile, MachineAddLook, SharingAskLook, PairCodeLook } from "types.slint";
 import { PluginLook } from "../plugin_look.slint";
 import { PluginSheet } from "plugin_sheet.slint";
 import { SetFrame } from "frame.slint";
@@ -119,6 +119,11 @@ export global SettingsBridge {
     // answer by row-button("machines-sharing", "cancel" or "primary").
     in-out property <bool> sharing-ask-open;
     in-out property <SharingAskLook> sharing-ask;
+    // The host's code dialog (machine pairing PR 3, rule 1243): open while a pairing request shows its code, over any
+    // tab. Decline answers by row-button("machines-pair", "decline"). The Add a machine dialog's code field answers by
+    // row-text("machines-add:code", text).
+    in-out property <bool> pair-code-open;
+    in-out property <PairCodeLook> pair-code;
     // The title of the plugin's panel when the sheet can open it, else "".
     // events
     callback page-chosen(string);
@@ -745,6 +750,7 @@ export component SettingsPreview inherits Window {
         answered(n) => { SettingsBridge.dict-ask-answered(n); }
     }
     MachineAddDialog {
+        code-edited(t) => { SettingsBridge.row-text("machines-add:code", t); }
         width: parent.width;
         height: parent.height;
         open: SettingsBridge.machine-add-open;

@@ -3973,3 +3973,92 @@ dialog's one line (the switch stays off). A done stop clears `serverByFlare`, a 
 `turning_off_removes_flares_keys_and_offers_to_stop_only_flares_server`,
 `a_mac_stops_remote_login_and_says_so_when_it_stays_on`, `the_windows_off_script_removes_only_what_flare_added`,
 `only_the_keys_flare_added_are_removed` and `turning_sharing_off_asks_to_stop_flares_server`.
+
+1242. **Computer sharing on means this computer is announced and takes pairing requests; off means neither. Flare's
+own SSH key is made the first time pairing needs it, in Flare's profile, and its private half never leaves that file.**
+Machine pairing PR 3, 2026-11-14 (spec, "What happens underneath"; mockup, "Computer sharing" and "Add a machine").
+While the switch is on (`Sharing::is_on`, not while it is on its way on or off), `Pairing::host` listens on a random TCP
+port and announces `_flare-pair._tcp.local.` over mDNS (`mdns-sd`) with that port and a TXT of `name`, `os`,
+`version` and `proto` only (`txt_of`; no secret, no address the record does not already carry). Turning the switch off
+(or a failed setup) unannounces at once and stops the listener; a restart with the switch on announces again.
+While the Add a machine dialog is open, `Pairing::browse` looks for that service (never a `_services._dns-sd` meta
+query) and the drop-down lists the computers found first, each with its system's logo (`SetOption.vendor`), then the
+SSH config hosts, then "Type an address"; this computer's own announcement is never listed, an announcement with
+another `proto` or no port is no choice (`nearby_of`), and closing the dialog stops looking. Under `--e2e` and in
+every test the network is `NoPairNet` or the in-memory fake: nothing is announced or opened. Flare's key is
+`id_flare_ed25519` (and `.pub`) in the profile, an OpenSSH ed25519 key with no passphrase (`openssh_key_files`; mode
+600 off Windows), made by `PairFiles::ensure_key` on the first pairing and reused after. Held by
+`the_announcement_carries_no_secret`, `an_announcement_is_a_nearby_computer_with_its_name_system_and_addresses`,
+`turning_sharing_off_stops_the_announcement`, `two_computers_pair_from_the_dialog_and_list_each_other`,
+`flares_key_is_an_openssh_ed25519_key_whose_public_line_matches`, `the_key_is_made_once_and_read_back_after` and
+`a_nearby_computer_shows_its_logo_and_the_code_field`.
+
+1243. **Pairing is a 6-digit code typed once, proven with SPAKE2: the code never crosses the network, a wrong code ends
+that attempt, three wrong codes close the window, and nothing is sent until both ends proved the code.** Machine
+pairing PR 3, 2026-11-14 (spec, "What happens underneath"; mockup, "The code" and "Problems"). The wire
+(`pair_wire`) is frames of a 4-byte big-endian length and at most 16 KiB of JSON. The viewer says `hello` (protocol 1,
+its name, system, version); the host answers `busy` when a request already shows its code or within 30 s of a window
+closed by wrong codes, `proto` for another protocol ("Update Flare on both computers, then try again."), else draws a
+fresh code from the OS (`fresh_code`, every value equally likely) and shows the Flare dialog "<viewer> wants to
+connect" with the code as `482 913`, "Enter this code on <viewer>" and Decline, over whatever tab is in front, Settings
+open or not (`PairCodeDialog`, Escape is Decline, a press outside does nothing, keys never reach the terminal under
+it). The viewer's dialog then shows "Code shown on <name>"; Add waits for six digits. Each attempt is SPAKE2
+(`spake2`, Ed25519 group) with identities bound to `flare-pair-v1 viewer` and `flare-pair-v1 host`; HKDF-SHA256
+splits the key into two confirmation keys and two channel keys; the viewer sends its HMAC over both SPAKE2 messages
+first and the host answers its own only when the viewer's checks out (constant time). A wrong code is `wrong` with
+the tries left: the red line "Wrong code" and the request stays; the third closes the host's dialog and the viewer says
+"Wrong code three times. Pick <name> again for a new code." A host that cannot prove the code gives no channel. After
+that every frame is ChaCha20-Poly1305 with a key per direction and the frame's number as nonce (a replayed, moved or
+changed frame does not open). Decline, Cancel, another pick or the dialog closing ends the connection, and the other
+side's dialog closes or says "<name> declined.". A request waits at most 5 minutes for the code. Held by
+`the_right_code_gives_both_ends_one_sealed_channel`, `a_wrong_code_ends_the_attempt_and_the_right_one_after_it_pairs`,
+`three_wrong_codes_close_the_window`, `a_host_that_does_not_know_the_code_is_not_trusted`,
+`a_replayed_or_changed_sealed_frame_does_not_open`, `a_frame_is_a_length_and_its_bytes_and_a_long_one_is_refused`,
+`a_code_is_six_digits_shown_in_two_threes`, `wrong_codes_say_so_and_the_third_closes_the_window`,
+`another_protocol_is_refused_in_one_line`, `decline_on_the_host_ends_the_request`,
+`a_second_request_while_one_shows_its_code_is_told_busy`,
+`a_nearby_computer_can_be_added_once_it_shows_its_code_and_six_digits_are_typed`,
+`the_code_dialog_draws_the_code_in_the_middle_and_decline_answers` and
+`the_hosts_code_dialog_shows_over_any_tab_and_decline_ends_the_request`.
+
+1244. **The host adds only one plain ed25519 key, with no options, to the right `authorized_keys`, tagged
+`flare-pair:<name>`.** Machine pairing PR 3, 2026-11-14 (spec; research, "Authorized keys"). Over the confirmed
+channel the viewer sends Flare's public key and its name; `authorized_line` refuses anything but `ssh-ed25519 <key>`
+whose blob names ed25519 and holds 32 bytes (no `command=` or other option, no second line), and adds the comment
+`flare-pair:` and the name in printable ASCII with dashes for spaces. On a Windows account in Administrators
+(`whoami /groups` lists S-1-5-32-544), one elevated script (`windows_add_key_script`, the UAC prompt) writes
+`%ProgramData%\ssh\administrators_authorized_keys` (the same key's older line replaced) and runs `icacls /inheritance:r
+/grant *S-1-5-32-544:F /grant *S-1-5-18:F` (SIDs, so any Windows language), and `flare.machines.adminKeys` is set so
+turning sharing off cleans it up elevated (rule 1241); a declined prompt adds nothing and the viewer reads "Windows did
+not allow the change, so the computer was not added." Any other account writes its own `~/.ssh/authorized_keys` with
+no prompt (`add_user_key`; off Windows `~/.ssh` is 700 and the file 600); pairing the same key again replaces its line
+and every other line stays. The key's base64 reaches a script only when it is base64's letters (`plain_key`). Held by
+`the_authorized_keys_line_is_one_plain_ed25519_key_tagged_with_the_name`,
+`pairing_again_replaces_the_same_keys_line_and_keeps_every_other`,
+`a_user_key_file_is_written_with_its_folder_and_the_key_removed_again` and
+`an_admin_account_adds_the_key_with_one_elevated_script`.
+
+1245. **The viewer pins the host's SSH key in Flare's own known-hosts file for the address it reached, and saves the
+machine so ssh uses Flare's key, that file and strict checking.** Machine pairing PR 3, 2026-11-14 (spec, "Changes to
+how Flare runs ssh"). The host answers with its SSH server's public key (`ssh_host_ed25519_key.pub`), its user name,
+Flare's own path there, its system, name and version. The viewer takes a host key of `HOST_KEY_TYPES` only, a user that
+is one argv word and a Flare path with no quote or control character, else says "<name> answered in a way Flare
+cannot use." and saves nothing. The pin is `<address> <type> <key>` (`[address]:port` off port 22) in
+`flare_known_hosts` in the profile; pairing again replaces that address's line and no other. The machine is saved
+with `host` (the address it reached), `user`, `flare`, `kind`, `key` (Flare's key file) and `known_hosts` (rule 1235's
+fields), keeping its id when the same address or name was paired before, and is then checked over ssh like any other
+(`-o IdentitiesOnly=yes -i <key> -o UserKnownHostsFile=<file> -o StrictHostKeyChecking=yes`). Held by
+`the_host_key_is_pinned_for_its_address_alone` and `the_right_code_pairs_and_both_sides_keep_the_other`.
+
+1246. **Both computers list the other in Linked machines; a computer that reaches this one is no machine to open a
+tab on, and removing it removes its key.** Machine pairing PR 3, 2026-11-14 (mockup, "Linked"). The host keeps each
+paired viewer in `machines_in.json` in its profile (`Incoming`: id, name, system, the address it paired from, the Flare
+version it said, and its key's base64; the same key again replaces its entry; an entry whose key is not plain base64
+is dropped when read). Its rows follow the machines in the table with the row id `machine: in:<id>`, status Linked,
+and a ⋯ menu with Remove only (no Test: this computer has no link to it); they never reach the + menu or `--on`.
+Remove takes its key out of the user's own `authorized_keys`, and out of `administrators_authorized_keys` with one
+elevated script when a key went there (`windows_remove_key_script`); a failure is the sharing dialog's one line.
+Turning Computer sharing off empties the list (rule 1241 removes the keys). Held by
+`the_computers_that_reach_this_one_read_back_and_a_strange_key_is_left_out`,
+`removing_a_computer_that_reaches_this_one_removes_its_key` and
+`two_computers_pair_from_the_dialog_and_list_each_other`.

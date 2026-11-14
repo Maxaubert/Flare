@@ -158,6 +158,7 @@ fn app_icon_row(env: &PageEnv) -> RowModel {
             id: i.id.to_string(),
             name: tile_name(i),
             face: String::new(),
+            vendor: String::new(),
         })
         .collect();
     RowModel {
@@ -215,6 +216,7 @@ pub fn build(env: &PageEnv) -> PageModel {
             id: e.word().to_string(),
             name: edge_name(e.word()).to_string(),
             face: String::new(),
+            vendor: String::new(),
         })
         .collect();
     let edges = row_with("window-edges", segmented(edges_word, edge_options));

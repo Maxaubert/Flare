@@ -426,11 +426,13 @@ fn the_select_menu_and_popover_sit_on_the_pixel_grid() {
                 id: "a".into(),
                 name: "Alpha".into(),
                 face: "".into(),
+                vendor: Default::default(),
             },
             crate::SetOption {
                 id: "b".into(),
                 name: "Beta".into(),
                 face: "".into(),
+                vendor: Default::default(),
             },
         ])));
         b.set_select_value("a".into());

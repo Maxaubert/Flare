@@ -72,10 +72,22 @@ pub trait SharingOs: Send + Sync {
     fn open_url(&self, url: &str);
     /// Removes the keys Flare added (a `flare-pair:` comment) from the user's own `authorized_keys`. How many.
     fn strip_user_keys(&self) -> Result<usize, String>;
-    /// Starts or stops announcing this computer on the network (machine pairing PR 3 announces; nothing yet).
+    /// Starts or stops announcing this computer on the network. Machine pairing PR 3 announces through
+    /// `pairing::PairNet` (it needs the pairing port); this stays the switch's own record of it.
     fn announce(&self, on: bool);
     /// Waits between two looks at the port.
     fn wait(&self, ms: u64);
+    /// Windows: this account is in the Administrators group, so sshd reads `administrators_authorized_keys` for it
+    /// (machine pairing PR 3, rule 1244).
+    fn windows_admin(&self) -> bool;
+    /// Adds a line to the user's own `authorized_keys` (rule 1244).
+    fn add_user_key(&self, line: &str) -> Result<(), String>;
+    /// Removes the line holding `key` from the user's own `authorized_keys` (rule 1246). Whether one went.
+    fn remove_user_key(&self, key: &str) -> Result<bool, String>;
+    /// The SSH server's public host key line (ed25519), which a viewer pins (rule 1245).
+    fn ssh_host_key(&self) -> Result<String, String>;
+    /// The account's user name, which a viewer's ssh logs in as.
+    fn user_name(&self) -> String;
 }
 
 // ---- the pure parts ----------------------------------------------------------------------------------------------
@@ -302,6 +314,125 @@ pub fn strip_flare_keys(text: &str) -> (String, usize) {
         }
     }
     (kept, dropped)
+}
+
+/// The elevated script that adds a paired computer's key to Windows' `administrators_authorized_keys` (machine pairing
+/// PR 3, rule 1244), reporting into `result`: the same key's older line goes, the line is added, and the file gets the
+/// access sshd wants (Administrators and SYSTEM only, by SID, so any Windows language works). `key` is the key's base64
+/// field, checked by the caller.
+pub fn windows_add_key_script(result: &Path, line: &str, key: &str) -> String {
+    let result = ps_quote(&result.to_string_lossy());
+    let line = ps_quote(line);
+    let key = ps_quote(key);
+    format!(
+        r#"# Flare: let a paired computer in (rule 1244). Runs elevated.
+$ErrorActionPreference = 'Stop'
+$result = {result}
+$out = New-Object System.Collections.Generic.List[string]
+$step = 'addkey'
+try {{
+    $f = Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
+    $keep = New-Object System.Collections.Generic.List[string]
+    if (Test-Path -LiteralPath $f) {{
+        foreach ($l in @(Get-Content -LiteralPath $f)) {{ if ((-split $l)[1] -ne {key}) {{ $keep.Add($l) }} }}
+    }}
+    $keep.Add({line})
+    Set-Content -LiteralPath $f -Value $keep -Encoding ascii
+    & icacls.exe $f /inheritance:r /grant '*S-1-5-32-544:F' /grant '*S-1-5-18:F' | Out-Null
+    if ($LASTEXITCODE -ne 0) {{ throw "icacls ended with $LASTEXITCODE" }}
+    $out.Add('ok=1')
+}} catch {{
+    $out.Add('step=' + $step)
+    $out.Add('error=' + ($_.Exception.Message -replace '[\r\n]+', ' '))
+}}
+Set-Content -LiteralPath $result -Value $out -Encoding UTF8
+"#
+    )
+}
+
+/// The elevated script that removes one paired computer's key from `administrators_authorized_keys` (rule 1246).
+pub fn windows_remove_key_script(result: &Path, key: &str) -> String {
+    let result = ps_quote(&result.to_string_lossy());
+    let key = ps_quote(key);
+    format!(
+        r#"# Flare: remove a paired computer's key (rule 1246). Runs elevated.
+$ErrorActionPreference = 'Stop'
+$result = {result}
+$out = New-Object System.Collections.Generic.List[string]
+$step = 'keys'
+try {{
+    $f = Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
+    if (Test-Path -LiteralPath $f) {{
+        $keep = @(Get-Content -LiteralPath $f | Where-Object {{ (-split $_)[1] -ne {key} }})
+        Set-Content -LiteralPath $f -Value $keep -Encoding ascii
+    }}
+    $out.Add('ok=1')
+}} catch {{
+    $out.Add('step=' + $step)
+    $out.Add('error=' + ($_.Exception.Message -replace '[\r\n]+', ' '))
+}}
+Set-Content -LiteralPath $result -Value $out -Encoding UTF8
+"#
+    )
+}
+
+/// Pure: a key's base64 field that may go into a script: base64's letters only.
+pub fn plain_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 2048
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='))
+}
+
+/// BLOCKING: lets a paired computer in (rule 1244): on a Windows account in Administrators, an elevated script (a UAC
+/// prompt) writes `administrators_authorized_keys`; any other account's own `~/.ssh/authorized_keys` takes the line
+/// with no prompt. True when the admin file took it; else the one line that says why not.
+pub fn install_key(os: &dyn SharingOs, line: &str) -> Result<bool, String> {
+    let key = line.split_ascii_whitespace().nth(1).unwrap_or_default();
+    if os.platform() == Platform::Windows && os.windows_admin() {
+        if !plain_key(key) {
+            return Err("The key that came is not one Flare takes.".into());
+        }
+        let text = os
+            .run_elevated(&|result| windows_add_key_script(result, line, key))
+            .map_err(|e| {
+                log::info!("pairing: the elevated key step did not run: {e}");
+                "Windows did not allow the change, so the computer was not added.".to_string()
+            })?;
+        let r = parse_report(&text);
+        if !r.ok {
+            log::warn!("pairing: the key step failed: {}", r.error);
+            return Err("Windows would not take the key for this computer.".into());
+        }
+        return Ok(true);
+    }
+    os.add_user_key(line).map_err(|e| {
+        log::warn!("pairing: the key could not be added: {e}");
+        "Flare could not add the key for this computer.".to_string()
+    })?;
+    Ok(false)
+}
+
+/// BLOCKING: removes a paired computer's key (rule 1246): from the user's own file, and, when a key went into the
+/// admin file (`admin`), from there with one elevated script.
+pub fn remove_key(os: &dyn SharingOs, key: &str, admin: bool) -> Result<(), String> {
+    if let Err(e) = os.remove_user_key(key) {
+        log::warn!("pairing: the key stays: {e}");
+        return Err(step_line("keys").to_string());
+    }
+    if admin && os.platform() == Platform::Windows && plain_key(key) {
+        let text = os
+            .run_elevated(&|result| windows_remove_key_script(result, key))
+            .map_err(|_| {
+                "Windows did not allow the change, so the key stays until sharing is turned off."
+                    .to_string()
+            })?;
+        if !parse_report(&text).ok {
+            return Err(step_line("keys").to_string());
+        }
+    }
+    Ok(())
 }
 
 // ---- turning on and off, over the OS calls -----------------------------------------------------------------------
@@ -531,6 +662,21 @@ impl SharingOs for NoSharingOs {
     }
     fn announce(&self, _on: bool) {}
     fn wait(&self, _ms: u64) {}
+    fn windows_admin(&self) -> bool {
+        false
+    }
+    fn add_user_key(&self, _line: &str) -> Result<(), String> {
+        Err("no setup here".into())
+    }
+    fn remove_user_key(&self, _key: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+    fn ssh_host_key(&self) -> Result<String, String> {
+        Err("no setup here".into())
+    }
+    fn user_name(&self) -> String {
+        String::new()
+    }
 }
 
 /// The Computer sharing switch's state on the UI thread.
@@ -580,6 +726,28 @@ impl Sharing {
     #[cfg(test)]
     pub fn phase(&self) -> Phase {
         self.phase
+    }
+
+    /// A line for the sharing dialog with OK (a key that could not be removed, rule 1246), unless it asks something.
+    pub fn notice(&mut self, line: String) {
+        if self.ask.is_none() {
+            self.ask = Some(SharingAsk::Notice(line));
+        }
+    }
+
+    /// A paired computer's key went into Windows' `administrators_authorized_keys` (rule 1244).
+    pub fn admin_keys(&self) -> bool {
+        prefs::admin_keys(&self.prefs)
+    }
+
+    /// Pairing put a key into `administrators_authorized_keys`: turning off cleans it up elevated (rule 1241).
+    pub fn note_admin_keys(&self) {
+        prefs::set_admin_keys(&self.prefs, true);
+    }
+
+    /// Sharing is on and set up (not on its way on or off): the computer is announced and takes pairing requests.
+    pub fn is_on(&self) -> bool {
+        self.phase == Phase::On
     }
 
     pub fn ask(&self) -> Option<&SharingAsk> {
@@ -872,12 +1040,48 @@ impl SharingOs for RealSharingOs {
     }
 
     fn announce(&self, on: bool) {
-        // Machine pairing PR 3 starts and stops the mDNS announcement here.
+        // The announcement itself is pairing's (`pairing::RealPairNet`: it carries the pairing port).
         log::info!("computer sharing: announced {on}");
     }
 
     fn wait(&self, ms: u64) {
         std::thread::sleep(std::time::Duration::from_millis(ms)); // sync-ok: a worker waits between two looks at a port
+    }
+
+    fn windows_admin(&self) -> bool {
+        if !cfg!(windows) {
+            return false;
+        }
+        // The Administrators group's SID is listed (as "deny only" before elevation) for every account in it.
+        quiet("whoami.exe")
+            .args(["/groups", "/fo", "csv"])
+            .output() // sync-ok: SharingOs calls run on workers
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("S-1-5-32-544"))
+            .unwrap_or(false)
+    }
+
+    fn add_user_key(&self, line: &str) -> Result<(), String> {
+        crate::pair_keys::add_user_key(&self.home, line)
+    }
+
+    fn remove_user_key(&self, key: &str) -> Result<bool, String> {
+        crate::pair_keys::remove_user_key(&self.home, key)
+    }
+
+    fn ssh_host_key(&self) -> Result<String, String> {
+        let file = if cfg!(windows) {
+            PathBuf::from(std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into()))
+                .join("ssh")
+                .join("ssh_host_ed25519_key.pub")
+        } else {
+            PathBuf::from("/etc/ssh/ssh_host_ed25519_key.pub")
+        };
+        std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display())) // sync-ok: SharingOs calls run on workers
+    }
+
+    fn user_name(&self) -> String {
+        let k = if cfg!(windows) { "USERNAME" } else { "USER" };
+        std::env::var(k).unwrap_or_default()
     }
 }
 

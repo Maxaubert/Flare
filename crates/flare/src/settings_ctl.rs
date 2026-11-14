@@ -277,6 +277,7 @@ fn options_of(opts: &[flare_settings::page::Opt]) -> ModelRc<SetOption> {
                 id: o.id.as_str().into(),
                 name: o.name.as_str().into(),
                 face: o.face.as_str().into(),
+                vendor: o.vendor.as_str().into(),
             })
             .collect::<Vec<_>>(),
     ))
@@ -605,9 +606,13 @@ pub fn to_slint_machine(m: &flare_settings::page::machines::MachineRow, y: f64, 
 }
 
 /// The Machine drop-down's choices as the Select menu draws them: the SSH hosts in `mono` (the code font), the others
-/// in the UI font (machine pairing PR 1, rule 1237). Nearby computers come in PR 3.
-pub fn machine_choice_opts(hosts: &[String], mono: &str) -> Vec<flare_settings::page::Opt> {
-    flare_settings::page::machines::machine_choices(&[], hosts)
+/// in the UI font (machine pairing PR 1, rule 1237); the nearby computers first, each with its system's logo (PR 3).
+pub fn machine_choice_opts(
+    nearby: &[flare_settings::page::machines::NearbyChoice],
+    hosts: &[String],
+    mono: &str,
+) -> Vec<flare_settings::page::Opt> {
+    flare_settings::page::machines::machine_choices(nearby, hosts)
         .into_iter()
         .map(|c| flare_settings::page::Opt {
             id: c.id,
@@ -617,8 +622,20 @@ pub fn machine_choice_opts(hosts: &[String], mono: &str) -> Vec<flare_settings::
             } else {
                 String::new()
             },
+            vendor: os_word(c.os).to_string(),
         })
         .collect()
+}
+
+/// The host's code dialog's look (machine pairing PR 3, rule 1243): "<name> wants to connect", the code, and "Enter
+/// this code on <name>".
+pub fn pair_code_look(p: &crate::pairing::Prompt) -> crate::PairCodeLook {
+    let w = crate::pairing::prompt_words(p);
+    crate::PairCodeLook {
+        title: w.title.as_str().into(),
+        code: w.code.as_str().into(),
+        line: w.line.as_str().into(),
+    }
 }
 
 /// The Add a machine dialog's look (machine pairing PR 1, rule 1237): the pick and the choices, the typed address and
@@ -636,6 +653,8 @@ pub fn machine_add_look(
         error: form.error.clone().unwrap_or_default().into(),
         busy: form.busy,
         can_add: form.can_add(),
+        code_for: form.code_for.as_str().into(),
+        code: form.code.as_str().into(),
     }
 }
 
@@ -1106,7 +1125,7 @@ impl SettingsCtl {
         // the sharing dialog (Cancel, Keep it, OK).
         if let Some(m) = self.machines.as_mut() {
             m.cancel_form();
-            m.sharing_mut().dismiss();
+            m.sharing_dismiss();
         }
         self.find.set_query("");
         self.finish_watch();
@@ -1165,6 +1184,10 @@ impl SettingsCtl {
                     && self.page == "machines"
                 {
                     self.refresh_if_visible();
+                }
+                // The host's code dialog draws over any tab, Settings open or not (machine pairing PR 3).
+                if let Some(app) = self.weak.upgrade() {
+                    self.push_pair_code(&app);
                 }
             }
         }
@@ -1306,12 +1329,46 @@ impl SettingsCtl {
         }
         if b.get_sharing_ask_open() {
             if let Some(m) = self.machines.as_mut() {
-                m.sharing_mut().dismiss();
+                m.sharing_dismiss();
             }
             self.rebuild();
             return true;
         }
         false
+    }
+
+    /// Decline (or Escape, which the dialog takes itself) in the host's code dialog: the request ends and it closes.
+    fn pair_decline(&mut self) {
+        if let Some(m) = self.machines.as_mut() {
+            m.decline();
+        }
+        if let Some(app) = self.weak.upgrade() {
+            self.push_pair_code(&app);
+        }
+    }
+
+    /// The host's code dialog into the bridge (rule 1243): open while a request shows its code, over whatever tab is
+    /// in front (the person may be anywhere in Flare), whether Settings is open or not.
+    fn push_pair_code(&self, app: &AppWindow) {
+        let b = app.global::<SettingsBridge>();
+        let prompt = self
+            .machines
+            .as_ref()
+            .and_then(|m| m.pairing().prompt().cloned());
+        let was = b.get_pair_code_open();
+        match prompt {
+            Some(p) => {
+                b.set_pair_code(pair_code_look(&p));
+                b.set_pair_code_open(true);
+            }
+            None => {
+                b.set_pair_code_open(false);
+                // The keys go back to the terminal when the dialog closed over it.
+                if was && !self.visible {
+                    app.invoke_focus_terminal();
+                }
+            }
+        }
     }
 
     // ---- building -------------------------------------------------------------------------------------
@@ -1609,6 +1666,7 @@ impl SettingsCtl {
         b.set_dict_ask_text(flare_dictation::catalog::LIMITED_LANGUAGES_TEXT.into());
         self.push_machine_add(app);
         self.push_sharing_ask(app);
+        self.push_pair_code(app);
         self.push_editor(app, format);
     }
 
@@ -1642,7 +1700,7 @@ impl SettingsCtl {
         let mono = app.global::<crate::SettingsFixed>().get_font_mono();
         b.set_machine_add(machine_add_look(
             &info.add,
-            &machine_choice_opts(&info.ssh_hosts, &mono),
+            &machine_choice_opts(&info.nearby, &info.ssh_hosts, &mono),
         ));
         b.set_machine_add_open(info.add.open && self.visible && self.page == "machines");
     }
@@ -1802,7 +1860,7 @@ impl SettingsCtl {
             && row == flare_settings::page::machines::SHARING_ROW
         {
             if let Some(m) = self.machines.as_mut() {
-                m.sharing_mut().switch(*on);
+                m.sharing_switch(*on);
             }
             self.rebuild();
             return;
@@ -1916,8 +1974,9 @@ impl SettingsCtl {
             .and_then(|r| r.strip_prefix(':'))
             && let Some(m) = self.machines.as_mut()
         {
-            use flare_settings::page::machines::{ADDRESS_FIELD, USER_FIELD};
+            use flare_settings::page::machines::{ADDRESS_FIELD, CODE_FIELD, USER_FIELD};
             match field {
+                CODE_FIELD => m.set_code(text),
                 ADDRESS_FIELD => m.set_address(text),
                 USER_FIELD => m.set_user(text),
                 _ => return,
@@ -1934,10 +1993,17 @@ impl SettingsCtl {
             self.machines_button(button);
             return;
         }
+        // The host's code dialog's Decline (machine pairing PR 3, rule 1243).
+        if row == flare_settings::page::machines::PAIR_ROW {
+            if button == flare_settings::page::machines::DECLINE_BUTTON {
+                self.pair_decline();
+            }
+            return;
+        }
         // The sharing dialog's buttons (rules 1240 and 1241).
         if row == flare_settings::page::machines::SHARING_ROW {
             if let Some(m) = self.machines.as_mut() {
-                m.sharing_mut().button(button);
+                m.sharing_button(button);
             }
             self.rebuild();
             return;
@@ -2027,10 +2093,14 @@ impl SettingsCtl {
                 .unwrap_or_default();
             return Some((
                 info.add.pick.clone(),
-                machine_choice_opts(&info.ssh_hosts, &mono),
+                machine_choice_opts(&info.nearby, &info.ssh_hosts, &mono),
             ));
         }
-        row.strip_prefix(MACHINE_PREFIX)?;
+        let id = row.strip_prefix(MACHINE_PREFIX)?;
+        // A computer that reaches this one has no link to test from here: Remove only (rule 1246).
+        if id.starts_with(flare_settings::page::machines::INCOMING_PREFIX) {
+            return Some((String::new(), opts_of(&[(REMOVE_CHOICE, "Remove")])));
+        }
         Some((
             String::new(),
             opts_of(&[(TEST_CHOICE, "Test"), (REMOVE_CHOICE, "Remove")]),
@@ -2986,6 +3056,7 @@ mod tests {
             id: "a".into(),
             name: "A".into(),
             face: "Cascadia Mono".into(),
+            vendor: String::new(),
         }];
         let range = flare_theme::colour_contrast::AlphaRange::default();
         let cases: Vec<(Control, SetKind)> = vec![

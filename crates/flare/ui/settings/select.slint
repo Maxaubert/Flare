@@ -4,7 +4,21 @@
 // the size of the window: a press outside it dismisses, Escape closes it and is consumed. The
 // highlight is the menu's own while it is open (Rust may set it); a choice is only reported.
 import { Px, SettingsShape, SettingsInk, Theme } from "../theme.slint";
+import { Glyphs } from "../glyphs.slint";
 import { SetOption } from "types.slint";
+
+// A system's logo before an option's name (machine pairing PR 3, the Add a machine dialog's nearby computers): 12 px,
+// the Apple logo for `mac`, the Windows logo for `pc`.
+component OptionLogo inherits Path {
+    in property <string> vendor;
+    width: 12px;
+    height: 12px;
+    viewbox-width: 24;
+    viewbox-height: 24;
+    commands: root.vendor == "mac" ? Glyphs.logo-mac : root.vendor == "pc" ? Glyphs.logo-pc : "";
+    fill: Theme.text;
+    visible: root.vendor != "";
+}
 
 // The trigger: 32 high, min width 168 (the parent gives the width, never less).
 export component SetSelect inherits Rectangle {
@@ -60,10 +74,18 @@ export component SetSelect inherits Rectangle {
         overflow: elide;
     }
 
+    for o in root.options: OptionLogo {
+        visible: o.id == root.value && o.vendor != "";
+        x: 10px;
+        y: (root.height - 12px) / 2;
+        vendor: o.vendor;
+    }
+
     for o in root.options: Text {
         visible: o.id == root.value;
-        x: 10px;
-        width: max(0px, root.width - 10px - 8px - 12px - 10px);
+        // A logo takes 12 px and a 7 px gap before the name.
+        x: o.vendor != "" ? 29px : 10px;
+        width: max(0px, root.width - self.x - 8px - 12px - 10px);
         height: root.height;
         text: o.name;
         font-size: 12px;
@@ -278,9 +300,15 @@ export component SelectMenu inherits Rectangle {
                     }
                 }
 
-                Text {
+                if o.vendor != "": OptionLogo {
                     x: 11px;
-                    width: max(0px, parent.width - 11px - 11px - 12px - 16px);
+                    y: (parent.height - 12px) / 2;
+                    vendor: o.vendor;
+                }
+
+                Text {
+                    x: o.vendor != "" ? 30px : 11px;
+                    width: max(0px, parent.width - self.x - 11px - 12px - 16px);
                     height: parent.height;
                     text: o.name;
                     font-size: 12px;

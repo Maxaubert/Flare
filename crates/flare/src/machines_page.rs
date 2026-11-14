@@ -17,15 +17,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use flare_settings::kv::PrefStore;
-use flare_settings::page::machines::{AddForm, LinkStatus, MachineOs, MachineRow, MachinesInfo};
+use flare_settings::page::machines::{
+    AddForm, INCOMING_PREFIX, LinkStatus, MachineOs, MachineRow, MachinesInfo, NEARBY_PREFIX,
+    NearbyChoice,
+};
 use flare_tabs::tabs::Os;
 
+use crate::pair_keys::PairFiles;
+use crate::pairing::{HostEvent, Me, NoPairNet, PairMsg, PairNet, Pairing, ViewerEvent};
 use crate::sharing::{NoSharingOs, Sharing, SharingOs};
 
 use crate::appctl::{Post, UiMsg};
 use crate::machines::{
-    FLARE_CANDIDATES, FileMachines, Machine, MachinesPort, failure_line, machine_id, os_of_hello,
-    probe_kinds, saved_kind,
+    FLARE_CANDIDATES, FileMachines, Incoming, Machine, MachinesPort, failure_line, incoming_file,
+    incoming_json, machine_id, os_of_hello, parse_incoming, probe_kinds, saved_kind,
 };
 use crate::remote_link::LinkError;
 use crate::settings_ctl::SettingsMsg;
@@ -45,12 +50,20 @@ pub trait MachinesIo: Send + Sync {
     fn ssh_hosts(&self) -> Vec<String>;
     /// `remote.hello` over the machine's link.
     fn probe(&self, m: &Machine) -> Result<HelloFacts, LinkError>;
+    /// The computers paired to reach this one (machine pairing PR 3, rule 1246).
+    fn list_in(&self) -> Vec<Incoming> {
+        Vec::new()
+    }
+    fn save_in(&self, _list: &[Incoming]) -> Result<(), String> {
+        Ok(())
+    }
 }
 
-/// The real disk and links: the profile's `machines.json`, the home folder's ssh config, ssh (or under `--e2e` the
-/// scenario's loopback command, `FLARE_E2E_REMOTE_COMMAND`).
+/// The real disk and links: the profile's `machines.json` and `machines_in.json`, the home folder's ssh config, ssh
+/// (or under `--e2e` the scenario's loopback command, `FLARE_E2E_REMOTE_COMMAND`).
 pub struct RealMachinesIo {
     file: FileMachines,
+    in_file: PathBuf,
     home: PathBuf,
     loopback: Option<Vec<String>>,
 }
@@ -59,6 +72,7 @@ impl RealMachinesIo {
     pub fn new(profile: &std::path::Path, home: PathBuf, loopback: Option<Vec<String>>) -> Self {
         Self {
             file: FileMachines::new(profile),
+            in_file: incoming_file(profile),
             home,
             loopback,
         }
@@ -74,6 +88,17 @@ impl MachinesIo for RealMachinesIo {
         self.file
             .save(list)
             .map_err(|e| format!("machines.json could not be saved: {e}"))
+    }
+
+    fn list_in(&self) -> Vec<Incoming> {
+        std::fs::read_to_string(&self.in_file) // sync-ok: a worker's call
+            .map(|raw| parse_incoming(&raw))
+            .unwrap_or_default()
+    }
+
+    fn save_in(&self, list: &[Incoming]) -> Result<(), String> {
+        flare_settings::atomic::write_atomic(&self.in_file, &incoming_json(list))
+            .map_err(|e| format!("machines_in.json could not be saved: {e}"))
     }
 
     fn ssh_hosts(&self) -> Vec<String> {
@@ -142,11 +167,16 @@ impl MachinesIo for SceneMachinesIo {
 /// A worker's answer for the page.
 #[derive(Debug)]
 pub enum MachinesMsg {
-    /// The machines and the ssh hosts, read.
+    /// The machines, the computers that reach this one, and the ssh hosts, read.
     Loaded {
         machines: Vec<Machine>,
+        incoming: Vec<Incoming>,
         hosts: Vec<String>,
     },
+    /// A computer that reaches this one was removed (its key with it): the new list, or the line that says what stays.
+    RemovedIn(Result<Vec<Incoming>, String>),
+    /// Pairing (machine pairing PR 3).
+    Pair(PairMsg),
     /// One machine's check: its Flare version, or the line that says why not.
     Checked {
         id: String,
@@ -173,6 +203,10 @@ pub struct MachinesPage {
     loading: bool,
     /// This computer's Computer sharing switch (machine pairing PR 2, rule 1238).
     sharing: Sharing,
+    /// The computers paired to reach this one (machine pairing PR 3, rule 1246).
+    incoming: Vec<Incoming>,
+    /// Pairing: the nearby computers, the viewer's request, the host's listener and code dialog (PR 3).
+    pairing: Pairing,
 }
 
 /// Runs `f` on a named worker; a failure to start is logged.
@@ -273,6 +307,13 @@ impl MachinesPage {
             PrefStore::memory(),
             Arc::clone(&post),
         );
+        let pairing = Pairing::new(
+            Arc::new(NoPairNet),
+            Arc::new(NoSharingOs),
+            None,
+            Me::this_computer(),
+            Arc::clone(&post),
+        );
         Self {
             io,
             post,
@@ -282,18 +323,33 @@ impl MachinesPage {
             add: AddForm::default(),
             loading: false,
             sharing,
+            incoming: Vec::new(),
+            pairing,
         }
     }
 
     /// The OS calls the sharing switch makes (the real ones in the app, a fake in the tests).
     pub fn with_sharing_os(mut self, os: Arc<dyn SharingOs>) -> Self {
+        self.pairing.set_os(Arc::clone(&os));
         self.sharing = Sharing::new(os, PrefStore::memory(), Arc::clone(&self.post));
+        self.sync_host();
+        self
+    }
+
+    /// Pairing (machine pairing PR 3): the network (`RealPairNet` in the app, a fake in the tests), Flare's key and
+    /// known hosts in `files`, and this computer as it says itself.
+    pub fn with_pairing(mut self, net: Arc<dyn PairNet>, files: PairFiles, me: Me) -> Self {
+        let os = self.sharing.os();
+        self.pairing.host(false, &self.io);
+        self.pairing = Pairing::new(net, os, Some(files), me, Arc::clone(&self.post));
+        self.sync_host();
         self
     }
 
     /// The settings store: the switch reads where it was left (on after a restart) and saves there from now on.
     pub fn use_prefs(&mut self, prefs: PrefStore) {
         self.sharing = Sharing::new(self.sharing.os(), prefs, Arc::clone(&self.post));
+        self.sync_host();
     }
 
     /// The Computer sharing switch.
@@ -301,8 +357,49 @@ impl MachinesPage {
         &self.sharing
     }
 
-    pub fn sharing_mut(&mut self) -> &mut Sharing {
-        &mut self.sharing
+    /// Pairing's state (the host's code dialog).
+    pub fn pairing(&self) -> &Pairing {
+        &self.pairing
+    }
+
+    /// The host listens and is announced exactly while Computer sharing is on (rule 1242).
+    fn sync_host(&mut self) {
+        let on = self.sharing.is_on();
+        self.pairing.host(on, &self.io);
+    }
+
+    /// The Computer sharing switch was flipped. Turning it off forgets the computers that reached this one: their keys
+    /// go with the clean up (rule 1241).
+    pub fn sharing_switch(&mut self, on: bool) {
+        let was = self.sharing.is_on();
+        self.sharing.switch(on);
+        if was && !on && !self.incoming.is_empty() {
+            self.incoming.clear();
+            let io = Arc::clone(&self.io);
+            worker("flare-machines-save", move || {
+                if let Err(e) = io.save_in(&[]) {
+                    log::warn!("{e}");
+                }
+            });
+        }
+        self.sync_host();
+    }
+
+    /// A button of the sharing dialog.
+    pub fn sharing_button(&mut self, id: &str) {
+        self.sharing.button(id);
+        self.sync_host();
+    }
+
+    /// Escape, or the Settings tab closing: the sharing dialog's way out.
+    pub fn sharing_dismiss(&mut self) {
+        self.sharing.dismiss();
+        self.sync_host();
+    }
+
+    /// Decline in the host's code dialog (or Escape there): the request ends (rule 1243).
+    pub fn decline(&mut self) {
+        self.pairing.decline();
     }
 
     fn say(post: &Post, m: MachinesMsg) {
@@ -326,8 +423,27 @@ impl MachinesPage {
                         status,
                     }
                 })
+                .chain(self.incoming.iter().map(|m| MachineRow {
+                    // A computer that reaches this one is linked while its key is here (rule 1246).
+                    id: format!("{INCOMING_PREFIX}{}", m.id),
+                    name: m.name.clone(),
+                    os: os_of(m.kind),
+                    address: m.address.clone(),
+                    version: m.version.clone(),
+                    status: LinkStatus::Linked,
+                }))
                 .collect(),
             ssh_hosts: self.hosts.clone(),
+            nearby: self
+                .pairing
+                .nearby()
+                .iter()
+                .map(|n| NearbyChoice {
+                    id: n.id.clone(),
+                    name: n.name.clone(),
+                    os: os_of(n.os),
+                })
+                .collect(),
             add: self.add.clone(),
             sharing: self.sharing.info(),
         }
@@ -343,8 +459,16 @@ impl MachinesPage {
         let (io, post) = (Arc::clone(&self.io), Arc::clone(&self.post));
         worker("flare-machines-read", move || {
             let machines = io.list();
+            let incoming = io.list_in();
             let hosts = io.ssh_hosts();
-            Self::say(&post, MachinesMsg::Loaded { machines, hosts });
+            Self::say(
+                &post,
+                MachinesMsg::Loaded {
+                    machines,
+                    incoming,
+                    hosts,
+                },
+            );
         });
     }
 
@@ -386,8 +510,32 @@ impl MachinesPage {
         self.check(vec![id.to_string()]);
     }
 
-    /// The ⋯ menu's Remove: the list without it, saved on a worker.
+    /// The ⋯ menu's Remove: the list without it, saved on a worker. A computer that reaches this one goes with its key
+    /// (rule 1246).
     pub fn remove(&mut self, id: &str) {
+        if let Some(id) = id.strip_prefix(INCOMING_PREFIX) {
+            let Some(gone) = self.incoming.iter().find(|m| m.id == id).cloned() else {
+                return;
+            };
+            let (io, post, os) = (
+                Arc::clone(&self.io),
+                Arc::clone(&self.post),
+                self.sharing.os(),
+            );
+            let admin = self.sharing.admin_keys();
+            worker("flare-machines-save", move || {
+                let answer = crate::sharing::remove_key(&*os, &gone.key, admin).and_then(|()| {
+                    let list: Vec<Incoming> = io
+                        .list_in()
+                        .into_iter()
+                        .filter(|m| m.id != gone.id)
+                        .collect();
+                    io.save_in(&list).map(|()| list)
+                });
+                Self::say(&post, MachinesMsg::RemovedIn(answer));
+            });
+            return;
+        }
         let (io, post) = (Arc::clone(&self.io), Arc::clone(&self.post));
         let id = id.to_string();
         worker("flare-machines-save", move || {
@@ -403,22 +551,51 @@ impl MachinesPage {
     }
 
     /// "+ Add a machine": the dialog opens with nothing picked ("Pick a machine"), Add waiting for a pick (rule 1237).
+    /// The computers with Computer sharing on are looked for while it is open (rule 1242).
     pub fn open_form(&mut self) {
         self.add = AddForm {
             open: true,
             ..AddForm::default()
         };
+        self.pairing.browse(true);
     }
 
+    /// Cancel: the dialog closes, a pairing request ends (the other computer's code dialog closes with it), and no
+    /// more computers are looked for. A link check that runs keeps the dialog until it answers.
     pub fn cancel_form(&mut self) {
-        if !self.add.busy {
+        if !self.add.busy || self.add.pairing() {
+            self.pairing.end_viewer();
+            self.pairing.browse(false);
             self.add = AddForm::default();
         }
     }
 
-    /// A pick in the Machine drop-down: an SSH host or "Type an address". A new pick clears the red line.
+    /// A pick in the Machine drop-down: a nearby computer (Flare connects and the other computer shows its code), an
+    /// SSH host or "Type an address". A new pick clears the red line and ends any older pairing request.
     pub fn set_pick(&mut self, id: &str) {
+        if id == self.add.pick && self.add.pairing() && self.pairing.viewer_to().is_some() {
+            return;
+        }
         self.add.pick = id.to_string();
+        self.add.error = None;
+        self.add.code.clear();
+        self.add.ready = false;
+        self.add.code_for.clear();
+        self.pairing.end_viewer();
+        if let Some(near) = id.strip_prefix(NEARBY_PREFIX) {
+            match self.pairing.nearby_by_id(near) {
+                Some(n) => {
+                    self.add.code_for = n.name.clone();
+                    self.pairing.start_viewer(near, Arc::clone(&self.io));
+                }
+                None => self.add.error = Some("Not answering".into()),
+            }
+        }
+    }
+
+    /// What is typed in the "Code shown on <name>" field (no rebuild: it keeps its caret). It clears the red line.
+    pub fn set_code(&mut self, text: &str) {
+        self.add.code = text.to_string();
         self.add.error = None;
     }
 
@@ -437,6 +614,20 @@ impl MachinesPage {
     /// answered.
     pub fn submit(&mut self) {
         if self.add.busy || !self.add.open {
+            return;
+        }
+        // A nearby computer: the typed code goes to its request (rule 1243).
+        if self.add.pairing() {
+            if !self.add.can_add() {
+                return;
+            }
+            let Some(digits) = crate::pair_wire::code_digits(&self.add.code) else {
+                return;
+            };
+            if self.pairing.send_code(digits) {
+                self.add.busy = true;
+                self.add.error = None;
+            }
             return;
         }
         let base = match new_machine(&self.add) {
@@ -527,9 +718,14 @@ impl MachinesPage {
     /// A worker's answer. True when the page should be drawn again.
     pub fn on_msg(&mut self, m: MachinesMsg) -> bool {
         match m {
-            MachinesMsg::Loaded { machines, hosts } => {
+            MachinesMsg::Loaded {
+                machines,
+                incoming,
+                hosts,
+            } => {
                 self.loading = false;
                 self.machines = machines;
+                self.incoming = incoming;
                 self.hosts = hosts;
                 self.checks
                     .retain(|id, _| self.machines.iter().any(|m| &m.id == id));
@@ -560,6 +756,7 @@ impl MachinesPage {
                 }
                 self.machines = list;
                 self.add = AddForm::default();
+                self.pairing.browse(false);
             }
             MachinesMsg::Added(Err(line)) => {
                 self.add.busy = false;
@@ -569,7 +766,68 @@ impl MachinesPage {
                 self.checks.retain(|id, _| list.iter().any(|m| &m.id == id));
                 self.machines = list;
             }
-            MachinesMsg::Sharing(m) => return self.sharing.on_msg(m),
+            MachinesMsg::RemovedIn(Ok(list)) => self.incoming = list,
+            MachinesMsg::RemovedIn(Err(line)) => {
+                self.sharing.notice(line);
+            }
+            MachinesMsg::Sharing(m) => {
+                let redraw = self.sharing.on_msg(m);
+                self.sync_host();
+                return redraw;
+            }
+            MachinesMsg::Pair(m) => return self.on_pair(m),
+        }
+        true
+    }
+
+    /// Pairing's answers (rules 1242 to 1246). True when the page should be drawn again.
+    fn on_pair(&mut self, m: PairMsg) -> bool {
+        match m {
+            PairMsg::Nearby(list) => {
+                self.pairing.set_nearby(list);
+                // A nearby computer that went away while picked keeps its pick (its request may still run).
+            }
+            PairMsg::Viewer { run, event } => {
+                if self.pairing.viewer_to().map(|(r, _)| r) != Some(run) {
+                    return false;
+                }
+                match event {
+                    ViewerEvent::Shown => self.add.ready = true,
+                    ViewerEvent::Wrong => {
+                        self.add.busy = false;
+                        self.add.error = Some("Wrong code".into());
+                    }
+                    ViewerEvent::Failed(line) => {
+                        self.pairing.viewer_ended(run);
+                        self.add.busy = false;
+                        self.add.ready = false;
+                        self.add.error = Some(line);
+                    }
+                    ViewerEvent::Linked { list, id } => {
+                        self.pairing.viewer_ended(run);
+                        self.pairing.browse(false);
+                        (self.post)(UiMsg::Machines(list.clone()));
+                        self.machines = list;
+                        self.add = AddForm::default();
+                        // The new machine is checked over ssh as any other (rule 1245).
+                        self.checks.remove(&id);
+                        self.check(vec![id]);
+                    }
+                }
+            }
+            PairMsg::Host(e) => {
+                self.pairing.on_host(&e);
+                if let HostEvent::Done {
+                    linked: Some((list, admin)),
+                    ..
+                } = e
+                {
+                    if admin {
+                        self.sharing.note_admin_keys();
+                    }
+                    self.incoming = list;
+                }
+            }
         }
         true
     }
@@ -596,6 +854,8 @@ pub(crate) mod fake {
         pub hosts: Vec<String>,
         pub answers: HashMap<(String, String), Result<HelloFacts, (bool, String)>>,
         pub probes: Mutex<Vec<(String, String, Option<Os>)>>,
+        /// The computers that reach this one (machine pairing PR 3).
+        pub incoming: Mutex<Vec<Incoming>>,
     }
 
     impl MachinesIo for FakeIo {
@@ -623,6 +883,13 @@ pub(crate) mod fake {
                 Some(Err((false, msg))) => Err(LinkError::Down(msg.clone())),
                 _ => Err(LinkError::Down("ssh ended".into())),
             }
+        }
+        fn list_in(&self) -> Vec<Incoming> {
+            self.incoming.lock().unwrap().clone()
+        }
+        fn save_in(&self, list: &[Incoming]) -> Result<(), String> {
+            *self.incoming.lock().unwrap() = list.to_vec();
+            Ok(())
         }
     }
 }

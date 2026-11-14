@@ -145,6 +145,81 @@ pub fn machines_json(machines: &[Machine]) -> String {
     serde_json::to_string_pretty(&json!({"machines": list})).unwrap_or_default()
 }
 
+/// A computer paired to reach this one (machine pairing PR 3, rule 1246): this computer has its key in an
+/// `authorized_keys` file, and shows it in Linked machines. It is never a machine to open a tab on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Incoming {
+    pub id: String,
+    pub name: String,
+    pub kind: Option<Os>,
+    /// The address it paired from.
+    pub address: String,
+    /// The Flare version it said when it paired.
+    pub version: String,
+    /// Its key (the base64 field of its `authorized_keys` line): removing it removes that line.
+    pub key: String,
+}
+
+/// Pure: the computers `machines_in.json` names. One whose key is not plain base64 is left out.
+pub fn parse_incoming(raw: &str) -> Vec<Incoming> {
+    let Ok(v) = serde_json::from_str::<Value>(raw) else {
+        return Vec::new();
+    };
+    let Some(list) = v.get("linked_in").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let s = |m: &Value, k: &str| {
+        m.get(k)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_default()
+    };
+    list.iter()
+        .filter_map(|m| {
+            let key = s(m, "key");
+            let plain = !key.is_empty()
+                && key.len() <= 2048
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='));
+            let id = s(m, "id");
+            (plain && argv_word(&id)).then(|| Incoming {
+                name: Some(s(m, "name"))
+                    .filter(|n| !n.trim().is_empty())
+                    .unwrap_or_else(|| id.clone()),
+                id,
+                kind: Os::parse(&s(m, "kind")),
+                address: s(m, "address"),
+                version: s(m, "version"),
+                key,
+            })
+        })
+        .collect()
+}
+
+/// Pure: the text of `machines_in.json`.
+pub fn incoming_json(list: &[Incoming]) -> String {
+    let list: Vec<Value> = list
+        .iter()
+        .map(|m| {
+            let mut v = json!({"id": m.id, "name": m.name, "address": m.address, "version": m.version, "key": m.key});
+            if let Some(k) = m.kind {
+                v["kind"] = json!(match k {
+                    Os::Mac => "mac",
+                    Os::Pc => "pc",
+                });
+            }
+            v
+        })
+        .collect();
+    serde_json::to_string_pretty(&json!({"linked_in": list})).unwrap_or_default()
+}
+
+/// `machines_in.json` in the profile: the computers paired to reach this one.
+pub fn incoming_file(profile: &Path) -> PathBuf {
+    profile.join("machines_in.json")
+}
+
 /// `machines.json` in the profile.
 pub fn machines_file(profile: &Path) -> PathBuf {
     profile.join("machines.json")
@@ -358,6 +433,29 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, ["machines.json"]);
+    }
+
+    /// Rule 1246: the computers that reach this one read back as written; one whose key is no plain base64 (it would
+    /// reach a script) or whose id is no plain word is left out.
+    #[test]
+    fn the_computers_that_reach_this_one_read_back_and_a_strange_key_is_left_out() {
+        let mac = Incoming {
+            id: "max-s-mac-mini".into(),
+            name: "Max's Mac mini".into(),
+            kind: Some(Os::Mac),
+            address: "192.168.0.120".into(),
+            version: "0.4.2".into(),
+            key: "AAAAC3NzaC1lZDI1NTE5AAAAIA+/=".into(),
+        };
+        let text = incoming_json(std::slice::from_ref(&mac));
+        assert_eq!(parse_incoming(&text), vec![mac.clone()]);
+        let evil = text.replace("AAAAC3NzaC1lZDI1NTE5AAAAIA+/=", "AAAA'; Remove-Item x");
+        assert!(parse_incoming(&evil).is_empty());
+        assert!(parse_incoming("{}").is_empty() && parse_incoming("no").is_empty());
+        assert_eq!(
+            incoming_file(Path::new("p")),
+            Path::new("p").join("machines_in.json")
+        );
     }
 
     /// Rule 40: a kind this build does not know reads as none and is not written back as a guess.

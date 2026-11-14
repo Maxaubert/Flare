@@ -2854,3 +2854,31 @@ The second of three PRs (spec and mockup as in PR 1).
   `SharingOs::announce` only logs, and no key carries `flare-pair:` yet. Flare's firewall rule stays after a turn off
   that needs no elevation (it lets only Flare's program in, on the Private profile, and nothing listens while sharing
   is off). Real runs: the new lines in `docs/remote-sessions-manual-checks.md`.
+
+## Machine pairing, PR 3: pairing with a code, 2026-11-14
+
+The last of three PRs (spec and mockup as in PR 1).
+
+- **Announced while sharing is on.** With Computer sharing on, the computer listens on a random TCP port and announces
+  itself on the home network as `_flare-pair._tcp` (mDNS: its name, system, Flare version and the pairing version,
+  nothing secret). Off, it does neither. Rule 1242.
+- **Nearby computers.** While Add a machine is open, its Machine drop-down lists the computers with sharing on first,
+  each with its Apple or Windows logo, then the SSH config hosts, then "Type an address". Rule 1242.
+- **The code.** Picking a nearby computer makes that computer show the Flare dialog "<name> wants to connect" with a
+  fresh 6-digit code ("482 913"), "Enter this code on <name>" and Decline, wherever the person is in Flare. The
+  dialog here shows "Code shown on <name>"; Add sends it. The code never crosses the network: both computers prove it
+  with SPAKE2 (RFC 9382) and key confirmation, then talk over ChaCha20-Poly1305. A wrong code is the red line "Wrong
+  code"; three close the window. Another computer asking meanwhile hears that it is busy. Rule 1243.
+- **The key.** Flare makes its own SSH key the first time (`id_flare_ed25519` in the profile). The other computer adds
+  it to the right `authorized_keys`, tagged `flare-pair:<name>`: a Windows administrator account's
+  `administrators_authorized_keys` through one UAC prompt with the ACL sshd wants; any other account's own
+  `~/.ssh/authorized_keys` with no prompt. Rule 1244.
+- **The pin.** The other computer answers with its SSH host key, user and Flare path; this one pins the key in
+  `flare_known_hosts` in the profile and saves the machine with its address, user, key and known hosts, then checks
+  the link as usual (ssh never asks). Rule 1245.
+- **Both lists.** The computer that was reached lists the one that paired (`machines_in.json`) with status Linked;
+  its menu has Remove, which takes the key away again. Rule 1246.
+- **Not yet.** The drop-down still draws no divider between nearby computers and SSH hosts. A computer that paired to
+  this one is shown Linked while its entry is here; Flare does not read `administrators_authorized_keys` back (it
+  needs admin rights) to see whether the key is still there. Pairing finds computers on the same network only
+  (issue #233 is the outside-the-house case). Real runs: the new lines in `docs/remote-sessions-manual-checks.md`.

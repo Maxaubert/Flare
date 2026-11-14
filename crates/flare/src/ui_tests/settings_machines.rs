@@ -70,6 +70,19 @@ fn fx_with(
     sharing: Arc<dyn crate::sharing::SharingOs>,
     prefs: PrefStore,
 ) -> Fx {
+    fx_full(scale, io, sharing, prefs, None)
+}
+
+/// Pairing for a page (machine pairing PR 3): the fake network, and the folder for Flare's key and known hosts.
+type PairWith = (Arc<crate::pairing::fake::FakeNet>, std::path::PathBuf);
+
+fn fx_full(
+    scale: f32,
+    io: FakeIo,
+    sharing: Arc<dyn crate::sharing::SharingOs>,
+    prefs: PrefStore,
+    pair: Option<PairWith>,
+) -> Fx {
     let look = LookStore::new(prefs.clone());
     let q: Queue = Arc::default();
     let post: Post = {
@@ -111,8 +124,19 @@ fn fx_with(
     };
     let ctl = SettingsCtl::new(&h.comp, deps);
     let io = Arc::new(io);
-    ctl.borrow_mut()
-        .set_machines(MachinesPage::new(io.clone(), post).with_sharing_os(sharing));
+    let mut page = MachinesPage::new(io.clone(), post).with_sharing_os(sharing);
+    if let Some((net, dir)) = pair {
+        page = page.with_pairing(
+            net,
+            crate::pair_keys::PairFiles::new(&dir),
+            crate::pairing::Me {
+                name: "Max's PC".into(),
+                os: Some(Os::Pc),
+                version: "0.4.2".into(),
+            },
+        );
+    }
+    ctl.borrow_mut().set_machines(page);
     ctl.borrow_mut().show();
     Fx {
         h,
@@ -523,11 +547,13 @@ fn the_dialog_draws_its_box_its_drop_down_and_its_red_line() {
                     id: (*n).into(),
                     name: (*n).into(),
                     face: SharedString::new(),
+                    vendor: Default::default(),
                 })
                 .chain(std::iter::once(SetOption {
                     id: " address".into(),
                     name: "Type an address".into(),
                     face: SharedString::new(),
+                    vendor: Default::default(),
                 }))
                 .collect::<Vec<_>>(),
         ));
@@ -1020,4 +1046,192 @@ fn the_sharing_dialog_draws_its_box_its_line_and_its_buttons() {
         assert!(h.comp.get_cancel_w() < 0.5, "{s}: no left button");
         assert_eq!(accent(&h.render()), 0, "{s}: no spinner");
     }
+}
+
+/// Rule 1243 (mockup "The code"): the host's code dialog draws in the Dialog look, a 380 px box in the middle, with
+/// the code in large digits across its middle; Decline and Escape answer, a press outside does not. At 100 and 225
+/// percent.
+#[test]
+fn the_code_dialog_draws_the_code_in_the_middle_and_decline_answers() {
+    use crate::PairCodeLook;
+    for s in SCALES2 {
+        let h = Harness::new(s, 900, 600, || crate::PairCodePreview::new().unwrap());
+        h.activate();
+        h.comp.set_look(PairCodeLook {
+            title: "Max's Mac mini wants to connect".into(),
+            code: "482 913".into(),
+            line: "Enter this code on Max's Mac mini".into(),
+        });
+        h.comp.set_open(true);
+        h.advance(16);
+        let (bx, by, bw, bh) = (
+            h.comp.get_box_x(),
+            h.comp.get_box_y(),
+            h.comp.get_box_w(),
+            h.comp.get_box_h(),
+        );
+        assert!((bw - 380.0).abs() < 0.5, "{s}: 380 px wide ({bw})");
+        assert!((bx + bw / 2.0 - 450.0).abs() < 1.0, "{s}: centred ({bx})");
+        assert!((by + bh / 2.0 - 300.0).abs() < 1.0, "{s}: centred ({by})");
+        let (cy, ch) = (h.comp.get_code_y(), h.comp.get_code_h());
+        assert!(ch >= 30.0, "{s}: large digits ({ch})");
+        // The digits draw in light ink, centred: lit pixels both left and right of the middle, none at the box edges.
+        let k = |v: f32| (v * s).round() as u32;
+        let f = h.render();
+        let lit = |x0: f32, x1: f32| {
+            f.count_where(k(x0), k(cy), k(x1), k(cy + ch), |p| {
+                p[0] > 170 && p[1] > 170 && p[2] > 160
+            })
+        };
+        assert!(
+            lit(bx + 100.0, bx + 190.0) > 30,
+            "{s}: the code's left half"
+        );
+        assert!(
+            lit(bx + 190.0, bx + 280.0) > 30,
+            "{s}: the code's right half"
+        );
+        assert_eq!(lit(bx + 2.0, bx + 40.0), 0, "{s}: centred, not at the edge");
+        // A press outside does nothing; Decline and Escape decline.
+        h.click(20.0, 20.0);
+        assert_eq!(
+            h.comp.get_declines(),
+            0,
+            "{s}: a press outside keeps the code"
+        );
+        assert_eq!(h.comp.get_behind_clicks(), 0, "{s}: the scrim takes it");
+        let (dx, dy, dw) = (
+            h.comp.get_decline_x(),
+            h.comp.get_decline_y(),
+            h.comp.get_decline_w(),
+        );
+        assert!(dx + dw > bx + bw - 30.0, "{s}: Decline sits at the right");
+        h.click(dx + dw / 2.0, dy + 15.0);
+        assert_eq!(h.comp.get_declines(), 1, "{s}");
+        h.key_text("\u{1b}");
+        assert_eq!(h.comp.get_declines(), 2, "{s}: Escape is Decline");
+    }
+}
+
+/// Rule 1243 (mockup "Add a machine"): a nearby computer picked shows "Code shown on <name>" under the drop-down,
+/// with the keys in it, and its logo before its name in the drop-down.
+#[test]
+fn a_nearby_computer_shows_its_logo_and_the_code_field() {
+    use crate::MachineAddLook;
+    use crate::SetOption;
+    use slint::{ModelRc, VecModel};
+    for s in SCALES2 {
+        let h = Harness::new(s, 900, 600, || crate::MachineAddPreview::new().unwrap());
+        h.activate();
+        let options = ModelRc::new(VecModel::from(vec![
+            SetOption {
+                id: " nearby:pc".into(),
+                name: "Max's PC".into(),
+                face: "".into(),
+                vendor: "pc".into(),
+            },
+            SetOption {
+                id: " address".into(),
+                name: "Type an address".into(),
+                face: "".into(),
+                vendor: "".into(),
+            },
+        ]));
+        let look = |code_for: &str| MachineAddLook {
+            pick: " nearby:pc".into(),
+            options: options.clone(),
+            code_for: code_for.into(),
+            ..MachineAddLook::default()
+        };
+        h.comp.set_look(look(""));
+        h.comp.set_open(true);
+        h.advance(16);
+        h.render();
+        let plain_h = h.comp.get_box_h();
+        // The Windows logo draws before the name in the drop-down (light ink in its first 12 px).
+        let k = |v: f32| (v * s).round() as u32;
+        let (px, py) = (h.comp.get_pick_x(), h.comp.get_pick_y());
+        let f = h.render();
+        let logo = f.count_where(
+            k(px + 10.0),
+            k(py + 10.0),
+            k(px + 22.0),
+            k(py + 22.0),
+            |p| p[0] > 150 && p[1] > 150 && p[2] > 140,
+        );
+        assert!(logo > 10, "{s}: the logo draws ({logo} lit)");
+        // The code field shows under the drop-down and takes the keys.
+        h.comp.set_look(look("Max's PC"));
+        h.advance(16);
+        h.render();
+        let code_h = h.comp.get_box_h();
+        assert!(
+            code_h > plain_h + 40.0 && code_h < plain_h + 80.0,
+            "{s}: one labelled field ({code_h} over {plain_h})"
+        );
+        h.key_text("482913");
+        h.advance(16);
+        assert_eq!(
+            h.comp.get_code_typed().as_str(),
+            "482913",
+            "{s}: the code field has the keys"
+        );
+    }
+}
+
+/// Rules 1242 and 1243: with Computer sharing on, a computer that asks makes "<name> wants to connect" show with its
+/// code, over any tab (here with the Settings tab hidden); Decline closes it and ends the request.
+#[test]
+fn the_hosts_code_dialog_shows_over_any_tab_and_decline_ends_the_request() {
+    use crate::pair_wire as wire;
+    use crate::pairing::fake::{FakeNet, Hub};
+    use crate::pairing::{Nearby, PairNet as _, SERVICE};
+    use crate::sharing::Platform;
+    use crate::sharing::fake::FakeOs;
+    let hub = Arc::new(Hub::default());
+    let net = Arc::new(FakeNet::new(&hub, "192.168.0.139"));
+    let dir = tempfile::tempdir().unwrap();
+    let prefs = PrefStore::memory();
+    flare_settings::machine_prefs::set_sharing_on(&prefs, true);
+    let f = fx_full(
+        1.0,
+        FakeIo::default(),
+        Arc::new(FakeOs::new(Platform::Windows)),
+        prefs,
+        Some((Arc::clone(&net), dir.path().to_path_buf())),
+    );
+    let port = net.port().expect("sharing on: announced with its port");
+    f.ctl.borrow_mut().hide();
+    assert!(!f.b().get_pair_code_open());
+    // A viewer connects and says hello.
+    let viewer = FakeNet::new(&hub, "192.168.0.120");
+    let to = Nearby {
+        id: format!("Max's PC.{SERVICE}"),
+        name: "Max's PC".into(),
+        os: Some(Os::Pc),
+        version: "0.4.2".into(),
+        addrs: vec!["192.168.0.139".parse().unwrap()],
+        port,
+    };
+    let (mut s, _) = viewer.connect(&to).unwrap();
+    wire::send(
+        &mut *s,
+        &serde_json::json!({"t": "hello", "proto": 1, "name": "Max's Mac mini", "os": "mac", "version": "0.4.2"}),
+    )
+    .unwrap();
+    f.settle("the code shows", |f| f.b().get_pair_code_open());
+    let look = f.b().get_pair_code();
+    assert_eq!(look.title.as_str(), "Max's Mac mini wants to connect");
+    assert_eq!(look.line.as_str(), "Enter this code on Max's Mac mini");
+    let code = look.code.to_string();
+    assert!(
+        code.len() == 7 && code.as_bytes()[3] == b' ',
+        "two groups of three: {code}"
+    );
+    assert_eq!(wire::kind(&wire::recv(&mut *s).unwrap()), "shown");
+    // Decline: the dialog closes and the viewer's connection ends.
+    f.b()
+        .invoke_row_button("machines-pair".into(), "decline".into());
+    assert!(!f.b().get_pair_code_open());
+    assert!(wire::recv(&mut *s).is_err(), "the request ended");
 }
