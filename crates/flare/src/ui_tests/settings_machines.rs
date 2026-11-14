@@ -1,8 +1,8 @@
 //! Settings > Machines (remote sessions PR 7), headless, at 100 and 225 percent: the rail lists the page after
 //! Plugins; with no machine it is the "+ Add a machine" row alone, with no subtext; linked machines are a table under a
 //! heading row (logo, name, Address, Flare version, status, a menu with Test and Remove); the add row opens the Add a
-//! machine dialog (machine pairing PR 1, rule 1237) and a failed check is one red line in it; a machine that is Not
-//! linked shows why as one grey line under its row, in plain words when ssh said why (rule 1236), with no tooltip. Every link check runs against an in-memory
+//! machine dialog (machine pairing PR 1, rule 1251) and a failed check is one red line in it; a machine that is Not
+//! linked shows why as one grey line under its row, in plain words when ssh said why (rule 1250), with no tooltip. Every link check runs against an in-memory
 //! stand-in: no ssh.
 
 use std::cell::RefCell;
@@ -330,7 +330,7 @@ impl Fx {
     }
 }
 
-/// Rule 1237: the add row opens the Add a machine dialog over the page (the page keeps its add row); its Machine
+/// Rule 1251: the add row opens the Add a machine dialog over the page (the page keeps its add row); its Machine
 /// drop-down lists the SSH hosts in the code font, then "Type an address"; Add waits for a pick; a failed check is one
 /// red line in the dialog, which stays open; a machine that answers is saved and the dialog closes; "Type an address"
 /// shows the Address field, whose keystrokes reach the page with no rebuild; Cancel and Escape close it. At 100 and
@@ -443,7 +443,7 @@ fn the_add_row_opens_the_dialog_and_a_failed_check_is_one_red_line_in_it() {
     }
 }
 
-/// Rule 1237: the dialog draws only over the Machines page. Another page closes it, and a form that is still open
+/// Rule 1251: the dialog draws only over the Machines page. Another page closes it, and a form that is still open
 /// (a check that runs) never draws over another page or over a hidden Settings tab.
 #[test]
 fn the_dialog_never_draws_over_another_page() {
@@ -462,7 +462,7 @@ fn the_dialog_never_draws_over_another_page() {
     assert!(!f.b().get_machine_add_open(), "hidden with Settings");
 }
 
-/// Rule 1236: a machine whose ssh said why it failed shows that in plain words as the grey line under its row.
+/// Rule 1250: a machine whose ssh said why it failed shows that in plain words as the grey line under its row.
 #[test]
 fn a_machine_whose_ssh_said_why_shows_it_in_plain_words_under_its_row() {
     struct Said(FakeIo);
@@ -504,7 +504,7 @@ fn a_machine_whose_ssh_said_why_shows_it_in_plain_words_under_its_row() {
     assert_eq!(m.badge.as_str(), "Not linked");
 }
 
-/// Rule 1237: the dialog draws in the Dialog look: a 380 px box in the middle of the scrim, "Pick a machine" in the
+/// Rule 1251: the dialog draws in the Dialog look: a 380 px box in the middle of the scrim, "Pick a machine" in the
 /// drop-down, Add dimmed and deaf until it can be pressed, Cancel and a press outside cancel, the drop-down's menu opens
 /// above the dialog and a pick reports its id, "Type an address" grows the box by the Address and User fields, and the
 /// red line grows it by one line. At 100 and 225 percent.

@@ -1,4 +1,4 @@
-//! What ssh said when a link did not come up, in plain words (machine pairing PR 1, rule 1236).
+//! What ssh said when a link did not come up, in plain words (machine pairing PR 1, rule 1250).
 //!
 //! ssh's stderr is no longer thrown away: a link (`remote_link::start_link`) and a Preview tunnel
 //! (`remote_tunnel::open_ssh`) keep its last lines ([`StderrTail`]), and a failed link carries them after
@@ -112,6 +112,41 @@ pub fn keep_line(tail: &mut VecDeque<String>, line: &str) {
     }
 }
 
+/// The most bytes of one line that are held while reading: [`LINE_MAX`] characters of up to 4 bytes each.
+const LINE_BYTES_MAX: usize = LINE_MAX * 4;
+
+/// One line of `r` into `buf`, at most `max` bytes of it: the rest of an over-long line is read and dropped up to its
+/// newline, so a host that sends a huge line (a banner with no newline) never makes Flare hold more than `max` bytes,
+/// and the pipe is still drained. The bytes read, the dropped ones included; 0 at the end.
+pub fn read_line_capped(
+    r: &mut impl BufRead,
+    buf: &mut Vec<u8>,
+    max: usize,
+) -> std::io::Result<usize> {
+    let mut read = 0;
+    loop {
+        let chunk = match r.fill_buf() {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if chunk.is_empty() {
+            return Ok(read);
+        }
+        let (used, done) = match chunk.iter().position(|&b| b == b'\n') {
+            Some(at) => (at + 1, true),
+            None => (chunk.len(), false),
+        };
+        let room = max.saturating_sub(buf.len());
+        buf.extend_from_slice(&chunk[..used.min(room)]);
+        r.consume(used);
+        read += used;
+        if done {
+            return Ok(read);
+        }
+    }
+}
+
 /// ssh's stderr, read on a thread of its own to its end (so ssh never blocks on a full pipe), its last lines kept.
 pub struct StderrTail {
     lines: Arc<Mutex<VecDeque<String>>>,
@@ -128,10 +163,10 @@ impl StderrTail {
             .name("flare-ssh-stderr".into())
             .spawn(move || {
                 let mut r = BufReader::new(r);
-                let mut buf = Vec::new();
+                let mut buf = Vec::with_capacity(LINE_BYTES_MAX);
                 loop {
                     buf.clear();
-                    match r.read_until(b'\n', &mut buf) {
+                    match read_line_capped(&mut r, &mut buf, LINE_BYTES_MAX) {
                         Ok(0) | Err(_) => break,
                         Ok(_) => keep_line(
                             &mut kept.lock().unwrap_or_else(PoisonError::into_inner),
@@ -159,7 +194,7 @@ impl StderrTail {
 mod tests {
     use super::*;
 
-    /// Rule 1236: each thing ssh says when a link fails is one plain line; anything else is no case.
+    /// Rule 1250: each thing ssh says when a link fails is one plain line; anything else is no case.
     #[test]
     fn what_ssh_says_is_sorted_into_one_plain_line() {
         let cases: [(&str, Option<SshProblem>); 19] = [
@@ -303,6 +338,42 @@ mod tests {
             ["one", "ssh: connect to host h port 22: Connection refused"]
         );
         assert_eq!(text.lines().count(), 3);
+        assert_eq!(sort(&text), Some(SshProblem::NotAnswering));
+    }
+
+    /// A host that sends a huge line with no newline (a banner) never makes Flare hold more than one capped line:
+    /// the line is read to its end and dropped past the cap, and the lines after it are still read.
+    #[test]
+    fn a_huge_line_with_no_newline_is_capped_while_it_is_read() {
+        use std::io::Read as _;
+        const HUGE: u64 = 64 << 20;
+        // No newline at all: the whole stream is read, at most `max` bytes are held.
+        let mut r = BufReader::new(std::io::repeat(b'x').take(HUGE));
+        let mut buf = Vec::new();
+        assert_eq!(
+            read_line_capped(&mut r, &mut buf, 16).unwrap(),
+            HUGE as usize
+        );
+        assert_eq!(buf, b"x".repeat(16));
+        buf.clear();
+        assert_eq!(read_line_capped(&mut r, &mut buf, 16).unwrap(), 0);
+        // An over-long line, then ssh's words: the cap ends at the newline and the next line reads whole.
+        let mut r = BufReader::new(std::io::repeat(b'y').take(1000).chain(&b"\nshort\n"[..]));
+        buf.clear();
+        assert_eq!(read_line_capped(&mut r, &mut buf, 16).unwrap(), 1001);
+        assert_eq!(buf, b"y".repeat(16));
+        buf.clear();
+        assert_eq!(read_line_capped(&mut r, &mut buf, 16).unwrap(), 6);
+        assert_eq!(buf, b"short\n");
+        // The tail drains it all and keeps the cut banner and ssh's last line.
+        let stream = std::io::repeat(b'z')
+            .take(HUGE)
+            .chain(&b"\nssh: connect to host h port 22: Connection refused\n"[..]);
+        let tail = StderrTail::read(stream);
+        let text = tail.text(Duration::from_secs(30));
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "z".repeat(LINE_MAX));
         assert_eq!(sort(&text), Some(SshProblem::NotAnswering));
     }
 }

@@ -2150,6 +2150,9 @@ pub(crate) struct KeyPath {
     pub caret: Rc<RefCell<CaretFollower>>,
     /// Codes whose press the app consumed: their release must not reach the shell either.
     pub consumed: RefCell<HashSet<String>>,
+    /// Codes whose press went on to Slint: their release goes there too, or Slint keeps the key held (a modifier
+    /// stays down for its fields until the window loses the focus, rule 1238). Emptied when the focus goes.
+    pub slint_down: RefCell<HashSet<String>>,
     pub app: slint::Weak<AppWindow>,
     /// The grid's cell metrics and size: a wheel turn is placed on a cell with them.
     pub host: Rc<RefCell<GridHost>>,
@@ -2162,6 +2165,25 @@ pub(crate) struct KeyPath {
 pub(crate) type WheelDelta = crate::live::ScrollDelta;
 
 impl KeyPath {
+    pub(crate) fn new(
+        ctl: std::rc::Weak<RefCell<AppCtl>>,
+        front: FrontCell,
+        caret: Rc<RefCell<CaretFollower>>,
+        app: slint::Weak<AppWindow>,
+        host: Rc<RefCell<GridHost>>,
+    ) -> Self {
+        Self {
+            ctl,
+            front,
+            caret,
+            consumed: RefCell::new(HashSet::new()),
+            slint_down: RefCell::new(HashSet::new()),
+            app,
+            host,
+            wheel_accum: RefCell::new(WheelAccum::new()),
+        }
+    }
+
     /// Whether a point (css px) is the terminal's to scroll: the one gate the real wheel and the e2e
     /// wheel share. Over the strip, the sidebar's tab list, the help sheet, a menu or any popup the
     /// wheel stays with Slint (audit 2026-10-20: M5).
@@ -2357,27 +2379,37 @@ pub(crate) fn handle_key(kp: &KeyPath, ev: &KeyEvent) -> EventResult {
     let outcome = if ev.pressed {
         let mut out = KeyOutcome::Slint;
         kp.with_ctl(&mut |c| out = c.on_key(ev));
-        if out == KeyOutcome::Consumed {
-            kp.consumed.borrow_mut().insert(ev.code.clone());
+        match out {
+            KeyOutcome::Consumed => {
+                kp.consumed.borrow_mut().insert(ev.code.clone());
+            }
+            KeyOutcome::Slint => {
+                kp.slint_down.borrow_mut().insert(ev.code.clone());
+            }
+            KeyOutcome::Pty => {}
         }
         out
     } else {
         kp.with_ctl(&mut |c| c.on_key_up(ev));
-        if kp.consumed.borrow_mut().remove(&ev.code) {
-            KeyOutcome::Consumed
-        } else if chrome_focus {
-            KeyOutcome::Slint
-        } else {
-            KeyOutcome::Pty
-        }
+        let consumed = kp.consumed.borrow_mut().remove(&ev.code);
+        let slint_had_press = kp.slint_down.borrow_mut().remove(&ev.code);
+        release_outcome(consumed, slint_had_press, chrome_focus)
     };
+    // A modifier let go reaches Slint unless the app took its press: Slint clears a held modifier only on
+    // its key-up or on a focus loss, so a swallowed one breaks typing in its fields (rule 1238).
+    let modifier_up =
+        !ev.pressed && crate::keymap::is_modifier_code(&ev.code) && outcome != KeyOutcome::Consumed;
     let (action, to_pty) = key_outcome_to_filter(outcome);
     if !to_pty {
         return to_event_result(action);
     }
     let Some(handle) = kp.front.borrow().clone() else {
-        // Nothing to type into (Settings, the start screen): swallow the key.
-        return EventResult::PreventDefault;
+        // Nothing to type into (Settings, the start screen): swallow the key, never a modifier's release.
+        return if modifier_up {
+            EventResult::Propagate
+        } else {
+            EventResult::PreventDefault
+        };
     };
     // AppCtl decided (copy, paste, delete over a selection and the agent's newline are
     // its own); what is left for the shell is typed here, the Mac way on macOS (Cmd never types).
@@ -2404,7 +2436,30 @@ pub(crate) fn handle_key(kp: &KeyPath, ev: &KeyEvent) -> EventResult {
     {
         app.window().request_redraw();
     }
+    if modifier_up {
+        // The shell had the release; Slint lets go of the modifier too.
+        return EventResult::Propagate;
+    }
     EventResult::PreventDefault
+}
+
+/// Pure (rule 1238): where a key's release goes. A key whose press Slint had is let go there, whatever has the keys
+/// now; then a release the app consumed the press of stays the app's; then a Slint field with the keys takes it; else
+/// the shell.
+pub(crate) fn release_outcome(
+    consumed: bool,
+    slint_had_press: bool,
+    chrome_focus: bool,
+) -> KeyOutcome {
+    if slint_had_press {
+        KeyOutcome::Slint
+    } else if consumed {
+        KeyOutcome::Consumed
+    } else if chrome_focus {
+        KeyOutcome::Slint
+    } else {
+        KeyOutcome::Pty
+    }
 }
 
 /// Pure (rule 1113): whether winit's own `Focused` is dropped. macOS under `--e2e` only: the parked
@@ -2418,6 +2473,10 @@ pub(crate) fn e2e_drops_native_focus(mac: bool, e2e: bool) -> bool {
 
 /// The window gained or lost the focus (winit's `Focused`, or the test hook's `Focus`).
 pub(crate) fn handle_focus(kp: &KeyPath, on: bool) {
+    // Slint lets go of every key it held when the window loses the focus: the releases owed to it are void (rule 1238).
+    if !on {
+        kp.slint_down.borrow_mut().clear();
+    }
     // The caret ticks only in a focused window, lit the moment the focus comes back (rule 1233).
     if let Ok(mut h) = kp.host.try_borrow_mut() {
         h.set_window_focus(on, Instant::now());
@@ -2645,15 +2704,13 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
     let mods = Cell::new(ModifiersState::empty());
     let cursor = Cell::new((0.0_f64, 0.0_f64));
     // The key path (and the codes whose press the app consumed) is shared with the e2e glue.
-    let kp = Rc::new(KeyPath {
-        ctl: ctl.clone(),
-        front: front.clone(),
+    let kp = Rc::new(KeyPath::new(
+        ctl.clone(),
+        front.clone(),
         caret,
-        consumed: RefCell::new(HashSet::new()),
-        app: app.as_weak(),
-        host: host.clone(),
-        wheel_accum: RefCell::new(WheelAccum::new()),
-    });
+        app.as_weak(),
+        host.clone(),
+    ));
     let kp_out = kp.clone();
     let reapply = RefCell::new(Reapply::new(
         initial.filter(|i| !i.maximise),

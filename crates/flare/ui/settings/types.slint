@@ -5,7 +5,7 @@ export enum BlockKind { row, wall, about, slint, note, model, machine-head, mach
 
 // face: the font-family for the font select ("" = the UI font)
 export struct SetOption { id: string, name: string, face: string }
-// The Add a machine dialog (machine pairing PR 1, rule 1237): the Machine drop-down's pick and choices, whether "Type an
+// The Add a machine dialog (machine pairing PR 1, rule 1251): the Machine drop-down's pick and choices, whether "Type an
 // address" is picked (the Address and User fields show), what is typed in them, the red line ("" for none), busy while
 // the machine is checked, and whether Add can be pressed.
 export struct MachineAddLook { pick: string, options: [SetOption], typing: bool, address: string, user: string, error: string, busy: bool, can-add: bool }

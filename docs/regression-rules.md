@@ -3802,9 +3802,51 @@ Mac (2026-11-14), so only the blink defaults count. Other non-Windows systems st
 `the_mac_defaults_read_runs_without_a_window` and `the_mac_blink_defaults_set_the_period_and_a_huge_one_is_steady`.
 Source: the macOS parity review of PR #234, 2026-11-14.
 
+## Keys Slint was handed (2026-11-14)
+
+1238. **A key whose press went to Slint has its release go there too, and a modifier's release is never swallowed.**
+After Shift or Ctrl+A in a Settings text field (the Machines Name field, the Find field) or with the panel holding
+the keys, typing broke until the window lost the focus: letters were dropped and Backspace deleted words (Ctrl held),
+or an arrow selected (Shift held). `window::handle_key` sent the press to Slint (`AppCtl::on_key` answers `Slint` with
+Settings in front or the panel focused) but the release to Slint only while `chrome_has_focus`, the find input or (on
+the Mac) the page had the keys; otherwise the release went to the shell or was dropped. Slint keeps its modifier
+state from its own key events and clears it only on a focus loss, so the modifier stayed down. Now `KeyPath` keeps
+`slint_down`, the codes whose press went to Slint: their release goes to Slint whatever has the keys
+(`release_outcome`: Slint's press first, then a press the app consumed, then a Slint field with the keys, else the
+shell). A modifier's release (`keymap::is_modifier_code`) that the app did not consume also reaches Slint after the
+shell had it, and with no shell in front it is let through rather than swallowed. A focus loss empties `slint_down`
+(`handle_focus`), as Slint lets go of every key then. The e2e glue had hidden it: it told Slint the modifiers were up
+on every swallowed release and folded modifiers into chords. Now a lone modifier reaches Slint as that one key, and
+only when `handle_key` lets it through (`slint_modifier_of`; `slint_modifier_releases` is gone), so scenarios take
+the real path. Native: `window::{KeyPath::slint_down, release_outcome, handle_key, handle_focus}`,
+`keymap::is_modifier_code`, `e2e_glue::{slint_key_events, slint_modifier_of}`. Held by
+`after_ctrl_a_in_a_settings_field_backspace_clears_it_and_letters_type`,
+`after_shift_in_a_settings_field_an_arrow_moves_the_caret_without_selecting`,
+`ctrl_a_in_the_panel_leaves_no_ctrl_held_for_the_next_field`,
+`shift_in_the_panel_leaves_no_shift_held_for_the_next_field`,
+`a_shift_release_goes_where_its_press_went_and_a_focus_loss_forgets_it`,
+`a_modifier_release_on_a_terminal_reaches_the_shell_and_slint`, `the_release_follows_the_press_first` and
+`a_chord_with_modifiers_reaches_slint_as_modifier_presses_around_the_key`. Source: Max, 2026-11-14.
+1239. **A shell the session's end kills keeps its tab.** On a Windows restart Windows ends the console processes
+(exit code `DBG_TERMINATE_PROCESS`, `0x40010004`) about 220 ms before Flare gets `WM_ENDSESSION`. Flare took each
+exit for a closed tab, the refresh saved the smaller strip and the session-end flush wrote it: 8 of 9 tabs were lost
+(proven from `diag.jsonl`, 2026-11-14). Now the session-end window sets a process-wide mark on `WM_QUERYENDSESSION`
+and clears it on a cancelled `WM_ENDSESSION` (`wParam == 0`). A shell that ends while the mark is set, or with exit
+code `0x40010004`, closes no tab: the controller holds the tabs (`session_hold`), saves and writes the strip as it
+stands once, and no refresh saves the tabs again for the rest of the run. Unlike `ended` the hold leaves the quit's
+own end of life armed. A refresh also saves nothing while the mark is set. A person's own exit (code 0 or any
+other) outside a session end still closes the tab. macOS: Flare answers the quit at a log out at once and ends
+before the system ends its shells, so the order is not known to bite there; the shared controller code still reads
+`session_ending()`, which on macOS is true for 60 s after `NSWorkspaceWillPowerOffNotification` (macOS says nothing
+when a log out is cancelled, so the mark runs out by itself). Native: `flare_win::session_end::{session_ending,
+DBG_TERMINATE_PROCESS}`, `AppCtl::hold_for_session_end`, the guarded `HostEvent::Exited` arm and `refresh`. Held by
+`shells_the_session_end_kills_keep_every_tab_in_tabs_json`, `a_plain_exit_while_the_session_ends_keeps_the_list`,
+`a_plain_exit_outside_a_session_end_closes_the_tab_and_saves_the_smaller_list`, `exit_closes_the_tab_without_asking`
+and `query_end_session_is_never_a_veto`. Source: diag.jsonl of the 2026-11-14 restart.
+
 ## Machine pairing (2026-11-14)
 
-1235. **A machine in `machines.json` may name its own address, port, key and known-hosts file, and every ssh Flare
+1249. **A machine in `machines.json` may name its own address, port, key and known-hosts file, and every ssh Flare
 runs for it (the link's and the Preview tunnel's) uses them as argv items of their own, with a 5 s connect timeout.**
 Machine pairing PR 1, 2026-11-14 (spec `docs/superpowers/specs/2026-11-14-machine-pairing-design.md`, "Changes to how
 Flare runs ssh"; approved by Max). A machine gains the optional fields `host` (the address ssh connects to; a machine
@@ -3823,11 +3865,13 @@ Held by `a_paired_machines_ssh_uses_its_address_port_key_and_known_hosts_as_argv
 `the_ssh_command_is_argv_items_quoted_for_the_hosts_shell` and
 `the_tunnel_argv_is_the_links_machine_and_never_a_shell_string`. Real ssh: `docs/remote-sessions-manual-checks.md`.
 
-1236. **ssh's stderr is kept, and a link that did not come up says why in plain words.** Machine pairing PR 1,
+1250. **ssh's stderr is kept, and a link that did not come up says why in plain words.** Machine pairing PR 1,
 2026-11-14 (spec, "Plain-words errors"). Before, a link started ssh with stderr on the null device, so every failure
 read "No Flare answered over SSH on <host>." Now `remote_link::start_link` and `remote_tunnel::open_ssh` pipe it to a
 `ssh_problem::StderrTail`: a named thread reads it to its end (so ssh never blocks on a full pipe) and keeps the last 12
-lines, each cut to 400 characters. A link whose `remote.hello` failed with the link down waits up to 1.5 s for ssh to
+lines, each cut to 400 characters. Each line is bounded while it is read (`read_line_capped`, at most 1 600 bytes held):
+the rest of an over-long line is read and dropped up to its newline, so a host that sends a huge line with no newline
+never makes Flare buffer it, and the pipe is still drained. A link whose `remote.hello` failed with the link down waits up to 1.5 s for ssh to
 end and carries its words after `ssh said: ` in the error; a link that could not start ssh because it is not there
 carries `no ssh client: `. `ssh_problem::sort_down` reads only those parts (Flare's own timeout words never match by
 chance) and `machines::failure_line` shows the case. Only ssh's own shapes count, never loose words, because the
@@ -3838,17 +3882,18 @@ list of methods, too many authentication failures: "Not paired with this compute
 host identification changed, no host key known with strict checking: "Its identity changed. Pair again"; `ssh:
 Could not resolve hostname`: "Can't find it on the network"; no ssh client: "This PC is missing Windows' SSH client" (on a Mac
 "This computer has no SSH client"). Anything else keeps the old line. The case is the grey line under the machine's
-row (rule 1205) and the red line in the Add a machine dialog (rule 1237); a tunnel that did not open names it too.
+row (rule 1205) and the red line in the Add a machine dialog (rule 1251); a tunnel that did not open names it too.
 When Add's first try ends in one of these cases, Add stops there (no other Flare path or quoting is tried), so a host
 that is off costs one connect timeout, not one per path. These are lines only; the buttons of the spec's table (Try
 again, Pair again) come with pairing. Held by
 `what_ssh_says_is_sorted_into_one_plain_line`, `only_what_follows_ssh_said_is_sorted`,
 `the_tail_keeps_the_last_lines_trimmed_and_cut`, `the_tail_reads_a_pipe_to_its_end`,
+`a_huge_line_with_no_newline_is_capped_while_it_is_read`,
 `a_failed_check_is_one_line_that_says_what_to_do`, `a_reason_from_ssh_ends_the_add_after_one_try`,
 `a_shells_permission_denied_does_not_end_the_add` and
 `a_machine_whose_ssh_said_why_shows_it_in_plain_words_under_its_row`.
 
-1237. **"+ Add a machine" opens a Flare dialog with a Machine drop-down, not a form in the row's place.** Max approved
+1251. **"+ Add a machine" opens a Flare dialog with a Machine drop-down, not a form in the row's place.** Max approved
 the mockup 2026-11-14 (`docs/superpowers/specs/2026-11-14-machine-pairing-mockup.html`, "Add a machine"). The dialog
 has the Dialog look (`dialog.slint`): a 380 px box centred on the scrim, the title "Add a machine", "Machine" over a
 drop-down that reads "Pick a machine" until a pick, Cancel and Add (`DialogButton`). The drop-down lists the computers
@@ -3858,8 +3903,8 @@ and a `:port` after it are read too (the User field wins over a `user@`, which n
 address with several colons stays whole, and one in brackets may take a port: `[fe80::1]:2222`). Add is dimmed and deaf until a
 machine is picked (and an address typed), and while the check runs it reads "Checking". The machine is checked as
 before (Flare looked for where it may be, rules 1207 and 1208) and saved only once it answered: an SSH host as its
-alias, a typed address as its own `host` with its user and port (rule 1235), named by the host or the address. A
-failed check is one red line (a red dot and the words, rule 1236) and the dialog stays open; a new pick or a keystroke
+alias, a typed address as its own `host` with its user and port (rule 1249), named by the host or the address. A
+failed check is one red line (a red dot and the words, rule 1250) and the dialog stays open; a new pick or a keystroke
 in the Address field clears it. Escape (in the dialog, or one no control took) and a press outside cancel, except
 while a check runs; Enter adds once Add can be pressed. The drop-down's menu is the Settings Select menu's state drawn
 inside the dialog, above it; the window's own Select menu stays closed while the dialog is open (both in `app.slint`
