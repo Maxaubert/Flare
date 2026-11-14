@@ -1,4 +1,4 @@
-//! Machine pairing PR 3 (rules 1242 and 1244): Flare's own SSH key, the `authorized_keys` line a host adds for a paired
+//! Machine pairing PR 3 (rules 1256 and 1258): Flare's own SSH key, the `authorized_keys` line a host adds for a paired
 //! computer, and the host key a viewer pins in Flare's own known-hosts file.
 //!
 //! - **Flare's key** (`id_flare_ed25519` and its `.pub`, in Flare's profile, never in `~/.ssh`): an ed25519 key made the
@@ -7,7 +7,7 @@
 //! - **The host's line**: `ssh-ed25519 <key> flare-pair:<name>`. Only an ed25519 key is taken, with no options in front
 //!   of it; the same key again replaces its old line.
 //! - **The pin**: `<address> <type> <key>` in `flare_known_hosts` in the profile, which a paired machine's ssh reads
-//!   with `StrictHostKeyChecking=yes` (rule 1235): ssh never asks, and never trusts another key for that address.
+//!   with `StrictHostKeyChecking=yes` (rule 1249): ssh never asks, and never trusts another key for that address.
 //!
 //! The text work is pure and tested; the file writes are BLOCKING (a worker's).
 
@@ -252,7 +252,7 @@ impl PairFiles {
         self.profile.join(KNOWN_HOSTS_FILE)
     }
 
-    /// BLOCKING: Flare's public key line, the key made first when there is none (rule 1242). A key file whose public
+    /// BLOCKING: Flare's public key line, the key made first when there is none (rule 1256). A key file whose public
     /// half is missing or broken is made again.
     pub fn ensure_key(&self, comment: &str) -> Result<String, String> {
         let key = self.key_path();
@@ -309,7 +309,7 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     }
 }
 
-/// BLOCKING: adds `line` to the user's own `authorized_keys` under `home` (rule 1244): `~/.ssh` made with mode 700 and
+/// BLOCKING: adds `line` to the user's own `authorized_keys` under `home` (rule 1258): `~/.ssh` made with mode 700 and
 /// the file with mode 600 off Windows (sshd's StrictModes), the same key's older line replaced.
 pub fn add_user_key(home: &Path, line: &str) -> Result<(), String> {
     let dir = home.join(".ssh");
@@ -354,7 +354,7 @@ pub fn remove_user_key(home: &Path, key: &str) -> Result<bool, String> {
 mod tests {
     use super::*;
 
-    /// Rule 1242: Flare's key is an OpenSSH ed25519 key with no passphrase, in the format ssh reads, and its public
+    /// Rule 1256: Flare's key is an OpenSSH ed25519 key with no passphrase, in the format ssh reads, and its public
     /// line names the same key.
     #[test]
     fn flares_key_is_an_openssh_ed25519_key_whose_public_line_matches() {
@@ -408,7 +408,7 @@ mod tests {
         }
     }
 
-    /// Rule 1244: the host takes one plain ed25519 key with no options, tagged `flare-pair:<name>`.
+    /// Rule 1258: the host takes one plain ed25519 key with no options, tagged `flare-pair:<name>`.
     #[test]
     fn the_authorized_keys_line_is_one_plain_ed25519_key_tagged_with_the_name() {
         let (_, line) = openssh_key_files(&[9u8; 32], "x", 1);
@@ -479,7 +479,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "");
     }
 
-    /// Rule 1245: the viewer pins the host's key for the address it reached, in Flare's own file; pairing again
+    /// Rule 1259: the viewer pins the host's key for the address it reached, in Flare's own file; pairing again
     /// replaces the pin, and no other address's line is touched.
     #[test]
     fn the_host_key_is_pinned_for_its_address_alone() {

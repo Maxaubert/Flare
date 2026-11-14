@@ -1048,7 +1048,7 @@ fn the_sharing_dialog_draws_its_box_its_line_and_its_buttons() {
     }
 }
 
-/// Rule 1243 (mockup "The code"): the host's code dialog draws in the Dialog look, a 380 px box in the middle, with
+/// Rule 1257 (mockup "The code"): the host's code dialog draws in the Dialog look, a 380 px box in the middle, with
 /// the code in large digits across its middle; Decline and Escape answer, a press outside does not. At 100 and 225
 /// percent.
 #[test]
@@ -1113,7 +1113,7 @@ fn the_code_dialog_draws_the_code_in_the_middle_and_decline_answers() {
     }
 }
 
-/// Rule 1243 (mockup "Add a machine"): a nearby computer picked shows "Code shown on <name>" under the drop-down,
+/// Rule 1257 (mockup "Add a machine"): a nearby computer picked shows "Code shown on <name>" under the drop-down,
 /// with the keys in it, and its logo before its name in the drop-down.
 #[test]
 fn a_nearby_computer_shows_its_logo_and_the_code_field() {
@@ -1179,7 +1179,7 @@ fn a_nearby_computer_shows_its_logo_and_the_code_field() {
     }
 }
 
-/// Rules 1242 and 1243: with Computer sharing on, a computer that asks makes "<name> wants to connect" show with its
+/// Rules 1256 and 1257: with Computer sharing on, a computer that asks makes "<name> wants to connect" show with its
 /// code, over any tab (here with the Settings tab hidden); Decline closes it and ends the request.
 #[test]
 fn the_hosts_code_dialog_shows_over_any_tab_and_decline_ends_the_request() {

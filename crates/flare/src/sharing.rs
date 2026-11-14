@@ -106,13 +106,13 @@ pub trait SharingOs: Send + Sync {
     /// Waits between two looks at the port.
     fn wait(&self, ms: u64);
     /// Windows: this account is in the Administrators group, so sshd reads `administrators_authorized_keys` for it
-    /// (machine pairing PR 3, rule 1244).
+    /// (machine pairing PR 3, rule 1258).
     fn windows_admin(&self) -> bool;
-    /// Adds a line to the user's own `authorized_keys` (rule 1244).
+    /// Adds a line to the user's own `authorized_keys` (rule 1258).
     fn add_user_key(&self, line: &str) -> Result<(), String>;
-    /// Removes the line holding `key` from the user's own `authorized_keys` (rule 1246). Whether one went.
+    /// Removes the line holding `key` from the user's own `authorized_keys` (rule 1260). Whether one went.
     fn remove_user_key(&self, key: &str) -> Result<bool, String>;
-    /// The SSH server's public host key line (ed25519), which a viewer pins (rule 1245).
+    /// The SSH server's public host key line (ed25519), which a viewer pins (rule 1259).
     fn ssh_host_key(&self) -> Result<String, String>;
     /// The account's user name, which a viewer's ssh logs in as.
     fn user_name(&self) -> String;
@@ -465,7 +465,7 @@ pub fn strip_flare_keys(text: &str) -> (String, usize) {
 }
 
 /// The elevated script that adds a paired computer's key to Windows' `administrators_authorized_keys` (machine pairing
-/// PR 3, rule 1244), reporting into `result`: the same key's older line goes, the line is added, and the file gets the
+/// PR 3, rule 1258), reporting into `result`: the same key's older line goes, the line is added, and the file gets the
 /// access sshd wants (Administrators and SYSTEM only, by SID, so any Windows language works). `key` is the key's base64
 /// field, checked by the caller.
 pub fn windows_add_key_script(result: &Path, line: &str, key: &str) -> String {
@@ -473,7 +473,7 @@ pub fn windows_add_key_script(result: &Path, line: &str, key: &str) -> String {
     let line = ps_quote(line);
     let key = ps_quote(key);
     format!(
-        r#"# Flare: let a paired computer in (rule 1244). Runs elevated.
+        r#"# Flare: let a paired computer in (rule 1258). Runs elevated.
 $ErrorActionPreference = 'Stop'
 $result = {result}
 $out = New-Object System.Collections.Generic.List[string]
@@ -497,12 +497,12 @@ try {{
     )
 }
 
-/// The elevated script that removes one paired computer's key from `administrators_authorized_keys` (rule 1246).
+/// The elevated script that removes one paired computer's key from `administrators_authorized_keys` (rule 1260).
 pub fn windows_remove_key_script(result: &Path, key: &str) -> String {
     let result = ps_quote(&result.to_string_lossy());
     let key = ps_quote(key);
     format!(
-        r#"# Flare: remove a paired computer's key (rule 1246). Runs elevated.
+        r#"# Flare: remove a paired computer's key (rule 1260). Runs elevated.
 $ErrorActionPreference = 'Stop'
 $result = {result}
 $out = New-Object System.Collections.Generic.List[string]
@@ -531,7 +531,7 @@ pub fn plain_key(key: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='))
 }
 
-/// BLOCKING: lets a paired computer in (rule 1244): on a Windows account in Administrators, an elevated script (a UAC
+/// BLOCKING: lets a paired computer in (rule 1258): on a Windows account in Administrators, an elevated script (a UAC
 /// prompt) writes `administrators_authorized_keys`; any other account's own `~/.ssh/authorized_keys` takes the line
 /// with no prompt. True when the admin file took it; else the one line that says why not.
 pub fn install_key(os: &dyn SharingOs, line: &str) -> Result<bool, String> {
@@ -563,7 +563,7 @@ pub fn install_key(os: &dyn SharingOs, line: &str) -> Result<bool, String> {
     Ok(false)
 }
 
-/// BLOCKING: removes a paired computer's key (rule 1246): from the user's own file, and, when a key went into the
+/// BLOCKING: removes a paired computer's key (rule 1260): from the user's own file, and, when a key went into the
 /// admin file (`admin`), from there with one elevated script.
 pub fn remove_key(os: &dyn SharingOs, key: &str, admin: bool) -> Result<(), String> {
     if let Err(e) = os.remove_user_key(key) {
@@ -913,19 +913,19 @@ impl Sharing {
         self.phase
     }
 
-    /// A line for the sharing dialog with OK (a key that could not be removed, rule 1246), unless it asks something.
+    /// A line for the sharing dialog with OK (a key that could not be removed, rule 1260), unless it asks something.
     pub fn notice(&mut self, line: String) {
         if self.ask.is_none() {
             self.ask = Some(SharingAsk::Notice(line));
         }
     }
 
-    /// A paired computer's key went into Windows' `administrators_authorized_keys` (rule 1244).
+    /// A paired computer's key went into Windows' `administrators_authorized_keys` (rule 1258).
     pub fn admin_keys(&self) -> bool {
         prefs::admin_keys(&self.prefs)
     }
 
-    /// Pairing put a key into `administrators_authorized_keys`: turning off cleans it up elevated (rule 1241).
+    /// Pairing put a key into `administrators_authorized_keys`: turning off cleans it up elevated (rule 1255).
     pub fn note_admin_keys(&self) {
         prefs::set_admin_keys(&self.prefs, true);
     }

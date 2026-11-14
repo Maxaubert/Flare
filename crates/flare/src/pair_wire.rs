@@ -1,4 +1,4 @@
-//! Machine pairing PR 3 (rule 1243): the pairing wire. A viewer and a host talk over one TCP connection in frames (a
+//! Machine pairing PR 3 (rule 1257): the pairing wire. A viewer and a host talk over one TCP connection in frames (a
 //! 4-byte big-endian length, then at most [`MAX_FRAME`] bytes of JSON). The 6-digit code never crosses it:
 //!
 //! 1. viewer: `{"t":"hello","proto":1,"name","os","version"}`; host: `{"t":"shown"}` once its dialog shows a fresh code
@@ -212,7 +212,7 @@ pub enum AttemptEnd {
     Gone(String),
 }
 
-/// One viewer attempt with the typed `code` (rule 1243): SPAKE2 side A, then the confirmations.
+/// One viewer attempt with the typed `code` (rule 1257): SPAKE2 side A, then the confirmations.
 pub fn viewer_attempt<S: Read + Write + ?Sized>(
     s: &mut S,
     code: &str,
@@ -265,7 +265,7 @@ pub enum HostEnd {
     Gone(String),
 }
 
-/// The host's side of the attempts with its `code` (rule 1243): up to [`MAX_TRIES`] SPAKE2 runs; each wrong code is
+/// The host's side of the attempts with its `code` (rule 1257): up to [`MAX_TRIES`] SPAKE2 runs; each wrong code is
 /// answered `wrong` with the tries left and calls `strike` with them; the right one gives the channel.
 pub fn host_attempts<S: Read + Write + ?Sized>(
     s: &mut S,
@@ -401,7 +401,7 @@ pub(crate) mod pipe {
 mod tests {
     use super::*;
 
-    /// Rule 1243: frames are a length and the bytes; a frame over the limit is refused both ways.
+    /// Rule 1257: frames are a length and the bytes; a frame over the limit is refused both ways.
     #[test]
     fn a_frame_is_a_length_and_its_bytes_and_a_long_one_is_refused() {
         let mut buf = Vec::new();
@@ -449,7 +449,7 @@ mod tests {
         (v, t)
     }
 
-    /// Rule 1243: the right code gives both ends the same sealed channel; a frame sealed one way opens the other way
+    /// Rule 1257: the right code gives both ends the same sealed channel; a frame sealed one way opens the other way
     /// only, and the code never crosses the pipe.
     #[test]
     fn the_right_code_gives_both_ends_one_sealed_channel() {
@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(ch.recv(&mut v).unwrap()["ok"], true);
     }
 
-    /// Rule 1243: a wrong code ends that attempt with the tries left; the right code after it still pairs.
+    /// Rule 1257: a wrong code ends that attempt with the tries left; the right code after it still pairs.
     #[test]
     fn a_wrong_code_ends_the_attempt_and_the_right_one_after_it_pairs() {
         let (mut v, t) = host_on_pipe("482913");
@@ -480,7 +480,7 @@ mod tests {
         assert_eq!(strikes, [2]);
     }
 
-    /// Rule 1243: three wrong codes close the host's window: the third answer says none is left and the host ends.
+    /// Rule 1257: three wrong codes close the host's window: the third answer says none is left and the host ends.
     #[test]
     fn three_wrong_codes_close_the_window() {
         let (mut v, t) = host_on_pipe("482913");
@@ -501,7 +501,7 @@ mod tests {
         ));
     }
 
-    /// Rule 1243: a host that does not know the code cannot prove it: its confirmation fails on the viewer, which
+    /// Rule 1257: a host that does not know the code cannot prove it: its confirmation fails on the viewer, which
     /// gets no channel (a stranger in between learns nothing it can use).
     #[test]
     fn a_host_that_does_not_know_the_code_is_not_trusted() {
@@ -529,7 +529,7 @@ mod tests {
         t.join().unwrap();
     }
 
-    /// Rule 1243: a sealed frame that is replayed or changed does not open.
+    /// Rule 1257: a sealed frame that is replayed or changed does not open.
     #[test]
     fn a_replayed_or_changed_sealed_frame_does_not_open() {
         let k = keys_of(b"shared secret");

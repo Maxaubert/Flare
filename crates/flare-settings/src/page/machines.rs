@@ -14,7 +14,7 @@
 //! sharing**, whose subtext is fixed: it never changes to report what the setup is doing. While the setup runs (or
 //! turning off cleans up) the switch is dimmed and deaf.
 //!
-//! Machine pairing PR 3 (rules 1242 to 1246): the drop-down's first choices are the computers with Computer sharing on
+//! Machine pairing PR 3 (rules 1256 to 1260): the drop-down's first choices are the computers with Computer sharing on
 //! found nearby, each with its logo; picking one shows "Code shown on <name>" ([`AddForm::code_for`]). The computers
 //! paired to reach this one follow the machines in the table ([`INCOMING_PREFIX`]).
 //!
@@ -478,7 +478,7 @@ mod tests {
         assert!(!form("studio", "", false).typing());
     }
 
-    /// Rule 1243: a nearby computer can be added once it shows its code and six digits are typed.
+    /// Rule 1257: a nearby computer can be added once it shows its code and six digits are typed.
     #[test]
     fn a_nearby_computer_can_be_added_once_it_shows_its_code_and_six_digits_are_typed() {
         let form = |ready: bool, code: &str, busy: bool| AddForm {

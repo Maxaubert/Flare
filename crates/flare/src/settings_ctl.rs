@@ -606,7 +606,7 @@ pub fn to_slint_machine(m: &flare_settings::page::machines::MachineRow, y: f64, 
 }
 
 /// The Machine drop-down's choices as the Select menu draws them: the SSH hosts in `mono` (the code font), the others
-/// in the UI font (machine pairing PR 1, rule 1237); the nearby computers first, each with its system's logo (PR 3).
+/// in the UI font (machine pairing PR 1, rule 1251); the nearby computers first, each with its system's logo (PR 3).
 pub fn machine_choice_opts(
     nearby: &[flare_settings::page::machines::NearbyChoice],
     hosts: &[String],
@@ -627,7 +627,7 @@ pub fn machine_choice_opts(
         .collect()
 }
 
-/// The host's code dialog's look (machine pairing PR 3, rule 1243): "<name> wants to connect", the code, and "Enter
+/// The host's code dialog's look (machine pairing PR 3, rule 1257): "<name> wants to connect", the code, and "Enter
 /// this code on <name>".
 pub fn pair_code_look(p: &crate::pairing::Prompt) -> crate::PairCodeLook {
     let w = crate::pairing::prompt_words(p);
@@ -638,7 +638,7 @@ pub fn pair_code_look(p: &crate::pairing::Prompt) -> crate::PairCodeLook {
     }
 }
 
-/// The Add a machine dialog's look (machine pairing PR 1, rule 1237): the pick and the choices, the typed address and
+/// The Add a machine dialog's look (machine pairing PR 1, rule 1251): the pick and the choices, the typed address and
 /// user, the red line, `busy` while the machine is checked, and whether Add can be pressed.
 pub fn machine_add_look(
     form: &flare_settings::page::machines::AddForm,
@@ -1347,7 +1347,7 @@ impl SettingsCtl {
         }
     }
 
-    /// The host's code dialog into the bridge (rule 1243): open while a request shows its code, over whatever tab is
+    /// The host's code dialog into the bridge (rule 1257): open while a request shows its code, over whatever tab is
     /// in front (the person may be anywhere in Flare), whether Settings is open or not.
     fn push_pair_code(&self, app: &AppWindow) {
         let b = app.global::<SettingsBridge>();
@@ -1993,14 +1993,14 @@ impl SettingsCtl {
             self.machines_button(button);
             return;
         }
-        // The host's code dialog's Decline (machine pairing PR 3, rule 1243).
+        // The host's code dialog's Decline (machine pairing PR 3, rule 1257).
         if row == flare_settings::page::machines::PAIR_ROW {
             if button == flare_settings::page::machines::DECLINE_BUTTON {
                 self.pair_decline();
             }
             return;
         }
-        // The sharing dialog's buttons (rules 1240 and 1241).
+        // The sharing dialog's buttons (rules 1254 and 1255).
         if row == flare_settings::page::machines::SHARING_ROW {
             if let Some(m) = self.machines.as_mut() {
                 m.sharing_button(button);
@@ -2097,7 +2097,7 @@ impl SettingsCtl {
             ));
         }
         let id = row.strip_prefix(MACHINE_PREFIX)?;
-        // A computer that reaches this one has no link to test from here: Remove only (rule 1246).
+        // A computer that reaches this one has no link to test from here: Remove only (rule 1260).
         if id.starts_with(flare_settings::page::machines::INCOMING_PREFIX) {
             return Some((String::new(), opts_of(&[(REMOVE_CHOICE, "Remove")])));
         }

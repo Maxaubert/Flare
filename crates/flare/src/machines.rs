@@ -145,7 +145,7 @@ pub fn machines_json(machines: &[Machine]) -> String {
     serde_json::to_string_pretty(&json!({"machines": list})).unwrap_or_default()
 }
 
-/// A computer paired to reach this one (machine pairing PR 3, rule 1246): this computer has its key in an
+/// A computer paired to reach this one (machine pairing PR 3, rule 1260): this computer has its key in an
 /// `authorized_keys` file, and shows it in Linked machines. It is never a machine to open a tab on.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Incoming {
@@ -435,7 +435,7 @@ mod tests {
         assert_eq!(names, ["machines.json"]);
     }
 
-    /// Rule 1246: the computers that reach this one read back as written; one whose key is no plain base64 (it would
+    /// Rule 1260: the computers that reach this one read back as written; one whose key is no plain base64 (it would
     /// reach a script) or whose id is no plain word is left out.
     #[test]
     fn the_computers_that_reach_this_one_read_back_and_a_strange_key_is_left_out() {

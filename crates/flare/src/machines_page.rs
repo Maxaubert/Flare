@@ -50,7 +50,7 @@ pub trait MachinesIo: Send + Sync {
     fn ssh_hosts(&self) -> Vec<String>;
     /// `remote.hello` over the machine's link.
     fn probe(&self, m: &Machine) -> Result<HelloFacts, LinkError>;
-    /// The computers paired to reach this one (machine pairing PR 3, rule 1246).
+    /// The computers paired to reach this one (machine pairing PR 3, rule 1260).
     fn list_in(&self) -> Vec<Incoming> {
         Vec::new()
     }
@@ -203,7 +203,7 @@ pub struct MachinesPage {
     loading: bool,
     /// This computer's Computer sharing switch (machine pairing PR 2, rule 1252).
     sharing: Sharing,
-    /// The computers paired to reach this one (machine pairing PR 3, rule 1246).
+    /// The computers paired to reach this one (machine pairing PR 3, rule 1260).
     incoming: Vec<Incoming>,
     /// Pairing: the nearby computers, the viewer's request, the host's listener and code dialog (PR 3).
     pairing: Pairing,
@@ -362,14 +362,14 @@ impl MachinesPage {
         &self.pairing
     }
 
-    /// The host listens and is announced exactly while Computer sharing is on (rule 1242).
+    /// The host listens and is announced exactly while Computer sharing is on (rule 1256).
     fn sync_host(&mut self) {
         let on = self.sharing.is_on();
         self.pairing.host(on, &self.io);
     }
 
     /// The Computer sharing switch was flipped. Turning it off forgets the computers that reached this one: their keys
-    /// go with the clean up (rule 1241).
+    /// go with the clean up (rule 1255).
     pub fn sharing_switch(&mut self, on: bool) {
         let was = self.sharing.is_on();
         self.sharing.switch(on);
@@ -397,7 +397,7 @@ impl MachinesPage {
         self.sync_host();
     }
 
-    /// Decline in the host's code dialog (or Escape there): the request ends (rule 1243).
+    /// Decline in the host's code dialog (or Escape there): the request ends (rule 1257).
     pub fn decline(&mut self) {
         self.pairing.decline();
     }
@@ -424,7 +424,7 @@ impl MachinesPage {
                     }
                 })
                 .chain(self.incoming.iter().map(|m| MachineRow {
-                    // A computer that reaches this one is linked while its key is here (rule 1246).
+                    // A computer that reaches this one is linked while its key is here (rule 1260).
                     id: format!("{INCOMING_PREFIX}{}", m.id),
                     name: m.name.clone(),
                     os: os_of(m.kind),
@@ -511,7 +511,7 @@ impl MachinesPage {
     }
 
     /// The ⋯ menu's Remove: the list without it, saved on a worker. A computer that reaches this one goes with its key
-    /// (rule 1246).
+    /// (rule 1260).
     pub fn remove(&mut self, id: &str) {
         if let Some(id) = id.strip_prefix(INCOMING_PREFIX) {
             let Some(gone) = self.incoming.iter().find(|m| m.id == id).cloned() else {
@@ -550,8 +550,8 @@ impl MachinesPage {
         });
     }
 
-    /// "+ Add a machine": the dialog opens with nothing picked ("Pick a machine"), Add waiting for a pick (rule 1237).
-    /// The computers with Computer sharing on are looked for while it is open (rule 1242).
+    /// "+ Add a machine": the dialog opens with nothing picked ("Pick a machine"), Add waiting for a pick (rule 1251).
+    /// The computers with Computer sharing on are looked for while it is open (rule 1256).
     pub fn open_form(&mut self) {
         self.add = AddForm {
             open: true,
@@ -616,7 +616,7 @@ impl MachinesPage {
         if self.add.busy || !self.add.open {
             return;
         }
-        // A nearby computer: the typed code goes to its request (rule 1243).
+        // A nearby computer: the typed code goes to its request (rule 1257).
         if self.add.pairing() {
             if !self.add.can_add() {
                 return;
@@ -780,7 +780,7 @@ impl MachinesPage {
         true
     }
 
-    /// Pairing's answers (rules 1242 to 1246). True when the page should be drawn again.
+    /// Pairing's answers (rules 1256 to 1260). True when the page should be drawn again.
     fn on_pair(&mut self, m: PairMsg) -> bool {
         match m {
             PairMsg::Nearby(list) => {
@@ -809,7 +809,7 @@ impl MachinesPage {
                         (self.post)(UiMsg::Machines(list.clone()));
                         self.machines = list;
                         self.add = AddForm::default();
-                        // The new machine is checked over ssh as any other (rule 1245).
+                        // The new machine is checked over ssh as any other (rule 1259).
                         self.checks.remove(&id);
                         self.check(vec![id]);
                     }

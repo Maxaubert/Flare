@@ -4045,7 +4045,7 @@ leaves the server Flare's, so the next turn off asks again. Held by
 `a_mac_stops_remote_login_and_says_so_when_it_stays_on`, `the_windows_off_script_removes_only_what_flare_added`,
 `only_the_keys_flare_added_are_removed` and `turning_sharing_off_asks_to_stop_flares_server`.
 
-1242. **Computer sharing on means this computer is announced and takes pairing requests; off means neither. Flare's
+1256. **Computer sharing on means this computer is announced and takes pairing requests; off means neither. Flare's
 own SSH key is made the first time pairing needs it, in Flare's profile, and its private half never leaves that file.**
 Machine pairing PR 3, 2026-11-14 (spec, "What happens underneath"; mockup, "Computer sharing" and "Add a machine").
 While the switch is on (`Sharing::is_on`, not while it is on its way on or off), `Pairing::host` listens on a random TCP
@@ -4064,7 +4064,7 @@ every test the network is `NoPairNet` or the in-memory fake: nothing is announce
 `flares_key_is_an_openssh_ed25519_key_whose_public_line_matches`, `the_key_is_made_once_and_read_back_after` and
 `a_nearby_computer_shows_its_logo_and_the_code_field`.
 
-1243. **Pairing is a 6-digit code typed once, proven with SPAKE2: the code never crosses the network, a wrong code ends
+1257. **Pairing is a 6-digit code typed once, proven with SPAKE2: the code never crosses the network, a wrong code ends
 that attempt, three wrong codes close the window, and nothing is sent until both ends proved the code.** Machine
 pairing PR 3, 2026-11-14 (spec, "What happens underneath"; mockup, "The code" and "Problems"). The wire
 (`pair_wire`) is frames of a 4-byte big-endian length and at most 16 KiB of JSON. The viewer says `hello` (protocol 1,
@@ -4092,7 +4092,7 @@ side's dialog closes or says "<name> declined.". A request waits at most 5 minut
 `the_code_dialog_draws_the_code_in_the_middle_and_decline_answers` and
 `the_hosts_code_dialog_shows_over_any_tab_and_decline_ends_the_request`.
 
-1244. **The host adds only one plain ed25519 key, with no options, to the right `authorized_keys`, tagged
+1258. **The host adds only one plain ed25519 key, with no options, to the right `authorized_keys`, tagged
 `flare-pair:<name>`.** Machine pairing PR 3, 2026-11-14 (spec; research, "Authorized keys"). Over the confirmed
 channel the viewer sends Flare's public key and its name; `authorized_line` refuses anything but `ssh-ed25519 <key>`
 whose blob names ed25519 and holds 32 bytes (no `command=` or other option, no second line), and adds the comment
@@ -4100,7 +4100,7 @@ whose blob names ed25519 and holds 32 bytes (no `command=` or other option, no s
 (`whoami /groups` lists S-1-5-32-544), one elevated script (`windows_add_key_script`, the UAC prompt) writes
 `%ProgramData%\ssh\administrators_authorized_keys` (the same key's older line replaced) and runs `icacls /inheritance:r
 /grant *S-1-5-32-544:F /grant *S-1-5-18:F` (SIDs, so any Windows language), and `flare.machines.adminKeys` is set so
-turning sharing off cleans it up elevated (rule 1241); a declined prompt adds nothing and the viewer reads "Windows did
+turning sharing off cleans it up elevated (rule 1255); a declined prompt adds nothing and the viewer reads "Windows did
 not allow the change, so the computer was not added." Any other account writes its own `~/.ssh/authorized_keys` with
 no prompt (`add_user_key`; off Windows `~/.ssh` is 700 and the file 600); pairing the same key again replaces its line
 and every other line stays. The key's base64 reaches a script only when it is base64's letters (`plain_key`). Held by
@@ -4109,19 +4109,19 @@ and every other line stays. The key's base64 reaches a script only when it is ba
 `a_user_key_file_is_written_with_its_folder_and_the_key_removed_again` and
 `an_admin_account_adds_the_key_with_one_elevated_script`.
 
-1245. **The viewer pins the host's SSH key in Flare's own known-hosts file for the address it reached, and saves the
+1259. **The viewer pins the host's SSH key in Flare's own known-hosts file for the address it reached, and saves the
 machine so ssh uses Flare's key, that file and strict checking.** Machine pairing PR 3, 2026-11-14 (spec, "Changes to
 how Flare runs ssh"). The host answers with its SSH server's public key (`ssh_host_ed25519_key.pub`), its user name,
 Flare's own path there, its system, name and version. The viewer takes a host key of `HOST_KEY_TYPES` only, a user that
 is one argv word and a Flare path with no quote or control character, else says "<name> answered in a way Flare
 cannot use." and saves nothing. The pin is `<address> <type> <key>` (`[address]:port` off port 22) in
 `flare_known_hosts` in the profile; pairing again replaces that address's line and no other. The machine is saved
-with `host` (the address it reached), `user`, `flare`, `kind`, `key` (Flare's key file) and `known_hosts` (rule 1235's
+with `host` (the address it reached), `user`, `flare`, `kind`, `key` (Flare's key file) and `known_hosts` (rule 1249's
 fields), keeping its id when the same address or name was paired before, and is then checked over ssh like any other
 (`-o IdentitiesOnly=yes -i <key> -o UserKnownHostsFile=<file> -o StrictHostKeyChecking=yes`). Held by
 `the_host_key_is_pinned_for_its_address_alone` and `the_right_code_pairs_and_both_sides_keep_the_other`.
 
-1246. **Both computers list the other in Linked machines; a computer that reaches this one is no machine to open a
+1260. **Both computers list the other in Linked machines; a computer that reaches this one is no machine to open a
 tab on, and removing it removes its key.** Machine pairing PR 3, 2026-11-14 (mockup, "Linked"). The host keeps each
 paired viewer in `machines_in.json` in its profile (`Incoming`: id, name, system, the address it paired from, the Flare
 version it said, and its key's base64; the same key again replaces its entry; an entry whose key is not plain base64
@@ -4129,13 +4129,13 @@ is dropped when read). Its rows follow the machines in the table with the row id
 and a ⋯ menu with Remove only (no Test: this computer has no link to it); they never reach the + menu or `--on`.
 Remove takes its key out of the user's own `authorized_keys`, and out of `administrators_authorized_keys` with one
 elevated script when a key went there (`windows_remove_key_script`); a failure is the sharing dialog's one line.
-Turning Computer sharing off empties the list (rule 1241 removes the keys). Held by
+Turning Computer sharing off empties the list (rule 1255 removes the keys). Held by
 `the_computers_that_reach_this_one_read_back_and_a_strange_key_is_left_out`,
 `removing_a_computer_that_reaches_this_one_removes_its_key` and
 `two_computers_pair_from_the_dialog_and_list_each_other`.
 
-1247. **A pairing request that ends after a wrong code, without pairing, locks the host for 30 s, like three wrong
-codes do.** Found 2026-11-14 in the review of machine pairing PR 3. Rule 1243 locked the host only after three wrong
+1261. **A pairing request that ends after a wrong code, without pairing, locks the host for 30 s, like three wrong
+codes do.** Found 2026-11-14 in the review of machine pairing PR 3. Rule 1257 locked the host only after three wrong
 codes in one connection, and every new connection gets a fresh code. So a stranger on the network could guess once,
 hang up, connect again at once and guess again: unlimited guesses, one per fresh code, held back only by how fast the
 host's dialog pops up. Now any request with a wrong code that ends unpaired (hung up, Decline, Cancel) sets the same

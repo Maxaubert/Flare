@@ -202,7 +202,7 @@ installed or not, sshd running or not, Remote Login on or off).
 - [ ] Mac release build: the first launch after this PR shows no local network prompt yet (nothing browses until PR
   3); `plutil -p Flare.app/Contents/Info.plist` lists `NSLocalNetworkUsageDescription` and `NSBonjourServices`.
 
-## Machine pairing PR 3 (rules 1242 to 1246, 2026-11-14)
+## Machine pairing PR 3 (rules 1256 to 1260, 2026-11-14)
 
 Run these between Max's PC and Max's Mac on the home network, with Computer sharing working on the machine to reach
 (the PR 2 lines above). Note both Flare versions, the macOS version and whether the Windows account is an

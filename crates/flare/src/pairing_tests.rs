@@ -99,7 +99,7 @@ fn next<T>(rx: &std::sync::mpsc::Receiver<T>) -> T {
     rx.recv_timeout(Duration::from_secs(10)).expect("an event") // sync-ok: a test waits for its threads and reads its own files
 }
 
-/// Rules 1243 to 1246: the whole exchange over an in-memory pipe. The host shows a code; the right code gives the
+/// Rules 1257 to 1260: the whole exchange over an in-memory pipe. The host shows a code; the right code gives the
 /// channel; the host adds the viewer's key (a standard account: its own file, no prompt) and keeps it as a computer
 /// that reaches it; the viewer pins the host key in Flare's own file and saves the machine with its address, user,
 /// key and known hosts.
@@ -179,7 +179,7 @@ fn the_right_code_pairs_and_both_sides_keep_the_other() {
     }
 }
 
-/// Rule 1244: on a Windows account in Administrators the key goes into `administrators_authorized_keys` through one
+/// Rule 1258: on a Windows account in Administrators the key goes into `administrators_authorized_keys` through one
 /// elevated script that keeps only Administrators and SYSTEM on the file (by SID); a declined prompt adds nothing and
 /// the viewer hears why.
 #[test]
@@ -240,7 +240,7 @@ fn an_admin_account_adds_the_key_with_one_elevated_script() {
     assert!(view_io.list().is_empty());
 }
 
-/// Rule 1243: a wrong code is "Wrong code" and the request stays; the third wrong code closes the host's window.
+/// Rule 1257: a wrong code is "Wrong code" and the request stays; the third wrong code closes the host's window.
 #[test]
 fn wrong_codes_say_so_and_the_third_closes_the_window() {
     let dir = tempfile::tempdir().unwrap();
@@ -282,7 +282,7 @@ fn wrong_codes_say_so_and_the_third_closes_the_window() {
     );
 }
 
-/// Rule 1243: a host that speaks another pairing protocol is refused in one line.
+/// Rule 1257: a host that speaks another pairing protocol is refused in one line.
 #[test]
 fn another_protocol_is_refused_in_one_line() {
     let (mut v, mut h) = pipe::pair();
@@ -310,7 +310,7 @@ fn another_protocol_is_refused_in_one_line() {
     );
 }
 
-/// Rule 1242: an announcement is a nearby computer only with the pairing protocol and a port; its TXT name wins over
+/// Rule 1256: an announcement is a nearby computer only with the pairing protocol and a port; its TXT name wins over
 /// the instance name, IPv4 comes first and loopback goes.
 #[test]
 fn an_announcement_is_a_nearby_computer_with_its_name_system_and_addresses() {
@@ -347,7 +347,7 @@ fn an_announcement_is_a_nearby_computer_with_its_name_system_and_addresses() {
     assert!(nearby_of(&full, &txt(&[("proto", "1")]), addrs, 0).is_none());
 }
 
-/// Rule 1242: the announcement says the name, the system, Flare's version and the protocol, and nothing else.
+/// Rule 1256: the announcement says the name, the system, Flare's version and the protocol, and nothing else.
 #[test]
 fn the_announcement_carries_no_secret() {
     let keys: Vec<String> = txt_of(&pc()).into_iter().map(|(k, _)| k).collect();
@@ -417,7 +417,7 @@ fn until(pages: &mut [&mut Page], what: &str, cond: impl Fn(&[&mut Page]) -> boo
     }
 }
 
-/// Rules 1242 to 1246, on two pages: the PC with Computer sharing on listens and is announced; the Mac's dialog finds
+/// Rules 1256 to 1260, on two pages: the PC with Computer sharing on listens and is announced; the Mac's dialog finds
 /// it; picking it makes the PC show its code; a wrong code is "Wrong code"; the right one links; both list the other.
 #[test]
 fn two_computers_pair_from_the_dialog_and_list_each_other() {
@@ -489,7 +489,7 @@ fn two_computers_pair_from_the_dialog_and_list_each_other() {
     assert_eq!(host.os.user_keys.lock().unwrap().len(), 1);
 }
 
-/// Rule 1243: Decline on the host ends the request: the viewer's dialog says so and its Add waits for a new pick.
+/// Rule 1257: Decline on the host ends the request: the viewer's dialog says so and its Add waits for a new pick.
 #[test]
 fn decline_on_the_host_ends_the_request() {
     let hub = Arc::new(Hub::default());
@@ -521,7 +521,7 @@ fn decline_on_the_host_ends_the_request() {
     assert!(view.io.list().is_empty());
 }
 
-/// Rule 1243: one request at a time: a second computer asking while the code shows hears that the host is busy.
+/// Rule 1257: one request at a time: a second computer asking while the code shows hears that the host is busy.
 #[test]
 fn a_second_request_while_one_shows_its_code_is_told_busy() {
     let hub = Arc::new(Hub::default());
@@ -556,7 +556,7 @@ fn a_second_request_while_one_shows_its_code_is_told_busy() {
     });
 }
 
-/// Rule 1247: a request locks the host when it had three wrong codes, or any wrong code and no pairing; a request that
+/// Rule 1261: a request locks the host when it had three wrong codes, or any wrong code and no pairing; a request that
 /// paired, or that ended before any code was tried, does not.
 #[test]
 fn a_request_that_ends_after_a_wrong_code_locks_the_host() {
@@ -566,7 +566,7 @@ fn a_request_that_ends_after_a_wrong_code_locks_the_host() {
     assert!(!locks_out(false, false, false), "no code tried");
 }
 
-/// Rule 1247, on two pages: a viewer that types one wrong code and hangs up cannot ask again at once for a fresh code:
+/// Rule 1261, on two pages: a viewer that types one wrong code and hangs up cannot ask again at once for a fresh code:
 /// the next request is told busy (else a stranger gets unlimited guesses, a few per code).
 #[test]
 fn hanging_up_after_a_wrong_code_does_not_give_a_fresh_code_at_once() {
@@ -618,7 +618,7 @@ fn hanging_up_after_a_wrong_code_does_not_give_a_fresh_code_at_once() {
     );
 }
 
-/// Rules 1241 and 1242: turning Computer sharing off stops the announcement and the listener.
+/// Rules 1255 and 1256: turning Computer sharing off stops the announcement and the listener.
 #[test]
 fn turning_sharing_off_stops_the_announcement() {
     let hub = Arc::new(Hub::default());
@@ -630,7 +630,7 @@ fn turning_sharing_off_stops_the_announcement() {
     host.pump();
 }
 
-/// Rule 1246: Remove on a computer that reaches this one removes its key and its row.
+/// Rule 1260: Remove on a computer that reaches this one removes its key and its row.
 #[test]
 fn removing_a_computer_that_reaches_this_one_removes_its_key() {
     let hub = Arc::new(Hub::default());

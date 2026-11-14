@@ -1,4 +1,4 @@
-//! Machine pairing PR 3 (rules 1242 to 1246): pairing two computers with a 6-digit code.
+//! Machine pairing PR 3 (rules 1256 to 1260): pairing two computers with a 6-digit code.
 //!
 //! Spec `docs/superpowers/specs/2026-11-14-machine-pairing-design.md` ("What happens underneath") and the approved
 //! mockup (`2026-11-14-machine-pairing-mockup.html`, "Add a machine", "The code", "Linked"):
@@ -8,12 +8,12 @@
 //!   connects and says hello makes the host show the Flare dialog "<viewer> wants to connect" with a fresh 6-digit code
 //!   and Decline, wherever the person is in Flare. One request at a time: another connection meanwhile is told `busy`;
 //!   after three wrong codes the window closes, and after any request that ended with a wrong code and no pairing
-//!   (rule 1247), no request is taken for [`LOCKOUT`].
+//!   (rule 1261), no request is taken for [`LOCKOUT`].
 //! - **The viewer**: while the Add a machine dialog is open it looks for those announcements; they are the drop-down's
 //!   first choices. Picking one connects and says hello; the dialog asks for the "Code shown on <name>". Add runs the
 //!   SPAKE2 exchange (`pair_wire`). A wrong code is the red line "Wrong code".
 //! - **Over the confirmed channel** the viewer sends Flare's own public key (`pair_keys`, made on first need) and its
-//!   name; the host adds it to the right `authorized_keys` (rule 1244) and answers with its SSH host key, its user, its
+//!   name; the host adds it to the right `authorized_keys` (rule 1258) and answers with its SSH host key, its user, its
 //!   Flare path, its system and version. The viewer pins the host key in Flare's own known-hosts file, saves the machine
 //!   with its address, user, key and known-hosts file (machine pairing PR 1's fields), and checks the link as usual. The
 //!   host keeps the viewer in its own list of computers that reach it (`machines_in.json`), so both show the other in
@@ -237,7 +237,7 @@ pub struct HostCtx {
     pub flare: String,
 }
 
-/// BLOCKING: one request on the host (rules 1243 and 1244), from the viewer's hello to the end. `events` reaches the
+/// BLOCKING: one request on the host (rules 1257 and 1258), from the viewer's hello to the end. `events` reaches the
 /// UI thread.
 pub fn host_session(
     s: &mut dyn Duplex,
@@ -395,7 +395,7 @@ pub fn flare_path_ok(p: &str) -> bool {
         && !p.chars().any(|c| c.is_control() || c == '"' || c == '\'')
 }
 
-/// BLOCKING: one pairing on the viewer (rules 1243 and 1245), from the hello to the saved machine. The typed codes come
+/// BLOCKING: one pairing on the viewer (rules 1257 and 1259), from the hello to the saved machine. The typed codes come
 /// through `codes` (a closed channel is Cancel); `events` reaches the UI thread.
 pub fn viewer_session(
     s: &mut dyn Duplex,
@@ -584,7 +584,7 @@ struct ViewerRun {
     close: Arc<Mutex<(bool, Option<Closer>)>>,
 }
 
-/// Pure (rule 1247): whether a request that ended locks the host for [`LOCKOUT`]: three wrong codes, or any wrong code
+/// Pure (rule 1261): whether a request that ended locks the host for [`LOCKOUT`]: three wrong codes, or any wrong code
 /// in a request that ended without pairing. Without the second, a stranger could guess once or twice, hang up and ask
 /// again for a fresh code at once, with no limit on its guesses.
 pub fn locks_out(too_many: bool, linked: bool, struck: bool) -> bool {
@@ -838,7 +838,7 @@ impl Pairing {
                 let (ctx, post, shared) =
                     (Arc::clone(&ctx), Arc::clone(&post), Arc::clone(&shared));
                 worker("flare-pair-host", move || {
-                    // A wrong code in this request: leaving without pairing still locks (rule 1247).
+                    // A wrong code in this request: leaving without pairing still locks (rule 1261).
                     let struck = std::cell::Cell::new(false);
                     let events = |e: HostEvent| {
                         match &e {
