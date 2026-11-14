@@ -3949,33 +3949,52 @@ sharing_ask_look}`, `ui/settings/machines.slint` (`SharingAskDialog`). Held by
 `sharing_and_what_flare_changed_default_off_and_keep_what_is_set`, the row table tests in `flare_settings::rows` and
 the overlay tests in `ui_tests::panel` and `ui_tests::overlay_order`.
 
-1253. **On Windows, turning Computer sharing on is one elevated PowerShell script (one UAC prompt) that opens the SSH
-server to the Private network profile only and never turns password logins on.** Machine pairing PR 2, 2026-11-14
-(spec, "Setup per OS"; research `Documents\Claude\research\flare\2026-11-14-machine-pairing.md`). `windows_on_script`
-installs the `OpenSSH.Server~~~~0.0.1.0` capability only when `Get-WindowsCapability` says it is not installed, starts
-`sshd` when it is not running and sets it to Automatic; when Flare installed the server itself it writes
-`PasswordAuthentication no` into `%ProgramData%\ssh\sshd_config` (in place of the commented default, else before the
-first `Match` block, never after it) and restarts sshd, all before Flare makes any firewall rule. A server the person
-had already keeps its config. A failure at any step leaves the server as the script found it: a server Flare started
-is stopped again (so a server Flare installed never runs with password logins on) and its start type is put back, so a
-switch that went back off never leaves an SSH server running (review fix, 2026-11-14). The firewall: when sshd is not
-running, its existing `OpenSSH-Server-In-TCP` rule is set to the Private profile (and enabled) BEFORE `Start-Service`,
-whether Flare installed the server now or the person had it but left it stopped (the capability makes the rule for
-every profile, so starting a dormant server would otherwise open it on public networks; review fix, 2026-11-14); a
-running server's rule is left alone. The rule is made for port 22 on the Private profile when it is missing; Flare's own
-rule `Flare-Pairing-In` lets Flare's program in on the Private profile only (the pairing port and the announcement,
-PR 3), made again on every turn on. No rule names the Public or Domain profile. The script reports `ok`, `installed`,
-`started` and, on a failure, the `step` and Windows' words as `key=value` lines in a temp file (`parse_report`); the
-step becomes one plain line (`step_line`, Windows' words go to the log). The elevation (`elevation_argv`) is a hidden
-`powershell.exe -EncodedCommand` (UTF-16LE base64, so no path quoting can break it) that runs `Start-Process
-powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList ... -File "<script>"`; the script is
-written with a BOM (a profile path beyond ASCII) and both temp files are removed. No result file means the prompt was
-declined: the switch goes back off with nothing to say. `installed` or `started` make the server Flare's
+1253. **On Windows, turning Computer sharing on is one elevated PowerShell script (one UAC prompt), sent inline, that
+opens the SSH server to the Private network profile only, and a server Flare starts takes keys only.** Machine pairing
+PR 2, 2026-11-14 (spec, "Setup per OS"; research `Documents\Claude\research\flare\2026-11-14-machine-pairing.md`;
+security review fixes, 2026-11-14, Max chose "Keys only"). `windows_on_script` installs the `OpenSSH.Server~~~~0.0.1.0`
+capability only when `Get-WindowsCapability` says it is not installed, starts `sshd` when it is not running and sets
+it to Automatic. Keys only: when sshd is not running (Flare installed it now, or it was installed but stopped), the
+script writes `PasswordAuthentication no` and `ChallengeResponseAuthentication no` at the top of
+`%ProgramData%\ssh\sshd_config` BEFORE `Start-Service`, under the line `# Flare Computer sharing: keys only`. The top is
+before any `Match` block, and sshd keeps the first value it reads, so they hold globally. (`ChallengeResponseAuthentication`
+is the name every Windows OpenSSH knows; on OpenSSH 8.7 and later it is the same setting as
+`KbdInteractiveAuthentication`, a keyword an older sshd refuses to start with.) A copy is kept as
+`sshd_config.flare-backup`; the person's other lines stay as they were; a second run replaces Flare's lines instead
+of adding more. A server never started has no config yet: the script copies Windows' `sshd_config_default` in, as sshd
+itself would, into a `%ProgramData%\ssh` folder made with sshd's own rights when it is missing (`SSHD_DIR_SDDL`). A
+server that was already running keeps its config. A failure at any step leaves the server as the script found it: a
+server Flare started is stopped again, `sshd_config` is put back from the backup (or the copy Flare made is removed),
+its start type is put back, and Flare's own rules go, so a switch that went back off never leaves an SSH server
+running. The firewall: when sshd is not running, its existing `OpenSSH-Server-In-TCP` rule is set to the Private
+profile (and enabled) BEFORE `Start-Service` (the capability makes the rule for every profile); a running server's
+rule is left alone. The rule is made for TCP 22 on the Private profile when it is missing. Flare's own two rules let
+only Flare's program in, on the Private profile, from the local subnet: `Flare-Pairing-In` (TCP; the pairing port is
+picked at random in PR 3, so the rule names the program, not a port) and `Flare-Pairing-mDNS-In` (UDP 5353, the
+announcement). They are made again on every turn on, and the report's `rule=1` saves `flare.machines.firewallRule`, so
+turning off removes them (rule 1255). No rule names the Public or Domain profile. The elevation (`elevation_argv`) is
+a hidden `powershell.exe -Command` that runs `Start-Process powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle
+Hidden -ArgumentList ... -EncodedCommand <script>`: the script travels inline (UTF-16LE base64, without comment lines
+and indent, `ps_compact`), so no script file exists that another program could swap before the prompt is answered.
+The whole command line is held under Windows' 32 767 characters (`COMMAND_LINE_MAX`; the tests hold every script under
+half of it with long paths, and a longer one is refused before anything runs). The script reports `ok`, `installed`,
+`started`, `rule` and, on a failure, the `step` and Windows' words as `key=value` lines into `result.txt` in a new
+folder Flare made for this run (`fresh_folder`: `create_dir` never reuses a folder that was there); the script writes
+it only when that folder is a plain folder (not a link) and the file is not there yet, and Flare removes the folder
+after. The result is untrusted text: `parse_report` reads at most 4 KB, only known keys, each once, flags `0` or `1`,
+a known step, and either `ok=1` or a failed step; Windows' words are cut to 300 characters without control
+characters. Anything else is an error: the setup counts as failed with the plain line "Computer sharing could not be
+set up.". A failed step becomes one plain line (`step_line`, Windows' words go to the log). No result file means the
+prompt was declined: the switch goes back off with nothing to say. `installed` or `started` make the server Flare's
 (`flare.machines.serverByFlare`), which turning off reads (rule 1255); it stays Flare's until turning off stops it. The
 tests read the script as text and the elevation as its argv; nothing is ever run (`SharingOs` is a trait and the tests
 use `sharing::fake::FakeOs`). Real runs: `docs/remote-sessions-manual-checks.md`. Held by
 `the_windows_script_installs_starts_and_opens_the_private_profile_only`,
-`the_elevation_call_runs_the_script_with_runas_and_waits`,
+`a_server_flare_starts_takes_keys_only_and_a_running_one_is_left_alone`,
+`flares_own_firewall_rules_are_narrow_and_go_when_the_setup_fails`,
+`the_elevated_scripts_write_the_result_only_into_a_plain_new_file`,
+`the_elevation_call_runs_the_script_inline_with_runas_and_waits`,
+`the_elevated_command_line_stays_under_windows_limit`, `a_result_file_is_read_strictly`,
 `a_result_file_is_read_and_a_failed_step_is_one_plain_line` and
 `a_declined_or_failed_windows_setup_leaves_the_switch_off`.
 
@@ -3990,7 +4009,9 @@ answers the sharing dialog shows "Turn on Remote Login", the spinner and "Flare 
 Open System Settings (`x-apple.systempreferences:com.apple.Sharing-Settings.extension`, opened with `/usr/bin/open` on
 a worker; the dialog stays). A worker watches port 22 every second; the moment it answers the dialog closes and the
 switch is on (the server is the person's, they turned it on). Cancel ends the watch (a late answer is ignored by its
-number) and the switch goes back off. Flare never asks for Full Disk Access. `Flare.app`'s Info.plist carries
+number) and the switch goes back off. Flare never asks for Full Disk Access. Flare does not change macOS' sshd
+settings: Remote Login keeps macOS' own password setting (the Windows keys-only change of rule 1253 is not made on a
+Mac; security review, 2026-11-14). `Flare.app`'s Info.plist carries
 `NSLocalNetworkUsageDescription` and `NSBonjourServices` = `_flare-pair._tcp` for the local network prompt pairing
 (PR 3) needs. Held by `a_mac_with_remote_login_on_needs_no_prompt`,
 `a_mac_asks_for_the_password_and_cancel_puts_the_switch_back`,
@@ -4007,14 +4028,19 @@ When `flare.machines.serverByFlare` is set, the sharing dialog asks "Stop the SS
 for Computer sharing. Other apps may use it.", Keep it and Stop it); Escape, a press outside and closing the Settings
 tab are Keep it. Then, on a worker (`turn_off`): the lines of the person's own `~/.ssh/authorized_keys` whose comment
 starts `flare-pair:` go (`strip_flare_keys`; every other line, comments and blank lines included, stays; the file is
-written in place, so its owner and mode stay); on Windows, when the server is to stop or a key went into
-`administrators_authorized_keys` (`flare.machines.adminKeys`, set by pairing in PR 3), one elevated
-`windows_off_script` removes those `flare-pair:` lines, stops sshd and sets it to Manual (only with Stop it), and
-removes Flare's firewall rule; the server's own rule and the capability stay. On a Mac, Stop it runs `systemsetup -f
+written in place, so its owner and mode stay); on Windows, when the server is to stop, a key went into
+`administrators_authorized_keys` (`flare.machines.adminKeys`, set by pairing in PR 3), or Flare's firewall rules are
+in place (`flare.machines.firewallRule`, set when the on script made them), one elevated `windows_off_script`
+(inline, read back strictly, as in rule 1253) removes those `flare-pair:` lines, stops sshd and sets it to Manual
+(only with Stop it), and removes Flare's two firewall rules; the server's own rule, its `sshd_config` and the
+capability stay. So turning off with Keep it, on a server that was the person's, still removes Flare's rules (security
+review, 2026-11-14). On a Mac, Stop it runs `systemsetup -f
 -setremotelogin off` through the administrator prompt, and when port 22 still answers after 2.5 s the dialog says
 "Remote Login is still on. Turn it off in System Settings, General, Sharing." A declined or failed clean up is that
 dialog's one line (the switch stays off). A done stop clears `serverByFlare`, a done admin clean up clears
-`adminKeys`; Keep it leaves the server Flare's, so the next turn off asks again. Held by
+`adminKeys`, a done clean up clears `firewallRule` (a failed one keeps it, so the next turn off tries again); Keep it
+leaves the server Flare's, so the next turn off asks again. Held by
 `turning_off_removes_flares_keys_and_offers_to_stop_only_flares_server`,
+`turning_off_removes_flares_firewall_rules_even_when_the_server_is_not_flares`,
 `a_mac_stops_remote_login_and_says_so_when_it_stays_on`, `the_windows_off_script_removes_only_what_flare_added`,
 `only_the_keys_flare_added_are_removed` and `turning_sharing_off_asks_to_stop_flares_server`.

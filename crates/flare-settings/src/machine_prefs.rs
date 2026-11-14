@@ -3,13 +3,15 @@
 //! Keys: `flare.machines.sharing` (a bool, default OFF: the switch, kept across restarts once the setup finished),
 //! `flare.machines.serverByFlare` (a bool: Flare started or installed the SSH server when sharing turned on, so turning
 //! sharing off offers to stop it again) and `flare.machines.adminKeys` (a bool: pairing, PR 3, put a key in Windows'
-//! `administrators_authorized_keys`, so turning sharing off needs the elevated clean up).
+//! `administrators_authorized_keys`, so turning sharing off needs the elevated clean up) and `flare.machines.firewallRule`
+//! (a bool: Windows' setup added Flare's own firewall rules, so turning sharing off removes them, elevated).
 
 use crate::kv::{PrefStore, bool_pref_get, bool_pref_set};
 
 const SHARING: &str = "flare.machines.sharing";
 const SERVER_BY_FLARE: &str = "flare.machines.serverByFlare";
 const ADMIN_KEYS: &str = "flare.machines.adminKeys";
+const FIREWALL_RULE: &str = "flare.machines.firewallRule";
 
 /// Computer sharing is on (the setup finished). Off by default.
 pub fn sharing_on(s: &PrefStore) -> bool {
@@ -38,6 +40,15 @@ pub fn set_admin_keys(s: &PrefStore, on: bool) {
     bool_pref_set(s, ADMIN_KEYS, on);
 }
 
+/// Windows' setup added Flare's own firewall rules (rule 1253); turning sharing off removes them (rule 1255).
+pub fn firewall_rule(s: &PrefStore) -> bool {
+    bool_pref_get(s, FIREWALL_RULE, false)
+}
+
+pub fn set_firewall_rule(s: &PrefStore, on: bool) {
+    bool_pref_set(s, FIREWALL_RULE, on);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -45,11 +56,13 @@ mod tests {
     #[test]
     fn sharing_and_what_flare_changed_default_off_and_keep_what_is_set() {
         let s = PrefStore::memory();
-        assert!(!sharing_on(&s) && !server_by_flare(&s) && !admin_keys(&s));
+        assert!(!sharing_on(&s) && !server_by_flare(&s) && !admin_keys(&s) && !firewall_rule(&s));
         set_sharing_on(&s, true);
         set_server_by_flare(&s, true);
         set_admin_keys(&s, true);
-        assert!(sharing_on(&s) && server_by_flare(&s) && admin_keys(&s));
+        set_firewall_rule(&s, true);
+        assert!(sharing_on(&s) && server_by_flare(&s) && admin_keys(&s) && firewall_rule(&s));
+        assert_eq!(s.get("flare.machines.firewallRule").as_deref(), Some("1"));
         assert_eq!(s.get("flare.machines.sharing").as_deref(), Some("1"));
         set_sharing_on(&s, false);
         assert!(!sharing_on(&s));
