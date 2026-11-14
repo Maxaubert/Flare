@@ -3869,7 +3869,9 @@ Held by `a_paired_machines_ssh_uses_its_address_port_key_and_known_hosts_as_argv
 2026-11-14 (spec, "Plain-words errors"). Before, a link started ssh with stderr on the null device, so every failure
 read "No Flare answered over SSH on <host>." Now `remote_link::start_link` and `remote_tunnel::open_ssh` pipe it to a
 `ssh_problem::StderrTail`: a named thread reads it to its end (so ssh never blocks on a full pipe) and keeps the last 12
-lines, each cut to 400 characters. A link whose `remote.hello` failed with the link down waits up to 1.5 s for ssh to
+lines, each cut to 400 characters. Each line is bounded while it is read (`read_line_capped`, at most 1 600 bytes held):
+the rest of an over-long line is read and dropped up to its newline, so a host that sends a huge line with no newline
+never makes Flare buffer it, and the pipe is still drained. A link whose `remote.hello` failed with the link down waits up to 1.5 s for ssh to
 end and carries its words after `ssh said: ` in the error; a link that could not start ssh because it is not there
 carries `no ssh client: `. `ssh_problem::sort_down` reads only those parts (Flare's own timeout words never match by
 chance) and `machines::failure_line` shows the case. Only ssh's own shapes count, never loose words, because the
@@ -3886,6 +3888,7 @@ that is off costs one connect timeout, not one per path. These are lines only; t
 again, Pair again) come with pairing. Held by
 `what_ssh_says_is_sorted_into_one_plain_line`, `only_what_follows_ssh_said_is_sorted`,
 `the_tail_keeps_the_last_lines_trimmed_and_cut`, `the_tail_reads_a_pipe_to_its_end`,
+`a_huge_line_with_no_newline_is_capped_while_it_is_read`,
 `a_failed_check_is_one_line_that_says_what_to_do`, `a_reason_from_ssh_ends_the_add_after_one_try`,
 `a_shells_permission_denied_does_not_end_the_add` and
 `a_machine_whose_ssh_said_why_shows_it_in_plain_words_under_its_row`.
