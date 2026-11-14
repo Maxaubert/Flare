@@ -36,18 +36,32 @@ fn modifier(code: &str, key: &str, pressed: bool) -> KeyEvent {
     ev.pressed = pressed;
     match code {
         "ControlLeft" => ev.ctrl = pressed,
+        "SuperLeft" => ev.meta = pressed,
         "ShiftLeft" => ev.shift = pressed,
         _ => {}
     }
     ev
 }
 
-/// A character key; with Ctrl held winit's text is dropped (`key_event_from_parts`).
+/// The key that selects all with A: Cmd on a Mac, Ctrl elsewhere, as (code, key name).
+fn select_all_mod() -> (&'static str, &'static str) {
+    if cfg!(target_vendor = "apple") {
+        ("SuperLeft", "Meta")
+    } else {
+        ("ControlLeft", "Control")
+    }
+}
+
+/// A character key; with the select-all modifier (`ctrl`) held winit's text is dropped (`key_event_from_parts`).
 fn letter(c: &str, pressed: bool, ctrl: bool, shift: bool) -> KeyEvent {
     let code = format!("Key{}", c.to_ascii_uppercase());
     let mut ev = KeyEvent::new(c, &code);
     ev.pressed = pressed;
-    ev.ctrl = ctrl;
+    if cfg!(target_vendor = "apple") {
+        ev.meta = ctrl;
+    } else {
+        ev.ctrl = ctrl;
+    }
     ev.shift = shift;
     if !ctrl {
         ev.text = Some(c.to_string());
@@ -107,11 +121,12 @@ fn type_text(f: &Fx, kp: &KeyPath, s: &str) {
     }
 }
 
-/// Ctrl down, A down and up, Ctrl up, as a person selects all.
+/// Ctrl down (Cmd on a Mac), A down and up, Ctrl up, as a person selects all.
 fn ctrl_a(f: &Fx, kp: &KeyPath) -> EventResult {
-    let down = winit_key(f, kp, &modifier("ControlLeft", "Control", true));
+    let (code, key) = select_all_mod();
+    let down = winit_key(f, kp, &modifier(code, key, true));
     tap(f, kp, letter("a", true, true, false));
-    let up = winit_key(f, kp, &modifier("ControlLeft", "Control", false));
+    let up = winit_key(f, kp, &modifier(code, key, false));
     assert_eq!(
         matches!(down, EventResult::Propagate),
         matches!(up, EventResult::Propagate),
