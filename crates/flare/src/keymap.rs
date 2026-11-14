@@ -109,6 +109,23 @@ pub fn pty_key(os: KeyOs, ev: &KeyEvent, option_as_meta: bool) -> PtyKey {
     }
 }
 
+/// Whether a W3C or winit key code is a modifier key on its own (Shift, Ctrl, Alt, the Windows or Cmd key).
+pub fn is_modifier_code(code: &str) -> bool {
+    matches!(
+        code,
+        "ShiftLeft"
+            | "ShiftRight"
+            | "ControlLeft"
+            | "ControlRight"
+            | "AltLeft"
+            | "AltRight"
+            | "SuperLeft"
+            | "SuperRight"
+            | "MetaLeft"
+            | "MetaRight"
+    )
+}
+
 /// Keys Slint keeps for itself: F12. Every chord is `AppCtl`'s. Slint hands F12 to the focused scope first: while
 /// the web panel's page has the keyboard its key scope takes it and the page opens DevTools (on the Mac the host
 /// catches it, rule 1168; on Windows WebView2's own window has the key), and elsewhere it toggles the debug overlay.

@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 use std::sync::Once;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
@@ -67,6 +68,20 @@ const CLASS_NAME: &str = "Flare.SessionEnd";
 
 static REGISTER: Once = Once::new();
 
+/// Windows is ending the session: set on `WM_QUERYENDSESSION`, cleared when `WM_ENDSESSION` says the end was
+/// cancelled (`wParam == 0`). Windows kills the console processes (exit code `DBG_TERMINATE_PROCESS`) about
+/// 220 ms before `WM_ENDSESSION` arrives, so a shell that ends while this is set is the session's end, not the
+/// person closing a tab (rule 1239).
+static SESSION_ENDING: AtomicBool = AtomicBool::new(false);
+
+/// `DBG_TERMINATE_PROCESS`: the exit code Windows gives the console processes it ends at a log-off or a restart.
+pub const DBG_TERMINATE_PROCESS: u32 = 0x4001_0004;
+
+/// True from `WM_QUERYENDSESSION` until the end is cancelled (process-wide).
+pub fn session_ending() -> bool {
+    SESSION_ENDING.load(Ordering::SeqCst)
+}
+
 thread_local! {
     /// The callback of the watch whose window lives on this thread.
     static ON_END: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
@@ -115,10 +130,16 @@ unsafe extern "system" fn wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
-        // Never a veto: Flare has nothing that must stop a shutdown.
-        WM_QUERYENDSESSION => 1,
+        // Never a veto: Flare has nothing that must stop a shutdown. From here a shell's end is the session's.
+        WM_QUERYENDSESSION => {
+            SESSION_ENDING.store(true, Ordering::SeqCst);
+            1
+        }
         WM_ENDSESSION => {
-            if wparam != 0 {
+            if wparam == 0 {
+                // Another app vetoed: the session goes on, and a shell's end is a tab's end again.
+                SESSION_ENDING.store(false, Ordering::SeqCst);
+            } else {
                 ON_END.with(|cell| {
                     if let Some(f) = cell.borrow().as_ref() {
                         // A panic must not unwind through the Win32 frame.
@@ -156,7 +177,8 @@ unsafe extern "system" fn wnd_proc(
     }
 }
 
-/// A hidden top-level window (never shown) on its own thread. `WM_QUERYENDSESSION` is answered 1 (never a veto);
+/// A hidden top-level window (never shown) on its own thread. `WM_QUERYENDSESSION` is answered 1 (never a veto)
+/// and sets [`session_ending`]; a cancelled `WM_ENDSESSION` clears it;
 /// `WM_ENDSESSION` with `wParam != 0` runs `on_end` on that thread before the message returns;
 /// `wParam == 0` (cancelled) runs nothing.
 pub struct SessionEndWatch {
@@ -327,6 +349,7 @@ mod tests {
         w.stop();
     }
 
+    /// The one test that sends `WM_QUERYENDSESSION`, so it alone moves the process-wide mark.
     #[test]
     fn query_end_session_is_never_a_veto() {
         let (w, n) = counted();
@@ -334,6 +357,21 @@ mod tests {
         let r = unsafe { SendMessageW(w.hwnd() as HWND, WM_QUERYENDSESSION, 0, 0) };
         assert_eq!(r, 1);
         assert_eq!(n.load(Ordering::SeqCst), 0);
+        assert!(session_ending(), "the query marks the session as ending");
+        // A cancelled end clears the mark and runs nothing.
+        // SAFETY: as above.
+        unsafe { SendMessageW(w.hwnd() as HWND, WM_ENDSESSION, 0, 0) };
+        assert!(!session_ending(), "a cancelled end clears the mark");
+        assert_eq!(n.load(Ordering::SeqCst), 0);
+        // A real end keeps it to the last.
+        // SAFETY: as above.
+        unsafe {
+            SendMessageW(w.hwnd() as HWND, WM_QUERYENDSESSION, 0, 0);
+            SendMessageW(w.hwnd() as HWND, WM_ENDSESSION, 1, 0);
+        }
+        assert!(session_ending(), "the end keeps the mark");
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+        SESSION_ENDING.store(false, Ordering::SeqCst);
         w.stop();
     }
 
