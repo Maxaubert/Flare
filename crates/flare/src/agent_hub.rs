@@ -232,6 +232,9 @@ pub struct AgentHub {
     /// Each tab's agent folder: the folder its Claude session works in, as its hooks last named it (`panel.state`
     /// with `cwd`, changes after review 2026-11-11). A relative file link is read from it. Gone with the agent.
     agent_folders: HashMap<String, String>,
+    /// Each tab's agent start folder: the first folder its session's hooks named since the agent came or the session
+    /// changed (rule 1248). A relative link the agent folder lacks is tried there next. Gone with the agent.
+    agent_start_folders: HashMap<String, String>,
     /// Tabs the process poll has answered for at least once (the e2e probe `agent.state` says so).
     polled: HashSet<String>,
     /// Tabs whose agent decor must go, and why, in the order it happened; the window takes them
@@ -265,6 +268,7 @@ impl AgentHub {
             folders: HashMap::new(),
             sessions: HashMap::new(),
             agent_folders: HashMap::new(),
+            agent_start_folders: HashMap::new(),
             polled: HashSet::new(),
             decor_gone: Vec::new(),
             remote: HashSet::new(),
@@ -345,6 +349,7 @@ impl AgentHub {
         if step.gone {
             self.sessions.remove(tab);
             self.agent_folders.remove(tab);
+            self.agent_start_folders.remove(tab);
             (self.deps.reports_off)(tab);
             self.decor_gone
                 .push((tab.to_string(), DecorGone::AgentLeft));
@@ -483,6 +488,7 @@ impl AgentHub {
                             let old = self.sessions.insert(id.clone(), session.clone());
                             // Another session in the same tab: what the old one put on the tab goes.
                             if old.is_some_and(|o| o != *session) {
+                                self.agent_start_folders.remove(id);
                                 self.decor_gone
                                     .push((id.clone(), DecorGone::SessionChanged));
                             }
@@ -556,6 +562,7 @@ impl AgentHub {
         self.note_tab(tab);
         self.folders.insert(tab.to_string(), cwd.to_string());
         self.agent_folders.remove(tab);
+        self.agent_start_folders.remove(tab);
         let resumed = valid_resume(resume);
         // A restored Claude tab already has its session: the resume id (only a UUID).
         let old = match resumed {
@@ -635,6 +642,7 @@ impl AgentHub {
         if let Some(s) = st.session.as_deref().filter(|s| is_session_id(s)) {
             let old = self.sessions.insert(tab.to_string(), s.to_string());
             if old.is_some_and(|o| o != s) {
+                self.agent_start_folders.remove(tab);
                 self.decor_gone
                     .push((tab.to_string(), DecorGone::SessionChanged));
             }
@@ -686,6 +694,7 @@ impl AgentHub {
         self.folders.remove(tab);
         self.sessions.remove(tab);
         self.agent_folders.remove(tab);
+        self.agent_start_folders.remove(tab);
         self.polled.remove(tab);
         self.decor_gone.retain(|(t, _)| t != tab);
         self.diag.forget(tab, now);
@@ -882,6 +891,10 @@ impl AgentHub {
 
     /// The agent's hooks named the folder its session works in: the latest wins.
     pub fn set_agent_folder(&mut self, tab: &str, folder: &str) {
+        // The first folder named is the session's start folder (rule 1248).
+        self.agent_start_folders
+            .entry(tab.to_string())
+            .or_insert_with(|| folder.to_string());
         self.agent_folders
             .insert(tab.to_string(), folder.to_string());
     }
@@ -889,6 +902,12 @@ impl AgentHub {
     /// The folder the tab's agent works in, while its hooks have named one and the agent has not left the tab.
     pub fn agent_folder(&self, tab: &str) -> Option<&str> {
         self.agent_folders.get(tab).map(String::as_str)
+    }
+
+    /// The folder the tab's agent session first named (rule 1248): a relative file link its agent folder lacks is
+    /// tried there next. Gone with the agent, and forgotten when another session starts in the tab.
+    pub fn agent_start_folder(&self, tab: &str) -> Option<&str> {
+        self.agent_start_folders.get(tab).map(String::as_str)
     }
 
     /// True once the process poll has answered for the tab (the first word is said once).
@@ -1510,6 +1529,34 @@ mod tests {
         assert_eq!(tab_of(&r.hub, "a").session, None);
         r.hub.on_closed("b");
         assert!(r.hub.send_tabs().iter().all(|t| t.tab != "b"));
+    }
+
+    /// Rule 1248: the start folder is the first folder the session named; a later one moves only the agent folder.
+    /// Another session, the agent leaving and the tab closing forget it.
+    #[test]
+    fn the_start_folder_is_the_first_folder_named_and_goes_with_the_agent() {
+        let mut r = Rig::new();
+        r.open("a", None);
+        r.title("a", CLAUDE_TITLE);
+        r.print("a", &osc_session("working", SID));
+        assert_eq!(r.hub.agent_start_folder("a"), None);
+        r.hub.set_agent_folder("a", "C:\\repo");
+        r.hub.set_agent_folder("a", "C:\\repo\\sub");
+        assert_eq!(r.hub.agent_folder("a"), Some("C:\\repo\\sub"));
+        assert_eq!(r.hub.agent_start_folder("a"), Some("C:\\repo"));
+        // Another session: its first folder is the new start.
+        let next = "11111111-2222-4333-8444-555555555555";
+        r.print("a", &osc_session("working", next));
+        assert_eq!(r.hub.agent_start_folder("a"), None);
+        r.hub.set_agent_folder("a", "C:\\other");
+        assert_eq!(r.hub.agent_start_folder("a"), Some("C:\\other"));
+        // The agent leaves.
+        r.title("a", "");
+        assert_eq!(r.hub.agent_start_folder("a"), None);
+        // The tab closes.
+        r.hub.set_agent_folder("a", "C:\\x");
+        r.hub.on_closed("a");
+        assert_eq!(r.hub.agent_start_folder("a"), None);
     }
 
     /// Plugins phase 1: the agent's decor belongs to its session. A first session is no change; another session,

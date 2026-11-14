@@ -27,6 +27,13 @@ fn three_tabs() -> Fx {
         ..Opts::default()
     });
     f.start_restore_and_wait();
+    // Each restored shell starts on its own worker. A tab closed before its worker ran never gets a shell (review
+    // #32), so the tests wait for all three: closing one at once raced its start on a busy runner.
+    f.pump_until("the restored shells", |f| {
+        ["C:\\a", "C:\\b", "C:\\c"]
+            .iter()
+            .all(|cwd| !f.made_with(cwd).is_empty())
+    });
     f
 }
 
