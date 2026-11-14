@@ -134,12 +134,39 @@ impl SnapGrid {
     }
 }
 
-/// The app icon picker's row (rule 1230): the row's 58 of words, a 40 px line of tiles and 16 under it.
-pub const ICON_ROW_H: f64 = 114.0;
-/// The picker's tile, its gap, and the tiles' top inside the row.
-pub const ICON_TILE: f64 = 40.0;
-pub const ICON_GAP: f64 = 8.0;
-pub const ICON_TILES_Y: f64 = 58.0;
+/// The app icon picker (rules 1230 and 1263, layout A of 2026-11-14): fixed 36 px tiles with 10 px between them, left
+/// aligned at the words' column (60), 2 under the row's 58 of words, wrapping onto more lines when the row is too
+/// narrow, 16 under the last line. Rust and the view both place the tiles by `icon_cols`.
+pub const ICON_TILE: f64 = 36.0;
+pub const ICON_GAP: f64 = 10.0;
+pub const ICON_TILES_X: f64 = 60.0;
+pub const ICON_TILES_Y: f64 = 60.0;
+/// The room kept right of the tiles and under them.
+pub const ICON_PAD_RIGHT: f64 = 16.0;
+pub const ICON_PAD_BOTTOM: f64 = 16.0;
+
+/// How many of `n` tiles fit one line of a row `row_w` wide (CSS px, inside the panel's border): at least one.
+pub fn icon_cols(row_w: f64, n: usize) -> usize {
+    let room = (row_w - ICON_TILES_X - ICON_PAD_RIGHT).max(0.0);
+    let fit = ((room + ICON_GAP) / (ICON_TILE + ICON_GAP) + 1e-9).floor();
+    (fit.max(1.0) as usize).min(n.max(1))
+}
+
+/// How many lines `n` tiles take in a row `row_w` wide.
+pub fn icon_lines(row_w: f64, n: usize) -> usize {
+    n.max(1).div_ceil(icon_cols(row_w, n))
+}
+
+/// The CSS height of the app icon row: its words, its lines of tiles and the room under them.
+pub fn icon_row_h(row_w: f64, n: usize) -> f64 {
+    let lines = icon_lines(row_w, n) as f64;
+    ICON_TILES_Y + lines * ICON_TILE + (lines - 1.0) * ICON_GAP + ICON_PAD_BOTTOM
+}
+
+/// A row's CSS width inside a panel `content_w` wide (the panel's border on each side).
+pub fn row_w_of(content_w: f64) -> f64 {
+    content_w - 2.0 * Metrics::reference().border
+}
 
 /// A speech model's or the GPU pack's row: PT's `min-h-16` (M8 Task 25).
 pub const MODEL_ROW_H: f64 = 64.0;
@@ -178,6 +205,8 @@ pub struct RowLayout {
     pub y: f64,
     pub w: f64,
     pub h: f64,
+    /// The app icon row's tiles a line (rule 1263; the view places its tiles by it); 0 for every other block.
+    pub cols: usize,
 }
 
 /// One section: the heading's box, the panel's box and every block of the panel, in order.
@@ -252,6 +281,7 @@ struct Child {
     kind: BlockKind,
     id: &'static str,
     css_h: f64,
+    cols: usize,
 }
 
 /// The CSS height of a block. A wall is its clip plus 66 (the heading gap, the toggle and the paddings).
@@ -261,13 +291,18 @@ fn child_of(
     slint_badge_h: f64,
     m: &Metrics,
     grid: SnapGrid,
+    content_w: f64,
 ) -> Child {
     let (kind, id, css_h) = match block {
-        // The app icon picker's row is its words, then its tiles under them (rule 1230).
-        BlockModel::Row(r) if matches!(r.control, crate::page::Control::Icons { .. }) => {
-            (BlockKind::Row, r.id, ICON_ROW_H)
-        }
-        BlockModel::Row(r) => (BlockKind::Row, r.id, m.row_h),
+        // The app icon picker's row is its words, then its lines of tiles under them (rules 1230 and 1263).
+        BlockModel::Row(r) => match &r.control {
+            crate::page::Control::Icons { options, .. } => (
+                BlockKind::Row,
+                r.id,
+                icon_row_h(row_w_of(content_w), options.len()),
+            ),
+            _ => (BlockKind::Row, r.id, m.row_h),
+        },
         BlockModel::Wall => (BlockKind::Wall, "", wall.clip_h + m.wall_overhead),
         BlockModel::AboutCard { .. } => (BlockKind::About, "", m.about_h),
         BlockModel::SlintBadge => (BlockKind::Slint, "", slint_badge_h),
@@ -297,10 +332,20 @@ fn child_of(
                 },
         ),
     };
+    let cols = match block {
+        BlockModel::Row(r) => match &r.control {
+            crate::page::Control::Icons { options, .. } => {
+                icon_cols(row_w_of(content_w), options.len())
+            }
+            _ => 0,
+        },
+        _ => 0,
+    };
     Child {
         kind,
         id,
         css_h: grid.at_least(css_h),
+        cols,
     }
 }
 
@@ -337,6 +382,7 @@ fn place_section(
             y: ry,
             w: rw,
             h: rh,
+            cols: c.cols,
         });
         y += c.css_h;
     }
@@ -381,7 +427,7 @@ pub fn layout_page(
         let children: Vec<Child> = s
             .blocks
             .iter()
-            .map(|b| child_of(b, wall, slint_badge_h, &m, grid))
+            .map(|b| child_of(b, wall, slint_badge_h, &m, grid, content_w))
             .collect();
         let (section, bottom) = place_section(
             grid,
@@ -425,6 +471,7 @@ pub fn layout_results(hits: usize, frame_w: f64, scale: f64) -> ResultsLayout {
             kind: BlockKind::Row,
             id: "",
             css_h: m.row_h,
+            cols: 0,
         })
         .collect();
     let (section, bottom) = place_section(
@@ -733,7 +780,8 @@ mod tests {
         assert_eq!(open.wall_expanded_h, expanded.full_h + 66.0);
     }
 
-    /// Rule 1230: the app icon row is its words over one line of 40 px tiles, 114 high; the other rows stay 58.
+    /// Rules 1230 and 1263: the app icon row is its words over one line of 36 px tiles, 112 high, at the usual width;
+    /// the other rows stay 58.
     #[test]
     fn the_app_icon_row_is_its_words_over_a_line_of_tiles() {
         for scale in [1.0, 1.5, 2.25] {
@@ -746,14 +794,48 @@ mod tests {
             );
             let icons = &window.rows[3];
             assert_eq!(icons.block, BlockKind::Row);
-            assert!((icons.h - ICON_ROW_H).abs() < 1.0, "{scale}: {}", icons.h);
+            assert!((icons.h - 112.0).abs() < 1.0, "{scale}: {}", icons.h);
             assert!((window.rows[2].h - 58.0).abs() < 1.0, "{scale}");
+            assert_eq!(icon_cols(row_w_of(l.content_w), 12), 12, "{scale}");
         }
-        assert_eq!(ICON_TILES_Y + ICON_TILE + 16.0, ICON_ROW_H);
-        // Twelve tiles and their gaps fit the row's free width (from the label column at 60, 16 from the right)
-        // down to the narrow layout's narrowest panel.
-        let tiles = 12.0 * ICON_TILE + 11.0 * ICON_GAP;
-        assert!(60.0 + tiles + 16.0 <= 760.0 - 56.0 - 2.0 * 20.0, "{tiles}");
+        assert_eq!(ICON_TILES_Y + ICON_TILE + ICON_PAD_BOTTOM, 112.0);
+    }
+
+    /// Rule 1263: a row too narrow for every tile wraps them onto more lines and grows by a tile and a gap per line;
+    /// a row with room for them all keeps one line.
+    #[test]
+    fn the_app_icon_tiles_wrap_and_the_row_grows() {
+        // 60 of words column, 16 at the right: twelve tiles need 60 + 12 * 36 + 11 * 10 + 16 = 618.
+        assert_eq!(icon_cols(618.0, 12), 12);
+        assert_eq!(icon_lines(618.0, 12), 1);
+        assert_eq!(icon_cols(617.0, 12), 11);
+        assert_eq!(icon_lines(617.0, 12), 2);
+        assert_eq!(icon_row_h(617.0, 12), 60.0 + 2.0 * 36.0 + 10.0 + 16.0);
+        // Room for three: four lines.
+        let three = 60.0 + 3.0 * 36.0 + 2.0 * 10.0 + 16.0;
+        assert_eq!(icon_cols(three, 12), 3);
+        assert_eq!(icon_lines(three, 12), 4);
+        // Never fewer than one a line, and never more columns than tiles.
+        assert_eq!(icon_cols(10.0, 12), 1);
+        assert_eq!(icon_cols(5000.0, 12), 12);
+        // A narrow window: the row is laid out taller, by whole lines.
+        for scale in [1.0, 1.5, 2.25] {
+            let l = laid_out("appearance", 600.0, scale);
+            assert!(l.narrow);
+            let rw = row_w_of(l.content_w);
+            let lines = icon_lines(rw, 12);
+            assert!(lines >= 2, "{scale}: {rw} css px holds {lines} lines");
+            let icons = &l.sections[0].rows[3];
+            assert_eq!(icons.id, "app-icon");
+            assert_eq!(icons.cols, icon_cols(rw, 12), "{scale}");
+            assert_eq!(l.sections[0].rows[2].cols, 0);
+            assert!(
+                (icons.h - icon_row_h(rw, 12)).abs() < 1.0,
+                "{scale}: {} vs {}",
+                icons.h,
+                icon_row_h(rw, 12)
+            );
+        }
     }
 
     #[test]

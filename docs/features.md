@@ -664,11 +664,18 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   2026-11-13 (owner: "the app icon should stay the same as default, no new default, just a picker so the user can
   change their look"): the original icon is the shipped app icon on both systems again (rule 1230): `build/icon.ico`
   and the Mac's `Flare.icns` both come from `assets/icon/flare-color.svg`. The new designs are choices instead:
-  **Settings > Appearance > App icon**, a line of twelve icon tiles under the row's words (Original first and picked
+  **Settings > Appearance > App icon**, twelve icon tiles under the row's words (Original first and picked
   until another is, then Liquid Glass, High Voltage, Daybreak, Hazard Reverse, Safety Orange, Blue Enamel, Raspberry
   Lacquer, Lemon Ink, Jade Glass, Citrus Punch, Cobalt Electric; sources in `assets/icon/app-icons/`). A tile has no
   words: its name is its tooltip and accessible label ("Original, the default" for the first), the chosen one wears
-  the accent ring, and the picked name sits at the row's right. Stored as `flare.window.appIcon` in `settings.json`.
+  the accent ring. Stored as `flare.window.appIcon` in `settings.json`.
+  2026-11-14 (owner: "the icons are weirdly placed ... instead of saying safety orange in that spot have it be a button
+  to restart explorer"), rule 1263, layout A of `docs/superpowers/specs/2026-11-14-app-icon-row-mockup.html`: the
+  tiles are a fixed 36 px with 10 px gaps, left aligned at the words' column, and wrap onto more lines in a narrow
+  window (the row grows by whole lines). The row's right is a **Restart Explorer** button (**Restart Dock** on a Mac)
+  in place of the icon's name: it ends `explorer.exe` in this user's session and starts the shell again (`killall
+  Dock` on a Mac) on a worker, so the taskbar or the Dock shows the pick at once. A failed restart says "Explorer did
+  not restart." under the label.
   How a pick is worn (rule 1231): on the Mac, `NSApplication.applicationIconImage` (the Dock and the app switcher),
   at start and on every pick; Finder keeps the original, since the signed bundle is never written to. On Windows,
   the window's big and small icons (`WM_SETICON`, which the taskbar button shows), at start, on a DPI change and on

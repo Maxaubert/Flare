@@ -114,6 +114,71 @@ pub fn on_app_icon_change(s: &PrefStore, cb: impl Fn() + Send + Sync + 'static) 
     s.on_change(PREF.key, cb)
 }
 
+/// The App icon row's button (rule 1263, 2026-11-14): it restarts the system's shell, so the taskbar (Windows) or the
+/// Dock (macOS) shows the picked icon at once. It stands where the picked icon's name stood.
+pub const RESTART_BUTTON: &str = "restart-shell";
+
+/// The button's words. It has words, so it has no tooltip.
+pub const RESTART_LABEL: &str = if cfg!(target_os = "macos") {
+    "Restart Dock"
+} else {
+    "Restart Explorer"
+};
+
+/// What the row says under its label when the restart failed: one plain line, as the microphone row says its problem.
+pub const RESTART_FAILED: &str = if cfg!(target_os = "macos") {
+    "The Dock did not restart."
+} else {
+    "Explorer did not restart."
+};
+
+/// Restarts the system's shell (rule 1263): Windows ends `explorer.exe` in this user's session and starts it again;
+/// macOS runs `killall Dock`. It blocks, so it runs on a worker. Tests use `FakeShellRestart`: nothing outside the
+/// test restarts. The error is a short reason with no path in it (it reaches the log as a crumb).
+pub trait ShellRestart: Send + Sync {
+    fn restart(&self) -> Result<(), String>;
+}
+
+/// The tests' stand-in: counts the restarts it was asked for and answers as told.
+#[derive(Debug, Default)]
+pub struct FakeShellRestart {
+    calls: std::sync::atomic::AtomicUsize,
+    fail: std::sync::atomic::AtomicBool,
+}
+
+impl FakeShellRestart {
+    pub fn new() -> FakeShellRestart {
+        FakeShellRestart::default()
+    }
+
+    /// A stand-in whose every restart fails.
+    pub fn failing() -> FakeShellRestart {
+        let f = FakeShellRestart::default();
+        f.set_failing(true);
+        f
+    }
+
+    pub fn set_failing(&self, fail: bool) {
+        self.fail.store(fail, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// How many restarts were asked for.
+    pub fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl ShellRestart for FakeShellRestart {
+    fn restart(&self) -> Result<(), String> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+            Err("fake failure".to_string())
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// What a tile says: the icon's name, and that the original is the default.
 pub fn tile_name(icon: &AppIcon) -> String {
     if icon.id == ORIGINAL {
@@ -199,6 +264,19 @@ mod tests {
         };
         set_app_icon_word(&s, "daybreak");
         assert_eq!(n.load(Ordering::SeqCst), 1);
+    }
+
+    /// Rule 1263: the stand-in counts and answers as told; the button's words name the system's shell.
+    #[test]
+    fn the_fake_restart_counts_and_fails_when_told() {
+        let f = FakeShellRestart::new();
+        assert_eq!(f.restart(), Ok(()));
+        f.set_failing(true);
+        assert!(f.restart().is_err());
+        assert_eq!(f.calls(), 2);
+        assert!(FakeShellRestart::failing().restart().is_err());
+        assert!(RESTART_LABEL.starts_with("Restart "));
+        assert!(RESTART_FAILED.ends_with("did not restart."));
     }
 
     #[test]

@@ -4,7 +4,9 @@
 
 use flare_theme::colour_contrast::AlphaRange;
 
-use super::{BlockModel, Control, GlassSupport, Opt, PageEnv, PageModel, RowModel, ThemeColours};
+use super::{
+    BlockModel, Button, Control, GlassSupport, Opt, PageEnv, PageModel, RowModel, ThemeColours,
+};
 use crate::kv::PrefStore;
 use crate::look::LookStore;
 
@@ -149,9 +151,10 @@ pub const APP_ICON_SUB: &str = if cfg!(target_os = "macos") {
     "The taskbar and the window. Shortcuts keep the original."
 };
 
-/// The app icon picker (rule 1230): the icon in force picked, the original first and named as the default.
+/// The app icon picker (rule 1230): the icon in force picked, the original first and named as the default. The row's
+/// right holds the Restart Explorer (Restart Dock) button, not the picked icon's name (rule 1263).
 fn app_icon_row(env: &PageEnv) -> RowModel {
-    use crate::app_icon::{APP_ICONS, app_icon, tile_name};
+    use crate::app_icon::{APP_ICONS, RESTART_BUTTON, RESTART_LABEL, app_icon, tile_name};
     let options = APP_ICONS
         .iter()
         .map(|i| Opt {
@@ -162,6 +165,12 @@ fn app_icon_row(env: &PageEnv) -> RowModel {
         .collect();
     RowModel {
         sub: APP_ICON_SUB.to_string(),
+        // Labelled, so no tooltip (rule 1263).
+        buttons: vec![Button {
+            id: RESTART_BUTTON,
+            label: RESTART_LABEL.to_string(),
+            ..Button::default()
+        }],
         ..row_with(
             "app-icon",
             Control::Icons {
@@ -420,6 +429,26 @@ mod tests {
         assert_eq!(picked(&page(&prefs, &look, GlassSupport::Ok)).0, "daybreak");
         prefs.set(KEY, "neon");
         assert_eq!(picked(&page(&prefs, &look, GlassSupport::Ok)).0, "original");
+    }
+
+    /// Rule 1263: the App icon row's right is one labelled button that restarts the system's shell, with no tooltip.
+    #[test]
+    fn the_app_icon_row_offers_the_shell_restart_button() {
+        use crate::app_icon::{RESTART_BUTTON, RESTART_LABEL};
+        let (prefs, look) = fresh();
+        let r = row(&page(&prefs, &look, GlassSupport::Ok), "app-icon").clone();
+        assert_eq!(r.buttons.len(), 1);
+        let b = &r.buttons[0];
+        assert_eq!(b.id, RESTART_BUTTON);
+        assert_eq!(b.label, RESTART_LABEL);
+        if cfg!(target_os = "macos") {
+            assert_eq!(b.label, "Restart Dock");
+        } else {
+            assert_eq!(b.label, "Restart Explorer");
+        }
+        assert!(b.tip.is_empty(), "a labelled button has no tooltip");
+        assert!(b.icon.is_empty());
+        assert!(!b.off);
     }
 
     #[test]

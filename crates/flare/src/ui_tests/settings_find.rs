@@ -73,6 +73,7 @@ fn fx() -> Fx {
         look,
         diag: Rc::new(FakeDiag::new("C:/logs", false)),
         verb: Arc::new(FakeVerb::new(VerbState::Off)),
+        shell_restart: Arc::new(flare_settings::app_icon::FakeShellRestart::new()),
         dictation: Rc::new(crate::dictation_page::DictationPageProvider),
         pick_folder: Rc::new(|_, done| done(None::<PathBuf>)),
         open_path: Rc::new(|_: &Path| {}),
