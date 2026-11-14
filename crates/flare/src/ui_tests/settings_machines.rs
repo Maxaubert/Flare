@@ -1,8 +1,8 @@
 //! Settings > Machines (remote sessions PR 7), headless, at 100 and 225 percent: the rail lists the page after
 //! Plugins; with no machine it is the "+ Add a machine" row alone, with no subtext; linked machines are a table under a
 //! heading row (logo, name, Address, Flare version, status, a menu with Test and Remove); the add row opens the Add a
-//! machine dialog (machine pairing PR 1, rule 1237) and a failed check is one red line in it; a machine that is Not
-//! linked shows why as one grey line under its row, in plain words when ssh said why (rule 1236), with no tooltip. Every link check runs against an in-memory
+//! machine dialog (machine pairing PR 1, rule 1251) and a failed check is one red line in it; a machine that is Not
+//! linked shows why as one grey line under its row, in plain words when ssh said why (rule 1250), with no tooltip. Every link check runs against an in-memory
 //! stand-in: no ssh.
 
 use std::cell::RefCell;
@@ -354,7 +354,7 @@ impl Fx {
     }
 }
 
-/// Rule 1237: the add row opens the Add a machine dialog over the page (the page keeps its add row); its Machine
+/// Rule 1251: the add row opens the Add a machine dialog over the page (the page keeps its add row); its Machine
 /// drop-down lists the SSH hosts in the code font, then "Type an address"; Add waits for a pick; a failed check is one
 /// red line in the dialog, which stays open; a machine that answers is saved and the dialog closes; "Type an address"
 /// shows the Address field, whose keystrokes reach the page with no rebuild; Cancel and Escape close it. At 100 and
@@ -467,7 +467,7 @@ fn the_add_row_opens_the_dialog_and_a_failed_check_is_one_red_line_in_it() {
     }
 }
 
-/// Rule 1237: the dialog draws only over the Machines page. Another page closes it, and a form that is still open
+/// Rule 1251: the dialog draws only over the Machines page. Another page closes it, and a form that is still open
 /// (a check that runs) never draws over another page or over a hidden Settings tab.
 #[test]
 fn the_dialog_never_draws_over_another_page() {
@@ -486,7 +486,7 @@ fn the_dialog_never_draws_over_another_page() {
     assert!(!f.b().get_machine_add_open(), "hidden with Settings");
 }
 
-/// Rule 1236: a machine whose ssh said why it failed shows that in plain words as the grey line under its row.
+/// Rule 1250: a machine whose ssh said why it failed shows that in plain words as the grey line under its row.
 #[test]
 fn a_machine_whose_ssh_said_why_shows_it_in_plain_words_under_its_row() {
     struct Said(FakeIo);
@@ -528,7 +528,7 @@ fn a_machine_whose_ssh_said_why_shows_it_in_plain_words_under_its_row() {
     assert_eq!(m.badge.as_str(), "Not linked");
 }
 
-/// Rule 1237: the dialog draws in the Dialog look: a 380 px box in the middle of the scrim, "Pick a machine" in the
+/// Rule 1251: the dialog draws in the Dialog look: a 380 px box in the middle of the scrim, "Pick a machine" in the
 /// drop-down, Add dimmed and deaf until it can be pressed, Cancel and a press outside cancel, the drop-down's menu opens
 /// above the dialog and a pick reports its id, "Type an address" grows the box by the Address and User fields, and the
 /// red line grows it by one line. At 100 and 225 percent.
@@ -838,7 +838,7 @@ fn a_machine_row_draws_its_reason_as_one_grey_line_under_it() {
     }
 }
 
-/// Rule 1238: the Machines page starts with This computer, whose one row is the Computer sharing switch with its fixed
+/// Rule 1252: the Machines page starts with This computer, whose one row is the Computer sharing switch with its fixed
 /// subtext and no tooltip; Linked machines comes after it. Flipping the switch on Windows runs the elevated setup (a
 /// fake: nothing runs), the switch shows on and dimmed while it runs, then on and saved. At 100 and 225 percent.
 #[test]
@@ -884,7 +884,7 @@ fn this_computer_is_first_and_its_switch_turns_sharing_on() {
     }
 }
 
-/// Rule 1238: a switch left on is on after a restart (read from the settings), with no setup run again.
+/// Rule 1252: a switch left on is on after a restart (read from the settings), with no setup run again.
 #[test]
 fn the_sharing_switch_stays_on_across_restarts() {
     use crate::sharing::Platform;
@@ -901,7 +901,7 @@ fn the_sharing_switch_stays_on_across_restarts() {
     assert_eq!(*os.announced.lock().unwrap(), [true]);
 }
 
-/// Rule 1240: when macOS refuses, the Flare dialog "Turn on Remote Login" draws over the Machines page with Cancel and
+/// Rule 1254: when macOS refuses, the Flare dialog "Turn on Remote Login" draws over the Machines page with Cancel and
 /// Open System Settings; Open System Settings opens Sharing and the dialog waits; it closes by itself once Remote Login
 /// is on, and the switch is on. It draws only over the Machines page while Settings is in front.
 #[test]
@@ -943,7 +943,7 @@ fn a_refused_mac_shows_turn_on_remote_login_over_the_page() {
     assert!(flare_settings::machine_prefs::sharing_on(&f.prefs));
 }
 
-/// Rule 1241: turning off when Flare turned the SSH server on asks "Stop the SSH server too?" with Keep it and Stop
+/// Rule 1255: turning off when Flare turned the SSH server on asks "Stop the SSH server too?" with Keep it and Stop
 /// it; the switch is off at once; Escape is Keep it.
 #[test]
 fn turning_sharing_off_asks_to_stop_flares_server() {
@@ -977,7 +977,7 @@ fn turning_sharing_off_asks_to_stop_flares_server() {
     assert!(flare_settings::machine_prefs::server_by_flare(&f.prefs));
 }
 
-/// Rules 1240 and 1241: the sharing dialog draws in the Dialog look, a 380 px box in the middle of the scrim; a
+/// Rules 1254 and 1255: the sharing dialog draws in the Dialog look, a 380 px box in the middle of the scrim; a
 /// notice has its one button only; the spinner turns before a waiting line; the buttons and Escape answer. At 100 and
 /// 225 percent.
 #[test]

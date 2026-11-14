@@ -102,7 +102,7 @@ pub const INVENTORY: &[(&str, &str)] = &[
     // Rule 1213: a remote tab's Preview tunnel. Its readiness check and the e2e's loopback stand-in connect to this
     // machine's 127.0.0.1 only; the tunnel itself is the user's own ssh to the machine in machines.json.
     ("flare/src/remote_tunnel.rs", "Remote sessions"),
-    // Rules 1239 and 1240: the Computer sharing switch looks at this machine's own port 22 (127.0.0.1 only) to see
+    // Rules 1253 and 1254: the Computer sharing switch looks at this machine's own port 22 (127.0.0.1 only) to see
     // whether its SSH server answers; it sends nothing. The Windows setup may download the OpenSSH Server feature from
     // Windows Update (Windows' own download, asked for in the elevated script).
     ("flare/src/sharing.rs", "Remote sessions"),

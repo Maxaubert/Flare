@@ -1735,7 +1735,7 @@ export component AppWindow inherits Window {
             text: SettingsBridge.dict-ask-text;
             answered(n) => { SettingsBridge.dict-ask-answered(n); }
         }
-        // The Machines page's Add a machine dialog (machine pairing PR 1, rule 1237): a Settings dialog like DictAsk,
+        // The Machines page's Add a machine dialog (machine pairing PR 1, rule 1251): a Settings dialog like DictAsk,
         // with the drop-down's menu drawn inside it, above it.
         machine-add := MachineAddDialog {
             x: 0px;
@@ -1762,7 +1762,7 @@ export component AppWindow inherits Window {
             cancel => { SettingsBridge.row-button("machines-add", "cancel"); }
             add => { SettingsBridge.row-button("machines-add", "add"); }
         }
-        // The Computer sharing dialog (machine pairing PR 2, rules 1240 and 1241): Turn on Remote Login, Stop the SSH
+        // The Computer sharing dialog (machine pairing PR 2, rules 1254 and 1255): Turn on Remote Login, Stop the SSH
         // server too?, or a failure's line. A Settings dialog like DictAsk.
         sharing-ask := SharingAskDialog {
             x: 0px;

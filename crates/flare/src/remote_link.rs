@@ -200,7 +200,7 @@ fn ssh_path_value(path: &str) -> String {
     }
 }
 
-/// Pure: the options a machine's own fields add to every ssh it runs, the link's and the tunnel's (rule 1235): the
+/// Pure: the options a machine's own fields add to every ssh it runs, the link's and the tunnel's (rule 1249): the
 /// connect timeout; with Flare's key, that key only (`IdentitiesOnly`, `-i`); with Flare's known-hosts file, that file
 /// only and strict checking (no question, no stranger trusted); the port. Each value is one argv item. None when a
 /// field could be read as an option or break ssh's own parsing.
@@ -311,7 +311,7 @@ fn start_link(argv: &[String]) -> Result<(ClientLink<StdioWire>, RemoteHelloInfo
         .split_first()
         .ok_or_else(|| LinkError::Down("an empty link command".into()))?;
     let mut cmd = std::process::Command::new(exe); // sync-ok: the tab's link worker starts ssh, never the UI thread
-    // ssh's stderr is kept (rule 1236): its last lines say why a link did not come up.
+    // ssh's stderr is kept (rule 1250): its last lines say why a link did not come up.
     cmd.args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

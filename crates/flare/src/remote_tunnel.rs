@@ -88,7 +88,7 @@ pub fn tunnel_argv(ssh: &str, m: &Machine, local_port: u16, host_port: u16) -> O
     if !argv_word(&m.ssh) || local_port == 0 || host_port == 0 {
         return None;
     }
-    // The machine's own options (rule 1235): the connect timeout, Flare's key and known-hosts file, the port.
+    // The machine's own options (rule 1249): the connect timeout, Flare's key and known-hosts file, the port.
     let opts = crate::remote_link::machine_opts(m)?;
     let mut argv = vec![
         ssh.to_string(),
@@ -162,7 +162,7 @@ pub fn open_ssh(ask: &TunnelAsk, wait: Duration) -> Result<Tunnel, String> {
     .ok_or_else(|| format!("cannot build the ssh command for {name}"))?;
     let (exe, args) = argv.split_first().expect("an argv has its program");
     let mut cmd = std::process::Command::new(exe); // sync-ok: a worker starts the tunnel, never the UI thread
-    // ssh's stderr is kept (rule 1236): a tunnel that did not open says why in plain words.
+    // ssh's stderr is kept (rule 1250): a tunnel that did not open says why in plain words.
     cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -334,7 +334,7 @@ mod tests {
                 "mini"
             ]
         );
-        // Rule 1235: a paired machine's tunnel uses its address, port, Flare's key and known-hosts file.
+        // Rule 1249: a paired machine's tunnel uses its address, port, Flare's key and known-hosts file.
         let paired = Machine {
             host: Some("192.168.0.139".into()),
             port: Some(2222),

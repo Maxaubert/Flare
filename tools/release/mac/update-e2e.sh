@@ -5,7 +5,7 @@
 # bundle checked (crates/flare-update/tests/mac_update.rs). Nothing is launched with `open`, nothing shows a window.
 #
 #   tools/release/mac/update-e2e.sh                          ad hoc (this Mac only)
-#   FLARE_MAC_SIGN_IDENTITY="Developer ID Application: MAX AUBERT (WV7BY8CUM8)" FLARE_NOTARY_PROFILE=flare-notary \
+#   FLARE_MAC_SIGN_IDENTITY="Developer ID Application: MAX AUBERT (WV7BY8CUM8)" FLARE_NOTARY_PROFILE=notary \
 #   tools/release/mac/update-e2e.sh                          signed and notarized (two notarizations, Gatekeeper must
 #                                                            accept the bundle before and after the update)
 #

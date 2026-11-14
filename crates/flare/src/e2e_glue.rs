@@ -1025,8 +1025,17 @@ pub fn slint_text_for(ev: &KeyEvent) -> Option<SharedString> {
 /// What Slint should see for one key it was left: the modifiers held (Slint tracks Shift, Control,
 /// Alt and Meta from their own key events), then the key; on release the key, then the modifiers
 /// let go. A Ctrl or Alt chord on a character sends the character, so Ctrl+A is select-all there.
-/// Nothing when Slint has no text for the key.
+/// A modifier key on its own is that one modifier's press or release, as a real keyboard sends it
+/// (rule 1238). Nothing when Slint has no text for the key.
 pub fn slint_key_events(ev: &KeyEvent) -> Vec<WindowEvent> {
+    if let Some(m) = slint_modifier_of(&ev.code) {
+        let text = SharedString::from(char::from(m));
+        return vec![if ev.pressed {
+            WindowEvent::KeyPressed { text }
+        } else {
+            WindowEvent::KeyReleased { text }
+        }];
+    }
     let text = slint_text_for(ev).or_else(|| {
         let mut chars = ev.key.chars();
         match (chars.next(), chars.next()) {
@@ -1076,15 +1085,22 @@ pub fn slint_modifiers(ev: &KeyEvent) -> [(bool, slint::platform::Key); 4] {
     ]
 }
 
-/// The key-up of each modifier a chord holds, so Slint never keeps one pressed after the chord.
-pub fn slint_modifier_releases(ev: &KeyEvent) -> Vec<WindowEvent> {
-    slint_modifiers(ev)
-        .into_iter()
-        .filter(|(on, _)| *on)
-        .map(|(_, k)| WindowEvent::KeyReleased {
-            text: SharedString::from(char::from(k)),
-        })
-        .collect()
+/// The Slint key of a modifier key's own code (macOS: Cmd is Slint's Control and Ctrl its Meta, rule
+/// 1110), or None for any other key.
+pub fn slint_modifier_of(code: &str) -> Option<slint::platform::Key> {
+    use slint::platform::Key;
+    let (cmd_key, ctrl_key) = if cfg!(target_vendor = "apple") {
+        (Key::Control, Key::Meta)
+    } else {
+        (Key::Meta, Key::Control)
+    };
+    Some(match code {
+        "ShiftLeft" | "ShiftRight" => Key::Shift,
+        "ControlLeft" | "ControlRight" => ctrl_key,
+        "AltLeft" | "AltRight" => Key::Alt,
+        "SuperLeft" | "SuperRight" | "MetaLeft" | "MetaRight" => cmd_key,
+        _ => return None,
+    })
 }
 // ---- pointer events (pure) -----------------------------------------------------------------
 
@@ -1359,15 +1375,13 @@ impl GlueCtx {
     }
 
     /// One key through the path a real key takes; a key the app leaves to Slint reaches it too,
-    /// with the modifiers a real keyboard would have pressed before it.
+    /// with the modifiers a real keyboard would have pressed before it. Only what `handle_key` lets
+    /// through reaches Slint, a release included, so a release the real window would swallow is
+    /// swallowed here too (rule 1238).
     fn key(&self, ev: &KeyEvent) -> Result<(), String> {
         let result = crate::window::handle_key(&self.kp, ev);
         if matches!(result, EventResult::Propagate) {
             self.dispatch(slint_key_events(ev))?;
-        } else if !ev.pressed {
-            // The key was the app's, but its press may have gone to Slint with the modifiers: a
-            // release is never forwarded, so Slint is told the modifiers are up here.
-            self.dispatch(slint_modifier_releases(ev))?;
         }
         Ok(())
     }
@@ -2485,14 +2499,19 @@ mod tests {
             slint_key_events(&event_from_chord("ArrowLeft", true).unwrap()).len(),
             1
         );
-        // A release the app took still lets go of the modifiers Slint saw pressed.
-        let rel = slint_modifier_releases(&event_from_chord("Ctrl+Shift+KeyA", false).unwrap());
-        assert_eq!(rel.len(), 2);
-        assert!(
-            rel.iter()
-                .all(|e| matches!(e, WindowEvent::KeyReleased { .. }))
-        );
-        assert!(slint_modifier_releases(&event_from_chord("KeyA", false).unwrap()).is_empty());
+        // Rule 1238: a modifier on its own is that one modifier, pressed or let go.
+        let lone: Vec<String> = [("ShiftLeft", true), ("ShiftLeft", false)]
+            .into_iter()
+            .flat_map(|(c, down)| slint_key_events(&event_from_chord(c, down).unwrap()))
+            .map(|e| kind(&e))
+            .collect();
+        assert_eq!(lone, vec![format!("down {shift}"), format!("up {shift}")]);
+        let ctrl_up: Vec<String> =
+            slint_key_events(&event_from_chord("Ctrl+ControlLeft", false).unwrap())
+                .iter()
+                .map(kind)
+                .collect();
+        assert_eq!(ctrl_up, vec![format!("up {ctrl}")]);
         assert!(slint_key_events(&event_from_chord("F11", true).unwrap()).is_empty());
     }
 

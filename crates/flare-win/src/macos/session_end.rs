@@ -8,7 +8,8 @@
 //! - **The machine powers off**: `NSWorkspaceWillPowerOffNotification`, earlier than the quit
 //!   event, so a shut down saves even when the quit is slow. It is NOT final: another app can still
 //!   cancel the log out or shut down (Terminal with a running job, say), and Flare keeps running. So
-//!   it flushes every time and never uses up the final save.
+//!   it flushes every time and never uses up the final save. It also marks the session as ending for a
+//!   minute ([`session_ending`]), so a shell the log out ends first keeps its tab (rule 1239).
 //! - **Sleep and the screens**: the workspace's will-sleep, did-wake, screens-did-sleep and
 //!   screens-did-wake, as `PowerEvents` (the watchdog drops the gap across a sleep).
 //!
@@ -30,7 +31,30 @@ use objc2_foundation::{
 };
 use std::ptr::NonNull;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// Never given on macOS; here so the shared code reads one name on both systems (rule 1239).
+pub const DBG_TERMINATE_PROCESS: u32 = 0x4001_0004;
+
+/// When the last power-off notice came, in ms since the Unix epoch (0: none).
+static POWER_OFF_AT: AtomicU64 = AtomicU64::new(0);
+
+/// How long a power-off notice marks the session as ending. macOS says nothing when another app cancels a log
+/// out or a shut down, so the mark runs out on its own instead of holding the tabs for the rest of the run.
+const POWER_OFF_HOLD_MS: u64 = 60_000;
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// True for a minute after `NSWorkspaceWillPowerOffNotification` (process-wide): a shell that ends then is the
+/// session's end, not the person closing a tab (rule 1239).
+pub fn session_ending() -> bool {
+    let at = POWER_OFF_AT.load(Ordering::SeqCst);
+    at != 0 && now_ms().saturating_sub(at) < POWER_OFF_HOLD_MS
+}
 
 /// What the machine's sleep and its screen tell the app (the same shape as on Windows).
 pub struct PowerEvents {
@@ -77,7 +101,10 @@ impl SessionEndWatch {
         // The power-off notice flushes each time and leaves `fired` alone.
         let flush_now = {
             let on_end = Arc::clone(&on_end);
-            move || on_end()
+            move || {
+                POWER_OFF_AT.store(now_ms().max(1), Ordering::SeqCst);
+                on_end()
+            }
         };
         let end = move || {
             let (fired, on_end) = (Arc::clone(&fired), Arc::clone(&on_end));
@@ -191,8 +218,13 @@ mod tests {
             post(&ws, NSWorkspaceScreensDidSleepNotification);
             post(&ws, NSWorkspaceScreensDidWakeNotification);
             assert_eq!(ends.load(Ordering::SeqCst), 0);
+            assert!(!session_ending(), "no power-off notice yet");
             // A shut down another app cancels: the power-off notice flushes, Flare keeps running.
             post(&ws, NSWorkspaceWillPowerOffNotification);
+            assert!(
+                session_ending(),
+                "the power-off notice marks the session as ending"
+            );
             assert_eq!(
                 ends.load(Ordering::SeqCst),
                 1,

@@ -81,7 +81,7 @@ pub fn app_keys(year: &str) -> Vec<(&'static str, String)> {
             "NSAppleEventsUsageDescription",
             format!("<string>{APPLE_EVENTS_USAGE}</string>"),
         ),
-        // Machine pairing (rule 1240): macOS asks before Flare looks for and announces computers on the home network,
+        // Machine pairing (rule 1254): macOS asks before Flare looks for and announces computers on the home network,
         // and only for the Bonjour service it names here.
         (
             "NSLocalNetworkUsageDescription",
@@ -416,7 +416,7 @@ mod tests {
             "<key>NSMicrophoneUsageDescription</key>\n  <string>Flare uses the microphone",
             "<key>CFBundleIconFile</key>\n  <string>Flare</string>",
             "<key>NSHighResolutionCapable</key>\n  <true/>",
-            // Machine pairing (rule 1240): the local network prompt's sentence, and the one Bonjour service.
+            // Machine pairing (rule 1254): the local network prompt's sentence, and the one Bonjour service.
             "<key>NSLocalNetworkUsageDescription</key>\n  <string>Flare finds and links your other computers",
             "<key>NSBonjourServices</key>\n  <array><string>_flare-pair._tcp</string></array>",
         ] {

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Flare hotkeys sheet</title>
+<!-- Approved by Max 2026-11-14: design 7 "Search and stripes" from the ten single-list mockups.
+     Settings > Terminal > Keys: the row "Flare hotkeys" (was "Agent hotkeys", on by default), subtext
+     "Text box keys in agent prompts, and spare keys for tabs.", an icon-only info button (tooltip
+     "Show all hotkeys") left of the switch. The button opens this sheet: one list, a search field on top
+     that filters it, grey group names, striped rows, the action left and the keys right. Close with Esc
+     or a click outside. The list holds every Flare hotkey, from the chord table (never typed by hand). -->
+<style>
+:root{--text:#dedacf;--soft:#c2bfb5;--dim:#929089;--line:#ffffff17;--divider:#ffffff12;--flat:#1f1f1e}
+body{margin:0;background:#141414;color:var(--text);font:13px/1.4 "Segoe UI",system-ui,sans-serif;display:flex;justify-content:center;padding:40px 16px}
+.s7{width:100%;max-width:400px;background:var(--flat);border:1px solid var(--divider);border-radius:6px;overflow:hidden}
+.top{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line)}
+.t{font:600 15px "Segoe UI"}
+.q{flex:1;height:28px;border-radius:14px;background:#161615;border:1px solid var(--divider);display:flex;align-items:center;padding:0 11px;color:var(--dim);font-size:12px}
+.g{font-size:11px;color:var(--dim);padding:10px 16px 4px}
+.r{display:flex;justify-content:space-between;align-items:center;height:32px;padding:0 16px;color:var(--soft)}
+.r:nth-of-type(odd){background:#ffffff05}
+.k{font:600 11.5px "Segoe UI";color:var(--text)}
+</style>
+</head>
+<body>
+<div class="s7">
+  <div class="top"><span class="t">Flare hotkeys</span><span class="q">Search</span></div>
+  <div class="g">Typing to an agent</div>
+  <div class="r"><span>Select all</span><span class="k">Ctrl+A</span></div>
+  <div class="r"><span>Select a letter</span><span class="k">Shift+←→</span></div>
+  <div class="r"><span>Select a word</span><span class="k">Ctrl+Shift+←→</span></div>
+  <div class="r"><span>Select to start or end</span><span class="k">Shift+Home, Shift+End</span></div>
+  <div class="r"><span>Jump a word</span><span class="k">Ctrl+←→</span></div>
+  <div class="r"><span>Delete a word</span><span class="k">Ctrl+Backspace, Ctrl+Delete</span></div>
+  <div class="r"><span>Cut</span><span class="k">Ctrl+X</span></div>
+  <div class="r"><span>Undo</span><span class="k">Ctrl+Z</span></div>
+  <div class="r"><span>Paste a screenshot</span><span class="k">Ctrl+V</span></div>
+  <div class="r"><span>New line</span><span class="k">Shift+Enter</span></div>
+  <div class="r"><span>Previous or next message</span><span class="k">Ctrl+Shift+↑↓</span></div>
+  <div class="r"><span>Clear the prompt</span><span class="k">Ctrl+Shift+Backspace</span></div>
+  <div class="g">Tabs</div>
+  <div class="r"><span>Next tab</span><span class="k">Ctrl+PgDn</span></div>
+  <div class="r"><span>Sidebar</span><span class="k">Ctrl+S</span></div>
+  <div class="r"><span>Reopen closed tab</span><span class="k">Ctrl+Shift+T</span></div>
+  <div class="r"><span>New tab in a folder</span><span class="k">Ctrl+Shift+N</span></div>
+  <div class="g">App</div>
+  <div class="r"><span>Tab on a machine</span><span class="k">Ctrl+Shift+R</span></div>
+  <div class="r"><span>Browser panel</span><span class="k">Ctrl+Shift+L</span></div>
+  <div class="r"><span>Open the folder</span><span class="k">Ctrl+Shift+E</span></div>
+</div>
+</body>
+</html>
