@@ -4062,3 +4062,13 @@ Turning Computer sharing off empties the list (rule 1241 removes the keys). Held
 `the_computers_that_reach_this_one_read_back_and_a_strange_key_is_left_out`,
 `removing_a_computer_that_reaches_this_one_removes_its_key` and
 `two_computers_pair_from_the_dialog_and_list_each_other`.
+
+1247. **A pairing request that ends after a wrong code, without pairing, locks the host for 30 s, like three wrong
+codes do.** Found 2026-11-14 in the review of machine pairing PR 3. Rule 1243 locked the host only after three wrong
+codes in one connection, and every new connection gets a fresh code. So a stranger on the network could guess once,
+hang up, connect again at once and guess again: unlimited guesses, one per fresh code, held back only by how fast the
+host's dialog pops up. Now any request with a wrong code that ends unpaired (hung up, Decline, Cancel) sets the same
+30 s lock (`locks_out`), and the next request hears `busy`. A typo followed by the right code still pairs and locks
+nothing; a request that ended before any code was tried locks nothing. Held by
+`a_request_that_ends_after_a_wrong_code_locks_the_host` and
+`hanging_up_after_a_wrong_code_does_not_give_a_fresh_code_at_once`.

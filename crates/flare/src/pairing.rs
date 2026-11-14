@@ -7,7 +7,8 @@
 //!   `version`, `proto`, no secret) and listens on a random TCP port, the one the announcement names. A viewer that
 //!   connects and says hello makes the host show the Flare dialog "<viewer> wants to connect" with a fresh 6-digit code
 //!   and Decline, wherever the person is in Flare. One request at a time: another connection meanwhile is told `busy`;
-//!   after three wrong codes the window closes and no request is taken for [`LOCKOUT`].
+//!   after three wrong codes the window closes, and after any request that ended with a wrong code and no pairing
+//!   (rule 1247), no request is taken for [`LOCKOUT`].
 //! - **The viewer**: while the Add a machine dialog is open it looks for those announcements; they are the drop-down's
 //!   first choices. Picking one connects and says hello; the dialog asks for the "Code shown on <name>". Add runs the
 //!   SPAKE2 exchange (`pair_wire`). A wrong code is the red line "Wrong code".
@@ -583,6 +584,13 @@ struct ViewerRun {
     close: Arc<Mutex<(bool, Option<Closer>)>>,
 }
 
+/// Pure (rule 1247): whether a request that ended locks the host for [`LOCKOUT`]: three wrong codes, or any wrong code
+/// in a request that ended without pairing. Without the second, a stranger could guess once or twice, hang up and ask
+/// again for a fresh code at once, with no limit on its guesses.
+pub fn locks_out(too_many: bool, linked: bool, struck: bool) -> bool {
+    too_many || (struck && !linked)
+}
+
 /// The host's listener and its requests.
 struct HostRun {
     stop: Arc<AtomicBool>,
@@ -830,13 +838,21 @@ impl Pairing {
                 let (ctx, post, shared) =
                     (Arc::clone(&ctx), Arc::clone(&post), Arc::clone(&shared));
                 worker("flare-pair-host", move || {
+                    // A wrong code in this request: leaving without pairing still locks (rule 1247).
+                    let struck = std::cell::Cell::new(false);
                     let events = |e: HostEvent| {
-                        if let HostEvent::Done { too_many, .. } = &e {
-                            let mut sh = lock(&shared);
-                            sh.active = None;
-                            if *too_many {
-                                sh.locked_until = Some(Instant::now() + LOCKOUT);
+                        match &e {
+                            HostEvent::Strike { .. } => struck.set(true),
+                            HostEvent::Done {
+                                linked, too_many, ..
+                            } => {
+                                let mut sh = lock(&shared);
+                                sh.active = None;
+                                if locks_out(*too_many, linked.is_some(), struck.get()) {
+                                    sh.locked_until = Some(Instant::now() + LOCKOUT);
+                                }
                             }
+                            HostEvent::Ask { .. } => {}
                         }
                         Self::say(&post, PairMsg::Host(e));
                     };

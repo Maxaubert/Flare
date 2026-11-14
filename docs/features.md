@@ -2868,7 +2868,8 @@ The last of three PRs (spec and mockup as in PR 1).
   fresh 6-digit code ("482 913"), "Enter this code on <name>" and Decline, wherever the person is in Flare. The
   dialog here shows "Code shown on <name>"; Add sends it. The code never crosses the network: both computers prove it
   with SPAKE2 (RFC 9382) and key confirmation, then talk over ChaCha20-Poly1305. A wrong code is the red line "Wrong
-  code"; three close the window. Another computer asking meanwhile hears that it is busy. Rule 1243.
+  code"; three close the window. Another computer asking meanwhile hears that it is busy. Rule 1243. A request that
+  ends after a wrong code without pairing, or three wrong codes, means no new request for 30 s. Rule 1247.
 - **The key.** Flare makes its own SSH key the first time (`id_flare_ed25519` in the profile). The other computer adds
   it to the right `authorized_keys`, tagged `flare-pair:<name>`: a Windows administrator account's
   `administrators_authorized_keys` through one UAC prompt with the ACL sshd wants; any other account's own

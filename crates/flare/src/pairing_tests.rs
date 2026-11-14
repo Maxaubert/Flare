@@ -556,6 +556,68 @@ fn a_second_request_while_one_shows_its_code_is_told_busy() {
     });
 }
 
+/// Rule 1247: a request locks the host when it had three wrong codes, or any wrong code and no pairing; a request that
+/// paired, or that ended before any code was tried, does not.
+#[test]
+fn a_request_that_ends_after_a_wrong_code_locks_the_host() {
+    assert!(locks_out(true, false, true), "three wrong codes");
+    assert!(locks_out(false, false, true), "a wrong code, then hung up");
+    assert!(!locks_out(false, true, true), "a typo, then the right code");
+    assert!(!locks_out(false, false, false), "no code tried");
+}
+
+/// Rule 1247, on two pages: a viewer that types one wrong code and hangs up cannot ask again at once for a fresh code:
+/// the next request is told busy (else a stranger gets unlimited guesses, a few per code).
+#[test]
+fn hanging_up_after_a_wrong_code_does_not_give_a_fresh_code_at_once() {
+    let hub = Arc::new(Hub::default());
+    let mut host = page(&hub, "192.168.0.139", pc(), true);
+    let port = host.net.port().unwrap();
+    let mut view = page(&hub, "192.168.0.120", mac(), false);
+    *view.net.nearby.lock().unwrap() = vec![pc_nearby(port)];
+    view.page.open_form();
+    until(&mut [&mut view], "nearby", |p| {
+        !p[0].page.info().nearby.is_empty()
+    });
+    let id = view.page.info().nearby[0].id.clone();
+    let pick = format!("{NEARBY_PREFIX}{id}");
+    view.page.set_pick(&pick);
+    until(&mut [&mut host, &mut view], "the code shows", |p| {
+        p[0].page.pairing().prompt().is_some() && p[1].page.info().add.ready
+    });
+    let code = host.page.pairing().prompt().unwrap().code.clone();
+    let wrong = if code == "111111" {
+        "222 222"
+    } else {
+        "111 111"
+    };
+    view.page.set_code(wrong);
+    view.page.submit();
+    until(&mut [&mut host, &mut view], "wrong code", |p| {
+        p[1].page.info().add.error.is_some()
+    });
+    assert_eq!(view.page.info().add.error.as_deref(), Some("Wrong code"));
+    // Hang up and ask again at once.
+    view.page.cancel_form();
+    until(&mut [&mut host], "the code dialog closes", |p| {
+        p[0].page.pairing().prompt().is_none()
+    });
+    view.page.open_form();
+    until(&mut [&mut view], "nearby again", |p| {
+        !p[0].page.info().nearby.is_empty()
+    });
+    // The host's dialog closed on its Done, which set the lock first.
+    view.page.set_pick(&pick);
+    until(&mut [&mut host, &mut view], "an answer", |p| {
+        p[1].page.info().add.error.is_some() || p[0].page.pairing().prompt().is_some()
+    });
+    assert!(host.page.pairing().prompt().is_none(), "no fresh code");
+    assert_eq!(
+        view.page.info().add.error.as_deref(),
+        Some("Max's PC is busy with another request. Try again in a minute.")
+    );
+}
+
 /// Rules 1241 and 1242: turning Computer sharing off stops the announcement and the listener.
 #[test]
 fn turning_sharing_off_stops_the_announcement() {
