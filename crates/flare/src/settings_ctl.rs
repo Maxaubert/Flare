@@ -42,6 +42,7 @@ use flare_settings::rows::all_rows;
 use flare_settings::verb::{DiagControlApi, ExplorerVerb, VerbState};
 use flare_settings::wall::{self, WallLayout};
 use flare_settings::window_colours::{CUSTOM_COLOURS_KEY, EDGES_KEY};
+use flare_tabs::keymap::KeyOs;
 use flare_theme::ansi::ANSI_KEYS;
 use flare_theme::colour::{ColourFormat, Rgba, parse_colour};
 use flare_theme::look::card_ansi;
@@ -52,8 +53,8 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use crate::appctl::{Post, UiMsg};
 use crate::picker_ctl::{PickerCtl, PickerCtx, RowColour};
 use crate::{
-    AppWindow, BlockKind as SlintBlock, EditorWell, RailItem, SetButton, SetHit, SetKind,
-    SetOption, SetRow, SetSection, SettingsBridge, WallCard,
+    AppWindow, BlockKind as SlintBlock, EditorWell, KeySheetRow, RailItem, SetButton, SetHit,
+    SetKind, SetOption, SetRow, SetSection, SettingsBridge, WallCard,
 };
 
 /// How long the Mark button says Marked.
@@ -139,7 +140,6 @@ pub struct SettingsDeps {
     pub face_of: Rc<dyn Fn(&str) -> String>,
     pub theme_colours: Rc<dyn Fn() -> ThemeColours>,
     pub agent_colours: Rc<dyn Fn() -> [String; 3]>,
-    pub agent_key_labels: Rc<dyn Fn() -> String>,
     pub post: Post,
     pub version: String,
     pub copyright: String,
@@ -198,6 +198,8 @@ pub struct SettingsCtl {
     /// The plugin whose details sheet is open, and what it lists now (what its "Turn on" approves).
     sheet: Option<String>,
     sheet_shown: Option<flare_mods::hub::Shown>,
+    /// The Flare hotkeys sheet is open (rule 1262).
+    keys_open: bool,
     pending_pick: RefCell<Option<String>>,
     /// The colour popover, the typed codes of the colour rows and the dropper.
     picker: PickerCtl,
@@ -286,6 +288,69 @@ fn no_colour() -> slint::Color {
     slint::Color::from_argb_u8(0, 0, 0, 0)
 }
 
+/// The Flare hotkeys sheet's lines for a search (rule 1262): each group's name over the rows of it the search keeps,
+/// every other row of a group striped from its first; a group with none kept is left out.
+pub fn keys_sheet_rows(os: KeyOs, query: &str) -> ModelRc<KeySheetRow> {
+    use flare_tabs::hotkeys::{filter_rows, hotkey_rows};
+    let mut out = Vec::new();
+    let mut group = "";
+    let mut n = 0;
+    for r in filter_rows(&hotkey_rows(os), query) {
+        if r.group != group {
+            group = r.group;
+            n = 0;
+            out.push(KeySheetRow {
+                heading: true,
+                text: group.into(),
+                keys: SharedString::new(),
+                stripe: false,
+            });
+        }
+        out.push(KeySheetRow {
+            heading: false,
+            text: r.action.into(),
+            keys: r.keys.as_str().into(),
+            stripe: n % 2 == 0,
+        });
+        n += 1;
+    }
+    ModelRc::new(VecModel::from(out))
+}
+
+/// Draws the hotkeys sheet's lines for a search, and the list's height: 29 px a group name, 32 a row, 6 under the last.
+fn show_keys(b: &SettingsBridge<'_>, query: &str) {
+    use slint::Model;
+    let rows = keys_sheet_rows(KeyOs::HOST, query);
+    let h: f32 = rows
+        .iter()
+        .map(|r| if r.heading { 29.0 } else { 32.0 })
+        .sum();
+    b.set_keys_list_h(if h > 0.0 { h + 6.0 } else { 0.0 });
+    b.set_keys_rows(rows);
+}
+
+/// A row's buttons drawn before its control (`lead`) or after it.
+fn row_buttons(buttons: &[flare_settings::page::Button], lead: bool) -> ModelRc<SetButton> {
+    ModelRc::new(VecModel::from(
+        buttons
+            .iter()
+            .filter(|b| b.lead == lead)
+            .map(|b| SetButton {
+                id: b.id.into(),
+                label: b.label.as_str().into(),
+                label_alt: b.alt.clone().unwrap_or_default().into(),
+                off: b.off,
+                alt: b.alt.is_some(),
+                icon: flare_settings::icons::button_icon_path(b.icon)
+                    .unwrap_or("")
+                    .into(),
+                tip: b.tip.as_str().into(),
+                warn: b.warn,
+            })
+            .collect::<Vec<_>>(),
+    ))
+}
+
 /// One row (`y` inside the panel, below its border) as the view draws it.
 pub fn to_slint_row(r: &RowModel, y: f64, h: f64, ctx: &RowCtx<'_>) -> SetRow {
     let mut out = SetRow {
@@ -309,23 +374,8 @@ pub fn to_slint_row(r: &RowModel, y: f64, h: f64, ctx: &RowCtx<'_>) -> SetRow {
         } else {
             0.0
         },
-        buttons: ModelRc::new(VecModel::from(
-            r.buttons
-                .iter()
-                .map(|b| SetButton {
-                    id: b.id.into(),
-                    label: b.label.as_str().into(),
-                    label_alt: b.alt.clone().unwrap_or_default().into(),
-                    off: b.off,
-                    alt: b.alt.is_some(),
-                    icon: flare_settings::icons::button_icon_path(b.icon)
-                        .unwrap_or("")
-                        .into(),
-                    tip: b.tip.as_str().into(),
-                    warn: b.warn,
-                })
-                .collect::<Vec<_>>(),
-        )),
+        buttons: row_buttons(&r.buttons, false),
+        lead_buttons: row_buttons(&r.buttons, true),
         ..Default::default()
     };
     if let Some(l) = &r.logo {
@@ -769,6 +819,7 @@ impl SettingsCtl {
             plugin_url: String::new(),
             sheet: None,
             sheet_shown: None,
+            keys_open: false,
             pending_pick: RefCell::new(None),
             picker: PickerCtl::default(),
             picker_timer: slint::Timer::default(),
@@ -977,6 +1028,9 @@ impl SettingsCtl {
             |c, k: SharedString, v: SharedString| c.sheet_choice(&k, &v)
         );
         on!(app, rc, on_sheet_turn_on, |c| c.sheet_turn_on());
+        on!(app, rc, on_keys_close, |c| c.close_keys());
+        on!(app, rc, on_keys_query_edited, |c, q: SharedString| c
+            .keys_query(&q));
         on!(app, rc, on_frame_resized, |c, w: f32, h: f32| c
             .frame_resized(f64::from(w), f64::from(h)));
         on!(app, rc, on_scale_changed, |c| c.scale_changed());
@@ -1054,6 +1108,7 @@ impl SettingsCtl {
         crate::dictation_ctl::page_left();
         self.close_select();
         self.close_sheet();
+        self.close_keys();
         self.picker_do(|p, _| p.hide_for_tab_switch());
         self.drop_pencil_wait();
         if let Some(app) = self.weak.upgrade() {
@@ -1076,6 +1131,7 @@ impl SettingsCtl {
         self.ask_open = false;
         self.stale = true;
         self.close_sheet();
+        self.close_keys();
         self.picker_do(|p, _| p.outside());
         if let Some(app) = self.weak.upgrade() {
             let b = app.global::<SettingsBridge>();
@@ -1186,6 +1242,31 @@ impl SettingsCtl {
         }
     }
 
+    /// The Flare hotkeys sheet (rule 1262): opens with an empty search and every hotkey of this system.
+    fn open_keys(&mut self) {
+        self.keys_open = true;
+        if let Some(app) = self.weak.upgrade() {
+            let b = app.global::<SettingsBridge>();
+            b.set_keys_query(SharedString::new());
+            show_keys(&b, "");
+            b.set_keys_open(true);
+        }
+    }
+
+    /// What is typed in the sheet's search: the rows it keeps, an empty group left out.
+    fn keys_query(&mut self, query: &str) {
+        if let Some(app) = self.weak.upgrade() {
+            show_keys(&app.global::<SettingsBridge>(), query);
+        }
+    }
+
+    fn close_keys(&mut self) {
+        self.keys_open = false;
+        if let Some(app) = self.weak.upgrade() {
+            app.global::<SettingsBridge>().set_keys_open(false);
+        }
+    }
+
     /// The plugin whose details sheet is open (the tests and the e2e read it).
     #[allow(dead_code)]
     pub fn sheet_of(&self) -> Option<&str> {
@@ -1229,6 +1310,10 @@ impl SettingsCtl {
         let b = app.global::<SettingsBridge>();
         if self.sheet.is_some() {
             self.close_sheet();
+            return true;
+        }
+        if self.keys_open {
+            self.close_keys();
             return true;
         }
         if crate::dictation_ctl::page_snap().ask.is_some() {
@@ -1305,7 +1390,6 @@ impl SettingsCtl {
             dictation_wired: crate::dictation_ctl::wired(),
             theme_colours: (self.deps.theme_colours)(),
             agent_colours: (self.deps.agent_colours)(),
-            agent_key_labels: (self.deps.agent_key_labels)(),
             face_of: &*self.deps.face_of,
             mods: mods_info.as_ref(),
             machines: machines_info.as_ref(),
@@ -1833,6 +1917,10 @@ impl SettingsCtl {
             if let Some(m) = &self.mods {
                 m.install_url(self.plugin_url.trim());
             }
+            return;
+        }
+        if row == "agent-keys" && button == flare_settings::page::terminal::HOTKEYS_BUTTON {
+            self.open_keys();
             return;
         }
         if let Some(id) = row.strip_prefix(SWITCH_PREFIX) {
@@ -2740,7 +2828,6 @@ mod tests {
                 secondary: "#181818".into(),
             }),
             agent_colours: Rc::new(|| ["#111111".into(), "#222222".into(), "#333333".into()]),
-            agent_key_labels: Rc::new(String::new),
             post,
             version: "1.2.3".to_string(),
             copyright: "Copyright 2026".to_string(),

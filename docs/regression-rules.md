@@ -3829,9 +3829,9 @@ is @ on a Norwegian layout) and replaces the selection. Shift+Enter (rule 6) and
 key (rule 5) already did what Max asked and are unchanged. Codex, agy and a plain shell keep every key: Flare knows no
 other agent's editor keys. Native: `flare_term::prompt_keys` (`prompt_key_of`, `read_box`, `plan`, `message_scroll`,
 `prompt_key_label`), `Emulator::{prompt_lines, marked_rows, sel_cells}`, `TermUi::{prompt_key, message_key,
-prompt_tick}`, the check in `AppCtl::term_key`, `keymap::agent_keys_text` for the Settings Keys notes. Held by the
+prompt_tick}`, the check in `AppCtl::term_key`; Settings lists the keys on the Flare hotkeys sheet (rule 1262). Held by the
 `prompt_keys` unit tests, `the_prompt_keys_are_no_chords`, `the_mac_prompt_keys_are_no_chords`,
-`the_agent_keys_list_names_every_key_by_its_label`, `the_agent_keys_are_listed_under_their_switch_a_note_per_line` and the UI tests
+the hotkeys sheet's tests (rule 1262) and the UI tests
 `ctrl_a_selects_the_claude_prompt_and_typing_replaces_it`,
 `shift_arrows_grow_the_highlight_and_it_survives_the_agents_repaint`,
 `the_prompt_keys_are_claudes_only_and_only_with_agent_hotkeys_on` and
@@ -3913,3 +3913,38 @@ DBG_TERMINATE_PROCESS}`, `AppCtl::hold_for_session_end`, the guarded `HostEvent:
 `shells_the_session_end_kills_keep_every_tab_in_tabs_json`, `a_plain_exit_while_the_session_ends_keeps_the_list`,
 `a_plain_exit_outside_a_session_end_closes_the_tab_and_saves_the_smaller_list`, `exit_closes_the_tab_without_asking`
 and `query_end_session_is_never_a_veto`. Source: diag.jsonl of the 2026-11-14 restart.
+
+## Flare hotkeys sheet (2026-11-14)
+
+1262. **Settings > Terminal > Keys names the switch "Flare hotkeys" and its info button opens a sheet of every hotkey.**
+The row was "Agent hotkeys"; it keeps its settings key (`flare.window.agentKeys`, on by default), so a choice made
+before survives. Its subtext is Max's own words, "Text box keys in agent prompts, and spare keys for tabs.", the same
+on and off (a subtext never reports state). The five note lines under the switch are gone. An icon-only info button
+(the circle i, tooltip "Show all hotkeys") sits left of the switch: a `Button` with `lead`, drawn before the control
+(`SetRow.lead-buttons`). It opens the hotkeys sheet, the approved mockup's design 7 "Search and stripes"
+(`docs/superpowers/specs/2026-11-14-hotkeys-sheet-mockup.html`): the title "Flare hotkeys" and a pill search field
+"Search" on one top row with a divider under it, then grey group names ("Typing to an agent", "Tabs", "App") over 32 px
+striped rows, the action left in soft ink and its keys right in bold, on the theme's flat ground (`side-flat`). The
+search holds the keys when the sheet opens; typing keeps the rows whose action, keys or table labels hold the text,
+ignoring case, and leaves out a group with none. Escape or a press outside the box closes it, and so does leaving
+Settings. The rows are built from the key tables per system, never typed: the chord table (`key_label_on`, a chord
+with an agent key shows both, the agent key first), the prompt keys (`prompt_key_label`), the paste key
+(`copy_paste_labels`), the new-line key (`flare_term::keys::newline_label`) and the Mac's Cmd+Backspace
+(`MAC_DELETE_LINE_LABEL`). Two arrow keys with the same modifiers share them ("Shift+←→"). The Mac shows its glyphs
+(⌘, ⌥, ⇧). Every chord of the table is on the sheet except the agent guard, which is no action (its own switch row);
+a key the system lacks has no row (the Window menu on a Mac, the zoom keys on Windows). Beyond the mockup the sheet
+also lists "Go to start or end" (Home, End) and the rest of the chord table (New tab, Close tab, Go to tab 1 to 9,
+Find a tab, Show or hide the panel, Keys to the panel and back, Find, Settings, Command help, Full screen, Window menu,
+and on the Mac Zoom in, Zoom out and Actual size). The sheet is an overlay (`Overlay::HotkeySheet`,
+`SettingsBridge.keys-open` in `overlay-open`), a modal declared after the plugin sheet. Native:
+`flare_tabs::hotkeys::{hotkey_rows, filter_rows, pair_text}`, `settings_ctl::keys_sheet_rows`,
+`SettingsCtl::{open_keys, keys_query, close_keys}`, `ui/settings/hotkey_sheet.slint`. Held by
+`every_chord_of_the_table_is_on_the_sheet_by_its_label`, `every_prompt_key_paste_and_new_line_are_on_the_sheet`,
+`the_windows_sheet_reads_as_the_mockup`, `the_mac_sheet_names_cmd_and_option_in_their_glyphs`,
+`the_search_reads_actions_keys_and_labels_and_ignores_case`,
+`flare_hotkeys_has_an_info_button_left_of_its_switch_and_no_notes`,
+`the_row_is_flare_hotkeys_with_an_info_button_before_its_switch`,
+`the_button_opens_the_sheet_the_search_filters_and_escape_closes_it`,
+`a_press_outside_the_box_closes_the_sheet_and_one_inside_does_not`, `every_chord_in_the_table_is_on_the_sheet`,
+`leaving_settings_closes_the_sheet`, `a_lead_button_sits_left_of_the_switch_and_both_answer_their_clicks` and
+`flare_hotkeys_is_found_by_its_new_name_and_its_old_one`. Source: Max, 2026-11-14 (the approved mockup).

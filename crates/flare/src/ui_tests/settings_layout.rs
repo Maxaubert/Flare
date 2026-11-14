@@ -95,7 +95,6 @@ pub(super) fn build(page: &str, prefs: &PrefStore, look: &LookStore) -> PageMode
             secondary: "#181818".into(),
         },
         agent_colours: ["#111111".into(), "#222222".into(), "#333333".into()],
-        agent_key_labels: String::new(),
         face_of: &face,
         mods: None,
         machines: None,

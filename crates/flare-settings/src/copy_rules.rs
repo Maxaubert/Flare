@@ -268,6 +268,8 @@ mod tests {
 
     /// The one subtext allowed past the word limit: See-through's nine words (O8, decision D5).
     const SEE_THROUGH_SUB: &str = "How much of the desktop shows behind every surface.";
+    /// The Flare hotkeys row's subtext, Max's own words (2026-11-14, rule 1262): longer than eight on purpose.
+    const FLARE_HOTKEYS_SUB: &str = "Text box keys in agent prompts, and spare keys for tabs.";
 
     /// The sub literal that follows the row id `term-acrylic`, the See-through row (O8).
     fn see_through_sub(source: &str) -> Option<String> {
@@ -400,8 +402,13 @@ mod tests {
             .iter()
             .filter(|t| sub_too_long(t))
             .filter(|t| Some(*t) != exception.as_ref())
+            .filter(|t| t.as_str() != FLARE_HOTKEYS_SUB)
             .collect();
         assert!(long.is_empty(), "subtexts over eight words: {long:?}");
+        assert!(
+            subs.iter().any(|t| t == FLARE_HOTKEYS_SUB),
+            "the Flare hotkeys subtext changed"
+        );
     }
 
     #[test]

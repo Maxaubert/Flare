@@ -32,6 +32,7 @@ mod settings_flows;
 mod settings_frame;
 mod settings_help;
 mod settings_help_flows;
+mod settings_hotkeys;
 mod settings_ink;
 mod settings_layout;
 mod settings_live;

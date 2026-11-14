@@ -114,29 +114,35 @@ fn opening_section(env: &PageEnv<'_>) -> SectionModel {
     )
 }
 
-/// The Keys section: the agent hotkeys (the tooltip lists the chords) and keep agents open.
+/// The Flare hotkeys row's info button (rule 1262): it opens the sheet of every hotkey.
+pub const HOTKEYS_BUTTON: &str = "hotkeys";
+/// Its tooltip (an icon-only button: its only words).
+pub const HOTKEYS_TIP: &str = "Show all hotkeys";
+
+/// The Keys section: the Flare hotkeys switch with its info button (the sheet lists the keys, rule 1262), keep agents
+/// open and right clicks.
 fn keys_section(env: &PageEnv<'_>) -> SectionModel {
-    let hotkeys = RowModel {
-        row_tip: env.agent_key_labels.clone(),
-        ..switch_row(def("agent-keys"), agent_keys(env.prefs))
-    };
+    let mut hotkeys = switch_row(def("agent-keys"), agent_keys(env.prefs));
+    hotkeys.buttons.push(Button {
+        id: HOTKEYS_BUTTON,
+        icon: "info",
+        tip: HOTKEYS_TIP.to_string(),
+        lead: true,
+        ..Button::default()
+    });
     let guard = RowModel {
         row_tip: GUARD_TIP.to_string(),
         ..switch_row(def("agent-guard"), agent_guard(env.prefs))
     };
     let right_click = switch_row(def("right-click-reports"), right_click_reports(env.prefs));
-    // The keys the hotkeys add, a note per line under their switch (rule 1235): the list is built from the key
-    // tables (`key_label`, `prompt_key_label`), never typed here.
-    let mut blocks = vec![BlockModel::Row(hotkeys)];
-    blocks.extend(
-        env.agent_key_labels
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| BlockModel::Note(l.to_string())),
-    );
-    blocks.push(BlockModel::Row(guard));
-    blocks.push(BlockModel::Row(right_click));
-    section("keys", blocks)
+    section(
+        "keys",
+        vec![
+            BlockModel::Row(hotkeys),
+            BlockModel::Row(guard),
+            BlockModel::Row(right_click),
+        ],
+    )
 }
 
 /// The Links section: the previews switch, on by default (Surfaces stage 1), and the switch that lets an
@@ -286,7 +292,6 @@ mod tests {
                 secondary: String::new(),
             },
             agent_colours: [String::new(), String::new(), String::new()],
-            agent_key_labels: "Ctrl+S, Ctrl+Tab".to_string(),
             face_of: face,
             mods: None,
             machines: None,
@@ -668,42 +673,49 @@ mod tests {
             the_row(&page, "agent-guard").row_tip,
             "Ctrl+C and Ctrl+D never reach an agent. Ctrl+C still stops one while it works, and copies a selection."
         );
-        assert_eq!(the_row(&page, "agent-keys").row_tip, "Ctrl+S, Ctrl+Tab");
         assert!(the_row(&page, "agent-keys").tap);
         assert!(the_row(&page, "agent-guard").tap);
     }
 
     #[test]
-    fn the_agent_keys_are_listed_under_their_switch_a_note_per_line() {
+    fn flare_hotkeys_has_an_info_button_left_of_its_switch_and_no_notes() {
+        // Rule 1262: the row is "Flare hotkeys" (the settings key stays), its subtext never reports state, the five
+        // note lines are gone (the sheet lists the keys) and an icon-only info button opens the sheet.
         let prefs = PrefStore::memory();
         let look = LookStore::new(prefs.clone());
         let face: &dyn Fn(&str) -> String = &face_of_test;
-        let mut e = env(&prefs, &look, face);
-        e.agent_key_labels = "Ctrl+A selects the prompt.\n\nCtrl+Z undoes.".to_string();
-        let page = build_terminal(&e);
+        let page = build_terminal(&env(&prefs, &look, face));
+        let r = the_row(&page, "agent-keys");
+        assert_eq!(r.label, "Flare hotkeys");
+        assert_eq!(
+            r.sub,
+            "Text box keys in agent prompts, and spare keys for tabs."
+        );
+        assert_eq!(r.row_tip, "", "a labelled control has no tooltip");
+        assert_eq!(r.control, Control::Switch { on: true });
+        assert_eq!(r.buttons.len(), 1);
+        let b = &r.buttons[0];
+        assert_eq!(
+            (b.id, b.icon, b.tip.as_str(), b.label.as_str(), b.lead),
+            (HOTKEYS_BUTTON, "info", "Show all hotkeys", "", true)
+        );
+        assert_eq!(
+            def("agent-keys").keys,
+            ["flare.window.agentKeys"],
+            "the choice survives"
+        );
+        // Off, the sub is the same.
+        set_agent_keys(&prefs, false);
+        let page = build_terminal(&env(&prefs, &look, face));
+        assert_eq!(the_row(&page, "agent-keys").sub, r.sub);
         let keys = page
             .sections
             .iter()
             .find(|s| s.id == "keys")
             .expect("the keys section");
-        let kinds: Vec<String> = keys
-            .blocks
-            .iter()
-            .map(|b| match b {
-                BlockModel::Row(r) => r.id.to_string(),
-                BlockModel::Note(t) => format!("note:{t}"),
-                _ => "other".to_string(),
-            })
-            .collect();
-        assert_eq!(
-            kinds,
-            vec![
-                "agent-keys",
-                "note:Ctrl+A selects the prompt.",
-                "note:Ctrl+Z undoes.",
-                "agent-guard",
-                "right-click-reports"
-            ]
+        assert!(
+            keys.blocks.iter().all(|b| matches!(b, BlockModel::Row(_))),
+            "no notes under the switch"
         );
     }
 

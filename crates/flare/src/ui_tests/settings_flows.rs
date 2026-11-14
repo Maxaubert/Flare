@@ -81,7 +81,6 @@ fn fx_at(scale: f32) -> Fx {
             secondary: "#181818".into(),
         }),
         agent_colours: Rc::new(|| ["#111111".into(), "#222222".into(), "#333333".into()]),
-        agent_key_labels: Rc::new(String::new),
         post,
         version: "1.2.3".to_string(),
         copyright: "Copyright 2026".to_string(),

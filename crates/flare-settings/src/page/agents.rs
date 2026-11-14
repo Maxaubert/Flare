@@ -204,7 +204,6 @@ mod tests {
                 secondary: String::new(),
             },
             agent_colours: colours.map(str::to_string),
-            agent_key_labels: String::new(),
             face_of,
             mods: None,
             machines: None,
