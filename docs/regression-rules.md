@@ -3804,7 +3804,7 @@ Source: the macOS parity review of PR #234, 2026-11-14.
 
 ## File links: fallback folders (2026-11-14)
 
-1240. **A relative file link the agent's folder lacks is read from the session's start folder, the tab's folder or
+1248. **A relative file link the agent's folder lacks is read from the session's start folder, the tab's folder or
 the repo root.** A click or the menu's Open on a relative link gave route `missing` (diag `path-click`, ext `tsx`):
 `TabInfo::link_base` read it only from the folder the agent's hooks last named, but agents write paths relative to
 their session's folder, and the named folder can differ (a `cd` into a subfolder or a worktree, a stale report).

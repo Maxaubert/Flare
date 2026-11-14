@@ -735,7 +735,7 @@ struct FrontTab {
     handle: Arc<TermHandle>,
     cwd: Option<String>,
     shell_cwd: Option<String>,
-    /// The folder the agent's session first named, a fallback for a relative link (rule 1240).
+    /// The folder the agent's session first named, a fallback for a relative link (rule 1248).
     start_cwd: Option<String>,
     alive: bool,
     remote: bool,
@@ -3385,7 +3385,7 @@ impl AppCtl {
             handle,
             cwd: link_folder(self.hub.agent_folder(&t.id), shell),
             shell_cwd: shell.map(str::to_string),
-            // Rule 1240: only a folder a relative path resolves from, as for the agent folder.
+            // Rule 1248: only a folder a relative path resolves from, as for the agent folder.
             start_cwd: self
                 .hub
                 .agent_start_folder(&t.id)

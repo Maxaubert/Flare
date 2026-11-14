@@ -233,7 +233,7 @@ pub struct AgentHub {
     /// with `cwd`, changes after review 2026-11-11). A relative file link is read from it. Gone with the agent.
     agent_folders: HashMap<String, String>,
     /// Each tab's agent start folder: the first folder its session's hooks named since the agent came or the session
-    /// changed (rule 1240). A relative link the agent folder lacks is tried there next. Gone with the agent.
+    /// changed (rule 1248). A relative link the agent folder lacks is tried there next. Gone with the agent.
     agent_start_folders: HashMap<String, String>,
     /// Tabs the process poll has answered for at least once (the e2e probe `agent.state` says so).
     polled: HashSet<String>,
@@ -891,7 +891,7 @@ impl AgentHub {
 
     /// The agent's hooks named the folder its session works in: the latest wins.
     pub fn set_agent_folder(&mut self, tab: &str, folder: &str) {
-        // The first folder named is the session's start folder (rule 1240).
+        // The first folder named is the session's start folder (rule 1248).
         self.agent_start_folders
             .entry(tab.to_string())
             .or_insert_with(|| folder.to_string());
@@ -904,7 +904,7 @@ impl AgentHub {
         self.agent_folders.get(tab).map(String::as_str)
     }
 
-    /// The folder the tab's agent session first named (rule 1240): a relative file link its agent folder lacks is
+    /// The folder the tab's agent session first named (rule 1248): a relative file link its agent folder lacks is
     /// tried there next. Gone with the agent, and forgotten when another session starts in the tab.
     pub fn agent_start_folder(&self, tab: &str) -> Option<&str> {
         self.agent_start_folders.get(tab).map(String::as_str)
@@ -1531,7 +1531,7 @@ mod tests {
         assert!(r.hub.send_tabs().iter().all(|t| t.tab != "b"));
     }
 
-    /// Rule 1240: the start folder is the first folder the session named; a later one moves only the agent folder.
+    /// Rule 1248: the start folder is the first folder the session named; a later one moves only the agent folder.
     /// Another session, the agent leaving and the tab closing forget it.
     #[test]
     fn the_start_folder_is_the_first_folder_named_and_goes_with_the_agent() {

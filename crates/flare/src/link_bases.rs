@@ -1,4 +1,4 @@
-//! The folders a file link is read from (rule 1240). A relative link is read from the agent's folder first, as ever
+//! The folders a file link is read from (rule 1248). A relative link is read from the agent's folder first, as ever
 //! (rule 275). When no spelling of it names anything there, the worker tries, in this order and each folder once: the
 //! folder the agent's session started in, the tab's own shell folder, the git repo root above the first folder (a
 //! worktree's `.git` file counts as a root), and the main repo root that a worktree's `.git` file points to. Agents
@@ -101,7 +101,7 @@ pub struct Found {
     pub text: String,
 }
 
-/// The first folder, in order, under which a spelling names something, and that spelling (rule 1240). Worker only.
+/// The first folder, in order, under which a spelling names something, and that spelling (rule 1248). Worker only.
 pub fn find_link(bases: &LinkBases, texts: &[String], home: &str) -> Option<Found> {
     bases.candidates().into_iter().find_map(|(kind, base)| {
         first_existing(&base, texts, home).map(|text| Found { kind, base, text })
@@ -235,7 +235,7 @@ mod tests {
         t.iter().map(|x| (*x).to_string()).collect()
     }
 
-    /// Rule 1240: the agent's folder is a subfolder; the file lives at the session's start folder.
+    /// Rule 1248: the agent's folder is a subfolder; the file lives at the session's start folder.
     #[test]
     fn a_relative_link_missing_under_the_agents_folder_is_found_under_the_start_folder() {
         let root = tempfile::tempdir().unwrap();
@@ -371,7 +371,7 @@ mod tests {
         assert_eq!(dedupe_key(&roots[1]), dedupe_key(&s(main.path())));
     }
 
-    /// Rule 1240: a worktree's `.git` file is data. A `gitdir:` that names no local folder (a network share, here a
+    /// Rule 1248: a worktree's `.git` file is data. A `gitdir:` that names no local folder (a network share, here a
     /// `\\?\` path so the test never touches the network) is never read and gives no main root.
     #[cfg(windows)]
     #[test]

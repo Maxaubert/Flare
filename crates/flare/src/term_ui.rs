@@ -122,7 +122,7 @@ pub enum TermMsg {
 /// `opened` (handed to Windows' default app; a failure there is its own `open-failed` crumb), `revealed`
 /// (Explorer, selected), `missing` (no spelling names anything) or `refused` (it changed under the click). The
 /// extension is a fixed word (`ext_label`): the screen text never reaches the log. `base` names the folder the link
-/// was found under (`agent`, `start`, `shell`, `repo`, or `none` when it was found nowhere; rule 1240), never the path.
+/// was found under (`agent`, `start`, `shell`, `repo`, or `none` when it was found nowhere; rule 1248), never the path.
 fn link_crumb(how: &str, route: &str, base: &str, text: &str, started: Instant) {
     let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     crate::diag_ctl::crumb(
@@ -181,7 +181,7 @@ pub struct TabInfo<'a> {
     pub handle: &'a Arc<TermHandle>,
     pub cwd: Option<&'a str>,
     pub shell_cwd: Option<&'a str>,
-    /// The folder the tab's agent session first named: a relative link `cwd` lacks is tried there next (rule 1240).
+    /// The folder the tab's agent session first named: a relative link `cwd` lacks is tried there next (rule 1248).
     pub start_cwd: Option<&'a str>,
     pub alive: bool,
     /// A remote tab (remote sessions PR 3): its file links name files of the host, never of this machine, so none is
@@ -200,7 +200,7 @@ impl TabInfo<'_> {
         }
     }
 
-    /// Every folder a file link spelled `text` is tried under, in order (rule 1240). A relative link: `link_base`,
+    /// Every folder a file link spelled `text` is tried under, in order (rule 1248). A relative link: `link_base`,
     /// then the agent's start folder, the tab's own folder and (found on the worker) the git repo roots above the
     /// first. Any other: `link_base` alone. Nothing is statted here.
     fn link_bases(&self, text: &str) -> LinkBases {
@@ -541,7 +541,7 @@ fn marked_path_at(target: &LinkTarget, tab: &TabInfo, home: &str) -> Option<Term
     })
 }
 
-/// The folders a menu row tries for its path (rule 1240): the folder the menu was built with first, then the tab's
+/// The folders a menu row tries for its path (rule 1248): the folder the menu was built with first, then the tab's
 /// fallback folders, so a row agrees with a click.
 fn menu_bases(tab: &TabInfo, path: &TermPathAt) -> LinkBases {
     let mut bases = tab.link_bases(&path.text);
@@ -743,7 +743,7 @@ impl TermUi {
     /// (`texts`: as written, then with a space where a row broke) and re-resolves it (rule 13). With previews on, a
     /// picture or a text file on the click allowlist (rule 14) goes to the tab's panel, at `line`; everything else (a
     /// folder, a document, a script) goes the way it always went. A path that names nothing is said in the panel.
-    /// Never runs anything. A relative link the first folder lacks is tried under the fallback folders (rule 1240).
+    /// Never runs anything. A relative link the first folder lacks is tried under the fallback folders (rule 1248).
     fn click_path_async(
         &self,
         tab: String,
@@ -3098,7 +3098,7 @@ mod tests {
         assert!(previews(&r).is_empty());
     }
 
-    /// Rule 1240 (owner, 2026-11-14): the agent cd'd into a subfolder, so the folder its hooks last named lacks the file
+    /// Rule 1248 (owner, 2026-11-14): the agent cd'd into a subfolder, so the folder its hooks last named lacks the file
     /// it wrote relative to its session's folder. The click, and the menu's "Show in side panel", read it from the
     /// tab's own folder instead of saying "no such file".
     #[test]
@@ -3127,7 +3127,7 @@ mod tests {
         assert!(!no_such_file(&r, "src/top.txt"));
     }
 
-    /// Rule 1240: the agent's session started at the repo root and later named a subfolder; the menu's Open reads the
+    /// Rule 1248: the agent's session started at the repo root and later named a subfolder; the menu's Open reads the
     /// file from the start folder, and the agent's folder wins when it has the file too.
     #[test]
     fn a_relative_link_is_read_from_the_start_folder_and_the_agents_folder_wins() {
@@ -3162,7 +3162,7 @@ mod tests {
         );
     }
 
-    /// Rule 1240: only a relative link gets fallback folders; an absolute or `~` one is read from one folder.
+    /// Rule 1248: only a relative link gets fallback folders; an absolute or `~` one is read from one folder.
     #[test]
     fn only_a_relative_link_gets_fallback_folders() {
         let r = Rig::new(1.0);

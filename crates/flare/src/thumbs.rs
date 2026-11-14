@@ -254,7 +254,7 @@ fn next_seq() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// One picture to fetch: what the link says and the folders it is tried under, as a click tries them (rule 1240).
+/// One picture to fetch: what the link says and the folders it is tried under, as a click tries them (rule 1248).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThumbJob {
     pub seq: u64,
