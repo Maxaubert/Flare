@@ -261,3 +261,21 @@ administrator.
   not left in `administrators_authorized_keys`, the Linked list stays empty, and the turn off's own prompt follows.
 - [ ] Remove a computer whose key is in the user's own file on an administrator PC that also has an admin key from
   another pairing: no UAC prompt.
+- [ ] Pairing port: `netstat -ano | findstr 4779` (PC) or `lsof -iTCP:47790-47794 -sTCP:LISTEN` (Mac) shows Flare on
+  47790. Hold 47790 with another program (`ncat -l 47790`) and turn sharing off and on: Flare takes 47791 and the Mac
+  still finds and pairs with the PC. Hold all five: the sharing dialog says "Other programs use ports 47790 to 47794,
+  ..." once.
+- [ ] Mac host name: with Mac sharing on for a few minutes, System Settings, General, Sharing still shows the Mac's own
+  local hostname (no "(2)" or "-2" added), and `dns-sd -B _flare-pair._tcp` on the PC or Mac lists "<Mac's name>".
+  `dns-sd -L "<Mac's name>" _flare-pair._tcp` names the host `<name>-flare.local.`.
+- [ ] Mac firewall (System Settings, Network, Firewall on, Flare not in its list), Remote Login off: turn sharing on.
+  One administrator prompt; afterwards the Firewall Options list shows Flare as "Allow incoming connections", and the
+  PC finds and pairs with the Mac.
+- [ ] Mac firewall on and Flare set to "Block incoming connections", Remote Login already on: turning sharing on shows
+  "The Mac firewall may block pairing. Allow Flare in System Settings, Network, Firewall, Options." and the switch
+  stays on. After allowing Flare there, the PC finds the Mac.
+- [ ] Mac running Flare from the mounted disk image (no copy in /Applications): pair the PC with it. The PC's
+  `machines.json` names `/Applications/Flare.app/Contents/MacOS/flare` for the Mac (its default), not a `/Volumes/`
+  path. With Flare also in /Applications, the same.
+- [ ] Older host entry: on an administrator PC, remove `"admin": true` from one entry of `machines_in.json` by hand and
+  Remove that computer: one UAC prompt, and its line is gone from `administrators_authorized_keys`.

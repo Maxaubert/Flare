@@ -4,7 +4,8 @@
 //! mockup (`2026-11-14-machine-pairing-mockup.html`, "Add a machine", "The code", "Linked"):
 //!
 //! - **The host** (Computer sharing on): announces itself on the network as `_flare-pair._tcp` (mDNS; TXT `name`, `os`,
-//!   `version`, `proto`, no secret) and listens on a random TCP port, the one the announcement names. A viewer that
+//!   `version`, `proto`, no secret) and listens on the first free port of `sharing::PAIRING_PORTS` (the ports Flare's
+//!   firewall rule names), the one the announcement names. A viewer that
 //!   connects and says hello within [`HELLO_WAIT`] makes the host show the Flare dialog "<viewer> wants to connect"
 //!   with a fresh 6-digit code and Decline, wherever the person is in Flare. One request at a time, taken only after a
 //!   valid hello: another connection meanwhile is told `busy`. After three wrong codes the window closes. Wrong codes
@@ -42,7 +43,7 @@ use crate::machines_page::{MachinesIo, MachinesMsg};
 use crate::pair_keys::{HOST_KEY_TYPES, PairFiles, authorized_line, parse_public_key};
 use crate::pair_wire::{self as wire, AttemptEnd, HostEnd, PROTOCOL};
 use crate::settings_ctl::SettingsMsg;
-use crate::sharing::SharingOs;
+use crate::sharing::{PAIRING_PORTS, SharingOs};
 
 /// The mDNS service type a computer with Computer sharing on announces.
 pub const SERVICE: &str = "_flare-pair._tcp.local.";
@@ -211,7 +212,8 @@ pub trait PairNet: Send + Sync {
     fn announce(&self, me: Option<(&Me, u16)>);
     /// Starts looking for announcements (each change calls `found` with them all, on a worker), or stops.
     fn browse(&self, on: bool, found: Arc<dyn Fn(Vec<Nearby>) + Send + Sync>);
-    /// A listener on a random port of the local network.
+    /// A listener on the first free port of [`PAIRING_PORTS`] ([`bind_first`]). Err is the one line for the person
+    /// (none of the ports was free), or empty when there is nothing to say (no pairing here).
     fn listen(&self) -> Result<Box<dyn PairListener>, String>;
     /// BLOCKING: a connection to a nearby computer's pairing port, and the address that answered.
     fn connect(&self, to: &Nearby) -> Result<(Box<dyn Duplex>, String), String>;
@@ -224,11 +226,34 @@ impl PairNet for NoPairNet {
     fn announce(&self, _me: Option<(&Me, u16)>) {}
     fn browse(&self, _on: bool, _found: Arc<dyn Fn(Vec<Nearby>) + Send + Sync>) {}
     fn listen(&self) -> Result<Box<dyn PairListener>, String> {
-        Err("no pairing here".into())
+        Err(String::new())
     }
     fn connect(&self, _to: &Nearby) -> Result<(Box<dyn Duplex>, String), String> {
         Err("no pairing here".into())
     }
+}
+
+/// Pure: binds the first port of [`PAIRING_PORTS`] that `bind` takes, in order, and says which (rule 1256). The ports
+/// are fixed, so Flare's Windows firewall rule names them. When every one is taken, the one plain line that says so
+/// (`bind`'s own words go to the log).
+pub fn bind_first<T>(mut bind: impl FnMut(u16) -> Result<T, String>) -> Result<(T, u16), String> {
+    for port in PAIRING_PORTS {
+        match bind(port) {
+            Ok(t) => return Ok((t, port)),
+            Err(e) => log::info!("pairing: port {port} is taken: {e}"),
+        }
+    }
+    Err(ports_taken_line())
+}
+
+/// The one line when every pairing port is taken by another program.
+pub fn ports_taken_line() -> String {
+    format!(
+        "Other programs use ports {} to {}, so other computers cannot pair with this one. Close them, then turn \
+         Computer sharing off and on.",
+        PAIRING_PORTS.start(),
+        PAIRING_PORTS.end()
+    )
 }
 
 // ---- the host's side of one connection --------------------------------------------------------------------------
@@ -263,11 +288,21 @@ pub struct HostCtx {
     pub stop: Arc<AtomicBool>,
     /// The settings store, where a key in the admin file is noted the moment it goes in (rule 1258).
     pub prefs: Arc<Mutex<Option<PrefStore>>>,
+    /// The sharing clean ups that went past their wait for the requests, and how many had when this host started: one
+    /// more means this host's clean up may have read `adminKeys` already (rule 1258).
+    pub clean_ups: CleanUps,
+    pub clean_ups_at_start: u64,
 }
 
 impl HostCtx {
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
+    }
+
+    /// This host's sharing clean up went past its wait for the requests, so it may have read `adminKeys` and cleaned
+    /// the admin file already. Before that, it provably has not: it waits for this request first.
+    fn clean_up_passed(&self) -> bool {
+        self.clean_ups.passed() != self.clean_ups_at_start
     }
 
     /// A key went into `administrators_authorized_keys`: turning sharing off cleans it up elevated (rule 1255).
@@ -412,7 +447,12 @@ pub fn host_session(
             .map(clean_name)
             .unwrap_or_default(),
         key: key_field.clone(),
-        admin: admin || old.is_some_and(|i| list[i].admin),
+        // In the admin file now, or as the older entry said (None stays unknown: Remove then asks, rule 1260).
+        admin: if admin {
+            Some(true)
+        } else {
+            old.map_or(Some(false), |i| list[i].admin)
+        },
     };
     match old {
         Some(i) => list[i] = entry,
@@ -425,8 +465,10 @@ pub fn host_session(
     let roll_back = |why: &str| {
         log::info!("pairing: the request from {peer} is undone: {why}");
         if !was_in {
-            // After a turn off, its clean up removes the admin file's keys elevated: no second prompt here.
-            let admin_too = admin && !ctx.stopped();
+            // After a turn off, its clean up removes the admin file's keys elevated, so no second prompt here, but only
+            // while that clean up provably has not run: it waits for this request before it reads `adminKeys`. Once it
+            // went past that wait (it gave up after DRAIN_WAIT), it may have cleaned already, so the key goes here.
+            let admin_too = admin && (!ctx.stopped() || ctx.clean_up_passed());
             if let Err(e) = crate::sharing::remove_key(&*ctx.os, &key_field, admin_too) {
                 log::warn!("pairing: the key could not be taken out again: {e}");
             }
@@ -439,16 +481,20 @@ pub fn host_session(
         roll_back("Computer sharing turned off");
         return done(None, false);
     }
-    let reply = json!({
+    let mut reply = json!({
         "ok": true,
         "host_key": host_key.line(),
         "user": user,
-        "flare": ctx.flare,
         "os": os_word(ctx.me.os),
         "name": ctx.me.name,
         "version": ctx.me.version,
         "port": crate::sharing::SSH_PORT,
     });
+    // A Mac copy that runs from a disk image or a moved-aside copy names the installed one, or none (rule 1259).
+    let mac = ctx.me.os == Some(Os::Mac);
+    if let Some(flare) = reply_flare_path(&ctx.flare, mac, &|p| std::path::Path::new(p).is_file()) {
+        reply["flare"] = json!(flare);
+    }
     if let Err(e) = ch.send(s, &reply) {
         roll_back(&format!("the answer could not be sent: {e}"));
         return done(None, false);
@@ -480,6 +526,29 @@ pub struct ViewerCtx {
     pub me: Me,
     pub io: Arc<dyn MachinesIo>,
     pub files: PairFiles,
+}
+
+/// Where the Mac app keeps Flare once it is installed.
+pub const MAC_APP_FLARE: &str = "/Applications/Flare.app/Contents/MacOS/flare";
+
+/// Pure: the Flare path the host answers with (rule 1259). A Mac copy that runs from a mounted disk image
+/// (`/Volumes/`) or from macOS' moved-aside copy (`/AppTranslocation/`) is gone once that closes, so the host names the
+/// installed app when `exists` finds it, or no path at all (the viewer then looks Flare up itself). Any other path is
+/// sent as it is; an empty one is none.
+pub fn reply_flare_path(exe: &str, mac: bool, exists: &dyn Fn(&str) -> bool) -> Option<String> {
+    if mac && (exe.starts_with("/Volumes/") || exe.contains("/AppTranslocation/")) {
+        return exists(MAC_APP_FLARE).then(|| MAC_APP_FLARE.to_string());
+    }
+    (!exe.trim().is_empty()).then(|| exe.to_string())
+}
+
+/// Pure: the Flare path a viewer saves when the host named none (rule 1259): where the Mac app keeps it on a Mac, else
+/// `flare` on the host's PATH, as a machine added by hand starts.
+pub fn fallback_flare(kind: Option<Os>) -> &'static str {
+    match kind {
+        Some(Os::Mac) => MAC_APP_FLARE,
+        _ => "flare",
+    }
 }
 
 /// Pure: a Flare path the host named, kept only when ssh can carry it as one word of the remote command.
@@ -585,7 +654,11 @@ pub fn viewer_session(
         return fail(format!("{name} sent no SSH key Flare can pin."));
     };
     let user = field("user");
-    let flare = field("flare");
+    // A host that names no Flare path (its copy runs from a disk image) leaves the viewer its own default.
+    let flare = match reply.get("flare") {
+        None => fallback_flare(Os::parse(field("os")).or(to.os)),
+        Some(_) => field("flare"),
+    };
     if !user_word(user) || !flare_path_ok(flare) || !argv_word(address) {
         return fail(format!("{name} answered in a way Flare cannot use."));
     }
@@ -762,6 +835,22 @@ pub struct Running(Arc<(Mutex<usize>, Condvar)>);
 /// One running worker; it counts until dropped.
 pub struct RunningOne(Running);
 
+/// How many sharing clean ups went past their wait for the host's requests (rule 1258). A request that rolls its key
+/// back compares it with the count when its host started.
+#[derive(Clone, Default)]
+pub struct CleanUps(Arc<AtomicU64>);
+
+impl CleanUps {
+    /// A clean up's wait ended (the requests ended, or it gave up): it reads `adminKeys` next.
+    pub fn pass(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn passed(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
 impl Running {
     fn enter(&self) -> RunningOne {
         *lock(&self.0.0) += 1;
@@ -818,6 +907,9 @@ pub struct Pairing {
     /// The settings store the host's requests note an admin key in.
     prefs: Arc<Mutex<Option<PrefStore>>>,
     running: Running,
+    clean_ups: CleanUps,
+    /// No pairing port was free while sharing is on: said once, tried again after sharing went off.
+    listen_failed: bool,
 }
 
 impl Pairing {
@@ -844,6 +936,8 @@ impl Pairing {
             prompt: None,
             prefs: Arc::default(),
             running: Running::default(),
+            clean_ups: CleanUps::default(),
+            listen_failed: false,
         }
     }
 
@@ -860,11 +954,13 @@ impl Pairing {
     /// BLOCKING when called: waits until the host's listener and requests have ended (at most [`DRAIN_WAIT`]), for
     /// turning sharing off to run its clean up after them (rule 1258).
     pub fn drain(&self) -> Arc<dyn Fn() + Send + Sync> {
-        let running = self.running.clone();
+        let (running, clean_ups) = (self.running.clone(), self.clean_ups.clone());
         Arc::new(move || {
             if !running.wait_idle(DRAIN_WAIT) {
                 log::warn!("pairing: a request still runs; the clean up goes ahead");
             }
+            // From here the clean up may read `adminKeys`: a request that rolls back later removes its own admin key.
+            clean_ups.pass();
         })
     }
 
@@ -981,10 +1077,14 @@ impl Pairing {
         }
     }
 
-    /// Computer sharing is on (listen and announce) or off (stop both, end any request).
-    pub fn host(&mut self, on: bool, io: &Arc<dyn MachinesIo>) {
-        if on == self.host.is_some() || self.files.is_none() {
-            return;
+    /// Computer sharing is on (listen and announce) or off (stop both, end any request). The one line for the sharing
+    /// dialog when no pairing port was free (rule 1256); it is said once, and tried again only after sharing went off.
+    pub fn host(&mut self, on: bool, io: &Arc<dyn MachinesIo>) -> Option<String> {
+        if !on {
+            self.listen_failed = false;
+        }
+        if on == self.host.is_some() || self.files.is_none() || (on && self.listen_failed) {
+            return None;
         }
         if !on {
             if let Some(h) = self.host.take() {
@@ -999,13 +1099,14 @@ impl Pairing {
             }
             self.prompt = None;
             self.net.announce(None);
-            return;
+            return None;
         }
         let listener = match self.net.listen() {
             Ok(l) => l,
             Err(e) => {
                 log::warn!("pairing: no listener: {e}");
-                return;
+                self.listen_failed = true;
+                return (!e.is_empty()).then_some(e);
             }
         };
         self.net.announce(Some((&self.me, listener.port())));
@@ -1024,6 +1125,8 @@ impl Pairing {
                 .unwrap_or_default(),
             stop: Arc::clone(&stop),
             prefs: Arc::clone(&self.prefs),
+            clean_ups: self.clean_ups.clone(),
+            clean_ups_at_start: self.clean_ups.passed(),
         });
         let (post, running) = (Arc::clone(&self.post), self.running.clone());
         // The listener counts as running from here, so a turn off right after waits for every request it starts.
@@ -1117,6 +1220,7 @@ impl Pairing {
                 });
             }
         });
+        None
     }
 
     /// Decline (or Escape) in the host's code dialog: the request ends and the viewer hears so.
@@ -1200,7 +1304,10 @@ impl RealPairNet {
     }
 }
 
-/// Pure: the mDNS host name for a computer name: letters, digits and dashes, then `.local.`.
+/// Pure: the mDNS host name the announcement's address records go under (rule 1256): the computer name in letters,
+/// digits and dashes, then `-flare.local.`. Never the computer's own `.local` name: macOS' mDNSResponder (and Windows'
+/// own responder) answer that one, and a second answer from `mdns-sd` is a name conflict, after which macOS renames
+/// the Mac ("Maxs-Mac-mini (2)"). The readable name stays in the instance name and the TXT `name`.
 pub fn mdns_host(name: &str) -> String {
     let mut h: String = name
         .chars()
@@ -1209,9 +1316,9 @@ pub fn mdns_host(name: &str) -> String {
         .collect();
     h = h.trim_matches('-').to_string();
     if h.is_empty() {
-        h = "flare".into();
+        h = "computer".into();
     }
-    format!("{h}.local.")
+    format!("{h}-flare.local.")
 }
 
 /// Pure: the TXT record of an announcement (no secret: the name, the system, Flare's version, the protocol).
@@ -1335,8 +1442,12 @@ impl PairNet for RealPairNet {
     }
 
     fn listen(&self) -> Result<Box<dyn PairListener>, String> {
-        let l = std::net::TcpListener::bind(("0.0.0.0", 0)).map_err(|e| e.to_string())?;
-        l.set_nonblocking(true).map_err(|e| e.to_string())?;
+        let (l, port) = bind_first(|port| {
+            let l = std::net::TcpListener::bind(("0.0.0.0", port)).map_err(|e| e.to_string())?;
+            l.set_nonblocking(true).map_err(|e| e.to_string())?;
+            Ok(l)
+        })?;
+        log::info!("pairing: listening on port {port}");
         Ok(Box::new(TcpPairListener(l)))
     }
 

@@ -4082,10 +4082,22 @@ leaves the server Flare's, so the next turn off asks again. Held by
 1256. **Computer sharing on means this computer is announced and takes pairing requests; off means neither. Flare's
 own SSH key is made the first time pairing needs it, in Flare's profile, and its private half never leaves that file.**
 Machine pairing PR 3, 2026-11-14 (spec, "What happens underneath"; mockup, "Computer sharing" and "Add a machine").
-While the switch is on (`Sharing::is_on`, not while it is on its way on or off), `Pairing::host` listens on a random TCP
-port and announces `_flare-pair._tcp.local.` over mDNS (`mdns-sd`) with that port and a TXT of `name`, `os`,
-`version` and `proto` only (`txt_of`; no secret, no address the record does not already carry). Turning the switch off
-(or a failed setup) unannounces at once and stops the listener; a restart with the switch on announces again.
+While the switch is on (`Sharing::is_on`, not while it is on its way on or off), `Pairing::host` listens on the first
+free port of `PAIRING_PORTS` (47790 to 47794, in order, `bind_first`; the ports rule 1253's firewall rule names) and
+announces `_flare-pair._tcp.local.` over mDNS (`mdns-sd`) with that port and a TXT of `name`, `os`, `version` and
+`proto` only (`txt_of`; no secret, no address the record does not already carry). When every port is taken, the
+sharing dialog says "Other programs use ports 47790 to 47794, so other computers cannot pair with this one. Close
+them, then turn Computer sharing off and on." once (`ports_taken_line`), nothing is announced, and turning the switch
+off and on tries again. The address records go under `<name>-flare.local.` (`mdns_host`), never the computer's own
+`.local` name: macOS' mDNSResponder (and Windows' responder) answer that one, and a second answer is a name conflict
+after which macOS renames the Mac (review, 2026-11-14); the readable name stays in the instance name and the TXT. On a
+Mac whose Application Firewall is on (`socketfilterfw --getglobalstate`) and does not let Flare in
+(`--getappblocked <exe>`: blocked, or not part of the firewall yet), turning sharing on adds `--add <exe>` and
+`--unblockapp <exe>` to the same administrator prompt that turns Remote Login on (`mac_allow_app_command`, the path in
+sh's single quotes); when Remote Login was on already there is no prompt, so the sharing dialog says "The Mac firewall
+may block pairing. Allow Flare in System Settings, Network, Firewall, Options." (`MAC_APP_FIREWALL_LINE`) and sharing
+is on all the same. Turning the switch off (or a failed setup) unannounces at once and stops the listener; a restart
+with the switch on announces again.
 While the Add a machine dialog is open, `Pairing::browse` looks for that service (never a `_services._dns-sd` meta
 query) and the drop-down lists the computers found first, each with its system's logo (`SetOption.vendor`), then the
 SSH config hosts, then "Type an address"; this computer's own announcement is never listed, an announcement with
@@ -4095,8 +4107,13 @@ every test the network is `NoPairNet` or the in-memory fake: nothing is announce
 600 off Windows), made by `PairFiles::ensure_key` on the first pairing and reused after. Held by
 `the_announcement_carries_no_secret`, `an_announcement_is_a_nearby_computer_with_its_name_system_and_addresses`,
 `turning_sharing_off_stops_the_announcement`, `two_computers_pair_from_the_dialog_and_list_each_other`,
-`flares_key_is_an_openssh_ed25519_key_whose_public_line_matches`, `the_key_is_made_once_and_read_back_after` and
-`a_nearby_computer_shows_its_logo_and_the_code_field`.
+`flares_key_is_an_openssh_ed25519_key_whose_public_line_matches`, `the_key_is_made_once_and_read_back_after`,
+`a_nearby_computer_shows_its_logo_and_the_code_field`,
+`the_listener_takes_the_first_free_pairing_port_or_says_none_was_free`,
+`no_free_pairing_port_says_so_once_and_announces_nothing`, `the_announcement_never_takes_the_computers_own_local_name`,
+`the_mac_app_firewall_answers_are_read_and_the_allow_command_is_quoted`,
+`a_mac_firewall_that_does_not_let_flare_in_is_fixed_in_the_same_prompt` and
+`remote_login_on_already_behind_a_firewall_that_blocks_flare_says_where_to_allow_it`.
 
 1257. **Pairing is a 6-digit code typed once, proven with SPAKE2: the code never crosses the network, a wrong code ends
 that attempt, three wrong codes close the window, and nothing is sent until both ends proved the code.** Machine
@@ -4138,15 +4155,21 @@ turning sharing off cleans it up elevated (rule 1255); a declined prompt adds no
 not allow the change, so the computer was not added." Any other account writes its own `~/.ssh/authorized_keys` with
 no prompt (`add_user_key`; off Windows `~/.ssh` is 700 and the file 600); pairing the same key again replaces its line
 and every other line stays. The key's base64 reaches a script only when it is base64's letters (`plain_key`). The
-key scripts run inline like rule 1253's and report through the same checked result file (step `addkey` or `keys`).
+key scripts run inline like rule 1253's and report through the same exit code, read strictly (step `addkey`, `keys`
+or `config`; they write no file). Before either writes, `Assert-AdminOnly` checks `%ProgramData%\ssh` and an existing
+`administrators_authorized_keys` (no link, owned and changeable only by SYSTEM, Administrators or TrustedInstaller);
+a failure there is rule 1253's `config` line and nothing is written.
 Order (security review, 2026-11-14): everything the answer needs is read before the key goes in (the SSH host key,
 and the user name, which must be one ssh user: `user_word` takes a Windows name with a space, as one argv item after
 `-l`, and refuses an empty name, a leading dash, a space at either end, a quote, a backtick, a control character, `%` or
 `${`); a failure there refuses the request with nothing added. The moment the key is in, its `machines_in.json` entry is
 saved (with which file holds it) and an admin key sets `flare.machines.adminKeys` from the request's own worker. When
-the answer cannot be sent, or Computer sharing turned off meanwhile, the key comes out again (`remove_key`; after a turn
-off the admin file is left to the clean up, so no second prompt) and the entries go back to what they were; a key that
-was in before this request stays. Turning sharing off stops the listener first and its clean up waits for a request
+the answer cannot be sent, or Computer sharing turned off meanwhile, the key comes out again (`remove_key`) and the
+entries go back to what they were; a key that was in before this request stays. After a turn off the admin file is
+left to the clean up (no second prompt) only while that clean up provably has not read `adminKeys` yet: it waits for
+this request first. Each clean up that went past that wait counts in `CleanUps` (it gave up after `DRAIN_WAIT`, or the
+requests ended); a request whose host started at an older count removes its own admin key with its own elevated
+script (second review, 2026-11-14). Turning sharing off stops the listener first and its clean up waits for a request
 that still runs (`Running`, at most `DRAIN_WAIT`), then reads `adminKeys`. The list of computers that reach this one
 is emptied after that same wait, so a request that writes its list as it ends cannot bring back a computer whose key
 the clean up removes (second review, 2026-11-14). Held by
@@ -4156,15 +4179,19 @@ the clean up removes (second review, 2026-11-14). Held by
 `an_admin_account_adds_the_key_with_one_elevated_script`, `nothing_goes_in_when_the_answer_cannot_be_made`,
 `a_key_that_went_in_as_sharing_turned_off_comes_out_again`, `turning_sharing_off_waits_for_a_request_that_runs`,
 `turning_sharing_off_mid_request_leaves_no_computer_listed`, `a_windows_user_with_a_space_pairs_and_is_one_ssh_argument`,
-`a_user_with_a_space_is_one_user_and_a_strange_one_is_left_out` and
-`the_elevated_scripts_write_the_result_only_into_a_plain_new_file`.
+`a_user_with_a_space_is_one_user_and_a_strange_one_is_left_out`,
+`an_admin_key_that_went_in_after_the_clean_up_comes_out_with_its_own_prompt` and
+`the_elevated_scripts_report_through_their_exit_code_and_write_no_file`.
 
 1259. **The viewer pins the host's SSH key in Flare's own known-hosts file for the address it reached, and saves the
 machine so ssh uses Flare's key, that file and strict checking.** Machine pairing PR 3, 2026-11-14 (spec, "Changes to
 how Flare runs ssh"). The host answers with its SSH server's public key (`ssh_host_ed25519_key.pub`), its user name,
 Flare's own path there, its system, name and version. The viewer takes a host key of `HOST_KEY_TYPES` only, a user that
 is one ssh user (`user_word`, rule 1258) and a Flare path with no quote or control character, else says "<name>
-answered in a way Flare cannot use." and saves nothing. The pin is `<address> <type> <key>` (`[address]:port` off port
+answered in a way Flare cannot use." and saves nothing. A Mac host whose Flare runs from a disk image (`/Volumes/`) or
+from macOS' moved-aside copy (`/AppTranslocation/`) names `/Applications/Flare.app/Contents/MacOS/flare` when that file
+is there, else no path (`reply_flare_path`); a viewer that gets no path saves its own default (`fallback_flare`: that
+Mac app path for a Mac, else `flare`) (review, 2026-11-14). The pin is `<address> <type> <key>` (`[address]:port` off port
 22) in `flare_known_hosts` in the profile; pairing again replaces that address's line and no other. The machine is
 saved with `host` (the address it reached), `user`, `flare`, `kind`, `key` (Flare's key file), `known_hosts` (rule
 1249's fields) and `host_key` (the pinned key's base64). An entry is replaced only when its `host_key` is the key just
@@ -4172,22 +4199,27 @@ pinned (security review, 2026-11-14): a name or an address the other computer sa
 stranger that calls itself like a saved machine gets a new entry with an id of its own and never takes over that
 machine's tabs. It is then checked over ssh like any other (`-o IdentitiesOnly=yes -i <key> -o
 UserKnownHostsFile=<file> -o StrictHostKeyChecking=yes`). Held by `the_host_key_is_pinned_for_its_address_alone`,
-`the_right_code_pairs_and_both_sides_keep_the_other` and `pairing_never_replaces_a_machine_by_its_name`.
+`the_right_code_pairs_and_both_sides_keep_the_other`, `pairing_never_replaces_a_machine_by_its_name`,
+`a_mac_copy_from_a_disk_image_names_the_installed_flare_or_none` and
+`a_host_that_names_no_flare_path_pairs_with_the_viewers_default`.
 
 1260. **Both computers list the other in Linked machines; a computer that reaches this one is no machine to open a
 tab on, and removing it removes its key.** Machine pairing PR 3, 2026-11-14 (mockup, "Linked"). The host keeps each
 paired viewer in `machines_in.json` in its profile (`Incoming`: id, name, system, the address it paired from, the Flare
 version it said, its key's base64, and `admin`: whether the key is in `administrators_authorized_keys`; the same key
 again replaces its entry, never a name; an entry whose key is not plain base64 is dropped when read, and one with no
-`admin` reads as the user's own file). Its rows follow the machines in the table with the row id `machine: in:<id>`,
+`admin` reads as unknown, never as the user's own file). Its rows follow the machines in the table with the row id `machine: in:<id>`,
 status Linked, and a ⋯ menu with Remove only (no Test: this computer has no link to it); they never reach the + menu
 or `--on`. Remove takes its key out of the user's own `authorized_keys`, and out of `administrators_authorized_keys`
 with one elevated script only when that entry's key went there (`windows_remove_key_script`; another entry's admin key
-asks nothing here); a failure is the sharing dialog's one line. Turning Computer sharing off empties the list (rule
+asks nothing here). An entry with no `admin` (written before Flare kept it) runs the admin removal too when the
+switch's `adminKeys` is set or the account is a Windows administrator (review, 2026-11-14), so its key is never left in
+the admin file. A failure is the sharing dialog's one line. Turning Computer sharing off empties the list (rule
 1255 removes the keys), and a request that ends after that lists nothing. Held by
 `the_computers_that_reach_this_one_read_back_and_a_strange_key_is_left_out`,
 `removing_a_computer_that_reaches_this_one_removes_its_key`,
-`removing_a_computer_whose_key_is_in_the_admin_file_asks_once` and
+`removing_a_computer_whose_key_is_in_the_admin_file_asks_once`,
+`removing_an_older_entry_that_does_not_say_where_its_key_went_asks_the_switch_and_the_account` and
 `two_computers_pair_from_the_dialog_and_list_each_other`.
 
 1261. **Guessing the code is limited across connections: failed requests lock the host for longer each time, and a

@@ -34,6 +34,8 @@ pub(crate) struct FakeNet {
     pub nearby: Mutex<Vec<Nearby>>,
     pub announced: Mutex<Vec<Option<(String, u16)>>>,
     pub browsing: Mutex<Vec<bool>>,
+    /// Every pairing port is taken: `listen` answers this (the test sets it).
+    pub ports_taken: Mutex<bool>,
 }
 
 impl FakeNet {
@@ -44,6 +46,7 @@ impl FakeNet {
             nearby: Mutex::default(),
             announced: Mutex::default(),
             browsing: Mutex::default(),
+            ports_taken: Mutex::new(false),
         }
     }
 
@@ -91,6 +94,9 @@ impl PairNet for FakeNet {
         }
     }
     fn listen(&self) -> Result<Box<dyn PairListener>, String> {
+        if *self.ports_taken.lock().unwrap() {
+            return super::bind_first::<()>(|_| Err("in use".into())).map(|_| unreachable!());
+        }
         let mut n = self.hub.next_port.lock().unwrap();
         *n += 1;
         let port = 40000 + *n;

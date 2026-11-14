@@ -368,7 +368,10 @@ impl MachinesPage {
         self.pairing.set_prefs(self.sharing.prefs());
         self.sharing.set_before_off(self.pairing.drain());
         let on = self.sharing.is_on();
-        self.pairing.host(on, &self.io);
+        // No pairing port free: the sharing dialog says so once (rule 1256); SSH itself stays shared.
+        if let Some(line) = self.pairing.host(on, &self.io) {
+            self.sharing.notice(line);
+        }
     }
 
     /// The Computer sharing switch was flipped. Turning it off forgets the computers that reached this one: their keys
@@ -527,22 +530,26 @@ impl MachinesPage {
             let Some(gone) = self.incoming.iter().find(|m| m.id == id).cloned() else {
                 return;
             };
-            let (io, post, os) = (
+            let (io, post, os, prefs) = (
                 Arc::clone(&self.io),
                 Arc::clone(&self.post),
                 self.sharing.os(),
+                self.sharing.prefs(),
             );
-            // Only a key in the admin file needs the UAC prompt (rule 1260).
+            // Only a key in the admin file needs the UAC prompt (rule 1260). An older entry that does not say where its
+            // key went asks the switch's `adminKeys` and the account, so a key in the admin file is never left there.
             worker("flare-machines-save", move || {
-                let answer =
-                    crate::sharing::remove_key(&*os, &gone.key, gone.admin).and_then(|()| {
-                        let list: Vec<Incoming> = io
-                            .list_in()
-                            .into_iter()
-                            .filter(|m| m.id != gone.id)
-                            .collect();
-                        io.save_in(&list).map(|()| list)
-                    });
+                let admin = gone.admin.unwrap_or_else(|| {
+                    flare_settings::machine_prefs::admin_keys(&prefs) || os.windows_admin()
+                });
+                let answer = crate::sharing::remove_key(&*os, &gone.key, admin).and_then(|()| {
+                    let list: Vec<Incoming> = io
+                        .list_in()
+                        .into_iter()
+                        .filter(|m| m.id != gone.id)
+                        .collect();
+                    io.save_in(&list).map(|()| list)
+                });
                 Self::say(&post, MachinesMsg::RemovedIn(answer));
             });
             return;

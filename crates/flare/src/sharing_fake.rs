@@ -37,6 +37,10 @@ pub(crate) struct FakeOs {
     /// What `socketfilterfw --getblockall` prints, and how often it was asked.
     pub block_all: Mutex<Result<String, String>>,
     pub block_all_asked: Mutex<u32>,
+    /// What `socketfilterfw --getglobalstate` and `--getappblocked` print (pairing, rule 1256), and the paths asked.
+    pub fw_state: Mutex<Result<String, String>>,
+    pub fw_app: Mutex<Result<String, String>>,
+    pub fw_app_asked: Mutex<Vec<String>>,
     pub urls: Mutex<Vec<String>>,
     pub stripped: Mutex<u32>,
     pub announced: Mutex<Vec<bool>>,
@@ -65,6 +69,9 @@ impl FakeOs {
             admin_cmds: Mutex::default(),
             block_all: Mutex::new(Ok("Firewall has block all state set to disabled.\n".into())),
             block_all_asked: Mutex::new(0),
+            fw_state: Mutex::new(Ok("Firewall is disabled. (State = 0)\n".into())),
+            fw_app: Mutex::new(Ok("The application is not part of the firewall\n".into())),
+            fw_app_asked: Mutex::default(),
             urls: Mutex::default(),
             stripped: Mutex::new(0),
             announced: Mutex::default(),
@@ -120,6 +127,16 @@ impl SharingOs for FakeOs {
     fn firewall_block_all(&self) -> Result<String, String> {
         *self.block_all_asked.lock().unwrap() += 1;
         self.block_all.lock().unwrap().clone()
+    }
+    fn firewall_global_state(&self) -> Result<String, String> {
+        self.fw_state.lock().unwrap().clone()
+    }
+    fn firewall_app_blocked(&self, exe: &std::path::Path) -> Result<String, String> {
+        self.fw_app_asked
+            .lock()
+            .unwrap()
+            .push(exe.to_string_lossy().into_owned());
+        self.fw_app.lock().unwrap().clone()
     }
     fn open_url(&self, url: &str) {
         self.urls.lock().unwrap().push(url.to_string());

@@ -189,8 +189,9 @@ pub struct Incoming {
     /// Its key (the base64 field of its `authorized_keys` line): removing it removes that line.
     pub key: String,
     /// The key went into Windows' `administrators_authorized_keys` (an administrator account): removing it needs the
-    /// elevated script. Else it is in the user's own `authorized_keys`, with no prompt (rule 1260).
-    pub admin: bool,
+    /// elevated script. `Some(false)`: the user's own `authorized_keys`, with no prompt. None: an entry written before
+    /// Flare kept this, so Remove asks the switch's `adminKeys` and the account instead (rule 1260).
+    pub admin: Option<bool>,
 }
 
 /// Pure: the computers `machines_in.json` names. One whose key is not plain base64 is left out.
@@ -213,7 +214,7 @@ pub fn parse_incoming(raw: &str) -> Vec<Incoming> {
             let plain = plain_base64(&key);
             let id = s(m, "id");
             (plain && argv_word(&id)).then(|| Incoming {
-                admin: m.get("admin").and_then(Value::as_bool).unwrap_or(false),
+                admin: m.get("admin").and_then(Value::as_bool),
                 name: Some(s(m, "name"))
                     .filter(|n| !n.trim().is_empty())
                     .unwrap_or_else(|| id.clone()),
@@ -238,8 +239,10 @@ pub fn incoming_json(list: &[Incoming]) -> String {
                 "address": m.address,
                 "version": m.version,
                 "key": m.key,
-                "admin": m.admin,
             });
+            if let Some(a) = m.admin {
+                v["admin"] = json!(a);
+            }
             if let Some(k) = m.kind {
                 v["kind"] = json!(match k {
                     Os::Mac => "mac",
@@ -483,13 +486,21 @@ mod tests {
             address: "192.168.0.120".into(),
             version: "0.4.2".into(),
             key: "AAAAC3NzaC1lZDI1NTE5AAAAIA+/=".into(),
-            admin: true,
+            admin: Some(true),
         };
         let text = incoming_json(std::slice::from_ref(&mac));
         assert_eq!(parse_incoming(&text), vec![mac.clone()]);
-        // Which file holds the key is kept (rule 1260): an entry written before it was is the user's own file.
+        // Which file holds the key is kept (rule 1260). An entry written before it was says nothing: None, never "the
+        // user's own file", so Remove does not leave a key in the admin file behind.
         let old = text.replace("\"admin\": true", "\"x\": 1");
-        assert!(!parse_incoming(&old)[0].admin);
+        assert_eq!(parse_incoming(&old)[0].admin, None);
+        let unknown = Incoming {
+            admin: None,
+            ..mac.clone()
+        };
+        let written = incoming_json(std::slice::from_ref(&unknown));
+        assert!(!written.contains("admin"), "{written}");
+        assert_eq!(parse_incoming(&written), vec![unknown]);
         let evil = text.replace("AAAAC3NzaC1lZDI1NTE5AAAAIA+/=", "AAAA'; Remove-Item x");
         assert!(parse_incoming(&evil).is_empty());
         assert!(parse_incoming("{}").is_empty() && parse_incoming("no").is_empty());

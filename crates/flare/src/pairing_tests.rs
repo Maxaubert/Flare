@@ -59,6 +59,21 @@ fn host_thread_with(
     std::sync::mpsc::Receiver<HostEvent>,
     std::thread::JoinHandle<()>,
 ) {
+    host_thread_cleaned(os, io, prefs, CleanUps::default())
+}
+
+/// [`host_thread_with`] whose host started when `clean_ups` had passed none: a test that passes one first plays a
+/// sharing clean up that already went past its wait.
+fn host_thread_cleaned(
+    os: Arc<FakeOs>,
+    io: Arc<FakeIo>,
+    prefs: PrefStore,
+    clean_ups: CleanUps,
+) -> (
+    pipe::End,
+    std::sync::mpsc::Receiver<HostEvent>,
+    std::thread::JoinHandle<()>,
+) {
     let (v, mut h) = pipe::pair();
     let (tx, rx) = channel();
     let stop = lock(&os.stop_on_add).clone().unwrap_or_default();
@@ -70,6 +85,8 @@ fn host_thread_with(
             flare: r"C:\Users\Max\AppData\Local\Flare\current\Flare.exe".into(),
             stop,
             prefs: Arc::new(Mutex::new(Some(prefs))),
+            clean_ups,
+            clean_ups_at_start: 0,
         };
         let tx = Mutex::new(tx);
         let Some(hello) = read_hello(&mut h) else {
@@ -157,7 +174,7 @@ fn the_right_code_pairs_and_both_sides_keep_the_other() {
     else {
         panic!("the host's request ends linked");
     };
-    assert!(!incoming[0].admin, "the user's own file");
+    assert_eq!(incoming[0].admin, Some(false), "the user's own file");
     assert_eq!(incoming.len(), 1);
     assert_eq!(incoming[0].name, "Max's Mac mini");
     assert_eq!(incoming[0].address, "192.168.0.120");
@@ -225,8 +242,12 @@ fn an_admin_account_adds_the_key_with_one_elevated_script() {
     let scripts = os.scripts.lock().unwrap().clone();
     assert_eq!(scripts.len(), 1);
     let s = &scripts[0];
-    assert!(s.contains(r"ssh\administrators_authorized_keys"));
+    assert!(s.contains("$f = Join-Path $dir 'administrators_authorized_keys'"));
     assert!(s.contains("/inheritance:r /grant '*S-1-5-32-544:F' /grant '*S-1-5-18:F'"));
+    // The folder and an existing file are checked before Flare writes there as an administrator (rule 1253's check).
+    let at = |want: &str| s.find(want).unwrap_or_else(|| panic!("{want}\n{s}"));
+    assert!(at("Assert-AdminOnly $dir") < at("$step = 'addkey'"));
+    assert!(at("Assert-AdminOnly $f") < at("Set-Content -LiteralPath $f"));
     assert!(
         s.contains("flare-pair:Max''s-Mac-mini"),
         "the name's quote is doubled"
@@ -239,7 +260,11 @@ fn an_admin_account_adds_the_key_with_one_elevated_script() {
     else {
         panic!("linked");
     };
-    assert!(list[0].admin, "the entry says the key is in the admin file");
+    assert_eq!(
+        list[0].admin,
+        Some(true),
+        "the entry says the key is in the admin file"
+    );
     assert!(
         flare_settings::machine_prefs::admin_keys(&prefs),
         "noted for the clean up"
@@ -378,9 +403,139 @@ fn an_announcement_is_a_nearby_computer_with_its_name_system_and_addresses() {
 fn the_announcement_carries_no_secret() {
     let keys: Vec<String> = txt_of(&pc()).into_iter().map(|(k, _)| k).collect();
     assert_eq!(keys, ["name", "os", "version", "proto"]);
-    assert_eq!(mdns_host("Max's PC"), "Max-s-PC.local.");
-    assert_eq!(mdns_host("..."), "flare.local.");
     assert_eq!(SERVICE, "_flare-pair._tcp.local.");
+}
+
+/// Rule 1256: the announcement's address records never go under the computer's own `.local` name, which macOS'
+/// mDNSResponder (and Windows' responder) answers already: a second answer there is a conflict, and macOS renames the
+/// Mac. The readable name stays in the instance name and the TXT.
+#[test]
+fn the_announcement_never_takes_the_computers_own_local_name() {
+    // gethostname on a Mac says "Maxs-Mac-mini.local"; `Me` leaves the `.local` off.
+    for (name, own) in [
+        ("Maxs-Mac-mini", "Maxs-Mac-mini.local."),
+        ("DESKTOP-7Q2K", "DESKTOP-7Q2K.local."),
+        ("Max's PC", "Max-s-PC.local."),
+    ] {
+        let host = mdns_host(name);
+        assert_ne!(host.to_ascii_lowercase(), own.to_ascii_lowercase());
+        assert!(host.ends_with("-flare.local."), "{host}");
+    }
+    assert_eq!(mdns_host("Maxs-Mac-mini"), "Maxs-Mac-mini-flare.local.");
+    assert_eq!(mdns_host("Max's PC"), "Max-s-PC-flare.local.");
+    assert_eq!(mdns_host("..."), "computer-flare.local.");
+    // One DNS label stays under 63 letters.
+    assert!(mdns_host(&"x".repeat(200)).len() <= 40 + "-flare.local.".len());
+    let txt = txt_of(&mac());
+    assert_eq!(txt[0], ("name".to_string(), "Max's Mac mini".to_string()));
+}
+
+/// Rule 1256: the listener takes the first free port of the fixed range Flare's firewall rule names, in order; when
+/// every one is taken, it says so in one plain line.
+#[test]
+fn the_listener_takes_the_first_free_pairing_port_or_says_none_was_free() {
+    assert_eq!(PAIRING_PORTS, 47_790..=47_794);
+    let mut tried = Vec::new();
+    let got = bind_first(|p| {
+        tried.push(p);
+        if p < 47_792 {
+            Err("in use".to_string())
+        } else {
+            Ok(u32::from(p) * 2)
+        }
+    });
+    assert_eq!(got, Ok((47_792_u32 * 2, 47_792)));
+    assert_eq!(tried, [47_790, 47_791, 47_792]);
+    let mut tried = Vec::new();
+    let none = bind_first::<()>(|p| {
+        tried.push(p);
+        Err("in use".to_string())
+    });
+    assert_eq!(tried, [47_790, 47_791, 47_792, 47_793, 47_794]);
+    assert_eq!(
+        none,
+        Err("Other programs use ports 47790 to 47794, so other computers cannot pair with this one. Close them, then \
+             turn Computer sharing off and on."
+            .to_string())
+    );
+}
+
+/// Rule 1259: a Mac copy that runs from a disk image or from macOS' moved-aside copy answers with the installed app's
+/// path when there is one, else with none (the viewer uses its own default); any other path goes as it is.
+#[test]
+fn a_mac_copy_from_a_disk_image_names_the_installed_flare_or_none() {
+    let installed = |p: &str| p == MAC_APP_FLARE;
+    let nothing = |_: &str| false;
+    for exe in [
+        "/Volumes/Flare/Flare.app/Contents/MacOS/flare",
+        "/private/var/folders/x1/T/AppTranslocation/0A1B/d/Flare.app/Contents/MacOS/flare",
+    ] {
+        assert_eq!(
+            reply_flare_path(exe, true, &installed).as_deref(),
+            Some(MAC_APP_FLARE),
+            "{exe}"
+        );
+        assert_eq!(reply_flare_path(exe, true, &nothing), None, "{exe}");
+    }
+    assert_eq!(
+        reply_flare_path(
+            "/Applications/Flare.app/Contents/MacOS/flare",
+            true,
+            &nothing
+        )
+        .as_deref(),
+        Some("/Applications/Flare.app/Contents/MacOS/flare")
+    );
+    let pc = r"C:\Users\Max\AppData\Local\Flare\current\Flare.exe";
+    assert_eq!(reply_flare_path(pc, false, &nothing).as_deref(), Some(pc));
+    assert_eq!(reply_flare_path("", false, &installed), None);
+    assert_eq!(fallback_flare(Some(Os::Mac)), MAC_APP_FLARE);
+    assert_eq!(fallback_flare(Some(Os::Pc)), "flare");
+}
+
+/// Rule 1259: a Mac host that runs from a disk image, with no installed app, answers with no Flare path; the viewer
+/// still pairs and saves the Mac app's own place.
+#[test]
+fn a_host_that_names_no_flare_path_pairs_with_the_viewers_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let os = Arc::new(FakeOs::new(Platform::Mac));
+    let view_io = Arc::new(FakeIo::default());
+    let (v, mut h) = pipe::pair();
+    let (tx, host_events) = channel();
+    let ht = std::thread::spawn(move || {
+        let ctx = HostCtx {
+            me: mac(),
+            os,
+            io: Arc::new(FakeIo::default()),
+            // No such file on the test machine: the installed app is missing.
+            flare: "/Volumes/Flare 0.4.2/Flare.app/Contents/MacOS/flare".into(),
+            stop: Arc::default(),
+            prefs: Arc::default(),
+            clean_ups: CleanUps::default(),
+            clean_ups_at_start: 0,
+        };
+        let tx = Mutex::new(tx);
+        let Some(hello) = read_hello(&mut h) else {
+            return;
+        };
+        host_session(&mut h, "192.168.0.139", &hello, &ctx, 1, &|e| {
+            let _ = lock(&tx).send(e);
+        });
+    });
+    let (codes, view_events, vt) =
+        viewer_thread(v, Arc::clone(&view_io), PairFiles::new(dir.path()));
+    let HostEvent::Ask { code, .. } = next(&host_events) else {
+        panic!("ask");
+    };
+    next(&view_events);
+    codes.send(code).unwrap();
+    let ViewerEvent::Linked { list, .. } = next(&view_events) else {
+        panic!("linked");
+    };
+    vt.join().unwrap(); // sync-ok: a test waits for its threads and reads its own files
+    ht.join().unwrap(); // sync-ok: a test waits for its threads and reads its own files
+    assert_eq!(list[0].kind, Some(Os::Mac));
+    assert_eq!(list[0].flare, MAC_APP_FLARE);
 }
 
 // ---- two pages over the fake network ----------------------------------------------------------------------------
@@ -441,6 +596,37 @@ fn until(pages: &mut [&mut Page], what: &str, cond: impl Fn(&[&mut Page]) -> boo
         assert!(t.elapsed() < Duration::from_secs(10), "timed out: {what}");
         std::thread::sleep(Duration::from_millis(3)); // sync-ok: a test waits for its workers
     }
+}
+
+/// Rule 1256: when every pairing port is taken, the sharing dialog says so once, nothing is announced, and turning
+/// sharing off and on tries again.
+#[test]
+fn no_free_pairing_port_says_so_once_and_announces_nothing() {
+    let hub = Arc::new(Hub::default());
+    let mut p = page(&hub, "192.168.0.139", pc(), false);
+    *p.net.ports_taken.lock().unwrap() = true;
+    let prefs = PrefStore::memory();
+    flare_settings::machine_prefs::set_sharing_on(&prefs, true);
+    p.page.use_prefs(prefs.clone());
+    assert!(!p.page.pairing().hosting());
+    assert!(p.net.port().is_none(), "nothing announced");
+    let Some(crate::sharing::SharingAsk::Notice(line)) = p.page.sharing().ask().cloned() else {
+        panic!("one line");
+    };
+    assert_eq!(line, ports_taken_line());
+    // Said once: the next look at the switch does not say it again.
+    p.page
+        .sharing_button(flare_settings::page::machines::SHARING_PRIMARY);
+    p.page.use_prefs(prefs.clone());
+    assert!(p.page.sharing().ask().is_none(), "said once");
+    // Off, then on again with a port free: it listens.
+    flare_settings::machine_prefs::set_sharing_on(&prefs, false);
+    p.page.use_prefs(prefs.clone());
+    *p.net.ports_taken.lock().unwrap() = false;
+    flare_settings::machine_prefs::set_sharing_on(&prefs, true);
+    p.page.use_prefs(prefs);
+    assert!(p.page.pairing().hosting());
+    assert!(p.net.port().is_some());
 }
 
 /// Rules 1256 to 1260, on two pages: the PC with Computer sharing on listens and is announced; the Mac's dialog finds
@@ -712,7 +898,7 @@ fn removing_a_computer_that_reaches_this_one_removes_its_key() {
         address: "192.168.0.120".into(),
         version: "0.4.2".into(),
         key: key.clone(),
-        admin: false,
+        admin: Some(false),
     }];
     // Another key once went into the admin file: Flare noted that for the whole computer, yet removing this one,
     // which is in the user's own file, needs no prompt (rule 1260).
@@ -744,7 +930,7 @@ fn removing_a_computer_whose_key_is_in_the_admin_file_asks_once() {
         id: "mini".into(),
         name: "Mini".into(),
         key: key.clone(),
-        admin: true,
+        admin: Some(true),
         ..Default::default()
     }];
     host.page.page_shown();
@@ -758,6 +944,51 @@ fn removing_a_computer_whose_key_is_in_the_admin_file_asks_once() {
     let scripts = host.os.scripts.lock().unwrap().clone();
     assert_eq!(scripts.len(), 1);
     assert!(scripts[0].contains("remove a paired computer's key"));
+}
+
+/// Rule 1260: an entry written before Flare kept where its key went says nothing. Remove then never takes it as the
+/// user's own file: when the switch noted an admin key, or the account is a Windows administrator, the admin file's
+/// line is removed too (one elevated script); else no prompt.
+#[test]
+fn removing_an_older_entry_that_does_not_say_where_its_key_went_asks_the_switch_and_the_account() {
+    for (noted, admin_account, asks) in [
+        (true, false, true),
+        (false, true, true),
+        (false, false, false),
+    ] {
+        let hub = Arc::new(Hub::default());
+        let mut host = page(&hub, "192.168.0.139", pc(), true);
+        *host.os.elevated.lock().unwrap() =
+            Ok(crate::sharing::fake::ok_outcome(false, false, false));
+        host.os.admin_account.store(admin_account, Ordering::SeqCst);
+        flare_settings::machine_prefs::set_admin_keys(&host.page.sharing().prefs(), noted);
+        let key = parse_public_key(&host_key(), &[ED25519]).unwrap().key;
+        *host.io.incoming.lock().unwrap() = vec![crate::machines::Incoming {
+            id: "mini".into(),
+            name: "Mini".into(),
+            key: key.clone(),
+            admin: None,
+            ..Default::default()
+        }];
+        host.page.page_shown();
+        until(&mut [&mut host], "read", |p| {
+            !p[0].page.info().machines.is_empty()
+        });
+        host.page.remove(&format!("{INCOMING_PREFIX}mini"));
+        until(&mut [&mut host], "removed", |p| {
+            p[0].page.info().machines.is_empty()
+        });
+        assert_eq!(*host.os.removed_keys.lock().unwrap(), [key]);
+        let scripts = host.os.scripts.lock().unwrap().clone();
+        assert_eq!(
+            scripts
+                .iter()
+                .filter(|s| s.contains("remove a paired computer's key"))
+                .count(),
+            usize::from(asks),
+            "noted {noted}, admin account {admin_account}"
+        );
+    }
 }
 
 /// Rule 1258: everything that can fail is read before the key goes in: a host key that cannot be read, or a user
@@ -833,6 +1064,42 @@ fn a_key_that_went_in_as_sharing_turned_off_comes_out_again() {
             "no second prompt"
         );
     }
+}
+
+/// Rule 1258: when the sharing clean up already went past its wait for this request (it gave up after `DRAIN_WAIT`),
+/// it may have cleaned the admin file before the key went in. The request then removes its own admin key, elevated,
+/// so no key in `administrators_authorized_keys` outlives sharing.
+#[test]
+fn an_admin_key_that_went_in_after_the_clean_up_comes_out_with_its_own_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let os = Arc::new(FakeOs::new(Platform::Windows));
+    os.admin_account.store(true, Ordering::SeqCst);
+    *os.elevated.lock().unwrap() = Ok(crate::sharing::fake::ok_outcome(false, false, false));
+    *os.stop_on_add.lock().unwrap() = Some(Arc::default());
+    let clean_ups = CleanUps::default();
+    clean_ups.pass();
+    let host_io = Arc::new(FakeIo::default());
+    let (v, host_events, ht) = host_thread_cleaned(
+        Arc::clone(&os),
+        Arc::clone(&host_io),
+        PrefStore::memory(),
+        clean_ups,
+    );
+    let (codes, view_events, vt) =
+        viewer_thread(v, Arc::new(FakeIo::default()), PairFiles::new(dir.path()));
+    let HostEvent::Ask { code, .. } = next(&host_events) else {
+        panic!("ask");
+    };
+    next(&view_events);
+    codes.send(code).unwrap();
+    assert!(matches!(next(&view_events), ViewerEvent::Failed(_)));
+    vt.join().unwrap(); // sync-ok: a test waits for its threads and reads its own files
+    ht.join().unwrap(); // sync-ok: a test waits for its threads and reads its own files
+    assert!(host_io.list_in().is_empty(), "no entry stays");
+    let scripts = os.scripts.lock().unwrap().clone();
+    assert_eq!(scripts.len(), 2, "the key went in, then out: {scripts:?}");
+    assert!(scripts[0].contains("let a paired computer in"));
+    assert!(scripts[1].contains("remove a paired computer's key"));
 }
 
 /// Rule 1258: turning sharing off waits for the host's requests that still run, at most a while.

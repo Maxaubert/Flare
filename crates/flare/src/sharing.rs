@@ -127,6 +127,70 @@ pub fn mac_on_command() -> String {
     )
 }
 
+/// The one line when the Mac firewall is on and Flare is not let in, and Flare did not ask for the administrator
+/// password to let it in (Remote Login was on already): pairing's listener and announcement need it (rule 1256).
+pub const MAC_APP_FIREWALL_LINE: &str = "The Mac firewall may block pairing. Allow Flare in System Settings, \
+     Network, Firewall, Options.";
+
+/// Pure: `socketfilterfw --getglobalstate` says the Mac firewall is on ("Firewall is enabled. (State = 1)"; 2 is
+/// block all, also on). Off, or words Flare does not know, is not on.
+pub fn firewall_on(out: &str) -> bool {
+    let low = out.to_ascii_lowercase();
+    !low.contains("disabled")
+        && !low.contains("state = 0")
+        && (low.contains("enabled") || low.contains("state = 1") || low.contains("state = 2"))
+}
+
+/// Pure: `socketfilterfw --getappblocked <exe>` says the firewall lets Flare in ("... is permitted"). Blocked, "not
+/// part of the firewall" (never asked) or words Flare does not know are not let in.
+pub fn app_allowed(out: &str) -> bool {
+    let low = out.to_ascii_lowercase();
+    let blocked = low.contains("blocked") && !low.contains("not blocked");
+    !blocked && !low.contains("not part") && (low.contains("permitted") || low.contains("allowed"))
+}
+
+/// BLOCKING: the Mac firewall is on and does not let Flare in yet, so other computers would not reach pairing's
+/// listener or hear its announcement (rule 1256). False when the firewall is off, Flare is let in, or socketfilterfw
+/// did not answer.
+pub fn mac_app_blocked(os: &dyn SharingOs, flare_exe: &Path) -> bool {
+    match os.firewall_global_state() {
+        Ok(out) if firewall_on(&out) => {}
+        Ok(_) => return false,
+        Err(e) => {
+            log::info!("computer sharing: socketfilterfw did not answer: {e}");
+            return false;
+        }
+    }
+    match os.firewall_app_blocked(flare_exe) {
+        Ok(out) if app_allowed(&out) => false,
+        Ok(out) => {
+            log::info!(
+                "computer sharing: the firewall does not let Flare in: {}",
+                out.trim()
+            );
+            true
+        }
+        Err(e) => {
+            log::info!("computer sharing: socketfilterfw did not answer for Flare: {e}");
+            true
+        }
+    }
+}
+
+/// Pure: the root commands that let Flare in through the Mac firewall (rule 1256), for the same administrator prompt
+/// that turns Remote Login on: `socketfilterfw --add` and `--unblockapp` with Flare's path in sh's single quotes. None
+/// for a path that is not absolute or holds a control character.
+pub fn mac_allow_app_command(flare_exe: &Path) -> Option<String> {
+    let exe = flare_exe.to_str()?;
+    if !exe.starts_with('/') || exe.chars().any(char::is_control) {
+        return None;
+    }
+    let exe = format!("'{}'", exe.replace('\'', "'\\''"));
+    Some(format!(
+        "{SOCKETFILTERFW} --add {exe} >/dev/null 2>&1; {SOCKETFILTERFW} --unblockapp {exe} >/dev/null 2>&1"
+    ))
+}
+
 /// The command osascript runs as root to turn Remote Login off (rule 1255): systemsetup, then Flare's keys-only file
 /// goes, only once Remote Login is off (a server left on keeps keys only).
 pub fn mac_off_command() -> String {
@@ -157,6 +221,10 @@ pub trait SharingOs: Send + Sync {
     fn run_as_admin(&self, command: &str) -> Result<String, String>;
     /// macOS: what `socketfilterfw --getblockall` printed ([`blocks_all`] reads it), or Err when it did not run.
     fn firewall_block_all(&self) -> Result<String, String>;
+    /// macOS: what `socketfilterfw --getglobalstate` printed ([`firewall_on`] reads it), or Err (machine pairing PR 3).
+    fn firewall_global_state(&self) -> Result<String, String>;
+    /// macOS: what `socketfilterfw --getappblocked <exe>` printed ([`app_allowed`] reads it), or Err.
+    fn firewall_app_blocked(&self, exe: &Path) -> Result<String, String>;
     /// Opens a URL (System Settings' Sharing page).
     fn open_url(&self, url: &str);
     /// Removes the keys Flare added (a `flare-pair:` comment) from the user's own `authorized_keys`. How many.
@@ -577,6 +645,7 @@ pub fn step_line(step: &str) -> &'static str {
         "firewall" => "Windows' firewall would not take the rule for sharing.",
         "keys" => "Flare could not remove the keys it added.",
         "stop" => "Windows' SSH server would not stop.",
+        "addkey" => "Windows would not take the key for this computer.",
         _ => "Computer sharing could not be set up.",
     }
 }
@@ -743,7 +812,7 @@ pub fn install_key(os: &dyn SharingOs, line: &str) -> Result<bool, String> {
                 Err("Windows did not allow the change, so the computer was not added.".into())
             }
             Err("config") => Err(step_line("config").into()),
-            Err(_) => Err("Windows would not take the key for this computer.".into()),
+            Err(_) => Err(step_line("addkey").into()),
         };
     }
     os.add_user_key(line).map_err(|e| {
@@ -782,8 +851,13 @@ pub fn remove_key(os: &dyn SharingOs, key: &str, admin: bool) -> Result<(), Stri
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OnResult {
     /// Sharing is on; `by_flare`: Flare installed or started the SSH server; `firewall`: Flare's own firewall rules
-    /// are in place (Windows), so turning off removes them.
-    On { by_flare: bool, firewall: bool },
+    /// are in place (Windows), so turning off removes them; `note`: a line to show once it is on (the Mac firewall
+    /// does not let Flare in, rule 1256).
+    On {
+        by_flare: bool,
+        firewall: bool,
+        note: Option<String>,
+    },
     /// The person said no at the system's prompt: the switch goes back off, with nothing to say.
     Declined,
     /// macOS would not let Flare turn Remote Login on: the person turns it on in System Settings.
@@ -818,6 +892,7 @@ pub fn turn_on(os: &dyn SharingOs, flare_exe: &Path) -> OnResult {
                 OnResult::On {
                     by_flare: r.installed || r.started,
                     firewall: r.rule,
+                    note: None,
                 }
             } else {
                 log::warn!("computer sharing: the setup failed at {}", r.step);
@@ -828,9 +903,12 @@ pub fn turn_on(os: &dyn SharingOs, flare_exe: &Path) -> OnResult {
             if os.port_open(SSH_PORT) {
                 return match mac_firewall_problem(os) {
                     Some(line) => OnResult::Failed(line),
+                    // No password prompt here, so a firewall that does not let Flare in is the person's to change.
                     None => OnResult::On {
                         by_flare: false,
                         firewall: false,
+                        note: mac_app_blocked(os, flare_exe)
+                            .then(|| MAC_APP_FIREWALL_LINE.to_string()),
                     },
                 };
             }
@@ -839,7 +917,16 @@ pub fn turn_on(os: &dyn SharingOs, flare_exe: &Path) -> OnResult {
             if let Some(line) = mac_firewall_problem(os) {
                 return OnResult::Failed(line);
             }
-            match os.run_as_admin(&mac_on_command()) {
+            // A firewall that does not let Flare in yet does so in the same administrator prompt (rule 1256).
+            let mut command = mac_on_command();
+            let mut note = None;
+            if mac_app_blocked(os, flare_exe) {
+                match mac_allow_app_command(flare_exe) {
+                    Some(allow) => command = format!("{command}; {allow}"),
+                    None => note = Some(MAC_APP_FIREWALL_LINE.to_string()),
+                }
+            }
+            match os.run_as_admin(&command) {
                 Err(out) if mac_declined(&out) => return OnResult::Declined,
                 Err(out) | Ok(out) if !out.trim().is_empty() => {
                     log::info!("computer sharing: systemsetup said: {}", out.trim());
@@ -852,6 +939,7 @@ pub fn turn_on(os: &dyn SharingOs, flare_exe: &Path) -> OnResult {
                     return OnResult::On {
                         by_flare: true,
                         firewall: false,
+                        note,
                     };
                 }
                 os.wait(500); // sync-ok: turn_on runs on a worker
@@ -1046,6 +1134,12 @@ impl SharingOs for NoSharingOs {
         Err("no setup here".into())
     }
     fn firewall_block_all(&self) -> Result<String, String> {
+        Err("no setup here".into())
+    }
+    fn firewall_global_state(&self) -> Result<String, String> {
+        Err("no setup here".into())
+    }
+    fn firewall_app_blocked(&self, _exe: &Path) -> Result<String, String> {
         Err("no setup here".into())
     }
     fn open_url(&self, _url: &str) {}
@@ -1292,7 +1386,17 @@ impl Sharing {
     pub fn on_msg(&mut self, m: SharingMsg) -> bool {
         match m {
             SharingMsg::TurnedOn(r) if self.phase == Phase::TurningOn => match r {
-                OnResult::On { by_flare, firewall } => self.turned_on(by_flare, firewall),
+                OnResult::On {
+                    by_flare,
+                    firewall,
+                    note,
+                } => {
+                    self.turned_on(by_flare, firewall);
+                    // Sharing works; the line says what still stops pairing (rule 1256).
+                    if let Some(line) = note {
+                        self.ask = Some(SharingAsk::Notice(line));
+                    }
+                }
                 OnResult::Declined => self.phase = Phase::Off,
                 OnResult::NeedsSettings => {
                     self.phase = Phase::WaitingForRemoteLogin;
@@ -1365,6 +1469,27 @@ fn quiet(program: &str) -> std::process::Command {
     cmd
 }
 
+/// BLOCKING: what the Mac firewall's tool printed for a question that needs no root (a worker's call).
+fn socketfilterfw(args: &[&std::ffi::OsStr]) -> Result<String, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("not a Mac".into());
+    }
+    let out = quiet(SOCKETFILTERFW)
+        .args(args)
+        .output() // sync-ok: SharingOs calls run on workers
+        .map_err(|e| format!("socketfilterfw did not start: {e}"))?;
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if out.status.success() {
+        Ok(said)
+    } else {
+        Err(said)
+    }
+}
+
 impl SharingOs for RealSharingOs {
     fn platform(&self) -> Platform {
         if cfg!(windows) {
@@ -1408,6 +1533,14 @@ impl SharingOs for RealSharingOs {
         } else {
             Err(said)
         }
+    }
+
+    fn firewall_global_state(&self) -> Result<String, String> {
+        socketfilterfw(&["--getglobalstate".as_ref()])
+    }
+
+    fn firewall_app_blocked(&self, exe: &Path) -> Result<String, String> {
+        socketfilterfw(&["--getappblocked".as_ref(), exe.as_os_str()])
     }
 
     fn firewall_block_all(&self) -> Result<String, String> {
