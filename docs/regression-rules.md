@@ -3662,8 +3662,8 @@ systems ship `assets/icon/flare-color.svg`: Windows' `build/icon.ico` (exe resou
 the Mac's `Flare.icns`, which `flare-cef`'s `macos::release` makes with `sips` and `iconutil` from
 `build/icon-source.png` (`APP_ICON_SOURCE`; no `Assets.car`, no `CFBundleIconName`). The owner's other designs
 (`assets/icon/app-icons/*.svg`, and Liquid Glass as the static vector of `assets/icon/app-macos.icon` on the Mac and
-#199's Windows SVG on Windows) are choices of **Settings > Appearance > App icon**: one line of twelve tiles under the
-row's words, Original first; the tiles carry no words, so each has its name as tooltip and accessible label, the
+#199's Windows SVG on Windows) are choices of **Settings > Appearance > App icon**: twelve tiles under the row's
+words (placed by rule 1263), Original first; the tiles carry no words, so each has its name as tooltip and accessible label, the
 first saying "Original, the default". The pick is `flare.window.appIcon` in `settings.json` (`flare_settings::app_icon`):
 `original` until another is picked, and for any stored word that is not a choice. Held by
 `the_original_icon_is_the_shipped_app_icon_and_the_others_are_choices` (`crates/flare/tests/ship_text.rs`),
@@ -3672,7 +3672,7 @@ first saying "Original, the default". The pick is `flare.window.appIcon` in `set
 `an_unknown_stored_word_reads_as_the_original_and_is_never_stored`),
 `the_app_icon_row_picks_the_original_until_another_is_chosen` (`page/appearance.rs`),
 `the_app_icon_row_is_its_words_over_a_line_of_tiles` (`layout.rs`) and the rendered picker in
-`crates/flare/src/ui_tests/settings_app_icon.rs` (`the_picker_shows_every_icon_with_the_original_picked_and_named_the_default`,
+`crates/flare/src/ui_tests/settings_app_icon.rs` (`the_picker_shows_every_icon_on_one_line_with_the_original_picked`,
 `a_press_on_a_tile_stores_it_and_the_row_follows`, `a_stored_pick_is_shown_and_an_unknown_one_shows_the_original`).
 Source: the owner, 2026-11-13 ("the app icon should stay the same as default, no new default, just a picker so the
 user can change their look").
@@ -3878,3 +3878,35 @@ DBG_TERMINATE_PROCESS}`, `AppCtl::hold_for_session_end`, the guarded `HostEvent:
 `shells_the_session_end_kills_keep_every_tab_in_tabs_json`, `a_plain_exit_while_the_session_ends_keeps_the_list`,
 `a_plain_exit_outside_a_session_end_closes_the_tab_and_saves_the_smaller_list`, `exit_closes_the_tab_without_asking`
 and `query_end_session_is_never_a_veto`. Source: diag.jsonl of the 2026-11-14 restart.
+
+## The App icon row (2026-11-14)
+
+1263. **The App icon tiles are a tidy grid that wraps, and the row's right restarts the shell instead of naming the
+icon.** Max, 2026-11-14: "change the look of this option, the icons are weirdly placed. also instead of saying safety
+orange in that spot have it be a button to restart explorer, since people dont care about the icon name". Layout A of
+`docs/superpowers/specs/2026-11-14-app-icon-row-mockup.html`: the tiles are a fixed 36 px with 10 px between them,
+left aligned at the words' column (60 in), 2 under the row's 58 of words and 16 above its bottom. They never shrink:
+a row too narrow for all twelve wraps them onto more lines and grows by a tile and a gap per line. Rust picks the
+tiles a line (`flare_settings::layout::{icon_cols, icon_lines, icon_row_h}`, `RowLayout::cols`, `SetRow.cols`) and
+the view places them by it (`AppIconStrip.cols`), so the height and the tiles always agree. The chosen ring, the
+hover fill, the name as tooltip and accessible label and the key focus of each tile stay as rule 1230 made them. The
+row's right is no longer the picked icon's name (`SetRow.badge` stays empty and `RowControls` draws no text for the
+row): it is a row button, **Restart Explorer** on Windows and **Restart Dock** on macOS (`app_icon::RESTART_LABEL`,
+id `restart-shell`), with the mockup's circular arrow (`redo`, in `icons::BUTTON_ICONS`) left of its words and no
+tooltip, as a labelled button.
+A press runs `ShellRestart::restart` on the `flare-shell-restart` worker and answers with
+`SettingsMsg::ShellRestarted`; the button is off while it runs and a second press does nothing. Windows ends every
+`explorer.exe` of this user's session (`ProcessIdToSessionId`, never another session's), waits up to 2.5 s for
+Winlogon to start the shell again and otherwise starts `explorer.exe` by its absolute path, out of any job Flare
+runs in, checks that it shows within 5 s and starts it once more before it reports a failure; macOS runs
+`/usr/bin/killall Dock` (`flare_win::shell_restart`). A failure puts "Explorer did not restart." ("The Dock did not
+restart.") in place of the row's subtext until the next press, as the microphone row says its problem. Crumbs:
+`shell-restart-asked`, then `shell-restart` with `ok` and a short `why` (no path). Tests and `--e2e` use
+`FakeShellRestart`: nothing outside the test restarts Explorer or the Dock. Held by
+`the_app_icon_row_is_its_words_over_a_line_of_tiles`, `the_app_icon_tiles_wrap_and_the_row_grows` (`layout.rs`),
+`the_app_icon_row_offers_the_shell_restart_button` (`page/appearance.rs`),
+`the_fake_restart_counts_and_fails_when_told` (`app_icon.rs`) and, in `ui_tests/settings_app_icon.rs`,
+`the_picker_shows_every_icon_on_one_line_with_the_original_picked`,
+`a_narrow_window_wraps_the_tiles_and_the_row_grows_by_whole_lines`,
+`the_right_side_is_the_restart_button_not_the_icon_name`, `the_restart_button_runs_the_fake_restart` and
+`a_failed_restart_says_so_under_the_label`. Source: Max, 2026-11-14.

@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use flare_settings::actions::{self, AskAnswer, Ctx, Effect, Event, SaveFrom};
+use flare_settings::app_icon::ShellRestart;
 use flare_settings::colour_format::{COLOUR_FORMAT_KEY, colour_format};
 use flare_settings::custom_theme::CUSTOM_KEY;
 use flare_settings::find::{IndexEnv, page_names, settings_index};
@@ -88,6 +89,8 @@ pub enum SettingsMsg {
     Mods,
     /// A worker of the Machines page answered (remote sessions PR 7).
     Machines(crate::machines_page::MachinesMsg),
+    /// The shell restart of the App icon row finished (rule 1263): Ok, or a short reason.
+    ShellRestarted(Result<(), String>),
 }
 
 /// The Mods page's door to the mods (Surfaces stage 8). The window's controller of mods implements it; a run with
@@ -128,6 +131,9 @@ pub struct SettingsDeps {
     pub look: LookStore,
     pub diag: Rc<dyn DiagControlApi>,
     pub verb: Arc<dyn ExplorerVerb>,
+    /// The App icon row's Restart Explorer (Restart Dock) button (rule 1263). Tests and --e2e give a fake, so nothing
+    /// outside the test restarts.
+    pub shell_restart: Arc<dyn ShellRestart>,
     pub dictation: Rc<dyn DictationPage>,
     pub pick_folder: PickFolder,
     pub open_path: Rc<dyn Fn(&Path)>,
@@ -224,6 +230,10 @@ pub struct SettingsCtl {
     mods: Option<Rc<dyn ModsPort>>,
     /// The Machines page (remote sessions PR 7); none until the window hands it over.
     machines: Option<crate::machines_page::MachinesPage>,
+    /// The App icon row's shell restart (rule 1263): one runs on a worker now (the button is off), and the last one
+    /// failed (the row says so under its label until the next press).
+    restarting: bool,
+    restart_failed: bool,
 }
 
 // ---- the pure mappers ------------------------------------------------------------------------------
@@ -340,7 +350,8 @@ pub fn to_slint_row(r: &RowModel, y: f64, h: f64, ctx: &RowCtx<'_>) -> SetRow {
             out.value = value.as_str().into();
             out.options = options_of(options);
         }
-        // The app icon picker (rule 1230): each tile's picture, and the picked icon's name for the row's right.
+        // The app icon picker (rule 1230): each tile's picture. The row's right holds the Restart Explorer button, not
+        // the picked icon's name (rule 1263), so `badge` stays empty.
         Control::Icons { value, options } => {
             out.value = value.as_str().into();
             out.options = options_of(options);
@@ -350,12 +361,6 @@ pub fn to_slint_row(r: &RowModel, y: f64, h: f64, ctx: &RowCtx<'_>) -> SetRow {
                     .map(|o| crate::app_icon::tile_image(&o.id))
                     .collect::<Vec<_>>(),
             ));
-            out.badge = options
-                .iter()
-                .find(|o| &o.id == value)
-                .map(|o| o.name.as_str())
-                .unwrap_or_default()
-                .into();
         }
         Control::Slider {
             value,
@@ -527,7 +532,11 @@ pub fn to_slint_section(s: &SectionModel, l: &SectionLayout, ctx: &RowCtx<'_>) -
                 0.0
             };
             let mut row = match b {
-                BlockModel::Row(r) => to_slint_row(r, y, rl.h, ctx),
+                // The app icon row's tiles a line, from the layout that set its height (rule 1263).
+                BlockModel::Row(r) => SetRow {
+                    cols: i32::try_from(rl.cols).unwrap_or(i32::MAX),
+                    ..to_slint_row(r, y, rl.h, ctx)
+                },
                 BlockModel::Wall => block_row("wall", SlintBlock::Wall, y, rl.h),
                 BlockModel::AboutCard {
                     name,
@@ -790,6 +799,8 @@ impl SettingsCtl {
             rebuilds: 0,
             mods: None,
             machines: None,
+            restarting: false,
+            restart_failed: false,
             deps,
         };
         let rc = Rc::new(RefCell::new(ctl));
@@ -1127,6 +1138,65 @@ impl SettingsCtl {
                     self.refresh_if_visible();
                 }
             }
+            SettingsMsg::ShellRestarted(r) => {
+                self.restarting = false;
+                self.restart_failed = r.is_err();
+                // The reason is a short word or two with no path in it (rule 1263).
+                crate::diag_ctl::crumb(
+                    "shell-restart",
+                    &[
+                        ("ok", serde_json::Value::Bool(r.is_ok())),
+                        (
+                            "why",
+                            crate::diag_ctl::txt(r.as_ref().err().map_or("", String::as_str)),
+                        ),
+                    ],
+                );
+                if let Err(e) = &r {
+                    log::warn!("shell restart failed: {e}");
+                }
+                self.refresh_if_visible();
+            }
+        }
+    }
+
+    /// The App icon row's Restart Explorer (Restart Dock) button (rule 1263): the restart runs on a worker through the
+    /// `ShellRestart` seam and answers with `ShellRestarted`. A press while one runs does nothing.
+    fn restart_shell(&mut self) {
+        if self.restarting {
+            return;
+        }
+        self.restarting = true;
+        self.restart_failed = false;
+        crate::diag_ctl::crumb("shell-restart-asked", &[]);
+        let restarter = Arc::clone(&self.deps.shell_restart);
+        let post = Arc::clone(&self.deps.post);
+        spawn_worker("flare-shell-restart", move || {
+            let r = restarter.restart();
+            post(UiMsg::Settings(SettingsMsg::ShellRestarted(r)));
+        });
+        self.refresh_if_visible();
+    }
+
+    /// The App icon row as the restart leaves it (rule 1263): its button off while a restart runs, and the failure's
+    /// one plain line in place of its subtext, as the microphone row says its problem.
+    fn mark_restart(&self, model: &mut PageModel) {
+        use flare_settings::app_icon::{RESTART_BUTTON, RESTART_FAILED};
+        for s in &mut model.sections {
+            for b in &mut s.blocks {
+                if let BlockModel::Row(r) = b
+                    && r.id == "app-icon"
+                {
+                    for btn in &mut r.buttons {
+                        if btn.id == RESTART_BUTTON {
+                            btn.off = self.restarting;
+                        }
+                    }
+                    if self.restart_failed {
+                        r.sub = RESTART_FAILED.to_string();
+                    }
+                }
+            }
         }
     }
 
@@ -1310,7 +1380,9 @@ impl SettingsCtl {
             mods: mods_info.as_ref(),
             machines: machines_info.as_ref(),
         };
-        build_page(self.page, &env, &*self.deps.dictation)
+        let mut model = build_page(self.page, &env, &*self.deps.dictation);
+        self.mark_restart(&mut model);
+        model
     }
 
     /// The frame (rail included) in logical px, from the last report or the bridge.
@@ -1853,6 +1925,10 @@ impl SettingsCtl {
             if crate::dictation_ctl::page_button(row, button) {
                 self.refresh_if_visible();
             }
+            return;
+        }
+        if row == "app-icon" && button == flare_settings::app_icon::RESTART_BUTTON {
+            self.restart_shell();
             return;
         }
         if row == "slint" {
@@ -2721,6 +2797,7 @@ mod tests {
             look: LookStore::new(prefs.clone()),
             diag: diag.clone(),
             verb,
+            shell_restart: Arc::new(flare_settings::app_icon::FakeShellRestart::new()),
             dictation,
             pick_folder: {
                 let answer = Rc::clone(&pick_answer);

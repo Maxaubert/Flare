@@ -336,12 +336,17 @@ fn rows_are_at_least_58_and_tiles_32_and_hairlines_start_60_in() {
             let sc = Scene::new(page, s, 1000, 604);
             let one_dev = 1.0 / sc.scale;
             // The model: every row block is 58 css px, to the device pixel. The app icon picker's row is its 58 of
-            // words over its line of tiles (Flare's own, rule 1230).
+            // words over its lines of tiles (Flare's own, rules 1230 and 1263).
             for (si, ri) in row_blocks(&sc.layout) {
                 let r = &sc.layout.sections[si].rows[ri];
                 if r.id == "app-icon" {
+                    use flare_settings::layout::{icon_row_h, row_w_of};
+                    let want = icon_row_h(
+                        row_w_of(sc.layout.content_w),
+                        flare_settings::app_icon::APP_ICONS.len(),
+                    );
                     assert!(
-                        within(r.h, flare_settings::layout::ICON_ROW_H, one_dev),
+                        within(r.h, want, one_dev),
                         "scale {s} {page}: the app icon row is {} high",
                         r.h
                     );
