@@ -3801,3 +3801,20 @@ Mac (2026-11-14), so only the blink defaults count. Other non-Windows systems st
 `the_mac_blink_period_comes_from_the_on_default_then_the_off_default`, `a_huge_mac_blink_period_is_steady`,
 `the_mac_defaults_read_runs_without_a_window` and `the_mac_blink_defaults_set_the_period_and_a_huge_one_is_steady`.
 Source: the macOS parity review of PR #234, 2026-11-14.
+
+1239. **A shell the session's end kills keeps its tab.** On a Windows restart Windows ends the console processes
+(exit code `DBG_TERMINATE_PROCESS`, `0x40010004`) about 220 ms before Flare gets `WM_ENDSESSION`. Flare took each
+exit for a closed tab, the refresh saved the smaller strip and the session-end flush wrote it: 8 of 9 tabs were lost
+(proven from `diag.jsonl`, 2026-11-14). Now the session-end window sets a process-wide mark on `WM_QUERYENDSESSION`
+and clears it on a cancelled `WM_ENDSESSION` (`wParam == 0`). A shell that ends while the mark is set, or with exit
+code `0x40010004`, closes no tab: the controller holds the tabs (`session_hold`), saves and writes the strip as it
+stands once, and no refresh saves the tabs again for the rest of the run. Unlike `ended` the hold leaves the quit's
+own end of life armed. A refresh also saves nothing while the mark is set. A person's own exit (code 0 or any
+other) outside a session end still closes the tab. macOS: Flare answers the quit at a log out at once and ends
+before the system ends its shells, so the order is not known to bite there; the shared controller code still reads
+`session_ending()`, which on macOS is true for 60 s after `NSWorkspaceWillPowerOffNotification` (macOS says nothing
+when a log out is cancelled, so the mark runs out by itself). Native: `flare_win::session_end::{session_ending,
+DBG_TERMINATE_PROCESS}`, `AppCtl::hold_for_session_end`, the guarded `HostEvent::Exited` arm and `refresh`. Held by
+`shells_the_session_end_kills_keep_every_tab_in_tabs_json`, `a_plain_exit_while_the_session_ends_keeps_the_list`,
+`a_plain_exit_outside_a_session_end_closes_the_tab_and_saves_the_smaller_list`, `exit_closes_the_tab_without_asking`
+and `query_end_session_is_never_a_veto`. Source: diag.jsonl of the 2026-11-14 restart.

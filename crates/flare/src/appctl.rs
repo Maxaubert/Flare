@@ -543,6 +543,11 @@ pub struct AppCtl {
     /// Agents that are mid-answer: tab id to the clock time they started (M6 fills this).
     working: HashMap<String, u64>,
     ended: bool,
+    /// A shell ended with the session (rule 1239): the tabs stay as they stood and no smaller list is saved again.
+    /// Unlike `ended` it leaves the quit's own end of life armed.
+    session_hold: bool,
+    /// Whether the OS is ending the session (`flare_win::session_end::session_ending`; a test may set it).
+    session_ending: fn() -> bool,
     /// Whose keys the chords and the terminal follow: macOS in a Mac build, Windows otherwise and in
     /// the unit tests (`keymap::app_key_os`); a test may set it.
     key_os: KeyOs,
@@ -1101,6 +1106,8 @@ impl AppCtl {
             last_saved: None,
             working: HashMap::new(),
             ended: false,
+            session_hold: false,
+            session_ending: flare_win::session_end::session_ending,
             key_os: crate::keymap::app_key_os(),
             handoff_stop: None,
             font: None,
@@ -1993,14 +2000,16 @@ impl AppCtl {
         // Rule 37: nothing is written before the restore answered. Nor after the end of life: `finish` wrote
         // the tabs as they stood, then killed the shells, and a refresh after that sees every agent gone and
         // would write a tabs.json with no agent to resume (2026-10-25: three restarts came back as plain shells).
-        if !self.ended
+        // Nor while the OS ends the session (rule 1239): Windows kills the shells before WM_ENDSESSION comes.
+        let frozen = self.ended || self.session_hold || (self.session_ending)();
+        if !frozen
             && let Some(s) = self.model.saved_if_restored()
             && self.last_saved.as_ref() != Some(&s)
         {
             self.deps.tabs_store.save(&s);
             self.last_saved = Some(s);
         }
-        if !self.ended && self.model.restore_done() {
+        if !frozen && self.model.restore_done() {
             let tabs = self.shell_tabs();
             self.panels.persist(&tabs);
         }
@@ -5237,6 +5246,24 @@ impl AppCtl {
         crate::diag_ctl::crumb("tabs-saved", &[("tabs", serde_json::Value::Array(tabs))]);
     }
 
+    /// A shell ended with the session (rule 1239): the strip as it stands is saved and written once, and from here
+    /// no refresh saves the tabs again. Nothing else stops: a quit still runs the whole end of life.
+    fn hold_for_session_end(&mut self) {
+        if self.session_hold {
+            return;
+        }
+        self.session_hold = true;
+        if !self.ended
+            && let Some(s) = self.model.saved_if_restored()
+        {
+            self.deps.tabs_store.save(&s);
+            self.deps.tabs_store.flush();
+            self.last_saved = Some(s);
+        }
+        let n = self.model.state.tabs.len();
+        crate::diag_ctl::crumb("session-end-hold", &[("tabs", serde_json::Value::from(n))]);
+    }
+
     /// The end of life: both state files flushed, then every shell killed and waited for.
     fn finish(&mut self) {
         if self.ended {
@@ -5641,6 +5668,16 @@ impl AppCtl {
                     self.remember_remote_home(&id, &path);
                 }
                 HostEvent::Output { id } => self.dev_read(&id),
+                // A shell the session's end killed is not a tab the person closed (rule 1239): Windows ends the
+                // console processes with DBG_TERMINATE_PROCESS about 220 ms before WM_ENDSESSION, and closing each
+                // tab then saved a strip of one (2026-11-14: 8 of 9 tabs lost on a restart).
+                HostEvent::Exited { code, .. }
+                    if self.session_hold
+                        || (self.session_ending)()
+                        || code == Some(flare_win::session_end::DBG_TERMINATE_PROCESS) =>
+                {
+                    self.hold_for_session_end();
+                }
                 HostEvent::Exited { id, .. } => {
                     self.note_close(&id);
                     self.deps.host.kill(&id);
@@ -6413,6 +6450,61 @@ mod tests {
         f.pump_until("the tab to close", |f| f.rows() == 1);
         assert_eq!(f.cwds(), ["C:\\a"]);
         assert_eq!(f.ctl.borrow().model().active().unwrap().cwd, "C:\\a");
+    }
+
+    /// Three shells open and saved; the tab count both in the strip and in tabs.json.
+    fn three_saved_shells(f: &Fx) -> usize {
+        f.start_restore_and_wait();
+        f.open_tabs(&["C:\\a", "C:\\b", "C:\\c"]);
+        let n = f.rows();
+        f.pump_until("the three tabs saved", |f| file_tabs(f) == Some(n));
+        n
+    }
+
+    /// Long enough for any debounced save to reach the disk, with the controller pumped and refreshed after.
+    fn settle(f: &Fx) {
+        std::thread::sleep(Duration::from_millis(150));
+        f.pump();
+        f.ctl.borrow_mut().refresh();
+        std::thread::sleep(Duration::from_millis(150));
+        f.pump();
+    }
+
+    #[test]
+    fn shells_the_session_end_kills_keep_every_tab_in_tabs_json() {
+        let f = fx();
+        let n = three_saved_shells(&f);
+        let dbg = flare_win::session_end::DBG_TERMINATE_PROCESS;
+        f.made_with("C:\\a")[0].exit(dbg);
+        f.made_with("C:\\b")[0].exit(dbg);
+        f.pump_until("the hold", |f| f.ctl.borrow().session_hold);
+        settle(&f);
+        assert_eq!(f.rows(), n, "no tab closed");
+        assert_eq!(file_tabs(&f), Some(n), "tabs.json keeps all three");
+        assert!(!f.ctl.borrow().ended, "the quit's end of life stays armed");
+    }
+
+    #[test]
+    fn a_plain_exit_while_the_session_ends_keeps_the_list() {
+        let f = fx();
+        let n = three_saved_shells(&f);
+        f.ctl.borrow_mut().session_ending = || true;
+        f.made_with("C:\\b")[0].exit(0);
+        f.pump_until("the hold", |f| f.ctl.borrow().session_hold);
+        settle(&f);
+        assert_eq!(f.rows(), n);
+        assert_eq!(file_tabs(&f), Some(n));
+    }
+
+    #[test]
+    fn a_plain_exit_outside_a_session_end_closes_the_tab_and_saves_the_smaller_list() {
+        let f = fx();
+        let n = three_saved_shells(&f);
+        f.made_with("C:\\b")[0].exit(0);
+        f.pump_until("the tab to close", |f| f.rows() == n - 1);
+        f.pump_until("the smaller list saved", |f| file_tabs(f) == Some(n - 1));
+        assert!(!f.ctl.borrow().session_hold);
+        assert!(!f.cwds().contains(&"C:\\b".to_string()));
     }
 
     #[test]
