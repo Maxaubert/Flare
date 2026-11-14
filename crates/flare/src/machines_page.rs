@@ -380,10 +380,13 @@ impl MachinesPage {
             self.pairing.host(false, &self.io);
         }
         self.sharing.switch(on);
-        if was && !on && !self.incoming.is_empty() {
+        if was && !on {
             self.incoming.clear();
-            let io = Arc::clone(&self.io);
+            // A request that still runs writes the list as it ends (its own entry, or the list from before it): the
+            // list is emptied only after it ended, so no computer whose key the clean up removes stays listed.
+            let (io, drain) = (Arc::clone(&self.io), self.pairing.drain());
             worker("flare-machines-save", move || {
+                drain();
                 if let Err(e) = io.save_in(&[]) {
                     log::warn!("{e}");
                 }

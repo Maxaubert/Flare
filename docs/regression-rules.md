@@ -4113,13 +4113,15 @@ saved (with which file holds it) and an admin key sets `flare.machines.adminKeys
 the answer cannot be sent, or Computer sharing turned off meanwhile, the key comes out again (`remove_key`; after a turn
 off the admin file is left to the clean up, so no second prompt) and the entries go back to what they were; a key that
 was in before this request stays. Turning sharing off stops the listener first and its clean up waits for a request
-that still runs (`Running`, at most `DRAIN_WAIT`), then reads `adminKeys`. Held by
+that still runs (`Running`, at most `DRAIN_WAIT`), then reads `adminKeys`. The list of computers that reach this one
+is emptied after that same wait, so a request that writes its list as it ends cannot bring back a computer whose key
+the clean up removes (second review, 2026-11-14). Held by
 `the_authorized_keys_line_is_one_plain_ed25519_key_tagged_with_the_name`,
 `pairing_again_replaces_the_same_keys_line_and_keeps_every_other`,
 `a_user_key_file_is_written_with_its_folder_and_the_key_removed_again`,
 `an_admin_account_adds_the_key_with_one_elevated_script`, `nothing_goes_in_when_the_answer_cannot_be_made`,
 `a_key_that_went_in_as_sharing_turned_off_comes_out_again`, `turning_sharing_off_waits_for_a_request_that_runs`,
-`a_windows_user_with_a_space_pairs_and_is_one_ssh_argument`,
+`turning_sharing_off_mid_request_leaves_no_computer_listed`, `a_windows_user_with_a_space_pairs_and_is_one_ssh_argument`,
 `a_user_with_a_space_is_one_user_and_a_strange_one_is_left_out` and
 `the_elevated_scripts_write_the_result_only_into_a_plain_new_file`.
 

@@ -31,6 +31,8 @@ pub(crate) struct FakeOs {
     pub user: Mutex<String>,
     /// Set when a key goes in (a test turns sharing off at that moment).
     pub stop_on_add: Mutex<Option<std::sync::Arc<AtomicBool>>>,
+    /// Holds a key that goes into the user's own file until the test sends (or drops its sender).
+    pub hold_add: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
 impl FakeOs {
@@ -52,6 +54,7 @@ impl FakeOs {
             host_key: Mutex::new(Ok(host_key())),
             user: Mutex::new("max".into()),
             stop_on_add: Mutex::default(),
+            hold_add: Mutex::default(),
         }
     }
 
@@ -115,6 +118,9 @@ impl SharingOs for FakeOs {
         self.user_keys.lock().unwrap().push(line.to_string());
         if let Some(stop) = self.stop_on_add.lock().unwrap().as_ref() {
             stop.store(true, Ordering::SeqCst);
+        }
+        if let Some(hold) = self.hold_add.lock().unwrap().as_ref() {
+            let _ = hold.recv(); // sync-ok: a test's fake holds the pairing worker
         }
         Ok(())
     }

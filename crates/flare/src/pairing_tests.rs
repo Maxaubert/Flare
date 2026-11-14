@@ -849,6 +849,57 @@ fn turning_sharing_off_waits_for_a_request_that_runs() {
     assert!(t.join().unwrap()); // sync-ok: a test waits for its threads and reads its own files
 }
 
+/// Rules 1255 and 1258: turning sharing off while a request adds its key: the request takes its key out and writes the
+/// list back as it was, and only then is the list of computers that reach this one emptied, so none whose key the
+/// clean up removes stays listed.
+#[test]
+fn turning_sharing_off_mid_request_leaves_no_computer_listed() {
+    let hub = Arc::new(Hub::default());
+    let mut host = page(&hub, "192.168.0.139", pc(), true);
+    *host.io.incoming.lock().unwrap() = vec![crate::machines::Incoming {
+        id: "mini".into(),
+        name: "Mini".into(),
+        address: "192.168.0.120".into(),
+        key: parse_public_key(&host_key(), &[ED25519]).unwrap().key,
+        ..Default::default()
+    }];
+    let (release, hold) = std::sync::mpsc::channel::<()>();
+    *host.os.hold_add.lock().unwrap() = Some(hold);
+    let port = host.net.port().unwrap();
+    let mut view = page(&hub, "192.168.0.110", mac(), false);
+    *view.net.nearby.lock().unwrap() = vec![pc_nearby(port)];
+    view.page.open_form();
+    until(&mut [&mut view], "nearby", |p| {
+        !p[0].page.info().nearby.is_empty()
+    });
+    let id = view.page.info().nearby[0].id.clone();
+    view.page.set_pick(&format!("{NEARBY_PREFIX}{id}"));
+    until(&mut [&mut host, &mut view], "the code shows", |p| {
+        p[0].page.pairing().prompt().is_some() && p[1].page.info().add.ready
+    });
+    let code = host.page.pairing().prompt().unwrap().code.clone();
+    view.page.set_code(&code);
+    view.page.submit();
+    until(&mut [&mut host, &mut view], "the key goes in", |p| {
+        !p[0].os.user_keys.lock().unwrap().is_empty()
+    });
+    host.page.sharing_switch(false);
+    drop(release);
+    let t = Instant::now();
+    while host.os.removed_keys.lock().unwrap().is_empty() || !host.io.list_in().is_empty() {
+        host.pump();
+        assert!(
+            t.elapsed() < Duration::from_secs(10),
+            "timed out: the list empties"
+        );
+        std::thread::sleep(Duration::from_millis(3)); // sync-ok: a test waits for its workers
+    }
+    // The clean up's worker ran after the request: nothing writes the old list back later.
+    std::thread::sleep(Duration::from_millis(50)); // sync-ok: a test waits for its workers
+    assert!(host.io.list_in().is_empty(), "{:?}", host.io.list_in());
+    assert_eq!(host.os.removed_keys.lock().unwrap().len(), 1);
+}
+
 /// Rule 1261: a connection that says nothing holds no request: another computer still gets its code. The slot is
 /// taken only after a valid hello.
 #[test]
