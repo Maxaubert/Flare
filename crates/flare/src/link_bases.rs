@@ -127,6 +127,9 @@ const GIT_FILE_MAX: u64 = 4096;
 /// file), then, for a worktree, the main repo root its `.git` file points to. Empty when there is none.
 pub fn repo_roots(start: &Path) -> Vec<String> {
     let mut out = Vec::new();
+    if !local_folder(start) {
+        return out;
+    }
     for dir in start.ancestors().take(WALK_MAX) {
         let dot = dir.join(".git");
         let Ok(meta) = std::fs::symlink_metadata(&dot) else {
@@ -157,6 +160,11 @@ fn worktree_main_root(dir: &Path, dot: &Path) -> Option<PathBuf> {
         return None;
     }
     let gitdir = lexical(&dir.join(gitdir));
+    // The `.git` file is data in a folder the link came from: a `gitdir:` naming a network share (or a `\\?\` path)
+    // is never read, so no click or hover makes Flare reach out to another machine.
+    if !local_folder(&gitdir) {
+        return None;
+    }
     let common = match read_small(&gitdir.join("commondir")) {
         Some(c) if !c.trim().is_empty() => lexical(&gitdir.join(c.trim())),
         _ => {
@@ -170,7 +178,16 @@ fn worktree_main_root(dir: &Path, dot: &Path) -> Option<PathBuf> {
     if common.file_name()? != ".git" {
         return None;
     }
-    common.parent().map(Path::to_path_buf)
+    common
+        .parent()
+        .filter(|p| local_folder(p))
+        .map(Path::to_path_buf)
+}
+
+/// A folder a relative path resolves from: on Windows a drive path, never a network or `\\?\` one (the filter the
+/// agent's folder gets in `appctl::link_folder`).
+fn local_folder(p: &Path) -> bool {
+    flare_term::path_open::resolve_term_path(&path_text(p), "x", "").is_some()
 }
 
 fn read_small(p: &Path) -> Option<String> {
@@ -352,6 +369,25 @@ mod tests {
         let roots = repo_roots(&wt);
         assert_eq!(roots.len(), 2, "{roots:?}");
         assert_eq!(dedupe_key(&roots[1]), dedupe_key(&s(main.path())));
+    }
+
+    /// Rule 1240: a worktree's `.git` file is data. A `gitdir:` that names no local folder (a network share, here a
+    /// `\\?\` path so the test never touches the network) is never read and gives no main root.
+    #[cfg(windows)]
+    #[test]
+    fn a_gitdir_that_is_no_local_folder_is_never_followed() {
+        let main = tempfile::tempdir().unwrap();
+        let admin = main.path().join(".git").join("worktrees").join("wt");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+        let wt = main.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), format!("gitdir: \\\\?\\{}\n", s(&admin))).unwrap();
+        let roots = repo_roots(&wt);
+        assert_eq!(roots.len(), 1, "{roots:?}");
+        assert_eq!(dedupe_key(&roots[0]), dedupe_key(&s(&wt)));
+        // A first folder that is no local folder is not walked at all.
+        assert!(repo_roots(Path::new("\\\\server\\share\\x")).is_empty());
     }
 
     #[test]
