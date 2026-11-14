@@ -28,6 +28,9 @@ pub(crate) struct FakeOs {
     pub user_keys: Mutex<Vec<String>>,
     pub removed_keys: Mutex<Vec<String>>,
     pub host_key: Mutex<Result<String, String>>,
+    pub user: Mutex<String>,
+    /// Set when a key goes in (a test turns sharing off at that moment).
+    pub stop_on_add: Mutex<Option<std::sync::Arc<AtomicBool>>>,
 }
 
 impl FakeOs {
@@ -47,6 +50,8 @@ impl FakeOs {
             user_keys: Mutex::default(),
             removed_keys: Mutex::default(),
             host_key: Mutex::new(Ok(host_key())),
+            user: Mutex::new("max".into()),
+            stop_on_add: Mutex::default(),
         }
     }
 
@@ -77,10 +82,13 @@ impl SharingOs for FakeOs {
         }
     }
     fn run_elevated(&self, build: &dyn Fn(&Path) -> String) -> Result<String, String> {
-        self.scripts
-            .lock()
-            .unwrap()
-            .push(build(Path::new(r"C:\Temp\flare-sharing-1.txt")));
+        let script = build(Path::new(r"C:\Temp\flare-sharing-1.txt"));
+        if script.contains("let a paired computer in")
+            && let Some(stop) = self.stop_on_add.lock().unwrap().as_ref()
+        {
+            stop.store(true, Ordering::SeqCst);
+        }
+        self.scripts.lock().unwrap().push(script);
         self.elevated.lock().unwrap().clone()
     }
     fn run_as_admin(&self, command: &str) -> Result<String, String> {
@@ -105,6 +113,9 @@ impl SharingOs for FakeOs {
     }
     fn add_user_key(&self, line: &str) -> Result<(), String> {
         self.user_keys.lock().unwrap().push(line.to_string());
+        if let Some(stop) = self.stop_on_add.lock().unwrap().as_ref() {
+            stop.store(true, Ordering::SeqCst);
+        }
         Ok(())
     }
     fn remove_user_key(&self, key: &str) -> Result<bool, String> {
@@ -115,7 +126,7 @@ impl SharingOs for FakeOs {
         self.host_key.lock().unwrap().clone()
     }
     fn user_name(&self) -> String {
-        "max".into()
+        self.user.lock().unwrap().clone()
     }
 }
 

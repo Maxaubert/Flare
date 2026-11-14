@@ -749,6 +749,7 @@ fn a_paired_machines_ssh_uses_its_address_port_key_and_known_hosts_as_argv_items
         port: Some(2222),
         key: Some("/Users/max/Library/Flare/id_flare_ed25519".into()),
         known_hosts: Some(r"C:\Users\John Doe\AppData\Flare\known_hosts".into()),
+        host_key: None,
     };
     assert_eq!(
         ssh_argv("ssh", &paired).unwrap(),

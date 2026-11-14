@@ -233,5 +233,16 @@ administrator.
   other computer closes.
 - [ ] Turn sharing off on the reached computer: the viewer's drop-down no longer lists it (reopen the dialog), and
   its Linked machines list is empty.
-- [ ] Pair again after the SSH server's host key changed (reinstall OpenSSH Server): the pin is replaced and the row
-  links again.
+- [ ] Pair again after the SSH server's host key changed (reinstall OpenSSH Server): the pin is replaced and a new
+  row appears that links (the old row stays, with the old key; remove it by hand). Pair again with the same host key:
+  the same row, no new one.
+- [ ] Guessing (rule 1261): pick the PC, type one wrong code, Cancel, pick it again at once: "busy". Wait 30 s and do
+  it again: busy for 2 minutes now, then 10. A typo and then the right code pairs with no wait.
+- [ ] `ncat <PC> <pairing port>` and type nothing: within 5 s the PC closes it, and meanwhile the Mac can still pick
+  the PC and gets its code.
+- [ ] A Windows account whose name has a space ("Max Aubert"): pairing works and the remote tab opens; the Mac's
+  `machines.json` holds the name as written.
+- [ ] Pair from the Mac, and turn sharing off on the PC while its UAC prompt for the key is up. After Yes: the key is
+  not left in `administrators_authorized_keys`, the Linked list stays empty, and the turn off's own prompt follows.
+- [ ] Remove a computer whose key is in the user's own file on an administrator PC that also has an admin key from
+  another pairing: no UAC prompt.

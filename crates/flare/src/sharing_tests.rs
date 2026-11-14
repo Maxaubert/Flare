@@ -333,7 +333,11 @@ fn the_elevated_command_line_stays_under_windows_limit() {
         windows_off_script(&result, true, true),
         windows_add_key_script(
             &result,
-            &format!("ssh-ed25519 {} flare-pair:{}", "A".repeat(68), "N".repeat(60)),
+            &format!(
+                "ssh-ed25519 {} flare-pair:{}",
+                "A".repeat(68),
+                "N".repeat(60)
+            ),
             &"A".repeat(68),
         ),
         windows_remove_key_script(&result, &"A".repeat(68)),

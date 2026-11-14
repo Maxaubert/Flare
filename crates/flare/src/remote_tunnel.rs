@@ -370,7 +370,12 @@ mod tests {
         let mut bad = mac(None);
         bad.ssh = "-oProxyCommand=calc".into();
         assert_eq!(tunnel_argv("ssh", &bad, 1, 2), None);
-        assert_eq!(tunnel_argv("ssh", &mac(Some("a b")), 1, 2), None);
+        assert_eq!(tunnel_argv("ssh", &mac(Some("-oX")), 1, 2), None);
+        assert_eq!(tunnel_argv("ssh", &mac(Some("Jo O'Neil")), 1, 2), None);
+        // A Windows user with a space is one argv item (rule 1258).
+        let argv = tunnel_argv("ssh", &mac(Some("Max Aubert")), 1, 2).unwrap();
+        let l = argv.iter().position(|a| a == "-l").unwrap();
+        assert_eq!(argv[l + 1], "Max Aubert");
         assert_eq!(tunnel_argv("ssh", &mac(None), 0, 2), None);
         assert_eq!(tunnel_argv("ssh", &mac(None), 1, 0), None);
     }

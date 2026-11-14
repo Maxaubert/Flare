@@ -364,14 +364,21 @@ impl MachinesPage {
 
     /// The host listens and is announced exactly while Computer sharing is on (rule 1256).
     fn sync_host(&mut self) {
+        // The host's requests note an admin key in the switch's store, and turning off waits for them (rule 1258).
+        self.pairing.set_prefs(self.sharing.prefs());
+        self.sharing.set_before_off(self.pairing.drain());
         let on = self.sharing.is_on();
         self.pairing.host(on, &self.io);
     }
 
     /// The Computer sharing switch was flipped. Turning it off forgets the computers that reached this one: their keys
-    /// go with the clean up (rule 1255).
+    /// go with the clean up (rule 1255). The host stops taking requests first, and the clean up waits for one that
+    /// runs, so a key it adds meanwhile is cleaned up too (rule 1258).
     pub fn sharing_switch(&mut self, on: bool) {
         let was = self.sharing.is_on();
+        if was && !on {
+            self.pairing.host(false, &self.io);
+        }
         self.sharing.switch(on);
         if was && !on && !self.incoming.is_empty() {
             self.incoming.clear();
@@ -522,16 +529,17 @@ impl MachinesPage {
                 Arc::clone(&self.post),
                 self.sharing.os(),
             );
-            let admin = self.sharing.admin_keys();
+            // Only a key in the admin file needs the UAC prompt (rule 1260).
             worker("flare-machines-save", move || {
-                let answer = crate::sharing::remove_key(&*os, &gone.key, admin).and_then(|()| {
-                    let list: Vec<Incoming> = io
-                        .list_in()
-                        .into_iter()
-                        .filter(|m| m.id != gone.id)
-                        .collect();
-                    io.save_in(&list).map(|()| list)
-                });
+                let answer =
+                    crate::sharing::remove_key(&*os, &gone.key, gone.admin).and_then(|()| {
+                        let list: Vec<Incoming> = io
+                            .list_in()
+                            .into_iter()
+                            .filter(|m| m.id != gone.id)
+                            .collect();
+                        io.save_in(&list).map(|()| list)
+                    });
                 Self::say(&post, MachinesMsg::RemovedIn(answer));
             });
             return;
@@ -817,14 +825,13 @@ impl MachinesPage {
             }
             PairMsg::Host(e) => {
                 self.pairing.on_host(&e);
+                // The request noted an admin key itself, the moment it went in (rule 1258). A request that ended
+                // after sharing went off lists nothing: the clean up removed its key.
                 if let HostEvent::Done {
-                    linked: Some((list, admin)),
-                    ..
+                    linked: Some(list), ..
                 } = e
+                    && self.sharing.is_on()
                 {
-                    if admin {
-                        self.sharing.note_admin_keys();
-                    }
                     self.incoming = list;
                 }
             }

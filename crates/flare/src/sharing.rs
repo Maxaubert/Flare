@@ -524,11 +524,7 @@ try {{
 
 /// Pure: a key's base64 field that may go into a script: base64's letters only.
 pub fn plain_key(key: &str) -> bool {
-    !key.is_empty()
-        && key.len() <= 2048
-        && key
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='))
+    crate::machines::plain_base64(key)
 }
 
 /// BLOCKING: lets a paired computer in (rule 1258): on a Windows account in Administrators, an elevated script (a UAC
@@ -875,6 +871,8 @@ pub struct Sharing {
     /// The Remote Login watch running now (0: none). A cancelled watch sees another number and ends.
     watch: Arc<AtomicU64>,
     watches: u64,
+    /// Runs on the clean up's worker before it starts: waits for pairing's host requests to end (rule 1258).
+    before_off: Arc<dyn Fn() + Send + Sync>,
 }
 
 /// Runs `f` on a named worker; a failure to start is logged.
@@ -900,12 +898,24 @@ impl Sharing {
             ask: None,
             watch: Arc::new(AtomicU64::new(0)),
             watches: 0,
+            before_off: Arc::new(|| {}),
         }
     }
 
     /// The OS calls in use (a page that takes the settings later keeps them).
     pub fn os(&self) -> Arc<dyn SharingOs> {
         Arc::clone(&self.os)
+    }
+
+    /// The settings store the switch keeps its state in (pairing notes an admin key there).
+    pub fn prefs(&self) -> PrefStore {
+        self.prefs.clone()
+    }
+
+    /// What the clean up waits for first, on its worker: pairing's host requests that still run (rule 1258), so a key
+    /// one adds meanwhile is cleaned up too.
+    pub fn set_before_off(&mut self, f: Arc<dyn Fn() + Send + Sync>) {
+        self.before_off = f;
     }
 
     #[cfg(test)]
@@ -918,16 +928,6 @@ impl Sharing {
         if self.ask.is_none() {
             self.ask = Some(SharingAsk::Notice(line));
         }
-    }
-
-    /// A paired computer's key went into Windows' `administrators_authorized_keys` (rule 1258).
-    pub fn admin_keys(&self) -> bool {
-        prefs::admin_keys(&self.prefs)
-    }
-
-    /// Pairing put a key into `administrators_authorized_keys`: turning off cleans it up elevated (rule 1255).
-    pub fn note_admin_keys(&self) {
-        prefs::set_admin_keys(&self.prefs, true);
     }
 
     /// Sharing is on and set up (not on its way on or off): the computer is announced and takes pairing requests.
@@ -990,13 +990,20 @@ impl Sharing {
 
     fn clean_up(&mut self, stop: bool) {
         self.phase = Phase::TurningOff;
-        let work = OffWork {
-            stop_server: stop,
-            admin_keys: prefs::admin_keys(&self.prefs),
-            firewall: prefs::firewall_rule(&self.prefs),
-        };
-        let (os, post) = (Arc::clone(&self.os), Arc::clone(&self.post));
+        let (os, post, prefs, before) = (
+            Arc::clone(&self.os),
+            Arc::clone(&self.post),
+            self.prefs.clone(),
+            Arc::clone(&self.before_off),
+        );
         worker("flare-sharing-off", move || {
+            // A pairing request that ran when the switch went off has ended first; what it added is read after it.
+            before();
+            let work = OffWork {
+                stop_server: stop,
+                admin_keys: prefs::admin_keys(&prefs),
+                firewall: prefs::firewall_rule(&prefs),
+            };
             let result = turn_off(&*os, work);
             Self::say(&post, SharingMsg::TurnedOff { work, result });
         });

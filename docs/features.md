@@ -2871,17 +2871,23 @@ The last of three PRs (spec and mockup as in PR 1).
   fresh 6-digit code ("482 913"), "Enter this code on <name>" and Decline, wherever the person is in Flare. The
   dialog here shows "Code shown on <name>"; Add sends it. The code never crosses the network: both computers prove it
   with SPAKE2 (RFC 9382) and key confirmation, then talk over ChaCha20-Poly1305. A wrong code is the red line "Wrong
-  code"; three close the window. Another computer asking meanwhile hears that it is busy. Rule 1257. A request that
-  ends after a wrong code without pairing, or three wrong codes, means no new request for 30 s. Rule 1261.
+  code"; three close the window. Another computer asking meanwhile hears that it is busy. Rule 1257.
+- **Guessing is limited.** A request that ends unpaired once its code showed locks the host: 30 s, then 2 min, then
+  10 min each time. More than 10 wrong tries from one address, or 20 from all, in an hour stop new requests until the
+  oldest is an hour old. A typo followed by the right code still pairs. A connection must say hello within 5 s, and
+  only then takes the one request slot. Rule 1261.
 - **The key.** Flare makes its own SSH key the first time (`id_flare_ed25519` in the profile). The other computer adds
   it to the right `authorized_keys`, tagged `flare-pair:<name>`: a Windows administrator account's
   `administrators_authorized_keys` through one UAC prompt with the ACL sshd wants; any other account's own
-  `~/.ssh/authorized_keys` with no prompt. Rule 1258.
+  `~/.ssh/authorized_keys` with no prompt. It reads everything its answer needs first, records the key the moment it
+  is in, and takes it out again when the answer cannot be sent or sharing turned off meanwhile. A Windows user name
+  with a space works. Rule 1258.
 - **The pin.** The other computer answers with its SSH host key, user and Flare path; this one pins the key in
-  `flare_known_hosts` in the profile and saves the machine with its address, user, key and known hosts, then checks
-  the link as usual (ssh never asks). Rule 1259.
+  `flare_known_hosts` in the profile and saves the machine with its address, user, key, known hosts and the pinned key,
+  then checks the link as usual (ssh never asks). Pairing again replaces an entry only with the same pinned key, never
+  by name. Rule 1259.
 - **Both lists.** The computer that was reached lists the one that paired (`machines_in.json`) with status Linked;
-  its menu has Remove, which takes the key away again. Rule 1260.
+  its menu has Remove, which takes the key away again. Only a key in the admin file asks for UAC. Rule 1260.
 - **Not yet.** The drop-down still draws no divider between nearby computers and SSH hosts. A computer that paired to
   this one is shown Linked while its entry is here; Flare does not read `administrators_authorized_keys` back (it
   needs admin rights) to see whether the key is still there. Pairing finds computers on the same network only

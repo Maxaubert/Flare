@@ -4068,8 +4068,8 @@ every test the network is `NoPairNet` or the in-memory fake: nothing is announce
 that attempt, three wrong codes close the window, and nothing is sent until both ends proved the code.** Machine
 pairing PR 3, 2026-11-14 (spec, "What happens underneath"; mockup, "The code" and "Problems"). The wire
 (`pair_wire`) is frames of a 4-byte big-endian length and at most 16 KiB of JSON. The viewer says `hello` (protocol 1,
-its name, system, version); the host answers `busy` when a request already shows its code or within 30 s of a window
-closed by wrong codes, `proto` for another protocol ("Update Flare on both computers, then try again."), else draws a
+its name, system, version); the host answers `busy` when a request already shows its code or while it is locked
+(rule 1261), `proto` for another protocol ("Update Flare on both computers, then try again."), else draws a
 fresh code from the OS (`fresh_code`, every value equally likely) and shows the Flare dialog "<viewer> wants to
 connect" with the code as `482 913`, "Enter this code on <viewer>" and Decline, over whatever tab is in front, Settings
 open or not (`PairCodeDialog`, Escape is Decline, a press outside does nothing, keys never reach the terminal under
@@ -4103,43 +4103,72 @@ whose blob names ed25519 and holds 32 bytes (no `command=` or other option, no s
 turning sharing off cleans it up elevated (rule 1255); a declined prompt adds nothing and the viewer reads "Windows did
 not allow the change, so the computer was not added." Any other account writes its own `~/.ssh/authorized_keys` with
 no prompt (`add_user_key`; off Windows `~/.ssh` is 700 and the file 600); pairing the same key again replaces its line
-and every other line stays. The key's base64 reaches a script only when it is base64's letters (`plain_key`). Held by
+and every other line stays. The key's base64 reaches a script only when it is base64's letters (`plain_key`). The
+key scripts run inline like rule 1253's and report through the same checked result file (step `addkey` or `keys`).
+Order (security review, 2026-11-14): everything the answer needs is read before the key goes in (the SSH host key,
+and the user name, which must be one ssh user: `user_word` takes a Windows name with a space, as one argv item after
+`-l`, and refuses an empty name, a leading dash, a space at either end, a quote, a backtick, a control character, `%` or
+`${`); a failure there refuses the request with nothing added. The moment the key is in, its `machines_in.json` entry is
+saved (with which file holds it) and an admin key sets `flare.machines.adminKeys` from the request's own worker. When
+the answer cannot be sent, or Computer sharing turned off meanwhile, the key comes out again (`remove_key`; after a turn
+off the admin file is left to the clean up, so no second prompt) and the entries go back to what they were; a key that
+was in before this request stays. Turning sharing off stops the listener first and its clean up waits for a request
+that still runs (`Running`, at most `DRAIN_WAIT`), then reads `adminKeys`. Held by
 `the_authorized_keys_line_is_one_plain_ed25519_key_tagged_with_the_name`,
 `pairing_again_replaces_the_same_keys_line_and_keeps_every_other`,
-`a_user_key_file_is_written_with_its_folder_and_the_key_removed_again` and
-`an_admin_account_adds_the_key_with_one_elevated_script`.
+`a_user_key_file_is_written_with_its_folder_and_the_key_removed_again`,
+`an_admin_account_adds_the_key_with_one_elevated_script`, `nothing_goes_in_when_the_answer_cannot_be_made`,
+`a_key_that_went_in_as_sharing_turned_off_comes_out_again`, `turning_sharing_off_waits_for_a_request_that_runs`,
+`a_windows_user_with_a_space_pairs_and_is_one_ssh_argument`,
+`a_user_with_a_space_is_one_user_and_a_strange_one_is_left_out` and
+`the_elevated_scripts_write_the_result_only_into_a_plain_new_file`.
 
 1259. **The viewer pins the host's SSH key in Flare's own known-hosts file for the address it reached, and saves the
 machine so ssh uses Flare's key, that file and strict checking.** Machine pairing PR 3, 2026-11-14 (spec, "Changes to
 how Flare runs ssh"). The host answers with its SSH server's public key (`ssh_host_ed25519_key.pub`), its user name,
 Flare's own path there, its system, name and version. The viewer takes a host key of `HOST_KEY_TYPES` only, a user that
-is one argv word and a Flare path with no quote or control character, else says "<name> answered in a way Flare
-cannot use." and saves nothing. The pin is `<address> <type> <key>` (`[address]:port` off port 22) in
-`flare_known_hosts` in the profile; pairing again replaces that address's line and no other. The machine is saved
-with `host` (the address it reached), `user`, `flare`, `kind`, `key` (Flare's key file) and `known_hosts` (rule 1249's
-fields), keeping its id when the same address or name was paired before, and is then checked over ssh like any other
-(`-o IdentitiesOnly=yes -i <key> -o UserKnownHostsFile=<file> -o StrictHostKeyChecking=yes`). Held by
-`the_host_key_is_pinned_for_its_address_alone` and `the_right_code_pairs_and_both_sides_keep_the_other`.
+is one ssh user (`user_word`, rule 1258) and a Flare path with no quote or control character, else says "<name>
+answered in a way Flare cannot use." and saves nothing. The pin is `<address> <type> <key>` (`[address]:port` off port
+22) in `flare_known_hosts` in the profile; pairing again replaces that address's line and no other. The machine is
+saved with `host` (the address it reached), `user`, `flare`, `kind`, `key` (Flare's key file), `known_hosts` (rule
+1249's fields) and `host_key` (the pinned key's base64). An entry is replaced only when its `host_key` is the key just
+pinned (security review, 2026-11-14): a name or an address the other computer says never picks the entry, so a
+stranger that calls itself like a saved machine gets a new entry with an id of its own and never takes over that
+machine's tabs. It is then checked over ssh like any other (`-o IdentitiesOnly=yes -i <key> -o
+UserKnownHostsFile=<file> -o StrictHostKeyChecking=yes`). Held by `the_host_key_is_pinned_for_its_address_alone`,
+`the_right_code_pairs_and_both_sides_keep_the_other` and `pairing_never_replaces_a_machine_by_its_name`.
 
 1260. **Both computers list the other in Linked machines; a computer that reaches this one is no machine to open a
 tab on, and removing it removes its key.** Machine pairing PR 3, 2026-11-14 (mockup, "Linked"). The host keeps each
 paired viewer in `machines_in.json` in its profile (`Incoming`: id, name, system, the address it paired from, the Flare
-version it said, and its key's base64; the same key again replaces its entry; an entry whose key is not plain base64
-is dropped when read). Its rows follow the machines in the table with the row id `machine: in:<id>`, status Linked,
-and a ⋯ menu with Remove only (no Test: this computer has no link to it); they never reach the + menu or `--on`.
-Remove takes its key out of the user's own `authorized_keys`, and out of `administrators_authorized_keys` with one
-elevated script when a key went there (`windows_remove_key_script`); a failure is the sharing dialog's one line.
-Turning Computer sharing off empties the list (rule 1255 removes the keys). Held by
+version it said, its key's base64, and `admin`: whether the key is in `administrators_authorized_keys`; the same key
+again replaces its entry, never a name; an entry whose key is not plain base64 is dropped when read, and one with no
+`admin` reads as the user's own file). Its rows follow the machines in the table with the row id `machine: in:<id>`,
+status Linked, and a ⋯ menu with Remove only (no Test: this computer has no link to it); they never reach the + menu
+or `--on`. Remove takes its key out of the user's own `authorized_keys`, and out of `administrators_authorized_keys`
+with one elevated script only when that entry's key went there (`windows_remove_key_script`; another entry's admin key
+asks nothing here); a failure is the sharing dialog's one line. Turning Computer sharing off empties the list (rule
+1255 removes the keys), and a request that ends after that lists nothing. Held by
 `the_computers_that_reach_this_one_read_back_and_a_strange_key_is_left_out`,
-`removing_a_computer_that_reaches_this_one_removes_its_key` and
+`removing_a_computer_that_reaches_this_one_removes_its_key`,
+`removing_a_computer_whose_key_is_in_the_admin_file_asks_once` and
 `two_computers_pair_from_the_dialog_and_list_each_other`.
 
-1261. **A pairing request that ends after a wrong code, without pairing, locks the host for 30 s, like three wrong
-codes do.** Found 2026-11-14 in the review of machine pairing PR 3. Rule 1257 locked the host only after three wrong
-codes in one connection, and every new connection gets a fresh code. So a stranger on the network could guess once,
-hang up, connect again at once and guess again: unlimited guesses, one per fresh code, held back only by how fast the
-host's dialog pops up. Now any request with a wrong code that ends unpaired (hung up, Decline, Cancel) sets the same
-30 s lock (`locks_out`), and the next request hears `busy`. A typo followed by the right code still pairs and locks
-nothing; a request that ended before any code was tried locks nothing. Held by
-`a_request_that_ends_after_a_wrong_code_locks_the_host` and
-`hanging_up_after_a_wrong_code_does_not_give_a_fresh_code_at_once`.
+1261. **Guessing the code is limited across connections: failed requests lock the host for longer each time, and a
+cap per hour stops guessing for good; a connection holds the one request slot only after a valid hello.** Found
+2026-11-14 in the review of machine pairing PR 3, and made stronger in its security review the same day. Rule 1257
+locked the host only after three wrong codes in one connection, and every new connection gets a fresh code. So a
+stranger on the network could guess, hang up, connect again at once and guess again: unlimited guesses, one per fresh
+code. Now the host keeps a count for as long as sharing stays on (`Guard`), per address and over all addresses, for an
+hour (`STRIKE_WINDOW`). A strike is a wrong code, or a request that ended unpaired once its code showed (hung up,
+Cancel, Decline, three wrong codes). Each such request locks the host for the next of `LOCKOUTS` (30 s, 2 min, then
+10 min each time); past `PEER_STRIKES_MAX` (10) strikes from one address or `ALL_STRIKES_MAX` (20) from all, no
+request is taken until the oldest is an hour old. Every request meanwhile hears `busy`. A typo followed by the right
+code still pairs and locks nothing (that address's strikes go); a connection that never got to its code locks
+nothing. Slot (same review): a connection must say a valid hello within `HELLO_WAIT` (5 s), or it is closed; at most
+`HELLO_WAITING_MAX` (4) wait at once. Only then is the slot taken, and only then does the read wait grow to the code's
+5-minute window. A quiet connection never blocks another computer's request. Held by
+`a_request_that_ends_after_a_wrong_code_locks_the_host`,
+`wrong_codes_count_across_connections_and_the_lockout_grows`,
+`hanging_up_after_a_wrong_code_does_not_give_a_fresh_code_at_once` and
+`a_quiet_connection_holds_no_request_slot`.

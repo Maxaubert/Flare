@@ -5,10 +5,12 @@
 //!
 //! - **The host** (Computer sharing on): announces itself on the network as `_flare-pair._tcp` (mDNS; TXT `name`, `os`,
 //!   `version`, `proto`, no secret) and listens on a random TCP port, the one the announcement names. A viewer that
-//!   connects and says hello makes the host show the Flare dialog "<viewer> wants to connect" with a fresh 6-digit code
-//!   and Decline, wherever the person is in Flare. One request at a time: another connection meanwhile is told `busy`;
-//!   after three wrong codes the window closes, and after any request that ended with a wrong code and no pairing
-//!   (rule 1261), no request is taken for [`LOCKOUT`].
+//!   connects and says hello within [`HELLO_WAIT`] makes the host show the Flare dialog "<viewer> wants to connect"
+//!   with a fresh 6-digit code and Decline, wherever the person is in Flare. One request at a time, taken only after a
+//!   valid hello: another connection meanwhile is told `busy`. After three wrong codes the window closes. Wrong codes
+//!   and requests that ended unpaired after the code showed are counted per address and in all, across connections
+//!   ([`Guard`], rule 1261): each such request locks the host for longer ([`LOCKOUTS`]), and a cap per hour stops
+//!   guessing for good.
 //! - **The viewer**: while the Add a machine dialog is open it looks for those announcements; they are the drop-down's
 //!   first choices. Picking one connects and says hello; the dialog asks for the "Code shown on <name>". Add runs the
 //!   SPAKE2 exchange (`pair_wire`). A wrong code is the red line "Wrong code".
@@ -27,14 +29,15 @@ use std::io::{Read, Write};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use flare_settings::kv::PrefStore;
 use flare_tabs::tabs::Os;
 use serde_json::{Value, json};
 
 use crate::appctl::{Post, UiMsg};
-use crate::machines::{Incoming, Machine, argv_word, machine_id};
+use crate::machines::{Incoming, Machine, argv_word, machine_id, user_word};
 use crate::machines_page::{MachinesIo, MachinesMsg};
 use crate::pair_keys::{HOST_KEY_TYPES, PairFiles, authorized_line, parse_public_key};
 use crate::pair_wire::{self as wire, AttemptEnd, HostEnd, PROTOCOL};
@@ -43,10 +46,27 @@ use crate::sharing::SharingOs;
 
 /// The mDNS service type a computer with Computer sharing on announces.
 pub const SERVICE: &str = "_flare-pair._tcp.local.";
-/// How long a host takes no request after three wrong codes.
-pub const LOCKOUT: Duration = Duration::from_secs(30);
+/// How long the host locks after a request that ended unpaired once the code showed: the first such request in the
+/// last hour, the second, the third and later (rule 1261).
+pub const LOCKOUTS: [Duration; 3] = [
+    Duration::from_secs(30),
+    Duration::from_secs(120),
+    Duration::from_secs(600),
+];
+/// The time over which wrong codes and failed requests are counted.
+pub const STRIKE_WINDOW: Duration = Duration::from_secs(3600);
+/// The most strikes (wrong codes, and requests that ended unpaired after the code showed) per hour from one address,
+/// and from all addresses together; past either, no request is taken until the oldest is an hour old.
+pub const PEER_STRIKES_MAX: usize = 10;
+pub const ALL_STRIKES_MAX: usize = 20;
 /// How long either end waits for the other: the person reads the code and types it in this time.
 pub const WINDOW: Duration = Duration::from_secs(300);
+/// How long the host waits for a viewer's hello; the request slot is taken only after a valid one (rule 1261).
+pub const HELLO_WAIT: Duration = Duration::from_secs(5);
+/// The most connections that wait for their hello at once; another is closed at once.
+pub const HELLO_WAITING_MAX: usize = 4;
+/// How long turning sharing off waits for a request that runs (one may be at the UAC prompt) before its clean up.
+pub const DRAIN_WAIT: Duration = Duration::from_secs(120);
 
 /// What a computer says about itself, in its hello and its announcement.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,9 +180,14 @@ pub type Closer = Box<dyn Fn() + Send + Sync>;
 /// One connection: its bytes both ways, and a way to end it from another thread.
 pub trait Duplex: Read + Write + Send {
     fn closer(&self) -> Closer;
+    /// How long one read waits before it fails (the hello's short wait, then the code's window).
+    fn set_wait(&self, _wait: Duration) {}
 }
 
 impl Duplex for std::net::TcpStream {
+    fn set_wait(&self, wait: Duration) {
+        let _ = self.set_read_timeout(Some(wait));
+    }
     fn closer(&self) -> Closer {
         match self.try_clone() {
             Ok(s) => Box::new(move || {
@@ -219,11 +244,10 @@ pub enum HostEvent {
     },
     /// A wrong code; `left` tries remain.
     Strike { id: u64, left: u32 },
-    /// The request ended: `linked` with the computers that reach this one now (and whether the key went into the
-    /// admin file), or not.
+    /// The request ended: `linked` with the computers that reach this one now, or not.
     Done {
         id: u64,
-        linked: Option<(Vec<Incoming>, bool)>,
+        linked: Option<Vec<Incoming>>,
         too_many: bool,
     },
 }
@@ -235,13 +259,49 @@ pub struct HostCtx {
     pub io: Arc<dyn MachinesIo>,
     /// Flare's own program here, which the viewer runs over ssh.
     pub flare: String,
+    /// Computer sharing turned off: a key that went in meanwhile comes out again (rule 1258).
+    pub stop: Arc<AtomicBool>,
+    /// The settings store, where a key in the admin file is noted the moment it goes in (rule 1258).
+    pub prefs: Arc<Mutex<Option<PrefStore>>>,
 }
 
-/// BLOCKING: one request on the host (rules 1257 and 1258), from the viewer's hello to the end. `events` reaches the
-/// UI thread.
+impl HostCtx {
+    fn stopped(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+    }
+
+    /// A key went into `administrators_authorized_keys`: turning sharing off cleans it up elevated (rule 1255).
+    fn note_admin(&self) {
+        if let Some(p) = lock(&self.prefs).as_ref() {
+            flare_settings::machine_prefs::set_admin_keys(p, true);
+        }
+    }
+}
+
+/// BLOCKING: the viewer's hello, which must come within [`HELLO_WAIT`] (the caller sets the wait). None when it is no
+/// hello, or speaks another protocol (that viewer hears `proto`).
+pub fn read_hello(s: &mut dyn Duplex) -> Option<Value> {
+    let hello = wire::recv(s).ok()?;
+    if wire::kind(&hello) != "hello" {
+        return None;
+    }
+    if hello.get("proto").and_then(Value::as_u64) != Some(PROTOCOL) {
+        let _ = wire::send(s, &json!({"t": "proto", "proto": PROTOCOL}));
+        return None;
+    }
+    Some(hello)
+}
+
+/// BLOCKING: one request on the host (rules 1257 and 1258), from the viewer's valid `hello` to the end. `events`
+/// reaches the UI thread.
+///
+/// Everything that can fail is read before the viewer's key goes in (the SSH host key, the user name). The key's entry
+/// is saved, and a key in the admin file noted, the moment it is in; when a later step fails (the answer cannot be
+/// sent) or sharing turned off meanwhile, the key and the entry come out again.
 pub fn host_session(
     s: &mut dyn Duplex,
     peer: &str,
+    hello: &Value,
     ctx: &HostCtx,
     id: u64,
     events: &dyn Fn(HostEvent),
@@ -253,16 +313,6 @@ pub fn host_session(
             too_many,
         })
     };
-    let Ok(hello) = wire::recv(s) else {
-        return done(None, false);
-    };
-    if wire::kind(&hello) != "hello" {
-        return done(None, false);
-    }
-    if hello.get("proto").and_then(Value::as_u64) != Some(PROTOCOL) {
-        let _ = wire::send(s, &json!({"t": "proto", "proto": PROTOCOL}));
-        return done(None, false);
-    }
     let viewer = clean_name(
         hello
             .get("name")
@@ -306,13 +356,10 @@ pub fn host_session(
         refuse(&mut ch, s, "The key that came is not one Flare takes.");
         return done(None, false);
     };
-    let admin = match crate::sharing::install_key(&*ctx.os, &line) {
-        Ok(admin) => admin,
-        Err(why) => {
-            refuse(&mut ch, s, &why);
-            return done(None, false);
-        }
-    };
+    let key_field = parse_public_key(key, &[crate::pair_keys::ED25519])
+        .map(|k| k.key)
+        .unwrap_or_default();
+    // Everything the answer needs is read before the key goes in, so a failure here leaves nothing behind.
     let Some(host_key) = ctx
         .os
         .ssh_host_key()
@@ -322,24 +369,34 @@ pub fn host_session(
         refuse(&mut ch, s, "The SSH server's key could not be read there.");
         return done(None, false);
     };
-    let reply = json!({
-        "ok": true,
-        "host_key": host_key.line(),
-        "user": ctx.os.user_name(),
-        "flare": ctx.flare,
-        "os": os_word(ctx.me.os),
-        "name": ctx.me.name,
-        "version": ctx.me.version,
-        "port": crate::sharing::SSH_PORT,
-    });
-    if ch.send(s, &reply).is_err() {
+    let user = ctx.os.user_name();
+    if !user_word(&user) {
+        log::warn!("pairing: this account's user name cannot go to ssh");
+        refuse(
+            &mut ch,
+            s,
+            "This account's user name cannot be used over SSH.",
+        );
         return done(None, false);
     }
-    // This computer keeps the viewer among the computers that reach it (the same key again replaces its entry).
-    let key_field = parse_public_key(key, &[crate::pair_keys::ED25519])
-        .map(|k| k.key)
-        .unwrap_or_default();
-    let mut list = ctx.io.list_in();
+    if ctx.stopped() {
+        return done(None, false);
+    }
+    let before = ctx.io.list_in();
+    // The same key paired before: it is in already, so a failure later leaves it there.
+    let was_in = before.iter().any(|m| m.key == key_field);
+    let admin = match crate::sharing::install_key(&*ctx.os, &line) {
+        Ok(admin) => admin,
+        Err(why) => {
+            refuse(&mut ch, s, &why);
+            return done(None, false);
+        }
+    };
+    // The key is in: Flare records it at once, so a crash or a turn off from here still cleans it up.
+    if admin {
+        ctx.note_admin();
+    }
+    let mut list = before.clone();
     let old = list.iter().position(|m| m.key == key_field);
     let taken: Vec<String> = list.iter().map(|m| m.id.clone()).collect();
     let entry = Incoming {
@@ -354,7 +411,8 @@ pub fn host_session(
             .and_then(Value::as_str)
             .map(clean_name)
             .unwrap_or_default(),
-        key: key_field,
+        key: key_field.clone(),
+        admin: admin || old.is_some_and(|i| list[i].admin),
     };
     match old {
         Some(i) => list[i] = entry,
@@ -363,7 +421,43 @@ pub fn host_session(
     if let Err(e) = ctx.io.save_in(&list) {
         log::warn!("pairing: {e}");
     }
-    done(Some((list, admin)), false)
+    // A failed step after the key went in takes it out again, and the entry with it.
+    let roll_back = |why: &str| {
+        log::info!("pairing: the request from {peer} is undone: {why}");
+        if !was_in {
+            // After a turn off, its clean up removes the admin file's keys elevated: no second prompt here.
+            let admin_too = admin && !ctx.stopped();
+            if let Err(e) = crate::sharing::remove_key(&*ctx.os, &key_field, admin_too) {
+                log::warn!("pairing: the key could not be taken out again: {e}");
+            }
+        }
+        if let Err(e) = ctx.io.save_in(&before) {
+            log::warn!("pairing: {e}");
+        }
+    };
+    if ctx.stopped() {
+        roll_back("Computer sharing turned off");
+        return done(None, false);
+    }
+    let reply = json!({
+        "ok": true,
+        "host_key": host_key.line(),
+        "user": user,
+        "flare": ctx.flare,
+        "os": os_word(ctx.me.os),
+        "name": ctx.me.name,
+        "version": ctx.me.version,
+        "port": crate::sharing::SSH_PORT,
+    });
+    if let Err(e) = ch.send(s, &reply) {
+        roll_back(&format!("the answer could not be sent: {e}"));
+        return done(None, false);
+    }
+    if ctx.stopped() {
+        roll_back("Computer sharing turned off");
+        return done(None, false);
+    }
+    done(Some(list), false)
 }
 
 // ---- the viewer's side of one connection ------------------------------------------------------------------------
@@ -414,7 +508,12 @@ pub fn viewer_session(
         "os": os_word(ctx.me.os),
         "version": ctx.me.version,
     });
-    let answer = wire::send(s, &hello).and_then(|()| wire::recv(s));
+    // A host that is locked or busy answers `busy` at once and hangs up, maybe before the hello is written: its answer
+    // is still read.
+    if let Err(e) = wire::send(s, &hello) {
+        log::info!("pairing: the hello to {name} did not go: {e}");
+    }
+    let answer = wire::recv(s);
     match answer.as_ref().map(wire::kind) {
         Ok("shown") => events(ViewerEvent::Shown),
         Ok("busy") => {
@@ -487,7 +586,7 @@ pub fn viewer_session(
     };
     let user = field("user");
     let flare = field("flare");
-    if !argv_word(user) || !flare_path_ok(flare) || !argv_word(address) {
+    if !user_word(user) || !flare_path_ok(flare) || !argv_word(address) {
         return fail(format!("{name} answered in a way Flare cannot use."));
     }
     let port = reply
@@ -507,10 +606,11 @@ pub fn viewer_session(
         host_name
     };
     let mut list = ctx.io.list();
-    // Pairing a machine again keeps its id (and its tabs).
+    // Pairing a machine again keeps its id (and its tabs). It is the same machine only when it proves the same SSH host
+    // key: a name or an address the other computer says could be anyone's, so neither ever picks an entry to replace.
     let old = list
         .iter()
-        .position(|m| m.host.as_deref() == Some(address) || m.name == machine_name);
+        .position(|m| m.host_key.as_deref() == Some(host_key.key.as_str()));
     let taken: Vec<String> = list.iter().map(|m| m.id.clone()).collect();
     let id = old
         .map(|i| list[i].id.clone())
@@ -526,6 +626,7 @@ pub fn viewer_session(
         port: (port != 22).then_some(port),
         key: Some(ctx.files.key_path().to_string_lossy().into_owned()),
         known_hosts: Some(known.to_string_lossy().into_owned()),
+        host_key: Some(host_key.key.clone()),
     };
     match old {
         Some(i) => list[i] = machine,
@@ -584,11 +685,57 @@ struct ViewerRun {
     close: Arc<Mutex<(bool, Option<Closer>)>>,
 }
 
-/// Pure (rule 1261): whether a request that ended locks the host for [`LOCKOUT`]: three wrong codes, or any wrong code
-/// in a request that ended without pairing. Without the second, a stranger could guess once or twice, hang up and ask
-/// again for a fresh code at once, with no limit on its guesses.
-pub fn locks_out(too_many: bool, linked: bool, struck: bool) -> bool {
-    too_many || (struck && !linked)
+/// The host's count of failed guessing (rule 1261), kept across connections for as long as sharing stays on. A strike is
+/// a wrong code, or a request that ended unpaired once its code showed (hung up, Cancel, Decline, three wrong codes).
+/// Each request that ended so locks the host for the next of [`LOCKOUTS`]; past [`PEER_STRIKES_MAX`] strikes from one
+/// address or [`ALL_STRIKES_MAX`] from all in [`STRIKE_WINDOW`], no request is taken until the oldest ages out. Without
+/// it a stranger could guess, hang up and ask again for a fresh code at once, with no limit on its guesses. A typo
+/// followed by the right code pairs, and the pairing address's strikes go.
+#[derive(Debug, Default)]
+pub struct Guard {
+    strikes: Vec<(Instant, String)>,
+    failed: Vec<Instant>,
+    locked_until: Option<Instant>,
+}
+
+impl Guard {
+    fn forget_old(&mut self, now: Instant) {
+        let fresh = |t: &Instant| now.saturating_duration_since(*t) < STRIKE_WINDOW;
+        self.strikes.retain(|(t, _)| fresh(t));
+        self.failed.retain(fresh);
+    }
+
+    /// Whether a request from `peer` is taken now.
+    pub fn admits(&mut self, peer: &str, now: Instant) -> bool {
+        self.forget_old(now);
+        if self.locked_until.is_some_and(|t| now < t) {
+            return false;
+        }
+        let mine = self.strikes.iter().filter(|(_, p)| p == peer).count();
+        mine < PEER_STRIKES_MAX && self.strikes.len() < ALL_STRIKES_MAX
+    }
+
+    /// A wrong code from `peer`.
+    pub fn strike(&mut self, peer: &str, now: Instant) {
+        self.strikes.push((now, peer.to_string()));
+    }
+
+    /// A request from `peer` ended: `shown` once its code showed, `linked` when it paired.
+    pub fn ended(&mut self, peer: &str, now: Instant, shown: bool, linked: bool) {
+        self.forget_old(now);
+        if linked {
+            self.strikes.retain(|(_, p)| p != peer);
+            return;
+        }
+        if !shown {
+            return;
+        }
+        self.strikes.push((now, peer.to_string()));
+        self.failed.push(now);
+        let lockout = LOCKOUTS[(self.failed.len() - 1).min(LOCKOUTS.len() - 1)];
+        let until = now + lockout;
+        self.locked_until = Some(self.locked_until.map_or(until, |t| t.max(until)));
+    }
 }
 
 /// The host's listener and its requests.
@@ -601,9 +748,44 @@ struct HostRun {
 struct HostShared {
     /// The request that shows its code now, and how to end it.
     active: Option<(u64, Closer)>,
-    /// No request until then (three wrong codes).
-    locked_until: Option<Instant>,
+    /// The connections that wait for their hello: their number, when their wait ends, and how to end them.
+    waiting: Vec<(u64, Instant, Closer)>,
+    guard: Guard,
     next: u64,
+}
+
+/// The host's workers that run now (the listener and each request), so turning sharing off can wait for them before
+/// its clean up (rule 1258).
+#[derive(Clone, Default)]
+pub struct Running(Arc<(Mutex<usize>, Condvar)>);
+
+/// One running worker; it counts until dropped.
+pub struct RunningOne(Running);
+
+impl Running {
+    fn enter(&self) -> RunningOne {
+        *lock(&self.0.0) += 1;
+        RunningOne(self.clone())
+    }
+
+    /// BLOCKING: waits until none runs, at most `max`. Whether none runs.
+    pub fn wait_idle(&self, max: Duration) -> bool {
+        let (m, cv) = &*self.0;
+        let n = lock(m);
+        let (n, _) = cv
+            .wait_timeout_while(n, max, |n| *n > 0) // sync-ok: the sharing clean up's worker waits
+            .unwrap_or_else(PoisonError::into_inner);
+        *n == 0
+    }
+}
+
+impl Drop for RunningOne {
+    fn drop(&mut self) {
+        let (m, cv) = &*self.0.0;
+        let mut n = lock(m);
+        *n = n.saturating_sub(1);
+        cv.notify_all();
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -633,6 +815,9 @@ pub struct Pairing {
     runs: u64,
     host: Option<HostRun>,
     prompt: Option<Prompt>,
+    /// The settings store the host's requests note an admin key in.
+    prefs: Arc<Mutex<Option<PrefStore>>>,
+    running: Running,
 }
 
 impl Pairing {
@@ -657,12 +842,30 @@ impl Pairing {
             runs: 0,
             host: None,
             prompt: None,
+            prefs: Arc::default(),
+            running: Running::default(),
         }
     }
 
     /// The same pairing with the switch's OS calls.
     pub fn set_os(&mut self, os: Arc<dyn SharingOs>) {
         self.os = os;
+    }
+
+    /// The settings store a host request notes a key in `administrators_authorized_keys` in, the moment it goes in.
+    pub fn set_prefs(&self, prefs: PrefStore) {
+        *lock(&self.prefs) = Some(prefs);
+    }
+
+    /// BLOCKING when called: waits until the host's listener and requests have ended (at most [`DRAIN_WAIT`]), for
+    /// turning sharing off to run its clean up after them (rule 1258).
+    pub fn drain(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let running = self.running.clone();
+        Arc::new(move || {
+            if !running.wait_idle(DRAIN_WAIT) {
+                log::warn!("pairing: a request still runs; the clean up goes ahead");
+            }
+        })
     }
 
     fn say(post: &Post, m: PairMsg) {
@@ -786,7 +989,11 @@ impl Pairing {
         if !on {
             if let Some(h) = self.host.take() {
                 h.stop.store(true, Ordering::SeqCst);
-                if let Some((_, close)) = lock(&h.shared).active.take() {
+                let mut sh = lock(&h.shared);
+                if let Some((_, close)) = sh.active.take() {
+                    close();
+                }
+                for (_, _, close) in sh.waiting.drain(..) {
                     close();
                 }
             }
@@ -815,48 +1022,98 @@ impl Pairing {
             flare: std::env::current_exe()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default(),
+            stop: Arc::clone(&stop),
+            prefs: Arc::clone(&self.prefs),
         });
-        let post = Arc::clone(&self.post);
+        let (post, running) = (Arc::clone(&self.post), self.running.clone());
+        // The listener counts as running from here, so a turn off right after waits for every request it starts.
+        let listening = running.enter();
         worker("flare-pair-listen", move || {
+            let _listening = listening;
             while !stop.load(Ordering::SeqCst) {
+                // A connection that is still quiet when its hello wait ends is closed (no slow drip holds a place).
+                {
+                    let now = Instant::now();
+                    let mut sh = lock(&shared);
+                    sh.waiting.retain(|(_, until, close)| {
+                        let keep = now < *until;
+                        if !keep {
+                            close();
+                        }
+                        keep
+                    });
+                }
                 let Some((mut s, peer)) = listener.accept(Duration::from_millis(200)) else {
                     continue;
                 };
-                let id = {
+                let n = {
                     let mut sh = lock(&shared);
-                    let locked = sh.locked_until.is_some_and(|t| Instant::now() < t);
-                    if sh.active.is_some() || locked {
+                    if !sh.guard.admits(&peer, Instant::now()) {
                         drop(sh);
                         let _ = wire::send(&mut *s, &json!({"t": "busy"}));
                         continue;
                     }
+                    if sh.waiting.len() >= HELLO_WAITING_MAX {
+                        continue;
+                    }
                     sh.next += 1;
-                    let id = sh.next;
-                    sh.active = Some((id, s.closer()));
-                    id
+                    let n = sh.next;
+                    sh.waiting
+                        .push((n, Instant::now() + HELLO_WAIT, s.closer()));
+                    n
                 };
-                let (ctx, post, shared) =
-                    (Arc::clone(&ctx), Arc::clone(&post), Arc::clone(&shared));
+                let (ctx, post, shared, one) = (
+                    Arc::clone(&ctx),
+                    Arc::clone(&post),
+                    Arc::clone(&shared),
+                    running.enter(),
+                );
                 worker("flare-pair-host", move || {
-                    // A wrong code in this request: leaving without pairing still locks (rule 1261).
-                    let struck = std::cell::Cell::new(false);
+                    let _one = one;
+                    s.set_wait(HELLO_WAIT);
+                    let hello = read_hello(&mut *s);
+                    lock(&shared).waiting.retain(|(w, _, _)| *w != n);
+                    let Some(hello) = hello else {
+                        return;
+                    };
+                    // The one request slot is taken only now, after a valid hello (rule 1261).
+                    let claimed = {
+                        let mut sh = lock(&shared);
+                        let free = sh.active.is_none()
+                            && !ctx.stopped()
+                            && sh.guard.admits(&peer, Instant::now());
+                        if free {
+                            sh.active = Some((n, s.closer()));
+                        }
+                        free
+                    };
+                    if !claimed {
+                        let _ = wire::send(&mut *s, &json!({"t": "busy"}));
+                        return;
+                    }
+                    s.set_wait(WINDOW);
+                    // The code showed: leaving unpaired from here counts against this address and all (rule 1261).
+                    let shown = std::cell::Cell::new(false);
                     let events = |e: HostEvent| {
                         match &e {
-                            HostEvent::Strike { .. } => struck.set(true),
-                            HostEvent::Done {
-                                linked, too_many, ..
-                            } => {
+                            HostEvent::Ask { .. } => shown.set(true),
+                            HostEvent::Strike { .. } => {
+                                lock(&shared).guard.strike(&peer, Instant::now());
+                            }
+                            HostEvent::Done { linked, .. } => {
                                 let mut sh = lock(&shared);
                                 sh.active = None;
-                                if locks_out(*too_many, linked.is_some(), struck.get()) {
-                                    sh.locked_until = Some(Instant::now() + LOCKOUT);
-                                }
+                                sh.guard.ended(
+                                    &peer,
+                                    Instant::now(),
+                                    shown.get(),
+                                    linked.is_some(),
+                                );
                             }
-                            HostEvent::Ask { .. } => {}
                         }
                         Self::say(&post, PairMsg::Host(e));
                     };
-                    host_session(&mut *s, &peer, &ctx, id, &events);
+                    host_session(&mut *s, &peer, &hello, &ctx, n, &events);
                 });
             }
         });

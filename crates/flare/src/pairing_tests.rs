@@ -45,17 +45,37 @@ fn host_thread(
     std::sync::mpsc::Receiver<HostEvent>,
     std::thread::JoinHandle<()>,
 ) {
+    host_thread_with(os, io, PrefStore::memory())
+}
+
+/// [`host_thread`] with the settings store an admin key is noted in. A test that set `os.stop_on_add` turns sharing
+/// off the moment the key goes in.
+fn host_thread_with(
+    os: Arc<FakeOs>,
+    io: Arc<FakeIo>,
+    prefs: PrefStore,
+) -> (
+    pipe::End,
+    std::sync::mpsc::Receiver<HostEvent>,
+    std::thread::JoinHandle<()>,
+) {
     let (v, mut h) = pipe::pair();
     let (tx, rx) = channel();
+    let stop = lock(&os.stop_on_add).clone().unwrap_or_default();
     let t = std::thread::spawn(move || {
         let ctx = HostCtx {
             me: pc(),
             os,
             io,
             flare: r"C:\Users\Max\AppData\Local\Flare\current\Flare.exe".into(),
+            stop,
+            prefs: Arc::new(Mutex::new(Some(prefs))),
         };
         let tx = Mutex::new(tx);
-        host_session(&mut h, "192.168.0.120", &ctx, 1, &|e| {
+        let Some(hello) = read_hello(&mut h) else {
+            return;
+        };
+        host_session(&mut h, "192.168.0.120", &hello, &ctx, 1, &|e| {
             let _ = lock(&tx).send(e);
         });
     });
@@ -130,14 +150,14 @@ fn the_right_code_pairs_and_both_sides_keep_the_other() {
     assert!(lines[0].ends_with(" flare-pair:Max's-Mac-mini"));
     assert!(os.scripts.lock().unwrap().is_empty(), "no UAC prompt");
     let HostEvent::Done {
-        linked: Some((incoming, admin)),
+        linked: Some(incoming),
         too_many: false,
         ..
     } = next(&host_events)
     else {
         panic!("the host's request ends linked");
     };
-    assert!(!admin);
+    assert!(!incoming[0].admin, "the user's own file");
     assert_eq!(incoming.len(), 1);
     assert_eq!(incoming[0].name, "Max's Mac mini");
     assert_eq!(incoming[0].address, "192.168.0.120");
@@ -188,7 +208,9 @@ fn an_admin_account_adds_the_key_with_one_elevated_script() {
     let os = Arc::new(FakeOs::new(Platform::Windows));
     os.admin_account.store(true, Ordering::SeqCst);
     *os.elevated.lock().unwrap() = Ok("ok=1\n".into());
-    let (v, host_events, ht) = host_thread(Arc::clone(&os), Arc::new(FakeIo::default()));
+    let prefs = PrefStore::memory();
+    let (v, host_events, ht) =
+        host_thread_with(Arc::clone(&os), Arc::new(FakeIo::default()), prefs.clone());
     let (codes, view_events, vt) =
         viewer_thread(v, Arc::new(FakeIo::default()), PairFiles::new(dir.path()));
     let HostEvent::Ask { code, .. } = next(&host_events) else {
@@ -210,14 +232,18 @@ fn an_admin_account_adds_the_key_with_one_elevated_script() {
         "the name's quote is doubled"
     );
     let Some(HostEvent::Done {
-        linked: Some((_, true)),
-        ..
+        linked: Some(list), ..
     }) = host_events
         .iter()
         .find(|e| matches!(e, HostEvent::Done { .. }))
     else {
-        panic!("linked through the admin file");
+        panic!("linked");
     };
+    assert!(list[0].admin, "the entry says the key is in the admin file");
+    assert!(
+        flare_settings::machine_prefs::admin_keys(&prefs),
+        "noted for the clean up"
+    );
     // Declined at the prompt: the viewer gets the host's one line, nothing is saved.
     *os.elevated.lock().unwrap() = Err("declined".into());
     let view_io = Arc::new(FakeIo::default());
@@ -556,14 +582,57 @@ fn a_second_request_while_one_shows_its_code_is_told_busy() {
     });
 }
 
-/// Rule 1261: a request locks the host when it had three wrong codes, or any wrong code and no pairing; a request that
-/// paired, or that ended before any code was tried, does not.
+/// Rule 1261: a request that ended unpaired once its code showed locks the host; a request that paired (a typo, then
+/// the right code), or that ended before its code showed, does not.
 #[test]
 fn a_request_that_ends_after_a_wrong_code_locks_the_host() {
-    assert!(locks_out(true, false, true), "three wrong codes");
-    assert!(locks_out(false, false, true), "a wrong code, then hung up");
-    assert!(!locks_out(false, true, true), "a typo, then the right code");
-    assert!(!locks_out(false, false, false), "no code tried");
+    let t = Instant::now();
+    let mut g = Guard::default();
+    g.ended("10.0.0.9", t, false, false);
+    assert!(g.admits("10.0.0.9", t), "no code showed: no lock");
+    g.strike("10.0.0.9", t);
+    g.ended("10.0.0.9", t, true, true);
+    assert!(g.admits("10.0.0.9", t), "a typo, then the right code");
+    g.strike("10.0.0.9", t);
+    g.ended("10.0.0.9", t, true, false);
+    assert!(!g.admits("10.0.0.9", t), "a wrong code, then hung up");
+    assert!(!g.admits("10.0.0.7", t), "the lock holds for every address");
+    assert!(g.admits("10.0.0.7", t + LOCKOUTS[0]));
+}
+
+/// Rule 1261: the count holds across connections. Each request that ended unpaired after its code showed locks for
+/// longer (30 s, 2 min, 10 min); one address past its cap per hour, or all addresses past theirs, get no request until
+/// the oldest strike is an hour old, so new connections never mean new guesses.
+#[test]
+fn wrong_codes_count_across_connections_and_the_lockout_grows() {
+    let t = Instant::now();
+    let mut g = Guard::default();
+    let mut now = t;
+    for (i, want) in [LOCKOUTS[0], LOCKOUTS[1], LOCKOUTS[2], LOCKOUTS[2]]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(g.admits("10.0.0.9", now), "request {i}");
+        g.ended("10.0.0.9", now, true, false);
+        assert!(!g.admits("10.0.0.9", now + want - Duration::from_secs(1)));
+        now += want;
+    }
+    // One address: its cap per hour, whatever the lockouts.
+    let mut g = Guard::default();
+    for _ in 0..PEER_STRIKES_MAX {
+        g.strike("10.0.0.9", t);
+    }
+    assert!(!g.admits("10.0.0.9", t + LOCKOUTS[2]));
+    assert!(g.admits("10.0.0.8", t + LOCKOUTS[2]));
+    assert!(g.admits("10.0.0.9", t + STRIKE_WINDOW));
+    // All addresses together: a stranger who changes address still meets the cap.
+    let mut g = Guard::default();
+    for i in 0..ALL_STRIKES_MAX {
+        g.strike(&format!("10.0.1.{i}"), t);
+    }
+    assert!(!g.admits("10.0.2.1", t));
+    assert!(g.admits("10.0.2.1", t + STRIKE_WINDOW));
+    const { assert!(PEER_STRIKES_MAX < ALL_STRIKES_MAX) };
 }
 
 /// Rule 1261, on two pages: a viewer that types one wrong code and hangs up cannot ask again at once for a fresh code:
@@ -643,7 +712,11 @@ fn removing_a_computer_that_reaches_this_one_removes_its_key() {
         address: "192.168.0.120".into(),
         version: "0.4.2".into(),
         key: key.clone(),
+        admin: false,
     }];
+    // Another key once went into the admin file: Flare noted that for the whole computer, yet removing this one,
+    // which is in the user's own file, needs no prompt (rule 1260).
+    flare_settings::machine_prefs::set_admin_keys(&host.page.sharing().prefs(), true);
     host.page.page_shown();
     until(&mut [&mut host], "read", |p| {
         !p[0].page.info().machines.is_empty()
@@ -656,6 +729,223 @@ fn removing_a_computer_that_reaches_this_one_removes_its_key() {
     assert!(host.io.list_in().is_empty());
     assert!(
         host.os.scripts.lock().unwrap().is_empty(),
-        "no admin key: no prompt"
+        "a key in the user's own file: no prompt"
     );
+}
+
+/// Rule 1260: a computer whose key is in `administrators_authorized_keys` is removed with one elevated script.
+#[test]
+fn removing_a_computer_whose_key_is_in_the_admin_file_asks_once() {
+    let hub = Arc::new(Hub::default());
+    let mut host = page(&hub, "192.168.0.139", pc(), true);
+    *host.os.elevated.lock().unwrap() = Ok("ok=1\n".into());
+    let key = parse_public_key(&host_key(), &[ED25519]).unwrap().key;
+    *host.io.incoming.lock().unwrap() = vec![crate::machines::Incoming {
+        id: "mini".into(),
+        name: "Mini".into(),
+        key: key.clone(),
+        admin: true,
+        ..Default::default()
+    }];
+    host.page.page_shown();
+    until(&mut [&mut host], "read", |p| {
+        !p[0].page.info().machines.is_empty()
+    });
+    host.page.remove(&format!("{INCOMING_PREFIX}mini"));
+    until(&mut [&mut host], "removed", |p| {
+        p[0].page.info().machines.is_empty()
+    });
+    let scripts = host.os.scripts.lock().unwrap().clone();
+    assert_eq!(scripts.len(), 1);
+    assert!(scripts[0].contains("remove a paired computer's key"));
+}
+
+/// Rule 1258: everything that can fail is read before the key goes in: a host key that cannot be read, or a user
+/// name ssh cannot take, refuses the request with nothing added.
+#[test]
+fn nothing_goes_in_when_the_answer_cannot_be_made() {
+    let dir = tempfile::tempdir().unwrap();
+    for broken in ["host key", "user"] {
+        let os = Arc::new(FakeOs::new(Platform::Windows));
+        match broken {
+            "host key" => *os.host_key.lock().unwrap() = Err("no file".into()),
+            _ => *os.user.lock().unwrap() = "Jo O'Neil".into(),
+        }
+        let host_io = Arc::new(FakeIo::default());
+        let (v, host_events, ht) = host_thread(Arc::clone(&os), Arc::clone(&host_io));
+        let (codes, view_events, vt) =
+            viewer_thread(v, Arc::new(FakeIo::default()), PairFiles::new(dir.path()));
+        let HostEvent::Ask { code, .. } = next(&host_events) else {
+            panic!("ask");
+        };
+        next(&view_events);
+        codes.send(code).unwrap();
+        assert!(
+            matches!(next(&view_events), ViewerEvent::Failed(_)),
+            "{broken}"
+        );
+        vt.join().unwrap(); // sync-ok: a test waits for its threads and reads its own files
+        ht.join().unwrap(); // sync-ok: a test waits for its threads and reads its own files
+        assert!(os.user_keys.lock().unwrap().is_empty(), "{broken}");
+        assert!(os.scripts.lock().unwrap().is_empty(), "{broken}");
+        assert!(host_io.list_in().is_empty(), "{broken}");
+    }
+}
+
+/// Rule 1258: when sharing turns off while a request adds its key, the key comes out again and no entry stays; an
+/// admin key is noted for the clean up at once, and the clean up (not a second prompt) removes it.
+#[test]
+fn a_key_that_went_in_as_sharing_turned_off_comes_out_again() {
+    let dir = tempfile::tempdir().unwrap();
+    for admin in [false, true] {
+        let os = Arc::new(FakeOs::new(Platform::Windows));
+        os.admin_account.store(admin, Ordering::SeqCst);
+        *os.elevated.lock().unwrap() = Ok("ok=1\n".into());
+        *os.stop_on_add.lock().unwrap() = Some(Arc::default());
+        let (host_io, prefs) = (Arc::new(FakeIo::default()), PrefStore::memory());
+        let (v, host_events, ht) =
+            host_thread_with(Arc::clone(&os), Arc::clone(&host_io), prefs.clone());
+        let (codes, view_events, vt) =
+            viewer_thread(v, Arc::new(FakeIo::default()), PairFiles::new(dir.path()));
+        let HostEvent::Ask { code, .. } = next(&host_events) else {
+            panic!("ask");
+        };
+        next(&view_events);
+        codes.send(code).unwrap();
+        assert!(matches!(next(&view_events), ViewerEvent::Failed(_)));
+        vt.join().unwrap(); // sync-ok: a test waits for its threads and reads its own files
+        ht.join().unwrap(); // sync-ok: a test waits for its threads and reads its own files
+        let done: Vec<HostEvent> = host_events.try_iter().collect();
+        assert!(
+            matches!(done.last(), Some(HostEvent::Done { linked: None, .. })),
+            "{done:?}"
+        );
+        assert!(host_io.list_in().is_empty(), "no entry stays");
+        assert_eq!(os.removed_keys.lock().unwrap().len(), 1, "taken out");
+        assert_eq!(
+            flare_settings::machine_prefs::admin_keys(&prefs),
+            admin,
+            "an admin key is noted the moment it went in"
+        );
+        assert_eq!(
+            os.scripts.lock().unwrap().len(),
+            usize::from(admin),
+            "no second prompt"
+        );
+    }
+}
+
+/// Rule 1258: turning sharing off waits for the host's requests that still run, at most a while.
+#[test]
+fn turning_sharing_off_waits_for_a_request_that_runs() {
+    let running = Running::default();
+    assert!(running.wait_idle(Duration::ZERO));
+    let one = running.enter();
+    assert!(!running.wait_idle(Duration::from_millis(20)));
+    let r = running.clone();
+    let t = std::thread::spawn(move || r.wait_idle(Duration::from_secs(10)));
+    std::thread::sleep(Duration::from_millis(30)); // sync-ok: a test waits for its workers
+    drop(one);
+    assert!(t.join().unwrap()); // sync-ok: a test waits for its threads and reads its own files
+}
+
+/// Rule 1261: a connection that says nothing holds no request: another computer still gets its code. The slot is
+/// taken only after a valid hello.
+#[test]
+fn a_quiet_connection_holds_no_request_slot() {
+    let hub = Arc::new(Hub::default());
+    let mut host = page(&hub, "192.168.0.139", pc(), true);
+    let port = host.net.port().unwrap();
+    let quiet = FakeNet::new(&hub, "192.168.0.66");
+    let _held = quiet.connect(&pc_nearby(port)).unwrap();
+    let mut view = page(&hub, "192.168.0.120", mac(), false);
+    *view.net.nearby.lock().unwrap() = vec![pc_nearby(port)];
+    view.page.open_form();
+    until(&mut [&mut view], "nearby", |p| {
+        !p[0].page.info().nearby.is_empty()
+    });
+    let id = view.page.info().nearby[0].id.clone();
+    view.page.set_pick(&format!("{NEARBY_PREFIX}{id}"));
+    until(&mut [&mut host, &mut view], "the code shows", |p| {
+        p[0].page.pairing().prompt().is_some() && p[1].page.info().add.ready
+    });
+    assert_eq!(
+        host.page.pairing().prompt().unwrap().viewer,
+        "Max's Mac mini"
+    );
+    view.page.cancel_form();
+}
+
+/// Rules 1258 and 1259: a Windows user name with a space pairs, and goes to ssh as one argv item after `-l`.
+#[test]
+fn a_windows_user_with_a_space_pairs_and_is_one_ssh_argument() {
+    let dir = tempfile::tempdir().unwrap();
+    let os = Arc::new(FakeOs::new(Platform::Windows));
+    *os.user.lock().unwrap() = "Max Aubert".into();
+    let view_io = Arc::new(FakeIo::default());
+    let (v, host_events, ht) = host_thread(Arc::clone(&os), Arc::new(FakeIo::default()));
+    let (codes, view_events, vt) =
+        viewer_thread(v, Arc::clone(&view_io), PairFiles::new(dir.path()));
+    let HostEvent::Ask { code, .. } = next(&host_events) else {
+        panic!("ask");
+    };
+    next(&view_events);
+    codes.send(code).unwrap();
+    let ViewerEvent::Linked { list, .. } = next(&view_events) else {
+        panic!("linked");
+    };
+    vt.join().unwrap(); // sync-ok: a test waits for its threads and reads its own files
+    ht.join().unwrap(); // sync-ok: a test waits for its threads and reads its own files
+    assert_eq!(list[0].user.as_deref(), Some("Max Aubert"));
+    let argv = crate::remote_link::ssh_argv("ssh", &list[0]).unwrap();
+    let l = argv.iter().position(|a| a == "-l").unwrap();
+    assert_eq!(argv[l + 1], "Max Aubert");
+    // Read back from the file, it is the same one user.
+    let text = crate::machines::machines_json(&list);
+    assert_eq!(crate::machines::parse_machines(&text), list);
+}
+
+/// Rule 1259: the viewer never picks the entry to replace by a name the other computer says: a computer that calls
+/// itself like a saved machine is a new entry with an id of its own. Pairing the same computer again (the same pinned
+/// SSH host key) keeps its entry and id.
+#[test]
+fn pairing_never_replaces_a_machine_by_its_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let view_io = Arc::new(FakeIo::default());
+    let mine = Machine {
+        id: "max-s-pc".into(),
+        name: "Max's PC".into(),
+        ssh: "studio".into(),
+        flare: "flare".into(),
+        host: Some("192.168.0.139".into()),
+        ..Machine::default()
+    };
+    *view_io.list.lock().unwrap() = vec![mine.clone()];
+    let pair_once = || {
+        let os = Arc::new(FakeOs::new(Platform::Windows));
+        let (v, host_events, ht) = host_thread(os, Arc::new(FakeIo::default()));
+        let (codes, view_events, vt) =
+            viewer_thread(v, Arc::clone(&view_io), PairFiles::new(dir.path()));
+        let HostEvent::Ask { code, .. } = next(&host_events) else {
+            panic!("ask");
+        };
+        next(&view_events);
+        codes.send(code).unwrap();
+        let ViewerEvent::Linked { list, id } = next(&view_events) else {
+            panic!("linked");
+        };
+        vt.join().unwrap(); // sync-ok: a test waits for its threads and reads its own files
+        ht.join().unwrap(); // sync-ok: a test waits for its threads and reads its own files
+        (list, id)
+    };
+    let (list, id) = pair_once();
+    assert_eq!(list.len(), 2, "a new entry");
+    assert_eq!(list[0], mine, "the saved machine is untouched");
+    assert_ne!(id, mine.id);
+    let hk = parse_public_key(&host_key(), &HOST_KEY_TYPES).unwrap().key;
+    assert_eq!(list[1].host_key.as_deref(), Some(hk.as_str()));
+    let (again, id2) = pair_once();
+    assert_eq!(again.len(), 2, "the same host key: the same entry");
+    assert_eq!(id2, id);
+    assert_eq!(again[0], mine);
 }
