@@ -88,8 +88,12 @@ are added as milestones land.
   none. The roadmap's M3 "rename" line is answered by this, not built.
 - **Ctrl+W closes a tab and reads "Ctrl+W" on its label.** Both Ctrl+W and Ctrl+Shift+W close it
   (owner question Q3 in `docs/parity.md`, assumed). Held by
-  `ctrl_w_and_ctrl_shift_w_both_close_ctrl_t_and_ctrl_shift_t_both_open` and
+  `ctrl_w_and_ctrl_shift_w_both_close_and_ctrl_shift_t_reopens` and
   `every_label_is_the_key_that_chord_answers_to`.
+- **App keys (rule 1236, 2026-11-14).** Ctrl+Shift+T reopens the tab closed last (its place, its agent resumed;
+  more presses walk back through 10), Ctrl+Shift+N asks for a folder, Ctrl+Shift+R lists the linked machines,
+  Ctrl+Shift+L opens the browser panel with the address field holding the keys, Ctrl+Shift+E shows the tab's folder
+  in Explorer. Cmd+Shift on a Mac. Always on; the letters without Shift stay the shell's.
 - **Tabs in one row, one width.** Every tab is the same width (150 px, floor 84 px, shrinking
   equally); when the strip is short it becomes icons (40 px), then the least-needed tabs move to the
   `+N` list. The front tab is never hidden. Held by `strip_plan` and `strip_layout` tests and the
