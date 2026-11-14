@@ -32,12 +32,26 @@ use crate::chrome_apply::{apply_chrome, apply_to_host};
 pub use crate::config::LookOverrides;
 use crate::host::GridHost;
 use crate::material_ctl::{Order, WindowMaterial, order_for};
+use flare_render::grid::CaretShape;
+
+/// The Caret shape setting's word as the grid draws it (rule 1233); an unknown word is the block.
+pub fn caret_shape(word: &str) -> CaretShape {
+    match word {
+        "hollow" => CaretShape::HollowBlock,
+        "bar" => CaretShape::Bar,
+        "underline" => CaretShape::Underline,
+        "pill" => CaretShape::Pill,
+        _ => CaretShape::Block,
+    }
+}
 
 // ---- the two sides of an apply -----------------------------------------------------------------
 
 /// The UI side of one apply: the Slint chrome and the grid.
 pub trait LookUi {
     fn apply(&mut self, look: &AppliedLook);
+    /// The Caret shape and Caret blink settings (rule 1233). Default: nothing to draw them on.
+    fn caret(&mut self, _shape: CaretShape, _blink: bool) {}
 }
 
 /// The material side: the frost behind a see-through window and the border.
@@ -109,6 +123,9 @@ impl LookUi for SlintUi {
             apply_chrome(&app, look);
         }
         apply_to_host(&mut self.host.borrow_mut(), look);
+    }
+    fn caret(&mut self, shape: CaretShape, blink: bool) {
+        self.host.borrow_mut().set_caret(shape, blink);
     }
 }
 
@@ -432,6 +449,10 @@ impl LookCtl {
             look.clone()
         };
         self.ui.apply(&worn);
+        self.ui.caret(
+            caret_shape(self.store.caret_shape()),
+            self.store.caret_blink(),
+        );
         if !material_first {
             self.apply_material(&look, wanted_changed, now);
         }
@@ -1295,5 +1316,23 @@ mod tests {
                 "scale {scale}: {mid:?}"
             );
         }
+    }
+
+    #[test]
+    fn every_caret_word_is_a_shape_and_junk_is_the_block() {
+        let want = [
+            ("block", CaretShape::Block),
+            ("hollow", CaretShape::HollowBlock),
+            ("bar", CaretShape::Bar),
+            ("underline", CaretShape::Underline),
+            ("pill", CaretShape::Pill),
+        ];
+        for (word, shape) in want {
+            assert_eq!(caret_shape(word), shape, "{word}");
+        }
+        for (word, _) in flare_settings::look::CARET_SHAPES {
+            assert!(want.iter().any(|(w, _)| *w == word), "{word} is drawn");
+        }
+        assert_eq!(caret_shape("beam"), CaretShape::Block);
     }
 }

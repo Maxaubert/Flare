@@ -380,6 +380,44 @@ fn the_terminal_font_rows_reach_the_grid_while_settings_is_open() {
     }
 }
 
+/// The caret rows (rule 1233): the shape and the blink reach the grid at once.
+#[test]
+fn the_caret_rows_reach_the_grid_while_settings_is_open() {
+    use flare_render::grid::CaretShape;
+    for s in SCALES {
+        let f = Fx::new(s);
+        f.page("terminal");
+        assert_eq!(
+            f.grid.borrow().caret_setting(),
+            (CaretShape::Block, true),
+            "scale {s}: a blinking block until chosen"
+        );
+        f.choose("term-caret", "pill");
+        assert_eq!(
+            f.prefs.get("flare.term.caretShape").as_deref(),
+            Some("pill")
+        );
+        assert_eq!(
+            f.grid.borrow().caret_setting(),
+            (CaretShape::Pill, true),
+            "scale {s}"
+        );
+        f.switch("term-caret-blink", false);
+        assert_eq!(
+            f.grid.borrow().caret_setting(),
+            (CaretShape::Pill, false),
+            "scale {s}"
+        );
+        f.choose("term-caret", "bar");
+        assert_eq!(
+            f.grid.borrow().caret_setting(),
+            (CaretShape::Bar, false),
+            "scale {s}"
+        );
+        f.still_open("the caret");
+    }
+}
+
 /// Command help: switched off, its button leaves the window at once.
 #[test]
 fn command_help_goes_while_settings_is_open() {

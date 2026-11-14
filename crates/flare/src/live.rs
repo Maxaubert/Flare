@@ -54,6 +54,14 @@ impl GridSource for LiveSource {
         self.handle.is_dirty()
     }
 
+    fn blinks(&self) -> bool {
+        true
+    }
+
+    fn last_typed(&self) -> Option<std::time::Instant> {
+        self.handle.last_typed()
+    }
+
     fn decor(&mut self) -> Decor {
         match &self.inputs {
             Some(i) => i.borrow_mut().decor(&self.handle),

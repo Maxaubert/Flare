@@ -19,7 +19,7 @@ use flare_theme::see_through::{SEE_THROUGH_TOP, see_through_level};
 use crate::custom_theme::{
     CUSTOM_KEY, CustomTheme, palette_of, parse_custom, serialize_custom, with_ground_alpha,
 };
-use crate::kv::{PrefStore, Subscription, on_any_change};
+use crate::kv::{EnumPref, PrefStore, Subscription, bool_pref_get, bool_pref_set, on_any_change};
 use crate::window_colours::{
     ACCENT, BACKGROUND, EDGES_KEY, NO_COLOURS, SECONDARY, custom_window_colours,
     read_window_colours, set_custom_window_colours, set_window_colours, window_edges,
@@ -34,14 +34,35 @@ const WORKING_KEY: &str = "flare.term.agentColor";
 const FINISHED_KEY: &str = "flare.term.agentDoneColor";
 const QUESTION_KEY: &str = "flare.term.agentQuestionColor";
 
+/// The caret's shape (rule 1233): one of the [`CARET_SHAPES`] words, `block` until somebody chooses.
+const CARET_SHAPE: EnumPref = EnumPref {
+    key: "flare.term.caretShape",
+    allowed: &["block", "hollow", "bar", "underline", "pill"],
+    fallback: "block",
+};
+/// Whether the caret ticks (rule 1233). On until switched off; only a stored "0" is off.
+const CARET_BLINK_KEY: &str = "flare.term.caretBlink";
+
+/// The caret shapes the Settings list offers, in order: the stored word and the name shown.
+pub const CARET_SHAPES: [(&str, &str); 5] = [
+    ("block", "Block"),
+    ("hollow", "Hollow block"),
+    ("bar", "Bar"),
+    ("underline", "Underline"),
+    ("pill", "Pill"),
+];
+
 /// Every key on_look_change hears (the draft is heard besides): the theme, the custom theme, see
-/// through, the font and its size, the indicator and the agent colours, the window colours, the edges.
-pub const LOOK_KEYS: [&str; 13] = [
+/// through, the font and its size, the caret, the indicator and the agent colours, the window colours,
+/// the edges.
+pub const LOOK_KEYS: [&str; 15] = [
     THEME_KEY,
     CUSTOM_KEY,
     SEE_THROUGH_KEY,
     FONT_KEY,
     FONT_PCT_KEY,
+    CARET_SHAPE.key,
+    CARET_BLINK_KEY,
     INDICATOR_KEY,
     WORKING_KEY,
     FINISHED_KEY,
@@ -201,6 +222,25 @@ impl LookStore {
 
     pub fn set_font_pct(&self, pct: u32) {
         self.store.set(FONT_PCT_KEY, &pct.to_string());
+    }
+
+    /// The caret shape's word: `block`, `hollow`, `bar`, `underline` or `pill`; anything else reads as `block`.
+    pub fn caret_shape(&self) -> &'static str {
+        CARET_SHAPE.get(&self.store)
+    }
+
+    /// Stores a shape word as given, or `block` when it is not one of the five.
+    pub fn set_caret_shape(&self, word: &str) {
+        CARET_SHAPE.set(&self.store, word);
+    }
+
+    /// Whether the caret ticks: on until switched off.
+    pub fn caret_blink(&self) -> bool {
+        bool_pref_get(&self.store, CARET_BLINK_KEY, true)
+    }
+
+    pub fn set_caret_blink(&self, on: bool) {
+        bool_pref_set(&self.store, CARET_BLINK_KEY, on);
     }
 
     pub fn see_through(&self) -> u8 {
@@ -1052,5 +1092,37 @@ mod tests {
         assert!(b.draft().is_some(), "the other store sees the draft");
         assert_eq!(n.load(Ordering::SeqCst), 1, "and hears it set");
         assert!(LookStore::new(PrefStore::memory()).draft().is_none());
+    }
+
+    #[test]
+    fn the_caret_is_a_block_that_blinks_until_chosen_and_a_change_is_heard() {
+        let p = PrefStore::memory();
+        let l = LookStore::new(p.clone());
+        assert_eq!(l.caret_shape(), "block");
+        assert!(l.caret_blink());
+        let (n, cb) = counter();
+        let _sub = l.on_look_change(cb);
+        for (word, _) in CARET_SHAPES {
+            l.set_caret_shape(word);
+            assert_eq!(l.caret_shape(), word);
+            assert_eq!(p.get("flare.term.caretShape").as_deref(), Some(word));
+        }
+        l.set_caret_shape("beam");
+        assert_eq!(
+            p.get("flare.term.caretShape").as_deref(),
+            Some("block"),
+            "junk is never stored"
+        );
+        p.set("flare.term.caretShape", "nope");
+        assert_eq!(l.caret_shape(), "block");
+        l.set_caret_blink(false);
+        assert!(!l.caret_blink());
+        assert_eq!(p.get("flare.term.caretBlink").as_deref(), Some("0"));
+        l.set_caret_blink(true);
+        assert!(l.caret_blink());
+        assert!(
+            n.load(Ordering::SeqCst) >= 7,
+            "the look hears every caret write"
+        );
     }
 }

@@ -88,6 +88,7 @@ pub fn sample_grid(cols: usize, rows: usize) -> Grid {
             row: 14,
             visible: true,
             hollow: false,
+            shape: Default::default(),
         };
     } else {
         g.cursor.visible = false;

@@ -12,7 +12,7 @@ use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetFocus;
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateCaret, DestroyCaret, HideCaret, SetCaretPos,
+    CreateCaret, DestroyCaret, GetCaretBlinkTime, HideCaret, SetCaretPos,
 };
 
 /// The caret's width in physical pixels. Thin on purpose: a tool may ignore a caret as wide as a whole cell or line.
@@ -130,6 +130,20 @@ pub fn has_focus(_hwnd: isize) -> bool {
 /// macOS: nothing to drive (see `has_focus`); the plan's calls are dropped.
 #[cfg(not(windows))]
 pub fn apply(_hwnd: isize, _ops: &[CaretOp]) {}
+
+/// The person's caret blink time in milliseconds (`GetCaretBlinkTime`, Control Panel's cursor blink rate), for
+/// Flare's own drawn caret (rule 1233). `u32::MAX` (INFINITE) means "do not blink"; 0 means the call failed.
+#[cfg(windows)]
+pub fn blink_time_ms() -> Option<u32> {
+    // SAFETY: a plain query of a system setting; it takes no arguments.
+    Some(unsafe { GetCaretBlinkTime() })
+}
+
+/// macOS has no caret blink setting: the caller ticks at its default.
+#[cfg(not(windows))]
+pub fn blink_time_ms() -> Option<u32> {
+    None
+}
 
 #[cfg(test)]
 mod tests {

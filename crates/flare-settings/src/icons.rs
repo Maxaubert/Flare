@@ -153,6 +153,8 @@ pub const FLARE_ICONS: &[(&str, &str)] = &[
         "app-icon",
         "M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4zM12 7.5c2.2 2.3 3.5 3.9 3.5 6a3.5 3.5 0 0 1-7 0c0-1.5.8-2.6 1.8-3.6.2 1 .7 1.6 1.3 1.9-.4-1.4-.3-2.8.4-4.3z",
     ),
+    // The caret rows (rule 1233): a terminal with a caret bar after its prompt.
+    ("caret", "M4 5h16v14H4zM7.5 9.5l3 2.5-3 2.5M14 9v6"),
 ];
 
 /// The path data of a named icon, or `None` when the name is not in the set.

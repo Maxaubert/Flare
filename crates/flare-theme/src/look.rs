@@ -3,6 +3,7 @@
 //! (`groundedTheme`, `currentLinkColor`) and `core/renderer/settings/theme/palette.ts` (`cardAnsi`).
 //! Pure: no runtime dependencies.
 
+use crate::ansi::{contrast_ratio, ensure_contrast, normalize_color};
 use crate::chrome::{chrome_tokens, ChromeTokens};
 use crate::edges::WindowEdges;
 use crate::find_ink::{find_ink, FindInk};
@@ -52,6 +53,45 @@ pub struct AppliedLook {
     pub light: bool,
     pub edges: WindowEdges,
     pub see_through: u8,
+    /// The terminal caret's colours (`caret_ink`).
+    pub caret: CaretInk,
+}
+
+/// The caret's fill and the ink of the glyph under a block caret, both opaque `#rrggbb` (rule 1233).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CaretInk {
+    pub fill: String,
+    pub ink: String,
+}
+
+/// The caret wears the chrome's accent (`--p-accent-solid`, held to 3:1 on the terminal ground), unless the
+/// person's own cursor colour is worn: a saved Custom theme or the colour editor's draft, whose cursor field
+/// they set. The glyph under a block caret takes the on-accent ink or the ground, whichever stands out more
+/// on the fill.
+pub fn caret_ink(term: &TermTheme, chrome: &ChromeTokens, own_cursor: bool) -> CaretInk {
+    let ground = normalize_color(&term.background, "#171717");
+    let fill = if own_cursor {
+        normalize_color(&term.cursor, "#bbbbbb")
+    } else {
+        let accent = chrome
+            .vars
+            .get("--p-accent-solid")
+            .map_or("#5b5bd6", String::as_str);
+        ensure_contrast(&normalize_color(accent, "#5b5bd6"), &ground, 3.0)
+    };
+    let on_accent = normalize_color(
+        chrome
+            .vars
+            .get("--p-on-accent")
+            .map_or("#ffffff", String::as_str),
+        "#ffffff",
+    );
+    let ink = if contrast_ratio(&on_accent, &fill) > contrast_ratio(&ground, &fill) {
+        on_accent
+    } else {
+        ground
+    };
+    CaretInk { fill, ink }
 }
 
 /// Settings in, everything the window wears out (PT `paintChrome` plus `groundedTheme`).
@@ -95,7 +135,11 @@ pub fn apply_look(i: &LookInput) -> AppliedLook {
         .get("--p-bg-solid")
         .cloned()
         .unwrap_or_else(|| term.background.clone());
+    // The person's own cursor colour: the draft is worn, or the saved Custom is the theme in force.
+    let own_cursor = i.draft.is_some() || (id == "custom" && i.custom.is_some());
+    let caret = caret_ink(&term, &chrome, own_cursor);
     AppliedLook {
+        caret,
         theme_id: id.to_string(),
         link_colour: link_colour(&term.background, &term.foreground),
         find: find_ink(
@@ -362,6 +406,75 @@ mod tests {
         i.custom = Some(&c);
         let a = apply_look(&i);
         assert_eq!(v(&a.chrome, "--p-accent"), "#fe8f34");
+    }
+
+    #[test]
+    fn the_caret_wears_the_accent_by_default() {
+        for p in presets() {
+            let a = apply_look(&input(p.id));
+            let solid = v(&a.chrome, "--p-accent-solid");
+            assert_eq!(
+                a.caret.fill,
+                ensure_contrast(&normalize_color(solid, "#000000"), &a.term.background, 3.0),
+                "{}",
+                p.id
+            );
+            assert!(
+                contrast_ratio(&a.caret.fill, &a.term.background) >= 2.98,
+                "{}: the caret shows on the ground",
+                p.id
+            );
+        }
+        // The pt-default theme's grey cursor is not worn: its orange accent is.
+        let a = apply_look(&input("pt-default"));
+        assert_eq!(a.caret.fill, "#fe8f34");
+        assert_ne!(a.caret.fill, a.term.cursor);
+    }
+
+    #[test]
+    fn a_picked_accent_is_the_carets_colour() {
+        let mut i = input("pt-default");
+        i.accent = Some("#e07a2f");
+        assert_eq!(apply_look(&i).caret.fill, "#e07a2f");
+    }
+
+    #[test]
+    fn the_persons_own_cursor_colour_wins_over_the_accent() {
+        let mut saved = custom_pt_default();
+        saved.cursor = "#ff00aa".into();
+        let mut i = input("custom");
+        i.custom = Some(&saved);
+        assert_eq!(apply_look(&i).caret.fill, "#ff00aa", "a saved Custom");
+
+        // The colour editor's draft is worn while it is open.
+        let mut draft = custom_pt_default();
+        draft.cursor = "#00aaff".into();
+        let mut j = input("pt-default");
+        j.draft = Some(&draft);
+        assert_eq!(apply_look(&j).caret.fill, "#00aaff", "the draft");
+
+        // A Custom saved but not in force is not worn: the accent is.
+        let mut k = input("pt-default");
+        k.custom = Some(&saved);
+        assert_eq!(apply_look(&k).caret.fill, "#fe8f34");
+    }
+
+    #[test]
+    fn the_glyph_under_a_block_caret_takes_the_ink_that_stands_out_more() {
+        for p in presets() {
+            let a = apply_look(&input(p.id));
+            let on = normalize_color(v(&a.chrome, "--p-on-accent"), "#ffffff");
+            let ground = normalize_color(&a.term.background, "#000000");
+            assert!(a.caret.ink == on || a.caret.ink == ground, "{}", p.id);
+            let best =
+                contrast_ratio(&on, &a.caret.fill).max(contrast_ratio(&ground, &a.caret.fill));
+            assert_eq!(
+                contrast_ratio(&a.caret.ink, &a.caret.fill),
+                best,
+                "{}",
+                p.id
+            );
+        }
     }
 
     #[test]

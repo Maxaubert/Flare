@@ -208,6 +208,7 @@ fn switch(ctx: &Ctx, row: &str, on: bool) -> Vec<Effect> {
         "dev-preview" => term_prefs::set_dev_preview(p, on),
         "notify-ask" => agent_prefs::set_notify_ask_on(p, on),
         "help-enabled" => help_prefs::set_help_enabled(p, on),
+        "term-caret-blink" => ctx.look.set_caret_blink(on),
         _ => {}
     }
     Vec::new()
@@ -222,6 +223,7 @@ fn choose(ctx: &Ctx, row: &str, option: &str) -> Vec<Effect> {
         "app-icon" => crate::app_icon::set_app_icon_word(p, option),
         "term-shell" => term_prefs::save_shell_id(p, option),
         "term-font-family" => ctx.look.set_font_id(option),
+        "term-caret" => ctx.look.set_caret_shape(option),
         "term-font" => {
             if let Ok(pct) = option.trim().parse::<u32>() {
                 ctx.look.set_font_pct(pct);
@@ -655,6 +657,29 @@ mod tests {
         });
         assert_eq!(r.prefs.get(help_prefs::ENABLED_KEY).as_deref(), Some("0"));
         assert!(!help_prefs::help_enabled(&r.prefs));
+    }
+
+    #[test]
+    fn the_caret_list_and_switch_write_their_keys() {
+        let r = Rig::new();
+        r.go(Event::Choose {
+            row: "term-caret".into(),
+            option: "bar".into(),
+        });
+        assert_eq!(r.prefs.get("flare.term.caretShape").as_deref(), Some("bar"));
+        r.go(Event::Choose {
+            row: "term-caret".into(),
+            option: "beam".into(),
+        });
+        assert_eq!(
+            r.prefs.get("flare.term.caretShape").as_deref(),
+            Some("block")
+        );
+        r.go(Event::Switch {
+            row: "term-caret-blink".into(),
+            on: false,
+        });
+        assert_eq!(r.prefs.get("flare.term.caretBlink").as_deref(), Some("0"));
     }
 
     #[test]

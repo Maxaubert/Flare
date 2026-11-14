@@ -830,6 +830,9 @@ pub fn run_window(
         }));
     }
     let host = Rc::new(RefCell::new(GridHost::new(Box::new(rasterizer), painter)));
+    // The caret's tick (rule 1233): armed after every painted frame for the next on or off, stopped when
+    // nothing ticks, so a background tab or an unfocused window costs no frames.
+    let blink_timer = Rc::new(slint::Timer::default());
     // Why the grid is not on the GPU even though it was asked for, set by the notifier.
     let note: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(outcome.fallback_reason.clone()));
     let effective = outcome.effective;
@@ -874,11 +877,13 @@ pub fn run_window(
         let front = front.clone();
         let caret = caret.clone();
         let ime_dims = ime_dims.clone();
+        let blink_timer = blink_timer.clone();
         move || {
             crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::Before);
             let Some(app) = weak.upgrade() else { return };
             sync_caret_shape(&app, &host);
             let image = host.borrow_mut().render();
+            arm_blink(&host, &blink_timer, &weak);
             if let Some(image) = image {
                 FrameTrace::global().time(TracePhase::SetImage, || app.set_grid_image(image));
                 note_cell_for_e2e(&host.borrow());
@@ -905,6 +910,7 @@ pub fn run_window(
         let front = front.clone();
         let caret = caret.clone();
         let ime_dims = ime_dims.clone();
+        let blink_timer = blink_timer.clone();
         let mut first_frame = true;
         // The frame trace (FLARE_TRACE_FRAME=1): when the render began and when the last one ended.
         let mut render_began: Option<std::time::Instant> = None;
@@ -950,6 +956,7 @@ pub fn run_window(
                     sync_caret_shape(&app, &host);
                     if host.borrow().is_dirty() {
                         let image = host.borrow_mut().render();
+                        arm_blink(&host, &blink_timer, &weak);
                         if let Some(image) = image {
                             trace.time(TracePhase::SetImage, || app.set_grid_image(image));
                             note_cell_for_e2e(&host.borrow());
@@ -2377,6 +2384,16 @@ pub(crate) fn handle_key(kp: &KeyPath, ev: &KeyEvent) -> EventResult {
         PtyKey::Text(t) => handle.send_text(&t),
         PtyKey::Nothing => {}
     }
+    // A key lights the caret at once, even when nothing echoes (rule 1233).
+    if ev.pressed
+        && kp
+            .host
+            .try_borrow_mut()
+            .is_ok_and(|mut h| h.caret_activity(Instant::now()))
+        && let Some(app) = kp.app.upgrade()
+    {
+        app.window().request_redraw();
+    }
     EventResult::PreventDefault
 }
 
@@ -2391,7 +2408,12 @@ pub(crate) fn e2e_drops_native_focus(mac: bool, e2e: bool) -> bool {
 
 /// The window gained or lost the focus (winit's `Focused`, or the test hook's `Focus`).
 pub(crate) fn handle_focus(kp: &KeyPath, on: bool) {
+    // The caret ticks only in a focused window, lit the moment the focus comes back (rule 1233).
+    if let Ok(mut h) = kp.host.try_borrow_mut() {
+        h.set_window_focus(on, Instant::now());
+    }
     if let Some(app) = kp.app.upgrade() {
+        app.window().request_redraw();
         system_caret(&app, |p| p.focus(on));
         #[cfg(target_os = "macos")]
         if let Some(view) = native_view_of(&app) {
@@ -2424,6 +2446,35 @@ fn system_caret(
     if let Some(hwnd) = hwnd_of(app) {
         flare_win::system_caret::apply(hwnd, &ops);
     }
+}
+
+/// Arms the caret's tick (rule 1233) for the moment the caret next turns on or off, or stops it when nothing ticks:
+/// no terminal in front, a hidden or hollow caret, Blink off, a window without the focus or a minimised one. The
+/// timer only marks the grid dirty and asks for a redraw when the caret changes; the frame that follows arms it
+/// again.
+fn arm_blink(host: &Rc<RefCell<GridHost>>, timer: &Rc<slint::Timer>, app: &slint::Weak<AppWindow>) {
+    let delay = match host.try_borrow() {
+        Ok(h) => h.blink_delay(Instant::now()),
+        Err(_) => return,
+    };
+    let minimised = app.upgrade().is_none_or(|a| is_minimised(a.window()));
+    let Some(delay) = delay.filter(|_| !minimised) else {
+        timer.stop();
+        return;
+    };
+    let (h, t, w) = (Rc::downgrade(host), Rc::downgrade(timer), app.clone());
+    timer.start(slint::TimerMode::SingleShot, delay, move || {
+        let (Some(host), Some(timer)) = (h.upgrade(), t.upgrade()) else {
+            return;
+        };
+        let changed = host
+            .try_borrow_mut()
+            .is_ok_and(|mut g| g.blink_tick(Instant::now()));
+        if changed && let Some(app) = w.upgrade() {
+            app.window().request_redraw();
+        }
+        arm_blink(&host, &timer, &w);
+    });
 }
 
 /// The caret follows the keyboard: an outline while a popup, a dialog or a field holds it (audit V11).

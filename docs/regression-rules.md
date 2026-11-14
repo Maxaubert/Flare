@@ -3754,3 +3754,35 @@ and `/x/app` on a Mac stay two. Native: `remote_tunnel::tunnel_argv`, `flare_ctl
 `remote_put_with_exec_makes_the_file_runnable_on_a_unix_host` and
 `remote_folders_differ_by_case_except_on_a_windows_host`. Real ssh: `docs/remote-sessions-manual-checks.md`.
 Source: the Mac review of PR #230, 2026-11-13.
+
+## The caret (2026-11-14)
+
+1233. **The terminal caret ticks, has five shapes and wears the accent.** Flare drew its caret on every frame and
+never blinked. Owner's pick (Max, 2026-11-14): a hard tick, the system's caret blink time on and the same off
+(`GetCaretBlinkTime`; 530 ms when it gives nothing usable or on macOS; INFINITE, Windows' "do not blink", is
+steady). Typing (a key to the terminal, or the handle's `last_typed`) and output (the source was dirty for the
+frame) keep it lit, and the tick starts again one period after the last of them; a tab coming to the front and the
+window getting the focus light it at once. It ticks only for the live terminal in front of a focused window: a
+background tab, a page or Settings in front, a hidden (DECTCEM) or hollow caret, Blink off, an unfocused or
+minimised window run no timer and ask for no frames, and an unfocused window shows the caret steady. The timer
+(`window.rs` `arm_blink`) is a single shot armed after each painted frame for the next change; it only marks the
+grid dirty and asks for a redraw when the caret turns on or off. Shapes (Settings > Terminal > Text, "Caret shape",
+key `flare.term.caretShape`, words `block`, `hollow`, `bar`, `underline`, `pill`, `block` until chosen): Block (the
+cell filled, the glyph in the caret ink), Hollow block (the outline), Bar (2 hairs at the left edge), Underline
+(2 hairs at the bottom) and Pill (3 hairs wide, 2 hairs in from the top and the bottom, its end rows cut round by
+pixel centres); a hair is the underline's thickness, so each follows the display scale. Every shape but the block is
+drawn over the glyph. A popup, dialog or field holding the keys still draws the outline whatever the shape (audit
+V11). "Caret blink" (`flare.term.caretBlink`, on until switched off) is a switch beside it; neither row has a
+tooltip. Colour: the caret is the chrome's `--p-accent-solid` (held to 3:1 on the terminal ground), so a picked
+accent moves it; a worn Custom theme or the colour editor's open draft uses the person's own cursor colour instead.
+The glyph under a block caret takes `--p-on-accent` or the ground, whichever contrasts more with the caret. A
+program's DECSCUSR (`CSI n SP q`) is not honoured: `flare-term` never reads the style alacritty_terminal parses.
+Native: `flare_render::grid::CaretShape`, `scene::caret_rects`, `flare_theme::look::caret_ink`,
+`chrome_apply::grid_palette`, `caret_blink::CaretBlink`, `GridHost::{set_caret, set_window_focus, caret_activity,
+blink_tick, blink_delay}`, `LookStore::{caret_shape, caret_blink}`. Held by `it_ticks_530_on_530_off_from_the_focus`,
+`typing_or_output_keeps_it_lit_and_the_tick_resumes_a_period_later`,
+`an_unfocused_window_shows_it_steady_and_runs_no_timer`, `a_focused_terminal_ticks_530_on_530_off`,
+`typing_and_output_keep_the_caret_lit`, `no_timer_for_a_page_in_front_a_hollow_caret_or_blink_off`,
+`a_pill_caret_is_three_hairs_wide_inset_two_with_round_ends`, `caret_shapes_follow_the_scale`,
+`a_popup_holding_the_keys_draws_the_outline_whatever_the_shape`, `the_caret_wears_the_accent_by_default` and
+`the_persons_own_cursor_colour_wins_over_the_accent`. Source: Max, 2026-11-14.

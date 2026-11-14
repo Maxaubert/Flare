@@ -70,14 +70,33 @@ impl Cell {
     }
 }
 
+/// How the caret is drawn when the terminal holds the keyboard (rule 1233). `Block` is the default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CaretShape {
+    /// The whole cell, the glyph under it in the caret ink.
+    #[default]
+    Block,
+    /// The cell's outline, the glyph keeps its colours.
+    HollowBlock,
+    /// A 2 px bar at the cell's left edge (scaled like the underline).
+    Bar,
+    /// A 2 px line at the cell's bottom (scaled like the underline).
+    Underline,
+    /// A 3 px bar with round ends, 2 px in from the top and the bottom (scaled like the underline).
+    Pill,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cursor {
     pub col: usize,
     pub row: usize,
     pub visible: bool,
     /// Drawn as an outline, not a filled block: the terminal has lost the keyboard to a popup or a
-    /// field (PT's xterm `cursorInactiveStyle` outline). The glyph keeps its own colours.
+    /// field (PT's xterm `cursorInactiveStyle` outline). The glyph keeps its own colours. Wins over
+    /// every shape.
     pub hollow: bool,
+    /// The shape the caret has while the terminal holds the keyboard.
+    pub shape: CaretShape,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -107,6 +126,7 @@ impl Grid {
                 row: 0,
                 visible: true,
                 hollow: false,
+                shape: CaretShape::Block,
             },
         }
     }
@@ -263,7 +283,8 @@ mod tests {
                 col: 0,
                 row: 0,
                 visible: true,
-                hollow: false
+                hollow: false,
+                shape: Default::default(),
             }
         );
         assert_eq!(g.cell(3, 1).ch, ' ');
