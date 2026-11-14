@@ -66,6 +66,7 @@ mod serve_remote;
 mod sessions;
 mod settings_ctl;
 mod settings_scene;
+mod sharing;
 mod ship_ctl;
 mod side_slide;
 mod sidebar_ui;

@@ -256,15 +256,15 @@ mod tests {
 
     #[test]
     fn the_index_has_46_rows_without_nvidia() {
-        // 37 rows outside dictation (Add a machine, the app icon and the two caret rows among them), 8 dictation
-        // rows and From any app (the GPU row needs NVIDIA).
+        // 38 rows outside dictation (Computer sharing, Add a machine, the app icon and the two caret rows among them),
+        // 8 dictation rows and From any app (the GPU row needs NVIDIA).
         let n = settings_index(&IndexEnv {
             nvidia: false,
             dictation_wired: true,
             mark_colours: true,
         })
         .len();
-        assert_eq!(n, 51);
+        assert_eq!(n, 52);
         assert!(
             settings_index(&IndexEnv {
                 nvidia: false,
@@ -288,12 +288,32 @@ mod tests {
     fn the_machines_page_is_found_by_ssh_mac_and_its_add_row() {
         let index = index_all();
         let names = page_names();
-        for q in ["ssh", "add a machine", "machines", "remote mac"] {
+        for q in ["ssh", "add a machine", "remote mac"] {
             let found = search_settings(&index, q, &names);
             let first = found.first().unwrap_or_else(|| panic!("{q} found nothing"));
             assert_eq!(first.id, "machines-add", "{q}");
             assert_eq!(first.page, "machines");
             assert_eq!(first.section, "Linked machines");
+        }
+        // The page's name finds both its rows, in the page's order.
+        let ids: Vec<&str> = search_settings(&index, "machines", &names)
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect();
+        assert_eq!(ids, ["machines-sharing", "machines-add"]);
+    }
+
+    /// Rule 1252: the Computer sharing switch is found by its words, under This computer.
+    #[test]
+    fn computer_sharing_is_found_by_sharing_and_the_ssh_server() {
+        let index = index_all();
+        let names = page_names();
+        for q in ["computer sharing", "sharing", "share", "pairing", "openssh"] {
+            let found = search_settings(&index, q, &names);
+            let first = found.first().unwrap_or_else(|| panic!("{q} found nothing"));
+            assert_eq!(first.id, "machines-sharing", "{q}");
+            assert_eq!(first.page, "machines");
+            assert_eq!(first.section, "This computer");
         }
     }
 

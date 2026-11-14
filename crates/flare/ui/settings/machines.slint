@@ -11,7 +11,7 @@
 
 import { Theme, Px, SettingsInk, SettingsFixed, SettingsShape } from "../theme.slint";
 import { Glyphs } from "../glyphs.slint";
-import { SetRow, SetOption, MachineAddLook } from "types.slint";
+import { SetRow, SetOption, MachineAddLook, SharingAskLook } from "types.slint";
 import { SetTextField } from "controls.slint";
 import { SetSelect, SelectMenu } from "select.slint";
 import { DialogButton } from "../dialog.slint";
@@ -416,6 +416,188 @@ export component MachineAddDialog inherits Rectangle {
         chosen(id) => { root.menu-chosen(id); }
         dismissed => { root.menu-dismissed(); }
         key(k) => { root.menu-key(k); }
+    }
+}
+
+// The spinner before a line that waits (the mockup's `.spin`): a 12 px ring in the track colour with an accent quarter
+// that turns while the dialog is up.
+component SharingSpinner inherits Rectangle {
+    in property <bool> running;
+    property <angle> turn: 0deg;
+    width: 12px;
+    height: 12px;
+    Timer {
+        interval: 50ms;
+        running: root.running;
+        triggered => { root.turn = root.turn + 18deg; }
+    }
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: self.width / 2;
+        border-width: 1.5px;
+        border-color: Theme.track;
+    }
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 6 0.75 A 5.25 5.25 0 0 1 11.25 6";
+        stroke: Theme.accent;
+        stroke-width: 1.5px;
+        transform-rotation: root.turn;
+    }
+}
+
+// The Computer sharing dialog (machine pairing PR 2, rules 1254 and 1255), in the Dialog look like the Add a machine
+// dialog: the title, one line (with the spinner before it while Flare waits for Remote Login), and its buttons, Cancel
+// (left out when its label is "") and the primary one. "Turn on Remote Login" with Cancel and Open System Settings,
+// "Stop the SSH server too?" with Keep it and Stop it, or a failure's line with OK. Escape and a press outside are the
+// left button (or OK). Labelled controls have no tooltip.
+export component SharingAskDialog inherits Rectangle {
+    in property <bool> open;
+    in property <SharingAskLook> look;
+    callback cancel();
+    callback primary();
+    out property <length> box-x: box.x;
+    out property <length> box-y: box.y;
+    out property <length> box-w: box.width;
+    out property <length> box-h: box.height;
+    out property <length> primary-x: primary-btn.absolute-position.x;
+    out property <length> primary-y: primary-btn.absolute-position.y;
+    out property <length> primary-w: primary-btn.width;
+    out property <length> cancel-w: cancel-btn.width;
+
+    visible: root.open;
+    width: 100%;
+    height: 100%;
+    changed open => {
+        if root.open {
+            fs.focus();
+        }
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            if e.text == Key.Return {
+                root.primary();
+                return accept;
+            }
+            return reject;
+        }
+
+        Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: Theme.scrim;
+        }
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down {
+                    root.cancel();
+                }
+            }
+        }
+        box := Rectangle {
+            width: min(380px, root.width - 48px);
+            height: col.preferred-height;
+            x: Px.snap((root.width - self.width) / 2);
+            y: Px.snap((root.height - self.height) / 2);
+            background: Theme.side-flat;
+            border-radius: 2px;
+            border-width: Px.hair();
+            border-color: Theme.divider;
+            drop-shadow-offset-y: 24px;
+            drop-shadow-blur: 70px;
+            drop-shadow-color: SettingsFixed.modal-shadow;
+            accessible-role: none;
+            accessible-label: root.look.title;
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+            }
+            col := VerticalLayout {
+                padding: 20px;
+                alignment: start;
+                Text {
+                    text: root.look.title;
+                    font-family: Theme.font-ui;
+                    font-size: 14.5px;
+                    font-weight: 600;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: 16px; }
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+                    if root.look.spin: VerticalLayout {
+                        alignment: center;
+                        SharingSpinner { running: root.open && root.look.spin; }
+                    }
+                    Text {
+                        text: root.look.line;
+                        font-family: Theme.font-ui;
+                        font-size: 12.5px;
+                        color: Theme.dim;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+                Rectangle { height: 20px; }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    cancel-btn := DialogButton {
+                        label: root.look.cancel;
+                        shown: root.look.cancel != "";
+                        clicked => { root.cancel(); }
+                    }
+                    primary-btn := DialogButton {
+                        label: root.look.primary;
+                        is-primary: true;
+                        clicked => { root.primary(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The sharing dialog's test window: the dialog over a stand-in page, and counts of what it reported.
+export component SharingAskPreview inherits Window {
+    preferred-width: 900px;
+    preferred-height: 600px;
+    background: Theme.ground;
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+    in-out property <bool> open;
+    in-out property <SharingAskLook> look;
+    in-out property <int> cancels;
+    in-out property <int> primaries;
+    out property <length> box-x: dlg.box-x;
+    out property <length> box-y: dlg.box-y;
+    out property <length> box-w: dlg.box-w;
+    out property <length> box-h: dlg.box-h;
+    out property <length> primary-x: dlg.primary-x;
+    out property <length> primary-y: dlg.primary-y;
+    out property <length> primary-w: dlg.primary-w;
+    out property <length> cancel-w: dlg.cancel-w;
+    dlg := SharingAskDialog {
+        open: root.open;
+        look: root.look;
+        cancel => { root.cancels += 1; }
+        primary => { root.primaries += 1; }
     }
 }
 

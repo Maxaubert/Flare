@@ -4,7 +4,7 @@
 // below its 1 hairline border, so the view adds `Px.hair()` the way the frame's Results list does.
 // For the non-row blocks: `about` reads `label` (name), `sub` (line one) and `note` (line two).
 import { Theme, Px, SettingsInk, SettingsShape, SettingsFixed } from "../theme.slint";
-import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell, RowLook, SheetTile, MachineAddLook } from "types.slint";
+import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell, RowLook, SheetTile, MachineAddLook, SharingAskLook } from "types.slint";
 import { PluginLook } from "../plugin_look.slint";
 import { PluginSheet } from "plugin_sheet.slint";
 import { SetFrame } from "frame.slint";
@@ -17,7 +17,7 @@ import { ThemeWallView, ThemeEditor, AskThree } from "wall.slint";
 import { AboutCard, SlintBadge } from "about.slint";
 import { HelpPanel } from "help_panel.slint";
 import { DictKeyField, DictMicField, DictLimitedMark, DictModelRow, DictAsk } from "dictation.slint";
-import { SetMachineHead, SetMachineRow, MachineAddDialog } from "machines.slint";
+import { SetMachineHead, SetMachineRow, MachineAddDialog, SharingAskDialog } from "machines.slint";
 import { AppIconStrip } from "app_icons.slint";
 
 export global SettingsBridge {
@@ -115,6 +115,10 @@ export global SettingsBridge {
     // Select menu's state (select-row "machines-add"), drawn inside the dialog; its fields answer by row-text.
     in-out property <bool> machine-add-open;
     in-out property <MachineAddLook> machine-add;
+    // The Computer sharing dialog (machine pairing PR 2, rules 1254 and 1255): open, and what it says. Its buttons
+    // answer by row-button("machines-sharing", "cancel" or "primary").
+    in-out property <bool> sharing-ask-open;
+    in-out property <SharingAskLook> sharing-ask;
     // The title of the plugin's panel when the sheet can open it, else "".
     // events
     callback page-chosen(string);
@@ -761,6 +765,14 @@ export component SettingsPreview inherits Window {
         user-edited(t) => { SettingsBridge.row-text("machines-add:user", t); }
         cancel => { SettingsBridge.row-button("machines-add", "cancel"); }
         add => { SettingsBridge.row-button("machines-add", "add"); }
+    }
+    SharingAskDialog {
+        width: parent.width;
+        height: parent.height;
+        open: SettingsBridge.sharing-ask-open;
+        look: SettingsBridge.sharing-ask;
+        cancel => { SettingsBridge.row-button("machines-sharing", "cancel"); }
+        primary => { SettingsBridge.row-button("machines-sharing", "primary"); }
     }
     SelectMenu {
         width: parent.width;

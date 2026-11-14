@@ -3923,3 +3923,124 @@ column is now "Address" (the address, else the SSH host). Labelled controls have
 `the_machine_drop_down_lists_nearby_then_ssh_hosts_then_type_an_address`,
 `add_can_be_pressed_once_a_machine_is_picked_or_an_address_typed`, the overlay tests in `ui_tests::panel` and
 `ui_tests::overlay_order`.
+
+1252. **Settings > Machines starts with a section This computer, whose one row is the Computer sharing switch; its
+subtext is fixed, and the switch stays on across restarts.** Machine pairing PR 2, 2026-11-14 (spec, revised flow;
+approved mockup `docs/superpowers/specs/2026-11-14-machine-pairing-mockup.html`, "Computer sharing"). The row is
+`machines-sharing`: the share icon (a screen and a phone), the label "Computer sharing" and the subtext "Allows you to
+control sessions from other devices", which never changes to report state (no "Ready", no progress words, no errors;
+owner rule). It is a switch row (a press anywhere flips it) with no tooltip. The switch is not a plain store write:
+`settings_ctl::event` hands it to the Machines page's `sharing::Sharing`, which runs the OS setup on a worker (rules
+1253 and 1254) and saves `flare.machines.sharing` only once the setup finished; a press shows the switch on and dimmed
+(deaf) while the setup runs, and back off when it was declined or failed. A failure is the sharing dialog (the Dialog
+look, title "Computer sharing", its one plain line and OK), never words under the row. A switch saved on is on after a
+restart with no setup run again (`Sharing::new` reads the store; the computer is announced again, PR 3). The dialog is
+an overlay (`Overlay::SharingAsk`, `overlay-open`, the picker rank after `MachineAddDialog`); it draws only over the
+Machines page while Settings is in front, and a question asked while Settings is hidden waits for the page; Escape and a
+press outside are its left button (Cancel, Keep it) or OK; closing the Settings tab answers the same. Under `--e2e` the
+switch sets nothing up (`NoSharingOs`). Native: `flare_settings::{page::machines::{SHARING_ROW, SharingInfo},
+machine_prefs, rows::APP_OPTIONS, sections::APP_SECTIONS}`, `sharing::{Sharing, SharingAsk, ask_words}`,
+`machines_page::MachinesPage::{with_sharing_os, use_prefs, sharing_mut}`, `settings_ctl::{push_sharing_ask,
+sharing_ask_look}`, `ui/settings/machines.slint` (`SharingAskDialog`). Held by
+`this_computer_is_first_with_the_sharing_switch_and_its_fixed_subtext`,
+`this_computer_is_first_and_its_switch_turns_sharing_on`, `the_sharing_switch_stays_on_across_restarts`,
+`the_sharing_dialog_draws_its_box_its_line_and_its_buttons`,
+`windows_turns_on_with_one_elevated_script_and_the_switch_is_saved`,
+`sharing_and_what_flare_changed_default_off_and_keep_what_is_set`, the row table tests in `flare_settings::rows` and
+the overlay tests in `ui_tests::panel` and `ui_tests::overlay_order`.
+
+1253. **On Windows, turning Computer sharing on is one elevated PowerShell script (one UAC prompt), sent inline, that
+opens the SSH server to the Private network profile only, and a server Flare starts takes keys only.** Machine pairing
+PR 2, 2026-11-14 (spec, "Setup per OS"; research `Documents\Claude\research\flare\2026-11-14-machine-pairing.md`;
+security review fixes, 2026-11-14, Max chose "Keys only"). `windows_on_script` installs the `OpenSSH.Server~~~~0.0.1.0`
+capability only when `Get-WindowsCapability` says it is not installed, starts `sshd` when it is not running and sets
+it to Automatic. Keys only: when sshd is not running (Flare installed it now, or it was installed but stopped), the
+script writes `PasswordAuthentication no` and `ChallengeResponseAuthentication no` at the top of
+`%ProgramData%\ssh\sshd_config` BEFORE `Start-Service`, under the line `# Flare Computer sharing: keys only`. The top is
+before any `Match` block, and sshd keeps the first value it reads, so they hold globally. (`ChallengeResponseAuthentication`
+is the name every Windows OpenSSH knows; on OpenSSH 8.7 and later it is the same setting as
+`KbdInteractiveAuthentication`, a keyword an older sshd refuses to start with.) A copy is kept as
+`sshd_config.flare-backup`; the person's other lines stay as they were; a second run replaces Flare's lines instead
+of adding more. A server never started has no config yet: the script copies Windows' `sshd_config_default` in, as sshd
+itself would, into a `%ProgramData%\ssh` folder made with sshd's own rights when it is missing (`SSHD_DIR_SDDL`). A
+server that was already running keeps its config. A failure at any step leaves the server as the script found it: a
+server Flare started is stopped again, `sshd_config` is put back from the backup (or the copy Flare made is removed),
+its start type is put back, and Flare's own rules go, so a switch that went back off never leaves an SSH server
+running. The firewall: when sshd is not running, its existing `OpenSSH-Server-In-TCP` rule is set to the Private
+profile (and enabled) BEFORE `Start-Service` (the capability makes the rule for every profile); a running server's
+rule is left alone. The rule is made for TCP 22 on the Private profile when it is missing. Flare's own two rules let
+only Flare's program in, on the Private profile, from the local subnet: `Flare-Pairing-In` (TCP; the pairing port is
+picked at random in PR 3, so the rule names the program, not a port) and `Flare-Pairing-mDNS-In` (UDP 5353, the
+announcement). They are made again on every turn on, and the report's `rule=1` saves `flare.machines.firewallRule`, so
+turning off removes them (rule 1255). No rule names the Public or Domain profile. The elevation (`elevation_argv`) is
+a hidden `powershell.exe -Command` that runs `Start-Process powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle
+Hidden -ArgumentList ... -EncodedCommand <script>`: the script travels inline (UTF-16LE base64, without comment lines
+and indent, `ps_compact`), so no script file exists that another program could swap before the prompt is answered.
+The whole command line is held under Windows' 32 767 characters (`COMMAND_LINE_MAX`; the tests hold every script under
+half of it with long paths, and a longer one is refused before anything runs). The script reports `ok`, `installed`,
+`started`, `rule` and, on a failure, the `step` and Windows' words as `key=value` lines into `result.txt` in a new
+folder Flare made for this run (`fresh_folder`: `create_dir` never reuses a folder that was there); the script writes
+it only when that folder is a plain folder (not a link) and the file is not there yet, and Flare removes the folder
+after. The result is untrusted text: `parse_report` reads at most 4 KB, only known keys, each once, flags `0` or `1`,
+a known step, and either `ok=1` or a failed step; Windows' words are cut to 300 characters without control
+characters. Anything else is an error: the setup counts as failed with the plain line "Computer sharing could not be
+set up.". A failed step becomes one plain line (`step_line`, Windows' words go to the log). No result file means the
+prompt was declined: the switch goes back off with nothing to say. `installed` or `started` make the server Flare's
+(`flare.machines.serverByFlare`), which turning off reads (rule 1255); it stays Flare's until turning off stops it. The
+tests read the script as text and the elevation as its argv; nothing is ever run (`SharingOs` is a trait and the tests
+use `sharing::fake::FakeOs`). Real runs: `docs/remote-sessions-manual-checks.md`. Held by
+`the_windows_script_installs_starts_and_opens_the_private_profile_only`,
+`a_server_flare_starts_takes_keys_only_and_a_running_one_is_left_alone`,
+`flares_own_firewall_rules_are_narrow_and_go_when_the_setup_fails`,
+`the_elevated_scripts_write_the_result_only_into_a_plain_new_file`,
+`the_elevation_call_runs_the_script_inline_with_runas_and_waits`,
+`the_elevated_command_line_stays_under_windows_limit`, `a_result_file_is_read_strictly`,
+`a_result_file_is_read_and_a_failed_step_is_one_plain_line` and
+`a_declined_or_failed_windows_setup_leaves_the_switch_off`.
+
+1254. **On a Mac, turning Computer sharing on uses Remote Login: no prompt when port 22 answers, else the
+administrator prompt, else the Flare dialog "Turn on Remote Login" that opens Sharing and carries on by itself.**
+Machine pairing PR 2, 2026-11-14 (spec, "Setup per OS"; mockup, "System prompts"). `turn_on` probes 127.0.0.1:22
+(500 ms); when it answers sharing is on and the server is the person's. Otherwise `osascript -e 'do shell script
+"/usr/sbin/systemsetup -setremotelogin on" with administrator privileges'` (`osascript_argv`) shows macOS' password
+prompt; Cancel there (error -128, `mac_declined`) puts the switch back off. systemsetup may print the Full Disk Access
+refusal and still succeed as a process, so the port decides: it is probed six times 500 ms apart, and when it never
+answers the sharing dialog shows "Turn on Remote Login", the spinner and "Flare continues when it is on", Cancel and
+Open System Settings (`x-apple.systempreferences:com.apple.Sharing-Settings.extension`, opened with `/usr/bin/open` on
+a worker; the dialog stays). A worker watches port 22 every second; the moment it answers the dialog closes and the
+switch is on (the server is the person's, they turned it on). Cancel ends the watch (a late answer is ignored by its
+number) and the switch goes back off. Flare never asks for Full Disk Access. Flare does not change macOS' sshd
+settings: Remote Login keeps macOS' own password setting (the Windows keys-only change of rule 1253 is not made on a
+Mac; security review, 2026-11-14). `Flare.app`'s Info.plist carries
+`NSLocalNetworkUsageDescription` and `NSBonjourServices` = `_flare-pair._tcp` for the local network prompt pairing
+(PR 3) needs. Held by `a_mac_with_remote_login_on_needs_no_prompt`,
+`a_mac_asks_for_the_password_and_cancel_puts_the_switch_back`,
+`a_refused_mac_shows_turn_on_remote_login_and_continues_by_itself`,
+`cancel_in_turn_on_remote_login_puts_the_switch_back_off`,
+`a_refused_mac_shows_turn_on_remote_login_over_the_page`,
+`the_mac_runs_systemsetup_through_the_administrator_prompt` and (on a Mac)
+`the_app_plist_names_the_app_its_version_its_mac_its_category_and_why_it_wants_the_mic`.
+
+1255. **Turning Computer sharing off stops the announcement at once, removes only the keys Flare added, and offers to
+stop the SSH server only when Flare turned it on.** Machine pairing PR 2, 2026-11-14 (spec, "On the machine to
+reach"). The switch is off and saved off the moment it is pressed, and the computer stops being announced (PR 3).
+When `flare.machines.serverByFlare` is set, the sharing dialog asks "Stop the SSH server too?" ("Flare turned it on
+for Computer sharing. Other apps may use it.", Keep it and Stop it); Escape, a press outside and closing the Settings
+tab are Keep it. Then, on a worker (`turn_off`): the lines of the person's own `~/.ssh/authorized_keys` whose comment
+starts `flare-pair:` go (`strip_flare_keys`; every other line, comments and blank lines included, stays; the file is
+written in place, so its owner and mode stay); on Windows, when the server is to stop, a key went into
+`administrators_authorized_keys` (`flare.machines.adminKeys`, set by pairing in PR 3), or Flare's firewall rules are
+in place (`flare.machines.firewallRule`, set when the on script made them), one elevated `windows_off_script`
+(inline, read back strictly, as in rule 1253) removes those `flare-pair:` lines, stops sshd and sets it to Manual
+(only with Stop it), and removes Flare's two firewall rules; the server's own rule, its `sshd_config` and the
+capability stay. So turning off with Keep it, on a server that was the person's, still removes Flare's rules (security
+review, 2026-11-14). On a Mac, Stop it runs `systemsetup -f
+-setremotelogin off` through the administrator prompt, and when port 22 still answers after 2.5 s the dialog says
+"Remote Login is still on. Turn it off in System Settings, General, Sharing." A declined or failed clean up is that
+dialog's one line (the switch stays off). A done stop clears `serverByFlare`, a done admin clean up clears
+`adminKeys`, a done clean up clears `firewallRule` (a failed one keeps it, so the next turn off tries again); Keep it
+leaves the server Flare's, so the next turn off asks again. Held by
+`turning_off_removes_flares_keys_and_offers_to_stop_only_flares_server`,
+`turning_off_removes_flares_firewall_rules_even_when_the_server_is_not_flares`,
+`a_mac_stops_remote_login_and_says_so_when_it_stays_on`, `the_windows_off_script_removes_only_what_flare_added`,
+`only_the_keys_flare_added_are_removed` and `turning_sharing_off_asks_to_stop_flares_server`.
