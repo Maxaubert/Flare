@@ -53,7 +53,7 @@ pub struct RowDef {
 }
 
 /// The rows of the terminal list, in PT's order (the marks row is separate; see `MARK_OPTIONS`).
-pub const TERMINAL_OPTIONS: [RowDef; 13] = [
+pub const TERMINAL_OPTIONS: [RowDef; 15] = [
     RowDef {
         id: "term-shell",
         label: "Default shell",
@@ -90,6 +90,32 @@ pub const TERMINAL_OPTIONS: [RowDef; 13] = [
         keywords: "font zoom bigger smaller scale",
         keys: &["flare.term.fontPct"],
         kind: RowKind::Choice,
+        source: Source::Terminal,
+        only_nvidia: false,
+    },
+    RowDef {
+        id: "term-caret",
+        label: "Caret shape",
+        sub: "How the typing point looks.",
+        section: "text",
+        page: "terminal",
+        icon: "caret",
+        keywords: "cursor caret block bar beam underline pill hollow outline shape",
+        keys: &["flare.term.caretShape"],
+        kind: RowKind::Choice,
+        source: Source::Terminal,
+        only_nvidia: false,
+    },
+    RowDef {
+        id: "term-caret-blink",
+        label: "Caret blink",
+        sub: "Blinks while you are not typing.",
+        section: "text",
+        page: "terminal",
+        icon: "caret",
+        keywords: "cursor caret blink blinking flash steady tick",
+        keys: &["flare.term.caretBlink"],
+        kind: RowKind::Switch,
         source: Source::Terminal,
         only_nvidia: false,
     },
@@ -729,7 +755,7 @@ pub const APP_OPTIONS: [RowDef; 22] = [
 ];
 
 /// The row ids in draw order (Appendix C, the `#` column), with Flare's own rows where their pages draw them.
-pub const ROW_ORDER: [&str; 50] = [
+pub const ROW_ORDER: [&str; 52] = [
     "tab-layout",
     "tab-switch",
     "window-edges",
@@ -753,6 +779,8 @@ pub const ROW_ORDER: [&str; 50] = [
     "dev-preview",
     "term-font-family",
     "term-font",
+    "term-caret",
+    "term-caret-blink",
     "help-enabled",
     "agent-indicator",
     "agent-done-on",
@@ -844,21 +872,21 @@ mod tests {
     #[test]
     fn the_tables_name_the_46_rows_in_row_order() {
         let ids: Vec<&str> = table_order().iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 50);
+        assert_eq!(ids.len(), 52);
         let mut sorted_tables = ids.clone();
         sorted_tables.sort_unstable();
         let mut sorted_order: Vec<&str> = ROW_ORDER.to_vec();
         sorted_order.sort_unstable();
         assert_eq!(sorted_tables, sorted_order);
         let distinct: BTreeSet<&str> = ROW_ORDER.iter().copied().collect();
-        assert_eq!(distinct.len(), 50);
+        assert_eq!(distinct.len(), 52);
         let drawn: Vec<&str> = all_rows().map(|r| r.id).collect();
         assert_eq!(drawn, ROW_ORDER.to_vec());
     }
 
     #[test]
     fn each_core_option_has_unique_keys_under_flare_term() {
-        assert_eq!(TERMINAL_OPTIONS.len(), 13);
+        assert_eq!(TERMINAL_OPTIONS.len(), 15);
         let mut keys: Vec<&str> = Vec::new();
         for r in TERMINAL_OPTIONS.iter().chain(MARK_OPTIONS.iter()) {
             for k in r.keys {
@@ -928,6 +956,8 @@ mod tests {
                 "term-shell=flare.term.shell",
                 "term-font-family=flare.term.font",
                 "term-font=flare.term.fontPct",
+                "term-caret=flare.term.caretShape",
+                "term-caret-blink=flare.term.caretBlink",
                 "agent-indicator=flare.term.agentIndicator",
                 "agent-done-on=flare.term.agentDoneOn",
                 "agent-rainbow=flare.term.agentRainbow",
@@ -955,7 +985,7 @@ mod tests {
                 "diag-mark=",
             ]
         );
-        assert_eq!(core.len(), 28);
+        assert_eq!(core.len(), 30);
 
         let app: Vec<String> = APP_OPTIONS.iter().map(store_line).collect();
         assert_eq!(

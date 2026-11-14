@@ -1,18 +1,20 @@
 //! GridHost: owns the grid, the glyph source and both painters, and turns them into a Slint image.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use flare_render::color::{Palette, Rgba};
 use flare_render::cpu::{RgbaImage, paint_scene};
 use flare_render::decor::{Decor, build_scene_decor, hair_px};
 use flare_render::glyph::GlyphSource;
 use flare_render::gpu::{GpuPainter, read_texture};
-use flare_render::grid::Grid;
+use flare_render::grid::{CaretShape, Grid};
 use flare_render::metrics::{BASE_FONT_PX, CellMetrics, cell_metrics_at, grid_dims};
 use flare_render::sample::sample_grid;
 use flare_render::scene::{GroundPaint, Scene};
 use flare_render::stats::{FrameStats, FrameTrace, TracePhase};
 use slint::{Image, Rgb8Pixel, Rgba8Pixel, SharedPixelBuffer};
+
+use crate::caret_blink::CaretBlink;
 
 /// Where the grid on screen comes from: the sample, or a live terminal.
 pub trait GridSource {
@@ -32,6 +34,14 @@ pub trait GridSource {
     /// The decoration to paint over the grid now (selection, find, links). Default none.
     fn decor(&mut self) -> Decor {
         Decor::default()
+    }
+    /// Whether this source's caret ticks (rule 1233): a live terminal's does, the sample's never.
+    fn blinks(&self) -> bool {
+        false
+    }
+    /// When the person last typed into this source: a key keeps the caret lit even when nothing echoes.
+    fn last_typed(&self) -> Option<Instant> {
+        None
     }
 }
 
@@ -94,6 +104,16 @@ pub struct GridHost {
     dirty: bool,
     /// The caret is an outline (the keyboard is on a popup or a field): audit V11.
     hollow_cursor: bool,
+    /// The Caret shape setting (rule 1233).
+    caret_shape: CaretShape,
+    /// The caret's tick (rule 1233).
+    blink: CaretBlink,
+    /// The last frame's caret could tick: a live terminal, its caret shown and not hollow.
+    caret_can_blink: bool,
+    /// The last frame drew the caret lit.
+    drawn_lit: bool,
+    /// The time the frame and the settings read (tests hand in their own).
+    clock: Box<dyn Fn() -> Instant>,
     pub stats: FrameStats,
 }
 
@@ -117,8 +137,79 @@ impl GridHost {
             base_px: BASE_FONT_PX,
             dirty: true,
             hollow_cursor: false,
+            caret_shape: CaretShape::Block,
+            blink: CaretBlink::new(crate::caret_blink::system_period()),
+            caret_can_blink: false,
+            drawn_lit: true,
+            clock: Box::new(Instant::now),
             stats: FrameStats::new(120),
         }
+    }
+
+    /// The time the frames read from now on, and the tick's period (tests: no system value, no clock).
+    #[cfg(test)]
+    pub fn set_clock(&mut self, clock: impl Fn() -> Instant + 'static, period: Duration) {
+        self.clock = Box::new(clock);
+        self.blink = CaretBlink::new(Some(period));
+    }
+
+    /// The Caret shape and Caret blink settings in force (tests).
+    #[cfg(test)]
+    pub fn caret_setting(&self) -> (CaretShape, bool) {
+        (self.caret_shape, self.blink.enabled())
+    }
+
+    /// The Caret shape and Caret blink settings; marks dirty only when the frame changes.
+    pub fn set_caret(&mut self, shape: CaretShape, blink: bool) {
+        if self.caret_shape != shape {
+            self.caret_shape = shape;
+            self.dirty = true;
+        }
+        if self.blink.enabled() != blink {
+            self.blink.set_enabled(blink, (self.clock)());
+            self.dirty = true;
+        }
+    }
+
+    /// The window gained or lost the keyboard focus. A change asks for a frame: gaining lights the caret and
+    /// starts the tick after that frame, losing shows it steady.
+    pub fn set_window_focus(&mut self, on: bool, now: Instant) {
+        if self.blink.set_focused(on, now) {
+            self.dirty = true;
+        }
+    }
+
+    /// A key went to the terminal: the caret is lit now and for a period. True when that needs a frame (it was
+    /// dark).
+    pub fn caret_activity(&mut self, now: Instant) -> bool {
+        self.blink.activity(now);
+        let relit = self.caret_can_blink && !self.drawn_lit && self.blink.lit(now);
+        if relit {
+            self.dirty = true;
+        }
+        relit
+    }
+
+    /// The blink timer fired: true (and dirty) when the caret turns on or off now.
+    pub fn blink_tick(&mut self, now: Instant) -> bool {
+        if let Some(t) = self.source.last_typed() {
+            self.blink.activity(t);
+        }
+        let lit = !self.caret_can_blink || self.blink.lit(now);
+        if lit != self.drawn_lit {
+            self.dirty = true;
+            return true;
+        }
+        false
+    }
+
+    /// How long until the caret next turns on or off, or `None` when nothing ticks (no timer, no frames): a
+    /// background tab, a page in front, an unfocused window, a hidden or hollow caret, Blink off.
+    pub fn blink_delay(&self, now: Instant) -> Option<Duration> {
+        if !self.caret_can_blink {
+            return None;
+        }
+        self.blink.next_change_in(now)
     }
 
     pub fn attach_gpu(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
@@ -241,6 +332,8 @@ impl GridHost {
         self.source = source;
         self.dims = None;
         self.dirty = true;
+        // A tab coming to the front shows its caret lit at once.
+        self.blink.activity((self.clock)());
     }
 
     /// Cell metrics for the current scale.
@@ -279,8 +372,23 @@ impl GridHost {
             self.source.resize(cols, rows);
             self.dims = Some((cols, rows));
         }
+        // Output (the source changed) and typing keep the caret lit (rule 1233); read before the fill clears it.
+        let now = (self.clock)();
+        if self.source.dirty() {
+            self.blink.activity(now);
+        }
+        if let Some(t) = self.source.last_typed() {
+            self.blink.activity(t);
+        }
         self.source.grid_into(&mut self.grid_buf);
         self.grid_buf.cursor.hollow = self.hollow_cursor;
+        self.grid_buf.cursor.shape = self.caret_shape;
+        self.caret_can_blink =
+            self.source.blinks() && self.grid_buf.cursor.visible && !self.hollow_cursor;
+        self.drawn_lit = !self.caret_can_blink || self.blink.lit(now);
+        if !self.drawn_lit {
+            self.grid_buf.cursor.visible = false;
+        }
         let decor = self.source.decor();
         let mut scene = FrameTrace::global().time(TracePhase::Scene, || {
             build_scene_decor(
@@ -686,6 +794,191 @@ mod tests {
 
     fn host(painter: GridPainter) -> GridHost {
         GridHost::new(Box::new(FakeGlyphs::new(8, 16)), painter)
+    }
+
+    /// A live-like source: its caret ticks, it sits at (0, 0), and the test says when it printed or was typed into.
+    struct Ticking {
+        size: (usize, usize),
+        printed: Rc<std::cell::Cell<bool>>,
+        typed: Rc<std::cell::Cell<Option<Instant>>>,
+    }
+
+    impl GridSource for Ticking {
+        fn resize(&mut self, cols: usize, rows: usize) {
+            self.size = (cols, rows);
+        }
+        fn grid(&mut self) -> Grid {
+            self.printed.set(false);
+            Grid::new(self.size.0, self.size.1)
+        }
+        fn dirty(&self) -> bool {
+            self.printed.get()
+        }
+        fn blinks(&self) -> bool {
+            true
+        }
+        fn last_typed(&self) -> Option<Instant> {
+            self.typed.get()
+        }
+    }
+
+    type Now = Rc<std::cell::Cell<Instant>>;
+
+    struct TickRig {
+        h: GridHost,
+        now: Now,
+        printed: Rc<std::cell::Cell<bool>>,
+        typed: Rc<std::cell::Cell<Option<Instant>>>,
+    }
+
+    const TICK: Duration = Duration::from_millis(530);
+
+    fn tick_rig() -> TickRig {
+        let now: Now = Rc::new(std::cell::Cell::new(Instant::now()));
+        let printed = Rc::new(std::cell::Cell::new(false));
+        let typed = Rc::new(std::cell::Cell::new(None));
+        let mut h = host(GridPainter::Cpu);
+        let n = now.clone();
+        h.set_clock(move || n.get(), TICK);
+        h.set_source(Box::new(Ticking {
+            size: (0, 0),
+            printed: printed.clone(),
+            typed: typed.clone(),
+        }));
+        h.resize(200, 100, 1.0);
+        TickRig {
+            h,
+            now,
+            printed,
+            typed,
+        }
+    }
+
+    impl TickRig {
+        fn at(&self, ms: u64) -> Instant {
+            self.now.get() + Duration::from_millis(ms)
+        }
+        fn go(&mut self, to: Instant) {
+            self.now.set(to);
+        }
+        /// The centre pixel of cell (0, 0), where the caret sits.
+        fn caret_px(&mut self) -> [u8; 4] {
+            self.h.render_rgba().expect("image").pixel(8, 12)
+        }
+    }
+
+    const CARET: [u8; 4] = [0xbb, 0xbb, 0xbb, 0xff];
+    const GROUND: [u8; 4] = [0x17, 0x17, 0x17, 0xff];
+
+    #[test]
+    fn an_unfocused_window_shows_the_caret_steady_with_no_timer() {
+        let mut r = tick_rig();
+        assert_eq!(r.caret_px(), CARET);
+        let t0 = r.now.get();
+        assert_eq!(r.h.blink_delay(t0), None, "no focus, no timer");
+        r.go(t0 + Duration::from_millis(800));
+        assert!(!r.h.blink_tick(r.now.get()));
+        assert_eq!(r.caret_px(), CARET);
+    }
+
+    #[test]
+    fn a_focused_terminal_ticks_530_on_530_off() {
+        let mut r = tick_rig();
+        let t0 = r.now.get();
+        r.h.set_window_focus(true, t0);
+        assert!(r.h.is_dirty(), "the focus asks for a frame");
+        assert_eq!(r.caret_px(), CARET, "lit at once");
+        assert_eq!(r.h.blink_delay(t0), Some(TICK));
+        let off = r.at(530);
+        r.go(off);
+        assert!(r.h.blink_tick(off), "turns off");
+        assert!(r.h.is_dirty());
+        assert_eq!(r.caret_px(), GROUND);
+        assert!(!r.h.is_dirty());
+        assert_eq!(r.h.blink_delay(off), Some(TICK));
+        let on = r.at(530);
+        r.go(on);
+        assert!(r.h.blink_tick(on));
+        assert_eq!(r.caret_px(), CARET);
+        // Losing the focus shows it steady and stops the timer.
+        let away = r.at(600);
+        r.go(away);
+        r.h.set_window_focus(false, away);
+        assert_eq!(r.caret_px(), CARET);
+        assert_eq!(r.h.blink_delay(away), None);
+    }
+
+    #[test]
+    fn typing_and_output_keep_the_caret_lit() {
+        let mut r = tick_rig();
+        let t0 = r.now.get();
+        r.h.set_window_focus(true, t0);
+        r.caret_px();
+        let dark = r.at(600);
+        r.go(dark);
+        r.h.blink_tick(dark);
+        assert_eq!(r.caret_px(), GROUND);
+        // A key with no echo: lit now, and the frame is asked for.
+        let key = r.at(10);
+        r.go(key);
+        assert!(r.h.caret_activity(key));
+        assert_eq!(r.caret_px(), CARET);
+        // Still lit a whole period after the key, dark after it.
+        r.go(key + Duration::from_millis(529));
+        assert!(!r.h.blink_tick(r.now.get()));
+        r.go(key + Duration::from_millis(530));
+        assert!(r.h.blink_tick(r.now.get()));
+        assert_eq!(r.caret_px(), GROUND);
+        // Output arrives: the frame that draws it lights the caret.
+        r.printed.set(true);
+        assert_eq!(r.caret_px(), CARET);
+        // A key the source heard (typed into the terminal) relights it at the next tick.
+        let later = r.at(530);
+        r.go(later);
+        assert!(r.h.blink_tick(later));
+        assert_eq!(r.caret_px(), GROUND);
+        r.typed.set(Some(later));
+        assert!(r.h.blink_tick(later), "the typed time lights it");
+        assert_eq!(r.caret_px(), CARET);
+    }
+
+    #[test]
+    fn no_timer_for_a_page_in_front_a_hollow_caret_or_blink_off() {
+        let mut r = tick_rig();
+        let t0 = r.now.get();
+        r.h.set_window_focus(true, t0);
+        r.caret_px();
+        assert!(r.h.blink_delay(t0).is_some());
+        r.h.set_hollow_cursor(true);
+        r.caret_px();
+        assert_eq!(r.h.blink_delay(t0), None, "a popup holds the keys");
+        r.h.set_hollow_cursor(false);
+        r.h.set_caret(CaretShape::Block, false);
+        r.caret_px();
+        assert_eq!(r.h.blink_delay(t0), None, "Blink is off");
+        r.go(r.at(600));
+        assert_eq!(r.caret_px(), CARET, "steady");
+        r.h.set_caret(CaretShape::Block, true);
+        r.caret_px();
+        assert!(r.h.blink_delay(r.now.get()).is_some());
+        // The sample (no terminal in front: Settings, the start screen) never ticks.
+        r.h.set_source(Box::new(SampleSource::new()));
+        r.h.render();
+        assert_eq!(r.h.blink_delay(r.now.get()), None);
+    }
+
+    #[test]
+    fn the_caret_shape_setting_reaches_the_frame() {
+        let mut r = tick_rig();
+        r.h.set_caret(CaretShape::Bar, true);
+        assert!(r.h.is_dirty());
+        let img = r.h.render_rgba().expect("image");
+        // The bar is two pixels at the cell's left edge (x 4 and 5); the cell's middle is the ground.
+        assert_eq!(img.pixel(4, 12), CARET);
+        assert_eq!(img.pixel(5, 12), CARET);
+        assert_eq!(img.pixel(8, 12), GROUND);
+        r.h.set_caret(CaretShape::Bar, true);
+        assert!(!r.h.is_dirty(), "the same setting is no change");
     }
 
     /// A glyph source whose fallback font arrives later (audit M2).

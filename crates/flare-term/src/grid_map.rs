@@ -44,12 +44,14 @@ pub fn snapshot_grid_into<T: EventListener>(term: &Term<T>, out: &mut Grid) {
             row: p.line,
             visible: shown,
             hollow: false,
+            shape: Default::default(),
         },
         _ => FCursor {
             col: point.column.0,
             row: 0,
             visible: false,
             hollow: false,
+            shape: Default::default(),
         },
     };
 }
@@ -172,6 +174,7 @@ mod tests {
                 row: 0,
                 visible: true,
                 hollow: false,
+                shape: Default::default(),
             }
         );
     }
@@ -315,6 +318,7 @@ mod tests {
                 row: 1,
                 visible: true,
                 hollow: false,
+                shape: Default::default(),
             }
         );
     }

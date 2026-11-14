@@ -3,7 +3,7 @@
 
 use crate::color::{Color, Palette, Rgba, resolve_bg, resolve_fg};
 use crate::glyph::GlyphKey;
-use crate::grid::{CellFlags, Grid};
+use crate::grid::{CaretShape, CellFlags, Grid};
 use crate::metrics::{CellMetrics, cell_origin};
 
 /// A solid rectangle in physical pixels.
@@ -108,8 +108,9 @@ pub fn build_scene_ground(
                 && cursor.row == row
                 && (cursor.col == col || (wide && cursor.col == col + 1));
             // A hollow caret (the keyboard is on a popup or a field) is an outline: the cell keeps
-            // its own colours and the edges are drawn on top below (audit V11).
-            let block = under_cursor && !cursor.hollow;
+            // its own colours and the edges are drawn on top below (audit V11). Only the block shape
+            // fills the cell; the others are drawn over the glyph below (rule 1233).
+            let block = under_cursor && !cursor.hollow && cursor.shape == CaretShape::Block;
             if block {
                 bg = palette.cursor;
                 fg = palette.cursor_accent;
@@ -135,9 +136,15 @@ pub fn build_scene_ground(
                     color: bg,
                 });
             }
-            if under_cursor && cursor.hollow {
-                caret_outline(
+            if under_cursor && !block {
+                let shape = if cursor.hollow {
+                    CaretShape::HollowBlock
+                } else {
+                    cursor.shape
+                };
+                caret_rects(
                     &mut scene.overlays,
+                    shape,
                     (x, y, w, m.cell_h),
                     m.underline_h,
                     palette.cursor,
@@ -203,6 +210,83 @@ fn caret_outline(
             h: eh,
             color,
         });
+    }
+}
+
+/// A caret that does not fill its cell, as rects drawn over the glyph (rule 1233). `cell` is the cell (both
+/// halves of a wide one); `hair` is the underline's thickness, so each size follows the display scale: the bar
+/// and the underline are 2 hairs, the pill 3 hairs wide and 2 hairs in from the top and the bottom. `Block`
+/// draws nothing here (the cell fill is the block).
+pub fn caret_rects(
+    out: &mut Vec<RectFill>,
+    shape: CaretShape,
+    cell: (i32, i32, u32, u32),
+    hair: u32,
+    color: Rgba,
+) {
+    let (x, y, w, h) = cell;
+    let hair = hair.max(1);
+    let rect = |x: i32, y: i32, w: u32, h: u32| RectFill { x, y, w, h, color };
+    match shape {
+        CaretShape::Block => {}
+        CaretShape::HollowBlock => caret_outline(out, cell, hair, color),
+        CaretShape::Bar => out.push(rect(x, y, (2 * hair).min(w), h)),
+        CaretShape::Underline => {
+            let t = (2 * hair).min(h);
+            out.push(rect(x, y + (h - t) as i32, w, t));
+        }
+        CaretShape::Pill => {
+            let pw = (3 * hair).min(w).max(1);
+            let inset = (2 * hair).min(h.saturating_sub(pw) / 2);
+            pill(out, (x, y + inset as i32, pw, h - 2 * inset), color);
+        }
+    }
+}
+
+/// A bar with round ends in the box `(x, y, w, h)`: a pixel is lit when its centre lies within the capsule
+/// (radius w / 2, less a quarter pixel so a 3 px pill loses its corners at 100%). Rows with the same span are
+/// merged, so the straight middle is one rect.
+fn pill(out: &mut Vec<RectFill>, (x, y, w, h): (i32, i32, u32, u32), color: Rgba) {
+    let r = w as f32 / 2.0;
+    let (top, bottom) = (r, (h as f32 - r).max(r));
+    let reach = (r - 0.25).max(0.5);
+    let span = |row: u32| -> (u32, u32) {
+        let cy = row as f32 + 0.5;
+        let dy = if cy < top {
+            top - cy
+        } else if cy > bottom {
+            cy - bottom
+        } else {
+            0.0
+        };
+        let lit: Vec<u32> = (0..w)
+            .filter(|&c| {
+                let dx = c as f32 + 0.5 - r;
+                dx * dx + dy * dy <= reach * reach
+            })
+            .collect();
+        match (lit.first(), lit.last()) {
+            (Some(&a), Some(&b)) => (a, b + 1 - a),
+            _ => (0, 0),
+        }
+    };
+    let mut row = 0;
+    while row < h {
+        let (off, width) = span(row);
+        let mut end = row + 1;
+        while end < h && span(end) == (off, width) {
+            end += 1;
+        }
+        if width > 0 {
+            out.push(RectFill {
+                x: x + off as i32,
+                y: y + row as i32,
+                w: width,
+                h: end - row,
+                color,
+            });
+        }
+        row = end;
     }
 }
 
@@ -284,6 +368,7 @@ mod tests {
             row: 0,
             visible: true,
             hollow: false,
+            shape: Default::default(),
         };
         let s = scene(&g);
         assert_eq!(
@@ -320,6 +405,7 @@ mod tests {
             row: 0,
             visible: true,
             hollow: false,
+            shape: Default::default(),
         };
         let s = scene(&g);
         assert_eq!(
@@ -427,6 +513,7 @@ mod tests {
             row: 0,
             visible: true,
             hollow: true,
+            shape: Default::default(),
         };
         let s = scene(&g);
         assert!(s.rects.is_empty(), "no filled block");
@@ -461,6 +548,7 @@ mod tests {
             row: 0,
             visible: true,
             hollow: true,
+            shape: Default::default(),
         };
         let s = scene(&g);
         assert!(s.rects.is_empty());
@@ -492,6 +580,7 @@ mod tests {
                 row: 1,
                 visible: true,
                 hollow: true,
+                shape: Default::default(),
             };
             let s = build_scene(&g, &p, &m, 3 * m.cell_w, 2 * m.cell_h);
             let (x, y) = cell_origin(1, 1, &m);
@@ -704,6 +793,7 @@ mod tests {
             row: 1,
             visible: true,
             hollow: false,
+            shape: Default::default(),
         };
         let s = by_ui_scene(&g);
         assert_eq!(s.rects.len(), 3);
@@ -717,5 +807,170 @@ mod tests {
         g.cell_mut(1, 0).bg = Color::Rgb(0x17, 0x17, 0x17);
         // The explicit background equals the ground: InGrid still skips it, as M1 did.
         assert!(scene(&g).rects.is_empty());
+    }
+
+    fn shaped(col: usize, shape: CaretShape) -> Grid {
+        let mut g = Grid::new(4, 2);
+        g.put_str(
+            0,
+            0,
+            "ABCD",
+            Color::DefaultFg,
+            Color::DefaultBg,
+            CellFlags::empty(),
+        );
+        g.cursor = Cursor {
+            col,
+            row: 0,
+            visible: true,
+            hollow: false,
+            shape,
+        };
+        g
+    }
+
+    fn rect(x: i32, y: i32, w: u32, h: u32, color: Rgba) -> RectFill {
+        RectFill { x, y, w, h, color }
+    }
+
+    #[test]
+    fn a_bar_caret_is_two_hairs_at_the_left_edge_over_the_glyph() {
+        let p = Palette::pt_default();
+        let s = scene(&shaped(1, CaretShape::Bar));
+        assert!(s.rects.is_empty(), "a bar fills no cell");
+        assert_eq!(s.overlays, vec![rect(12, 4, 2, 16, p.cursor)]);
+        assert_eq!(s.glyphs[1].color, p.fg, "the glyph keeps its own ink");
+    }
+
+    #[test]
+    fn an_underline_caret_is_two_hairs_at_the_cell_bottom() {
+        let p = Palette::pt_default();
+        let s = scene(&shaped(1, CaretShape::Underline));
+        assert!(s.rects.is_empty());
+        assert_eq!(s.overlays, vec![rect(12, 18, 8, 2, p.cursor)]);
+    }
+
+    #[test]
+    fn a_hollow_block_caret_is_the_cells_outline() {
+        let p = Palette::pt_default();
+        let s = scene(&shaped(1, CaretShape::HollowBlock));
+        assert!(s.rects.is_empty());
+        assert_eq!(
+            s.overlays,
+            vec![
+                rect(12, 4, 8, 1, p.cursor),
+                rect(12, 19, 8, 1, p.cursor),
+                rect(12, 4, 1, 16, p.cursor),
+                rect(19, 4, 1, 16, p.cursor),
+            ]
+        );
+        assert_eq!(s.glyphs[1].color, p.fg);
+    }
+
+    #[test]
+    fn a_pill_caret_is_three_hairs_wide_inset_two_with_round_ends() {
+        let p = Palette::pt_default();
+        let s = scene(&shaped(1, CaretShape::Pill));
+        assert!(s.rects.is_empty());
+        // The cell is (12, 4) 8x16: the pill runs from y 6 to 18, its end rows lose their corners.
+        assert_eq!(
+            s.overlays,
+            vec![
+                rect(13, 6, 1, 1, p.cursor),
+                rect(12, 7, 3, 10, p.cursor),
+                rect(13, 17, 1, 1, p.cursor),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_block_caret_is_still_the_default_and_fills_the_cell() {
+        let p = Palette::pt_default();
+        assert_eq!(CaretShape::default(), CaretShape::Block);
+        let s = scene(&shaped(1, CaretShape::Block));
+        assert_eq!(s.rects, vec![rect(12, 4, 8, 16, p.cursor)]);
+        assert!(s.overlays.is_empty());
+        assert_eq!(s.glyphs[1].color, p.cursor_accent);
+    }
+
+    #[test]
+    fn a_popup_holding_the_keys_draws_the_outline_whatever_the_shape() {
+        let p = Palette::pt_default();
+        for shape in [
+            CaretShape::Block,
+            CaretShape::HollowBlock,
+            CaretShape::Bar,
+            CaretShape::Underline,
+            CaretShape::Pill,
+        ] {
+            let mut g = shaped(1, shape);
+            g.cursor.hollow = true;
+            let s = scene(&g);
+            assert!(s.rects.is_empty(), "{shape:?}");
+            assert_eq!(s.overlays.len(), 4, "{shape:?}: four edges");
+            assert!(s.overlays.iter().all(|r| r.color == p.cursor), "{shape:?}");
+            assert_eq!(s.glyphs[1].color, p.fg, "{shape:?}");
+        }
+    }
+
+    #[test]
+    fn caret_shapes_follow_the_scale() {
+        let p = Palette::pt_default();
+        let m = cell_metrics(
+            &FontUnits {
+                units_per_em: 2048.0,
+                ascent: 1900.0,
+                descent: -480.0,
+                leading: 0.0,
+                advance: 1200.0,
+            },
+            2.0,
+        );
+        assert_eq!(m.underline_h, 2);
+        let at2 = |shape| build_scene(&shaped(1, shape), &p, &m, 400, 200);
+        let (cx, cy) = cell_origin(1, 0, &m);
+        assert_eq!(
+            at2(CaretShape::Bar).overlays,
+            vec![rect(cx, cy, 4, m.cell_h, p.cursor)]
+        );
+        assert_eq!(
+            at2(CaretShape::Underline).overlays,
+            vec![rect(cx, cy + m.cell_h as i32 - 4, m.cell_w, 4, p.cursor)]
+        );
+        let pill = at2(CaretShape::Pill).overlays;
+        let top = pill.first().expect("a pill");
+        let bottom = pill.last().expect("a pill");
+        assert_eq!(top.y, cy + 4, "inset two hairs");
+        assert_eq!(bottom.y + bottom.h as i32, cy + m.cell_h as i32 - 4);
+        assert!(top.w < 6 && bottom.w < 6, "round ends: {pill:?}");
+        assert!(
+            pill.iter().any(|r| r.w == 6 && r.x == cx),
+            "6 px across: {pill:?}"
+        );
+        assert!(pill.iter().all(|r| r.x >= cx && r.x + r.w as i32 <= cx + 6));
+        // Symmetric top to bottom.
+        assert_eq!((top.x, top.w), (bottom.x, bottom.w));
+    }
+
+    #[test]
+    fn an_underline_caret_on_a_wide_cell_spans_both_halves() {
+        let p = Palette::pt_default();
+        let mut g = Grid::new(3, 2);
+        g.put_str(
+            0,
+            0,
+            "中",
+            Color::DefaultFg,
+            Color::DefaultBg,
+            CellFlags::empty(),
+        );
+        g.cursor = Cursor {
+            col: 1,
+            row: 0,
+            visible: true,
+            hollow: false,
+            shape: CaretShape::Underline,
+        };
+        assert_eq!(scene(&g).overlays, vec![rect(4, 18, 16, 2, p.cursor)]);
     }
 }

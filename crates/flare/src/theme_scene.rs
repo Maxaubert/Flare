@@ -262,11 +262,12 @@ mod tests {
             "{label}: blank cell {blank:?}, want {}",
             look.term.background
         );
+        // The caret wears the accent, not the theme's cursor colour (rule 1233).
         let cursor = rgba_of(&frame, w, g.cursor);
         assert!(
-            near(cursor, opaque(&look.term.cursor), tol),
+            near(cursor, opaque(&look.caret.fill), tol),
             "{label}: cursor cell {cursor:?}, want {}",
-            look.term.cursor
+            look.caret.fill
         );
         let tabs = colour(&look.chrome.vars["--p-tabs"]);
         let title = rgba_of(&frame, w, (2, 2));

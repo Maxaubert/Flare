@@ -8,6 +8,7 @@ mod appctl;
 mod ask_agent;
 mod backend;
 mod badge;
+mod caret_blink;
 mod chords;
 mod chrome_apply;
 mod cli_open;

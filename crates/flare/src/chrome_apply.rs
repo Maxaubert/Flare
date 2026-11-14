@@ -187,11 +187,24 @@ pub fn ground_paint(look: &AppliedLook) -> GroundPaint {
     }
 }
 
+/// The grid's palette for a look: the theme's ([`palette_of`]) with the caret's colours (rule 1233): the accent,
+/// or the person's own cursor colour, and the ink of the glyph under a block caret.
+pub fn grid_palette(look: &AppliedLook) -> Palette {
+    let mut p = palette_of(&look.term);
+    if let Some(fill) = Rgba::from_hex(&look.caret.fill) {
+        p.cursor = Rgba { a: 255, ..fill };
+    }
+    if let Some(ink) = Rgba::from_hex(&look.caret.ink) {
+        p.cursor_accent = Rgba { a: 255, ..ink };
+    }
+    p
+}
+
 /// Hands the grid its palette and who paints the ground (marks it dirty only on a change).
 pub fn apply_to_host(host: &mut GridHost, look: &AppliedLook) {
     crate::term_ui::set_worn_link(&look.link_colour);
     crate::term_ui::set_worn_find(&look.find);
-    host.set_look(palette_of(&look.term), ground_paint(look));
+    host.set_look(grid_palette(look), ground_paint(look));
 }
 
 #[cfg(test)]
@@ -323,6 +336,42 @@ mod tests {
         assert_eq!(p.ansi[1], Rgba::rgb(0xff, 0x61, 0x5a));
         assert_eq!(p.cursor_accent, p.bg);
         assert_eq!(p.selection, Rgba::from_hex("#bbbbbb55").expect("hex"));
+    }
+
+    #[test]
+    fn the_grid_caret_wears_the_accent_and_the_persons_cursor_wins() {
+        let look = look_of("pt-default", 0, false);
+        let p = grid_palette(&look);
+        assert_eq!(p.cursor, Rgba::from_hex("#fe8f34").expect("hex"));
+        assert_eq!(Some(p.cursor), Rgba::from_hex(&look.caret.fill));
+        assert_eq!(Some(p.cursor_accent), Rgba::from_hex(&look.caret.ink));
+        // The rest of the palette is the theme's.
+        let theme = palette_of(&look.term);
+        assert_eq!((p.fg, p.bg, p.ansi), (theme.fg, theme.bg, theme.ansi));
+
+        let custom = flare_theme::resolve::CustomPalette {
+            bg: "#171717".into(),
+            fg: "#dedacf".into(),
+            cursor: "#ff00aa".into(),
+            selection: None,
+            ansi: Default::default(),
+            accent: Some("#fe8f34".into()),
+        };
+        let own = apply_look(&LookInput {
+            theme_id: "custom",
+            custom: Some(&custom),
+            draft: None,
+            background: None,
+            accent: None,
+            secondary: None,
+            edges: DEFAULT_WINDOW_EDGES,
+            see_through: 0,
+            glass_possible: false,
+        });
+        assert_eq!(
+            grid_palette(&own).cursor,
+            Rgba::from_hex("#ff00aa").expect("hex")
+        );
     }
 
     #[test]

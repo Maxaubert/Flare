@@ -497,6 +497,7 @@ mod tests {
             row: 1,
             visible: true,
             hollow: false,
+            shape: Default::default(),
         };
         let d = Decor {
             selection: vec![span(1, 0, 5)],

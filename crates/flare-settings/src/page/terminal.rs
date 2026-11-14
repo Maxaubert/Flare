@@ -10,6 +10,7 @@ use super::{
 };
 use crate::agent_prefs::agent_guard;
 use crate::help_prefs::help_enabled;
+use crate::look::CARET_SHAPES;
 use crate::new_tab::new_tab_folder;
 use crate::rows::{RowDef, row};
 use crate::term_prefs::{
@@ -183,7 +184,32 @@ fn text_section(env: &PageEnv<'_>) -> SectionModel {
             options: sizes,
         },
     );
-    section("text", vec![BlockModel::Row(family), BlockModel::Row(size)])
+    // The caret (rule 1233): its shape from the list, and whether it blinks.
+    let shapes = CARET_SHAPES
+        .iter()
+        .map(|(id, name)| Opt {
+            id: (*id).to_string(),
+            name: (*name).to_string(),
+            face: String::new(),
+        })
+        .collect();
+    let caret = plain_row(
+        def("term-caret"),
+        Control::Select {
+            value: env.look.caret_shape().to_string(),
+            options: shapes,
+        },
+    );
+    let blink = switch_row(def("term-caret-blink"), env.look.caret_blink());
+    section(
+        "text",
+        vec![
+            BlockModel::Row(family),
+            BlockModel::Row(size),
+            BlockModel::Row(caret),
+            BlockModel::Row(blink),
+        ],
+    )
 }
 
 /// The Command help section: one switch, on by default.
@@ -354,8 +380,45 @@ mod tests {
                 "dev-preview",
                 "term-font-family",
                 "term-font",
+                "term-caret",
+                "term-caret-blink",
                 "help-enabled",
             ]
+        );
+    }
+
+    #[test]
+    fn the_caret_rows_are_a_shape_list_and_a_blink_switch_with_no_tooltip() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(prefs.clone());
+        let face: &dyn Fn(&str) -> String = &face_of_test;
+        let page = build_terminal(&env(&prefs, &look, face));
+        let shape = the_row(&page, "term-caret");
+        assert_eq!(shape.label, "Caret shape");
+        assert_eq!(shape.row_tip, "", "a labelled control has no tooltip");
+        match &shape.control {
+            Control::Select { value, options } => {
+                assert_eq!(value, "block");
+                let names: Vec<&str> = options.iter().map(|o| o.name.as_str()).collect();
+                assert_eq!(names, ["Block", "Hollow block", "Bar", "Underline", "Pill"]);
+            }
+            other => panic!("expected a select, got {other:?}"),
+        }
+        let blink = the_row(&page, "term-caret-blink");
+        assert_eq!(blink.label, "Caret blink");
+        assert_eq!(blink.row_tip, "");
+        assert_eq!(blink.control, Control::Switch { on: true });
+
+        look.set_caret_shape("pill");
+        look.set_caret_blink(false);
+        let page = build_terminal(&env(&prefs, &look, face));
+        match &the_row(&page, "term-caret").control {
+            Control::Select { value, .. } => assert_eq!(value, "pill"),
+            other => panic!("expected a select, got {other:?}"),
+        }
+        assert_eq!(
+            the_row(&page, "term-caret-blink").control,
+            Control::Switch { on: false }
         );
     }
 
