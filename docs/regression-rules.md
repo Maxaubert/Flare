@@ -3965,62 +3965,87 @@ is the name every Windows OpenSSH knows; on OpenSSH 8.7 and later it is the same
 `KbdInteractiveAuthentication`, a keyword an older sshd refuses to start with.) A copy is kept as
 `sshd_config.flare-backup`; the person's other lines stay as they were; a second run replaces Flare's lines instead
 of adding more. A server never started has no config yet: the script copies Windows' `sshd_config_default` in, as sshd
-itself would, into a `%ProgramData%\ssh` folder made with sshd's own rights when it is missing (`SSHD_DIR_SDDL`). A
-server that was already running keeps its config. A failure at any step leaves the server as the script found it: a
+itself would, into a `%ProgramData%\ssh` folder made with sshd's own rights when it is missing (`SSHD_DIR_SDDL`).
+Before it copies, backs up or writes anything there, and before sshd starts, the `config` step checks the folder and
+then `sshd_config` (`Assert-AdminOnly`): neither may be a reparse point (junction or link), the owner must be SYSTEM,
+Administrators or TrustedInstaller, and no other principal may hold an Allow entry with any right that changes it
+(`WRITE_RIGHTS_MASK`: write and append data, attributes, delete, delete child, change rights, take ownership, generic
+write and all; CREATOR OWNER is allowed, since only those accounts can make a file there). A wrong one fails the step
+with "Other accounts can change the SSH server's settings folder, so Flare did not touch it." and the usual roll back
+(security review, 2026-11-14). A server that was already running keeps its config. A failure at any step leaves the server as the script found it: a
 server Flare started is stopped again, `sshd_config` is put back from the backup (or the copy Flare made is removed),
 its start type is put back, and Flare's own rules go, so a switch that went back off never leaves an SSH server
 running. The firewall: when sshd is not running, its existing `OpenSSH-Server-In-TCP` rule is set to the Private
 profile (and enabled) BEFORE `Start-Service` (the capability makes the rule for every profile); a running server's
 rule is left alone. The rule is made for TCP 22 on the Private profile when it is missing. Flare's own two rules let
-only Flare's program in, on the Private profile, from the local subnet: `Flare-Pairing-In` (TCP; the pairing port is
-picked at random in PR 3, so the rule names the program, not a port) and `Flare-Pairing-mDNS-In` (UDP 5353, the
-announcement). They are made again on every turn on, and the report's `rule=1` saves `flare.machines.firewallRule`, so
+only Flare's program in, on the Private profile, from the local subnet: `Flare-Pairing-In` (TCP, `-LocalPort
+47790-47794`: `PAIRING_PORTS`, the fixed range PR 3's pairing listener takes its port from, first free first) and
+`Flare-Pairing-mDNS-In` (UDP 5353, the announcement). They are made again on every turn on, and the report's `rule=1` saves `flare.machines.firewallRule`, so
 turning off removes them (rule 1255). No rule names the Public or Domain profile. The elevation (`elevation_argv`) is
 a hidden `powershell.exe -Command` that runs `Start-Process powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle
 Hidden -ArgumentList ... -EncodedCommand <script>`: the script travels inline (UTF-16LE base64, without comment lines
 and indent, `ps_compact`), so no script file exists that another program could swap before the prompt is answered.
 The whole command line is held under Windows' 32 767 characters (`COMMAND_LINE_MAX`; the tests hold every script under
-half of it with long paths, and a longer one is refused before anything runs). The script reports `ok`, `installed`,
-`started`, `rule` and, on a failure, the `step` and Windows' words as `key=value` lines into `result.txt` in a new
-folder Flare made for this run (`fresh_folder`: `create_dir` never reuses a folder that was there); the script writes
-it only when that folder is a plain folder (not a link) and the file is not there yet, and Flare removes the folder
-after. The result is untrusted text: `parse_report` reads at most 4 KB, only known keys, each once, flags `0` or `1`,
-a known step, and either `ok=1` or a failed step; Windows' words are cut to 300 characters without control
-characters. Anything else is an error: the setup counts as failed with the plain line "Computer sharing could not be
-set up.". A failed step becomes one plain line (`step_line`, Windows' words go to the log). No result file means the
-prompt was declined: the switch goes back off with nothing to say. `installed` or `started` make the server Flare's
+half of it with long paths, and a longer one is refused before anything runs). The elevated script writes no file
+anywhere (a result file in the user's temp could be redirected by a junction swapped in by the same user, security
+review, 2026-11-14): it reports only through its exit code, `report_code`: `EXIT_BASE` (17920) plus 8 times the failed
+step's number (0 when ok; 1 to 7 for `install`, `start`, `config`, `passwords`, `firewall`, `keys`, `stop`, and 15 for
+a step it does not know) plus `installed` (1), `started` (2) and `rule` (4). The outer, non-elevated PowerShell reads
+it with `Start-Process ... -Wait -PassThru` and `.ExitCode` and prints one line, `flare-sharing=<code>`, or
+`flare-sharing=declined` when Start-Process fails (No at the UAC prompt). That line is untrusted text:
+`parse_outcome` reads at most 256 bytes, exactly one `flare-sharing=` line, the code in decimal digits within Flare's
+range and with a known step (`parse_code`). Anything else is an error: the setup counts as failed with the plain line
+"Computer sharing could not be set up.". A failed step becomes one plain line (`step_line`; Windows' own words are
+not carried). `declined`, or a PowerShell that did not start, puts the switch back off with nothing to say. `installed` or `started` make the server Flare's
 (`flare.machines.serverByFlare`), which turning off reads (rule 1255); it stays Flare's until turning off stops it. The
 tests read the script as text and the elevation as its argv; nothing is ever run (`SharingOs` is a trait and the tests
 use `sharing::fake::FakeOs`). Real runs: `docs/remote-sessions-manual-checks.md`. Held by
 `the_windows_script_installs_starts_and_opens_the_private_profile_only`,
 `a_server_flare_starts_takes_keys_only_and_a_running_one_is_left_alone`,
 `flares_own_firewall_rules_are_narrow_and_go_when_the_setup_fails`,
-`the_elevated_scripts_write_the_result_only_into_a_plain_new_file`,
+`the_ssh_folder_and_config_are_checked_before_flare_writes_there`,
+`the_elevated_scripts_report_through_their_exit_code_and_write_no_file`,
+`the_exit_code_carries_the_report_and_is_read_strictly`, `the_outer_line_is_read_strictly`,
 `the_elevation_call_runs_the_script_inline_with_runas_and_waits`,
-`the_elevated_command_line_stays_under_windows_limit`, `a_result_file_is_read_strictly`,
-`a_result_file_is_read_and_a_failed_step_is_one_plain_line` and
+`the_elevated_command_line_stays_under_windows_limit`, `a_failed_step_is_one_plain_line`,
+`powershell_that_did_not_start_leaves_the_switch_off` and
 `a_declined_or_failed_windows_setup_leaves_the_switch_off`.
 
 1254. **On a Mac, turning Computer sharing on uses Remote Login: no prompt when port 22 answers, else the
 administrator prompt, else the Flare dialog "Turn on Remote Login" that opens Sharing and carries on by itself.**
 Machine pairing PR 2, 2026-11-14 (spec, "Setup per OS"; mockup, "System prompts"). `turn_on` probes 127.0.0.1:22
 (500 ms); when it answers sharing is on and the server is the person's. Otherwise `osascript -e 'do shell script
-"/usr/sbin/systemsetup -setremotelogin on" with administrator privileges'` (`osascript_argv`) shows macOS' password
-prompt; Cancel there (error -128, `mac_declined`) puts the switch back off. systemsetup may print the Full Disk Access
+"<mac_on_command()>" with administrator privileges'` (`osascript_argv`) shows macOS' password prompt; Cancel there (error -128,
+`mac_declined`) puts the switch back off. Keys only (security review, 2026-11-14, Max chose "Keys only" for a server
+Flare turns on): `mac_on_command` first writes `/etc/ssh/sshd_config.d/000-flare.conf` (`MAC_KEYS_FILE`) with `# Flare
+Computer sharing: keys only`, `PasswordAuthentication no` and `KbdInteractiveAuthentication no`, then runs
+`systemsetup -setremotelogin on`, all as one root command. macOS' own `/etc/ssh/sshd_config` reads `Include
+/etc/ssh/sshd_config.d/*` before any setting of its own (macOS 13 and later), and sshd keeps the first value it
+reads, so these lines win. When `systemsetup -getremotelogin` does not then say `Remote Login: On` (macOS refused),
+the same command removes the file, so a Remote Login the person turns on by hand keeps macOS' own setting. A Remote
+Login that was already on is never touched. The Mac firewall: after port 22 answers, and before the password prompt
+when it does not, `socketfilterfw --getblockall` (`/usr/libexec/ApplicationFirewall/socketfilterfw`, no root) is
+asked through `SharingOs::firewall_block_all`; when it blocks all incoming connections (`blocks_all` reads each
+wording macOS used) sharing does not count as working: the Notice says "The Mac firewall blocks all incoming
+connections. Turn that off in System Settings, Network, Firewall, Options." and the switch stays off. Asking before
+the prompt means Flare never turns on a server nobody can reach and leaves it on. A tool that does not answer is not
+a block. systemsetup may print the Full Disk Access
 refusal and still succeed as a process, so the port decides: it is probed six times 500 ms apart, and when it never
 answers the sharing dialog shows "Turn on Remote Login", the spinner and "Flare continues when it is on", Cancel and
 Open System Settings (`x-apple.systempreferences:com.apple.Sharing-Settings.extension`, opened with `/usr/bin/open` on
 a worker; the dialog stays). A worker watches port 22 every second; the moment it answers the dialog closes and the
-switch is on (the server is the person's, they turned it on). Cancel ends the watch (a late answer is ignored by its
-number) and the switch goes back off. Flare never asks for Full Disk Access. Flare does not change macOS' sshd
-settings: Remote Login keeps macOS' own password setting (the Windows keys-only change of rule 1253 is not made on a
-Mac; security review, 2026-11-14). `Flare.app`'s Info.plist carries
+switch is on (the server is the person's, they turned it on), unless the firewall blocks all, which is that Notice
+instead. Cancel ends the watch (a late answer is ignored by its
+number) and the switch goes back off. Flare never asks for Full Disk Access. `Flare.app`'s Info.plist carries
 `NSLocalNetworkUsageDescription` and `NSBonjourServices` = `_flare-pair._tcp` for the local network prompt pairing
 (PR 3) needs. Held by `a_mac_with_remote_login_on_needs_no_prompt`,
 `a_mac_asks_for_the_password_and_cancel_puts_the_switch_back`,
 `a_refused_mac_shows_turn_on_remote_login_and_continues_by_itself`,
 `cancel_in_turn_on_remote_login_puts_the_switch_back_off`,
 `a_refused_mac_shows_turn_on_remote_login_over_the_page`,
+`a_mac_firewall_that_blocks_all_stops_sharing_with_one_line`,
+`remote_login_turned_on_by_hand_behind_a_block_all_firewall_is_not_sharing`,
+`the_mac_firewall_block_all_answer_is_read`,
 `the_mac_runs_systemsetup_through_the_administrator_prompt` and (on a Mac)
 `the_app_plist_names_the_app_its_version_its_mac_its_category_and_why_it_wants_the_mic`.
 
@@ -4034,18 +4059,24 @@ starts `flare-pair:` go (`strip_flare_keys`; every other line, comments and blan
 written in place, so its owner and mode stay); on Windows, when the server is to stop, a key went into
 `administrators_authorized_keys` (`flare.machines.adminKeys`, set by pairing in PR 3), or Flare's firewall rules are
 in place (`flare.machines.firewallRule`, set when the on script made them), one elevated `windows_off_script`
-(inline, read back strictly, as in rule 1253) removes those `flare-pair:` lines, stops sshd and sets it to Manual
+(inline, read back strictly, as in rule 1253) removes those `flare-pair:` lines (after the same `Assert-AdminOnly`
+check of `%ProgramData%\ssh` and the keys file), stops sshd and sets it to Manual
 (only with Stop it), and removes Flare's two firewall rules; the server's own rule, its `sshd_config` and the
 capability stay. So turning off with Keep it, on a server that was the person's, still removes Flare's rules (security
 review, 2026-11-14). On a Mac, Stop it runs `systemsetup -f
--setremotelogin off` through the administrator prompt, and when port 22 still answers after 2.5 s the dialog says
-"Remote Login is still on. Turn it off in System Settings, General, Sharing." A declined or failed clean up is that
+-setremotelogin off` through the administrator prompt (`mac_off_command`; the same root command then removes
+`000-flare.conf` once `systemsetup -getremotelogin` says `Remote Login: Off`, so a server left on stays keys only),
+and when port 22 still answers after 2.5 s the dialog says "Remote Login is still on. Turn it off in System Settings,
+General, Sharing." Cancel at that password prompt (error -128) skips the wait and says "macOS did not allow the
+change, so Remote Login stays on." at once; the server stays Flare's. A declined or failed clean up is that
 dialog's one line (the switch stays off). A done stop clears `serverByFlare`, a done admin clean up clears
 `adminKeys`, a done clean up clears `firewallRule` (a failed one keeps it, so the next turn off tries again); Keep it
 leaves the server Flare's, so the next turn off asks again. Held by
 `turning_off_removes_flares_keys_and_offers_to_stop_only_flares_server`,
 `turning_off_removes_flares_firewall_rules_even_when_the_server_is_not_flares`,
-`a_mac_stops_remote_login_and_says_so_when_it_stays_on`, `the_windows_off_script_removes_only_what_flare_added`,
+`a_mac_stops_remote_login_and_says_so_when_it_stays_on`,
+`cancel_at_the_mac_password_prompt_when_turning_off_says_so_at_once`,
+`the_windows_off_script_removes_only_what_flare_added`,
 `only_the_keys_flare_added_are_removed` and `turning_sharing_off_asks_to_stop_flares_server`.
 
 1256. **Computer sharing on means this computer is announced and takes pairing requests; off means neither. Flare's

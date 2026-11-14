@@ -156,7 +156,8 @@ in-memory pipe, error sorting, argv building), and UI tests for the page. The OS
 ## Left to the builder
 
 - Exact copy of the lines and buttons (keep them short, no tooltips on labelled controls).
-- Port numbers (pairing port picked at random, sent in the mDNS record).
+- Port numbers (pairing port sent in the mDNS record). Since the PR 2 security review (2026-11-14) it is the first
+  free port of the fixed range 47790 to 47794 (`sharing::PAIRING_PORTS`), so Windows' firewall rule can name it.
 - How "nearby" rows look while being found (a spinner or a quiet "Looking..." line).
 
 ## Open questions for Max

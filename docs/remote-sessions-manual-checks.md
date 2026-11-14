@@ -165,15 +165,19 @@ installed or not, sshd running or not, Remote Login on or off).
 
 - [ ] Windows, no SSH server: Computer sharing on shows one UAC prompt; after it (up to a minute while Windows adds
   the feature) the switch is on. `Get-Service sshd` is Running and Automatic; `(Get-NetFirewallRule -Name
-  OpenSSH-Server-In-TCP).Profile` is `Private`; `Flare-Pairing-In` (TCP) and `Flare-Pairing-mDNS-In` (UDP 5353)
+  OpenSSH-Server-In-TCP).Profile` is `Private`; `Flare-Pairing-In` (TCP 47790-47794) and `Flare-Pairing-mDNS-In` (UDP 5353)
   exist for Flare's exe, Private only, remote address `LocalSubnet`; the first lines of
   `%ProgramData%\ssh\sshd_config` are `# Flare Computer sharing: keys only`, `PasswordAuthentication no` and
   `ChallengeResponseAuthentication no`, above any `Match` block, the rest is Windows' default, and
   `sshd_config.flare-backup` is next to it; `sshd -T | findstr /i "passwordauthentication kbdinteractive"` (elevated)
   says `no` for both; `ssh -o PreferredAuthentications=password,keyboard-interactive localhost` is refused.
-- [ ] Windows: the elevated run leaves no `flare-sharing-*.ps1` in `%TEMP%`, and its `flare-sharing-*` folder is gone
-  afterwards. Note the Windows build and the OpenSSH version (`sshd -V`), and that the UAC prompt names Windows
-  PowerShell (the long inline command works there).
+- [ ] Windows: the elevated run leaves nothing in `%TEMP%` (no `flare-sharing-*` file or folder), and Flare's log has
+  no "could not be read" line (the exit code came back). Note the Windows build and the OpenSSH version (`sshd -V`),
+  and that the UAC prompt names Windows PowerShell (the long inline command works there).
+- [ ] Windows, a stopped sshd whose `%ProgramData%\ssh` gives Users Modify (`icacls %ProgramData%\ssh /grant
+  Users:M`): Computer sharing on shows the dialog "Other accounts can change the SSH server's settings folder, so
+  Flare did not touch it.", `sshd_config` is unchanged, sshd is still stopped, and the switch is off. Put the rights
+  back afterwards (`icacls %ProgramData%\ssh /remove:g Users`).
 - [ ] Windows, SSH server already running: the switch is on after one UAC prompt; `sshd_config` and the sshd rule's
   profiles are as they were.
 - [ ] Windows, SSH server installed but stopped (its rule on every profile, and a `sshd_config` of your own with
@@ -199,9 +203,17 @@ installed or not, sshd running or not, Remote Login on or off).
   System Settings) or "Turn on Remote Login" shows. Open System Settings opens General > Sharing; turning Remote Login
   on there closes the dialog within about a second and the switch is on. Note the macOS version.
 - [ ] Mac: Cancel at the password prompt puts the switch back off; Cancel in "Turn on Remote Login" too.
-- [ ] Mac turn off with Stop it: Remote Login goes off (or the dialog says where to turn it off).
-- [ ] Mac: Flare leaves macOS' sshd settings alone (`/etc/ssh/sshd_config` and `sshd_config.d` are as they were).
-  Password logins over Remote Login follow macOS' own setting; note what it is on the test Mac.
+- [ ] Mac turn off with Stop it: Remote Login goes off (or the dialog says where to turn it off), and
+  `/etc/ssh/sshd_config.d/000-flare.conf` is gone. Cancel at that password prompt shows "macOS did not allow the
+  change, so Remote Login stays on." at once.
+- [ ] Mac keys only: `grep -n Include /etc/ssh/sshd_config` shows `Include /etc/ssh/sshd_config.d/*` before any
+  setting. After Flare turned Remote Login on, `/etc/ssh/sshd_config.d/000-flare.conf` holds Flare's three lines,
+  `sudo sshd -T | grep -Ei 'passwordauthentication|kbdinteractive'` says `no` for both, and `ssh -o
+  PreferredAuthentications=password,keyboard-interactive localhost` is refused. When macOS refused (no Full Disk
+  Access), the file is not there. With Remote Login already on, `sshd_config.d` is as it was.
+- [ ] Mac firewall: with System Settings, Network, Firewall, Options, "Block all incoming connections" on, Computer
+  sharing on shows the dialog that says to turn that off, no password prompt, and the switch is off. With it off
+  again, the switch turns on.
 - [ ] Mac release build: the first launch after this PR shows no local network prompt yet (nothing browses until PR
   3); `plutil -p Flare.app/Contents/Info.plist` lists `NSLocalNetworkUsageDescription` and `NSBonjourServices`.
 

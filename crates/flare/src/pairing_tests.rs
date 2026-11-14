@@ -207,7 +207,7 @@ fn an_admin_account_adds_the_key_with_one_elevated_script() {
     let dir = tempfile::tempdir().unwrap();
     let os = Arc::new(FakeOs::new(Platform::Windows));
     os.admin_account.store(true, Ordering::SeqCst);
-    *os.elevated.lock().unwrap() = Ok("ok=1\n".into());
+    *os.elevated.lock().unwrap() = Ok(crate::sharing::fake::ok_outcome(false, false, false));
     let prefs = PrefStore::memory();
     let (v, host_events, ht) =
         host_thread_with(Arc::clone(&os), Arc::new(FakeIo::default()), prefs.clone());
@@ -245,7 +245,7 @@ fn an_admin_account_adds_the_key_with_one_elevated_script() {
         "noted for the clean up"
     );
     // Declined at the prompt: the viewer gets the host's one line, nothing is saved.
-    *os.elevated.lock().unwrap() = Err("declined".into());
+    *os.elevated.lock().unwrap() = Ok("flare-sharing=declined\r\n".into());
     let view_io = Arc::new(FakeIo::default());
     let (v, host_events, ht) = host_thread(Arc::clone(&os), Arc::new(FakeIo::default()));
     let (codes, view_events, vt) =
@@ -738,7 +738,7 @@ fn removing_a_computer_that_reaches_this_one_removes_its_key() {
 fn removing_a_computer_whose_key_is_in_the_admin_file_asks_once() {
     let hub = Arc::new(Hub::default());
     let mut host = page(&hub, "192.168.0.139", pc(), true);
-    *host.os.elevated.lock().unwrap() = Ok("ok=1\n".into());
+    *host.os.elevated.lock().unwrap() = Ok(crate::sharing::fake::ok_outcome(false, false, false));
     let key = parse_public_key(&host_key(), &[ED25519]).unwrap().key;
     *host.io.incoming.lock().unwrap() = vec![crate::machines::Incoming {
         id: "mini".into(),
@@ -800,7 +800,7 @@ fn a_key_that_went_in_as_sharing_turned_off_comes_out_again() {
     for admin in [false, true] {
         let os = Arc::new(FakeOs::new(Platform::Windows));
         os.admin_account.store(admin, Ordering::SeqCst);
-        *os.elevated.lock().unwrap() = Ok("ok=1\n".into());
+        *os.elevated.lock().unwrap() = Ok(crate::sharing::fake::ok_outcome(false, false, false));
         *os.stop_on_add.lock().unwrap() = Some(Arc::default());
         let (host_io, prefs) = (Arc::new(FakeIo::default()), PrefStore::memory());
         let (v, host_events, ht) =
