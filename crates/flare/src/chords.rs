@@ -46,6 +46,16 @@ pub trait ChordTarget {
     /// macOS Cmd+plus, Cmd+minus, Cmd+0: the tab in front one size up (1), down (-1), or back to
     /// the settings' size (0).
     fn zoom(&mut self, step: i32);
+    /// Ctrl+Shift+T: the tab closed last opens again (rule 1236); nothing when no tab was closed.
+    fn reopen_tab(&mut self);
+    /// Ctrl+Shift+N: the folder picker; a pick opens a tab there.
+    fn new_tab_in_folder(&mut self);
+    /// Ctrl+Shift+R: the linked machines' menu; a pick opens a tab on that machine.
+    fn remote_tab(&mut self);
+    /// Ctrl+Shift+L: the browser panel beside the tab in front, its address field holding the keys.
+    fn open_browser(&mut self);
+    /// Ctrl+Shift+E: the front tab's folder in Explorer (Finder on a Mac); nothing for a remote tab.
+    fn open_tab_folder(&mut self);
 }
 
 /// App.tsx `onKey`, in order: a Ctrl chord that is not Tab, Control or Shift ends a Most recent walk;
@@ -107,6 +117,11 @@ pub fn dispatch(ev: &KeyEvent, ctx: &KeyContext, t: &mut dyn ChordTarget) -> Dis
         ChordId::ZoomIn => t.zoom(1),
         ChordId::ZoomOut => t.zoom(-1),
         ChordId::ZoomReset => t.zoom(0),
+        ChordId::ReopenTab => t.reopen_tab(),
+        ChordId::NewTabIn => t.new_tab_in_folder(),
+        ChordId::RemoteTab => t.remote_tab(),
+        ChordId::Browser => t.open_browser(),
+        ChordId::OpenFolder => t.open_tab_folder(),
     }
     Dispatch::Taken
 }
@@ -180,6 +195,21 @@ mod tests {
         fn zoom(&mut self, step: i32) {
             self.calls.push(format!("zoom({step})"));
         }
+        fn reopen_tab(&mut self) {
+            self.calls.push("reopen_tab".into());
+        }
+        fn new_tab_in_folder(&mut self) {
+            self.calls.push("new_tab_in_folder".into());
+        }
+        fn remote_tab(&mut self) {
+            self.calls.push("remote_tab".into());
+        }
+        fn open_browser(&mut self) {
+            self.calls.push("open_browser".into());
+        }
+        fn open_tab_folder(&mut self) {
+            self.calls.push("open_tab_folder".into());
+        }
     }
 
     fn on() -> KeyContext {
@@ -235,12 +265,64 @@ mod tests {
             (k("F1", "F1"), "help"),
             (k("P", "KeyP").ctrl().shift(), "panel"),
             (k("O", "KeyO").ctrl().shift(), "panel_focus"),
+            (k("T", "KeyT").ctrl().shift(), "reopen_tab"),
+            (k("N", "KeyN").ctrl().shift(), "new_tab_in_folder"),
+            (k("R", "KeyR").ctrl().shift(), "remote_tab"),
+            (k("L", "KeyL").ctrl().shift(), "open_browser"),
+            (k("E", "KeyE").ctrl().shift(), "open_tab_folder"),
         ];
         for (ev, call) in cases {
             let (d, calls) = run(&ev, &c);
             assert_eq!(d, Dispatch::Taken, "{call}");
             assert!(calls.contains(&call.to_string()), "{call}: {calls:?}");
         }
+    }
+
+    #[test]
+    fn the_app_keys_are_taken_in_a_plain_shell_and_a_full_screen_program_and_ctrl_t_still_opens() {
+        // Rule 1236: no agent, no agent hotkeys, vim in front: the five keys are still the app's.
+        let c = KeyContext {
+            agent_here: false,
+            agent_keys: false,
+            full_screen: true,
+            ..on()
+        };
+        for (key, call) in [
+            ("T", "reopen_tab"),
+            ("N", "new_tab_in_folder"),
+            ("R", "remote_tab"),
+            ("L", "open_browser"),
+            ("E", "open_tab_folder"),
+        ] {
+            let (d, calls) = run(&k(key, &format!("Key{key}")).ctrl().shift(), &c);
+            assert_eq!(d, Dispatch::Taken, "{call}");
+            assert_eq!(calls, vec!["commit_walk".to_string(), call.to_string()]);
+            // The letter without Shift is the shell's (Ctrl+E, Ctrl+L, Ctrl+R, Ctrl+N mean things there).
+            let low = key.to_lowercase();
+            if low != "t" {
+                let (d, calls) = run(&k(&low, &format!("Key{key}")).ctrl(), &c);
+                assert_eq!(d, Dispatch::NotAChord, "ctrl+{low}");
+                assert!(!calls.contains(&call.to_string()), "ctrl+{low}");
+            }
+        }
+        assert_eq!(
+            run(&k("t", "KeyT").ctrl(), &c).1,
+            vec!["commit_walk".to_string(), "new_tab".to_string()]
+        );
+        // Under a question they do nothing and the shell behind still never hears them.
+        let mut t = FakeTarget {
+            blocked: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            dispatch(&k("T", "KeyT").ctrl().shift(), &c, &mut t),
+            Dispatch::Taken
+        );
+        assert!(
+            !t.calls.contains(&"reopen_tab".to_string()),
+            "{:?}",
+            t.calls
+        );
     }
 
     #[test]
@@ -410,6 +492,11 @@ mod tests {
             (k("+", "Equal").meta().shift(), "zoom(1)"),
             (k("-", "Minus").meta(), "zoom(-1)"),
             (k("0", "Digit0").meta(), "zoom(0)"),
+            (k("T", "KeyT").meta().shift(), "reopen_tab"),
+            (k("N", "KeyN").meta().shift(), "new_tab_in_folder"),
+            (k("R", "KeyR").meta().shift(), "remote_tab"),
+            (k("L", "KeyL").meta().shift(), "open_browser"),
+            (k("E", "KeyE").meta().shift(), "open_tab_folder"),
         ];
         for (ev, call) in cases {
             let (d, calls) = run(&ev, &c);

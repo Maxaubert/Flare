@@ -39,10 +39,20 @@ pub enum ChordId {
     ZoomOut,
     /// macOS Cmd+0: back to the size the settings give.
     ZoomReset,
+    /// Ctrl+Shift+T: the tab closed last comes back, its agent session resumed (rule 1236).
+    ReopenTab,
+    /// Ctrl+Shift+N: the folder picker, then a tab in the folder picked.
+    NewTabIn,
+    /// Ctrl+Shift+R: the linked machines; a pick opens a tab there.
+    RemoteTab,
+    /// Ctrl+Shift+L: the browser panel beside the tab, its address field holding the keys.
+    Browser,
+    /// Ctrl+Shift+E: the tab's folder in Explorer (Finder on a Mac).
+    OpenFolder,
 }
 
 /// Every chord, in search order.
-pub const ORDER: [ChordId; 14] = [
+pub const ORDER: [ChordId; 19] = [
     ChordId::Help,
     ChordId::Fullscreen,
     ChordId::NextTab,
@@ -50,6 +60,7 @@ pub const ORDER: [ChordId; 14] = [
     ChordId::Settings,
     ChordId::FindTab,
     ChordId::Sidebar,
+    ChordId::ReopenTab,
     ChordId::NewTab,
     ChordId::CloseTab,
     ChordId::Find,
@@ -57,6 +68,10 @@ pub const ORDER: [ChordId; 14] = [
     ChordId::SystemMenu,
     ChordId::Panel,
     ChordId::PanelFocus,
+    ChordId::NewTabIn,
+    ChordId::RemoteTab,
+    ChordId::Browser,
+    ChordId::OpenFolder,
 ];
 
 /// The chords only macOS has, searched after `ORDER` there.
@@ -206,8 +221,35 @@ fn sidebar_agent_matches(e: &KeyEvent, c: &KeyContext) -> bool {
     primary(e, c) && !e.shift && k(e) == "s" && c.vertical
 }
 
+/// Without Shift: Ctrl+Shift+T reopens the tab closed last (rule 1236).
 fn new_tab_matches(e: &KeyEvent, c: &KeyContext) -> bool {
-    primary(e, c) && k(e) == "t"
+    primary(e, c) && !e.shift && k(e) == "t"
+}
+
+/// The app's modifier with Shift and this letter, by the layout's letter (rule 11): the app keys of rule 1236. With
+/// Alt too (AltGr on some layouts) the key is the shell's.
+fn shift_letter(e: &KeyEvent, c: &KeyContext, l: char) -> bool {
+    primary(e, c) && e.shift && letter(e, l)
+}
+
+fn reopen_tab_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    shift_letter(e, c, 't')
+}
+
+fn new_tab_in_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    shift_letter(e, c, 'n')
+}
+
+fn remote_tab_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    shift_letter(e, c, 'r')
+}
+
+fn browser_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    shift_letter(e, c, 'l')
+}
+
+fn open_folder_matches(e: &KeyEvent, c: &KeyContext) -> bool {
+    shift_letter(e, c, 'e')
 }
 
 fn close_tab_matches(e: &KeyEvent, c: &KeyContext) -> bool {
@@ -435,6 +477,30 @@ static ZOOM_RESET: ChordDef = ChordDef {
     agent: None,
 };
 
+/// One of the app keys of rule 1236: Ctrl+Shift+letter on Windows, Cmd+Shift+letter on a Mac, always the app's
+/// (a full-screen program keeps the same letter without Shift).
+const fn app_key(
+    label: &'static str,
+    mac_label: &'static str,
+    matches: fn(&KeyEvent, &KeyContext) -> bool,
+) -> ChordDef {
+    ChordDef {
+        label,
+        mac_label,
+        mac_agent_label: "",
+        shell_too: false,
+        under_modal: UnderModal::Swallow,
+        matches,
+        agent: None,
+    }
+}
+
+static REOPEN_TAB: ChordDef = app_key("Ctrl+Shift+T", "\u{21e7}\u{2318}T", reopen_tab_matches);
+static NEW_TAB_IN: ChordDef = app_key("Ctrl+Shift+N", "\u{21e7}\u{2318}N", new_tab_in_matches);
+static REMOTE_TAB: ChordDef = app_key("Ctrl+Shift+R", "\u{21e7}\u{2318}R", remote_tab_matches);
+static BROWSER: ChordDef = app_key("Ctrl+Shift+L", "\u{21e7}\u{2318}L", browser_matches);
+static OPEN_FOLDER: ChordDef = app_key("Ctrl+Shift+E", "\u{21e7}\u{2318}E", open_folder_matches);
+
 /// The definition of one chord.
 pub fn chord(id: ChordId) -> &'static ChordDef {
     match id {
@@ -455,6 +521,11 @@ pub fn chord(id: ChordId) -> &'static ChordDef {
         ChordId::ZoomIn => &ZOOM_IN,
         ChordId::ZoomOut => &ZOOM_OUT,
         ChordId::ZoomReset => &ZOOM_RESET,
+        ChordId::ReopenTab => &REOPEN_TAB,
+        ChordId::NewTabIn => &NEW_TAB_IN,
+        ChordId::RemoteTab => &REMOTE_TAB,
+        ChordId::Browser => &BROWSER,
+        ChordId::OpenFolder => &OPEN_FOLDER,
     }
 }
 
@@ -929,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_w_and_ctrl_shift_w_both_close_ctrl_t_and_ctrl_shift_t_both_open() {
+    fn ctrl_w_and_ctrl_shift_w_both_close_and_ctrl_shift_t_reopens() {
         let c = on();
         assert_eq!(chord_of(&ev("w").ctrl(), &c), Some(ChordId::CloseTab));
         assert_eq!(
@@ -937,10 +1008,90 @@ mod tests {
             Some(ChordId::CloseTab)
         );
         assert_eq!(chord_of(&ev("t").ctrl(), &c), Some(ChordId::NewTab));
+        // Rule 1236: Shift makes it the reopen key, as in a browser.
         assert_eq!(
             chord_of(&KeyEvent::new("T", "").ctrl().shift(), &c),
-            Some(ChordId::NewTab)
+            Some(ChordId::ReopenTab)
         );
+    }
+
+    const APP_KEYS: [(ChordId, char); 5] = [
+        (ChordId::ReopenTab, 't'),
+        (ChordId::NewTabIn, 'n'),
+        (ChordId::RemoteTab, 'r'),
+        (ChordId::Browser, 'l'),
+        (ChordId::OpenFolder, 'e'),
+    ];
+
+    #[test]
+    fn the_app_keys_take_ctrl_shift_letters_everywhere_and_leave_the_plain_letters_to_the_shell() {
+        // Rule 1236: always on, agent hotkeys or not, agent or plain shell, full-screen program or prompt.
+        let contexts = [
+            on(),
+            KeyContext {
+                agent_here: false,
+                agent_keys: false,
+                ..on()
+            },
+            KeyContext {
+                agent_keys: true,
+                ..on()
+            },
+            KeyContext {
+                full_screen: true,
+                agent_here: false,
+                ..on()
+            },
+        ];
+        for c in contexts {
+            for (id, l) in APP_KEYS {
+                let upper = l.to_ascii_uppercase().to_string();
+                let code = format!("Key{upper}");
+                let e = KeyEvent::new(&upper, &code).ctrl().shift();
+                assert_eq!(chord_of(&e, &c), Some(id), "ctrl+shift+{l}");
+                assert!(app_owns_key(&e, &c), "ctrl+shift+{l}");
+                // The same letter without Shift stays the shell's (Claude's Ctrl+E, Ctrl+L, Ctrl+R; readline's too).
+                // Ctrl+T is the app's new tab, as ever (rule 125).
+                let plain = KeyEvent::new(&l.to_string(), &code).ctrl();
+                assert_eq!(app_owns_key(&plain, &c), l == 't', "ctrl+{l}");
+                // With Alt too (AltGr) it is the shell's.
+                assert_eq!(
+                    chord_of(&KeyEvent::new(&upper, &code).ctrl().shift().alt(), &c),
+                    None,
+                    "ctrl+alt+shift+{l}"
+                );
+                assert_eq!(chord(id).under_modal, UnderModal::Swallow);
+            }
+        }
+        // A layout that names the key outside ASCII still finds it by its position (rule 11).
+        assert_eq!(
+            chord_of(&KeyEvent::new("\u{435}", "KeyT").ctrl().shift(), &on()),
+            Some(ChordId::ReopenTab)
+        );
+        // Dvorak's Ctrl+Shift+L sits on the physical P key: the letter decides, not the place.
+        assert_eq!(
+            chord_of(&KeyEvent::new("L", "KeyP").ctrl().shift(), &on()),
+            Some(ChordId::Browser)
+        );
+    }
+
+    #[test]
+    fn on_the_mac_the_app_keys_are_cmd_shift_and_ctrl_shift_stays_the_shells() {
+        let c = mac();
+        for (id, l) in APP_KEYS {
+            let upper = l.to_ascii_uppercase().to_string();
+            let code = format!("Key{upper}");
+            let cmd = KeyEvent::new(&upper, &code).meta().shift();
+            assert_eq!(chord_of(&cmd, &c), Some(id), "cmd+shift+{l}");
+            assert!(app_owns_key(&cmd, &c));
+            assert_eq!(
+                chord_of(&KeyEvent::new(&upper, &code).ctrl().shift(), &c),
+                None,
+                "ctrl+shift+{l}"
+            );
+        }
+        // Cmd+T alone is still a new tab.
+        assert_eq!(chord_of(&ev("t").meta(), &c), Some(ChordId::NewTab));
     }
 
     #[test]
