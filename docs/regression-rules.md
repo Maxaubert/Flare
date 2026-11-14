@@ -3957,7 +3957,10 @@ capability only when `Get-WindowsCapability` says it is not installed, starts `s
 it to Automatic. Keys only: when sshd is not running (Flare installed it now, or it was installed but stopped), the
 script writes `PasswordAuthentication no` and `ChallengeResponseAuthentication no` at the top of
 `%ProgramData%\ssh\sshd_config` BEFORE `Start-Service`, under the line `# Flare Computer sharing: keys only`. The top is
-before any `Match` block, and sshd keeps the first value it reads, so they hold globally. (`ChallengeResponseAuthentication`
+before any `Match` block, and sshd keeps the first global value it reads, so they hold globally. A `Match` block the
+person wrote that sets one of them again still wins for the logins it matches (sshd's own rule); Flare does not edit
+inside it, and Windows' default config has no such block. All quoted values go through `flare_shells::ps_quote`, which
+doubles the curly quotes PowerShell also reads as `'`. (`ChallengeResponseAuthentication`
 is the name every Windows OpenSSH knows; on OpenSSH 8.7 and later it is the same setting as
 `KbdInteractiveAuthentication`, a keyword an older sshd refuses to start with.) A copy is kept as
 `sshd_config.flare-backup`; the person's other lines stay as they were; a second run replaces Flare's lines instead

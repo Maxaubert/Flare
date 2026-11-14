@@ -60,9 +60,10 @@ pub const SSHD_MARK: &str = "# Flare Computer sharing: keys only";
 /// The rights sshd gives `%ProgramData%\ssh` when it makes it: SYSTEM and Administrators full, signed-in users read.
 pub const SSHD_DIR_SDDL: &str = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;AU)";
 /// The settings a server Flare starts gets, at the top of `sshd_config` (sshd keeps the first value it reads, so they
-/// win over any later line and any Match block). `ChallengeResponseAuthentication` is the name every Windows OpenSSH
-/// knows; on OpenSSH 8.7 and later it is the same setting as `KbdInteractiveAuthentication`, which an older sshd
-/// would refuse to start with.
+/// win over any later global line). A `Match` block the person wrote that sets one of them again still wins for the
+/// logins it matches (sshd's own rule); Windows' default config has none. `ChallengeResponseAuthentication` is the
+/// name every Windows OpenSSH knows; on OpenSSH 8.7 and later it is the same setting as
+/// `KbdInteractiveAuthentication`, which an older sshd would refuse to start with.
 pub const SSHD_KEYS_ONLY: [&str; 2] = [
     "PasswordAuthentication no",
     "ChallengeResponseAuthentication no",
@@ -120,9 +121,10 @@ pub trait SharingOs: Send + Sync {
 
 // ---- the pure parts ----------------------------------------------------------------------------------------------
 
-/// A PowerShell single-quoted string: nothing inside is expanded, and a `'` is doubled.
+/// A PowerShell single-quoted string: nothing inside is expanded, and every quote PowerShell reads as `'` is doubled,
+/// the curly ones (U+2018 to U+201B) too, so a path like `C:\Users\D’Angelo` cannot end the string (`flare-shells`).
 pub fn ps_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
+    flare_shells::ps_quote::ps_quote(s)
 }
 
 /// The end of every elevated script: it writes its lines into `$result` only when the folder Flare made for this run
@@ -174,7 +176,7 @@ try {{
         $step = 'firewall'
         if ($null -ne $sshdRule) {{ Set-NetFirewallRule -Name '{SSHD_RULE}' -Profile Private -Enabled True }}
         # A server Flare starts takes keys only, from its first start. Flare's lines go at the top of sshd_config,
-        # before any Match block (sshd keeps the first value it reads); a backup is kept, and the other lines stay.
+        # before any Match block (sshd keeps the first global value it reads); a backup is kept, the other lines stay.
         $step = 'passwords'
         $dir = Join-Path $env:ProgramData 'ssh'
         $cfg = Join-Path $dir 'sshd_config'
