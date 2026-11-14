@@ -141,11 +141,10 @@ pub enum BlockModel {
     },
     SlintBadge,
     Note(String),
-    /// The Machines page's table (remote sessions PR 7): its heading row, one linked machine, and the add form open in
-    /// the add row's place.
+    /// The Machines page's table (remote sessions PR 7): its heading row and one linked machine. Adding one is a dialog
+    /// over the page (machine pairing PR 1, rule 1251), not a block.
     MachineHead,
     Machine(machines::MachineRow),
-    MachineAdd(machines::AddBlock),
 }
 
 /// The Save changes action in a section heading (Mark colours).

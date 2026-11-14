@@ -1,19 +1,20 @@
-// Settings > Machines (remote sessions PR 7): the table of linked machines and the add form. The owner's picks
-// (2026-11-12 mockups): no subtext; a table with Machine (the system's logo and the name), SSH host, Flare, Status and a
-// menu (Test, Remove); "+ Add a machine" opens a form in its place: an SSH host drop-down, a Name field, Cancel and
-// Add, and one red line under it when the check failed.
+// Settings > Machines (remote sessions PR 7): the table of linked machines and the Add a machine dialog. The owner's
+// picks (2026-11-12 mockups): no subtext; a table with Machine (the system's logo and the name), Address, Flare, Status
+// and a menu (Test, Remove). Machine pairing PR 1 (approved mockup 2026-11-14, rule 1251): "+ Add a machine" opens a
+// Flare dialog (the Dialog look): a Machine drop-down (nearby computers, then the SSH config hosts, then "Type an
+// address"), Cancel and Add, and one red line when the check failed.
 //
-// The rows are SetRow data (types.slint): a machine's `label` is its name, `value` its SSH host, `note` the Flare
-// version, `state` its status word (unknown, checking, linked, failed), `badge` the status's words, `sub` the line of
-// a failed check (one small grey line under the row, never a tooltip: owner rule 2026-11-13), and `vendor` its system
-// (mac, pc, ""). The form's `value` is the host picked, `options` the
-// hosts, `note` the name typed, `sub` the red line and `state` "busy" while the host is checked.
+// The rows are SetRow data (types.slint): a machine's `label` is its name, `value` its address (or SSH host), `note`
+// the Flare version, `state` its status word (unknown, checking, linked, failed), `badge` the status's words, `sub` the
+// line of a failed check (one small grey line under the row, never a tooltip: owner rule 2026-11-13), and `vendor` its
+// system (mac, pc, ""). The dialog draws a MachineAddLook (types.slint).
 
 import { Theme, Px, SettingsInk, SettingsFixed, SettingsShape } from "../theme.slint";
 import { Glyphs } from "../glyphs.slint";
-import { SetRow } from "types.slint";
-import { SetRowButton, SetTextField } from "controls.slint";
-import { SetSelect } from "select.slint";
+import { SetRow, SetOption, MachineAddLook } from "types.slint";
+import { SetTextField } from "controls.slint";
+import { SetSelect, SelectMenu } from "select.slint";
+import { DialogButton } from "../dialog.slint";
 
 // The columns' left edges as parts of the row's width, shared by the heading and the rows.
 global MachineCols {
@@ -50,7 +51,7 @@ component MachineHeadText inherits Text {
 export component SetMachineHead inherits Rectangle {
     in property <bool> first;
     MachineHeadText { x: MachineCols.pad; width: root.width * MachineCols.host - MachineCols.pad - 8px; height: root.height; text: "Machine"; }
-    MachineHeadText { x: root.width * MachineCols.host; width: root.width * (MachineCols.flare - MachineCols.host) - 8px; height: root.height; text: "SSH host"; }
+    MachineHeadText { x: root.width * MachineCols.host; width: root.width * (MachineCols.flare - MachineCols.host) - 8px; height: root.height; text: "Address"; }
     MachineHeadText { x: root.width * MachineCols.flare; width: root.width * (MachineCols.status - MachineCols.flare) - 8px; height: root.height; text: "Flare"; }
     MachineHeadText { x: root.width * MachineCols.status; width: root.width * (1 - MachineCols.status) - MachineCols.menu-w; height: root.height; text: "Status"; }
 }
@@ -183,113 +184,246 @@ export component SetMachineRow inherits Rectangle {
     }
 }
 
-// The add form, in the add row's place: host, name, Cancel, Add; the red line of a failed check under them.
-export component SetMachineForm inherits Rectangle {
-    in property <SetRow> data;
-    in property <bool> first;
-    in property <bool> select-open;
-    callback open-request(length, length, length, length);
-    callback name-edited(string);
-    callback pressed(string);
-    callback tip(string, length, length, length, length);
+// A field's name over it in the dialog: 12 px, dim (the mockup's `.lbl`).
+component MachineFieldLabel inherits Text {
+    font-family: Theme.font-ui;
+    font-size: 12px;
+    color: Theme.dim;
+    overflow: elide;
+}
 
-    public function focus-me() {
-        host.focus-me();
+// The Add a machine dialog (machine pairing PR 1, rule 1251), in the Dialog look (dialog.slint): a 380 px box on the
+// scrim, the title, the Machine drop-down ("Pick a machine" until a pick), the Address and User fields while "Type an
+// address" is picked, the red line of a failed check, Cancel and Add. Machine pairing PR 3 adds "Code shown on <name>"
+// under the drop-down for a nearby computer. Escape and a press outside cancel unless a check runs; Enter adds once
+// Add can be pressed. The drop-down's menu is drawn inside the dialog, above it (the Settings Select menu's state:
+// the window's own menu stays closed while the dialog is open). Labelled controls have no tooltip.
+export component MachineAddDialog inherits Rectangle {
+    in property <bool> open;
+    in property <MachineAddLook> look;
+    in property <bool> menu-open;
+    in property <[SetOption]> menu-options;
+    in property <string> menu-value;
+    in property <length> menu-x;
+    in property <length> menu-y;
+    in property <length> menu-w;
+    in property <length> menu-h;
+    in-out property <int> menu-highlight: -1;
+    callback pick-request(length, length, length, length);
+    callback menu-chosen(string);
+    callback menu-dismissed();
+    callback menu-key(string);
+    callback address-edited(string);
+    callback user-edited(string);
+    callback cancel();
+    callback add();
+    out property <length> box-x: box.x;
+    out property <length> box-y: box.y;
+    out property <length> box-w: box.width;
+    out property <length> box-h: box.height;
+    out property <length> pick-x: machine.absolute-position.x;
+    out property <length> pick-y: machine.absolute-position.y;
+    out property <length> pick-w: machine.width;
+    out property <length> add-x: add-btn.absolute-position.x;
+    out property <length> add-y: add-btn.absolute-position.y;
+    out property <length> add-w: add-btn.width;
+    out property <length> cancel-x: cancel-btn.absolute-position.x;
+    out property <length> cancel-y: cancel-btn.absolute-position.y;
+    out property <length> cancel-w: cancel-btn.width;
+    out property <bool> pick-has-focus: machine.keyboard-focus || fs.has-focus;
+
+    visible: root.open;
+    width: 100%;
+    height: 100%;
+    changed open => {
+        if root.open {
+            machine.focus-me();
+        }
+    }
+    // A pick closed the menu: the keys go back to the drop-down (the Address field takes them itself when it shows).
+    changed menu-open => {
+        if !root.menu-open && root.open && !root.look.typing {
+            machine.focus-me();
+        }
     }
 
-    background: SettingsInk.row-hover;
-    Rectangle {
-        y: 0px;
+    fs := FocusScope {
         width: parent.width;
-        height: Px.hair();
-        background: Theme.line;
-        visible: !root.first;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                if !root.look.busy {
+                    root.cancel();
+                }
+                return accept;
+            }
+            if e.text == Key.Return {
+                if root.look.can-add {
+                    root.add();
+                }
+                return accept;
+            }
+            return reject;
+        }
+
+        Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: Theme.scrim;
+        }
+        // A press outside the box cancels, unless a check runs.
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && !root.look.busy {
+                    root.cancel();
+                }
+            }
+        }
+        box := Rectangle {
+            width: min(380px, root.width - 48px);
+            height: col.preferred-height;
+            x: Px.snap((root.width - self.width) / 2);
+            y: Px.snap((root.height - self.height) / 2);
+            background: Theme.side-flat;
+            border-radius: 2px;
+            border-width: Px.hair();
+            border-color: Theme.divider;
+            drop-shadow-offset-y: 24px;
+            drop-shadow-blur: 70px;
+            drop-shadow-color: SettingsFixed.modal-shadow;
+            // Swallows presses inside the box, so they never reach the scrim.
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+            }
+            col := VerticalLayout {
+                padding: 20px;
+                alignment: start;
+                Text {
+                    text: "Add a machine";
+                    font-family: Theme.font-ui;
+                    font-size: 14.5px;
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+                Rectangle { height: 16px; }
+                MachineFieldLabel { text: "Machine"; }
+                Rectangle { height: 6px; }
+                machine := SetSelect {
+                    options: root.look.options;
+                    value: root.look.pick;
+                    placeholder: "Pick a machine";
+                    label: "Machine";
+                    sub: "";
+                    disabled: root.look.busy;
+                    open: root.menu-open;
+                    open-request(x, y, w, h) => { root.pick-request(Px.snap(x), Px.snap(y), Px.snap(x + w) - Px.snap(x), Px.snap(y + h) - Px.snap(y)); }
+                }
+                if root.look.typing: VerticalLayout {
+                    init => { address.focus-me(); }
+                    Rectangle { height: 14px; }
+                    MachineFieldLabel { text: "Address"; }
+                    Rectangle { height: 6px; }
+                    address := SetTextField {
+                        width: box.width - 40px;
+                        text: root.look.address;
+                        placeholder: "Name or IP address";
+                        label: "Address";
+                        sub: "";
+                        off: root.look.busy;
+                        edited(t) => { root.address-edited(t); }
+                        accepted => {
+                            if root.look.can-add {
+                                root.add();
+                            }
+                        }
+                    }
+                    Rectangle { height: 14px; }
+                    MachineFieldLabel { text: "User"; }
+                    Rectangle { height: 6px; }
+                    SetTextField {
+                        width: box.width - 40px;
+                        text: root.look.user;
+                        placeholder: "Optional";
+                        label: "User";
+                        sub: "";
+                        off: root.look.busy;
+                        edited(t) => { root.user-edited(t); }
+                        accepted => {
+                            if root.look.can-add {
+                                root.add();
+                            }
+                        }
+                    }
+                }
+                // The red line of a failed check: a red dot and the words (the mockup's "Wrong code" line).
+                if root.look.error != "": VerticalLayout {
+                    Rectangle { height: 8px; }
+                    HorizontalLayout {
+                        spacing: 7px;
+                        alignment: start;
+                        VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 8px;
+                                height: 8px;
+                                border-radius: 4px;
+                                background: Theme.danger-fill;
+                            }
+                        }
+                        Text {
+                            text: root.look.error;
+                            font-family: Theme.font-ui;
+                            font-size: 12.5px;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                Rectangle { height: 20px; }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    cancel-btn := DialogButton {
+                        label: "Cancel";
+                        enabled: !root.look.busy;
+                        clicked => { root.cancel(); }
+                    }
+                    add-btn := DialogButton {
+                        label: root.look.busy ? "Checking" : "Add";
+                        is-primary: true;
+                        enabled: root.look.can-add;
+                        clicked => { root.add(); }
+                    }
+                }
+            }
+        }
     }
-    HorizontalLayout {
-        x: MachineCols.pad;
-        y: 0px;
-        width: root.width - MachineCols.pad - 16px;
-        height: 58px;
-        spacing: 10px;
-        VerticalLayout {
-            alignment: center;
-            host := SetSelect {
-                width: SettingsShape.select-min-w;
-                options: root.data.options;
-                value: root.data.value;
-                disabled: root.data.state == "busy";
-                label: "SSH host";
-                sub: "";
-                open: root.select-open;
-                open-request(x, y, w, h) => { root.open-request(Px.snap(x), Px.snap(y), Px.snap(x + w) - Px.snap(x), Px.snap(y + h) - Px.snap(y)); }
-            }
-        }
-        VerticalLayout {
-            alignment: center;
-            SetTextField {
-                width: 160px;
-                text: root.data.note;
-                placeholder: root.data.placeholder;
-                label: "Name";
-                sub: "";
-                off: root.data.state == "busy";
-                edited(t) => { root.name-edited(t); }
-                accepted => { root.pressed("add"); }
-            }
-        }
-        Rectangle { horizontal-stretch: 1; }
-        VerticalLayout {
-            alignment: center;
-            SetRowButton {
-                label: "Cancel";
-                off: root.data.state == "busy";
-                clicked => { root.pressed("cancel"); }
-                tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
-            }
-        }
-        VerticalLayout {
-            alignment: center;
-            SetRowButton {
-                label: root.data.state == "busy" ? "Checking" : "Add";
-                off: root.data.state == "busy";
-                clicked => { root.pressed("add"); }
-                tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
-            }
-        }
-    }
-    if root.data.sub != "": HorizontalLayout {
-        x: MachineCols.pad;
-        y: 52px;
-        width: root.width - 2 * MachineCols.pad;
-        height: 24px;
-        spacing: 8px;
-        alignment: start;
-        VerticalLayout {
-            alignment: center;
-            Rectangle {
-                width: 8px;
-                height: 8px;
-                border-radius: 4px;
-                background: Theme.danger-fill;
-            }
-        }
-        Text {
-            text: root.data.sub;
-            font-family: Theme.font-ui;
-            font-size: 13px;
-            color: Theme.text;
-            vertical-alignment: center;
-            overflow: elide;
-        }
+    SelectMenu {
+        width: parent.width;
+        height: parent.height;
+        open: root.menu-open;
+        options: root.menu-options;
+        value: root.menu-value;
+        menu-x: root.menu-x;
+        menu-y: root.menu-y;
+        menu-w: root.menu-w;
+        menu-h: root.menu-h;
+        highlight <=> root.menu-highlight;
+        chosen(id) => { root.menu-chosen(id); }
+        dismissed => { root.menu-dismissed(); }
+        key(k) => { root.menu-key(k); }
     }
 }
 
-// The test window: one heading, one machine row and the add form, on sample data the test sets.
+// The test window: one heading and one machine row, on sample data the test sets.
 export component MachinesPreview inherits Window {
     preferred-width: 760px;
     preferred-height: 220px;
     in property <SetRow> machine;
-    in property <SetRow> form;
     out property <int> menus: 0;
     background: Theme.ground;
     SetMachineHead { x: 0px; y: 0px; width: root.width; height: 34px; first: true; }
@@ -302,5 +436,70 @@ export component MachinesPreview inherits Window {
         data: root.machine;
         menu-request(x, y, w, h) => { root.menus += 1; }
     }
-    SetMachineForm { x: 0px; y: 34px + mrow.height; width: root.width; height: 84px; data: root.form; }
+}
+
+// The dialog's test window: the dialog over a stand-in page, its menu run the way the controller runs it (opened under
+// the drop-down, a pick sets the look's pick), and counts of what it reported.
+export component MachineAddPreview inherits Window {
+    preferred-width: 900px;
+    preferred-height: 600px;
+    background: Theme.ground;
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+    in-out property <bool> open;
+    in-out property <MachineAddLook> look;
+    in-out property <bool> menu-open;
+    in-out property <int> adds;
+    in-out property <int> cancels;
+    in-out property <string> address-typed;
+    in-out property <string> user-typed;
+    in-out property <string> picked;
+    in-out property <int> behind-clicks;
+    out property <length> box-x: dlg.box-x;
+    out property <length> box-y: dlg.box-y;
+    out property <length> box-w: dlg.box-w;
+    out property <length> box-h: dlg.box-h;
+    out property <length> pick-x: dlg.pick-x;
+    out property <length> pick-y: dlg.pick-y;
+    out property <length> pick-w: dlg.pick-w;
+    out property <length> add-x: dlg.add-x;
+    out property <length> add-y: dlg.add-y;
+    out property <length> add-w: dlg.add-w;
+    out property <length> cancel-x: dlg.cancel-x;
+    out property <length> cancel-y: dlg.cancel-y;
+    out property <length> cancel-w: dlg.cancel-w;
+    property <length> mx;
+    property <length> my;
+    property <length> mw;
+
+    TouchArea {
+        clicked => { root.behind-clicks += 1; }
+    }
+    dlg := MachineAddDialog {
+        open: root.open;
+        look: root.look;
+        menu-open: root.menu-open;
+        menu-options: root.look.options;
+        menu-value: root.look.pick;
+        menu-x: root.mx;
+        menu-y: root.my + 4px;
+        menu-w: root.mw;
+        menu-h: root.look.options.length * SettingsShape.option-h + 4px;
+        pick-request(x, y, w, h) => {
+            root.mx = x;
+            root.my = y + h;
+            root.mw = w;
+            root.menu-open = true;
+        }
+        menu-chosen(id) => {
+            root.menu-open = false;
+            root.picked = id;
+        }
+        menu-dismissed => { root.menu-open = false; }
+        address-edited(t) => { root.address-typed = t; }
+        user-edited(t) => { root.user-typed = t; }
+        cancel => { root.cancels += 1; }
+        add => { root.adds += 1; }
+    }
 }

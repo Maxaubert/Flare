@@ -70,6 +70,7 @@ mod ship_ctl;
 mod side_slide;
 mod sidebar_ui;
 mod ssh_config;
+mod ssh_problem;
 mod startup;
 mod startup_trace;
 mod tab_host;

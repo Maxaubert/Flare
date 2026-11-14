@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 /// A machine a remote tab can run on.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Machine {
     pub id: String,
     pub name: String,
@@ -24,6 +24,32 @@ pub struct Machine {
     pub user: Option<String>,
     /// Flare's executable on the host; `flare` (on the host's PATH) when not given.
     pub flare: String,
+    /// The address ssh connects to, when it is not the `ssh` alias (a typed address, a paired machine; rule 1249).
+    pub host: Option<String>,
+    /// ssh's port on `host` (`-p`); ssh's own (22, or the config's) when not given.
+    pub port: Option<u16>,
+    /// Flare's own key for this machine (pairing): ssh offers only it (`IdentitiesOnly`, `-i`).
+    pub key: Option<String>,
+    /// Flare's own known-hosts file for this machine (pairing): ssh trusts only the host key in it.
+    pub known_hosts: Option<String>,
+}
+
+impl Machine {
+    /// What ssh is pointed at: the address when there is one, else the alias.
+    pub fn target(&self) -> &str {
+        self.host.as_deref().unwrap_or(&self.ssh)
+    }
+}
+
+/// A file path that goes to ssh as one argv item or one option's value (a key, a known-hosts file, rule 1249): no
+/// control character, never read as an option, none of `"` (it would end ssh's own quoting of the value) or `%`, and no
+/// `${` (ssh expands `%` tokens and `${VAR}` in both).
+pub fn path_word(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 1024
+        && !s.starts_with('-')
+        && !s.contains("${")
+        && !s.chars().any(|c| c.is_control() || c == '"' || c == '%')
 }
 
 /// A word that goes to ssh as one argv item: printable, no space, never read as an option.
@@ -45,12 +71,28 @@ pub fn parse_machines(raw: &str) -> Vec<Machine> {
     let s = |m: &Value, k: &str| m.get(k).and_then(Value::as_str).map(str::to_string);
     list.iter()
         .filter_map(|m| {
-            let id = s(m, "id").filter(|i| argv_word(i))?;
-            let ssh = s(m, "ssh").filter(|h| argv_word(h))?;
-            let user = match m.get("user") {
-                None | Some(Value::Null) => None,
-                Some(_) => Some(s(m, "user").filter(|u| argv_word(u))?),
+            // An optional field that is there but not well formed leaves the machine out (rule 290), never half used.
+            let opt = |k: &str, ok: fn(&str) -> bool| match m.get(k) {
+                None | Some(Value::Null) => Some(None),
+                Some(_) => s(m, k).filter(|v| ok(v)).map(Some),
             };
+            let id = s(m, "id").filter(|i| argv_word(i))?;
+            let user = opt("user", argv_word)?;
+            let host = opt("host", argv_word)?;
+            let key = opt("key", path_word)?;
+            let known_hosts = opt("known_hosts", path_word)?;
+            let port = match m.get("port") {
+                None | Some(Value::Null) => None,
+                Some(p) => Some(
+                    p.as_u64()
+                        .and_then(|p| u16::try_from(p).ok())
+                        .filter(|p| *p > 0)?,
+                ),
+            };
+            // A machine with an address needs no alias: the address stands in (rule 1249).
+            let ssh = s(m, "ssh")
+                .or_else(|| host.clone())
+                .filter(|h| argv_word(h))?;
             Some(Machine {
                 name: s(m, "name")
                     .filter(|n| !n.trim().is_empty())
@@ -62,6 +104,10 @@ pub fn parse_machines(raw: &str) -> Vec<Machine> {
                 id,
                 ssh,
                 user,
+                host,
+                port,
+                key,
+                known_hosts,
             })
         })
         .collect()
@@ -80,8 +126,18 @@ pub fn machines_json(machines: &[Machine]) -> String {
                     Os::Pc => "pc",
                 });
             }
-            if let Some(u) = &m.user {
-                v["user"] = json!(u);
+            for (k, val) in [
+                ("user", &m.user),
+                ("host", &m.host),
+                ("key", &m.key),
+                ("known_hosts", &m.known_hosts),
+            ] {
+                if let Some(val) = val {
+                    v[k] = json!(val);
+                }
+            }
+            if let Some(p) = m.port {
+                v["port"] = json!(p);
             }
             v
         })
@@ -242,7 +298,11 @@ pub fn failure_line(host: &str, e: &crate::remote_link::LinkError, here: u32) ->
             err.message.clone()
         }
         LinkError::Refused(err) => format!("{host} said: {}", err.message),
-        LinkError::Down(_) => format!("No Flare answered over SSH on {host}."),
+        // What ssh said, in plain words when it is one of the cases (rule 1250).
+        LinkError::Down(m) => match crate::ssh_problem::sort_down(m) {
+            Some(p) => p.line().to_string(),
+            None => format!("No Flare answered over SSH on {host}."),
+        },
     }
 }
 
@@ -270,6 +330,7 @@ mod tests {
             ssh: "mac-mini".into(),
             user: Some("max".into()),
             flare: "/Applications/Flare.app/Contents/MacOS/flare".into(),
+            ..Default::default()
         }
     }
 
@@ -286,6 +347,7 @@ mod tests {
             ssh: "desk".into(),
             user: None,
             flare: "C:\\Program Files\\Flare\\flare.exe".into(),
+            ..Default::default()
         };
         file.save(&[mac(), pc.clone()]).expect("save");
         assert_eq!(file.list(), vec![mac(), pc]);
@@ -358,6 +420,36 @@ mod tests {
         assert_eq!(
             failure_line("desk", &refused("unavailable", "no"), 1),
             "desk said: no"
+        );
+        // Rule 1250: what ssh said is the line when it is one of the cases.
+        let said = |s: &str| LinkError::Down(format!("the link ended; ssh said: {s}"));
+        assert_eq!(
+            failure_line(
+                "desk",
+                &said("ssh: connect to host desk port 22: Connection refused"),
+                1
+            ),
+            "Not answering"
+        );
+        assert_eq!(
+            failure_line("desk", &said("max@desk: Permission denied (publickey)."), 1),
+            "Not paired with this computer"
+        );
+        assert_eq!(
+            failure_line("desk", &said("Host key verification failed."), 1),
+            "Its identity changed. Pair again"
+        );
+        assert_eq!(
+            failure_line(
+                "desk",
+                &said("ssh: Could not resolve hostname desk: No such host is known."),
+                1
+            ),
+            "Can't find it on the network"
+        );
+        assert_eq!(
+            failure_line("desk", &said("some other words"), 1),
+            "No Flare answered over SSH on desk."
         );
         assert_eq!(os_of_hello("mac"), Some(Os::Mac));
         assert_eq!(os_of_hello("other"), None);

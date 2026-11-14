@@ -550,7 +550,6 @@ pub fn to_slint_section(s: &SectionModel, l: &SectionLayout, ctx: &RowCtx<'_>) -
                     block_row("machine-head", SlintBlock::MachineHead, y, rl.h)
                 }
                 BlockModel::Machine(m) => to_slint_machine(m, y, rl.h),
-                BlockModel::MachineAdd(a) => to_slint_machine_add(a, y, rl.h),
             };
             if section_flash > 0.0 {
                 row.flash = section_flash;
@@ -583,14 +582,14 @@ fn os_word(os: Option<flare_settings::page::machines::MachineOs>) -> &'static st
     }
 }
 
-/// One linked machine's table row (remote sessions PR 7): its name, its SSH host, the Flare version it said, its
-/// status (the word it draws by in `state`, the words it shows in `badge`) and, in `sub`, the one line of a failed check
-/// drawn under the row. The status has no tooltip (owner rule 2026-11-13: a control with words has none).
+/// One linked machine's table row (remote sessions PR 7): its name, its address (or SSH host), the Flare version it
+/// said, its status (the word it draws by in `state`, the words it shows in `badge`) and, in `sub`, the one line of a
+/// failed check drawn under the row. The status has no tooltip (owner rule 2026-11-13: a control with words has none).
 pub fn to_slint_machine(m: &flare_settings::page::machines::MachineRow, y: f64, h: f64) -> SetRow {
     use flare_settings::page::machines::MACHINE_PREFIX;
     SetRow {
         label: m.name.as_str().into(),
-        value: m.ssh.as_str().into(),
+        value: m.address.as_str().into(),
         note: m.version.as_str().into(),
         state: m.status.word().into(),
         badge: m.status.text().into(),
@@ -605,23 +604,38 @@ pub fn to_slint_machine(m: &flare_settings::page::machines::MachineRow, y: f64, 
     }
 }
 
-/// The add form (remote sessions PR 7): the host picked and the hosts to pick from, the name typed, its red line, and
-/// `busy` while the host is checked.
-pub fn to_slint_machine_add(
-    a: &flare_settings::page::machines::AddBlock,
-    y: f64,
-    h: f64,
-) -> SetRow {
-    use flare_settings::page::machines::ADD_ROW;
-    let hosts: Vec<(&str, &str)> = a.hosts.iter().map(|h| (h.as_str(), h.as_str())).collect();
-    SetRow {
-        value: a.form.host.as_str().into(),
-        options: options_of(&flare_settings::page::opts(&hosts)),
-        note: a.form.name.as_str().into(),
-        sub: a.form.error.clone().unwrap_or_default().into(),
-        state: if a.form.busy { "busy" } else { "" }.into(),
-        placeholder: "Name".into(),
-        ..block_row(ADD_ROW, SlintBlock::MachineAdd, y, h)
+/// The Machine drop-down's choices as the Select menu draws them: the SSH hosts in `mono` (the code font), the others
+/// in the UI font (machine pairing PR 1, rule 1251). Nearby computers come in PR 3.
+pub fn machine_choice_opts(hosts: &[String], mono: &str) -> Vec<flare_settings::page::Opt> {
+    flare_settings::page::machines::machine_choices(&[], hosts)
+        .into_iter()
+        .map(|c| flare_settings::page::Opt {
+            id: c.id,
+            name: c.label,
+            face: if c.mono {
+                mono.to_string()
+            } else {
+                String::new()
+            },
+        })
+        .collect()
+}
+
+/// The Add a machine dialog's look (machine pairing PR 1, rule 1251): the pick and the choices, the typed address and
+/// user, the red line, `busy` while the machine is checked, and whether Add can be pressed.
+pub fn machine_add_look(
+    form: &flare_settings::page::machines::AddForm,
+    opts: &[flare_settings::page::Opt],
+) -> crate::MachineAddLook {
+    crate::MachineAddLook {
+        pick: form.pick.as_str().into(),
+        options: options_of(opts),
+        typing: form.typing(),
+        address: form.address.as_str().into(),
+        user: form.user.as_str().into(),
+        error: form.error.clone().unwrap_or_default().into(),
+        busy: form.busy,
+        can_add: form.can_add(),
     }
 }
 
@@ -1056,8 +1070,14 @@ impl SettingsCtl {
         self.close_sheet();
         self.picker_do(|p, _| p.hide_for_tab_switch());
         self.drop_pencil_wait();
+        // The Add a machine dialog closes with the page (a check that runs still saves what answered).
+        if let Some(m) = self.machines.as_mut() {
+            m.cancel_form();
+        }
         if let Some(app) = self.weak.upgrade() {
-            app.global::<SettingsBridge>().set_picker_open(false);
+            let b = app.global::<SettingsBridge>();
+            b.set_picker_open(false);
+            b.set_machine_add_open(false);
         }
     }
 
@@ -1068,6 +1088,10 @@ impl SettingsCtl {
         }
         crate::dictation_ctl::page_left();
         self.page = DEFAULT_PAGE;
+        // The Add a machine dialog ends with the tab (a check that runs keeps its form until it answers).
+        if let Some(m) = self.machines.as_mut() {
+            m.cancel_form();
+        }
         self.find.set_query("");
         self.finish_watch();
         self.flash = None;
@@ -1256,6 +1280,10 @@ impl SettingsCtl {
         }
         if b.get_select_open() {
             self.close_select();
+            return true;
+        }
+        if b.get_machine_add_open() {
+            self.machines_button(flare_settings::page::machines::CANCEL_BUTTON);
             return true;
         }
         false
@@ -1554,7 +1582,27 @@ impl SettingsCtl {
         b.set_ask_open(self.ask_open);
         b.set_dict_ask_open(crate::dictation_ctl::page_snap().ask.is_some());
         b.set_dict_ask_text(flare_dictation::catalog::LIMITED_LANGUAGES_TEXT.into());
+        self.push_machine_add(app);
         self.push_editor(app, format);
+    }
+
+    /// The Add a machine dialog into the bridge (machine pairing PR 1, rule 1251): open while the page's form is, and
+    /// what it shows. A keystroke in its fields pushes only this, so the field keeps its caret. It draws only over the
+    /// Machines page while Settings is in front: a form left open by a check that still ran when Settings was hidden
+    /// or left never comes back over another page.
+    fn push_machine_add(&self, app: &AppWindow) {
+        let b = app.global::<SettingsBridge>();
+        let Some(m) = self.machines.as_ref() else {
+            b.set_machine_add_open(false);
+            return;
+        };
+        let info = m.info();
+        let mono = app.global::<crate::SettingsFixed>().get_font_mono();
+        b.set_machine_add(machine_add_look(
+            &info.add,
+            &machine_choice_opts(&info.ssh_hosts, &mono),
+        ));
+        b.set_machine_add_open(info.add.open && self.visible && self.page == "machines");
     }
 
     fn find_query_trimmed(&self) -> String {
@@ -1681,6 +1729,11 @@ impl SettingsCtl {
 
     fn page_chosen(&mut self, id: &str) {
         self.page = page_static(id);
+        if self.page != "machines"
+            && let Some(m) = self.machines.as_mut()
+        {
+            m.cancel_form();
+        }
         if self.page == "dictation" {
             // The microphones are listed again, on a worker (the page never opens one).
             crate::dictation_ctl::page_shown();
@@ -1804,10 +1857,21 @@ impl SettingsCtl {
         if row == flare_settings::page::mods::URL_ROW {
             self.plugin_url = text.to_string();
         }
-        if row == flare_settings::page::machines::ADD_ROW
+        // The Add a machine dialog's fields (rule 1251): "machines-add:address" and "machines-add:user".
+        if let Some(field) = row
+            .strip_prefix(flare_settings::page::machines::ADD_ROW)
+            .and_then(|r| r.strip_prefix(':'))
             && let Some(m) = self.machines.as_mut()
         {
-            m.set_name(text);
+            use flare_settings::page::machines::{ADDRESS_FIELD, USER_FIELD};
+            match field {
+                ADDRESS_FIELD => m.set_address(text),
+                USER_FIELD => m.set_user(text),
+                _ => return,
+            }
+            if let Some(app) = self.weak.upgrade() {
+                self.push_machine_add(&app);
+            }
         }
     }
 
@@ -1867,8 +1931,8 @@ impl SettingsCtl {
         });
     }
 
-    /// The Machines page's add row and form (remote sessions PR 7): a press on the row opens the form, Cancel closes
-    /// it, Add checks the host and saves it once it answered.
+    /// The Machines page's add row and its dialog (machine pairing PR 1, rule 1251): a press on the row opens the
+    /// dialog, Cancel closes it, Add checks the machine and saves it once it answered.
     fn machines_button(&mut self, button: &str) {
         use flare_settings::page::machines::{ADD_BUTTON, CANCEL_BUTTON, OPEN_BUTTON};
         let Some(m) = self.machines.as_mut() else {
@@ -1881,25 +1945,29 @@ impl SettingsCtl {
             _ => return,
         }
         self.rebuild();
-        if button == OPEN_BUTTON {
-            self.focus_row(flare_settings::page::machines::ADD_ROW);
-        }
     }
 
-    /// What the Select menu offers for a row of the Machines page: the form's hosts, or a machine's ⋯ menu (Test,
-    /// Remove). None for any other row.
+    /// What the Select menu offers for a row of the Machines page: the dialog's Machine drop-down (the SSH hosts in the
+    /// code font, then "Type an address"), or a machine's ⋯ menu (Test, Remove). None for any other row.
     fn machines_select(&self, row: &str) -> Option<(String, Vec<flare_settings::page::Opt>)> {
         use flare_settings::page::machines::{ADD_ROW, MACHINE_PREFIX, REMOVE_CHOICE, TEST_CHOICE};
         use flare_settings::page::opts as opts_of;
         let m = self.machines.as_ref()?;
         if row == ADD_ROW {
             let info = m.info();
-            let hosts: Vec<(&str, &str)> = info
-                .ssh_hosts
-                .iter()
-                .map(|h| (h.as_str(), h.as_str()))
-                .collect();
-            return Some((info.add.host.clone(), opts_of(&hosts)));
+            let mono = self
+                .weak
+                .upgrade()
+                .map(|a| {
+                    a.global::<crate::SettingsFixed>()
+                        .get_font_mono()
+                        .to_string()
+                })
+                .unwrap_or_default();
+            return Some((
+                info.add.pick.clone(),
+                machine_choice_opts(&info.ssh_hosts, &mono),
+            ));
         }
         row.strip_prefix(MACHINE_PREFIX)?;
         Some((
@@ -1915,7 +1983,7 @@ impl SettingsCtl {
             return false;
         };
         if row == ADD_ROW {
-            m.set_host(id);
+            m.set_pick(id);
         } else if let Some(machine) = row.strip_prefix(MACHINE_PREFIX) {
             match id {
                 TEST_CHOICE => m.test(machine),
@@ -1927,13 +1995,6 @@ impl SettingsCtl {
         }
         self.rebuild();
         true
-    }
-
-    /// Asks the view to put the keys on this row's first control.
-    fn focus_row(&self, id: &str) {
-        if let Some(app) = self.weak.upgrade() {
-            app.global::<SettingsBridge>().set_focus_id(id.into());
-        }
     }
 
     fn save_clicked(&mut self, id: &str) {

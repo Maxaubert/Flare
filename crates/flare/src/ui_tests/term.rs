@@ -2856,6 +2856,7 @@ mod flow {
             ssh: "mini".into(),
             user: None,
             flare: "flare".into(),
+            ..Default::default()
         }
     }
 

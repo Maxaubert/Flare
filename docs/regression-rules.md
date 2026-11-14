@@ -3843,3 +3843,83 @@ DBG_TERMINATE_PROCESS}`, `AppCtl::hold_for_session_end`, the guarded `HostEvent:
 `shells_the_session_end_kills_keep_every_tab_in_tabs_json`, `a_plain_exit_while_the_session_ends_keeps_the_list`,
 `a_plain_exit_outside_a_session_end_closes_the_tab_and_saves_the_smaller_list`, `exit_closes_the_tab_without_asking`
 and `query_end_session_is_never_a_veto`. Source: diag.jsonl of the 2026-11-14 restart.
+
+## Machine pairing (2026-11-14)
+
+1249. **A machine in `machines.json` may name its own address, port, key and known-hosts file, and every ssh Flare
+runs for it (the link's and the Preview tunnel's) uses them as argv items of their own, with a 5 s connect timeout.**
+Machine pairing PR 1, 2026-11-14 (spec `docs/superpowers/specs/2026-11-14-machine-pairing-design.md`, "Changes to how
+Flare runs ssh"; approved by Max). A machine gains the optional fields `host` (the address ssh connects to; a machine
+with one needs no `ssh` alias, the address stands in and is written as both, so an older Flare still reads it),
+`port`, `user` (as before), `key` and `known_hosts` (Flare's own files, written by pairing in PR 3). `machine_opts`
+adds `-o ConnectTimeout=5` always, so a host that is off never keeps Add waiting; with `key`, `-o IdentitiesOnly=yes
+-i <key>`; with `known_hosts`, `-o UserKnownHostsFile=<file> -o StrictHostKeyChecking=yes` (the value in double quotes
+when the path holds a space, as ssh splits an option's value there); with `port`, `-p <port>`; `machine_dest` ends
+with `-l <user> -- <address or alias>`. A host or user that is no plain word (rule 290), a key or file path that is
+empty, starts with `-`, or holds a control character, `"`, `%` or `${` (ssh expands `%` tokens and `${VAR}` in both), and a port that is
+0 or over 65535, leave the machine out when read and refuse the command when built: never half used. A machine with
+none of the fields runs exactly as before plus the timeout. Native: `machines::{Machine::target, path_word,
+parse_machines, machines_json}`, `remote_link::{machine_opts, machine_dest, ssh_argv}`, `remote_tunnel::tunnel_argv`.
+Held by `a_paired_machines_ssh_uses_its_address_port_key_and_known_hosts_as_argv_items`,
+`machines_json_reads_and_writes_the_address_port_key_and_known_hosts`,
+`the_ssh_command_is_argv_items_quoted_for_the_hosts_shell` and
+`the_tunnel_argv_is_the_links_machine_and_never_a_shell_string`. Real ssh: `docs/remote-sessions-manual-checks.md`.
+
+1250. **ssh's stderr is kept, and a link that did not come up says why in plain words.** Machine pairing PR 1,
+2026-11-14 (spec, "Plain-words errors"). Before, a link started ssh with stderr on the null device, so every failure
+read "No Flare answered over SSH on <host>." Now `remote_link::start_link` and `remote_tunnel::open_ssh` pipe it to a
+`ssh_problem::StderrTail`: a named thread reads it to its end (so ssh never blocks on a full pipe) and keeps the last 12
+lines, each cut to 400 characters. Each line is bounded while it is read (`read_line_capped`, at most 1 600 bytes held):
+the rest of an over-long line is read and dropped up to its newline, so a host that sends a huge line with no newline
+never makes Flare buffer it, and the pipe is still drained. A link whose `remote.hello` failed with the link down waits up to 1.5 s for ssh to
+end and carries its words after `ssh said: ` in the error; a link that could not start ssh because it is not there
+carries `no ssh client: `. `ssh_problem::sort_down` reads only those parts (Flare's own timeout words never match by
+chance) and `machines::failure_line` shows the case. Only ssh's own shapes count, never loose words, because the
+stderr also carries what a command on the host printed (a shell's "flare: Permission denied" for a Flare path that is
+not runnable must not end Add's search): `ssh: connect to host ...` (refused, timed out, no route, unreachable), a
+banner timeout, `kex_exchange_identification`, reset or closed by: "Not answering"; `Permission denied (` with ssh's
+list of methods, too many authentication failures: "Not paired with this computer"; host key verification failed,
+host identification changed, no host key known with strict checking: "Its identity changed. Pair again"; `ssh:
+Could not resolve hostname`: "Can't find it on the network"; no ssh client: "This PC is missing Windows' SSH client" (on a Mac
+"This computer has no SSH client"). Anything else keeps the old line. The case is the grey line under the machine's
+row (rule 1205) and the red line in the Add a machine dialog (rule 1251); a tunnel that did not open names it too.
+When Add's first try ends in one of these cases, Add stops there (no other Flare path or quoting is tried), so a host
+that is off costs one connect timeout, not one per path. These are lines only; the buttons of the spec's table (Try
+again, Pair again) come with pairing. Held by
+`what_ssh_says_is_sorted_into_one_plain_line`, `only_what_follows_ssh_said_is_sorted`,
+`the_tail_keeps_the_last_lines_trimmed_and_cut`, `the_tail_reads_a_pipe_to_its_end`,
+`a_huge_line_with_no_newline_is_capped_while_it_is_read`,
+`a_failed_check_is_one_line_that_says_what_to_do`, `a_reason_from_ssh_ends_the_add_after_one_try`,
+`a_shells_permission_denied_does_not_end_the_add` and
+`a_machine_whose_ssh_said_why_shows_it_in_plain_words_under_its_row`.
+
+1251. **"+ Add a machine" opens a Flare dialog with a Machine drop-down, not a form in the row's place.** Max approved
+the mockup 2026-11-14 (`docs/superpowers/specs/2026-11-14-machine-pairing-mockup.html`, "Add a machine"). The dialog
+has the Dialog look (`dialog.slint`): a 380 px box centred on the scrim, the title "Add a machine", "Machine" over a
+drop-down that reads "Pick a machine" until a pick, Cancel and Add (`DialogButton`). The drop-down lists the computers
+found nearby (machine pairing PR 3; `machine_choices` takes them, none yet), then the SSH config hosts in the code
+font, then "Type an address", which shows an Address field and an optional User field; a `user@` before the address
+and a `:port` after it are read too (the User field wins over a `user@`, which never stays in the address; an IPv6
+address with several colons stays whole, and one in brackets may take a port: `[fe80::1]:2222`). Add is dimmed and deaf until a
+machine is picked (and an address typed), and while the check runs it reads "Checking". The machine is checked as
+before (Flare looked for where it may be, rules 1207 and 1208) and saved only once it answered: an SSH host as its
+alias, a typed address as its own `host` with its user and port (rule 1249), named by the host or the address. A
+failed check is one red line (a red dot and the words, rule 1250) and the dialog stays open; a new pick or a keystroke
+in the Address field clears it. Escape (in the dialog, or one no control took) and a press outside cancel, except
+while a check runs; Enter adds once Add can be pressed. The drop-down's menu is the Settings Select menu's state drawn
+inside the dialog, above it; the window's own Select menu stays closed while the dialog is open (both in `app.slint`
+and the Settings preview). The dialog is an overlay (`Overlay::MachineAdd`, `overlay-open`, the picker rank after
+`DictAsk`); hiding Settings, closing its tab or choosing another page closes it, and a form a running check keeps
+open draws only over the Machines page while Settings is in front. Its keystrokes push only the dialog's look, never a page rebuild, so the field
+keeps its caret. The page keeps its add row; the inline form and its block kind are gone, and the table's second
+column is now "Address" (the address, else the SSH host). Labelled controls have no tooltip. Native:
+`flare_settings::page::machines::{AddForm, machine_choices, TYPE_ADDRESS, NEARBY_PREFIX}`,
+`machines_page::{new_machine, MachinesPage::{open_form, set_pick, set_address, set_user, submit}}`,
+`settings_ctl::{push_machine_add, machine_add_look, machine_choice_opts}`, `ui/settings/machines.slint`
+(`MachineAddDialog`), `SetSelect`'s `placeholder`. Held by
+`the_add_row_opens_the_dialog_and_a_failed_check_is_one_red_line_in_it`,
+`the_dialog_draws_its_box_its_drop_down_and_its_red_line`, `the_dialog_never_draws_over_another_page`, `a_typed_address_is_checked_and_saved_with_its_user_and_port`,
+`the_dialog_names_a_machine_or_says_why_not_in_one_line`,
+`the_machine_drop_down_lists_nearby_then_ssh_hosts_then_type_an_address`,
+`add_can_be_pressed_once_a_machine_is_picked_or_an_address_typed`, the overlay tests in `ui_tests::panel` and
+`ui_tests::overlay_order`.
