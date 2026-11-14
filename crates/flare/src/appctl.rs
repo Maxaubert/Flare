@@ -735,6 +735,8 @@ struct FrontTab {
     handle: Arc<TermHandle>,
     cwd: Option<String>,
     shell_cwd: Option<String>,
+    /// The folder the agent's session first named, a fallback for a relative link (rule 1240).
+    start_cwd: Option<String>,
     alive: bool,
     remote: bool,
 }
@@ -746,6 +748,7 @@ impl FrontTab {
             handle: &self.handle,
             cwd: self.cwd.as_deref(),
             shell_cwd: self.shell_cwd.as_deref(),
+            start_cwd: self.start_cwd.as_deref(),
             alive: self.alive,
             remote: self.remote,
         }
@@ -3382,6 +3385,12 @@ impl AppCtl {
             handle,
             cwd: link_folder(self.hub.agent_folder(&t.id), shell),
             shell_cwd: shell.map(str::to_string),
+            // Rule 1240: only a folder a relative path resolves from, as for the agent folder.
+            start_cwd: self
+                .hub
+                .agent_start_folder(&t.id)
+                .filter(|a| flare_term::path_open::resolve_term_path(a, "x", "").is_some())
+                .map(str::to_string),
             alive,
             remote: t.remote.is_some(),
         })

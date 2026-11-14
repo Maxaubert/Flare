@@ -33,8 +33,8 @@ use flare_term::link_target::{LinkAction, TermPathAt, click_action};
 use flare_term::mouse_report::{MouseButton, MouseEvt, MouseKind, MouseMods, encode_mouse};
 use flare_term::osc52::OSC52_MAX;
 use flare_term::path_open::{
-    OpenMode, Opened, PathKind, PathOpeners, ext_label, first_existing, open_term_path,
-    resolve_openable_file, resolve_term_path,
+    OpenMode, Opened, PathKind, PathOpeners, ext_label, open_term_path, resolve_openable_file,
+    resolve_term_path,
 };
 use flare_term::sel_machine::{
     ClickCounter, DRAG_SCROLL_MS, Drag, Press, SelMachine, SelOut, ViewBox,
@@ -49,6 +49,7 @@ use crate::clip_flow::{
     paste_action, read_async, remote_upload,
 };
 use crate::drop_flow::{DROP_QUIET_MS, DropBatcher, type_dropped};
+use crate::link_bases::{BASE_NONE, BaseKind, LinkBases, find_link};
 use crate::term_menu::{TermMenuAct, TermMenuAt, TermMenuRow, term_menu_rows};
 use crate::thumbs::{Thumb, ThumbHover, ThumbJob, ThumbView, ThumbWorker, item_box};
 
@@ -120,14 +121,16 @@ pub enum TermMsg {
 /// no trace). `how` is `click`, `menu-open` or `menu-reveal`; `route` is where it went: `panel` (the side panel),
 /// `opened` (handed to Windows' default app; a failure there is its own `open-failed` crumb), `revealed`
 /// (Explorer, selected), `missing` (no spelling names anything) or `refused` (it changed under the click). The
-/// extension is a fixed word (`ext_label`): the screen text never reaches the log.
-fn link_crumb(how: &str, route: &str, text: &str, started: Instant) {
+/// extension is a fixed word (`ext_label`): the screen text never reaches the log. `base` names the folder the link
+/// was found under (`agent`, `start`, `shell`, `repo`, or `none` when it was found nowhere; rule 1240), never the path.
+fn link_crumb(how: &str, route: &str, base: &str, text: &str, started: Instant) {
     let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     crate::diag_ctl::crumb(
         "path-click",
         &[
             ("how", crate::diag_ctl::txt(how)),
             ("route", crate::diag_ctl::txt(route)),
+            ("base", crate::diag_ctl::txt(base)),
             ("ext", crate::diag_ctl::txt(ext_label(text))),
             ("ms", serde_json::Value::from(ms)),
         ],
@@ -178,6 +181,8 @@ pub struct TabInfo<'a> {
     pub handle: &'a Arc<TermHandle>,
     pub cwd: Option<&'a str>,
     pub shell_cwd: Option<&'a str>,
+    /// The folder the tab's agent session first named: a relative link `cwd` lacks is tried there next (rule 1240).
+    pub start_cwd: Option<&'a str>,
     pub alive: bool,
     /// A remote tab (remote sessions PR 3): its file links name files of the host, never of this machine, so none is
     /// resolved, opened, previewed or offered here (a click asks the tab's link to fetch it, PR 6), and a file dropped
@@ -193,6 +198,40 @@ impl TabInfo<'_> {
         } else {
             self.shell_cwd.or(self.cwd).unwrap_or_default()
         }
+    }
+
+    /// Every folder a file link spelled `text` is tried under, in order (rule 1240). A relative link: `link_base`,
+    /// then the agent's start folder, the tab's own folder and (found on the worker) the git repo roots above the
+    /// first. Any other: `link_base` alone. Nothing is statted here.
+    fn link_bases(&self, text: &str) -> LinkBases {
+        let first = self.link_base(text).to_string();
+        if !flare_term::path_grammar::is_relative(text) {
+            let kind = if self.shell_cwd.is_some() {
+                BaseKind::Shell
+            } else {
+                BaseKind::Agent
+            };
+            return LinkBases {
+                tried: vec![(kind, first)],
+                repo: false,
+            };
+        }
+        // The first folder is the agent's unless it is just the tab's own folder.
+        let kind = if self.cwd.is_some() && self.cwd == self.shell_cwd {
+            BaseKind::Shell
+        } else {
+            BaseKind::Agent
+        };
+        let mut tried = vec![(kind, first)];
+        for (k, b) in [
+            (BaseKind::Start, self.start_cwd),
+            (BaseKind::Shell, self.shell_cwd),
+        ] {
+            if let Some(b) = b.filter(|b| !b.is_empty()) {
+                tried.push((k, b.to_string()));
+            }
+        }
+        LinkBases { tried, repo: true }
     }
 }
 
@@ -502,6 +541,17 @@ fn marked_path_at(target: &LinkTarget, tab: &TabInfo, home: &str) -> Option<Term
     })
 }
 
+/// The folders a menu row tries for its path (rule 1240): the folder the menu was built with first, then the tab's
+/// fallback folders, so a row agrees with a click.
+fn menu_bases(tab: &TabInfo, path: &TermPathAt) -> LinkBases {
+    let mut bases = tab.link_bases(&path.text);
+    match bases.tried.first_mut() {
+        Some(first) => first.1.clone_from(&path.base),
+        None => bases.tried.push((BaseKind::Agent, path.base.clone())),
+    }
+    bases
+}
+
 fn mods(e: &PointerIn) -> MouseMods {
     MouseMods {
         shift: e.shift,
@@ -693,22 +743,29 @@ impl TermUi {
     /// (`texts`: as written, then with a space where a row broke) and re-resolves it (rule 13). With previews on, a
     /// picture or a text file on the click allowlist (rule 14) goes to the tab's panel, at `line`; everything else (a
     /// folder, a document, a script) goes the way it always went. A path that names nothing is said in the panel.
-    /// Never runs anything.
-    fn click_path_async(&self, tab: String, base: String, texts: Vec<String>, line: Option<u32>) {
+    /// Never runs anything. A relative link the first folder lacks is tried under the fallback folders (rule 1240).
+    fn click_path_async(
+        &self,
+        tab: String,
+        bases: LinkBases,
+        texts: Vec<String>,
+        line: Option<u32>,
+    ) {
         let openers = Arc::clone(&self.deps.openers);
         let home = self.deps.home.clone();
         let post = Arc::clone(&self.deps.post);
         let previews = self.previews;
         let started = Instant::now();
         thread::spawn(move || {
-            let Some(text) = first_existing(&base, &texts, &home) else {
+            let Some(found) = find_link(&bases, &texts, &home) else {
                 let text = texts.into_iter().next().unwrap_or_default();
-                link_crumb("click", "missing", &text, started);
+                link_crumb("click", "missing", BASE_NONE, &text, started);
                 post(TermMsg::NoSuchFile { tab, text });
                 return;
             };
+            let (base, text, at) = (found.base, found.text, found.kind.label());
             if previews && let Some((kind, abs)) = previewable(&base, &text, &home) {
-                link_crumb("click", "panel", &text, started);
+                link_crumb("click", "panel", at, &text, started);
                 post(TermMsg::Preview {
                     tab,
                     kind,
@@ -719,23 +776,29 @@ impl TermUi {
                 return;
             }
             let got = open_term_path(&base, &text, OpenMode::Open, &*openers, &home);
-            link_crumb("click", route_of(got), &text, started);
+            link_crumb("click", route_of(got), at, &text, started);
         });
     }
 
     /// "Show in side panel" from the path menu: the same vetting as the click, and when the path is not a picture or
     /// a text file after all (it changed since the menu was built) the panel says so: this row never opens anything.
     /// A link none of whose spellings names anything is said as the click says it.
-    fn preview_path_async(&self, tab: String, base: String, texts: Vec<String>, line: Option<u32>) {
+    fn preview_path_async(
+        &self,
+        tab: String,
+        bases: LinkBases,
+        texts: Vec<String>,
+        line: Option<u32>,
+    ) {
         let home = self.deps.home.clone();
         let post = Arc::clone(&self.deps.post);
         thread::spawn(move || {
-            let Some(text) = first_existing(&base, &texts, &home) else {
+            let Some(found) = find_link(&bases, &texts, &home) else {
                 let text = texts.into_iter().next().unwrap_or_default();
                 post(TermMsg::NoSuchFile { tab, text });
                 return;
             };
-            match previewable(&base, &text, &home) {
+            match previewable(&found.base, &found.text, &home) {
                 Some((kind, abs)) => post(TermMsg::Preview {
                     tab,
                     kind,
@@ -750,13 +813,13 @@ impl TermUi {
 
     /// "Copy path" for a file link: the first spelling that names something, read from the tab's folder, as a whole
     /// path. When none does, the text as written (a table cell's path without its borders), never a guess.
-    fn copy_path_async(&self, base: String, texts: Vec<String>) {
+    fn copy_path_async(&self, bases: LinkBases, texts: Vec<String>) {
         let home = self.deps.home.clone();
         let clip = Arc::clone(&self.deps.clipboard);
         let done = self.post_copied();
         thread::spawn(move || {
-            let copied = match first_existing(&base, &texts, &home) {
-                Some(text) => resolve_term_path(&base, &text, &home).unwrap_or(text),
+            let copied = match find_link(&bases, &texts, &home) {
+                Some(f) => resolve_term_path(&f.base, &f.text, &home).unwrap_or(f.text),
                 None => texts.into_iter().next().unwrap_or_default(),
             };
             copy_async(clip, copied, COPY_MAX, done);
@@ -873,7 +936,7 @@ impl TermUi {
                 Some((
                     ThumbJob {
                         seq,
-                        base: t.link_base(text).to_string(),
+                        bases: t.link_bases(text),
                         text: text.clone(),
                         alts: alts.clone(),
                     },
@@ -920,7 +983,7 @@ impl TermUi {
     /// The menu's Open and Show in Explorer: a worker re-resolves the link and applies the allowlist. A file link's
     /// spellings are tried in order; when none names anything no opener is called and the panel says so, as the
     /// click does (rule 273).
-    fn open_path_async(&self, tab: String, base: String, texts: Vec<String>, mode: OpenMode) {
+    fn open_path_async(&self, tab: String, bases: LinkBases, texts: Vec<String>, mode: OpenMode) {
         let openers = Arc::clone(&self.deps.openers);
         let home = self.deps.home.clone();
         let post = Arc::clone(&self.deps.post);
@@ -930,14 +993,14 @@ impl TermUi {
             OpenMode::Reveal => "menu-reveal",
         };
         thread::spawn(move || {
-            let Some(text) = first_existing(&base, &texts, &home) else {
+            let Some(found) = find_link(&bases, &texts, &home) else {
                 let text = texts.into_iter().next().unwrap_or_default();
-                link_crumb(how, "missing", &text, started);
+                link_crumb(how, "missing", BASE_NONE, &text, started);
                 post(TermMsg::NoSuchFile { tab, text });
                 return;
             };
-            let got = open_term_path(&base, &text, mode, &*openers, &home);
-            link_crumb(how, route_of(got), &text, started);
+            let got = open_term_path(&found.base, &found.text, mode, &*openers, &home);
+            link_crumb(how, route_of(got), found.kind.label(), &found.text, started);
         });
     }
 
@@ -1300,8 +1363,14 @@ impl TermUi {
                 let LinkTarget::Path { line, alts, .. } = &mark.target else {
                     return;
                 };
-                let texts = std::iter::once(text).chain(alts.iter().cloned()).collect();
-                self.click_path_async(tab.id.to_string(), base, texts, *line);
+                let texts: Vec<String> =
+                    std::iter::once(text).chain(alts.iter().cloned()).collect();
+                let mut bases = tab.link_bases(&texts[0]);
+                match bases.tried.first_mut() {
+                    Some(first) => first.1 = base,
+                    None => bases.tried.push((BaseKind::Agent, base)),
+                }
+                self.click_path_async(tab.id.to_string(), bases, texts, *line);
             }
             LinkAction::Nothing => {}
         }
@@ -1625,15 +1694,18 @@ impl TermUi {
                     OpenMode::Open
                 };
                 let texts = path.spellings();
-                self.open_path_async(t.id.to_string(), path.base, texts, mode);
+                let bases = menu_bases(t, &path);
+                self.open_path_async(t.id.to_string(), bases, texts, mode);
             }
             TermMenuAct::ShowInPanel { path } => {
                 let texts = path.spellings();
-                self.preview_path_async(t.id.to_string(), path.base, texts, path.line);
+                let bases = menu_bases(t, &path);
+                self.preview_path_async(t.id.to_string(), bases, texts, path.line);
             }
             TermMenuAct::CopyPath { path } => {
                 let texts = path.spellings();
-                self.copy_path_async(path.base, texts);
+                let bases = menu_bases(t, &path);
+                self.copy_path_async(bases, texts);
             }
             TermMenuAct::Copy(text) => self.copy(text, COPY_MAX),
             TermMenuAct::OpenLink(u) => self.open_link(&u),
@@ -1919,6 +1991,10 @@ mod tests {
         rcr: Rc<Cell<bool>>,
         g: GridGeom,
         cwd: Option<String>,
+        /// The tab's own shell folder (None: read from `cwd`).
+        shell_cwd: Option<String>,
+        /// The folder the agent's session first named.
+        start_cwd: Option<String>,
         /// The tab is a remote one (remote sessions PR 6).
         remote: bool,
         _sp: Arc<FakeSpawner>,
@@ -2028,6 +2104,8 @@ mod tests {
                     window: (800, 600),
                 },
                 cwd,
+                shell_cwd: None,
+                start_cwd: None,
                 remote: false,
                 _sp: sp,
             };
@@ -2088,7 +2166,8 @@ mod tests {
                 id: "a",
                 handle: &h,
                 cwd: self.cwd.as_deref(),
-                shell_cwd: None,
+                shell_cwd: self.shell_cwd.as_deref(),
+                start_cwd: self.start_cwd.as_deref(),
                 alive: true,
                 remote: self.remote,
             };
@@ -2143,7 +2222,8 @@ mod tests {
                 id: "a",
                 handle: &h,
                 cwd: self.cwd.as_deref(),
-                shell_cwd: None,
+                shell_cwd: self.shell_cwd.as_deref(),
+                start_cwd: self.start_cwd.as_deref(),
                 alive: true,
                 remote: self.remote,
             };
@@ -2160,7 +2240,8 @@ mod tests {
                 id: "a",
                 handle: &h,
                 cwd: self.cwd.as_deref(),
-                shell_cwd: None,
+                shell_cwd: self.shell_cwd.as_deref(),
+                start_cwd: self.start_cwd.as_deref(),
                 alive: true,
                 remote: self.remote,
             };
@@ -2192,7 +2273,8 @@ mod tests {
                 id: tab_id,
                 handle: &h,
                 cwd: self.cwd.as_deref(),
-                shell_cwd: None,
+                shell_cwd: self.shell_cwd.as_deref(),
+                start_cwd: self.start_cwd.as_deref(),
                 alive: true,
                 remote: self.remote,
             };
@@ -2211,7 +2293,8 @@ mod tests {
                 id: "a",
                 handle: &h,
                 cwd: self.cwd.as_deref(),
-                shell_cwd: None,
+                shell_cwd: self.shell_cwd.as_deref(),
+                start_cwd: self.start_cwd.as_deref(),
                 alive: true,
                 remote: self.remote,
             };
@@ -2224,7 +2307,8 @@ mod tests {
                 id: "a",
                 handle: &h,
                 cwd: self.cwd.as_deref(),
-                shell_cwd: None,
+                shell_cwd: self.shell_cwd.as_deref(),
+                start_cwd: self.start_cwd.as_deref(),
                 alive: true,
                 remote: self.remote,
             };
@@ -2967,6 +3051,7 @@ mod tests {
             handle: &r.handle,
             cwd: Some("AGENT"),
             shell_cwd: Some("SHELL"),
+            start_cwd: None,
             alive: true,
             remote: false,
         };
@@ -2976,6 +3061,7 @@ mod tests {
         assert_eq!(tab.link_base("~/a.rs"), "SHELL");
         let alone = TabInfo {
             shell_cwd: None,
+            start_cwd: None,
             ..tab
         };
         assert_eq!(alone.link_base("/x/a.rs"), "AGENT");
@@ -3012,6 +3098,113 @@ mod tests {
         assert!(previews(&r).is_empty());
     }
 
+    /// Rule 1240 (owner, 2026-11-14): the agent cd'd into a subfolder, so the folder its hooks last named lacks the file
+    /// it wrote relative to its session's folder. The click, and the menu's "Show in side panel", read it from the
+    /// tab's own folder instead of saying "no such file".
+    #[test]
+    fn a_relative_link_the_agents_folder_lacks_is_read_from_the_tabs_own_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let sub = root.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src").join("top.txt"), "x").unwrap();
+        let mut r = Rig::with_cwd(1.0, &sub);
+        r.shell_cwd = Some(root.path().to_string_lossy().into_owned());
+        light_up(&mut r, "src/top.txt");
+        r.frame();
+        r.click(2, 0);
+        until("the click's preview", || {
+            previews(&r).iter().any(|(_, _, p)| p.ends_with("top.txt"))
+        });
+        pick_on(&mut r, 2, 0, "Show in side panel");
+        until("the menu's preview", || {
+            previews(&r)
+                .iter()
+                .filter(|(_, _, p)| p.ends_with("top.txt"))
+                .count()
+                == 2
+        });
+        assert!(!no_such_file(&r, "src/top.txt"));
+    }
+
+    /// Rule 1240: the agent's session started at the repo root and later named a subfolder; the menu's Open reads the
+    /// file from the start folder, and the agent's folder wins when it has the file too.
+    #[test]
+    fn a_relative_link_is_read_from_the_start_folder_and_the_agents_folder_wins() {
+        let root = tempfile::tempdir().unwrap();
+        let sub = root.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(root.path().join("only.bat"), "x").unwrap();
+        std::fs::write(root.path().join("both.bat"), "x").unwrap();
+        std::fs::write(sub.join("both.bat"), "x").unwrap();
+        let mut r = Rig::with_cwd(1.0, &sub);
+        r.start_cwd = Some(root.path().to_string_lossy().into_owned());
+        light_up(&mut r, "only.bat both.bat");
+        r.frame();
+        pick_on(&mut r, 2, 0, "Open");
+        until("the open", || r.openers.records().len() == 1);
+        pick_on(&mut r, 11, 0, "Open");
+        until("the second open", || r.openers.records().len() == 2);
+        let rec = r.openers.records();
+        let sep = std::path::MAIN_SEPARATOR;
+        let only = format!(
+            "{}{sep}only.bat",
+            root.path().file_name().unwrap().to_string_lossy()
+        );
+        let both = format!("sub{sep}both.bat");
+        assert!(
+            matches!(&rec[0], OpenedRecord::Reveal(p) | OpenedRecord::Open(p) if p.ends_with(&only)),
+            "{rec:?}"
+        );
+        assert!(
+            matches!(&rec[1], OpenedRecord::Reveal(p) | OpenedRecord::Open(p) if p.ends_with(&both)),
+            "{rec:?}"
+        );
+    }
+
+    /// Rule 1240: only a relative link gets fallback folders; an absolute or `~` one is read from one folder.
+    #[test]
+    fn only_a_relative_link_gets_fallback_folders() {
+        let r = Rig::new(1.0);
+        let tab = TabInfo {
+            id: "a",
+            handle: &r.handle,
+            cwd: Some("AGENT"),
+            shell_cwd: Some("SHELL"),
+            start_cwd: Some("START"),
+            alive: true,
+            remote: false,
+        };
+        let rel = tab.link_bases("src/a.rs");
+        assert_eq!(
+            rel.tried,
+            [
+                (BaseKind::Agent, "AGENT".to_string()),
+                (BaseKind::Start, "START".to_string()),
+                (BaseKind::Shell, "SHELL".to_string()),
+            ]
+        );
+        assert!(rel.repo);
+        for t in ["/x/a.rs", "~/a.rs"] {
+            let one = tab.link_bases(t);
+            assert_eq!(one.tried, [(BaseKind::Shell, "SHELL".to_string())], "{t}");
+            assert!(!one.repo, "{t}");
+        }
+        // No agent folder: the tab's own folder is first, and is named as such.
+        let plain = TabInfo {
+            cwd: Some("SHELL"),
+            start_cwd: None,
+            ..tab
+        };
+        assert_eq!(
+            plain.link_bases("a.rs").tried,
+            [
+                (BaseKind::Shell, "SHELL".to_string()),
+                (BaseKind::Shell, "SHELL".to_string())
+            ]
+        );
+    }
+
     // ---- hover thumbnails ----
 
     fn png(path: &Path, w: u32, h: u32) {
@@ -3036,7 +3229,8 @@ mod tests {
             id: "a",
             handle: &h,
             cwd: r.cwd.as_deref(),
-            shell_cwd: None,
+            shell_cwd: r.shell_cwd.as_deref(),
+            start_cwd: r.start_cwd.as_deref(),
             alive: true,
             remote: false,
         };
@@ -3232,7 +3426,8 @@ mod tests {
             id: "a",
             handle: &h,
             cwd: r.cwd.as_deref(),
-            shell_cwd: None,
+            shell_cwd: r.shell_cwd.as_deref(),
+            start_cwd: r.start_cwd.as_deref(),
             alive: true,
             remote: false,
         };
@@ -3511,6 +3706,7 @@ mod tests {
             handle: &h,
             cwd: None,
             shell_cwd: None,
+            start_cwd: None,
             alive: true,
             remote: false,
         };
@@ -3784,6 +3980,7 @@ mod tests {
             handle: &h,
             cwd: None,
             shell_cwd: None,
+            start_cwd: None,
             alive: true,
             remote: false,
         };
@@ -3808,6 +4005,7 @@ mod tests {
             handle: &h,
             cwd: None,
             shell_cwd: None,
+            start_cwd: None,
             alive: false,
             remote: false,
         };

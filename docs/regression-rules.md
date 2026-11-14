@@ -3801,3 +3801,31 @@ Mac (2026-11-14), so only the blink defaults count. Other non-Windows systems st
 `the_mac_blink_period_comes_from_the_on_default_then_the_off_default`, `a_huge_mac_blink_period_is_steady`,
 `the_mac_defaults_read_runs_without_a_window` and `the_mac_blink_defaults_set_the_period_and_a_huge_one_is_steady`.
 Source: the macOS parity review of PR #234, 2026-11-14.
+
+## File links: fallback folders (2026-11-14)
+
+1240. **A relative file link the agent's folder lacks is read from the session's start folder, the tab's folder or
+the repo root.** A click or the menu's Open on a relative link gave route `missing` (diag `path-click`, ext `tsx`):
+`TabInfo::link_base` read it only from the folder the agent's hooks last named, but agents write paths relative to
+their session's folder, and the named folder can differ (a `cd` into a subfolder or a worktree, a stale report).
+Owner's pick (Max, 2026-11-14): fallback folders. When no spelling names anything under the agent's folder, the worker
+tries, in order and each folder once: the folder the agent's session first named (`AgentHub::agent_start_folder`,
+the first `panel.state` folder since the agent came or the session changed; the `SessionStart` hook sends none), the
+tab's own shell folder, the nearest git repo root above the agent's folder (a folder holding `.git`, a worktree's
+`.git` file included) and the main repo root a worktree's `.git` file points to (`gitdir:` then `commondir`). Folders
+go outer, spellings inner: the first folder is tried with every spelling, then the next. The agent's folder wins
+whenever it has the file. Nothing found: `missing`, as before. The click, every menu row (Open, Show in Explorer, Show
+in side panel, Copy path) and the hover thumbnail use the same resolution, so they agree. The `path-click` crumb gets
+`base`: `agent`, `start`, `shell`, `repo` or `none`, a fixed word, never the path. Unchanged: an absolute path, a
+rooted path with no drive and `~` read from one folder only; a remote tab resolves nothing here; the worker
+re-resolves the winning spelling under the winning folder and applies the allowlist (rules 13 and 14); nothing is
+run, only stats and a worktree's small `.git` and `commondir` files are read. Native: `link_bases::{LinkBases,
+find_link, repo_roots}`, `TabInfo::link_bases`, `FrontTab::start_cwd`. Held by
+`a_relative_link_the_agents_folder_lacks_is_read_from_the_tabs_own_folder`,
+`a_relative_link_is_read_from_the_start_folder_and_the_agents_folder_wins`,
+`a_relative_link_missing_under_the_agents_folder_is_found_under_the_start_folder`,
+`the_agents_folder_wins_when_both_have_the_file`, `folders_go_before_spellings`, `nothing_anywhere_is_none`,
+`the_repo_root_above_the_agents_folder_is_tried`,
+`a_worktree_counts_as_a_root_and_its_main_repo_root_is_tried_after_it`,
+`a_worktree_without_commondir_still_finds_its_main_root`, `only_a_relative_link_gets_fallback_folders` and
+`the_start_folder_is_the_first_folder_named_and_goes_with_the_agent`. Source: Max, 2026-11-14.
