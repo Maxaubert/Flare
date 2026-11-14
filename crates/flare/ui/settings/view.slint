@@ -19,6 +19,7 @@ import { HelpPanel } from "help_panel.slint";
 import { DictKeyField, DictMicField, DictLimitedMark, DictModelRow, DictAsk } from "dictation.slint";
 import { SetMachineHead, SetMachineRow, SetMachineForm } from "machines.slint";
 import { AppIconStrip } from "app_icons.slint";
+import { SetNotice } from "notice.slint";
 
 export global SettingsBridge {
     // data, all computed by Rust
@@ -101,6 +102,9 @@ export global SettingsBridge {
     in-out property <float> dict-level;
     in-out property <bool> dict-ask-open;
     in-out property <string> dict-ask-text;
+    // A settings notice (rule 1263): one plain line and OK, for a failure a row must not report in its subtext.
+    in-out property <bool> notice-open;
+    in-out property <string> notice-text;
     // A plugin's details sheet (the info button on its card, 2026-11-08): what it shows, filled by Rust.
     in-out property <bool> sheet-open;
     in-out property <string> sheet-name;
@@ -154,6 +158,7 @@ export global SettingsBridge {
     callback editor-cancel();
     callback ask-answered(int);
     callback dict-ask-answered(int);
+    callback notice-closed();
     callback sheet-close();
     // A toggle tile (its key, the new state) and a dropdown tile (its key, the level's id).
     callback sheet-toggle(string, bool);
@@ -746,6 +751,13 @@ export component SettingsPreview inherits Window {
         open: SettingsBridge.dict-ask-open;
         text: SettingsBridge.dict-ask-text;
         answered(n) => { SettingsBridge.dict-ask-answered(n); }
+    }
+    SetNotice {
+        width: parent.width;
+        height: parent.height;
+        open: SettingsBridge.notice-open;
+        text: SettingsBridge.notice-text;
+        closed => { SettingsBridge.notice-closed(); }
     }
     SelectMenu {
         width: parent.width;

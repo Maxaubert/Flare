@@ -2,9 +2,9 @@
 //! twelve 36 px icon tiles 46 css px apart (layout A), the original first and picked on a fresh profile; a press on a
 //! tile stores its id in the settings and the row follows. A narrow window wraps the tiles onto more lines and the row
 //! grows by whole lines. The row's right holds the Restart Explorer (Restart Dock) button, never the icon's name; the
-//! button runs the restart through the `ShellRestart` seam, here a fake, and a failure is one plain line under the
-//! label. The tiles are found by the original icon's own red-orange flame, which no other design and no other part of
-//! the page wears.
+//! button runs the restart through the `ShellRestart` seam, here a fake, and a failure opens the settings notice (one
+//! plain line and OK) while the row's subtext stays as it is. The tiles are found by the original icon's own
+//! red-orange flame, which no other design and no other part of the page wears.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -363,25 +363,72 @@ fn the_restart_button_runs_the_fake_restart() {
     f.pump_until("the second restart", |f| f.restart.calls() == 2);
 }
 
-/// Rule 1263: a failed restart is one plain line under the label until the next press.
+/// Rule 1263: a failed restart opens the settings notice, one plain line and OK; the row's subtext never changes.
+/// OK closes it.
 #[test]
-fn a_failed_restart_says_so_under_the_label() {
+fn a_failed_restart_opens_the_notice_and_the_subtext_stays() {
+    use flare_settings::page::appearance::APP_ICON_SUB;
+    for s in SCALES2 {
+        let restart = Arc::new(FakeShellRestart::failing());
+        let f = fx_sized(s, PrefStore::memory(), 1000, restart.clone());
+        assert!(!f.b().get_notice_open(), "{s}: no notice before a press");
+        f.b()
+            .invoke_row_button("app-icon".into(), RESTART_BUTTON.into());
+        f.pump_until("the notice", |f| f.b().get_notice_open());
+        assert_eq!(restart.calls(), 1);
+        assert_eq!(f.b().get_notice_text().as_str(), RESTART_FAILED, "{s}");
+        if cfg!(target_os = "macos") {
+            assert_eq!(RESTART_FAILED, "The Dock did not restart.");
+        } else {
+            assert_eq!(RESTART_FAILED, "Explorer did not restart.");
+        }
+        assert!(!RESTART_FAILED.contains('\n'));
+        assert_eq!(f.row().sub.as_str(), APP_ICON_SUB, "{s}: the subtext stays");
+        assert!(!f.row().buttons.row_data(0).unwrap().off);
+        // It counts as an overlay (`Overlay::SettingsNotice`, held in `ui_tests/panel.rs`); here the Settings page is
+        // in front, which is an overlay already, so this test does not read `overlay-open`.
+        // The box is drawn in the Dialog look, 380 wide at most.
+        f.h.advance(16);
+        let bw = f.h.comp.get_notice_box_w();
+        assert!(bw > 200.0 && bw <= 380.0, "{s}: box {bw}");
+        // OK closes it, and the subtext is still the usual words.
+        let (x, y, w, h) = (
+            f.h.comp.get_notice_ok_x(),
+            f.h.comp.get_notice_ok_y(),
+            f.h.comp.get_notice_ok_w(),
+            f.h.comp.get_notice_ok_h(),
+        );
+        assert!(w > 0.0 && h > 0.0, "{s}: OK is drawn");
+        f.h.click(x + w / 2.0, y + h / 2.0);
+        f.pump();
+        assert!(!f.b().get_notice_open(), "{s}: OK closes the notice");
+        assert_eq!(f.row().sub.as_str(), APP_ICON_SUB, "{s}");
+    }
+}
+
+/// Rule 1263: Escape closes the notice too, and a restart that works opens none.
+#[test]
+fn escape_closes_the_restart_notice_and_a_good_restart_opens_none() {
     let restart = Arc::new(FakeShellRestart::failing());
     let f = fx_sized(1.0, PrefStore::memory(), 1000, restart.clone());
     f.b()
         .invoke_row_button("app-icon".into(), RESTART_BUTTON.into());
-    f.pump_until("the failure line", |f| {
-        f.row().sub.as_str() == RESTART_FAILED
-    });
-    assert_eq!(restart.calls(), 1);
-    assert!(!f.row().buttons.row_data(0).unwrap().off);
-    assert!(!RESTART_FAILED.contains('\n'));
-    // The next press clears it, and a restart that works leaves the usual words.
+    f.pump_until("the notice", |f| f.b().get_notice_open());
+    f.h.advance(16);
+    f.h.key_text(&char::from(slint::platform::Key::Escape).to_string());
+    f.pump();
+    assert!(!f.b().get_notice_open(), "Escape closes the notice");
+    // A restart that works: no notice, the usual words.
     restart.set_failing(false);
     f.b()
         .invoke_row_button("app-icon".into(), RESTART_BUTTON.into());
-    f.pump_until("the usual words", |f| {
-        f.row().sub.as_str() == flare_settings::page::appearance::APP_ICON_SUB
-            && restart.calls() == 2
+    f.pump_until("the second restart", |f| {
+        f.restart.calls() == 2 && !f.row().buttons.row_data(0).unwrap().off
     });
+    f.pump();
+    assert!(!f.b().get_notice_open(), "a good restart opens no notice");
+    assert_eq!(
+        f.row().sub.as_str(),
+        flare_settings::page::appearance::APP_ICON_SUB
+    );
 }

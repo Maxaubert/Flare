@@ -674,8 +674,9 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   tiles are a fixed 36 px with 10 px gaps, left aligned at the words' column, and wrap onto more lines in a narrow
   window (the row grows by whole lines). The row's right is a **Restart Explorer** button (**Restart Dock** on a Mac)
   in place of the icon's name: it ends `explorer.exe` in this user's session and starts the shell again (`killall
-  Dock` on a Mac) on a worker, so the taskbar or the Dock shows the pick at once. A failed restart says "Explorer did
-  not restart." under the label.
+  Dock` on a Mac) on a worker, so the taskbar or the Dock shows the pick at once. A failed restart opens a small
+  Flare dialog with one line, "Explorer did not restart." ("The Dock did not restart." on a Mac), and OK; the row's
+  subtext never changes.
   How a pick is worn (rule 1231): on the Mac, `NSApplication.applicationIconImage` (the Dock and the app switcher),
   at start and on every pick; Finder keeps the original, since the signed bundle is never written to. On Windows,
   the window's big and small icons (`WM_SETICON`, which the taskbar button shows), at start, on a DPI change and on

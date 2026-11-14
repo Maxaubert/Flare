@@ -3864,8 +3864,15 @@ A press runs `ShellRestart::restart` on the `flare-shell-restart` worker and ans
 `explorer.exe` of this user's session (`ProcessIdToSessionId`, never another session's), waits up to 2.5 s for
 Winlogon to start the shell again and otherwise starts `explorer.exe` by its absolute path, out of any job Flare
 runs in, checks that it shows within 5 s and starts it once more before it reports a failure; macOS runs
-`/usr/bin/killall Dock` (`flare_win::shell_restart`). A failure puts "Explorer did not restart." ("The Dock did not
-restart.") in place of the row's subtext until the next press, as the microphone row says its problem. Crumbs:
+`/usr/bin/killall Dock` (`flare_win::shell_restart`). A settings row's subtext never changes to report state (Max's
+standing rule), so the row always says "The taskbar and the window. Shortcuts keep the original." (its own fixed text
+on a Mac, `APP_ICON_SUB`). A failure opens the settings notice instead (`SetNotice`, `ui/settings/notice.slint`):
+the Dialog look (scrim, a box of at most 380 px on the side-flat ground, hairline border, modal shadow) with one plain
+line, "Explorer did not restart." ("The Dock did not restart.", `app_icon::RESTART_FAILED`), and an **OK** button
+(labelled, so no tooltip). OK, Enter, Space, Escape and a press outside close it. Rust drives it through
+`SettingsBridge.notice-open`, `notice-text` and `notice-closed` (`SettingsCtl::show_notice` and `close_notice`;
+`SettingsCtl::escape` and leaving Settings close it too). It is counted as an overlay (`Overlay::SettingsNotice`, the
+`overlay-open` term, rank 3 in `overlay_order.rs`). It is not a row, so the Find index does not change. Crumbs:
 `shell-restart-asked`, then `shell-restart` with `ok` and a short `why` (no path). Tests and `--e2e` use
 `FakeShellRestart`: nothing outside the test restarts Explorer or the Dock. Held by
 `the_app_icon_row_is_its_words_over_a_line_of_tiles`, `the_app_icon_tiles_wrap_and_the_row_grows` (`layout.rs`),
@@ -3873,5 +3880,6 @@ restart.") in place of the row's subtext until the next press, as the microphone
 `the_fake_restart_counts_and_fails_when_told` (`app_icon.rs`) and, in `ui_tests/settings_app_icon.rs`,
 `the_picker_shows_every_icon_on_one_line_with_the_original_picked`,
 `a_narrow_window_wraps_the_tiles_and_the_row_grows_by_whole_lines`,
-`the_right_side_is_the_restart_button_not_the_icon_name`, `the_restart_button_runs_the_fake_restart` and
-`a_failed_restart_says_so_under_the_label`. Source: Max, 2026-11-14.
+`the_right_side_is_the_restart_button_not_the_icon_name`, `the_restart_button_runs_the_fake_restart`,
+`a_failed_restart_opens_the_notice_and_the_subtext_stays` (OK closes it) and
+`escape_closes_the_restart_notice_and_a_good_restart_opens_none`. Source: Max, 2026-11-14.

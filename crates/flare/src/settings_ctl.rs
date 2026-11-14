@@ -230,10 +230,11 @@ pub struct SettingsCtl {
     mods: Option<Rc<dyn ModsPort>>,
     /// The Machines page (remote sessions PR 7); none until the window hands it over.
     machines: Option<crate::machines_page::MachinesPage>,
-    /// The App icon row's shell restart (rule 1263): one runs on a worker now (the button is off), and the last one
-    /// failed (the row says so under its label until the next press).
+    /// The App icon row's shell restart (rule 1263): one runs on a worker now (the button is off).
     restarting: bool,
-    restart_failed: bool,
+    /// The settings notice's one plain line while it is open (rule 1263: a failed shell restart). A row's subtext
+    /// never changes to report state, so a failure is told here.
+    notice: Option<String>,
 }
 
 // ---- the pure mappers ------------------------------------------------------------------------------
@@ -800,7 +801,7 @@ impl SettingsCtl {
             mods: None,
             machines: None,
             restarting: false,
-            restart_failed: false,
+            notice: None,
             deps,
         };
         let rc = Rc::new(RefCell::new(ctl));
@@ -978,6 +979,7 @@ impl SettingsCtl {
         on!(app, rc, on_ask_answered, |c, n: i32| c.ask_answered(n));
         on!(app, rc, on_dict_ask_answered, |c, n: i32| c
             .dict_ask_answered(n));
+        on!(app, rc, on_notice_closed, |c| c.close_notice());
         on!(app, rc, on_sheet_close, |c| c.close_sheet());
         on!(app, rc, on_sheet_toggle, |c, k: SharedString, on: bool| c
             .sheet_choice(&k, if on { "on" } else { "off" }));
@@ -1087,6 +1089,7 @@ impl SettingsCtl {
         self.ask_open = false;
         self.stale = true;
         self.close_sheet();
+        self.close_notice();
         self.picker_do(|p, _| p.outside());
         if let Some(app) = self.weak.upgrade() {
             let b = app.global::<SettingsBridge>();
@@ -1140,7 +1143,6 @@ impl SettingsCtl {
             }
             SettingsMsg::ShellRestarted(r) => {
                 self.restarting = false;
-                self.restart_failed = r.is_err();
                 // The reason is a short word or two with no path in it (rule 1263).
                 crate::diag_ctl::crumb(
                     "shell-restart",
@@ -1156,7 +1158,29 @@ impl SettingsCtl {
                     log::warn!("shell restart failed: {e}");
                 }
                 self.refresh_if_visible();
+                // A failure is a notice, one plain line and OK; the row's subtext stays as it is.
+                if r.is_err() {
+                    self.show_notice(flare_settings::app_icon::RESTART_FAILED);
+                }
             }
+        }
+    }
+
+    /// Opens the settings notice with one plain line (rule 1263).
+    fn show_notice(&mut self, line: &str) {
+        self.notice = Some(line.to_string());
+        if let Some(app) = self.weak.upgrade() {
+            let b = app.global::<SettingsBridge>();
+            b.set_notice_text(line.into());
+            b.set_notice_open(true);
+        }
+    }
+
+    /// OK, Enter, Escape or a press outside closed the notice.
+    fn close_notice(&mut self) {
+        self.notice = None;
+        if let Some(app) = self.weak.upgrade() {
+            app.global::<SettingsBridge>().set_notice_open(false);
         }
     }
 
@@ -1167,7 +1191,6 @@ impl SettingsCtl {
             return;
         }
         self.restarting = true;
-        self.restart_failed = false;
         crate::diag_ctl::crumb("shell-restart-asked", &[]);
         let restarter = Arc::clone(&self.deps.shell_restart);
         let post = Arc::clone(&self.deps.post);
@@ -1178,10 +1201,10 @@ impl SettingsCtl {
         self.refresh_if_visible();
     }
 
-    /// The App icon row as the restart leaves it (rule 1263): its button off while a restart runs, and the failure's
-    /// one plain line in place of its subtext, as the microphone row says its problem.
+    /// The App icon row as the restart leaves it (rule 1263): its button off while a restart runs. Its subtext never
+    /// changes; a failure is the settings notice (`show_notice`).
     fn mark_restart(&self, model: &mut PageModel) {
-        use flare_settings::app_icon::{RESTART_BUTTON, RESTART_FAILED};
+        use flare_settings::app_icon::RESTART_BUTTON;
         for s in &mut model.sections {
             for b in &mut s.blocks {
                 if let BlockModel::Row(r) = b
@@ -1191,9 +1214,6 @@ impl SettingsCtl {
                         if btn.id == RESTART_BUTTON {
                             btn.off = self.restarting;
                         }
-                    }
-                    if self.restart_failed {
-                        r.sub = RESTART_FAILED.to_string();
                     }
                 }
             }
@@ -1297,6 +1317,10 @@ impl SettingsCtl {
             return false;
         };
         let b = app.global::<SettingsBridge>();
+        if self.notice.is_some() {
+            self.close_notice();
+            return true;
+        }
         if self.sheet.is_some() {
             self.close_sheet();
             return true;
@@ -1626,6 +1650,8 @@ impl SettingsCtl {
         b.set_ask_open(self.ask_open);
         b.set_dict_ask_open(crate::dictation_ctl::page_snap().ask.is_some());
         b.set_dict_ask_text(flare_dictation::catalog::LIMITED_LANGUAGES_TEXT.into());
+        b.set_notice_open(self.notice.is_some());
+        b.set_notice_text(self.notice.as_deref().unwrap_or_default().into());
         self.push_editor(app, format);
     }
 

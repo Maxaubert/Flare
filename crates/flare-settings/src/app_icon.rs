@@ -125,7 +125,8 @@ pub const RESTART_LABEL: &str = if cfg!(target_os = "macos") {
     "Restart Explorer"
 };
 
-/// What the row says under its label when the restart failed: one plain line, as the microphone row says its problem.
+/// The one plain line of the settings notice (a dialog with OK) after a failed restart. The row's subtext never
+/// changes to report it (rule 1263).
 pub const RESTART_FAILED: &str = if cfg!(target_os = "macos") {
     "The Dock did not restart."
 } else {
