@@ -169,6 +169,8 @@ fn app_icon_row(env: &PageEnv) -> RowModel {
         buttons: vec![Button {
             id: RESTART_BUTTON,
             label: RESTART_LABEL.to_string(),
+            // The mockup's circular arrow, left of the words.
+            icon: "redo",
             ..Button::default()
         }],
         ..row_with(
@@ -447,7 +449,8 @@ mod tests {
             assert_eq!(b.label, "Restart Explorer");
         }
         assert!(b.tip.is_empty(), "a labelled button has no tooltip");
-        assert!(b.icon.is_empty());
+        assert_eq!(b.icon, "redo");
+        assert!(crate::icons::button_icon_path(b.icon).is_some());
         assert!(!b.off);
     }
 

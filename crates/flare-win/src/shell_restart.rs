@@ -3,7 +3,8 @@
 //!
 //! - Windows: every `explorer.exe` of this user's session (never another session's) is ended, then the shell is
 //!   started again. Winlogon starts it again by itself on many PCs; when no new Explorer shows within a short wait,
-//!   `explorer.exe` is started by its absolute path under the system root.
+//!   `explorer.exe` is started by its absolute path under the system root, out of any job Flare runs in. Flare checks
+//!   that it shows and starts it once more if not, so the user is never left with no shell and no word of it.
 //! - macOS: `/usr/bin/killall Dock`; launchd starts the Dock again at once.
 //!
 //! It blocks for up to a few seconds, so callers run it on a worker. Errors are short reasons with no path in them.
@@ -36,13 +37,16 @@ mod imp {
     };
     use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcessId, OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess,
-        WaitForSingleObject,
+        CREATE_BREAKAWAY_FROM_JOB, GetCurrentProcessId, OpenProcess, PROCESS_SYNCHRONIZE,
+        PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
     };
 
-    /// How long each ended Explorer is waited for, and how long Winlogon gets to start the shell by itself.
+    /// How long each ended Explorer is waited for, how long Winlogon gets to start the shell by itself, how long an
+    /// Explorer Flare started gets to show, and how many times Flare starts it.
     const END_WAIT_MS: u32 = 5_000;
     const COME_BACK: Duration = Duration::from_millis(2_500);
+    const STARTED_WAIT: Duration = Duration::from_millis(5_000);
+    const START_TRIES: usize = 2;
     const POLL: Duration = Duration::from_millis(100);
 
     /// The session of a process; None when Windows does not say.
@@ -104,13 +108,43 @@ mod imp {
         ended
     }
 
-    /// Starts `explorer.exe` by its absolute path under the system root (never the bare name).
+    /// Starts `explorer.exe` by its absolute path under the system root (never the bare name). It breaks away from any
+    /// job Flare runs in, so a job that ends with Flare never takes the new shell with it; a job that forbids breaking
+    /// away gets a plain start.
     fn start_explorer() -> Result<(), String> {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
         let sys_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
-        std::process::Command::new(crate::openers::explorer_path(&sys_root)) // sync-ok: the restart worker only
-            .spawn()
+        let path = crate::openers::explorer_path(&sys_root);
+        let spawn = |flags: u32| {
+            Command::new(&path) // sync-ok: the restart worker only
+                .creation_flags(flags)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+        };
+        spawn(CREATE_BREAKAWAY_FROM_JOB)
+            .or_else(|_| spawn(0))
             .map(|_| ())
             .map_err(|e| format!("explorer did not start: {}", e.kind()))
+    }
+
+    /// Whether an Explorer that was not running before shows in `session` within `within`.
+    fn came_back(session: u32, before: &[u32], within: Duration) -> bool {
+        let start = Instant::now();
+        loop {
+            if explorers_in(session)
+                .iter()
+                .any(|pid| !before.contains(pid))
+            {
+                return true;
+            }
+            if start.elapsed() >= within {
+                return false;
+            }
+            std::thread::sleep(POLL); // sync-ok: the restart worker only
+        }
     }
 
     pub fn restart() -> Result<(), String> {
@@ -123,17 +157,19 @@ mod imp {
             return Err("explorer could not be ended".to_string());
         }
         // Winlogon brings the shell back by itself on many PCs; a second shell would open a folder window instead.
-        let start = Instant::now();
-        while start.elapsed() < COME_BACK {
-            if explorers_in(session)
-                .iter()
-                .any(|pid| !before.contains(pid))
-            {
-                return Ok(());
-            }
-            std::thread::sleep(POLL); // sync-ok: the restart worker only
+        if came_back(session, &before, COME_BACK) {
+            return Ok(());
         }
-        start_explorer()
+        // Never leave the user with no shell: start it, check it shows, and try once more before saying it failed.
+        let mut why = String::new();
+        for _ in 0..START_TRIES {
+            match start_explorer() {
+                Ok(()) if came_back(session, &before, STARTED_WAIT) => return Ok(()),
+                Ok(()) => why = "explorer did not come back".to_string(),
+                Err(e) => why = e,
+            }
+        }
+        Err(why)
     }
 }
 

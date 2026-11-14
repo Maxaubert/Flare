@@ -3857,11 +3857,13 @@ the view places them by it (`AppIconStrip.cols`), so the height and the tiles al
 hover fill, the name as tooltip and accessible label and the key focus of each tile stay as rule 1230 made them. The
 row's right is no longer the picked icon's name (`SetRow.badge` stays empty and `RowControls` draws no text for the
 row): it is a row button, **Restart Explorer** on Windows and **Restart Dock** on macOS (`app_icon::RESTART_LABEL`,
-id `restart-shell`), text only (Flare's icon set has no circular arrow) and with no tooltip, as a labelled button.
+id `restart-shell`), with the mockup's circular arrow (`redo`, in `icons::BUTTON_ICONS`) left of its words and no
+tooltip, as a labelled button.
 A press runs `ShellRestart::restart` on the `flare-shell-restart` worker and answers with
 `SettingsMsg::ShellRestarted`; the button is off while it runs and a second press does nothing. Windows ends every
 `explorer.exe` of this user's session (`ProcessIdToSessionId`, never another session's), waits up to 2.5 s for
-Winlogon to start the shell again and otherwise starts `explorer.exe` by its absolute path; macOS runs
+Winlogon to start the shell again and otherwise starts `explorer.exe` by its absolute path, out of any job Flare
+runs in, checks that it shows within 5 s and starts it once more before it reports a failure; macOS runs
 `/usr/bin/killall Dock` (`flare_win::shell_restart`). A failure puts "Explorer did not restart." ("The Dock did not
 restart.") in place of the row's subtext until the next press, as the microphone row says its problem. Crumbs:
 `shell-restart-asked`, then `shell-restart` with `ok` and a short `why` (no path). Tests and `--e2e` use

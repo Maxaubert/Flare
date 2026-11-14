@@ -323,7 +323,11 @@ fn the_right_side_is_the_restart_button_not_the_icon_name() {
     assert_eq!(b.id.as_str(), RESTART_BUTTON);
     assert_eq!(b.label.as_str(), RESTART_LABEL);
     assert_eq!(b.tip.as_str(), "", "a labelled button has no tooltip");
-    assert_eq!(b.icon.as_str(), "");
+    // The mockup's circular arrow left of the words (the icon's path data reaches the view).
+    assert_eq!(
+        b.icon.as_str(),
+        flare_settings::icons::button_icon_path("redo").unwrap()
+    );
     assert!(!b.off);
     // The view's row controls never print the row's badge (the icon's name lived there).
     let view = include_str!("../../ui/settings/view.slint");

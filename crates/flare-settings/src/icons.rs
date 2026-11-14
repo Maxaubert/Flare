@@ -132,6 +132,8 @@ pub const BUTTON_ICONS: &[(&str, &str)] = &[
         "info",
         "M12 8h.01M11 12h1v4h1M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z",
     ),
+    // The App icon row's Restart Explorer (Restart Dock) button (rule 1263): a circular arrow, the mockup's `redo`.
+    ("redo", "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"),
 ];
 
 /// The path data of an icon button's icon: a button icon, else a settings icon.
