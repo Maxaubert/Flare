@@ -3802,6 +3802,31 @@ Mac (2026-11-14), so only the blink defaults count. Other non-Windows systems st
 `the_mac_defaults_read_runs_without_a_window` and `the_mac_blink_defaults_set_the_period_and_a_huge_one_is_steady`.
 Source: the macOS parity review of PR #234, 2026-11-14.
 
+## Keys Slint was handed (2026-11-14)
+
+1238. **A key whose press went to Slint has its release go there too, and a modifier's release is never swallowed.**
+After Shift or Ctrl+A in a Settings text field (the Machines Name field, the Find field) or with the panel holding
+the keys, typing broke until the window lost the focus: letters were dropped and Backspace deleted words (Ctrl held),
+or an arrow selected (Shift held). `window::handle_key` sent the press to Slint (`AppCtl::on_key` answers `Slint` with
+Settings in front or the panel focused) but the release to Slint only while `chrome_has_focus`, the find input or (on
+the Mac) the page had the keys; otherwise the release went to the shell or was dropped. Slint keeps its modifier
+state from its own key events and clears it only on a focus loss, so the modifier stayed down. Now `KeyPath` keeps
+`slint_down`, the codes whose press went to Slint: their release goes to Slint whatever has the keys
+(`release_outcome`: Slint's press first, then a press the app consumed, then a Slint field with the keys, else the
+shell). A modifier's release (`keymap::is_modifier_code`) that the app did not consume also reaches Slint after the
+shell had it, and with no shell in front it is let through rather than swallowed. A focus loss empties `slint_down`
+(`handle_focus`), as Slint lets go of every key then. The e2e glue had hidden it: it told Slint the modifiers were up
+on every swallowed release and folded modifiers into chords. Now a lone modifier reaches Slint as that one key, and
+only when `handle_key` lets it through (`slint_modifier_of`; `slint_modifier_releases` is gone), so scenarios take
+the real path. Native: `window::{KeyPath::slint_down, release_outcome, handle_key, handle_focus}`,
+`keymap::is_modifier_code`, `e2e_glue::{slint_key_events, slint_modifier_of}`. Held by
+`after_ctrl_a_in_a_settings_field_backspace_clears_it_and_letters_type`,
+`after_shift_in_a_settings_field_an_arrow_moves_the_caret_without_selecting`,
+`ctrl_a_in_the_panel_leaves_no_ctrl_held_for_the_next_field`,
+`shift_in_the_panel_leaves_no_shift_held_for_the_next_field`,
+`a_shift_release_goes_where_its_press_went_and_a_focus_loss_forgets_it`,
+`a_modifier_release_on_a_terminal_reaches_the_shell_and_slint`, `the_release_follows_the_press_first` and
+`a_chord_with_modifiers_reaches_slint_as_modifier_presses_around_the_key`. Source: Max, 2026-11-14.
 1239. **A shell the session's end kills keeps its tab.** On a Windows restart Windows ends the console processes
 (exit code `DBG_TERMINATE_PROCESS`, `0x40010004`) about 220 ms before Flare gets `WM_ENDSESSION`. Flare took each
 exit for a closed tab, the refresh saved the smaller strip and the session-end flush wrote it: 8 of 9 tabs were lost
