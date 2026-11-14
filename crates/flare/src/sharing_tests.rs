@@ -333,6 +333,13 @@ fn the_elevated_scripts_report_through_their_exit_code_and_write_no_file() {
         }
     }
     assert_eq!(EXIT_BASE, 17_920);
+    // The key scripts compare base64 keys with case (`-cne`): `-ne` ignores case, so a key that differs only in case
+    // would take another computer's line out.
+    let add = windows_add_key_script("ssh-ed25519 AAAA flare-pair:Mini", "AAAA");
+    let remove = windows_remove_key_script("AAAA");
+    assert!(add.contains("if ((-split $l)[1] -cne 'AAAA')"), "{add}");
+    assert!(remove.contains("(-split $_)[1] -cne 'AAAA'"), "{remove}");
+    assert!(!add.contains(" -ne 'AAAA'") && !remove.contains(" -ne 'AAAA'"));
 }
 
 /// Rule 1253: the exit code is read strictly. Every report goes there and back; PowerShell's own codes, a code below or

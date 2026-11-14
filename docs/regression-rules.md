@@ -4158,7 +4158,9 @@ and every other line stays. The key's base64 reaches a script only when it is ba
 key scripts run inline like rule 1253's and report through the same exit code, read strictly (step `addkey`, `keys`
 or `config`; they write no file). Before either writes, `Assert-AdminOnly` checks `%ProgramData%\ssh` and an existing
 `administrators_authorized_keys` (no link, owned and changeable only by SYSTEM, Administrators or TrustedInstaller);
-a failure there is rule 1253's `config` line and nothing is written.
+a failure there is rule 1253's `config` line and nothing is written. Both scripts compare the key's base64 with case
+(`-cne`): PowerShell's `-ne` ignores case, so a key that differs only in case would take another line out (fourth
+review, 2026-11-15).
 Order (security review, 2026-11-14): everything the answer needs is read before the key goes in (the SSH host key,
 and the user name, which must be one ssh user: `user_word` takes a Windows name with a space, as one argv item after
 `-l`, and refuses an empty name, a leading dash, a space at either end, a quote, a backtick, a control character, `%` or

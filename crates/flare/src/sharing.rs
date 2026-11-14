@@ -704,7 +704,8 @@ pub fn strip_flare_keys(text: &str) -> (String, usize) {
 /// PR 3, rule 1258), reporting through its exit code like the others: the same key's older line goes, the line is
 /// added, and the file gets the access sshd wants (Administrators and SYSTEM only, by SID, so any Windows language
 /// works). It writes only when no other account can change the folder or the file, and neither is a link
-/// (`Assert-AdminOnly`, step `config`). `key` is the key's base64 field, checked by the caller.
+/// (`Assert-AdminOnly`, step `config`). `key` is the key's base64 field, checked by the caller. Keys are compared with
+/// case (`-cne`), as base64 is: PowerShell's `-ne` ignores case, so another key could match.
 pub fn windows_add_key_script(line: &str, key: &str) -> String {
     let line = ps_quote(line);
     let key = ps_quote(key);
@@ -725,7 +726,7 @@ try {{
     $keep = New-Object System.Collections.Generic.List[string]
     if (Test-Path -LiteralPath $f) {{
         Assert-AdminOnly $f
-        foreach ($l in @(Get-Content -LiteralPath $f)) {{ if ((-split $l)[1] -ne {key}) {{ $keep.Add($l) }} }}
+        foreach ($l in @(Get-Content -LiteralPath $f)) {{ if ((-split $l)[1] -cne {key}) {{ $keep.Add($l) }} }}
     }}
     $step = 'addkey'
     $keep.Add({line})
@@ -761,7 +762,7 @@ try {{
         Assert-AdminOnly $dir
         Assert-AdminOnly $f
         $step = 'keys'
-        $keep = @(Get-Content -LiteralPath $f | Where-Object {{ (-split $_)[1] -ne {key} }})
+        $keep = @(Get-Content -LiteralPath $f | Where-Object {{ (-split $_)[1] -cne {key} }})
         Set-Content -LiteralPath $f -Value $keep -Encoding ascii
     }}
 }} catch {{
