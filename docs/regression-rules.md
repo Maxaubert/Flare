@@ -3831,3 +3831,45 @@ prompt_tick}`, the check in `AppCtl::term_key`, `keymap::agent_keys_text` for th
 `shift_arrows_grow_the_highlight_and_it_survives_the_agents_repaint`,
 `the_prompt_keys_are_claudes_only_and_only_with_agent_hotkeys_on` and
 `ctrl_shift_up_and_down_step_through_your_messages`. Source: Max, 2026-11-14.
+
+## Keys Slint was handed (2026-11-14)
+
+1238. **A key whose press went to Slint has its release go there too, and a modifier's release is never swallowed.**
+After Shift or Ctrl+A in a Settings text field (the Machines Name field, the Find field) or with the panel holding
+the keys, typing broke until the window lost the focus: letters were dropped and Backspace deleted words (Ctrl held),
+or an arrow selected (Shift held). `window::handle_key` sent the press to Slint (`AppCtl::on_key` answers `Slint` with
+Settings in front or the panel focused) but the release to Slint only while `chrome_has_focus`, the find input or (on
+the Mac) the page had the keys; otherwise the release went to the shell or was dropped. Slint keeps its modifier
+state from its own key events and clears it only on a focus loss, so the modifier stayed down. Now `KeyPath` keeps
+`slint_down`, the codes whose press went to Slint: their release goes to Slint whatever has the keys
+(`release_outcome`: Slint's press first, then a press the app consumed, then a Slint field with the keys, else the
+shell). A modifier's release (`keymap::is_modifier_code`) that the app did not consume also reaches Slint after the
+shell had it, and with no shell in front it is let through rather than swallowed. A focus loss empties `slint_down`
+(`handle_focus`), as Slint lets go of every key then. The e2e glue had hidden it: it told Slint the modifiers were up
+on every swallowed release and folded modifiers into chords. Now a lone modifier reaches Slint as that one key, and
+only when `handle_key` lets it through (`slint_modifier_of`; `slint_modifier_releases` is gone), so scenarios take
+the real path. Native: `window::{KeyPath::slint_down, release_outcome, handle_key, handle_focus}`,
+`keymap::is_modifier_code`, `e2e_glue::{slint_key_events, slint_modifier_of}`. Held by
+`after_ctrl_a_in_a_settings_field_backspace_clears_it_and_letters_type`,
+`after_shift_in_a_settings_field_an_arrow_moves_the_caret_without_selecting`,
+`ctrl_a_in_the_panel_leaves_no_ctrl_held_for_the_next_field`,
+`shift_in_the_panel_leaves_no_shift_held_for_the_next_field`,
+`a_shift_release_goes_where_its_press_went_and_a_focus_loss_forgets_it`,
+`a_modifier_release_on_a_terminal_reaches_the_shell_and_slint`, `the_release_follows_the_press_first` and
+`a_chord_with_modifiers_reaches_slint_as_modifier_presses_around_the_key`. Source: Max, 2026-11-14.
+1239. **A shell the session's end kills keeps its tab.** On a Windows restart Windows ends the console processes
+(exit code `DBG_TERMINATE_PROCESS`, `0x40010004`) about 220 ms before Flare gets `WM_ENDSESSION`. Flare took each
+exit for a closed tab, the refresh saved the smaller strip and the session-end flush wrote it: 8 of 9 tabs were lost
+(proven from `diag.jsonl`, 2026-11-14). Now the session-end window sets a process-wide mark on `WM_QUERYENDSESSION`
+and clears it on a cancelled `WM_ENDSESSION` (`wParam == 0`). A shell that ends while the mark is set, or with exit
+code `0x40010004`, closes no tab: the controller holds the tabs (`session_hold`), saves and writes the strip as it
+stands once, and no refresh saves the tabs again for the rest of the run. Unlike `ended` the hold leaves the quit's
+own end of life armed. A refresh also saves nothing while the mark is set. A person's own exit (code 0 or any
+other) outside a session end still closes the tab. macOS: Flare answers the quit at a log out at once and ends
+before the system ends its shells, so the order is not known to bite there; the shared controller code still reads
+`session_ending()`, which on macOS is true for 60 s after `NSWorkspaceWillPowerOffNotification` (macOS says nothing
+when a log out is cancelled, so the mark runs out by itself). Native: `flare_win::session_end::{session_ending,
+DBG_TERMINATE_PROCESS}`, `AppCtl::hold_for_session_end`, the guarded `HostEvent::Exited` arm and `refresh`. Held by
+`shells_the_session_end_kills_keep_every_tab_in_tabs_json`, `a_plain_exit_while_the_session_ends_keeps_the_list`,
+`a_plain_exit_outside_a_session_end_closes_the_tab_and_saves_the_smaller_list`, `exit_closes_the_tab_without_asking`
+and `query_end_session_is_never_a_veto`. Source: diag.jsonl of the 2026-11-14 restart.
