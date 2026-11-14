@@ -192,8 +192,12 @@ pub enum UiMsg {
     Machines(Vec<crate::machines::Machine>),
     /// A worker read the conversation of a tab a remote viewer sizes, for the host's own fitted view (rule 1211).
     HostConvo(remote_glue::HostConvoRead),
+    /// Ctrl+Shift+T on a closed Claude tab whose session the hooks never named: a worker found the newest session of
+    /// the folder no open tab holds (rule 1236).
+    Reopen(app_keys_glue::Reopen),
 }
 
+mod app_keys_glue;
 mod ask_glue;
 mod bar_glue;
 mod install_glue;
@@ -615,6 +619,8 @@ pub struct AppCtl {
     /// Tabs restored with an agent to resume: the kind and when they were spawned. They wear the
     /// agent's icon from the first frame and are saved as that agent until the hub takes over.
     restoring: HashMap<String, (AgentKind, u64)>,
+    /// The tabs closed this run, the last one last: Ctrl+Shift+T walks back through them (rule 1236).
+    closed: Vec<app_keys_glue::ClosedTab>,
     /// Tabs whose panel their agent opened and where the hub has seen that agent since: when it is no longer
     /// there, the panel closes (owner, 2026-10-24: a panel Claude opened belongs to its session, not the tab).
     agent_panel_seen: HashSet<String>,
@@ -1143,6 +1149,7 @@ impl AppCtl {
             badge: None,
             badge_seen: None,
             restoring: HashMap::new(),
+            closed: Vec::new(),
             agent_panel_seen: HashSet::new(),
             web_full_was: None,
             settings: None,
@@ -2808,6 +2815,8 @@ impl AppCtl {
     }
 
     pub(crate) fn close_now(&mut self, id: &str) {
+        // Before anything forgets it: Ctrl+Shift+T can open it again (rule 1236).
+        self.remember_closed(id);
         self.note_close(id);
         self.deps.host.kill(id);
         self.working.remove(id);
@@ -3015,15 +3024,28 @@ impl AppCtl {
     /// The strip's + right-clicked: the folder menu at the pointer.
     fn open_plus_menu(&mut self, x: f32, y: f32) {
         self.close_overflow_quietly();
-        let rows = plus_menu_rows(&self.prefs, &self.starters, &self.deps.home, &self.machines);
+        let rows = self.plus_rows();
         self.show_menu(MenuKind::Plus, rows, x, y);
+    }
+
+    /// The folder menu's rows, "Choose a folder…" wearing its key (rule 1236).
+    fn plus_rows(&self) -> Vec<(MenuRowData, String)> {
+        let mut rows = plus_menu_rows(&self.prefs, &self.starters, &self.deps.home, &self.machines);
+        self.label_choose_row(&mut rows);
+        rows
+    }
+
+    fn label_choose_row(&self, rows: &mut [(MenuRowData, String)]) {
+        if let Some((choose, _)) = rows.first_mut() {
+            choose.hint = self.key_label_of(ChordId::NewTabIn).to_string();
+        }
     }
 
     /// The sidebar New tab button's arrow: the same menu as a dropdown from the button (`right` is its right edge,
     /// `top` and `foot` its top and foot). It opens upward, right-aligned to the arrow, and never covers the button.
     fn open_folder_menu(&mut self, right: f32, top: f32, foot: f32) {
         self.close_overflow_quietly();
-        let rows = plus_menu_rows(&self.prefs, &self.starters, &self.deps.home, &self.machines);
+        let rows = self.plus_rows();
         self.show_menu_at(MenuKind::Plus, rows, right, top, Some(foot));
     }
 
@@ -3167,6 +3189,7 @@ impl AppCtl {
             }
             MenuKind::Tab { id, .. } if self.plugin_menu_picked(&id.clone(), &path.clone()) => {}
             MenuKind::Section { sid } => self.section_menu_picked(&sid.clone(), &row.label.clone()),
+            MenuKind::Machines => self.machine_menu_picked(&path.clone()),
             MenuKind::Tab { id, cwd } => match row.label.as_str() {
                 "Close tab" => self.request_close(id),
                 crate::menus_ui::HIDE_HERE => self.hide_remote(&id.clone()),
@@ -3201,10 +3224,16 @@ impl AppCtl {
 
     /// The pin at the end of a + menu row: pin or unpin, the menu stays.
     fn menu_trailing(&mut self, i: i32) {
-        let Some(m) = self.menu.as_mut() else { return };
-        if !matches!(m.kind, MenuKind::Plus) {
+        if !self
+            .menu
+            .as_ref()
+            .is_some_and(|m| matches!(m.kind, MenuKind::Plus))
+        {
             return;
         }
+        let Some(mut m) = self.menu.take() else {
+            return;
+        };
         if let Ok(i) = usize::try_from(i) {
             toggle_pin_in_menu(
                 &self.prefs,
@@ -3214,7 +3243,9 @@ impl AppCtl {
                 &self.deps.home,
                 &self.machines,
             );
+            self.label_choose_row(&mut m.rows);
         }
+        self.menu = Some(m);
         self.push_menu();
     }
 
@@ -5454,6 +5485,7 @@ impl AppCtl {
                 self.focus_terminal();
             }
             UiMsg::Picked(None) => {}
+            UiMsg::Reopen(r) => self.reopened(r),
             UiMsg::StarterFolders(list) => self.starters = list,
             UiMsg::Machines(list) => self.set_machines(list),
             UiMsg::HostConvo(read) => self.on_host_convo(read),
@@ -5842,6 +5874,27 @@ impl ChordTarget for Target<'_> {
     fn zoom(&mut self, step: i32) {
         self.0.zoom_front_step(step);
     }
+
+    fn reopen_tab(&mut self) {
+        self.0.reopen_closed_tab();
+    }
+
+    fn new_tab_in_folder(&mut self) {
+        self.0.close_menu_quietly();
+        self.0.choose_folder();
+    }
+
+    fn remote_tab(&mut self) {
+        self.0.open_machine_menu();
+    }
+
+    fn open_browser(&mut self) {
+        self.0.open_browser_panel();
+    }
+
+    fn open_tab_folder(&mut self) {
+        self.0.open_front_folder();
+    }
 }
 
 /// How many times the system menu was asked for (the `--e2e` hook reads it; a pointer event
@@ -5881,6 +5934,7 @@ impl AppCtl {
 
 #[cfg(test)]
 mod tests {
+    mod app_keys_tests;
     mod arrow_tests;
     mod ask_tests;
     // Rule 1118: a timer steps the slide without an OS window and on a Mac under --e2e only.

@@ -171,7 +171,7 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 
 ## Defaults, drop and migration (added in the M0 review)
 
-125. **New tab is Ctrl+T and opens in the user's folder; Ctrl+W closes a tab.** An empty folder means the user's own, resolved by the backend; there is no ask mode since 2026-10-27 (a stored "ask" opens in the folder; the folder menu's "Choose a folder…" row asks). Ctrl+T and Ctrl+W are taken from the shell knowingly (Ctrl+Shift+W still closes; Ctrl+Backspace covers delete-word). Native: the keymap table owns both chords; `new_tab_folder` reads "" as home. Source: regression-rules.md new-tab-ctrl-t; src/renderer/src/lib/newTabPrefs.ts; keymap.ts. M3 (amended): the label reads Ctrl+W, held by `ctrl_w_and_ctrl_shift_w_both_close_ctrl_t_and_ctrl_shift_t_both_open` (`flare-tabs` keymap).
+125. **New tab is Ctrl+T and opens in the user's folder; Ctrl+W closes a tab.** An empty folder means the user's own, resolved by the backend; there is no ask mode since 2026-10-27 (a stored "ask" opens in the folder; the folder menu's "Choose a folder…" row asks). Ctrl+T and Ctrl+W are taken from the shell knowingly (Ctrl+Shift+W still closes; Ctrl+Backspace covers delete-word). Native: the keymap table owns both chords; `new_tab_folder` reads "" as home. Source: regression-rules.md new-tab-ctrl-t; src/renderer/src/lib/newTabPrefs.ts; keymap.ts. M3 (amended): the label reads Ctrl+W, held by `ctrl_w_and_ctrl_shift_w_both_close_and_ctrl_shift_t_reopens` (`flare-tabs` keymap).
 126. **The accent and the background are settings; unset is the theme's.** Each row shows the theme's colour until a pick, then a plain Reset word forgets it. Applied once where the chrome is painted: a picked background replaces the theme's before the chrome tokens are measured, so mode, inks and the accent floor follow, and the terminal ground follows with text at 4.5:1 and the cursor and the sixteen colours at 3:1. A picked accent is kept where the ground can show it and moved only to the 3:1 floor where it cannot; an unpicked working indicator wears it. Native: `Option<Colour>` fields in settings, resolved in one `flare-theme` function feeding both chrome and grid. Source: regression-rules.md accent-and-background; backgroundPrefs.ts; accentPrefs.ts; colourPref.ts. M4 tests: `unset_colours_follow_the_theme_exactly`, `follows_the_theme_when_nothing_is_chosen`, `a_picked_background_replaces_the_themes_before_the_chrome_is_measured`, `keeps_the_picked_colour_where_the_ground_can_show_it`, `a_chosen_accent_the_ground_cannot_show_is_moved_to_the_floor_not_swapped`, `background_follows_the_theme_and_forgets_on_none`, `accent_follows_the_theme_until_chosen`, `the_working_colour_follows_the_theme_until_picked_and_can_be_given_back`.
 127. **PT Default is the default theme and Custom comes before it in the wall.** A fresh profile wears PT Default; the wall is Custom (when saved), PT Default, then the rest. Native: the default theme id is one constant in `flare-theme`; the wall order is a tested pure function. Source: regression-rules.md pt-default-theme; src/renderer/src/termHost.ts defaults. M4 tests: `the_wall_is_custom_then_the_default_then_the_rest`, `holds_the_whole_order`, `pt_default_leads_the_list_and_prism_is_the_core_fallback`, `a_fresh_store_wears_pt_default_at_100_percent`.
 128. **A dropped file types its quoted path, never Enter, only over a shell; the terminal answers a right-click.** The menu is Paste, Find in scrollback and Command help, led by Copy link over a link and Copy over marked text, with no Close tab. Nothing in a feature list is true until a test has done it: the e2e performs a real OS drop (`WM_DROPFILES` or an OLE drop carrying a real path), not a synthetic event. Native: the drop goes through `quote_path` and the paste-safe write path. Source: regression-rules.md file-drop-and-menu (#16); two-apps.md menu-fits.
@@ -3832,6 +3832,41 @@ find_link, repo_roots}`, `TabInfo::link_bases`, `FrontTab::start_cwd`. Held by
 `a_worktree_without_commondir_still_finds_its_main_root`, `a_gitdir_that_is_no_local_folder_is_never_followed`,
 `only_a_relative_link_gets_fallback_folders` and
 `the_start_folder_is_the_first_folder_named_and_goes_with_the_agent`. Source: Max, 2026-11-14.
+
+## App keys (2026-11-14)
+
+1236. **Five app keys, always on: Ctrl+Shift+T reopens, N picks a folder, R picks a machine, L opens the browser, E
+shows the folder.** They are Cmd+Shift+T, N, R, L and E on a Mac. They do not need agent hotkeys or an agent: like
+Ctrl+Shift+P, O and K they are the app's in a plain shell and over a full-screen program too, because the same letter
+without Shift stays the shell's (Ctrl+E, Ctrl+L, Ctrl+R, Ctrl+N keep their meaning for readline and Claude Code). With
+Alt too (AltGr) the key is the shell's. Under a question they do nothing and the shell never hears them. Ctrl+T without
+Shift is still a new tab; Ctrl+Shift+T no longer is one. Ctrl+Shift+T opens the tab closed last again, in its old place
+in the strip, in front: a list of the last 10 closed tabs is kept in memory for this run only (never saved), so more
+presses walk back. Settings and a placeholder are not kept. A Claude tab resumes the session the hooks named for it; when
+none was named, or an open tab holds that session now (two Claudes never share one session), a worker reads the folder's sessions and takes the newest one no open tab holds (rule 4), else a plain
+shell. Codex resumes with `codex resume --last` and agy with `agy -c`, as the restore does. A remote tab comes back on
+its machine in its folder; the host owns its session. Ctrl+Shift+N is the folder menu's "Choose a folder..." row (the
+row shows the key). Ctrl+Shift+R shows the linked machines as a menu under the bar (the + menu's machine rows; "No
+linked machines yet" when there are none); a pick opens a shell tab on that machine in the host's home folder.
+Ctrl+Shift+L shows the browser panel beside the tab in front: a page the tab shows or hid comes back, otherwise
+about:blank opens; then the address field takes the keys with its text selected. Ctrl+Shift+E opens the front tab's
+folder in Explorer (Finder on a Mac) on a worker; a remote tab's folder is on another machine, so nothing opens. The Mac
+menu bar lists them: File > New Tab in Folder..., New Tab on Machine..., Reopen Closed Tab, Show Folder in Finder; View
+> Browser Panel. Native: `flare_tabs::keymap::{ChordId::ReopenTab, NewTabIn, RemoteTab, Browser, OpenFolder}`,
+`chords::ChordTarget::{reopen_tab, new_tab_in_folder, remote_tab, open_browser, open_tab_folder}`,
+`appctl::app_keys_glue`, `menus_ui::{MenuKind::Machines, machine_menu_rows}`. Held by
+`the_app_keys_take_ctrl_shift_letters_everywhere_and_leave_the_plain_letters_to_the_shell`,
+`on_the_mac_the_app_keys_are_cmd_shift_and_ctrl_shift_stays_the_shells`,
+`ctrl_w_and_ctrl_shift_w_both_close_and_ctrl_shift_t_reopens`,
+`the_app_keys_are_taken_in_a_plain_shell_and_a_full_screen_program_and_ctrl_t_still_opens`,
+`ctrl_shift_t_walks_back_through_the_closed_tabs_each_in_its_place`,
+`a_closed_claude_tab_comes_back_with_its_session_and_codex_with_its_own_resume`,
+`a_named_session_an_open_tab_took_since_is_not_resumed_twice`,
+`a_closed_remote_tab_comes_back_on_its_machine`, `ctrl_shift_n_asks_for_a_folder_and_opens_a_tab_there`,
+`ctrl_shift_r_lists_the_linked_machines_and_a_pick_opens_a_tab_there`,
+`ctrl_shift_l_opens_the_browser_panel_with_the_address_field_holding_the_keys`,
+`ctrl_shift_e_shows_the_folder_and_a_remote_tab_opens_nothing` and `the_shown_shortcut_is_the_keymaps_label`. Source:
+Max, 2026-11-14 (the approved hotkeys sheet, design 7).
 
 ## Keys Slint was handed (2026-11-14)
 
