@@ -182,7 +182,7 @@ fn os_of(kind: Option<Os>) -> Option<MachineOs> {
     })
 }
 
-/// Pure: the machine the dialog names, before Flare is looked for on it (rule 1237): an SSH host as it is; a typed
+/// Pure: the machine the dialog names, before Flare is looked for on it (rule 1251): an SSH host as it is; a typed
 /// address as its own host, with the User field's name (or the `user@` before the address) and a `:port` after it. Its
 /// name is the host or the address. The one red line when it names none.
 pub fn new_machine(form: &AddForm) -> Result<Machine, String> {
@@ -366,7 +366,7 @@ impl MachinesPage {
         });
     }
 
-    /// "+ Add a machine": the dialog opens with nothing picked ("Pick a machine"), Add waiting for a pick (rule 1237).
+    /// "+ Add a machine": the dialog opens with nothing picked ("Pick a machine"), Add waiting for a pick (rule 1251).
     pub fn open_form(&mut self) {
         self.add = AddForm {
             open: true,
@@ -474,7 +474,7 @@ impl MachinesPage {
                 // A host that answered and refused is the answer: no other path is tried.
                 Err(e @ LinkError::Refused(_)) => return Err(failure_line(host, &e, here)),
                 // ssh itself said why (not answering, not paired, ...): no other path can answer, so none is tried
-                // and Add waits one connect timeout, not one per path (rule 1236).
+                // and Add waits one connect timeout, not one per path (rule 1250).
                 Err(LinkError::Down(m)) if crate::ssh_problem::sort_down(&m).is_some() => {
                     return Err(failure_line(host, &LinkError::Down(m), here));
                 }
@@ -902,7 +902,7 @@ mod tests {
         }
     }
 
-    /// Rule 1237: the dialog opens with nothing picked; "Type an address" saves the address as the machine's own host,
+    /// Rule 1251: the dialog opens with nothing picked; "Type an address" saves the address as the machine's own host,
     /// with the User field's name and a port after a colon, and runs ssh at that address.
     #[test]
     fn a_typed_address_is_checked_and_saved_with_its_user_and_port() {
@@ -947,7 +947,7 @@ mod tests {
         assert_eq!(r.io.probes.lock().unwrap().len(), probes);
     }
 
-    /// Rule 1236: when ssh itself said why the first try failed (here: refused), Add stops there with the plain line;
+    /// Rule 1250: when ssh itself said why the first try failed (here: refused), Add stops there with the plain line;
     /// no other Flare path is tried, so a host that is off costs one connect timeout, not one per path.
     #[test]
     fn a_reason_from_ssh_ends_the_add_after_one_try() {
@@ -974,7 +974,7 @@ mod tests {
         assert!(r.io.list().is_empty());
     }
 
-    /// Rule 1236: what a shell on the host printed (a Flare path that is not runnable) is no reason of ssh's: Add
+    /// Rule 1250: what a shell on the host printed (a Flare path that is not runnable) is no reason of ssh's: Add
     /// goes on to the next Flare path, which answers.
     #[test]
     fn a_shells_permission_denied_does_not_end_the_add() {
@@ -1005,7 +1005,7 @@ mod tests {
         assert_eq!(saved[0].flare, FLARE_CANDIDATES[1]);
     }
 
-    /// Rule 1237: what the dialog names, before any check: `user@` and `:port` are read from a typed address, and an
+    /// Rule 1251: what the dialog names, before any check: `user@` and `:port` are read from a typed address, and an
     /// address, a user or a port that cannot be one is one red line.
     #[test]
     fn the_dialog_names_a_machine_or_says_why_not_in_one_line() {

@@ -733,7 +733,7 @@ fn the_ssh_command_is_argv_items_quoted_for_the_hosts_shell() {
     }
 }
 
-/// Rule 1235: a machine with an address, a port, Flare's key and Flare's known-hosts file runs ssh at that address with
+/// Rule 1249: a machine with an address, a port, Flare's key and Flare's known-hosts file runs ssh at that address with
 /// that key only and that file only (strict checking, no question), each value one argv item; a path with a space is
 /// quoted inside its option's value; a field that could be an option, or break ssh's parsing, refuses the command.
 #[test]
@@ -805,7 +805,7 @@ fn a_paired_machines_ssh_uses_its_address_port_key_and_known_hosts_as_argv_items
     assert_eq!(with(|m| m.known_hosts = Some("a\nb".into())), None);
 }
 
-/// Rule 1235: `machines.json` reads and writes the optional fields; a machine with an address needs no alias; a field
+/// Rule 1249: `machines.json` reads and writes the optional fields; a machine with an address needs no alias; a field
 /// that is there but not well formed leaves the machine out, never half used.
 #[test]
 fn machines_json_reads_and_writes_the_address_port_key_and_known_hosts() {

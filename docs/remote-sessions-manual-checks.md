@@ -139,7 +139,7 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
   `run.sh` runnable (`-rwxr-xr-x`) and `README` not; `./run.sh` runs. From the PC viewer the same files arrive
   not runnable. Against a host on an older Flare the files still land, not runnable.
 
-## Machine pairing PR 1 (rules 1235 to 1237, 2026-11-14)
+## Machine pairing PR 1 (rules 1249 to 1251, 2026-11-14)
 
 - [ ] The dialog on both machines: "+ Add a machine" opens the Add a machine dialog over the page, the drop-down lists
   the `~/.ssh/config` hosts in the code font, then "Type an address"; picking the other machine's alias and Add links

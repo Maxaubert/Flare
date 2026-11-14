@@ -2815,17 +2815,17 @@ The first of three PRs that let a person link another computer without leaving F
   Address field and an optional User field (`user@address` and `address:port` are read too). Add waits for a pick and
   reads "Checking" while the machine is checked; a failed check is one red line in the dialog, which stays open. The
   table's second column is now "Address". The inline form is gone. Computers found nearby join the drop-down in PR 3.
-  Rule 1237. Held by `ui_tests::settings_machines::*`, `machines_page::tests` and the `flare-settings` page tests.
+  Rule 1251. Held by `ui_tests::settings_machines::*`, `machines_page::tests` and the `flare-settings` page tests.
 - **ssh says why, in plain words.** ssh's stderr is kept (its last 12 lines) instead of thrown away, and a link that
   did not come up shows one line: "Not answering", "Not paired with this computer", "Its identity changed. Pair
   again", "Can't find it on the network", or that this PC is missing Windows' SSH client. It is the grey line under a
   machine's row and the red line in the dialog; anything else keeps "No Flare answered over SSH on <host>." When ssh
-  says why on the first try, Add stops there instead of trying every Flare path. Rule 1236. Held by
+  says why on the first try, Add stops there instead of trying every Flare path. Rule 1250. Held by
   `ssh_problem::tests`, `machines::tests` and `machines_page::tests`.
 - **Machine fields and a connect timeout.** `machines.json` may give a machine `host`, `port`, `user`, `key` and
   `known_hosts`; every ssh Flare runs for it (link and Preview tunnel) uses them as argv items of their own (Flare's key
   only, Flare's known-hosts file only with strict checking), and every ssh gets `-o ConnectTimeout=5`. A machine from
-  `~/.ssh/config` runs as before. Rule 1235. Held by `remote_link::tests` and `remote_tunnel::tests`.
+  `~/.ssh/config` runs as before. Rule 1249. Held by `remote_link::tests` and `remote_tunnel::tests`.
 - **Not yet.** The "This computer" switch (PR 2), pairing with a code, mDNS and Flare's own key and known-hosts file
   (PR 3), and the error table's buttons. The drop-down draws no divider before "Type an address" and draws it in the
   normal ink (the mockup's divider and dim ink are left for PR 3, with the nearby rows). Real ssh: the new lines in

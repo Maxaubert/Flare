@@ -146,7 +146,7 @@ pub const MODEL_ROW_H: f64 = 64.0;
 /// The id the GPU pack's block carries (the store's id for the pack).
 pub const GPU_ROW_ID: &str = "gpu-pack";
 /// The Machines page's table (remote sessions PR 7): the heading row and a machine's row. A machine that is Not linked
-/// grows by its grey reason line (2026-11-13). Adding is a dialog over the page since machine pairing PR 1 (rule 1237).
+/// grows by its grey reason line (2026-11-13). Adding is a dialog over the page since machine pairing PR 1 (rule 1251).
 pub const MACHINE_HEAD_H: f64 = 34.0;
 pub const MACHINE_ROW_H: f64 = 50.0;
 pub const MACHINE_REASON_H: f64 = 18.0;

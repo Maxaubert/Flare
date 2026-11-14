@@ -605,7 +605,7 @@ pub fn to_slint_machine(m: &flare_settings::page::machines::MachineRow, y: f64, 
 }
 
 /// The Machine drop-down's choices as the Select menu draws them: the SSH hosts in `mono` (the code font), the others
-/// in the UI font (machine pairing PR 1, rule 1237). Nearby computers come in PR 3.
+/// in the UI font (machine pairing PR 1, rule 1251). Nearby computers come in PR 3.
 pub fn machine_choice_opts(hosts: &[String], mono: &str) -> Vec<flare_settings::page::Opt> {
     flare_settings::page::machines::machine_choices(&[], hosts)
         .into_iter()
@@ -621,7 +621,7 @@ pub fn machine_choice_opts(hosts: &[String], mono: &str) -> Vec<flare_settings::
         .collect()
 }
 
-/// The Add a machine dialog's look (machine pairing PR 1, rule 1237): the pick and the choices, the typed address and
+/// The Add a machine dialog's look (machine pairing PR 1, rule 1251): the pick and the choices, the typed address and
 /// user, the red line, `busy` while the machine is checked, and whether Add can be pressed.
 pub fn machine_add_look(
     form: &flare_settings::page::machines::AddForm,
@@ -1586,7 +1586,7 @@ impl SettingsCtl {
         self.push_editor(app, format);
     }
 
-    /// The Add a machine dialog into the bridge (machine pairing PR 1, rule 1237): open while the page's form is, and
+    /// The Add a machine dialog into the bridge (machine pairing PR 1, rule 1251): open while the page's form is, and
     /// what it shows. A keystroke in its fields pushes only this, so the field keeps its caret. It draws only over the
     /// Machines page while Settings is in front: a form left open by a check that still ran when Settings was hidden
     /// or left never comes back over another page.
@@ -1857,7 +1857,7 @@ impl SettingsCtl {
         if row == flare_settings::page::mods::URL_ROW {
             self.plugin_url = text.to_string();
         }
-        // The Add a machine dialog's fields (rule 1237): "machines-add:address" and "machines-add:user".
+        // The Add a machine dialog's fields (rule 1251): "machines-add:address" and "machines-add:user".
         if let Some(field) = row
             .strip_prefix(flare_settings::page::machines::ADD_ROW)
             .and_then(|r| r.strip_prefix(':'))
@@ -1931,7 +1931,7 @@ impl SettingsCtl {
         });
     }
 
-    /// The Machines page's add row and its dialog (machine pairing PR 1, rule 1237): a press on the row opens the
+    /// The Machines page's add row and its dialog (machine pairing PR 1, rule 1251): a press on the row opens the
     /// dialog, Cancel closes it, Add checks the machine and saves it once it answered.
     fn machines_button(&mut self, button: &str) {
         use flare_settings::page::machines::{ADD_BUTTON, CANCEL_BUTTON, OPEN_BUTTON};

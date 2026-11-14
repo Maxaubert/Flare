@@ -24,7 +24,7 @@ pub struct Machine {
     pub user: Option<String>,
     /// Flare's executable on the host; `flare` (on the host's PATH) when not given.
     pub flare: String,
-    /// The address ssh connects to, when it is not the `ssh` alias (a typed address, a paired machine; rule 1235).
+    /// The address ssh connects to, when it is not the `ssh` alias (a typed address, a paired machine; rule 1249).
     pub host: Option<String>,
     /// ssh's port on `host` (`-p`); ssh's own (22, or the config's) when not given.
     pub port: Option<u16>,
@@ -41,7 +41,7 @@ impl Machine {
     }
 }
 
-/// A file path that goes to ssh as one argv item or one option's value (a key, a known-hosts file, rule 1235): no
+/// A file path that goes to ssh as one argv item or one option's value (a key, a known-hosts file, rule 1249): no
 /// control character, never read as an option, none of `"` (it would end ssh's own quoting of the value) or `%`, and no
 /// `${` (ssh expands `%` tokens and `${VAR}` in both).
 pub fn path_word(s: &str) -> bool {
@@ -89,7 +89,7 @@ pub fn parse_machines(raw: &str) -> Vec<Machine> {
                         .filter(|p| *p > 0)?,
                 ),
             };
-            // A machine with an address needs no alias: the address stands in (rule 1235).
+            // A machine with an address needs no alias: the address stands in (rule 1249).
             let ssh = s(m, "ssh")
                 .or_else(|| host.clone())
                 .filter(|h| argv_word(h))?;
@@ -298,7 +298,7 @@ pub fn failure_line(host: &str, e: &crate::remote_link::LinkError, here: u32) ->
             err.message.clone()
         }
         LinkError::Refused(err) => format!("{host} said: {}", err.message),
-        // What ssh said, in plain words when it is one of the cases (rule 1236).
+        // What ssh said, in plain words when it is one of the cases (rule 1250).
         LinkError::Down(m) => match crate::ssh_problem::sort_down(m) {
             Some(p) => p.line().to_string(),
             None => format!("No Flare answered over SSH on {host}."),
@@ -421,7 +421,7 @@ mod tests {
             failure_line("desk", &refused("unavailable", "no"), 1),
             "desk said: no"
         );
-        // Rule 1236: what ssh said is the line when it is one of the cases.
+        // Rule 1250: what ssh said is the line when it is one of the cases.
         let said = |s: &str| LinkError::Down(format!("the link ended; ssh said: {s}"));
         assert_eq!(
             failure_line(

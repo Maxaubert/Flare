@@ -1,4 +1,4 @@
-//! What ssh said when a link did not come up, in plain words (machine pairing PR 1, rule 1236).
+//! What ssh said when a link did not come up, in plain words (machine pairing PR 1, rule 1250).
 //!
 //! ssh's stderr is no longer thrown away: a link (`remote_link::start_link`) and a Preview tunnel
 //! (`remote_tunnel::open_ssh`) keep its last lines ([`StderrTail`]), and a failed link carries them after
@@ -159,7 +159,7 @@ impl StderrTail {
 mod tests {
     use super::*;
 
-    /// Rule 1236: each thing ssh says when a link fails is one plain line; anything else is no case.
+    /// Rule 1250: each thing ssh says when a link fails is one plain line; anything else is no case.
     #[test]
     fn what_ssh_says_is_sorted_into_one_plain_line() {
         let cases: [(&str, Option<SshProblem>); 19] = [

@@ -75,21 +75,24 @@ Two things first, both once, both Max's own (a prompt or a password on the scree
    security set-key-partition-list -S apple-tool:,apple: -s ~/Library/Keychains/login.keychain-db
    ```
 
-2. A notarytool profile named `flare-notary` (this Mac has one). To make it again from an App Store Connect API key:
-   `xcrun notarytool store-credentials flare-notary --key AuthKey_<KEYID>.p8 --key-id <KEYID> --issuer <ISSUER>`.
+2. The notarytool profile `notary` (this Mac has one since 2026-11-14). It is shared by every app Max notarizes on
+   this Mac (Flare, Sonara, Universal Clipboard) and holds the app-specific password "notarytool (all apps)"; the
+   old `flare-notary` profile is dead (its password was revoked). To make it again:
+   `xcrun notarytool store-credentials notary --apple-id <Apple ID> --team-id WV7BY8CUM8` (asks for an
+   app-specific password from account.apple.com).
 
 Then the one command that proves a signed, notarized release updates itself (two notarizations, about 10 to 30
 minutes; Gatekeeper must say "Notarized Developer ID" for the bundle before and after the update):
 
 ```sh
-FLARE_MAC_SIGN_IDENTITY="Developer ID Application: MAX AUBERT (WV7BY8CUM8)" FLARE_NOTARY_PROFILE=flare-notary \
+FLARE_MAC_SIGN_IDENTITY="Developer ID Application: MAX AUBERT (WV7BY8CUM8)" FLARE_NOTARY_PROFILE=notary \
   FLARE_E2E_BUILD=1 tools/release/mac/update-e2e.sh
 ```
 
 A real release by hand, the same way CI does it:
 
 ```sh
-export FLARE_MAC_SIGN_IDENTITY="Developer ID Application: MAX AUBERT (WV7BY8CUM8)" FLARE_NOTARY_PROFILE=flare-notary
+export FLARE_MAC_SIGN_IDENTITY="Developer ID Application: MAX AUBERT (WV7BY8CUM8)" FLARE_NOTARY_PROFILE=notary
 FLARE_NOTARIZE=0 tools/release/mac/make-app.sh
 tools/release/mac/pack.sh target/mac-release/Flare.app <version> Releases notes.md
 ```
@@ -155,8 +158,8 @@ The App Store Connect API key (what notarization signs in with in CI):
 2. Download `AuthKey_<KEYID>.p8` (Apple lets you download it once). The key id is in the list, the issuer id above it.
 3. `base64 -i AuthKey_<KEYID>.p8 | gh secret set APPLE_API_KEY_P8_BASE64 --env mac-release --repo Maxaubert/Flare`,
    then `gh secret set APPLE_API_KEY_ID` and `gh secret set APPLE_API_ISSUER_ID` the same way (with `--env
-   mac-release`). Then delete the `.p8` for good (`rm -P AuthKey_<KEYID>.p8`, never to the Bin) once it is stored as
-   the profile `flare-notary` (above); a new one can always be made.
+   mac-release`). Then delete the `.p8` for good (`rm -P AuthKey_<KEYID>.p8`, never to the Bin) once the secrets are set;
+   a new one can always be made.
 
 In the job, the programs are built first; only then does `ci-keychain.sh` put the certificate in a keychain with a
 random password that only `codesign` may use and store the API key as the notarytool profile `flare-ci` in that same
@@ -171,6 +174,6 @@ whatever happened before, so no later action (the artifact, the upload, the cach
 - `flare-mac-app as vpk's codesign: ...`: vpk called `codesign` with arguments the shim does not know (a new vpk), or
   with another identity than the script set. Read `crates/flare-cef/src/macos/vpk.rs` before changing `VPK_VERSION`.
 - Notarization: `target/mac-release/notary-*.json` (the DMG) or vpk's output (the app) has the submission id;
-  `xcrun notarytool log <id> --keychain-profile flare-notary` says why.
+  `xcrun notarytool log <id> --keychain-profile notary` says why.
 - `the update package's Flare.app` fails `codesign --verify`: something changed the bundle after vpk signed it; the
   packages are not to be shipped.
