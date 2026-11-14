@@ -24,6 +24,7 @@ import { SelectMenu } from "settings/select.slint";
 import { ColourPopover } from "settings/colour.slint";
 import { ThemeEditor, AskThree } from "settings/wall.slint";
 import { DictAsk } from "settings/dictation.slint";
+import { MachineAddDialog } from "settings/machines.slint";
 import { PluginSheet } from "settings/plugin_sheet.slint";
 import { HelpPanel, HelpBridge } from "settings/help_panel.slint";
 import { PanelSlot } from "panel.slint";
@@ -53,7 +54,7 @@ export { RemoteConvoLine } from "remote_convo.slint";
 
 // The Settings tab (M7 Task 1): every file is listed so the compiler checks it, and the
 // previews, the real components and the two globals are reachable from Rust.
-export { SetKind, BlockKind, SetOption, SetButton, SetRow, SetSection, RailItem, SetHit, WallCard, HelpRowData, HelpChip, EditorWell, RowLook } from "settings/types.slint";
+export { SetKind, BlockKind, SetOption, SetButton, SetRow, SetSection, RailItem, SetHit, WallCard, HelpRowData, HelpChip, EditorWell, RowLook, MachineAddLook } from "settings/types.slint";
 export { ControlsPreview } from "settings/controls.slint";
 export { SliderPreview } from "settings/slider.slint";
 export { SelectPreview } from "settings/select.slint";
@@ -64,7 +65,7 @@ export { WallPreview } from "settings/wall.slint";
 export { AboutPreview } from "settings/about.slint";
 export { HelpPanelPreview, HelpBridge } from "settings/help_panel.slint";
 export { SettingsPreview, SettingsBridge } from "settings/view.slint";
-export { MachinesPreview } from "settings/machines.slint";
+export { MachinesPreview, MachineAddPreview } from "settings/machines.slint";
 export { AppIconsPreview } from "settings/app_icons.slint";
 export { UpdateBridge, UpdateChipPreview, UpdateWindowPreview } from "update.slint";
 
@@ -580,7 +581,7 @@ export component AppWindow inherits Window {
     // The collapsed sidebar, out on a hover (or sliding), reaches over the panel's slot (a wide sidebar beside a
     // wide panel): it is drawn over the page, so a web panel hides under it like under any overlay.
     property <bool> sidebar-over-slot: root.side-mode && root.sidebar-collapsed && (root.sidebar-revealed || root.sidebar-sliding) && root.panel-slot-w > 0px && root.sidebar-width > page.width - root.panel-slot-w;
-    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.pask-open || root.update-open || root.update-notice != "" || root.staged-toast != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.sheet-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying || root.sidebar-over-slot;
+    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.pask-open || root.update-open || root.update-notice != "" || root.staged-toast != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.machine-add-open || SettingsBridge.sheet-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying || root.sidebar-over-slot;
     changed overlay-open => { root.overlay-changed(); }
 
     // ---- tabs ----
@@ -1628,7 +1629,8 @@ export component AppWindow inherits Window {
             y: 0px;
             width: root.width;
             height: root.height;
-            open: SettingsBridge.select-open;
+            // The Add a machine dialog draws its own menu (above it) while it is open.
+            open: SettingsBridge.select-open && !SettingsBridge.machine-add-open;
             options: SettingsBridge.select-options;
             value: SettingsBridge.select-value;
             menu-x: SettingsBridge.select-x;
@@ -1732,6 +1734,32 @@ export component AppWindow inherits Window {
             open: SettingsBridge.dict-ask-open;
             text: SettingsBridge.dict-ask-text;
             answered(n) => { SettingsBridge.dict-ask-answered(n); }
+        }
+        // The Machines page's Add a machine dialog (machine pairing PR 1, rule 1237): a Settings dialog like DictAsk,
+        // with the drop-down's menu drawn inside it, above it.
+        machine-add := MachineAddDialog {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.machine-add-open;
+            look: SettingsBridge.machine-add;
+            menu-open: SettingsBridge.select-open;
+            menu-options: SettingsBridge.select-options;
+            menu-value: SettingsBridge.select-value;
+            menu-x: SettingsBridge.select-x;
+            menu-y: SettingsBridge.select-y;
+            menu-w: SettingsBridge.select-w;
+            menu-h: SettingsBridge.select-h;
+            menu-highlight <=> SettingsBridge.select-highlight;
+            pick-request(x, y, w, h) => { SettingsBridge.select-open-request("machines-add", x, y, w, h); }
+            menu-chosen(id) => { SettingsBridge.select-chosen(id); }
+            menu-dismissed => { SettingsBridge.select-dismissed(); }
+            menu-key(k) => { SettingsBridge.select-key(k); }
+            address-edited(t) => { SettingsBridge.row-text("machines-add:address", t); }
+            user-edited(t) => { SettingsBridge.row-text("machines-add:user", t); }
+            cancel => { SettingsBridge.row-button("machines-add", "cancel"); }
+            add => { SettingsBridge.row-button("machines-add", "add"); }
         }
         ColourPopover {
             x: 0px;

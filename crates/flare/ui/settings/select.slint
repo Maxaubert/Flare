@@ -16,6 +16,8 @@ export component SetSelect inherits Rectangle {
     in property <string> label;
     in property <string> sub;
     in property <bool> open;
+    // The faint words while nothing is picked (`value` is ""): the Add a machine dialog's "Pick a machine".
+    in property <string> placeholder;
     // its absolute x, y, width, height
     callback open-request(length, length, length, length);
     out property <bool> keyboard-focus: fs.has-focus && root.by-key;
@@ -44,6 +46,18 @@ export component SetSelect inherits Rectangle {
         if !root.disabled {
             root.open-request(root.absolute-position.x, root.absolute-position.y, root.width, root.height);
         }
+    }
+
+    if root.value == "" && root.placeholder != "": Text {
+        x: 10px;
+        width: max(0px, root.width - 10px - 8px - 12px - 10px);
+        height: root.height;
+        text: root.placeholder;
+        font-size: 12px;
+        font-family: Theme.font-ui;
+        color: Theme.dim;
+        vertical-alignment: center;
+        overflow: elide;
     }
 
     for o in root.options: Text {

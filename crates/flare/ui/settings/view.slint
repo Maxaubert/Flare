@@ -4,7 +4,7 @@
 // below its 1 hairline border, so the view adds `Px.hair()` the way the frame's Results list does.
 // For the non-row blocks: `about` reads `label` (name), `sub` (line one) and `note` (line two).
 import { Theme, Px, SettingsInk, SettingsShape, SettingsFixed } from "../theme.slint";
-import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell, RowLook, SheetTile } from "types.slint";
+import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell, RowLook, SheetTile, MachineAddLook } from "types.slint";
 import { PluginLook } from "../plugin_look.slint";
 import { PluginSheet } from "plugin_sheet.slint";
 import { SetFrame } from "frame.slint";
@@ -17,7 +17,7 @@ import { ThemeWallView, ThemeEditor, AskThree } from "wall.slint";
 import { AboutCard, SlintBadge } from "about.slint";
 import { HelpPanel } from "help_panel.slint";
 import { DictKeyField, DictMicField, DictLimitedMark, DictModelRow, DictAsk } from "dictation.slint";
-import { SetMachineHead, SetMachineRow, SetMachineForm } from "machines.slint";
+import { SetMachineHead, SetMachineRow, MachineAddDialog } from "machines.slint";
 import { AppIconStrip } from "app_icons.slint";
 
 export global SettingsBridge {
@@ -111,6 +111,10 @@ export global SettingsBridge {
     in-out property <PluginLook> sheet-look;
     // The plugin is off: the sheet offers "Turn on" (what it lists is what that approves).
     in-out property <bool> sheet-can-turn-on;
+    // The Add a machine dialog (machine pairing PR 1, rule 1237): open, and what it shows. Its Machine drop-down uses the
+    // Select menu's state (select-row "machines-add"), drawn inside the dialog; its fields answer by row-text.
+    in-out property <bool> machine-add-open;
+    in-out property <MachineAddLook> machine-add;
     // The title of the plugin's panel when the sheet can open it, else "".
     // events
     callback page-chosen(string);
@@ -595,24 +599,6 @@ export component SettingsView inherits Rectangle {
                         menu-open: SettingsBridge.select-open && SettingsBridge.select-row == row.id;
                         menu-request(x, y, w, h) => { SettingsBridge.select-open-request(row.id, Px.snap(x), Px.snap(y), Px.snap(x + w) - Px.snap(x), Px.snap(y + h) - Px.snap(y)); }
                     }
-                    if row.block == BlockKind.machine-add: SetMachineForm {
-                        width: parent.width;
-                        height: parent.height;
-                        data: row;
-                        first: i == 0;
-                        select-open: SettingsBridge.select-open && SettingsBridge.select-row == row.id;
-                        property <bool> want: SettingsBridge.focus-id != "" && SettingsBridge.focus-id == row.id;
-                        changed want => {
-                            if self.want {
-                                self.focus-me();
-                                SettingsBridge.focus-id = "";
-                            }
-                        }
-                        open-request(x, y, w, h) => { SettingsBridge.select-open-request(row.id, x, y, w, h); }
-                        name-edited(t) => { SettingsBridge.row-text(row.id, t); }
-                        pressed(b) => { SettingsBridge.row-button(row.id, b); }
-                        tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
-                    }
                     if row.block == BlockKind.wall: SetBlockFrame {
                         width: parent.width;
                         height: parent.height;
@@ -754,10 +740,33 @@ export component SettingsPreview inherits Window {
         text: SettingsBridge.dict-ask-text;
         answered(n) => { SettingsBridge.dict-ask-answered(n); }
     }
+    MachineAddDialog {
+        width: parent.width;
+        height: parent.height;
+        open: SettingsBridge.machine-add-open;
+        look: SettingsBridge.machine-add;
+        menu-open: SettingsBridge.select-open;
+        menu-options: SettingsBridge.select-options;
+        menu-value: SettingsBridge.select-value;
+        menu-x: SettingsBridge.select-x;
+        menu-y: SettingsBridge.select-y;
+        menu-w: SettingsBridge.select-w;
+        menu-h: SettingsBridge.select-h;
+        menu-highlight <=> SettingsBridge.select-highlight;
+        pick-request(x, y, w, h) => { SettingsBridge.select-open-request("machines-add", x, y, w, h); }
+        menu-chosen(id) => { SettingsBridge.select-chosen(id); }
+        menu-dismissed => { SettingsBridge.select-dismissed(); }
+        menu-key(k) => { SettingsBridge.select-key(k); }
+        address-edited(t) => { SettingsBridge.row-text("machines-add:address", t); }
+        user-edited(t) => { SettingsBridge.row-text("machines-add:user", t); }
+        cancel => { SettingsBridge.row-button("machines-add", "cancel"); }
+        add => { SettingsBridge.row-button("machines-add", "add"); }
+    }
     SelectMenu {
         width: parent.width;
         height: parent.height;
-        open: SettingsBridge.select-open;
+        // The Add a machine dialog draws its own menu (above it) while it is open.
+        open: SettingsBridge.select-open && !SettingsBridge.machine-add-open;
         options: SettingsBridge.select-options;
         value: SettingsBridge.select-value;
         menu-x: SettingsBridge.select-x;

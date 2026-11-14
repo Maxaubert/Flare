@@ -1,8 +1,8 @@
 //! Settings > Machines (remote sessions PR 7), headless, at 100 and 225 percent: the rail lists the page after
 //! Plugins; with no machine it is the "+ Add a machine" row alone, with no subtext; linked machines are a table under a
-//! heading row (logo, name, SSH host, Flare version, status, a menu with Test and Remove); the add row opens the form
-//! in its place (host drop-down, name, Cancel, Add) and a failed check is one red line under it; a machine that is Not
-//! linked shows why as one grey line under its row, with no tooltip. Every link check runs against an in-memory
+//! heading row (logo, name, Address, Flare version, status, a menu with Test and Remove); the add row opens the Add a
+//! machine dialog (machine pairing PR 1, rule 1237) and a failed check is one red line in it; a machine that is Not
+//! linked shows why as one grey line under its row, in plain words when ssh said why (rule 1236), with no tooltip. Every link check runs against an in-memory
 //! stand-in: no ssh.
 
 use std::cell::RefCell;
@@ -48,6 +48,7 @@ fn mac() -> Machine {
         ssh: "mini".into(),
         user: None,
         flare: "flare".into(),
+        ..Default::default()
     }
 }
 
@@ -290,8 +291,28 @@ fn the_menu_offers_test_and_remove_and_remove_tells_the_window() {
     assert_eq!(f.kinds(), [BlockKind::Row]);
 }
 
+impl Fx {
+    fn look(&self) -> crate::MachineAddLook {
+        self.b().get_machine_add()
+    }
+
+    fn option_names(&self) -> Vec<String> {
+        self.b()
+            .get_select_options()
+            .iter()
+            .map(|o| o.name.to_string())
+            .collect()
+    }
+}
+
+/// Rule 1237: the add row opens the Add a machine dialog over the page (the page keeps its add row); its Machine
+/// drop-down lists the SSH hosts in the code font, then "Type an address"; Add waits for a pick; a failed check is one
+/// red line in the dialog, which stays open; a machine that answers is saved and the dialog closes; "Type an address"
+/// shows the Address field, whose keystrokes reach the page with no rebuild; Cancel and Escape close it. At 100 and
+/// 225 percent.
 #[test]
-fn the_add_row_opens_the_form_and_a_failed_check_is_one_red_line_under_it() {
+fn the_add_row_opens_the_dialog_and_a_failed_check_is_one_red_line_in_it() {
+    use flare_settings::page::machines::TYPE_ADDRESS;
     for s in SCALES2 {
         let mut io = FakeIo {
             hosts: vec!["studio".into(), "nas".into()],
@@ -311,72 +332,269 @@ fn the_add_row_opens_the_form_and_a_failed_check_is_one_red_line_under_it() {
         let f = fx_at(s, io);
         f.page();
         f.settle("the read", |f| f.row("machines-add").is_some());
-        let closed_h = f.row("machines-add").unwrap().h;
+        assert!(!f.b().get_machine_add_open(), "{s}: closed at first");
         f.b().invoke_row_button("machines-add".into(), "tap".into());
-        // The hosts are read on a worker: the form picks the first once they are in.
-        f.settle("the first host is picked", |f| {
-            f.row("machines-add")
-                .is_some_and(|r| r.value.as_str() == "studio")
+        assert!(f.b().get_machine_add_open(), "{s}: the dialog opens");
+        assert_eq!(
+            f.kinds(),
+            [BlockKind::Row],
+            "{s}: the page keeps its add row"
+        );
+        // The hosts are read on a worker: the drop-down offers them once they are in.
+        f.settle("the hosts are read", |f| {
+            slint::Model::row_count(&f.look().options) == 3
         });
-        let form = f.row("machines-add").unwrap();
-        assert_eq!(form.block, BlockKind::MachineAdd, "{s}");
-        assert_eq!(form.value.as_str(), "studio", "the first host is picked");
-        let hosts: Vec<String> = form.options.iter().map(|o| o.id.to_string()).collect();
-        assert_eq!(hosts, ["studio", "nas"]);
-        assert_eq!(form.sub.as_str(), "");
-        // The host drop-down is the Select menu; the name is typed.
+        let look = f.look();
+        assert_eq!(look.pick.as_str(), "", "nothing picked: Pick a machine");
+        assert!(!look.can_add && !look.typing && look.error.is_empty());
+        // The drop-down is the Select menu: the hosts in the code font, then "Type an address" in the UI font.
         f.b()
-            .invoke_select_open_request("machines-add".into(), 60.0, 200.0, 168.0, 32.0);
-        let names: Vec<String> = f
+            .invoke_select_open_request("machines-add".into(), 280.0, 250.0, 340.0, 32.0);
+        assert!(f.b().get_select_open());
+        assert_eq!(f.option_names(), ["studio", "nas", "Type an address"]);
+        let faces: Vec<String> = f
             .b()
             .get_select_options()
             .iter()
-            .map(|o| o.name.to_string())
+            .map(|o| o.face.to_string())
             .collect();
-        assert_eq!(names, ["studio", "nas"]);
+        let mono = f.h.comp.global::<crate::SettingsFixed>().get_font_mono();
+        assert_eq!(faces, [mono.to_string(), mono.to_string(), String::new()]);
         f.b().invoke_select_chosen("studio".into());
-        f.b()
-            .invoke_row_text("machines-add".into(), "Studio".into());
+        assert!(!f.b().get_select_open());
+        assert_eq!(f.look().pick.as_str(), "studio");
+        assert!(f.look().can_add);
         f.b().invoke_row_button("machines-add".into(), "add".into());
-        assert_eq!(f.row("machines-add").unwrap().state.as_str(), "busy");
+        assert!(f.look().busy && !f.look().can_add, "{s}: Add waits");
         f.settle("the failed check", |f| {
-            f.row("machines-add")
-                .is_some_and(|r| !r.sub.is_empty() && r.state.is_empty())
+            !f.look().error.is_empty() && !f.look().busy
         });
-        let form = f.row("machines-add").unwrap();
         assert_eq!(
-            form.sub.as_str(),
+            f.look().error.as_str(),
             "Flare there speaks remote protocol 0, here 1. Update it there."
         );
-        assert_eq!(form.note.as_str(), "Studio", "the name stays");
-        assert!(
-            form.h > closed_h,
-            "{s}: the form grows by its red line ({} over {closed_h})",
-            form.h
-        );
+        assert!(f.b().get_machine_add_open(), "{s}: the dialog stays open");
         assert!(f.io.list().is_empty(), "nothing saved");
-        // Another host answers: saved, the form closes, the window hears the list.
+        // Another host answers: saved, the dialog closes, the window hears the list.
         f.b()
-            .invoke_select_open_request("machines-add".into(), 60.0, 200.0, 168.0, 32.0);
+            .invoke_select_open_request("machines-add".into(), 280.0, 250.0, 340.0, 32.0);
         f.b().invoke_select_chosen("nas".into());
-        f.b().invoke_row_text("machines-add".into(), "Nas".into());
+        assert!(f.look().error.is_empty(), "a new pick clears the line");
         f.b().invoke_row_button("machines-add".into(), "add".into());
         f.settle("the save", |f| f.row("machine:nas").is_some());
+        assert!(!f.b().get_machine_add_open(), "{s}: the dialog closes");
         let saved = f.io.list();
         assert_eq!(saved.len(), 1);
         assert_eq!(saved[0].kind, Some(Os::Mac));
         assert_eq!(f.sent.borrow().len(), 1);
         let row = f.row("machine:nas").unwrap();
         assert_eq!(row.state.as_str(), "linked");
-        assert_eq!(f.row("machines-add").unwrap().block, BlockKind::Row);
-        // Cancel closes an open form with nothing saved.
+        assert_eq!(row.value.as_str(), "nas", "the Address column");
+        // "Type an address": the fields show, a keystroke reaches the page with no rebuild, Cancel closes.
         f.b().invoke_row_button("machines-add".into(), "tap".into());
         f.b()
+            .invoke_select_open_request("machines-add".into(), 280.0, 250.0, 340.0, 32.0);
+        f.b().invoke_select_chosen(TYPE_ADDRESS.into());
+        assert!(f.look().typing && !f.look().can_add);
+        let sections = f.b().get_sections();
+        f.b()
+            .invoke_row_text("machines-add:address".into(), "192.168.0.9".into());
+        f.b()
+            .invoke_row_text("machines-add:user".into(), "max".into());
+        assert_eq!(f.look().address.as_str(), "192.168.0.9");
+        assert_eq!(f.look().user.as_str(), "max");
+        assert!(f.look().can_add);
+        assert!(
+            sections == f.b().get_sections(),
+            "{s}: typing rebuilds no page"
+        );
+        f.b()
             .invoke_row_button("machines-add".into(), "cancel".into());
-        assert_eq!(f.row("machines-add").unwrap().block, BlockKind::Row);
+        assert!(!f.b().get_machine_add_open());
+        // Escape that no control took closes it too.
+        f.b().invoke_row_button("machines-add".into(), "tap".into());
+        assert!(f.ctl.borrow_mut().escape());
+        assert!(!f.b().get_machine_add_open());
     }
 }
 
+/// Rule 1236: a machine whose ssh said why it failed shows that in plain words as the grey line under its row.
+#[test]
+fn a_machine_whose_ssh_said_why_shows_it_in_plain_words_under_its_row() {
+    struct Said(FakeIo);
+    impl MachinesIo for Said {
+        fn list(&self) -> Vec<Machine> {
+            self.0.list()
+        }
+        fn save(&self, list: &[Machine]) -> Result<(), String> {
+            self.0.save(list)
+        }
+        fn ssh_hosts(&self) -> Vec<String> {
+            self.0.ssh_hosts()
+        }
+        fn probe(&self, _m: &Machine) -> Result<HelloFacts, crate::remote_link::LinkError> {
+            Err(crate::remote_link::LinkError::Down(
+                "the link ended; ssh said: max@mini: Permission denied (publickey).".into(),
+            ))
+        }
+    }
+    let io = FakeIo::default();
+    *io.list.lock().unwrap() = vec![mac()];
+    let f = fx_at(1.0, FakeIo::default());
+    let said = Arc::new(Said(io));
+    f.ctl.borrow_mut().set_machines(MachinesPage::new(said, {
+        let q = Arc::clone(&f.q);
+        Arc::new(move |m: UiMsg| {
+            q.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push_back(m);
+        })
+    }));
+    f.page();
+    f.settle("the check", |f| {
+        f.row("machine:mac")
+            .is_some_and(|r| r.state.as_str() == "failed")
+    });
+    let m = f.row("machine:mac").unwrap();
+    assert_eq!(m.sub.as_str(), "Not paired with this computer");
+    assert_eq!(m.badge.as_str(), "Not linked");
+}
+
+/// Rule 1237: the dialog draws in the Dialog look: a 380 px box in the middle of the scrim, "Pick a machine" in the
+/// drop-down, Add dimmed and deaf until it can be pressed, Cancel and a press outside cancel, the drop-down's menu opens
+/// above the dialog and a pick reports its id, "Type an address" grows the box by the Address and User fields, and the
+/// red line grows it by one line. At 100 and 225 percent.
+#[test]
+fn the_dialog_draws_its_box_its_drop_down_and_its_red_line() {
+    use crate::MachineAddLook;
+    use crate::SetOption;
+    use slint::{ModelRc, SharedString, VecModel};
+    for s in SCALES2 {
+        let h = Harness::new(s, 900, 600, || crate::MachineAddPreview::new().unwrap());
+        h.activate();
+        let options = ModelRc::new(VecModel::from(
+            ["studio", "nas"]
+                .iter()
+                .map(|n| SetOption {
+                    id: (*n).into(),
+                    name: (*n).into(),
+                    face: SharedString::new(),
+                })
+                .chain(std::iter::once(SetOption {
+                    id: " address".into(),
+                    name: "Type an address".into(),
+                    face: SharedString::new(),
+                }))
+                .collect::<Vec<_>>(),
+        ));
+        let look = |pick: &str, typing: bool, error: &str, can_add: bool| MachineAddLook {
+            pick: pick.into(),
+            options: options.clone(),
+            typing,
+            error: error.into(),
+            can_add,
+            ..MachineAddLook::default()
+        };
+        h.comp.set_look(look("", false, "", false));
+        h.comp.set_open(true);
+        h.advance(16);
+        let (bx, by, bw, bh) = (
+            h.comp.get_box_x(),
+            h.comp.get_box_y(),
+            h.comp.get_box_w(),
+            h.comp.get_box_h(),
+        );
+        assert!((bw - 380.0).abs() < 0.5, "{s}: 380 px wide ({bw})");
+        assert!((bx + bw / 2.0 - 450.0).abs() < 1.0, "{s}: centred ({bx})");
+        assert!((by + bh / 2.0 - 300.0).abs() < 1.0, "{s}: centred ({by})");
+        // "Pick a machine" draws in the drop-down: dim ink, left of its chevron.
+        let k = |v: f32| (v * s).round() as u32;
+        let (px, py, pw) = (
+            h.comp.get_pick_x(),
+            h.comp.get_pick_y(),
+            h.comp.get_pick_w(),
+        );
+        assert!(
+            (pw - 340.0).abs() < 0.5,
+            "{s}: the drop-down spans the box ({pw})"
+        );
+        let frame = h.render();
+        let ground = frame.px(k(px + pw - 40.0), k(py + 4.0));
+        let ink = frame.count_where(k(px + 8.0), k(py + 6.0), k(px + 120.0), k(py + 26.0), |p| {
+            (0..3).any(|c| p[c].abs_diff(ground[c]) > 40)
+        });
+        assert!(ink > 20, "{s}: the placeholder draws ({ink} lit)");
+        // Add is dimmed and deaf; Cancel answers.
+        let (ax, ay, aw) = (h.comp.get_add_x(), h.comp.get_add_y(), h.comp.get_add_w());
+        h.click(ax + aw / 2.0, ay + 15.0);
+        assert_eq!(h.comp.get_adds(), 0, "{s}: Add waits for a pick");
+        let (cx, cy, cw) = (
+            h.comp.get_cancel_x(),
+            h.comp.get_cancel_y(),
+            h.comp.get_cancel_w(),
+        );
+        h.click(cx + cw / 2.0, cy + 15.0);
+        assert_eq!(h.comp.get_cancels(), 1, "{s}");
+        // A press outside the box cancels; nothing behind it is reached.
+        h.click(20.0, 20.0);
+        assert_eq!(h.comp.get_cancels(), 2, "{s}");
+        assert_eq!(
+            h.comp.get_behind_clicks(),
+            0,
+            "{s}: the scrim takes the press"
+        );
+        // The drop-down opens its menu above the dialog; a pick of the third choice reports its id.
+        h.click(px + pw / 2.0, py + 16.0);
+        h.advance(16);
+        assert!(h.comp.get_menu_open(), "{s}: the menu opens");
+        let opt_h = 28.0_f32;
+        let menu_top = py + 32.0 + 4.0 + 2.0;
+        h.click(px + 40.0, menu_top + opt_h * 2.5);
+        h.advance(16);
+        assert!(!h.comp.get_menu_open(), "{s}: a pick closes it");
+        assert_eq!(h.comp.get_picked().as_str(), " address", "{s}");
+        // "Type an address": the box grows by the two fields; typing reaches the dialog's callback.
+        h.comp.set_look(look(" address", true, "", false));
+        h.advance(16);
+        // The fields are made when the dialog is next drawn.
+        h.render();
+        let typing_h = h.comp.get_box_h();
+        assert!(
+            typing_h > bh + 100.0,
+            "{s}: the fields grow the box ({typing_h} over {bh})"
+        );
+        h.key_text("10.0.0.5");
+        h.advance(16);
+        assert_eq!(
+            h.comp.get_address_typed().as_str(),
+            "10.0.0.5",
+            "{s}: the Address field has the keys"
+        );
+        // A red line grows the box by one line, and Add answers once it can be pressed.
+        h.comp
+            .set_look(look(" address", true, "Not answering", true));
+        h.advance(16);
+        h.render();
+        let with_line = h.comp.get_box_h();
+        assert!(
+            with_line > typing_h + 12.0 && with_line < typing_h + 40.0,
+            "{s}: one line ({with_line} over {typing_h})"
+        );
+        let (ax, ay, aw) = (h.comp.get_add_x(), h.comp.get_add_y(), h.comp.get_add_w());
+        h.click(ax + aw / 2.0, ay + 15.0);
+        assert_eq!(h.comp.get_adds(), 1, "{s}: Add answers");
+        // The red line's dot is the danger red.
+        let f = h.render();
+        let reds = f.count_where(
+            k(h.comp.get_box_x()),
+            k(h.comp.get_box_y()),
+            k(h.comp.get_box_x() + 380.0),
+            k(h.comp.get_box_y() + with_line),
+            |p| p[0] > 140 && p[1] < 90 && p[2] < 100,
+        );
+        assert!(reds > 4, "{s}: the red dot draws ({reds})");
+    }
+}
 /// The table row draws its system's logo before the name (the Apple logo for a Mac, nothing for a machine of a system
 /// not known), and its menu button takes a click; at 100 and 225 percent.
 #[test]

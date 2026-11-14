@@ -138,3 +138,22 @@ the PC. Note the date, both Flare versions and the result of each line in the PR
   (`chmod +x`), on a tab of the Mac host and of a Linux host if one is linked: `ls -l` there shows `gradlew` and
   `run.sh` runnable (`-rwxr-xr-x`) and `README` not; `./run.sh` runs. From the PC viewer the same files arrive
   not runnable. Against a host on an older Flare the files still land, not runnable.
+
+## Machine pairing PR 1 (rules 1235 to 1237, 2026-11-14)
+
+- [ ] The dialog on both machines: "+ Add a machine" opens the Add a machine dialog over the page, the drop-down lists
+  the `~/.ssh/config` hosts in the code font, then "Type an address"; picking the other machine's alias and Add links
+  it as before (row "Linked", its logo and version, the address column shows the alias).
+- [ ] Type an address: on the PC pick "Type an address", type the Mac's IP address and the Mac's user name, Add: the
+  machine is saved with `host` and `user` in `machines.json` (no `~/.ssh/config` entry needed when keys are already
+  in place), and a tab opens on it from the + menu.
+- [ ] Not answering: with the other machine asleep or its SSH server off, Test (or Add) answers "Not answering"
+  within about 6 s (the 5 s connect timeout), not after 90 s.
+- [ ] Not paired: with a key the other machine does not accept, the line reads "Not paired with this computer".
+- [ ] Identity changed: change the host's key line in the viewer's known-hosts file (or point a machine's
+  `known_hosts` at a file with another key): the line reads "Its identity changed. Pair again".
+- [ ] Can't find it: a typed address that does not resolve (`no-such-host.local`) reads "Can't find it on the network".
+- [ ] No SSH client (PC): with `C:\Windows\System32\OpenSSH\ssh.exe` missing (a test account or VM), the line reads
+  "This PC is missing Windows' SSH client". Do not remove ssh from the everyday PC.
+- [ ] Paired fields: a hand-written machine with `port`, `key` and `known_hosts` (a key path and a known-hosts path
+  with a space in them) links over real ssh, and ssh asks nothing (`StrictHostKeyChecking=yes`, the key only).

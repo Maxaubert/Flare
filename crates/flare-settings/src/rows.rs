@@ -725,7 +725,7 @@ pub const APP_OPTIONS: [RowDef; 22] = [
         only_nvidia: false,
     },
     // Remote sessions PR 7: the Machines page's add row. Its words are for Find; the page draws no subtext (owner
-    // pick, 2026-11-12), and a press opens the add form in its place.
+    // pick, 2026-11-12), and a press opens the Add a machine dialog (machine pairing PR 1).
     RowDef {
         id: "machines-add",
         label: "Add a machine",

@@ -670,6 +670,7 @@ fn the_ssh_command_is_argv_items_quoted_for_the_hosts_shell() {
         ssh: ssh.into(),
         user: user.map(str::to_string),
         flare: flare.into(),
+        ..Default::default()
     };
     let mac = ssh_argv(
         "/usr/bin/ssh",
@@ -687,6 +688,8 @@ fn the_ssh_command_is_argv_items_quoted_for_the_hosts_shell() {
             "/usr/bin/ssh",
             "-o",
             "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
             "-T",
             "-l",
             "max",
@@ -727,6 +730,107 @@ fn the_ssh_command_is_argv_items_quoted_for_the_hosts_shell() {
             None,
             "{ssh} {flare}"
         );
+    }
+}
+
+/// Rule 1235: a machine with an address, a port, Flare's key and Flare's known-hosts file runs ssh at that address with
+/// that key only and that file only (strict checking, no question), each value one argv item; a path with a space is
+/// quoted inside its option's value; a field that could be an option, or break ssh's parsing, refuses the command.
+#[test]
+fn a_paired_machines_ssh_uses_its_address_port_key_and_known_hosts_as_argv_items() {
+    let paired = Machine {
+        id: "pc".into(),
+        name: "Max's PC".into(),
+        kind: Some(Os::Pc),
+        ssh: "192.168.0.139".into(),
+        user: Some("max".into()),
+        flare: "flare".into(),
+        host: Some("192.168.0.139".into()),
+        port: Some(2222),
+        key: Some("/Users/max/Library/Flare/id_flare_ed25519".into()),
+        known_hosts: Some(r"C:\Users\John Doe\AppData\Flare\known_hosts".into()),
+    };
+    assert_eq!(
+        ssh_argv("ssh", &paired).unwrap(),
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-i",
+            "/Users/max/Library/Flare/id_flare_ed25519",
+            "-o",
+            r#"UserKnownHostsFile="C:\Users\John Doe\AppData\Flare\known_hosts""#,
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-p",
+            "2222",
+            "-T",
+            "-l",
+            "max",
+            "--",
+            "192.168.0.139",
+            r#"cmd /c "flare" --serve-remote"#,
+        ]
+    );
+    // The address wins over the alias; a machine with no key and no file has neither option.
+    let typed = Machine {
+        ssh: "old-alias".into(),
+        host: Some("studio.local".into()),
+        ..Machine::default()
+    };
+    let argv = machine_opts(&typed).unwrap();
+    assert_eq!(argv, ["-o", "ConnectTimeout=5"]);
+    assert_eq!(
+        machine_dest(&typed),
+        ["--".to_string(), "studio.local".to_string()]
+    );
+    let with = |f: fn(&mut Machine)| {
+        let mut m = paired.clone();
+        f(&mut m);
+        ssh_argv("ssh", &m)
+    };
+    assert_eq!(with(|m| m.host = Some("-oProxyCommand=x".into())), None);
+    assert_eq!(with(|m| m.key = Some("-i/etc/passwd".into())), None);
+    assert_eq!(with(|m| m.key = Some("C:\\a%h\\key".into())), None);
+    assert_eq!(with(|m| m.known_hosts = Some("a\"b".into())), None);
+    assert_eq!(with(|m| m.known_hosts = Some("a\nb".into())), None);
+}
+
+/// Rule 1235: `machines.json` reads and writes the optional fields; a machine with an address needs no alias; a field
+/// that is there but not well formed leaves the machine out, never half used.
+#[test]
+fn machines_json_reads_and_writes_the_address_port_key_and_known_hosts() {
+    let raw = r#"{"machines":[
+        {"id":"pc","name":"Max's PC","kind":"pc","host":"192.168.0.139","port":2222,"user":"max",
+         "key":"C:/Flare/id_flare_ed25519","known_hosts":"C:/Flare/known_hosts"},
+        {"id":"bad-port","ssh":"x","port":70000},
+        {"id":"zero-port","ssh":"x","port":0},
+        {"id":"bad-host","ssh":"x","host":"-oX"},
+        {"id":"bad-key","ssh":"x","key":"%d/key"},
+        {"id":"no-where"}
+    ]}"#;
+    let ms = parse_machines(raw);
+    assert_eq!(ms.len(), 1, "{ms:?}");
+    let pc = &ms[0];
+    assert_eq!(
+        pc.ssh, "192.168.0.139",
+        "the address stands in for the alias"
+    );
+    assert_eq!(pc.target(), "192.168.0.139");
+    assert_eq!(pc.port, Some(2222));
+    assert_eq!(pc.key.as_deref(), Some("C:/Flare/id_flare_ed25519"));
+    assert_eq!(pc.known_hosts.as_deref(), Some("C:/Flare/known_hosts"));
+    let back = parse_machines(&crate::machines::machines_json(&ms));
+    assert_eq!(back, ms, "written and read back the same");
+    // A machine with none of them is written as before.
+    let plain = parse_machines(r#"{"machines":[{"id":"m","ssh":"m"}]}"#);
+    let text = crate::machines::machines_json(&plain);
+    for k in ["host", "port", "key", "known_hosts"] {
+        assert!(!text.contains(&format!("\"{k}\"")), "{k}: {text}");
     }
 }
 

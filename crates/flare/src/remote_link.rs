@@ -187,24 +187,78 @@ pub(crate) fn ssh_exe() -> String {
     }
 }
 
-/// Pure: ssh's argv for a machine, every part an item of its own: no shell on this side, no option smuggled in a
-/// host name, no prompt (`BatchMode`), no terminal (`-T`).
-pub fn ssh_argv(ssh: &str, m: &Machine) -> Option<Vec<String>> {
-    if !argv_word(&m.ssh) || m.user.as_deref().is_some_and(|u| !argv_word(u)) {
+/// How long ssh may take to reach a host (`ConnectTimeout`), so a host that is off never keeps Add waiting.
+pub const CONNECT_TIMEOUT_S: u32 = 5;
+
+/// Pure: an option value that is a file path, as ssh reads it: in double quotes when it holds a space (ssh splits an
+/// option's value at a space; `path_word` already refused `"` and `%`).
+fn ssh_path_value(path: &str) -> String {
+    if path.contains(char::is_whitespace) {
+        format!("\"{path}\"")
+    } else {
+        path.to_string()
+    }
+}
+
+/// Pure: the options a machine's own fields add to every ssh it runs, the link's and the tunnel's (rule 1235): the
+/// connect timeout; with Flare's key, that key only (`IdentitiesOnly`, `-i`); with Flare's known-hosts file, that file
+/// only and strict checking (no question, no stranger trusted); the port. Each value is one argv item. None when a
+/// field could be read as an option or break ssh's own parsing.
+pub fn machine_opts(m: &Machine) -> Option<Vec<String>> {
+    use crate::machines::path_word;
+    if !argv_word(m.target()) || m.user.as_deref().is_some_and(|u| !argv_word(u)) {
         return None;
     }
-    let mut argv = vec![
-        ssh.to_string(),
-        "-o".into(),
-        "BatchMode=yes".into(),
-        "-T".into(),
-    ];
-    if let Some(u) = &m.user {
-        argv.push("-l".into());
-        argv.push(u.clone());
+    let mut a: Vec<String> = vec!["-o".into(), format!("ConnectTimeout={CONNECT_TIMEOUT_S}")];
+    if let Some(k) = &m.key {
+        if !path_word(k) {
+            return None;
+        }
+        a.extend([
+            "-o".into(),
+            "IdentitiesOnly=yes".into(),
+            "-i".into(),
+            k.clone(),
+        ]);
     }
-    argv.push("--".into());
-    argv.push(m.ssh.clone());
+    if let Some(f) = &m.known_hosts {
+        if !path_word(f) {
+            return None;
+        }
+        a.extend([
+            "-o".into(),
+            format!("UserKnownHostsFile={}", ssh_path_value(f)),
+            "-o".into(),
+            "StrictHostKeyChecking=yes".into(),
+        ]);
+    }
+    if let Some(p) = m.port.filter(|p| *p > 0) {
+        a.extend(["-p".into(), p.to_string()]);
+    }
+    Some(a)
+}
+
+/// Pure: the end of every ssh argv for a machine: its user, `--`, and where ssh connects (the address when there is
+/// one, else the alias).
+pub fn machine_dest(m: &Machine) -> Vec<String> {
+    let mut a = Vec::new();
+    if let Some(u) = &m.user {
+        a.push("-l".into());
+        a.push(u.clone());
+    }
+    a.push("--".into());
+    a.push(m.target().to_string());
+    a
+}
+
+/// Pure: ssh's argv for a machine, every part an item of its own: no shell on this side, no option smuggled in a
+/// host name, no prompt (`BatchMode`), no terminal (`-T`), and the machine's own options (`machine_opts`).
+pub fn ssh_argv(ssh: &str, m: &Machine) -> Option<Vec<String>> {
+    let opts = machine_opts(m)?;
+    let mut argv = vec![ssh.to_string(), "-o".into(), "BatchMode=yes".into()];
+    argv.extend(opts);
+    argv.push("-T".into());
+    argv.extend(machine_dest(m));
     argv.push(remote_command(m.kind, &m.flare)?);
     Some(argv)
 }
@@ -257,19 +311,29 @@ fn start_link(argv: &[String]) -> Result<(ClientLink<StdioWire>, RemoteHelloInfo
         .split_first()
         .ok_or_else(|| LinkError::Down("an empty link command".into()))?;
     let mut cmd = std::process::Command::new(exe); // sync-ok: the tab's link worker starts ssh, never the UI thread
+    // ssh's stderr is kept (rule 1236): its last lines say why a link did not come up.
     cmd.args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         // No console window, ever (tests never take the screen; nor does a link).
         cmd.creation_flags(0x0800_0000);
     }
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| LinkError::Down(format!("could not start the link: {e}")))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        let mark = if e.kind() == std::io::ErrorKind::NotFound {
+            crate::ssh_problem::NO_CLIENT
+        } else {
+            ""
+        };
+        LinkError::Down(format!("{mark}could not start the link: {e}"))
+    })?;
+    let tail = child
+        .stderr
+        .take()
+        .map(crate::ssh_problem::StderrTail::read);
     let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         let _ = child.kill();
         return Err(LinkError::Down("the link has no stdio".into()));
@@ -282,9 +346,24 @@ fn start_link(argv: &[String]) -> Result<(ClientLink<StdioWire>, RemoteHelloInfo
         }
     };
     let mut link = ClientLink::new(Client::new(wire), Some(child));
-    let info = hello_info(&mut link.client)?;
-    Ok((link, info))
+    match hello_info(&mut link.client) {
+        Ok(info) => Ok((link, info)),
+        // A link that never came up says what ssh said: its last lines, once it ended (a moment at most).
+        Err(LinkError::Down(m)) => {
+            let said = tail.map(|t| t.text(STDERR_WAIT)).unwrap_or_default();
+            drop(link);
+            Err(LinkError::Down(if said.is_empty() {
+                m
+            } else {
+                format!("{m}; {}{said}", crate::ssh_problem::SAID)
+            }))
+        }
+        Err(e) => Err(e),
+    }
 }
+
+/// How long a failed link waits for ssh's last words before it is ended.
+const STDERR_WAIT: Duration = Duration::from_millis(1500);
 
 impl Connector for SshConnector {
     fn connect(&self, machine: &str) -> Result<Box<dyn Link>, LinkError> {

@@ -85,12 +85,11 @@ pub type TunnelOpener = Arc<dyn Fn(&TunnelAsk) -> Result<Tunnel, String> + Send 
 /// before the host), no command, no prompt, the forward on this machine's loopback only, and ssh ends when the
 /// forward cannot be made. None for a machine or a port that cannot be one.
 pub fn tunnel_argv(ssh: &str, m: &Machine, local_port: u16, host_port: u16) -> Option<Vec<String>> {
-    if !argv_word(&m.ssh) || m.user.as_deref().is_some_and(|u| !argv_word(u)) {
+    if !argv_word(&m.ssh) || local_port == 0 || host_port == 0 {
         return None;
     }
-    if local_port == 0 || host_port == 0 {
-        return None;
-    }
+    // The machine's own options (rule 1235): the connect timeout, Flare's key and known-hosts file, the port.
+    let opts = crate::remote_link::machine_opts(m)?;
     let mut argv = vec![
         ssh.to_string(),
         "-N".into(),
@@ -107,12 +106,8 @@ pub fn tunnel_argv(ssh: &str, m: &Machine, local_port: u16, host_port: u16) -> O
         "-L".into(),
         format!("127.0.0.1:{local_port}:localhost:{host_port}"),
     ];
-    if let Some(u) = &m.user {
-        argv.push("-l".into());
-        argv.push(u.clone());
-    }
-    argv.push("--".into());
-    argv.push(m.ssh.clone());
+    argv.extend(opts);
+    argv.extend(crate::remote_link::machine_dest(m));
     Some(argv)
 }
 
@@ -167,10 +162,11 @@ pub fn open_ssh(ask: &TunnelAsk, wait: Duration) -> Result<Tunnel, String> {
     .ok_or_else(|| format!("cannot build the ssh command for {name}"))?;
     let (exe, args) = argv.split_first().expect("an argv has its program");
     let mut cmd = std::process::Command::new(exe); // sync-ok: a worker starts the tunnel, never the UI thread
+    // ssh's stderr is kept (rule 1236): a tunnel that did not open says why in plain words.
     cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -180,12 +176,21 @@ pub fn open_ssh(ask: &TunnelAsk, wait: Duration) -> Result<Tunnel, String> {
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("could not start ssh for the tunnel to {name}: {e}"))?;
+    let tail = child
+        .stderr
+        .take()
+        .map(crate::ssh_problem::StderrTail::read);
     let end = Instant::now() + wait;
     loop {
         if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!(
-                "the tunnel to {name} did not open (ssh ended: {status})"
-            ));
+            let said = tail
+                .as_ref()
+                .map(|t| t.text(Duration::from_millis(500)))
+                .unwrap_or_default();
+            return Err(match crate::ssh_problem::sort(&said) {
+                Some(p) => format!("the tunnel to {name} did not open: {}", p.line()),
+                None => format!("the tunnel to {name} did not open (ssh ended: {status})"),
+            });
         }
         if listens(local) {
             break;
@@ -297,6 +302,7 @@ mod tests {
             ssh: "mini".into(),
             user: user.map(str::to_string),
             flare: "flare".into(),
+            ..Default::default()
         }
     }
 
@@ -320,10 +326,42 @@ mod tests {
                 "ControlPath=none",
                 "-L",
                 "127.0.0.1:50123:localhost:5173",
+                "-o",
+                "ConnectTimeout=5",
                 "-l",
                 "max",
                 "--",
                 "mini"
+            ]
+        );
+        // Rule 1235: a paired machine's tunnel uses its address, port, Flare's key and known-hosts file.
+        let paired = Machine {
+            host: Some("192.168.0.139".into()),
+            port: Some(2222),
+            key: Some(r"C:\Users\John Doe\flare\id_flare_ed25519".into()),
+            known_hosts: Some("/Users/max/flare/known_hosts".into()),
+            ..mac(Some("max"))
+        };
+        let argv = tunnel_argv("ssh", &paired, 1, 2).unwrap();
+        assert_eq!(
+            argv[argv.len() - 16..],
+            [
+                "-o",
+                "ConnectTimeout=5",
+                "-o",
+                "IdentitiesOnly=yes",
+                "-i",
+                r"C:\Users\John Doe\flare\id_flare_ed25519",
+                "-o",
+                "UserKnownHostsFile=/Users/max/flare/known_hosts",
+                "-o",
+                "StrictHostKeyChecking=yes",
+                "-p",
+                "2222",
+                "-l",
+                "max",
+                "--",
+                "192.168.0.139"
             ]
         );
         let argv = tunnel_argv("ssh", &mac(None), 1, 2).unwrap();
