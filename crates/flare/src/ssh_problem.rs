@@ -52,6 +52,9 @@ impl SshProblem {
 
 /// Pure: ssh's own words sorted into a case, None when they are none of them. The checks go from the most telling:
 /// a host key problem ends the login before any key is offered, and a refused key comes before the connection closes.
+/// The words are ssh's own shapes, not loose ones: the stderr also carries what a command on the host printed (a shell's
+/// "flare: Permission denied" for a Flare path that is not runnable, a program's "Connection refused"), and that must
+/// never read as "Not paired" or "Not answering" (nor end Add's search of the other Flare paths).
 pub fn sort(said: &str) -> Option<SshProblem> {
     let t = said.to_ascii_lowercase();
     let any = |ps: &[&str]| ps.iter().any(|p| t.contains(p));
@@ -63,28 +66,21 @@ pub fn sort(said: &str) -> Option<SshProblem> {
     ]) {
         Some(SshProblem::IdentityChanged)
     } else if any(&[
-        "permission denied",
+        // ssh lists the methods it tried: "Permission denied (publickey,...)".
+        "permission denied (",
         "too many authentication failures",
         "no supported authentication methods",
     ]) {
         Some(SshProblem::NotPaired)
-    } else if any(&[
-        "could not resolve hostname",
-        "name or service not known",
-        "nodename nor servname",
-        "no such host is known",
-        "temporary failure in name resolution",
-    ]) {
+    } else if any(&["ssh: could not resolve hostname"]) {
         Some(SshProblem::NotFound)
     } else if any(&[
-        "connection refused",
-        "timed out",
-        "no route to host",
-        "network is unreachable",
-        "host is down",
-        "connection reset",
-        "connection closed by",
+        // "ssh: connect to host <h> port <p>: Connection refused / timed out / No route to host / ...".
+        "ssh: connect to host",
+        "connection timed out during banner exchange",
         "kex_exchange_identification",
+        "connection reset by",
+        "connection closed by",
     ]) {
         Some(SshProblem::NotAnswering)
     } else {
@@ -166,7 +162,19 @@ mod tests {
     /// Rule 1236: each thing ssh says when a link fails is one plain line; anything else is no case.
     #[test]
     fn what_ssh_says_is_sorted_into_one_plain_line() {
-        let cases: [(&str, Option<SshProblem>); 14] = [
+        let cases: [(&str, Option<SshProblem>); 19] = [
+            // What a shell or a program on the host printed is no case of ssh's: Add tries the next Flare path.
+            ("bash: /usr/local/bin/flare: Permission denied", None),
+            ("zsh:1: permission denied: /opt/flare/flare", None),
+            (
+                "flare: could not reach the daemon: Connection refused",
+                None,
+            ),
+            ("curl: (28) Operation timed out", None),
+            (
+                "ssh: connect to host studio port 22: Network is unreachable",
+                Some(SshProblem::NotAnswering),
+            ),
             (
                 "ssh: connect to host 192.168.0.139 port 22: Connection refused",
                 Some(SshProblem::NotAnswering),

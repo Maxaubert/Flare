@@ -42,12 +42,13 @@ impl Machine {
 }
 
 /// A file path that goes to ssh as one argv item or one option's value (a key, a known-hosts file, rule 1235): no
-/// control character, never read as an option, and none of `"` (it would end ssh's own quoting of the value) or `%`
-/// (ssh expands `%` tokens in both).
+/// control character, never read as an option, none of `"` (it would end ssh's own quoting of the value) or `%`, and no
+/// `${` (ssh expands `%` tokens and `${VAR}` in both).
 pub fn path_word(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 1024
         && !s.starts_with('-')
+        && !s.contains("${")
         && !s.chars().any(|c| c.is_control() || c == '"' || c == '%')
 }
 

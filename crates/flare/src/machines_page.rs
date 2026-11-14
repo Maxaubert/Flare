@@ -192,23 +192,40 @@ pub fn new_machine(form: &AddForm) -> Result<Machine, String> {
     if pick == TYPE_ADDRESS {
         let mut address = form.address.trim();
         let mut user = form.user.trim().to_string();
-        if let Some((u, rest)) = address.split_once('@')
-            && user.is_empty()
-        {
-            user = u.to_string();
+        // A `user@` before the address is its user, unless the User field names one (the field wins); it never stays
+        // in the address, where ssh would read it as the user again and "linked already" would miss it.
+        if let Some((u, rest)) = address.split_once('@') {
+            if user.is_empty() {
+                user = u.to_string();
+            }
             address = rest;
         }
-        // One colon and digits after it is a port; an IPv6 address (several colons) is left whole.
+        if address.contains('@') {
+            return Err("Type the address with one @ at most.".into());
+        }
+        // One colon and digits after it is a port; an IPv6 address (several colons) is left whole, and one in brackets
+        // may have a port after them (`[fe80::1]:2222`).
         let mut port = None;
-        if address.matches(':').count() == 1
+        let parse_port = |p: &str| {
+            p.parse::<u16>()
+                .ok()
+                .filter(|p| *p > 0)
+                .ok_or_else(|| "Type a port from 1 to 65535 after the colon.".to_string())
+        };
+        if let Some(inner) = address.strip_prefix('[') {
+            let Some((a, rest)) = inner.split_once(']') else {
+                return Err("Type the address with no spaces.".into());
+            };
+            if let Some(p) = rest.strip_prefix(':') {
+                port = Some(parse_port(p)?);
+            } else if !rest.is_empty() {
+                return Err("Type the address with no spaces.".into());
+            }
+            address = a;
+        } else if address.matches(':').count() == 1
             && let Some((a, p)) = address.split_once(':')
         {
-            port = Some(
-                p.parse::<u16>()
-                    .ok()
-                    .filter(|p| *p > 0)
-                    .ok_or_else(|| "Type a port from 1 to 65535 after the colon.".to_string())?,
-            );
+            port = Some(parse_port(p)?);
             address = a;
         }
         if address.is_empty() {
@@ -957,6 +974,37 @@ mod tests {
         assert!(r.io.list().is_empty());
     }
 
+    /// Rule 1236: what a shell on the host printed (a Flare path that is not runnable) is no reason of ssh's: Add
+    /// goes on to the next Flare path, which answers.
+    #[test]
+    fn a_shells_permission_denied_does_not_end_the_add() {
+        let mut io = FakeIo::default();
+        io.answers.insert(
+            ("studio".into(), FLARE_CANDIDATES[0].to_string()),
+            Err((
+                false,
+                format!(
+                    "the link ended; ssh said: bash: {}: Permission denied",
+                    FLARE_CANDIDATES[0]
+                ),
+            )),
+        );
+        io.answers.insert(
+            ("studio".into(), FLARE_CANDIDATES[1].to_string()),
+            facts("0.4.2", Some(Os::Mac)),
+        );
+        let mut r = Rig::new(io);
+        r.page.page_shown();
+        r.settle();
+        r.page.open_form();
+        r.page.set_pick("studio");
+        r.page.submit();
+        r.settle();
+        let saved = r.io.list();
+        assert_eq!(saved.len(), 1, "{:?}", r.page.info().add.error);
+        assert_eq!(saved[0].flare, FLARE_CANDIDATES[1]);
+    }
+
     /// Rule 1237: what the dialog names, before any check: `user@` and `:port` are read from a typed address, and an
     /// address, a user or a port that cannot be one is one red line.
     #[test]
@@ -979,7 +1027,29 @@ mod tests {
         assert_eq!((m.user.as_deref(), m.port), (Some("admin"), Some(22)));
         let m = new_machine(&form(TYPE_ADDRESS, "fe80::1", "")).unwrap();
         assert_eq!((m.target(), m.port), ("fe80::1", None), "IPv6 stays whole");
+        let m = new_machine(&form(TYPE_ADDRESS, "[fe80::1]:2222", "")).unwrap();
+        assert_eq!(
+            (m.target(), m.port),
+            ("fe80::1", Some(2222)),
+            "IPv6 in brackets"
+        );
+        let m = new_machine(&form(TYPE_ADDRESS, "[fe80::1]", "")).unwrap();
+        assert_eq!((m.target(), m.port), ("fe80::1", None));
+        // The User field wins over a `user@`, which never stays in the address.
+        let m = new_machine(&form(TYPE_ADDRESS, "max@studio.local", "admin")).unwrap();
+        assert_eq!(
+            (m.target(), m.user.as_deref()),
+            ("studio.local", Some("admin"))
+        );
         let line = |f: AddForm| new_machine(&f).unwrap_err();
+        assert_eq!(
+            line(form(TYPE_ADDRESS, "a@b@studio", "")),
+            "Type the address with one @ at most."
+        );
+        assert_eq!(
+            line(form(TYPE_ADDRESS, "[fe80::1]x", "")),
+            "Type the address with no spaces."
+        );
         assert_eq!(line(form(TYPE_ADDRESS, "  ", "")), "Type an address.");
         assert_eq!(
             line(form(TYPE_ADDRESS, "my mac", "")),

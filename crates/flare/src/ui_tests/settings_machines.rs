@@ -418,6 +418,25 @@ fn the_add_row_opens_the_dialog_and_a_failed_check_is_one_red_line_in_it() {
     }
 }
 
+/// Rule 1237: the dialog draws only over the Machines page. Another page closes it, and a form that is still open
+/// (a check that runs) never draws over another page or over a hidden Settings tab.
+#[test]
+fn the_dialog_never_draws_over_another_page() {
+    let f = fx_at(1.0, FakeIo::default());
+    f.page();
+    f.settle("the read", |f| f.row("machines-add").is_some());
+    f.b().invoke_row_button("machines-add".into(), "tap".into());
+    assert!(f.b().get_machine_add_open());
+    f.b().invoke_page_chosen("terminal".into());
+    assert!(!f.b().get_machine_add_open(), "another page closes it");
+    f.page();
+    assert!(!f.b().get_machine_add_open(), "and it stays closed");
+    // A busy form outlives a hide, but draws only once Settings and its page are back.
+    f.b().invoke_row_button("machines-add".into(), "tap".into());
+    f.ctl.borrow_mut().hide();
+    assert!(!f.b().get_machine_add_open(), "hidden with Settings");
+}
+
 /// Rule 1236: a machine whose ssh said why it failed shows that in plain words as the grey line under its row.
 #[test]
 fn a_machine_whose_ssh_said_why_shows_it_in_plain_words_under_its_row() {

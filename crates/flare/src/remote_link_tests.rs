@@ -796,6 +796,11 @@ fn a_paired_machines_ssh_uses_its_address_port_key_and_known_hosts_as_argv_items
     assert_eq!(with(|m| m.host = Some("-oProxyCommand=x".into())), None);
     assert_eq!(with(|m| m.key = Some("-i/etc/passwd".into())), None);
     assert_eq!(with(|m| m.key = Some("C:\\a%h\\key".into())), None);
+    assert_eq!(with(|m| m.key = Some("${HOME}/key".into())), None);
+    assert!(
+        with(|m| m.key = Some(r"C:\Users\a$b\key".into())).is_some(),
+        "a lone $ is a path's own"
+    );
     assert_eq!(with(|m| m.known_hosts = Some("a\"b".into())), None);
     assert_eq!(with(|m| m.known_hosts = Some("a\nb".into())), None);
 }

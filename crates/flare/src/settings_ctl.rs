@@ -1088,6 +1088,10 @@ impl SettingsCtl {
         }
         crate::dictation_ctl::page_left();
         self.page = DEFAULT_PAGE;
+        // The Add a machine dialog ends with the tab (a check that runs keeps its form until it answers).
+        if let Some(m) = self.machines.as_mut() {
+            m.cancel_form();
+        }
         self.find.set_query("");
         self.finish_watch();
         self.flash = None;
@@ -1583,7 +1587,9 @@ impl SettingsCtl {
     }
 
     /// The Add a machine dialog into the bridge (machine pairing PR 1, rule 1237): open while the page's form is, and
-    /// what it shows. A keystroke in its fields pushes only this, so the field keeps its caret.
+    /// what it shows. A keystroke in its fields pushes only this, so the field keeps its caret. It draws only over the
+    /// Machines page while Settings is in front: a form left open by a check that still ran when Settings was hidden
+    /// or left never comes back over another page.
     fn push_machine_add(&self, app: &AppWindow) {
         let b = app.global::<SettingsBridge>();
         let Some(m) = self.machines.as_ref() else {
@@ -1596,7 +1602,7 @@ impl SettingsCtl {
             &info.add,
             &machine_choice_opts(&info.ssh_hosts, &mono),
         ));
-        b.set_machine_add_open(info.add.open);
+        b.set_machine_add_open(info.add.open && self.visible && self.page == "machines");
     }
 
     fn find_query_trimmed(&self) -> String {
@@ -1723,6 +1729,11 @@ impl SettingsCtl {
 
     fn page_chosen(&mut self, id: &str) {
         self.page = page_static(id);
+        if self.page != "machines"
+            && let Some(m) = self.machines.as_mut()
+        {
+            m.cancel_form();
+        }
         if self.page == "dictation" {
             // The microphones are listed again, on a worker (the page never opens one).
             crate::dictation_ctl::page_shown();
