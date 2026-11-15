@@ -3680,7 +3680,8 @@ user can change their look").
 `NSApplication.applicationIconImage` (the Dock and the app switcher), the pick drawn at 512 px from its SVG with
 resvg, set at start and on every pick, and cleared for the original so the bundle's icon shows again; never
 `NSWorkspace setIcon` on `Flare.app`, which would break its code signature, so Finder keeps the original (the row
-says so). Windows: the main window's big and small icons (`WM_SETICON`, which the taskbar button shows), drawn at the
+says so). Windows: the main window's big and small icons (`WM_SETICON`; the taskbar button follows them only through
+rule 1265's window id), drawn at the
 monitor's icon sizes, at start, on every DPI change and on every pick; the exe's resource for the original. Shortcuts,
 the exe and the installer keep the original. The dictation widget is a tool window with no icon and Settings is a tab,
 so the main window is the only one. Nothing is set at start while the original is picked. Code: `crates/flare/src/app_icon.rs`
@@ -4036,25 +4037,25 @@ tiles a line (`flare_settings::layout::{icon_cols, icon_lines, icon_row_h}`, `Ro
 the view places them by it (`AppIconStrip.cols`), so the height and the tiles always agree. The chosen ring, the
 hover fill, the name as tooltip and accessible label and the key focus of each tile stay as rule 1230 made them. The
 row's right is no longer the picked icon's name (`SetRow.badge` stays empty and `RowControls` draws no text for the
-row): it is a row button, **Restart Explorer** on Windows and **Restart Dock** on macOS (`app_icon::RESTART_LABEL`,
-id `restart-shell`), with the mockup's circular arrow (`redo`, in `icons::BUTTON_ICONS`) left of its words and no
+row): on Windows it is a row button, **Restart Explorer** (`app_icon::RESTART_LABEL`, id `restart-shell`; a Mac has
+no button there, rule 1264), with the mockup's circular arrow (`redo`, in `icons::BUTTON_ICONS`) left of its words and no
 tooltip, as a labelled button.
 A press runs `ShellRestart::restart` on the `flare-shell-restart` worker and answers with
 `SettingsMsg::ShellRestarted`; the button is off while it runs and a second press does nothing. Windows ends every
 `explorer.exe` of this user's session (`ProcessIdToSessionId`, never another session's), waits up to 2.5 s for
 Winlogon to start the shell again and otherwise starts `explorer.exe` by its absolute path, out of any job Flare
-runs in, checks that it shows within 5 s and starts it once more before it reports a failure; macOS runs
-`/usr/bin/killall Dock` (`flare_win::shell_restart`). A settings row's subtext never changes to report state (Max's
+runs in, checks that it shows within 5 s and starts it once more before it reports a failure
+(`flare_win::shell_restart`). A settings row's subtext never changes to report state (Max's
 standing rule), so the row always says "The taskbar and the window. Shortcuts keep the original." (its own fixed text
 on a Mac, `APP_ICON_SUB`). A failure opens the settings notice instead (`SetNotice`, `ui/settings/notice.slint`):
 the Dialog look (scrim, a box of at most 380 px on the side-flat ground, hairline border, modal shadow) with one plain
-line, "Explorer did not restart." ("The Dock did not restart.", `app_icon::RESTART_FAILED`), and an **OK** button
+line, "Explorer did not restart." (`app_icon::RESTART_FAILED`), and an **OK** button
 (labelled, so no tooltip). OK, Enter, Space, Escape and a press outside close it. Rust drives it through
 `SettingsBridge.notice-open`, `notice-text` and `notice-closed` (`SettingsCtl::show_notice` and `close_notice`;
 `SettingsCtl::escape` and leaving Settings close it too). It is counted as an overlay (`Overlay::SettingsNotice`, the
 `overlay-open` term, rank 3 in `overlay_order.rs`). It is not a row, so the Find index does not change. Crumbs:
 `shell-restart-asked`, then `shell-restart` with `ok` and a short `why` (no path). Tests and `--e2e` use
-`FakeShellRestart`: nothing outside the test restarts Explorer or the Dock. Held by
+`FakeShellRestart`: nothing outside the test restarts Explorer. Held by
 `the_app_icon_row_is_its_words_over_a_line_of_tiles`, `the_app_icon_tiles_wrap_and_the_row_grows` (`layout.rs`),
 `the_app_icon_row_offers_the_shell_restart_button` (`page/appearance.rs`),
 `the_fake_restart_counts_and_fails_when_told` (`app_icon.rs`) and, in `ui_tests/settings_app_icon.rs`,
@@ -4063,6 +4064,24 @@ line, "Explorer did not restart." ("The Dock did not restart.", `app_icon::RESTA
 `the_right_side_is_the_restart_button_not_the_icon_name`, `the_restart_button_runs_the_fake_restart`,
 `a_failed_restart_opens_the_notice_and_the_subtext_stays` (OK closes it) and
 `escape_closes_the_restart_notice_and_a_good_restart_opens_none`. Source: Max, 2026-11-14.
+
+## No Restart Dock on a Mac (2026-11-15)
+
+1264. **On a Mac the App icon row has no restart button, and Flare never ends the Dock.** Max, 2026-11-15: the Dock
+already shows a picked icon at once through `NSApplication.applicationIconImage` (rule 1231), and restarting the Dock
+may drop that icon, so the "Restart Dock" button of rule 1263 is gone. The row keeps its words and its tile grid as
+they are; its right side is simply empty on a Mac (`SetRow.buttons` is empty, `badge` stays empty). Windows keeps
+**Restart Explorer** unchanged. The choice is one pure function of the system, so both arms are tested on any host:
+`app_icon::restart_label(ShellHost)` is `Some("Restart Explorer")` for `ShellHost::Windows` and None for
+`ShellHost::Mac`, and `page::appearance::app_icon_buttons(ShellHost)` builds the row's buttons from it
+(`ShellHost::current()` for the real page). Nothing can run `killall Dock`: `flare_win::shell_restart` has no macOS
+arm (any system but Windows answers "no shell to restart here"), and `SettingsCtl::restart_shell` returns at once on a
+Mac even when a press arrives by the button's id. The Mac-only words "Restart Dock" and "The Dock did not restart."
+are gone. Held by `only_windows_offers_a_restart_and_a_mac_none` (`app_icon.rs`),
+`the_app_icon_row_offers_the_shell_restart_button` (`page/appearance.rs`, both arms) and, in
+`ui_tests/settings_app_icon.rs`, `the_right_side_is_the_restart_button_not_the_icon_name` (no button on a Mac) and
+`a_mac_press_by_the_button_id_restarts_nothing` (macOS only); the restart flow tests run on Windows only. Source:
+Max, 2026-11-15.
 
 ## Flare hotkeys sheet (2026-11-14)
 
@@ -4075,8 +4094,10 @@ on and off (a subtext never reports state). The five note lines under the switch
 (`docs/superpowers/specs/2026-11-14-hotkeys-sheet-mockup.html`): the title "Flare hotkeys" and a pill search field
 "Search" on one top row with a divider under it, then grey group names ("Typing to an agent", "Tabs", "App") over 32 px
 striped rows, the action left in soft ink and its keys right in bold, on the theme's flat ground (`side-flat`). The
-search holds the keys when the sheet opens; typing keeps the rows whose action, keys or table labels hold the text,
-ignoring case, and leaves out a group with none. Escape or a press outside the box closes it, and so does leaving
+box is 520 px wide (the window less 16 px each side when narrower) and at most 70 percent of the window tall, never
+over 640 px, centred in the window; a longer list scrolls inside it (2026-11-15, Max: "a bit shorter and a bit
+wider", it was 400 px wide and almost the window's height). The search holds the keys when the sheet opens; typing
+keeps the rows whose action, keys or table labels hold the text, ignoring case, and leaves out a group with none. Escape or a press outside the box closes it, and so does leaving
 Settings. The rows are built from the key tables per system, never typed: the chord table (`key_label_on`, a chord
 with an agent key shows both, the agent key first), the prompt keys (`prompt_key_label`), the paste key
 (`copy_paste_labels`), the new-line key (`flare_term::keys::newline_label`) and the Mac's Cmd+Backspace
@@ -4095,6 +4116,30 @@ and on the Mac Zoom in, Zoom out and Actual size). The sheet is an overlay (`Ove
 `flare_hotkeys_has_an_info_button_left_of_its_switch_and_no_notes`,
 `the_row_is_flare_hotkeys_with_an_info_button_before_its_switch`,
 `the_button_opens_the_sheet_the_search_filters_and_escape_closes_it`,
-`a_press_outside_the_box_closes_the_sheet_and_one_inside_does_not`, `every_chord_in_the_table_is_on_the_sheet`,
+`a_press_outside_the_box_closes_the_sheet_and_one_inside_does_not`,
+`the_box_is_at_most_640_tall_in_a_tall_window_and_fits_a_narrow_one`, `every_chord_in_the_table_is_on_the_sheet`,
 `leaving_settings_closes_the_sheet`, `a_lead_button_sits_left_of_the_switch_and_both_answer_their_clicks` and
 `flare_hotkeys_is_found_by_its_new_name_and_its_old_one`. Source: Max, 2026-11-14 (the approved mockup).
+
+## The taskbar wears the app icon (2026-11-15)
+
+1265. **While a custom app icon is picked, the main window has its own taskbar id, so the taskbar button shows the
+pick.** Max, 2026-11-15: "it doesnt change wheni picka differnt icon thoguh, not before or after restart explorer".
+The process id (`ship_ctl::set_aumid`, `effective_aumid`) is the Start menu shortcut's, and the Windows 11 taskbar
+draws that shortcut's icon and ignores `WM_SETICON`. Window relaunch properties (`RelaunchIconResource` and the rest)
+do not beat the shortcut either. A window whose own id has no shortcut shows its `WM_SETICON` icon (both tried by hand
+on Max's PC, 2026-11-15; research: `research/flare/2026-11-15-taskbar-icon.md`). So `ship_ctl::window_aumid` gives
+the main window `effective_aumid()` + `.icon` (one stable id per profile) for any pick but the original, and
+`effective_aumid()` for the original, whose shortcut icon is the original, so pinning works as before. The id is the
+window-level `PKEY_AppUserModel_ID` ({9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}, 5, `VT_LPWSTR`), written by
+`flare_win::window_app_id::set` (`SHGetPropertyStoreForWindow`, `SetValue`, `Commit`, the store released, COM opened
+in the apartment model on the UI thread and closed when the call opened it). `set_window_icon` puts it on after the
+icons, at window creation and on every pick, live, with no restart (`wear_window_aumid`): it writes only when the id
+changes (a DPI change writes nothing; a window made with the original writes nothing, the process id covers it), and
+a failed write is logged and tried again on the next call. The process id and toasts stay on the base id. While a
+custom icon is picked, a pinned Flare and its Jump List belong to the other id. macOS is unchanged. The Restart
+Explorer button stays. Held by `a_custom_pick_wears_one_icon_id_and_the_original_wears_the_shortcuts`,
+`the_window_id_is_written_only_when_it_changes_and_a_failure_retries`,
+`the_window_wears_the_pick_id_and_the_process_keeps_the_base_id` (`ship_ctl.rs`),
+`the_key_is_pkey_app_user_model_id` and `a_null_window_or_an_empty_id_is_refused_without_the_shell`
+(`flare-win/src/window_app_id.rs`). Source: Max, 2026-11-15.

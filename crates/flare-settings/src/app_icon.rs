@@ -114,28 +114,49 @@ pub fn on_app_icon_change(s: &PrefStore, cb: impl Fn() + Send + Sync + 'static) 
     s.on_change(PREF.key, cb)
 }
 
-/// The App icon row's button (rule 1263, 2026-11-14): it restarts the system's shell, so the taskbar (Windows) or the
-/// Dock (macOS) shows the picked icon at once. It stands where the picked icon's name stood.
+/// The App icon row's button on Windows (rule 1263, 2026-11-14): it restarts Explorer, so the taskbar shows the
+/// picked icon at once. It stands where the picked icon's name stood. A Mac has no such button (rule 1264).
 pub const RESTART_BUTTON: &str = "restart-shell";
 
 /// The button's words. It has words, so it has no tooltip.
-pub const RESTART_LABEL: &str = if cfg!(target_os = "macos") {
-    "Restart Dock"
-} else {
-    "Restart Explorer"
-};
+pub const RESTART_LABEL: &str = "Restart Explorer";
 
 /// The one plain line of the settings notice (a dialog with OK) after a failed restart. The row's subtext never
 /// changes to report it (rule 1263).
-pub const RESTART_FAILED: &str = if cfg!(target_os = "macos") {
-    "The Dock did not restart."
-} else {
-    "Explorer did not restart."
-};
+pub const RESTART_FAILED: &str = "Explorer did not restart.";
 
-/// Restarts the system's shell (rule 1263): Windows ends `explorer.exe` in this user's session and starts it again;
-/// macOS runs `killall Dock`. It blocks, so it runs on a worker. Tests use `FakeShellRestart`: nothing outside the
-/// test restarts. The error is a short reason with no path in it (it reaches the log as a crumb).
+/// The system whose shell the App icon row is for. Any system but macOS reads as Windows, as the rest of the page's
+/// `cfg!(target_os = "macos")` switches do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellHost {
+    Windows,
+    Mac,
+}
+
+impl ShellHost {
+    /// The system Flare runs on.
+    pub const fn current() -> ShellHost {
+        if cfg!(target_os = "macos") {
+            ShellHost::Mac
+        } else {
+            ShellHost::Windows
+        }
+    }
+}
+
+/// The restart button's words on `host`, or None when the row offers no restart button (rule 1264, Max 2026-11-15):
+/// the Dock shows a picked icon at once through `NSApplication.applicationIconImage`, and restarting the Dock may
+/// drop it, so a Mac has no Restart Dock button and Flare never ends the Dock.
+pub const fn restart_label(host: ShellHost) -> Option<&'static str> {
+    match host {
+        ShellHost::Windows => Some(RESTART_LABEL),
+        ShellHost::Mac => None,
+    }
+}
+
+/// Restarts Explorer (rule 1263): Windows ends `explorer.exe` in this user's session and starts it again. It blocks,
+/// so it runs on a worker. A Mac never calls it (rule 1264). Tests use `FakeShellRestart`: nothing outside the test
+/// restarts. The error is a short reason with no path in it (it reaches the log as a crumb).
 pub trait ShellRestart: Send + Sync {
     fn restart(&self) -> Result<(), String>;
 }
@@ -276,8 +297,21 @@ mod tests {
         assert!(f.restart().is_err());
         assert_eq!(f.calls(), 2);
         assert!(FakeShellRestart::failing().restart().is_err());
-        assert!(RESTART_LABEL.starts_with("Restart "));
-        assert!(RESTART_FAILED.ends_with("did not restart."));
+        assert_eq!(RESTART_LABEL, "Restart Explorer");
+        assert_eq!(RESTART_FAILED, "Explorer did not restart.");
+    }
+
+    /// Rule 1264: Windows offers Restart Explorer; a Mac offers no restart button at all.
+    #[test]
+    fn only_windows_offers_a_restart_and_a_mac_none() {
+        assert_eq!(restart_label(ShellHost::Windows), Some("Restart Explorer"));
+        assert_eq!(restart_label(ShellHost::Mac), None);
+        let want = if cfg!(target_os = "macos") {
+            ShellHost::Mac
+        } else {
+            ShellHost::Windows
+        };
+        assert_eq!(ShellHost::current(), want);
     }
 
     #[test]

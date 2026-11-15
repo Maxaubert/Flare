@@ -212,8 +212,8 @@ component RowControls inherits HorizontalLayout {
             tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
         }
     }
-    // The app icon picker's row (rules 1230 and 1263) draws nothing here but its Restart Explorer button (one of
-    // `buttons`, below); its tiles are drawn under the words.
+    // The app icon picker's row (rules 1230, 1263 and 1264) draws nothing here but its Restart Explorer button on
+    // Windows (one of `buttons`, below; a Mac has none); its tiles are drawn under the words.
     if root.data.kind == SetKind.pill: VerticalLayout {
         alignment: center;
         Rectangle {

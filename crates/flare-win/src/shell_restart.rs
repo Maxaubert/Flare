@@ -1,11 +1,12 @@
-//! Restarts the system's shell so it shows the app icon Flare picked (rule 1263, 2026-11-14): the taskbar keeps the
-//! icon it read when the window first showed, and the Dock keeps its own copy, until the shell starts again.
+//! Restarts Explorer so the taskbar shows the app icon Flare picked (rule 1263, 2026-11-14): the taskbar keeps the
+//! icon it read when the window first showed until the shell starts again.
 //!
 //! - Windows: every `explorer.exe` of this user's session (never another session's) is ended, then the shell is
 //!   started again. Winlogon starts it again by itself on many PCs; when no new Explorer shows within a short wait,
 //!   `explorer.exe` is started by its absolute path under the system root, out of any job Flare runs in. Flare checks
 //!   that it shows and starts it once more if not, so the user is never left with no shell and no word of it.
-//! - macOS: `/usr/bin/killall Dock`; launchd starts the Dock again at once.
+//! - macOS: nothing. The Dock shows a pick at once through `NSApplication.applicationIconImage`, and restarting it may
+//!   drop that icon, so Flare offers no Restart Dock and never ends the Dock (rule 1264, Max 2026-11-15).
 //!
 //! It blocks for up to a few seconds, so callers run it on a worker. Errors are short reasons with no path in them.
 //! The tests never call it: Flare's controller reaches it through the `ShellRestart` seam, which tests fill with a
@@ -173,23 +174,7 @@ mod imp {
     }
 }
 
-#[cfg(target_os = "macos")]
-mod imp {
-    pub fn restart() -> Result<(), String> {
-        let status = std::process::Command::new("/usr/bin/killall") // sync-ok: the restart worker only
-            .arg("Dock")
-            // sync-ok: the restart worker only, waits for killall
-            .status()
-            .map_err(|e| format!("killall did not start: {}", e.kind()))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(format!("killall ended with {:?}", status.code()))
-        }
-    }
-}
-
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(windows))]
 mod imp {
     pub fn restart() -> Result<(), String> {
         Err("no shell to restart here".to_string())
