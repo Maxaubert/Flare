@@ -15,6 +15,9 @@ pub struct AskView {
     pub title: String,
     /// A secret's line under the heading (an account), or empty.
     pub sub: String,
+    /// A secret's error line (why the last answer failed), or empty. When set, the dialog shows it in the sub's
+    /// place in the error colour and gives the field a red edge.
+    pub error: String,
     /// What the field is for (a secret only): its placeholder.
     pub label: String,
     /// A secret's button.
@@ -89,8 +92,9 @@ pub fn fill_view(
     }
 }
 
-/// A plugin's ask for a secret: its title as the heading, its sub under it, its label in the field and its word on the
-/// button ([`DEFAULT_BUTTON`] when it names none). `source`: where the plugin was installed from, or empty.
+/// A plugin's ask for a secret: its title as the heading, its sub under it (or its error, in red, in the sub's place),
+/// its label in the field and its word on the button ([`DEFAULT_BUTTON`] when it names none). `source`: where the
+/// plugin was installed from, or empty.
 pub fn secret_view(
     plugin_name: &str,
     source: &str,
@@ -98,11 +102,13 @@ pub fn secret_view(
     label: &str,
     sub: &str,
     button: &str,
+    error: &str,
 ) -> AskView {
     AskView {
         kind: 1,
         title: cut(title),
         sub: cut(sub),
+        error: cut(error.trim()),
         label: cut(label),
         button: if button.trim().is_empty() {
             DEFAULT_BUTTON.to_string()
@@ -144,14 +150,14 @@ mod tests {
 
     #[test]
     fn a_plugin_installed_from_an_address_is_named_with_its_host() {
-        let v = secret_view("Vault", "https://example.com/v.zip", "t", "l", "", "");
+        let v = secret_view("Vault", "https://example.com/v.zip", "t", "l", "", "", "");
         assert!(
             v.foot.contains("Vault (from example.com) only"),
             "{}",
             v.foot
         );
         assert!(
-            secret_view("Vault", "", "t", "l", "", "")
+            secret_view("Vault", "", "t", "l", "", "", "")
                 .foot
                 .contains("Vault only")
         );
@@ -168,16 +174,36 @@ mod tests {
             "Master password",
             "me@x",
             "",
+            "",
         );
         assert_eq!(v.title, "Unlock");
         assert_eq!(v.kind, 1);
         assert_eq!(v.label, "Master password");
         assert_eq!(v.sub, "me@x");
+        assert_eq!(v.error, "");
         assert_eq!(v.button, DEFAULT_BUTTON);
         assert!(v.foot.contains("Bitwarden only"), "{}", v.foot);
         assert_eq!(
-            secret_view("P", "", "t", "l", "", "Unlock").button,
+            secret_view("P", "", "t", "l", "", "Unlock", "").button,
             "Unlock"
         );
+    }
+
+    #[test]
+    fn an_error_is_kept_beside_the_sub_and_cleaned() {
+        let v = secret_view(
+            "Bitwarden",
+            "",
+            "Your vault is locked",
+            "Master password",
+            "me@x",
+            "Unlock",
+            " Wrong password.\u{7} Try again. ",
+        );
+        assert_eq!(v.error, "Wrong password. Try again.");
+        assert_eq!(v.sub, "me@x");
+        assert_eq!(v.button, "Unlock");
+        let v = secret_view("P", "", "t", "l", "", "", &"e".repeat(200));
+        assert_eq!(v.error, format!("{}...", "e".repeat(SHOWN_MAX)));
     }
 }

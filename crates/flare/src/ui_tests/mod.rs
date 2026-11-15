@@ -23,6 +23,7 @@ mod plugin_bar;
 mod plugin_surfaces;
 mod remote_convo;
 mod scrollbar;
+mod secret_error;
 mod settings_about;
 mod settings_app_icon;
 mod settings_colour;

@@ -291,7 +291,7 @@ worker, and every limit spent there, before the window hears of it.
 | Convo (`convo`) | `convo.state` | |
 | Tools (`tools`) | `tools.respond` (the bridge's `respond`) | 8 calls waiting per plugin |
 | Browser (`browser`) | `browser.*` | answered `unavailable` (not built) |
-| Fill (`fill`) | `browser.fill {tab?, login_name, login_uris, username?, password?, totp?}`, `browser.fill.page {tab?}`, `secret.ask {title, label, sub?, button?}` | one question at a time in all (`busy`); 6 asks a minute per plugin, fills and secrets together; a minute to answer |
+| Fill (`fill`) | `browser.fill {tab?, login_name, login_uris, username?, password?, totp?}`, `browser.fill.page {tab?}`, `secret.ask {title, label, sub?, button?, error?}` | one question at a time in all (`busy`); 6 asks a minute per plugin, fills and secrets together; a minute to answer |
 
 **Decor.** A badge is a bare glyph (no ring) Flare draws before the tab's end (left of the ring on a sidebar row),
 in the tone `ink` (default), `accent` or `muted` (`mic` never `accent`, Flare's dictation mark). A progress is a static
@@ -476,10 +476,13 @@ Flare's own dialog, and the user name, password and code never reach the agent.
   `{declined: true, timed_out: true}`, or an error. One dialog at a time across plugins (`busy`) and 6 asks a minute per
   plugin (`rate_limited`).
 - **`browser.fill.page {tab?}`** gives `{tab, url, host}`: the address a plugin picks the login for.
-- **`secret.ask {title, label, sub?, button?}`** shows Flare's masked field, centred in the plugin's look: its logo,
-  `title` as the heading, `sub` under it (an account), one field with `label` as its placeholder and an eye that shows
-  what is typed, a full-width button with `button` (`OK` without it), Cancel as a link, and Flare's line "What you
-  type goes to <Plugin> only.". Enter submits. Answers `{text}` to that plugin only, `{cancelled: true}` or `{cancelled: true, timed_out: true}`. Flare keeps
+- **`secret.ask {title, label, sub?, button?, error?}`** shows Flare's masked field, centred in the plugin's look: its
+  logo, `title` as the heading, `sub` under it (an account), one field with `label` as its placeholder and an eye that
+  shows what is typed, a full-width button with `button` (`OK` without it), Cancel as a link, and Flare's line "What
+  you type goes to <Plugin> only.". Enter submits. To ask again after a wrong answer, call it again with `error` (one
+  plain line, at most 120 characters, such as "Wrong password. Try again."): the line shows in red in the sub's place,
+  the field gets a red edge and a soft red glow, and it is empty and ready to type. No `error`, or an empty one, is the
+  usual look (rule 1266). Answers `{text}` to that plugin only, `{cancelled: true}` or `{cancelled: true, timed_out: true}`. Flare keeps
   and logs none of it. It shares the 6 asks a minute.
 - **A tool answered by a helper.** Claude's call to a plugin with a helper and neither a background page nor a panel
   reaches the helper as the `tool` event; while it waits the helper may fill into the caller's tab. Claude has 30 s for

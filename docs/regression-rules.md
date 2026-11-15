@@ -4037,3 +4037,21 @@ and on the Mac Zoom in, Zoom out and Actual size). The sheet is an overlay (`Ove
 `a_press_outside_the_box_closes_the_sheet_and_one_inside_does_not`, `every_chord_in_the_table_is_on_the_sheet`,
 `leaving_settings_closes_the_sheet`, `a_lead_button_sits_left_of_the_switch_and_both_answer_their_clicks` and
 `flare_hotkeys_is_found_by_its_new_name_and_its_old_one`. Source: Max, 2026-11-14 (the approved mockup).
+
+## A secret question's error line (2026-11-15)
+
+1266. **`secret.ask` takes an optional `error`: a red line in the sub's place and a red edge on the field.** A plugin
+whose last answer failed (a wrong master password) asks again with `error`, one clean line of plain text of at most
+120 characters (`MAX_ERROR_CHARS`; a control or hidden formatting character, two lines or a non-text value is
+`bad_params`, as for the other fields). When it is present and not blank, the dialog draws that text under the title
+in the error colour instead of `sub`, and the field gets a red edge with a soft red glow; the field is empty and has
+the keys, and the button, Cancel and Flare's foot line are as before. The look is Max's approved mockup C
+(2026-11-15). The colours are theme tokens, no hex in the dialog: `BrandInk.error` and `error-edge` on a brand,
+`SettingsFixed.error-dark`, `error-light` and `error-edge` on Flare's theme, through `PluginInk.error` and
+`PluginInk.error-edge`. The error takes the sub's line, so a box with a sub keeps its height. Older plugins are unchanged: no
+`error`, an empty one, a blank one or null is today's look. Native: `flare_mods::fill::parse_secret`
+(`SecretRequest.error`), `CtlOp::SecretAsk.error`, `plugin_ask::secret_view` (`AskView.error`, cut like the
+sub), `pask-error` and `pask-error-shown` in `app.slint`, `PluginAsk.error` in `ui/plugin_ask.slint`. Held by
+`a_secret_ask_may_carry_an_error_line` (`fill.rs`), `an_error_is_kept_beside_the_sub_and_cleaned`
+(`plugin_ask.rs`), and in `ui_tests/secret_error.rs` `an_error_is_red_in_the_sub_place_and_the_field_gets_a_red_edge`
+and `no_error_keeps_todays_look_and_the_error_does_not_move_the_box`. Source: Max, 2026-11-15.

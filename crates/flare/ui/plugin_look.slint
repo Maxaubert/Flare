@@ -3,7 +3,7 @@
 // A plugin with a brand gets the fixed dark brand surface (navy ground, slate cards and lines, white text) and its
 // own colour for the buttons, the chosen level, an on toggle and the focus ring; one without wears Flare's theme.
 // Amber (full control, "Always allow") is the same warning colour on both, never neutral.
-import { Theme, Px, SettingsInk, BrandInk } from "theme.slint";
+import { Theme, Px, SettingsInk, BrandInk, SettingsFixed } from "theme.slint";
 
 // `branded`: the plugin has a brand. `accent` its colour, `accent-hi` a lighter tint of it (links, focus ring, the
 // usual level). `logo`: SVG path data on the 24-unit box; with `plate` it is the brand's logo, filled in `accent` on
@@ -23,6 +23,11 @@ export global PluginInk {
     pure public function on-accent(l: PluginLook) -> color { return l.branded ? BrandInk.text : Theme.on-accent; }
     pure public function warn(l: PluginLook) -> color { return l.branded ? BrandInk.warn : SettingsInk.warn; }
     pure public function on-warn(l: PluginLook) -> color { return BrandInk.on-warn; }
+    // A question's error: the line's ink (readable on a light theme too) and the field's red edge.
+    pure public function error(l: PluginLook) -> color {
+        return l.branded ? BrandInk.error : (Theme.light ? SettingsFixed.error-light : SettingsFixed.error-dark);
+    }
+    pure public function error-edge(l: PluginLook) -> color { return l.branded ? BrandInk.error-edge : SettingsFixed.error-edge; }
     // A tone (0 plain, 1 the brand's usual, 2 amber) as text on the surface.
     pure public function tone(l: PluginLook, t: int) -> color {
         return t == 2 ? PluginInk.warn(l) : (t == 1 ? PluginInk.accent-hi(l) : PluginInk.text(l));

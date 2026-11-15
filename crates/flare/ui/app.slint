@@ -767,6 +767,8 @@ export component AppWindow inherits Window {
     in property <int> pask-kind;
     in property <string> pask-title;
     in property <string> pask-sub;
+    // A secret's error line (secret.ask `error`), or "": red, in the sub's place, and a red field edge.
+    in property <string> pask-error;
     in property <string> pask-label;
     in property <string> pask-button;
     in property <string> pask-site;
@@ -872,6 +874,12 @@ export component AppWindow inherits Window {
     out property <length> pask-box-y: pask.box-y;
     out property <length> pask-box-w: pask.box-w;
     out property <length> pask-box-h: pask.box-h;
+    // A secret's error: shown or not, and where the field is (the tests read its red edge).
+    out property <bool> pask-error-shown: pask.error-shown;
+    out property <length> pask-field-x: pask.field-x;
+    out property <length> pask-field-y: pask.field-y;
+    out property <length> pask-field-w: pask.field-w;
+    out property <length> pask-field-h: pask.field-h;
     // The settings notice's box and its OK button (rule 1263; the tests press OK).
     out property <length> notice-box-w: notice.box-w;
     out property <length> notice-ok-x: notice.ok-x;
@@ -1870,6 +1878,7 @@ export component AppWindow inherits Window {
             kind: root.pask-kind;
             title: root.pask-title;
             sub: root.pask-sub;
+            error: root.pask-error;
             label: root.pask-label;
             button: root.pask-button;
             site: root.pask-site;
