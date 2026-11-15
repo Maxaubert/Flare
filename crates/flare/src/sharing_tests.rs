@@ -774,6 +774,8 @@ fn the_mac_app_firewall_answers_are_read_and_the_allow_command_is_quoted() {
     for yes in [
         "The application /Applications/Flare.app/Contents/MacOS/flare is permitted",
         "Incoming connection to the application is permitted",
+        // What macOS 27 prints, read on the Mac mini 2026-11-15.
+        "Incoming connection to /Applications/Flare.app/Contents/MacOS/flare is permitted.",
         "The application is not blocked and is allowed",
     ] {
         assert!(app_allowed(yes), "{yes}");
