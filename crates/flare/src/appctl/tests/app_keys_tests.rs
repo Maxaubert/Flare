@@ -248,6 +248,10 @@ fn mini() -> crate::machines::Machine {
         ssh: "mini".into(),
         user: None,
         flare: "flare".into(),
+        host: None,
+        port: None,
+        key: None,
+        known_hosts: None,
     }
 }
 
