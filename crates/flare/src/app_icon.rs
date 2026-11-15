@@ -5,8 +5,11 @@
 //! - macOS: `NSApplication.applicationIconImage` (the Dock and the app switcher), set at start and on every change;
 //!   the original clears it, so the bundle's icon shows again. The signed bundle is never written to (setting a
 //!   custom icon on `Flare.app` breaks its code signature), so Finder keeps the original.
-//! - Windows: the window's big and small icons (`WM_SETICON`, which the taskbar button shows too), set when the window
-//!   has its handle, on every DPI change and on every pick. Shortcuts, the exe and the installer keep the original.
+//! - Windows: the window's big and small icons (`WM_SETICON`), set when the window has its handle, on every DPI change
+//!   and on every pick. They show in the title bar and Alt+Tab. The taskbar button does not follow `WM_SETICON` while
+//!   the window's id is the Start menu shortcut's: it draws the shortcut's icon. So a custom pick also gives the window
+//!   its own taskbar id with no shortcut (`ship_ctl::window_aumid`, rule 1265), and the original gives it back the
+//!   shortcut's id. Shortcuts, the exe and the installer keep the original.
 //!
 //! The dictation widget is a tool window with no icon (off the taskbar, never in the Dock), and Settings is a tab of
 //! the main window, so the main window is the only one that wears the icon.

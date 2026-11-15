@@ -3680,7 +3680,8 @@ user can change their look").
 `NSApplication.applicationIconImage` (the Dock and the app switcher), the pick drawn at 512 px from its SVG with
 resvg, set at start and on every pick, and cleared for the original so the bundle's icon shows again; never
 `NSWorkspace setIcon` on `Flare.app`, which would break its code signature, so Finder keeps the original (the row
-says so). Windows: the main window's big and small icons (`WM_SETICON`, which the taskbar button shows), drawn at the
+says so). Windows: the main window's big and small icons (`WM_SETICON`; the taskbar button follows them only through
+rule 1265's window id), drawn at the
 monitor's icon sizes, at start, on every DPI change and on every pick; the exe's resource for the original. Shortcuts,
 the exe and the installer keep the original. The dictation widget is a tool window with no icon and Settings is a tab,
 so the main window is the only one. Nothing is set at start while the original is picked. Code: `crates/flare/src/app_icon.rs`
@@ -4037,3 +4038,26 @@ and on the Mac Zoom in, Zoom out and Actual size). The sheet is an overlay (`Ove
 `a_press_outside_the_box_closes_the_sheet_and_one_inside_does_not`, `every_chord_in_the_table_is_on_the_sheet`,
 `leaving_settings_closes_the_sheet`, `a_lead_button_sits_left_of_the_switch_and_both_answer_their_clicks` and
 `flare_hotkeys_is_found_by_its_new_name_and_its_old_one`. Source: Max, 2026-11-14 (the approved mockup).
+
+## The taskbar wears the app icon (2026-11-15)
+
+1265. **While a custom app icon is picked, the main window has its own taskbar id, so the taskbar button shows the
+pick.** Max, 2026-11-15: "it doesnt change wheni picka differnt icon thoguh, not before or after restart explorer".
+The process id (`ship_ctl::set_aumid`, `effective_aumid`) is the Start menu shortcut's, and the Windows 11 taskbar
+draws that shortcut's icon and ignores `WM_SETICON`. Window relaunch properties (`RelaunchIconResource` and the rest)
+do not beat the shortcut either. A window whose own id has no shortcut shows its `WM_SETICON` icon (both tried by hand
+on Max's PC, 2026-11-15; research: `research/flare/2026-11-15-taskbar-icon.md`). So `ship_ctl::window_aumid` gives
+the main window `effective_aumid()` + `.icon` (one stable id per profile) for any pick but the original, and
+`effective_aumid()` for the original, whose shortcut icon is the original, so pinning works as before. The id is the
+window-level `PKEY_AppUserModel_ID` ({9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}, 5, `VT_LPWSTR`), written by
+`flare_win::window_app_id::set` (`SHGetPropertyStoreForWindow`, `SetValue`, `Commit`, the store released, COM opened
+in the apartment model on the UI thread and closed when the call opened it). `set_window_icon` puts it on after the
+icons, at window creation and on every pick, live, with no restart (`wear_window_aumid`): it writes only when the id
+changes (a DPI change writes nothing; a window made with the original writes nothing, the process id covers it), and
+a failed write is logged and tried again on the next call. The process id and toasts stay on the base id. While a
+custom icon is picked, a pinned Flare and its Jump List belong to the other id. macOS is unchanged. The Restart
+Explorer button stays. Held by `a_custom_pick_wears_one_icon_id_and_the_original_wears_the_shortcuts`,
+`the_window_id_is_written_only_when_it_changes_and_a_failure_retries`,
+`the_window_wears_the_pick_id_and_the_process_keeps_the_base_id` (`ship_ctl.rs`),
+`the_key_is_pkey_app_user_model_id` and `a_null_window_or_an_empty_id_is_refused_without_the_shell`
+(`flare-win/src/window_app_id.rs`). Source: Max, 2026-11-15.
