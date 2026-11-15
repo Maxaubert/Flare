@@ -909,6 +909,11 @@ mod tests {
             ssh: "mini".into(),
             user: None,
             flare: "flare".into(),
+            host: None,
+            port: None,
+            key: None,
+            known_hosts: None,
+            host_key: None,
         };
         let prefs = PrefStore::memory();
         remember_remote_root(&prefs, "mac", "/Users/max/proj", false);
