@@ -464,21 +464,16 @@ export component AppWindow inherits Window {
     out property <length> panel-md-x: panel-slot.md-x;
     out property <length> panel-md-y: panel-slot.md-y;
     out property <length> panel-md-w: panel-slot.md-w;
-    // "Ask agent": the header's button, and the note that says why nothing was sent.
-    in property <bool> panel-ask-on;
-    callback panel-ask-agent();
-    // The button's tooltip: placed beside the button, never under it, where a page's native window would hide it.
-    callback panel-ask-tip(string, length, length, length, length);
-    out property <bool> panel-ask-visible: panel-slot.ask-visible;
-    out property <length> panel-ask-x: panel-slot.ask-x;
-    out property <length> panel-ask-y: panel-slot.ask-y;
-    out property <length> panel-ask-w: panel-slot.ask-w;
-    // "Draw arrow" beside it (rule 256): shown on a web page or a mini-app of a tab with an agent, never a plugin's page,
-    // and not while a pop-up is open; pressed while the person draws.
+    // "Draw arrow" (rule 256): shown on a web page or a mini-app of a tab with an agent, never a plugin's page, and not
+    // while a pop-up is open; pressed while the person draws. The panel has no "Ask agent" button (rule 1267).
     in property <bool> panel-draw-on;
     in property <bool> panel-draw-active;
     callback panel-draw-arrow();
     out property <bool> panel-draw-visible: panel-slot.draw-visible;
+    out property <length> panel-draw-x: panel-slot.draw-x;
+    out property <length> panel-draw-y: panel-slot.draw-y;
+    out property <length> panel-draw-w: panel-slot.draw-w;
+    // The note that says why nothing was sent or drawn (the terminal menu's "Ask agent about this selection", the arrow).
     in property <string> ask-note;
     out property <length> ask-note-x: ask-note-box.x;
     out property <length> ask-note-w: ask-note-box.width;
@@ -1358,9 +1353,6 @@ export component AppWindow inherits Window {
                         md-file: root.panel-md;
                         md-view: root.panel-md-view;
                         md-view-picked(i) => { root.panel-md-view-picked(i); }
-                        ask-on: root.panel-ask-on;
-                        ask-agent => { root.panel-ask-agent(); }
-                        ask-tip(a, b, c, d, e) => { root.panel-ask-tip(a, b, c, d, e); }
                         draw-on: root.panel-draw-on;
                         draw-active: root.panel-draw-active;
                         draw-arrow => { root.panel-draw-arrow(); }
@@ -1629,7 +1621,7 @@ export component AppWindow inherits Window {
             y: Px.snap((root.staged-chip-shown ? root.staged-chip-y + root.staged-chip-h : Theme.bar-height) + 8px);
             clicked => { root.staged-toast-clicked(); }
         }
-        // Why "Ask agent" sent nothing. Over the terminal, never the panel: a page's browser window sits above
+        // Why "Ask agent about this selection" or "Draw arrow" did nothing. Over the terminal, never the panel: a page's browser window sits above
         // anything drawn there.
         ask-note-box := StagedToast {
             text: root.ask-note;

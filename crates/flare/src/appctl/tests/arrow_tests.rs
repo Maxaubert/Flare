@@ -842,6 +842,60 @@ fn the_persons_arrow_is_kept_five_minutes_or_until_the_page_moves_on() {
     assert!(!recorded_mark().shown);
 }
 
+/// The prompt hook's quiet context (rule 1268): `panel.state` with `context`, the page's selection read given up on.
+fn quiet(f: &Fx, tab: &str) -> Value {
+    let rx = ask(
+        f,
+        CtlOp::PanelContext {
+            tab: tab.into(),
+            cwd: None,
+        },
+    );
+    f.ctl.borrow_mut().quiet_reads_expire();
+    rx.try_recv().expect("answered").expect("the state")["context"].clone()
+}
+
+#[test]
+fn a_claude_tab_with_hooks_hears_of_the_arrow_quietly_until_a_look_and_nothing_is_typed() {
+    let (f, _h, shell) = live(Opts::default());
+    let slot = with_fake(&f);
+    let tab = claude(&f);
+    let cwd = f.cwds()[0].clone();
+    f.made_with(&cwd)[0].feed(
+        b"\x1b]777;flare-agent;state=working;session=b44e954e-a9cf-4ba9-a3c0-99ec6795d1d9\x07",
+    );
+    f.pump_until("the session", |f| {
+        f.ctl.borrow().hub().claude_session(&tab).is_some()
+    });
+    let id = up(&f, &slot);
+    with_shop(&slot);
+    assert_eq!(quiet(&f, &id), json!({}), "no arrow yet");
+    let m = mouse(&f);
+    press_draw(&f);
+    drag(&f, &m, (20.0, 30.0), (160.0, 155.0));
+    assert!(f.ctl.borrow().web.user_arrow_of(&id).is_some());
+    std::thread::sleep(Duration::from_millis(60)); // sync-ok: test code only
+    f.pump();
+    assert!(shell.written().is_empty(), "nothing is typed");
+    // Said at every prompt while it is kept, with the page and never what it points at.
+    for _ in 0..2 {
+        let mark = quiet(&f, &id)["mark"].clone();
+        assert_eq!(mark["kind"], "arrow");
+        assert_eq!(mark["page"]["url"], PAGE);
+        assert!(mark.get("role").is_none() && mark.get("name").is_none());
+    }
+    // The look sees it: no more.
+    assert!(look(&f, &id).get("user_arrow").is_some());
+    assert_eq!(quiet(&f, &id), json!({}));
+    // A new one goes with its time.
+    press_draw(&f);
+    drag(&f, &m, (20.0, 30.0), (160.0, 155.0));
+    assert!(quiet(&f, &id).get("mark").is_some());
+    f.ctl.borrow_mut().web.skip_clock(USER_ARROW_MS);
+    assert_eq!(quiet(&f, &id), json!({}));
+    assert!(shell.written().is_empty(), "still nothing typed");
+}
+
 #[test]
 fn the_persons_arrow_stays_on_what_it_points_at_as_the_page_scrolls() {
     let (f, _h, shell) = live(Opts::default());

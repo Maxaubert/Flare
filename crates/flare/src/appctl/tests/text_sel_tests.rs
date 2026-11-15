@@ -1,5 +1,6 @@
 //! Selecting text in the Text panel (2026-11-10) inside the window controller: the pointer through the window's own
-//! callbacks, the keys through `on_key`, the copy into the in-memory clipboard and "Ask agent" into a fake shell.
+//! callbacks, the keys through `on_key`, the copy into the in-memory clipboard and the quiet context the prompt hook
+//! hears (rule 1268).
 
 use flare_surfaces::mdview::MdView;
 use flare_web::fake::{Call, FakeWeb};
@@ -319,63 +320,73 @@ fn wide_characters_and_emoji_are_selected_by_the_columns_they_take() {
     assert_eq!(painted(&f), Some(((0, 3), (0, 8))));
 }
 
+/// What the prompt hook of the tab's Claude hears of the panel (rule 1268): `panel.state`'s `context`.
+fn quiet(f: &Fx, tab: &str) -> serde_json::Value {
+    use crate::ctl_app::{CtlOp, CtlRequest, CtlRequestBox};
+    let (tx, rx) = std::sync::mpsc::channel();
+    f.ctl
+        .borrow_mut()
+        .on_msg(UiMsg::Ctl(CtlRequestBox(CtlRequest {
+            op: CtlOp::PanelContext {
+                tab: tab.into(),
+                cwd: None,
+            },
+            deadline: Instant::now() + Duration::from_secs(5),
+            reply: tx,
+        })));
+    f.pump();
+    rx.try_recv().expect("answered at once").expect("the state")["context"].clone()
+}
+
 #[test]
-fn ask_agent_sends_the_selection_framed_with_the_file_and_its_lines_and_no_enter() {
+fn the_quiet_context_hands_on_the_selected_lines_with_the_file_and_types_nothing() {
     let (f, h, shell) = live(Opts::default());
     let cwd = f.cwds()[0].clone();
     let id = f.ctl.borrow().front_id().unwrap();
     f.say(&cwd, TITLE_IDLE);
     f.pump_until("the agent", |f| f.agent_here(&id));
     feed(&h, "\x1b[?2004h");
-    open(&f, "notes.txt", "first\nsecond line\nthird\nfourth");
+    let abs = open(&f, "notes.txt", "first\nsecond line\nthird\nfourth");
+    assert_eq!(quiet(&f, &id), serde_json::json!({}), "nothing selected");
     down(&f, 1, 0.0, false);
     drag(&f, 2, 5.0);
     up(&f);
-    f.ctl.borrow_mut().panel_ask_agent();
-    f.pump();
-    // The file's text goes through the same frame as a page's selection, unchanged.
-    let framed =
-        crate::ask_agent::frame_selection("notes.txt lines 2-3", "second line\nthird").unwrap();
     assert_eq!(
-        framed,
-        "About this from notes.txt lines 2-3:\n> second line\n> third"
+        quiet(&f, &id),
+        serde_json::json!({"selection": {
+            "text": "second line\nthird",
+            "cut": false,
+            "file": abs,
+            "lines": "lines 2-3",
+        }})
     );
-    let want = format!("\x1b[200~{}\x1b[201~", framed.replace('\n', "\r"));
-    until_written(&shell, |w| w == want.as_bytes());
+    // Asked again while it is still selected: said again. Let go: gone.
+    assert!(quiet(&f, &id).get("selection").is_some());
+    pause();
+    down(&f, 0, 1.0, false);
+    up(&f);
+    assert_eq!(selected(&f), None);
+    assert_eq!(quiet(&f, &id), serde_json::json!({}));
     std::thread::sleep(Duration::from_millis(40)); // sync-ok: test code only
     f.pump();
-    assert_eq!(shell.written(), want.as_bytes(), "no Enter follows");
+    assert!(shell.written().is_empty(), "nothing is typed");
 }
 
 #[test]
-fn hostile_file_text_cannot_end_the_paste_or_press_enter() {
-    let (f, h, shell) = live(Opts::default());
-    let cwd = f.cwds()[0].clone();
+fn hostile_file_text_reaches_the_context_with_no_control_but_the_line_break() {
+    let (f, _h, _shell) = live(Opts::default());
     let id = f.ctl.borrow().front_id().unwrap();
-    f.say(&cwd, TITLE_IDLE);
-    f.pump_until("the agent", |f| f.agent_here(&id));
-    feed(&h, "\x1b[?2004h");
-    // A control in a file is drawn as U+FFFD by the shaping, so the panel's text never holds an escape; the frame's gate
-    // stays the last word on what reaches the prompt.
+    // A control in a file is drawn as U+FFFD by the shaping, so the panel's text never holds an escape; the context's
+    // gate stays the last word.
     open(&f, "evil.txt", "a\x1b[201~\rrm -rf\nok");
     let app = f.ctl.borrow().app().unwrap();
     assert!(f.ctl.borrow_mut().panels.select_all(&app));
-    let (label, text) = f.ctl.borrow().panels.selection_ask(&id).unwrap();
-    assert!(label.starts_with("evil.txt line"), "{label}");
+    let sel = quiet(&f, &id)["selection"].clone();
+    let text = sel["text"].as_str().unwrap();
     assert!(!text.contains('\x1b') && !text.contains('\r'), "{text:?}");
-    f.ctl.borrow_mut().panel_ask_agent();
-    f.pump();
-    let framed = crate::ask_agent::frame_selection(&label, &text).unwrap();
-    let want = format!("\x1b[200~{}\x1b[201~", framed.replace('\n', "\r"));
-    until_written(&shell, |w| w == want.as_bytes());
-    let written = shell.written();
-    assert_eq!(
-        written.windows(6).filter(|w| *w == b"\x1b[201~").count(),
-        1,
-        "one end of the paste: {written:?}"
-    );
+    assert!(text.ends_with("\nok"), "{text:?}");
+    assert!(sel["lines"].as_str().unwrap().starts_with("line"), "{sel}");
 }
-
 /// Every browser the controller made (the markdown page's), so no real one is ever started.
 fn with_fake_web(f: &Fx) -> Rc<RefCell<Vec<FakeWeb>>> {
     let slot: Rc<RefCell<Vec<FakeWeb>>> = Rc::default();
@@ -389,15 +400,14 @@ fn with_fake_web(f: &Fx) -> Rc<RefCell<Vec<FakeWeb>>> {
 }
 
 #[test]
-fn the_code_view_of_a_markdown_file_selects_and_asks_like_any_text_file() {
-    let (f, h, shell) = live(Opts::default());
+fn the_code_view_of_a_markdown_file_selects_and_hands_on_like_any_text_file() {
+    let (f, _h, shell) = live(Opts::default());
     let slot = with_fake_web(&f);
     f.ctl.borrow_mut().set_apps_root(f.dir.path().join("apps"));
     let cwd = f.cwds()[0].clone();
     let id = f.ctl.borrow().front_id().unwrap();
     f.say(&cwd, TITLE_IDLE);
     f.pump_until("the agent", |f| f.agent_here(&id));
-    feed(&h, "\x1b[?2004h");
     show_text(&f, "r.md", "# Title\n\nSome *text*\n");
     f.pump_until("the compiled page", |_| {
         slot.borrow()
@@ -411,10 +421,11 @@ fn the_code_view_of_a_markdown_file_selects_and_asks_like_any_text_file() {
     drag(&f, 2, 11.0);
     up(&f);
     assert_eq!(selected(&f).as_deref(), Some("*text*"));
-    f.ctl.borrow_mut().panel_ask_agent();
-    f.pump();
-    let want = "\x1b[200~About this from r.md line 3:\r> *text*\x1b[201~";
-    until_written(&shell, |w| w == want.as_bytes());
+    let sel = quiet(&f, &id)["selection"].clone();
+    assert_eq!(sel["text"], "*text*");
+    assert_eq!(sel["lines"], "line 3");
+    assert!(sel["file"].as_str().unwrap().ends_with("r.md"), "{sel}");
+    assert!(shell.written().is_empty(), "nothing is typed");
     // Back to a page view: the native selection goes with the text.
     f.h.comp
         .invoke_panel_md_view_picked(MdView::Compiled.index());

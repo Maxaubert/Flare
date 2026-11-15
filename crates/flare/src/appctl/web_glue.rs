@@ -517,13 +517,11 @@ impl AppCtl {
                 } => self.offer_app_link(&tab, &uri, &scheme, &site),
                 WebOut::Filled { id, result } => self.fill_done(id, result),
                 WebOut::AskSelection {
-                    tab,
-                    label,
+                    id,
+                    file,
                     page,
                     result,
-                } => {
-                    self.ask_selection_done(&tab, &label, page.as_ref(), result);
-                }
+                } => self.quiet_selection_read(id, file.as_deref(), page.as_ref(), result),
                 WebOut::ArrowDrawn { tab, text } => self.arrow_drawn(&tab, &text),
             }
         }

@@ -1217,6 +1217,13 @@ the hash of the tab token and the hook's `session_id`, so the secret is never wr
 gone. The title and address are page data: cleaned, quoted and between the markers. Outside Flare, or when Flare does not
 answer, it prints nothing and exits 0.
 
+Since 2026-11-15 (rule 1268) it sends `"context": true` with `panel.state`. For the tab's own agent (and no other
+caller) the answer then has `context`: `selection` `{text, cut, file?, lines?, page?: {title, url}, other?}` (the text
+selected in the panel now, gated, at most 2,000 characters) and `mark` `{kind: "arrow", file? | page? | other?}` (an
+arrow the person drew that Flare still keeps). Flare waits at most 400 ms for a page to say what is selected. The hook
+adds a sentence for each, at every prompt while it holds, telling the agent to use it only if the user's message is
+about it. A Flare that does not know the field answers as before.
+
 `open_page` answers with
 the final address and the page's title (cleaned to one line, like a refusal's words, because a web page wrote
 it) and says so when the page did not finish loading. A tool

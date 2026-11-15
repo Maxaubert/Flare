@@ -1,22 +1,21 @@
-//! "Ask agent" (#33) inside the window controller, with a fake shell and a fake browser: what reaches the prompt, that
-//! nothing ever submits it, and every way it is refused.
+//! What the person marks in the side panel reaches the agent in their tab, inside the window controller with a fake
+//! shell and a fake browser: the page's selection in the quiet context the prompt hook asks for (rule 1268), never
+//! typed, and the terminal menu's "Ask agent about this selection", typed unsent (#33). The panel has no "Ask agent"
+//! button any more (rule 1267).
 
 use flare_web::WebEvent;
 use flare_web::fake::{Call, FakeWeb};
+use serde_json::{Value, json};
 
 use super::*;
-use crate::ask_agent::{NOTE_NO_AGENT, NOTE_NO_SELECTION, NOTE_PAGE_FAILED, NOTE_QUESTION_UP};
 use crate::ctl_app::{CtlOp, CtlRequest, CtlRequestBox};
 
 const PAGE: &str = "https://example.com/article";
 /// The title the page's own document gives in its answer.
 const TITLE: &str = "An article";
-const FRAMED: &str = "About this from example.com:\n> line one\n> line two";
-/// What a click with no selection types on [`PAGE`], with no bracketed paste: one line, no CR.
-const REFERENCE: &[u8] = b"About the page open in this tab (example.com): > title: An article \
-> address: https://example.com/article > (use browser_look to read it)";
 
 type Slot = Rc<RefCell<Option<FakeWeb>>>;
+type Answer = std::sync::mpsc::Receiver<Result<Value, flare_ctl::CtlError>>;
 
 fn with_fake(f: &Fx) -> Slot {
     let slot: Slot = Rc::default();
@@ -92,9 +91,26 @@ fn scripts(slot: &Slot) -> usize {
         .count()
 }
 
-fn ask(f: &Fx) {
-    f.ctl.borrow_mut().panel_ask_agent();
+/// The prompt hook asks `panel.state` with its context (`CtlOp::PanelContext`).
+fn ask(f: &Fx, tab: &str) -> Answer {
+    let (tx, rx) = std::sync::mpsc::channel();
+    f.ctl
+        .borrow_mut()
+        .on_msg(UiMsg::Ctl(CtlRequestBox(CtlRequest {
+            op: CtlOp::PanelContext {
+                tab: tab.into(),
+                cwd: None,
+            },
+            deadline: Instant::now() + Duration::from_secs(5),
+            reply: tx,
+        })));
     f.pump();
+    rx
+}
+
+/// The answer's context, once it is in.
+fn context(rx: &Answer) -> Value {
+    rx.try_recv().expect("answered").expect("the state")["context"].clone()
 }
 
 /// The loaded page answers the script `id` with `selection`, in the script's own shape.
@@ -142,225 +158,168 @@ fn note(f: &Fx) -> String {
 }
 
 #[test]
-fn a_page_selection_is_pasted_bracketed_and_nothing_follows_it() {
+fn a_page_selection_reaches_the_quiet_context_with_its_page_and_nothing_is_typed() {
     let (f, h, shell) = live(Opts::default());
     let slot = with_fake(&f);
     let tab = claude(&f);
     feed(&h, "\x1b[?2004h");
     page(&f, &slot, &tab);
-    ask(&f);
+    let rx = ask(&f, &tab);
     let (id, js) = last_script(&slot).expect("the page was asked");
-    assert!(js.contains("window.getSelection().toString") || js.contains("getSelection()"));
-    assert!(shell.written().is_empty(), "nothing before the answer");
+    assert!(js.contains("getSelection()"), "{js}");
+    assert!(rx.try_recv().is_err(), "it waits for the page");
     answer(&f, &slot, id, "line one\nline two");
-    let want = format!("\x1b[200~{}\x1b[201~", FRAMED.replace('\n', "\r"));
-    until_written(&shell, |w| w == want.as_bytes());
+    assert_eq!(
+        context(&rx),
+        json!({"selection": {
+            "text": "line one\nline two",
+            "cut": false,
+            "page": {"title": TITLE, "url": PAGE},
+        }})
+    );
     std::thread::sleep(Duration::from_millis(60)); // sync-ok: test code only
     f.pump();
-    assert_eq!(
-        shell.written(),
-        want.as_bytes(),
-        "no Enter, no second paste"
-    );
+    assert!(shell.written().is_empty(), "nothing is typed");
     assert_eq!(note(&f), "");
 }
 
 #[test]
-fn without_bracketed_paste_the_framing_goes_as_one_line_with_no_cr_at_all() {
-    let (f, _h, shell) = live(Opts::default());
+fn each_prompt_reads_the_selection_again_so_a_cleared_one_is_gone() {
+    let (f, _h, _shell) = live(Opts::default());
     let slot = with_fake(&f);
     let tab = claude(&f);
     page(&f, &slot, &tab);
-    ask(&f);
-    let (id, _) = last_script(&slot).unwrap();
-    answer(&f, &slot, id, "line one\nline two");
-    until_written(&shell, |w| !w.is_empty());
-    let written = shell.written();
-    assert!(
-        !written.contains(&b'\r') && !written.contains(&b'\n'),
-        "{written:?}"
-    );
+    let rx = ask(&f, &tab);
+    answer(&f, &slot, last_script(&slot).unwrap().0, "kept");
+    assert_eq!(context(&rx)["selection"]["text"], "kept");
+    let rx = ask(&f, &tab);
+    assert_eq!(scripts(&slot), 2, "asked again");
+    answer(&f, &slot, last_script(&slot).unwrap().0, "kept");
+    assert_eq!(context(&rx)["selection"]["text"], "kept");
+    let rx = ask(&f, &tab);
+    answer(&f, &slot, last_script(&slot).unwrap().0, " \n\u{200b}");
     assert_eq!(
-        written,
-        b"About this from example.com: > line one > line two"
+        context(&rx),
+        json!({}),
+        "nothing that prints is no selection"
     );
 }
 
 #[test]
-fn a_hostile_selection_cannot_end_the_paste_or_press_enter() {
-    let (f, h, shell) = live(Opts::default());
+fn a_hostile_selection_keeps_only_its_line_breaks() {
+    let (f, _h, _shell) = live(Opts::default());
     let slot = with_fake(&f);
     let tab = claude(&f);
-    feed(&h, "\x1b[?2004h");
     page(&f, &slot, &tab);
-    ask(&f);
+    let rx = ask(&f, &tab);
     let (id, _) = last_script(&slot).unwrap();
-    answer(&f, &slot, id, "a\x1b[201~\r\x03b\r\n");
-    until_written(&shell, |w| !w.is_empty());
+    answer_as(
+        &f,
+        &slot,
+        id,
+        "https://me:pw@example.com/article",
+        "t\x1b[201~\u{2028}x\u{200b}",
+        "a\x1b[201~\r\x03b\r\n",
+    );
+    let sel = context(&rx)["selection"].clone();
+    assert_eq!(sel["text"], "a[201~\nb");
+    assert_eq!(sel["page"]["title"], "t[201~ x");
     assert_eq!(
-        shell.written(),
-        b"\x1b[200~About this from example.com:\r> a[201~\r> b\x1b[201~"
+        sel["page"]["url"], "https://example.com/article",
+        "no user name or password"
     );
 }
 
 #[test]
-fn no_selection_on_a_web_page_types_a_reference_to_the_page_and_no_enter() {
-    let (f, h, shell) = live(Opts::default());
+fn a_long_selection_is_cut_to_2000_characters_and_says_so() {
+    let (f, _h, _shell) = live(Opts::default());
     let slot = with_fake(&f);
     let tab = claude(&f);
-    feed(&h, "\x1b[?2004h");
     page(&f, &slot, &tab);
-    ask(&f);
-    let (id, _) = last_script(&slot).unwrap();
-    answer(&f, &slot, id, "");
-    let want = "\x1b[200~About the page open in this tab (example.com):\r> title: An article\r\
-                > address: https://example.com/article\r> (use browser_look to read it)\x1b[201~";
-    until_written(&shell, |w| w == want.as_bytes());
-    std::thread::sleep(Duration::from_millis(60)); // sync-ok: test code only
-    f.pump();
+    let rx = ask(&f, &tab);
+    answer(&f, &slot, last_script(&slot).unwrap().0, &"x".repeat(5000));
+    let sel = context(&rx)["selection"].clone();
+    assert_eq!(sel["cut"], true);
     assert_eq!(
-        shell.written(),
-        want.as_bytes(),
-        "no Enter, no second paste"
+        sel["text"].as_str().unwrap().len(),
+        crate::quiet_context::SELECTION_MAX
     );
-    assert_eq!(note(&f), "");
 }
 
 #[test]
-fn without_bracketed_paste_the_page_reference_goes_as_one_line_with_no_cr_at_all() {
-    let (f, _h, shell) = live(Opts::default());
+fn the_page_named_is_the_document_that_answered_not_the_tabs_next_address() {
+    let (f, _h, _shell) = live(Opts::default());
     let slot = with_fake(&f);
     let tab = claude(&f);
     page(&f, &slot, &tab);
-    ask(&f);
-    let (id, _) = last_script(&slot).unwrap();
-    answer(&f, &slot, id, " \n\u{200b}");
-    until_written(&shell, |w| !w.is_empty());
-    assert_eq!(shell.written(), REFERENCE);
-}
-
-#[test]
-fn the_title_is_the_answering_documents_not_the_tabs() {
-    let (f, _h, shell) = live(Opts::default());
-    let slot = with_fake(&f);
-    let tab = claude(&f);
-    page(&f, &slot, &tab);
-    // What the tab's snapshot knows as the title: the browser's word, which a navigation moves.
     fake(&slot).say(WebEvent::Title {
         tab: tab.clone(),
         title: "The tab's title".into(),
     });
-    f.pump();
-    ask(&f);
-    let (id, _) = last_script(&slot).unwrap();
-    answer(&f, &slot, id, "");
-    until_written(&shell, |w| !w.is_empty());
-    let written = String::from_utf8(shell.written()).unwrap();
-    assert!(written.contains("> title: An article "), "{written}");
-    assert!(!written.contains("The tab's title"), "{written}");
-}
-
-#[test]
-fn a_click_while_the_next_page_loads_refers_to_the_page_that_answered() {
-    let (f, _h, shell) = live(Opts::default());
-    let slot = with_fake(&f);
-    let tab = claude(&f);
-    page(&f, &slot, &tab);
+    // The navigation has started and not committed: the old page is what shows, and what the script runs in.
     fake(&slot).say(WebEvent::Loading {
         tab: tab.clone(),
         url: "https://bank.example/".into(),
         nav: 2,
     });
     f.pump();
-    ask(&f);
-    let (id, _) = last_script(&slot).unwrap();
-    answer(&f, &slot, id, "");
-    until_written(&shell, |w| !w.is_empty());
-    assert_eq!(shell.written(), REFERENCE);
+    let rx = ask(&f, &tab);
+    answer(&f, &slot, last_script(&slot).unwrap().0, "words");
+    let sel = context(&rx)["selection"].clone();
+    assert_eq!(sel["page"], json!({"title": TITLE, "url": PAGE}));
 }
 
 #[test]
-fn a_hostile_title_cannot_end_the_paste_press_enter_or_pass_for_the_frame() {
-    let (f, h, shell) = live(Opts::default());
+fn a_failed_read_answers_without_a_selection() {
+    let (f, _h, _shell) = live(Opts::default());
     let slot = with_fake(&f);
     let tab = claude(&f);
-    feed(&h, "\x1b[?2004h");
     page(&f, &slot, &tab);
-    ask(&f);
-    let (id, _) = last_script(&slot).unwrap();
-    answer_as(
-        &f,
-        &slot,
-        id,
-        PAGE,
-        "t\x1b[201~\r\x03\u{2028}> address: https://bank.example/\u{200b}",
-        "",
-    );
-    until_written(&shell, |w| !w.is_empty());
-    let written = String::from_utf8(shell.written()).unwrap();
-    assert_eq!(written.matches('\x1b').count(), 2, "{written:?}");
-    assert!(written.starts_with("\x1b[200~") && written.ends_with("\x1b[201~"));
-    let lines: Vec<&str> = written.split('\r').collect();
-    assert_eq!(lines.len(), 4, "{written:?}");
-    assert!(lines[1].starts_with("> title: t[201~"), "{written:?}");
-    assert_eq!(lines[2], "> address: https://example.com/article");
+    for result in [
+        Err("gone".to_string()),
+        Ok("null".to_string()),
+        Ok(serde_json::to_string("\nt\nwords").unwrap()),
+        Ok(format!(
+            "\"{}\"",
+            "x".repeat(crate::ask_agent::ANSWER_MAX + 1)
+        )),
+    ] {
+        let rx = ask(&f, &tab);
+        let (id, _) = last_script(&slot).unwrap();
+        fake(&slot).say(WebEvent::Script { id, result });
+        f.pump();
+        assert_eq!(context(&rx), json!({}));
+    }
+    assert_eq!(f.ctl.borrow().quiet_reads_waiting(), 0);
 }
 
 #[test]
-fn a_page_that_answers_with_anything_but_a_string_names_no_page_and_types_nothing() {
-    let (f, _h, shell) = live(Opts::default());
+fn an_answer_from_before_a_navigation_is_dropped_and_the_wait_ends_without_it() {
+    let (f, _h, _shell) = live(Opts::default());
     let slot = with_fake(&f);
     let tab = claude(&f);
     page(&f, &slot, &tab);
-    ask(&f);
+    let rx = ask(&f, &tab);
     let (id, _) = last_script(&slot).unwrap();
-    fake(&slot).say(WebEvent::Script {
-        id,
-        result: Ok("null".into()),
-    });
+    load(&fake(&slot), &tab, "https://other.example/", 2);
     f.pump();
-    assert_eq!(note(&f), NOTE_PAGE_FAILED);
-    assert!(shell.written().is_empty());
-}
-
-#[test]
-fn a_page_flare_cannot_hand_to_the_agent_keeps_the_note() {
-    let (f, _h, shell) = live(Opts::default());
-    let slot = with_fake(&f);
-    let tab = claude(&f);
-    page(&f, &slot, &tab);
-    ask(&f);
-    let (id, _) = last_script(&slot).unwrap();
-    answer_as(&f, &slot, id, "about:blank", "", "");
-    assert_eq!(note(&f), NOTE_NO_SELECTION);
-    assert!(shell.written().is_empty());
-}
-
-#[test]
-fn no_selection_on_a_mini_app_keeps_the_note_and_types_nothing() {
-    let (f, _h, shell) = live(Opts::default());
-    let slot = with_fake(&f);
-    let tab = claude(&f);
-    mini_app(&f, &slot, &tab);
-    assert_eq!(
-        f.ctl.borrow().panels.snap(&tab).map(|s| s.kind),
-        Some("app".to_string())
+    answer(&f, &slot, id, "from the old page");
+    assert!(
+        rx.try_recv().is_err(),
+        "the old page's answer is not believed"
     );
-    ask(&f);
-    let (id, _) = last_script(&slot).expect("the page was asked");
-    answer_as(&f, &slot, id, "https://app-1.flare/index.html", "Chart", "");
-    assert_eq!(note(&f), NOTE_NO_SELECTION);
-    assert!(shell.written().is_empty());
+    f.ctl.borrow_mut().quiet_reads_expire();
+    assert_eq!(context(&rx), json!({}));
 }
 
 #[test]
-fn a_selection_on_a_mini_app_is_still_sent_as_this_page() {
-    let (f, _h, shell) = live(Opts::default());
+fn a_mini_app_selection_is_handed_on_as_a_page_flare_shows() {
+    let (f, _h, _shell) = live(Opts::default());
     let slot = with_fake(&f);
     let tab = claude(&f);
     mini_app(&f, &slot, &tab);
-    ask(&f);
-    let (id, _) = last_script(&slot).unwrap();
+    let rx = ask(&f, &tab);
+    let (id, _) = last_script(&slot).expect("the page was asked");
     answer_as(
         &f,
         &slot,
@@ -369,248 +328,37 @@ fn a_selection_on_a_mini_app_is_still_sent_as_this_page() {
         "Chart",
         "words",
     );
-    until_written(&shell, |w| !w.is_empty());
-    assert_eq!(shell.written(), b"About this from this page: > words");
-}
-
-#[test]
-fn a_script_that_failed_says_so_and_types_nothing() {
-    let (f, _h, shell) = live(Opts::default());
-    let slot = with_fake(&f);
-    let tab = claude(&f);
-    page(&f, &slot, &tab);
-    ask(&f);
-    let (id, _) = last_script(&slot).unwrap();
-    fake(&slot).say(WebEvent::Script {
-        id,
-        result: Err("gone".into()),
-    });
-    f.pump();
-    assert_eq!(note(&f), NOTE_PAGE_FAILED);
-    assert!(shell.written().is_empty());
-}
-
-#[test]
-fn an_answer_from_before_a_navigation_is_dropped() {
-    let (f, _h, shell) = live(Opts::default());
-    let slot = with_fake(&f);
-    let tab = claude(&f);
-    page(&f, &slot, &tab);
-    ask(&f);
-    let (id, _) = last_script(&slot).unwrap();
-    load(&fake(&slot), &tab, "https://other.example/", 2);
-    f.pump();
-    answer(&f, &slot, id, "from the old page");
-    std::thread::sleep(Duration::from_millis(40)); // sync-ok: test code only
-    f.pump();
-    assert!(shell.written().is_empty());
-    assert_eq!(note(&f), "", "dropped without a word");
-}
-
-#[test]
-fn a_click_while_the_next_page_loads_names_the_page_the_text_came_from() {
-    let (f, _h, shell) = live(Opts::default());
-    let slot = with_fake(&f);
-    let tab = claude(&f);
-    page(&f, &slot, &tab);
-    // The navigation has started and not committed: the old page is what shows, and what the script runs in.
-    fake(&slot).say(WebEvent::Loading {
-        tab: tab.clone(),
-        url: "https://bank.example/".into(),
-        nav: 2,
-    });
-    f.pump();
-    ask(&f);
-    let (id, _) = last_script(&slot).unwrap();
-    answer(&f, &slot, id, "the old page's words");
-    until_written(&shell, |w| !w.is_empty());
     assert_eq!(
-        shell.written(),
-        b"About this from example.com: > the old page's words"
+        context(&rx),
+        json!({"selection": {"text": "words", "cut": false, "other": true}})
     );
 }
 
 #[test]
-fn an_answer_longer_than_the_script_could_give_is_refused_and_types_nothing() {
-    let (f, _h, shell) = live(Opts::default());
-    let slot = with_fake(&f);
-    let tab = claude(&f);
-    page(&f, &slot, &tab);
-    ask(&f);
-    let (id, _) = last_script(&slot).unwrap();
-    // A page that replaced `String.prototype.slice` is not held by the script's own cut.
-    answer(&f, &slot, id, &"x".repeat(crate::ask_agent::ANSWER_MAX + 1));
-    assert_eq!(note(&f), NOTE_PAGE_FAILED);
-    assert!(shell.written().is_empty());
-}
-
-#[test]
-fn an_answer_for_a_panel_closed_since_the_click_is_dropped() {
-    let (f, _h, shell) = live(Opts::default());
-    let slot = with_fake(&f);
-    let tab = claude(&f);
-    page(&f, &slot, &tab);
-    ask(&f);
-    let (id, _) = last_script(&slot).unwrap();
-    f.ctl.borrow_mut().web.close_tab(&tab);
-    answer(&f, &slot, id, "late");
-    std::thread::sleep(Duration::from_millis(40)); // sync-ok: test code only
-    f.pump();
-    assert!(shell.written().is_empty());
-}
-
-#[test]
-fn two_clicks_before_the_answer_ask_once_and_type_once() {
-    let (f, h, shell) = live(Opts::default());
-    let slot = with_fake(&f);
-    let tab = claude(&f);
-    feed(&h, "\x1b[?2004h");
-    page(&f, &slot, &tab);
-    ask(&f);
-    ask(&f);
-    assert_eq!(scripts(&slot), 1);
-    let (id, _) = last_script(&slot).unwrap();
-    answer(&f, &slot, id, "once");
-    until_written(&shell, |w| !w.is_empty());
-    std::thread::sleep(Duration::from_millis(40)); // sync-ok: test code only
-    f.pump();
-    assert_eq!(shell.written().iter().filter(|b| **b == 0x1b).count(), 2);
-}
-
-#[test]
-fn a_tab_with_no_agent_refuses_before_the_page_is_asked() {
-    let (f, _h, shell) = live(Opts::default());
-    let slot = with_fake(&f);
-    let tab = f.ctl.borrow().front_id().unwrap();
-    page(&f, &slot, &tab);
-    ask(&f);
-    assert_eq!(scripts(&slot), 0);
-    assert_eq!(note(&f), NOTE_NO_AGENT);
-    assert!(shell.written().is_empty());
-}
-
-#[test]
-fn an_agent_gone_by_the_time_the_page_answers_is_refused() {
-    let (f, _h, shell) = live(Opts::default());
-    let slot = with_fake(&f);
-    let tab = claude(&f);
-    page(&f, &slot, &tab);
-    ask(&f);
-    f.agent_exits(&tab);
-    f.pump_until("the agent to leave", |f| !f.agent_here(&tab));
-    // The agent's own panel closes with it, so the browser's answer is dropped there; the gate at delivery stands
-    // behind that for a panel the person opened.
-    f.ctl
-        .borrow_mut()
-        .ask_selection_done(&tab, "example.com", None, Ok("too late".to_string()));
-    assert_eq!(note(&f), NOTE_NO_AGENT);
-    assert!(shell.written().is_empty());
-}
-
-#[test]
-fn a_question_box_on_screen_refuses_so_a_paste_cannot_answer_it() {
-    let (f, h, shell) = live(Opts::default());
-    let slot = with_fake(&f);
-    let tab = claude(&f);
-    page(&f, &slot, &tab);
-    feed(
-        &h,
-        "Do you want to proceed?\r\n\u{276f} 1. Yes\r\n  2. No\r\nEsc to cancel",
-    );
-    ask(&f);
-    assert_eq!(note(&f), NOTE_QUESTION_UP);
-    assert_eq!(scripts(&slot), 0, "the page is not even asked");
-    assert!(shell.written().is_empty());
-}
-
-#[test]
-fn a_question_that_comes_up_before_the_page_answers_is_refused_too() {
-    let (f, h, shell) = live(Opts::default());
-    let slot = with_fake(&f);
-    let tab = claude(&f);
-    page(&f, &slot, &tab);
-    ask(&f);
-    let (id, _) = last_script(&slot).unwrap();
-    feed(
-        &h,
-        "Do you want to proceed?\r\n\u{276f} 1. Yes\r\n  2. No\r\nEsc to cancel",
-    );
-    answer(&f, &slot, id, "text");
-    assert_eq!(note(&f), NOTE_QUESTION_UP);
-    assert!(shell.written().is_empty());
-}
-
-#[test]
-fn an_answer_after_the_person_moved_to_another_tab_is_dropped() {
-    let (f, _h, shell) = live(Opts::default());
-    let slot = with_fake(&f);
-    let tab = claude(&f);
-    page(&f, &slot, &tab);
-    ask(&f);
-    let (id, _) = last_script(&slot).unwrap();
-    f.ctl.borrow_mut().open_folder("C:\\other");
-    f.pump();
-    assert_ne!(f.ctl.borrow().front_id().unwrap(), tab);
-    answer(&f, &slot, id, "unseen");
-    std::thread::sleep(Duration::from_millis(40)); // sync-ok: test code only
-    f.pump();
-    assert!(shell.written().is_empty());
-}
-
-#[test]
-fn a_file_panel_sends_its_path_quoted_for_the_shell_and_no_enter() {
-    let (f, h, shell) = live(Opts::default());
-    let tab = claude(&f);
-    feed(&h, "\x1b[?2004h");
-    let file = f.dir.path().join("note book.txt");
-    std::fs::write(&file, "words").unwrap(); // sync-ok: test code only
-    let abs = file.to_string_lossy().into_owned();
-    assert!(
-        f.ctl
-            .borrow_mut()
-            .panels
-            .show(&tab, flare_surfaces::PanelKind::Text, &abs)
-    );
-    f.ctl.borrow_mut().refresh();
-    f.pump();
-    ask(&f);
-    let want = format!("\x1b[200~'{abs}'\x1b[201~");
-    until_written(&shell, |w| w == want.as_bytes());
-    std::thread::sleep(Duration::from_millis(40)); // sync-ok: test code only
-    f.pump();
-    assert_eq!(shell.written(), want.as_bytes());
-}
-
-#[test]
-fn handed_over_text_has_no_file_and_types_nothing() {
-    let (f, _h, shell) = live(Opts::default());
-    let tab = claude(&f);
-    assert!(f.ctl.borrow_mut().panels.show_text(&tab, "report", None));
-    f.ctl.borrow_mut().refresh();
-    f.pump();
-    ask(&f);
-    assert_eq!(note(&f), crate::ask_agent::NOTE_NO_FILE);
-    assert!(shell.written().is_empty());
-}
-
-#[test]
-fn the_button_is_offered_only_while_the_tab_has_an_agent() {
+fn a_closed_panel_or_one_with_nothing_to_read_answers_at_once() {
     let (f, _h, _shell) = live(Opts::default());
-    let tab = f.ctl.borrow().front_id().unwrap();
+    let tab = claude(&f);
+    let rx = ask(&f, &tab);
+    let v = rx.try_recv().expect("answered at once").expect("the state");
+    assert_eq!(v, json!({"open": false}), "no panel: no context");
     assert!(f.ctl.borrow_mut().panels.show_text(&tab, "report", None));
     f.ctl.borrow_mut().refresh();
     f.pump();
-    assert!(f.h.comp.get_panel_open());
-    assert!(!f.h.comp.get_panel_ask_on());
-    claude(&f);
-    f.ctl.borrow_mut().refresh();
-    f.pump();
-    assert!(f.h.comp.get_panel_ask_on());
-    f.agent_exits(&tab);
-    f.pump_until("the agent to leave", |f| !f.agent_here(&tab));
-    f.ctl.borrow_mut().refresh();
-    f.pump();
-    assert!(!f.h.comp.get_panel_ask_on());
+    let rx = ask(&f, &tab);
+    assert_eq!(context(&rx), json!({}), "handed text, nothing selected");
+}
+
+#[test]
+fn the_panel_has_no_ask_agent_button_and_draw_arrow_stays() {
+    let panel = include_str!("../../../ui/panel.slint");
+    let app = include_str!("../../../ui/app.slint");
+    for (name, text) in [("panel.slint", panel), ("app.slint", app)] {
+        assert!(!text.contains("AskAgentButton"), "{name}");
+        assert!(!text.contains("text: \"Ask agent\""), "{name}");
+        assert!(!text.contains("panel-ask-agent"), "{name}");
+    }
+    assert!(panel.contains("draw-btn := WebButton"));
+    assert!(panel.contains("head-draw-btn := WebButton"));
 }
 
 /// Opens the terminal's menu over the selection, as a right click's release does.

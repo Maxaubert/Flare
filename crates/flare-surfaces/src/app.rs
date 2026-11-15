@@ -57,7 +57,7 @@ pub struct AppSpec {
     /// A mod's view (stage 8): the mod, and the browser serves its files itself from `folder` on every
     /// request instead of mapping the folder. None for a mini-app or a diagram.
     pub module: Option<crate::modview::ModSpec>,
-    /// The file a markdown view's page was made from (`mdview`): Ask agent names it, and the page is the panel's view
+    /// The file a markdown view's page was made from (`mdview`): the context names it, and the page is the panel's view
     /// of that file, never the agent's. None for every other page.
     pub source: Option<String>,
 }

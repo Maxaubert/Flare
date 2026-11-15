@@ -13,9 +13,10 @@
 //! - **The person's arrow**: the bar's "Draw arrow" puts a pad over the page (the probe of 2026-11-10 showed a layered
 //!   window there catches the mouse and leaves the keyboard with the page). The agent timer polls the pointer: a press
 //!   on the page starts the arrow, a blue arrow follows the drag, the release asks the browser (no page script) what
-//!   is under the head and hands the window a framed note to type, unsent. The button again, a right click, Escape
-//!   where it arrives, a menu, a tab switch, a pop-up or a navigation cancel it. The arrow is kept for
-//!   [`USER_ARROW_MS`] or until a navigation, and the agent's next look gets it, drawn on its screenshot. Its ends are
+//!   is under the head and hands the window a framed note. A Claude tab's hooks hear of the kept arrow quietly at the
+//!   next prompt and nothing is typed (rule 1268); another agent gets the note typed, unsent. The button again, a
+//!   right click, Escape where it arrives, a menu, a tab switch, a pop-up or a navigation cancel it. The arrow is
+//!   kept for [`USER_ARROW_MS`] or until a navigation, and the agent's next look gets it, drawn on its screenshot. Its ends are
 //!   kept on the document (the viewport point plus the scroll at the release), so it stays on what it points at: the
 //!   scroll is measured again while its page is in front, it is drawn only while all of it shows, and a look gets its
 //!   ends in the look's own viewport, `offscreen` and undrawn when its head is outside it.
@@ -116,6 +117,11 @@ pub(super) struct UserArrow {
 }
 
 impl UserArrow {
+    /// Still kept for the agent: drawn on the document `doc` shows now, and its time has not run out.
+    pub(super) fn kept_on(&self, doc: u64, now: u64) -> bool {
+        self.doc == doc && now < self.until
+    }
+
     /// The arrow in a viewport scrolled to `scroll`: tail and head in its CSS pixels.
     fn in_view(&self, scroll: (f64, f64)) -> ((f64, f64), (f64, f64)) {
         (
@@ -1018,7 +1024,7 @@ impl WebCtl {
             return;
         };
         let doc = t.doc;
-        if let Some(u) = t.user_arrow.take_if(|u| u.doc == doc && now < u.until) {
+        if let Some(u) = t.user_arrow.take_if(|u| u.kept_on(doc, now)) {
             add_user_arrow(v, &u, &mut t.refs);
         }
     }

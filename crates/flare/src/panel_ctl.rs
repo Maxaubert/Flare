@@ -1887,17 +1887,21 @@ impl PanelCtl {
         Some(panel_sel::text_of(lines, range))
     }
 
-    /// For "Ask agent" on `tab`: the selection's label (`<name> lines A-B`, named as the header names the panel) and
-    /// its text. None when nothing is selected there.
-    pub fn selection_ask(&self, tab: &str) -> Option<(String, String)> {
+    /// For the quiet context of `tab` (rule 1268): the file the selection is in (its path, or the panel's title for
+    /// text handed over), its lines (`lines A-B`) and its text. None when nothing is selected there.
+    pub fn selection_now(&self, tab: &str) -> Option<(String, String, String)> {
         let s = self.shown.as_ref().filter(|s| s.tab == tab)?;
         let range = self.sel.range()?;
         let text = self.selection_text()?;
-        let name = self
-            .titles
-            .get(tab)
-            .map_or_else(|| file_name(&s.target), String::as_str);
-        Some((panel_sel::label(name, range), text))
+        let name = if s.target.starts_with(INLINE) {
+            self.titles
+                .get(tab)
+                .cloned()
+                .unwrap_or_else(|| "text in the panel".to_string())
+        } else {
+            s.target.clone()
+        };
+        Some((name, panel_sel::lines_label(range), text))
     }
 
     /// Nothing on show: the picture and the rows are let go.
