@@ -1,21 +1,22 @@
 //! Settings > Appearance > App icon (rules 1230 and 1263), headless at 100 and 225 percent: the row's words over
 //! twelve 36 px icon tiles 46 css px apart (layout A), the original first and picked on a fresh profile; a press on a
 //! tile stores its id in the settings and the row follows. A narrow window wraps the tiles onto more lines and the row
-//! grows by whole lines. The row's right holds the Restart Explorer (Restart Dock) button, never the icon's name; the
-//! button runs the restart through the `ShellRestart` seam, here a fake, and a failure opens the settings notice (one
-//! plain line and OK) while the row's subtext stays as it is. The tiles are found by the original icon's own
-//! red-orange flame, which no other design and no other part of the page wears.
+//! grows by whole lines. The row's right never holds the icon's name. On Windows it holds the Restart Explorer button,
+//! which runs the restart through the `ShellRestart` seam, here a fake, and a failure opens the settings notice (one
+//! plain line and OK) while the row's subtext stays as it is. On a Mac it holds nothing and nothing restarts (rule
+//! 1264). The tiles are found by the original icon's own red-orange flame, which no other design and no other part of
+//! the page wears.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_os = "macos"))]
+use std::time::Instant;
 
-use flare_settings::app_icon::{
-    APP_ICONS, FakeShellRestart, KEY, RESTART_BUTTON, RESTART_FAILED, RESTART_LABEL,
-};
+use flare_settings::app_icon::{APP_ICONS, FakeShellRestart, KEY, RESTART_BUTTON, RESTART_LABEL};
 use flare_settings::kv::PrefStore;
 use flare_settings::layout::{ICON_GAP, ICON_TILE};
 use flare_settings::look::LookStore;
@@ -125,6 +126,7 @@ impl Fx {
     }
 
     /// Pumps until `done` holds (the restart answers from a worker), at most 5 s.
+    #[cfg(not(target_os = "macos"))]
     fn pump_until(&self, what: &str, done: impl Fn(&Fx) -> bool) {
         let start = Instant::now();
         while !done(self) {
@@ -309,7 +311,8 @@ fn a_stored_pick_is_shown_and_an_unknown_one_shows_the_original() {
     assert_eq!(f.row().value.as_str(), "original");
 }
 
-/// Rule 1263: the row's right is one labelled button and no icon name; the view draws no name there.
+/// Rule 1263: the row's right is one labelled button and no icon name; the view draws no name there. Rule 1264: a
+/// Mac's row has no button there at all.
 #[test]
 fn the_right_side_is_the_restart_button_not_the_icon_name() {
     let prefs = PrefStore::memory();
@@ -317,6 +320,13 @@ fn the_right_side_is_the_restart_button_not_the_icon_name() {
     let f = fx_at(1.0, prefs);
     let r = f.row();
     assert_eq!(r.badge.as_str(), "", "no icon name at the row's right");
+    // The view's row controls never print the row's badge (the icon's name lived there).
+    let view = include_str!("../../ui/settings/view.slint");
+    assert!(!view.contains("root.data.badge"));
+    if cfg!(target_os = "macos") {
+        assert_eq!(r.buttons.row_count(), 0, "a Mac has no Restart Dock button");
+        return;
+    }
     assert_eq!(r.buttons.row_count(), 1);
     let b = r.buttons.row_data(0).unwrap();
     assert_eq!(b.id.as_str(), RESTART_BUTTON);
@@ -328,13 +338,26 @@ fn the_right_side_is_the_restart_button_not_the_icon_name() {
         flare_settings::icons::button_icon_path("redo").unwrap()
     );
     assert!(!b.off);
-    // The view's row controls never print the row's badge (the icon's name lived there).
-    let view = include_str!("../../ui/settings/view.slint");
-    assert!(!view.contains("root.data.badge"));
+}
+
+/// Rule 1264: on a Mac a press sent by the button's id restarts nothing (no `killall Dock`) and opens no notice.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_mac_press_by_the_button_id_restarts_nothing() {
+    let f = fx_at(1.0, PrefStore::memory());
+    f.b()
+        .invoke_row_button("app-icon".into(), RESTART_BUTTON.into());
+    f.pump();
+    std::thread::sleep(Duration::from_millis(50));
+    f.pump();
+    assert_eq!(f.restart.calls(), 0, "nothing restarts on a Mac");
+    assert!(!f.b().get_notice_open());
+    assert_eq!(f.row().buttons.row_count(), 0);
 }
 
 /// Rule 1263: the button runs the restart once through the seam (here the fake), off while it runs, and a press
 /// while it runs does nothing more.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn the_restart_button_runs_the_fake_restart() {
     let f = fx_at(1.0, PrefStore::memory());
@@ -364,8 +387,10 @@ fn the_restart_button_runs_the_fake_restart() {
 
 /// Rule 1263: a failed restart opens the settings notice, one plain line and OK; the row's subtext never changes.
 /// OK closes it.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn a_failed_restart_opens_the_notice_and_the_subtext_stays() {
+    use flare_settings::app_icon::RESTART_FAILED;
     use flare_settings::page::appearance::APP_ICON_SUB;
     for s in SCALES2 {
         let restart = Arc::new(FakeShellRestart::failing());
@@ -376,11 +401,7 @@ fn a_failed_restart_opens_the_notice_and_the_subtext_stays() {
         f.pump_until("the notice", |f| f.b().get_notice_open());
         assert_eq!(restart.calls(), 1);
         assert_eq!(f.b().get_notice_text().as_str(), RESTART_FAILED, "{s}");
-        if cfg!(target_os = "macos") {
-            assert_eq!(RESTART_FAILED, "The Dock did not restart.");
-        } else {
-            assert_eq!(RESTART_FAILED, "Explorer did not restart.");
-        }
+        assert_eq!(RESTART_FAILED, "Explorer did not restart.");
         assert!(!RESTART_FAILED.contains('\n'));
         assert_eq!(f.row().sub.as_str(), APP_ICON_SUB, "{s}: the subtext stays");
         assert!(!f.row().buttons.row_data(0).unwrap().off);
@@ -406,6 +427,7 @@ fn a_failed_restart_opens_the_notice_and_the_subtext_stays() {
 }
 
 /// Rule 1263: Escape closes the notice too, and a restart that works opens none.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn escape_closes_the_restart_notice_and_a_good_restart_opens_none() {
     let restart = Arc::new(FakeShellRestart::failing());
