@@ -151,10 +151,27 @@ pub const APP_ICON_SUB: &str = if cfg!(target_os = "macos") {
     "The taskbar and the window. Shortcuts keep the original."
 };
 
+/// The App icon row's buttons on `host`: on Windows one labelled Restart Explorer button (rule 1263), on a Mac none
+/// (rule 1264), so the row's right is empty there and the tiles keep their place.
+pub fn app_icon_buttons(host: crate::app_icon::ShellHost) -> Vec<Button> {
+    use crate::app_icon::{RESTART_BUTTON, restart_label};
+    restart_label(host)
+        .map(|label| Button {
+            id: RESTART_BUTTON,
+            label: label.to_string(),
+            // The mockup's circular arrow, left of the words. Labelled, so no tooltip (rule 1263).
+            icon: "redo",
+            ..Button::default()
+        })
+        .into_iter()
+        .collect()
+}
+
 /// The app icon picker (rule 1230): the icon in force picked, the original first and named as the default. The row's
-/// right holds the Restart Explorer (Restart Dock) button, not the picked icon's name (rule 1263).
+/// right holds the Restart Explorer button on Windows, not the picked icon's name (rule 1263), and nothing on a Mac
+/// (rule 1264).
 fn app_icon_row(env: &PageEnv) -> RowModel {
-    use crate::app_icon::{APP_ICONS, RESTART_BUTTON, RESTART_LABEL, app_icon, tile_name};
+    use crate::app_icon::{APP_ICONS, ShellHost, app_icon, tile_name};
     let options = APP_ICONS
         .iter()
         .map(|i| Opt {
@@ -165,14 +182,7 @@ fn app_icon_row(env: &PageEnv) -> RowModel {
         .collect();
     RowModel {
         sub: APP_ICON_SUB.to_string(),
-        // Labelled, so no tooltip (rule 1263).
-        buttons: vec![Button {
-            id: RESTART_BUTTON,
-            label: RESTART_LABEL.to_string(),
-            // The mockup's circular arrow, left of the words.
-            icon: "redo",
-            ..Button::default()
-        }],
+        buttons: app_icon_buttons(ShellHost::current()),
         ..row_with(
             "app-icon",
             Control::Icons {
@@ -432,25 +442,28 @@ mod tests {
         assert_eq!(picked(&page(&prefs, &look, GlassSupport::Ok)).0, "original");
     }
 
-    /// Rule 1263: the App icon row's right is one labelled button that restarts the system's shell, with no tooltip.
+    /// Rule 1263: on Windows the App icon row's right is one labelled button that restarts Explorer, with no tooltip.
+    /// Rule 1264: a Mac's row has no restart button at all. Both arms are checked on any host.
     #[test]
     fn the_app_icon_row_offers_the_shell_restart_button() {
-        use crate::app_icon::{RESTART_BUTTON, RESTART_LABEL};
-        let (prefs, look) = fresh();
-        let r = row(&page(&prefs, &look, GlassSupport::Ok), "app-icon").clone();
-        assert_eq!(r.buttons.len(), 1);
-        let b = &r.buttons[0];
+        use crate::app_icon::{RESTART_BUTTON, ShellHost};
+        let win = app_icon_buttons(ShellHost::Windows);
+        assert_eq!(win.len(), 1);
+        let b = &win[0];
         assert_eq!(b.id, RESTART_BUTTON);
-        assert_eq!(b.label, RESTART_LABEL);
-        if cfg!(target_os = "macos") {
-            assert_eq!(b.label, "Restart Dock");
-        } else {
-            assert_eq!(b.label, "Restart Explorer");
-        }
+        assert_eq!(b.label, "Restart Explorer");
         assert!(b.tip.is_empty(), "a labelled button has no tooltip");
         assert_eq!(b.icon, "redo");
         assert!(crate::icons::button_icon_path(b.icon).is_some());
         assert!(!b.off);
+        assert!(
+            app_icon_buttons(ShellHost::Mac).is_empty(),
+            "a Mac has no Restart Dock button"
+        );
+        // The page this host builds wears its own arm.
+        let (prefs, look) = fresh();
+        let r = row(&page(&prefs, &look, GlassSupport::Ok), "app-icon").clone();
+        assert_eq!(r.buttons, app_icon_buttons(ShellHost::current()));
     }
 
     #[test]

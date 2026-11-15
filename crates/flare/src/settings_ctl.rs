@@ -132,8 +132,8 @@ pub struct SettingsDeps {
     pub look: LookStore,
     pub diag: Rc<dyn DiagControlApi>,
     pub verb: Arc<dyn ExplorerVerb>,
-    /// The App icon row's Restart Explorer (Restart Dock) button (rule 1263). Tests and --e2e give a fake, so nothing
-    /// outside the test restarts.
+    /// The App icon row's Restart Explorer button (rule 1263; none on a Mac, rule 1264). Tests and --e2e give a
+    /// fake, so nothing outside the test restarts.
     pub shell_restart: Arc<dyn ShellRestart>,
     pub dictation: Rc<dyn DictationPage>,
     pub pick_folder: PickFolder,
@@ -1240,10 +1240,12 @@ impl SettingsCtl {
         }
     }
 
-    /// The App icon row's Restart Explorer (Restart Dock) button (rule 1263): the restart runs on a worker through the
-    /// `ShellRestart` seam and answers with `ShellRestarted`. A press while one runs does nothing.
+    /// The App icon row's Restart Explorer button (rule 1263): the restart runs on a worker through the
+    /// `ShellRestart` seam and answers with `ShellRestarted`. A press while one runs does nothing. A Mac has no such
+    /// button and never restarts anything, even when asked by id (rule 1264).
     fn restart_shell(&mut self) {
-        if self.restarting {
+        use flare_settings::app_icon::{ShellHost, restart_label};
+        if self.restarting || restart_label(ShellHost::current()).is_none() {
             return;
         }
         self.restarting = true;

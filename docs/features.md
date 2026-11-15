@@ -676,11 +676,11 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   2026-11-14 (owner: "the icons are weirdly placed ... instead of saying safety orange in that spot have it be a button
   to restart explorer"), rule 1263, layout A of `docs/superpowers/specs/2026-11-14-app-icon-row-mockup.html`: the
   tiles are a fixed 36 px with 10 px gaps, left aligned at the words' column, and wrap onto more lines in a narrow
-  window (the row grows by whole lines). The row's right is a **Restart Explorer** button (**Restart Dock** on a Mac)
-  in place of the icon's name: it ends `explorer.exe` in this user's session and starts the shell again (`killall
-  Dock` on a Mac) on a worker, so the taskbar or the Dock shows the pick at once. A failed restart opens a small
-  Flare dialog with one line, "Explorer did not restart." ("The Dock did not restart." on a Mac), and OK; the row's
-  subtext never changes.
+  window (the row grows by whole lines). On Windows the row's right is a **Restart Explorer** button in place of the
+  icon's name: it ends `explorer.exe` in this user's session and starts the shell again on a worker, so the taskbar
+  shows the pick at once. A failed restart opens a small Flare dialog with one line, "Explorer did not restart.", and
+  OK; the row's subtext never changes. 2026-11-15 (owner's decision), rule 1264: on a Mac the row's right is empty,
+  with no restart button, since the Dock already shows a pick at once and restarting it may drop that icon.
   How a pick is worn (rule 1231): on the Mac, `NSApplication.applicationIconImage` (the Dock and the app switcher),
   at start and on every pick; Finder keeps the original, since the signed bundle is never written to. On Windows,
   the window's big and small icons (`WM_SETICON`, which the taskbar button shows), at start, on a DPI change and on
