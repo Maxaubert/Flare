@@ -709,6 +709,12 @@ fn settings_deps(
             flare_diag::control::DiagControl::with_log(&profile, flare_diag::writer::main()),
         )),
         verb,
+        // Under --e2e a stand-in: a scenario never restarts Explorer or the Dock (rule 1263).
+        shell_restart: if e2e_on {
+            Arc::new(flare_settings::app_icon::FakeShellRestart::new())
+        } else {
+            Arc::new(flare_win::shell_restart::SystemShellRestart)
+        },
         dictation: Rc::new(crate::dictation_page::DictationPageProvider),
         pick_folder: Rc::new(move |default_dir, answer| {
             let parent = weak

@@ -37,6 +37,8 @@ pub enum Overlay {
     SettingsAsk,
     /// The Dictation page's question.
     DictationAsk,
+    /// A settings notice: one plain line and OK (the App icon row's failed shell restart, rule 1263).
+    SettingsNotice,
     /// A plugin's details sheet (Settings > Plugins, its card's info button).
     PluginSheet,
     /// The Flare hotkeys sheet (Settings > Terminal > Keys, the info button; rule 1262).
@@ -57,7 +59,7 @@ pub enum Overlay {
 
 impl Overlay {
     /// All of them.
-    pub const ALL: [Overlay; 21] = [
+    pub const ALL: [Overlay; 22] = [
         Overlay::Menu,
         Overlay::Overflow,
         Overlay::PluginsDropdown,
@@ -71,6 +73,7 @@ impl Overlay {
         Overlay::ThemeEditor,
         Overlay::SettingsAsk,
         Overlay::DictationAsk,
+        Overlay::SettingsNotice,
         Overlay::PluginSheet,
         Overlay::HotkeySheet,
         Overlay::ColourPicker,

@@ -57,6 +57,7 @@ fn fx_at(scale: f32) -> Fx {
         pick_folder: Rc::new(|_, done| done(None)),
         open_path: Rc::new(|_: &Path| {}),
         clipboard: Rc::new(|_: &str| {}),
+        shell_restart: Arc::new(flare_settings::app_icon::FakeShellRestart::new()),
         shell_list: Arc::new(|| vec![("pwsh".to_string(), "PowerShell".to_string())]),
         glass: Rc::new(|| GlassSupport::Ok),
         face_of: Rc::new(|_: &str| String::new()),

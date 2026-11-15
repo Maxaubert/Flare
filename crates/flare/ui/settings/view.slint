@@ -20,6 +20,7 @@ import { HelpPanel } from "help_panel.slint";
 import { DictKeyField, DictMicField, DictLimitedMark, DictModelRow, DictAsk } from "dictation.slint";
 import { SetMachineHead, SetMachineRow, SetMachineForm } from "machines.slint";
 import { AppIconStrip } from "app_icons.slint";
+import { SetNotice } from "notice.slint";
 
 export global SettingsBridge {
     // data, all computed by Rust
@@ -102,6 +103,9 @@ export global SettingsBridge {
     in-out property <float> dict-level;
     in-out property <bool> dict-ask-open;
     in-out property <string> dict-ask-text;
+    // A settings notice (rule 1263): one plain line and OK, for a failure a row must not report in its subtext.
+    in-out property <bool> notice-open;
+    in-out property <string> notice-text;
     // A plugin's details sheet (the info button on its card, 2026-11-08): what it shows, filled by Rust.
     in-out property <bool> sheet-open;
     in-out property <string> sheet-name;
@@ -160,6 +164,7 @@ export global SettingsBridge {
     callback editor-cancel();
     callback ask-answered(int);
     callback dict-ask-answered(int);
+    callback notice-closed();
     callback sheet-close();
     // A toggle tile (its key, the new state) and a dropdown tile (its key, the level's id).
     callback sheet-toggle(string, bool);
@@ -203,17 +208,8 @@ component RowControls inherits HorizontalLayout {
             tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
         }
     }
-    // The app icon picker's row (rule 1230): the picked icon's name at the right; the tiles are drawn under the words.
-    if root.data.kind == SetKind.icons: VerticalLayout {
-        alignment: center;
-        Text {
-            text: root.data.badge;
-            font-family: Theme.font-ui;
-            font-size: 12px;
-            color: Theme.text-soft;
-            wrap: no-wrap;
-        }
-    }
+    // The app icon picker's row (rules 1230 and 1263) draws nothing here but its Restart Explorer button (one of
+    // `buttons`, below); its tiles are drawn under the words.
     if root.data.kind == SetKind.pill: VerticalLayout {
         alignment: center;
         Rectangle {
@@ -584,11 +580,13 @@ export component SettingsView inherits Rectangle {
                             background: SettingsInk.flash;
                             opacity: row.flash;
                         }
+                        // Layout A (rule 1263): 2 under the words, at the words' column, `row.cols` tiles a line.
                         AppIconStrip {
                             x: 60px;
-                            y: 0px;
+                            y: 2px;
                             width: parent.width - 60px - 16px;
-                            height: 40px;
+                            height: parent.height - 2px - 16px;
+                            cols: row.cols;
                             options: row.options;
                             art: row.art;
                             value: row.value;
@@ -786,6 +784,13 @@ export component SettingsPreview inherits Window {
         open: SettingsBridge.dict-ask-open;
         text: SettingsBridge.dict-ask-text;
         answered(n) => { SettingsBridge.dict-ask-answered(n); }
+    }
+    SetNotice {
+        width: parent.width;
+        height: parent.height;
+        open: SettingsBridge.notice-open;
+        text: SettingsBridge.notice-text;
+        closed => { SettingsBridge.notice-closed(); }
     }
     SelectMenu {
         width: parent.width;
