@@ -11,9 +11,6 @@
 use flare_surfaces::wrap::{MIN_COLS, display_cols, wrap_line};
 use flare_term::word_at::WORD_SEPARATORS;
 
-/// The longest label a frame carries (`ask_agent`'s cap): the file's name is cut first, so the lines always show.
-const LABEL_MAX: usize = 64;
-
 /// A place between two characters of a line: `ch` characters into line `line` (both from 0).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Pos {
@@ -387,31 +384,20 @@ pub fn text_of<L: AsRef<str>>(lines: &[L], (a, b): (Pos, Pos)) -> String {
     out
 }
 
-/// The frame's source for a selection: `<name> lines A-B` (or `line A`), counted from 1. A selection that ends at the
-/// start of a line (a triple click's) does not count that line. The name is cut first, so the whole label fits the
-/// frame's 64 characters.
-pub fn label(name: &str, (a, b): (Pos, Pos)) -> String {
+/// The lines a selection takes, for the quiet context (rule 1268): `lines A-B` (or `line A`), counted from 1. A
+/// selection that ends at the start of a line (a triple click's) does not count that line.
+pub fn lines_label((a, b): (Pos, Pos)) -> String {
     let first = a.line + 1;
     let last = if b.ch == 0 && b.line > a.line {
         b.line
     } else {
         b.line + 1
     };
-    let lines = if last <= first {
-        format!(" line {first}")
+    if last <= first {
+        format!("line {first}")
     } else {
-        format!(" lines {first}-{last}")
-    };
-    let room = LABEL_MAX.saturating_sub(chars(&lines));
-    let name = name.trim();
-    let name: String = if chars(name) > room {
-        let mut cut: String = name.chars().take(room.saturating_sub(1)).collect();
-        cut.push('\u{2026}');
-        cut
-    } else {
-        name.to_string()
-    };
-    format!("{name}{lines}")
+        format!("lines {first}-{last}")
+    }
 }
 
 /// What the window draws of a selection: from column `a_col` of row `a_row` to column `b_col` of row `b_row` (the end
@@ -708,24 +694,14 @@ mod tests {
     }
 
     #[test]
-    fn the_label_names_the_lines_and_cuts_the_name_to_fit() {
+    fn the_lines_label_counts_from_one() {
         assert_eq!(
-            label("notes.md", (Pos::new(11, 0), Pos::new(39, 4))),
-            "notes.md lines 12-40"
+            lines_label((Pos::new(11, 0), Pos::new(39, 4))),
+            "lines 12-40"
         );
-        assert_eq!(
-            label("notes.md", (Pos::new(2, 1), Pos::new(2, 4))),
-            "notes.md line 3"
-        );
+        assert_eq!(lines_label((Pos::new(2, 1), Pos::new(2, 4))), "line 3");
         // A triple click's span ends at the next line's start: that line is not in it.
-        assert_eq!(
-            label("a.txt", (Pos::new(4, 0), Pos::new(5, 0))),
-            "a.txt line 5"
-        );
-        let long = "x".repeat(100);
-        let l = label(&long, (Pos::new(0, 0), Pos::new(1233, 2)));
-        assert_eq!(l.chars().count(), 64);
-        assert!(l.ends_with("\u{2026} lines 1-1234"), "{l}");
+        assert_eq!(lines_label((Pos::new(4, 0), Pos::new(5, 0))), "line 5");
     }
 
     #[test]

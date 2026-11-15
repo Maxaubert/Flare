@@ -221,26 +221,38 @@ pub enum WebOut {
         id: u64,
         result: Result<String, String>,
     },
-    /// The page answered "Ask agent" with its selection (the text, already decoded), or why not. A page that navigated since
-    /// the click says nothing at all.
+    /// The page answered a read of its selection for the quiet context (rule 1268) with the text, already decoded, or
+    /// why not. A page that navigated since says nothing at all.
     AskSelection {
-        tab: String,
-        /// The source for the frame: the page's host, or a plain word for a page Flare itself made.
-        label: String,
-        /// On a plain web page, the address and title the answering document gave, for a click with no selection;
-        /// None on a mini-app or plugin page, whose address means nothing to an agent.
+        /// The read's id, as [`WebCtl::ask_selection`] gave it.
+        id: u64,
+        /// On a markdown view's page, the file it was made from.
+        file: Option<String>,
+        /// On a plain web page, the address and title the answering document gave; None on a mini-app or plugin page,
+        /// whose address means nothing to an agent.
         page: Option<crate::ask_agent::PageRef>,
         result: Result<String, String>,
     },
     /// The person drew an arrow on the page (rule 255): its frame (`ask_agent::frame_arrow`), typed at the tab's prompt
-    /// unsent when the tab is still in front.
+    /// unsent when the tab is still in front and its agent has no hooks to hear it quietly (rule 1268).
     ArrowDrawn { tab: String, text: String },
 }
 
-/// One "Ask agent" read of a page's selection, while it is out.
+/// Where the person's kept arrow is ([`WebCtl::kept_arrow_place`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeptArrowPlace {
+    /// A markdown view's page: the file it was made from.
+    File(String),
+    /// A plain web page: its address and title as the tab knows them.
+    Page { title: String, url: String },
+    /// A page Flare made (a mini-app).
+    Other,
+}
+
+/// One read of a page's selection for the quiet context, while it is out.
 struct SelectionAsk {
     tab: String,
-    /// The document the click was made on ([`TabWeb::doc`]); an answer from any other is dropped.
+    /// The document the read was made on ([`TabWeb::doc`]); an answer from any other is dropped.
     doc: u64,
 }
 
@@ -536,7 +548,7 @@ struct TabWeb {
     /// The host of the mini-app this view shows (None for a plain web page): a view is closed and made
     /// again when the panel's app is not the one it was made for.
     app_host: Option<String>,
-    /// The file a markdown view's page was made from (None for any other page): Ask agent names it.
+    /// The file a markdown view's page was made from (None for any other page): the quiet context names it.
     source: Option<String>,
     /// A diagram's "did it draw" question, while it is out.
     probe: Option<Probe>,
@@ -622,7 +634,7 @@ pub struct WebCtl {
     /// The scripts that fill a plugin's login into a page (the `fill` permission): their answer goes to the window as
     /// [`WebOut::Filled`], never into `scripts` (which the e2e reads).
     fills: std::collections::HashSet<u64>,
-    /// The "Ask agent" reads still out, by script id.
+    /// The selection reads for the quiet context still out, by script id.
     selection_asks: HashMap<u64, SelectionAsk>,
     /// The last id given to a DevTools call (unique across the window).
     call_ids: u64,
@@ -2857,23 +2869,12 @@ impl WebCtl {
         Some(id)
     }
 
-    /// "Ask agent": reads the selection of the tab's page; the answer comes back as [`WebOut::AskSelection`], or not
-    /// at all if the page navigates first. False when there is no page to ask. A second click while the first is out
-    /// starts nothing, so one selection is typed once.
-    pub fn ask_selection(&mut self, tab: &str) -> bool {
-        let Some(doc) = self.tabs.get(tab).map(|t| t.doc) else {
-            return false;
-        };
-        if self.backend().is_none() {
-            return false;
-        }
-        if self
-            .selection_asks
-            .values()
-            .any(|a| a.tab == tab && a.doc == doc)
-        {
-            return true;
-        }
+    /// The quiet context (rule 1268): reads the selection of the tab's page; the answer comes back as
+    /// [`WebOut::AskSelection`] with the id this returns, or not at all if the page navigates first. None when there is
+    /// no page to ask.
+    pub fn ask_selection(&mut self, tab: &str) -> Option<u64> {
+        let doc = self.tabs.get(tab).map(|t| t.doc)?;
+        self.backend()?;
         self.script_seq += 1;
         let id = self.script_seq;
         self.selection_asks.insert(
@@ -2886,16 +2887,17 @@ impl WebCtl {
         if let Some(b) = self.backend() {
             b.run_script(tab, id, crate::ask_agent::SELECTION_SCRIPT);
         }
-        true
+        Some(id)
     }
 
-    /// The page answered a selection read. Only the document the person clicked on is believed, and the source is the
+    /// The page answered a selection read. Only the document the read was made on is believed, and the source is the
     /// address that document gave with its text: `t.url` is already the next page's from the moment a navigation
-    /// starts, while the old page still shows and answers. The page reference for a click with no selection comes from
-    /// that same answer, never from the tab's address or title, and only on a plain web page. A plain page whose answer
-    /// is not in the script's shape names no page, so it is a failed read rather than "select some text".
+    /// starts, while the old page still shows and answers. The page reference comes from that same answer, never from
+    /// the tab's address or title, and only on a plain web page. A plain page whose answer is not in the script's shape
+    /// names no page, so it is a failed read.
     fn selection_answered(
         &self,
+        id: u64,
         ask: SelectionAsk,
         result: Result<String, String>,
     ) -> Option<WebOut> {
@@ -2912,25 +2914,47 @@ impl WebCtl {
             Ok(None) => (None, Err("the answer is too long".to_string())),
             Err(why) => (None, Err(why)),
         };
-        let address = answer.as_ref().map_or("", |a| a.address.as_str());
-        let label = if let Some(file) = &t.source {
-            // A markdown view: the file the page was made from, by its name.
-            file.rsplit(['\\', '/']).next().unwrap_or(file).to_string()
-        } else if plain {
-            flare_surfaces::web::host_label(address)
-        } else {
-            "this page".to_string()
-        };
-        let page = answer.filter(|_| plain).map(|a| crate::ask_agent::PageRef {
-            address: a.address,
-            title: a.title,
-        });
+        // A markdown view: the file the page was made from.
+        let file = t.source.clone();
+        let page = answer
+            .filter(|_| plain && file.is_none())
+            .map(|a| crate::ask_agent::PageRef {
+                address: a.address,
+                title: a.title,
+            });
         Some(WebOut::AskSelection {
-            tab: ask.tab,
-            label,
+            id,
+            file,
             page,
             result,
         })
+    }
+
+    /// Where the person's kept arrow is on the tab's page, for the quiet context (rule 1268): the markdown file a view
+    /// was made from, else the page's address and title (a plain page), else a page Flare made. None when no arrow is
+    /// kept: none was drawn, a look saw it, the page moved on or its time ran out.
+    pub fn kept_arrow_place(&self, tab: &str) -> Option<KeptArrowPlace> {
+        let now = self.now_ms();
+        let t = self.tabs.get(tab)?;
+        t.user_arrow.as_ref().filter(|u| u.kept_on(t.doc, now))?;
+        Some(if let Some(file) = &t.source {
+            KeptArrowPlace::File(file.clone())
+        } else if t.app_host.is_none() {
+            KeptArrowPlace::Page {
+                title: t.title.clone(),
+                url: t.url.clone(),
+            }
+        } else {
+            KeptArrowPlace::Other
+        })
+    }
+
+    /// The tab's browser shows a plain web page: not a page Flare made (a mini-app or a mod's page) and not a markdown
+    /// view's page.
+    pub fn is_plain_page(&self, tab: &str) -> bool {
+        self.tabs
+            .get(tab)
+            .is_some_and(|t| t.app_host.is_none() && t.source.is_none())
     }
 
     /// The answer of the latest script started, None while it runs.
@@ -3406,7 +3430,7 @@ impl WebCtl {
                 if self.fills.remove(&id) {
                     out.push(WebOut::Filled { id, result });
                 } else if let Some(ask) = self.selection_asks.remove(&id) {
-                    out.extend(self.selection_answered(ask, result));
+                    out.extend(self.selection_answered(id, ask, result));
                 } else {
                     self.scripts.insert(id, result);
                 }

@@ -203,6 +203,7 @@ mod bar_glue;
 mod install_glue;
 mod mods_glue;
 mod plugins_glue;
+mod quiet_glue;
 mod remote_files_glue;
 mod remote_glue;
 mod sessions_glue;
@@ -672,6 +673,8 @@ pub struct AppCtl {
     plugin_ask: Option<ask_glue::PluginAsk>,
     /// Numbers the plugins' questions, so a timer of an older one ends nothing.
     plugin_ask_seq: u64,
+    /// The prompt hook's `panel.state` calls that wait for a page's selection (rule 1268), by the read's id.
+    quiet_reads: quiet_glue::QuietReads,
     /// The panel had the keys at the last look, so they go back to the terminal when it goes away.
     panel_focus_seen: bool,
     /// The key being handled is one the page's key filter handed back (macOS): it never goes to the page again.
@@ -1175,6 +1178,7 @@ impl AppCtl {
             app_launcher: Rc::new(crate::app_ask::RecordingLauncher::default()),
             plugin_ask: None,
             plugin_ask_seq: 0,
+            quiet_reads: quiet_glue::QuietReads::default(),
             panel_focus_seen: false,
             key_from_page: false,
             panel_front_seen: None,
@@ -1506,14 +1510,6 @@ impl AppCtl {
             on_tip_request,
             |c, t: SharedString, x: f32, y: f32, w: f32, h: f32| c.tip_request(&t, x, y, w, h)
         );
-        bind!(
-            app,
-            rc,
-            on_panel_ask_tip,
-            |c, t: SharedString, x: f32, y: f32, w: f32, h: f32| {
-                c.tip_request_toward(&t, x, y, w, h, Some(TipSide::Left));
-            }
-        );
         // The Settings view's tooltips go the same way as every other surface's.
         {
             let weak = Rc::downgrade(rc);
@@ -1580,7 +1576,6 @@ impl AppCtl {
         bind!(app, rc, on_panel_wrap_toggled, |c| c.panel_wrap_toggled());
         bind!(app, rc, on_panel_md_view_picked, |c, i: i32| c
             .panel_md_view_picked(i));
-        bind!(app, rc, on_panel_ask_agent, |c| c.panel_ask_agent());
         bind!(app, rc, on_panel_draw_arrow, |c| c.panel_draw_arrow());
         bind!(app, rc, on_panel_wrap_cols_changed, |c| c
             .panel_wrap_cols_changed());
@@ -3356,29 +3351,15 @@ impl AppCtl {
 
     // ---- tooltips ---------------------------------------------------------------------------------------
 
+    /// A tooltip where tips usually go: right of a vertical sidebar's items, else below.
     fn tip_request(&mut self, text: &str, x: f32, y: f32, w: f32, h: f32) {
-        self.tip_request_toward(text, x, y, w, h, None);
-    }
-
-    /// A tooltip on the side `side` asks for (still flipped when there is no room), or where tips usually go.
-    fn tip_request_toward(
-        &mut self,
-        text: &str,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        side: Option<TipSide>,
-    ) {
         if text.is_empty() {
             self.clear_tip();
             return;
         }
         let now = self.now();
         let side_width = self.sidebar.view(self.scale, now).width_css as f32;
-        let prefer = if let Some(side) = side {
-            side
-        } else if self.vertical() && x < side_width {
+        let prefer = if self.vertical() && x < side_width {
             TipSide::Right
         } else {
             TipSide::Below
@@ -3637,6 +3618,16 @@ impl AppCtl {
         };
         let info = front.info();
         let armed = self.agent_view.armed(&front.id);
+        // A plain Enter the person pressed in the terminal of the tab in front, with an agent there, sends a prompt:
+        // that prompt's hook may have the panel's quiet context once (rule 1268).
+        if ev.pressed
+            && ev.key == "Enter"
+            && !(ev.shift || ev.ctrl || ev.alt || ev.meta)
+            && armed.is_some()
+        {
+            let tab = front.id.clone();
+            self.quiet_prompt_seen(&tab);
+        }
         let option_as_meta = self.option_as_meta();
         // Agent hotkeys with Claude in front: the prompt is a text box (rule 1235). Only Claude: Flare knows no
         // other agent's editor keys.
@@ -3742,7 +3733,6 @@ impl AppCtl {
         self.panels
             .set_wrap(flare_settings::term_prefs::wrap_previews(&self.prefs));
         self.panels.sync(app, front.as_deref());
-        app.set_panel_ask_on(front.as_deref().is_some_and(|t| self.hub.agent_here(t)));
         // The bar's height first: the terminal is laid out shorter before the browser is placed.
         self.push_bar(app);
         let ctx = self.key_context();
@@ -4169,6 +4159,9 @@ impl AppCtl {
                     .ok_or_else(no_tab)?;
                 Ok(json!({"cwd": t.cwd}))
             }
+            // The window routes this one through `ctl_panel_context`, which also reads a page's selection; here it is
+            // answered at once with what is known without the page, and only for a prompt the person sent.
+            CtlOp::PanelContext { tab, cwd } => self.panel_context_once(&tab, cwd),
             CtlOp::PanelState { tab, cwd } => {
                 if !self.is_shell_tab(&tab) {
                     return Err(no_tab());
@@ -5633,6 +5626,10 @@ impl AppCtl {
                         // A mod's panel, or a tool call put in front of a mod's page (stage 8).
                         op @ CtlOp::ShowMod { .. } => self.ctl_show_mod(op, req.reply),
                         op @ CtlOp::ModTool { .. } => self.ctl_mod_tool(op, req.reply),
+                        // The prompt hook's quiet context (rule 1268): a page's selection is read first.
+                        CtlOp::PanelContext { tab, cwd } => {
+                            self.ctl_panel_context(&tab, cwd, req.reply);
+                        }
                         // A plugin's question (the `fill` permission): answered by the person, or when it expires.
                         op @ (CtlOp::Fill { .. } | CtlOp::SecretAsk { .. }) => {
                             self.ctl_plugin_ask(op, req.reply);

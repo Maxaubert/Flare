@@ -18,7 +18,6 @@ use flare_agent::question::looks_like_question;
 use flare_convo::follow::Said;
 use flare_ctl::{CtlError, Grant, Permission, code};
 use flare_mods::bridge;
-use flare_shells::paste::{path_shell_of, quote_path, sanitize_paste};
 use flare_surfaces::slot::Slot;
 use flare_term::handle::PluginInput;
 use serde_json::{Value, json};
@@ -27,7 +26,7 @@ use super::{AppCtl, UiMsg};
 use crate::mods_ctl::{ModsMsg, ModsMsgBox};
 use crate::plugin_sessions::{ENTER_AFTER_MS, Want, entry_json};
 
-/// How long the "Ask agent" note stays up.
+/// How long the note of the terminal menu's "Ask agent about this selection" and of "Draw arrow" stays up.
 const ASK_NOTE_MS: u64 = 4_000;
 
 impl AppCtl {
@@ -80,90 +79,8 @@ impl AppCtl {
         true
     }
 
-    /// The panel header's "Ask agent": what is sent depends on what the panel shows.
-    pub(super) fn panel_ask_agent(&mut self) {
-        let Some(tab) = self.front_id() else { return };
-        if let Some(why) = self.ask_refusal(&tab) {
-            self.ask_note(why);
-            return;
-        }
-        let Some(snap) = self.panels.snap(&tab).filter(|s| s.open) else {
-            return;
-        };
-        // Text selected in a text file (the Code view of a markdown file included): the quote, named by the file and its
-        // lines. A selection of blanks only frames nothing, and the path goes as with none.
-        if let Some(framed) = self
-            .panels
-            .selection_ask(&tab)
-            .and_then(|(label, text)| crate::ask_agent::frame_selection(&label, &text))
-        {
-            self.deliver_ask(&tab, &framed);
-            return;
-        }
-        // A markdown view's page: its selection, named by the file (with nothing selected, the file's path goes).
-        if self.panels.is_md_page(&tab) {
-            if !self.web.ask_selection(&tab) {
-                self.ask_note(crate::ask_agent::NOTE_PAGE_FAILED);
-            }
-            return;
-        }
-        if let Some(path) = &snap.path {
-            self.ask_about_path(&tab, path);
-        } else if snap.kind == "web" || snap.kind == "app" || snap.kind.starts_with("mod:") {
-            if !self.web.ask_selection(&tab) {
-                self.ask_note(crate::ask_agent::NOTE_PAGE_FAILED);
-            }
-        } else {
-            self.ask_note(crate::ask_agent::NOTE_NO_FILE);
-        }
-    }
-
-    /// A text or image panel has no selection: its file's path is sent, quoted for the tab's shell.
-    fn ask_about_path(&mut self, tab: &str, path: &str) {
-        let shell = self.handle_of(tab).and_then(|h| h.shell_id());
-        let quoted = quote_path(path, Some(path_shell_of(shell.as_deref())))
-            .filter(|q| sanitize_paste(q) == *q);
-        match quoted {
-            Some(q) => {
-                self.deliver_ask(tab, &q);
-            }
-            None => self.ask_note(crate::ask_agent::NOTE_PATH_REFUSED),
-        }
-    }
-
-    /// The page answered with its selection. Dropped when the person has since moved to another tab: what they
-    /// asked about is no longer in front of them, and nothing may be typed where they are not looking. With nothing
-    /// selected, a plain web page (`page`) is sent as a reference for the agent to look at; a mini-app or plugin page
-    /// has none and keeps the note.
-    pub(super) fn ask_selection_done(
-        &mut self,
-        tab: &str,
-        label: &str,
-        page: Option<&crate::ask_agent::PageRef>,
-        result: Result<String, String>,
-    ) {
-        use crate::ask_agent::{NOTE_NO_SELECTION, NOTE_PAGE_FAILED, frame_page, frame_selection};
-        if self.front_id().as_deref() != Some(tab) {
-            return;
-        }
-        let Ok(text) = result else {
-            self.ask_note(NOTE_PAGE_FAILED);
-            return;
-        };
-        match frame_selection(label, &text).or_else(|| page.and_then(frame_page)) {
-            Some(framed) => {
-                self.deliver_ask(tab, &framed);
-            }
-            // Nothing selected on a markdown view's page: the file is what the panel shows, as in Code.
-            None => match self.panels.snap(tab).and_then(|s| s.path) {
-                Some(path) if self.panels.is_md_page(tab) => self.ask_about_path(tab, &path),
-                _ => self.ask_note(NOTE_NO_SELECTION),
-            },
-        }
-    }
-
-    /// "Draw arrow" (rule 256): the draw mode over the front tab's page, or its end when it is on. Only where "Ask agent"
-    /// could type: a tab with an agent and no question up.
+    /// "Draw arrow" (rule 256): the draw mode over the front tab's page, or its end when it is on. Only on a tab with an
+    /// agent and no question up.
     pub(super) fn panel_draw_arrow(&mut self) {
         let Some(tab) = self.front_id() else { return };
         // The button again ends the draw mode, whatever else holds now.
@@ -186,9 +103,11 @@ impl AppCtl {
         self.refresh();
     }
 
-    /// The person's arrow is known: its frame is typed at the tab's prompt, unsent, while the tab is still in front.
+    /// The person's arrow is known. A Claude tab whose hooks named its session types nothing: its prompt hook tells the
+    /// agent of the kept arrow at the next prompt, quietly (rule 1268). Any other agent gets the frame typed at its
+    /// prompt, unsent, while the tab is still in front.
     pub(super) fn arrow_drawn(&mut self, tab: &str, text: &str) {
-        if self.front_id().as_deref() != Some(tab) {
+        if self.hub.claude_session(tab).is_some() || self.front_id().as_deref() != Some(tab) {
             return;
         }
         self.deliver_ask(tab, text);

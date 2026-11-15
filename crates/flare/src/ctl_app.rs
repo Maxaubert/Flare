@@ -89,6 +89,14 @@ pub enum CtlOp {
         tab: String,
         cwd: Option<String>,
     },
+    /// `panel.state` with `"context": true`, which the agent's own prompt hook asks (rule 1268): the same answer with
+    /// `context`, what the person marked in the panel. Answered when the page's selection is read, or without it after
+    /// a short wait. Only one call per prompt the person sent (a plain Enter in the terminal of the tab in front) has
+    /// the context; the agent grant alone is not enough, so a repeat or the agent's own tool gets the plain state.
+    PanelContext {
+        tab: String,
+        cwd: Option<String>,
+    },
     PanelClose {
         tab: String,
     },
@@ -378,6 +386,7 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::TabsWide => "CtlOp::TabsWide",
             CtlOp::TabCwd { .. } => "CtlOp::TabCwd",
             CtlOp::PanelState { .. } => "CtlOp::PanelState",
+            CtlOp::PanelContext { .. } => "CtlOp::PanelContext",
             CtlOp::PanelClose { .. } => "CtlOp::PanelClose",
             CtlOp::ShowFile { .. } => "CtlOp::ShowFile",
             CtlOp::ShowText { .. } => "CtlOp::ShowText",
@@ -2920,14 +2929,20 @@ impl Dispatcher for AppDispatcher {
             Method::PanelState => {
                 // Only the agent's own hooks name its folder; anything odd is ignored, never an error, so a
                 // hook never fails over it.
-                let cwd = match ctx.grant {
-                    Grant::Agent { .. } => agent_folder(&params),
-                    _ => None,
+                let (cwd, context) = match ctx.grant {
+                    Grant::Agent { .. } => (
+                        agent_folder(&params),
+                        params.get("context").and_then(Value::as_bool) == Some(true),
+                    ),
+                    _ => (None, false),
                 };
-                self.ask(CtlOp::PanelState {
-                    tab: Self::tab_of_call(ctx)?,
-                    cwd,
-                })
+                let tab = Self::tab_of_call(ctx)?;
+                // What the person marked in the panel goes to the tab's own agent only (rule 1268).
+                if context {
+                    self.ask(CtlOp::PanelContext { tab, cwd })
+                } else {
+                    self.ask(CtlOp::PanelState { tab, cwd })
+                }
             }
             Method::PanelClose => self.ask(CtlOp::PanelClose {
                 tab: Self::tab_of_call(ctx)?,
@@ -4898,6 +4913,48 @@ mod tests {
             assert_eq!(seen.lock().unwrap().last(), Some(&None));
         }
     }
+
+    /// Rule 1268: what the person marked in the panel (the quiet context) goes to the tab's own agent only. A plugin or
+    /// the app asking with `context` gets the plain state.
+    #[test]
+    fn only_the_agent_gets_the_panels_quiet_context() {
+        let seen: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let got = seen.clone();
+        let r = rig(
+            move |op| {
+                got.lock().unwrap().push(match op {
+                    CtlOp::PanelContext { .. } => "context",
+                    CtlOp::PanelState { .. } => "state",
+                    _ => "other",
+                });
+                Ok(json!({"open": false}))
+            },
+            false,
+            FILES,
+        );
+        let ask = json!({"context": true});
+        r.d.call(&agent_in_tab(), Method::PanelState, ask.clone())
+            .unwrap();
+        r.d.call(
+            &agent_in_tab(),
+            Method::PanelState,
+            json!({"context": "yes"}),
+        )
+        .unwrap();
+        r.d.call(&agent_in_tab(), Method::PanelState, json!({}))
+            .unwrap();
+        let _ = r.d.call(
+            &plugin(Some("tab-1"), &[Permission::Tabs]),
+            Method::PanelState,
+            ask.clone(),
+        );
+        let _ =
+            r.d.call(&ctx(Some("tab-1"), Grant::Ui), Method::PanelState, ask);
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen[0], "context");
+        assert!(seen[1..].iter().all(|s| *s == "state"), "{seen:?}");
+    }
+
     #[test]
     fn an_unanswered_call_times_out_and_a_stop_ends_the_wait_within_a_slice() {
         // Stop flag: the wait ends within one slice of it being set.

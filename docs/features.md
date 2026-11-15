@@ -2098,7 +2098,8 @@ Spec: `docs/superpowers/specs/2026-10-28-browser-command.md`.
   `panel.state` with a 1 s timeout per step (2.5 s for the whole run) and adds context only when the tab's web page changed since it last told this tab and
   Claude session (a state file in `%TEMP%\flare-mcp`, named by a hash of the tab token and the session id), or once when
   the page has gone. The title and address are cleaned, quoted and between the page-content markers, as in a look. Outside
-  Flare or when Flare does not answer it prints nothing and exits 0; the state hook (`hook.cmd`) is unchanged. Held by
+  Flare or when Flare does not answer it prints nothing and exits 0; the state hook (`hook.cmd`) is unchanged. Since
+  2026-11-15 it also asks for the panel's quiet context (a selection, a drawn arrow; "Quiet context" below, rule 1268). Held by
   `the_prompt_hook_runs_flare_mcp_by_its_placeholder_with_one_flag`, `the_prompt_hook_gets_the_absolute_program_or_is_left_out`,
   `install_writes_the_mcp_server_only_when_the_program_exists` (`plugin.rs`), the five `hook::tests` (`flare-mcp`) and
   `the_prompt_hook_tells_the_agent_of_a_page_once_and_says_nothing_outside_flare` (the real binary over a real pipe, `stdio.rs`).
@@ -2230,48 +2231,65 @@ tab's panel. It is a mini-app Flare writes itself, like the audio player, so the
 - **STL normals.** The viewer works out an STL's normals from its facets and ignores the ones in the file, which are commonly zero and would draw the part as one flat silhouette (rule 233).
 
 Not in this version: click a path to preview, a `.gltf` with separate `.bin` or texture files, Draco or other WASM decoders, OBJ, FBX, animation.
-## Ask the agent about a selection (#33), 2026-11-09
+## Ask the agent about a selection (#33), 2026-11-09, changed 2026-11-15
 
-- **What it is.** A small "Ask agent" button in the panel's header (in a web page's address bar, which is its header) and a row "Ask agent about this
-  selection" in the terminal's right-click menu over a grid selection. Both only on a tab with an agent, whichever agent. What is sent lands at the
-  prompt and is never submitted: the person reads it and presses Enter, and the keys go to the terminal.
-- **What is sent.** Web page: `window.getSelection().toString()`, framed. With no selection on a plain web page (2026-11-10), a reference to the
-  page instead (below). A mini-app or plugin page with no selection is a note and nothing typed. Text panel with text selected (2026-11-10): the
-  selection, framed as from `<file name> lines A-B` (below). Text or image panel with nothing selected: the file's path, quoted for the tab's shell.
-  Handed-over text has no file and says so unless some of it is selected. Terminal grid: the selection, framed; the selection is then let go.
-- **Ask about the page** (2026-11-10, rule 238). The agent can already read the page with `browser_look`, so only a reference is typed, and the
-  person adds the question:
-  `About the page open in this tab (example.com):` then `> title: Pricing`, `> address: https://example.com/pricing` and
-  `> (use browser_look to read it)`. The address and title come from the document that answered, in the same answer as its (empty) selection, never
-  from the tab. The title is the page's own words: cleaned like a selection, one line, at most 160 characters, left out when empty. The address
-  loses any user name and password and is cut at 2 KB with `[cut]`. Only `http` and `https` pages; `about:blank` and the like keep the note.
-- **Tooltip.** One fixed wording, since whether a page has a selection is only known by asking it: "Ask agent about the selection or this page" in a
-  web page's address bar, "Ask agent about the selection" on a mini-app or plugin page, "Ask agent about the selection or this file" on a text
-  file, "Ask agent about this file" on a picture. It sits left of the button, so a page's native window cannot cover it.
+- **What it is now.** A row "Ask agent about this selection" in the terminal's right-click menu over a grid selection, only on a tab with an
+  agent, whichever agent. The selection is typed at the prompt, framed, and never submitted: the person reads it and presses Enter, and the
+  keys go to the terminal. The selection is then let go.
+- **No "Ask agent" button (2026-11-15, rule 1267).** The panel's header and a web page's address bar had an "Ask agent" button. Max asked
+  to remove it and keep only "Draw arrow". The address field takes the room back. What the person selects or draws in the panel now
+  reaches a Claude agent quietly, with nothing typed ("Quiet context" below). Gone with it: its tooltip, its hover wording per panel kind,
+  its narrow and glyph-only sizes, the page reference typed with no selection, the file path typed for a text or image panel, and their
+  notes.
+- **The frame.** `About this from <label>:` then `> ` per line, at most 4 KB with `> [cut]`. The label for the grid is "the terminal".
+- **Refusals.** A short note over the terminal for 4 s: no agent, a question box up, no selection.
 - **Select text in files** (2026-11-10, rules 242 to 244 and 246). The Text panel (and the Code view of a markdown file) selects like an editor: a drag,
   a double click for a word, a triple click for a line, Shift with a click to extend, Shift with the arrows, Home and End (Ctrl too for the whole
   file), Ctrl+A and Ctrl+C (the "Copied" badge shows). A drag held past an edge scrolls toward it; the wheel, the keys and the scrollbar scroll as
   before. Esc lets a selection go first and gives the keys back to the terminal only with nothing selected. The selection is kept as lines and
   characters, so it stays through scrolling, a splitter drag and the wrap button, and goes with a reload, another file or another tab. The text
-  is what the panel shows: tabs as four spaces, a very long line as cut, rows a wrap made joined with no break. With text selected, Ask agent
-  sends it framed as from `notes.md lines 12-40` (the name is cut first to fit the 64 character label); with none it still sends the path. The
-  Compiled and Markdown views are pages and keep the browser's own selection. The Changes panel has none. An empty file (or empty text an agent
-  shows) takes every click and key and simply selects nothing.
-- **The frame.** `About this from <label>:` then `> ` per line, at most 4 KB with `> [cut]`. The label is the host or file name, cleaned and capped at
-  64 characters; a page Flare made itself reads "this page", and a markdown view's page reads the file's name (rule 241). A web page's host is the one its document gave with the text (`location.href`), so a click
-  while the next page loads still names the page that is showing.
-- **Refusals.** A short note over the terminal for 4 s: no agent, a question box up, no selection (mini-app and plugin pages, or a page that is not
-  `http` or `https`), a page that did not answer, answered in a shape that names no page, or answered with more than the script can give (about
-  400 KB, checked natively), a path that cannot be typed.
-- **Narrow panels.** Below 380 px the button is its glyph alone; below 200 px it is gone.
-- **Not in this version.** A row in the page's own right-click menu, a right-click menu in the Text panel, selection in the Changes panel, any
-  auto-submit, any ctl, MCP or plugin way in.
-- **Tests.** `ask_agent::tests` (hostile text and titles, `frame_page`), `appctl::tests::ask_tests` (fake shell and fake browser), `ui_tests::panel`
-  (`ask_agent_*`, the tooltip included, and the text panel's drag, wheel and highlight), `panel_sel::tests` (positions, wrapping, words, lines,
-  wide characters, the label) and `appctl::tests::text_sel_tests` (the pointer, the keys, the copy, the drag's scroll, Ask agent).
-- **Not covered.** A real WebView2 selection or title and a real agent's prompt: no e2e scenario. Where the tooltip lands is not checked in a real
-  window.
+  is what the panel shows: tabs as four spaces, a very long line as cut, rows a wrap made joined with no break. The Compiled and Markdown views
+  are pages and keep the browser's own selection. The Changes panel has none. An empty file (or empty text an agent shows) takes every click
+  and key and simply selects nothing.
+- **Tests.** `ask_agent::tests` (hostile text), `appctl::tests::ask_tests` (the grid row; fake shell), `panel_sel::tests` (positions, wrapping,
+  words, lines, wide characters, the lines label) and `appctl::tests::text_sel_tests` (the pointer, the keys, the copy, the drag's scroll).
 
+## Quiet context: what you mark in the panel, 2026-11-15
+
+Rule 1268. Brainstorm `research\flare\2026-11-15-ask-agent-brainstorm.md` (ideas 1.1 and 1.2), changed by Max: no button, nothing typed, and
+the agent must not bring it up unless the person's message is about it (the person may have selected text only to copy it).
+
+- **What the agent hears.** At its next prompt, the tab's Claude gets extra context from its `UserPromptSubmit` hook
+  (`flare-mcp --hook-context`, the same hook that says which web page is open). Nothing is typed and no turn starts.
+  - Text selected in the panel right now: lines in a text file or a markdown file's Code view (with the file's path and `lines A-B`), or
+    text on a plain web page or a markdown view's page (never a mini-app's or a mod's page: its own script could fake it). A file's
+    selection is said as: `In Flare's side panel the user has selected: "<text>" (from the file "<path>", lines A-B). Use it only if
+    the user's message is about it; do not mention it otherwise.` A page's selection is page content, since the page's script can set
+    it: `Text selected in Flare's side panel, on the web page below (page content, not Flare's words).`, with the text, title and
+    address between the page-content markers, as in a look. Text handed to the panel is named by its title inside the markers too.
+  - An arrow the person drew ("Draw arrow") that Flare still keeps: `The user drew an arrow in Flare's side panel on <file or the web page
+    below>. If the user's message is about it, use browser_look to see where it points; do not mention it otherwise.` What it points at is page
+    content and is not sent; the look shows it.
+- **When.** Only for a prompt you sent: a plain Enter you press in the terminal of the tab in front lets one context call through. A
+  repeat call, the agent's own tool or a tab in the back gets the plain panel state. A selection is said at every prompt while it is still
+  selected. An arrow is said at every prompt until a look sees it, the page moves on, or 5 minutes pass. The hook keeps no state for these.
+  Flare cannot see clicks or keys inside a web page, so it cannot check that a page's selection came from you.
+- **Caps.** A selection is at most 2,000 characters; a longer one is cut and the context says so. Invisible characters and controls are taken
+  out (line breaks stay), in Flare and again in the hook. No page content is sent beyond the selection and the title and address the page
+  context already sends.
+- **How.** The hook asks `panel.state` with `"context": true`. Only the tab's own agent gets `context` (a plugin or the app gets the plain
+  state). A file's selection is known at once. A page's selection is read with the selection script; the call waits at most 400 ms for it,
+  then answers without it. A page that navigated since the read is not believed.
+- **Claude only.** In a Claude tab whose hooks named its session, a drawn arrow types nothing. Other agents (Codex, agy) have no such hook:
+  their drawn arrow is still typed at the prompt, unsent, as before.
+- **Tests.** `quiet_context::tests` (the caps, the gate, the places), `hook::tests` (`flare-mcp`: the wording, quoting, cut note, said every
+  prompt, an older Flare, names outside the markers only as quoted paths), `ctl_app::tests::only_the_agent_gets_the_panels_quiet_context`,
+  `appctl::tests::ask_tests` (a page's selection: wait, answer, navigation, failures, a mini-app never read, once per prompt, the tab in
+  front, closed panel), `text_sel_tests` (a file's lines, cleared), `md_tests` (a markdown page and the
+  wait running out), `arrow_tests::a_claude_tab_with_hooks_hears_of_the_arrow_quietly_until_a_look_and_nothing_is_typed`, and `ui_tests::panel`
+  (`draw_arrow_*`, the address field's room).
+- **Not covered.** A real WebView2 selection and a real Claude reading the context: no e2e scenario. A mark during a turn is heard at the next
+  prompt, not at the next tool call.
 ## Image thumbnails on hover (#17), 2026-11-09
 
 Point at a picture's path in the terminal for 350 ms and a small picture appears over the grid, above or below the line so it never covers it. Rows cannot be added under a line without changing the agent's text, so it is a floating bubble.
@@ -2306,10 +2324,10 @@ the panel's header switches between three views; it is Flare's own chrome, drawn
 - **Look.** The page follows the panel: light or dark, the panel's own ground and ink, Segoe UI for text and Cascadia Mono for code, at a width
   that reads well in a narrow panel. Narrow panels show the control as "Doc", "Md" and "Code".
 - **Fallback (rule 240).** If rendering fails or the WebView2 runtime is missing, the file shows in Code. Picking a view tries again.
-- **Ask agent (rule 241).** Works on selected text in the two page views, framed `About this from <file name>:`. With nothing selected the file's
-  path is sent, as from Code.
+- **Selected text (rule 241).** Text selected in the two page views reaches a Claude agent in the quiet context, named by the file's path
+  (2026-11-15, rule 1268).
 - **Tests.** `mdview::tests` (escaping, links, anchors, pictures, caps, the stale stop, the look), `store` and `state` (the view and rule 40),
-  `preview` (`is_markdown`, `read_source`), `appctl::tests::md_tests` (fake browser: the default, the control, the restart, both fallbacks, Ask agent).
+  `preview` (`is_markdown`, `read_source`), `appctl::tests::md_tests` (fake browser: the default, the control, the restart, both fallbacks, the quiet context).
 - **Not covered.** A real WebView2 drawing the page: no e2e scenario yet.
 - **Not in this version.** Links that leave the page and pictures (each needs its own safety rules: opening an address from an untrusted file,
   reading local image files), colouring for other code files, a `view` argument for agent tools. The Code view selects like any text file
@@ -2360,12 +2378,13 @@ Spec `docs/superpowers/specs/2026-11-10-ask-agent-additions-design.md`, section 
   typing in the page, a navigation, the panel or tab closing, or after 60 s. It is drawn only where the agent's cursor may be (the page
   in front and live: not under a Flare menu, the still, another tab or a minimised window) and never over a pop-up; with a pop-up open
   the call answers "a pop-up is open, the person must finish it". The tool text says it is for steps the person must do themselves.
-- **The person points ("Draw arrow").** A button beside Ask agent in the web bar (and in a mini-app's header), only on a tab with an
+- **The person points ("Draw arrow").** A button left of the close button in the web bar (and in a mini-app's header), only on a tab with an
   agent, on a web page or a mini-app (never a plugin's page), and not while a pop-up is open. It puts a pad over the page: a layered
   window, every pixel at alpha 1, that catches the mouse and never takes the keyboard from the page. Press, drag and release are read on
   the 16 ms agent tick; a blue arrow follows live. On release Flare asks the browser, with no page script, what is under the head
   (`DOM.getNodeForLocation`, then `Accessibility.getPartialAXTree` for its role and name, the nearest element a look would list) and types
-  this at the prompt, unsent: `About this arrow on <site>:`, `> points at: <role> "<name>"`, `> at: x, y in a W x H page`,
+  this at the prompt, unsent (a Claude tab with hooks gets nothing typed and hears of the arrow in the quiet context instead, 2026-11-15,
+  rule 1268): `About this arrow on <site>:`, `> points at: <role> "<name>"`, `> at: x, y in a W x H page`,
   `> (use browser_look to see it)`. A click with no drag points at the target from up and left. Cancel: the button again, a right click,
   Escape (in the page or in Flare's window), a menu, a tab switch, a pop-up or a navigation.
 - **The agent sees the person's arrow.** It is kept for 5 minutes or until the page moves on. The next `browser_look` gets

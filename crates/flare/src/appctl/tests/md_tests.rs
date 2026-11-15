@@ -1,6 +1,6 @@
 //! Markdown views (2026-11-10) inside the window controller, with a fake browser: a `.md` file opens compiled as a
 //! page Flare writes, the header's control switches between Compiled, Markdown and Code, the pick stays with the panel
-//! (and across a restart), a page that cannot be shown falls back to Code, and Ask agent names the file.
+//! (and across a restart), a page that cannot be shown falls back to Code, and the quiet context names the file.
 
 use flare_surfaces::app::AppSpec;
 use flare_surfaces::mdview::MdView;
@@ -288,15 +288,12 @@ fn the_picked_view_is_written_and_comes_back_after_a_restart() {
 }
 
 #[test]
-fn ask_agent_on_a_markdown_page_names_the_file_and_sends_its_path_with_nothing_selected() {
-    let (f, h, shell) = live(Opts::default());
+fn the_quiet_context_of_a_markdown_page_names_the_file_and_waits_for_the_pages_answer() {
+    use crate::ctl_app::{CtlOp, CtlRequest, CtlRequestBox};
+    let (f, _h, shell) = live(Opts::default());
     let slot = with_fake(&f);
     apps_root(&f);
     let id = f.ctl.borrow().front_id().unwrap();
-    let cwd = f.cwds()[0].clone();
-    f.say(&cwd, TITLE_IDLE);
-    f.pump_until("the agent to be here", |f| f.agent_here(&id));
-    feed(&h, "\x1b[?2004h");
     let abs = show_md(&f, "r.md", DOC);
     f.pump_until("the page", |_| !opened_pages(&slot).is_empty());
     let url = opened_pages(&slot)[0].url.clone();
@@ -306,33 +303,52 @@ fn ask_agent_on_a_markdown_page_names_the_file_and_sends_its_path_with_nothing_s
             _ => None,
         })
     };
-    f.ctl.borrow_mut().panel_ask_agent();
-    f.pump();
+    let ask = |f: &Fx| {
+        f.ctl.borrow_mut().quiet_prompt_seen(&id);
+        let (tx, rx) = std::sync::mpsc::channel();
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Ctl(CtlRequestBox(CtlRequest {
+                op: CtlOp::PanelContext {
+                    tab: id.clone(),
+                    cwd: None,
+                },
+                deadline: Instant::now() + Duration::from_secs(5),
+                reply: tx,
+            })));
+        f.pump();
+        rx
+    };
+    let rx = ask(&f);
+    assert!(rx.try_recv().is_err(), "it waits for the page");
+    assert_eq!(f.ctl.borrow().quiet_reads_waiting(), 1);
     let sid = script(&slot).expect("the page was asked for its selection");
     fake(&slot).say(WebEvent::Script {
         id: sid,
         result: Ok(serde_json::to_string(&format!("{url}\nr.md\nSome text")).unwrap()),
     });
-    // The paste reaches the pty on the session's writer, not at once.
-    f.pump_until("the paste", |_| shell.written().ends_with(b"\x1b[201~"));
-    let typed = String::from_utf8_lossy(&shell.written()).into_owned();
-    assert!(typed.contains("About this from r.md:"), "{typed:?}");
-    assert!(typed.contains("> Some text"), "{typed:?}");
-    assert!(
-        typed.ends_with("\x1b[201~"),
-        "nothing follows the paste: {typed:?}"
-    );
-    // Nothing selected: the file's path goes, as from the Code view.
-    f.ctl.borrow_mut().panel_ask_agent();
     f.pump();
+    let v = rx.try_recv().expect("answered").expect("the state");
+    assert_eq!(
+        v["context"],
+        serde_json::json!({"selection": {"text": "Some text", "cut": false, "file": abs}})
+    );
+    assert_eq!(f.ctl.borrow().quiet_reads_waiting(), 0);
+    // Nothing selected: no selection, and nothing typed either way.
+    let rx = ask(&f);
     let sid = script(&slot).unwrap();
     fake(&slot).say(WebEvent::Script {
         id: sid,
         result: Ok(serde_json::to_string(&format!("{url}\nr.md\n")).unwrap()),
     });
-    f.pump_until("the path", |_| {
-        String::from_utf8_lossy(&shell.written()).contains(&abs)
-    });
-    let typed = String::from_utf8_lossy(&shell.written()).into_owned();
-    assert!(typed.contains(&abs), "{typed:?}");
+    f.pump();
+    let v = rx.try_recv().expect("answered").expect("the state");
+    assert_eq!(v["context"], serde_json::json!({}));
+    // A page that never answers: the call is answered without it when the wait ends.
+    let rx = ask(&f);
+    assert!(rx.try_recv().is_err());
+    f.ctl.borrow_mut().quiet_reads_expire();
+    let v = rx.try_recv().expect("answered").expect("the state");
+    assert_eq!(v["context"], serde_json::json!({}));
+    assert!(shell.written().is_empty(), "nothing is typed");
 }
