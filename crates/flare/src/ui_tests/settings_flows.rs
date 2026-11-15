@@ -65,6 +65,7 @@ fn fx_at(scale: f32) -> Fx {
         look: look.clone(),
         diag: Rc::new(FakeDiag::new("C:/logs", false)),
         verb: Arc::new(FakeVerb::new(VerbState::Off)),
+        shell_restart: Arc::new(flare_settings::app_icon::FakeShellRestart::new()),
         dictation: Rc::new(crate::dictation_page::DictationPageProvider),
         pick_folder: Rc::new(|_, done| done(None)),
         open_path: {
@@ -81,7 +82,6 @@ fn fx_at(scale: f32) -> Fx {
             secondary: "#181818".into(),
         }),
         agent_colours: Rc::new(|| ["#111111".into(), "#222222".into(), "#333333".into()]),
-        agent_key_labels: Rc::new(String::new),
         post,
         version: "1.2.3".to_string(),
         copyright: "Copyright 2026".to_string(),

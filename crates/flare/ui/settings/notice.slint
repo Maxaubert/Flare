@@ -1,0 +1,103 @@
+// A settings notice (rule 1263, 2026-11-14): one plain line and an OK button, in the Dialog look (dialog.slint: the
+// scrim, a 380 px box on the side-flat ground with a hairline border and the modal shadow, DialogButton). A settings
+// row's subtext never changes to report state, so a failure that has to be told (the App icon row's failed shell
+// restart) is told here. OK, Enter, Space, Escape and a press outside all close it; the focus lands on OK as it opens.
+// OK has words, so it has no tooltip.
+import { Theme, Px, SettingsFixed } from "../theme.slint";
+import { DialogButton } from "../dialog.slint";
+
+export component SetNotice inherits Rectangle {
+    in property <bool> open;
+    in property <string> text;
+    callback closed();
+    out property <length> box-x: box.x;
+    out property <length> box-y: box.y;
+    out property <length> box-w: box.width;
+    out property <length> box-h: box.height;
+    out property <length> ok-x: ok.absolute-position.x;
+    out property <length> ok-y: ok.absolute-position.y;
+    out property <length> ok-w: ok.width;
+    out property <length> ok-h: ok.height;
+
+    visible: root.open;
+    width: 100%;
+    height: 100%;
+    changed open => {
+        if root.open {
+            fs.focus();
+        }
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Escape || e.text == Key.Return || e.text == " " {
+                root.closed();
+                return accept;
+            }
+            // Tab stays inside: OK is the only button.
+            if e.text == Key.Tab || e.text == Key.Backtab {
+                return accept;
+            }
+            return reject;
+        }
+
+        Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: Theme.scrim;
+        }
+        // a press outside the box closes it
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down {
+                    root.closed();
+                }
+            }
+        }
+        box := Rectangle {
+            width: min(380px, root.width - 48px);
+            height: col.preferred-height;
+            x: Px.snap((root.width - self.width) / 2);
+            y: Px.snap((root.height - self.height) / 2);
+            background: Theme.side-flat;
+            border-radius: 2px;
+            border-width: Px.hair();
+            border-color: Theme.divider;
+            drop-shadow-offset-y: 24px;
+            drop-shadow-blur: 70px;
+            drop-shadow-color: SettingsFixed.modal-shadow;
+            accessible-role: none;
+            accessible-label: root.text;
+
+            // swallows presses inside the box, so they never reach the scrim
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+            }
+            col := VerticalLayout {
+                padding: 20px;
+                alignment: start;
+                Text {
+                    text: root.text;
+                    wrap: word-wrap;
+                    font-family: Theme.font-ui;
+                    font-size: 13px;
+                    color: Theme.text;
+                }
+                Rectangle { height: 20px; }
+                HorizontalLayout {
+                    alignment: end;
+                    ok := DialogButton {
+                        label: "OK";
+                        is-primary: true;
+                        clicked => { root.closed(); }
+                    }
+                }
+            }
+        }
+    }
+}

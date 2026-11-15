@@ -8,6 +8,7 @@ pub mod drag_flight;
 pub mod fit_hold;
 pub mod folder_names;
 pub mod hidden_title;
+pub mod hotkeys;
 pub mod keymap;
 #[cfg(not(windows))]
 mod macos;
