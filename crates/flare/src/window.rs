@@ -709,7 +709,7 @@ fn settings_deps(
             flare_diag::control::DiagControl::with_log(&profile, flare_diag::writer::main()),
         )),
         verb,
-        // Under --e2e a stand-in: a scenario never restarts Explorer or the Dock (rule 1263).
+        // Under --e2e a stand-in: a scenario never restarts Explorer (rule 1263).
         shell_restart: if e2e_on {
             Arc::new(flare_settings::app_icon::FakeShellRestart::new())
         } else {
