@@ -63,11 +63,20 @@ fn plugin_ask(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     v["open"] = json!(a.get_pask_open());
     v["title"] = json!(a.get_pask_title().to_string());
     v["sub"] = json!(a.get_pask_sub().to_string());
+    v["error"] = json!(a.get_pask_error().to_string());
+    v["error_shown"] = json!(a.get_pask_error_shown());
     v["label"] = json!(a.get_pask_label().to_string());
     v["button"] = json!(a.get_pask_button().to_string());
     v["site"] = json!(a.get_pask_site().to_string());
     v["asker"] = json!(a.get_pask_asker().to_string());
+    // A secret's "Asked by <plugin>" line under Cancel, from Flare, and where it is drawn.
     v["foot"] = json!(a.get_pask_foot().to_string());
+    v["foot_box"] = rect(
+        a.get_pask_foot_x(),
+        a.get_pask_foot_y(),
+        a.get_pask_foot_w(),
+        a.get_pask_foot_h(),
+    );
     v["branded"] = json!(a.get_pask_look().branded);
     v["plate"] = json!(a.get_pask_look().plate);
     v["revealed"] = json!(a.get_pask_revealed());

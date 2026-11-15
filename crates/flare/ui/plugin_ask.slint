@@ -3,7 +3,10 @@
 // the site and who asked in which tab, wide Deny and Fill, nothing under them since 2026-11-10), or a secret the plugin
 // asks for (`secret.ask`: its logo, the title as the heading, the optional sub under it, one masked field with the
 // label as its placeholder and an eye to show it, a full-width button with the plugin's word, Cancel as a link).
-// The words under a secret say whose question it is: the plugin's name comes from Flare, never from the plugin.
+// A secret ask with an `error` (2026-11-15, the approved mockup C) shows that line in the sub's place in the error
+// colour, and the field gets a red edge with a soft red glow; it is empty and has the keys as always.
+// The short grey line under a secret's Cancel, "Asked by <plugin>", says whose question it is: Flare writes it from
+// the plugin's resolved name (and install host), never from the ask, in Flare's own dim ink (rule 1266, 2026-11-15).
 // Fill is pressed by the pointer only: no key presses it (Enter and Space press Deny, which holds the keys),
 // so a key sent at the window cannot approve a fill. Escape and a press outside the box are Deny (or Cancel).
 // Fill takes no press for its first moment (ARM-DELAY): a question that pops up under a click already on its way
@@ -72,6 +75,8 @@ export component PluginAsk inherits Rectangle {
     in property <string> title;
     // A secret's sub line (an account), or "".
     in property <string> sub;
+    // A secret's error line (why the last answer failed), or "". Shown in the sub's place, in red.
+    in property <string> error;
     // What the field is for (a secret's placeholder).
     in property <string> label;
     // The secret's button ("OK" when the plugin names none).
@@ -96,6 +101,13 @@ export component PluginAsk inherits Rectangle {
     property <bool> reveal;
     out property <bool> allow-armed: root.armed;
     out property <bool> field-has-focus: field.has-focus;
+    // The secret shows its error: the red line and the field's red edge.
+    out property <bool> error-shown: root.kind == 1 && root.error != "";
+    // Where the field is, for the UI tests (its edge).
+    out property <length> field-x: fbox.absolute-position.x;
+    out property <length> field-y: fbox.absolute-position.y;
+    out property <length> field-w: fbox.width;
+    out property <length> field-h: fbox.height;
     out property <bool> revealed: root.reveal;
     // Where the buttons are, for the e2e's pointer (it presses them as the person would).
     out property <length> allow-x: allow-btn.absolute-position.x;
@@ -112,6 +124,11 @@ export component PluginAsk inherits Rectangle {
     out property <length> ok-h: ok-btn.height;
     out property <length> eye-x: eye.absolute-position.x;
     out property <length> eye-y: eye.absolute-position.y;
+    // Where a secret's "Asked by" line is, for the UI tests (it sits under Cancel).
+    out property <length> foot-x: foot-txt.absolute-position.x;
+    out property <length> foot-y: foot-txt.absolute-position.y;
+    out property <length> foot-w: foot-txt.width;
+    out property <length> foot-h: foot-txt.height;
     out property <length> box-x: box.x;
     out property <length> box-y: box.y;
     out property <length> box-w: box.width;
@@ -232,12 +249,12 @@ export component PluginAsk inherits Rectangle {
                 font-weight: 650;
                 color: PluginInk.text(root.look);
             }
-            if root.kind == 1 && root.sub != "": Text {
-                text: root.sub;
+            if root.kind == 1 && (root.error-shown || root.sub != ""): Text {
+                text: root.error-shown ? root.error : root.sub;
                 horizontal-alignment: center;
                 font-family: Theme.font-ui;
                 font-size: 12.5px;
-                color: PluginInk.dim(root.look);
+                color: root.error-shown ? PluginInk.error(root.look) : PluginInk.dim(root.look);
                 overflow: elide;
             }
             Rectangle { height: root.kind == 1 ? 14px : 12px; }
@@ -291,15 +308,15 @@ export component PluginAsk inherits Rectangle {
                     }
                 }
             }
-            // A secret: the masked field, its placeholder and the eye.
-            Rectangle {
+            // A secret: the masked field, its placeholder and the eye. With an error: a red edge and a red glow.
+            fbox := Rectangle {
                 visible: root.kind == 1;
                 height: root.kind == 1 ? 42px : 0px;
                 border-radius: 8px;
                 background: PluginInk.field(root.look);
                 border-width: Px.hair();
-                border-color: field.has-focus ? PluginInk.accent-hi(root.look) : PluginInk.line(root.look);
-                // The glow of the focused field.
+                border-color: root.error-shown ? PluginInk.error-edge(root.look) : (field.has-focus ? PluginInk.accent-hi(root.look) : PluginInk.line(root.look));
+                // The glow of the focused field, red while it shows an error.
                 Rectangle {
                     x: -3px;
                     y: -3px;
@@ -307,7 +324,7 @@ export component PluginAsk inherits Rectangle {
                     height: parent.height + 6px;
                     border-radius: 11px;
                     border-width: 3px;
-                    border-color: field.has-focus ? PluginInk.accent-hi(root.look).with-alpha(0.2) : transparent;
+                    border-color: root.error-shown ? PluginInk.error-edge(root.look).with-alpha(0.22) : (field.has-focus ? PluginInk.accent-hi(root.look).with-alpha(0.2) : transparent);
                 }
                 if field.text == "": Text {
                     x: 12px;
@@ -333,6 +350,7 @@ export component PluginAsk inherits Rectangle {
                     vertical-alignment: center;
                     accessible-role: text-input;
                     accessible-label: root.label;
+                    accessible-description: root.error-shown ? root.error : "";
                     accepted => { root.send-secret(); }
                     key-pressed(e) => {
                         if e.text == Key.Escape {
@@ -403,7 +421,7 @@ export component PluginAsk inherits Rectangle {
                     clicked => { root.fill-answer(1); }
                 }
             }
-            // A secret: Cancel as a link and Flare's line. A fill ends at its buttons.
+            // A secret: Cancel as a link and Flare's "Asked by <plugin>" under it. A fill ends at its buttons.
             Rectangle { height: root.kind == 1 ? 6px : 0px; }
             HorizontalLayout {
                 visible: root.kind == 1;
@@ -417,13 +435,18 @@ export component PluginAsk inherits Rectangle {
                     clicked => { root.cancel(); }
                 }
             }
-            if root.kind == 1: Rectangle { height: 4px; }
-            if root.kind == 1: Text {
-                text: root.foot;
+            // Small and dim, in Flare's own type and dim ink (Theme.dim, or BrandInk.dim on the fixed brand surface):
+            // never the plugin's colour, and its words come from Flare, not from the ask (rule 1266).
+            Rectangle { height: root.kind == 1 ? 2px : 0px; }
+            foot-txt := Text {
+                visible: root.kind == 1;
+                height: root.kind == 1 ? self.preferred-height : 0px;
+                text: root.kind == 1 ? root.foot : "";
                 wrap: word-wrap;
                 horizontal-alignment: center;
                 font-family: Theme.font-ui;
-                font-size: 11.5px;
+                font-size: 11px;
+                font-weight: 400;
                 color: PluginInk.dim(root.look);
             }
         }

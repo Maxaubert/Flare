@@ -217,6 +217,7 @@ impl AppCtl {
                 label,
                 sub,
                 button,
+                error,
                 generation,
             } => {
                 if !self.plugin_live(&plugin, generation) {
@@ -238,6 +239,7 @@ impl AppCtl {
                     &label,
                     &sub,
                     &button,
+                    &error,
                 );
                 let ask = PluginAsk {
                     plugin,
@@ -272,6 +274,7 @@ impl AppCtl {
             app.set_pask_kind(v.kind);
             app.set_pask_title(v.title.as_str().into());
             app.set_pask_sub(v.sub.as_str().into());
+            app.set_pask_error(v.error.as_str().into());
             app.set_pask_label(v.label.as_str().into());
             app.set_pask_button(v.button.as_str().into());
             app.set_pask_site(v.site.as_str().into());
