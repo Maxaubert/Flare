@@ -252,6 +252,7 @@ fn mini() -> crate::machines::Machine {
         port: None,
         key: None,
         known_hosts: None,
+        host_key: None,
     }
 }
 
