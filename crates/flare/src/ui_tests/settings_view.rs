@@ -29,6 +29,7 @@ fn opts(ids: &[&str]) -> ModelRc<SetOption> {
             id: SharedString::from(*i),
             name: SharedString::from(i.to_uppercase()),
             face: SharedString::new(),
+            vendor: Default::default(),
         })
         .collect();
     ModelRc::new(VecModel::from(v))

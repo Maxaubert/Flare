@@ -18,12 +18,14 @@ use crate::sections::section_title;
 use crate::verb::VerbState;
 use flare_theme::colour_contrast::AlphaRange;
 
-/// One option of a segmented or select control. `face` is "" for the UI font.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One option of a segmented or select control. `face` is "" for the UI font. `vendor` is a system's logo drawn before
+/// the name (`mac`, `pc`; "" for none): the Add a machine dialog's nearby computers (machine pairing PR 3).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Opt {
     pub id: String,
     pub name: String,
     pub face: String,
+    pub vendor: String,
 }
 
 /// The control a row draws.
@@ -299,7 +301,7 @@ pub fn opts(pairs: &[(&str, &str)]) -> Vec<Opt> {
         .map(|(id, name)| Opt {
             id: (*id).to_string(),
             name: (*name).to_string(),
-            face: String::new(),
+            ..Opt::default()
         })
         .collect()
 }

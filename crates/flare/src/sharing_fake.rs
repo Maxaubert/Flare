@@ -37,9 +37,24 @@ pub(crate) struct FakeOs {
     /// What `socketfilterfw --getblockall` prints, and how often it was asked.
     pub block_all: Mutex<Result<String, String>>,
     pub block_all_asked: Mutex<u32>,
+    /// What `socketfilterfw --getglobalstate` and `--getappblocked` print (pairing, rule 1256), and the paths asked.
+    pub fw_state: Mutex<Result<String, String>>,
+    pub fw_app: Mutex<Result<String, String>>,
+    pub fw_app_asked: Mutex<Vec<String>>,
     pub urls: Mutex<Vec<String>>,
     pub stripped: Mutex<u32>,
     pub announced: Mutex<Vec<bool>>,
+    /// Pairing (PR 3): an account in Administrators, the lines added to and keys removed from the user's own file,
+    /// the SSH server's host key line and the user name.
+    pub admin_account: AtomicBool,
+    pub user_keys: Mutex<Vec<String>>,
+    pub removed_keys: Mutex<Vec<String>>,
+    pub host_key: Mutex<Result<String, String>>,
+    pub user: Mutex<String>,
+    /// Set when a key goes in (a test turns sharing off at that moment).
+    pub stop_on_add: Mutex<Option<std::sync::Arc<AtomicBool>>>,
+    /// Holds a key that goes into the user's own file until the test sends (or drops its sender).
+    pub hold_add: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
 impl FakeOs {
@@ -54,9 +69,19 @@ impl FakeOs {
             admin_cmds: Mutex::default(),
             block_all: Mutex::new(Ok("Firewall has block all state set to disabled.\n".into())),
             block_all_asked: Mutex::new(0),
+            fw_state: Mutex::new(Ok("Firewall is disabled. (State = 0)\n".into())),
+            fw_app: Mutex::new(Ok("The application is not part of the firewall\n".into())),
+            fw_app_asked: Mutex::default(),
             urls: Mutex::default(),
             stripped: Mutex::new(0),
             announced: Mutex::default(),
+            admin_account: AtomicBool::new(false),
+            user_keys: Mutex::default(),
+            removed_keys: Mutex::default(),
+            host_key: Mutex::new(Ok(host_key())),
+            user: Mutex::new("max".into()),
+            stop_on_add: Mutex::default(),
+            hold_add: Mutex::default(),
         }
     }
 
@@ -87,6 +112,11 @@ impl SharingOs for FakeOs {
         }
     }
     fn run_elevated(&self, script: &str) -> Result<String, String> {
+        if script.contains("let a paired computer in")
+            && let Some(stop) = self.stop_on_add.lock().unwrap().as_ref()
+        {
+            stop.store(true, Ordering::SeqCst);
+        }
         self.scripts.lock().unwrap().push(script.to_string());
         self.elevated.lock().unwrap().clone()
     }
@@ -97,6 +127,16 @@ impl SharingOs for FakeOs {
     fn firewall_block_all(&self) -> Result<String, String> {
         *self.block_all_asked.lock().unwrap() += 1;
         self.block_all.lock().unwrap().clone()
+    }
+    fn firewall_global_state(&self) -> Result<String, String> {
+        self.fw_state.lock().unwrap().clone()
+    }
+    fn firewall_app_blocked(&self, exe: &std::path::Path) -> Result<String, String> {
+        self.fw_app_asked
+            .lock()
+            .unwrap()
+            .push(exe.to_string_lossy().into_owned());
+        self.fw_app.lock().unwrap().clone()
     }
     fn open_url(&self, url: &str) {
         self.urls.lock().unwrap().push(url.to_string());
@@ -111,4 +151,32 @@ impl SharingOs for FakeOs {
     fn wait(&self, _ms: u64) {
         std::thread::sleep(std::time::Duration::from_millis(1)); // sync-ok: a test's fake wait
     }
+    fn windows_admin(&self) -> bool {
+        self.admin_account.load(Ordering::SeqCst)
+    }
+    fn add_user_key(&self, line: &str) -> Result<(), String> {
+        self.user_keys.lock().unwrap().push(line.to_string());
+        if let Some(stop) = self.stop_on_add.lock().unwrap().as_ref() {
+            stop.store(true, Ordering::SeqCst);
+        }
+        if let Some(hold) = self.hold_add.lock().unwrap().as_ref() {
+            let _ = hold.recv(); // sync-ok: a test's fake holds the pairing worker
+        }
+        Ok(())
+    }
+    fn remove_user_key(&self, key: &str) -> Result<bool, String> {
+        self.removed_keys.lock().unwrap().push(key.to_string());
+        Ok(true)
+    }
+    fn ssh_host_key(&self) -> Result<String, String> {
+        self.host_key.lock().unwrap().clone()
+    }
+    fn user_name(&self) -> String {
+        self.user.lock().unwrap().clone()
+    }
+}
+
+/// The host key line a fake SSH server has (an ed25519 key made from a fixed seed).
+pub(crate) fn host_key() -> String {
+    crate::pair_keys::openssh_key_files(&[42u8; 32], "root@host", 1).1
 }

@@ -20,6 +20,7 @@ fn opt(id: &str, name: &str, face: &str) -> SetOption {
         id: id.into(),
         name: name.into(),
         face: face.into(),
+        vendor: Default::default(),
     }
 }
 

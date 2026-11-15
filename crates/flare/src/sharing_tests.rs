@@ -298,6 +298,8 @@ fn the_elevated_scripts_report_through_their_exit_code_and_write_no_file() {
         windows_on_script(Path::new(r"C:\F.exe")),
         windows_off_script(true, true),
         windows_off_script(false, false),
+        windows_add_key_script("ssh-ed25519 AAAA flare-pair:Mini", "AAAA"),
+        windows_remove_key_script("AAAA"),
     ] {
         for gone in [
             "$result",
@@ -316,7 +318,7 @@ fn the_elevated_scripts_report_through_their_exit_code_and_write_no_file() {
         );
         for want in [
             "$fail = 0",
-            "$fail = [array]::IndexOf(@('install', 'start', 'config', 'passwords', 'firewall', 'keys', 'stop'), $step) + 1",
+            "$fail = [array]::IndexOf(@('install', 'start', 'config', 'passwords', 'firewall', 'keys', 'stop', 'addkey'), $step) + 1",
             "if ($fail -lt 1) { $fail = 15 }",
             "exit (17920 + 8 * $fail + [int]$installed + 2 * [int]$started + 4 * [int]$rule)",
         ] {
@@ -331,6 +333,13 @@ fn the_elevated_scripts_report_through_their_exit_code_and_write_no_file() {
         }
     }
     assert_eq!(EXIT_BASE, 17_920);
+    // The key scripts compare base64 keys with case (`-cne`): `-ne` ignores case, so a key that differs only in case
+    // would take another computer's line out.
+    let add = windows_add_key_script("ssh-ed25519 AAAA flare-pair:Mini", "AAAA");
+    let remove = windows_remove_key_script("AAAA");
+    assert!(add.contains("if ((-split $l)[1] -cne 'AAAA')"), "{add}");
+    assert!(remove.contains("(-split $_)[1] -cne 'AAAA'"), "{remove}");
+    assert!(!add.contains(" -ne 'AAAA'") && !remove.contains(" -ne 'AAAA'"));
 }
 
 /// Rule 1253: the exit code is read strictly. Every report goes there and back; PowerShell's own codes, a code below or
@@ -366,7 +375,8 @@ fn the_exit_code_carries_the_report_and_is_read_strictly() {
         1,
         -1,
         EXIT_BASE - 1,
-        EXIT_BASE + 8 * 8,
+        // One past the last step (`addkey`, machine pairing's, is the eighth).
+        EXIT_BASE + 8 * 9,
         EXIT_BASE + 8 * STEP_UNKNOWN,
         EXIT_BASE + 128,
         i64::from(u32::MAX),
@@ -525,7 +535,19 @@ fn the_elevation_call_runs_the_script_inline_with_runas_and_waits() {
 fn the_elevated_command_line_stays_under_windows_limit() {
     let long = format!(r"C:\Users\{}\AppData\Local", "Jø O'Néil ".repeat(20));
     let exe = PathBuf::from(format!(r"{long}\Flare\current\Flare.exe"));
-    for script in [windows_on_script(&exe), windows_off_script(true, true)] {
+    for script in [
+        windows_on_script(&exe),
+        windows_off_script(true, true),
+        windows_add_key_script(
+            &format!(
+                "ssh-ed25519 {} flare-pair:{}",
+                "A".repeat(68),
+                "N".repeat(60)
+            ),
+            &"A".repeat(68),
+        ),
+        windows_remove_key_script(&"A".repeat(68)),
+    ] {
         let argv = elevation_argv(&script).unwrap();
         let len = command_line_len(&argv);
         assert!(len < COMMAND_LINE_MAX / 2, "{len}");
@@ -733,6 +755,125 @@ fn a_mac_with_remote_login_on_needs_no_prompt() {
     r.settle_phase(Phase::On);
     assert!(r.os.admin_cmds.lock().unwrap().is_empty());
     assert!(!prefs::server_by_flare(&r.prefs), "the person's own server");
+}
+
+/// Rule 1256: the Mac firewall's answers are read: on (state 1 or 2), and whether Flare is let in. A path that is
+/// not absolute or holds a control character never reaches the root command; a quote in it is sh-quoted.
+#[test]
+fn the_mac_app_firewall_answers_are_read_and_the_allow_command_is_quoted() {
+    for on in [
+        "Firewall is enabled. (State = 1)",
+        "Firewall is enabled. (State = 2)",
+        "Firewall is on. (State = 1)",
+    ] {
+        assert!(firewall_on(on), "{on}");
+    }
+    for off in ["Firewall is disabled. (State = 0)", "", "something else"] {
+        assert!(!firewall_on(off), "{off}");
+    }
+    for yes in [
+        "The application /Applications/Flare.app/Contents/MacOS/flare is permitted",
+        "Incoming connection to the application is permitted",
+        // What macOS 27 prints, read on the Mac mini 2026-11-15.
+        "Incoming connection to /Applications/Flare.app/Contents/MacOS/flare is permitted.",
+        "The application is not blocked and is allowed",
+    ] {
+        assert!(app_allowed(yes), "{yes}");
+    }
+    for no in [
+        "The application /Applications/Flare.app/Contents/MacOS/flare is blocked",
+        "The application is not part of the firewall",
+        "",
+    ] {
+        assert!(!app_allowed(no), "{no}");
+    }
+    assert_eq!(
+        mac_allow_app_command(Path::new("/Applications/Flare.app/Contents/MacOS/flare")).unwrap(),
+        "/usr/libexec/ApplicationFirewall/socketfilterfw --add '/Applications/Flare.app/Contents/MacOS/flare' \
+         >/dev/null 2>&1; /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp \
+         '/Applications/Flare.app/Contents/MacOS/flare' >/dev/null 2>&1"
+    );
+    let odd = mac_allow_app_command(Path::new("/Users/Jo O'Neil/Flare.app/Contents/MacOS/flare"))
+        .unwrap();
+    assert!(
+        odd.contains("--add '/Users/Jo O'\\''Neil/Flare.app/Contents/MacOS/flare'"),
+        "{odd}"
+    );
+    assert_eq!(mac_allow_app_command(Path::new("Flare.app/flare")), None);
+    assert_eq!(mac_allow_app_command(Path::new("/Apps/a\nb")), None);
+}
+
+/// Rule 1256: when the Mac firewall is on and does not let Flare in, Flare lets itself in inside the same administrator
+/// prompt that turns Remote Login on; no second prompt and no line. With the firewall off nothing is added.
+#[test]
+fn a_mac_firewall_that_does_not_let_flare_in_is_fixed_in_the_same_prompt() {
+    let exe = PathBuf::from("/Applications/Flare.app/Contents/MacOS/flare");
+    let mut r = Rig::new(
+        FakeOs::new(Platform::Mac).ports(&[false, true]),
+        PrefStore::memory(),
+    );
+    r.sharing.flare_exe = exe.clone();
+    *r.os.fw_state.lock().unwrap() = Ok("Firewall is enabled. (State = 1)\n".into());
+    r.sharing.switch(true);
+    r.settle_phase(Phase::On);
+    let cmds = r.os.admin_cmds.lock().unwrap().clone();
+    assert_eq!(cmds.len(), 1, "one prompt");
+    assert_eq!(
+        cmds[0],
+        format!(
+            "{}; {}",
+            mac_on_command(),
+            mac_allow_app_command(&exe).unwrap()
+        )
+    );
+    assert_eq!(*r.os.fw_app_asked.lock().unwrap(), [exe.to_string_lossy()]);
+    assert_eq!(r.sharing.ask(), None);
+    // Firewall off: Flare is not asked about, and the command is Remote Login's alone.
+    let mut r = Rig::new(
+        FakeOs::new(Platform::Mac).ports(&[false, true]),
+        PrefStore::memory(),
+    );
+    r.sharing.flare_exe = exe.clone();
+    r.sharing.switch(true);
+    r.settle_phase(Phase::On);
+    assert_eq!(*r.os.admin_cmds.lock().unwrap(), [mac_on_command()]);
+    assert!(r.os.fw_app_asked.lock().unwrap().is_empty());
+    // Firewall on and Flare let in already: nothing is added.
+    let mut r = Rig::new(
+        FakeOs::new(Platform::Mac).ports(&[false, true]),
+        PrefStore::memory(),
+    );
+    r.sharing.flare_exe = exe;
+    *r.os.fw_state.lock().unwrap() = Ok("Firewall is enabled. (State = 1)\n".into());
+    *r.os.fw_app.lock().unwrap() = Ok("The application is permitted\n".into());
+    r.sharing.switch(true);
+    r.settle_phase(Phase::On);
+    assert_eq!(*r.os.admin_cmds.lock().unwrap(), [mac_on_command()]);
+}
+
+/// Rule 1256: with Remote Login on already there is no administrator prompt, so a Mac firewall that does not let Flare
+/// in is one line pointing to System Settings; sharing is on all the same (SSH works).
+#[test]
+fn remote_login_on_already_behind_a_firewall_that_blocks_flare_says_where_to_allow_it() {
+    let mut r = Rig::new(
+        FakeOs::new(Platform::Mac).ports(&[true]),
+        PrefStore::memory(),
+    );
+    r.sharing.flare_exe = PathBuf::from("/Applications/Flare.app/Contents/MacOS/flare");
+    *r.os.fw_state.lock().unwrap() = Ok("Firewall is enabled. (State = 1)\n".into());
+    *r.os.fw_app.lock().unwrap() = Ok("The application is blocked\n".into());
+    r.sharing.switch(true);
+    r.settle_phase(Phase::On);
+    assert!(r.os.admin_cmds.lock().unwrap().is_empty(), "no prompt");
+    assert_eq!(
+        r.sharing.ask(),
+        Some(&SharingAsk::Notice(MAC_APP_FIREWALL_LINE.to_string()))
+    );
+    assert!(prefs::sharing_on(&r.prefs));
+    assert_eq!(
+        MAC_APP_FIREWALL_LINE,
+        "The Mac firewall may block pairing. Allow Flare in System Settings, Network, Firewall, Options."
+    );
 }
 
 /// Rule 1254: the administrator prompt turns Remote Login on; Cancel there puts the switch back off.

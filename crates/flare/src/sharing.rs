@@ -127,6 +127,70 @@ pub fn mac_on_command() -> String {
     )
 }
 
+/// The one line when the Mac firewall is on and Flare is not let in, and Flare did not ask for the administrator
+/// password to let it in (Remote Login was on already): pairing's listener and announcement need it (rule 1256).
+pub const MAC_APP_FIREWALL_LINE: &str = "The Mac firewall may block pairing. Allow Flare in System Settings, \
+     Network, Firewall, Options.";
+
+/// Pure: `socketfilterfw --getglobalstate` says the Mac firewall is on ("Firewall is enabled. (State = 1)"; 2 is
+/// block all, also on). Off, or words Flare does not know, is not on.
+pub fn firewall_on(out: &str) -> bool {
+    let low = out.to_ascii_lowercase();
+    !low.contains("disabled")
+        && !low.contains("state = 0")
+        && (low.contains("enabled") || low.contains("state = 1") || low.contains("state = 2"))
+}
+
+/// Pure: `socketfilterfw --getappblocked <exe>` says the firewall lets Flare in ("... is permitted"). Blocked, "not
+/// part of the firewall" (never asked) or words Flare does not know are not let in.
+pub fn app_allowed(out: &str) -> bool {
+    let low = out.to_ascii_lowercase();
+    let blocked = low.contains("blocked") && !low.contains("not blocked");
+    !blocked && !low.contains("not part") && (low.contains("permitted") || low.contains("allowed"))
+}
+
+/// BLOCKING: the Mac firewall is on and does not let Flare in yet, so other computers would not reach pairing's
+/// listener or hear its announcement (rule 1256). False when the firewall is off, Flare is let in, or socketfilterfw
+/// did not answer.
+pub fn mac_app_blocked(os: &dyn SharingOs, flare_exe: &Path) -> bool {
+    match os.firewall_global_state() {
+        Ok(out) if firewall_on(&out) => {}
+        Ok(_) => return false,
+        Err(e) => {
+            log::info!("computer sharing: socketfilterfw did not answer: {e}");
+            return false;
+        }
+    }
+    match os.firewall_app_blocked(flare_exe) {
+        Ok(out) if app_allowed(&out) => false,
+        Ok(out) => {
+            log::info!(
+                "computer sharing: the firewall does not let Flare in: {}",
+                out.trim()
+            );
+            true
+        }
+        Err(e) => {
+            log::info!("computer sharing: socketfilterfw did not answer for Flare: {e}");
+            true
+        }
+    }
+}
+
+/// Pure: the root commands that let Flare in through the Mac firewall (rule 1256), for the same administrator prompt
+/// that turns Remote Login on: `socketfilterfw --add` and `--unblockapp` with Flare's path in sh's single quotes. None
+/// for a path that is not absolute or holds a control character.
+pub fn mac_allow_app_command(flare_exe: &Path) -> Option<String> {
+    let exe = flare_exe.to_str()?;
+    if !exe.starts_with('/') || exe.chars().any(char::is_control) {
+        return None;
+    }
+    let exe = format!("'{}'", exe.replace('\'', "'\\''"));
+    Some(format!(
+        "{SOCKETFILTERFW} --add {exe} >/dev/null 2>&1; {SOCKETFILTERFW} --unblockapp {exe} >/dev/null 2>&1"
+    ))
+}
+
 /// The command osascript runs as root to turn Remote Login off (rule 1255): systemsetup, then Flare's keys-only file
 /// goes, only once Remote Login is off (a server left on keeps keys only).
 pub fn mac_off_command() -> String {
@@ -157,14 +221,30 @@ pub trait SharingOs: Send + Sync {
     fn run_as_admin(&self, command: &str) -> Result<String, String>;
     /// macOS: what `socketfilterfw --getblockall` printed ([`blocks_all`] reads it), or Err when it did not run.
     fn firewall_block_all(&self) -> Result<String, String>;
+    /// macOS: what `socketfilterfw --getglobalstate` printed ([`firewall_on`] reads it), or Err (machine pairing PR 3).
+    fn firewall_global_state(&self) -> Result<String, String>;
+    /// macOS: what `socketfilterfw --getappblocked <exe>` printed ([`app_allowed`] reads it), or Err.
+    fn firewall_app_blocked(&self, exe: &Path) -> Result<String, String>;
     /// Opens a URL (System Settings' Sharing page).
     fn open_url(&self, url: &str);
     /// Removes the keys Flare added (a `flare-pair:` comment) from the user's own `authorized_keys`. How many.
     fn strip_user_keys(&self) -> Result<usize, String>;
-    /// Starts or stops announcing this computer on the network (machine pairing PR 3 announces; nothing yet).
+    /// Starts or stops announcing this computer on the network. Machine pairing PR 3 announces through
+    /// `pairing::PairNet` (it needs the pairing port); this stays the switch's own record of it.
     fn announce(&self, on: bool);
     /// Waits between two looks at the port.
     fn wait(&self, ms: u64);
+    /// Windows: this account is in the Administrators group, so sshd reads `administrators_authorized_keys` for it
+    /// (machine pairing PR 3, rule 1258).
+    fn windows_admin(&self) -> bool;
+    /// Adds a line to the user's own `authorized_keys` (rule 1258).
+    fn add_user_key(&self, line: &str) -> Result<(), String>;
+    /// Removes the line holding `key` from the user's own `authorized_keys` (rule 1260). Whether one went.
+    fn remove_user_key(&self, key: &str) -> Result<bool, String>;
+    /// The SSH server's public host key line (ed25519), which a viewer pins (rule 1259).
+    fn ssh_host_key(&self) -> Result<String, String>;
+    /// The account's user name, which a viewer's ssh logs in as.
+    fn user_name(&self) -> String;
 }
 
 // ---- the pure parts ----------------------------------------------------------------------------------------------
@@ -463,7 +543,8 @@ pub struct Report {
 }
 
 /// The steps an elevated script names when it fails, in the order of their number in the exit code (1 is `install`).
-pub const STEPS: [&str; 7] = [
+/// `addkey` is machine pairing's (PR 3, rule 1258).
+pub const STEPS: [&str; 8] = [
     "install",
     "start",
     "config",
@@ -471,6 +552,7 @@ pub const STEPS: [&str; 7] = [
     "firewall",
     "keys",
     "stop",
+    "addkey",
 ];
 
 /// Pure: the exit code an elevated script ends with for `r`: [`EXIT_BASE`], plus 8 times the failed step's number (0
@@ -563,6 +645,7 @@ pub fn step_line(step: &str) -> &'static str {
         "firewall" => "Windows' firewall would not take the rule for sharing.",
         "keys" => "Flare could not remove the keys it added.",
         "stop" => "Windows' SSH server would not stop.",
+        "addkey" => "Windows would not take the key for this computer.",
         _ => "Computer sharing could not be set up.",
     }
 }
@@ -617,14 +700,165 @@ pub fn strip_flare_keys(text: &str) -> (String, usize) {
     (kept, dropped)
 }
 
+/// The elevated script that adds a paired computer's key to Windows' `administrators_authorized_keys` (machine pairing
+/// PR 3, rule 1258), reporting through its exit code like the others: the same key's older line goes, the line is
+/// added, and the file gets the access sshd wants (Administrators and SYSTEM only, by SID, so any Windows language
+/// works). It writes only when no other account can change the folder or the file, and neither is a link
+/// (`Assert-AdminOnly`, step `config`). `key` is the key's base64 field, checked by the caller. Keys are compared with
+/// case (`-cne`), as base64 is: PowerShell's `-ne` ignores case, so another key could match.
+pub fn windows_add_key_script(line: &str, key: &str) -> String {
+    let line = ps_quote(line);
+    let key = ps_quote(key);
+    let check = assert_admin_only();
+    let tail = exit_tail();
+    format!(
+        r#"# Flare: let a paired computer in (rule 1258). Runs elevated.
+$ErrorActionPreference = 'Stop'
+{check}$step = 'config'
+$fail = 0
+$installed = $false
+$started = $false
+$rule = $false
+try {{
+    $dir = Join-Path $env:ProgramData 'ssh'
+    Assert-AdminOnly $dir
+    $f = Join-Path $dir 'administrators_authorized_keys'
+    $keep = New-Object System.Collections.Generic.List[string]
+    if (Test-Path -LiteralPath $f) {{
+        Assert-AdminOnly $f
+        foreach ($l in @(Get-Content -LiteralPath $f)) {{ if ((-split $l)[1] -cne {key}) {{ $keep.Add($l) }} }}
+    }}
+    $step = 'addkey'
+    $keep.Add({line})
+    Set-Content -LiteralPath $f -Value $keep -Encoding ascii
+    & icacls.exe $f /inheritance:r /grant '*S-1-5-32-544:F' /grant '*S-1-5-18:F' | Out-Null
+    if ($LASTEXITCODE -ne 0) {{ throw "icacls ended with $LASTEXITCODE" }}
+}} catch {{
+    $fail = 1
+}}
+{tail}"#
+    )
+}
+
+/// The elevated script that removes one paired computer's key from `administrators_authorized_keys` (rule 1260),
+/// reporting through its exit code, after the same `Assert-AdminOnly` checks.
+pub fn windows_remove_key_script(key: &str) -> String {
+    let key = ps_quote(key);
+    let check = assert_admin_only();
+    let tail = exit_tail();
+    format!(
+        r#"# Flare: remove a paired computer's key (rule 1260). Runs elevated.
+$ErrorActionPreference = 'Stop'
+{check}$step = 'keys'
+$fail = 0
+$installed = $false
+$started = $false
+$rule = $false
+try {{
+    $dir = Join-Path $env:ProgramData 'ssh'
+    $f = Join-Path $dir 'administrators_authorized_keys'
+    if (Test-Path -LiteralPath $f) {{
+        $step = 'config'
+        Assert-AdminOnly $dir
+        Assert-AdminOnly $f
+        $step = 'keys'
+        $keep = @(Get-Content -LiteralPath $f | Where-Object {{ (-split $_)[1] -cne {key} }})
+        Set-Content -LiteralPath $f -Value $keep -Encoding ascii
+    }}
+}} catch {{
+    $fail = 1
+}}
+{tail}"#
+    )
+}
+
+/// Pure: whether an elevated run went well: Ok(true) ok, Ok(false) the person declined, Err the failed step (or ""
+/// when the answer could not be read).
+fn elevated_ok(answer: Result<String, String>) -> Result<bool, &'static str> {
+    match answer.map(|t| parse_outcome(&t)) {
+        Ok(Ok(Elevated::Done(r))) if r.ok => Ok(true),
+        Ok(Ok(Elevated::Done(r))) => {
+            log::warn!("pairing: the elevated key step failed at {}", r.step);
+            Err(r.step)
+        }
+        Ok(Ok(Elevated::Declined)) => Ok(false),
+        Ok(Err(e)) => {
+            log::warn!("pairing: the elevated key step's answer could not be read: {e}");
+            Err("")
+        }
+        Err(e) => {
+            log::info!("pairing: the elevated key step did not run: {e}");
+            Ok(false)
+        }
+    }
+}
+
+/// Pure: a key's base64 field that may go into a script: base64's letters only.
+pub fn plain_key(key: &str) -> bool {
+    crate::machines::plain_base64(key)
+}
+
+/// BLOCKING: lets a paired computer in (rule 1258): on a Windows account in Administrators, an elevated script (a UAC
+/// prompt) writes `administrators_authorized_keys`; any other account's own `~/.ssh/authorized_keys` takes the line
+/// with no prompt. True when the admin file took it; else the one line that says why not.
+pub fn install_key(os: &dyn SharingOs, line: &str) -> Result<bool, String> {
+    let key = line.split_ascii_whitespace().nth(1).unwrap_or_default();
+    if os.platform() == Platform::Windows && os.windows_admin() {
+        if !plain_key(key) {
+            return Err("The key that came is not one Flare takes.".into());
+        }
+        return match elevated_ok(os.run_elevated(&windows_add_key_script(line, key))) {
+            Ok(true) => Ok(true),
+            Ok(false) => {
+                Err("Windows did not allow the change, so the computer was not added.".into())
+            }
+            Err("config") => Err(step_line("config").into()),
+            Err(_) => Err(step_line("addkey").into()),
+        };
+    }
+    os.add_user_key(line).map_err(|e| {
+        log::warn!("pairing: the key could not be added: {e}");
+        "Flare could not add the key for this computer.".to_string()
+    })?;
+    Ok(false)
+}
+
+/// BLOCKING: removes a paired computer's key (rule 1260): from the user's own file, and, when a key went into the
+/// admin file (`admin`), from there with one elevated script.
+pub fn remove_key(os: &dyn SharingOs, key: &str, admin: bool) -> Result<(), String> {
+    if let Err(e) = os.remove_user_key(key) {
+        log::warn!("pairing: the key stays: {e}");
+        return Err(step_line("keys").to_string());
+    }
+    if admin && os.platform() == Platform::Windows && plain_key(key) {
+        match elevated_ok(os.run_elevated(&windows_remove_key_script(key))) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(
+                    "Windows did not allow the change, so the key stays until sharing is turned off."
+                        .into(),
+                );
+            }
+            Err("config") => return Err(step_line("config").into()),
+            Err(_) => return Err(step_line("keys").to_string()),
+        }
+    }
+    Ok(())
+}
+
 // ---- turning on and off, over the OS calls -----------------------------------------------------------------------
 
 /// How turning on went.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OnResult {
     /// Sharing is on; `by_flare`: Flare installed or started the SSH server; `firewall`: Flare's own firewall rules
-    /// are in place (Windows), so turning off removes them.
-    On { by_flare: bool, firewall: bool },
+    /// are in place (Windows), so turning off removes them; `note`: a line to show once it is on (the Mac firewall
+    /// does not let Flare in, rule 1256).
+    On {
+        by_flare: bool,
+        firewall: bool,
+        note: Option<String>,
+    },
     /// The person said no at the system's prompt: the switch goes back off, with nothing to say.
     Declined,
     /// macOS would not let Flare turn Remote Login on: the person turns it on in System Settings.
@@ -659,6 +893,7 @@ pub fn turn_on(os: &dyn SharingOs, flare_exe: &Path) -> OnResult {
                 OnResult::On {
                     by_flare: r.installed || r.started,
                     firewall: r.rule,
+                    note: None,
                 }
             } else {
                 log::warn!("computer sharing: the setup failed at {}", r.step);
@@ -669,9 +904,12 @@ pub fn turn_on(os: &dyn SharingOs, flare_exe: &Path) -> OnResult {
             if os.port_open(SSH_PORT) {
                 return match mac_firewall_problem(os) {
                     Some(line) => OnResult::Failed(line),
+                    // No password prompt here, so a firewall that does not let Flare in is the person's to change.
                     None => OnResult::On {
                         by_flare: false,
                         firewall: false,
+                        note: mac_app_blocked(os, flare_exe)
+                            .then(|| MAC_APP_FIREWALL_LINE.to_string()),
                     },
                 };
             }
@@ -680,7 +918,16 @@ pub fn turn_on(os: &dyn SharingOs, flare_exe: &Path) -> OnResult {
             if let Some(line) = mac_firewall_problem(os) {
                 return OnResult::Failed(line);
             }
-            match os.run_as_admin(&mac_on_command()) {
+            // A firewall that does not let Flare in yet does so in the same administrator prompt (rule 1256).
+            let mut command = mac_on_command();
+            let mut note = None;
+            if mac_app_blocked(os, flare_exe) {
+                match mac_allow_app_command(flare_exe) {
+                    Some(allow) => command = format!("{command}; {allow}"),
+                    None => note = Some(MAC_APP_FIREWALL_LINE.to_string()),
+                }
+            }
+            match os.run_as_admin(&command) {
                 Err(out) if mac_declined(&out) => return OnResult::Declined,
                 Err(out) | Ok(out) if !out.trim().is_empty() => {
                     log::info!("computer sharing: systemsetup said: {}", out.trim());
@@ -693,6 +940,7 @@ pub fn turn_on(os: &dyn SharingOs, flare_exe: &Path) -> OnResult {
                     return OnResult::On {
                         by_flare: true,
                         firewall: false,
+                        note,
                     };
                 }
                 os.wait(500); // sync-ok: turn_on runs on a worker
@@ -889,12 +1137,33 @@ impl SharingOs for NoSharingOs {
     fn firewall_block_all(&self) -> Result<String, String> {
         Err("no setup here".into())
     }
+    fn firewall_global_state(&self) -> Result<String, String> {
+        Err("no setup here".into())
+    }
+    fn firewall_app_blocked(&self, _exe: &Path) -> Result<String, String> {
+        Err("no setup here".into())
+    }
     fn open_url(&self, _url: &str) {}
     fn strip_user_keys(&self) -> Result<usize, String> {
         Ok(0)
     }
     fn announce(&self, _on: bool) {}
     fn wait(&self, _ms: u64) {}
+    fn windows_admin(&self) -> bool {
+        false
+    }
+    fn add_user_key(&self, _line: &str) -> Result<(), String> {
+        Err("no setup here".into())
+    }
+    fn remove_user_key(&self, _key: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+    fn ssh_host_key(&self) -> Result<String, String> {
+        Err("no setup here".into())
+    }
+    fn user_name(&self) -> String {
+        String::new()
+    }
 }
 
 /// The Computer sharing switch's state on the UI thread.
@@ -908,6 +1177,8 @@ pub struct Sharing {
     /// The Remote Login watch running now (0: none). A cancelled watch sees another number and ends.
     watch: Arc<AtomicU64>,
     watches: u64,
+    /// Runs on the clean up's worker before it starts: waits for pairing's host requests to end (rule 1258).
+    before_off: Arc<dyn Fn() + Send + Sync>,
 }
 
 /// Runs `f` on a named worker; a failure to start is logged.
@@ -933,6 +1204,7 @@ impl Sharing {
             ask: None,
             watch: Arc::new(AtomicU64::new(0)),
             watches: 0,
+            before_off: Arc::new(|| {}),
         }
     }
 
@@ -941,9 +1213,32 @@ impl Sharing {
         Arc::clone(&self.os)
     }
 
+    /// The settings store the switch keeps its state in (pairing notes an admin key there).
+    pub fn prefs(&self) -> PrefStore {
+        self.prefs.clone()
+    }
+
+    /// What the clean up waits for first, on its worker: pairing's host requests that still run (rule 1258), so a key
+    /// one adds meanwhile is cleaned up too.
+    pub fn set_before_off(&mut self, f: Arc<dyn Fn() + Send + Sync>) {
+        self.before_off = f;
+    }
+
     #[cfg(test)]
     pub fn phase(&self) -> Phase {
         self.phase
+    }
+
+    /// A line for the sharing dialog with OK (a key that could not be removed, rule 1260), unless it asks something.
+    pub fn notice(&mut self, line: String) {
+        if self.ask.is_none() {
+            self.ask = Some(SharingAsk::Notice(line));
+        }
+    }
+
+    /// Sharing is on and set up (not on its way on or off): the computer is announced and takes pairing requests.
+    pub fn is_on(&self) -> bool {
+        self.phase == Phase::On
     }
 
     pub fn ask(&self) -> Option<&SharingAsk> {
@@ -1001,13 +1296,20 @@ impl Sharing {
 
     fn clean_up(&mut self, stop: bool) {
         self.phase = Phase::TurningOff;
-        let work = OffWork {
-            stop_server: stop,
-            admin_keys: prefs::admin_keys(&self.prefs),
-            firewall: prefs::firewall_rule(&self.prefs),
-        };
-        let (os, post) = (Arc::clone(&self.os), Arc::clone(&self.post));
+        let (os, post, prefs, before) = (
+            Arc::clone(&self.os),
+            Arc::clone(&self.post),
+            self.prefs.clone(),
+            Arc::clone(&self.before_off),
+        );
         worker("flare-sharing-off", move || {
+            // A pairing request that ran when the switch went off has ended first; what it added is read after it.
+            before();
+            let work = OffWork {
+                stop_server: stop,
+                admin_keys: prefs::admin_keys(&prefs),
+                firewall: prefs::firewall_rule(&prefs),
+            };
             let result = turn_off(&*os, work);
             Self::say(&post, SharingMsg::TurnedOff { work, result });
         });
@@ -1085,7 +1387,17 @@ impl Sharing {
     pub fn on_msg(&mut self, m: SharingMsg) -> bool {
         match m {
             SharingMsg::TurnedOn(r) if self.phase == Phase::TurningOn => match r {
-                OnResult::On { by_flare, firewall } => self.turned_on(by_flare, firewall),
+                OnResult::On {
+                    by_flare,
+                    firewall,
+                    note,
+                } => {
+                    self.turned_on(by_flare, firewall);
+                    // Sharing works; the line says what still stops pairing (rule 1256).
+                    if let Some(line) = note {
+                        self.ask = Some(SharingAsk::Notice(line));
+                    }
+                }
                 OnResult::Declined => self.phase = Phase::Off,
                 OnResult::NeedsSettings => {
                     self.phase = Phase::WaitingForRemoteLogin;
@@ -1158,6 +1470,27 @@ fn quiet(program: &str) -> std::process::Command {
     cmd
 }
 
+/// BLOCKING: what the Mac firewall's tool printed for a question that needs no root (a worker's call).
+fn socketfilterfw(args: &[&std::ffi::OsStr]) -> Result<String, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("not a Mac".into());
+    }
+    let out = quiet(SOCKETFILTERFW)
+        .args(args)
+        .output() // sync-ok: SharingOs calls run on workers
+        .map_err(|e| format!("socketfilterfw did not start: {e}"))?;
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if out.status.success() {
+        Ok(said)
+    } else {
+        Err(said)
+    }
+}
+
 impl SharingOs for RealSharingOs {
     fn platform(&self) -> Platform {
         if cfg!(windows) {
@@ -1201,6 +1534,14 @@ impl SharingOs for RealSharingOs {
         } else {
             Err(said)
         }
+    }
+
+    fn firewall_global_state(&self) -> Result<String, String> {
+        socketfilterfw(&["--getglobalstate".as_ref()])
+    }
+
+    fn firewall_app_blocked(&self, exe: &Path) -> Result<String, String> {
+        socketfilterfw(&["--getappblocked".as_ref(), exe.as_os_str()])
     }
 
     fn firewall_block_all(&self) -> Result<String, String> {
@@ -1249,12 +1590,48 @@ impl SharingOs for RealSharingOs {
     }
 
     fn announce(&self, on: bool) {
-        // Machine pairing PR 3 starts and stops the mDNS announcement here.
+        // The announcement itself is pairing's (`pairing::RealPairNet`: it carries the pairing port).
         log::info!("computer sharing: announced {on}");
     }
 
     fn wait(&self, ms: u64) {
         std::thread::sleep(std::time::Duration::from_millis(ms)); // sync-ok: a worker waits between two looks at a port
+    }
+
+    fn windows_admin(&self) -> bool {
+        if !cfg!(windows) {
+            return false;
+        }
+        // The Administrators group's SID is listed (as "deny only" before elevation) for every account in it.
+        quiet("whoami.exe")
+            .args(["/groups", "/fo", "csv"])
+            .output() // sync-ok: SharingOs calls run on workers
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("S-1-5-32-544"))
+            .unwrap_or(false)
+    }
+
+    fn add_user_key(&self, line: &str) -> Result<(), String> {
+        crate::pair_keys::add_user_key(&self.home, line)
+    }
+
+    fn remove_user_key(&self, key: &str) -> Result<bool, String> {
+        crate::pair_keys::remove_user_key(&self.home, key)
+    }
+
+    fn ssh_host_key(&self) -> Result<String, String> {
+        let file = if cfg!(windows) {
+            PathBuf::from(std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into()))
+                .join("ssh")
+                .join("ssh_host_ed25519_key.pub")
+        } else {
+            PathBuf::from("/etc/ssh/ssh_host_ed25519_key.pub")
+        };
+        std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display())) // sync-ok: SharingOs calls run on workers
+    }
+
+    fn user_name(&self) -> String {
+        let k = if cfg!(windows) { "USERNAME" } else { "USER" };
+        std::env::var(k).unwrap_or_default()
     }
 }
 

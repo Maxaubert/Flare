@@ -216,3 +216,66 @@ installed or not, sshd running or not, Remote Login on or off).
   again, the switch turns on.
 - [ ] Mac release build: the first launch after this PR shows no local network prompt yet (nothing browses until PR
   3); `plutil -p Flare.app/Contents/Info.plist` lists `NSLocalNetworkUsageDescription` and `NSBonjourServices`.
+
+## Machine pairing PR 3 (rules 1256 to 1260, 2026-11-14)
+
+Run these between Max's PC and Max's Mac on the home network, with Computer sharing working on the machine to reach
+(the PR 2 lines above). Note both Flare versions, the macOS version and whether the Windows account is an
+administrator.
+
+- [ ] PC sharing on, Mac opens Add a machine: "Max's PC" (or the PC's name) shows first in the drop-down with the
+  Windows logo, within a few seconds. On the Mac's first browse, macOS asks to find devices on the local network
+  (Flare.app's `NSLocalNetworkUsageDescription`); after Allow, the PC shows.
+- [ ] Windows: the first announcement shows no firewall "allow access" dialog (PR 2's `Flare-Pairing-In` rule covers
+  Flare's program on Private networks). On a network marked Public, the PC is not found (expected).
+- [ ] Pick the PC on the Mac: the PC shows "<Mac's name> wants to connect" with a 6-digit code over whatever tab is
+  in front, also while Settings is closed, and the keys stay in that dialog.
+- [ ] Type a wrong code on the Mac: "Wrong code" under the field; the PC's code stays. Three wrong codes: the PC's
+  dialog closes and the Mac says "Wrong code three times. Pick <name> again for a new code."
+- [ ] The right code, PC on an administrator account: one UAC prompt on the PC; after Yes,
+  `%ProgramData%\ssh\administrators_authorized_keys` ends with the Mac's key and `flare-pair:<Mac name>`, and
+  `icacls` on it lists only Administrators and SYSTEM. The Mac's row turns Linked with the PC's Flare version, and a
+  remote tab on the PC opens from the + menu with no ssh prompt.
+- [ ] The same on a standard Windows account: no UAC prompt; the key is in `%USERPROFILE%\.ssh\authorized_keys`.
+- [ ] The other way (Mac sharing on, PC pairs): the key lands in `~/.ssh/authorized_keys` on the Mac with
+  `~/.ssh` 700 and the file 600, and the PC's row links.
+- [ ] `id_flare_ed25519` and `flare_known_hosts` are in the viewer's Flare profile, nothing new in `~/.ssh` on the
+  viewer, and `ssh -G` is not needed: the machine's row links with the paired fields only.
+- [ ] Both computers list the other in Linked machines. On the reached one, the row's menu has Remove only; Remove
+  takes the key out of the right file (an administrator account shows one UAC prompt) and the viewer's row then says
+  "Not paired with this computer" on Test.
+- [ ] Decline on the reached computer: the viewer says "<name> declined." Cancel on the viewer: the code dialog on the
+  other computer closes.
+- [ ] Turn sharing off on the reached computer: the viewer's drop-down no longer lists it (reopen the dialog), and
+  its Linked machines list is empty.
+- [ ] Pair again after the SSH server's host key changed (reinstall OpenSSH Server): the pin is replaced and a new
+  row appears that links (the old row stays, with the old key; remove it by hand). Pair again with the same host key:
+  the same row, no new one.
+- [ ] Guessing (rule 1261): pick the PC, type one wrong code, Cancel, pick it again at once: "busy". Wait 30 s and do
+  it again: busy for 2 minutes now, then 10. A typo and then the right code pairs with no wait.
+- [ ] `ncat <PC> <pairing port>` and type nothing: within 5 s the PC closes it, and meanwhile the Mac can still pick
+  the PC and gets its code.
+- [ ] A Windows account whose name has a space ("Max Aubert"): pairing works and the remote tab opens; the Mac's
+  `machines.json` holds the name as written.
+- [ ] Pair from the Mac, and turn sharing off on the PC while its UAC prompt for the key is up. After Yes: the key is
+  not left in `administrators_authorized_keys`, the Linked list stays empty, and the turn off's own prompt follows.
+- [ ] Remove a computer whose key is in the user's own file on an administrator PC that also has an admin key from
+  another pairing: no UAC prompt.
+- [ ] Pairing port: `netstat -ano | findstr 4779` (PC) or `lsof -iTCP:47790-47794 -sTCP:LISTEN` (Mac) shows Flare on
+  47790. Hold 47790 with another program (`ncat -l 47790`) and turn sharing off and on: Flare takes 47791 and the Mac
+  still finds and pairs with the PC. Hold all five: the sharing dialog says "Other programs use ports 47790 to 47794,
+  ..." once.
+- [ ] Mac host name: with Mac sharing on for a few minutes, System Settings, General, Sharing still shows the Mac's own
+  local hostname (no "(2)" or "-2" added), and `dns-sd -B _flare-pair._tcp` on the PC or Mac lists "<Mac's name>".
+  `dns-sd -L "<Mac's name>" _flare-pair._tcp` names the host `<name>-flare.local.`.
+- [ ] Mac firewall (System Settings, Network, Firewall on, Flare not in its list), Remote Login off: turn sharing on.
+  One administrator prompt; afterwards the Firewall Options list shows Flare as "Allow incoming connections", and the
+  PC finds and pairs with the Mac.
+- [ ] Mac firewall on and Flare set to "Block incoming connections", Remote Login already on: turning sharing on shows
+  "The Mac firewall may block pairing. Allow Flare in System Settings, Network, Firewall, Options." and the switch
+  stays on. After allowing Flare there, the PC finds the Mac.
+- [ ] Mac running Flare from the mounted disk image (no copy in /Applications): pair the PC with it. The PC's
+  `machines.json` names `/Applications/Flare.app/Contents/MacOS/flare` for the Mac (its default), not a `/Volumes/`
+  path. With Flare also in /Applications, the same.
+- [ ] Older host entry: on an administrator PC, remove `"admin": true` from one entry of `machines_in.json` by hand and
+  Remove that computer: one UAC prompt, and its line is gone from `administrators_authorized_keys`.

@@ -206,7 +206,12 @@ fn ssh_path_value(path: &str) -> String {
 /// field could be read as an option or break ssh's own parsing.
 pub fn machine_opts(m: &Machine) -> Option<Vec<String>> {
     use crate::machines::path_word;
-    if !argv_word(m.target()) || m.user.as_deref().is_some_and(|u| !argv_word(u)) {
+    // A user may hold a space (a Windows account, rule 1258): it is one argv item of its own after `-l`.
+    if !argv_word(m.target())
+        || m.user
+            .as_deref()
+            .is_some_and(|u| !crate::machines::user_word(u))
+    {
         return None;
     }
     let mut a: Vec<String> = vec!["-o".into(), format!("ConnectTimeout={CONNECT_TIMEOUT_S}")];

@@ -2941,3 +2941,49 @@ The second of three PRs (spec and mockup as in PR 1).
 - **Not yet.** The announcement itself (mDNS), the pairing code and the nearby rows are PR 3; until then
   `SharingOs::announce` only logs, and no key carries `flare-pair:` yet. Real runs: the new lines in
   `docs/remote-sessions-manual-checks.md`.
+
+## Machine pairing, PR 3: pairing with a code, 2026-11-14
+
+The last of three PRs (spec and mockup as in PR 1).
+
+- **Announced while sharing is on.** With Computer sharing on, the computer listens on the first free port of 47790
+  to 47794 (the ports Flare's Windows firewall rule names) and announces itself on the home network as
+  `_flare-pair._tcp` (mDNS: its name, system, Flare version and the pairing version, nothing secret). Off, it does
+  neither. When all five ports are taken, one line says so and nothing is announced. The announcement's address
+  records go under `<name>-flare.local`, never the computer's own `.local` name, so macOS never renames the Mac over a
+  name conflict. Rule 1256.
+- **Mac firewall.** When the Mac's firewall is on and does not let Flare in yet, turning sharing on lets Flare in
+  inside the same administrator prompt that turns Remote Login on. When Remote Login was on already (no prompt), one
+  line says where to allow Flare: System Settings, Network, Firewall, Options. Rule 1256.
+- **Nearby computers.** While Add a machine is open, its Machine drop-down lists the computers with sharing on first,
+  each with its Apple or Windows logo, then the SSH config hosts, then "Type an address". Rule 1256.
+- **The code.** Picking a nearby computer makes that computer show the Flare dialog "<name> wants to connect" with a
+  fresh 6-digit code ("482 913"), "Enter this code on <name>" and Decline, wherever the person is in Flare. The
+  dialog here shows "Code shown on <name>"; Add sends it. The code never crosses the network: both computers prove it
+  with SPAKE2 (RFC 9382) and key confirmation, then talk over ChaCha20-Poly1305. A wrong code is the red line "Wrong
+  code"; three close the window. Another computer asking meanwhile hears that it is busy. Rule 1257.
+- **Guessing is limited.** A request that ends unpaired once its code showed locks the host: 30 s, then 2 min, then
+  10 min each time. More than 10 wrong tries from one address, or 20 from all, in an hour stop new requests until the
+  oldest is an hour old. A typo followed by the right code still pairs. A connection must say hello within 5 s, and
+  only then takes the one request slot. Rule 1261.
+- **The key.** Flare makes its own SSH key the first time (`id_flare_ed25519` in the profile). The other computer adds
+  it to the right `authorized_keys`, tagged `flare-pair:<name>`: a Windows administrator account's
+  `administrators_authorized_keys` through one UAC prompt with the ACL sshd wants; any other account's own
+  `~/.ssh/authorized_keys` with no prompt. It reads everything its answer needs first, records the key the moment it
+  is in, and takes it out again when the answer cannot be sent or sharing turned off meanwhile (with its own UAC
+  prompt for an admin key when the clean up may have run already). The key scripts report by exit code and first
+  check that only SYSTEM and Administrators can change the SSH folder and the admin keys file. A Windows user name
+  with a space works. Rule 1258.
+- **The pin.** The other computer answers with its SSH host key, user and Flare path; this one pins the key in
+  `flare_known_hosts` in the profile and saves the machine with its address, user, key, known hosts and the pinned key,
+  then checks the link as usual (ssh never asks). Pairing again replaces an entry only with the same pinned key, never
+  by name. A Mac running Flare from a disk image names the installed app in `/Applications`, or no path, and the
+  viewer then uses its own default. Rule 1259.
+- **Both lists.** The computer that was reached lists the one that paired (`machines_in.json`) with status Linked;
+  its menu has Remove, which takes the key away again. Only a key in the admin file asks for UAC; an older entry that
+  does not say where its key went asks too when Flare noted an admin key or the account is a Windows administrator.
+  Rule 1260.
+- **Not yet.** The drop-down still draws no divider between nearby computers and SSH hosts. A computer that paired to
+  this one is shown Linked while its entry is here; Flare does not read `administrators_authorized_keys` back (it
+  needs admin rights) to see whether the key is still there. Pairing finds computers on the same network only
+  (issue #233 is the outside-the-house case). Real runs: the new lines in `docs/remote-sessions-manual-checks.md`.

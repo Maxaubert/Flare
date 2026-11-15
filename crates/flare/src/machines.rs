@@ -32,6 +32,9 @@ pub struct Machine {
     pub key: Option<String>,
     /// Flare's own known-hosts file for this machine (pairing): ssh trusts only the host key in it.
     pub known_hosts: Option<String>,
+    /// The SSH host key pinned when this machine was paired (its base64 field): pairing again finds the machine by it,
+    /// never by a name the other computer says (rule 1259).
+    pub host_key: Option<String>,
 }
 
 impl Machine {
@@ -60,7 +63,31 @@ pub fn argv_word(s: &str) -> bool {
         && s.chars().all(|c| c.is_ascii_graphic())
 }
 
-/// Pure: the machines a `machines.json` names. A machine whose id, host or user is not a plain word is left out.
+/// A user name that goes to ssh as one argv item (`-l <user>`): a Windows account may have a space in its name
+/// ("Max Aubert"), so a space inside is fine; never empty, never read as an option, no space at either end, no
+/// control character, no quote of either kind, and no `%` or `${` (ssh may expand them) (rule 1258).
+pub fn user_word(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 255
+        && !s.starts_with('-')
+        && s.trim() == s
+        && !s.contains("${")
+        && !s
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '"' | '\'' | '%' | '`'))
+}
+
+/// Pure: a key's base64 field as an `authorized_keys` line or a known-hosts line carries it: base64's letters only.
+pub fn plain_base64(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 2048
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='))
+}
+
+/// Pure: the machines a `machines.json` names. A machine whose id or host is not a plain word, or whose user is not a
+/// plain user name ([`user_word`]), is left out.
 pub fn parse_machines(raw: &str) -> Vec<Machine> {
     let Ok(v) = serde_json::from_str::<Value>(raw) else {
         return Vec::new();
@@ -77,10 +104,11 @@ pub fn parse_machines(raw: &str) -> Vec<Machine> {
                 Some(_) => s(m, k).filter(|v| ok(v)).map(Some),
             };
             let id = s(m, "id").filter(|i| argv_word(i))?;
-            let user = opt("user", argv_word)?;
+            let user = opt("user", user_word)?;
             let host = opt("host", argv_word)?;
             let key = opt("key", path_word)?;
             let known_hosts = opt("known_hosts", path_word)?;
+            let host_key = opt("host_key", plain_base64)?;
             let port = match m.get("port") {
                 None | Some(Value::Null) => None,
                 Some(p) => Some(
@@ -108,6 +136,7 @@ pub fn parse_machines(raw: &str) -> Vec<Machine> {
                 port,
                 key,
                 known_hosts,
+                host_key,
             })
         })
         .collect()
@@ -131,6 +160,7 @@ pub fn machines_json(machines: &[Machine]) -> String {
                 ("host", &m.host),
                 ("key", &m.key),
                 ("known_hosts", &m.known_hosts),
+                ("host_key", &m.host_key),
             ] {
                 if let Some(val) = val {
                     v[k] = json!(val);
@@ -143,6 +173,91 @@ pub fn machines_json(machines: &[Machine]) -> String {
         })
         .collect();
     serde_json::to_string_pretty(&json!({"machines": list})).unwrap_or_default()
+}
+
+/// A computer paired to reach this one (machine pairing PR 3, rule 1260): this computer has its key in an
+/// `authorized_keys` file, and shows it in Linked machines. It is never a machine to open a tab on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Incoming {
+    pub id: String,
+    pub name: String,
+    pub kind: Option<Os>,
+    /// The address it paired from.
+    pub address: String,
+    /// The Flare version it said when it paired.
+    pub version: String,
+    /// Its key (the base64 field of its `authorized_keys` line): removing it removes that line.
+    pub key: String,
+    /// The key went into Windows' `administrators_authorized_keys` (an administrator account): removing it needs the
+    /// elevated script. `Some(false)`: the user's own `authorized_keys`, with no prompt. None: an entry written before
+    /// Flare kept this, so Remove asks the switch's `adminKeys` and the account instead (rule 1260).
+    pub admin: Option<bool>,
+}
+
+/// Pure: the computers `machines_in.json` names. One whose key is not plain base64 is left out.
+pub fn parse_incoming(raw: &str) -> Vec<Incoming> {
+    let Ok(v) = serde_json::from_str::<Value>(raw) else {
+        return Vec::new();
+    };
+    let Some(list) = v.get("linked_in").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let s = |m: &Value, k: &str| {
+        m.get(k)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_default()
+    };
+    list.iter()
+        .filter_map(|m| {
+            let key = s(m, "key");
+            let plain = plain_base64(&key);
+            let id = s(m, "id");
+            (plain && argv_word(&id)).then(|| Incoming {
+                admin: m.get("admin").and_then(Value::as_bool),
+                name: Some(s(m, "name"))
+                    .filter(|n| !n.trim().is_empty())
+                    .unwrap_or_else(|| id.clone()),
+                id,
+                kind: Os::parse(&s(m, "kind")),
+                address: s(m, "address"),
+                version: s(m, "version"),
+                key,
+            })
+        })
+        .collect()
+}
+
+/// Pure: the text of `machines_in.json`.
+pub fn incoming_json(list: &[Incoming]) -> String {
+    let list: Vec<Value> = list
+        .iter()
+        .map(|m| {
+            let mut v = json!({
+                "id": m.id,
+                "name": m.name,
+                "address": m.address,
+                "version": m.version,
+                "key": m.key,
+            });
+            if let Some(a) = m.admin {
+                v["admin"] = json!(a);
+            }
+            if let Some(k) = m.kind {
+                v["kind"] = json!(match k {
+                    Os::Mac => "mac",
+                    Os::Pc => "pc",
+                });
+            }
+            v
+        })
+        .collect();
+    serde_json::to_string_pretty(&json!({"linked_in": list})).unwrap_or_default()
+}
+
+/// `machines_in.json` in the profile: the computers paired to reach this one.
+pub fn incoming_file(profile: &Path) -> PathBuf {
+    profile.join("machines_in.json")
 }
 
 /// `machines.json` in the profile.
@@ -358,6 +473,78 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, ["machines.json"]);
+    }
+
+    /// Rule 1260: the computers that reach this one read back as written; one whose key is no plain base64 (it would
+    /// reach a script) or whose id is no plain word is left out.
+    #[test]
+    fn the_computers_that_reach_this_one_read_back_and_a_strange_key_is_left_out() {
+        let mac = Incoming {
+            id: "max-s-mac-mini".into(),
+            name: "Max's Mac mini".into(),
+            kind: Some(Os::Mac),
+            address: "192.168.0.120".into(),
+            version: "0.4.2".into(),
+            key: "AAAAC3NzaC1lZDI1NTE5AAAAIA+/=".into(),
+            admin: Some(true),
+        };
+        let text = incoming_json(std::slice::from_ref(&mac));
+        assert_eq!(parse_incoming(&text), vec![mac.clone()]);
+        // Which file holds the key is kept (rule 1260). An entry written before it was says nothing: None, never "the
+        // user's own file", so Remove does not leave a key in the admin file behind.
+        let old = text.replace("\"admin\": true", "\"x\": 1");
+        assert_eq!(parse_incoming(&old)[0].admin, None);
+        let unknown = Incoming {
+            admin: None,
+            ..mac.clone()
+        };
+        let written = incoming_json(std::slice::from_ref(&unknown));
+        assert!(!written.contains("admin"), "{written}");
+        assert_eq!(parse_incoming(&written), vec![unknown]);
+        let evil = text.replace("AAAAC3NzaC1lZDI1NTE5AAAAIA+/=", "AAAA'; Remove-Item x");
+        assert!(parse_incoming(&evil).is_empty());
+        assert!(parse_incoming("{}").is_empty() && parse_incoming("no").is_empty());
+        assert_eq!(
+            incoming_file(Path::new("p")),
+            Path::new("p").join("machines_in.json")
+        );
+    }
+
+    /// Rule 1258: a Windows user name with a space is one user, kept as written; a user that is empty, starts with a
+    /// dash, has a quote, a control character, `%` or `${`, or a space at either end is no user and its machine is
+    /// left out. The pinned host key is kept with the machine (rule 1259), and one that is no plain base64 is refused.
+    #[test]
+    fn a_user_with_a_space_is_one_user_and_a_strange_one_is_left_out() {
+        for ok in ["max", "Max Aubert", "J. O Neil", "user@corp", "DOMAIN\\max"] {
+            assert!(user_word(ok), "{ok:?}");
+        }
+        for bad in [
+            "",
+            "-oProxyCommand=x",
+            " max",
+            "max ",
+            "Jo O'Neil",
+            "a\"b",
+            "a\nb",
+            "a%h",
+            "${HOME}",
+            "a`b",
+        ] {
+            assert!(!user_word(bad), "{bad:?}");
+        }
+        let pc = Machine {
+            id: "pc".into(),
+            name: "PC".into(),
+            ssh: "192.168.0.139".into(),
+            user: Some("Max Aubert".into()),
+            flare: "flare".into(),
+            host_key: Some("AAAAC3NzaC1lZDI1NTE5AAAAIA+/=".into()),
+            ..Default::default()
+        };
+        let text = machines_json(std::slice::from_ref(&pc));
+        assert_eq!(parse_machines(&text), vec![pc]);
+        assert!(parse_machines(&text.replace("Max Aubert", "-oX")).is_empty());
+        assert!(parse_machines(&text.replace("AAAAC3NzaC1lZDI1NTE5AAAAIA+/=", "AA AA")).is_empty());
     }
 
     /// Rule 40: a kind this build does not know reads as none and is not written back as a guess.
