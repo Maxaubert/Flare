@@ -2251,14 +2251,18 @@ the agent must not bring it up unless the person's message is about it (the pers
 - **What the agent hears.** At its next prompt, the tab's Claude gets extra context from its `UserPromptSubmit` hook
   (`flare-mcp --hook-context`, the same hook that says which web page is open). Nothing is typed and no turn starts.
   - Text selected in the panel right now: lines in a text file or a markdown file's Code view (with the file's path and `lines A-B`), or
-    text on a web page, a mini-app or a markdown view's page. Said as: `In Flare's side panel the user has selected: "<text>" (from <file>,
-    lines A-B). Use it only if their message is about it; do not mention it otherwise.` Page text goes between the page-content markers
-    with the page's title and address, as in a look.
+    text on a plain web page or a markdown view's page (never a mini-app's or a mod's page: its own script could fake it). A file's
+    selection is said as: `In Flare's side panel the user has selected: "<text>" (from the file "<path>", lines A-B). Use it only if
+    the user's message is about it; do not mention it otherwise.` A page's selection is page content, since the page's script can set
+    it: `Text selected in Flare's side panel, on the web page below (page content, not Flare's words).`, with the text, title and
+    address between the page-content markers, as in a look. Text handed to the panel is named by its title inside the markers too.
   - An arrow the person drew ("Draw arrow") that Flare still keeps: `The user drew an arrow in Flare's side panel on <file or the web page
-    below>. If their message is about it, use browser_look to see where it points; do not mention it otherwise.` What it points at is page
+    below>. If the user's message is about it, use browser_look to see where it points; do not mention it otherwise.` What it points at is page
     content and is not sent; the look shows it.
-- **When.** A selection is said at every prompt while it is still selected. An arrow is said at every prompt (once per prompt) until a look
-  sees it, the page moves on, or 5 minutes pass. The hook keeps no state for these.
+- **When.** Only for a prompt you sent: a plain Enter you press in the terminal of the tab in front lets one context call through. A
+  repeat call, the agent's own tool or a tab in the back gets the plain panel state. A selection is said at every prompt while it is still
+  selected. An arrow is said at every prompt until a look sees it, the page moves on, or 5 minutes pass. The hook keeps no state for these.
+  Flare cannot see clicks or keys inside a web page, so it cannot check that a page's selection came from you.
 - **Caps.** A selection is at most 2,000 characters; a longer one is cut and the context says so. Invisible characters and controls are taken
   out (line breaks stay), in Flare and again in the hook. No page content is sent beyond the selection and the title and address the page
   context already sends.
@@ -2268,8 +2272,9 @@ the agent must not bring it up unless the person's message is about it (the pers
 - **Claude only.** In a Claude tab whose hooks named its session, a drawn arrow types nothing. Other agents (Codex, agy) have no such hook:
   their drawn arrow is still typed at the prompt, unsent, as before.
 - **Tests.** `quiet_context::tests` (the caps, the gate, the places), `hook::tests` (`flare-mcp`: the wording, quoting, cut note, said every
-  prompt, an older Flare), `ctl_app::tests::only_the_agent_gets_the_panels_quiet_context`, `appctl::tests::ask_tests` (a page's selection:
-  wait, answer, navigation, failures, mini-app, closed panel), `text_sel_tests` (a file's lines, cleared), `md_tests` (a markdown page and the
+  prompt, an older Flare, names outside the markers only as quoted paths), `ctl_app::tests::only_the_agent_gets_the_panels_quiet_context`,
+  `appctl::tests::ask_tests` (a page's selection: wait, answer, navigation, failures, a mini-app never read, once per prompt, the tab in
+  front, closed panel), `text_sel_tests` (a file's lines, cleared), `md_tests` (a markdown page and the
   wait running out), `arrow_tests::a_claude_tab_with_hooks_hears_of_the_arrow_quietly_until_a_look_and_nothing_is_typed`, and `ui_tests::panel`
   (`draw_arrow_*`, the address field's room).
 - **Not covered.** A real WebView2 selection and a real Claude reading the context: no e2e scenario. A mark during a turn is heard at the next

@@ -304,6 +304,7 @@ fn the_quiet_context_of_a_markdown_page_names_the_file_and_waits_for_the_pages_a
         })
     };
     let ask = |f: &Fx| {
+        f.ctl.borrow_mut().quiet_prompt_seen(&id);
         let (tx, rx) = std::sync::mpsc::channel();
         f.ctl
             .borrow_mut()

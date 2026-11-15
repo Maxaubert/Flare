@@ -844,6 +844,7 @@ fn the_persons_arrow_is_kept_five_minutes_or_until_the_page_moves_on() {
 
 /// The prompt hook's quiet context (rule 1268): `panel.state` with `context`, the page's selection read given up on.
 fn quiet(f: &Fx, tab: &str) -> Value {
+    f.ctl.borrow_mut().quiet_prompt_seen(tab);
     let rx = ask(
         f,
         CtlOp::PanelContext {

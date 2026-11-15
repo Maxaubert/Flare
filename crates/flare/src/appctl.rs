@@ -3598,6 +3598,16 @@ impl AppCtl {
         };
         let info = front.info();
         let armed = self.agent_view.armed(&front.id);
+        // A plain Enter the person pressed in the terminal of the tab in front, with an agent there, sends a prompt:
+        // that prompt's hook may have the panel's quiet context once (rule 1268).
+        if ev.pressed
+            && ev.key == "Enter"
+            && !(ev.shift || ev.ctrl || ev.alt || ev.meta)
+            && armed.is_some()
+        {
+            let tab = front.id.clone();
+            self.quiet_prompt_seen(&tab);
+        }
         let option_as_meta = self.option_as_meta();
         // Agent hotkeys with Claude in front: the prompt is a text box (rule 1235). Only Claude: Flare knows no
         // other agent's editor keys.
@@ -4130,8 +4140,8 @@ impl AppCtl {
                 Ok(json!({"cwd": t.cwd}))
             }
             // The window routes this one through `ctl_panel_context`, which also reads a page's selection; here it is
-            // answered at once with what is known without the page.
-            CtlOp::PanelContext { tab, cwd } => self.panel_context_now(&tab, cwd),
+            // answered at once with what is known without the page, and only for a prompt the person sent.
+            CtlOp::PanelContext { tab, cwd } => self.panel_context_once(&tab, cwd),
             CtlOp::PanelState { tab, cwd } => {
                 if !self.is_shell_tab(&tab) {
                     return Err(no_tab());

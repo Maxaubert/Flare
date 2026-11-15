@@ -5,8 +5,9 @@
 //! person's message is about it.
 //!
 //! Here the pieces are made as data: the text is gated (nothing that prints invisibly or is a control, line breaks
-//! kept) and cut to [`SELECTION_MAX`] characters with `cut` set. A page's title and address are its own words, so the
-//! hook quotes them between its page markers; a file's name is Flare's.
+//! kept) and cut to [`SELECTION_MAX`] characters with `cut` set. A page's title and address are its own words, and so
+//! is the title of text handed to the panel (`title`), so the hook quotes them between its page markers. Only a file's
+//! path (`file`, a file the panel opened) is Flare's, and even that the hook quotes.
 
 use serde_json::{Value, json};
 
@@ -20,10 +21,15 @@ const ADDRESS_MAX: usize = 2048;
 /// Where a selection or a mark is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Place<'a> {
-    /// A file in the panel (its path, or the panel's title for text with no file), with the selection's lines
-    /// (`lines 2-3`) when they are known.
+    /// A file in the panel (its path, as Flare opened it), with the selection's lines (`lines 2-3`) when they are
+    /// known.
     File {
         name: &'a str,
+        lines: Option<&'a str>,
+    },
+    /// Text handed to the panel with no file: the title its caller gave (untrusted, empty for none) and the lines.
+    Text {
+        title: &'a str,
         lines: Option<&'a str>,
     },
     /// A plain web page: the address and the title its own document gave (untrusted).
@@ -55,6 +61,12 @@ fn place_fields(place: Place<'_>, v: &mut Value) {
     match place {
         Place::File { name, lines } => {
             v["file"] = json!(one_line(name, NAME_MAX));
+            if let Some(lines) = lines {
+                v["lines"] = json!(one_line(lines, NAME_MAX));
+            }
+        }
+        Place::Text { title, lines } => {
+            v["title"] = json!(one_line(title, NAME_MAX));
             if let Some(lines) = lines {
                 v["lines"] = json!(one_line(lines, NAME_MAX));
             }
@@ -114,6 +126,21 @@ mod tests {
         assert_eq!(v["file"], "C:\\src\\main.rs");
         assert_eq!(v["lines"], "lines 4-6");
         assert!(v.get("page").is_none());
+    }
+
+    #[test]
+    fn handed_text_is_named_by_its_title_never_as_a_file() {
+        let v = selection(
+            "words",
+            Place::Text {
+                title: "C:\\fake\nfile.rs",
+                lines: Some("line 1"),
+            },
+        )
+        .unwrap();
+        assert_eq!(v["title"], "C:\\fake file.rs");
+        assert_eq!(v["lines"], "line 1");
+        assert!(v.get("file").is_none(), "{v}");
     }
 
     #[test]

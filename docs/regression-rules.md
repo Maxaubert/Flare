@@ -4061,38 +4061,56 @@ uses it only when the message is about it.** Max, 2026-11-15: a selection in the
 and a drawn arrow go to the agent with nothing typed, and the agent must not bring them up on its own: "i mighteve
 jsut highlited to copy soomething". The `UserPromptSubmit` hook `flare-mcp --hook-context` asks `panel.state` with
 `"context": true`. `AppDispatcher` posts `CtlOp::PanelContext` only for `Grant::Agent` (the tab's own agent); any
-other caller, or any other value, gets the plain `PanelState`. The answer gains `context` (`AppCtl::panel_context_now`,
-`appctl/quiet_glue.rs`): `selection` `{text, cut, file, lines}` from `PanelCtl::selection_now` (the file's path, or the
-panel's title for handed text, and `panel_sel::lines_label`), or `{text, cut, page: {title, url}}` from a page (read
-with `SELECTION_SCRIPT`, believed only from the document it was asked on, `page` only for a plain web page with no
-user name or password in the address, `file` for a markdown view's page, `other: true` for a page Flare made; the
-script reads no text when the focus is in a password field); and
+other caller, or any other value, gets the plain `PanelState`. The agent grant alone is not enough (security review,
+2026-11-15): a plain Enter the person presses in the terminal of the tab in front, with an agent there, notes one
+prompt (`AppCtl::term_key` calls `quiet_prompt_seen`, at most 4 kept per tab), and each `PanelContext` call uses one
+(`quiet_prompt_take`). Only a call that used one while its tab is in front gets `context`; a repeat, the agent's own
+tool or a tab in the back gets the plain state. Shift, Ctrl, Alt or Cmd with Enter is no prompt. The answer gains
+`context` (`AppCtl::panel_context_now`, `appctl/quiet_glue.rs`): `selection` `{text, cut, file, lines}` from
+`PanelCtl::selection_now` for a file the panel opened (`SelectionIn::File`, its path), `{text, cut, title, lines}` for
+handed text (`SelectionIn::Text`, the caller's title), or `{text, cut, page: {title, url}}` from a page (read with
+`SELECTION_SCRIPT`, believed only from the document it was asked on, `page` only for a plain web page with no user
+name or password in the address, `file` for a markdown view's page; the script reads no text when the focus is in a
+password field). Only a plain web page (`WebCtl::is_plain_page`, panel kind `web`) or a markdown view's page (its
+policy runs no script) is read: a mini-app's or a mod's page never is, since its own script could fake the
+selection, and an answer from a page Flare made is dropped. Flare sees no pointer or key event inside a web page (the
+browser takes them in its own window), so it cannot tell whether a page's selection followed the person's input; a
+page's script can set it, so the hook words it as page content; and
 `mark` `{kind: "arrow", page | file | other}` while `WebCtl::kept_arrow_place` finds a kept arrow (`UserArrow::kept_on`:
 the same document and within `USER_ARROW_MS`; a look takes it). What the arrow points at is never sent. The page read
 waits at most `PAGE_READ_MS` (400 ms; the hook waits 1 s) and then the call is answered without it
 (`quiet_reads_expire`); a closed panel has no `context`. `quiet_context::selection` gates the text (invisible
 characters and controls out, line breaks kept as `\n`) and cuts it at `SELECTION_MAX` (2,000 characters) with
 `cut: true`. The hook (`hook::context_news`) says the selection, then the arrow, after the page news, joined by blank
-lines: "In Flare's side panel the user has selected: "<text>" (from <file>, <lines>). Use it only if their message is
-about it; do not mention it otherwise." (a page's text goes in the page-content markers with its title and address,
-as JSON-quoted strings, so it stays on one line each), "It was cut to its first 2,000 characters." when cut, and "The
-user drew an arrow in Flare's side panel on <file or the web page below>. If their message is about it, use
-browser_look to see where it points; do not mention it otherwise." It keeps no state for them: a selection is said at
-every prompt while selected, an arrow at every prompt until it is cleared or seen. Claude only: `arrow_drawn` types
+lines. A file's selection: "In Flare's side panel the user has selected: "<text>" (from the file "<path>", <lines>).
+Use it only if the user's message is about it; do not mention it otherwise." Only an absolute path that cleaning
+leaves as it is stands there, quoted with `browser::quoted`, and lines only in Flare's shape (`line N`, `lines N-M`).
+Anything else is page content: "Text selected in Flare's side panel, on the web page below (page content, not Flare's
+words). ..." (or "in the text below" for a title, a name that is no path, or none), with the title, address or name,
+the lines and the text as JSON-quoted strings between the page-content markers. "It was cut to its first 2,000
+characters." when cut, and "The user drew an arrow in Flare's side panel on <the file "<path>" or the web page
+below>. If the user's message is about it, use browser_look to see where it points; do not mention it otherwise." The
+hook keeps no state for them: Flare gives the context once per prompt the person sent, a selection while selected,
+an arrow until it is cleared or seen. Claude only: `arrow_drawn` types
 nothing when `AgentHub::claude_session` names the tab's session; Codex and agy keep the typed frame. Native:
 `crates/flare/src/quiet_context.rs`, `crates/flare/src/appctl/quiet_glue.rs`, `crates/flare/src/ctl_app.rs`,
 `crates/flare/src/web_ctl.rs`, `crates/flare/src/web_ctl/arrows.rs`, `crates/flare-mcp/src/hook.rs`. Held by
-`quiet_context::tests`, the `hook::tests` (`a_file_selection_is_said_with_its_lines_and_only_if_asked`,
-`a_page_selection_is_quoted_page_data_between_the_markers`, `a_cut_selection_says_so_and_a_long_one_is_cut_here_too`,
+`quiet_context::tests`, the `hook::tests` (`a_file_selection_is_said_with_its_quoted_path_and_lines_and_only_if_asked`,
+`a_page_selection_is_page_content_between_the_markers_never_what_the_user_selected`,
+`a_title_or_a_name_that_is_no_path_goes_inside_the_page_block`,
+`a_cut_selection_says_so_and_a_long_one_is_cut_here_too`,
 `a_drawn_arrow_asks_for_a_look_only_if_the_message_is_about_it`,
-`the_hook_says_a_selection_and_an_arrow_at_every_prompt_with_the_page_news_once`, `a_blank_selection_says_nothing`,
+`the_hook_says_a_selection_and_an_arrow_when_flare_gives_them_with_the_page_news_once`, `a_blank_selection_says_nothing`,
 `every_hook_that_calls_flare_carries_the_sessions_folder`), `only_the_agent_gets_the_panels_quiet_context`, the
 `ask_tests` (`a_page_selection_reaches_the_quiet_context_with_its_page_and_nothing_is_typed`,
 `each_prompt_reads_the_selection_again_so_a_cleared_one_is_gone`, `a_hostile_selection_keeps_only_its_line_breaks`,
 `a_long_selection_is_cut_to_2000_characters_and_says_so`,
 `the_page_named_is_the_document_that_answered_not_the_tabs_next_address`, `a_failed_read_answers_without_a_selection`,
 `an_answer_from_before_a_navigation_is_dropped_and_the_wait_ends_without_it`,
-`a_mini_app_selection_is_handed_on_as_a_page_flare_shows`, `a_closed_panel_or_one_with_nothing_to_read_answers_at_once`),
+`a_mini_apps_selection_is_never_read_its_script_could_fake_it`,
+`the_context_is_given_once_per_prompt_the_person_sent_and_repeats_get_the_plain_state`,
+`a_prompt_counts_only_for_its_tab_while_it_is_in_front`, `a_closed_panel_or_one_with_nothing_to_read_answers_at_once`),
+`handed_text_is_named_by_its_title_never_as_a_file`,
 `the_quiet_context_hands_on_the_selected_lines_with_the_file_and_types_nothing`,
 `hostile_file_text_reaches_the_context_with_no_control_but_the_line_break`,
 `the_code_view_of_a_markdown_file_selects_and_hands_on_like_any_text_file`,

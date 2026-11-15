@@ -89,9 +89,10 @@ pub enum CtlOp {
         tab: String,
         cwd: Option<String>,
     },
-    /// `panel.state` with `"context": true`, which only the agent's own prompt hook asks (rule 1268): the same answer
-    /// with `context`, what the person marked in the panel. Answered when the page's selection is read, or without it
-    /// after a short wait.
+    /// `panel.state` with `"context": true`, which the agent's own prompt hook asks (rule 1268): the same answer with
+    /// `context`, what the person marked in the panel. Answered when the page's selection is read, or without it after
+    /// a short wait. Only one call per prompt the person sent (a plain Enter in the terminal of the tab in front) has
+    /// the context; the agent grant alone is not enough, so a repeat or the agent's own tool gets the plain state.
     PanelContext {
         tab: String,
         cwd: Option<String>,

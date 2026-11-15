@@ -2949,6 +2949,14 @@ impl WebCtl {
         })
     }
 
+    /// The tab's browser shows a plain web page: not a page Flare made (a mini-app or a mod's page) and not a markdown
+    /// view's page.
+    pub fn is_plain_page(&self, tab: &str) -> bool {
+        self.tabs
+            .get(tab)
+            .is_some_and(|t| t.app_host.is_none() && t.source.is_none())
+    }
+
     /// The answer of the latest script started, None while it runs.
     pub fn script_latest(&self) -> Option<Result<String, String>> {
         self.scripts.get(&self.script_seq).cloned()

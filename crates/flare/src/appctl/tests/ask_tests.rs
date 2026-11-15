@@ -91,8 +91,14 @@ fn scripts(slot: &Slot) -> usize {
         .count()
 }
 
-/// The prompt hook asks `panel.state` with its context (`CtlOp::PanelContext`).
+/// The person sends a prompt, and its hook asks `panel.state` with its context (`CtlOp::PanelContext`).
 fn ask(f: &Fx, tab: &str) -> Answer {
+    f.ctl.borrow_mut().quiet_prompt_seen(tab);
+    ask_unprompted(f, tab)
+}
+
+/// A call asks `panel.state` with `context`, with no prompt of its own.
+fn ask_unprompted(f: &Fx, tab: &str) -> Answer {
     let (tx, rx) = std::sync::mpsc::channel();
     f.ctl
         .borrow_mut()
@@ -313,25 +319,83 @@ fn an_answer_from_before_a_navigation_is_dropped_and_the_wait_ends_without_it() 
 }
 
 #[test]
-fn a_mini_app_selection_is_handed_on_as_a_page_flare_shows() {
+fn a_mini_apps_selection_is_never_read_its_script_could_fake_it() {
     let (f, _h, _shell) = live(Opts::default());
     let slot = with_fake(&f);
     let tab = claude(&f);
     mini_app(&f, &slot, &tab);
+    let before = scripts(&slot);
     let rx = ask(&f, &tab);
-    let (id, _) = last_script(&slot).expect("the page was asked");
-    answer_as(
-        &f,
-        &slot,
-        id,
-        "https://app-1.flare/index.html",
-        "Chart",
-        "words",
-    );
+    assert_eq!(scripts(&slot), before, "the page is not asked");
     assert_eq!(
         context(&rx),
-        json!({"selection": {"text": "words", "cut": false, "other": true}})
+        json!({}),
+        "answered at once, with no selection"
     );
+    assert_eq!(f.ctl.borrow().quiet_reads_waiting(), 0);
+}
+
+/// The person's own Enter in the terminal: what sends a prompt.
+fn enter(f: &Fx, shift: bool) {
+    let mut ev = flare_term::keys::KeyEvent::new("Enter", "Enter");
+    ev.shift = shift;
+    let _ = f.ctl.borrow_mut().on_key(&ev);
+    f.pump();
+}
+
+#[test]
+fn the_context_is_given_once_per_prompt_the_person_sent_and_repeats_get_the_plain_state() {
+    let (f, _h, _shell) = live(Opts::default());
+    let slot = with_fake(&f);
+    let tab = claude(&f);
+    page(&f, &slot, &tab);
+    // No prompt sent: the agent's own tool asking with `context` gets the plain state, and the page is not asked.
+    let before = scripts(&slot);
+    let rx = ask_unprompted(&f, &tab);
+    let v = rx.try_recv().expect("answered at once").expect("the state");
+    assert!(v.get("context").is_none(), "{v}");
+    assert_eq!(v["open"], true);
+    assert_eq!(scripts(&slot), before);
+    // A Shift+Enter is a new line, not a prompt.
+    enter(&f, true);
+    let v = ask_unprompted(&f, &tab).try_recv().unwrap().unwrap();
+    assert!(v.get("context").is_none(), "{v}");
+    // The person presses Enter: that prompt's call has the context.
+    enter(&f, false);
+    let rx = ask_unprompted(&f, &tab);
+    answer(&f, &slot, last_script(&slot).unwrap().0, "chosen");
+    assert_eq!(context(&rx)["selection"]["text"], "chosen");
+    // The same prompt asked again: the plain state.
+    let v = ask_unprompted(&f, &tab).try_recv().unwrap().unwrap();
+    assert!(v.get("context").is_none(), "{v}");
+}
+
+#[test]
+fn a_prompt_counts_only_for_its_tab_while_it_is_in_front() {
+    let (f, _h, _shell) = live(Opts::default());
+    let tab = claude(&f);
+    assert!(f.ctl.borrow_mut().panels.show_text(&tab, "report", None));
+    f.ctl.borrow_mut().refresh();
+    f.pump();
+    let has_context = |f: &Fx| {
+        let v = f.ctl.borrow_mut().panel_context_once(&tab, None).unwrap();
+        assert_eq!(v["open"], true, "{v}");
+        v.get("context").is_some()
+    };
+    // A prompt for another tab does not open this one.
+    f.ctl.borrow_mut().quiet_prompt_seen("tab-elsewhere");
+    assert!(!has_context(&f));
+    // This tab's prompt while another tab is in front: the plain state, and the prompt is used up.
+    f.ctl.borrow_mut().quiet_prompt_seen(&tab);
+    f.ctl.borrow_mut().model.state.active_id = Some("tab-elsewhere".into());
+    let v = f.ctl.borrow_mut().panel_context_once(&tab, None).unwrap();
+    assert!(v.get("context").is_none(), "{v}");
+    f.ctl.borrow_mut().model.state.active_id = Some(tab.clone());
+    assert!(!has_context(&f), "used up");
+    // In front, with its prompt: the context.
+    f.ctl.borrow_mut().quiet_prompt_seen(&tab);
+    assert!(has_context(&f));
+    assert!(!has_context(&f), "once");
 }
 
 #[test]

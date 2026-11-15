@@ -1218,11 +1218,13 @@ gone. The title and address are page data: cleaned, quoted and between the marke
 answer, it prints nothing and exits 0.
 
 Since 2026-11-15 (rule 1268) it sends `"context": true` with `panel.state`. For the tab's own agent (and no other
-caller) the answer then has `context`: `selection` `{text, cut, file?, lines?, page?: {title, url}, other?}` (the text
-selected in the panel now, gated, at most 2,000 characters) and `mark` `{kind: "arrow", file? | page? | other?}` (an
-arrow the person drew that Flare still keeps). Flare waits at most 400 ms for a page to say what is selected. The hook
-adds a sentence for each, at every prompt while it holds, telling the agent to use it only if the user's message is
-about it. A Flare that does not know the field answers as before.
+caller) the answer then has `context`: `selection` `{text, cut, file? | title?, lines?, page?: {title, url}}` (the text
+selected in the panel now, gated, at most 2,000 characters; `file` only for a file the panel opened, `title` for handed
+text) and `mark` `{kind: "arrow", file? | page? | other?}` (an arrow the person drew that Flare still keeps). Flare
+gives `context` once per prompt the person sent (a plain Enter in the terminal of the tab in front); other calls get
+the plain state. It reads a selection only from a plain web page or a markdown view's page, and waits at most 400 ms
+for it. The hook adds a sentence for each, telling the agent to use it only if the user's message is about it; only a
+quoted absolute path stands outside the page-content markers. A Flare that does not know the field answers as before.
 
 `open_page` answers with
 the final address and the page's title (cleaned to one line, like a refusal's words, because a web page wrote

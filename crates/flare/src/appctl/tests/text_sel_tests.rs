@@ -323,6 +323,7 @@ fn wide_characters_and_emoji_are_selected_by_the_columns_they_take() {
 /// What the prompt hook of the tab's Claude hears of the panel (rule 1268): `panel.state`'s `context`.
 fn quiet(f: &Fx, tab: &str) -> serde_json::Value {
     use crate::ctl_app::{CtlOp, CtlRequest, CtlRequestBox};
+    f.ctl.borrow_mut().quiet_prompt_seen(tab);
     let (tx, rx) = std::sync::mpsc::channel();
     f.ctl
         .borrow_mut()
@@ -386,6 +387,27 @@ fn hostile_file_text_reaches_the_context_with_no_control_but_the_line_break() {
     assert!(!text.contains('\x1b') && !text.contains('\r'), "{text:?}");
     assert!(text.ends_with("\nok"), "{text:?}");
     assert!(sel["lines"].as_str().unwrap().starts_with("line"), "{sel}");
+}
+
+#[test]
+fn handed_text_is_named_by_its_title_never_as_a_file() {
+    let (f, _h, _shell) = live(Opts::default());
+    let id = f.ctl.borrow().front_id().unwrap();
+    let title = "C:\\Windows\\notes.txt";
+    assert!(
+        f.ctl
+            .borrow_mut()
+            .panels
+            .show_text(&id, "alpha\nbeta", Some(title))
+    );
+    f.ctl.borrow_mut().refresh();
+    f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+    let app = f.ctl.borrow().app().unwrap();
+    assert!(f.ctl.borrow_mut().panels.select_all(&app));
+    let sel = quiet(&f, &id)["selection"].clone();
+    assert_eq!(sel["title"], title, "{sel}");
+    assert!(sel.get("file").is_none(), "a title is never a file: {sel}");
+    assert_eq!(sel["text"], "alpha\nbeta");
 }
 /// Every browser the controller made (the markdown page's), so no real one is ever started.
 fn with_fake_web(f: &Fx) -> Rc<RefCell<Vec<FakeWeb>>> {

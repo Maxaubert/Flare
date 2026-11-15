@@ -215,6 +215,15 @@ struct InlineText {
     text: Arc<str>,
 }
 
+/// Where a selection in the panel's text is (the quiet context, rule 1268).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SelectionIn {
+    /// A file the panel opened: its path.
+    File(String),
+    /// Text handed over with no file (`show_text`): the panel's title, which the caller gave. Empty for none.
+    Text(String),
+}
+
 /// What the control channel reports of a tab's panel (`PanelInfo`, `panel.state`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PanelSnap {
@@ -1887,21 +1896,18 @@ impl PanelCtl {
         Some(panel_sel::text_of(lines, range))
     }
 
-    /// For the quiet context of `tab` (rule 1268): the file the selection is in (its path, or the panel's title for
-    /// text handed over), its lines (`lines A-B`) and its text. None when nothing is selected there.
-    pub fn selection_now(&self, tab: &str) -> Option<(String, String, String)> {
+    /// For the quiet context of `tab` (rule 1268): where the selection is, its lines (`lines A-B`) and its text. None
+    /// when nothing is selected there.
+    pub fn selection_now(&self, tab: &str) -> Option<(SelectionIn, String, String)> {
         let s = self.shown.as_ref().filter(|s| s.tab == tab)?;
         let range = self.sel.range()?;
         let text = self.selection_text()?;
-        let name = if s.target.starts_with(INLINE) {
-            self.titles
-                .get(tab)
-                .cloned()
-                .unwrap_or_else(|| "text in the panel".to_string())
+        let place = if s.target.starts_with(INLINE) {
+            SelectionIn::Text(self.titles.get(tab).cloned().unwrap_or_default())
         } else {
-            s.target.clone()
+            SelectionIn::File(s.target.clone())
         };
-        Some((name, panel_sel::lines_label(range), text))
+        Some((place, panel_sel::lines_label(range), text))
     }
 
     /// Nothing on show: the picture and the rows are let go.
