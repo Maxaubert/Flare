@@ -137,7 +137,7 @@ fn the_asked_by_line_sits_under_cancel_small_and_dim() {
         for look in [crate::plugin_look::look_of(None), branded()] {
             let h = ask(s, look.clone(), "");
             h.comp
-                .set_pask_foot("Asked by Vault (from example.com)".into());
+                .set_pask_foot("Asked by \"Vault\" \u{00B7} from example.com".into());
             h.advance(0);
             let f = h.render();
             let c = &h.comp;

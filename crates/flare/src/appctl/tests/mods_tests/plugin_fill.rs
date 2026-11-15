@@ -402,10 +402,10 @@ fn secret_ask_hands_the_typed_text_to_the_plugin_that_asked_or_says_cancelled() 
     assert_eq!(f.h.comp.get_pask_title(), "Unlock the vault");
     assert_eq!(f.h.comp.get_pask_button(), "OK");
     // Flare's line under Cancel names the plugin that asked, from its own name, not from the ask's title.
-    assert!(
-        f.h.comp.get_pask_foot().starts_with("Asked by Vault vault"),
-        "{}",
-        f.h.comp.get_pask_foot()
+    // A folder plugin: its name in quotes, then Flare's origin (no address, so "from a file").
+    assert_eq!(
+        f.h.comp.get_pask_foot(),
+        "Asked by \"Vault vault\" \u{00B7} from a file"
     );
     assert_eq!(f.h.comp.get_pask_label(), "Master password");
     f.h.comp.invoke_pask_secret(true, PASS.into());

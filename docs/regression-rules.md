@@ -4045,8 +4045,18 @@ whose last answer failed (a wrong master password) asks again with `error`, one 
 120 characters (`MAX_ERROR_CHARS`; a control or hidden formatting character, two lines or a non-text value is
 `bad_params`, as for the other fields). When it is present and not blank, the dialog draws that text under the title
 in the error colour instead of `sub`, and the field gets a red edge with a soft red glow; the field is empty and has
-the keys, and the button, Cancel and Flare's line under Cancel are as before. That line is a short grey "Asked by
-<plugin>" ("Asked by Vault (from example.com)" for a plugin Settings installed from an address), the box's last row.
+the keys, and the button, Cancel and Flare's line under Cancel are as before. That line is a short grey
+`Asked by "<plugin>" · from <origin>`, the box's last row: `Asked by "Vault" · from example.com` for a plugin Settings
+installed from an address, `Asked by "Vault" · from a file` for one installed from a file or a folder put in place (no
+address), and `from an address` when the address has no host. The name is always in quotes and the origin is always
+Flare's, so a plugin named `Bitwarden (from bitwarden.com)` reads `Asked by "Bitwarden (from bitwarden.com)" · from a
+file`, never like the real one. A second security review (2026-11-15) found the first form forgeable, so: the host comes
+from `url::Url::parse(source)` and `host_str()` (the parser the download check uses; never a user name, password, port or
+path), is shown whole, and a host longer than 80 characters is cut from the LEFT, keeping its last labels
+(`...evil.net`), so `bitwarden.com.evil.net` never reads as `bitwarden.com...`; the name is cut at 40 characters, has
+control, bidi (U+061C, U+200E/F, U+202A to U+202E, U+2066 to U+2069) and zero-width characters (U+200B to U+200D, U+2060,
+U+FEFF) taken out (every name in the dialog loses them), and a quote mark in it becomes an apostrophe, so it cannot close
+its quotes early.
 It replaced "What you type goes to <Plugin> only. Flare does not keep it or show it.", which Max took out; a security
 review then found that with no line at all another plugin could dress as Bitwarden in the box, so Max chose this short
 line (2026-11-15). Flare writes it from the plugin's resolved name (`fill_caller`) and install host
@@ -4063,8 +4073,9 @@ sub), `pask-error` and `pask-error-shown` in `app.slint`, `PluginAsk.error` in `
 (`plugin_ask.rs`), and in `ui_tests/secret_error.rs` `an_error_is_red_in_the_sub_place_and_the_field_gets_a_red_edge`
 and `no_error_keeps_todays_look_and_the_error_does_not_move_the_box`. The "Asked by" line: `AskView.foot`,
 `pask-foot` and `pask-foot-x/y/w/h` in `app.slint`, `PluginAsk.foot` in `ui/plugin_ask.slint`, held by
-`a_plugin_installed_from_an_address_is_named_with_its_host` and
-`the_asked_by_line_names_the_real_plugin_whatever_the_ask_says` (`plugin_ask.rs`),
+`a_plugin_installed_from_an_address_is_named_with_its_host`,
+`the_asked_by_line_names_the_real_plugin_whatever_the_ask_says`, `a_host_is_never_cut_from_the_right` and
+`a_name_cannot_pass_for_another_plugins_origin` (`plugin_ask.rs`),
 `secret_ask_hands_the_typed_text_to_the_plugin_that_asked_or_says_cancelled` (`plugin_fill.rs`),
 `the_asked_by_line_sits_under_cancel_small_and_dim` (`ui_tests/secret_error.rs`) and the e2e `brand` scenario
 (the probe's `foot` and `foot_box`). Source: Max, 2026-11-15.

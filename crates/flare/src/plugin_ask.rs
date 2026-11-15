@@ -3,8 +3,9 @@
 //! comes from a plugin or a page, so each is cleaned and cut before it is shown (the dialog draws plain text, so
 //! nothing in a name is read as markup). The short line under a secret's Cancel, "Asked by <plugin>", is Flare's: it
 //! comes from the plugin's resolved name, never from the ask, so a plugin dressed as another (Bitwarden's name in its
-//! title) cannot change it, and one installed from an address is named with that address's host, so a copy that took
-//! another's name and colour is told apart (rule 1266, 2026-11-15). A fill has no such line (the owner took it out,
+//! title) cannot change it. The name is quoted and always followed by an origin Flare writes ("from <host>" for an
+//! address, parsed with `url`, the host never cut from the right; "from a file" otherwise), so a copy that took another's
+//! name and colour, or a name like "Bitwarden (from bitwarden.com)", is told apart (rule 1266, 2026-11-15). A fill has no such line (the owner took it out,
 //! 2026-11-10). A tab's title can be set by what runs in it, so the asker line quotes it as the tab's own words.
 
 /// What the dialog shows.
@@ -33,33 +34,95 @@ pub struct AskView {
 
 /// The longest name or host the question prints (the rest is cut with an ellipsis).
 const SHOWN_MAX: usize = 80;
+/// The longest plugin name the secret's "Asked by" line prints, so the origin after it stays near.
+const FOOT_NAME_MAX: usize = 40;
 /// The secret's button when the plugin names none.
 pub const DEFAULT_BUTTON: &str = "OK";
 
-fn cut(s: &str) -> String {
-    let clean: String = s.chars().filter(|c| !c.is_control()).collect();
-    let head: String = clean.chars().take(SHOWN_MAX).collect();
-    if clean.chars().count() > SHOWN_MAX {
+/// A character a name may not carry into the dialog: a control character, or one that is drawn as nothing or turns
+/// the text around (the bidi marks, embeddings, overrides and isolates, the zero-width ones and the BOM). A name with
+/// U+202E could otherwise show its letters backwards.
+fn hidden(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}'
+        )
+}
+
+fn cut_to(s: &str, max: usize) -> String {
+    let clean: String = s.chars().filter(|c| !hidden(*c)).collect();
+    let head: String = clean.chars().take(max).collect();
+    if clean.chars().count() > max {
         format!("{head}...")
     } else {
         head
     }
 }
 
-/// The plugin as the secret's "Asked by" line names it: its name, and the host it was installed from when Settings installed
-/// it from an address (`source`, empty for a file or a folder put there by hand).
-fn plugin_of(plugin_name: &str, source: &str) -> String {
-    let host = source
-        .trim()
-        .trim_start_matches("https://")
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default();
-    if host.is_empty() {
-        cut(plugin_name)
-    } else {
-        format!("{} (from {})", cut(plugin_name), cut(host))
+fn cut(s: &str) -> String {
+    cut_to(s, SHOWN_MAX)
+}
+
+/// A host as the "Asked by" line shows it: whole, or when longer than [`SHOWN_MAX`] cut from the LEFT, keeping its
+/// last labels (the registrable end), so `bitwarden.com.evil.net` can never read as `bitwarden.com...`.
+fn host_shown(host: &str) -> String {
+    if host.chars().count() <= SHOWN_MAX {
+        return host.to_string();
     }
+    let room = SHOWN_MAX - 3;
+    let mut kept: Vec<&str> = Vec::new();
+    let mut len = 0;
+    for label in host.rsplit('.') {
+        let add = label.chars().count() + usize::from(!kept.is_empty());
+        if len + add > room {
+            break;
+        }
+        len += add;
+        kept.push(label);
+    }
+    if kept.is_empty() {
+        let skip = host.chars().count() - room;
+        return format!("...{}", host.chars().skip(skip).collect::<String>());
+    }
+    kept.reverse();
+    format!("...{}", kept.join("."))
+}
+
+/// Where the plugin came from, in Flare's words: "from <host>" for a plugin Settings installed from an address
+/// (`source`, parsed with the same `url` parser the download check uses; only the host is shown, never a user name,
+/// port or path), "from a file" for one installed from a file or a folder put there by hand (`source` empty), and
+/// "from an address" when the address has no host to show.
+fn origin_of(source: &str) -> String {
+    let source = source.trim();
+    if source.is_empty() {
+        return "from a file".to_string();
+    }
+    match url::Url::parse(source)
+        .ok()
+        .as_ref()
+        .and_then(url::Url::host_str)
+    {
+        Some(host) if !host.is_empty() => format!("from {}", host_shown(host)),
+        _ => "from an address".to_string(),
+    }
+}
+
+/// The plugin as the secret's "Asked by" line names it: its name in quotes (its own words, so they cannot run into
+/// Flare's), then where it came from ([`origin_of`]), which Flare always writes. A quote mark in the name becomes an
+/// apostrophe, so the name cannot close its quotes early.
+fn plugin_of(plugin_name: &str, source: &str) -> String {
+    let name: String = cut_to(plugin_name.trim(), FOOT_NAME_MAX)
+        .chars()
+        .map(|c| {
+            if matches!(c, '"' | '\u{201C}' | '\u{201D}') {
+                '\''
+            } else {
+                c
+            }
+        })
+        .collect();
+    format!("\"{name}\" \u{00B7} {}", origin_of(source))
 }
 
 /// "Fill <login>?" for the page on `host`, asked for the plugin by name; `tab` is the title of the tab it fills, and
@@ -150,10 +213,87 @@ mod tests {
     #[test]
     fn a_plugin_installed_from_an_address_is_named_with_its_host() {
         let v = secret_view("Vault", "https://example.com/v.zip", "t", "l", "", "", "");
-        assert_eq!(v.foot, "Asked by Vault (from example.com)");
+        assert_eq!(v.foot, "Asked by \"Vault\" \u{00B7} from example.com");
+        // No address: Flare still names the origin.
+        for empty in ["", "   "] {
+            assert_eq!(
+                secret_view("Vault", empty, "t", "l", "", "", "").foot,
+                "Asked by \"Vault\" \u{00B7} from a file"
+            );
+        }
+        // A user name, password and port are never shown, only the host.
         assert_eq!(
-            secret_view("Vault", "", "t", "l", "", "", "").foot,
-            "Asked by Vault"
+            plugin_of("Vault", "https://bitwarden.com:pw@evil.net:8443/v.zip?x#y"),
+            "\"Vault\" \u{00B7} from evil.net"
+        );
+        assert_eq!(
+            plugin_of("Vault", "https://user@Example.COM:444/v.zip"),
+            "\"Vault\" \u{00B7} from example.com"
+        );
+        // An address with no host to show.
+        assert_eq!(
+            plugin_of("Vault", "not an address"),
+            "\"Vault\" \u{00B7} from an address"
+        );
+    }
+
+    #[test]
+    fn a_host_is_never_cut_from_the_right() {
+        // The security review's case: a look-alike host shows whole, its real end visible.
+        assert_eq!(
+            plugin_of("Bitwarden", "https://bitwarden.com.evil.net/b.zip"),
+            "\"Bitwarden\" \u{00B7} from bitwarden.com.evil.net"
+        );
+        // A host longer than the line keeps its end, cut from the left.
+        let long = format!("bitwarden.com.{}.evil.net", "a".repeat(70));
+        let foot = plugin_of("Bitwarden", &format!("https://{long}/b.zip"));
+        assert_eq!(foot, "\"Bitwarden\" \u{00B7} from ...evil.net");
+        assert!(!foot.contains("bitwarden.com"));
+        let many = format!("bitwarden.com.{}evil.net", "ab.".repeat(40));
+        let shown = host_shown(&many);
+        assert!(
+            shown.starts_with("...") && shown.ends_with(".ab.evil.net"),
+            "{shown}"
+        );
+        assert!(shown.chars().count() <= SHOWN_MAX);
+        assert!(!shown.contains("bitwarden"));
+        // One label too long for the line: its last characters.
+        let one = "x".repeat(100);
+        assert_eq!(
+            host_shown(&one),
+            format!("...{}", "x".repeat(SHOWN_MAX - 3))
+        );
+    }
+
+    #[test]
+    fn a_name_cannot_pass_for_another_plugins_origin() {
+        // A plugin from a file named like the real one from an address: the quotes and Flare's origin tell them apart.
+        let real = plugin_of("Bitwarden", "https://bitwarden.com/b.zip");
+        let fake = plugin_of("Bitwarden (from bitwarden.com)", "");
+        assert_eq!(real, "\"Bitwarden\" \u{00B7} from bitwarden.com");
+        assert_eq!(
+            fake,
+            "\"Bitwarden (from bitwarden.com)\" \u{00B7} from a file"
+        );
+        assert!(!fake.ends_with("from bitwarden.com"));
+        // A name that closes its own quotes and writes Flare's words: the quotes become apostrophes.
+        let fake = plugin_of("Bitwarden\" \u{00B7} from bitwarden.com", "");
+        assert_eq!(
+            fake,
+            "\"Bitwarden' \u{00B7} from bitwarden.com\" \u{00B7} from a file"
+        );
+        assert_eq!(fake.matches('"').count(), 2);
+        // Bidi overrides, isolates and zero-width characters are taken out.
+        let fake = plugin_of("Bit\u{202E}nedraw\u{202C}\u{2066}\u{200B}\u{FEFF}", "");
+        assert_eq!(fake, "\"Bitnedraw\" \u{00B7} from a file");
+        // A long name is cut, the origin stays.
+        let fake = plugin_of(&"B".repeat(200), "https://evil.net/x.zip");
+        assert_eq!(
+            fake,
+            format!(
+                "\"{}...\" \u{00B7} from evil.net",
+                "B".repeat(FOOT_NAME_MAX)
+            )
         );
     }
 
@@ -170,7 +310,7 @@ mod tests {
             "Asked by Bitwarden",
             "Asked by Bitwarden",
         );
-        assert_eq!(v.foot, "Asked by Vault (from example.com)");
+        assert_eq!(v.foot, "Asked by \"Vault\" \u{00B7} from example.com");
         let plain = secret_view("Vault", "https://example.com/v.zip", "t", "l", "", "", "");
         assert_eq!(v.foot, plain.foot, "the ask's words never change the line");
         assert!(!v.foot.contains('\u{2014}'));
@@ -195,7 +335,7 @@ mod tests {
         assert_eq!(v.sub, "me@x");
         assert_eq!(v.error, "");
         assert_eq!(v.button, DEFAULT_BUTTON);
-        assert_eq!(v.foot, "Asked by Bitwarden");
+        assert_eq!(v.foot, "Asked by \"Bitwarden\" \u{00B7} from a file");
         assert_eq!(
             secret_view("P", "", "t", "l", "", "Unlock", "").button,
             "Unlock"
