@@ -4123,6 +4123,62 @@ nothing when `AgentHub::claude_session` names the tab's session; Codex and agy k
 `a_claude_tab_with_hooks_hears_of_the_arrow_quietly_until_a_look_and_nothing_is_typed`. Source: Max, 2026-11-15
 (brainstorm `research\flare\2026-11-15-ask-agent-brainstorm.md`, ideas 1.1 and 1.2, changed by Max).
 
+## A secret question's error line (2026-11-15)
+
+1266. **`secret.ask` takes an optional `error`: a red line in the sub's place and a red edge on the field.** A plugin
+whose last answer failed (a wrong master password) asks again with `error`, one clean line of plain text of at most
+120 characters (`MAX_ERROR_CHARS`; a control or hidden formatting character, two lines or a non-text value is
+`bad_params`, as for the other fields). When it is present and not blank, the dialog draws that text under the title
+in the error colour instead of `sub`, and the field gets a red edge with a soft red glow; the field is empty and has
+the keys, and the button, Cancel and Flare's line under Cancel are as before. That line is a short grey
+`Asked by "<plugin>" · from <origin>`, the box's last row: `Asked by "Vault" · from example.com` for a plugin Settings
+installed from an address, `Asked by "Vault" · from a file` for one installed from a file or a folder put in place (no
+address), and `from an address` when the address has no host. The name is always in quotes and the origin is always
+Flare's, so a plugin named `Bitwarden (from bitwarden.com)` reads `Asked by "Bitwarden (from bitwarden.com)" · from a
+file`, never like the real one. A second security review (2026-11-15) found the first form forgeable, so: the host comes
+from `url::Url::parse(source)` and `host_str()` (the parser the download check uses; never a user name, password, port or
+path), is shown whole, and a host longer than 80 characters is cut from the LEFT, keeping its last labels
+(`...evil.net`), so `bitwarden.com.evil.net` never reads as `bitwarden.com...`; the name is cut at 40 characters, has
+control, bidi (U+061C, U+200E/F, U+202A to U+202E, U+2066 to U+2069) and zero-width characters (U+200B to U+200D, U+2060,
+U+FEFF) taken out (every name in the dialog loses them), and a quote mark in it becomes an apostrophe, so it cannot close
+its quotes early.
+It replaced "What you type goes to <Plugin> only. Flare does not keep it or show it.", which Max took out; a security
+review then found that with no line at all another plugin could dress as Bitwarden in the box, so Max chose this short
+line (2026-11-15). Flare writes it from the plugin's resolved name (`fill_caller`) and install host
+(`hub().source_of`, through `plugin_of`), never from the ask: the plugin's `title`, `sub`, `label`, `button` and
+`error` cannot change it, and its `brand` cannot colour it. It is drawn small (11 px) in Flare's own type and dim ink,
+`PluginInk.dim` (`Theme.dim`, or `BrandInk.dim` on the fixed brand surface), never the plugin's colour. The look is Max's approved mockup C
+(2026-11-15). The colours are theme tokens, no hex in the dialog: `BrandInk.error` and `error-edge` on a brand,
+`SettingsFixed.error-dark`, `error-light` and `error-edge` on Flare's theme, through `PluginInk.error` and
+`PluginInk.error-edge`. The error takes the sub's line, so a box with a sub keeps its height. Older plugins are unchanged: no
+`error`, an empty one, a blank one or null is today's look. Native: `flare_mods::fill::parse_secret`
+(`SecretRequest.error`), `CtlOp::SecretAsk.error`, `plugin_ask::secret_view` (`AskView.error`, cut like the
+sub), `pask-error` and `pask-error-shown` in `app.slint`, `PluginAsk.error` in `ui/plugin_ask.slint`. Held by
+`a_secret_ask_may_carry_an_error_line` (`fill.rs`), `an_error_is_kept_beside_the_sub_and_cleaned`
+(`plugin_ask.rs`), and in `ui_tests/secret_error.rs` `an_error_is_red_in_the_sub_place_and_the_field_gets_a_red_edge`
+and `no_error_keeps_todays_look_and_the_error_does_not_move_the_box`. The "Asked by" line: `AskView.foot`,
+`pask-foot` and `pask-foot-x/y/w/h` in `app.slint`, `PluginAsk.foot` in `ui/plugin_ask.slint`, held by
+`a_plugin_installed_from_an_address_is_named_with_its_host`,
+`the_asked_by_line_names_the_real_plugin_whatever_the_ask_says`, `a_host_is_never_cut_from_the_right` and
+`a_name_cannot_pass_for_another_plugins_origin` (`plugin_ask.rs`),
+`secret_ask_hands_the_typed_text_to_the_plugin_that_asked_or_says_cancelled` (`plugin_fill.rs`),
+`the_asked_by_line_sits_under_cancel_small_and_dim` (`ui_tests/secret_error.rs`) and the e2e `brand` scenario
+(the probe's `foot` and `foot_box`). Source: Max, 2026-11-15.
+
+1269. **The folder menu leaves out the folders of open tabs.** Max, 2026-11-15: the New tab button's folder menu (and
+the strip's right-click on +) listed folders that already had a terminal tab. Now, when the menu opens, an unpinned
+recent or starter folder that an open local shell tab is in is not listed. A pin always stays, as it is a deliberate
+choice. Two spellings of one folder match: a trailing slash, either slash, the `\\?\` prefix and, on Windows, any
+case. A folder below or beside it is another folder. A hidden folder frees no spot: no older recent and no starter
+takes it, and no "No recent folders" note appears, so the list just has fewer rows. A remote tab's folder is on
+another machine, so it hides nothing, and the remote folder rows stay as they were. The list is built each time the
+menu opens (and again after a pin toggle), so it reflects the tabs open at that moment. Native:
+`menus_ui::{plus_menu_rows, toggle_pin_in_menu}` take the open folders, `menus_ui::{open_folder_key, is_open_folder}`,
+`AppCtl::open_local_folders`. Held by `an_open_tabs_recent_folder_is_left_out_of_the_menu`,
+`a_pinned_folder_stays_while_its_tab_is_open`, `an_open_folder_matches_whatever_its_spelling`,
+`open_folders_never_hide_a_remote_folder_row`, `only_local_tabs_count_as_open_folders_for_the_menu`,
+`a_menu_picks_a_recent_folder_and_copies_a_path` and `plus_opens_at_once_in_the_chosen_folder_and_does_not_ask_again`. Source: Max, 2026-11-15.
+
 ## The taskbar wears the app icon (2026-11-15)
 
 1265. **While a custom app icon is picked, the main window has its own taskbar id, so the taskbar button shows the

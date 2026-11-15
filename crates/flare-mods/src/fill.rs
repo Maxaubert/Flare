@@ -81,20 +81,24 @@ pub struct FillRequest {
     pub values: Values,
 }
 
-/// `secret.ask`'s params, checked. `sub` (a line under the title, such as the account) and `button` (the word on the
-/// button) are empty when the plugin leaves them out.
+/// `secret.ask`'s params, checked. `sub` (a line under the title, such as the account), `button` (the word on the
+/// button) and `error` (why the last answer failed, such as "Wrong password. Try again.") are empty when the plugin
+/// leaves them out. An `error` takes the sub's place, drawn in the error colour, and gives the field a red edge.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SecretRequest {
     pub title: String,
     pub label: String,
     pub sub: String,
     pub button: String,
+    pub error: String,
 }
 
 /// The longest word `secret.ask` may put on its button.
 pub const MAX_BUTTON_CHARS: usize = 24;
+/// The longest error line `secret.ask` may show.
+pub const MAX_ERROR_CHARS: usize = 120;
 /// The keys `secret.ask` takes.
-const SECRET_KEYS: [&str; 4] = ["title", "label", "sub", "button"];
+const SECRET_KEYS: [&str; 5] = ["title", "label", "sub", "button", "error"];
 
 fn bad(m: impl Into<String>) -> CtlError {
     CtlError::new(code::BAD_PARAMS, m.into())
@@ -216,7 +220,7 @@ pub fn parse_secret(params: &Value) -> Result<SecretRequest, CtlError> {
         .ok_or_else(|| bad("params must be an object"))?;
     if let Some(k) = obj.keys().find(|k| !SECRET_KEYS.contains(&k.as_str())) {
         return Err(bad(format!(
-            "unknown param \"{}\"; secret.ask takes title, label, sub and button",
+            "unknown param \"{}\"; secret.ask takes title, label, sub, button and error",
             k.chars().take(40).collect::<String>()
         )));
     }
@@ -225,6 +229,11 @@ pub fn parse_secret(params: &Value) -> Result<SecretRequest, CtlError> {
         label: clean_line(params, "label", MAX_LABEL_CHARS, true)?,
         sub: clean_line(params, "sub", MAX_LABEL_CHARS, false)?,
         button: clean_line(params, "button", MAX_BUTTON_CHARS, false)?,
+        // An empty or blank error is no error: a plugin may always send the key and get today's look.
+        error: match params.get("error") {
+            Some(Value::String(s)) if s.trim().is_empty() => String::new(),
+            _ => clean_line(params, "error", MAX_ERROR_CHARS, false)?,
+        },
     })
 }
 
@@ -689,6 +698,33 @@ mod tests {
         assert!(parse_secret(&json!({"title": "x", "label": "y", "button": long})).is_err());
         assert!(parse_secret(&json!({"title": "x", "label": "y", "sub": "a\nb"})).is_err());
         assert!(parse_secret(&json!({"title": "x", "label": "y", "button": 3})).is_err());
+    }
+
+    #[test]
+    fn a_secret_ask_may_carry_an_error_line() {
+        // No error: today's ask, unchanged.
+        let r = parse_secret(&json!({"title": "Your vault is locked", "label": "Master password", "sub": "me@example.com"}))
+            .unwrap();
+        assert_eq!(r.error, "");
+        assert_eq!(r.sub, "me@example.com");
+        // An error is one clean line, kept beside the sub (the dialog shows it in the sub's place).
+        let r = parse_secret(&json!({"title": "Your vault is locked", "label": "Master password", "sub": "me@example.com", "error": " Wrong password. Try again. "}))
+            .unwrap();
+        assert_eq!(r.error, "Wrong password. Try again.");
+        assert_eq!(r.sub, "me@example.com");
+        // Empty, blank or null is no error.
+        for e in [json!(""), json!("   "), Value::Null] {
+            let r = parse_secret(&json!({"title": "x", "label": "y", "error": e})).unwrap();
+            assert_eq!(r.error, "");
+        }
+        // At most MAX_ERROR_CHARS; two lines, hidden characters or not text: refused.
+        let most = "e".repeat(MAX_ERROR_CHARS);
+        assert!(parse_secret(&json!({"title": "x", "label": "y", "error": most})).is_ok());
+        let long = "e".repeat(MAX_ERROR_CHARS + 1);
+        assert!(parse_secret(&json!({"title": "x", "label": "y", "error": long})).is_err());
+        assert!(parse_secret(&json!({"title": "x", "label": "y", "error": "a\nb"})).is_err());
+        assert!(parse_secret(&json!({"title": "x", "label": "y", "error": "a\u{202E}b"})).is_err());
+        assert!(parse_secret(&json!({"title": "x", "label": "y", "error": true})).is_err());
     }
 
     #[test]

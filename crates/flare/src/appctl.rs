@@ -3025,9 +3025,27 @@ impl AppCtl {
 
     /// The folder menu's rows, "Choose a folder…" wearing its key (rule 1236).
     fn plus_rows(&self) -> Vec<(MenuRowData, String)> {
-        let mut rows = plus_menu_rows(&self.prefs, &self.starters, &self.deps.home, &self.machines);
+        let mut rows = plus_menu_rows(
+            &self.prefs,
+            &self.starters,
+            &self.deps.home,
+            &self.machines,
+            &self.open_local_folders(),
+        );
         self.label_choose_row(&mut rows);
         rows
+    }
+
+    /// The folders of the open local shell tabs (rule 1269): the folder menu leaves their recents out. A remote tab's
+    /// folder is on another machine, so it hides nothing here.
+    fn open_local_folders(&self) -> Vec<String> {
+        self.model
+            .state
+            .tabs
+            .iter()
+            .filter(|t| t.kind == TabKind::Shell && t.remote.is_none() && !t.cwd.is_empty())
+            .map(|t| t.cwd.clone())
+            .collect()
     }
 
     fn label_choose_row(&self, rows: &mut [(MenuRowData, String)]) {
@@ -3230,6 +3248,7 @@ impl AppCtl {
             return;
         };
         if let Ok(i) = usize::try_from(i) {
+            let open = self.open_local_folders();
             toggle_pin_in_menu(
                 &self.prefs,
                 &mut m.rows,
@@ -3237,6 +3256,7 @@ impl AppCtl {
                 &self.starters,
                 &self.deps.home,
                 &self.machines,
+                &open,
             );
             self.label_choose_row(&mut m.rows);
         }
@@ -7141,10 +7161,38 @@ mod tests {
         f.h.comp.invoke_menu_picked(1); // Copy folder path
         assert_eq!(f.log.borrow().clipboard, ["C:\\a"]);
         assert!(!f.h.comp.get_menu_open());
+        // C:\a has a tab, so the menu leaves it out (rule 1269); the older recent C:\b is row 1.
+        flare_settings::recent_roots::remember_root(&f.prefs, "C:\\b");
+        flare_settings::recent_roots::remember_root(&f.prefs, "C:\\a");
         f.ctl.borrow_mut().open_plus_menu(10.0, 10.0);
         assert!(f.h.comp.get_menu_open());
-        f.h.comp.invoke_menu_picked(1); // the recent folder C:\a, under "Choose a folder…"
+        let listed: Vec<String> = f
+            .ctl
+            .borrow()
+            .menu
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .map(|(_, p)| p.clone())
+            .collect();
+        assert_eq!(listed, ["", "C:\\b"]);
+        f.h.comp.invoke_menu_picked(1); // the recent folder C:\b, under "Choose a folder…"
         assert_eq!(f.rows(), 2);
+        assert_eq!(f.cwds(), ["C:\\a", "C:\\b"]);
+    }
+
+    /// Rule 1269: the folder menu hides only the folders of local shell tabs; a remote tab's folder is another
+    /// machine's, so it hides nothing here.
+    #[test]
+    fn only_local_tabs_count_as_open_folders_for_the_menu() {
+        let f = fx();
+        f.ctl.borrow_mut().open_folder("C:\\a");
+        f.ctl.borrow_mut().open_folder("C:\\r");
+        assert_eq!(f.ctl.borrow().open_local_folders(), ["C:\\a", "C:\\r"]);
+        f.ctl.borrow_mut().model.state.tabs[1].remote =
+            Some(flare_tabs::tabs::MachineTag::of_id("mac"));
+        assert_eq!(f.ctl.borrow().open_local_folders(), ["C:\\a"]);
     }
 
     #[test]

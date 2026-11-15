@@ -1779,6 +1779,7 @@ dependencies = [
  "slint",
  "slint-build",
  "tempfile",
+ "url",
  "velopack",
  "wgpu",
  "windows-sys 0.61.2",
