@@ -8,7 +8,7 @@
 //! those in the light theme. It saves a picture of each surface into `<shots>/plugin-brand/`: the card, the details
 //! sheet (closed and with the Fills logins dropdown open), the unlock question, the fill approval and the tab menu.
 //! It holds: the one action is a flat tab-menu row titled by the plugin, wearing the brand's logo or Flare's chip and
-//! the plugin's name as its hint; `secret.ask` shows the plugin's heading, sub line, button and Flare's line naming it,
+//! the plugin's name as its hint; `secret.ask` shows the plugin's heading, sub line and button, no line under it,
 //! the eye shows and hides, Enter submits and the helper gets only that a secret came; the fill approval names the
 //! login, the site and the tab the agent asked in (in quotes), and the first press on Deny answers it; every surface
 //! wears the brand exactly when the manifest has one, and the logo only with a logo; the card's Details button opens the
@@ -404,9 +404,8 @@ fn run(
             && q["button"] == json!("Unlock")
             && q["branded"] == json!(dress.branded())
             && q["plate"] == json!(dress == Dress::Logo)
-            && q["field_focus"] == json!(true)
-            && q["foot"].as_str().is_some_and(|f| f.contains(NAME)),
-        format!("{pct}: the unlock question is the plugin's, centred, with Flare's line naming it ({q})"),
+            && q["field_focus"] == json!(true),
+        format!("{pct}: the unlock question is the plugin's, centred, with no line under it ({q})"),
     );
     shot(ctx, app, dir, &format!("unlock-{pct}"));
     if let Some((x, y)) = centre(&q["buttons"]["eye"]) {

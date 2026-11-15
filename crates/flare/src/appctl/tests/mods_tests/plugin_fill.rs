@@ -158,7 +158,6 @@ fn a_fill_needs_the_logins_site_and_the_persons_allow_and_answers_kinds_of_field
         f.h.comp.get_pask_asker()
     );
     // No line under a fill (the owner took it out, 2026-11-10).
-    assert_eq!(f.h.comp.get_pask_foot(), "");
     assert!(!f.h.comp.get_pask_look().branded, "no brand: Flare's look");
     assert!(
         f.h.comp.get_overlay_open(),
@@ -401,7 +400,6 @@ fn secret_ask_hands_the_typed_text_to_the_plugin_that_asked_or_says_cancelled() 
     assert_eq!(f.h.comp.get_pask_kind(), 1);
     assert_eq!(f.h.comp.get_pask_title(), "Unlock the vault");
     assert_eq!(f.h.comp.get_pask_button(), "OK");
-    assert!(f.h.comp.get_pask_foot().contains("Vault vault only"));
     assert_eq!(f.h.comp.get_pask_label(), "Master password");
     f.h.comp.invoke_pask_secret(true, PASS.into());
     assert_eq!(answer_of(&f, &rx).unwrap(), json!({"text": PASS}));

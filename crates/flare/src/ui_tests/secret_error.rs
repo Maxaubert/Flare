@@ -1,6 +1,6 @@
 //! A plugin's secret question with an error line (`secret.ask` `error`, rule 1266, the approved mockup C), headless:
 //! the error stands in the sub's place in the error colour, the field gets a red edge and a soft red glow, it is empty
-//! and has the keys; with no error the dialog looks as it did.
+//! and has the keys; with no error the dialog looks as it did. The box ends at Cancel: no line under it.
 
 use crate::ui_harness::{Frame, Harness, SCALES};
 use crate::{AppWindow, PluginLook};
@@ -126,5 +126,19 @@ fn no_error_keeps_todays_look_and_the_error_does_not_move_the_box() {
             err.comp.get_pask_field_y(),
             "scale {s}"
         );
+    }
+}
+
+#[test]
+fn the_secret_box_ends_at_cancel_with_no_line_under_it() {
+    // Max took out "What you type goes to <Plugin> only. Flare does not keep it or show it." (2026-11-15): the box
+    // ends 16 px under Cancel, its bottom padding, with nothing between.
+    for s in SCALES {
+        let h = ask(s, crate::plugin_look::look_of(None), "");
+        let _ = h.render();
+        let c = &h.comp;
+        let gap =
+            (c.get_pask_box_y() + c.get_pask_box_h()) - (c.get_pask_deny_y() + c.get_pask_deny_h());
+        assert!((gap - 16.0).abs() <= 1.0, "gap {gap} at scale {s}");
     }
 }

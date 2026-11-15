@@ -93,7 +93,6 @@ pub const INVENTORY: &[(&str, &str)] = &[
     // plugin's question show a homepage's or an install address's host.
     ("flare-mods/src/fill.rs", "Mods"),
     ("flare-mods/src/grants.rs", "Mods"),
-    ("flare/src/plugin_ask.rs", "Mods"),
     // The fill and brand scenarios: a test login's addresses and a test plugin's homepage, never requested (the page
     // is served by the loopback stand-in).
     ("e2e/src/fake_fill_helper.rs", "Web panel"),

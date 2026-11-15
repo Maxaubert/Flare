@@ -69,7 +69,6 @@ fn plugin_ask(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     v["button"] = json!(a.get_pask_button().to_string());
     v["site"] = json!(a.get_pask_site().to_string());
     v["asker"] = json!(a.get_pask_asker().to_string());
-    v["foot"] = json!(a.get_pask_foot().to_string());
     v["branded"] = json!(a.get_pask_look().branded);
     v["plate"] = json!(a.get_pask_look().plate);
     v["revealed"] = json!(a.get_pask_revealed());

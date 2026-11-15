@@ -4045,7 +4045,9 @@ whose last answer failed (a wrong master password) asks again with `error`, one 
 120 characters (`MAX_ERROR_CHARS`; a control or hidden formatting character, two lines or a non-text value is
 `bad_params`, as for the other fields). When it is present and not blank, the dialog draws that text under the title
 in the error colour instead of `sub`, and the field gets a red edge with a soft red glow; the field is empty and has
-the keys, and the button, Cancel and Flare's foot line are as before. The look is Max's approved mockup C
+the keys, and the button and Cancel are as before. The dialog ends at Cancel: Max took out the line under it,
+"What you type goes to <Plugin> only. Flare does not keep it or show it." (2026-11-15), so `AskView.foot`,
+`pask-foot` and `PluginAsk.foot` are gone and the box is that line shorter. The look is Max's approved mockup C
 (2026-11-15). The colours are theme tokens, no hex in the dialog: `BrandInk.error` and `error-edge` on a brand,
 `SettingsFixed.error-dark`, `error-light` and `error-edge` on Flare's theme, through `PluginInk.error` and
 `PluginInk.error-edge`. The error takes the sub's line, so a box with a sub keeps its height. Older plugins are unchanged: no
@@ -4054,4 +4056,5 @@ the keys, and the button, Cancel and Flare's foot line are as before. The look i
 sub), `pask-error` and `pask-error-shown` in `app.slint`, `PluginAsk.error` in `ui/plugin_ask.slint`. Held by
 `a_secret_ask_may_carry_an_error_line` (`fill.rs`), `an_error_is_kept_beside_the_sub_and_cleaned`
 (`plugin_ask.rs`), and in `ui_tests/secret_error.rs` `an_error_is_red_in_the_sub_place_and_the_field_gets_a_red_edge`
-and `no_error_keeps_todays_look_and_the_error_does_not_move_the_box`. Source: Max, 2026-11-15.
+and `no_error_keeps_todays_look_and_the_error_does_not_move_the_box`, and the box ending 16 px under Cancel by
+`the_secret_box_ends_at_cancel_with_no_line_under_it`. Source: Max, 2026-11-15.
