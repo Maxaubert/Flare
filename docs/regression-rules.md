@@ -4084,6 +4084,20 @@ and `no_error_keeps_todays_look_and_the_error_does_not_move_the_box`. The "Asked
 `the_asked_by_line_sits_under_cancel_small_and_dim` (`ui_tests/secret_error.rs`) and the e2e `brand` scenario
 (the probe's `foot` and `foot_box`). Source: Max, 2026-11-15.
 
+1269. **The folder menu leaves out the folders of open tabs.** Max, 2026-11-15: the New tab button's folder menu (and
+the strip's right-click on +) listed folders that already had a terminal tab. Now, when the menu opens, an unpinned
+recent or starter folder that an open local shell tab is in is not listed. A pin always stays, as it is a deliberate
+choice. Two spellings of one folder match: a trailing slash, either slash, the `\\?\` prefix and, on Windows, any
+case. A folder below or beside it is another folder. A hidden folder frees no spot: no older recent and no starter
+takes it, and no "No recent folders" note appears, so the list just has fewer rows. A remote tab's folder is on
+another machine, so it hides nothing, and the remote folder rows stay as they were. The list is built each time the
+menu opens (and again after a pin toggle), so it reflects the tabs open at that moment. Native:
+`menus_ui::{plus_menu_rows, toggle_pin_in_menu}` take the open folders, `menus_ui::{open_folder_key, is_open_folder}`,
+`AppCtl::open_local_folders`. Held by `an_open_tabs_recent_folder_is_left_out_of_the_menu`,
+`a_pinned_folder_stays_while_its_tab_is_open`, `an_open_folder_matches_whatever_its_spelling`,
+`open_folders_never_hide_a_remote_folder_row`, `only_local_tabs_count_as_open_folders_for_the_menu`,
+`a_menu_picks_a_recent_folder_and_copies_a_path` and `plus_opens_at_once_in_the_chosen_folder_and_does_not_ask_again`. Source: Max, 2026-11-15.
+
 ## The taskbar wears the app icon (2026-11-15)
 
 1265. **While a custom app icon is picked, the main window has its own taskbar id, so the taskbar button shows the
