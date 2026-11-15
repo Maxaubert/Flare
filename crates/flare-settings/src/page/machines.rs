@@ -1,10 +1,14 @@
-//! The Machines page (remote sessions PR 7): the machines this Flare opens remote tabs on, and a form to link one more.
+//! The Machines page (remote sessions PR 7): the machines this Flare opens remote tabs on, and a way to link one more.
 //!
 //! The owner's picks (2026-11-12 mockups, `docs/superpowers/specs/remote-sessions-mockups/pick.html`): no subtext
-//! anywhere on the page; the linked machines are a table (Machine with its system's logo and name, SSH host, Flare
-//! version, Status, and a menu with Test and Remove); adding is a "+ Add a machine" row that opens an inline form in
-//! its place (an SSH host drop-down, a Name field, Cancel and Add), and a failed check is one red line under the form.
-//! A machine that is Not linked shows why as one small grey line under its row, not as a tooltip (2026-11-13).
+//! anywhere on the page; the linked machines are a table (Machine with its system's logo and name, Address, Flare
+//! version, Status, and a menu with Test and Remove). A machine that is Not linked shows why as one small grey line
+//! under its row, not as a tooltip (2026-11-13).
+//!
+//! Machine pairing PR 1 (approved mockup `docs/superpowers/specs/2026-11-14-machine-pairing-mockup.html`, rule 1251):
+//! "+ Add a machine" opens a Flare dialog over the page, no longer a form in the row's place. Its Machine drop-down
+//! lists the computers found nearby (PR 3; none yet), then the SSH config hosts, then "Type an address", which shows an
+//! Address field and an optional User field. A failed check is one red line in the dialog.
 //!
 //! This is data only. The app's `machines_page` reads `machines.json` and `~/.ssh/config` and checks a link on a
 //! worker, and hands the page what it found in a [`MachinesInfo`].
@@ -12,17 +16,24 @@
 use super::{BlockModel, Control, PageEnv, PageModel, RowModel, plain_row, section};
 use crate::rows::row;
 
-/// The add row's id (and the add form's, which takes its place while it is open).
+/// The add row's id (the dialog's Machine drop-down and its fields answer to it too).
 pub const ADD_ROW: &str = "machines-add";
 /// A machine row's id is this prefix and the machine's id (its ⋯ menu answers to it).
 pub const MACHINE_PREFIX: &str = "machine:";
-/// The form's buttons and its name field, as `row-button` and `row-text` name them.
+/// The dialog's buttons, as `row-button` names them.
 pub const ADD_BUTTON: &str = "add";
 pub const CANCEL_BUTTON: &str = "cancel";
 pub const OPEN_BUTTON: &str = "tap";
+/// The dialog's two text fields, as `row-text` names them (the row is [`ADD_ROW`] and the text follows the word).
+pub const ADDRESS_FIELD: &str = "address";
+pub const USER_FIELD: &str = "user";
 /// The ⋯ menu's two choices.
 pub const TEST_CHOICE: &str = "test";
 pub const REMOVE_CHOICE: &str = "remove";
+/// The Machine drop-down's last choice. It starts with a space, so no SSH host (a plain argv word) can be it.
+pub const TYPE_ADDRESS: &str = " address";
+/// A computer found nearby is this prefix and its id (machine pairing PR 3 fills them; none in PR 1).
+pub const NEARBY_PREFIX: &str = " nearby:";
 
 /// The system a machine runs: its logo on the page, on its tabs and in the + menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +84,8 @@ pub struct MachineRow {
     pub id: String,
     pub name: String,
     pub os: Option<MachineOs>,
-    pub ssh: String,
+    /// Where ssh connects: the machine's address, or its SSH host when it has none.
+    pub address: String,
     /// The Flare version the host said at its last check ("" until one answered).
     pub version: String,
     pub status: LinkStatus,
@@ -90,37 +102,80 @@ impl MachineRow {
     }
 }
 
-/// The add form while it is open.
+/// The Add a machine dialog while it is open.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AddForm {
     pub open: bool,
-    /// The SSH host picked ("" before a pick).
-    pub host: String,
-    /// The name typed.
-    pub name: String,
+    /// The Machine drop-down's pick: an SSH host, [`TYPE_ADDRESS`], or "" before a pick ("Pick a machine").
+    pub pick: String,
+    /// What is typed in the Address and User fields (shown while [`TYPE_ADDRESS`] is picked).
+    pub address: String,
+    pub user: String,
     /// The link is being checked: Add waits.
     pub busy: bool,
     /// The one red line of the last failed check.
     pub error: Option<String>,
 }
 
+impl AddForm {
+    /// "Type an address" is picked: the Address and User fields show.
+    pub fn typing(&self) -> bool {
+        self.pick == TYPE_ADDRESS
+    }
+
+    /// Add can be pressed: a machine is picked (with an address typed, for "Type an address"), and no check runs.
+    pub fn can_add(&self) -> bool {
+        !self.busy
+            && match self.pick.as_str() {
+                "" => false,
+                TYPE_ADDRESS => !self.address.trim().is_empty(),
+                _ => true,
+            }
+    }
+}
+
+/// One choice of the Machine drop-down: its id, its words, and whether they are drawn in the code font (an SSH host).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MachineChoice {
+    pub id: String,
+    pub label: String,
+    pub mono: bool,
+}
+
+/// The Machine drop-down in the mockup's order: the computers found nearby (`(id, name)`, machine pairing PR 3), then
+/// the SSH config hosts, then "Type an address".
+pub fn machine_choices(nearby: &[(String, String)], hosts: &[String]) -> Vec<MachineChoice> {
+    let mut out: Vec<MachineChoice> = nearby
+        .iter()
+        .map(|(id, name)| MachineChoice {
+            id: format!("{NEARBY_PREFIX}{id}"),
+            label: name.clone(),
+            mono: false,
+        })
+        .collect();
+    out.extend(hosts.iter().map(|h| MachineChoice {
+        id: h.clone(),
+        label: h.clone(),
+        mono: true,
+    }));
+    out.push(MachineChoice {
+        id: TYPE_ADDRESS.to_string(),
+        label: "Type an address".to_string(),
+        mono: false,
+    });
+    out
+}
+
 /// What the page shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MachinesInfo {
     pub machines: Vec<MachineRow>,
-    /// The hosts `~/.ssh/config` names (no wildcard, no `Match`), for the form's drop-down.
+    /// The hosts `~/.ssh/config` names (no wildcard, no `Match`), for the dialog's drop-down.
     pub ssh_hosts: Vec<String>,
     pub add: AddForm,
 }
 
-/// The add form's block: the form and the hosts its drop-down offers.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AddBlock {
-    pub form: AddForm,
-    pub hosts: Vec<String>,
-}
-
-/// The "+ Add a machine" row: its plus, its label and no subtext (owner pick); a press anywhere opens the form.
+/// The "+ Add a machine" row: its plus, its label and no subtext (owner pick); a press anywhere opens the dialog.
 fn add_row() -> RowModel {
     let def = row(ADD_ROW).expect("machines-add is a row");
     RowModel {
@@ -131,7 +186,7 @@ fn add_row() -> RowModel {
 }
 
 /// The Machines page: the table of linked machines (its heading row first, none while there is no machine), then the
-/// add row, or the add form in its place while it is open.
+/// add row. The Add a machine dialog is drawn over the page from [`MachinesInfo::add`], not as a block.
 pub fn build(env: &PageEnv<'_>) -> PageModel {
     let empty = MachinesInfo::default();
     let info = env.machines.unwrap_or(&empty);
@@ -140,14 +195,7 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
         blocks.push(BlockModel::MachineHead);
         blocks.extend(info.machines.iter().cloned().map(BlockModel::Machine));
     }
-    if info.add.open {
-        blocks.push(BlockModel::MachineAdd(AddBlock {
-            form: info.add.clone(),
-            hosts: info.ssh_hosts.clone(),
-        }));
-    } else {
-        blocks.push(BlockModel::Row(add_row()));
-    }
+    blocks.push(BlockModel::Row(add_row()));
     PageModel {
         id: "machines",
         label: "Machines",
@@ -165,7 +213,7 @@ mod tests {
             id: "mac".into(),
             name: "Mac Mini".into(),
             os: Some(MachineOs::Mac),
-            ssh: "mac-mini".into(),
+            address: "mac-mini".into(),
             version: "0.1.0".into(),
             status: LinkStatus::Linked,
         }
@@ -178,7 +226,6 @@ mod tests {
             .map(|b| match b {
                 BlockModel::MachineHead => "head",
                 BlockModel::Machine(_) => "machine",
-                BlockModel::MachineAdd(_) => "form",
                 BlockModel::Row(r) if r.id == ADD_ROW => "add",
                 _ => "other",
             })
@@ -208,9 +255,9 @@ mod tests {
             id: "pc".into(),
             name: "Desk".into(),
             os: Some(MachineOs::Pc),
-            ssh: "desk".into(),
+            address: "desk".into(),
             version: String::new(),
-            status: LinkStatus::Failed("No Flare answered over SSH on desk.".into()),
+            status: LinkStatus::Failed("Not answering".into()),
         };
         let info = MachinesInfo {
             machines: vec![mac(), pc.clone()],
@@ -224,30 +271,72 @@ mod tests {
         });
     }
 
+    /// Rule 1251: the dialog is drawn over the page; an open one leaves the add row in its place.
     #[test]
-    fn an_open_form_takes_the_add_rows_place_with_the_hosts_and_its_one_line() {
+    fn an_open_dialog_leaves_the_page_as_it_is() {
         let info = MachinesInfo {
             machines: vec![mac()],
-            ssh_hosts: vec!["studio".into(), "nas".into()],
+            ssh_hosts: vec!["studio".into()],
             add: AddForm {
                 open: true,
-                host: "studio".into(),
-                name: "Studio".into(),
-                busy: false,
-                error: Some(
-                    "Flare there speaks remote protocol 0, here 1. Update it there.".into(),
-                ),
+                pick: "studio".into(),
+                error: Some("Not answering".into()),
+                ..AddForm::default()
             },
         };
-        with_env_machines(info.clone(), |env| {
-            let page = build(env);
-            assert_eq!(kinds(&page), ["head", "machine", "form"]);
-            let BlockModel::MachineAdd(b) = &page.sections[0].blocks[2] else {
-                panic!("the form");
-            };
-            assert_eq!(b.form, info.add);
-            assert_eq!(b.hosts, ["studio", "nas"]);
+        with_env_machines(info, |env| {
+            assert_eq!(kinds(&build(env)), ["head", "machine", "add"]);
         });
+    }
+
+    /// Rule 1251: the drop-down lists the nearby computers, then the SSH hosts in the code font, then "Type an
+    /// address"; no host can take the last one's id.
+    #[test]
+    fn the_machine_drop_down_lists_nearby_then_ssh_hosts_then_type_an_address() {
+        let hosts = vec!["studio".to_string(), "nas".to_string()];
+        let words = |c: &[MachineChoice]| -> Vec<(String, bool)> {
+            c.iter().map(|c| (c.label.clone(), c.mono)).collect()
+        };
+        let plain = machine_choices(&[], &hosts);
+        assert_eq!(
+            words(&plain),
+            [
+                ("studio".to_string(), true),
+                ("nas".to_string(), true),
+                ("Type an address".to_string(), false)
+            ]
+        );
+        assert_eq!(plain[2].id, TYPE_ADDRESS);
+        let near = machine_choices(&[("a1".into(), "Max's PC".into())], &hosts);
+        assert_eq!(near[0].label, "Max's PC");
+        assert_eq!(near[0].id, format!("{NEARBY_PREFIX}a1"));
+        assert!(!near[0].mono);
+        assert_eq!(near.len(), 4);
+        // An id that starts with a space is never a plain host name.
+        assert!(TYPE_ADDRESS.starts_with(' ') && NEARBY_PREFIX.starts_with(' '));
+        assert_eq!(
+            words(&machine_choices(&[], &[])),
+            [("Type an address".to_string(), false)]
+        );
+    }
+
+    /// Rule 1251: Add waits for a pick, for an address when "Type an address" is picked, and while a check runs.
+    #[test]
+    fn add_can_be_pressed_once_a_machine_is_picked_or_an_address_typed() {
+        let form = |pick: &str, address: &str, busy: bool| AddForm {
+            open: true,
+            pick: pick.into(),
+            address: address.into(),
+            busy,
+            ..AddForm::default()
+        };
+        assert!(!form("", "", false).can_add(), "nothing picked");
+        assert!(form("studio", "", false).can_add());
+        assert!(!form("studio", "", true).can_add(), "a check runs");
+        assert!(!form(TYPE_ADDRESS, "  ", false).can_add(), "no address");
+        assert!(form(TYPE_ADDRESS, "192.168.0.139", false).can_add());
+        assert!(form(TYPE_ADDRESS, "", false).typing());
+        assert!(!form("studio", "", false).typing());
     }
 
     #[test]
@@ -267,10 +356,8 @@ mod tests {
     #[test]
     fn a_failed_machine_carries_its_reason_as_its_sub_line_and_the_others_have_none() {
         let with = |status: LinkStatus| MachineRow { status, ..mac() };
-        let failed = with(LinkStatus::Failed(
-            "No Flare answered over SSH on mini.".into(),
-        ));
-        assert_eq!(failed.sub_line(), "No Flare answered over SSH on mini.");
+        let failed = with(LinkStatus::Failed("Not answering".into()));
+        assert_eq!(failed.sub_line(), "Not answering");
         assert_eq!(
             failed.status.text(),
             "Not linked",

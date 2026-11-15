@@ -1,4 +1,4 @@
-//! The hosts `~/.ssh/config` names, for Settings > Machines (remote sessions PR 7): the form's SSH host drop-down.
+//! The hosts `~/.ssh/config` names, for Settings > Machines (remote sessions PR 7): the SSH hosts of the Add a machine dialog's drop-down.
 //!
 //! Only `Host` lines are read, and only their plain names: a pattern (`*`, `?`, `!`) is no host one can pick, and the
 //! lines under a `Match` block belong to no host. `Include` is followed (relative names under `~/.ssh`, `~/` for the

@@ -105,6 +105,7 @@ impl MachinesIo for SceneMachinesIo {
                 ssh: "mac".into(),
                 user: None,
                 flare: "flare".into(),
+                ..Default::default()
             },
             Machine {
                 id: "desk".into(),
@@ -113,6 +114,7 @@ impl MachinesIo for SceneMachinesIo {
                 ssh: "desk".into(),
                 user: None,
                 flare: "flare".into(),
+                ..Default::default()
             },
         ]
     }
@@ -180,6 +182,81 @@ fn os_of(kind: Option<Os>) -> Option<MachineOs> {
     })
 }
 
+/// Pure: the machine the dialog names, before Flare is looked for on it (rule 1251): an SSH host as it is; a typed
+/// address as its own host, with the User field's name (or the `user@` before the address) and a `:port` after it. Its
+/// name is the host or the address. The one red line when it names none.
+pub fn new_machine(form: &AddForm) -> Result<Machine, String> {
+    use crate::machines::argv_word;
+    use flare_settings::page::machines::TYPE_ADDRESS;
+    let pick = form.pick.as_str();
+    if pick == TYPE_ADDRESS {
+        let mut address = form.address.trim();
+        let mut user = form.user.trim().to_string();
+        // A `user@` before the address is its user, unless the User field names one (the field wins); it never stays
+        // in the address, where ssh would read it as the user again and "linked already" would miss it.
+        if let Some((u, rest)) = address.split_once('@') {
+            if user.is_empty() {
+                user = u.to_string();
+            }
+            address = rest;
+        }
+        if address.contains('@') {
+            return Err("Type the address with one @ at most.".into());
+        }
+        // One colon and digits after it is a port; an IPv6 address (several colons) is left whole, and one in brackets
+        // may have a port after them (`[fe80::1]:2222`).
+        let mut port = None;
+        let parse_port = |p: &str| {
+            p.parse::<u16>()
+                .ok()
+                .filter(|p| *p > 0)
+                .ok_or_else(|| "Type a port from 1 to 65535 after the colon.".to_string())
+        };
+        if let Some(inner) = address.strip_prefix('[') {
+            let Some((a, rest)) = inner.split_once(']') else {
+                return Err("Type the address with no spaces.".into());
+            };
+            if let Some(p) = rest.strip_prefix(':') {
+                port = Some(parse_port(p)?);
+            } else if !rest.is_empty() {
+                return Err("Type the address with no spaces.".into());
+            }
+            address = a;
+        } else if address.matches(':').count() == 1
+            && let Some((a, p)) = address.split_once(':')
+        {
+            port = Some(parse_port(p)?);
+            address = a;
+        }
+        if address.is_empty() {
+            return Err("Type an address.".into());
+        }
+        if !argv_word(address) {
+            return Err("Type the address with no spaces.".into());
+        }
+        if !user.is_empty() && !argv_word(&user) {
+            return Err("Type the user name with no spaces.".into());
+        }
+        return Ok(Machine {
+            name: address.to_string(),
+            ssh: address.to_string(),
+            host: Some(address.to_string()),
+            user: (!user.is_empty()).then_some(user),
+            port,
+            ..Machine::default()
+        });
+    }
+    // A nearby computer (machine pairing PR 3) is paired with its code, not added here; its id is no plain word.
+    if !argv_word(pick) {
+        return Err("Pick a machine.".into());
+    }
+    Ok(Machine {
+        name: pick.to_string(),
+        ssh: pick.to_string(),
+        ..Machine::default()
+    })
+}
+
 impl MachinesPage {
     pub fn new(io: Arc<dyn MachinesIo>, post: Post) -> Self {
         Self {
@@ -209,7 +286,7 @@ impl MachinesPage {
                         id: m.id.clone(),
                         name: m.name.clone(),
                         os: os_of(m.kind),
-                        ssh: m.ssh.clone(),
+                        address: m.target().to_string(),
                         version,
                         status,
                     }
@@ -262,7 +339,7 @@ impl MachinesPage {
                 let result = io
                     .probe(&m)
                     .map(|f| f.version)
-                    .map_err(|e| failure_line(&m.ssh, &e, here));
+                    .map_err(|e| failure_line(m.target(), &e, here));
                 Self::say(&post, MachinesMsg::Checked { id: m.id, result });
             }
         });
@@ -289,52 +366,67 @@ impl MachinesPage {
         });
     }
 
-    /// "+ Add a machine": the form opens in the row's place, the first host picked.
+    /// "+ Add a machine": the dialog opens with nothing picked ("Pick a machine"), Add waiting for a pick (rule 1251).
     pub fn open_form(&mut self) {
         self.add = AddForm {
             open: true,
-            host: self.hosts.first().cloned().unwrap_or_default(),
             ..AddForm::default()
         };
     }
 
     pub fn cancel_form(&mut self) {
-        self.add = AddForm::default();
+        if !self.add.busy {
+            self.add = AddForm::default();
+        }
     }
 
-    pub fn set_host(&mut self, host: &str) {
-        self.add.host = host.to_string();
+    /// A pick in the Machine drop-down: an SSH host or "Type an address". A new pick clears the red line.
+    pub fn set_pick(&mut self, id: &str) {
+        self.add.pick = id.to_string();
         self.add.error = None;
     }
 
-    /// What is typed in the Name field (no rebuild: the field keeps its caret).
-    pub fn set_name(&mut self, name: &str) {
-        self.add.name = name.to_string();
+    /// What is typed in the Address field (no rebuild of the field: it keeps its caret). It clears the red line.
+    pub fn set_address(&mut self, text: &str) {
+        self.add.address = text.to_string();
+        self.add.error = None;
     }
 
-    /// Add: the host is checked (Flare looked for where it may be) and saved once it answered.
+    /// What is typed in the optional User field.
+    pub fn set_user(&mut self, text: &str) {
+        self.add.user = text.to_string();
+    }
+
+    /// Add: the machine picked, or the address typed, is checked (Flare looked for where it may be) and saved once it
+    /// answered.
     pub fn submit(&mut self) {
-        if self.add.busy {
+        if self.add.busy || !self.add.open {
             return;
         }
-        let host = self.add.host.trim().to_string();
-        if !crate::machines::argv_word(&host) {
-            self.add.error = Some("Pick an SSH host.".into());
-            return;
-        }
-        if let Some(m) = self.machines.iter().find(|m| m.ssh == host) {
-            self.add.error = Some(format!("{host} is linked already, as {}.", m.name));
-            return;
-        }
-        let name = match self.add.name.trim() {
-            "" => host.clone(),
-            n => n.chars().take(60).collect(),
+        let base = match new_machine(&self.add) {
+            Ok(m) => m,
+            Err(line) => {
+                self.add.error = Some(line);
+                return;
+            }
         };
+        if let Some(m) = self
+            .machines
+            .iter()
+            .find(|m| m.target() == base.target() && m.port == base.port)
+        {
+            self.add.error = Some(format!(
+                "{} is linked already, as {}.",
+                base.target(),
+                m.name
+            ));
+            return;
+        }
         self.add.busy = true;
         self.add.error = None;
         let (io, post) = (Arc::clone(&self.io), Arc::clone(&self.post));
         worker("flare-machines-add", move || {
-            let answer = Self::add_on_worker(&*io, &host, &name);
+            let answer = Self::add_on_worker(&*io, &base);
             if let Ok((list, _)) = &answer {
                 post(UiMsg::Machines(list.clone()));
             }
@@ -342,13 +434,16 @@ impl MachinesPage {
         });
     }
 
-    /// BLOCKING: finds Flare on `host`, then saves the machine; the new list and its id, or the form's line.
+    /// BLOCKING: finds Flare on the machine `base` names (its address, port and user kept), then saves it; the new
+    /// list and the version it said, or the dialog's line.
     fn add_on_worker(
         io: &dyn MachinesIo,
-        host: &str,
-        name: &str,
+        base: &Machine,
     ) -> Result<(Vec<Machine>, String), String> {
         let here = flare_ctl::REMOTE_PROTOCOL;
+        let host = base.target().to_string();
+        let host = host.as_str();
+        let name = base.name.as_str();
         let mut last = None;
         // Each path quoted the way its own shape says (rule 1207): the host's system is not known until it answers.
         let tries = FLARE_CANDIDATES
@@ -359,9 +454,8 @@ impl MachinesPage {
                 id: "new".into(),
                 name: name.to_string(),
                 kind,
-                ssh: host.to_string(),
-                user: None,
                 flare: flare.to_string(),
+                ..base.clone()
             };
             match io.probe(&probe) {
                 Ok(facts) => {
@@ -379,6 +473,11 @@ impl MachinesPage {
                 }
                 // A host that answered and refused is the answer: no other path is tried.
                 Err(e @ LinkError::Refused(_)) => return Err(failure_line(host, &e, here)),
+                // ssh itself said why (not answering, not paired, ...): no other path can answer, so none is tried
+                // and Add waits one connect timeout, not one per path (rule 1250).
+                Err(LinkError::Down(m)) if crate::ssh_problem::sort_down(&m).is_some() => {
+                    return Err(failure_line(host, &LinkError::Down(m), here));
+                }
                 Err(e) => last = Some(e),
             }
         }
@@ -396,10 +495,6 @@ impl MachinesPage {
                 self.loading = false;
                 self.machines = machines;
                 self.hosts = hosts;
-                // A form opened before the hosts were read picks the first one now.
-                if self.add.open && self.add.host.is_empty() {
-                    self.add.host = self.hosts.first().cloned().unwrap_or_default();
-                }
                 self.checks
                     .retain(|id, _| self.machines.iter().any(|m| &m.id == id));
                 let unchecked: Vec<String> = self
@@ -488,6 +583,7 @@ pub(crate) mod fake {
                     "unsupported_protocol",
                     msg.clone(),
                 ))),
+                Some(Err((false, msg))) => Err(LinkError::Down(msg.clone())),
                 _ => Err(LinkError::Down("ssh ended".into())),
             }
         }
@@ -558,6 +654,7 @@ mod tests {
             ssh: "mini".into(),
             user: None,
             flare: "flare".into(),
+            ..Default::default()
         }
     }
 
@@ -613,16 +710,17 @@ mod tests {
         r.page.page_shown();
         r.settle();
         r.page.open_form();
-        assert_eq!(r.page.info().add.host, "studio");
-        r.page.set_name("Studio Mac");
+        assert_eq!(r.page.info().add.pick, "", "nothing picked yet");
+        r.page.set_pick("studio");
         r.page.submit();
         assert!(r.page.info().add.busy);
         let lists = r.settle();
         let saved = r.io.list();
         assert_eq!(saved.len(), 1);
-        assert_eq!(saved[0].id, "studio-mac");
-        assert_eq!(saved[0].name, "Studio Mac");
+        assert_eq!(saved[0].id, "studio");
+        assert_eq!(saved[0].name, "studio");
         assert_eq!(saved[0].ssh, "studio");
+        assert_eq!(saved[0].host, None, "an SSH host keeps its config");
         assert_eq!(saved[0].kind, Some(Os::Mac));
         assert_eq!(saved[0].flare, FLARE_CANDIDATES[5]);
         // The window heard the new list (the + menu and the logos follow).
@@ -664,6 +762,7 @@ mod tests {
         r.page.page_shown();
         r.settle();
         r.page.open_form();
+        r.page.set_pick("desk");
         r.page.submit();
         r.settle();
         let saved = r.io.list();
@@ -706,6 +805,7 @@ mod tests {
         r.page.page_shown();
         r.settle();
         r.page.open_form();
+        r.page.set_pick("desk");
         r.page.submit();
         r.settle();
         let saved = r.io.list();
@@ -745,6 +845,7 @@ mod tests {
         r.page.page_shown();
         r.settle();
         r.page.open_form();
+        r.page.set_pick("bashpc");
         r.page.submit();
         r.settle();
         let saved = r.io.list();
@@ -801,23 +902,181 @@ mod tests {
         }
     }
 
+    /// Rule 1251: the dialog opens with nothing picked; "Type an address" saves the address as the machine's own host,
+    /// with the User field's name and a port after a colon, and runs ssh at that address.
     #[test]
-    fn a_form_opened_before_the_hosts_are_read_picks_the_first_when_they_come() {
-        let io = FakeIo {
-            hosts: vec!["studio".into(), "nas".into()],
-            ..FakeIo::default()
-        };
+    fn a_typed_address_is_checked_and_saved_with_its_user_and_port() {
+        use flare_settings::page::machines::TYPE_ADDRESS;
+        let mut io = FakeIo::default();
+        io.answers.insert(
+            ("192.168.0.139".into(), "flare".into()),
+            facts("0.4.2", Some(Os::Mac)),
+        );
         let mut r = Rig::new(io);
         r.page.page_shown();
-        r.page.open_form();
-        assert_eq!(r.page.info().add.host, "", "nothing read yet");
         r.settle();
-        assert_eq!(r.page.info().add.host, "studio");
-        // A host already picked is kept when the hosts are read again.
-        r.page.set_host("nas");
+        r.page.open_form();
+        assert_eq!(r.page.info().add.pick, "", "nothing picked: Pick a machine");
+        assert!(!r.page.info().add.can_add());
+        r.page.set_pick(TYPE_ADDRESS);
+        assert!(r.page.info().add.typing() && !r.page.info().add.can_add());
+        r.page.set_address("192.168.0.139:2222");
+        r.page.set_user("max");
+        assert!(r.page.info().add.can_add());
+        r.page.submit();
+        r.settle();
+        let saved = r.io.list();
+        assert_eq!(saved.len(), 1, "{:?}", r.page.info().add.error);
+        assert_eq!(saved[0].host.as_deref(), Some("192.168.0.139"));
+        assert_eq!(saved[0].ssh, "192.168.0.139");
+        assert_eq!(saved[0].user.as_deref(), Some("max"));
+        assert_eq!(saved[0].port, Some(2222));
+        assert_eq!(saved[0].name, "192.168.0.139");
+        assert_eq!(r.page.info().machines[0].address, "192.168.0.139");
+        assert!(!r.page.info().add.open, "the dialog closes");
+        // The same address again is refused before any check.
+        let probes = r.io.probes.lock().unwrap().len();
+        r.page.open_form();
+        r.page.set_pick(TYPE_ADDRESS);
+        r.page.set_address("max@192.168.0.139:2222");
+        r.page.submit();
+        assert_eq!(
+            r.page.info().add.error.as_deref(),
+            Some("192.168.0.139 is linked already, as 192.168.0.139.")
+        );
+        assert_eq!(r.io.probes.lock().unwrap().len(), probes);
+    }
+
+    /// Rule 1250: when ssh itself said why the first try failed (here: refused), Add stops there with the plain line;
+    /// no other Flare path is tried, so a host that is off costs one connect timeout, not one per path.
+    #[test]
+    fn a_reason_from_ssh_ends_the_add_after_one_try() {
+        let mut io = FakeIo::default();
+        for flare in FLARE_CANDIDATES {
+            io.answers.insert(
+                ("studio".into(), flare.to_string()),
+                Err((
+                    false,
+                    "the link ended; ssh said: ssh: connect to host studio port 22: Connection refused"
+                        .into(),
+                )),
+            );
+        }
+        let mut r = Rig::new(io);
         r.page.page_shown();
         r.settle();
-        assert_eq!(r.page.info().add.host, "nas");
+        r.page.open_form();
+        r.page.set_pick("studio");
+        r.page.submit();
+        r.settle();
+        assert_eq!(r.page.info().add.error.as_deref(), Some("Not answering"));
+        assert_eq!(r.io.probes.lock().unwrap().len(), 1, "one try only");
+        assert!(r.io.list().is_empty());
+    }
+
+    /// Rule 1250: what a shell on the host printed (a Flare path that is not runnable) is no reason of ssh's: Add
+    /// goes on to the next Flare path, which answers.
+    #[test]
+    fn a_shells_permission_denied_does_not_end_the_add() {
+        let mut io = FakeIo::default();
+        io.answers.insert(
+            ("studio".into(), FLARE_CANDIDATES[0].to_string()),
+            Err((
+                false,
+                format!(
+                    "the link ended; ssh said: bash: {}: Permission denied",
+                    FLARE_CANDIDATES[0]
+                ),
+            )),
+        );
+        io.answers.insert(
+            ("studio".into(), FLARE_CANDIDATES[1].to_string()),
+            facts("0.4.2", Some(Os::Mac)),
+        );
+        let mut r = Rig::new(io);
+        r.page.page_shown();
+        r.settle();
+        r.page.open_form();
+        r.page.set_pick("studio");
+        r.page.submit();
+        r.settle();
+        let saved = r.io.list();
+        assert_eq!(saved.len(), 1, "{:?}", r.page.info().add.error);
+        assert_eq!(saved[0].flare, FLARE_CANDIDATES[1]);
+    }
+
+    /// Rule 1251: what the dialog names, before any check: `user@` and `:port` are read from a typed address, and an
+    /// address, a user or a port that cannot be one is one red line.
+    #[test]
+    fn the_dialog_names_a_machine_or_says_why_not_in_one_line() {
+        use flare_settings::page::machines::{NEARBY_PREFIX, TYPE_ADDRESS};
+        let form = |pick: &str, address: &str, user: &str| AddForm {
+            open: true,
+            pick: pick.into(),
+            address: address.into(),
+            user: user.into(),
+            ..AddForm::default()
+        };
+        let m = new_machine(&form(TYPE_ADDRESS, " max@studio.local ", "")).unwrap();
+        assert_eq!(
+            (m.target(), m.user.as_deref(), m.port),
+            ("studio.local", Some("max"), None)
+        );
+        // The User field and a port after the colon.
+        let m = new_machine(&form(TYPE_ADDRESS, "10.0.0.5:22", "admin")).unwrap();
+        assert_eq!((m.user.as_deref(), m.port), (Some("admin"), Some(22)));
+        let m = new_machine(&form(TYPE_ADDRESS, "fe80::1", "")).unwrap();
+        assert_eq!((m.target(), m.port), ("fe80::1", None), "IPv6 stays whole");
+        let m = new_machine(&form(TYPE_ADDRESS, "[fe80::1]:2222", "")).unwrap();
+        assert_eq!(
+            (m.target(), m.port),
+            ("fe80::1", Some(2222)),
+            "IPv6 in brackets"
+        );
+        let m = new_machine(&form(TYPE_ADDRESS, "[fe80::1]", "")).unwrap();
+        assert_eq!((m.target(), m.port), ("fe80::1", None));
+        // The User field wins over a `user@`, which never stays in the address.
+        let m = new_machine(&form(TYPE_ADDRESS, "max@studio.local", "admin")).unwrap();
+        assert_eq!(
+            (m.target(), m.user.as_deref()),
+            ("studio.local", Some("admin"))
+        );
+        let line = |f: AddForm| new_machine(&f).unwrap_err();
+        assert_eq!(
+            line(form(TYPE_ADDRESS, "a@b@studio", "")),
+            "Type the address with one @ at most."
+        );
+        assert_eq!(
+            line(form(TYPE_ADDRESS, "[fe80::1]x", "")),
+            "Type the address with no spaces."
+        );
+        assert_eq!(line(form(TYPE_ADDRESS, "  ", "")), "Type an address.");
+        assert_eq!(
+            line(form(TYPE_ADDRESS, "my mac", "")),
+            "Type the address with no spaces."
+        );
+        assert_eq!(
+            line(form(TYPE_ADDRESS, "-oProxyCommand=x", "")),
+            "Type the address with no spaces."
+        );
+        assert_eq!(
+            line(form(TYPE_ADDRESS, "mac:99999", "")),
+            "Type a port from 1 to 65535 after the colon."
+        );
+        assert_eq!(
+            line(form(TYPE_ADDRESS, "mac", "a b")),
+            "Type the user name with no spaces."
+        );
+        assert_eq!(line(form("", "", "")), "Pick a machine.");
+        assert_eq!(
+            line(form(&format!("{NEARBY_PREFIX}x"), "", "")),
+            "Pick a machine."
+        );
+        let m = new_machine(&form("studio", "ignored", "ignored")).unwrap();
+        assert_eq!(
+            (m.ssh.as_str(), m.host.clone(), m.user.clone()),
+            ("studio", None, None)
+        );
     }
 
     #[test]
@@ -834,6 +1093,7 @@ mod tests {
         r.page.page_shown();
         r.settle();
         r.page.open_form();
+        r.page.set_pick("studio");
         r.page.submit();
         let lists = r.settle();
         assert!(lists.is_empty() && r.io.list().is_empty());
@@ -846,7 +1106,7 @@ mod tests {
         // A refusal is the answer: no other path or quoting was tried.
         assert_eq!(r.io.probes.lock().unwrap().len(), 1);
         // No Flare anywhere on nas: every path tried, one line.
-        r.page.set_host("nas");
+        r.page.set_pick("nas");
         assert_eq!(r.page.info().add.error, None, "a new pick clears the line");
         r.page.submit();
         r.settle();
@@ -855,12 +1115,9 @@ mod tests {
             Some("No Flare answered over SSH on nas.")
         );
         // No host at all, and a host linked already, never reach a worker.
-        r.page.set_host("");
+        r.page.set_pick("");
         r.page.submit();
-        assert_eq!(
-            r.page.info().add.error.as_deref(),
-            Some("Pick an SSH host.")
-        );
+        assert_eq!(r.page.info().add.error.as_deref(), Some("Pick a machine."));
         r.page.cancel_form();
         assert_eq!(r.page.info().add, AddForm::default());
     }

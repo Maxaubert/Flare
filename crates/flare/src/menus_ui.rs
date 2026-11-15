@@ -643,6 +643,7 @@ mod tests {
             ssh: id.into(),
             user: None,
             flare: "flare".into(),
+            ..Default::default()
         };
         let machines = [
             m("mac", "Mac Mini", Some(Os::Mac)),
@@ -692,6 +693,7 @@ mod tests {
             ssh: "mini".into(),
             user: None,
             flare: "flare".into(),
+            ..Default::default()
         };
         let prefs = PrefStore::memory();
         remember_root(&prefs, r"C:\w\a");

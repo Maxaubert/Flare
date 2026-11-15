@@ -1,10 +1,15 @@
 // The shared structs of the Settings tab (M7 Task 1). Change them only through the orchestrator.
 
 export enum SetKind { none, pill, switch, segmented, select, slider, colour, save, key, mic, text, icons }
-export enum BlockKind { row, wall, about, slint, note, model, machine-head, machine, machine-add }
+export enum BlockKind { row, wall, about, slint, note, model, machine-head, machine }
 
 // face: the font-family for the font select ("" = the UI font)
 export struct SetOption { id: string, name: string, face: string }
+// The Add a machine dialog (machine pairing PR 1, rule 1251): the Machine drop-down's pick and choices, whether "Type an
+// address" is picked (the Address and User fields show), what is typed in them, the red line ("" for none), busy while
+// the machine is checked, and whether Add can be pressed.
+export struct MachineAddLook { pick: string, options: [SetOption], typing: bool, address: string, user: string, error: string, busy: bool, can-add: bool }
+
 // alt: show label-alt instead (Mark, then Marked); both words are laid out in one cell
 // icon: path data (24 unit box); with an empty label it is a square icon button. tip: said on hover. warn: the
 // icon in the warning colour.
