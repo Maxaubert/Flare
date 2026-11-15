@@ -3996,8 +3996,10 @@ on and off (a subtext never reports state). The five note lines under the switch
 (`docs/superpowers/specs/2026-11-14-hotkeys-sheet-mockup.html`): the title "Flare hotkeys" and a pill search field
 "Search" on one top row with a divider under it, then grey group names ("Typing to an agent", "Tabs", "App") over 32 px
 striped rows, the action left in soft ink and its keys right in bold, on the theme's flat ground (`side-flat`). The
-search holds the keys when the sheet opens; typing keeps the rows whose action, keys or table labels hold the text,
-ignoring case, and leaves out a group with none. Escape or a press outside the box closes it, and so does leaving
+box is 520 px wide (the window less 16 px each side when narrower) and at most 70 percent of the window tall, never
+over 640 px, centred in the window; a longer list scrolls inside it (2026-11-15, Max: "a bit shorter and a bit
+wider", it was 400 px wide and almost the window's height). The search holds the keys when the sheet opens; typing
+keeps the rows whose action, keys or table labels hold the text, ignoring case, and leaves out a group with none. Escape or a press outside the box closes it, and so does leaving
 Settings. The rows are built from the key tables per system, never typed: the chord table (`key_label_on`, a chord
 with an agent key shows both, the agent key first), the prompt keys (`prompt_key_label`), the paste key
 (`copy_paste_labels`), the new-line key (`flare_term::keys::newline_label`) and the Mac's Cmd+Backspace
@@ -4016,6 +4018,7 @@ and on the Mac Zoom in, Zoom out and Actual size). The sheet is an overlay (`Ove
 `flare_hotkeys_has_an_info_button_left_of_its_switch_and_no_notes`,
 `the_row_is_flare_hotkeys_with_an_info_button_before_its_switch`,
 `the_button_opens_the_sheet_the_search_filters_and_escape_closes_it`,
-`a_press_outside_the_box_closes_the_sheet_and_one_inside_does_not`, `every_chord_in_the_table_is_on_the_sheet`,
+`a_press_outside_the_box_closes_the_sheet_and_one_inside_does_not`,
+`the_box_is_at_most_640_tall_in_a_tall_window_and_fits_a_narrow_one`, `every_chord_in_the_table_is_on_the_sheet`,
 `leaving_settings_closes_the_sheet`, `a_lead_button_sits_left_of_the_switch_and_both_answer_their_clicks` and
 `flare_hotkeys_is_found_by_its_new_name_and_its_old_one`. Source: Max, 2026-11-14 (the approved mockup).
