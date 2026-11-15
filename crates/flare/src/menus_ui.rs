@@ -322,17 +322,50 @@ fn starter_hint(path: &str, home: &str) -> String {
 /// list at all: a disabled note under the first row. Each row comes with the folder it opens ("" for the first
 /// row and the note).
 /// After them, one row per linked machine (remote sessions PR 7, [`machine_rows`]).
+/// `open` holds the folders of the open local tabs (rule 1269): an unpinned folder among them is left out, so the
+/// menu offers only folders that have no tab yet. A pin always stays. A hidden folder leaves its spot empty; no
+/// older recent or starter takes it, and no note appears.
 pub fn plus_menu_rows(
     prefs: &PrefStore,
     starters: &[String],
     home: &str,
     machines: &[crate::machines::Machine],
+    open: &[String],
 ) -> Vec<(MenuRowData, String)> {
     let remote = remote_folder_rows(prefs, machines);
-    let mut rows = folder_rows(prefs, starters, home, !remote.is_empty());
+    let mut rows = folder_rows(prefs, starters, home, !remote.is_empty(), open);
     rows.extend(remote);
     rows.extend(machine_rows(machines));
     rows
+}
+
+/// One folder however it was spelled, for rule 1269: no `\\?\` prefix, either slash, no trailing separator, and
+/// (on Windows) any case.
+fn open_folder_key(path: &str) -> String {
+    let p = path.trim();
+    let p = match p.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => p.strip_prefix(r"\\?\").unwrap_or(p).to_string(),
+    };
+    let lead = if p.starts_with(['\\', '/']) { "/" } else { "" };
+    let key = format!(
+        "{lead}{}",
+        p.split(['\\', '/'])
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("/")
+    );
+    if cfg!(windows) {
+        key.to_lowercase()
+    } else {
+        key
+    }
+}
+
+/// Whether `path` is the folder of an open local tab (rule 1269).
+fn is_open_folder(path: &str, open: &[String]) -> bool {
+    let key = open_folder_key(path);
+    !key.is_empty() && open.iter().any(|o| open_folder_key(o) == key)
 }
 
 fn folder_rows(
@@ -340,14 +373,19 @@ fn folder_rows(
     starters: &[String],
     home: &str,
     has_remote: bool,
+    open: &[String],
 ) -> Vec<(MenuRowData, String)> {
     let (pinned, recent) = (pinned_roots(prefs), recent_roots(prefs));
-    let places = place_rows(&pinned, &recent);
-    let fill = starter_fill(&pinned, &recent, starters, RECENT_SHOWN);
+    let mut places = place_rows(&pinned, &recent);
+    let mut fill = starter_fill(&pinned, &recent, starters, RECENT_SHOWN);
     let mut choose = MenuRowData::plain(CHOOSE_FOLDER);
     choose.icon = GLYPH_FOLDER;
     let mut rows = vec![(choose, String::new())];
-    if places.is_empty() && fill.is_empty() {
+    // Rule 1269: worked out over every known folder first, so a hidden one frees no spot and brings no note.
+    let known = !places.is_empty() || !fill.is_empty();
+    places.retain(|p| p.pinned || !is_open_folder(&p.path, open));
+    fill.retain(|s| !is_open_folder(s, open));
+    if !known {
         if has_remote {
             return rows;
         }
@@ -393,6 +431,7 @@ pub fn toggle_pin_in_menu(
     starters: &[String],
     home: &str,
     machines: &[crate::machines::Machine],
+    open: &[String],
 ) {
     let Some((_, path)) = rows.get(index) else {
         return;
@@ -401,7 +440,7 @@ pub fn toggle_pin_in_menu(
         return;
     }
     toggle_pin(prefs, &path.clone());
-    *rows = plus_menu_rows(prefs, starters, home, machines);
+    *rows = plus_menu_rows(prefs, starters, home, machines, open);
 }
 
 /// A remote tab's menu row after Close tab (remote sessions PR 7, rule 1192): the tab goes from this window and the
@@ -568,7 +607,7 @@ mod tests {
     #[test]
     fn the_plus_menu_is_choose_then_pins_then_five_recents_or_a_disabled_note() {
         let prefs = PrefStore::memory();
-        let empty = plus_menu_rows(&prefs, &[], "", &[]);
+        let empty = plus_menu_rows(&prefs, &[], "", &[], &[]);
         assert_eq!(labels(&empty), [CHOOSE_FOLDER, "No recent folders"]);
         assert!(!empty[0].0.disabled);
         assert_eq!(empty[0].0.icon, GLYPH_FOLDER);
@@ -579,7 +618,7 @@ mod tests {
         }
         toggle_pin(&prefs, r"C:\p\pinA");
         toggle_pin(&prefs, r"C:\p\pinB");
-        let rows = plus_menu_rows(&prefs, &[], "", &[]);
+        let rows = plus_menu_rows(&prefs, &[], "", &[], &[]);
         assert_eq!(rows.len(), 8);
         assert_eq!(rows[0].0.label, CHOOSE_FOLDER);
         assert_eq!(rows[0].1, "");
@@ -612,7 +651,7 @@ mod tests {
         ];
         let prefs = PrefStore::memory();
         remember_root(&prefs, r"C:\w\a");
-        let mut rows = plus_menu_rows(&prefs, &[], "", &machines);
+        let mut rows = plus_menu_rows(&prefs, &[], "", &machines, &[]);
         assert_eq!(
             labels(&rows),
             [CHOOSE_FOLDER, "a", "Mac Mini", "Desk", "nas"]
@@ -628,10 +667,10 @@ mod tests {
         assert_eq!(rows[4].0.icon, GLYPH_LINK);
         // A folder's path is never a machine; a machine's row has no pin to toggle.
         assert_eq!(machine_of_row(r"C:\w\a"), None);
-        toggle_pin_in_menu(&prefs, &mut rows, 2, &[], "", &machines);
+        toggle_pin_in_menu(&prefs, &mut rows, 2, &[], "", &machines, &[]);
         assert!(pinned_roots(&prefs).is_empty());
         // No folder known: the note, then the machines.
-        let none = plus_menu_rows(&PrefStore::memory(), &[], "", &machines[..1]);
+        let none = plus_menu_rows(&PrefStore::memory(), &[], "", &machines[..1], &[]);
         assert_eq!(
             labels(&none),
             [CHOOSE_FOLDER, "No recent folders", "Mac Mini"]
@@ -658,7 +697,7 @@ mod tests {
         remember_root(&prefs, r"C:\w\a");
         remember_remote_root(&prefs, "gone", "/srv/old", false);
         remember_remote_root(&prefs, "mac", "/Users/max/proj", false);
-        let mut rows = plus_menu_rows(&prefs, &[], "", std::slice::from_ref(&mac));
+        let mut rows = plus_menu_rows(&prefs, &[], "", std::slice::from_ref(&mac), &[]);
         assert_eq!(labels(&rows), [CHOOSE_FOLDER, "a", "proj", "Mac Mini"]);
         let (row, path) = &rows[2];
         assert_eq!(remote_folder_of_row(path), Some(("mac", "/Users/max/proj")));
@@ -668,18 +707,32 @@ mod tests {
         assert_eq!(row.hint, "Mac Mini");
         assert_eq!(remote_folder_of_row(r"C:\w\a"), None);
         // A remote folder's row has no pin to toggle.
-        toggle_pin_in_menu(&prefs, &mut rows, 2, &[], "", std::slice::from_ref(&mac));
+        toggle_pin_in_menu(
+            &prefs,
+            &mut rows,
+            2,
+            &[],
+            "",
+            std::slice::from_ref(&mac),
+            &[],
+        );
         assert!(pinned_roots(&prefs).is_empty());
         // Only remote folders known: no note, the remote folder, then the machine.
         let only = PrefStore::memory();
         remember_remote_root(&only, "mac", "/Users/max/proj", false);
         assert_eq!(
-            labels(&plus_menu_rows(&only, &[], "", std::slice::from_ref(&mac))),
+            labels(&plus_menu_rows(
+                &only,
+                &[],
+                "",
+                std::slice::from_ref(&mac),
+                &[]
+            )),
             [CHOOSE_FOLDER, "proj", "Mac Mini"]
         );
         // No machines linked: no remote folder.
         assert_eq!(
-            labels(&plus_menu_rows(&prefs, &[], "", &[])),
+            labels(&plus_menu_rows(&prefs, &[], "", &[], &[])),
             [CHOOSE_FOLDER, "a"]
         );
     }
@@ -697,7 +750,7 @@ mod tests {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        let rows = plus_menu_rows(&prefs, &starters, home, &[]);
+        let rows = plus_menu_rows(&prefs, &starters, home, &[], &[]);
         assert_eq!(
             labels(&rows),
             [CHOOSE_FOLDER, "Documents", "Downloads", "Desktop", "me"]
@@ -712,7 +765,7 @@ mod tests {
         // Two recents: they come first and the last two starters give way.
         remember_root(&prefs, r"C:\work\b");
         remember_root(&prefs, r"C:\work\a");
-        let rows = plus_menu_rows(&prefs, &starters, home, &[]);
+        let rows = plus_menu_rows(&prefs, &starters, home, &[], &[]);
         assert_eq!(
             labels(&rows),
             [CHOOSE_FOLDER, "a", "b", "Documents", "Downloads", "Desktop"]
@@ -720,7 +773,7 @@ mod tests {
         assert_eq!(rows[1].0.hint, "");
         // A starter opened once is a recent: listed once, as a recent.
         remember_root(&prefs, r"C:\Users\me\Downloads");
-        let rows = plus_menu_rows(&prefs, &starters, home, &[]);
+        let rows = plus_menu_rows(&prefs, &starters, home, &[], &[]);
         assert_eq!(
             labels(&rows),
             [CHOOSE_FOLDER, "Downloads", "a", "b", "Documents", "Desktop"]
@@ -728,7 +781,7 @@ mod tests {
         assert_eq!(rows[1].0.hint, "");
         // Pinning a starter makes it a pin.
         let mut rows = rows;
-        toggle_pin_in_menu(&prefs, &mut rows, 4, &starters, home, &[]);
+        toggle_pin_in_menu(&prefs, &mut rows, 4, &starters, home, &[], &[]);
         assert_eq!(
             labels(&rows),
             [
@@ -750,15 +803,15 @@ mod tests {
         for p in [r"C:\x\c", r"C:\x\b", r"C:\x\a"] {
             remember_root(&prefs, p);
         }
-        let mut rows = plus_menu_rows(&prefs, &[], "", &[]);
+        let mut rows = plus_menu_rows(&prefs, &[], "", &[], &[]);
         assert_eq!(
             rows.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>(),
             ["", r"C:\x\a", r"C:\x\b", r"C:\x\c"]
         );
         // The first row has no pin: toggling it does nothing.
-        toggle_pin_in_menu(&prefs, &mut rows, 0, &[], "", &[]);
+        toggle_pin_in_menu(&prefs, &mut rows, 0, &[], "", &[], &[]);
         assert!(pinned_roots(&prefs).is_empty());
-        toggle_pin_in_menu(&prefs, &mut rows, 3, &[], "", &[]);
+        toggle_pin_in_menu(&prefs, &mut rows, 3, &[], "", &[], &[]);
         assert_eq!(
             rows.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>(),
             ["", r"C:\x\c", r"C:\x\a", r"C:\x\b"]
@@ -768,8 +821,98 @@ mod tests {
         assert_eq!(rows[2].0.trailing_tip, "Pin to this menu");
         assert_eq!(rows[3].0.trailing_tip, "Pin to this menu");
         // And back: unpinning drops it to the recents' place.
-        toggle_pin_in_menu(&prefs, &mut rows, 1, &[], "", &[]);
+        toggle_pin_in_menu(&prefs, &mut rows, 1, &[], "", &[], &[]);
         assert!(pinned_roots(&prefs).is_empty());
+    }
+
+    fn paths(rows: &[(MenuRowData, String)]) -> Vec<&str> {
+        rows.iter().map(|(_, p)| p.as_str()).collect()
+    }
+
+    /// Rule 1269: a recent folder whose tab is open is left out of the folder menu; its spot stays empty.
+    #[test]
+    fn an_open_tabs_recent_folder_is_left_out_of_the_menu() {
+        let prefs = PrefStore::memory();
+        for p in [r"C:\x\c", r"C:\x\b", r"C:\x\a"] {
+            remember_root(&prefs, p);
+        }
+        let open = vec![r"C:\x\b".to_string()];
+        let rows = plus_menu_rows(&prefs, &[], "", &[], &open);
+        assert_eq!(paths(&rows), ["", r"C:\x\a", r"C:\x\c"]);
+        assert!(rows[1].0.group);
+        // Every recent open: just the first row, no note.
+        let all: Vec<String> = [r"C:\x\a", r"C:\x\b", r"C:\x\c"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            labels(&plus_menu_rows(&prefs, &[], "", &[], &all)),
+            [CHOOSE_FOLDER]
+        );
+    }
+
+    /// Rule 1269: a pin stays even while its folder has a tab, and an open starter is left out without another one
+    /// taking its spot.
+    #[test]
+    fn a_pinned_folder_stays_while_its_tab_is_open() {
+        let prefs = PrefStore::memory();
+        remember_root(&prefs, r"C:\x\a");
+        remember_root(&prefs, r"C:\x\p");
+        toggle_pin(&prefs, r"C:\x\p");
+        let open = vec![r"C:\x\p".to_string(), r"C:\x\a".to_string()];
+        let rows = plus_menu_rows(&prefs, &[], "", &[], &open);
+        assert_eq!(paths(&rows), ["", r"C:\x\p"]);
+        assert!(rows[1].0.trailing_filled);
+        let starters = vec![r"C:\s\one".to_string(), r"C:\s\two".to_string()];
+        let rows = plus_menu_rows(
+            &PrefStore::memory(),
+            &starters,
+            "",
+            &[],
+            &[r"C:\s\one".to_string()],
+        );
+        assert_eq!(paths(&rows), ["", r"C:\s\two"]);
+    }
+
+    /// Rule 1269: one folder however the tab spells it: a trailing slash, the other slash, the `\\?\` prefix and (on
+    /// Windows) another case.
+    #[test]
+    fn an_open_folder_matches_whatever_its_spelling() {
+        let prefs = PrefStore::memory();
+        remember_root(&prefs, r"C:\Work\App");
+        for spelling in [r"C:\Work\App\", "C:/Work/App", r"\\?\C:\Work\App"] {
+            let rows = plus_menu_rows(&prefs, &[], "", &[], &[spelling.to_string()]);
+            assert_eq!(paths(&rows), [""], "{spelling}");
+        }
+        let rows = plus_menu_rows(&prefs, &[], "", &[], &[r"c:\work\app".to_string()]);
+        let hidden = rows.len() == 1;
+        assert_eq!(hidden, cfg!(windows));
+        // A folder below or beside it is another folder.
+        for other in [r"C:\Work\App\src", r"C:\Work\Ap", r"C:\Work"] {
+            let rows = plus_menu_rows(&prefs, &[], "", &[], &[other.to_string()]);
+            assert_eq!(paths(&rows), ["", r"C:\Work\App"], "{other}");
+        }
+    }
+
+    /// Rule 1269: only local tabs hide a folder. A remote tab's folder is on its own machine, so the app never passes it
+    /// in, and the remote rows stay as they were.
+    #[test]
+    fn open_folders_never_hide_a_remote_folder_row() {
+        use crate::machines::Machine;
+        use flare_settings::recent_roots::remember_remote_root;
+        let mac = Machine {
+            id: "mac".into(),
+            name: "Mac Mini".into(),
+            kind: None,
+            ssh: "mini".into(),
+            user: None,
+            flare: "flare".into(),
+        };
+        let prefs = PrefStore::memory();
+        remember_remote_root(&prefs, "mac", "/Users/max/proj", false);
+        let open = vec!["/Users/max/proj".to_string()];
+        let rows = plus_menu_rows(&prefs, &[], "", std::slice::from_ref(&mac), &open);
+        assert_eq!(labels(&rows), [CHOOSE_FOLDER, "proj", "Mac Mini"]);
     }
 
     #[test]
@@ -989,7 +1132,7 @@ mod tests {
     fn labels_helper_reads_rows() {
         let prefs = PrefStore::memory();
         assert_eq!(
-            labels(&plus_menu_rows(&prefs, &[], "", &[])),
+            labels(&plus_menu_rows(&prefs, &[], "", &[], &[])),
             [CHOOSE_FOLDER, "No recent folders"]
         );
     }

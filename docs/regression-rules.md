@@ -4037,3 +4037,17 @@ and on the Mac Zoom in, Zoom out and Actual size). The sheet is an overlay (`Ove
 `a_press_outside_the_box_closes_the_sheet_and_one_inside_does_not`, `every_chord_in_the_table_is_on_the_sheet`,
 `leaving_settings_closes_the_sheet`, `a_lead_button_sits_left_of_the_switch_and_both_answer_their_clicks` and
 `flare_hotkeys_is_found_by_its_new_name_and_its_old_one`. Source: Max, 2026-11-14 (the approved mockup).
+
+1269. **The folder menu leaves out the folders of open tabs.** Max, 2026-11-15: the New tab button's folder menu (and
+the strip's right-click on +) listed folders that already had a terminal tab. Now, when the menu opens, an unpinned
+recent or starter folder that an open local shell tab is in is not listed. A pin always stays, as it is a deliberate
+choice. Two spellings of one folder match: a trailing slash, either slash, the `\\?\` prefix and, on Windows, any
+case. A folder below or beside it is another folder. A hidden folder frees no spot: no older recent and no starter
+takes it, and no "No recent folders" note appears, so the list just has fewer rows. A remote tab's folder is on
+another machine, so it hides nothing, and the remote folder rows stay as they were. The list is built each time the
+menu opens (and again after a pin toggle), so it reflects the tabs open at that moment. Native:
+`menus_ui::{plus_menu_rows, toggle_pin_in_menu}` take the open folders, `menus_ui::{open_folder_key, is_open_folder}`,
+`AppCtl::open_local_folders`. Held by `an_open_tabs_recent_folder_is_left_out_of_the_menu`,
+`a_pinned_folder_stays_while_its_tab_is_open`, `an_open_folder_matches_whatever_its_spelling`,
+`open_folders_never_hide_a_remote_folder_row`, `only_local_tabs_count_as_open_folders_for_the_menu`,
+`a_menu_picks_a_recent_folder_and_copies_a_path` and `plus_opens_at_once_in_the_chosen_folder_and_does_not_ask_again`. Source: Max, 2026-11-15.
