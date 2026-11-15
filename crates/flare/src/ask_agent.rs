@@ -28,9 +28,12 @@ pub const NOTE_NO_SELECTION: &str = "Select some text first";
 /// it is the same document's; it is the page's to choose (a named element can even replace `document.title`, which the
 /// type check turns into no title), so it is untrusted text and only its first line is ever a title. The cuts are well
 /// past what is handed on, so a longer selection still arrives long enough to be marked as cut, but they run in the
-/// page's world: [`ANSWER_MAX`] is the bound.
+/// page's world: [`ANSWER_MAX`] is the bound. Text selected in a password field is never read: the quiet context reads
+/// the selection at every prompt, not at a click (rule 1268).
 pub const SELECTION_SCRIPT: &str = "(function(){var s=window.getSelection();\
 var t=s?s.toString().slice(0,65536):'';\
+var a=document.activeElement;\
+if(a&&a.tagName==='INPUT'&&String(a.type).toLowerCase()==='password')t='';\
 var d=document.title;d=typeof d==='string'?d.slice(0,1024):'';\
 return location.href+'\\n'+d+'\\n'+(typeof t==='string'?t:'');})()";
 
@@ -244,6 +247,17 @@ mod tests {
     fn the_address_comes_first_and_is_read_with_nothing_a_page_can_replace() {
         assert!(SELECTION_SCRIPT.contains("return location.href+'\\n'+d+'\\n'+"));
         assert!(SELECTION_SCRIPT.contains("typeof d==='string'"));
+    }
+
+    /// Rule 1268: the selection is read at every prompt, so a password field's selected text never leaves the page.
+    #[test]
+    fn a_password_fields_selection_is_never_read() {
+        assert!(SELECTION_SCRIPT.contains(
+            "if(a&&a.tagName==='INPUT'&&String(a.type).toLowerCase()==='password')t='';"
+        ));
+        let blank = SELECTION_SCRIPT.find("t='';").unwrap();
+        let ret = SELECTION_SCRIPT.find("return ").unwrap();
+        assert!(blank < ret, "the blank comes before the answer");
     }
 
     #[test]

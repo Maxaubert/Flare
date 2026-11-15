@@ -4065,7 +4065,8 @@ other caller, or any other value, gets the plain `PanelState`. The answer gains 
 `appctl/quiet_glue.rs`): `selection` `{text, cut, file, lines}` from `PanelCtl::selection_now` (the file's path, or the
 panel's title for handed text, and `panel_sel::lines_label`), or `{text, cut, page: {title, url}}` from a page (read
 with `SELECTION_SCRIPT`, believed only from the document it was asked on, `page` only for a plain web page with no
-user name or password in the address, `file` for a markdown view's page, `other: true` for a page Flare made); and
+user name or password in the address, `file` for a markdown view's page, `other: true` for a page Flare made; the
+script reads no text when the focus is in a password field); and
 `mark` `{kind: "arrow", page | file | other}` while `WebCtl::kept_arrow_place` finds a kept arrow (`UserArrow::kept_on`:
 the same document and within `USER_ARROW_MS`; a look takes it). What the arrow points at is never sent. The page read
 waits at most `PAGE_READ_MS` (400 ms; the hook waits 1 s) and then the call is answered without it
@@ -4095,6 +4096,7 @@ nothing when `AgentHub::claude_session` names the tab's session; Codex and agy k
 `the_quiet_context_hands_on_the_selected_lines_with_the_file_and_types_nothing`,
 `hostile_file_text_reaches_the_context_with_no_control_but_the_line_break`,
 `the_code_view_of_a_markdown_file_selects_and_hands_on_like_any_text_file`,
-`the_quiet_context_of_a_markdown_page_names_the_file_and_waits_for_the_pages_answer` and
+`the_quiet_context_of_a_markdown_page_names_the_file_and_waits_for_the_pages_answer`,
+`a_password_fields_selection_is_never_read` and
 `a_claude_tab_with_hooks_hears_of_the_arrow_quietly_until_a_look_and_nothing_is_typed`. Source: Max, 2026-11-15
 (brainstorm `research\flare\2026-11-15-ask-agent-brainstorm.md`, ideas 1.1 and 1.2, changed by Max).
