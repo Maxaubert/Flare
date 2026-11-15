@@ -72,6 +72,7 @@ pub mod taskbar;
 pub mod taskbar_flash;
 pub mod tcp_owner;
 pub mod toast;
+pub mod window_app_id;
 pub mod window_edge;
 #[cfg(windows)]
 pub mod window_park;
